@@ -261,7 +261,7 @@ POST_PLAYBACK_SUPPRESSION_SECS = 0.5
 # ─────────────────────────────────────────────────────────────────────────────
 
 # How often the analysis loop runs (seconds)
-SCENE_ANALYSIS_INTERVAL_SECS = 1.0
+SCENE_ANALYSIS_INTERVAL_SECS = 6.0
 
 # Audio window fed into each analysis function (seconds of history)
 SCENE_ANALYSIS_WINDOW_SECS = 2.0
@@ -474,6 +474,13 @@ POST_SPEECH_LISTEN_DELAY_SECS = 0.8
 # Seconds of no detected speech in ACTIVE state before returning to IDLE
 CONVERSATION_IDLE_TIMEOUT_SECS = 30.0
 
+# After Rex asks a direct question, suppress autonomous/proactive speech for a
+# short window so humans get a clean chance to answer.
+QUESTION_RESPONSE_WAIT_SECS = 10.0
+
+# Longer wait window for unknown-person onboarding prompts ("who are you?").
+IDENTITY_RESPONSE_WAIT_SECS = 20.0
+
 # Short acknowledgment lines Rex speaks when a wake word transitions him from
 # IDLE or SLEEP to ACTIVE. Distinct from INTERRUPT_ACKNOWLEDGMENTS (mid-speech).
 WAKE_ACKNOWLEDGMENTS = [
@@ -492,6 +499,12 @@ WAKE_ACKNOWLEDGMENTS = [
 
 # How frequently the consciousness loop ticks to check WorldState and trigger behavior
 CONSCIOUSNESS_LOOP_INTERVAL_SECS = 1.0
+
+# Minimum spacing between autonomous/proactive spoken lines from consciousness.
+CONSCIOUSNESS_PROACTIVE_MIN_GAP_SECS = 8.0
+
+# If False, consciousness-generated proactive speech only occurs in IDLE.
+CONSCIOUSNESS_ALLOW_PROACTIVE_IN_ACTIVE = False
 
 # How often GPT-4o runs a full environment/scene analysis (seconds)
 ENVIRONMENT_SCAN_INTERVAL_SECS = 180

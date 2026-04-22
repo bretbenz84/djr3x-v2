@@ -58,6 +58,13 @@ _pending_identity_prompt = threading.Event()
 _last_identity_prompt_at: float = 0.0
 _IDENTITY_PROMPT_COOLDOWN_SECS = 45.0
 
+# Conversation turn-taking guard: when Rex asks a question, proactive speech
+# pauses briefly so people can answer without being talked over.
+_response_wait_until: float = 0.0
+_last_proactive_speech_at: float = 0.0
+_turn_lock = threading.Lock()
+_proactive_speech_pending = threading.Event()
+
 # Face detection terminal feedback de-duplication signature.
 _last_face_feedback_signature: Optional[str] = None
 
@@ -93,6 +100,63 @@ def consume_identity_prompt_request() -> bool:
     return False
 
 
+def begin_response_wait(window_secs: Optional[float] = None) -> None:
+    """
+    Extend the "waiting for user response" window.
+    """
+    global _response_wait_until
+    wait_for = (
+        config.QUESTION_RESPONSE_WAIT_SECS
+        if window_secs is None
+        else max(0.0, float(window_secs))
+    )
+    deadline = time.monotonic() + wait_for
+    with _turn_lock:
+        _response_wait_until = max(_response_wait_until, deadline)
+
+
+def clear_response_wait() -> None:
+    """Clear any active response-wait window."""
+    global _response_wait_until
+    with _turn_lock:
+        _response_wait_until = 0.0
+
+
+def is_waiting_for_response() -> bool:
+    """Return True while Rex should pause proactive speech and wait for a reply."""
+    with _turn_lock:
+        return time.monotonic() < _response_wait_until
+
+
+def _utterance_expects_reply(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    return "?" in cleaned
+
+
+def note_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
+    """
+    Track when Rex last spoke and, if it was a question, open a reply window.
+    """
+    global _last_proactive_speech_at, _response_wait_until
+    now = time.monotonic()
+
+    with _turn_lock:
+        _last_proactive_speech_at = now
+
+        should_wait = wait_secs is not None or _utterance_expects_reply(text)
+        if not should_wait:
+            return
+
+        wait_for = (
+            config.QUESTION_RESPONSE_WAIT_SECS
+            if wait_secs is None
+            else max(0.0, float(wait_secs))
+        )
+        _response_wait_until = max(_response_wait_until, now + wait_for)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -101,25 +165,80 @@ def _can_speak() -> bool:
     return state_module.get_state() not in (State.QUIET, State.SHUTDOWN)
 
 
-def _speak_async(text: str, emotion: str = "neutral") -> None:
+def _can_proactive_speak() -> bool:
+    if not _can_speak():
+        return False
+
+    current_state = state_module.get_state()
+    if (
+        current_state == State.ACTIVE
+        and not getattr(config, "CONSCIOUSNESS_ALLOW_PROACTIVE_IN_ACTIVE", False)
+    ):
+        return False
+
+    if is_waiting_for_response():
+        return False
+    if _proactive_speech_pending.is_set():
+        return False
+
+    with _turn_lock:
+        last_spoken = _last_proactive_speech_at
+    min_gap = max(0.0, float(getattr(config, "CONSCIOUSNESS_PROACTIVE_MIN_GAP_SECS", 0.0)))
+    if min_gap and (time.monotonic() - last_spoken) < min_gap:
+        return False
+
     try:
         from audio import tts, output_gate
         if tts.is_speaking() or output_gate.is_busy():
-            return
-        speak = tts.speak
-        threading.Thread(target=speak, args=(text, emotion), daemon=True).start()
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _speak_async(
+    text: str,
+    emotion: str = "neutral",
+    *,
+    wait_secs: Optional[float] = None,
+) -> bool:
+    try:
+        if not _can_proactive_speak():
+            return False
+        if not text or not text.strip():
+            return False
+        from audio import tts
+        _proactive_speech_pending.set()
+
+        def _task() -> None:
+            try:
+                tts.speak(text, emotion)
+            finally:
+                _proactive_speech_pending.clear()
+
+        threading.Thread(target=_task, daemon=True).start()
+        note_rex_utterance(text, wait_secs=wait_secs)
+        return True
     except Exception as exc:
+        _proactive_speech_pending.clear()
         _log.debug("_speak_async error: %s", exc)
+        return False
 
 
-def _generate_and_speak(prompt: str, emotion: str = "neutral") -> None:
+def _generate_and_speak(
+    prompt: str,
+    emotion: str = "neutral",
+    *,
+    wait_secs: Optional[float] = None,
+) -> None:
     def _task():
         try:
+            if not _can_proactive_speak():
+                return
             from intelligence.llm import get_response
             text = get_response(prompt)
             if text:
-                from audio.tts import speak
-                speak(text, emotion)
+                _speak_async(text, emotion, wait_secs=wait_secs)
         except Exception as exc:
             _log.debug("_generate_and_speak error: %s", exc)
 
@@ -289,7 +408,7 @@ def _step_person_recognition(frame) -> None:
                 # interaction can enroll them in the person database.
                 now = time.monotonic()
                 if (
-                    _can_speak()
+                    _can_proactive_speak()
                     and state_module.get_state() == State.IDLE
                     and (now - _last_identity_prompt_at) >= _IDENTITY_PROMPT_COOLDOWN_SECS
                 ):
@@ -301,6 +420,7 @@ def _step_person_recognition(frame) -> None:
                         "In one short in-character line, ask who they are and what name "
                         "you should store for them.",
                         emotion="curious",
+                        wait_secs=getattr(config, "IDENTITY_RESPONSE_WAIT_SECS", 20.0),
                     )
             _last_face_feedback_signature = signature
 
@@ -350,7 +470,7 @@ def _step_disengagement(snapshot: dict) -> None:
     If the dominant speaker is disengaging, fire a proactive re-engagement line.
     Rate-limited to _REENGAGEMENT_COOLDOWN_SECS per person.
     """
-    if not _can_speak():
+    if not _can_proactive_speak():
         return
     try:
         from awareness.social import check_disengagement
@@ -388,7 +508,7 @@ def _step_proactive_reactions(snapshot: dict) -> None:
     """
     global _acknowledged_dates
 
-    if not _can_speak() or not _last_snapshot:
+    if not _last_snapshot or not _can_proactive_speak():
         return
 
     try:
@@ -445,7 +565,8 @@ def _step_proactive_reactions(snapshot: dict) -> None:
                 "excited",
             ))
 
-        for prompt, emotion in triggers:
+        if triggers:
+            prompt, emotion = random.choice(triggers)
             _generate_and_speak(prompt, emotion)
 
     except Exception as exc:
@@ -464,6 +585,8 @@ def _step_idle_micro_behavior(snapshot: dict) -> None:
     global _last_micro_behavior_at
 
     if state_module.get_state() != State.IDLE:
+        return
+    if is_waiting_for_response():
         return
 
     now = time.monotonic()
@@ -517,7 +640,7 @@ def _do_ambient_scan() -> None:
 
 
 def _do_private_thought() -> None:
-    if not _can_speak():
+    if not _can_proactive_speak():
         return
     line = random.choice(config.PRIVATE_THOUGHTS)
     _speak_async(line, emotion="neutral")
@@ -688,12 +811,16 @@ def _loop() -> None:
 
 def start() -> None:
     """Start the consciousness daemon thread. No-op if already running."""
-    global _thread
+    global _thread, _response_wait_until, _last_proactive_speech_at
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
     _stop_event.clear()
     _pending_identity_prompt.clear()
+    _proactive_speech_pending.clear()
+    with _turn_lock:
+        _response_wait_until = 0.0
+        _last_proactive_speech_at = 0.0
     _thread = threading.Thread(target=_loop, daemon=True, name="consciousness")
     _thread.start()
     _log.info(
@@ -704,9 +831,12 @@ def start() -> None:
 
 def stop() -> None:
     """Stop the consciousness daemon thread and wait for it to exit."""
-    global _thread
+    global _thread, _response_wait_until
     _stop_event.set()
     _pending_identity_prompt.clear()
+    _proactive_speech_pending.clear()
+    with _turn_lock:
+        _response_wait_until = 0.0
     if _thread:
         _thread.join(timeout=5)
         _thread = None

@@ -26,11 +26,13 @@ import state as state_module
 from state import State
 from audio import stream, vad, wake_word, transcription, speaker_id
 from audio import tts, output_gate
+from audio import echo_cancel
 from intelligence import command_parser, llm, personality
 from intelligence import consciousness
 from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
+from memory import events as events_memory
 from awareness import interoception
 from world_state import world_state
 
@@ -79,6 +81,10 @@ _identity_prompt_until: float = 0.0
 
 _IDENTITY_REPLY_WINDOW_SECS = 45.0
 _NAME_MAX_WORDS = 3
+
+# If a follow-up question ("how did X go?") is outstanding, this stores the
+# event row so the next user utterance can be captured as the outcome.
+_awaiting_followup_event: Optional[dict] = None
 
 _NAME_PATTERNS = [
     re.compile(r"\bmy name is\s+(.+)$", re.IGNORECASE),
@@ -192,6 +198,20 @@ def _speak_filler() -> None:
     chosen = random.choice(candidates)
     _last_filler = chosen
     _speak_async(chosen)
+
+
+def _assistant_asked_question(text: str) -> bool:
+    cleaned = (text or "").strip()
+    return bool(cleaned) and ("?" in cleaned)
+
+
+def _register_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
+    if not text or not text.strip():
+        return
+    try:
+        consciousness.note_rex_utterance(text, wait_secs=wait_secs)
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -657,18 +677,35 @@ def _execute_command(
 # Post-response processing
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _post_response(user_text: str, person_id: Optional[int]) -> None:
+def _post_response(
+    user_text: str,
+    person_id: Optional[int],
+    *,
+    assistant_asked_question: bool = False,
+) -> None:
     """
     Run after every response in ACTIVE state. Sentiment, facts, follow-up,
     and interoception are handled here. Sentiment/facts run in a background
     thread; follow-up delivery and interoception run in the calling thread.
     """
     # ── Follow-up delivery (sync — spoken as part of this turn) ───────────────
+    global _awaiting_followup_event
+
     if person_id is not None:
         try:
             followups = consciousness.get_pending_followup(person_id)
             if followups:
-                for event in followups:
+                # If Rex just asked a question, do not immediately ask another one.
+                # Re-queue and wait for the person's reply first.
+                if assistant_asked_question or consciousness.is_waiting_for_response():
+                    for event in followups:
+                        consciousness.set_pending_followup(person_id, event)
+                else:
+                    # Ask one follow-up at a time; keep the rest queued.
+                    event = followups[0]
+                    for leftover in followups[1:]:
+                        consciousness.set_pending_followup(person_id, leftover)
+
                     event_name = event.get("event_name", "that thing you mentioned")
                     resp = llm.get_response(
                         f"You're following up on something this person mentioned before: "
@@ -677,7 +714,20 @@ def _post_response(user_text: str, person_id: Optional[int]) -> None:
                     )
                     if resp:
                         conv_memory.add_to_transcript("Rex", resp)
-                        _speak_blocking(resp)
+                        completed = _speak_blocking(resp)
+                        if completed:
+                            _register_rex_utterance(resp)
+                            _awaiting_followup_event = None
+                            event_id = event.get("id")
+                            if event_id is not None:
+                                _awaiting_followup_event = {
+                                    "person_id": person_id,
+                                    "event_id": int(event_id),
+                                }
+                        else:
+                            consciousness.set_pending_followup(person_id, event)
+                    else:
+                        consciousness.set_pending_followup(person_id, event)
         except Exception as exc:
             _log.debug("post_response follow-up error: %s", exc)
 
@@ -741,13 +791,18 @@ def _end_session() -> None:
     Called on ACTIVE → IDLE transition. Generates and persists a session summary,
     updates visit records and familiarity, then clears in-memory session state.
     """
-    global _session_exchange_count, _identity_prompt_until
+    global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
 
     transcript = conv_memory.get_session_transcript()
     if not transcript:
         _session_exchange_count = 0
         _session_person_ids.clear()
         _identity_prompt_until = 0.0
+        _awaiting_followup_event = None
+        try:
+            consciousness.clear_response_wait()
+        except Exception:
+            pass
         return
 
     for person_id in list(_session_person_ids):
@@ -778,6 +833,11 @@ def _end_session() -> None:
     _session_exchange_count = 0
     _session_person_ids.clear()
     _identity_prompt_until = 0.0
+    _awaiting_followup_event = None
+    try:
+        consciousness.clear_response_wait()
+    except Exception:
+        pass
     _log.info("[interaction] session ended — summary saved, transcript cleared")
 
 
@@ -787,7 +847,7 @@ def _end_session() -> None:
 
 def _handle_speech_segment(audio_array: np.ndarray) -> None:
     """Full processing pipeline for one detected speech segment in ACTIVE state."""
-    global _session_exchange_count, _identity_prompt_until
+    global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
 
     # Randomised pre-response pause — prevents Rex from feeling instant/robotic
     delay_ms = random.randint(config.REACTION_DELAY_MS_MIN, config.REACTION_DELAY_MS_MAX)
@@ -801,6 +861,12 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
 
     if not text:
         return
+
+    # Any non-empty user utterance means we should stop waiting for a reply.
+    try:
+        consciousness.clear_response_wait()
+    except Exception:
+        pass
 
     # Consciousness asked an unknown person for their name. Open a short window
     # where single/short name replies are treated as enrollment input.
@@ -827,6 +893,23 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 person_name = intro_name
                 _identity_prompt_until = 0.0
 
+    # If Rex had an outstanding event follow-up question, treat this utterance
+    # as the outcome and close the loop in memory.
+    if _awaiting_followup_event:
+        pending_pid = _awaiting_followup_event.get("person_id")
+        pending_event_id = _awaiting_followup_event.get("event_id")
+        pid_matches = (
+            pending_pid is None
+            or person_id is None
+            or pending_pid == person_id
+        )
+        if pending_event_id is not None and pid_matches:
+            try:
+                events_memory.mark_followed_up(int(pending_event_id), text.strip())
+                _awaiting_followup_event = None
+            except Exception as exc:
+                _log.debug("follow-up outcome write failed: %s", exc)
+
     if person_id is not None:
         _session_person_ids.add(person_id)
         voice_name = person_name or f"person_{person_id}"
@@ -849,11 +932,18 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
     else:
         response_text = _stream_llm_response(text, person_id)
 
+    assistant_asked_question = False
     if response_text:
         conv_memory.add_to_transcript("Rex", response_text)
         _session_exchange_count += 1
+        _register_rex_utterance(response_text)
+        assistant_asked_question = _assistant_asked_question(response_text)
 
-    _post_response(text, person_id)
+    _post_response(
+        text,
+        person_id,
+        assistant_asked_question=assistant_asked_question,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -901,6 +991,12 @@ def _loop() -> None:
                 state_module.set_state(State.ACTIVE)
                 _last_speech_at = time.monotonic()
                 _wake_ack()
+                continue
+
+            # Never let Rex's own playback in IDLE self-trigger the interaction
+            # loop into ACTIVE.
+            if tts.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
+                _stop_event.wait(0.05)
                 continue
 
             # Optional hands-free behavior: allow normal speech to activate Rex
@@ -1006,7 +1102,7 @@ def _loop() -> None:
 
 def start() -> None:
     """Start the wake word detector and the continuous interaction loop."""
-    global _thread, _identity_prompt_until
+    global _thread, _identity_prompt_until, _awaiting_followup_event
 
     if _thread and _thread.is_alive():
         _log.warning("[interaction] already running")
@@ -1017,6 +1113,11 @@ def start() -> None:
     _interrupted.clear()
     _session_person_ids.clear()
     _identity_prompt_until = 0.0
+    _awaiting_followup_event = None
+    try:
+        consciousness.clear_response_wait()
+    except Exception:
+        pass
 
     wake_word.start(_on_wake_word)
     if not wake_word.is_ready():
@@ -1035,7 +1136,7 @@ def start() -> None:
 
 def stop() -> None:
     """Stop the interaction loop and wake word detector, waiting for clean exit."""
-    global _thread
+    global _thread, _awaiting_followup_event, _identity_prompt_until
 
     _stop_event.set()
     wake_word.stop()
@@ -1045,5 +1146,12 @@ def stop() -> None:
         if _thread.is_alive():
             _log.warning("[interaction] loop thread did not stop cleanly")
         _thread = None
+
+    _awaiting_followup_event = None
+    _identity_prompt_until = 0.0
+    try:
+        consciousness.clear_response_wait()
+    except Exception:
+        pass
 
     _log.info("[interaction] stopped")
