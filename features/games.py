@@ -19,7 +19,6 @@ Public API:
     current_game()                       → str | None
 """
 
-import base64
 import json
 import logging
 import random
@@ -36,6 +35,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from rapidfuzz import fuzz
 
 import config
+from vision.image_utils import encode_jpeg_base64
 
 _log = logging.getLogger(__name__)
 
@@ -167,20 +167,18 @@ def _ispy_get_target() -> Optional[dict]:
     Returns {"object": "red chair", "clue": "red"} or None on failure.
     """
     try:
-        import cv2
         from vision import camera
     except ImportError:
-        _log.warning("[games] Camera/cv2 unavailable for I Spy")
+        _log.warning("[games] Camera unavailable for I Spy")
         return None
 
     frame = camera.get_frame()
     if frame is None:
         return None
 
-    ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-    if not ret:
+    b64 = encode_jpeg_base64(frame, quality=85)
+    if b64 is None:
         return None
-    b64 = base64.b64encode(buf.tobytes()).decode("ascii")
 
     detail = config.VISION_DETAIL.get("active_conversation", "auto")
     prompt = (

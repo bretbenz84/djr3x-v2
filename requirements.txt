@@ -34,9 +34,10 @@ torchaudio>=2.3.0
 # ── Vision — face detection & recognition ────────────────────────────────────
 # dlib compiles from source; cmake and boost must be installed via Homebrew first
 dlib>=19.24.6
-opencv-python>=4.10.0
+Pillow>=10.0.0
 
 # ── Vision — pose estimation ──────────────────────────────────────────────────
+# mediapipe installs opencv-contrib-python, which already provides cv2
 mediapipe>=0.10.14
 
 # ── Hardware — serial (Maestro servo controller + Arduino) ───────────────────

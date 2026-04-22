@@ -19,6 +19,7 @@ from typing import Optional
 import numpy as np
 
 import config
+from vision.image_utils import bgr_to_rgb
 from world_state import world_state
 
 _log = logging.getLogger(__name__)
@@ -421,8 +422,7 @@ def detect_pose(frame) -> list[dict]:
         return []
 
     try:
-        import cv2
-        rgb     = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb = bgr_to_rgb(frame)
         results = _pose.process(rgb)
     except Exception as exc:
         _log.warning("MediaPipe Pose processing error: %s", exc)

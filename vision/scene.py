@@ -15,16 +15,14 @@ fires immediately on start, then re-fires every interval_secs OR whenever
 world_state.crowd.count changes by _CROWD_CHANGE_DELTA or more.
 """
 
-import base64
 import json
 import logging
 import threading
 import time
 from typing import Optional
 
-import cv2
-
 import config
+from vision.image_utils import encode_jpeg_base64
 from world_state import world_state
 
 _log = logging.getLogger(__name__)
@@ -57,12 +55,12 @@ def _get_client():
 
 
 def _encode_frame(frame) -> Optional[str]:
-    """JPEG-encode an OpenCV BGR frame and return base64, or None on failure."""
-    ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-    if not ret:
+    """JPEG-encode a BGR frame and return base64, or None on failure."""
+    encoded = encode_jpeg_base64(frame, quality=85)
+    if encoded is None:
         _log.error("_encode_frame: JPEG encode failed")
         return None
-    return base64.b64encode(buf.tobytes()).decode("ascii")
+    return encoded
 
 
 def _parse_json(text: str):

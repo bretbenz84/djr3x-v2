@@ -12,17 +12,16 @@ permanently switches to the HOG detector for the remainder of the session and
 logs a warning. HOG is faster but misses non-frontal faces.
 """
 
-import base64
 import json
 import logging
 import time
 from typing import Optional
 
-import cv2
 import numpy as np
 
 import config
 from memory import facts, people
+from vision.image_utils import bgr_to_rgb, encode_jpeg_base64
 
 _log = logging.getLogger(__name__)
 
@@ -146,7 +145,7 @@ def detect_faces(frame: np.ndarray) -> list[dict]:
     if not _load_models():
         return []
 
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    rgb = bgr_to_rgb(frame)
     rects = _detect_rects(rgb)
     results = []
 
@@ -229,12 +228,11 @@ def update_appearance(person_id: int, frame: np.ndarray) -> None:
         _log.error("update_appearance: missing dependency — %s", exc)
         return
 
-    ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
-    if not ret:
+    b64 = encode_jpeg_base64(frame, quality=90)
+    if b64 is None:
         _log.error("update_appearance: failed to JPEG-encode frame for person_id=%d", person_id)
         return
 
-    b64    = base64.b64encode(buf.tobytes()).decode("ascii")
     detail = config.VISION_DETAIL.get("face_enrollment", "high")
 
     prompt = (
