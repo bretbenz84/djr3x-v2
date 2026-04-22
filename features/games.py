@@ -6,11 +6,13 @@ Manages one active game at a time. All games are interruptible via stop_game().
 Supported games:
     "i_spy"            — Rex picks an object from the camera frame; player guesses
     "20_questions"     — Rex thinks of something; player asks yes/no questions
+    "trivia"           — Rex asks one trivia question and judges the answer
     "word_association" — Rapid back-and-forth word chain
 
 Public API:
     can_play(game_name)                  → (bool, str | None)  # repeat-limit gate
     start_game(game_name, person_id=None) → str    # opening line for Rex to speak
+    start_trivia(person_id=None)         → str    # convenience wrapper for trivia
     handle_input(text, person_id=None)   → str    # Rex's response to player input
     stop_game(person_id=None)            → str    # graceful closing line
     is_active()                          → bool
@@ -49,6 +51,7 @@ _game_play_log: dict[str, list[float]] = {}
 _GAME_DISPLAY_NAMES: dict[str, str] = {
     "i_spy":            "I Spy",
     "20_questions":     "20 Questions",
+    "trivia":           "Trivia",
     "word_association": "Word Association",
 }
 
@@ -63,6 +66,7 @@ _GAME_ALIASES: dict[str, str] = {
     "twenty questions": "20_questions",
     "20questions":      "20_questions",
     "20_questions":     "20_questions",
+    "trivia":           "trivia",
     "word association": "word_association",
     "word_association": "word_association",
     "word assoc":       "word_association",
@@ -435,6 +439,108 @@ def _20q_stop(person_id: Optional[int]) -> str:
     )
 
 
+# ── Trivia game ───────────────────────────────────────────────────────────────
+
+def _trivia_start(person_id: Optional[int]) -> str:
+    try:
+        from features import trivia as trivia_bank
+    except Exception as exc:
+        _log.error("[games] trivia import failed: %s", exc)
+        return _rex_respond(
+            "[GAME: Trivia — START FAILED] Trivia question loading failed. "
+            "Rex apologizes in character and suggests another game.",
+            person_id,
+        )
+
+    categories = trivia_bank.get_categories()
+    if not categories:
+        return _rex_respond(
+            "[GAME: Trivia — NO QUESTIONS] No trivia categories are available. "
+            "Rex apologizes in character and suggests another game.",
+            person_id,
+        )
+
+    category = "General Knowledge" if "General Knowledge" in categories else categories[0]
+    question = trivia_bank.get_question(category)
+    if not question:
+        return _rex_respond(
+            f"[GAME: Trivia — NO QUESTION] Rex tried to load a trivia question from "
+            f"category \"{category}\" but came up empty. Apologize in character.",
+            person_id,
+        )
+
+    _game_state.update({
+        "category": category,
+        "question": question,
+    })
+
+    return _rex_respond(
+        f"[GAME: Trivia — START] Rex is starting a trivia round in category "
+        f"\"{category}\". After a brief Rex-style intro, ask this question exactly: "
+        f"\"{question['question']}\"",
+        person_id,
+    )
+
+
+def _trivia_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
+    question = _game_state.get("question")
+    category = _game_state.get("category", "Trivia")
+    if not isinstance(question, dict):
+        _game_state.clear()
+        return (
+            _rex_respond(
+                "[GAME: Trivia — STATE ERROR] The trivia round lost its question state. "
+                "Rex acknowledges the glitch in character.",
+                person_id,
+            ),
+            True,
+        )
+
+    try:
+        from features import trivia as trivia_bank
+        is_correct = trivia_bank.check_answer(question, text)
+    except Exception as exc:
+        _log.error("[games] trivia answer check failed: %s", exc)
+        is_correct = False
+
+    answer = question.get("answer", "unknown")
+    _game_state.clear()
+
+    if is_correct:
+        return (
+            _rex_respond(
+                f"[GAME: Trivia — CORRECT] Category: \"{category}\". "
+                f"Question: \"{question.get('question', '')}\". "
+                f"Player answered: \"{text.strip()}\". Correct answer: \"{answer}\". "
+                "Rex celebrates briefly in character.",
+                person_id,
+            ),
+            True,
+        )
+
+    return (
+        _rex_respond(
+            f"[GAME: Trivia — WRONG] Category: \"{category}\". "
+            f"Question: \"{question.get('question', '')}\". "
+            f"Player answered: \"{text.strip()}\". Correct answer: \"{answer}\". "
+            "Rex reveals the answer and lightly roasts the miss in character.",
+            person_id,
+        ),
+        True,
+    )
+
+
+def _trivia_stop(person_id: Optional[int]) -> str:
+    question = _game_state.get("question", {})
+    answer = question.get("answer", "unknown") if isinstance(question, dict) else "unknown"
+    _game_state.clear()
+    return _rex_respond(
+        f"[GAME: Trivia — STOPPED] Trivia ended early. The answer was \"{answer}\". "
+        "Rex delivers a brief in-character close.",
+        person_id,
+    )
+
+
 # ── Word Association game ─────────────────────────────────────────────────────
 
 _WORD_ASSOC_STARTERS = [
@@ -561,6 +667,11 @@ _GAME_HANDLERS: dict[str, dict] = {
         "handle": _20q_handle,
         "stop":   _20q_stop,
     },
+    "trivia": {
+        "start":  _trivia_start,
+        "handle": _trivia_handle,
+        "stop":   _trivia_stop,
+    },
     "word_association": {
         "start":  _wordassoc_start,
         "handle": _wordassoc_handle,
@@ -662,6 +773,11 @@ def start_game(game_name: str, person_id: Optional[int] = None) -> str:
 
     _log.info("[games] Starting game: %s", normalized)
     return _GAME_HANDLERS[normalized]["start"](person_id)
+
+
+def start_trivia(person_id: Optional[int] = None) -> str:
+    """Convenience wrapper so trivia can be launched by a dedicated command."""
+    return start_game("trivia", person_id)
 
 
 def handle_input(text: str, person_id: Optional[int] = None) -> str:

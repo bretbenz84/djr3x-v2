@@ -41,11 +41,11 @@ def _get_personality_params() -> dict:
 
 
 def _get_anger_level() -> int:
-    """Return the current session anger escalation level (0–4), or 0 if unavailable."""
+    """Return the current session anger escalation level (0–4) from world_state."""
     try:
-        from intelligence.personality import get_anger_level
-        return get_anger_level()
-    except Exception:
+        ws = world_state.snapshot()
+        return int(ws.get("self_state", {}).get("anger_level", 0) or 0)
+    except (TypeError, ValueError):
         return 0
 
 

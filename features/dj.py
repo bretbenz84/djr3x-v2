@@ -45,6 +45,7 @@ _thread: Optional[threading.Thread] = None
 _thread_lock = threading.Lock()
 _current_track: Optional[TrackInfo] = None
 _volume: float = 1.0
+_VOLUME_STEP = 0.1
 
 _SAMPLE_RATE = 44100
 _CHANNELS = 2
@@ -239,6 +240,28 @@ def set_volume(level: float) -> None:
     global _volume
     _volume = max(0.0, min(1.0, float(level)))
     logger.debug("[dj] Volume → %.2f", _volume)
+
+
+def volume_up(step: float = _VOLUME_STEP) -> float:
+    """Increase playback volume by step and return the new level."""
+    set_volume(_volume + step)
+    return _volume
+
+
+def volume_down(step: float = _VOLUME_STEP) -> float:
+    """Decrease playback volume by step and return the new level."""
+    set_volume(_volume - step)
+    return _volume
+
+
+def play_by_vibe(vibe: str) -> Optional[TrackInfo]:
+    """Resolve a vibe request and start playback when a match is found."""
+    track = handle_request(vibe)
+    if track is None:
+        logger.info("[dj] No match found for vibe request: %r", vibe)
+        return None
+    play(track)
+    return track
 
 
 def is_playing() -> bool:

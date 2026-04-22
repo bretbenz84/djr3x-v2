@@ -38,6 +38,13 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _sync_anger_level(level: int) -> None:
+    """Mirror the current anger level into world_state for prompt assembly."""
+    self_state = world_state.get("self_state")
+    self_state["anger_level"] = level
+    world_state.update("self_state", self_state)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Personality parameters — DB-backed, persistent across sessions
 # ─────────────────────────────────────────────────────────────────────────────
@@ -167,6 +174,7 @@ def apply_mood_decay(seconds_elapsed: float) -> None:
         return
 
     should_go_neutral = False
+    anger_level_changed = False
 
     with _lock:
         if _mood_intensity > 0.0:
@@ -182,12 +190,16 @@ def apply_mood_decay(seconds_elapsed: float) -> None:
         ):
             _anger_level = 0
             _anger_last_incremented = None
+            anger_level_changed = True
 
     if should_go_neutral:
         self_state = world_state.get("self_state")
         if self_state.get("emotion", "neutral") != "neutral":
             self_state["emotion"] = "neutral"
             world_state.update("self_state", self_state)
+
+    if anger_level_changed:
+        _sync_anger_level(0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -197,6 +209,7 @@ def apply_mood_decay(seconds_elapsed: float) -> None:
 def get_anger_level() -> int:
     """Return current session anger level (0–4), auto-resetting if cooldown has elapsed."""
     global _anger_level, _anger_last_incremented
+    anger_level_changed = False
     with _lock:
         if (
             _anger_level > 0
@@ -205,7 +218,13 @@ def get_anger_level() -> int:
         ):
             _anger_level = 0
             _anger_last_incremented = None
-        return _anger_level
+            anger_level_changed = True
+        current_level = _anger_level
+
+    if anger_level_changed:
+        _sync_anger_level(current_level)
+
+    return current_level
 
 
 def increment_anger(person_id: Optional[int] = None) -> int:
@@ -219,6 +238,8 @@ def increment_anger(person_id: Optional[int] = None) -> int:
         _anger_level = min(4, _anger_level + 1)
         _anger_last_incremented = time.monotonic()
         new_level = _anger_level
+
+    _sync_anger_level(new_level)
 
     if person_id is not None:
         db.execute(
@@ -234,7 +255,10 @@ def decrement_anger() -> int:
     global _anger_level
     with _lock:
         _anger_level = max(0, _anger_level - 1)
-        return _anger_level
+        new_level = _anger_level
+
+    _sync_anger_level(new_level)
+    return new_level
 
 
 def reset_anger() -> None:
@@ -243,3 +267,5 @@ def reset_anger() -> None:
     with _lock:
         _anger_level = 0
         _anger_last_incremented = None
+
+    _sync_anger_level(0)

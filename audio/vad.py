@@ -22,19 +22,12 @@ _loaded = False
 def _load() -> None:
     global _model, _get_speech_timestamps, _loaded
     try:
-        import torch
+        from silero_vad import get_speech_timestamps, load_silero_vad
 
-        model, utils = torch.hub.load(
-            repo_or_dir="snakers4/silero-vad",
-            model="silero_vad",
-            force_reload=False,
-            verbose=False,
-        )
-        (get_speech_timestamps, _, _, _, _) = utils
-        _model = model
+        _model = load_silero_vad()
         _get_speech_timestamps = get_speech_timestamps
         _loaded = True
-        _log.info("Silero VAD model loaded.")
+        _log.info("Silero VAD model loaded from installed silero_vad package.")
     except Exception as exc:
         _log.error("Failed to load Silero VAD model — speech detection disabled: %s", exc)
         _loaded = False

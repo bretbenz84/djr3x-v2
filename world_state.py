@@ -37,6 +37,7 @@ _DEFAULTS = {
         },
         "body_state": "neutral",
         "emotion": "neutral",
+        "anger_level": 0,
         "cpu_temp": None,
         "cpu_load": None,
         "uptime_seconds": 0,

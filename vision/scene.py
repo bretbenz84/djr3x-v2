@@ -361,6 +361,44 @@ def count_crowd(frame) -> dict:
     return {"count": count, "count_label": label}
 
 
+def describe_scene() -> str:
+    """
+    Return a short natural-language scene summary using the latest WorldState data.
+
+    If a current camera frame is available, refresh the environment cache first.
+    """
+    try:
+        from vision import camera
+        frame = camera.get_frame()
+        if frame is not None:
+            analyze_environment(frame)
+    except Exception as exc:
+        _log.debug("describe_scene: camera refresh skipped: %s", exc)
+
+    env = world_state.get("environment")
+    crowd = world_state.get("crowd")
+    animals = world_state.get("animals")
+
+    parts = []
+
+    description = env.get("description") or env.get("scene_type")
+    if description:
+        parts.append(description)
+
+    count = crowd.get("count", 0) or 0
+    if count == 0:
+        parts.append("No people are visible")
+    else:
+        noun = "person" if count == 1 else "people"
+        parts.append(f"{count} {noun} visible")
+
+    if animals:
+        animal_list = ", ".join(a.get("species", "unknown") for a in animals)
+        parts.append(f"Animals spotted: {animal_list}")
+
+    return ". ".join(parts) + "." if parts else "Nothing notable right now."
+
+
 # ── Periodic scan ─────────────────────────────────────────────────────────────
 
 def start_periodic_scan(interval_secs: float) -> None:

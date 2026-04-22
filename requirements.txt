@@ -17,6 +17,7 @@ elevenlabs>=1.9.0
 
 # ── Audio stream & VAD ────────────────────────────────────────────────────────
 sounddevice>=0.4.7
+pygame>=2.5.2
 silero-vad>=5.1.2
 numpy>=1.26.0
 scipy>=1.13.0
