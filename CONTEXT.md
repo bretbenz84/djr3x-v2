@@ -12,6 +12,7 @@
 ### Development Modes
 - **Full mode**: M1 connected to all robot hardware via USB
 - **Software-only mode**: Laptop or M1 without hardware — hardware features gracefully disabled based on `.env` device configuration
+- **macOS camera dev mode**: In software-only mode, the built-in MacBook camera can be selected with `.env` `CAMERA_DEVICE_NAME` instead of relying on OpenCV camera index ordering
 
 ---
 
@@ -25,6 +26,7 @@
 | Arduino Nano (chest LEDs) | `/dev/tty.usbserial*` | 98 WS2811 LEDs, 115200 baud, CH340 |
 | ReSpeaker Lite | CoreAudio device | USB mic, stereo mixdown to mono |
 | ELP-USBFHD01M-L21 | Camera index (`.env`) | 1080p wide angle, mounted in head |
+| MacBook built-in FaceTime camera | Camera device name (`.env`) | Development-only option for laptop testing via ffmpeg + AVFoundation |
 | Speakers | 3.5mm jack | Via stereo amp, passive resistor mixer |
 
 ### Servo Channels (Pololu Maestro Mini 18, quarter-microseconds)
@@ -165,7 +167,7 @@ OpenAI and ElevenLabs API keys only. Never committed. Listed in `.gitignore`.
 A template `apikeys.example.py` with placeholder values is committed instead.
 
 ### `.env` — Host-Specific Hardware Config (excluded from git)
-Camera index and serial port paths. Different per machine.
+Camera selection (`CAMERA_INDEX` for the robot USB camera or `CAMERA_DEVICE_NAME` for the built-in macOS camera) and serial port paths. Different per machine.
 A template `.env.example` with placeholder values is committed instead.
 When a device entry is missing or blank, that hardware feature is gracefully disabled.
 Audio output uses macOS system default device (3.5mm audio jack on the M1).

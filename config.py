@@ -189,6 +189,7 @@ CAMERA_POSE_SETTLE_SECS = 0.5
 # Frame resolution set on the capture device at startup
 CAMERA_WIDTH  = 1280
 CAMERA_HEIGHT = 720
+CAMERA_FPS    = 30
 
 # Seconds between reconnection attempts when the camera disconnects
 CAMERA_RECONNECT_INTERVAL_SECS = 5.0

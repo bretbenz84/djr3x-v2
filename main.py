@@ -41,6 +41,7 @@ from utils.config_loader import (
     HEAD_LEDS_ENABLED,
     CHEST_LEDS_ENABLED,
     CAMERA_ENABLED,
+    CAMERA_SELECTION_DESCRIPTION,
     AUDIO_ENABLED,
 )
 from sequences import animations
@@ -137,7 +138,10 @@ def main() -> None:
     else:
         logger.info("Chest LEDs: disabled (ARDUINO_CHEST_PORT not set)")
 
-    logger.info("Camera: %s", "enabled" if CAMERA_ENABLED else "disabled (CAMERA_INDEX not set)")
+    logger.info(
+        "Camera: %s",
+        f"enabled ({CAMERA_SELECTION_DESCRIPTION})" if CAMERA_ENABLED else "disabled",
+    )
     logger.info("Audio devices: %s", "enabled" if AUDIO_ENABLED else "disabled (AUDIO_DEVICE_INDEX not set)")
 
     # Step 5: animations module is ready — functions operate directly on the hardware
