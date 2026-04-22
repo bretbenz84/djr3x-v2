@@ -25,10 +25,15 @@ _DROP_REPORT_INTERVAL_SECS = 5.0
 _dropped_counts: dict[str, int] = {}
 _drop_window_started_at = 0.0
 _next_drop_report_at = 0.0
+_speech_drop_notified = False
 
 
 def _cmd_family(cmd: str) -> str:
     return (cmd.split(":", 1)[0].strip().upper() or "UNKNOWN")
+
+
+def _is_speech_led_command(family: str) -> bool:
+    return family in {"SPEAK", "SPEAK_LEVEL", "SPEAK_STOP"}
 
 
 def _report_drops_if_due(now: float) -> None:
@@ -86,7 +91,7 @@ def _flush_drop_summary(reason: str) -> None:
 # ── Connection ─────────────────────────────────────────────────────────────────
 
 def connect() -> bool:
-    global _ser
+    global _ser, _speech_drop_notified
     if not HEAD_LEDS_ENABLED:
         _log.debug("HEAD_LEDS_ENABLED=False — skipping connect")
         return False
@@ -94,6 +99,7 @@ def connect() -> bool:
         _ser = serial.Serial(ARDUINO_HEAD_PORT, config.HEAD_ARDUINO_BAUD, timeout=1)
         _log.info("Head Arduino connected on %s at %d baud", ARDUINO_HEAD_PORT, config.HEAD_ARDUINO_BAUD)
         _flush_drop_summary("reconnected")
+        _speech_drop_notified = False
         return True
     except serial.SerialException as exc:
         _log.error("Failed to open head Arduino port %s: %s", ARDUINO_HEAD_PORT, exc)
@@ -102,24 +108,38 @@ def connect() -> bool:
 
 
 def disconnect() -> None:
-    global _ser
+    global _ser, _speech_drop_notified
     with _lock:
         if _ser and _ser.is_open:
             _ser.close()
         _ser = None
+        _speech_drop_notified = False
 
 
 # ── Transport ──────────────────────────────────────────────────────────────────
 
 def send_command(cmd: str) -> None:
     """Send a newline-terminated command string to the head Arduino."""
+    global _speech_drop_notified
     if not HEAD_LEDS_ENABLED:
         _log.debug("send_command no-op: HEAD_LEDS_ENABLED=False (cmd=%r)", cmd)
         return
+    family = _cmd_family(cmd)
     with _lock:
         if _ser is None or not _ser.is_open:
+            if _is_speech_led_command(family):
+                if not _speech_drop_notified:
+                    _log.warning(
+                        "Head Arduino not connected — ignoring mouth LED updates for this speech routine."
+                    )
+                    _speech_drop_notified = True
+                if family == "SPEAK_STOP":
+                    _speech_drop_notified = False
+                return
             _record_drop(cmd)
             return
+        if family == "SPEAK_STOP":
+            _speech_drop_notified = False
         _flush_drop_summary("is online")
         _ser.write((cmd + "\n").encode())
 
