@@ -86,6 +86,9 @@ djr3x-v2/
 │   ├── leds_head.py           # Head Arduino serial commands, eye and mouth LEDs
 │   └── leds_chest.py          # Chest Arduino serial commands
 │
+├── sequences/
+│   └── animations.py          # All choreographed servo + LED sequences (startup, sleep, speech, reactions)
+│
 ├── intelligence/
 │   ├── consciousness.py       # Consciousness loop, proactive behavior decisions
 │   ├── llm.py                 # GPT-4o-mini streaming, prompt assembly
