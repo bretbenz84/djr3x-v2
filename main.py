@@ -110,11 +110,14 @@ def _shutdown() -> None:
     animations.shutdown()
 
     # Shutdown audio.
-    logger.info("Playing shutdown audio: %s", config.SHUTDOWN_AUDIO_FILE)
-    try:
-        _play_audio_file(config.SHUTDOWN_AUDIO_FILE)
-    except Exception as e:
-        logger.warning("Could not play shutdown audio: %s", e)
+    if config.PLAY_SHUTDOWN_AUDIO:
+        logger.info("Playing shutdown audio: %s", config.SHUTDOWN_AUDIO_FILE)
+        try:
+            _play_audio_file(config.SHUTDOWN_AUDIO_FILE)
+        except Exception as e:
+            logger.warning("Could not play shutdown audio: %s", e)
+    else:
+        logger.info("Shutdown audio disabled by config.PLAY_SHUTDOWN_AUDIO")
 
     # Close hardware.
     logger.info("Closing hardware...")
@@ -173,12 +176,15 @@ def main() -> None:
     animations.startup()
 
     # Step 7: Startup audio — pre-recorded files played in order via pygame.
-    for audio_file in config.STARTUP_AUDIO_FILES:
-        logger.info("Playing startup audio: %s", audio_file)
-        try:
-            _play_audio_file(audio_file)
-        except Exception as e:
-            logger.warning("Could not play %s: %s", audio_file, e)
+    if config.PLAY_STARTUP_AUDIO:
+        for audio_file in config.STARTUP_AUDIO_FILES:
+            logger.info("Playing startup audio: %s", audio_file)
+            try:
+                _play_audio_file(audio_file)
+            except Exception as e:
+                logger.warning("Could not play %s: %s", audio_file, e)
+    else:
+        logger.info("Startup audio disabled by config.PLAY_STARTUP_AUDIO")
 
     # Step 8: Start background services in order.
     logger.info("=== Starting background services ===")
