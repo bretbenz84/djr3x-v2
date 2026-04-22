@@ -155,6 +155,17 @@ ARM_CHANNELS  = [4, 5, 6, 7]
 # Seconds to wait after raising visor and centering neck before capturing a frame
 CAMERA_POSE_SETTLE_SECS = 0.5
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CAMERA
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Frame resolution set on the capture device at startup
+CAMERA_WIDTH  = 1280
+CAMERA_HEIGHT = 720
+
+# Seconds between reconnection attempts when the camera disconnects
+CAMERA_RECONNECT_INTERVAL_SECS = 5.0
+
 # Breathing rhythm — slow headlift oscillation that runs continuously in the background
 BREATHING_AMPLITUDE_QUS  = 80   # quarter-microseconds above/below neutral
 BREATHING_PERIOD_SECS    = 4.0  # full up-down cycle duration in neutral state
