@@ -114,6 +114,12 @@ djr3x-v2/
 │   ├── config_loader.py       # Loads config.py, apikeys.py, .env cleanly
 │   └── logging.py             # Centralized logging
 │
+├── arduino/                   # Sketches carried over from v1 — not modified
+│   ├── head_nano/             # Python communicates with both via the serial command protocol
+│   │   └── head_nano.ino      # documented in the LED System section
+│   └── chest_nano/
+│       └── chest_nano.ino
+│
 └── assets/
     ├── models/
     │   ├── wake_word/          # OpenWakeWord ONNX models
