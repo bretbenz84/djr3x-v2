@@ -251,6 +251,10 @@ AUDIO_BUFFER_SECONDS = 30     # rolling circular buffer duration
 # muted while still allowing callers to detect intentional loud interruptions.
 AEC_SUPPRESSION_FACTOR = 0.05
 
+# Seconds suppression stays active after set_playing(False) — prevents Rex's
+# voice tail that has already bled into the mic buffer from passing the VAD.
+POST_PLAYBACK_SUPPRESSION_SECS = 0.5
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AUDITORY SCENE ANALYSIS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -460,6 +464,11 @@ IDLE_LISTEN_WITHOUT_WAKE_WORD = True
 
 # Seconds of sustained silence after speech before the segment is processed
 SILENCE_TIMEOUT_SECS = 1.5
+
+# Seconds after TTS completes before VAD detections are accepted.  During this
+# window any speech onset is discarded and the audio buffer is flushed so
+# Rex's own voice tail cannot trigger a new speech segment.
+POST_SPEECH_LISTEN_DELAY_SECS = 0.8
 
 # Seconds of no detected speech in ACTIVE state before returning to IDLE
 CONVERSATION_IDLE_TIMEOUT_SECS = 30.0

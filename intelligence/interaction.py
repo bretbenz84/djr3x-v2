@@ -65,6 +65,11 @@ _last_speech_at: float = 0.0  # monotonic timestamp of most recent speech chunk
 # Anti-repeat for latency filler lines
 _last_filler: Optional[str] = None
 
+# Monotonic deadline before which VAD speech-onset detections are discarded.
+# Set at the end of each TTS utterance; prevents Rex's own voice tail from
+# immediately triggering a new speech segment.
+_listen_resume_at: float = 0.0
+
 # Time window (set by consciousness) where a short bare-name reply is accepted.
 _identity_prompt_until: float = 0.0
 
@@ -147,6 +152,11 @@ def _speak_blocking(text: str, emotion: str = "neutral") -> bool:
             done.wait(timeout=0.5)  # let tts.speak() clean up its finally block
             return False
 
+    # Normal completion — block new speech-onset detections briefly and discard
+    # any mic audio that captured Rex's voice tail during playback.
+    global _listen_resume_at
+    _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
+    stream.flush()
     return True
 
 
@@ -902,6 +912,10 @@ def _loop() -> None:
                 _stop_event.wait(_CHUNK_SECS)
                 continue
 
+            if time.monotonic() < _listen_resume_at:
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+
             _log.info("[interaction] speech detected in IDLE — activating without wake word")
             state_module.set_state(State.ACTIVE)
             speech_start = time.monotonic()
@@ -931,6 +945,12 @@ def _loop() -> None:
             continue
 
         if not vad.is_speech(chunk):
+            _stop_event.wait(_CHUNK_SECS)
+            continue
+
+        # Discard speech onset during the post-TTS deaf window so Rex's own
+        # voice tail (or the first 0.8 s of reverb decay) cannot self-trigger.
+        if time.monotonic() < _listen_resume_at:
             _stop_event.wait(_CHUNK_SECS)
             continue
 

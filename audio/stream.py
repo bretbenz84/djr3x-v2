@@ -118,3 +118,12 @@ def get_audio_chunk(seconds: float) -> np.ndarray:
     if len(audio) >= samples_needed:
         return audio[-samples_needed:]
     return audio
+
+
+def flush() -> None:
+    """Discard all audio currently in the rolling buffer.
+
+    Called after TTS playback to prevent Rex's own voice tail from being
+    picked up as speech onset on the next listening pass.
+    """
+    _buf.clear()

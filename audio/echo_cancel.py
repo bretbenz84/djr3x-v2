@@ -12,6 +12,7 @@ wired up.
 
 import logging
 import threading
+import time
 
 import numpy as np
 
@@ -21,22 +22,33 @@ logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _playing = False
+_suppress_until: float = 0.0  # monotonic deadline for post-playback tail suppression
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def set_playing(is_playing: bool) -> None:
     """Called by TTS and playback modules when audio output starts or stops."""
-    global _playing
+    global _playing, _suppress_until
     with _lock:
         changed = _playing != is_playing
         _playing = is_playing
+        if not is_playing:
+            # Keep suppression active for a short tail so any of Rex's voice
+            # that has already bled into the mic buffer is still attenuated.
+            _suppress_until = time.monotonic() + config.POST_PLAYBACK_SUPPRESSION_SECS
+        else:
+            # Playback starting — cancel any leftover tail from a previous run.
+            _suppress_until = 0.0
 
     if changed:
         if is_playing:
             logger.info("[aec] suppression started — playback active")
         else:
-            logger.info("[aec] suppression stopped — playback ended")
+            logger.info(
+                "[aec] suppression stopped — playback ended, %.1fs tail active",
+                config.POST_PLAYBACK_SUPPRESSION_SECS,
+            )
 
 
 def add_reference(audio_array: np.ndarray) -> None:
@@ -48,15 +60,15 @@ def add_reference(audio_array: np.ndarray) -> None:
 
 
 def filter(audio_array: np.ndarray) -> np.ndarray:
-    """Return audio_array with suppression applied if playback is active."""
+    """Return audio_array with suppression applied if playback is active or in tail."""
     with _lock:
-        suppressing = _playing
+        suppressing = _playing or time.monotonic() < _suppress_until
     if suppressing:
         return audio_array * config.AEC_SUPPRESSION_FACTOR
     return audio_array
 
 
 def is_suppressed() -> bool:
-    """Return True if mic input is currently being suppressed."""
+    """Return True if mic input is currently being suppressed (including tail)."""
     with _lock:
-        return _playing
+        return _playing or time.monotonic() < _suppress_until
