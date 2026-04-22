@@ -1,0 +1,48 @@
+# DJ-R3X v2 — Python dependencies
+# Install inside the venv:  pip install -r requirements.txt
+# Requires macOS Apple Silicon. Run setup_macos.sh first for system libs.
+
+# ── Apple Silicon ML (mlx must come before mlx-whisper) ──────────────────────
+mlx>=0.16.0
+mlx-whisper>=0.4.0
+
+# ── Hugging Face (model download for whisper) ─────────────────────────────────
+huggingface-hub>=0.23.0
+
+# ── OpenAI (LLM, vision, Whisper API fallback) ────────────────────────────────
+openai>=1.40.0
+
+# ── ElevenLabs TTS ────────────────────────────────────────────────────────────
+elevenlabs>=1.9.0
+
+# ── Audio stream & VAD ────────────────────────────────────────────────────────
+sounddevice>=0.4.7
+silero-vad>=5.1.2
+numpy>=1.26.0
+scipy>=1.13.0
+
+# ── Wake word (OpenWakeWord + ONNX runtime) ───────────────────────────────────
+openwakeword>=0.6.0
+onnxruntime>=1.18.0
+
+# ── Speaker identification ────────────────────────────────────────────────────
+resemblyzer>=0.1.1.dev0
+torch>=2.3.0
+torchaudio>=2.3.0
+
+# ── Vision — face detection & recognition ────────────────────────────────────
+# dlib compiles from source; cmake and boost must be installed via Homebrew first
+dlib>=19.24.6
+opencv-python>=4.10.0
+
+# ── Vision — pose estimation ──────────────────────────────────────────────────
+mediapipe>=0.10.14
+
+# ── Hardware — serial (Maestro servo controller + Arduino) ───────────────────
+pyserial>=3.5
+
+# ── Config & environment ──────────────────────────────────────────────────────
+python-dotenv>=1.0.1
+
+# ── HTTP (weather API, misc) ──────────────────────────────────────────────────
+requests>=2.32.0

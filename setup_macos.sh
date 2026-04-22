@@ -218,6 +218,30 @@ echo -e "${BOLD}  Setup Summary${NC}"
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
+# ── Venv activation check ─────────────────────────────────────────────────────
+# $VIRTUAL_ENV is set by the shell's `activate` script — this script cannot set
+# it for the user's interactive session, so we detect and warn prominently.
+if [[ "${VIRTUAL_ENV:-}" == "$VENV_DIR" ]]; then
+    echo -e "${GREEN}${BOLD}✓  Virtual environment is active.${NC}"
+else
+    echo -e "${RED}${BOLD}╔══════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}${BOLD}║  ⚠  VIRTUAL ENVIRONMENT IS NOT ACTIVE           ║${NC}"
+    echo -e "${RED}${BOLD}╠══════════════════════════════════════════════════╣${NC}"
+    echo -e "${RED}${BOLD}║                                                  ║${NC}"
+    echo -e "${RED}${BOLD}║  The venv was created but THIS shell session is  ║${NC}"
+    echo -e "${RED}${BOLD}║  not inside it. Shell scripts cannot activate a  ║${NC}"
+    echo -e "${RED}${BOLD}║  venv for you — you must run this yourself:      ║${NC}"
+    echo -e "${RED}${BOLD}║                                                  ║${NC}"
+    echo -e "${RED}${BOLD}║    source venv/bin/activate                      ║${NC}"
+    echo -e "${RED}${BOLD}║                                                  ║${NC}"
+    echo -e "${RED}${BOLD}║  Do this BEFORE running python, pip, or any      ║${NC}"
+    echo -e "${RED}${BOLD}║  project commands.                               ║${NC}"
+    echo -e "${RED}${BOLD}║                                                  ║${NC}"
+    echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════╝${NC}"
+fi
+
+echo ""
+
 if [[ ${#INSTALLED_ITEMS[@]} -gt 0 ]]; then
     echo -e "${GREEN}${BOLD}Installed / configured this run:${NC}"
     for item in "${INSTALLED_ITEMS[@]}"; do
@@ -239,9 +263,19 @@ else
 fi
 
 echo ""
-echo -e "${BOLD}To activate the virtual environment:${NC}"
-echo "  source $VENV_DIR/bin/activate"
+echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BOLD}  Next steps${NC}"
+echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${BOLD}To start DJ-R3X:${NC}"
-echo "  python main.py"
+echo -e "${YELLOW}${BOLD}  Step 1 — Activate the virtual environment (REQUIRED):${NC}"
+echo ""
+echo -e "    ${BOLD}source venv/bin/activate${NC}"
+echo ""
+echo -e "  Your prompt will change to show ${BOLD}(venv)${NC} when it is active."
+echo -e "  You must do this in every new terminal session before"
+echo -e "  running any project commands."
+echo ""
+echo -e "${BOLD}  Step 2 — Start DJ-R3X:${NC}"
+echo ""
+echo -e "    ${BOLD}python main.py${NC}"
 echo ""

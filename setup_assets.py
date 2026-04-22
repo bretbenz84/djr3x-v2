@@ -224,7 +224,7 @@ def download_whisper_model(
 
     try:
         print(f"    Downloading {WHISPER_LOCAL_MODEL}")
-        print("    (~1.5 GB, may take several minutes on first run)")
+        print("    (~800 MB, may take several minutes on first run)")
         snapshot_download(
             repo_id=WHISPER_LOCAL_MODEL,
             local_dir=str(local_dir),

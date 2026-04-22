@@ -7,7 +7,7 @@
 # AI MODELS
 # ─────────────────────────────────────────────────────────────────────────────
 
-WHISPER_LOCAL_MODEL   = "mlx-community/whisper-large-v3-turbo-mlx"
+WHISPER_LOCAL_MODEL   = "mlx-community/whisper-large-v3-turbo"
 WHISPER_FALLBACK_MODEL = "whisper-1"   # OpenAI Whisper API — used if local unavailable
 LLM_MODEL             = "gpt-4o-mini"  # Streaming chat completions
 VISION_MODEL          = "gpt-4o"       # All image and scene analysis queries
@@ -247,6 +247,43 @@ FAMILIARITY_INCREMENTS = {
 # Minimum exchanges in one conversation to earn the long_conversation increment
 LONG_CONVERSATION_MIN_EXCHANGES = 5
 
+# Maximum question depth unlocked at each friendship tier
+TIER_MAX_DEPTH = {
+    "stranger":     1,
+    "acquaintance": 1,
+    "friend":       2,
+    "close_friend": 3,
+    "best_friend":  4,
+}
+
+# Question pool — ordered by depth so get_next_question naturally progresses
+# Each entry: key (canonical unique ID), text (what Rex asks), depth (1–4)
+QUESTION_POOL = [
+    # Depth 1 — Surface (stranger / acquaintance)
+    {"key": "hometown",        "text": "So where are you from?",                                              "depth": 1},
+    {"key": "job",             "text": "What do you do — professionally speaking?",                           "depth": 1},
+    {"key": "favorite_movie",  "text": "What's your favorite movie?",                                         "depth": 1},
+    {"key": "favorite_music",  "text": "What kind of music are you into?",                                    "depth": 1},
+    {"key": "how_found_rex",   "text": "How did you end up talking to a droid DJ?",                           "depth": 1},
+    # Depth 2 — Personal (friend)
+    {"key": "hobbies",         "text": "What do you do when you're not wandering into cantinas?",             "depth": 2},
+    {"key": "travel",          "text": "What's the most interesting place you've been?",                      "depth": 2},
+    {"key": "proudest_moment", "text": "What's something you're actually proud of?",                          "depth": 2},
+    {"key": "biggest_challenge","text": "What's the hardest thing you've had to deal with?",                  "depth": 2},
+    {"key": "obsession",       "text": "What are you completely obsessed with right now?",                    "depth": 2},
+    {"key": "relationships",   "text": "Who's the most important person in your life?",                       "depth": 2},
+    # Depth 3 — Deep (close friend)
+    {"key": "values",          "text": "What do you actually believe in?",                                    "depth": 3},
+    {"key": "fears",           "text": "What keeps you up at night?",                                         "depth": 3},
+    {"key": "life_changing",   "text": "What's something that genuinely changed you?",                        "depth": 3},
+    {"key": "regret",          "text": "Is there anything you'd do differently?",                             "depth": 3},
+    # Depth 4 — Philosophical (best friend)
+    {"key": "meaning_of_life", "text": "What do you think the point of all this actually is?",               "depth": 4},
+    {"key": "free_will",       "text": "Do you think you make real choices, or is it all just momentum?",    "depth": 4},
+    {"key": "consciousness",   "text": "Do you ever wonder what it would be like to not be conscious?",      "depth": 4},
+    {"key": "good_life",       "text": "What makes a life worth living?",                                     "depth": 4},
+]
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RELATIONSHIP SCORE INCREMENTS
 # Each entry: event_key → (dimension, delta)
@@ -346,6 +383,9 @@ LONG_ABSENCE_THRESHOLD_DAYS = 60
 
 # If a person visited within this many hours Rex comments on the quick return
 RECENT_RETURN_THRESHOLD_HOURS = 48
+
+# Days after mentioned_at before a dateless event is due for follow-up
+FOLLOWUP_UNDATED_DAYS = 7
 
 # Visit count milestones Rex acknowledges in character
 VISIT_MILESTONES = [5, 10, 25, 50, 100]

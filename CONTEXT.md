@@ -166,7 +166,7 @@ Audio output uses macOS system default device (3.5mm audio jack on the M1).
 ## AI Backend
 
 ### Transcription
-- Local `mlx-whisper` (`mlx-community/whisper-large-v3-turbo-mlx`) — runs on Apple Neural Engine, ~1s
+- Local `mlx-whisper` (`mlx-community/whisper-large-v3-turbo`) — runs on Apple Neural Engine, ~1s
 - Large-v3-turbo chosen for near large-v3 accuracy at roughly medium model speed
 - Falls back to OpenAI Whisper API (`whisper-1`) if local model unavailable
 - Model cached at `assets/models/whisper/`
