@@ -64,6 +64,8 @@ def speak(text: str, emotion: str = "neutral") -> None:
     """
     if not text or not text.strip():
         return
+    spoken_text = " ".join(text.split())
+    print(f"[TTS] {spoken_text}", flush=True)
 
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID

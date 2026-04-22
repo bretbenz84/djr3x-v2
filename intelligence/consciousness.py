@@ -53,6 +53,9 @@ _REENGAGEMENT_COOLDOWN_SECS = 30.0
 _pending_followups: dict[int, list[dict]] = {}
 _followup_lock = threading.Lock()
 
+# Face detection terminal feedback de-duplication signature.
+_last_face_feedback_signature: Optional[str] = None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public follow-up API
@@ -168,22 +171,30 @@ def _step_person_recognition(frame) -> None:
     current frame and attempt a DB lookup. On match, inject face_id (name) and
     person_db_id (integer DB key) into that world_state person entry.
     """
+    global _last_face_feedback_signature
     try:
         from vision import face as face_mod
         people = world_state.get("people")
         unidentified = [p for p in people if p.get("face_id") is None]
         if not unidentified or frame is None:
+            _last_face_feedback_signature = None
             return
 
         detected = face_mod.detect_faces(frame)
         if not detected:
+            _last_face_feedback_signature = None
             return
 
         changed = False
+        recognized_names: list[str] = []
+        unknown_count = 0
         for det in detected:
             person_record = face_mod.identify_face(det["encoding"])
             if person_record is None:
+                unknown_count += 1
                 continue
+            recognized_name = person_record.get("name") or f"person_{person_record.get('id')}"
+            recognized_names.append(recognized_name)
             # Assign to the first unidentified world_state slot (closest approximation
             # when frame-to-worldstate position mapping isn't available).
             for ws_person in people:
@@ -197,6 +208,16 @@ def _step_person_recognition(frame) -> None:
                         person_record.get("id"),
                     )
                     break
+
+        known_unique = sorted(set(recognized_names))
+        signature = f"known={','.join(known_unique)}|unknown={unknown_count}"
+        if signature != _last_face_feedback_signature:
+            if known_unique:
+                print(f"[FACE] Known face detected: {', '.join(known_unique)}", flush=True)
+            if unknown_count > 0:
+                noun = "face" if unknown_count == 1 else "faces"
+                print(f"[FACE] Unknown {noun} detected ({unknown_count})", flush=True)
+            _last_face_feedback_signature = signature
 
         if changed:
             world_state.update("people", people)

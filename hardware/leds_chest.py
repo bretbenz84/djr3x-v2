@@ -9,6 +9,7 @@ All operations are no-ops (with a debug log) when CHEST_LEDS_ENABLED is False.
 
 import logging
 import threading
+import time
 
 import serial
 
@@ -19,6 +20,66 @@ _log = logging.getLogger(__name__)
 
 _ser: "serial.Serial | None" = None
 _lock = threading.Lock()
+_DROP_REPORT_INTERVAL_SECS = 5.0
+_dropped_counts: dict[str, int] = {}
+_drop_window_started_at = 0.0
+_next_drop_report_at = 0.0
+
+
+def _cmd_family(cmd: str) -> str:
+    return (cmd.split(":", 1)[0].strip().upper() or "UNKNOWN")
+
+
+def _report_drops_if_due(now: float) -> None:
+    global _dropped_counts, _drop_window_started_at, _next_drop_report_at
+    if not _dropped_counts or now < _next_drop_report_at:
+        return
+    total = sum(_dropped_counts.values())
+    breakdown = ", ".join(f"{k}={v}" for k, v in sorted(_dropped_counts.items()))
+    elapsed = now - _drop_window_started_at
+    _log.warning(
+        "Chest Arduino not connected — dropped %d command(s) in %.1fs (%s). "
+        "Suppressing per-command logs; summary repeats every %.0fs while disconnected.",
+        total,
+        elapsed,
+        breakdown,
+        _DROP_REPORT_INTERVAL_SECS,
+    )
+    _dropped_counts = {}
+    _drop_window_started_at = now
+    _next_drop_report_at = now + _DROP_REPORT_INTERVAL_SECS
+
+
+def _record_drop(cmd: str) -> None:
+    global _drop_window_started_at, _next_drop_report_at
+    now = time.monotonic()
+    if not _dropped_counts:
+        _drop_window_started_at = now
+        _next_drop_report_at = now  # report first drop immediately
+    family = _cmd_family(cmd)
+    _dropped_counts[family] = _dropped_counts.get(family, 0) + 1
+    _report_drops_if_due(now)
+
+
+def _flush_drop_summary(reason: str) -> None:
+    """Emit one final drop summary (if pending) and clear counters."""
+    global _dropped_counts, _drop_window_started_at, _next_drop_report_at
+    if not _dropped_counts:
+        return
+    now = time.monotonic()
+    total = sum(_dropped_counts.values())
+    breakdown = ", ".join(f"{k}={v}" for k, v in sorted(_dropped_counts.items()))
+    elapsed = now - _drop_window_started_at
+    _log.info(
+        "Chest Arduino %s — %d command(s) were dropped over %.1fs (%s).",
+        reason,
+        total,
+        elapsed,
+        breakdown,
+    )
+    _dropped_counts = {}
+    _drop_window_started_at = 0.0
+    _next_drop_report_at = 0.0
 
 
 # ── Connection ─────────────────────────────────────────────────────────────────
@@ -31,6 +92,7 @@ def connect() -> bool:
     try:
         _ser = serial.Serial(ARDUINO_CHEST_PORT, config.CHEST_ARDUINO_BAUD, timeout=1)
         _log.info("Chest Arduino connected on %s at %d baud", ARDUINO_CHEST_PORT, config.CHEST_ARDUINO_BAUD)
+        _flush_drop_summary("reconnected")
         return True
     except serial.SerialException as exc:
         _log.error("Failed to open chest Arduino port %s: %s", ARDUINO_CHEST_PORT, exc)
@@ -55,8 +117,9 @@ def send_command(cmd: str) -> None:
         return
     with _lock:
         if _ser is None or not _ser.is_open:
-            _log.warning("Chest Arduino not connected — dropping command %r", cmd)
+            _record_drop(cmd)
             return
+        _flush_drop_summary("is online")
         _ser.write((cmd + "\n").encode())
 
 

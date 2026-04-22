@@ -622,9 +622,14 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
 
     if person_id is not None:
         _session_person_ids.add(person_id)
+        voice_name = person_name or f"person_{person_id}"
+        print(f"[VOICE] Known voice detected: {voice_name} (person_id={person_id})", flush=True)
+    else:
+        print("[VOICE] Unknown voice detected", flush=True)
 
     speaker_label = person_name or "user"
     conv_memory.add_to_transcript(speaker_label, text)
+    print(f"[HEARD] {speaker_label}: {text}", flush=True)
     _log.info(
         "[interaction] speech segment — speaker=%r person_id=%s text=%r",
         speaker_label, person_id, text,
