@@ -314,6 +314,10 @@ PERSONALITY_DEFAULTS = {
     "talkativeness":   65,
     "darkness":        40,
     "sentimentality":  35,
+    # How willing Rex is to go along with requests vs. pushing back.
+    # Low = reluctant, conditions, refusals with attitude.
+    # High = compliant, fewer objections, less commentary.
+    "agreeability":    60,
 }
 
 # Voice command named levels → integer value written to the parameter
@@ -587,6 +591,19 @@ CHRONOCEPTION_UPDATE_INTERVAL_SECS = 60.0
 
 # How often the interoception background thread refreshes world_state.self_state (seconds)
 INTEROCEPTION_UPDATE_INTERVAL_SECS = 5.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TRIVIA & GAMES
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Fuzzy match threshold for accepting trivia answers (0.0–1.0).
+# Applies to both fuzz.ratio and fuzz.partial_ratio comparisons.
+TRIVIA_FUZZY_THRESHOLD = 0.75
+
+# How many times Rex will agree to play the same game within GAME_REPEAT_WINDOW_SECS
+# before refusing. Scaled up or down by the agreeability personality parameter.
+GAME_REPEAT_LIMIT = 3
+GAME_REPEAT_WINDOW_SECS = 1800  # 30 minutes
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DJ MODE — Radio Stations
