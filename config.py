@@ -148,6 +148,7 @@ HALLUCINATION_BLOCKLIST = [
     "please subscribe",
     "see you next time",
     "you",
+    "guh",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────

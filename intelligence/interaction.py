@@ -70,6 +70,10 @@ _last_filler: Optional[str] = None
 # immediately triggering a new speech segment.
 _listen_resume_at: float = 0.0
 
+# When True, the main loop flushes the buffer once after the post-TTS delay
+# expires to drop any room-decay audio accumulated during the silent wait.
+_post_tts_flush_needed: bool = False
+
 # Time window (set by consciousness) where a short bare-name reply is accepted.
 _identity_prompt_until: float = 0.0
 
@@ -154,9 +158,10 @@ def _speak_blocking(text: str, emotion: str = "neutral") -> bool:
 
     # Normal completion — block new speech-onset detections briefly and discard
     # any mic audio that captured Rex's voice tail during playback.
-    global _listen_resume_at
+    global _listen_resume_at, _post_tts_flush_needed
     _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
     stream.flush()
+    _post_tts_flush_needed = True
     return True
 
 
@@ -916,6 +921,14 @@ def _loop() -> None:
                 _stop_event.wait(_CHUNK_SECS)
                 continue
 
+            # First chunk after the post-TTS window: flush decay audio and skip.
+            global _post_tts_flush_needed
+            if _post_tts_flush_needed:
+                _post_tts_flush_needed = False
+                stream.flush()
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+
             _log.info("[interaction] speech detected in IDLE — activating without wake word")
             state_module.set_state(State.ACTIVE)
             speech_start = time.monotonic()
@@ -951,6 +964,13 @@ def _loop() -> None:
         # Discard speech onset during the post-TTS deaf window so Rex's own
         # voice tail (or the first 0.8 s of reverb decay) cannot self-trigger.
         if time.monotonic() < _listen_resume_at:
+            _stop_event.wait(_CHUNK_SECS)
+            continue
+
+        # First chunk after the post-TTS window: flush decay audio and skip.
+        if _post_tts_flush_needed:
+            _post_tts_flush_needed = False
+            stream.flush()
             _stop_event.wait(_CHUNK_SECS)
             continue
 
