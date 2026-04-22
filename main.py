@@ -46,7 +46,7 @@ from utils.config_loader import (
     AUDIO_ENABLED,
 )
 from sequences import animations
-from audio import stream, scene as audio_scene
+from audio import stream, scene as audio_scene, output_gate
 from vision import camera, scene as vision_scene
 from awareness import chronoception, interoception
 from intelligence import consciousness, interaction
@@ -68,10 +68,13 @@ def _verify_local_whisper_model() -> None:
 
 def _play_audio_file(path: str) -> None:
     """Play a pre-recorded audio file synchronously via pygame."""
-    pygame.mixer.music.load(path)
-    pygame.mixer.music.play()
-    while pygame.mixer.music.get_busy():
-        time.sleep(0.05)
+    with output_gate.hold("startup_or_shutdown_clip") as acquired:
+        if not acquired:
+            return
+        pygame.mixer.music.load(path)
+        pygame.mixer.music.play()
+        while pygame.mixer.music.get_busy():
+            time.sleep(0.05)
 
 
 def _shutdown() -> None:

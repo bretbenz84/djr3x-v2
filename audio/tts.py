@@ -40,6 +40,7 @@ import numpy as np
 
 import config
 from audio import echo_cancel
+from audio import output_gate
 from hardware import leds_head
 
 logger = logging.getLogger(__name__)
@@ -101,33 +102,38 @@ def _play(audio: np.ndarray, samplerate: int, emotion: str) -> None:
         logger.error("[tts] sounddevice not installed — cannot play audio")
         return
 
-    with _speaking_lock:
-        _speaking = True
+    with output_gate.hold("tts") as acquired:
+        if not acquired:
+            logger.debug("[tts] playback skipped — output gate busy")
+            return
 
-    stop_event = threading.Event()
-    led_thread = threading.Thread(
-        target=_drive_leds,
-        args=(audio, samplerate, stop_event),
-        daemon=True,
-        name="tts-leds",
-    )
-
-    try:
-        leds_head.speak(emotion)
-        echo_cancel.set_playing(True)
-        led_thread.start()
-        sd.play(audio, samplerate)
-        sd.wait()
-    except Exception as exc:
-        logger.error("[tts] playback error: %s", exc)
-    finally:
-        stop_event.set()
-        if led_thread.is_alive():
-            led_thread.join(timeout=1.0)
-        leds_head.speak_stop()
-        echo_cancel.set_playing(False)
         with _speaking_lock:
-            _speaking = False
+            _speaking = True
+
+        stop_event = threading.Event()
+        led_thread = threading.Thread(
+            target=_drive_leds,
+            args=(audio, samplerate, stop_event),
+            daemon=True,
+            name="tts-leds",
+        )
+
+        try:
+            leds_head.speak(emotion)
+            echo_cancel.set_playing(True)
+            led_thread.start()
+            sd.play(audio, samplerate)
+            sd.wait()
+        except Exception as exc:
+            logger.error("[tts] playback error: %s", exc)
+        finally:
+            stop_event.set()
+            if led_thread.is_alive():
+                led_thread.join(timeout=1.0)
+            leds_head.speak_stop()
+            echo_cancel.set_playing(False)
+            with _speaking_lock:
+                _speaking = False
 
 
 def _drive_leds(

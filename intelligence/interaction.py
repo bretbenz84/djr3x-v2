@@ -25,7 +25,7 @@ import config
 import state as state_module
 from state import State
 from audio import stream, vad, wake_word, transcription, speaker_id
-from audio import tts
+from audio import tts, output_gate
 from intelligence import command_parser, llm, personality
 from intelligence import consciousness
 from memory import facts as facts_memory
@@ -152,6 +152,8 @@ def _speak_blocking(text: str, emotion: str = "neutral") -> bool:
 
 def _speak_async(text: str, emotion: str = "neutral") -> None:
     if not _can_speak() or not text:
+        return
+    if tts.is_speaking() or output_gate.is_busy():
         return
     threading.Thread(
         target=tts.speak, args=(text, emotion), daemon=True, name="tts-async"

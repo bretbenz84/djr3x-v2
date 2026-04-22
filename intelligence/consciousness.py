@@ -103,7 +103,10 @@ def _can_speak() -> bool:
 
 def _speak_async(text: str, emotion: str = "neutral") -> None:
     try:
-        from audio.tts import speak
+        from audio import tts, output_gate
+        if tts.is_speaking() or output_gate.is_busy():
+            return
+        speak = tts.speak
         threading.Thread(target=speak, args=(text, emotion), daemon=True).start()
     except Exception as exc:
         _log.debug("_speak_async error: %s", exc)
@@ -532,9 +535,14 @@ def _do_idle_clip() -> None:
             try:
                 import sounddevice as sd
                 import soundfile as sf
-                data, samplerate = sf.read(str(clip_path), dtype="float32")
-                sd.play(data, samplerate)
-                sd.wait()
+                from audio import output_gate
+
+                with output_gate.hold("idle_clip", blocking=False) as acquired:
+                    if not acquired:
+                        return
+                    data, samplerate = sf.read(str(clip_path), dtype="float32")
+                    sd.play(data, samplerate)
+                    sd.wait()
             except Exception as exc:
                 _log.debug("idle clip playback error: %s", exc)
 
