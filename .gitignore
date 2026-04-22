@@ -225,3 +225,5 @@ assets/memory/people.db
 
 # Runtime logs
 logs/
+
+.VSCodeCounter/
