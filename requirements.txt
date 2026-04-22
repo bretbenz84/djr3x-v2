@@ -41,6 +41,9 @@ mediapipe>=0.10.14
 # ── Hardware — serial (Maestro servo controller + Arduino) ───────────────────
 pyserial>=3.5
 
+# ── Fuzzy string matching (command parser) ────────────────────────────────────
+rapidfuzz>=3.9.0
+
 # ── Config & environment ──────────────────────────────────────────────────────
 python-dotenv>=1.0.1
 
