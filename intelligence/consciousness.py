@@ -183,25 +183,52 @@ def _step_chronoception() -> None:
 
 def _step_person_recognition(frame) -> None:
     """
-    For each unidentified person in world_state.people, detect faces in the
-    current frame and attempt a DB lookup. On match, inject face_id (name) and
-    person_db_id (integer DB key) into that world_state person entry.
+    Detect visible faces, resolve known identities via DB lookup, and update
+    world_state.people with one slot per visible face.
+
+    This function no longer depends on pose pre-populating people slots. If the
+    pose pipeline is disabled or lagging, face recognition still works and can
+    drive unknown-person onboarding prompts.
     """
     global _last_face_feedback_signature, _last_identity_prompt_at
     try:
         from vision import face as face_mod
-        people = world_state.get("people")
-        unidentified = [p for p in people if p.get("face_id") is None]
-        if not unidentified or frame is None:
+
+        if frame is None:
             _last_face_feedback_signature = None
             return
 
         detected = face_mod.detect_faces(frame)
         if not detected:
+            # No visible faces this tick — clear transient person slots.
+            if world_state.get("people"):
+                world_state.update("people", [])
             _last_face_feedback_signature = None
             return
 
+        people = world_state.get("people")
         changed = False
+
+        # Ensure one world-state person slot per detected face.
+        if len(people) != len(detected):
+            resized = []
+            for i in range(len(detected)):
+                base = people[i] if i < len(people) else {}
+                resized.append({
+                    "id": base.get("id") or f"person_{i + 1}",
+                    "person_db_id": base.get("person_db_id"),
+                    "face_id": base.get("face_id"),
+                    "voice_id": base.get("voice_id"),
+                    "distance_zone": base.get("distance_zone"),
+                    "pose": base.get("pose"),
+                    "gesture": base.get("gesture"),
+                    "engagement": base.get("engagement"),
+                    "age_estimate": base.get("age_estimate"),
+                    "position": base.get("position"),
+                })
+            people = resized
+            changed = True
+
         recognized_names: list[str] = []
         unknown_count = 0
         for det in detected:
@@ -211,28 +238,49 @@ def _step_person_recognition(frame) -> None:
                 continue
             recognized_name = person_record.get("name") or f"person_{person_record.get('id')}"
             recognized_names.append(recognized_name)
-            # Assign to the first unidentified world_state slot (closest approximation
-            # when frame-to-worldstate position mapping isn't available).
+
+            # Prefer matching an already-assigned DB slot; otherwise fill first unknown slot.
+            target_slot = None
             for ws_person in people:
-                if ws_person.get("face_id") is None:
-                    ws_person["face_id"] = person_record.get("name")
-                    ws_person["person_db_id"] = person_record.get("id")
-                    changed = True
-                    _log.info(
-                        "consciousness: face identified → %s (db_id=%s)",
-                        person_record.get("name"),
-                        person_record.get("id"),
-                    )
+                if ws_person.get("person_db_id") == person_record.get("id"):
+                    target_slot = ws_person
                     break
+            if target_slot is None:
+                for ws_person in people:
+                    if ws_person.get("face_id") is None:
+                        target_slot = ws_person
+                        break
+
+            if target_slot is None:
+                continue
+
+            incoming_name = person_record.get("name")
+            incoming_id = person_record.get("id")
+            if (
+                target_slot.get("face_id") != incoming_name
+                or target_slot.get("person_db_id") != incoming_id
+            ):
+                target_slot["face_id"] = incoming_name
+                target_slot["person_db_id"] = incoming_id
+                if target_slot.get("voice_id") is None and incoming_name:
+                    target_slot["voice_id"] = incoming_name
+                changed = True
+                _log.info(
+                    "consciousness: face identified → %s (db_id=%s)",
+                    incoming_name,
+                    incoming_id,
+                )
 
         known_unique = sorted(set(recognized_names))
         signature = f"known={','.join(known_unique)}|unknown={unknown_count}"
         if signature != _last_face_feedback_signature:
             if known_unique:
                 print(f"[FACE] Known face detected: {', '.join(known_unique)}", flush=True)
+                _log.info("consciousness: known face(s) visible: %s", ", ".join(known_unique))
             if unknown_count > 0:
                 noun = "face" if unknown_count == 1 else "faces"
                 print(f"[FACE] Unknown {noun} detected ({unknown_count})", flush=True)
+                _log.info("consciousness: unknown %s detected (%d)", noun, unknown_count)
 
                 # If someone unknown appears while idle, ask who they are so
                 # interaction can enroll them in the person database.
@@ -244,6 +292,7 @@ def _step_person_recognition(frame) -> None:
                 ):
                     _last_identity_prompt_at = now
                     _pending_identity_prompt.set()
+                    _log.info("consciousness: prompting unknown person for identity")
                     _generate_and_speak(
                         "You can see someone you don't recognize. "
                         "In one short in-character line, ask who they are and what name "
