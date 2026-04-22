@@ -2,6 +2,7 @@
 """DJ-R3X v2 — main entry point."""
 
 import sys
+from pathlib import Path
 
 # Step 1: Logging must be configured before any other module logs.
 from utils.logging import setup_logging, get_logger
@@ -49,6 +50,20 @@ from audio import stream, scene as audio_scene
 from vision import camera, scene as vision_scene
 from awareness import chronoception, interoception
 from intelligence import consciousness, interaction
+
+
+def _verify_local_whisper_model() -> None:
+    """Fail fast if setup_assets.py has not downloaded the local Whisper model."""
+    model_config = (
+        Path(__file__).resolve().parent / config.WHISPER_MODEL_DIR / "config.json"
+    )
+    if not model_config.exists():
+        print(
+            f"[FATAL] Local Whisper model not found: {model_config}",
+            file=sys.stderr,
+        )
+        print("Run:  python setup_assets.py", file=sys.stderr)
+        sys.exit(1)
 
 
 def _play_audio_file(path: str) -> None:
@@ -109,6 +124,9 @@ def _shutdown() -> None:
 
 
 def main() -> None:
+    logger.info("Verifying local Whisper model...")
+    _verify_local_whisper_model()
+
     pygame.mixer.init()
 
     # Step 4: Initialize hardware and log enabled/disabled status.

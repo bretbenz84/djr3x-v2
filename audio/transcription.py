@@ -2,12 +2,15 @@ import io
 import logging
 import re
 import wave
+from pathlib import Path
 
 import numpy as np
 
 import config
 
 logger = logging.getLogger(__name__)
+_WHISPER_LOCAL_DIR = (Path(__file__).resolve().parents[1] / config.WHISPER_MODEL_DIR).resolve()
+_WARNED_MISSING_LOCAL_MODEL = False
 
 try:
     import mlx_whisper
@@ -55,18 +58,29 @@ def transcribe(audio_array: np.ndarray) -> str:
     """
     raw = ""
     backend = "none"
+    local_model_ready = (_WHISPER_LOCAL_DIR / "config.json").exists()
 
     if _MLX_AVAILABLE:
-        try:
-            result = mlx_whisper.transcribe(
-                audio_array,
-                path_or_hf_repo=config.WHISPER_LOCAL_MODEL,
-                initial_prompt=config.WHISPER_INITIAL_PROMPT,
-            )
-            raw = result.get("text", "").strip()
-            backend = "mlx_whisper"
-        except Exception as exc:
-            logger.warning("mlx_whisper failed (%s), falling back to OpenAI Whisper", exc)
+        if local_model_ready:
+            try:
+                result = mlx_whisper.transcribe(
+                    audio_array,
+                    path_or_hf_repo=str(_WHISPER_LOCAL_DIR),
+                    initial_prompt=config.WHISPER_INITIAL_PROMPT,
+                )
+                raw = result.get("text", "").strip()
+                backend = "mlx_whisper"
+            except Exception as exc:
+                logger.warning("mlx_whisper failed (%s), falling back to OpenAI Whisper", exc)
+        else:
+            global _WARNED_MISSING_LOCAL_MODEL
+            if not _WARNED_MISSING_LOCAL_MODEL:
+                logger.warning(
+                    "Local Whisper model missing at %s (config.json not found). "
+                    "Run setup_assets.py; falling back to OpenAI Whisper.",
+                    _WHISPER_LOCAL_DIR,
+                )
+                _WARNED_MISSING_LOCAL_MODEL = True
 
     if not raw:
         try:
