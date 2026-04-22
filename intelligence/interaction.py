@@ -755,6 +755,12 @@ def start() -> None:
     _session_person_ids.clear()
 
     wake_word.start(_on_wake_word)
+    if not wake_word.is_ready():
+        _log.warning(
+            "[interaction] wake word unavailable — entering ACTIVE fallback so speech can still be processed"
+        )
+        if state_module.get_state() == State.IDLE:
+            state_module.set_state(State.ACTIVE)
 
     _thread = threading.Thread(
         target=_loop, daemon=True, name="interaction-loop"

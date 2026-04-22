@@ -37,8 +37,12 @@ def _apply_corrections(text: str) -> str:
 
 def _is_hallucination(text: str) -> bool:
     lower = text.lower().strip()
+    # Compare against full-utterance matches only (after basic normalization).
+    # Substring matching is too aggressive and can hide valid speech.
+    normalized = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9'\s]", " ", lower)).strip()
     for phrase in config.HALLUCINATION_BLOCKLIST:
-        if phrase.lower() in lower:
+        phrase_norm = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9'\s]", " ", phrase.lower())).strip()
+        if normalized == phrase_norm:
             return True
     return False
 

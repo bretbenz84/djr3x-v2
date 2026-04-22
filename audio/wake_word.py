@@ -18,6 +18,8 @@ Usage:
 import logging
 import os
 import threading
+import urllib.request
+from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
@@ -43,6 +45,10 @@ _stop_event = threading.Event()
 _thread: Optional[threading.Thread] = None
 _lock = threading.Lock()
 
+# Fallback directory for openWakeWord feature models when the pip package is
+# installed without bundled resources (missing resources/models/*.onnx).
+_OWW_RESOURCE_DIR = Path(config.WAKE_WORD_MODELS_DIR) / "_openwakeword_resources"
+
 
 # ── Model loading ─────────────────────────────────────────────────────────────
 
@@ -50,6 +56,7 @@ def _load_models() -> None:
     global _oww_model, _loaded_models
 
     try:
+        import openwakeword as oww_pkg
         from openwakeword.model import Model
     except ImportError:
         _log.error("openwakeword package not installed — wake word detection disabled.")
@@ -68,8 +75,14 @@ def _load_models() -> None:
         _log.error("No wake word model files found — wake word detection disabled.")
         return
 
+    feature_kwargs = _resolve_feature_model_paths(oww_pkg)
+
     try:
-        _oww_model = Model(wakeword_models=paths, inference_framework="onnx")
+        _oww_model = Model(
+            wakeword_models=paths,
+            inference_framework="onnx",
+            **feature_kwargs,
+        )
         _loaded_models = frozenset(loaded)
         _log.info(
             "Loaded %d wake word model(s): %s",
@@ -82,6 +95,79 @@ def _load_models() -> None:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _download_oww_file(url: str, dest: Path) -> bool:
+    """Download one openWakeWord resource file to dest, atomically."""
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    try:
+        urllib.request.urlretrieve(url, tmp)
+        tmp.replace(dest)
+        return True
+    except Exception as exc:
+        _log.error("Failed downloading %s: %s", url, exc)
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        return False
+
+
+def _resolve_feature_model_paths(openwakeword_pkg) -> dict[str, str]:
+    """Return kwargs for Model(...) when package resources are missing.
+
+    openWakeWord expects melspectrogram.onnx and embedding_model.onnx inside the
+    package resources directory. Some installs are missing those files; in that
+    case we self-heal by downloading them once into assets and passing explicit
+    paths to the Model constructor.
+    """
+    try:
+        melspec_default = Path(
+            openwakeword_pkg.FEATURE_MODELS["melspectrogram"]["model_path"]
+        ).with_suffix(".onnx")
+        embedding_default = Path(
+            openwakeword_pkg.FEATURE_MODELS["embedding"]["model_path"]
+        ).with_suffix(".onnx")
+    except Exception:
+        return {}
+
+    if melspec_default.exists() and embedding_default.exists():
+        return {}
+
+    _OWW_RESOURCE_DIR.mkdir(parents=True, exist_ok=True)
+    melspec_path = _OWW_RESOURCE_DIR / "melspectrogram.onnx"
+    embedding_path = _OWW_RESOURCE_DIR / "embedding_model.onnx"
+
+    targets = [
+        (
+            melspec_path,
+            openwakeword_pkg.FEATURE_MODELS["melspectrogram"]["download_url"].replace(
+                ".tflite", ".onnx"
+            ),
+        ),
+        (
+            embedding_path,
+            openwakeword_pkg.FEATURE_MODELS["embedding"]["download_url"].replace(
+                ".tflite", ".onnx"
+            ),
+        ),
+    ]
+
+    for path, url in targets:
+        if path.exists():
+            continue
+        _log.warning(
+            "openwakeword package resources missing (%s). Downloading fallback resource to %s",
+            path.name,
+            path,
+        )
+        if not _download_oww_file(url, path):
+            return {}
+
+    return {
+        "melspec_model_path": str(melspec_path),
+        "embedding_model_path": str(embedding_path),
+    }
 
 def _active_for_state(current_state: State) -> frozenset[str]:
     if current_state in (State.IDLE, State.QUIET, State.ACTIVE):
@@ -184,3 +270,8 @@ def stop() -> None:
 
     with _lock:
         _thread = None
+
+
+def is_ready() -> bool:
+    """True when wake-word models are successfully loaded and usable."""
+    return _oww_model is not None and bool(_loaded_models)
