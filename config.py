@@ -100,6 +100,16 @@ WHISPER_CORRECTIONS = {
     "rex's":  "Rex",
 }
 
+# Transcriptions that exactly match or contain these phrases (case-insensitive)
+# are discarded entirely — they are known Whisper hallucinations on near-silent audio.
+HALLUCINATION_BLOCKLIST = [
+    "thank you",
+    "thanks for watching",
+    "please subscribe",
+    "see you next time",
+    "you",
+]
+
 # ─────────────────────────────────────────────────────────────────────────────
 # COMMAND PARSER
 # ─────────────────────────────────────────────────────────────────────────────
