@@ -1,0 +1,600 @@
+"""
+intelligence/consciousness.py — Central consciousness loop for DJ-R3X.
+
+Reads WorldState on a fixed interval and drives proactive behavior:
+anger/mood maintenance, person recognition, follow-up detection,
+disengagement recovery, proactive world reactions, idle micro-behaviors,
+and continuous neck-servo face tracking.
+"""
+
+import logging
+import random
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Optional
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+import config
+import state as state_module
+from state import State
+from world_state import world_state
+
+_log = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Module-level state
+# ─────────────────────────────────────────────────────────────────────────────
+
+_stop_event = threading.Event()
+_thread: Optional[threading.Thread] = None
+
+# Smoothed neck servo position in quarter-microseconds
+_neck_smooth: float = float(config.SERVO_CHANNELS["neck"]["neutral"])
+
+# WorldState snapshot from the previous loop iteration (for change detection)
+_last_snapshot: dict = {}
+
+# Notable dates acknowledged this session so we don't repeat them
+_acknowledged_dates: set[str] = set()
+
+# Monotonic timestamp of the last idle micro-behavior
+_last_micro_behavior_at: float = 0.0
+
+# Cooldown: map person id-string → monotonic timestamp of last re-engagement attempt
+_reengagement_sent_at: dict[str, float] = {}
+_REENGAGEMENT_COOLDOWN_SECS = 30.0
+
+# Pending follow-up events per DB person_id: {db_id: [event_dict, ...]}
+_pending_followups: dict[int, list[dict]] = {}
+_followup_lock = threading.Lock()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public follow-up API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def set_pending_followup(person_id: int, event: dict) -> None:
+    """Store a follow-up event so the next interaction loop opens with it."""
+    with _followup_lock:
+        _pending_followups.setdefault(person_id, []).append(event)
+
+
+def get_pending_followup(person_id: int) -> Optional[list[dict]]:
+    """
+    Return and clear pending follow-up events for person_id, or None if absent.
+    Called by the interaction loop before starting a conversation.
+    """
+    with _followup_lock:
+        events = _pending_followups.pop(person_id, None)
+    return events if events else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _can_speak() -> bool:
+    return state_module.get_state() not in (State.QUIET, State.SHUTDOWN)
+
+
+def _speak_async(text: str, emotion: str = "neutral") -> None:
+    try:
+        from audio.tts import speak
+        threading.Thread(target=speak, args=(text, emotion), daemon=True).start()
+    except Exception as exc:
+        _log.debug("_speak_async error: %s", exc)
+
+
+def _generate_and_speak(prompt: str, emotion: str = "neutral") -> None:
+    def _task():
+        try:
+            from intelligence.llm import get_response
+            text = get_response(prompt)
+            if text:
+                from audio.tts import speak
+                speak(text, emotion)
+        except Exception as exc:
+            _log.debug("_generate_and_speak error: %s", exc)
+
+    threading.Thread(target=_task, daemon=True).start()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 1 — Anger cooldown
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _step_anger_cooldown() -> None:
+    try:
+        from intelligence.personality import get_anger_level
+        get_anger_level()  # auto-resets anger level if cooldown has elapsed
+    except Exception as exc:
+        _log.debug("anger cooldown error: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2 — Mood decay
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _step_mood_decay(elapsed: float) -> None:
+    try:
+        from intelligence.personality import apply_mood_decay
+        apply_mood_decay(elapsed)
+    except Exception as exc:
+        _log.debug("mood decay error: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 3 — Interoception update
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _step_interoception() -> None:
+    try:
+        from awareness import interoception
+        sys_state = interoception.get_system_state()
+        self_state = world_state.get("self_state")
+        self_state.update(sys_state)
+        world_state.update("self_state", self_state)
+    except Exception as exc:
+        _log.debug("interoception step error: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 4 — Chronoception update
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _step_chronoception() -> None:
+    try:
+        from awareness.chronoception import get_time_context
+        ctx = get_time_context()
+        time_state = world_state.get("time")
+        time_state.update(ctx)
+        world_state.update("time", time_state)
+    except Exception as exc:
+        _log.debug("chronoception step error: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 5 — Person recognition
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _step_person_recognition(frame) -> None:
+    """
+    For each unidentified person in world_state.people, detect faces in the
+    current frame and attempt a DB lookup. On match, inject face_id (name) and
+    person_db_id (integer DB key) into that world_state person entry.
+    """
+    try:
+        from vision import face as face_mod
+        people = world_state.get("people")
+        unidentified = [p for p in people if p.get("face_id") is None]
+        if not unidentified or frame is None:
+            return
+
+        detected = face_mod.detect_faces(frame)
+        if not detected:
+            return
+
+        changed = False
+        for det in detected:
+            person_record = face_mod.identify_face(det["encoding"])
+            if person_record is None:
+                continue
+            # Assign to the first unidentified world_state slot (closest approximation
+            # when frame-to-worldstate position mapping isn't available).
+            for ws_person in people:
+                if ws_person.get("face_id") is None:
+                    ws_person["face_id"] = person_record.get("name")
+                    ws_person["person_db_id"] = person_record.get("id")
+                    changed = True
+                    _log.info(
+                        "consciousness: face identified → %s (db_id=%s)",
+                        person_record.get("name"),
+                        person_record.get("id"),
+                    )
+                    break
+
+        if changed:
+            world_state.update("people", people)
+    except Exception as exc:
+        _log.debug("person recognition step error: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 6 — Follow-up check
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _step_followup_check(snapshot: dict) -> None:
+    """
+    For each identified person in world_state.people, query the DB for pending
+    follow-up events and store novel ones in _pending_followups.
+    """
+    try:
+        from memory import events as events_mod
+        for person in snapshot.get("people", []):
+            db_id = person.get("person_db_id")
+            if db_id is None:
+                continue
+            pending = events_mod.get_pending_followups(db_id)
+            if not pending:
+                continue
+            with _followup_lock:
+                existing_ids = {e.get("id") for e in _pending_followups.get(db_id, [])}
+                for ev in pending:
+                    if ev.get("id") not in existing_ids:
+                        _pending_followups.setdefault(db_id, []).append(ev)
+                        _log.debug(
+                            "consciousness: queued follow-up for db_id=%s: %s",
+                            db_id, ev.get("event_name"),
+                        )
+    except Exception as exc:
+        _log.debug("followup check step error: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 7 — Disengagement detection
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _step_disengagement(snapshot: dict) -> None:
+    """
+    If the dominant speaker is disengaging, fire a proactive re-engagement line.
+    Rate-limited to _REENGAGEMENT_COOLDOWN_SECS per person.
+    """
+    if not _can_speak():
+        return
+    try:
+        from awareness.social import check_disengagement
+        people = snapshot.get("people", [])
+        disengaged = check_disengagement(people)
+        dominant = snapshot.get("crowd", {}).get("dominant_speaker")
+        if not dominant or dominant not in disengaged:
+            return
+
+        now = time.monotonic()
+        last_sent = _reengagement_sent_at.get(dominant, 0.0)
+        if now - last_sent < _REENGAGEMENT_COOLDOWN_SECS:
+            return
+
+        _reengagement_sent_at[dominant] = now
+        _log.info("consciousness: dominant speaker disengaging — triggering re-engagement")
+        _generate_and_speak(
+            "The person you were just talking to is starting to disengage or drift away. "
+            "Generate one short, in-character line to recapture their attention. "
+            "Not desperate — Rex doesn't beg. One punchy line only.",
+            emotion="curious",
+        )
+    except Exception as exc:
+        _log.debug("disengagement step error: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 8 — Proactive reactions
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _step_proactive_reactions(snapshot: dict) -> None:
+    """
+    Compare current WorldState to _last_snapshot. For each notable change,
+    generate and speak a short in-character reaction. Never fires in QUIET/SHUTDOWN.
+    """
+    global _acknowledged_dates
+
+    if not _can_speak() or not _last_snapshot:
+        return
+
+    try:
+        triggers: list[tuple[str, str]] = []  # (llm_prompt, emotion)
+
+        # New person entered frame
+        prev_count = _last_snapshot.get("crowd", {}).get("count", 0)
+        curr_count = snapshot.get("crowd", {}).get("count", 0)
+        if curr_count > prev_count:
+            triggers.append((
+                "Someone new just walked into your view. React in one short in-character line — "
+                "somewhere between a greeting and a roast, delivered as you clock them entering.",
+                "curious",
+            ))
+
+        # Animal detected
+        prev_animal_ids = {a.get("id") for a in _last_snapshot.get("animals", [])}
+        for animal in snapshot.get("animals", []):
+            if animal.get("id") not in prev_animal_ids:
+                species = animal.get("species", "creature")
+                triggers.append((
+                    f"You just spotted a {species} in your immediate environment. "
+                    "One short in-character reaction — genuinely surprised, unmistakably Rex.",
+                    "excited",
+                ))
+
+        # Crowd size label changed significantly
+        prev_label = _last_snapshot.get("crowd", {}).get("count_label")
+        curr_label = snapshot.get("crowd", {}).get("count_label")
+        if curr_label and prev_label and curr_label != prev_label:
+            triggers.append((
+                f"The crowd around you just shifted from '{prev_label}' to '{curr_label}'. "
+                "One short in-character observation about this change.",
+                "neutral",
+            ))
+
+        # Notable sound event
+        prev_sound = _last_snapshot.get("audio_scene", {}).get("last_sound_event")
+        curr_sound = snapshot.get("audio_scene", {}).get("last_sound_event")
+        if curr_sound and curr_sound != prev_sound:
+            triggers.append((
+                f"You just registered a notable sound event: '{curr_sound}'. "
+                "One punchy in-character line reacting to it.",
+                "curious",
+            ))
+
+        # Notable calendar date (once per session per date)
+        notable_date = snapshot.get("time", {}).get("notable_date")
+        if notable_date and notable_date not in _acknowledged_dates:
+            _acknowledged_dates.add(notable_date)
+            triggers.append((
+                f"Today is {notable_date}. Make one spontaneous in-character remark about it "
+                "as if you just noticed the date. Deliver it Rex-style.",
+                "excited",
+            ))
+
+        for prompt, emotion in triggers:
+            _generate_and_speak(prompt, emotion)
+
+    except Exception as exc:
+        _log.debug("proactive reactions step error: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 9 — Idle micro-behaviors
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _step_idle_micro_behavior(snapshot: dict) -> None:
+    """
+    In IDLE state, when sufficiently idle, fire one random micro-behavior:
+    ambient scan, private thought, or idle audio clip.
+    """
+    global _last_micro_behavior_at
+
+    if state_module.get_state() != State.IDLE:
+        return
+
+    now = time.monotonic()
+    interval_min = getattr(config, "MICRO_BEHAVIOR_INTERVAL_SECS_MIN", 15)
+    interval_max = getattr(config, "MICRO_BEHAVIOR_INTERVAL_SECS_MAX", 45)
+    since_last = now - _last_micro_behavior_at
+
+    if since_last < interval_min:
+        return
+
+    # Don't fire immediately after an interaction
+    last_interaction_ago = snapshot.get("self_state", {}).get("last_interaction_ago")
+    if last_interaction_ago is not None and last_interaction_ago < interval_min:
+        return
+
+    # Randomise the trigger point within the [min, max] window
+    if since_last < random.uniform(interval_min, interval_max):
+        return
+
+    _last_micro_behavior_at = now
+    behavior = random.choice(["ambient_scan", "private_thought", "idle_clip"])
+    _log.debug("consciousness: idle micro-behavior → %s", behavior)
+
+    if behavior == "ambient_scan":
+        _do_ambient_scan()
+    elif behavior == "private_thought":
+        _do_private_thought()
+    else:
+        _do_idle_clip()
+
+
+def _do_ambient_scan() -> None:
+    try:
+        from hardware.servos import set_servo
+        neck_cfg = config.SERVO_CHANNELS["neck"]
+        ch = neck_cfg["ch"]
+        neutral = neck_cfg["neutral"]
+        left_pos  = int(neutral - (neutral - neck_cfg["min"]) * 0.35)
+        right_pos = int(neutral + (neck_cfg["max"] - neutral) * 0.35)
+
+        def _scan():
+            set_servo(ch, left_pos)
+            time.sleep(1.5)
+            set_servo(ch, right_pos)
+            time.sleep(1.5)
+            set_servo(ch, neutral)
+
+        threading.Thread(target=_scan, daemon=True, name="ambient_scan").start()
+    except Exception as exc:
+        _log.debug("ambient scan error: %s", exc)
+
+
+def _do_private_thought() -> None:
+    if not _can_speak():
+        return
+    line = random.choice(config.PRIVATE_THOUGHTS)
+    _speak_async(line, emotion="neutral")
+
+
+def _do_idle_clip() -> None:
+    try:
+        clips_dir = Path(config.AUDIO_CLIPS_DIR)
+        clips = list(clips_dir.glob("*.mp3")) + list(clips_dir.glob("*.wav"))
+        if not clips:
+            return
+        clip_path = random.choice(clips)
+
+        def _play():
+            try:
+                import sounddevice as sd
+                import soundfile as sf
+                data, samplerate = sf.read(str(clip_path), dtype="float32")
+                sd.play(data, samplerate)
+                sd.wait()
+            except Exception as exc:
+                _log.debug("idle clip playback error: %s", exc)
+
+        threading.Thread(target=_play, daemon=True, name="idle_clip").start()
+    except Exception as exc:
+        _log.debug("idle clip error: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 10 — Face tracking
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _face_x_to_neck_target(x: int) -> float:
+    """Map pixel x to neck servo position. Center → neutral; edges → extremes."""
+    neck_cfg = config.SERVO_CHANNELS["neck"]
+    frac = x / max(config.CAMERA_WIDTH - 1, 1)  # 0.0 (left) → 1.0 (right)
+    return float(neck_cfg["min"] + frac * (neck_cfg["max"] - neck_cfg["min"]))
+
+
+def _step_face_tracking(frame) -> None:
+    """
+    Get the largest face position from the current frame, smooth toward the neck
+    servo target, and issue a set_servo command when change exceeds the dead zone.
+    Suspended during SLEEP state.
+    """
+    global _neck_smooth
+
+    if state_module.get_state() == State.SLEEP:
+        return
+
+    try:
+        from vision import face as face_mod
+        from hardware.servos import set_servo
+
+        neck_cfg = config.SERVO_CHANNELS["neck"]
+        neck_ch  = neck_cfg["ch"]
+        neutral  = float(neck_cfg["neutral"])
+        alpha    = 1.0 - config.TRACKING_SMOOTHING_FACTOR  # fraction to close per tick
+
+        face_pos = face_mod.get_face_position(frame) if frame is not None else None
+
+        if face_pos is None:
+            # No face detected: drift back toward neutral
+            _neck_smooth += alpha * (neutral - _neck_smooth)
+            return
+
+        x, _y = face_pos
+        frame_cx = config.CAMERA_WIDTH / 2.0
+
+        # Pixel dead zone: if face is close enough to center, do nothing
+        if abs(x - frame_cx) <= config.TRACKING_DEAD_ZONE_PX:
+            return
+
+        target = _face_x_to_neck_target(x)
+        new_smooth = _neck_smooth + alpha * (target - _neck_smooth)
+
+        # Only send servo command if smoothed position moved beyond dead zone in servo space
+        dead_zone_qus = (
+            config.TRACKING_DEAD_ZONE_PX
+            / config.CAMERA_WIDTH
+            * (neck_cfg["max"] - neck_cfg["min"])
+        )
+        if abs(new_smooth - _neck_smooth) >= dead_zone_qus:
+            _neck_smooth = new_smooth
+            clamped = max(neck_cfg["min"], min(neck_cfg["max"], int(_neck_smooth)))
+            set_servo(neck_ch, clamped)
+
+    except Exception as exc:
+        _log.debug("face tracking step error: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main loop
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _loop() -> None:
+    global _last_snapshot, _last_micro_behavior_at, _neck_smooth
+
+    interval = getattr(config, "CONSCIOUSNESS_LOOP_INTERVAL_SECS", 1.0)
+    last_tick = time.monotonic()
+    _last_micro_behavior_at = time.monotonic()
+
+    while not _stop_event.is_set():
+        tick_start = time.monotonic()
+        elapsed = tick_start - last_tick
+        last_tick = tick_start
+
+        try:
+            # 1. Anger cooldown
+            _step_anger_cooldown()
+
+            # 2. Mood decay
+            _step_mood_decay(elapsed)
+
+            # Grab current camera frame once — reused by steps 5 and 10
+            try:
+                from vision.camera import get_frame
+                frame = get_frame()
+            except Exception:
+                frame = None
+
+            # 3. Interoception
+            _step_interoception()
+
+            # 4. Chronoception
+            _step_chronoception()
+
+            # 5. Person recognition (may update world_state.people)
+            _step_person_recognition(frame)
+
+            # Snapshot after recognition so steps 6–9 see identified persons
+            snapshot = world_state.snapshot()
+
+            # 6. Follow-up check
+            _step_followup_check(snapshot)
+
+            # 7. Disengagement detection
+            _step_disengagement(snapshot)
+
+            # 8. Proactive reactions
+            _step_proactive_reactions(snapshot)
+
+            # 9. Idle micro-behaviors
+            _step_idle_micro_behavior(snapshot)
+
+            # 10. Face tracking
+            _step_face_tracking(frame)
+
+            # Preserve snapshot for next iteration's change detection
+            _last_snapshot = snapshot
+
+        except Exception as exc:
+            _log.error("consciousness loop unhandled error: %s", exc)
+
+        # Sleep for the remainder of the interval (or yield immediately if overrun)
+        sleep_for = max(0.0, interval - (time.monotonic() - tick_start))
+        _stop_event.wait(sleep_for)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lifecycle
+# ─────────────────────────────────────────────────────────────────────────────
+
+def start() -> None:
+    """Start the consciousness daemon thread. No-op if already running."""
+    global _thread
+    if _thread and _thread.is_alive():
+        _log.debug("consciousness already running")
+        return
+    _stop_event.clear()
+    _thread = threading.Thread(target=_loop, daemon=True, name="consciousness")
+    _thread.start()
+    _log.info(
+        "consciousness started (interval=%.1fs)",
+        getattr(config, "CONSCIOUSNESS_LOOP_INTERVAL_SECS", 1.0),
+    )
+
+
+def stop() -> None:
+    """Stop the consciousness daemon thread and wait for it to exit."""
+    global _thread
+    _stop_event.set()
+    if _thread:
+        _thread.join(timeout=5)
+        _thread = None
+    _log.info("consciousness stopped")
