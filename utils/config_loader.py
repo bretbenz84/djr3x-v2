@@ -74,26 +74,28 @@ def _require_port(env_key: str, label: str) -> "str | None":
     return val
 
 
-def _require_camera_index(env_key: str) -> "int | None":
+def _require_int_env(env_key: str, label: str) -> "int | None":
     val = os.getenv(env_key, "").strip()
     if not val:
-        _log.warning("Hardware config missing: %s not set — camera disabled.", env_key)
+        _log.warning("Hardware config missing: %s not set — %s disabled.", env_key, label)
         return None
     try:
         return int(val)
     except ValueError:
         _log.warning(
-            "Hardware config invalid: %s=%r is not an integer — camera disabled.", env_key, val
+            "Hardware config invalid: %s=%r is not an integer — %s disabled.", env_key, val, label
         )
         return None
 
 
-CAMERA_INDEX: "int | None" = _require_camera_index("CAMERA_INDEX")
+CAMERA_INDEX: "int | None" = _require_int_env("CAMERA_INDEX", "camera")
+AUDIO_DEVICE_INDEX: "int | None" = _require_int_env("AUDIO_DEVICE_INDEX", "microphone")
 MAESTRO_PORT: "str | None" = _require_port("MAESTRO_PORT", "servo controller")
 ARDUINO_HEAD_PORT: "str | None" = _require_port("ARDUINO_HEAD_PORT", "head LEDs")
 ARDUINO_CHEST_PORT: "str | None" = _require_port("ARDUINO_CHEST_PORT", "chest LEDs")
 
 CAMERA_ENABLED: bool = CAMERA_INDEX is not None
+AUDIO_ENABLED: bool = AUDIO_DEVICE_INDEX is not None
 SERVOS_ENABLED: bool = MAESTRO_PORT is not None
 HEAD_LEDS_ENABLED: bool = ARDUINO_HEAD_PORT is not None
 CHEST_LEDS_ENABLED: bool = ARDUINO_CHEST_PORT is not None

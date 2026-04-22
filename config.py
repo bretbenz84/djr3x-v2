@@ -170,6 +170,15 @@ SPEAKER_ID_SIMILARITY_THRESHOLD = 0.75
 VAD_THRESHOLD = 0.5
 
 # ─────────────────────────────────────────────────────────────────────────────
+# AUDIO STREAM
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Sample rate required by Silero VAD and Whisper — do not change without updating both
+AUDIO_SAMPLE_RATE    = 16000  # Hz
+AUDIO_CHANNELS       = 1      # mono
+AUDIO_BUFFER_SECONDS = 30     # rolling circular buffer duration
+
+# ─────────────────────────────────────────────────────────────────────────────
 # LED — Head Arduino (82 NeoPixels)
 # ─────────────────────────────────────────────────────────────────────────────
 
