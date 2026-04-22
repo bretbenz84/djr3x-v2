@@ -46,7 +46,7 @@ TRIVIA_DIR         = "assets/trivia"
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Rex voice clone ID — find this in your ElevenLabs account after cloning the voice
-ELEVENLABS_VOICE_ID = "your_voice_id_here"
+ELEVENLABS_VOICE_ID = "kb9LZZlhckjFQsP89t9T"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WAKE WORD — OpenWakeWord ONNX Models
@@ -187,6 +187,45 @@ VAD_THRESHOLD = 0.5
 AUDIO_SAMPLE_RATE    = 16000  # Hz
 AUDIO_CHANNELS       = 1      # mono
 AUDIO_BUFFER_SECONDS = 30     # rolling circular buffer duration
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ECHO CANCELLATION (AEC)
+# Simple suppression approach: reduce mic sensitivity during playback rather
+# than full AEC, which requires sample-accurate latency matching.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Multiplier applied to mic input while Rex is playing audio.
+# 0.0 = full silence, 1.0 = no suppression. 0.05 leaves the signal nearly
+# muted while still allowing callers to detect intentional loud interruptions.
+AEC_SUPPRESSION_FACTOR = 0.05
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUDITORY SCENE ANALYSIS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# How often the analysis loop runs (seconds)
+SCENE_ANALYSIS_INTERVAL_SECS = 1.0
+
+# Audio window fed into each analysis function (seconds of history)
+SCENE_ANALYSIS_WINDOW_SECS = 2.0
+
+# RMS thresholds for ambient level classification (float32, range 0.0–1.0)
+SCENE_AMBIENT_QUIET_RMS = 0.01   # below → "quiet"
+SCENE_AMBIENT_LOUD_RMS  = 0.07   # above → "loud"; between → "moderate"
+
+# Music detection: mean squared energy per frequency band (after normalising FFT
+# by window length) must exceed this to count a band as active.
+SCENE_MUSIC_BAND_ENERGY_MIN  = 2e-6
+# Minimum number of the three bands (bass/mid/treble) that must be active.
+SCENE_MUSIC_ACTIVE_BANDS_MIN = 2
+
+# Laughter detection: burst-pattern heuristic on 50 ms RMS sub-windows.
+SCENE_LAUGHTER_MEAN_RMS_MIN       = 0.02   # minimum mean energy
+SCENE_LAUGHTER_BURST_VARIANCE_MIN = 3e-4   # minimum variance of per-chunk RMS values
+
+# Applause detection: broadband noise with high spectral flatness.
+SCENE_APPLAUSE_RMS_MIN              = 0.04  # minimum overall RMS
+SCENE_APPLAUSE_SPECTRAL_FLATNESS_MIN = 0.30  # geometric/arithmetic mean of spectrum
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LED — Head Arduino (82 NeoPixels)
