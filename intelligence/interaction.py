@@ -687,14 +687,40 @@ def _loop() -> None:
             _stop_event.wait(0.05)
             continue
 
-        # ── IDLE — wait for wake word, ignore all speech ───────────────────────
+        # ── IDLE — wake word first; optional direct speech activation ──────────
         if current_state == State.IDLE:
             if _wake_word_fired.is_set():
                 _wake_word_fired.clear()
                 state_module.set_state(State.ACTIVE)
                 _last_speech_at = time.monotonic()
                 _wake_ack()
-            _stop_event.wait(0.05)
+                continue
+
+            # Optional hands-free behavior: allow normal speech to activate Rex
+            # directly from IDLE without a wake word.
+            if not getattr(config, "IDLE_LISTEN_WITHOUT_WAKE_WORD", False):
+                _stop_event.wait(0.05)
+                continue
+
+            chunk = stream.get_audio_chunk(_CHUNK_SECS)
+            if len(chunk) == 0:
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+            if not vad.is_speech(chunk):
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+
+            _log.info("[interaction] speech detected in IDLE — activating without wake word")
+            state_module.set_state(State.ACTIVE)
+            speech_start = time.monotonic()
+            _last_speech_at = speech_start
+
+            audio_segment = _accumulate_speech(speech_start)
+            if audio_segment is None or len(audio_segment) == 0:
+                continue
+
+            _last_speech_at = time.monotonic()
+            _handle_speech_segment(audio_segment)
             continue
 
         # ── ACTIVE — full continuous listening ─────────────────────────────────

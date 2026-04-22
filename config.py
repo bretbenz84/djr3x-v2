@@ -453,6 +453,11 @@ SURPRISE_PAUSE_MS_MAX = 1000
 # INTERACTION LOOP
 # ─────────────────────────────────────────────────────────────────────────────
 
+# If True, Rex will begin processing normal speech from IDLE without requiring
+# a wake word first. Wake words remain active for explicit attention grabbing and
+# mid-speech interruption behavior.
+IDLE_LISTEN_WITHOUT_WAKE_WORD = True
+
 # Seconds of sustained silence after speech before the segment is processed
 SILENCE_TIMEOUT_SECS = 1.5
 
