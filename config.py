@@ -449,6 +449,28 @@ SURPRISE_PAUSE_MS_MIN = 500
 SURPRISE_PAUSE_MS_MAX = 1000
 
 # ─────────────────────────────────────────────────────────────────────────────
+# INTERACTION LOOP
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Seconds of sustained silence after speech before the segment is processed
+SILENCE_TIMEOUT_SECS = 1.5
+
+# Seconds of no detected speech in ACTIVE state before returning to IDLE
+CONVERSATION_IDLE_TIMEOUT_SECS = 30.0
+
+# Short acknowledgment lines Rex speaks when a wake word transitions him from
+# IDLE or SLEEP to ACTIVE. Distinct from INTERRUPT_ACKNOWLEDGMENTS (mid-speech).
+WAKE_ACKNOWLEDGMENTS = [
+    "yeah?",
+    "what's up?",
+    "I'm here.",
+    "...go ahead.",
+    "you have my attention.",
+    "systems online. What do you need?",
+    "DJ-R3X at your service. Briefly.",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CONSCIOUSNESS LOOP
 # ─────────────────────────────────────────────────────────────────────────────
 
