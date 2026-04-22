@@ -53,6 +53,11 @@ _REENGAGEMENT_COOLDOWN_SECS = 30.0
 _pending_followups: dict[int, list[dict]] = {}
 _followup_lock = threading.Lock()
 
+# Pending identity prompt for unknown-person enrollment.
+_pending_identity_prompt = threading.Event()
+_last_identity_prompt_at: float = 0.0
+_IDENTITY_PROMPT_COOLDOWN_SECS = 45.0
+
 # Face detection terminal feedback de-duplication signature.
 _last_face_feedback_signature: Optional[str] = None
 
@@ -75,6 +80,17 @@ def get_pending_followup(person_id: int) -> Optional[list[dict]]:
     with _followup_lock:
         events = _pending_followups.pop(person_id, None)
     return events if events else None
+
+
+def consume_identity_prompt_request() -> bool:
+    """
+    Return True once when an unknown-person identity prompt was recently spoken.
+    Interaction uses this to temporarily accept short bare-name replies.
+    """
+    if _pending_identity_prompt.is_set():
+        _pending_identity_prompt.clear()
+        return True
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -171,7 +187,7 @@ def _step_person_recognition(frame) -> None:
     current frame and attempt a DB lookup. On match, inject face_id (name) and
     person_db_id (integer DB key) into that world_state person entry.
     """
-    global _last_face_feedback_signature
+    global _last_face_feedback_signature, _last_identity_prompt_at
     try:
         from vision import face as face_mod
         people = world_state.get("people")
@@ -217,6 +233,23 @@ def _step_person_recognition(frame) -> None:
             if unknown_count > 0:
                 noun = "face" if unknown_count == 1 else "faces"
                 print(f"[FACE] Unknown {noun} detected ({unknown_count})", flush=True)
+
+                # If someone unknown appears while idle, ask who they are so
+                # interaction can enroll them in the person database.
+                now = time.monotonic()
+                if (
+                    _can_speak()
+                    and state_module.get_state() == State.IDLE
+                    and (now - _last_identity_prompt_at) >= _IDENTITY_PROMPT_COOLDOWN_SECS
+                ):
+                    _last_identity_prompt_at = now
+                    _pending_identity_prompt.set()
+                    _generate_and_speak(
+                        "You can see someone you don't recognize. "
+                        "In one short in-character line, ask who they are and what name "
+                        "you should store for them.",
+                        emotion="curious",
+                    )
             _last_face_feedback_signature = signature
 
         if changed:
@@ -603,6 +636,7 @@ def start() -> None:
         _log.debug("consciousness already running")
         return
     _stop_event.clear()
+    _pending_identity_prompt.clear()
     _thread = threading.Thread(target=_loop, daemon=True, name="consciousness")
     _thread.start()
     _log.info(
@@ -615,6 +649,7 @@ def stop() -> None:
     """Stop the consciousness daemon thread and wait for it to exit."""
     global _thread
     _stop_event.set()
+    _pending_identity_prompt.clear()
     if _thread:
         _thread.join(timeout=5)
         _thread = None

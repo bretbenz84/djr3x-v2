@@ -14,6 +14,7 @@ Public API:
 
 import logging
 import random
+import re
 import threading
 import time
 from typing import Optional
@@ -31,6 +32,7 @@ from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
 from awareness import interoception
+from world_state import world_state
 
 _log = logging.getLogger(__name__)
 
@@ -62,6 +64,35 @@ _last_speech_at: float = 0.0  # monotonic timestamp of most recent speech chunk
 
 # Anti-repeat for latency filler lines
 _last_filler: Optional[str] = None
+
+# Time window (set by consciousness) where a short bare-name reply is accepted.
+_identity_prompt_until: float = 0.0
+
+_IDENTITY_REPLY_WINDOW_SECS = 45.0
+_NAME_MAX_WORDS = 3
+
+_NAME_PATTERNS = [
+    re.compile(r"\bmy name is\s+(.+)$", re.IGNORECASE),
+    re.compile(r"\bi am\s+(.+)$", re.IGNORECASE),
+    re.compile(r"\bi['’]m\s+(.+)$", re.IGNORECASE),
+    re.compile(r"\bim\s+(.+)$", re.IGNORECASE),
+    re.compile(r"\bthis is\s+(.+)$", re.IGNORECASE),
+    re.compile(r"\bcall me\s+(.+)$", re.IGNORECASE),
+]
+
+_NAME_STOPWORDS = {
+    "again",
+    "back",
+    "fine",
+    "good",
+    "great",
+    "here",
+    "okay",
+    "ok",
+    "ready",
+    "sorry",
+    "there",
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -144,6 +175,138 @@ def _speak_filler() -> None:
     chosen = random.choice(candidates)
     _last_filler = chosen
     _speak_async(chosen)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Identity enrollment helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _normalize_name(candidate: str) -> Optional[str]:
+    """
+    Normalize a spoken/self-reported name candidate.
+    Returns None when the candidate does not look like a usable name.
+    """
+    text = candidate.strip()
+    if not text:
+        return None
+
+    # Keep the first clause only ("my name is Bret, nice to meet you").
+    text = re.split(r"[,.!?;:]", text, maxsplit=1)[0].strip()
+    text = re.sub(r"\s+", " ", text)
+
+    tokens = []
+    for raw in text.split(" "):
+        token = re.sub(r"[^A-Za-z'\-]", "", raw).strip("'-")
+        if token:
+            tokens.append(token)
+
+    if not tokens or len(tokens) > _NAME_MAX_WORDS:
+        return None
+
+    if len(tokens) == 1 and tokens[0].lower() in _NAME_STOPWORDS:
+        return None
+
+    if any(t.lower() in {"i", "im", "i'm", "me", "my", "name"} for t in tokens):
+        return None
+
+    # If Whisper returned all lowercase, title-case for storage/readback.
+    if all(t.islower() for t in tokens):
+        tokens = [t.capitalize() for t in tokens]
+
+    return " ".join(tokens)
+
+
+def _extract_introduced_name(text: str, allow_bare_name: bool = False) -> Optional[str]:
+    """Extract a self-introduced name from speech text."""
+    normalized = text.strip()
+    if not normalized:
+        return None
+
+    for pattern in _NAME_PATTERNS:
+        m = pattern.search(normalized)
+        if not m:
+            continue
+        return _normalize_name(m.group(1))
+
+    # After Rex explicitly asks "who are you?", many people reply with only a name.
+    if allow_bare_name:
+        return _normalize_name(normalized)
+
+    return None
+
+
+def _has_unknown_visible_person() -> bool:
+    """True if WorldState currently includes at least one person without a face match."""
+    try:
+        people = world_state.get("people")
+    except Exception:
+        return False
+    return any(p.get("face_id") is None for p in people)
+
+
+def _bind_world_state_identity(person_id: int, name: str) -> None:
+    """
+    Attach the newly enrolled identity to the first unknown world-state person slot.
+    """
+    try:
+        people = world_state.get("people")
+        changed = False
+        for person in people:
+            if person.get("person_db_id") is None or person.get("face_id") is None:
+                person["person_db_id"] = person_id
+                person["face_id"] = name
+                person["voice_id"] = name
+                changed = True
+                break
+        if changed:
+            world_state.update("people", people)
+
+        crowd = world_state.get("crowd")
+        crowd["dominant_speaker"] = name
+        world_state.update("crowd", crowd)
+    except Exception as exc:
+        _log.debug("world_state identity bind failed: %s", exc)
+
+
+def _enroll_new_person(name: str, audio_array: np.ndarray) -> Optional[int]:
+    """
+    Enroll a brand-new person and attach available voice/face biometrics.
+    Returns person_id on success.
+    """
+    person_id = people_memory.enroll_person(name)
+    if person_id is None:
+        _log.error("failed to enroll new person row for name=%r", name)
+        return None
+
+    first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
+    if first_inc > 0:
+        people_memory.update_familiarity(person_id, first_inc)
+
+    try:
+        speaker_id.enroll_voice(person_id, audio_array)
+    except Exception as exc:
+        _log.warning("voice enrollment failed for person_id=%s: %s", person_id, exc)
+
+    try:
+        from vision import camera as camera_mod
+        from vision import face as face_mod
+
+        frame = camera_mod.capture_still()
+        if frame is not None:
+            face_mod.enroll_face(person_id, frame)
+            # Appearance extraction is useful but non-blocking.
+            threading.Thread(
+                target=face_mod.update_appearance,
+                args=(person_id, frame.copy()),
+                daemon=True,
+                name=f"appearance-enroll-{person_id}",
+            ).start()
+    except Exception as exc:
+        _log.warning("face enrollment failed for person_id=%s: %s", person_id, exc)
+
+    _bind_world_state_identity(person_id, name)
+    _log.info("[interaction] enrolled new person: %s (person_id=%s)", name, person_id)
+    return person_id
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -561,12 +724,13 @@ def _end_session() -> None:
     Called on ACTIVE → IDLE transition. Generates and persists a session summary,
     updates visit records and familiarity, then clears in-memory session state.
     """
-    global _session_exchange_count
+    global _session_exchange_count, _identity_prompt_until
 
     transcript = conv_memory.get_session_transcript()
     if not transcript:
         _session_exchange_count = 0
         _session_person_ids.clear()
+        _identity_prompt_until = 0.0
         return
 
     for person_id in list(_session_person_ids):
@@ -596,6 +760,7 @@ def _end_session() -> None:
     conv_memory.clear_transcript()
     _session_exchange_count = 0
     _session_person_ids.clear()
+    _identity_prompt_until = 0.0
     _log.info("[interaction] session ended — summary saved, transcript cleared")
 
 
@@ -605,7 +770,7 @@ def _end_session() -> None:
 
 def _handle_speech_segment(audio_array: np.ndarray) -> None:
     """Full processing pipeline for one detected speech segment in ACTIVE state."""
-    global _session_exchange_count
+    global _session_exchange_count, _identity_prompt_until
 
     # Randomised pre-response pause — prevents Rex from feeling instant/robotic
     delay_ms = random.randint(config.REACTION_DELAY_MS_MIN, config.REACTION_DELAY_MS_MAX)
@@ -619,6 +784,31 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
 
     if not text:
         return
+
+    # Consciousness asked an unknown person for their name. Open a short window
+    # where single/short name replies are treated as enrollment input.
+    if consciousness.consume_identity_prompt_request():
+        _identity_prompt_until = max(
+            _identity_prompt_until,
+            time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS,
+        )
+
+    # If we don't recognize the speaker but there is an unknown person visible,
+    # attempt self-identification enrollment from this utterance.
+    now_mono = time.monotonic()
+    should_attempt_enroll = (
+        person_id is None
+        and (_has_unknown_visible_person() or now_mono <= _identity_prompt_until)
+    )
+    if should_attempt_enroll:
+        allow_bare = now_mono <= _identity_prompt_until
+        intro_name = _extract_introduced_name(text, allow_bare_name=allow_bare)
+        if intro_name:
+            enrolled_id = _enroll_new_person(intro_name, audio_array)
+            if enrolled_id is not None:
+                person_id = enrolled_id
+                person_name = intro_name
+                _identity_prompt_until = 0.0
 
     if person_id is not None:
         _session_person_ids.add(person_id)
@@ -774,7 +964,7 @@ def _loop() -> None:
 
 def start() -> None:
     """Start the wake word detector and the continuous interaction loop."""
-    global _thread
+    global _thread, _identity_prompt_until
 
     if _thread and _thread.is_alive():
         _log.warning("[interaction] already running")
@@ -784,6 +974,7 @@ def start() -> None:
     _wake_word_fired.clear()
     _interrupted.clear()
     _session_person_ids.clear()
+    _identity_prompt_until = 0.0
 
     wake_word.start(_on_wake_word)
     if not wake_word.is_ready():
