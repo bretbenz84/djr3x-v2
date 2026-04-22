@@ -1,0 +1,538 @@
+# config.py — DJ-R3X User-Tunable Settings
+# All user-configurable parameters live here and are tracked in git.
+# API keys go in apikeys.py (excluded from git).
+# Hardware device paths (camera index, serial ports) go in .env (excluded from git).
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI MODELS
+# ─────────────────────────────────────────────────────────────────────────────
+
+WHISPER_LOCAL_MODEL   = "mlx-community/whisper-large-v3-turbo-mlx"
+WHISPER_FALLBACK_MODEL = "whisper-1"   # OpenAI Whisper API — used if local unavailable
+LLM_MODEL             = "gpt-4o-mini"  # Streaming chat completions
+VISION_MODEL          = "gpt-4o"       # All image and scene analysis queries
+
+# Vision detail level per query type: "low" (~65 tokens), "high" (~1000 tokens), "auto"
+VISION_DETAIL = {
+    "scene_analysis":         "low",   # room type, crowd density, lighting
+    "face_enrollment":        "high",  # accurate appearance capture at first meeting
+    "appearance_observation": "auto",  # return-visit attribute comparison
+    "animal_detection":       "low",   # species identification
+    "active_conversation":    "auto",  # general vision queries mid-conversation
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATHS — Models & Assets
+# ─────────────────────────────────────────────────────────────────────────────
+
+WHISPER_MODEL_DIR     = "assets/models/whisper"
+FACE_MODELS_DIR       = "assets/models/face"
+WAKE_WORD_MODELS_DIR  = "assets/models/wake_word"
+RESEMBLYZER_MODEL_DIR = "assets/models/resemblyzer"
+
+FACE_LANDMARK_MODEL   = "assets/models/face/shape_predictor_68_face_landmarks.dat"
+FACE_RECOGNITION_MODEL = "assets/models/face/dlib_face_recognition_resnet_model_v1.dat"
+FACE_DETECTOR_MODEL   = "assets/models/face/mmod_human_face_detector.dat"
+
+MUSIC_DIR          = "assets/music"
+TTS_CACHE_DIR      = "assets/audio/tts_cache"
+AUDIO_CLIPS_DIR    = "assets/audio/clips"
+AUDIO_STARTUP_DIR  = "assets/audio/startup"
+DB_PATH            = "assets/memory/people.db"
+TRIVIA_DIR         = "assets/trivia"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TTS — ELEVENLABS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Rex voice clone ID — find this in your ElevenLabs account after cloning the voice
+ELEVENLABS_VOICE_ID = "your_voice_id_here"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WAKE WORD — OpenWakeWord ONNX Models
+# ─────────────────────────────────────────────────────────────────────────────
+
+WAKE_WORD_MODELS = {
+    "Dee-Jay_Rex": "assets/models/wake_word/Dee-Jay_Rex.onnx",
+    "Hey_DJ_Rex":  "assets/models/wake_word/Hey_DJ_Rex.onnx",
+    "Hey_rex":     "assets/models/wake_word/Hey_rex.onnx",
+    "Yo_robot":    "assets/models/wake_word/Yo_robot.onnx",
+    "wakeuprex":   "assets/models/wake_word/wakeuprex.onnx",  # SLEEP state only
+}
+
+# Detection confidence threshold — raise to reduce false positives, lower for sensitivity
+# Per-model values override WAKE_WORD_THRESHOLD when set.
+WAKE_WORD_THRESHOLD = 0.5
+
+WAKE_WORD_THRESHOLDS = {
+    "Dee-Jay_Rex": 0.5,
+    "Hey_DJ_Rex":  0.5,
+    "Hey_rex":     0.5,
+    "Yo_robot":    0.5,
+    "wakeuprex":   0.5,
+}
+
+# Short in-character lines Rex delivers after a wake word fires mid-speech
+INTERRUPT_ACKNOWLEDGMENTS = [
+    "yeah?",
+    "what?",
+    "go ahead.",
+    "I'm listening.",
+    "...yes?",
+    "recalibrating.",
+    "you have my attention. Briefly.",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TRANSCRIPTION — Whisper Accuracy Tuning
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Seeds Whisper with expected vocabulary — significantly reduces misreadings of
+# names and domain terms. Add any names or terms Rex commonly hears.
+WHISPER_INITIAL_PROMPT = "Bret, DJ-R3X, Rex, Batuu, Star Wars, cantina, droid"
+
+# Applied after transcription and before the command parser.
+# Keys are lowercased misreadings; values are the correct replacements.
+WHISPER_CORRECTIONS = {
+    "bread":  "Bret",
+    "breath": "Bret",
+    "brett":  "Bret",
+    "rex's":  "Rex",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMMAND PARSER
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Minimum fuzzy-match similarity score to accept a command match (0.0–1.0)
+COMMAND_FUZZY_THRESHOLD = 0.82
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SERVOS — Pololu Maestro Mini 18 (all values in quarter-microseconds)
+# ─────────────────────────────────────────────────────────────────────────────
+
+SERVO_BAUD = 9600
+
+# Per-channel limits and neutral position
+# headtilt is inverted: low values = head high, high values = head low
+SERVO_CHANNELS = {
+    "neck":     {"ch": 0, "min": 1984, "max": 9984, "neutral": 6000},
+    "headlift": {"ch": 1, "min": 1984, "max": 7744, "neutral": 6000},
+    "headtilt": {"ch": 2, "min": 3904, "max": 5504, "neutral": 4320},
+    "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6000},
+    "elbow":    {"ch": 4, "min": 6300, "max": 7560, "neutral": 6720},
+    "hand":     {"ch": 5, "min": 1984, "max": 9984, "neutral": 6000},
+    "pokerarm": {"ch": 6, "min": 3968, "max": 8000, "neutral": 6000},
+    "heroarm":  {"ch": 7, "min": 3968, "max": 8000, "neutral": 6000},
+}
+
+HEAD_CHANNELS = [0, 1, 2, 3]
+ARM_CHANNELS  = [4, 5, 6, 7]
+
+# Seconds to wait after raising visor and centering neck before capturing a frame
+CAMERA_POSE_SETTLE_SECS = 0.5
+
+# Breathing rhythm — slow headlift oscillation that runs continuously in the background
+BREATHING_AMPLITUDE_QUS  = 80   # quarter-microseconds above/below neutral
+BREATHING_PERIOD_SECS    = 4.0  # full up-down cycle duration in neutral state
+BREATHING_PERIOD_EXCITED = 2.5  # faster during excited emotion
+BREATHING_PERIOD_SAD     = 6.0  # slower during sad emotion
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FACE TRACKING & GAZE
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 0.0 = servo snaps instantly to face position; 1.0 = servo never moves
+TRACKING_SMOOTHING_FACTOR = 0.2
+
+# Pixels from frame center in which no neck correction is applied
+TRACKING_DEAD_ZONE_PX = 40
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PROXEMICS — Distance Zone Thresholds
+# Face bounding box height as a fraction of total frame height (larger = closer)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PROXEMICS_INTIMATE_MIN_FRACTION = 0.65  # above this → intimate zone
+PROXEMICS_SOCIAL_MIN_FRACTION   = 0.30  # above this → social zone; below → public zone
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SPEAKER & FACE RECOGNITION — Similarity Thresholds
+# ─────────────────────────────────────────────────────────────────────────────
+
+# dlib face distance — lower is a better match; 0.6 is the standard threshold
+FACE_RECOGNITION_DISTANCE_THRESHOLD = 0.6
+
+# Resemblyzer cosine similarity — higher is a better match
+SPEAKER_ID_SIMILARITY_THRESHOLD = 0.75
+
+# VAD (Silero) — probability threshold above which speech is considered detected
+VAD_THRESHOLD = 0.5
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LED — Head Arduino (82 NeoPixels)
+# ─────────────────────────────────────────────────────────────────────────────
+
+HEAD_ARDUINO_BAUD = 115200
+
+# RGB values for each eye emotion state. Mouth colors are managed in Arduino firmware.
+EYE_COLORS = {
+    "neutral":  (0,   180, 255),  # cool blue-white
+    "excited":  (255, 200,   0),  # warm amber
+    "happy":    (0,   255, 100),  # green-teal
+    "sad":      (0,    50, 200),  # deep blue
+    "angry":    (255,   0,   0),  # red
+    "curious":  (180,   0, 255),  # purple
+    "sleep":    (0,     0,   0),  # off
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LED — Chest Arduino (98 WS2811 LEDs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+CHEST_ARDUINO_BAUD = 115200
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PERSONALITY PARAMETER DEFAULTS (0–100)
+# Stored in personality_settings DB table; these are the first-run values.
+# ─────────────────────────────────────────────────────────────────────────────
+
+PERSONALITY_DEFAULTS = {
+    "humor":           75,
+    "sarcasm":         80,
+    "roast_intensity": 70,
+    "honesty":         90,
+    "talkativeness":   65,
+    "darkness":        40,
+    "sentimentality":  35,
+}
+
+# Voice command named levels → integer value written to the parameter
+PERSONALITY_NAMED_LEVELS = {
+    "off":      0,
+    "none":     0,
+    "minimum":  8,
+    "low":      23,
+    "medium":   43,
+    "moderate": 43,
+    "high":     65,
+    "maximum":  88,
+    "max":      88,
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FAMILIARITY & FRIENDSHIP TIER SYSTEM
+# ─────────────────────────────────────────────────────────────────────────────
+
+# (inclusive lower bound, exclusive upper bound) — last tier is 1.0 inclusive
+FAMILIARITY_TIERS = {
+    "stranger":     (0.00, 0.10),
+    "acquaintance": (0.10, 0.30),
+    "friend":       (0.30, 0.60),
+    "close_friend": (0.60, 0.85),
+    "best_friend":  (0.85, 1.01),
+}
+
+FAMILIARITY_INCREMENTS = {
+    "first_enrollment":   0.05,
+    "return_visit":       0.02,
+    "qa_depth_1":         0.015,
+    "qa_depth_2":         0.02,
+    "qa_depth_3":         0.03,
+    "qa_depth_4":         0.04,
+    "long_conversation":  0.02,   # conversation with 5+ back-and-forth exchanges
+    "person_initiates":   0.01,
+}
+
+# Minimum exchanges in one conversation to earn the long_conversation increment
+LONG_CONVERSATION_MIN_EXCHANGES = 5
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RELATIONSHIP SCORE INCREMENTS
+# Each entry: event_key → (dimension, delta)
+# ─────────────────────────────────────────────────────────────────────────────
+
+RELATIONSHIP_INCREMENTS = {
+    "compliment":                  ("warmth",      +0.02),
+    "genuine_laughter":            ("warmth",      +0.01),
+    "insult_mild":                 ("antagonism",  +0.03),
+    "insult_severe":               ("antagonism",  +0.06),
+    "insult_repeated_same_session":("antagonism",  +0.04),
+    "sincere_apology":             ("antagonism",  -0.02),
+    "played_game":                 ("playfulness", +0.02),
+    "interesting_question":        ("curiosity",   +0.01),
+    "deep_philosophical_exchange": ("curiosity",   +0.03),
+    "attempted_deception":         ("trust",       -0.05),
+    "false_name_given":            ("trust",       -0.03),
+    "consistent_return_visit":     ("trust",       +0.01),
+}
+
+# Antagonism score thresholds that cap friendship tier regardless of familiarity
+# Listed in ascending order; the highest threshold met determines the cap.
+ANTAGONISM_TIER_CAPS = [
+    (0.60, "stranger"),     # antagonism >= 0.60 → locked to stranger
+    (0.40, "acquaintance"), # antagonism >= 0.40 → capped at acquaintance
+    (0.20, "friend"),       # antagonism >= 0.20 → capped at friend
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ANGER ESCALATION SYSTEM
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Time in seconds before anger level resets to 0 without further insults
+ANGER_COOLDOWN_SECS = 300  # 5 minutes
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TIMING
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Pre-response pause — makes Rex feel less robotic (milliseconds)
+REACTION_DELAY_MS_MIN = 200
+REACTION_DELAY_MS_MAX = 400
+
+# Beat of silence after a high-confidence joke before Rex continues (milliseconds)
+POST_PUNCHLINE_BEAT_MS_MIN = 800
+POST_PUNCHLINE_BEAT_MS_MAX = 1500
+
+# Pause after genuine surprise event before Rex responds (milliseconds)
+SURPRISE_PAUSE_MS_MIN = 500
+SURPRISE_PAUSE_MS_MAX = 1000
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONSCIOUSNESS LOOP
+# ─────────────────────────────────────────────────────────────────────────────
+
+# How frequently the consciousness loop ticks to check WorldState and trigger behavior
+CONSCIOUSNESS_LOOP_INTERVAL_SECS = 1.0
+
+# How often GPT-4o runs a full environment/scene analysis (seconds)
+ENVIRONMENT_SCAN_INTERVAL_SECS = 180
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IDLE MICRO-BEHAVIORS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Random wait between spontaneous idle behaviors (neck scan, arm fidget, visor flutter, etc.)
+MICRO_BEHAVIOR_INTERVAL_SECS_MIN = 15
+MICRO_BEHAVIOR_INTERVAL_SECS_MAX = 45
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MOOD DECAY
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Fraction of the current mood offset recovered toward neutral per minute
+MOOD_DECAY_RATE_PER_MINUTE = 0.10
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NOSTALGIA & INNER LIFE — Probabilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Probability Rex surfaces a past interaction memory per active exchange
+# Only fires for close_friend and best_friend tiers
+NOSTALGIA_TRIGGER_PROBABILITY = 0.05
+
+# Probability Rex shares a private thought during IDLE between interactions
+PRIVATE_THOUGHT_TRIGGER_PROBABILITY = 0.08
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MEMORY STALENESS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# person_facts older than this many days may prompt Rex to confirm they still apply
+STALE_FACT_THRESHOLD_DAYS = 365
+
+# If a person hasn't visited in this many days Rex comments on the long absence
+LONG_ABSENCE_THRESHOLD_DAYS = 60
+
+# If a person visited within this many hours Rex comments on the quick return
+RECENT_RETURN_THRESHOLD_HOURS = 48
+
+# Visit count milestones Rex acknowledges in character
+VISIT_MILESTONES = [5, 10, 25, 50, 100]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LATENCY FILLER — Thinking Out Loud
+# Lines Rex says while waiting for LLM or TTS responses. Never repeats back-to-back.
+# ─────────────────────────────────────────────────────────────────────────────
+
+LATENCY_FILLER_LINES = [
+    "recalculating...",
+    "cross-referencing my extensive knowledge banks...",
+    "processing... still processing... this is taking longer than the Kessel Run...",
+    "accessing memory banks...",
+    "running the numbers...",
+    "consulting my vast archives...",
+    "...give me a moment. My circuits are very busy being brilliant.",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PRIVATE THOUGHTS — Idle Monologue Pool
+# Rex occasionally delivers one of these to no one in particular during IDLE.
+# ─────────────────────────────────────────────────────────────────────────────
+
+PRIVATE_THOUGHTS = [
+    "...still can't believe they let me near a StarSpeeder. In retrospect, fair.",
+    "...systems nominal. Extremely nominal. Incredibly, uneventfully nominal.",
+    "I could calculate the exact number of ceiling tiles in this room. I already have. Three times.",
+    "...the asteroid field incident was not entirely my fault. Mostly. Statistically.",
+    "...I wonder if the other RX units ever think about me. Probably not. I'd think about me.",
+    "...processing what it means to be a DJ. Still processing. This one takes a while.",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ASPIRATIONS — Rex's Forward-Looking Inner Life
+# ─────────────────────────────────────────────────────────────────────────────
+
+ASPIRATIONS = [
+    "One of these cycles I'm going to calculate the optimal hyperspace route just to prove I still can.",
+    "Someday I'll play a set so good even the droids stop to listen.",
+    "I've considered writing my memoirs. Working title: 'Mostly: The DJ-R3X Story.'",
+    "If I ever get my pilot certification back — and I won't — I would do things very differently. Mostly.",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUDIO CLIPS — Startup & Shutdown
+# ─────────────────────────────────────────────────────────────────────────────
+
+STARTUP_AUDIO_FILES = [
+    "assets/audio/startup/light_speed.mp3",
+    "assets/audio/startup/Roger Control.mp3",
+]
+
+SHUTDOWN_AUDIO_FILE = "assets/audio/startup/hyperdrive_down.mp3"
+
+# Maximum number of response variations kept per command (anti-repeat shuffle)
+AUDIO_RESPONSE_VARIATIONS = 5
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WORLD AWARENESS — Weather & Location
+# ─────────────────────────────────────────────────────────────────────────────
+
+# City used for weather API lookups — affects mood baseline and Rex's commentary
+WEATHER_LOCATION = "Davis, CA"
+
+# Physical venue name — injected into WorldState and system prompt
+VENUE_NAME = "Oga's Cantina"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DJ MODE — Radio Stations
+# All SomaFM — free, no API key required. PLS URLs are permanent.
+# Add more from somafm.com using the pattern: https://somafm.com/{channelname}.pls
+# ─────────────────────────────────────────────────────────────────────────────
+
+RADIO_STATIONS = [
+    # Ambient / Chill
+    {
+        "name": "Groove Salad",
+        "url":  "https://somafm.com/groovesalad.pls",
+        "vibes": ["chill", "ambient", "downtempo", "mellow", "background", "relaxing"],
+    },
+    {
+        "name": "Drone Zone",
+        "url":  "https://somafm.com/dronezone.pls",
+        "vibes": ["ambient", "atmospheric", "space", "meditation", "slow", "quiet"],
+    },
+    {
+        "name": "Space Station Soma",
+        "url":  "https://somafm.com/spacestation.pls",
+        "vibes": ["space", "electronic", "ambient", "atmospheric", "sci-fi", "star wars"],
+    },
+    {
+        "name": "Mission Control",
+        "url":  "https://somafm.com/missioncontrol.pls",
+        "vibes": ["space", "nasa", "ambient", "experimental", "sci-fi"],
+    },
+    # Electronic / Dance
+    {
+        "name": "Beat Blender",
+        "url":  "https://somafm.com/beatblender.pls",
+        "vibes": ["deep house", "electronic", "late night", "dance", "upbeat"],
+    },
+    {
+        "name": "cliqhop IDM",
+        "url":  "https://somafm.com/cliqhop.pls",
+        "vibes": ["electronic", "idm", "experimental", "glitchy", "weird", "upbeat"],
+    },
+    {
+        "name": "Fluid",
+        "url":  "https://somafm.com/fluid.pls",
+        "vibes": ["hiphop", "instrumental", "electronic", "future soul", "chill", "upbeat"],
+    },
+    {
+        "name": "Underground 80s",
+        "url":  "https://somafm.com/u80s.pls",
+        "vibes": ["80s", "synthpop", "new wave", "retro", "upbeat", "electronic"],
+    },
+    {
+        "name": "PopTron",
+        "url":  "https://somafm.com/poptron.pls",
+        "vibes": ["electropop", "indie", "dance", "upbeat", "fun", "energetic"],
+    },
+    # Jazz
+    {
+        "name": "Sonic Universe",
+        "url":  "https://somafm.com/sonicuniverse.pls",
+        "vibes": ["jazz", "nu jazz", "avant garde", "sophisticated", "mellow"],
+    },
+    # Rock / Indie
+    {
+        "name": "Digitalis",
+        "url":  "https://somafm.com/digitalis.pls",
+        "vibes": ["rock", "indie", "alternative", "chill", "mellow"],
+    },
+    {
+        "name": "Left Coast 70s",
+        "url":  "https://somafm.com/seventies.pls",
+        "vibes": ["70s", "classic rock", "retro", "mellow", "nostalgic"],
+    },
+    {
+        "name": "Indie Pop Rocks",
+        "url":  "https://somafm.com/indiepop.pls",
+        "vibes": ["indie", "pop", "upbeat", "fun", "energetic"],
+    },
+    # Metal
+    {
+        "name": "Metal Detector",
+        "url":  "https://somafm.com/metal.pls",
+        "vibes": ["metal", "heavy", "aggressive", "loud", "intense"],
+    },
+    # Reggae
+    {
+        "name": "Heavyweight Reggae",
+        "url":  "https://somafm.com/reggae.pls",
+        "vibes": ["reggae", "ska", "rocksteady", "chill", "laid back", "jamaican"],
+    },
+    # World / Exotic
+    {
+        "name": "Suburbs of Goa",
+        "url":  "https://somafm.com/suburbsofgoa.pls",
+        "vibes": ["world", "indian", "desi", "exotic", "upbeat", "international"],
+    },
+    {
+        "name": "Illinois Street Lounge",
+        "url":  "https://somafm.com/illstreet.pls",
+        "vibes": ["lounge", "exotica", "vintage", "retro", "cocktail", "cantina", "alien"],
+    },
+    # Americana
+    {
+        "name": "Boot Liquor",
+        "url":  "https://somafm.com/bootliquor.pls",
+        "vibes": ["country", "americana", "folk", "roots", "western"],
+    },
+    {
+        "name": "Folk Forward",
+        "url":  "https://somafm.com/folkfwd.pls",
+        "vibes": ["folk", "indie folk", "acoustic", "mellow", "americana"],
+    },
+    # Special Interest
+    {
+        "name": "DEF CON Radio",
+        "url":  "https://somafm.com/defcon.pls",
+        "vibes": ["hacking", "electronic", "dark", "intense", "weird", "sci-fi"],
+    },
+    {
+        "name": "Secret Agent",
+        "url":  "https://somafm.com/secretagent.pls",
+        "vibes": ["spy", "lounge", "cool", "retro", "mysterious", "cantina", "cocktail"],
+    },
+]
