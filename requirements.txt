@@ -41,8 +41,11 @@ mediapipe>=0.10.14
 # ── Hardware — serial (Maestro servo controller + Arduino) ───────────────────
 pyserial>=3.5
 
-# ── Fuzzy string matching (command parser) ────────────────────────────────────
+# ── Fuzzy string matching (command parser + DJ vibe matching) ─────────────────
 rapidfuzz>=3.9.0
+
+# ── Audio metadata — ID3 tag reading for DJ music index ───────────────────────
+mutagen>=1.47.0
 
 # ── Config & environment ──────────────────────────────────────────────────────
 python-dotenv>=1.0.1
