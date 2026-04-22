@@ -47,5 +47,8 @@ rapidfuzz>=3.9.0
 # ── Config & environment ──────────────────────────────────────────────────────
 python-dotenv>=1.0.1
 
+# ── System monitoring (interoception — CPU load) ──────────────────────────────
+psutil>=6.0.0
+
 # ── HTTP (weather API, misc) ──────────────────────────────────────────────────
 requests>=2.32.0

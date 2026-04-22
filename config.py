@@ -563,6 +563,31 @@ WEATHER_LOCATION = "Davis, CA"
 # Physical venue name — injected into WorldState and system prompt
 VENUE_NAME = "Oga's Cantina"
 
+# How long to cache wttr.in weather results before re-fetching (seconds)
+WEATHER_CACHE_SECS = 600  # 10 minutes
+
+# Notable calendar dates Rex reacts to — keys are (month, day) tuples
+NOTABLE_DATES = {
+    (5,  4):  "Star Wars Day",
+    (10, 31): "Halloween",
+    (12, 25): "Christmas",
+    (1,  1):  "New Year's Day",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CHRONOCEPTION — Time Awareness Update Interval
+# ─────────────────────────────────────────────────────────────────────────────
+
+# How often the chronoception background thread refreshes world_state.time (seconds)
+CHRONOCEPTION_UPDATE_INTERVAL_SECS = 60.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INTEROCEPTION — System Health Update Interval
+# ─────────────────────────────────────────────────────────────────────────────
+
+# How often the interoception background thread refreshes world_state.self_state (seconds)
+INTEROCEPTION_UPDATE_INTERVAL_SECS = 5.0
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DJ MODE — Radio Stations
 # All SomaFM — free, no API key required. PLS URLs are permanent.
