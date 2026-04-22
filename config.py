@@ -48,6 +48,19 @@ TRIVIA_DIR         = "assets/trivia"
 # Rex voice clone ID — find this in your ElevenLabs account after cloning the voice
 ELEVENLABS_VOICE_ID = "kb9LZZlhckjFQsP89t9T"
 
+# ElevenLabs model to use for TTS. eleven_turbo_v2 trades a little quality for
+# lower latency — right choice for live conversation. Change to
+# eleven_multilingual_v2 for higher quality if latency budget allows.
+TTS_MODEL_ID = "eleven_turbo_v2"
+
+# Mouth LED brightness driven from audio RMS during playback.
+# How often to recompute RMS and send SPEAK_LEVEL to the head Arduino.
+TTS_LED_UPDATE_INTERVAL_SECS = 0.033  # ~30 fps
+
+# RMS (0.0–1.0) × this scale → brightness (0–255).
+# Typical speech RMS is 0.1–0.3; at 800 that maps to 80–240.
+TTS_LED_BRIGHTNESS_SCALE = 800
+
 # ─────────────────────────────────────────────────────────────────────────────
 # WAKE WORD — OpenWakeWord ONNX Models
 # ─────────────────────────────────────────────────────────────────────────────
