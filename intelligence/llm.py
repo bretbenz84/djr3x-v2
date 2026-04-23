@@ -246,6 +246,7 @@ def stream_response(
                 {"role": "user", "content": user_text},
             ],
             stream=True,
+            max_tokens=150,
         )
         for chunk in stream:
             delta = chunk.choices[0].delta
@@ -316,6 +317,7 @@ def generate_session_summary(person_id: int, transcript: list[dict]) -> str:
             model=config.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
+            max_tokens=500,
         )
         return resp.choices[0].message.content.strip()
     except Exception as exc:
@@ -346,6 +348,7 @@ def extract_facts(person_id: int, transcript: list[dict]) -> list[dict]:
             model=config.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
+            max_tokens=500,
         )
         result = json.loads(resp.choices[0].message.content.strip())
         if not isinstance(result, list):
