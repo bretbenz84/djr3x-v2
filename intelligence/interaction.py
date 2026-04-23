@@ -35,6 +35,7 @@ from memory import people as people_memory
 from memory import events as events_memory
 from awareness import interoception
 from world_state import world_state
+from utils import conv_log
 
 _log = logging.getLogger(__name__)
 
@@ -714,6 +715,7 @@ def _post_response(
                     )
                     if resp:
                         conv_memory.add_to_transcript("Rex", resp)
+                        conv_log.log_rex(resp)
                         completed = _speak_blocking(resp)
                         if completed:
                             _register_rex_utterance(resp)
@@ -919,6 +921,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
 
     speaker_label = person_name or "user"
     conv_memory.add_to_transcript(speaker_label, text)
+    conv_log.log_heard(person_name, text)
     print(f"[HEARD] {speaker_label}: {text}", flush=True)
     _log.info(
         "[interaction] speech segment — speaker=%r person_id=%s text=%r",
@@ -935,6 +938,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
     assistant_asked_question = False
     if response_text:
         conv_memory.add_to_transcript("Rex", response_text)
+        conv_log.log_rex(response_text)
         _session_exchange_count += 1
         _register_rex_utterance(response_text)
         assistant_asked_question = _assistant_asked_question(response_text)
