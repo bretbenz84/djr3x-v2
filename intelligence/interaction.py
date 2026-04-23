@@ -353,21 +353,22 @@ def _enroll_new_person(name: str, audio_array: np.ndarray) -> Optional[int]:
 
 def _process_audio(
     audio_array: np.ndarray,
-) -> tuple[str, Optional[int], Optional[str]]:
+) -> tuple[str, Optional[int], Optional[str], float]:
     """
     Run transcription and speaker ID simultaneously in two threads.
-    Returns (transcribed_text, person_id, person_name).
+    Returns (transcribed_text, person_id, person_name, speaker_score).
     """
     text_box: list[str] = [""]
-    speaker_box: list = [None, None]  # [person_id, name]
+    speaker_box: list = [None, None, 0.0]  # [person_id, name, score]
 
     def _transcribe() -> None:
         text_box[0] = transcription.transcribe(audio_array)
 
     def _identify() -> None:
-        pid, name, _score = speaker_id.identify_speaker(audio_array)
+        pid, name, score = speaker_id.identify_speaker(audio_array)
         speaker_box[0] = pid
         speaker_box[1] = name
+        speaker_box[2] = score
 
     t1 = threading.Thread(target=_transcribe, daemon=True, name="transcription")
     t2 = threading.Thread(target=_identify, daemon=True, name="speaker-id")
@@ -376,7 +377,7 @@ def _process_audio(
     t1.join()
     t2.join()
 
-    return text_box[0] or "", speaker_box[0], speaker_box[1]
+    return text_box[0] or "", speaker_box[0], speaker_box[1], speaker_box[2]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -859,10 +860,49 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
     _speak_filler()
 
     # Concurrent transcription + speaker identification
-    text, person_id, person_name = _process_audio(audio_array)
+    text, person_id, person_name, speaker_score = _process_audio(audio_array)
 
     if not text:
         return
+
+    # ── World-state person resolution ──────────────────────────────────────────
+    # Consciousness runs face ID independently; if speaker ID missed or is absent,
+    # fall back to whoever consciousness already identified in world_state.people.
+    # Only use this when exactly one identified person is visible (unambiguous).
+    try:
+        ws_people = world_state.get("people")
+        ws_identified = [p for p in ws_people if p.get("person_db_id") is not None]
+        ws_person = ws_identified[0] if len(ws_identified) == 1 else None
+    except Exception:
+        ws_person = None
+
+    if ws_person is not None:
+        ws_pid = ws_person.get("person_db_id")
+        ws_name = ws_person.get("face_id") or ws_person.get("voice_id")
+        if person_id is None:
+            person_id = ws_pid
+            person_name = ws_name
+            _log.info(
+                "[interaction] person resolution: worldstate match — person_id=%s name=%r",
+                person_id, person_name,
+            )
+        elif person_id == ws_pid:
+            _log.info(
+                "[interaction] person resolution: both agreed — person_id=%s name=%r score=%.3f",
+                person_id, person_name, speaker_score,
+            )
+        else:
+            _log.info(
+                "[interaction] person resolution: speaker_id match (score=%.3f) vs worldstate "
+                "(ws_pid=%s) — keeping speaker_id result person_id=%s name=%r",
+                speaker_score, ws_pid, person_id, person_name,
+            )
+    elif person_id is not None:
+        _log.info(
+            "[interaction] person resolution: speaker_id match — person_id=%s name=%r score=%.3f",
+            person_id, person_name, speaker_score,
+        )
+    # else: neither matched — falls through to enrollment logic below
 
     # Any non-empty user utterance means we should stop waiting for a reply.
     try:
