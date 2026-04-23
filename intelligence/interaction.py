@@ -697,7 +697,7 @@ def _post_response(
             if followups:
                 # If Rex just asked a question, do not immediately ask another one.
                 # Re-queue and wait for the person's reply first.
-                if assistant_asked_question or consciousness.is_waiting_for_response():
+                if assistant_asked_question:
                     for event in followups:
                         consciousness.set_pending_followup(person_id, event)
                 else:

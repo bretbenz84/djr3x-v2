@@ -261,7 +261,7 @@ POST_PLAYBACK_SUPPRESSION_SECS = 0.5
 # ─────────────────────────────────────────────────────────────────────────────
 
 # How often the analysis loop runs (seconds)
-SCENE_ANALYSIS_INTERVAL_SECS = 6.0
+SCENE_ANALYSIS_INTERVAL_SECS = 1.0
 
 # Audio window fed into each analysis function (seconds of history)
 SCENE_ANALYSIS_WINDOW_SECS = 2.0
@@ -504,7 +504,7 @@ CONSCIOUSNESS_LOOP_INTERVAL_SECS = 1.0
 CONSCIOUSNESS_PROACTIVE_MIN_GAP_SECS = 8.0
 
 # If False, consciousness-generated proactive speech only occurs in IDLE.
-CONSCIOUSNESS_ALLOW_PROACTIVE_IN_ACTIVE = False
+CONSCIOUSNESS_ALLOW_PROACTIVE_IN_ACTIVE = True
 
 # How often GPT-4o runs a full environment/scene analysis (seconds)
 ENVIRONMENT_SCAN_INTERVAL_SECS = 180
