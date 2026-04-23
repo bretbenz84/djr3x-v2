@@ -890,6 +890,7 @@ def _curiosity_check(
         return None
 
     question_text: Optional[str] = None
+    pool_question: Optional[dict] = None
 
     # Try question pool first — structured, depth-gated, no extra LLM call
     if person_id is not None:
@@ -899,6 +900,7 @@ def _curiosity_check(
             next_q = rel_memory.get_next_question(person_id, tier)
             if next_q:
                 question_text = next_q.get("text", "")
+                pool_question = next_q
         except Exception as exc:
             _log.debug("curiosity_check pool error: %s", exc)
 
@@ -914,6 +916,22 @@ def _curiosity_check(
 
     _speak_blocking(question_text)
     _log.info("[interaction] curiosity question spoken: %r", question_text)
+
+    # Record pool question as asked immediately so get_next_question() won't
+    # return it again in this session. Answer is empty — updated later if the
+    # person responds; what matters now is the key is in the DB.
+    if pool_question is not None and person_id is not None:
+        try:
+            rel_memory.save_qa(
+                person_id,
+                pool_question["key"],
+                question_text,
+                "",
+                pool_question.get("depth", 1),
+            )
+        except Exception as exc:
+            _log.debug("curiosity_check save_qa error: %s", exc)
+
     return question_text
 
 

@@ -72,6 +72,9 @@ _last_face_feedback_signature: Optional[str] = None
 # Key type: int (person_db_id) for known people, str (slot id e.g. "person_1") for unknown.
 _visible_people: set = set()
 
+# Known people (by person_db_id) already greeted since process start.
+_greeted_this_session: set[int] = set()
+
 # Per-person monotonic timestamp of when they were last seen in frame.
 _last_seen: dict = {}
 
@@ -820,8 +823,21 @@ def _step_presence_tracking(snapshot: dict) -> None:
     for key in current_keys - _visible_people:
         person_name = current_tracked[key]
 
-        # First time ever seen this session — let the crowd-count reaction in step 8 handle it.
+        # First time ever seen this session.
         if key not in _last_seen:
+            # Greet known people by name on startup — distinct from the generic
+            # crowd-count reaction in step 8, which handles new-arrival commentary.
+            if isinstance(key, int) and person_name and key not in _greeted_this_session:
+                _greeted_this_session.add(key)
+                first_name = person_name.split()[0]
+                _log.info("consciousness: startup greeting for %s", person_name)
+                _generate_and_speak_presence(
+                    f"You just started up and immediately see '{first_name}', someone you know. "
+                    f"Greet them in one short in-character Rex line. "
+                    f"Address {first_name} by name. Make it feel like Rex just booted and is glad to see a familiar face.",
+                    label=f"startup greeting for {person_name}",
+                    emotion="excited",
+                )
             continue
 
         absent_secs = now - _last_seen[key]
@@ -1015,6 +1031,7 @@ def start() -> None:
     _stop_event.clear()
     _pending_identity_prompt.clear()
     _proactive_speech_pending.clear()
+    _greeted_this_session.clear()
     with _turn_lock:
         _response_wait_until = 0.0
         _last_proactive_speech_at = 0.0
