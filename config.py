@@ -485,6 +485,22 @@ SURPRISE_PAUSE_MS_MIN = 500
 SURPRISE_PAUSE_MS_MAX = 1000
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SITUATION ASSESSMENT
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Seconds of ACTIVE state within which last speech still counts as "conversation active"
+CONVERSATION_ACTIVE_WINDOW_SECS = 30
+
+# Seconds of VAD silence (while face is gone) required before flagging apparent departure
+DEPARTURE_AUDIO_SILENCE_SECS = 3.0
+
+# Seconds since last speech during which system/interoception comments are suppressed
+SYSTEM_COMMENT_SILENCE_SECS = 60
+
+# Maximum roast_intensity when a child or teen is present (family-safe cap)
+CHILD_SAFE_ROAST_MAX = 30
+
+# ─────────────────────────────────────────────────────────────────────────────
 # INTERACTION LOOP
 # ─────────────────────────────────────────────────────────────────────────────
 

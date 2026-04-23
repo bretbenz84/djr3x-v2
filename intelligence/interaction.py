@@ -35,6 +35,7 @@ from memory import people as people_memory
 from memory import events as events_memory
 from memory import relationships as rel_memory
 from awareness import interoception
+from awareness.situation import assessor as _situation_assessor
 from world_state import world_state
 from utils import conv_log
 
@@ -401,7 +402,9 @@ def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
             _stop_event.wait(_CHUNK_SECS)
             continue
 
-        if vad.is_speech(chunk):
+        is_speech = vad.is_speech(chunk)
+        _situation_assessor.set_vad_active(is_speech)
+        if is_speech:
             silence_elapsed = 0.0
         else:
             silence_elapsed += _CHUNK_SECS
@@ -1159,7 +1162,9 @@ def _loop() -> None:
             if len(chunk) == 0:
                 _stop_event.wait(_CHUNK_SECS)
                 continue
-            if not vad.is_speech(chunk):
+            _idle_speech = vad.is_speech(chunk)
+            _situation_assessor.set_vad_active(_idle_speech)
+            if not _idle_speech:
                 _stop_event.wait(_CHUNK_SECS)
                 continue
 
@@ -1203,7 +1208,9 @@ def _loop() -> None:
             _stop_event.wait(_CHUNK_SECS)
             continue
 
-        if not vad.is_speech(chunk):
+        _active_speech = vad.is_speech(chunk)
+        _situation_assessor.set_vad_active(_active_speech)
+        if not _active_speech:
             _stop_event.wait(_CHUNK_SECS)
             continue
 

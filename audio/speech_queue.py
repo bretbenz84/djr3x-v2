@@ -158,6 +158,12 @@ class _SpeechQueue:
                 self._current_priority = item.priority
 
             try:
+                try:
+                    from awareness.situation import assessor as _sit
+                    _sit.set_rex_speaking(True)
+                except Exception:
+                    pass
+
                 if item.audio_path:
                     self._play_file(item.audio_path)
                 elif item.text:
@@ -166,6 +172,11 @@ class _SpeechQueue:
             except Exception as exc:
                 logger.error("speech_queue worker error: %s", exc)
             finally:
+                try:
+                    from awareness.situation import assessor as _sit
+                    _sit.set_rex_speaking(False)
+                except Exception:
+                    pass
                 with self._lock:
                     self._speaking = False
                     self._current_priority = -1

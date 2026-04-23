@@ -33,9 +33,26 @@ _anger_last_incremented: Optional[float] = None  # time.monotonic() timestamp
 # 1.0 when a non-neutral emotion is set; decays toward 0 → snaps to neutral
 _mood_intensity: float = 0.0
 
+# When True, anger reads as 0 and roast/darkness params are capped for child safety.
+# Set each tick by consciousness.py based on SituationProfile.force_family_safe.
+_family_safe: bool = False
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def set_family_safe(enabled: bool) -> None:
+    """
+    Enable or disable family-safe mode.  Called each consciousness tick when a
+    child or teen is detected in frame.  When enabled:
+      - get_anger_level() returns 0
+      - get_param("roast_intensity") is capped at config.CHILD_SAFE_ROAST_MAX
+      - get_param("darkness") returns 0
+    The underlying DB values are not modified — the cap is read-time only.
+    """
+    global _family_safe
+    _family_safe = enabled
 
 
 def _sync_anger_level(level: int) -> None:
@@ -50,14 +67,19 @@ def _sync_anger_level(level: int) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_param(param_name: str) -> int:
-    """Read current value from personality_settings DB; fall back to config.PERSONALITY_DEFAULTS."""
+    """Read current value from personality_settings DB; fall back to config.PERSONALITY_DEFAULTS.
+    When family-safe mode is active, roast_intensity and darkness are capped/zeroed."""
     row = db.fetchone(
         "SELECT value FROM personality_settings WHERE parameter = ?",
         (param_name,),
     )
-    if row is not None:
-        return row["value"]
-    return config.PERSONALITY_DEFAULTS.get(param_name, 50)
+    value = row["value"] if row is not None else config.PERSONALITY_DEFAULTS.get(param_name, 50)
+    if _family_safe:
+        if param_name == "roast_intensity":
+            return min(value, getattr(config, "CHILD_SAFE_ROAST_MAX", 30))
+        if param_name == "darkness":
+            return 0
+    return value
 
 
 def set_param(param_name: str, value: int, updated_by: str = "unknown") -> tuple[int, int]:
@@ -207,7 +229,8 @@ def apply_mood_decay(seconds_elapsed: float) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_anger_level() -> int:
-    """Return current session anger level (0–4), auto-resetting if cooldown has elapsed."""
+    """Return current session anger level (0–4), auto-resetting if cooldown has elapsed.
+    Returns 0 when family-safe mode is active regardless of the internal level."""
     global _anger_level, _anger_last_incremented
     anger_level_changed = False
     with _lock:
@@ -224,7 +247,7 @@ def get_anger_level() -> int:
     if anger_level_changed:
         _sync_anger_level(current_level)
 
-    return current_level
+    return 0 if _family_safe else current_level
 
 
 def increment_anger(person_id: Optional[int] = None) -> int:

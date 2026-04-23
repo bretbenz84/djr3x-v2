@@ -23,6 +23,7 @@ import config
 import state as state_module
 from state import State
 from world_state import world_state
+from awareness.situation import assessor as _situation_assessor, SituationProfile
 
 _log = logging.getLogger(__name__)
 
@@ -84,6 +85,12 @@ _last_return_reaction_at: dict = {}
 
 # Ensures only one presence reaction fires at a time; acquire non-blocking to skip if busy.
 _presence_reaction_lock = threading.Lock()
+
+# Persons who have left frame but whose departure reaction hasn't fired yet.
+# Maps tracking_key → (departure_monotonic, person_name_or_None).
+# Departure reactions are delayed until situation.apparent_departure is True so that
+# face-gone-but-still-talking (situation.likely_still_present) doesn't trigger a reaction.
+_pending_departure_keys: dict = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -529,12 +536,12 @@ def _step_followup_check(snapshot: dict) -> None:
 # Step 7 — Disengagement detection
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _step_disengagement(snapshot: dict) -> None:
+def _step_disengagement(snapshot: dict, profile: SituationProfile) -> None:
     """
     If the dominant speaker is disengaging, fire a proactive re-engagement line.
     Rate-limited to _REENGAGEMENT_COOLDOWN_SECS per person.
     """
-    if not _can_proactive_speak():
+    if profile.suppress_proactive or not _can_proactive_speak():
         return
     try:
         from awareness.social import check_disengagement
@@ -565,13 +572,15 @@ def _step_disengagement(snapshot: dict) -> None:
 # Step 8 — Proactive reactions
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _step_proactive_reactions(snapshot: dict) -> None:
+def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None:
     """
     Compare current WorldState to _last_snapshot. For each notable change,
     generate and speak a short in-character reaction. Never fires in QUIET/SHUTDOWN.
     """
     global _acknowledged_dates
 
+    if profile.suppress_proactive or profile.rapid_exchange:
+        return
     if not _last_snapshot or not _can_proactive_speak():
         return
 
@@ -641,7 +650,7 @@ def _step_proactive_reactions(snapshot: dict) -> None:
 # Step 9 — Idle micro-behaviors
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _step_idle_micro_behavior(snapshot: dict) -> None:
+def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None:
     """
     In IDLE state, when sufficiently idle, fire one random micro-behavior:
     ambient scan, private thought, or idle audio clip.
@@ -677,9 +686,13 @@ def _step_idle_micro_behavior(snapshot: dict) -> None:
     if behavior == "ambient_scan":
         _do_ambient_scan()
     elif behavior == "private_thought":
-        _do_private_thought()
+        # Private thoughts are system monologues — suppressed by both proactive and
+        # system-comment gates so Rex doesn't mutter about himself mid-conversation.
+        if not profile.suppress_proactive and not profile.suppress_system_comments:
+            _do_private_thought()
     else:
-        _do_idle_clip()
+        if not profile.suppress_proactive:
+            _do_idle_clip()
 
 
 def _do_ambient_scan() -> None:
@@ -748,19 +761,24 @@ def _tracking_key(person: dict):
     return db_id if db_id is not None else person.get("id", "unknown")
 
 
-def _step_presence_tracking(snapshot: dict) -> None:
+def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
     """
     Compare person visibility against the previous tick for both known and unknown people.
     Known people (have a name in the DB) get personalized reactions by name.
     Unknown people (no DB record) are tracked by slot id and addressed generically.
+
+    Departure reactions are deferred into _pending_departure_keys and only fire once
+    situation.apparent_departure is True (face gone + VAD silent ≥ DEPARTURE_AUDIO_SILENCE_SECS),
+    suppressing false alarms when the user steps off-camera while still talking.
     """
-    global _visible_people
+    global _visible_people, _pending_departure_keys
 
     if not _can_speak():
         return
 
     now = time.monotonic()
     departure_cooldown = getattr(config, "PRESENCE_DEPARTURE_COOLDOWN_SECS", 30)
+    departure_audio_silence = getattr(config, "DEPARTURE_AUDIO_SILENCE_SECS", 3.0)
     return_min_absent = getattr(config, "PRESENCE_RETURN_MIN_ABSENT_SECS", 10)
     unknown_addresses = getattr(config, "UNKNOWN_PERSON_ADDRESSES", ["hey you"])
 
@@ -772,25 +790,58 @@ def _step_presence_tracking(snapshot: dict) -> None:
 
     current_keys = set(current_tracked.keys())
 
-    # Departed: visible last tick, absent now.
+    # ── Stage departures: newly absent people enter the pending queue ──────────
     for key in _visible_people - current_keys:
-        # Recover person info from last snapshot.
-        person_name = None
-        for p in _last_snapshot.get("people", []):
-            if _tracking_key(p) == key:
-                person_name = p.get("face_id")
-                break
+        if key not in _pending_departure_keys:
+            # Capture person info while it's still in _last_snapshot
+            person_name = None
+            for p in _last_snapshot.get("people", []):
+                if _tracking_key(p) == key:
+                    person_name = p.get("face_id")
+                    break
+            _pending_departure_keys[key] = (now, person_name)
+            _log.debug("consciousness: queued pending departure for key=%s name=%r", key, person_name)
+
+    # ── Resolve pending departures ─────────────────────────────────────────────
+    for key in list(_pending_departure_keys):
+        departed_at, person_name = _pending_departure_keys[key]
+
+        # Person returned — cancel
+        if key in current_keys:
+            del _pending_departure_keys[key]
+            continue
+
+        # Timeout: give up after departure_cooldown without resolution
+        if now - departed_at > departure_cooldown:
+            del _pending_departure_keys[key]
+            continue
+
+        # Face gone but user still talking → likely just stepped off-camera; suppress
+        if profile.likely_still_present:
+            continue
+
+        # Fire when apparent_departure is confirmed OR when the VAD-silence window
+        # has elapsed even without a global face_gone flag (multi-person scenario).
+        should_fire = profile.apparent_departure or (
+            (now - departed_at) >= departure_audio_silence
+            and not profile.user_mid_sentence
+        )
+        if not should_fire:
+            continue
 
         last_reaction = _last_departure_reaction_at.get(key, 0.0)
         if now - last_reaction < departure_cooldown:
+            del _pending_departure_keys[key]
             continue
 
         _last_departure_reaction_at[key] = now
+        del _pending_departure_keys[key]
+
         is_known = isinstance(key, int) and person_name
 
         if is_known:
             first_name = person_name.split()[0]
-            _log.info("consciousness: departure detected — queuing reaction for %s", person_name)
+            _log.info("consciousness: departure reaction firing for %s", person_name)
             _generate_and_speak_presence(
                 f"The person named '{first_name}' just left your camera view. "
                 "React in one short in-character line as Rex. Examples: "
@@ -802,7 +853,7 @@ def _step_presence_tracking(snapshot: dict) -> None:
             )
         else:
             address = random.choice(unknown_addresses)
-            _log.info("consciousness: departure detected — queuing reaction for unknown (key=%s)", key)
+            _log.info("consciousness: departure reaction firing for unknown (key=%s)", key)
             _generate_and_speak_presence(
                 f"Someone you don't recognize just left your camera view. "
                 f"React in one short in-character line as Rex — dry, amused, slightly suspicious. "
@@ -814,7 +865,8 @@ def _step_presence_tracking(snapshot: dict) -> None:
                 emotion="curious",
             )
 
-    # Returned: absent last tick, visible now. Check absence before updating _last_seen.
+    # ── Returned: absent last tick, visible now ────────────────────────────────
+    # Check absence before updating _last_seen.
     for key in current_keys - _visible_people:
         person_name = current_tracked[key]
 
@@ -959,6 +1011,16 @@ def _loop() -> None:
         last_tick = tick_start
 
         try:
+            # 0. Situation assessment — evaluated once per tick, passed to all steps
+            profile = _situation_assessor.evaluate()
+
+            # Apply family-safe personality overrides based on current scene
+            try:
+                from intelligence.personality import set_family_safe
+                set_family_safe(profile.force_family_safe)
+            except Exception as exc:
+                _log.debug("family_safe apply error: %s", exc)
+
             # 1. Anger cooldown
             _step_anger_cooldown()
 
@@ -988,16 +1050,16 @@ def _loop() -> None:
             _step_followup_check(snapshot)
 
             # 7. Disengagement detection
-            _step_disengagement(snapshot)
+            _step_disengagement(snapshot, profile)
 
             # 8. Proactive reactions
-            _step_proactive_reactions(snapshot)
+            _step_proactive_reactions(snapshot, profile)
 
             # 9. Idle micro-behaviors
-            _step_idle_micro_behavior(snapshot)
+            _step_idle_micro_behavior(snapshot, profile)
 
             # 10. Presence tracking (departure / return reactions)
-            _step_presence_tracking(snapshot)
+            _step_presence_tracking(snapshot, profile)
 
             # 11. Face tracking
             _step_face_tracking(frame)
@@ -1019,7 +1081,7 @@ def _loop() -> None:
 
 def start() -> None:
     """Start the consciousness daemon thread. No-op if already running."""
-    global _thread, _response_wait_until, _last_proactive_speech_at
+    global _thread, _response_wait_until, _last_proactive_speech_at, _pending_departure_keys
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
@@ -1027,6 +1089,7 @@ def start() -> None:
     _pending_identity_prompt.clear()
     _proactive_speech_pending.clear()
     _greeted_this_session.clear()
+    _pending_departure_keys.clear()
     with _turn_lock:
         _response_wait_until = 0.0
         _last_proactive_speech_at = 0.0
