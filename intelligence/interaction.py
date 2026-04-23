@@ -408,7 +408,9 @@ def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
             silence_elapsed = 0.0
         else:
             silence_elapsed += _CHUNK_SECS
-            if silence_elapsed >= silence_timeout:
+            elapsed = time.monotonic() - speech_start_mono
+            min_duration = getattr(config, "MIN_SPEECH_DURATION_SECS", 0.0)
+            if silence_elapsed >= silence_timeout and elapsed >= min_duration:
                 break
 
         _stop_event.wait(_CHUNK_SECS)
@@ -1186,7 +1188,7 @@ def stop() -> None:
     wake_word.stop()
 
     if _thread:
-        _thread.join(timeout=5.0)
+        _thread.join(timeout=3.0)
         if _thread.is_alive():
             _log.warning("[interaction] loop thread did not stop cleanly")
         _thread = None

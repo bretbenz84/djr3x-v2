@@ -477,7 +477,11 @@ SURPRISE_PAUSE_MS_MAX = 1000
 IDLE_LISTEN_WITHOUT_WAKE_WORD = True
 
 # Seconds of sustained silence after speech before the segment is processed
-SILENCE_TIMEOUT_SECS = 1.5
+SILENCE_TIMEOUT_SECS = 2.5
+
+# Minimum seconds of accumulated audio before silence can end a recording.
+# Prevents single-word transcriptions when the person is still talking.
+MIN_SPEECH_DURATION_SECS = 1.5
 
 # Seconds after TTS completes before VAD detections are accepted.  During this
 # window any speech onset is discarded and the audio buffer is flushed so

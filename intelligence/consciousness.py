@@ -79,6 +79,9 @@ _last_seen: dict = {}
 _last_departure_reaction_at: dict = {}
 _last_return_reaction_at: dict = {}
 
+# Ensures only one presence reaction fires at a time; acquire non-blocking to skip if busy.
+_presence_reaction_lock = threading.Lock()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public follow-up API
@@ -273,6 +276,9 @@ def _generate_and_speak_presence(
     - Logs at INFO right before the tts.speak() call so departures are visible in the log.
     """
     def _task():
+        if not _presence_reaction_lock.acquire(blocking=False):
+            _log.debug("_generate_and_speak_presence: reaction already in progress, skipping — %s", label)
+            return
         try:
             if not _can_speak():
                 return
@@ -299,6 +305,8 @@ def _generate_and_speak_presence(
             tts.speak(text, emotion)
         except Exception as exc:
             _log.debug("_generate_and_speak_presence error: %s", exc)
+        finally:
+            _presence_reaction_lock.release()
 
     threading.Thread(target=_task, daemon=True).start()
 
@@ -783,13 +791,14 @@ def _step_presence_tracking(snapshot: dict) -> None:
         is_known = isinstance(key, int) and person_name
 
         if is_known:
+            first_name = person_name.split()[0]
             _log.info("consciousness: departure detected — queuing reaction for %s", person_name)
             _generate_and_speak_presence(
-                f"The person named '{person_name}' just left your camera view. "
+                f"The person named '{first_name}' just left your camera view. "
                 "React in one short in-character line as Rex. Examples: "
-                f"'Where are you going, {person_name}?', 'Oh, leaving already?', "
+                f"'Where are you going, {first_name}?', 'Oh, leaving already?', "
                 "'Don't go too far, I can't roast you from a distance.' "
-                f"Address {person_name} by name. One line only.",
+                f"Address {first_name} by name. One line only.",
                 label=f"departure for {person_name}",
                 emotion="curious",
             )
@@ -827,14 +836,15 @@ def _step_presence_tracking(snapshot: dict) -> None:
         is_known = isinstance(key, int) and person_name
 
         if is_known:
+            first_name = person_name.split()[0]
             _log.info("consciousness: return detected — queuing reaction for %s (absent %.1fs)", person_name, absent_secs)
             _generate_and_speak_presence(
-                f"The person named '{person_name}' just came back into your camera view after "
+                f"The person named '{first_name}' just came back into your camera view after "
                 f"being away for about {int(absent_secs)} seconds. "
                 "React in one short in-character line as Rex — warm but dry. Examples: "
-                f"'Oh, you're back.', 'Miss me already, {person_name}?', "
+                f"'Oh, you're back.', 'Miss me already, {first_name}?', "
                 "'I knew you couldn't stay away.' "
-                f"Address {person_name} by name. One line only.",
+                f"Address {first_name} by name. One line only.",
                 label=f"return for {person_name}",
                 emotion="neutral",
             )

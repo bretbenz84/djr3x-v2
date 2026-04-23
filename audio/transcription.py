@@ -48,7 +48,7 @@ def _is_hallucination(text: str) -> bool:
         if normalized == phrase_norm:
             return True
     # Repetition pattern: any single word appearing more than 5 times is a loop artifact.
-    words = re.findall(r"[a-z0-9']+", normalized)
+    words = [w.lower() for w in re.findall(r"[a-zA-Z0-9']+", normalized)]
     if words:
         from collections import Counter
         if max(Counter(words).values()) > 5:
