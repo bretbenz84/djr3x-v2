@@ -12,7 +12,6 @@
 ### Development Modes
 - **Full mode**: M1 connected to all robot hardware via USB
 - **Software-only mode**: Laptop or M1 without hardware — hardware features gracefully disabled based on `.env` device configuration
-- **macOS camera dev mode**: In software-only mode, the built-in MacBook camera can be selected with `.env` `CAMERA_DEVICE_NAME` instead of relying on OpenCV camera index ordering
 
 ---
 
@@ -26,7 +25,6 @@
 | Arduino Nano (chest LEDs) | `/dev/tty.usbserial*` | 98 WS2811 LEDs, 115200 baud, CH340 |
 | ReSpeaker Lite | CoreAudio device | USB mic, stereo mixdown to mono |
 | ELP-USBFHD01M-L21 | Camera index (`.env`) | 1080p wide angle, mounted in head |
-| MacBook built-in FaceTime camera | Camera device name (`.env`) | Development-only option for laptop testing via ffmpeg + AVFoundation |
 | Speakers | 3.5mm jack | Via stereo amp, passive resistor mixer |
 
 ### Servo Channels (Pololu Maestro Mini 18, quarter-microseconds)
@@ -88,9 +86,6 @@ djr3x-v2/
 │   ├── leds_head.py           # Head Arduino serial commands, eye and mouth LEDs
 │   └── leds_chest.py          # Chest Arduino serial commands
 │
-├── sequences/
-│   └── animations.py          # All choreographed servo + LED sequences (startup, sleep, speech, reactions)
-│
 ├── intelligence/
 │   ├── consciousness.py       # Consciousness loop, proactive behavior decisions
 │   ├── llm.py                 # GPT-4o-mini streaming, prompt assembly
@@ -118,12 +113,6 @@ djr3x-v2/
 ├── utils/
 │   ├── config_loader.py       # Loads config.py, apikeys.py, .env cleanly
 │   └── logging.py             # Centralized logging
-│
-├── arduino/                   # Sketches carried over from v1 — not modified
-│   ├── head_nano/             # Python communicates with both via the serial command protocol
-│   │   └── head_nano.ino      # documented in the LED System section
-│   └── chest_nano/
-│       └── chest_nano.ino
 │
 └── assets/
     ├── models/
@@ -167,7 +156,7 @@ OpenAI and ElevenLabs API keys only. Never committed. Listed in `.gitignore`.
 A template `apikeys.example.py` with placeholder values is committed instead.
 
 ### `.env` — Host-Specific Hardware Config (excluded from git)
-Camera selection (`CAMERA_INDEX` for the robot USB camera or `CAMERA_DEVICE_NAME` for the built-in macOS camera) and serial port paths. Different per machine.
+Camera index and serial port paths. Different per machine.
 A template `.env.example` with placeholder values is committed instead.
 When a device entry is missing or blank, that hardware feature is gracefully disabled.
 Audio output uses macOS system default device (3.5mm audio jack on the M1).
@@ -177,7 +166,7 @@ Audio output uses macOS system default device (3.5mm audio jack on the M1).
 ## AI Backend
 
 ### Transcription
-- Local `mlx-whisper` (`mlx-community/whisper-large-v3-turbo`) — runs on Apple Neural Engine, ~1s
+- Local `mlx-whisper` (`mlx-community/whisper-large-v3-turbo-mlx`) — runs on Apple Neural Engine, ~1s
 - Large-v3-turbo chosen for near large-v3 accuracy at roughly medium model speed
 - Falls back to OpenAI Whisper API (`whisper-1`) if local model unavailable
 - Model cached at `assets/models/whisper/`
@@ -1706,3 +1695,83 @@ from `config.py` are written to the table. Rex can be asked what any parameter i
 currently set to:
 *"What's your sarcasm level?"* → *"Currently sitting at 80 percent. I know, I'm
 surprised it's that low too."*
+
+---
+
+## Situation Assessment
+
+Before Rex speaks anything — proactively, reactively, or via idle behavior — the
+consciousness loop evaluates a situation profile to determine whether speaking is
+appropriate at that moment. This is the judgment layer between "I could say something"
+and "I will say something."
+
+### SituationAssessor
+
+Lives in `awareness/situation.py`. Evaluated on every consciousness loop tick and
+before every speech decision. Reads from WorldState, VAD state, interaction state,
+and the speech queue.
+
+```python
+situation = assessor.evaluate()
+# Returns SituationProfile:
+{
+    "conversation_active": bool,      # ACTIVE state with recent speech
+    "user_mid_sentence": bool,        # VAD currently detecting speech
+    "rapid_exchange": bool,           # multiple turns in last 30s
+    "child_present": bool,            # any child/teen in world_state.people
+    "apparent_departure": bool,       # face gone AND audio silent > 3s
+    "likely_still_present": bool,     # face gone BUT VAD active — person moved, not left
+    "social_mode": str,               # one_on_one / small_group / crowd / performance
+    "suppress_proactive": bool,       # derived: don't fire unsolicited speech right now
+    "suppress_system_comments": bool, # derived: don't mention CPU/uptime mid-conversation
+    "force_family_safe": bool,        # derived: child present, override all adult content
+}
+```
+
+### Rules by Situation
+
+**Departure reactions:**
+- `apparent_departure` requires face gone AND VAD silent for `config.DEPARTURE_AUDIO_SILENCE_SECS = 3.0`
+- If face is gone but VAD is active → `likely_still_present = True` → suppress departure reaction entirely
+- Person walking to another room while still talking is NOT a departure
+
+**Child present:**
+- `force_family_safe = True` whenever any person has `age_category` of `child` or `teen`
+- When True: anger escalation forced to 0, roast intensity capped at `config.CHILD_SAFE_ROAST_MAX = 30`, dark humor suppressed, no insult responses
+- Applies globally — not just to the child, but all interactions while child is visible
+
+**System status comments (interoception):**
+- CPU temperature, uptime, load comments only surface during genuine lulls
+- `suppress_system_comments = True` whenever `conversation_active` is True or speech detected in last `config.SYSTEM_COMMENT_SILENCE_SECS = 60`
+- Never fires during rapid back-and-forth exchanges
+
+**Proactive speech suppression:**
+- `suppress_proactive = True` when: user is mid-sentence, conversation just ended < 5s ago, Rex just finished speaking < 2s ago, or state is QUIET/SHUTDOWN
+- All consciousness loop proactive reactions check this before firing
+
+**Rapid exchange mode:**
+- Detected when 3+ speech turns have occurred in the last 30 seconds
+- In rapid exchange: no idle thoughts, no system comments, no follow-up curiosity questions between turns — just respond and wait
+
+### Conditional Speech Queue Items
+
+Speech queue items can carry a condition evaluated at playback time:
+
+```python
+speech_queue.enqueue(
+    text="Where are you going, Bret?",
+    priority=0,
+    condition=lambda: not situation.conversation_active and situation.apparent_departure
+)
+```
+
+If the condition is False when the item reaches the front of the queue it is silently
+dropped. This prevents departure reactions from playing after the person has already
+returned and started talking again.
+
+### Integration Points
+
+- `intelligence/consciousness.py` — evaluates situation before every proactive speech decision
+- `audio/speech_queue.py` — checks conditions on queued items at playback time
+- `intelligence/personality.py` — `force_family_safe` overrides anger and roast parameters
+- `intelligence/interaction.py` — `user_mid_sentence` suppresses curiosity questions mid-turn

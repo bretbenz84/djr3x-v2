@@ -205,8 +205,8 @@ def _can_proactive_speak() -> bool:
         return False
 
     try:
-        from audio import tts, output_gate
-        if tts.is_speaking() or output_gate.is_busy():
+        from audio import speech_queue, output_gate
+        if speech_queue.is_speaking() or output_gate.is_busy():
             return False
     except Exception:
         return False
@@ -224,16 +224,15 @@ def _speak_async(
             return False
         if not text or not text.strip():
             return False
-        from audio import tts
+        from audio import speech_queue
         _proactive_speech_pending.set()
+        done = speech_queue.enqueue(text, emotion, priority=0)
 
-        def _task() -> None:
-            try:
-                tts.speak(text, emotion)
-            finally:
-                _proactive_speech_pending.clear()
+        def _on_done() -> None:
+            done.wait()
+            _proactive_speech_pending.clear()
 
-        threading.Thread(target=_task, daemon=True).start()
+        threading.Thread(target=_on_done, daemon=True, name="speech-pending-clear").start()
         note_rex_utterance(text, wait_secs=wait_secs)
         return True
     except Exception as exc:
@@ -292,11 +291,6 @@ def _generate_and_speak_presence(
             if not _can_speak():
                 return
 
-            from audio import tts, output_gate
-            deadline = time.monotonic() + 5.0
-            while output_gate.is_busy() and time.monotonic() < deadline:
-                time.sleep(0.1)
-
             delay = getattr(config, "PRESENCE_REACTION_DELAY_SECS", 2.0)
             if delay > 0:
                 time.sleep(delay)
@@ -304,8 +298,9 @@ def _generate_and_speak_presence(
             if not _can_speak():
                 return
 
+            from audio import speech_queue
             _log.info("consciousness: firing presence reaction — %s: %r", label, text[:120])
-            tts.speak(text, emotion)
+            speech_queue.enqueue(text, emotion, priority=1)
         except Exception as exc:
             _log.debug("_generate_and_speak_presence error: %s", exc)
         finally:

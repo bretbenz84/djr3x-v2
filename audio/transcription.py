@@ -51,6 +51,12 @@ def _is_hallucination(text: str) -> bool:
     stripped = re.sub(r"[^a-z0-9]", "", normalized)
     if len(stripped) < config.WHISPER_MIN_CHARS:
         return True
+    # Minimum meaningful word count — words longer than 2 characters are considered
+    # substantive; short tokens like "uh", "um", "ah" do not count.
+    meaningful = [w for w in re.findall(r"[a-zA-Z0-9']+", normalized) if len(w) > 2]
+    if len(meaningful) < config.WHISPER_MIN_WORDS:
+        return True
+
     # Repetition pattern: any single word appearing more than threshold times is a loop artifact.
     words = [w.lower() for w in re.findall(r"[a-zA-Z0-9']+", normalized)]
     if words:

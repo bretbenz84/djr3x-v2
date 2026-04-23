@@ -164,6 +164,11 @@ WHISPER_REPETITION_THRESHOLD = 4
 # to pass the hallucination filter. Catches single-char junk like "!" or ".".
 WHISPER_MIN_CHARS = 3
 
+# Minimum number of meaningful words (length > 2) required to accept a transcription.
+# Filters filler fragments like "uh", "um", "ah", and function-word-only noise like
+# "and the" where no word carries independent semantic content.
+WHISPER_MIN_WORDS = 2
+
 # Transcriptions that exactly match or contain these phrases (case-insensitive)
 # are discarded entirely — they are known Whisper hallucinations on near-silent audio.
 HALLUCINATION_BLOCKLIST = [
@@ -173,6 +178,7 @@ HALLUCINATION_BLOCKLIST = [
     "see you next time",
     "you",
     "guh",
+    "and the",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -25,7 +25,7 @@ import config
 import state as state_module
 from state import State
 from audio import stream, vad, wake_word, transcription, speaker_id
-from audio import tts, output_gate
+from audio import speech_queue, output_gate
 from audio import echo_cancel
 from intelligence import command_parser, llm, personality
 from intelligence import consciousness
@@ -121,7 +121,7 @@ def _on_wake_word(model_name: str) -> None:
     with _wake_lock:
         _last_wake_word = model_name
 
-    if tts.is_speaking():
+    if speech_queue.is_speaking():
         _interrupted.set()
 
     _wake_word_fired.set()
@@ -135,24 +135,19 @@ def _can_speak() -> bool:
     return state_module.get_state() not in (State.QUIET, State.SHUTDOWN)
 
 
-def _speak_blocking(text: str, emotion: str = "neutral") -> bool:
+def _speak_blocking(text: str, emotion: str = "neutral", priority: int = 1) -> bool:
     """
-    Speak text synchronously, monitoring for wake-word interruption.
-    Returns True if playback completed normally, False if a wake word cut it short.
+    Enqueue text for speech and block until playback finishes, monitoring for
+    wake-word interruption.  Returns True on normal completion, False if cut short.
+
+    priority 1 = normal response; priority 2 = urgent acknowledgment.
+    Enqueueing drops all waiting items of lower priority and preempts any
+    currently-playing item of lower priority.
     """
     if not _can_speak() or not text or not text.strip():
         return True
 
-    done = threading.Event()
-
-    def _task() -> None:
-        try:
-            tts.speak(text, emotion)
-        finally:
-            done.set()
-
-    t = threading.Thread(target=_task, daemon=True, name="tts-speak")
-    t.start()
+    done = speech_queue.enqueue(text, emotion, priority=priority)
 
     while not done.wait(timeout=0.05):
         if _interrupted.is_set():
@@ -161,7 +156,10 @@ def _speak_blocking(text: str, emotion: str = "neutral") -> bool:
                 sd.stop()
             except Exception:
                 pass
-            done.wait(timeout=0.5)  # let tts.speak() clean up its finally block
+            # Drop our queued item in case it hasn't played yet, then wait for
+            # whatever was playing (or our item if it just started) to finish.
+            speech_queue.clear_below_priority(priority + 1)
+            done.wait(timeout=0.5)
             return False
 
     # Normal completion — block new speech-onset detections briefly and discard
@@ -176,20 +174,18 @@ def _speak_blocking(text: str, emotion: str = "neutral") -> bool:
 def _speak_async(text: str, emotion: str = "neutral") -> None:
     if not _can_speak() or not text:
         return
-    if tts.is_speaking() or output_gate.is_busy():
+    if speech_queue.is_speaking():
         return
-    threading.Thread(
-        target=tts.speak, args=(text, emotion), daemon=True, name="tts-async"
-    ).start()
+    speech_queue.enqueue(text, emotion, priority=0)
 
 
 def _wake_ack() -> None:
     pool = config.WAKE_ACKNOWLEDGMENTS
-    _speak_blocking(random.choice(pool))
+    _speak_blocking(random.choice(pool), priority=2)
 
 
 def _interrupt_ack() -> None:
-    _speak_blocking(random.choice(config.INTERRUPT_ACKNOWLEDGMENTS))
+    _speak_blocking(random.choice(config.INTERRUPT_ACKNOWLEDGMENTS), priority=2)
 
 
 def _speak_filler() -> None:
@@ -1149,7 +1145,7 @@ def _loop() -> None:
 
             # Never let Rex's own playback in IDLE self-trigger the interaction
             # loop into ACTIVE.
-            if tts.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
+            if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
                 _stop_event.wait(0.05)
                 continue
 
@@ -1229,14 +1225,14 @@ def _loop() -> None:
         _last_speech_at = speech_start
 
         # Mid-speech interruption: stop TTS, acknowledge, then listen
-        if tts.is_speaking():
+        if speech_queue.is_speaking():
             _interrupted.set()
             try:
                 import sounddevice as sd
                 sd.stop()
             except Exception:
                 pass
-            # Brief settle so tts.speak() can clean up its finally block
+            # Brief settle so the worker can clean up its finally block
             time.sleep(0.1)
             _interrupted.clear()
             _interrupt_ack()
