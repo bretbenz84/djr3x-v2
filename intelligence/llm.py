@@ -366,5 +366,5 @@ def extract_facts(person_id: int, transcript: list[dict]) -> list[dict]:
             if isinstance(item, dict) and item.get("key") and item.get("value")
         ]
     except Exception as exc:
-        _log.error("extract_facts failed: %s", exc)
+        _log.debug("extract_facts: no facts parsed (%s)", exc)
         return []

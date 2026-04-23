@@ -23,14 +23,48 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _playing = False
 _suppress_until: float = 0.0  # monotonic deadline for post-playback tail suppression
+_sequence_active: bool = False  # when True, set_playing(False) is deferred until end_sequence()
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
+def start_sequence() -> None:
+    """Begin a multi-segment playback sequence.
+
+    Suppression is activated immediately and held active across all segments until
+    end_sequence() is called. set_playing(False) calls from individual TTS segments
+    are ignored — no mid-sequence flush or tail suppression fires.
+    """
+    global _playing, _suppress_until, _sequence_active
+    with _lock:
+        _sequence_active = True
+        _playing = True
+        _suppress_until = 0.0
+    logger.info("[aec] sequence started — suppression held across segments")
+
+
+def end_sequence() -> None:
+    """End the playback sequence and apply normal post-playback tail suppression."""
+    global _playing, _suppress_until, _sequence_active
+    with _lock:
+        _sequence_active = False
+        _playing = False
+        _suppress_until = time.monotonic() + config.POST_PLAYBACK_SUPPRESSION_SECS
+        from audio import stream as _stream
+        _stream.flush()
+    logger.info(
+        "[aec] sequence ended — suppression stopped, %.1fs tail active",
+        config.POST_PLAYBACK_SUPPRESSION_SECS,
+    )
+
 
 def set_playing(is_playing: bool) -> None:
     """Called by TTS and playback modules when audio output starts or stops."""
     global _playing, _suppress_until
     with _lock:
+        if not is_playing and _sequence_active:
+            # Mid-sequence: suppress the turn-off so the next segment sees no gap.
+            return
         changed = _playing != is_playing
         _playing = is_playing
         if not is_playing:

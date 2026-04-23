@@ -430,35 +430,15 @@ def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _stream_llm_response(text: str, person_id: Optional[int]) -> str:
+    """Collect the full LLM response, then speak it in a single TTS call.
+
+    Collecting before speaking keeps AEC suppression as one continuous window
+    per response. At max_tokens=150 the added latency is negligible.
     """
-    Stream GPT-4o-mini response chunks, speaking at sentence boundaries.
-    Stops early if _interrupted is set. Returns the full response string.
-    """
-    all_chunks: list[str] = []
-    sentence_buf: list[str] = []
-
-    for chunk in llm.stream_response(text, person_id):
-        if _interrupted.is_set():
-            break
-
-        sentence_buf.append(chunk)
-        all_chunks.append(chunk)
-
-        combined = "".join(sentence_buf)
-        if combined.rstrip().endswith((".", "?", "!", "...", "—")):
-            sentence = combined.strip()
-            if sentence:
-                if not _speak_blocking(sentence):
-                    break  # interrupted mid-stream
-            sentence_buf.clear()
-
-    # Speak any trailing text if not interrupted
-    if sentence_buf and not _interrupted.is_set():
-        remaining = "".join(sentence_buf).strip()
-        if remaining:
-            _speak_blocking(remaining)
-
-    return "".join(all_chunks)
+    full_text = llm.get_response(text, person_id)
+    if full_text and full_text.strip() and not _interrupted.is_set():
+        _speak_blocking(full_text)
+    return full_text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -858,138 +838,145 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
     delay_ms = random.randint(config.REACTION_DELAY_MS_MIN, config.REACTION_DELAY_MS_MAX)
     time.sleep(delay_ms / 1000.0)
 
-    # Speak filler asynchronously while transcription + speaker ID run
-    _speak_filler()
-
-    # Concurrent transcription + speaker identification
-    text, person_id, person_name, speaker_score = _process_audio(audio_array)
-
-    if not text:
-        return
-
-    # ── World-state person resolution ──────────────────────────────────────────
-    # Consciousness runs face ID independently; if speaker ID missed or is absent,
-    # fall back to whoever consciousness already identified in world_state.people.
-    # Only use this when exactly one identified person is visible (unambiguous).
+    # Hold AEC suppression open across filler + response as one continuous window.
+    # Individual tts.speak() calls will not turn suppression off mid-sequence;
+    # end_sequence() in the finally block does the final flush and tail.
+    echo_cancel.start_sequence()
     try:
-        ws_people = world_state.get("people")
-        ws_identified = [p for p in ws_people if p.get("person_db_id") is not None]
-        ws_person = ws_identified[0] if len(ws_identified) == 1 else None
-    except Exception:
-        ws_person = None
+        # Speak filler asynchronously while transcription + speaker ID run
+        _speak_filler()
 
-    if ws_person is not None:
-        ws_pid = ws_person.get("person_db_id")
-        ws_name = ws_person.get("face_id") or ws_person.get("voice_id")
-        if person_id is None:
-            person_id = ws_pid
-            person_name = ws_name
+        # Concurrent transcription + speaker identification
+        text, person_id, person_name, speaker_score = _process_audio(audio_array)
+
+        if not text:
+            return
+
+        # ── World-state person resolution ──────────────────────────────────────
+        # Consciousness runs face ID independently; if speaker ID missed or is absent,
+        # fall back to whoever consciousness already identified in world_state.people.
+        # Only use this when exactly one identified person is visible (unambiguous).
+        try:
+            ws_people = world_state.get("people")
+            ws_identified = [p for p in ws_people if p.get("person_db_id") is not None]
+            ws_person = ws_identified[0] if len(ws_identified) == 1 else None
+        except Exception:
+            ws_person = None
+
+        if ws_person is not None:
+            ws_pid = ws_person.get("person_db_id")
+            ws_name = ws_person.get("face_id") or ws_person.get("voice_id")
+            if person_id is None:
+                person_id = ws_pid
+                person_name = ws_name
+                _log.info(
+                    "[interaction] person resolution: worldstate match — person_id=%s name=%r",
+                    person_id, person_name,
+                )
+            elif person_id == ws_pid:
+                _log.info(
+                    "[interaction] person resolution: both agreed — person_id=%s name=%r score=%.3f",
+                    person_id, person_name, speaker_score,
+                )
+            else:
+                _log.info(
+                    "[interaction] person resolution: speaker_id match (score=%.3f) vs worldstate "
+                    "(ws_pid=%s) — keeping speaker_id result person_id=%s name=%r",
+                    speaker_score, ws_pid, person_id, person_name,
+                )
+        elif person_id is not None:
             _log.info(
-                "[interaction] person resolution: worldstate match — person_id=%s name=%r",
-                person_id, person_name,
-            )
-        elif person_id == ws_pid:
-            _log.info(
-                "[interaction] person resolution: both agreed — person_id=%s name=%r score=%.3f",
+                "[interaction] person resolution: speaker_id match — person_id=%s name=%r score=%.3f",
                 person_id, person_name, speaker_score,
             )
-        else:
-            _log.info(
-                "[interaction] person resolution: speaker_id match (score=%.3f) vs worldstate "
-                "(ws_pid=%s) — keeping speaker_id result person_id=%s name=%r",
-                speaker_score, ws_pid, person_id, person_name,
+        # else: neither matched — falls through to enrollment logic below
+
+        # Any non-empty user utterance means we should stop waiting for a reply.
+        try:
+            consciousness.clear_response_wait()
+        except Exception:
+            pass
+
+        # Consciousness asked an unknown person for their name. Open a short window
+        # where single/short name replies are treated as enrollment input.
+        if consciousness.consume_identity_prompt_request():
+            _identity_prompt_until = max(
+                _identity_prompt_until,
+                time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS,
             )
-    elif person_id is not None:
+
+        # If we don't recognize the speaker but there is an unknown person visible,
+        # attempt self-identification enrollment from this utterance.
+        now_mono = time.monotonic()
+        should_attempt_enroll = (
+            person_id is None
+            and (_has_unknown_visible_person() or now_mono <= _identity_prompt_until)
+        )
+        if should_attempt_enroll:
+            allow_bare = now_mono <= _identity_prompt_until
+            intro_name = _extract_introduced_name(text, allow_bare_name=allow_bare)
+            if intro_name:
+                enrolled_id = _enroll_new_person(intro_name, audio_array)
+                if enrolled_id is not None:
+                    person_id = enrolled_id
+                    person_name = intro_name
+                    _identity_prompt_until = 0.0
+
+        # If Rex had an outstanding event follow-up question, treat this utterance
+        # as the outcome and close the loop in memory.
+        if _awaiting_followup_event:
+            pending_pid = _awaiting_followup_event.get("person_id")
+            pending_event_id = _awaiting_followup_event.get("event_id")
+            pid_matches = (
+                pending_pid is None
+                or person_id is None
+                or pending_pid == person_id
+            )
+            if pending_event_id is not None and pid_matches:
+                try:
+                    events_memory.mark_followed_up(int(pending_event_id), text.strip())
+                    _awaiting_followup_event = None
+                except Exception as exc:
+                    _log.debug("follow-up outcome write failed: %s", exc)
+
+        if person_id is not None:
+            _session_person_ids.add(person_id)
+            voice_name = person_name or f"person_{person_id}"
+            print(f"[VOICE] Known voice detected: {voice_name} (person_id={person_id})", flush=True)
+        else:
+            print("[VOICE] Unknown voice detected", flush=True)
+
+        speaker_label = person_name or "user"
+        conv_memory.add_to_transcript(speaker_label, text)
+        conv_log.log_heard(person_name, text)
+        print(f"[HEARD] {speaker_label}: {text}", flush=True)
         _log.info(
-            "[interaction] person resolution: speaker_id match — person_id=%s name=%r score=%.3f",
-            person_id, person_name, speaker_score,
-        )
-    # else: neither matched — falls through to enrollment logic below
-
-    # Any non-empty user utterance means we should stop waiting for a reply.
-    try:
-        consciousness.clear_response_wait()
-    except Exception:
-        pass
-
-    # Consciousness asked an unknown person for their name. Open a short window
-    # where single/short name replies are treated as enrollment input.
-    if consciousness.consume_identity_prompt_request():
-        _identity_prompt_until = max(
-            _identity_prompt_until,
-            time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS,
+            "[interaction] speech segment — speaker=%r person_id=%s text=%r",
+            speaker_label, person_id, text,
         )
 
-    # If we don't recognize the speaker but there is an unknown person visible,
-    # attempt self-identification enrollment from this utterance.
-    now_mono = time.monotonic()
-    should_attempt_enroll = (
-        person_id is None
-        and (_has_unknown_visible_person() or now_mono <= _identity_prompt_until)
-    )
-    if should_attempt_enroll:
-        allow_bare = now_mono <= _identity_prompt_until
-        intro_name = _extract_introduced_name(text, allow_bare_name=allow_bare)
-        if intro_name:
-            enrolled_id = _enroll_new_person(intro_name, audio_array)
-            if enrolled_id is not None:
-                person_id = enrolled_id
-                person_name = intro_name
-                _identity_prompt_until = 0.0
+        # Command parser → local dispatch or LLM fallback
+        match = command_parser.parse(text)
+        if match is not None:
+            response_text = _execute_command(match, person_id, person_name, text)
+        else:
+            response_text = _stream_llm_response(text, person_id)
 
-    # If Rex had an outstanding event follow-up question, treat this utterance
-    # as the outcome and close the loop in memory.
-    if _awaiting_followup_event:
-        pending_pid = _awaiting_followup_event.get("person_id")
-        pending_event_id = _awaiting_followup_event.get("event_id")
-        pid_matches = (
-            pending_pid is None
-            or person_id is None
-            or pending_pid == person_id
+        assistant_asked_question = False
+        if response_text:
+            conv_memory.add_to_transcript("Rex", response_text)
+            conv_log.log_rex(response_text)
+            _session_exchange_count += 1
+            _register_rex_utterance(response_text)
+            assistant_asked_question = _assistant_asked_question(response_text)
+
+        _post_response(
+            text,
+            person_id,
+            assistant_asked_question=assistant_asked_question,
         )
-        if pending_event_id is not None and pid_matches:
-            try:
-                events_memory.mark_followed_up(int(pending_event_id), text.strip())
-                _awaiting_followup_event = None
-            except Exception as exc:
-                _log.debug("follow-up outcome write failed: %s", exc)
-
-    if person_id is not None:
-        _session_person_ids.add(person_id)
-        voice_name = person_name or f"person_{person_id}"
-        print(f"[VOICE] Known voice detected: {voice_name} (person_id={person_id})", flush=True)
-    else:
-        print("[VOICE] Unknown voice detected", flush=True)
-
-    speaker_label = person_name or "user"
-    conv_memory.add_to_transcript(speaker_label, text)
-    conv_log.log_heard(person_name, text)
-    print(f"[HEARD] {speaker_label}: {text}", flush=True)
-    _log.info(
-        "[interaction] speech segment — speaker=%r person_id=%s text=%r",
-        speaker_label, person_id, text,
-    )
-
-    # Command parser → local dispatch or LLM fallback
-    match = command_parser.parse(text)
-    if match is not None:
-        response_text = _execute_command(match, person_id, person_name, text)
-    else:
-        response_text = _stream_llm_response(text, person_id)
-
-    assistant_asked_question = False
-    if response_text:
-        conv_memory.add_to_transcript("Rex", response_text)
-        conv_log.log_rex(response_text)
-        _session_exchange_count += 1
-        _register_rex_utterance(response_text)
-        assistant_asked_question = _assistant_asked_question(response_text)
-
-    _post_response(
-        text,
-        person_id,
-        assistant_asked_question=assistant_asked_question,
-    )
+    finally:
+        echo_cancel.end_sequence()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
