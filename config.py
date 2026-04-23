@@ -4,6 +4,14 @@
 # Hardware device paths (camera index, serial ports) go in .env (excluded from git).
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DEBUG
+# ─────────────────────────────────────────────────────────────────────────────
+
+# When True, clears logs/djr3x.log and logs/conversation.log at startup so
+# each run begins with fresh log files.
+DEBUG_MODE = True
+
+# ─────────────────────────────────────────────────────────────────────────────
 # AI MODELS
 # ─────────────────────────────────────────────────────────────────────────────
 

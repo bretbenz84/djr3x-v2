@@ -1,5 +1,5 @@
 """
-Plain-text conversational log at <project_root>/conversation.log.
+Plain-text conversational log at <project_root>/logs/conversation.log.
 
 Each line is:
     YYYY-MM-DD HH:MM:SS | HEARD | <Speaker>: <text>
@@ -13,7 +13,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-_LOG_PATH = Path(__file__).parent.parent / "conversation.log"
+_LOG_PATH = Path(__file__).parent.parent / "logs" / "conversation.log"
 _lock = threading.Lock()
 
 

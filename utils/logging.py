@@ -12,8 +12,11 @@ import logging
 import logging.handlers
 from pathlib import Path
 
+import config
+
 _LOG_DIR = Path(__file__).parent.parent / "logs"
 _LOG_FILE = _LOG_DIR / "djr3x.log"
+_CONV_LOG_FILE = _LOG_DIR / "conversation.log"
 _FORMAT = "%(asctime)s | %(name)-30s | %(levelname)-8s | %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 _MAX_BYTES = 10 * 1024 * 1024  # 10 MB per file
@@ -23,6 +26,10 @@ _BACKUP_COUNT = 5
 def setup_logging(level: int = logging.INFO) -> None:
     """Configure root logger with console and rotating file handlers."""
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    if config.DEBUG_MODE:
+        for log_file in (_LOG_FILE, _CONV_LOG_FILE):
+            log_file.write_text("", encoding="utf-8")
 
     formatter = logging.Formatter(_FORMAT, datefmt=_DATE_FORMAT)
 
