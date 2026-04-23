@@ -68,6 +68,17 @@ _proactive_speech_pending = threading.Event()
 # Face detection terminal feedback de-duplication signature.
 _last_face_feedback_signature: Optional[str] = None
 
+# Presence tracking: set of tracking keys visible in the previous loop tick.
+# Key type: int (person_db_id) for known people, str (slot id e.g. "person_1") for unknown.
+_visible_people: set = set()
+
+# Per-person monotonic timestamp of when they were last seen in frame.
+_last_seen: dict = {}
+
+# Per-person monotonic timestamp of the last departure/return reaction fired.
+_last_departure_reaction_at: dict = {}
+_last_return_reaction_at: dict = {}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public follow-up API
@@ -675,7 +686,129 @@ def _do_idle_clip() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 10 — Face tracking
+# Step 10 — Presence tracking (departure / return reactions)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _tracking_key(person: dict):
+    """Stable per-person tracking key: db_id (int) for known, slot id (str) for unknown."""
+    db_id = person.get("person_db_id")
+    return db_id if db_id is not None else person.get("id", "unknown")
+
+
+def _step_presence_tracking(snapshot: dict) -> None:
+    """
+    Compare person visibility against the previous tick for both known and unknown people.
+    Known people (have a name in the DB) get personalized reactions by name.
+    Unknown people (no DB record) are tracked by slot id and addressed generically.
+    """
+    global _visible_people
+
+    if not _can_speak():
+        return
+
+    now = time.monotonic()
+    departure_cooldown = getattr(config, "PRESENCE_DEPARTURE_COOLDOWN_SECS", 30)
+    return_min_absent = getattr(config, "PRESENCE_RETURN_MIN_ABSENT_SECS", 10)
+    unknown_addresses = getattr(config, "UNKNOWN_PERSON_ADDRESSES", ["hey you"])
+
+    # Build current tracked set: tracking_key → name (None for unknown people).
+    current_tracked: dict = {}
+    for person in snapshot.get("people", []):
+        key = _tracking_key(person)
+        current_tracked[key] = person.get("face_id")  # None if unrecognized
+
+    current_keys = set(current_tracked.keys())
+
+    # Departed: visible last tick, absent now.
+    for key in _visible_people - current_keys:
+        # Recover person info from last snapshot.
+        person_name = None
+        for p in _last_snapshot.get("people", []):
+            if _tracking_key(p) == key:
+                person_name = p.get("face_id")
+                break
+
+        last_reaction = _last_departure_reaction_at.get(key, 0.0)
+        if now - last_reaction < departure_cooldown:
+            continue
+
+        _last_departure_reaction_at[key] = now
+        is_known = isinstance(key, int) and person_name
+
+        if is_known:
+            _log.info("consciousness: known person departed — %s", person_name)
+            _generate_and_speak(
+                f"The person named '{person_name}' just left your camera view. "
+                "React in one short in-character line as Rex. Examples: "
+                f"'Where are you going, {person_name}?', 'Oh, leaving already?', "
+                "'Don't go too far, I can't roast you from a distance.' "
+                f"Address {person_name} by name. One line only.",
+                emotion="curious",
+            )
+        else:
+            address = random.choice(unknown_addresses)
+            _log.info("consciousness: unknown person departed (key=%s)", key)
+            _generate_and_speak(
+                f"Someone you don't recognize just left your camera view. "
+                f"React in one short in-character line as Rex — dry, amused, slightly suspicious. "
+                f"Use a generic address like '{address}' (examples: 'hey you', 'you there', "
+                "'mystery organic', 'that one'). Example lines: "
+                f"'And off goes {address}...', 'Huh. The mystery deepens.', "
+                f"'Farewell, {address}. Whoever you are.' One line only.",
+                emotion="curious",
+            )
+
+    # Returned: absent last tick, visible now. Check absence before updating _last_seen.
+    for key in current_keys - _visible_people:
+        person_name = current_tracked[key]
+
+        # First time ever seen this session — let the crowd-count reaction in step 8 handle it.
+        if key not in _last_seen:
+            continue
+
+        absent_secs = now - _last_seen[key]
+        if absent_secs < return_min_absent:
+            continue
+
+        last_reaction = _last_return_reaction_at.get(key, 0.0)
+        if now - last_reaction < departure_cooldown:
+            continue
+
+        _last_return_reaction_at[key] = now
+        is_known = isinstance(key, int) and person_name
+
+        if is_known:
+            _log.info("consciousness: known person returned — %s", person_name)
+            _generate_and_speak(
+                f"The person named '{person_name}' just came back into your camera view after "
+                f"being away for about {int(absent_secs)} seconds. "
+                "React in one short in-character line as Rex — warm but dry. Examples: "
+                f"'Oh, you're back.', 'Miss me already, {person_name}?', "
+                "'I knew you couldn't stay away.' "
+                f"Address {person_name} by name. One line only.",
+                emotion="neutral",
+            )
+        else:
+            address = random.choice(unknown_addresses)
+            _log.info("consciousness: unknown person returned (key=%s, absent=%.1fs)", key, absent_secs)
+            _generate_and_speak(
+                f"Someone you don't recognize has returned to your camera view after "
+                f"about {int(absent_secs)} seconds away. "
+                "React in one short in-character line as Rex — suspicious, dry, slightly wary. "
+                f"Use a generic address like '{address}'. Examples: "
+                f"'Oh, you again.', 'Back already, mystery organic?', "
+                "'I see you returned. Bold choice.' One line only.",
+                emotion="neutral",
+            )
+
+    # Update last-seen timestamps after absence checks so the pre-tick value is accurate.
+    for key in current_keys:
+        _last_seen[key] = now
+    _visible_people = current_keys
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 11 — Face tracking
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _face_x_to_neck_target(x: int) -> float:
@@ -760,7 +893,7 @@ def _loop() -> None:
             # 2. Mood decay
             _step_mood_decay(elapsed)
 
-            # Grab current camera frame once — reused by steps 5 and 10
+            # Grab current camera frame once — reused by steps 5 and 11
             try:
                 from vision.camera import get_frame
                 frame = get_frame()
@@ -776,7 +909,7 @@ def _loop() -> None:
             # 5. Person recognition (may update world_state.people)
             _step_person_recognition(frame)
 
-            # Snapshot after recognition so steps 6–9 see identified persons
+            # Snapshot after recognition so steps 6–11 see identified persons
             snapshot = world_state.snapshot()
 
             # 6. Follow-up check
@@ -791,7 +924,10 @@ def _loop() -> None:
             # 9. Idle micro-behaviors
             _step_idle_micro_behavior(snapshot)
 
-            # 10. Face tracking
+            # 10. Presence tracking (departure / return reactions)
+            _step_presence_tracking(snapshot)
+
+            # 11. Face tracking
             _step_face_tracking(frame)
 
             # Preserve snapshot for next iteration's change detection

@@ -515,6 +515,19 @@ CONSCIOUSNESS_ALLOW_PROACTIVE_IN_ACTIVE = True
 ENVIRONMENT_SCAN_INTERVAL_SECS = 180
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PRESENCE TRACKING
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Minimum seconds Rex must be absent from tracking before a return reaction fires.
+PRESENCE_RETURN_MIN_ABSENT_SECS = 10
+
+# Cooldown between departure/return reactions for the same person (avoids jitter spam).
+PRESENCE_DEPARTURE_COOLDOWN_SECS = 30
+
+# Generic addresses Rex uses when reacting to an unknown (unnamed) person.
+UNKNOWN_PERSON_ADDRESSES = ["hey you", "you there", "mystery organic", "that one"]
+
+# ─────────────────────────────────────────────────────────────────────────────
 # IDLE MICRO-BEHAVIORS
 # ─────────────────────────────────────────────────────────────────────────────
 
