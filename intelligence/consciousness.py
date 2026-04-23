@@ -256,6 +256,53 @@ def _generate_and_speak(
     threading.Thread(target=_task, daemon=True).start()
 
 
+def _generate_and_speak_presence(
+    prompt: str,
+    label: str,
+    emotion: str = "neutral",
+) -> None:
+    """
+    Presence-reaction variant of _generate_and_speak.
+
+    Differences from the generic helper:
+    - Uses _can_speak() (QUIET/SHUTDOWN only) instead of _can_proactive_speak(), so
+      it fires in both IDLE and ACTIVE states regardless of output_gate or response-wait.
+    - After LLM text is generated, polls output_gate.is_busy() for up to 5 s so the
+      reaction queues behind any ongoing TTS rather than being silently dropped.
+    - Adds a PRESENCE_REACTION_DELAY_SECS pause after the gate clears before speaking.
+    - Logs at INFO right before the tts.speak() call so departures are visible in the log.
+    """
+    def _task():
+        try:
+            if not _can_speak():
+                return
+            from intelligence.llm import get_response
+            text = get_response(prompt)
+            if not text or not text.strip():
+                return
+            if not _can_speak():
+                return
+
+            from audio import tts, output_gate
+            deadline = time.monotonic() + 5.0
+            while output_gate.is_busy() and time.monotonic() < deadline:
+                time.sleep(0.1)
+
+            delay = getattr(config, "PRESENCE_REACTION_DELAY_SECS", 2.0)
+            if delay > 0:
+                time.sleep(delay)
+
+            if not _can_speak():
+                return
+
+            _log.info("consciousness: firing presence reaction — %s: %r", label, text[:120])
+            tts.speak(text, emotion)
+        except Exception as exc:
+            _log.debug("_generate_and_speak_presence error: %s", exc)
+
+    threading.Thread(target=_task, daemon=True).start()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1 — Anger cooldown
 # ─────────────────────────────────────────────────────────────────────────────
@@ -736,25 +783,27 @@ def _step_presence_tracking(snapshot: dict) -> None:
         is_known = isinstance(key, int) and person_name
 
         if is_known:
-            _log.info("consciousness: known person departed — %s", person_name)
-            _generate_and_speak(
+            _log.info("consciousness: departure detected — queuing reaction for %s", person_name)
+            _generate_and_speak_presence(
                 f"The person named '{person_name}' just left your camera view. "
                 "React in one short in-character line as Rex. Examples: "
                 f"'Where are you going, {person_name}?', 'Oh, leaving already?', "
                 "'Don't go too far, I can't roast you from a distance.' "
                 f"Address {person_name} by name. One line only.",
+                label=f"departure for {person_name}",
                 emotion="curious",
             )
         else:
             address = random.choice(unknown_addresses)
-            _log.info("consciousness: unknown person departed (key=%s)", key)
-            _generate_and_speak(
+            _log.info("consciousness: departure detected — queuing reaction for unknown (key=%s)", key)
+            _generate_and_speak_presence(
                 f"Someone you don't recognize just left your camera view. "
                 f"React in one short in-character line as Rex — dry, amused, slightly suspicious. "
                 f"Use a generic address like '{address}' (examples: 'hey you', 'you there', "
                 "'mystery organic', 'that one'). Example lines: "
                 f"'And off goes {address}...', 'Huh. The mystery deepens.', "
                 f"'Farewell, {address}. Whoever you are.' One line only.",
+                label=f"departure for unknown ({key})",
                 emotion="curious",
             )
 
@@ -778,26 +827,28 @@ def _step_presence_tracking(snapshot: dict) -> None:
         is_known = isinstance(key, int) and person_name
 
         if is_known:
-            _log.info("consciousness: known person returned — %s", person_name)
-            _generate_and_speak(
+            _log.info("consciousness: return detected — queuing reaction for %s (absent %.1fs)", person_name, absent_secs)
+            _generate_and_speak_presence(
                 f"The person named '{person_name}' just came back into your camera view after "
                 f"being away for about {int(absent_secs)} seconds. "
                 "React in one short in-character line as Rex — warm but dry. Examples: "
                 f"'Oh, you're back.', 'Miss me already, {person_name}?', "
                 "'I knew you couldn't stay away.' "
                 f"Address {person_name} by name. One line only.",
+                label=f"return for {person_name}",
                 emotion="neutral",
             )
         else:
             address = random.choice(unknown_addresses)
-            _log.info("consciousness: unknown person returned (key=%s, absent=%.1fs)", key, absent_secs)
-            _generate_and_speak(
+            _log.info("consciousness: return detected — queuing reaction for unknown (key=%s, absent=%.1fs)", key, absent_secs)
+            _generate_and_speak_presence(
                 f"Someone you don't recognize has returned to your camera view after "
                 f"about {int(absent_secs)} seconds away. "
                 "React in one short in-character line as Rex — suspicious, dry, slightly wary. "
                 f"Use a generic address like '{address}'. Examples: "
                 f"'Oh, you again.', 'Back already, mystery organic?', "
                 "'I see you returned. Bold choice.' One line only.",
+                label=f"return for unknown ({key})",
                 emotion="neutral",
             )
 

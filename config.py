@@ -532,6 +532,9 @@ PRESENCE_RETURN_MIN_ABSENT_SECS = 10
 # Cooldown between departure/return reactions for the same person (avoids jitter spam).
 PRESENCE_DEPARTURE_COOLDOWN_SECS = 30
 
+# Seconds to pause after current TTS finishes before firing a presence reaction.
+PRESENCE_REACTION_DELAY_SECS = 2.0
+
 # Generic addresses Rex uses when reacting to an unknown (unnamed) person.
 UNKNOWN_PERSON_ADDRESSES = ["hey you", "you there", "mystery organic", "that one"]
 
