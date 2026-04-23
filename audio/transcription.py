@@ -53,6 +53,12 @@ def _is_hallucination(text: str) -> bool:
         from collections import Counter
         if max(Counter(words).values()) > 5:
             return True
+    # Non-Latin alphabetic characters (e.g. Japanese, Chinese, Arabic) indicate
+    # Whisper hallucinating in another language on near-silence or ambient noise.
+    # U+024F is the last code point in Latin Extended-B; anything higher that is
+    # also alphabetic is a non-Latin script character.
+    if any(c.isalpha() and ord(c) > 0x024F for c in text):
+        return True
     return False
 
 
@@ -73,6 +79,7 @@ def transcribe(audio_array: np.ndarray) -> str:
                     audio_array,
                     path_or_hf_repo=str(_WHISPER_LOCAL_DIR),
                     initial_prompt=config.WHISPER_INITIAL_PROMPT,
+                    language=config.WHISPER_LANGUAGE,
                 )
                 raw = result.get("text", "").strip()
                 backend = "mlx_whisper"
@@ -101,6 +108,7 @@ def transcribe(audio_array: np.ndarray) -> str:
                 model=config.WHISPER_FALLBACK_MODEL,
                 file=buf,
                 prompt=config.WHISPER_INITIAL_PROMPT,
+                language=config.WHISPER_LANGUAGE,
             )
             raw = response.text.strip()
             backend = "openai_whisper"

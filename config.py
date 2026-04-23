@@ -9,6 +9,7 @@
 
 WHISPER_LOCAL_MODEL   = "mlx-community/whisper-large-v3-turbo"
 WHISPER_FALLBACK_MODEL = "whisper-1"   # OpenAI Whisper API — used if local unavailable
+WHISPER_LANGUAGE      = "en"           # Force English to suppress non-Latin hallucinations
 LLM_MODEL             = "gpt-4o-mini"  # Streaming chat completions
 VISION_MODEL          = "gpt-4o"       # All image and scene analysis queries
 

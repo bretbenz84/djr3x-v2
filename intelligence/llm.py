@@ -350,7 +350,10 @@ def extract_facts(person_id: int, transcript: list[dict]) -> list[dict]:
             temperature=0,
             max_tokens=500,
         )
-        result = json.loads(resp.choices[0].message.content.strip())
+        content = resp.choices[0].message.content
+        if not content or not content.strip():
+            return []
+        result = json.loads(content.strip())
         if not isinstance(result, list):
             return []
         return [

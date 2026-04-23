@@ -167,7 +167,7 @@ def _count_label(count: int) -> str:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def analyze_environment(frame) -> dict:
+def analyze_environment(frame, force: bool = False) -> dict:
     """
     Analyze the scene in frame using GPT-4o vision (config detail: "scene_analysis").
 
@@ -177,6 +177,9 @@ def analyze_environment(frame) -> dict:
     Returns the cached result if the scene is unlikely to have changed:
       - crowd count has not shifted by _CROWD_CHANGE_DELTA or more, AND
       - less than config.ENVIRONMENT_SCAN_INTERVAL_SECS has elapsed.
+
+    Set force=True to bypass the cache and always make a fresh API call (e.g. when
+    the user explicitly asks "what do you see?").
 
     Returns the cached dict (or {}) without an API call on frame=None or on failure.
     """
@@ -191,7 +194,8 @@ def analyze_environment(frame) -> dict:
     cache_age     = now - _env_cache_time
     crowd_stable  = abs(current_crowd - _env_cache_crowd) < _CROWD_CHANGE_DELTA
 
-    if (_env_cache is not None
+    if (not force
+            and _env_cache is not None
             and cache_age < config.ENVIRONMENT_SCAN_INTERVAL_SECS
             and crowd_stable):
         _log.debug("analyze_environment: cache hit (age=%.0fs)", cache_age)
@@ -369,7 +373,7 @@ def describe_scene() -> str:
         from vision import camera
         frame = camera.get_frame()
         if frame is not None:
-            analyze_environment(frame)
+            analyze_environment(frame, force=True)
     except Exception as exc:
         _log.debug("describe_scene: camera refresh skipped: %s", exc)
 

@@ -94,10 +94,16 @@ def identify_speaker(
 
     person = people.get_person(best_id)
     name = person.get("name") if person else None
-    logger.info(
-        "[speaker_id] matched person_id=%s name=%r score=%.3f",
-        best_id, name, best_sim,
-    )
+    if best_sim < 0.80:
+        logger.warning(
+            "[speaker_id] LOW-CONFIDENCE match person_id=%s name=%r score=%.3f (< 0.80) — treat with caution",
+            best_id, name, best_sim,
+        )
+    else:
+        logger.info(
+            "[speaker_id] matched person_id=%s name=%r score=%.3f",
+            best_id, name, best_sim,
+        )
     return (best_id, name, float(best_sim))
 
 

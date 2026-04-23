@@ -294,6 +294,9 @@ def _capture_loop() -> None:
 
     while not _stop_event.is_set():
         if _cap is None or not _cap.isOpened():
+            from state import get_state, State
+            if get_state() == State.SHUTDOWN:
+                break
             _log.info(
                 "Attempting camera reconnection (%s)", CAMERA_SELECTION_DESCRIPTION
             )
