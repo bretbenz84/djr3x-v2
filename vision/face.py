@@ -6,10 +6,11 @@ missing, the affected functions degrade gracefully and return empty results.
 
 Detector selection
 ──────────────────
-mmod (CNN) detector is used by default for accuracy. If it runs above
-_SLOW_THRESHOLD_SECS for _SLOW_COUNT_TO_SWITCH consecutive frames the module
-permanently switches to the HOG detector for the remainder of the session and
-logs a warning. HOG is faster but misses non-frontal faces.
+When config.FACE_DETECTOR_FORCE_HOG is True, the HOG detector is used from the
+start and mmod is never loaded. When False, mmod (CNN) is used by default; if it
+runs above _SLOW_THRESHOLD_SECS for _SLOW_COUNT_TO_SWITCH consecutive frames the
+module permanently switches to HOG for the session and logs a warning.
+HOG is faster but misses non-frontal faces.
 """
 
 import json
@@ -36,7 +37,7 @@ _models_attempted = False
 
 # ── mmod performance tracking for automatic HOG fallback ─────────────────────
 
-_use_hog              = False
+_use_hog              = config.FACE_DETECTOR_FORCE_HOG
 _SLOW_THRESHOLD_SECS  = 0.4   # single-frame mmod budget
 _SLOW_COUNT_TO_SWITCH = 3     # consecutive slow frames before switching
 _slow_count           = 0
@@ -63,12 +64,15 @@ def _load_models() -> bool:
 
     ok = True
 
-    try:
-        _cnn_detector = dlib.cnn_face_detection_model_v1(config.FACE_DETECTOR_MODEL)
-        _log.info("Loaded mmod face detector: %s", config.FACE_DETECTOR_MODEL)
-    except Exception as exc:
-        _log.error("Failed to load mmod detector %s: %s", config.FACE_DETECTOR_MODEL, exc)
-        ok = False
+    if not config.FACE_DETECTOR_FORCE_HOG:
+        try:
+            _cnn_detector = dlib.cnn_face_detection_model_v1(config.FACE_DETECTOR_MODEL)
+            _log.info("Loaded mmod face detector: %s", config.FACE_DETECTOR_MODEL)
+        except Exception as exc:
+            _log.error("Failed to load mmod detector %s: %s", config.FACE_DETECTOR_MODEL, exc)
+            ok = False
+    else:
+        _log.info("FACE_DETECTOR_FORCE_HOG=True — skipping mmod, using HOG only")
 
     try:
         _hog_detector = dlib.get_frontal_face_detector()

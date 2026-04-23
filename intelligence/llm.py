@@ -337,6 +337,31 @@ def generate_session_summary(person_id: int, transcript: list[dict]) -> str:
         return ""
 
 
+def generate_curiosity_question(response_text: str, user_text: str) -> str:
+    """
+    Generate one short contextual follow-up question in Rex's voice.
+    Used by the curiosity routine when the question pool is exhausted or unavailable.
+    """
+    prompt = (
+        f'Rex just said: "{response_text}"\n'
+        f'The human said: "{user_text}"\n\n'
+        "Generate ONE short follow-up question Rex would naturally ask next, "
+        "in his snarky droid character. One sentence only. "
+        "Make it feel natural, not interrogative."
+    )
+    try:
+        resp = _client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.8,
+            max_tokens=60,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as exc:
+        _log.debug("generate_curiosity_question failed: %s", exc)
+        return ""
+
+
 def extract_facts(
     person_id: int,
     transcript: list[dict],

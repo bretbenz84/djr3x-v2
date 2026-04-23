@@ -74,6 +74,10 @@ FACE_LANDMARK_MODEL   = "assets/models/face/shape_predictor_68_face_landmarks.da
 FACE_RECOGNITION_MODEL = "assets/models/face/dlib_face_recognition_resnet_model_v1.dat"
 FACE_DETECTOR_MODEL   = "assets/models/face/mmod_human_face_detector.dat"
 
+# Skip mmod entirely and use HOG from the start. mmod averages >400ms/frame on
+# FaceTime camera — HOG is sufficient for this use case. Set False to re-enable mmod.
+FACE_DETECTOR_FORCE_HOG = True
+
 MUSIC_DIR          = "assets/music"
 TTS_CACHE_DIR      = "assets/audio/tts_cache"
 AUDIO_CLIPS_DIR    = "assets/audio/clips"
@@ -477,6 +481,11 @@ SURPRISE_PAUSE_MS_MAX = 1000
 # ─────────────────────────────────────────────────────────────────────────────
 # INTERACTION LOOP
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Probability (0.0–1.0) that Rex appends a follow-up question after a response
+# that contained no question mark. 1.0 = always, 0.0 = never.
+# Leaving some headroom (0.8) preserves standalone zingers that need no reply.
+CURIOSITY_QUESTION_PROBABILITY = 0.8
 
 # If True, Rex will begin processing normal speech from IDLE without requiring
 # a wake word first. Wake words remain active for explicit attention grabbing and

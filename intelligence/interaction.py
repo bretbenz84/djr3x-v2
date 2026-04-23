@@ -33,6 +33,7 @@ from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
 from memory import events as events_memory
+from memory import relationships as rel_memory
 from awareness import interoception
 from world_state import world_state
 from utils import conv_log
@@ -861,6 +862,62 @@ def _end_session() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Curiosity routine
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _curiosity_check(
+    response_text: str,
+    user_text: str,
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> Optional[str]:
+    """
+    After Rex gives a response with no question mark, optionally ask a follow-up.
+
+    Priority:
+      1. If the response already contains '?', do nothing.
+      2. Roll against CURIOSITY_QUESTION_PROBABILITY — skip on failure.
+      3. Try the depth-appropriate question pool for this person.
+      4. Fall back to a short contextual LLM question.
+
+    Speaks the question as a separate TTS line (within the caller's AEC sequence)
+    and returns the text, or None if nothing was spoken.
+    """
+    if "?" in response_text:
+        return None
+
+    if random.random() >= config.CURIOSITY_QUESTION_PROBABILITY:
+        return None
+
+    question_text: Optional[str] = None
+
+    # Try question pool first — structured, depth-gated, no extra LLM call
+    if person_id is not None:
+        try:
+            person = people_memory.get_person(person_id)
+            tier = (person.get("friendship_tier", "stranger") if person else "stranger")
+            next_q = rel_memory.get_next_question(person_id, tier)
+            if next_q:
+                question_text = next_q.get("text", "")
+        except Exception as exc:
+            _log.debug("curiosity_check pool error: %s", exc)
+
+    # LLM fallback — contextual question when pool is empty or person is unknown
+    if not question_text:
+        try:
+            question_text = llm.generate_curiosity_question(response_text, user_text)
+        except Exception as exc:
+            _log.debug("curiosity_check LLM error: %s", exc)
+
+    if not question_text or not question_text.strip():
+        return None
+
+    _speak_blocking(question_text)
+    _log.info("[interaction] curiosity question spoken: %r", question_text)
+    return question_text
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Speech segment processing
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1003,6 +1060,17 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             _session_exchange_count += 1
             _register_rex_utterance(response_text)
             assistant_asked_question = _assistant_asked_question(response_text)
+
+        # Curiosity routine — only on pure conversational responses, not commands.
+        # Commands handle their own phrasing (sleep, shutdown, DJ, etc.) and a
+        # tacked-on follow-up question would be contextually wrong for most of them.
+        if match is None and response_text and not _interrupted.is_set():
+            curiosity_q = _curiosity_check(response_text, text, person_id, person_name)
+            if curiosity_q:
+                conv_memory.add_to_transcript("Rex", curiosity_q)
+                conv_log.log_rex(curiosity_q)
+                _register_rex_utterance(curiosity_q)
+                assistant_asked_question = True
 
         _post_response(
             text,
