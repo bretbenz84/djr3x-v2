@@ -57,6 +57,18 @@ def is_speaking() -> bool:
         return _speaking
 
 
+def prewarm() -> None:
+    """Play 100ms of silence to force audio device initialization before first TTS."""
+    try:
+        import sounddevice as sd
+        silence = np.zeros(int(44100 * 0.1), dtype=np.float32)
+        sd.play(silence, samplerate=44100, blocksize=2048)
+        sd.wait()
+        logger.info("[tts] audio output device pre-warmed")
+    except Exception as exc:
+        logger.warning("[tts] prewarm failed (non-fatal): %s", exc)
+
+
 def speak(text: str, emotion: str = "neutral") -> None:
     """Convert text to speech and play it, blocking until playback finishes.
 
@@ -122,7 +134,7 @@ def _play(audio: np.ndarray, samplerate: int, emotion: str) -> None:
             leds_head.speak(emotion)
             echo_cancel.set_playing(True)
             led_thread.start()
-            sd.play(audio, samplerate)
+            sd.play(audio, samplerate, blocksize=2048)
             sd.wait()
         except Exception as exc:
             logger.error("[tts] playback error: %s", exc)

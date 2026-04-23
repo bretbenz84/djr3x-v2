@@ -46,7 +46,7 @@ from utils.config_loader import (
     AUDIO_ENABLED,
 )
 from sequences import animations
-from audio import stream, scene as audio_scene, output_gate
+from audio import stream, scene as audio_scene, output_gate, tts
 from vision import camera, scene as vision_scene
 from awareness import chronoception, interoception
 from intelligence import consciousness, interaction
@@ -191,6 +191,9 @@ def main() -> None:
 
     logger.info("Starting audio.stream...")
     stream.start()
+
+    logger.info("Pre-warming audio output device...")
+    tts.prewarm()
 
     # audio.wake_word is started internally by intelligence.interaction.start() —
     # starting it separately would create a duplicate daemon thread.

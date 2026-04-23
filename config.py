@@ -631,13 +631,11 @@ VISIT_MILESTONES = [5, 10, 25, 50, 100]
 # ─────────────────────────────────────────────────────────────────────────────
 
 LATENCY_FILLER_LINES = [
-    "recalculating...",
-    "cross-referencing my extensive knowledge banks...",
-    "processing... still processing... this is taking longer than the Kessel Run...",
-    "accessing memory banks...",
-    "running the numbers...",
-    "consulting my vast archives...",
-    "...give me a moment. My circuits are very busy being brilliant.",
+    "Mm...",
+    "Uh...",
+    "Hmm...",
+    "Let me think...",
+    "Processing...",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────

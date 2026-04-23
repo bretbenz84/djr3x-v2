@@ -896,10 +896,35 @@ def _curiosity_check(
         try:
             person = people_memory.get_person(person_id)
             tier = (person.get("friendship_tier", "stranger") if person else "stranger")
-            next_q = rel_memory.get_next_question(person_id, tier)
-            if next_q:
-                question_text = next_q.get("text", "")
-                pool_question = next_q
+            max_depth = config.TIER_MAX_DEPTH.get(tier, 1)
+            answered = rel_memory.get_answered_question_keys(person_id)
+
+            # Load all known facts once so we can skip questions whose topic is
+            # already covered — e.g. don't ask about job if a job fact exists.
+            known_fact_keys: set[str] = set()
+            known_fact_categories: set[str] = set()
+            try:
+                for fact in facts_memory.get_facts(person_id):
+                    known_fact_keys.add(fact["key"])
+                    known_fact_categories.add(fact["category"])
+            except Exception as exc:
+                _log.debug("curiosity_check facts load error: %s", exc)
+
+            for candidate in config.QUESTION_POOL:
+                if candidate["depth"] > max_depth:
+                    continue
+                if candidate["key"] in answered:
+                    continue
+                # Skip if Rex already knows something about this topic
+                q_key = candidate["key"]
+                if q_key in known_fact_keys or q_key in known_fact_categories:
+                    _log.debug(
+                        "curiosity_check: skipping %r — fact already recorded", q_key
+                    )
+                    continue
+                question_text = candidate.get("text", "")
+                pool_question = candidate
+                break
         except Exception as exc:
             _log.debug("curiosity_check pool error: %s", exc)
 
