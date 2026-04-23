@@ -47,11 +47,15 @@ def _is_hallucination(text: str) -> bool:
         phrase_norm = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9'\s]", " ", phrase.lower())).strip()
         if normalized == phrase_norm:
             return True
-    # Repetition pattern: any single word appearing more than 5 times is a loop artifact.
+    # Minimum meaningful content check — discard pure punctuation/whitespace junk.
+    stripped = re.sub(r"[^a-z0-9]", "", normalized)
+    if len(stripped) < config.WHISPER_MIN_CHARS:
+        return True
+    # Repetition pattern: any single word appearing more than threshold times is a loop artifact.
     words = [w.lower() for w in re.findall(r"[a-zA-Z0-9']+", normalized)]
     if words:
         from collections import Counter
-        if max(Counter(words).values()) > 5:
+        if max(Counter(words).values()) > config.WHISPER_REPETITION_THRESHOLD:
             return True
     # Non-Latin alphabetic characters (e.g. Japanese, Chinese, Arabic) indicate
     # Whisper hallucinating in another language on near-silence or ambient noise.

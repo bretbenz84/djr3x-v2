@@ -153,6 +153,13 @@ WHISPER_CORRECTIONS = {
     "rex's":  "Rex",
 }
 
+# Repetition filter: any single word appearing more than this many times is a loop artifact.
+WHISPER_REPETITION_THRESHOLD = 4
+
+# Minimum meaningful characters (after stripping punctuation and whitespace) required
+# to pass the hallucination filter. Catches single-char junk like "!" or ".".
+WHISPER_MIN_CHARS = 3
+
 # Transcriptions that exactly match or contain these phrases (case-insensitive)
 # are discarded entirely — they are known Whisper hallucinations on near-silent audio.
 HALLUCINATION_BLOCKLIST = [

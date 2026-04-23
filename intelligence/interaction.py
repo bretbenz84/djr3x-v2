@@ -664,6 +664,7 @@ def _execute_command(
 def _post_response(
     user_text: str,
     person_id: Optional[int],
+    person_name: Optional[str] = None,
     *,
     assistant_asked_question: bool = False,
 ) -> None:
@@ -748,9 +749,11 @@ def _post_response(
         if person_id is not None:
             try:
                 transcript = conv_memory.get_session_transcript()
-                # Feed the last 6 entries (3 exchanges) to keep the prompt tight
-                recent = transcript[-6:] if len(transcript) >= 6 else transcript
-                new_facts = llm.extract_facts(person_id, recent)
+                # Last 10 entries (~5 exchanges) — wider window than before so
+                # facts mentioned a few turns back are still in scope.
+                recent = transcript[-10:] if len(transcript) >= 10 else transcript
+                new_facts = llm.extract_facts(person_id, recent, person_name=person_name)
+                saved_count = 0
                 for fact in new_facts:
                     if fact.get("key") and fact.get("value"):
                         facts_memory.add_fact(
@@ -761,6 +764,11 @@ def _post_response(
                             source="stated",
                             confidence=0.9,
                         )
+                        saved_count += 1
+                _log.info(
+                    "[interaction] facts extracted=%d saved=%d for person_id=%s",
+                    len(new_facts), saved_count, person_id,
+                )
             except Exception as exc:
                 _log.debug("post_response fact extraction error: %s", exc)
 
@@ -792,6 +800,9 @@ def _end_session() -> None:
 
     for person_id in list(_session_person_ids):
         try:
+            person_row = people_memory.get_person(person_id)
+            person_name = person_row.get("name") if person_row else None
+
             summary = llm.generate_session_summary(person_id, transcript)
             if summary:
                 conv_memory.save_conversation(
@@ -800,6 +811,29 @@ def _end_session() -> None:
                     emotion_tone="neutral",
                     topics="",
                 )
+
+            # Full-transcript fact extraction at session end — catches facts the
+            # per-exchange rolling window may have missed.
+            try:
+                end_facts = llm.extract_facts(person_id, transcript, person_name=person_name)
+                saved = 0
+                for fact in end_facts:
+                    if fact.get("key") and fact.get("value"):
+                        facts_memory.add_fact(
+                            person_id,
+                            fact.get("category", "other"),
+                            fact["key"],
+                            fact["value"],
+                            source="stated",
+                            confidence=0.9,
+                        )
+                        saved += 1
+                _log.info(
+                    "[interaction] session-end facts extracted=%d saved=%d for person_id=%s (%s)",
+                    len(end_facts), saved, person_id, person_name,
+                )
+            except Exception as exc:
+                _log.error("session-end fact extraction error for person_id=%s: %s", person_id, exc)
 
             # update_visit increments visit_count, last_seen, and applies the
             # return_visit familiarity increment defined in config.
@@ -973,6 +1007,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         _post_response(
             text,
             person_id,
+            person_name,
             assistant_asked_question=assistant_asked_question,
         )
     finally:

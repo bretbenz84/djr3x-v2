@@ -4,6 +4,7 @@ intelligence/llm.py — GPT-4o-mini streaming interface and prompt assembly for 
 
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Generator, Optional
@@ -141,6 +142,7 @@ def _build_person_context(person_id: int) -> str:
 
     # skin_color is stored for recognition only — never inject into LLM context
     facts = [f for f in facts_db.get_facts(person_id) if f.get("key") != "skin_color"]
+    _log.info("[llm] loaded %d facts for %s", len(facts), name)
     if facts:
         fact_strs = [f"{f['key']}: {f['value']}" for f in facts[:12]]
         lines.append("Known facts: " + ", ".join(fact_strs) + ".")
@@ -210,6 +212,16 @@ def assemble_system_prompt(person_id: Optional[int] = None) -> str:
             tier = person.get("friendship_tier", "stranger")
             if tier in _TIER_ROAST_STYLE:
                 rules.append(_TIER_ROAST_STYLE[tier])
+            known_facts = [
+                f for f in facts_db.get_facts(person_id)
+                if f.get("key") != "skin_color"
+            ]
+            if known_facts:
+                rules.append(
+                    "You already know the following facts about this person — do NOT ask about "
+                    "things already listed in their facts or mentioned in the conversation summary. "
+                    "Use what you know naturally in conversation instead of re-asking it."
+                )
 
     anger_level = _get_anger_level()
     if anger_level in _ANGER_RULES:
@@ -325,24 +337,43 @@ def generate_session_summary(person_id: int, transcript: list[dict]) -> str:
         return ""
 
 
-def extract_facts(person_id: int, transcript: list[dict]) -> list[dict]:
+def extract_facts(
+    person_id: int,
+    transcript: list[dict],
+    person_name: Optional[str] = None,
+) -> list[dict]:
     """
-    Ask GPT-4o-mini to extract facts about the person from a session transcript.
+    Ask GPT-4o-mini to extract facts about the human speaker from a session transcript.
     Returns a list of dicts with keys: category, key, value.
     """
     if not transcript:
         return []
+
+    speaker_label = person_name or "user"
     prompt = (
-        "Extract factual statements the person made about themselves from the following "
-        "conversation transcript. Return a JSON array where each element has:\n"
+        f"You are extracting personal facts about a person named {speaker_label!r} "
+        f"from a conversation transcript between {speaker_label!r} and Rex (a robot DJ).\n\n"
+        "Extract every fact that the human speaker states about themselves — "
+        "including but not limited to: where they are from, their job or occupation, "
+        "hobbies, interests, favorite things, family members, pets, beliefs, opinions, "
+        "life experiences, and personal preferences.\n\n"
+        "Common phrasings to capture:\n"
+        "  'I'm from X' or 'I live in X'         → category=hometown, key=hometown\n"
+        "  'I work as X' or 'I'm a X'             → category=job, key=job_title\n"
+        "  'I like/love X' or 'my favorite X is Y'→ category=preference, key=favorite_<x>\n"
+        "  'I have a X' (pet/child)               → category=pet or family\n"
+        "  'I'm into X' or 'I do X for fun'       → category=hobby\n"
+        "  'I believe X' or 'I think X'           → category=belief\n\n"
+        "Only extract facts the human speaker stated. Do not extract anything Rex said. "
+        "Do not infer or guess. If no facts are present, return an empty array.\n\n"
+        "Return a JSON array where each element has exactly these fields:\n"
         '  "category": one of "job", "hometown", "hobby", "pet", "family", "belief", "preference", "other"\n'
-        '  "key": a snake_case identifier (e.g. "job_title", "favorite_band")\n'
-        '  "value": the fact value as a short string\n\n'
-        "Only include facts the person stated explicitly. Do not infer or guess. "
-        "If no facts are present, return an empty array [].\n\n"
+        '  "key": a snake_case identifier (e.g. "hometown", "job_title", "favorite_band")\n'
+        '  "value": the fact value as a concise string\n\n'
         f"Transcript:\n{_format_transcript(transcript)}\n\n"
         "Return only the JSON array. No explanation."
     )
+    _log.debug("[llm] extract_facts prompt for %r:\n%s", speaker_label, prompt)
     try:
         resp = _client.chat.completions.create(
             model=config.LLM_MODEL,
@@ -351,9 +382,15 @@ def extract_facts(person_id: int, transcript: list[dict]) -> list[dict]:
             max_tokens=500,
         )
         content = resp.choices[0].message.content
+        _log.debug("[llm] extract_facts raw response for %r: %r", speaker_label, content)
         if not content or not content.strip():
             return []
-        result = json.loads(content.strip())
+        # Strip markdown code fences if model wrapped the JSON
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r"^```[a-z]*\n?", "", stripped)
+            stripped = re.sub(r"\n?```$", "", stripped)
+        result = json.loads(stripped)
         if not isinstance(result, list):
             return []
         return [
