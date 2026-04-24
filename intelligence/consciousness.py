@@ -50,6 +50,9 @@ _last_micro_behavior_at: float = 0.0
 _reengagement_sent_at: dict[str, float] = {}
 _REENGAGEMENT_COOLDOWN_SECS = 30.0
 
+# Monotonic timestamp of last live-vision commentary call (cost control).
+_last_live_vision_comment_at: float = 0.0
+
 # Pending follow-up events per DB person_id: {db_id: [event_dict, ...]}
 _pending_followups: dict[int, list[dict]] = {}
 _followup_lock = threading.Lock()
@@ -78,6 +81,12 @@ _greeted_this_session: set[int] = set()
 
 # Per-person monotonic timestamp of when they were last seen in frame.
 _last_seen: dict = {}
+
+# Identity stickiness: when exactly one face is visible and recognition momentarily
+# returns Unknown for what is almost certainly the same physical person we had
+# identified a second ago, carry the last identity forward for this many seconds.
+_last_solo_identity: Optional[tuple[int, str, float]] = None  # (db_id, name, monotonic)
+_SOLO_IDENTITY_STICKY_SECS = 5.0
 
 # Per-person monotonic timestamp of the last departure/return reaction fired.
 _last_departure_reaction_at: dict = {}
@@ -461,7 +470,7 @@ def _step_person_recognition(frame) -> None:
     pose pipeline is disabled or lagging, face recognition still works and can
     drive unknown-person onboarding prompts.
     """
-    global _last_face_feedback_signature, _last_identity_prompt_at
+    global _last_face_feedback_signature, _last_identity_prompt_at, _last_solo_identity
     try:
         from vision import face as face_mod
 
@@ -476,6 +485,15 @@ def _step_person_recognition(frame) -> None:
                 world_state.update("people", [])
             _last_face_feedback_signature = None
             return
+
+        # Identity stickiness: HOG face recognition flickers unknown↔known within
+        # 1–2 frames. When there's one face and we identified it moments ago,
+        # carry that identity forward if this frame can't match.
+        apply_sticky = (
+            len(detected) == 1
+            and _last_solo_identity is not None
+            and (time.monotonic() - _last_solo_identity[2]) <= _SOLO_IDENTITY_STICKY_SECS
+        )
 
         people = world_state.get("people")
         changed = False
@@ -502,11 +520,17 @@ def _step_person_recognition(frame) -> None:
 
         recognized_names: list[str] = []
         unknown_count = 0
+        any_identified_this_tick = False
         for det in detected:
             person_record = face_mod.identify_face(det["encoding"])
+            if person_record is None and apply_sticky:
+                # Carry forward last solo identity through a single-face miss.
+                sticky_id, sticky_name, _ = _last_solo_identity
+                person_record = {"id": sticky_id, "name": sticky_name}
             if person_record is None:
                 unknown_count += 1
                 continue
+            any_identified_this_tick = True
             recognized_name = person_record.get("name") or f"person_{person_record.get('id')}"
             recognized_names.append(recognized_name)
 
@@ -575,6 +599,21 @@ def _step_person_recognition(frame) -> None:
 
         if changed:
             world_state.update("people", people)
+
+        # Update solo identity snapshot for next tick's stickiness check.
+        if len(detected) == 1 and any_identified_this_tick and recognized_names:
+            # Find the db_id that matches the recognized name
+            for ws_person in people:
+                if ws_person.get("face_id") == recognized_names[0] and ws_person.get("person_db_id"):
+                    _last_solo_identity = (
+                        ws_person["person_db_id"],
+                        ws_person["face_id"],
+                        time.monotonic(),
+                    )
+                    break
+        elif len(detected) != 1:
+            # Multiple or zero faces — stickiness no longer applies.
+            _last_solo_identity = None
     except Exception as exc:
         _log.debug("person recognition step error: %s", exc)
 
@@ -758,7 +797,16 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
         return
 
     _last_micro_behavior_at = now
-    behavior = random.choice(["ambient_scan", "private_thought", "idle_clip"])
+    # Include ambient_observation and appearance_riff/live_vision so Rex talks
+    # about his surroundings and the people in them, not just himself.
+    behavior = random.choice([
+        "ambient_scan",
+        "private_thought",
+        "idle_clip",
+        "ambient_observation",
+        "appearance_riff",
+        "live_vision_comment",
+    ])
     _log.debug("consciousness: idle micro-behavior → %s", behavior)
 
     if behavior == "ambient_scan":
@@ -768,9 +816,18 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
         # system-comment gates so Rex doesn't mutter about himself mid-conversation.
         if not profile.suppress_proactive and not profile.suppress_system_comments:
             _do_private_thought()
-    else:
+    elif behavior == "idle_clip":
         if not profile.suppress_proactive:
             _do_idle_clip()
+    elif behavior == "ambient_observation":
+        if not profile.suppress_proactive:
+            _do_ambient_observation(snapshot)
+    elif behavior == "appearance_riff":
+        if not profile.suppress_proactive:
+            _do_appearance_riff(snapshot)
+    elif behavior == "live_vision_comment":
+        if not profile.suppress_proactive:
+            _do_live_vision_comment(snapshot)
 
 
 def _do_ambient_scan() -> None:
@@ -799,6 +856,113 @@ def _do_private_thought() -> None:
         return
     line = random.choice(config.PRIVATE_THOUGHTS)
     _speak_async(line, emotion="neutral")
+
+
+def _do_ambient_observation(snapshot: dict) -> None:
+    """
+    Fire a short in-character remark about the current environment, pulled from
+    world_state.environment — room type, lighting, crowd density, description.
+    No vision call; uses data the periodic scene scanner already collected.
+    """
+    if random.random() >= getattr(config, "AMBIENT_OBSERVATION_PROBABILITY", 0.5):
+        return
+    env = snapshot.get("environment", {}) or {}
+    audio_scene = snapshot.get("audio_scene", {}) or {}
+
+    bits: list[str] = []
+    if env.get("description"):
+        bits.append(f"scene: {env['description']}")
+    elif env.get("scene_type"):
+        bits.append(f"scene type: {env['scene_type']}")
+    if env.get("lighting"):
+        bits.append(f"lighting: {env['lighting']}")
+    if env.get("crowd_density"):
+        bits.append(f"crowd density: {env['crowd_density']}")
+    if audio_scene.get("ambient_level"):
+        bits.append(f"ambient noise: {audio_scene['ambient_level']}")
+    if audio_scene.get("music_detected"):
+        bits.append("music is playing")
+
+    if not bits:
+        return
+    context = "; ".join(bits)
+    _generate_and_speak(
+        f"You are idly observing your surroundings right now. Here is what you perceive "
+        f"— {context}. In one short in-character Rex line, make an offhand observation "
+        f"about the room or environment — like someone thinking out loud. Don't greet "
+        f"anyone, don't ask a question; just a dry remark about the space or vibe. "
+        f"One line only.",
+        emotion="neutral",
+    )
+
+
+def _do_appearance_riff(snapshot: dict) -> None:
+    """
+    Pick one currently-visible known person and make an unprompted remark about
+    their appearance (hair, clothes, notable features), using stored person_facts.
+    No vision call; uses data from face enrollment.
+    """
+    people = snapshot.get("people", []) or []
+    known = [p for p in people if p.get("person_db_id") and p.get("face_id")]
+    if not known:
+        return
+    target = random.choice(known)
+    hint = _pick_appearance_hint(target.get("person_db_id"))
+    if not hint:
+        return
+    # Don't riff on the engaged person — it'd feel interruptive mid-conversation.
+    if is_engaged_with(target.get("person_db_id")):
+        return
+    first_name = (target.get("face_id") or "").split()[0] or "there"
+    _generate_and_speak(
+        f"You're idly looking at '{first_name}'. You remember this about their "
+        f"appearance: {hint}. Make one short in-character Rex remark about it — "
+        f"the kind of thing you'd say while looking them over. Warm, dry, observational. "
+        f"Address {first_name} by name. One line only.",
+        emotion="neutral",
+    )
+
+
+def _do_live_vision_comment(snapshot: dict) -> None:
+    """
+    Capture the current frame and ask GPT-4o for one short observational detail
+    about it — a spontaneous remark on something Rex is literally seeing right now.
+
+    Rate-limited by LIVE_VISION_COMMENT_COOLDOWN_SECS so it stays costed.
+    """
+    global _last_live_vision_comment_at
+    now = time.monotonic()
+    cooldown = getattr(config, "LIVE_VISION_COMMENT_COOLDOWN_SECS", 300.0)
+    if (now - _last_live_vision_comment_at) < cooldown:
+        return
+    _last_live_vision_comment_at = now
+
+    def _task():
+        try:
+            if not _can_proactive_speak():
+                return
+            from vision import camera as _cam
+            from vision import scene as _scene
+            frame = _cam.get_frame()
+            if frame is None:
+                return
+            # Reuse the describe_scene path for a fresh, low-detail summary. This
+            # triggers analyze_environment(force=True) which hits GPT-4o once.
+            desc = _scene.describe_scene()
+            if not desc:
+                return
+            _generate_and_speak(
+                f"You just glanced around and actually LOOKED at what's in front of you "
+                f"right now. Vision summary: '{desc}'. In one short in-character Rex line, "
+                f"make a spontaneous remark about one concrete detail you 'see' — not a "
+                f"greeting, not a question, just a passing observation as if thinking out "
+                f"loud. One line only.",
+                emotion="curious",
+            )
+        except Exception as exc:
+            _log.debug("live vision comment error: %s", exc)
+
+    threading.Thread(target=_task, daemon=True, name="live-vision-comment").start()
 
 
 def _do_idle_clip() -> None:
@@ -832,6 +996,45 @@ def _do_idle_clip() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 10 — Presence tracking (departure / return reactions)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _pick_appearance_hint(person_db_id: Optional[int]) -> Optional[str]:
+    """Return a single natural-language appearance hint for prompting, or None.
+
+    Reads the person_facts table for category='appearance' and formats one or
+    two attributes into a short phrase Rex can riff on.
+    """
+    if person_db_id is None:
+        return None
+    try:
+        from memory import facts as _facts
+        rows = _facts.get_facts_by_category(person_db_id, "appearance")
+    except Exception:
+        return None
+    if not rows:
+        return None
+
+    attrs = {r["key"]: r["value"] for r in rows if r.get("key") and r.get("value")}
+    candidates: list[str] = []
+
+    notable = attrs.get("notable_features")
+    if notable and notable not in ("[]", "None", "none"):
+        candidates.append(f"notable features: {notable}")
+
+    hair = []
+    if attrs.get("hair_color"):
+        hair.append(attrs["hair_color"])
+    if attrs.get("hair_style"):
+        hair.append(attrs["hair_style"])
+    if hair:
+        candidates.append(f"{' '.join(hair)} hair")
+
+    if attrs.get("build"):
+        candidates.append(f"{attrs['build']} build")
+
+    if not candidates:
+        return None
+    return random.choice(candidates)
+
 
 def _tracking_key(person: dict):
     """Stable per-person tracking key: db_id (int) for known, slot id (str) for unknown."""
@@ -900,6 +1103,18 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 person_name = p.get("face_id")
                 person_db_id = p.get("person_db_id")
                 break
+        # If the key is itself a db_id but the slot had lost its name (flicker),
+        # look the name up directly so we don't mislabel a known departure as
+        # "mystery organic."
+        if isinstance(key, int) and not person_name:
+            try:
+                from memory import people as _people_mod
+                row = _people_mod.get_person(key)
+                if row and row.get("name"):
+                    person_name = row["name"]
+                    person_db_id = key
+            except Exception:
+                pass
         _pending_departure_keys[key] = (first_missing, person_name, person_db_id)
         _log.debug(
             "consciousness: staged departure for key=%s name=%r after %.1fs absent",
@@ -1003,13 +1218,26 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         if is_known:
             first_name = person_name.split()[0]
             _log.info("consciousness: return detected — queuing reaction for %s (absent %.1fs)", person_name, absent_secs)
+            appearance_hint = _pick_appearance_hint(person_db_id)
+            if appearance_hint and random.random() < getattr(config, "APPEARANCE_RIFF_PROBABILITY", 0.35):
+                prompt = (
+                    f"The person named '{first_name}' just came back into your camera view "
+                    f"after about {int(absent_secs)} seconds away. You remember this about "
+                    f"their appearance: {appearance_hint}. React in one short in-character "
+                    f"Rex line that NATURALLY references that appearance detail — warm but "
+                    f"dry. Address {first_name} by name. One line only."
+                )
+            else:
+                prompt = (
+                    f"The person named '{first_name}' just came back into your camera view after "
+                    f"being away for about {int(absent_secs)} seconds. "
+                    "React in one short in-character line as Rex — warm but dry. Examples: "
+                    f"'Oh, you're back.', 'Miss me already, {first_name}?', "
+                    "'I knew you couldn't stay away.' "
+                    f"Address {first_name} by name. One line only."
+                )
             _generate_and_speak_presence(
-                f"The person named '{first_name}' just came back into your camera view after "
-                f"being away for about {int(absent_secs)} seconds. "
-                "React in one short in-character line as Rex — warm but dry. Examples: "
-                f"'Oh, you're back.', 'Miss me already, {first_name}?', "
-                "'I knew you couldn't stay away.' "
-                f"Address {first_name} by name. One line only.",
+                prompt,
                 label=f"return for {person_name}",
                 tag_key=key,
                 emotion="neutral",

@@ -165,9 +165,9 @@ WHISPER_REPETITION_THRESHOLD = 4
 WHISPER_MIN_CHARS = 3
 
 # Minimum number of meaningful words (length > 2) required to accept a transcription.
-# Filters filler fragments like "uh", "um", "ah", and function-word-only noise like
-# "and the" where no word carries independent semantic content.
-WHISPER_MIN_WORDS = 2
+# Set to 1 so short valid utterances like "Stop", "Yes", "Who am I?" pass through.
+# Filler-only junk like "uh", "um", "ah" still fails because those tokens are ≤2 chars.
+WHISPER_MIN_WORDS = 1
 
 # Transcriptions that exactly match or contain these phrases (case-insensitive)
 # are discarded entirely — they are known Whisper hallucinations on near-silent audio.
@@ -601,6 +601,18 @@ UNKNOWN_PERSON_ADDRESSES = ["hey you", "you there", "mystery organic", "that one
 # Random wait between spontaneous idle behaviors (neck scan, arm fidget, visor flutter, etc.)
 MICRO_BEHAVIOR_INTERVAL_SECS_MIN = 15
 MICRO_BEHAVIOR_INTERVAL_SECS_MAX = 45
+
+# Probability that a return reaction for a known person includes an appearance
+# callout (pulled from stored person_facts appearance entries).
+APPEARANCE_RIFF_PROBABILITY = 0.35
+
+# Minimum seconds between live-vision commentary calls. These make a fresh
+# GPT-4o call against the current camera frame to comment on what Rex sees —
+# enforce a hard cooldown so it doesn't turn into expensive narration.
+LIVE_VISION_COMMENT_COOLDOWN_SECS = 300.0
+
+# Probability a triggered ambient-observation tick actually fires (vs skipping).
+AMBIENT_OBSERVATION_PROBABILITY = 0.5
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MOOD DECAY
