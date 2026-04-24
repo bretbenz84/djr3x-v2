@@ -794,6 +794,7 @@ def _end_session() -> None:
         _awaiting_followup_event = None
         try:
             consciousness.clear_response_wait()
+            consciousness.clear_engagement()
         except Exception:
             pass
         return
@@ -855,6 +856,7 @@ def _end_session() -> None:
     _awaiting_followup_event = None
     try:
         consciousness.clear_response_wait()
+        consciousness.clear_engagement()
     except Exception:
         pass
     _log.info("[interaction] session ended — summary saved, transcript cleared")
@@ -1030,6 +1032,20 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         except Exception:
             pass
 
+        # User spoke — any queued presence reaction about this person is now stale.
+        # Drop it so Rex doesn't narrate someone's "departure" immediately after they spoke.
+        try:
+            ws_people_now = world_state.get("people")
+            for p in ws_people_now:
+                pid = p.get("person_db_id")
+                if pid is not None:
+                    speech_queue.drop_by_tag(f"presence:{pid}")
+                slot_id = p.get("id")
+                if slot_id:
+                    speech_queue.drop_by_tag(f"presence:{slot_id}")
+        except Exception:
+            pass
+
         # Consciousness asked an unknown person for their name. Open a short window
         # where single/short name replies are treated as enrollment input.
         if consciousness.consume_identity_prompt_request():
@@ -1076,6 +1092,12 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             _session_person_ids.add(person_id)
             voice_name = person_name or f"person_{person_id}"
             print(f"[VOICE] Known voice detected: {voice_name} (person_id={person_id})", flush=True)
+            # Mark this person as Rex's current conversational partner. Consciousness
+            # uses this to suppress presence reactions about them while engaged.
+            try:
+                consciousness.mark_engagement(person_id)
+            except Exception:
+                pass
         else:
             print("[VOICE] Unknown voice detected", flush=True)
 
@@ -1129,7 +1151,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _loop() -> None:
-    global _last_speech_at
+    global _last_speech_at, _listen_resume_at, _post_tts_flush_needed
 
     idle_timeout = config.CONVERSATION_IDLE_TIMEOUT_SECS
     _last_speech_at = time.monotonic()
@@ -1256,8 +1278,11 @@ def _loop() -> None:
         speech_start = time.monotonic()
         _last_speech_at = speech_start
 
-        # Mid-speech interruption: stop TTS, acknowledge, then listen
-        if speech_queue.is_speaking():
+        # Mid-speech interruption: stop TTS, acknowledge, flush the mic buffer of
+        # Rex's voice tail, then WAIT for a fresh VAD rising edge before
+        # accumulating. Without this, the rolling buffer still holds ~seconds of
+        # Rex's own voice which Whisper concatenates onto the user's utterance.
+        if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
             _interrupted.set()
             try:
                 import sounddevice as sd
@@ -1268,6 +1293,13 @@ def _loop() -> None:
             time.sleep(0.1)
             _interrupted.clear()
             _interrupt_ack()
+
+            # Drop the polluted buffer and re-arm. The next user utterance must
+            # trigger VAD again; the original speech_start is discarded.
+            stream.flush()
+            _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
+            _post_tts_flush_needed = True
+            continue
 
         # Accumulate the full utterance
         audio_segment = _accumulate_speech(speech_start)

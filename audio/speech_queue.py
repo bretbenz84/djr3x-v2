@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ── Queue item ─────────────────────────────────────────────────────────────────
 
 class _Item:
-    __slots__ = ("neg_priority", "seq", "text", "emotion", "audio_path", "done")
+    __slots__ = ("neg_priority", "seq", "text", "emotion", "audio_path", "done", "tag")
 
     def __init__(
         self,
@@ -40,6 +40,7 @@ class _Item:
         emotion: str,
         audio_path: Optional[str],
         done: threading.Event,
+        tag: Optional[str] = None,
     ) -> None:
         self.neg_priority = -priority
         self.seq = seq
@@ -47,6 +48,7 @@ class _Item:
         self.emotion = emotion
         self.audio_path = audio_path
         self.done = done
+        self.tag = tag
 
     def __lt__(self, other: "_Item") -> bool:
         if self.neg_priority != other.neg_priority:
@@ -75,13 +77,44 @@ class _SpeechQueue:
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    def enqueue(self, text: str, emotion: str = "neutral", priority: int = 0) -> threading.Event:
-        """Enqueue text for TTS. Returns an Event set when playback finishes."""
-        return self._add(text, emotion, None, priority)
+    def enqueue(
+        self,
+        text: str,
+        emotion: str = "neutral",
+        priority: int = 0,
+        tag: Optional[str] = None,
+    ) -> threading.Event:
+        """Enqueue text for TTS. Returns an Event set when playback finishes.
 
-    def enqueue_audio_file(self, path: str, priority: int = 0) -> threading.Event:
+        If tag is given, any waiting items with the same tag are dropped first —
+        useful for coalescing stale presence/idle reactions.
+        """
+        return self._add(text, emotion, None, priority, tag)
+
+    def enqueue_audio_file(self, path: str, priority: int = 0, tag: Optional[str] = None) -> threading.Event:
         """Enqueue an audio file for direct playback. Returns an Event set when done."""
-        return self._add(None, "neutral", path, priority)
+        return self._add(None, "neutral", path, priority, tag)
+
+    def drop_by_tag(self, tag: str) -> int:
+        """Drop all *waiting* items whose tag matches. Returns count dropped."""
+        dropped = 0
+        with self._not_empty:
+            keep = []
+            for item in self._heap:
+                if item.tag == tag:
+                    item.done.set()
+                    dropped += 1
+                else:
+                    keep.append(item)
+            if dropped:
+                self._heap = keep
+                heapq.heapify(self._heap)
+        return dropped
+
+    def has_waiting_with_tag(self, tag: str) -> bool:
+        """True if any waiting (not-yet-playing) item has this tag."""
+        with self._lock:
+            return any(item.tag == tag for item in self._heap)
 
     def clear_below_priority(self, n: int) -> None:
         """Drop all *waiting* items with priority < n and set their done events."""
@@ -109,15 +142,17 @@ class _SpeechQueue:
         emotion: str,
         audio_path: Optional[str],
         priority: int,
+        tag: Optional[str] = None,
     ) -> threading.Event:
         done = threading.Event()
         should_preempt = False
 
         with self._not_empty:
-            # Drop all waiting items of strictly lower priority
+            # Drop all waiting items of strictly lower priority, plus any
+            # waiting items with the same tag (coalesce stale reactions).
             keep = []
             for item in self._heap:
-                if item.priority < priority:
+                if item.priority < priority or (tag is not None and item.tag == tag):
                     item.done.set()
                 else:
                     keep.append(item)
@@ -133,7 +168,7 @@ class _SpeechQueue:
             self._seq += 1
             heapq.heappush(
                 self._heap,
-                _Item(priority, seq, text, emotion, audio_path, done),
+                _Item(priority, seq, text, emotion, audio_path, done, tag),
             )
             self._not_empty.notify()
 
@@ -213,19 +248,34 @@ class _SpeechQueue:
 _queue = _SpeechQueue()
 
 
-def enqueue(text: str, emotion: str = "neutral", priority: int = 0) -> threading.Event:
+def enqueue(
+    text: str,
+    emotion: str = "neutral",
+    priority: int = 0,
+    tag: Optional[str] = None,
+) -> threading.Event:
     """Enqueue text for TTS speech. Returns an Event set when playback finishes."""
-    return _queue.enqueue(text, emotion, priority)
+    return _queue.enqueue(text, emotion, priority, tag)
 
 
-def enqueue_audio_file(path: str, priority: int = 0) -> threading.Event:
+def enqueue_audio_file(path: str, priority: int = 0, tag: Optional[str] = None) -> threading.Event:
     """Enqueue an audio file for playback. Returns an Event set when done."""
-    return _queue.enqueue_audio_file(path, priority)
+    return _queue.enqueue_audio_file(path, priority, tag)
 
 
 def clear_below_priority(n: int) -> None:
     """Drop all waiting queue items with priority < n."""
     _queue.clear_below_priority(n)
+
+
+def drop_by_tag(tag: str) -> int:
+    """Drop all waiting queue items matching tag. Returns count dropped."""
+    return _queue.drop_by_tag(tag)
+
+
+def has_waiting_with_tag(tag: str) -> bool:
+    """True if any waiting item has this tag."""
+    return _queue.has_waiting_with_tag(tag)
 
 
 def is_speaking() -> bool:

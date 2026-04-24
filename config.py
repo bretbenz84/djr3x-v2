@@ -569,13 +569,27 @@ ENVIRONMENT_SCAN_INTERVAL_SECS = 180
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Minimum seconds Rex must be absent from tracking before a return reaction fires.
-PRESENCE_RETURN_MIN_ABSENT_SECS = 10
+PRESENCE_RETURN_MIN_ABSENT_SECS = 30
 
 # Cooldown between departure/return reactions for the same person (avoids jitter spam).
 PRESENCE_DEPARTURE_COOLDOWN_SECS = 30
 
+# Per-person cooldown on ANY presence reaction (departure OR return). Prevents
+# Rex from narrating every micro-absence of the same person.
+PRESENCE_PER_PERSON_COOLDOWN_SECS = 120
+
+# Hysteresis: face must be continuously absent for this many seconds before we
+# even begin staging a departure. Guards against frame-level face-detection flicker.
+PRESENCE_DEPARTURE_CONFIRM_SECS = 8.0
+
 # Seconds to pause after current TTS finishes before firing a presence reaction.
 PRESENCE_REACTION_DELAY_SECS = 2.0
+
+# If Rex is currently engaged in conversation with a person, presence reactions
+# for THAT person are suppressed entirely while the engagement window is open.
+# The window ends when the conversation session ends or this many seconds pass
+# since the last exchange with that person.
+ENGAGEMENT_WINDOW_SECS = 90.0
 
 # Generic addresses Rex uses when reacting to an unknown (unnamed) person.
 UNKNOWN_PERSON_ADDRESSES = ["hey you", "you there", "mystery organic", "that one"]

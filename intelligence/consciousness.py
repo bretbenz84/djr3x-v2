@@ -92,6 +92,55 @@ _presence_reaction_lock = threading.Lock()
 # face-gone-but-still-talking (situation.likely_still_present) doesn't trigger a reaction.
 _pending_departure_keys: dict = {}
 
+# Unified per-person presence cooldown (ANY reaction type — departure or return).
+# Takes precedence over per-type cooldowns to stop Rex from narrating every
+# micro-absence of the same person.
+_last_presence_reaction_at: dict = {}
+
+# First-missing-at timestamp per tracking key. A person must be continuously
+# missing for PRESENCE_DEPARTURE_CONFIRM_SECS before a departure is staged.
+_first_missing_at: dict = {}
+
+# Engagement tracking: the person_db_id Rex is currently talking with, if any.
+# Presence reactions for this person are suppressed while the engagement is open.
+_engaged_lock = threading.Lock()
+_engaged_person_id: Optional[int] = None
+_engaged_last_touch_at: float = 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Engagement API — called by interaction.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+def mark_engagement(person_id: Optional[int]) -> None:
+    """Record that Rex is actively conversing with person_id. Called on every
+    identified speech segment. Resets the engagement window."""
+    global _engaged_person_id, _engaged_last_touch_at
+    if person_id is None:
+        return
+    with _engaged_lock:
+        _engaged_person_id = person_id
+        _engaged_last_touch_at = time.monotonic()
+
+
+def clear_engagement() -> None:
+    """Clear engagement state — called on session end."""
+    global _engaged_person_id, _engaged_last_touch_at
+    with _engaged_lock:
+        _engaged_person_id = None
+        _engaged_last_touch_at = 0.0
+
+
+def is_engaged_with(person_id: Optional[int]) -> bool:
+    """True if person_id is currently Rex's active conversational partner."""
+    if person_id is None:
+        return False
+    window = getattr(config, "ENGAGEMENT_WINDOW_SECS", 90.0)
+    with _engaged_lock:
+        if _engaged_person_id != person_id:
+            return False
+        return (time.monotonic() - _engaged_last_touch_at) <= window
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public follow-up API
@@ -268,21 +317,48 @@ def _generate_and_speak(
     threading.Thread(target=_task, daemon=True).start()
 
 
+def _should_fire_presence(key, person_db_id: Optional[int], profile: SituationProfile) -> bool:
+    """
+    Unified gate for presence (departure/return) reactions.
+
+    Stricter than generic proactive speech: we never narrate presence events for
+    the person Rex is currently talking to, never during the user's own sentence,
+    never while another presence reaction for this person is already queued, and
+    never more often than PRESENCE_PER_PERSON_COOLDOWN_SECS per person.
+    """
+    if not _can_speak():
+        return False
+    if profile.user_mid_sentence:
+        return False
+    if is_engaged_with(person_db_id):
+        return False
+
+    cooldown = getattr(config, "PRESENCE_PER_PERSON_COOLDOWN_SECS", 120.0)
+    last = _last_presence_reaction_at.get(key, 0.0)
+    if last and (time.monotonic() - last) < cooldown:
+        return False
+
+    try:
+        from audio import speech_queue
+        if speech_queue.has_waiting_with_tag(f"presence:{key}"):
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def _generate_and_speak_presence(
     prompt: str,
     label: str,
+    tag_key,
     emotion: str = "neutral",
 ) -> None:
     """
     Presence-reaction variant of _generate_and_speak.
 
-    Differences from the generic helper:
-    - Uses _can_speak() (QUIET/SHUTDOWN only) instead of _can_proactive_speak(), so
-      it fires in both IDLE and ACTIVE states regardless of output_gate or response-wait.
-    - After LLM text is generated, polls output_gate.is_busy() for up to 5 s so the
-      reaction queues behind any ongoing TTS rather than being silently dropped.
-    - Adds a PRESENCE_REACTION_DELAY_SECS pause after the gate clears before speaking.
-    - Logs at INFO right before the tts.speak() call so departures are visible in the log.
+    All gating now flows through _should_fire_presence() before this is called.
+    The tag_key is used to coalesce duplicate queued reactions for the same
+    person (newer replaces older).
     """
     def _task():
         if not _presence_reaction_lock.acquire(blocking=False):
@@ -306,8 +382,10 @@ def _generate_and_speak_presence(
                 return
 
             from audio import speech_queue
+            tag = f"presence:{tag_key}"
             _log.info("consciousness: firing presence reaction — %s: %r", label, text[:120])
-            speech_queue.enqueue(text, emotion, priority=1)
+            _last_presence_reaction_at[tag_key] = time.monotonic()
+            speech_queue.enqueue(text, emotion, priority=1, tag=tag)
         except Exception as exc:
             _log.debug("_generate_and_speak_presence error: %s", exc)
         finally:
@@ -764,14 +842,17 @@ def _tracking_key(person: dict):
 def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
     """
     Compare person visibility against the previous tick for both known and unknown people.
-    Known people (have a name in the DB) get personalized reactions by name.
-    Unknown people (no DB record) are tracked by slot id and addressed generically.
 
-    Departure reactions are deferred into _pending_departure_keys and only fire once
-    situation.apparent_departure is True (face gone + VAD silent ≥ DEPARTURE_AUDIO_SILENCE_SECS),
-    suppressing false alarms when the user steps off-camera while still talking.
+    Hysteresis model:
+      - A person must be continuously missing for PRESENCE_DEPARTURE_CONFIRM_SECS
+        before we even consider them "gone." Single-frame detection flicker is ignored.
+      - Once confirmed gone, we stage a departure in _pending_departure_keys and wait
+        for apparent_departure (face-gone + VAD-silent) before speaking.
+      - _should_fire_presence() is the single gate for every presence reaction —
+        it enforces per-person cooldowns and the "no narrating the person you're
+        talking to" rule.
     """
-    global _visible_people, _pending_departure_keys
+    global _visible_people, _pending_departure_keys, _first_missing_at
 
     if not _can_speak():
         return
@@ -779,32 +860,55 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
     now = time.monotonic()
     departure_cooldown = getattr(config, "PRESENCE_DEPARTURE_COOLDOWN_SECS", 30)
     departure_audio_silence = getattr(config, "DEPARTURE_AUDIO_SILENCE_SECS", 3.0)
-    return_min_absent = getattr(config, "PRESENCE_RETURN_MIN_ABSENT_SECS", 10)
+    confirm_absent = getattr(config, "PRESENCE_DEPARTURE_CONFIRM_SECS", 8.0)
+    return_min_absent = getattr(config, "PRESENCE_RETURN_MIN_ABSENT_SECS", 30)
     unknown_addresses = getattr(config, "UNKNOWN_PERSON_ADDRESSES", ["hey you"])
 
-    # Build current tracked set: tracking_key → name (None for unknown people).
+    # Build current tracked set: tracking_key → (name, db_id).
     current_tracked: dict = {}
     for person in snapshot.get("people", []):
         key = _tracking_key(person)
-        current_tracked[key] = person.get("face_id")  # None if unrecognized
+        current_tracked[key] = (person.get("face_id"), person.get("person_db_id"))
 
     current_keys = set(current_tracked.keys())
 
-    # ── Stage departures: newly absent people enter the pending queue ──────────
-    for key in _visible_people - current_keys:
-        if key not in _pending_departure_keys:
-            # Capture person info while it's still in _last_snapshot
-            person_name = None
-            for p in _last_snapshot.get("people", []):
-                if _tracking_key(p) == key:
-                    person_name = p.get("face_id")
-                    break
-            _pending_departure_keys[key] = (now, person_name)
-            _log.debug("consciousness: queued pending departure for key=%s name=%r", key, person_name)
+    # ── Hysteresis: track "first-missing-at" and clear when visible ───────────
+    for key in _first_missing_at.keys() - current_keys:
+        pass  # still missing; keep the timestamp
+    # Start or clear the missing timer
+    for key in _visible_people:
+        if key in current_keys:
+            _first_missing_at.pop(key, None)
+        elif key not in _first_missing_at:
+            _first_missing_at[key] = now
+
+    # Anyone who reappears clears their timer
+    for key in current_keys:
+        _first_missing_at.pop(key, None)
+
+    # ── Stage departures once absence exceeds the confirmation window ─────────
+    for key, first_missing in list(_first_missing_at.items()):
+        if key in _pending_departure_keys:
+            continue
+        if (now - first_missing) < confirm_absent:
+            continue
+        # Capture person info from last snapshot.
+        person_name = None
+        person_db_id = None
+        for p in _last_snapshot.get("people", []):
+            if _tracking_key(p) == key:
+                person_name = p.get("face_id")
+                person_db_id = p.get("person_db_id")
+                break
+        _pending_departure_keys[key] = (first_missing, person_name, person_db_id)
+        _log.debug(
+            "consciousness: staged departure for key=%s name=%r after %.1fs absent",
+            key, person_name, now - first_missing,
+        )
 
     # ── Resolve pending departures ─────────────────────────────────────────────
     for key in list(_pending_departure_keys):
-        departed_at, person_name = _pending_departure_keys[key]
+        departed_at, person_name, person_db_id = _pending_departure_keys[key]
 
         # Person returned — cancel
         if key in current_keys:
@@ -820,8 +924,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         if profile.likely_still_present:
             continue
 
-        # Fire when apparent_departure is confirmed OR when the VAD-silence window
-        # has elapsed even without a global face_gone flag (multi-person scenario).
+        # Fire only when face-gone + VAD has been silent ≥ departure_audio_silence.
         should_fire = profile.apparent_departure or (
             (now - departed_at) >= departure_audio_silence
             and not profile.user_mid_sentence
@@ -829,8 +932,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         if not should_fire:
             continue
 
-        last_reaction = _last_departure_reaction_at.get(key, 0.0)
-        if now - last_reaction < departure_cooldown:
+        if not _should_fire_presence(key, person_db_id, profile):
             del _pending_departure_keys[key]
             continue
 
@@ -849,6 +951,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 "'Don't go too far, I can't roast you from a distance.' "
                 f"Address {first_name} by name. One line only.",
                 label=f"departure for {person_name}",
+                tag_key=key,
                 emotion="curious",
             )
         else:
@@ -862,37 +965,36 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 f"'And off goes {address}...', 'Huh. The mystery deepens.', "
                 f"'Farewell, {address}. Whoever you are.' One line only.",
                 label=f"departure for unknown ({key})",
+                tag_key=key,
                 emotion="curious",
             )
 
     # ── Returned: absent last tick, visible now ────────────────────────────────
-    # Check absence before updating _last_seen.
     for key in current_keys - _visible_people:
-        person_name = current_tracked[key]
+        person_name, person_db_id = current_tracked[key]
 
         # First time ever seen this session.
         if key not in _last_seen:
-            # Greet known people by name on startup — distinct from the generic
-            # crowd-count reaction in step 8, which handles new-arrival commentary.
             if isinstance(key, int) and person_name and key not in _greeted_this_session:
                 _greeted_this_session.add(key)
-                first_name = person_name.split()[0]
-                _log.info("consciousness: startup greeting for %s", person_name)
-                _generate_and_speak_presence(
-                    f"You just started up and immediately see '{first_name}', someone you know. "
-                    f"Greet them in one short in-character Rex line. "
-                    f"Address {first_name} by name. Make it feel like Rex just booted and is glad to see a familiar face.",
-                    label=f"startup greeting for {person_name}",
-                    emotion="excited",
-                )
+                if _should_fire_presence(key, person_db_id, profile):
+                    first_name = person_name.split()[0]
+                    _log.info("consciousness: startup greeting for %s", person_name)
+                    _generate_and_speak_presence(
+                        f"You just started up and immediately see '{first_name}', someone you know. "
+                        f"Greet them in one short in-character Rex line. "
+                        f"Address {first_name} by name. Make it feel like Rex just booted and is glad to see a familiar face.",
+                        label=f"startup greeting for {person_name}",
+                        tag_key=key,
+                        emotion="excited",
+                    )
             continue
 
         absent_secs = now - _last_seen[key]
         if absent_secs < return_min_absent:
             continue
 
-        last_reaction = _last_return_reaction_at.get(key, 0.0)
-        if now - last_reaction < departure_cooldown:
+        if not _should_fire_presence(key, person_db_id, profile):
             continue
 
         _last_return_reaction_at[key] = now
@@ -909,6 +1011,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 "'I knew you couldn't stay away.' "
                 f"Address {first_name} by name. One line only.",
                 label=f"return for {person_name}",
+                tag_key=key,
                 emotion="neutral",
             )
         else:
@@ -922,6 +1025,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 f"'Oh, you again.', 'Back already, mystery organic?', "
                 "'I see you returned. Bold choice.' One line only.",
                 label=f"return for unknown ({key})",
+                tag_key=key,
                 emotion="neutral",
             )
 
@@ -1090,6 +1194,9 @@ def start() -> None:
     _proactive_speech_pending.clear()
     _greeted_this_session.clear()
     _pending_departure_keys.clear()
+    _first_missing_at.clear()
+    _last_presence_reaction_at.clear()
+    clear_engagement()
     with _turn_lock:
         _response_wait_until = 0.0
         _last_proactive_speech_at = 0.0
