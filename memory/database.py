@@ -30,7 +30,36 @@ _EXPECTED_TABLES = frozenset({
     "conversations",
     "person_events",
     "personality_settings",
+    "person_relationships",
 })
+
+# Inline migrations for schema additions introduced after initial deploy.
+# Idempotent: CREATE TABLE IF NOT EXISTS is safe on both new and old DBs.
+_MIGRATIONS = [
+    """
+    CREATE TABLE IF NOT EXISTS person_relationships (
+        id              INTEGER PRIMARY KEY,
+        from_person_id  INTEGER REFERENCES people(id),
+        to_person_id    INTEGER REFERENCES people(id),
+        relationship    TEXT,
+        described_by    INTEGER REFERENCES people(id),
+        created_at      DATETIME,
+        updated_at      DATETIME,
+        UNIQUE(from_person_id, to_person_id, relationship)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_rel_from ON person_relationships(from_person_id)",
+    "CREATE INDEX IF NOT EXISTS idx_rel_to   ON person_relationships(to_person_id)",
+]
+
+
+def _run_migrations() -> None:
+    try:
+        with connection() as conn:
+            for stmt in _MIGRATIONS:
+                conn.execute(stmt)
+    except Exception as exc:
+        _log.warning("schema migration skipped: %s", exc)
 
 
 @contextmanager
@@ -103,7 +132,11 @@ def executemany(query: str, params_seq: list[tuple]) -> int | None:
 
 
 def verify_schema() -> None:
-    """Raise RuntimeError if people.db is missing or any of the 7 expected tables are absent."""
+    """Raise RuntimeError if people.db is missing or any expected table is absent.
+
+    Runs inline migrations first so older DBs transparently gain new tables.
+    """
+    _run_migrations()
     try:
         with connection() as conn:
             rows = conn.execute(

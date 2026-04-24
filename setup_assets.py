@@ -141,6 +141,20 @@ CREATE TABLE IF NOT EXISTS personality_settings (
     updated_at  DATETIME,
     updated_by  TEXT
 );
+
+CREATE TABLE IF NOT EXISTS person_relationships (
+    id              INTEGER PRIMARY KEY,
+    from_person_id  INTEGER REFERENCES people(id),
+    to_person_id    INTEGER REFERENCES people(id),
+    relationship    TEXT,
+    described_by    INTEGER REFERENCES people(id),
+    created_at      DATETIME,
+    updated_at      DATETIME,
+    UNIQUE(from_person_id, to_person_id, relationship)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rel_from ON person_relationships(from_person_id);
+CREATE INDEX IF NOT EXISTS idx_rel_to   ON person_relationships(to_person_id);
 """
 
 

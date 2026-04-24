@@ -304,6 +304,102 @@ def _bind_world_state_identity(person_id: int, name: str) -> None:
         _log.debug("world_state identity bind failed: %s", exc)
 
 
+def _handle_relationship_reply(
+    rel_ctx: dict,
+    user_text: str,
+    speaker_person_id: Optional[int],
+    speaker_person_name: Optional[str],
+) -> None:
+    """
+    Process the engaged person's reply to Rex's "who's this?" question.
+
+    Extracts {name, relationship}. If both present and the speaker matches the
+    engaged person Rex asked, enroll the newcomer (face + DB row), save the
+    relationship edge, and speak a brief acknowledgment.
+    """
+    engaged_id = rel_ctx.get("engaged_person_id")
+    engaged_name = rel_ctx.get("engaged_name") or "friend"
+    slot_id = rel_ctx.get("slot_id") or ""
+
+    # Only trust the reply if it came from the person Rex actually asked. If a
+    # different speaker answered first, re-open the window for the real engaged
+    # person by not marking the slot handled.
+    if speaker_person_id is not None and engaged_id is not None and speaker_person_id != engaged_id:
+        _log.info(
+            "[interaction] relationship reply came from person_id=%s but Rex asked "
+            "person_id=%s — ignoring",
+            speaker_person_id, engaged_id,
+        )
+        return
+
+    try:
+        parsed = llm.extract_relationship_introduction(user_text, speaker_person_name or engaged_name)
+    except Exception as exc:
+        _log.debug("relationship extraction error: %s", exc)
+        parsed = {"name": None, "relationship": None}
+
+    name = parsed.get("name")
+    relationship = parsed.get("relationship")
+
+    if not name:
+        # Deflection or no name given. Don't badger — mark slot handled so Rex
+        # moves on. Relationship could still be saved if name later surfaces.
+        _log.info(
+            "[interaction] relationship reply had no name — user_text=%r parsed=%r",
+            user_text, parsed,
+        )
+        consciousness.note_relationship_slot_handled(slot_id)
+        return
+
+    # Enroll the newcomer. Use enroll_unknown_face so we don't rebind the
+    # engaged person's face to the new name.
+    try:
+        from vision import camera as camera_mod
+        from vision import face as face_mod
+
+        new_id = people_memory.enroll_person(name)
+        if new_id is None:
+            _log.error("[interaction] failed to create DB row for newcomer %r", name)
+            consciousness.note_relationship_slot_handled(slot_id)
+            return
+
+        first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
+        if first_inc > 0:
+            people_memory.update_familiarity(new_id, first_inc)
+
+        frame = camera_mod.capture_still()
+        if frame is not None:
+            face_mod.enroll_unknown_face(new_id, frame)
+            threading.Thread(
+                target=face_mod.update_appearance,
+                args=(new_id, frame.copy()),
+                daemon=True,
+                name=f"appearance-enroll-{new_id}",
+            ).start()
+
+        # Save the relationship edge (speaker → newcomer).
+        if engaged_id and relationship:
+            try:
+                from memory import social as social_memory
+                social_memory.save_relationship(
+                    from_person_id=engaged_id,
+                    to_person_id=new_id,
+                    relationship=relationship,
+                    described_by=engaged_id,
+                )
+            except Exception as exc:
+                _log.warning("social.save_relationship failed: %s", exc)
+
+        _log.info(
+            "[interaction] enrolled newcomer %s (person_id=%s) as %s of %s",
+            name, new_id, relationship or "acquaintance", engaged_name,
+        )
+    except Exception as exc:
+        _log.error("relationship enrollment failed: %s", exc)
+    finally:
+        consciousness.note_relationship_slot_handled(slot_id)
+
+
 def _enroll_new_person(name: str, audio_array: np.ndarray) -> Optional[int]:
     """
     Enroll a brand-new person and attach available voice/face biometrics.
@@ -1053,6 +1149,13 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 _identity_prompt_until,
                 time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS,
             )
+
+        # Consciousness asked the ENGAGED person about an unknown newcomer.
+        # Try to extract {name, relationship}, enroll the newcomer using the
+        # current unknown face, and save the relationship edge.
+        rel_ctx = consciousness.consume_relationship_prompt_request()
+        if rel_ctx is not None:
+            _handle_relationship_reply(rel_ctx, text, person_id, person_name)
 
         # If we don't recognize the speaker but there is an unknown person visible,
         # attempt self-identification enrollment from this utterance.

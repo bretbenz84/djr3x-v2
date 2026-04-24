@@ -202,6 +202,41 @@ def enroll_face(person_id: int, frame: np.ndarray) -> bool:
     return False
 
 
+def enroll_unknown_face(person_id: int, frame: np.ndarray) -> bool:
+    """
+    Like enroll_face, but when multiple faces are present, pick the LARGEST face
+    that does NOT already match an existing person in the DB. Used when Rex
+    enrolls a newcomer while still seeing the known conversational partner.
+    """
+    faces = detect_faces(frame)
+    if not faces:
+        _log.warning("enroll_unknown_face: no face detected (person_id=%d)", person_id)
+        return False
+
+    # Filter to faces that DON'T identify as any existing known person.
+    unknown_faces = []
+    for f in faces:
+        match = identify_face(f["encoding"])
+        if match is None:
+            unknown_faces.append(f)
+
+    if not unknown_faces:
+        # Fallback: all faces are known; pick whichever is largest anyway.
+        _log.warning(
+            "enroll_unknown_face: no unknown face found in frame, falling back to largest (person_id=%d)",
+            person_id,
+        )
+        unknown_faces = faces
+
+    target = _largest_face(unknown_faces)
+    result = people.add_biometric(person_id, "face", target["encoding"])
+    if result is not None:
+        _log.info("enroll_unknown_face: biometric stored for person_id=%d", person_id)
+        return True
+    _log.error("enroll_unknown_face: database write failed for person_id=%d", person_id)
+    return False
+
+
 def get_face_position(frame: np.ndarray) -> Optional[tuple[int, int]]:
     """
     Return the (x, y) pixel center of the largest detected face, or None.

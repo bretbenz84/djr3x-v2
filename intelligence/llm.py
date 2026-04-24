@@ -161,6 +161,15 @@ def _build_person_context(person_id: int) -> str:
             f"\"{next_q['text']}\" (depth {next_q['depth']})."
         )
 
+    # Known inter-person relationships (e.g. "Bret is partner of JT").
+    try:
+        from memory import social as _social
+        rel_summary = _social.summarize_for_prompt(person_id, name)
+        if rel_summary:
+            lines.append("Known relationships to others: " + rel_summary + ".")
+    except Exception as exc:
+        _log.debug("relationship summary error: %s", exc)
+
     return "\n".join(lines)
 
 
@@ -360,6 +369,68 @@ def generate_curiosity_question(response_text: str, user_text: str) -> str:
     except Exception as exc:
         _log.debug("generate_curiosity_question failed: %s", exc)
         return ""
+
+
+def extract_relationship_introduction(
+    user_text: str,
+    speaker_name: str,
+) -> dict:
+    """
+    Extract a newcomer's name and their relationship to the speaker from a short
+    reply like "Oh this is my partner JT" or "that's my brother Mike".
+
+    Returns a dict with keys:
+      {"name": str | None, "relationship": str | None}
+
+    Returns empty values if the utterance doesn't actually introduce someone —
+    e.g. "never mind", "just a friend" without a name, "I don't know them".
+    """
+    if not user_text or not user_text.strip():
+        return {"name": None, "relationship": None}
+
+    prompt = (
+        f'The person speaking is named {speaker_name!r}. They just said:\n'
+        f'  "{user_text}"\n\n'
+        "Rex had just asked them who a new unfamiliar person in the room is, and "
+        "what that person's relationship to them is.\n\n"
+        "From the speaker's reply, extract:\n"
+        '  "name": the newcomer\'s first name (string), or null if not stated.\n'
+        '  "relationship": a single lowercase label for the relationship FROM THE '
+        "SPEAKER'S PERSPECTIVE toward the newcomer (e.g. \"partner\", \"friend\", "
+        '"brother", "son", "coworker", "roommate", "boss", "stranger"), or null '
+        "if no relationship was mentioned.\n\n"
+        "Rules:\n"
+        "- If the speaker declined, deflected, or said they don't know the person, "
+        "return null for both.\n"
+        "- Normalize relationship to a single short word (e.g. \"best friend\" → "
+        '"bestfriend", "my wife" → "wife").\n'
+        "- Return ONLY a JSON object, no preamble or markdown."
+    )
+    try:
+        resp = _client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=80,
+            response_format={"type": "json_object"},
+        )
+        import json as _json
+        content = resp.choices[0].message.content or "{}"
+        parsed = _json.loads(content)
+        name = parsed.get("name")
+        rel = parsed.get("relationship")
+        if isinstance(name, str):
+            name = name.strip() or None
+        else:
+            name = None
+        if isinstance(rel, str):
+            rel = rel.strip().lower() or None
+        else:
+            rel = None
+        return {"name": name, "relationship": rel}
+    except Exception as exc:
+        _log.debug("extract_relationship_introduction failed: %s", exc)
+        return {"name": None, "relationship": None}
 
 
 def extract_facts(

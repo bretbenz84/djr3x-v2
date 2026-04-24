@@ -594,6 +594,13 @@ ENGAGEMENT_WINDOW_SECS = 90.0
 # Generic addresses Rex uses when reacting to an unknown (unnamed) person.
 UNKNOWN_PERSON_ADDRESSES = ["hey you", "you there", "mystery organic", "that one"]
 
+# Continuous visible-seconds an unknown face must be present while Rex is
+# engaged with a known person before Rex asks "who's this?"
+UNKNOWN_WITH_ENGAGED_CONFIRM_SECS = 5.0
+
+# Cooldown on relationship-inquiry prompts so Rex doesn't badger.
+RELATIONSHIP_PROMPT_COOLDOWN_SECS = 45.0
+
 # ─────────────────────────────────────────────────────────────────────────────
 # IDLE MICRO-BEHAVIORS
 # ─────────────────────────────────────────────────────────────────────────────

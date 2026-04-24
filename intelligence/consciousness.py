@@ -62,6 +62,18 @@ _pending_identity_prompt = threading.Event()
 _last_identity_prompt_at: float = 0.0
 _IDENTITY_PROMPT_COOLDOWN_SECS = 45.0
 
+# Pending RELATIONSHIP prompt: Rex asked the engaged person who the stranger is.
+# When set, the next user utterance should be parsed for {name, relationship}
+# and, if found, the new face is enrolled and an edge saved.
+_pending_relationship_prompt = threading.Event()
+_pending_relationship_context: dict = {}  # {"engaged_person_id": int, "engaged_name": str, "slot_id": str, "asked_at": float}
+_RELATIONSHIP_PROMPT_COOLDOWN_SECS = 45.0
+_UNKNOWN_WITH_ENGAGED_CONFIRM_SECS = 5.0
+# Per-session slot ids we've already asked about, so Rex doesn't re-ask.
+_asked_relationship_slots: set[str] = set()
+# Track first-seen time of each unknown slot (while any engaged conversation is open).
+_unknown_first_seen_at: dict[str, float] = {}
+
 # Conversation turn-taking guard: when Rex asks a question, proactive speech
 # pauses briefly so people can answer without being talked over.
 _response_wait_until: float = 0.0
@@ -180,6 +192,27 @@ def consume_identity_prompt_request() -> bool:
         _pending_identity_prompt.clear()
         return True
     return False
+
+
+def consume_relationship_prompt_request() -> Optional[dict]:
+    """
+    If Rex recently asked the engaged person about an unknown stranger, return
+    the context dict (engaged_person_id, engaged_name, slot_id, asked_at) once
+    and clear the event. Returns None if no prompt is pending.
+    """
+    if _pending_relationship_prompt.is_set():
+        _pending_relationship_prompt.clear()
+        ctx = dict(_pending_relationship_context)
+        _pending_relationship_context.clear()
+        return ctx
+    return None
+
+
+def note_relationship_slot_handled(slot_id: str) -> None:
+    """Called by interaction after it resolves (or gives up on) a slot so
+    consciousness won't re-ask about the same unknown face in this session."""
+    if slot_id:
+        _asked_relationship_slots.add(slot_id)
 
 
 def begin_response_wait(window_secs: Optional[float] = None) -> None:
@@ -1042,6 +1075,105 @@ def _tracking_key(person: dict):
     return db_id if db_id is not None else person.get("id", "unknown")
 
 
+def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    When Rex is engaged with a known person and an UNKNOWN face has been
+    continuously visible for UNKNOWN_WITH_ENGAGED_CONFIRM_SECS, ask the engaged
+    person who the stranger is and what their relationship is.
+
+    Sets _pending_relationship_prompt so interaction.py parses the next utterance
+    for a {name, relationship} pair.
+    """
+    global _last_identity_prompt_at, _unknown_first_seen_at
+
+    if not _can_speak():
+        return
+    if profile.suppress_proactive:
+        return
+    if _pending_relationship_prompt.is_set():
+        return
+
+    now = time.monotonic()
+    cooldown = getattr(config, "RELATIONSHIP_PROMPT_COOLDOWN_SECS", _RELATIONSHIP_PROMPT_COOLDOWN_SECS)
+    if (now - _last_identity_prompt_at) < cooldown:
+        # Reuse the identity-prompt cooldown so Rex doesn't spam prompts.
+        return
+
+    # Find engaged person (if any) from current snapshot.
+    engaged_id: Optional[int] = None
+    engaged_name: Optional[str] = None
+    with _engaged_lock:
+        if _engaged_person_id is None:
+            # Not currently engaged; drop all unknown timers to avoid stale state.
+            _unknown_first_seen_at.clear()
+            return
+        engaged_id = _engaged_person_id
+
+    people = snapshot.get("people", []) or []
+    known_visible = False
+    unknown_slots: list[str] = []
+    for p in people:
+        pid = p.get("person_db_id")
+        slot = p.get("id") or ""
+        if pid == engaged_id:
+            known_visible = True
+            engaged_name = p.get("face_id")
+        if pid is None and slot:
+            unknown_slots.append(slot)
+
+    if not known_visible or not unknown_slots:
+        # No relevant unknowns while engaged — prune timers.
+        for slot in list(_unknown_first_seen_at):
+            if slot not in unknown_slots:
+                _unknown_first_seen_at.pop(slot, None)
+        return
+
+    # Track continuous presence per unknown slot while engaged.
+    for slot in unknown_slots:
+        if slot not in _unknown_first_seen_at:
+            _unknown_first_seen_at[slot] = now
+
+    # Find a slot that has persisted long enough and hasn't been asked about yet.
+    confirm = getattr(config, "UNKNOWN_WITH_ENGAGED_CONFIRM_SECS", _UNKNOWN_WITH_ENGAGED_CONFIRM_SECS)
+    ripe_slot: Optional[str] = None
+    for slot in unknown_slots:
+        if slot in _asked_relationship_slots:
+            continue
+        if (now - _unknown_first_seen_at.get(slot, now)) >= confirm:
+            ripe_slot = slot
+            break
+    if ripe_slot is None:
+        return
+
+    # Gate on proactive speech — need an open mouth slot.
+    if not _can_proactive_speak():
+        return
+
+    first_name = (engaged_name or "").split()[0] or "friend"
+    _last_identity_prompt_at = now
+    _pending_relationship_context.clear()
+    _pending_relationship_context.update({
+        "engaged_person_id": engaged_id,
+        "engaged_name": engaged_name,
+        "slot_id": ripe_slot,
+        "asked_at": now,
+    })
+    _pending_relationship_prompt.set()
+    _log.info(
+        "consciousness: asking %s about unknown visitor (slot=%s)",
+        engaged_name, ripe_slot,
+    )
+    _generate_and_speak(
+        f"You're talking with '{first_name}' and a new unfamiliar face has just "
+        f"joined the view. In one short in-character Rex line, ask {first_name} "
+        f"who the newcomer is AND what their relationship to {first_name} is — "
+        f"e.g. 'Oh hey, who's this, {first_name}? Friend of yours?' Keep it warm "
+        f"and curious, one line only, ending with a question mark.",
+        emotion="curious",
+        wait_secs=getattr(config, "IDENTITY_RESPONSE_WAIT_SECS", 20.0),
+    )
+
+
 def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
     """
     Compare person visibility against the previous tick for both known and unknown people.
@@ -1393,6 +1525,9 @@ def _loop() -> None:
             # 10. Presence tracking (departure / return reactions)
             _step_presence_tracking(snapshot, profile)
 
+            # 10b. Social inquiry — ask engaged person about unknown newcomer
+            _step_relationship_inquiry(snapshot, profile)
+
             # 11. Face tracking
             _step_face_tracking(frame)
 
@@ -1419,6 +1554,10 @@ def start() -> None:
         return
     _stop_event.clear()
     _pending_identity_prompt.clear()
+    _pending_relationship_prompt.clear()
+    _pending_relationship_context.clear()
+    _asked_relationship_slots.clear()
+    _unknown_first_seen_at.clear()
     _proactive_speech_pending.clear()
     _greeted_this_session.clear()
     _pending_departure_keys.clear()
