@@ -132,6 +132,10 @@ def fetch_weather() -> dict:
         description = cc["weatherDesc"][0]["value"]
         condition = _weather_code_to_condition(int(cc["weatherCode"]))
         result = {"condition": condition, "temp_f": temp_f, "description": description}
+        _log.info(
+            "[chronoception] wttr.in returned for %s: %d°F %s (%s)",
+            config.WEATHER_LOCATION, temp_f, description, condition,
+        )
     except Exception as exc:
         _log.error("fetch_weather failed: %s", exc)
         result = {"condition": "unknown", "temp_f": None, "description": "unavailable"}

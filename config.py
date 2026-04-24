@@ -742,8 +742,10 @@ AUDIO_RESPONSE_VARIATIONS = 5
 # WORLD AWARENESS — Weather & Location
 # ─────────────────────────────────────────────────────────────────────────────
 
-# City used for weather API lookups — affects mood baseline and Rex's commentary
-WEATHER_LOCATION = "Davis, CA"
+# City used for weather API lookups — affects mood baseline and Rex's commentary.
+# Use the full state name; wttr.in mis-resolves the "CA" abbreviation to a
+# different (much colder) Davis.
+WEATHER_LOCATION = "Sacramento, California"
 
 # Physical venue name — injected into WorldState and system prompt
 VENUE_NAME = "Oga's Cantina"

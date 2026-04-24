@@ -612,11 +612,14 @@ def _execute_command(
         from awareness.chronoception import get_time_context
         ctx = get_time_context()
         h = ctx.get("hour", 0)
+        minute = ctx.get("minute", 0)
         ampm = "AM" if h < 12 else "PM"
         h12 = h % 12 or 12
         return _say(
-            f"The current time is {h12}:{ctx.get('minute', 0):02d} {ampm}. "
-            f"Tell the person the time in one in-character line."
+            f"The exact current time is {h12}:{minute:02d} {ampm}. "
+            f"Tell the person the time in one in-character line. "
+            f"You MUST state both the hour and the minute exactly as given "
+            f"({h12}:{minute:02d}) — do not round to the hour, do not omit the minute."
         )
 
     if key == "date_query":
@@ -1130,7 +1133,9 @@ def _handle_classified_intent(
         ampm = "AM" if now.hour < 12 else "PM"
         return _say(
             f"Tell the user the current time is exactly {h12}:{now.minute:02d} {ampm} "
-            f"in Rex character. Be brief."
+            f"in Rex character. Be brief. You MUST state both the hour and the minute "
+            f"exactly as given ({h12}:{now.minute:02d}) — do not round to the hour, "
+            f"do not omit the minute."
         )
 
     if intent == "query_weather":
@@ -1138,12 +1143,20 @@ def _handle_classified_intent(
         w = fetch_weather()
         temp = w.get("temp_f")
         desc = w.get("description") or w.get("condition") or "unknown"
+        location = getattr(config, "WEATHER_LOCATION", "the local area")
+        _log.info("[interaction] weather fetched for %r: %s", location, w)
         if temp is None:
-            facts = f"Weather data is unavailable right now (conditions: {desc})."
-        else:
-            facts = f"It is {temp}°F and {desc} right now."
+            return _say(
+                "The user asked about the weather but your weather feed is offline "
+                "right now. Tell them you can't reach the weather service in one "
+                "Rex-style line. Do NOT make up a temperature or conditions."
+            )
         return _say(
-            f"Tell the user the current weather in Rex character. Facts: {facts} Be brief."
+            f"The real current weather in {location} is exactly {temp}°F and "
+            f"{desc}. Tell the user the weather in one Rex-style line. "
+            f"You MUST state the temperature exactly as given ({temp}°F) and the "
+            f"conditions ({desc}) — do not round, do not invent different numbers, "
+            f"do not substitute different conditions."
         )
 
     if intent == "query_games":
