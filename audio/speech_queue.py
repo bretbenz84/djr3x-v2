@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 # ── Queue item ─────────────────────────────────────────────────────────────────
 
 class _Item:
-    __slots__ = ("neg_priority", "seq", "text", "emotion", "audio_path", "done", "tag")
+    __slots__ = (
+        "neg_priority", "seq", "text", "emotion", "audio_path",
+        "done", "tag", "pre_beat_ms", "post_beat_ms",
+    )
 
     def __init__(
         self,
@@ -41,6 +44,8 @@ class _Item:
         audio_path: Optional[str],
         done: threading.Event,
         tag: Optional[str] = None,
+        pre_beat_ms: int = 0,
+        post_beat_ms: int = 0,
     ) -> None:
         self.neg_priority = -priority
         self.seq = seq
@@ -49,6 +54,8 @@ class _Item:
         self.audio_path = audio_path
         self.done = done
         self.tag = tag
+        self.pre_beat_ms = pre_beat_ms
+        self.post_beat_ms = post_beat_ms
 
     def __lt__(self, other: "_Item") -> bool:
         if self.neg_priority != other.neg_priority:
@@ -83,17 +90,29 @@ class _SpeechQueue:
         emotion: str = "neutral",
         priority: int = 0,
         tag: Optional[str] = None,
+        pre_beat_ms: int = 0,
+        post_beat_ms: int = 0,
     ) -> threading.Event:
         """Enqueue text for TTS. Returns an Event set when playback finishes.
 
         If tag is given, any waiting items with the same tag are dropped first —
         useful for coalescing stale presence/idle reactions.
-        """
-        return self._add(text, emotion, None, priority, tag)
 
-    def enqueue_audio_file(self, path: str, priority: int = 0, tag: Optional[str] = None) -> threading.Event:
+        pre_beat_ms / post_beat_ms add a silent pause before / after speaking
+        (worker holds the queue open during the beat so nothing else cuts in).
+        """
+        return self._add(text, emotion, None, priority, tag, pre_beat_ms, post_beat_ms)
+
+    def enqueue_audio_file(
+        self,
+        path: str,
+        priority: int = 0,
+        tag: Optional[str] = None,
+        pre_beat_ms: int = 0,
+        post_beat_ms: int = 0,
+    ) -> threading.Event:
         """Enqueue an audio file for direct playback. Returns an Event set when done."""
-        return self._add(None, "neutral", path, priority, tag)
+        return self._add(None, "neutral", path, priority, tag, pre_beat_ms, post_beat_ms)
 
     def drop_by_tag(self, tag: str) -> int:
         """Drop all *waiting* items whose tag matches. Returns count dropped."""
@@ -143,6 +162,8 @@ class _SpeechQueue:
         audio_path: Optional[str],
         priority: int,
         tag: Optional[str] = None,
+        pre_beat_ms: int = 0,
+        post_beat_ms: int = 0,
     ) -> threading.Event:
         done = threading.Event()
         should_preempt = False
@@ -168,7 +189,8 @@ class _SpeechQueue:
             self._seq += 1
             heapq.heappush(
                 self._heap,
-                _Item(priority, seq, text, emotion, audio_path, done, tag),
+                _Item(priority, seq, text, emotion, audio_path, done, tag,
+                      pre_beat_ms, post_beat_ms),
             )
             self._not_empty.notify()
 
@@ -199,11 +221,19 @@ class _SpeechQueue:
                 except Exception:
                     pass
 
+                if item.pre_beat_ms > 0:
+                    import time as _t
+                    _t.sleep(item.pre_beat_ms / 1000.0)
+
                 if item.audio_path:
                     self._play_file(item.audio_path)
                 elif item.text:
                     from audio import tts
                     tts.speak(item.text, item.emotion)
+
+                if item.post_beat_ms > 0:
+                    import time as _t
+                    _t.sleep(item.post_beat_ms / 1000.0)
             except Exception as exc:
                 logger.error("speech_queue worker error: %s", exc)
             finally:
@@ -253,14 +283,22 @@ def enqueue(
     emotion: str = "neutral",
     priority: int = 0,
     tag: Optional[str] = None,
+    pre_beat_ms: int = 0,
+    post_beat_ms: int = 0,
 ) -> threading.Event:
     """Enqueue text for TTS speech. Returns an Event set when playback finishes."""
-    return _queue.enqueue(text, emotion, priority, tag)
+    return _queue.enqueue(text, emotion, priority, tag, pre_beat_ms, post_beat_ms)
 
 
-def enqueue_audio_file(path: str, priority: int = 0, tag: Optional[str] = None) -> threading.Event:
+def enqueue_audio_file(
+    path: str,
+    priority: int = 0,
+    tag: Optional[str] = None,
+    pre_beat_ms: int = 0,
+    post_beat_ms: int = 0,
+) -> threading.Event:
     """Enqueue an audio file for playback. Returns an Event set when done."""
-    return _queue.enqueue_audio_file(path, priority, tag)
+    return _queue.enqueue_audio_file(path, priority, tag, pre_beat_ms, post_beat_ms)
 
 
 def clear_below_priority(n: int) -> None:

@@ -188,6 +188,11 @@ HALLUCINATION_BLOCKLIST = [
 # Minimum fuzzy-match similarity score to accept a command match (0.0–1.0)
 COMMAND_FUZZY_THRESHOLD = 0.82
 
+# When True, the LLM fallback path runs a fast intent classifier so questions
+# about Rex's own capabilities / time / weather / uptime / vision get answered
+# with real data instead of free-form LLM guesses. Disable if latency suffers.
+INTENT_CLASSIFIER_ENABLED = True
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SERVOS — Pololu Maestro Mini 18 (all values in quarter-microseconds)
 # ─────────────────────────────────────────────────────────────────────────────

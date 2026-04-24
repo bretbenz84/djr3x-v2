@@ -29,6 +29,7 @@ from audio import speech_queue, output_gate
 from audio import echo_cancel
 from intelligence import command_parser, llm, personality
 from intelligence import consciousness
+from intelligence import intent_classifier
 from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
@@ -136,7 +137,12 @@ def _can_speak() -> bool:
     return state_module.get_state() not in (State.QUIET, State.SHUTDOWN)
 
 
-def _speak_blocking(text: str, emotion: str = "neutral", priority: int = 1) -> bool:
+def _speak_blocking(
+    text: str,
+    emotion: str = "neutral",
+    priority: int = 1,
+    pre_beat_ms: int = 0,
+) -> bool:
     """
     Enqueue text for speech and block until playback finishes, monitoring for
     wake-word interruption.  Returns True on normal completion, False if cut short.
@@ -148,7 +154,19 @@ def _speak_blocking(text: str, emotion: str = "neutral", priority: int = 1) -> b
     if not _can_speak() or not text or not text.strip():
         return True
 
-    done = speech_queue.enqueue(text, emotion, priority=priority)
+    # Post-punchline beat: a brief silence after a normal-priority response so
+    # the line lands. Skipped for urgent acks (priority >= 2), filler, etc.
+    post_beat_ms = 0
+    if priority == 1:
+        beat_min = getattr(config, "POST_PUNCHLINE_BEAT_MS_MIN", 0)
+        beat_max = getattr(config, "POST_PUNCHLINE_BEAT_MS_MAX", 0)
+        if beat_max > 0 and beat_max >= beat_min:
+            post_beat_ms = random.randint(beat_min, beat_max)
+
+    done = speech_queue.enqueue(
+        text, emotion, priority=priority,
+        pre_beat_ms=pre_beat_ms, post_beat_ms=post_beat_ms,
+    )
 
     while not done.wait(timeout=0.05):
         if _interrupted.is_set():
@@ -531,9 +549,38 @@ def _stream_llm_response(text: str, person_id: Optional[int]) -> str:
     Collecting before speaking keeps AEC suppression as one continuous window
     per response. At max_tokens=150 the added latency is negligible.
     """
+    # Fire the surprise classifier in parallel with the main LLM stream so
+    # its result is (usually) ready by the time the response text is in hand.
+    # If it returns is_surprising=True before we speak, we prepend a brief
+    # silent beat — Rex's "...huh, didn't see that coming" pause.
+    surprise_result: dict[str, bool] = {"value": False}
+
+    def _classify() -> None:
+        try:
+            surprise_result["value"] = llm.classify_surprise(text)
+        except Exception as exc:
+            _log.debug("surprise classify thread error: %s", exc)
+
+    surprise_thread = threading.Thread(
+        target=_classify, daemon=True, name="surprise-classify"
+    )
+    surprise_thread.start()
+
     full_text = llm.get_response(text, person_id)
+
+    pre_beat_ms = 0
     if full_text and full_text.strip() and not _interrupted.is_set():
-        _speak_blocking(full_text)
+        # Brief join — classifier usually finishes before or alongside the
+        # main response since its prompt is tiny. Cap the wait so a slow
+        # classifier never delays Rex perceptibly.
+        surprise_thread.join(timeout=0.3)
+        if surprise_result["value"]:
+            beat_min = getattr(config, "SURPRISE_PAUSE_MS_MIN", 500)
+            beat_max = getattr(config, "SURPRISE_PAUSE_MS_MAX", 1000)
+            if beat_max >= beat_min > 0:
+                pre_beat_ms = random.randint(beat_min, beat_max)
+                _log.info("[interaction] surprise beat: %d ms", pre_beat_ms)
+        _speak_blocking(full_text, pre_beat_ms=pre_beat_ms)
     return full_text
 
 
@@ -1058,6 +1105,109 @@ def _curiosity_check(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Intent-routed local responses (LLM fallback path)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _handle_classified_intent(
+    intent: str,
+    raw_text: str,
+    person_id: Optional[int],
+) -> Optional[str]:
+    """Answer a classified intent locally with real data, in Rex's voice.
+
+    Returns the spoken response text, or None if the intent should fall
+    through to the normal LLM path (i.e. 'general' or unhandled).
+    """
+    def _say(prompt: str) -> str:
+        resp = llm.get_response(prompt, person_id)
+        _speak_blocking(resp)
+        return resp
+
+    if intent == "query_time":
+        from datetime import datetime
+        now = datetime.now()
+        h12 = now.hour % 12 or 12
+        ampm = "AM" if now.hour < 12 else "PM"
+        return _say(
+            f"Tell the user the current time is exactly {h12}:{now.minute:02d} {ampm} "
+            f"in Rex character. Be brief."
+        )
+
+    if intent == "query_weather":
+        from awareness.chronoception import fetch_weather
+        w = fetch_weather()
+        temp = w.get("temp_f")
+        desc = w.get("description") or w.get("condition") or "unknown"
+        if temp is None:
+            facts = f"Weather data is unavailable right now (conditions: {desc})."
+        else:
+            facts = f"It is {temp}°F and {desc} right now."
+        return _say(
+            f"Tell the user the current weather in Rex character. Facts: {facts} Be brief."
+        )
+
+    if intent == "query_games":
+        # Surface the actual aliases users would say, not the internal keys.
+        from features import games as games_mod
+        seen: list[str] = []
+        for alias, key in games_mod._GAME_ALIASES.items():
+            label = {
+                "i_spy": "I Spy",
+                "20_questions": "20 Questions",
+                "trivia": "Trivia",
+                "word_association": "Word Association",
+            }.get(key)
+            if label and label not in seen:
+                seen.append(label)
+        game_list = ", ".join(seen) if seen else "none right now"
+        return _say(
+            f"The user asked what games you can play. Your actual game list: {game_list}. "
+            f"Tell them in one Rex-style line. Be brief."
+        )
+
+    if intent == "query_capabilities":
+        capabilities = (
+            "hold a real conversation and remember people across visits; "
+            "recognize faces and voices; describe what you see through your camera; "
+            "play games (Trivia, I Spy, 20 Questions, Word Association); "
+            "DJ music with skip / stop / volume control; "
+            "tell time, date, and weather; "
+            "track your own mood, anger, and uptime"
+        )
+        return _say(
+            f"The user asked what you can do. Your real capabilities: {capabilities}. "
+            f"Summarize in one or two Rex-style lines. Be brief."
+        )
+
+    if intent == "query_uptime":
+        try:
+            self_state = world_state.get("self_state")
+            up = int(self_state.get("uptime_seconds", 0) or 0)
+        except Exception:
+            up = 0
+        hours = up // 3600
+        minutes = (up % 3600) // 60
+        return _say(
+            f"Tell the user your uptime is exactly {hours} hours and {minutes} minutes "
+            f"in Rex character. Be brief."
+        )
+
+    if intent == "query_what_do_you_see":
+        desc = ""
+        try:
+            from vision import scene as vision_scene
+            desc = vision_scene.describe_scene()
+        except Exception as exc:
+            _log.debug("intent vision describe error: %s", exc)
+        return _say(
+            f"You were asked what you see. Scene analysis: '{desc or 'nothing notable'}'. "
+            f"Describe it in character in one or two lines."
+        )
+
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Speech segment processing
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1218,7 +1368,18 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         if match is not None:
             response_text = _execute_command(match, person_id, person_name, text)
         else:
-            response_text = _stream_llm_response(text, person_id)
+            response_text = None
+            if getattr(config, "INTENT_CLASSIFIER_ENABLED", False):
+                try:
+                    intent = intent_classifier.classify(text)
+                except Exception as exc:
+                    _log.debug("intent classification error: %s", exc)
+                    intent = "general"
+                _log.info("[interaction] intent classifier: %s", intent)
+                if intent != "general":
+                    response_text = _handle_classified_intent(intent, text, person_id)
+            if response_text is None:
+                response_text = _stream_llm_response(text, person_id)
 
         assistant_asked_question = False
         if response_text:

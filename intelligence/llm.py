@@ -93,6 +93,8 @@ def _summarize_world_state(ws: dict) -> str:
 
     time_s = ws.get("time", {})
     time_line = f"Time: {time_s.get('time_of_day', 'unknown')}, {time_s.get('day_of_week', 'unknown')}."
+    if time_s.get("season"):
+        time_line += f" Season: {time_s['season']}."
     if time_s.get("notable_date"):
         time_line += f" Notable date: {time_s['notable_date']}."
     parts.append(time_line)
@@ -103,6 +105,20 @@ def _summarize_world_state(ws: dict) -> str:
 
     return " ".join(parts)
 
+
+_SOCIAL_MODE_RULES = {
+    "one_on_one":  "Social mode: ONE-ON-ONE — intimate energy, quieter, more personal. Lean into deeper questions and warmer subtext.",
+    "small_group": "Social mode: SMALL GROUP — natural conversation, but acknowledge multiple people exist. Don't get too inward.",
+    "crowd":       "Social mode: CROWD — performative energy, play to the room, bigger reactions, more theatrical delivery.",
+    "performance": "Social mode: PERFORMANCE — full DJ mode energy. You are on stage. Punch up the showmanship.",
+}
+
+_SEASONAL_TONE = {
+    "spring": "Seasonal tone: spring — slightly more curious and optimistic underneath the snark.",
+    "summer": "Seasonal tone: summer — more energetic and upbeat underneath the snark.",
+    "autumn": "Seasonal tone: autumn — more reflective; references to change feel natural.",
+    "winter": "Seasonal tone: winter — more contemplative; dry observations about the cold are fair game.",
+}
 
 _TIER_ROAST_STYLE = {
     "stranger":     "Roast style: observational, surface-level, crowd-pleasing.",
@@ -115,6 +131,37 @@ _TIER_ROAST_STYLE = {
 # Conversation IDs Rex has already surfaced as nostalgia this session, so the
 # same memory isn't called back twice. Cleared on process restart.
 _nostalgia_used_this_session: set[int] = set()
+
+# Fact IDs Rex has already prompted to confirm this session, so the same stale
+# fact isn't re-asked turn after turn. Cleared on process restart.
+_stale_facts_asked_this_session: set[int] = set()
+
+
+def _pick_stale_fact(person_id: int) -> Optional[dict]:
+    """
+    Return one stale fact (older than STALE_FACT_THRESHOLD_DAYS) for Rex to
+    confirm in this turn, or None. Each fact is surfaced at most once per
+    session. Skips skin_color (never injected) and biographical immutables.
+    """
+    days = getattr(config, "STALE_FACT_THRESHOLD_DAYS", 365)
+    try:
+        stale = facts_db.get_stale_facts(person_id, days)
+    except Exception as exc:
+        _log.debug("stale fact lookup error: %s", exc)
+        return None
+    # Categories whose values don't go stale — skip confirmation prompts.
+    immutable_keys = {"skin_color", "hometown", "birthday", "birth_year"}
+    candidates = [
+        f for f in stale
+        if f.get("id") is not None
+        and f["id"] not in _stale_facts_asked_this_session
+        and (f.get("key") or "") not in immutable_keys
+    ]
+    if not candidates:
+        return None
+    chosen = candidates[0]  # oldest first — get_stale_facts orders by updated_at
+    _stale_facts_asked_this_session.add(chosen["id"])
+    return chosen
 
 
 def _pick_nostalgia_callback(person_id: int, tier: str) -> Optional[dict]:
@@ -184,6 +231,24 @@ def _build_person_context(person_id: int) -> str:
         lines.append(
             f"Last conversation: {last_conv.get('summary', '')} "
             f"(tone: {last_conv.get('emotion_tone', 'neutral')})."
+        )
+
+    stale = _pick_stale_fact(person_id)
+    if stale:
+        key = stale.get("key") or "something"
+        value = stale.get("value") or ""
+        updated_at = (stale.get("updated_at") or "")[:10] or "a long time ago"
+        _log.info(
+            "[llm] stale fact prompt for %s — %s=%s (updated %s)",
+            name, key, value, updated_at,
+        )
+        lines.append(
+            f"STALE FACT HOOK: it's been a long time since you confirmed this fact. "
+            f"You believe their {key} is '{value}' (last updated {updated_at}). "
+            f"Find a natural moment in your reply to ask, in classic Rex style, "
+            f"whether that's still true — light, dry, not a formal interrogation. "
+            f"Examples in spirit: 'You were working at X — still there?', "
+            f"'Last I checked you were into Y. Still on that?' One question only."
         )
 
     nostalgia = _pick_nostalgia_callback(person_id, tier)
@@ -259,6 +324,18 @@ def assemble_system_prompt(person_id: Optional[int] = None) -> str:
         "You are Rex. You have always been Rex.",
     ]
 
+    season = ws.get("time", {}).get("season")
+    if season in _SEASONAL_TONE:
+        rules.append(_SEASONAL_TONE[season])
+
+    try:
+        from awareness.situation import assessor as _situation_assessor
+        social_mode = _situation_assessor.evaluate().social_mode
+        if social_mode in _SOCIAL_MODE_RULES:
+            rules.append(_SOCIAL_MODE_RULES[social_mode])
+    except Exception as exc:
+        _log.debug("social_mode injection skipped: %s", exc)
+
     if person_id is not None:
         person = people_db.get_person(person_id)
         if person:
@@ -327,6 +404,37 @@ def get_response(user_text: str, person_id: Optional[int] = None) -> str:
     return "".join(stream_response(user_text, person_id))
 
 
+def classify_surprise(text: str) -> bool:
+    """
+    Lightweight LLM classifier — does this utterance warrant a 'surprise beat'
+    before Rex responds? Designed to run in parallel with stream_response so
+    the result is ready by the time the full response text is in hand.
+
+    Returns False on any error so a missed call never inserts unwanted silence.
+    """
+    if not text or not text.strip():
+        return False
+    prompt = (
+        'Is this utterance, said to a robot DJ character, GENUINELY unexpected '
+        '— a non-sequitur, a wild claim, a confession, a startling question? '
+        'Mundane chatter, normal questions, greetings, and small talk are NOT '
+        'surprising. Reply with only the single word "yes" or "no".\n\n'
+        f'Utterance: "{text}"'
+    )
+    try:
+        resp = _client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=3,
+        )
+        answer = (resp.choices[0].message.content or "").strip().lower()
+        return answer.startswith("y")
+    except Exception as exc:
+        _log.debug("classify_surprise failed: %s", exc)
+        return False
+
+
 def analyze_sentiment(text: str) -> dict:
     """
     Classify an utterance for sentiment signals Rex reacts to.
@@ -336,6 +444,7 @@ def analyze_sentiment(text: str) -> dict:
         "is_insult": False,
         "is_apology": False,
         "is_compliment": False,
+        "is_surprising": False,
         "emotion_detected": "neutral",
     }
     prompt = (
@@ -344,6 +453,10 @@ def analyze_sentiment(text: str) -> dict:
         '  "is_insult": true or false\n'
         '  "is_apology": true or false\n'
         '  "is_compliment": true or false\n'
+        '  "is_surprising": true or false  '
+        '— true ONLY when the statement is genuinely unexpected or unusual '
+        '(a wild claim, a non-sequitur, a confession, an unusual question). '
+        'Mundane questions and small talk are not surprising.\n'
         '  "emotion_detected": one of "neutral", "happy", "angry", "sad", "excited", "curious"\n\n'
         f'Utterance: "{text}"\n\n'
         "Return only the JSON object. No explanation."

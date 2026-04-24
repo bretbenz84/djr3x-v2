@@ -720,6 +720,106 @@ def _pick_anticipated_event(person_db_id: Optional[int]) -> Optional[dict]:
     return None
 
 
+def _pick_milestone(person_db_id: Optional[int]) -> Optional[int]:
+    """
+    Return the visit number Rex should acknowledge as a milestone, or None.
+    visit_count in the DB reflects PRIOR visits — update_visit fires at session
+    end — so the incoming visit number is visit_count + 1.
+    """
+    if not isinstance(person_db_id, int):
+        return None
+    try:
+        from memory import people as people_mod
+        person = people_mod.get_person(person_db_id)
+        if not person:
+            return None
+        incoming = int(person.get("visit_count", 0)) + 1
+        milestones = getattr(config, "VISIT_MILESTONES", ())
+        return incoming if incoming in milestones else None
+    except Exception as exc:
+        _log.debug("milestone lookup error: %s", exc)
+        return None
+
+
+def _pick_absence_phase(person_db_id: Optional[int]) -> Optional[tuple[str, float]]:
+    """
+    Return ("long_absence", days) if last visit was long ago,
+    ("recent_return", hours) if last visit was very recent, or None.
+    Mutually exclusive — long absence wins ties.
+    """
+    if not isinstance(person_db_id, int):
+        return None
+    try:
+        from datetime import datetime, timezone
+        from memory import people as people_mod
+        person = people_mod.get_person(person_db_id)
+        if not person:
+            return None
+        last_seen_str = person.get("last_seen")
+        if not last_seen_str:
+            return None
+        try:
+            last_seen = datetime.fromisoformat(last_seen_str)
+        except ValueError:
+            return None
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - last_seen
+        days = delta.total_seconds() / 86400.0
+        hours = delta.total_seconds() / 3600.0
+        long_thresh = getattr(config, "LONG_ABSENCE_THRESHOLD_DAYS", 60)
+        recent_thresh = getattr(config, "RECENT_RETURN_THRESHOLD_HOURS", 48)
+        if days >= long_thresh:
+            return ("long_absence", days)
+        if hours <= recent_thresh:
+            return ("recent_return", hours)
+    except Exception as exc:
+        _log.debug("absence phase lookup error: %s", exc)
+    return None
+
+
+def _build_milestone_prompt(first_name: str, visit_number: int) -> str:
+    return (
+        f"You see '{first_name}', someone you know — and this is their visit number "
+        f"{visit_number}, a milestone you actually want to acknowledge. Open with one "
+        f"short in-character Rex line that calls out the milestone — dry, slightly "
+        f"begrudging, but the warmth is unmistakable. Address {first_name} by name. "
+        f"One line only."
+    )
+
+
+def _build_long_absence_prompt(first_name: str, days: float) -> str:
+    days_int = int(round(days))
+    if days_int >= 365:
+        span = f"about {days_int // 365} year(s)"
+    elif days_int >= 60:
+        span = f"about {days_int // 30} months"
+    else:
+        span = f"{days_int} days"
+    return (
+        f"You see '{first_name}', someone you know — but it's been {span} since their "
+        f"last visit. Open with one short in-character Rex line acknowledging the long "
+        f"absence — dry, faintly accusatory, masking that you're glad they're back. "
+        f"Examples in spirit: 'Look who finally surfaced.', 'I assumed you'd gotten lost "
+        f"in hyperspace.' Address {first_name} by name. One line only."
+    )
+
+
+def _build_recent_return_prompt(first_name: str, hours: float) -> str:
+    if hours < 1.5:
+        span = "less than an hour ago"
+    elif hours < 24:
+        span = f"about {int(round(hours))} hours ago"
+    else:
+        span = "yesterday"
+    return (
+        f"You see '{first_name}' again — they were just here {span}. Open with one "
+        f"short in-character Rex line teasing them about the quick return. Examples "
+        f"in spirit: 'Back already?', 'Did you forget something, or did you just miss "
+        f"me?' Address {first_name} by name. One line only."
+    )
+
+
 def _build_anticipation_prompt(
     first_name: str, event: dict, situation: str
 ) -> Optional[str]:
@@ -1412,36 +1512,69 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 _greeted_this_session.add(key)
                 if _should_fire_presence(key, person_db_id, profile):
                     first_name = person_name.split()[0]
-                    anticipated = _pick_anticipated_event(person_db_id)
-                    anticipation_prompt = (
-                        _build_anticipation_prompt(
-                            first_name, anticipated, "you just booted up and immediately spot them"
-                        )
-                        if anticipated
-                        else None
-                    )
-                    if anticipation_prompt:
-                        _anticipated_events.add((person_db_id, anticipated["id"]))
+                    prompt: Optional[str] = None
+                    label = f"startup greeting for {person_name}"
+                    emotion = "excited"
+
+                    # Priority 1 — milestone visit
+                    milestone = _pick_milestone(person_db_id)
+                    if milestone is not None:
+                        prompt = _build_milestone_prompt(first_name, milestone)
+                        label = f"startup milestone (#{milestone}) for {person_name}"
                         _log.info(
-                            "consciousness: startup anticipation for %s (event=%s)",
-                            person_name, anticipated.get("event_name"),
+                            "consciousness: startup milestone for %s (visit #%d)",
+                            person_name, milestone,
                         )
-                        _generate_and_speak_presence(
-                            anticipation_prompt,
-                            label=f"startup anticipation for {person_name}",
-                            tag_key=key,
-                            emotion="excited",
-                        )
-                    else:
-                        _log.info("consciousness: startup greeting for %s", person_name)
-                        _generate_and_speak_presence(
+
+                    # Priority 2 — anticipated upcoming event
+                    if prompt is None:
+                        anticipated = _pick_anticipated_event(person_db_id)
+                        if anticipated is not None:
+                            anti_prompt = _build_anticipation_prompt(
+                                first_name, anticipated,
+                                "you just booted up and immediately spot them",
+                            )
+                            if anti_prompt:
+                                _anticipated_events.add((person_db_id, anticipated["id"]))
+                                prompt = anti_prompt
+                                label = f"startup anticipation for {person_name}"
+                                _log.info(
+                                    "consciousness: startup anticipation for %s (event=%s)",
+                                    person_name, anticipated.get("event_name"),
+                                )
+
+                    # Priority 3 — long absence or recent return
+                    if prompt is None:
+                        absence = _pick_absence_phase(person_db_id)
+                        if absence and absence[0] == "long_absence":
+                            prompt = _build_long_absence_prompt(first_name, absence[1])
+                            label = f"startup long-absence for {person_name}"
+                            emotion = "curious"
+                            _log.info(
+                                "consciousness: startup long-absence for %s (%.1f days)",
+                                person_name, absence[1],
+                            )
+                        elif absence and absence[0] == "recent_return":
+                            prompt = _build_recent_return_prompt(first_name, absence[1])
+                            label = f"startup recent-return for {person_name}"
+                            emotion = "curious"
+                            _log.info(
+                                "consciousness: startup recent-return for %s (%.1f hrs)",
+                                person_name, absence[1],
+                            )
+
+                    # Fallback — generic greeting
+                    if prompt is None:
+                        prompt = (
                             f"You just started up and immediately see '{first_name}', someone you know. "
                             f"Greet them in one short in-character Rex line. "
-                            f"Address {first_name} by name. Make it feel like Rex just booted and is glad to see a familiar face.",
-                            label=f"startup greeting for {person_name}",
-                            tag_key=key,
-                            emotion="excited",
+                            f"Address {first_name} by name. Make it feel like Rex just booted and is glad to see a familiar face."
                         )
+                        _log.info("consciousness: startup greeting for %s", person_name)
+
+                    _generate_and_speak_presence(
+                        prompt, label=label, tag_key=key, emotion=emotion,
+                    )
             continue
 
         absent_secs = now - _last_seen[key]
