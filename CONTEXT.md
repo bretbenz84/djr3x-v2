@@ -90,15 +90,18 @@ djr3x-v2/
 │   ├── consciousness.py       # Consciousness loop, proactive behavior decisions
 │   ├── llm.py                 # GPT-4o-mini streaming, prompt assembly
 │   ├── command_parser.py      # Command handling — bypasses LLM for known commands
+│   ├── intent_classifier.py   # Fast GPT-4o-mini intent routing for LLM fallback path
+│   ├── interaction.py         # Continuous listening loop, speech pipeline
 │   └── personality.py         # TARS parameters, emotion state, mood decay
 │
 ├── memory/
-│   ├── database.py            # SQLite connection, schema init, migrations
-│   ├── people.py              # Person CRUD, biometrics, familiarity scoring
+│   ├── database.py            # SQLite connection, schema init, inline migrations
+│   ├── people.py              # Person CRUD, biometrics (face+voice), familiarity
 │   ├── facts.py               # person_facts — observed and stated attributes
 │   ├── conversations.py       # Session summaries, callbacks, transcript buffer
 │   ├── events.py              # Upcoming events, follow-up tracking
-│   └── relationships.py       # Relationship scores, antagonism, tier management
+│   ├── relationships.py       # Q&A history and question depth (person_qa)
+│   └── social.py              # Inter-person relationship edges (person_relationships)
 │
 ├── features/
 │   ├── dj.py                  # DJ mode, music playback, radio streaming, requests
@@ -108,7 +111,18 @@ djr3x-v2/
 ├── awareness/
 │   ├── chronoception.py       # Time of day, season, notable dates, weather API
 │   ├── interoception.py       # Uptime, CPU temp, load, session stats
+│   ├── situation.py           # Situation assessor — judgment layer before speech
 │   └── social.py              # Crowd dynamics, child detection, disengagement
+│
+├── audio/
+│   ├── speech_queue.py        # Priority heap + intent-tag coalescing worker
+│   ├── speaker_id.py          # Resemblyzer voice prints (identify_speaker_raw)
+│   ├── echo_cancel.py         # Suppression + sequence-held AEC
+│   └── (transcription, tts, vad, wake_word, stream, output_gate, scene)
+│
+├── tools/
+│   ├── audio_test.py          # Standalone audio pipeline diagnostics
+│   └── test_voice_id.py       # Voice-print scoreboard + enrollment/trim tool
 │
 ├── utils/
 │   ├── config_loader.py       # Loads config.py, apikeys.py, .env cleanly
@@ -192,9 +206,24 @@ Audio output uses macOS system default device (3.5mm audio jack on the M1).
   ```
   Correction map configurable in `config.py`. New misreadings can be added without code changes.
 
+- **Hallucination filter**: rejects empty utterances, pure-punctuation junk,
+  filler-only noise ("uh", "um", "ah"), looped repetitions, non-Latin scripts,
+  and an exact-match blocklist of known Whisper hallucinations ("thank you",
+  "thanks for watching", "please subscribe", etc.). Gates:
+  `WHISPER_MIN_CHARS = 3`, `WHISPER_MIN_WORDS = 1` (≥ 1 word longer than
+  2 chars — allows short valid utterances like "stop", "yes", "who am I?").
+
 ### LLM
 - OpenAI `gpt-4o-mini` streaming (cloud only)
 - OpenAI `gpt-4o` for vision queries
+- **Intent classifier** (`intelligence/intent_classifier.py`) sits between the
+  command parser and the full LLM call. A single tiny GPT-4o-mini request
+  returns one of: `query_time`, `query_weather`, `query_games`,
+  `query_capabilities`, `query_uptime`, `query_what_do_you_see`,
+  `query_who_is_speaking`, `general`. Matching intents are answered locally
+  with real data so Rex can't hallucinate over them. See the
+  **Identity Continuity** section for how `query_who_is_speaking` produces
+  confidence-tiered replies.
 
 ### TTS — ElevenLabs with SHA File Cache
 - ElevenLabs streaming — Rex voice clone based on Star Tours DJ-R3X audio
@@ -501,7 +530,30 @@ CREATE TABLE personality_settings (
     updated_at  DATETIME,
     updated_by  TEXT            -- name of person who last changed it, or 'default'
 );
+
+-- Inter-person relationship edges. Bret saying "JT is my partner" creates
+-- (from=Bret, to=JT, relationship="partner", described_by=Bret). Symmetric
+-- labels (partner, spouse, friend, sibling, roommate, neighbor, colleague,
+-- classmate, cousin) are auto-mirrored; asymmetric labels (son, boss,
+-- employee, parent, child) are stored one-way. See memory/social.py.
+CREATE TABLE person_relationships (
+    id              INTEGER PRIMARY KEY,
+    from_person_id  INTEGER REFERENCES people(id),
+    to_person_id    INTEGER REFERENCES people(id),
+    relationship    TEXT,                     -- lowercased label
+    described_by    INTEGER REFERENCES people(id),
+    created_at      DATETIME,
+    updated_at      DATETIME,
+    UNIQUE(from_person_id, to_person_id, relationship)
+);
+CREATE INDEX idx_rel_from ON person_relationships(from_person_id);
+CREATE INDEX idx_rel_to   ON person_relationships(to_person_id);
 ```
+
+Schema additions made after initial deploy are applied by the inline
+`_run_migrations()` helper in `memory/database.py` on startup, so existing
+`people.db` files gain new tables transparently without re-running
+`setup_assets.py`.
 
 ### Familiarity & Friendship Tier System
 
@@ -547,6 +599,27 @@ Questions are drawn from depth-appropriate pools. Rex never re-asks an answered 
 4. Voice identification runs in parallel — cross-confirms face match or resolves identity when face is off-camera
 5. On conversation end: GPT-4o-mini generates session summary, new facts extracted and stored, familiarity score updated
 
+**Voice-only enrollment path**: when an unknown voice speaks while someone
+visible is engaged and no unknown face is present, Rex asks "who's that?"
+and enrolls the newcomer as a **voice-only** person (no face biometric).
+Later, when that person appears on camera, the **face-reveal confirmation**
+flow asks them (or bystanders) to confirm which unknown face is theirs,
+then binds the face — upgrading the person to full face+voice identity.
+
+**Social inquiry path**: when an unknown face is visible alongside the
+engaged known person for ≥ 5s, Rex asks the engaged person to introduce
+them. The reply is parsed via `llm.extract_relationship_introduction` into
+`{name, relationship}`, creating the newcomer and storing an edge in
+`person_relationships`.
+
+**Identity-to-relationship chain**: after enrolling a newcomer via
+self-introduction ("my name is Exudica"), if another person was engaged in
+the last 60s, Rex automatically asks "how do you know Bret?" and records
+the relationship when answered.
+
+See **Identity Continuity & Adaptive Enrollment** for the full set of
+flows, thresholds, and heuristics the identity layer uses.
+
 ### Memory Injection into System Prompt
 
 On each interaction with a known person, Rex's system prompt includes:
@@ -555,6 +628,135 @@ On each interaction with a known person, Rex's system prompt includes:
 - Summary of last conversation
 - Notable shared history
 - Unanswered questions available at current depth tier — Rex weaves these naturally into conversation
+- **Inter-person relationships** — edges from `person_relationships` rendered
+  as human text by `memory.social.summarize_for_prompt`, e.g.
+  *"Bret is partner of Exudica; Exudica says Bret is their partner"*
+
+---
+
+## Identity Continuity & Adaptive Enrollment
+
+Face and voice recognition are both noisy. dlib HOG flickers unknown↔known across
+single frames; Resemblyzer voice scores vary 0.55–0.90 on the same speaker
+depending on utterance length and acoustic conditions. Rex's identity layer is
+built to tolerate that noise, ask for help when uncertain, and self-heal its
+biometric store over time.
+
+### Face Identity Stickiness
+In `consciousness._step_person_recognition`, when exactly one face is visible
+and recognition momentarily returns Unknown for what was identified a second
+ago, the last identity carries forward. Threshold: `_SOLO_IDENTITY_STICKY_SECS
+= 5.0`. Kills the Bret↔unknown flicker loop that used to spawn false
+"departure/return" reactions.
+
+### Session-Sticky Voice Threshold
+Voice acceptance is a two-tier decision in `_handle_speech_segment`:
+- `speaker_score >= SPEAKER_ID_SIMILARITY_THRESHOLD` (hard, default 0.75) → accept
+- `speaker_score >= SPEAKER_ID_SOFT_THRESHOLD` (default 0.60) AND top candidate
+  matches `consciousness.get_recent_engagement()` → accept under session
+  stickiness, logged as `voice soft-accept under session stickiness`
+- Otherwise → unknown
+
+Mirrors human identity continuity: once someone is confirmed this session,
+subsequent low-scoring utterances from the same candidate still resolve to
+them. New speakers still need the hard threshold because their voice won't
+match the engaged person.
+
+### Auto Voice-Refresh
+In the "both agreed" branch (face-ID + voice-ID confirm the same person),
+when `speaker_score >= AUTO_VOICE_REFRESH_MIN_SCORE` (default 0.90), the
+current audio is asynchronously appended as an additional voice biometric
+row — up to `AUTO_VOICE_REFRESH_MAX_SAMPLES` (default 5). Rate-limited to
+one refresh per person per session. Builds a robust multi-sample voice
+print organically without manual re-enrollment.
+
+### Off-Camera Unknown Voice
+When speaker-ID returns no match AND no unknown face is visible AND a known
+person is (or was recently) engaged, the person-resolution layer treats the
+utterance as off-camera unknown instead of misattributing it to the visible
+engaged person. Rex asks a variation of *"Who's that, Bret? I can't see
+them."* and stores the audio in `_pending_offscreen_identify`. When the
+engaged person replies with a name ("that's my friend JT"), the newcomer is
+enrolled as a **voice-only** person (no face biometric yet), and a relationship
+edge is saved if a label was given. Config: `OFFSCREEN_IDENTIFY_WINDOW_SECS`.
+
+### Face-Reveal Confirmation
+When a voice-only enrolled person later speaks **on camera**, Rex detects that
+the known voice matches someone with no face biometric yet, and an unknown
+face is visible. Rather than silently auto-binding (risks mis-binding), Rex
+asks a confirmation:
+- **Mode A** (exactly one unknown face): *"Wait — JT, is that actually what
+  you look like? Been picturing something different."* → yes/no answer.
+- **Mode B** (exactly two unknown faces): *"I think one of you is JT — are
+  you the one on my left or my right?"* → left/right answer. "Left" = smaller
+  x-coordinate in the camera frame from Rex's POV.
+- **Mode C** (3+ unknown faces): skipped, logged.
+
+On confirmation, the correct face encoding (cached at question time, not
+reply time) is bound as the person's face biometric, and Rex fires a
+surprise-plus-light-roast reaction: *"JT, I pictured a smaller organic.
+Voice was all wrong for that face."* `llm.extract_face_reveal_answer`
+parses yes/no/left/right via structured JSON. Config:
+`FACE_REVEAL_MIN_SCORE = 0.80`, `FACE_REVEAL_CONFIRM_WINDOW_SECS = 30.0`.
+Per-session `_face_reveal_declined` set prevents re-asking after a "no".
+
+### Social Inquiry — Newcomer While Engaged
+`consciousness._step_relationship_inquiry` watches for unknown faces that
+persist ≥ `UNKNOWN_WITH_ENGAGED_CONFIRM_SECS` (default 5.0) while Rex is
+(or was recently — `RECENT_ENGAGEMENT_WINDOW_SECS`, default 60.0) engaged
+with a known person. Fires *"Oh hey, who's this, Bret? Friend of yours?"*
+The engaged person's reply is parsed via `llm.extract_relationship_introduction`
+for `{name, relationship}`, which triggers enrollment + edge save.
+`enroll_unknown_face` is used so the **newcomer's** face is stored, not the
+known visible person's.
+
+### Identity-to-Relationship Chain
+When the identity prompt ("who are you?") is answered by a newcomer after a
+known person was just engaged, the post-response hook automatically fires a
+follow-up: *"Nice to meet you, Exudica. How do you know Bret?"* This opens a
+**mode-B** relationship prompt (newcomer describing their own relationship
+to the engaged person). Edge saved as newcomer → engaged, auto-mirrored for
+symmetric labels.
+
+### Speaker-ID Override During Identity Prompt
+When `_identity_prompt_until > now` AND an unknown face is visible, the
+enrollment gate is broadened so enrollment runs even if speaker-ID wrongly
+matched the voice to an existing known person. Without this, a newcomer
+whose voice collapses into the nearest enrolled voice print never triggers
+enrollment. The **face** enrollment uses `enroll_unknown_face` so Bret's
+face isn't rebound to the newcomer's name.
+
+### query_who_is_speaking Intent
+Tiered confidence-aware response when the user asks "who's speaking?" /
+"who am I?" / "do you know who I am?":
+- **Face visible + identified** → confident confirmation by sight
+- **Voice score ≥ hard threshold** → confident confirmation by voice
+- **Voice score ≥ `SPEAKER_ID_MAYBE_FLOOR`** (default 0.50) → hedged guess
+  *("I'm not positive, but it sounds like Bret Benziger.")*
+- **Below floor / no match** → honest unknown *("No idea, who's asking?")*
+
+The raw top candidate + score + visible-known-name are threaded from
+`_handle_speech_segment` into `_handle_classified_intent`.
+
+### Speech Queue Intent Tagging
+`audio/speech_queue.py` supports per-item `tag` parameter with
+`drop_by_tag(tag)` and `has_waiting_with_tag(tag)`. Consciousness tags
+presence reactions with `presence:{tracking_key}` so that queueing a new
+reaction for the same person coalesces older queued items. Prevents stale
+"departure" lines firing after a person has already returned to view.
+Tagged enqueues also support `pre_beat_ms` and `post_beat_ms` silent pauses
+for delivery timing.
+
+### Presence Hysteresis & Engagement Suppression
+Presence reactions (departure / return) flow through a unified
+`_should_fire_presence` gate:
+- Face must be continuously absent ≥ `PRESENCE_DEPARTURE_CONFIRM_SECS`
+  (default 8.0) before departure is staged — kills single-frame flicker
+- Per-person cooldown: `PRESENCE_PER_PERSON_COOLDOWN_SECS` (default 120)
+- Suppressed entirely while Rex is engaged with that person
+- Name re-lookup from DB at stage time if tracking key is int db_id and the
+  last-snapshot slot had lost its name — prevents "mystery organic, key=2"
+  where we know the person but momentarily lost their name binding.
 
 ---
 
@@ -987,7 +1189,8 @@ Rex requires voice confirmation before wiping:
 > Say 'yes forget me' to confirm or just walk away."*
 
 On confirmation: deletes all rows for that person from `people`, `biometrics`,
-`person_facts`, `person_qa`, and `conversations` tables. Rex delivers an in-character
+`person_facts`, `person_qa`, `conversations`, and `person_relationships` tables
+(both directions of the relationship graph). Rex delivers an in-character
 farewell line acknowledging the wipe.
 
 ### Full Memory Wipe (All People)
@@ -1003,6 +1206,49 @@ only the data is erased.
 
 Both wipe operations are non-destructive to the database structure, the TTS cache,
 audio files, and all other project assets.
+
+### Voice-Print Diagnostic CLI (`tools/test_voice_id.py`)
+Standalone tool for calibrating speaker-ID without running the full Rex stack.
+Records from the mic, computes a Resemblyzer embedding, prints a ranked scoreboard
+of all enrolled voices with raw similarity scores, and shows verdict per person
+(HIGH ≥ 0.80, LOW-CONF ≥ threshold, REJECT below).
+
+```bash
+# Basic scan (5s record + rank)
+python tools/test_voice_id.py
+
+# Take 3 samples back-to-back to check consistency
+python tools/test_voice_id.py --repeat 3 --secs 8
+
+# Add a new voice biometric for an existing or new person
+python tools/test_voice_id.py --enroll "Bret Benziger" --secs 8
+
+# Enroll fresh AND delete all prior voice rows for that person
+python tools/test_voice_id.py --enroll "Bret Benziger" --replace
+
+# Keep only the newest voice biometric for a named person
+python tools/test_voice_id.py --trim "Bret Benziger"
+
+# DB-wide cleanup — keep newest voice row per person
+python tools/test_voice_id.py --trim-all
+```
+
+`--trim` modes do not touch the mic; they are pure DB operations.
+
+### Inline Diagnostic Logging
+Every speech segment emits a top-3 voice-ID scoreboard at INFO level from
+`speaker_id.identify_speaker_raw`:
+```
+[speaker_id] scan — threshold=0.750, candidates: Bret Benziger#2=0.812, Exudica#3=0.643
+```
+The session-stickiness decision also logs when it fires:
+```
+[interaction] voice soft-accept under session stickiness — person_id=2 name='Bret Benziger' score=0.614 (hard=0.75, soft=0.60)
+```
+And the auto voice-refresh on high-confidence agreement:
+```
+[interaction] auto-refreshed voice biometric for person_id=2 (score=0.912, now 2 sample(s))
+```
 
 ---
 
@@ -1089,6 +1335,29 @@ On each interaction, Rex's system prompt includes a relationship summary:
 - Current session anger escalation level
 - Any notable relationship flags (e.g. "has apologized twice", "attempted deception")
 - Rex's tone and willingness to engage is colored by this summary automatically
+
+### Inter-Person Relationship Graph (`memory/social.py`)
+Distinct from Rex↔person scores above: the `person_relationships` table stores
+directional edges BETWEEN people. Populated via the social-inquiry flow in
+`consciousness._step_relationship_inquiry` and the post-greet chain in
+`interaction.py`. Edge rows capture:
+- `from_person_id` → `to_person_id`
+- `relationship` (lowercased label: partner, friend, son, boss, etc.)
+- `described_by` (who told Rex about this relationship)
+
+Symmetric labels (partner, spouse, wife, husband, friend, sibling, brother,
+sister, cousin, roommate, neighbor, colleague, classmate) auto-mirror the edge
+so a lookup on either person finds it. Asymmetric labels store one-way.
+
+When Rex builds a person's system-prompt context, `social.summarize_for_prompt`
+produces lines like *"Bret is partner of Exudica; Exudica says Bret is their
+partner"* which feed into `llm._build_person_context`, letting the LLM
+naturally reference who's related to whom.
+
+`llm.extract_relationship_introduction` performs structured JSON extraction
+from utterances like *"this is my partner JT"* into `{name, relationship}`
+— used by both the social-inquiry Mode-A flow and the off-camera identify
+flow.
 
 ---
 
@@ -1459,16 +1728,28 @@ varies slightly each time so it never feels mechanical.
 
 ### Idle Micro-Behaviors
 When no one is actively interacting with Rex, he exhibits spontaneous small behaviors
-on randomized timers to appear inhabited rather than paused:
-- Slow room scan — neck pans gradually across the space
-- Audible sigh or muttered comment to no one in particular
-- Small arm adjustment or fidget movement
-- Brief visor flutter
-- Quiet ambient sound effect or hummed note
-- Glances toward any motion detected in the periphery
+on randomized timers (`MICRO_BEHAVIOR_INTERVAL_SECS_MIN/MAX`, default 15–45s)
+to appear inhabited rather than paused. The pool rotates through:
 
-Micro-behavior frequency and variety configurable in `config.py`. These run during
-IDLE and QUIET states and cease immediately when interaction begins.
+- **`ambient_scan`** — neck pans gradually left/right
+- **`private_thought`** — muttered comment from the `PRIVATE_THOUGHTS` pool
+- **`idle_clip`** — plays a random MP3/WAV from `assets/audio/clips/`
+- **`ambient_observation`** — dry remark about the current environment using
+  already-collected `world_state.environment` + `audio_scene` data (scene type,
+  lighting, crowd density, ambient level, music detected). No vision call.
+  Gated by `AMBIENT_OBSERVATION_PROBABILITY` (default 0.5). Example:
+  *"Dim in here tonight. Organic mood lighting or just cheap bulbs?"*
+- **`appearance_riff`** — picks a currently-visible known person (not the one
+  Rex is engaged with) and makes an unsolicited remark drawing from stored
+  appearance facts (`person_facts` category=appearance). No vision call.
+  Example: *"Still rocking those glasses, Bret. Brave look."*
+- **`live_vision_comment`** — fresh GPT-4o-low call against the current camera
+  frame for a spontaneous observational line. Hard-gated to one call per
+  `LIVE_VISION_COMMENT_COOLDOWN_SECS` (default 300.0) so it doesn't burn
+  API budget.
+
+All six behaviors run during IDLE state and cease immediately when interaction
+begins. Each honors the proactive-speech gate so Rex never mutters over himself.
 
 ### Gaze Behavior
 Rex's neck tracking follows more than just faces:
