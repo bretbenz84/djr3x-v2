@@ -255,6 +255,28 @@ def update_relationship_scores(person_id: int, **kwargs: float) -> None:
 # Memory wipe
 # ─────────────────────────────────────────────────────────────────────────────
 
+def has_face_biometric(person_id: int) -> bool:
+    """Return True if this person has at least one stored face biometric."""
+    if person_id is None:
+        return False
+    row = db.fetchone(
+        "SELECT 1 FROM biometrics WHERE person_id = ? AND type = 'face' LIMIT 1",
+        (person_id,),
+    )
+    return row is not None
+
+
+def has_voice_biometric(person_id: int) -> bool:
+    """Return True if this person has at least one stored voice biometric."""
+    if person_id is None:
+        return False
+    row = db.fetchone(
+        "SELECT 1 FROM biometrics WHERE person_id = ? AND type = 'voice' LIMIT 1",
+        (person_id,),
+    )
+    return row is not None
+
+
 def delete_person(person_id: int) -> None:
     """Delete all rows for a person across every person-related table."""
     for table in _PERSON_TABLES:

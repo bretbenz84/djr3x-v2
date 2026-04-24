@@ -628,6 +628,20 @@ RELATIONSHIP_PROMPT_COOLDOWN_SECS = 45.0
 # ended (e.g. conversation idle-timed out right as a newcomer arrived).
 RECENT_ENGAGEMENT_WINDOW_SECS = 60.0
 
+# How long Rex waits for the engaged person to name an off-camera unknown
+# speaker before forgetting the question. If the engaged person doesn't answer
+# in this window, the stored unknown audio is discarded and Rex moves on.
+OFFSCREEN_IDENTIFY_WINDOW_SECS = 30.0
+
+# Minimum voice-match similarity score required before Rex will fire a
+# face-reveal confirmation question ("is this what you look like?"). Below this
+# threshold the voice match is too uncertain to risk even asking.
+FACE_REVEAL_MIN_SCORE = 0.80
+
+# How long Rex waits for the yes/no/left/right answer to a face-reveal question
+# before forgetting the pending candidates.
+FACE_REVEAL_CONFIRM_WINDOW_SECS = 30.0
+
 # ─────────────────────────────────────────────────────────────────────────────
 # IDLE MICRO-BEHAVIORS
 # ─────────────────────────────────────────────────────────────────────────────

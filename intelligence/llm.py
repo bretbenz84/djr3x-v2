@@ -590,6 +590,56 @@ def extract_relationship_introduction(
         return {"name": None, "relationship": None}
 
 
+def extract_face_reveal_answer(user_text: str) -> dict:
+    """
+    Parse a reply to Rex's face-reveal confirmation question.
+
+    Rex may have asked either:
+      (A) "Is that what you look like, JT?" — expects yes/no
+      (B) "Are you on my left or my right?" — expects left/right
+
+    Returns a dict with exactly one key:
+      {"intent": "yes" | "no" | "left" | "right" | None}
+
+    None means the reply is ambiguous or off-topic.
+    """
+    if not user_text or not user_text.strip():
+        return {"intent": None}
+
+    prompt = (
+        f'A person replied: "{user_text}"\n\n'
+        "Rex just asked them either:\n"
+        "  (A) whether a face he's looking at is actually them (yes/no), OR\n"
+        "  (B) whether they are the person on Rex's LEFT or on Rex's RIGHT.\n\n"
+        "From the reply, classify the intent as exactly ONE of:\n"
+        '  "yes"   — they confirmed (yes, yeah, that\'s me, correct, affirmative)\n'
+        '  "no"    — they denied (no, nope, that\'s not me, wrong)\n'
+        '  "left"  — they indicated they are on Rex\'s left\n'
+        '  "right" — they indicated they are on Rex\'s right\n'
+        "  null    — the reply doesn't clearly answer, is off-topic, or is ambiguous.\n\n"
+        "Return ONLY a JSON object like {\"intent\": \"yes\"} — no preamble."
+    )
+    try:
+        resp = _client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=20,
+            response_format={"type": "json_object"},
+        )
+        content = resp.choices[0].message.content or "{}"
+        parsed = json.loads(content)
+        intent = parsed.get("intent")
+        if isinstance(intent, str):
+            intent = intent.strip().lower()
+            if intent in ("yes", "no", "left", "right"):
+                return {"intent": intent}
+        return {"intent": None}
+    except Exception as exc:
+        _log.debug("extract_face_reveal_answer failed: %s", exc)
+        return {"intent": None}
+
+
 def extract_facts(
     person_id: int,
     transcript: list[dict],
