@@ -650,6 +650,12 @@ FACE_REVEAL_CONFIRM_WINDOW_SECS = 30.0
 # won't match the engaged person.
 SPEAKER_ID_SOFT_THRESHOLD = 0.60
 
+# Floor score at which Rex will voice an uncertain guess ("I'm not sure, but
+# it could be Bret") when directly asked "who's speaking?". Below this floor
+# Rex honestly admits he doesn't recognize the voice. Only affects the
+# query_who_is_speaking intent — not the acceptance logic.
+SPEAKER_ID_MAYBE_FLOOR = 0.50
+
 # Auto voice-refresh: when both face-ID AND voice-ID agree on a person with
 # voice score at or above this confidence, silently append the current audio
 # as an additional voice biometric row — up to MAX_SAMPLES per person. Builds

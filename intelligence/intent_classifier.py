@@ -27,13 +27,17 @@ _VALID_INTENTS = {
     "query_capabilities",
     "query_uptime",
     "query_what_do_you_see",
+    "query_who_is_speaking",
     "general",
 }
 
 _PROMPT_TEMPLATE = (
     'Classify this input into exactly one category. Reply with only the '
     'category name. Categories: query_time, query_weather, query_games, '
-    'query_capabilities, query_uptime, query_what_do_you_see, general. '
+    'query_capabilities, query_uptime, query_what_do_you_see, '
+    'query_who_is_speaking, general. '
+    'Note: query_who_is_speaking covers "who\'s speaking?", "who am I?", '
+    '"do you know who I am?", "you know who that is?", "can you tell who I am?". '
     'Input: "{text}"'
 )
 

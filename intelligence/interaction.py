@@ -1267,11 +1267,21 @@ def _handle_classified_intent(
     intent: str,
     raw_text: str,
     person_id: Optional[int],
+    *,
+    raw_best_id: Optional[int] = None,
+    raw_best_name: Optional[str] = None,
+    raw_best_score: float = 0.0,
+    visible_known_name: Optional[str] = None,
 ) -> Optional[str]:
     """Answer a classified intent locally with real data, in Rex's voice.
 
     Returns the spoken response text, or None if the intent should fall
     through to the normal LLM path (i.e. 'general' or unhandled).
+
+    The raw_best_* kwargs carry the UNFILTERED top voice-ID candidate for
+    this utterance (no threshold applied). Used by query_who_is_speaking to
+    produce confidence-aware responses. visible_known_name is the name of a
+    currently-visible identified face if any.
     """
     def _say(prompt: str) -> str:
         resp = llm.get_response(prompt, person_id)
@@ -1367,6 +1377,58 @@ def _handle_classified_intent(
         return _say(
             f"You were asked what you see. Scene analysis: '{desc or 'nothing notable'}'. "
             f"Describe it in character in one or two lines."
+        )
+
+    if intent == "query_who_is_speaking":
+        # Build a confidence-aware prompt. Priority order:
+        #   1. Face visible + identified → confident by face
+        #   2. Voice score >= hard threshold → confident by voice
+        #   3. Voice score >= a "maybe" floor with a plausible candidate →
+        #      Rex expresses uncertainty with the candidate name
+        #   4. Nothing above the floor → Rex honestly says he doesn't know
+        hard = float(config.SPEAKER_ID_SIMILARITY_THRESHOLD)
+        # "Maybe" floor: voice scores in [0.50, hard) deserve a tentative guess.
+        maybe_floor = float(getattr(config, "SPEAKER_ID_MAYBE_FLOOR", 0.50))
+
+        candidate_name = raw_best_name
+        candidate_score = raw_best_score
+
+        if visible_known_name:
+            # Face wins — tell them with confidence.
+            return _say(
+                f"Someone asked who's speaking. You can actually SEE them on "
+                f"camera and you recognize them as {visible_known_name}. "
+                f"In one short in-character Rex line, confirm their identity — "
+                f"warm but dry. Address them by name. One line only."
+            )
+
+        if candidate_name and candidate_score >= hard:
+            return _say(
+                f"Someone asked who's speaking. You recognize the voice with high "
+                f"confidence (score {candidate_score:.2f}) as {candidate_name}. "
+                f"In ONE short in-character Rex line, confirm their identity. "
+                f"Be direct, address them by name."
+            )
+
+        if candidate_name and candidate_score >= maybe_floor:
+            return _say(
+                f"Someone asked who's speaking. You have a PARTIAL voice match "
+                f"(confidence score {candidate_score:.2f} out of 1.0) for "
+                f"{candidate_name} — it might be them, but you're not sure. "
+                f"In ONE short in-character Rex line, voice that uncertainty out "
+                f"loud: say you're not sure but it could be {candidate_name}. "
+                f"Keep the hedging audible — 'I'm not positive' / 'could be' / "
+                f"'pretty sure but my sensors aren't certain'. One line only."
+            )
+
+        # Nothing plausible — honest unknown.
+        return _say(
+            f"Someone asked who's speaking but no voice print matched (top "
+            f"similarity was only {candidate_score:.2f}) and you don't see their "
+            f"face. In ONE short in-character Rex line, admit honestly that you "
+            f"don't recognize the voice — NO guessing, NO roast about forget"
+            f"tability unless it comes naturally. Just 'no idea, who's asking?' "
+            f"in Rex's voice. One line only."
         )
 
     return None
@@ -1964,7 +2026,24 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     intent = "general"
                 _log.info("[interaction] intent classifier: %s", intent)
                 if intent != "general":
-                    response_text = _handle_classified_intent(intent, text, person_id)
+                    # Pass raw voice-match data and currently-visible identified
+                    # face so handlers like query_who_is_speaking can answer with
+                    # real biometric ground truth instead of LLM hallucination.
+                    _visible_name = None
+                    try:
+                        for p in world_state.get("people") or []:
+                            if p.get("person_db_id") is not None and p.get("face_id"):
+                                _visible_name = p["face_id"]
+                                break
+                    except Exception:
+                        pass
+                    response_text = _handle_classified_intent(
+                        intent, text, person_id,
+                        raw_best_id=raw_best_id,
+                        raw_best_name=raw_best_name,
+                        raw_best_score=speaker_score,
+                        visible_known_name=_visible_name,
+                    )
             if response_text is None:
                 response_text = _stream_llm_response(text, person_id)
 
