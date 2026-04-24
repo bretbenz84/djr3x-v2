@@ -116,6 +116,11 @@ _pending_face_reveal_confirm: Optional[dict] = None
 # but were declined ("no") — so Rex doesn't keep re-asking the same question.
 _face_reveal_declined: set[int] = set()
 
+# Per-session set of person_ids whose voice biometric was auto-refreshed this
+# session. Cap at one refresh per person per session so we don't spam new
+# biometric rows when someone speaks a lot.
+_voice_refreshed_this_session: set[int] = set()
+
 _NAME_PATTERNS = [
     re.compile(r"\bmy name is\s+(.+)$", re.IGNORECASE),
     re.compile(r"\bi am\s+(.+)$", re.IGNORECASE),
@@ -496,6 +501,53 @@ def _handle_relationship_reply(
         consciousness.note_relationship_slot_handled(slot_id)
 
 
+def _maybe_auto_refresh_voice(
+    person_id: int,
+    voice_score: float,
+    audio_array: np.ndarray,
+) -> None:
+    """
+    On high-confidence face+voice agreement, append the current audio as an
+    additional voice biometric row for this person, up to a per-person cap.
+
+    Runs asynchronously so the enrollment (which recomputes an embedding via
+    Resemblyzer) doesn't delay Rex's response. Rate-limited to one refresh per
+    person per session.
+    """
+    if person_id is None:
+        return
+    if person_id in _voice_refreshed_this_session:
+        return
+    min_score = float(getattr(config, "AUTO_VOICE_REFRESH_MIN_SCORE", 0.90))
+    if voice_score < min_score:
+        return
+    max_samples = int(getattr(config, "AUTO_VOICE_REFRESH_MAX_SAMPLES", 5))
+    current = people_memory.count_biometrics(person_id, "voice")
+    if current >= max_samples:
+        _voice_refreshed_this_session.add(person_id)  # don't keep checking
+        return
+
+    _voice_refreshed_this_session.add(person_id)
+    audio_copy = audio_array.copy()
+
+    def _task() -> None:
+        try:
+            ok = speaker_id.enroll_voice(person_id, audio_copy)
+            if ok:
+                new_total = people_memory.count_biometrics(person_id, "voice")
+                _log.info(
+                    "[interaction] auto-refreshed voice biometric for person_id=%s "
+                    "(score=%.3f, now %d sample(s))",
+                    person_id, voice_score, new_total,
+                )
+        except Exception as exc:
+            _log.warning("auto-refresh voice enrollment failed: %s", exc)
+
+    threading.Thread(
+        target=_task, daemon=True, name=f"auto-voice-refresh-{person_id}"
+    ).start()
+
+
 def _enroll_new_person(
     name: str,
     audio_array: np.ndarray,
@@ -558,7 +610,11 @@ def _process_audio(
 ) -> tuple[str, Optional[int], Optional[str], float]:
     """
     Run transcription and speaker ID simultaneously in two threads.
-    Returns (transcribed_text, person_id, person_name, speaker_score).
+
+    Returns (transcribed_text, raw_best_id, raw_best_name, raw_best_score).
+    The speaker values are the RAW top voice-ID candidate — NOT threshold-
+    filtered. Callers apply hard/soft thresholds themselves so they can also
+    consult session context (recent engagement) for identity continuity.
     """
     text_box: list[str] = [""]
     speaker_box: list = [None, None, 0.0]  # [person_id, name, score]
@@ -567,7 +623,7 @@ def _process_audio(
         text_box[0] = transcription.transcribe(audio_array)
 
     def _identify() -> None:
-        pid, name, score = speaker_id.identify_speaker(audio_array)
+        pid, name, score = speaker_id.identify_speaker_raw(audio_array)
         speaker_box[0] = pid
         speaker_box[1] = name
         speaker_box[2] = score
@@ -1094,6 +1150,8 @@ def _end_session() -> None:
     _session_person_ids.clear()
     _identity_prompt_until = 0.0
     _awaiting_followup_event = None
+    _voice_refreshed_this_session.clear()
+    _face_reveal_declined.clear()
     try:
         consciousness.clear_response_wait()
         consciousness.clear_engagement()
@@ -1335,10 +1393,46 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         _speak_filler()
 
         # Concurrent transcription + speaker identification
-        text, person_id, person_name, speaker_score = _process_audio(audio_array)
+        text, raw_best_id, raw_best_name, speaker_score = _process_audio(audio_array)
 
         if not text:
             return
+
+        # ── Voice acceptance: hard + session-sticky soft threshold ─────────────
+        # Short/noisy utterances cause wild score variance (0.60–0.85 for the
+        # same person within a single conversation). Mirror human identity
+        # continuity: once someone is confirmed this session, accept subsequent
+        # low-score utterances from the same person as long as they clear the
+        # softer floor. New speakers still need the hard threshold because
+        # their voice won't match the engaged person.
+        hard_threshold = float(config.SPEAKER_ID_SIMILARITY_THRESHOLD)
+        soft_threshold = float(getattr(config, "SPEAKER_ID_SOFT_THRESHOLD", 0.60))
+        try:
+            _recent_engaged = consciousness.get_recent_engagement()
+        except Exception:
+            _recent_engaged = None
+
+        person_id: Optional[int] = None
+        person_name: Optional[str] = None
+        sticky_accepted = False
+        if raw_best_id is not None and speaker_score >= hard_threshold:
+            person_id = raw_best_id
+            person_name = raw_best_name
+        elif (
+            raw_best_id is not None
+            and speaker_score >= soft_threshold
+            and _recent_engaged is not None
+            and raw_best_id == _recent_engaged.get("person_id")
+        ):
+            person_id = raw_best_id
+            person_name = raw_best_name or _recent_engaged.get("name")
+            sticky_accepted = True
+            _log.info(
+                "[interaction] voice soft-accept under session stickiness — "
+                "person_id=%s name=%r score=%.3f (hard=%.2f, soft=%.2f)",
+                person_id, person_name, speaker_score, hard_threshold, soft_threshold,
+            )
+        # else: person_id stays None — truly unknown voice.
 
         # ── World-state person resolution ──────────────────────────────────────
         # Consciousness runs face ID independently; if speaker ID missed or is absent,
@@ -1395,6 +1489,15 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     "[interaction] person resolution: both agreed — person_id=%s name=%r score=%.3f",
                     person_id, person_name, speaker_score,
                 )
+                # Auto-refresh voice biometric: when face AND voice both confirm
+                # the same person with HIGH voice confidence, append this audio
+                # as an additional voice-print row (up to a per-person cap). Over
+                # time this builds a more robust multi-sample representation
+                # without manual re-enrollment.
+                try:
+                    _maybe_auto_refresh_voice(person_id, speaker_score, audio_array)
+                except Exception as exc:
+                    _log.debug("auto voice-refresh skip: %s", exc)
             else:
                 _log.info(
                     "[interaction] person resolution: speaker_id match (score=%.3f) vs worldstate "

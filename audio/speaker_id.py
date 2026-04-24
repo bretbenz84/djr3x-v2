@@ -49,32 +49,31 @@ def get_embedding(audio_array: np.ndarray) -> Optional[np.ndarray]:
         return None
 
 
-def identify_speaker(
+def identify_speaker_raw(
     audio_array: np.ndarray,
 ) -> Tuple[Optional[int], Optional[str], float]:
-    """Return (person_id, name, score) for the best voice match above threshold.
+    """Return the TOP voice match without applying a threshold filter.
 
-    Returns (None, None, 0.0) if Resemblyzer is unavailable, no biometrics are stored,
-    or the best match falls below SPEAKER_ID_SIMILARITY_THRESHOLD.
+    Returns (best_id, best_name, best_sim). Returns (None, None, 0.0) only if
+    Resemblyzer is unavailable, the embedding couldn't be computed, or there
+    are no voice biometrics enrolled yet.
+
+    This is the low-level primitive. Callers apply their own acceptance logic
+    (e.g. hard threshold vs. session-sticky soft threshold).
     """
     embedding = get_embedding(audio_array)
     if embedding is None:
         return (None, None, 0.0)
-
-    # find_by_voice in people.py doesn't expose the similarity score, so we do the
-    # biometric scan here directly — same query pattern people.py uses internally.
     rows = db.fetchall(
         "SELECT person_id, encoding FROM biometrics WHERE type = 'voice'"
     )
     if not rows:
         return (None, None, 0.0)
 
-    # embedding is already normalized by get_embedding; normalize defensively anyway.
     query = embedding.astype(np.float32)
     query_norm = query / (np.linalg.norm(query) + 1e-10)
 
-    # Score every stored voice so we can log a ranked diagnostic line.
-    scored: list[tuple[int, float]] = []  # (person_id, similarity)
+    scored: list[tuple[int, float]] = []
     for row in rows:
         stored = np.frombuffer(bytes(row["encoding"]), dtype=np.float32)
         if stored.shape != query.shape:
@@ -87,30 +86,45 @@ def identify_speaker(
         sim = float(np.dot(stored_norm, query_norm))
         scored.append((row["person_id"], sim))
 
+    if not scored:
+        return (None, None, 0.0)
     scored.sort(key=lambda t: t[1], reverse=True)
 
-    # Always log the top candidates with their scores — makes voice-print
-    # tuning possible from the live log, not just unit tests.
+    # Emit the diagnostic scoreboard line — same format as before so tooling
+    # and test_voice_id.py both read cleanly.
     top_summary_parts = []
     for pid, sim in scored[:3]:
         person = people.get_person(pid)
         nm = (person.get("name") if person else None) or "?"
         top_summary_parts.append(f"{nm}#{pid}={sim:.3f}")
-    top_summary = ", ".join(top_summary_parts) if top_summary_parts else "(no voice prints enrolled)"
     logger.info(
         "[speaker_id] scan — threshold=%.3f, candidates: %s",
-        config.SPEAKER_ID_SIMILARITY_THRESHOLD, top_summary,
+        config.SPEAKER_ID_SIMILARITY_THRESHOLD,
+        ", ".join(top_summary_parts),
     )
 
-    if not scored:
-        return (None, None, 0.0)
-
     best_id, best_sim = scored[0]
-    if best_sim < config.SPEAKER_ID_SIMILARITY_THRESHOLD:
-        return (None, None, 0.0)
-
     person = people.get_person(best_id)
     name = person.get("name") if person else None
+    return (best_id, name, float(best_sim))
+
+
+def identify_speaker(
+    audio_array: np.ndarray,
+) -> Tuple[Optional[int], Optional[str], float]:
+    """Return (person_id, name, score) for the best voice match above threshold.
+
+    Returns (None, None, 0.0) if Resemblyzer is unavailable, no biometrics are
+    stored, or the best match falls below SPEAKER_ID_SIMILARITY_THRESHOLD.
+
+    Thin wrapper over identify_speaker_raw — adds the hard-threshold filter
+    and the low-/high-confidence warning/info log.
+    """
+    best_id, name, best_sim = identify_speaker_raw(audio_array)
+    if best_id is None:
+        return (None, None, 0.0)
+    if best_sim < config.SPEAKER_ID_SIMILARITY_THRESHOLD:
+        return (None, None, 0.0)
     if best_sim < 0.80:
         logger.warning(
             "[speaker_id] LOW-CONFIDENCE match person_id=%s name=%r score=%.3f (< 0.80) — treat with caution",

@@ -642,6 +642,21 @@ FACE_REVEAL_MIN_SCORE = 0.80
 # before forgetting the pending candidates.
 FACE_REVEAL_CONFIRM_WINDOW_SECS = 30.0
 
+# Session-sticky voice threshold: when an utterance scores BELOW the hard
+# SPEAKER_ID_SIMILARITY_THRESHOLD but at or above this softer floor AND the
+# top candidate is the recently engaged person, accept the match. Mirrors how
+# humans maintain identity continuity across short/noisy utterances within a
+# conversation. New speakers still need the hard threshold because their voice
+# won't match the engaged person.
+SPEAKER_ID_SOFT_THRESHOLD = 0.60
+
+# Auto voice-refresh: when both face-ID AND voice-ID agree on a person with
+# voice score at or above this confidence, silently append the current audio
+# as an additional voice biometric row — up to MAX_SAMPLES per person. Builds
+# a more robust multi-sample voice print over time without manual re-enrollment.
+AUTO_VOICE_REFRESH_MIN_SCORE = 0.90
+AUTO_VOICE_REFRESH_MAX_SAMPLES = 5
+
 # ─────────────────────────────────────────────────────────────────────────────
 # IDLE MICRO-BEHAVIORS
 # ─────────────────────────────────────────────────────────────────────────────

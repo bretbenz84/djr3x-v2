@@ -277,6 +277,17 @@ def has_voice_biometric(person_id: int) -> bool:
     return row is not None
 
 
+def count_biometrics(person_id: int, type_: str) -> int:
+    """Return the number of biometric rows of a given type stored for a person."""
+    if person_id is None:
+        return 0
+    row = db.fetchone(
+        "SELECT COUNT(*) AS n FROM biometrics WHERE person_id = ? AND type = ?",
+        (person_id, type_),
+    )
+    return int(row["n"]) if row else 0
+
+
 def delete_person(person_id: int) -> None:
     """Delete all rows for a person across every person-related table."""
     for table in _PERSON_TABLES:
