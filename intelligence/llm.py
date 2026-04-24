@@ -602,10 +602,13 @@ def extract_facts(
     if not transcript:
         return []
 
+    from datetime import date as _date
+    today_md = _date.today().strftime("%m-%d")
     speaker_label = person_name or "user"
     prompt = (
         f"You are extracting personal facts about a person named {speaker_label!r} "
-        f"from a conversation transcript between {speaker_label!r} and Rex (a robot DJ).\n\n"
+        f"from a conversation transcript between {speaker_label!r} and Rex (a robot DJ). "
+        f"Today's date is {_date.today().isoformat()} (MM-DD: {today_md}).\n\n"
         "Extract every fact that the human speaker states about themselves — "
         "including but not limited to: where they are from, their job or occupation, "
         "hobbies, interests, favorite things, family members, pets, beliefs, opinions, "
@@ -616,7 +619,11 @@ def extract_facts(
         "  'I like/love X' or 'my favorite X is Y'→ category=preference, key=favorite_<x>\n"
         "  'I have a X' (pet/child)               → category=pet or family\n"
         "  'I'm into X' or 'I do X for fun'       → category=hobby\n"
-        "  'I believe X' or 'I think X'           → category=belief\n\n"
+        "  'I believe X' or 'I think X'           → category=belief\n"
+        "  'my birthday is X' / 'I was born on X' / 'today is my birthday'\n"
+        "      → category=birthday, key=birthday, value=MM-DD (zero-padded, e.g. '07-04')\n"
+        "      If the year is mentioned use MM-DD only — drop the year.\n"
+        "      If the speaker says 'today is my birthday', use today's MM-DD.\n\n"
         "Only extract facts the human speaker stated. Do not extract anything Rex said. "
         "Do not infer or guess. If no facts are present, return an empty array.\n\n"
         "Return a JSON array where each element has exactly these fields:\n"

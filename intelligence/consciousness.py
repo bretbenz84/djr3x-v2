@@ -95,6 +95,23 @@ _greeted_this_session: set[int] = set()
 # so the same upcoming event isn't referenced on every re-entry into frame.
 _anticipated_events: set[tuple[int, int]] = set()
 
+# Third-party awareness state.
+# _third_party_seen_at: per-tracking-key monotonic timestamp of when the
+#   person was first noticed as a non-engaged bystander this lurking spell.
+# _third_party_called_out: per-tracking-key dedupe so a given lurker only
+#   triggers one callout per session.
+# _last_third_party_check_at: rate limit so the step only does real work
+#   every THIRD_PARTY_CHECK_INTERVAL_SECS.
+_third_party_seen_at: dict = {}
+_third_party_called_out: set = set()
+_last_third_party_check_at: float = 0.0
+
+# Holiday-plans dedupe: (person_db_id, holiday_iso_date) tuples Rex has already
+# asked about this session. The iso date includes the year, so the same holiday
+# next year is fair game without a manual reset.
+_holiday_plans_asked: set[tuple[int, str]] = set()
+_last_holiday_plans_check_at: float = 0.0
+
 # Per-person monotonic timestamp of when they were last seen in frame.
 _last_seen: dict = {}
 
@@ -718,6 +735,45 @@ def _pick_anticipated_event(person_db_id: Optional[int]) -> Optional[dict]:
     except Exception as exc:
         _log.debug("anticipation lookup error: %s", exc)
     return None
+
+
+def _pick_birthday_window(person_db_id: Optional[int]) -> Optional[int]:
+    """
+    If the person has a stored birthday and it's within
+    BIRTHDAY_REMINDER_WINDOW_DAYS, return days_until (0 = today).
+    Otherwise None.
+    """
+    if not isinstance(person_db_id, int):
+        return None
+    try:
+        from memory import facts as facts_mod
+        from awareness.holidays import days_until_birthday
+        for fact in facts_mod.get_facts(person_db_id):
+            if fact.get("key") == "birthday":
+                days = days_until_birthday(fact.get("value") or "")
+                if days is None:
+                    return None
+                window = getattr(config, "BIRTHDAY_REMINDER_WINDOW_DAYS", 7)
+                if 0 <= days <= window:
+                    return days
+                return None
+    except Exception as exc:
+        _log.debug("birthday window lookup error: %s", exc)
+    return None
+
+
+def _build_birthday_prompt(first_name: str, days_until: int) -> str:
+    if days_until == 0:
+        when = "is TODAY"
+    elif days_until == 1:
+        when = "is tomorrow"
+    else:
+        when = f"is in {days_until} days"
+    return (
+        f"You see '{first_name}', someone you know — and their birthday {when}. "
+        f"Open with one short in-character Rex line that calls it out — warm, dry, "
+        f"with the usual snark. Don't sing. Address {first_name} by name. One line only."
+    )
 
 
 def _pick_milestone(person_db_id: Optional[int]) -> Optional[int]:
@@ -1516,17 +1572,28 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     label = f"startup greeting for {person_name}"
                     emotion = "excited"
 
-                    # Priority 1 — milestone visit
-                    milestone = _pick_milestone(person_db_id)
-                    if milestone is not None:
-                        prompt = _build_milestone_prompt(first_name, milestone)
-                        label = f"startup milestone (#{milestone}) for {person_name}"
+                    # Priority 1 — birthday within reminder window
+                    bday_days = _pick_birthday_window(person_db_id)
+                    if bday_days is not None:
+                        prompt = _build_birthday_prompt(first_name, bday_days)
+                        label = f"startup birthday (T-{bday_days}) for {person_name}"
                         _log.info(
-                            "consciousness: startup milestone for %s (visit #%d)",
-                            person_name, milestone,
+                            "consciousness: startup birthday reminder for %s (T-%d days)",
+                            person_name, bday_days,
                         )
 
-                    # Priority 2 — anticipated upcoming event
+                    # Priority 2 — milestone visit
+                    if prompt is None:
+                        milestone = _pick_milestone(person_db_id)
+                        if milestone is not None:
+                            prompt = _build_milestone_prompt(first_name, milestone)
+                            label = f"startup milestone (#{milestone}) for {person_name}"
+                            _log.info(
+                                "consciousness: startup milestone for %s (visit #%d)",
+                                person_name, milestone,
+                            )
+
+                    # Priority 3 — anticipated upcoming event
                     if prompt is None:
                         anticipated = _pick_anticipated_event(person_db_id)
                         if anticipated is not None:
@@ -1543,7 +1610,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                                     person_name, anticipated.get("event_name"),
                                 )
 
-                    # Priority 3 — long absence or recent return
+                    # Priority 4 — long absence or recent return
                     if prompt is None:
                         absence = _pick_absence_phase(person_db_id)
                         if absence and absence[0] == "long_absence":
@@ -1656,6 +1723,204 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
     for key in current_keys:
         _last_seen[key] = now
     _visible_people = current_keys
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 10c — Third-party awareness
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Reuse the same set the disengagement step uses to keep the definition consistent.
+from awareness.social import _DISENGAGED_ENGAGEMENT as _LURK_ENGAGEMENT_VALUES
+
+
+def _step_third_party_awareness(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    When Rex has an active conversation partner and another person nearby is
+    visibly disengaged but lingering, low-probability callout that acknowledges
+    the lurker. Each (session, lurker) is called out at most once.
+
+    Rate-limited per loop tick so the dispatcher stays cheap.
+    """
+    global _last_third_party_check_at
+
+    if profile.suppress_proactive or profile.rapid_exchange:
+        return
+
+    now = time.monotonic()
+    interval = getattr(config, "THIRD_PARTY_CHECK_INTERVAL_SECS", 5.0)
+    if (now - _last_third_party_check_at) < interval:
+        return
+    _last_third_party_check_at = now
+
+    try:
+        people = snapshot.get("people", []) or []
+        if len(people) < 2:
+            _third_party_seen_at.clear()
+            return
+
+        crowd = snapshot.get("crowd", {}) or {}
+        dominant = crowd.get("dominant_speaker")
+        if not dominant:
+            # No active conversation partner → not a "third party" situation.
+            _third_party_seen_at.clear()
+            return
+
+        lurk_threshold = getattr(config, "THIRD_PARTY_LURK_SECS", 30.0)
+        callout_prob = getattr(config, "THIRD_PARTY_CALLOUT_PROBABILITY", 0.10)
+
+        present_keys: set = set()
+        for person in people:
+            pid = person.get("id")
+            if pid is None or pid == dominant:
+                continue
+            engagement = (person.get("engagement") or "").lower()
+            if engagement not in _LURK_ENGAGEMENT_VALUES:
+                # They're engaged or attentive — not a lurker; reset their timer.
+                _third_party_seen_at.pop(pid, None)
+                continue
+
+            present_keys.add(pid)
+            first_seen = _third_party_seen_at.setdefault(pid, now)
+            lurk_secs = now - first_seen
+            if lurk_secs < lurk_threshold:
+                continue
+            if pid in _third_party_called_out:
+                continue
+            if random.random() >= callout_prob:
+                continue
+
+            face_id = person.get("face_id")
+            if face_id and isinstance(face_id, str):
+                first_name = face_id.split()[0]
+                descriptor = f"the person named '{first_name}' standing nearby"
+                address_hint = f"refer to them as '{first_name}'"
+            else:
+                descriptor = "the other person standing nearby — you don't know their name"
+                address_hint = "use a generic label like 'your friend over there' or 'the one in the back'"
+
+            prompt = (
+                f"You're mid-conversation with someone, but {descriptor} has been "
+                f"hanging around for about {int(lurk_secs)} seconds without engaging — "
+                f"facing away or looking down. Drop ONE short in-character Rex line "
+                f"that acknowledges them dryly, observant rather than confrontational. "
+                f"{address_hint.capitalize()}. Examples in spirit: "
+                f"'Your friend over there has been pretending not to listen for a while now.', "
+                f"'Don't think I haven't noticed the lurker.' One line only."
+            )
+            _third_party_called_out.add(pid)
+            _log.info(
+                "consciousness: third-party callout for pid=%s (lurk %.1fs)",
+                pid, lurk_secs,
+            )
+            _generate_and_speak_presence(
+                prompt,
+                label=f"third-party callout for {pid}",
+                tag_key=f"third_party:{pid}",
+                emotion="curious",
+            )
+            # One callout per tick to avoid stacking lines.
+            break
+
+        # Clean up timers for people who left the scene this tick.
+        for pid in list(_third_party_seen_at.keys()):
+            if pid not in present_keys:
+                _third_party_seen_at.pop(pid, None)
+    except Exception as exc:
+        _log.debug("third-party awareness step error: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 10d — Holiday plans curiosity
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    During an active conversation with a known person, if any public holiday
+    is within its approach window, occasionally ask the engaged person about
+    their plans. Each (person, holiday) pair is asked at most once per session;
+    the holiday's iso date includes the year so next year resets naturally.
+    """
+    global _last_holiday_plans_check_at
+
+    if profile.suppress_proactive or profile.rapid_exchange:
+        return
+    if not _can_proactive_speak():
+        return
+
+    now = time.monotonic()
+    interval = getattr(config, "HOLIDAY_PLANS_CHECK_INTERVAL_SECS", 30.0)
+    if (now - _last_holiday_plans_check_at) < interval:
+        return
+    _last_holiday_plans_check_at = now
+
+    # Need an engaged conversation partner with a DB record (so we can dedupe).
+    with _engaged_lock:
+        engaged_id = _engaged_person_id
+        engaged_touch = _engaged_last_touch_at
+    if engaged_id is None:
+        return
+    window = getattr(config, "ENGAGEMENT_WINDOW_SECS", 90.0)
+    if (now - engaged_touch) > window:
+        return
+
+    try:
+        from awareness.holidays import upcoming_holidays
+        from memory import people as people_mod
+
+        holidays = upcoming_holidays()
+        if not holidays:
+            return
+
+        # Find the soonest holiday Rex hasn't asked this person about yet.
+        target = None
+        for h in holidays:
+            if (engaged_id, h["date"]) not in _holiday_plans_asked:
+                target = h
+                break
+        if target is None:
+            return
+
+        if random.random() >= getattr(config, "HOLIDAY_PLANS_PROBABILITY", 0.25):
+            return
+
+        person = people_mod.get_person(engaged_id)
+        if not person:
+            return
+        first_name = (person.get("name") or "").split()[0] or "you"
+
+        days_until = target["days_until"]
+        if days_until == 0:
+            when_clause = "today"
+        elif days_until == 1:
+            when_clause = "tomorrow"
+        else:
+            when_clause = f"in {days_until} days"
+
+        if target["window"] == "major":
+            framing = (
+                f"Ask {first_name} about their plans for {target['name']} ({when_clause}). "
+                f"Treat it as a real holiday — the kind organics actually do something for. "
+            )
+        else:
+            framing = (
+                f"{target['name']} is {when_clause} — a long weekend in their tradition. "
+                f"Ask {first_name} if they have any 3-day-weekend plans, dryly observant. "
+            )
+
+        prompt = (
+            f"You're mid-conversation with '{first_name}'. {framing}"
+            f"One short in-character Rex line, ending with a question. Don't lecture about "
+            f"the holiday — just ask the question, in Rex's voice."
+        )
+
+        _holiday_plans_asked.add((engaged_id, target["date"]))
+        _log.info(
+            "consciousness: holiday plans question for person_id=%s — %s (T-%dd, %s)",
+            engaged_id, target["name"], days_until, target["window"],
+        )
+        _generate_and_speak(prompt, emotion="curious")
+    except Exception as exc:
+        _log.debug("holiday plans step error: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1790,6 +2055,12 @@ def _loop() -> None:
 
             # 10b. Social inquiry — ask engaged person about unknown newcomer
             _step_relationship_inquiry(snapshot, profile)
+
+            # 10c. Third-party awareness — call out a lingering bystander
+            _step_third_party_awareness(snapshot, profile)
+
+            # 10d. Holiday plans — ask engaged person about upcoming holidays
+            _step_holiday_plans(snapshot, profile)
 
             # 11. Face tracking
             _step_face_tracking(frame)

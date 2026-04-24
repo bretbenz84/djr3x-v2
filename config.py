@@ -473,6 +473,22 @@ ANTAGONISM_TIER_CAPS = [
 # Time in seconds before anger level resets to 0 without further insults
 ANGER_COOLDOWN_SECS = 300  # 5 minutes
 
+# Layer-1 insult detection — fast keyword/phrase pre-check that fires anger
+# escalation BEFORE the LLM call so Rex's reply on this same turn reflects it.
+# Layer 2 (llm.analyze_sentiment in the post-response background) still catches
+# ambiguous or context-dependent rudeness. Keep entries lower-case.
+INSULT_KEYWORDS = [
+    "stupid", "dumb", "idiot", "moron", "useless", "garbage", "trash",
+    "broken", "junk", "hate you", "shut up", "sucks", "loser",
+    "worthless", "pathetic", "annoying",
+]
+# Whole-phrase patterns matched as substrings (lower-cased).
+INSULT_PHRASES = [
+    "you're an idiot", "you are an idiot", "you're stupid", "you are stupid",
+    "you're useless", "you are useless", "piece of junk", "piece of garbage",
+    "i hate you",
+]
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TIMING
 # ─────────────────────────────────────────────────────────────────────────────
@@ -651,6 +667,17 @@ NOSTALGIA_HISTORY_DEPTH = 10
 # Probability Rex shares a private thought during IDLE between interactions
 PRIVATE_THOUGHT_TRIGGER_PROBABILITY = 0.08
 
+# THIRD-PARTY AWARENESS — calling out a nearby lurker
+# A non-dominant-speaker person who has been visible in-frame this long with
+# disengaged body language becomes eligible to be called out by Rex.
+THIRD_PARTY_LURK_SECS = 30.0
+# Probability a single eligibility tick actually fires a callout. Tuned low so
+# it feels observant rather than surveillance-y. Each (session, person) is
+# called out at most once via _third_party_called_out dedupe.
+THIRD_PARTY_CALLOUT_PROBABILITY = 0.10
+# Per-loop-tick rate limit to keep the dispatcher cheap.
+THIRD_PARTY_CHECK_INTERVAL_SECS = 5.0
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MEMORY STALENESS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -752,6 +779,32 @@ VENUE_NAME = "Oga's Cantina"
 
 # How long to cache wttr.in weather results before re-fetching (seconds)
 WEATHER_CACHE_SECS = 600  # 10 minutes
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RECURRING EVENTS — birthdays & holidays
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ISO 3166-1 alpha-2 country code for the public-holiday calendar
+# (date.nager.at — no API key required, refreshed at runtime).
+HOLIDAY_COUNTRY_CODE = "US"
+
+# Days before a major holiday (Christmas, New Year, Easter Sunday, Thanksgiving)
+# Rex starts asking the engaged person about plans.
+HOLIDAY_MAJOR_WINDOW_DAYS = 30
+
+# Days before a minor public holiday (Labor Day, MLK Day, etc.) Rex starts
+# asking about 3-day-weekend plans.
+HOLIDAY_MINOR_WINDOW_DAYS = 7
+
+# Days around an upcoming birthday Rex will mention it preemptively in the
+# greeting (matches the anticipation pipeline). 0 = day-of only; 7 = up to a
+# week before.
+BIRTHDAY_REMINDER_WINDOW_DAYS = 7
+
+# Probability the holiday-plans question fires on any given eligible loop tick
+# for an engaged person who hasn't been asked about that holiday this year.
+HOLIDAY_PLANS_PROBABILITY = 0.25
+HOLIDAY_PLANS_CHECK_INTERVAL_SECS = 30.0
 
 # Notable calendar dates Rex reacts to — keys are (month, day) tuples
 NOTABLE_DATES = {

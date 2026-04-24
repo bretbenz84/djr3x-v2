@@ -813,6 +813,7 @@ def _post_response(
     person_name: Optional[str] = None,
     *,
     assistant_asked_question: bool = False,
+    pre_classified_insult: bool = False,
 ) -> None:
     """
     Run after every response in ACTIVE state. Sentiment, facts, follow-up,
@@ -876,9 +877,12 @@ def _post_response(
             sentiment = llm.analyze_sentiment(user_text)
 
             if sentiment.get("is_insult"):
-                personality.increment_anger(person_id)
-                if person_id is not None:
-                    people_memory.update_relationship_scores(person_id, antagonism=+0.03)
+                # Skip if layer 1 already counted this turn so we don't
+                # double-bump anger or antagonism for one utterance.
+                if not pre_classified_insult:
+                    personality.increment_anger(person_id)
+                    if person_id is not None:
+                        people_memory.update_relationship_scores(person_id, antagonism=+0.03)
 
             elif sentiment.get("is_apology"):
                 personality.decrement_anger()
@@ -1376,6 +1380,20 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             speaker_label, person_id, text,
         )
 
+        # Layer-1 insult pre-check: keyword match → bump anger BEFORE the LLM
+        # call so this turn's system prompt reflects the new escalation level.
+        # Layer 2 (llm.analyze_sentiment in _post_response) skips its own
+        # increment when this flag is set so we never double-count.
+        pre_classified_insult = False
+        if personality.is_obvious_insult(text):
+            new_level = personality.increment_anger(person_id)
+            pre_classified_insult = True
+            if person_id is not None:
+                people_memory.update_relationship_scores(person_id, antagonism=+0.03)
+            _log.info(
+                "[interaction] layer-1 insult detected — anger now %d", new_level,
+            )
+
         # Command parser → local dispatch or LLM fallback
         match = command_parser.parse(text)
         if match is not None:
@@ -1418,6 +1436,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             person_id,
             person_name,
             assistant_asked_question=assistant_asked_question,
+            pre_classified_insult=pre_classified_insult,
         )
     finally:
         echo_cancel.end_sequence()

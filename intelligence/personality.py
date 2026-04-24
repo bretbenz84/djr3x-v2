@@ -4,6 +4,7 @@ mood decay, and session-based anger escalation for DJ-R3X.
 """
 
 import logging
+import re
 import sys
 import threading
 import time
@@ -248,6 +249,51 @@ def get_anger_level() -> int:
         _sync_anger_level(current_level)
 
     return 0 if _family_safe else current_level
+
+
+# Compiled regex for fast layer-1 insult keyword detection. Built lazily so
+# config edits during a session don't require a restart to pick up new words.
+_insult_keyword_re: Optional[re.Pattern] = None
+_insult_keyword_signature: Optional[tuple] = None
+
+
+def _get_insult_keyword_re() -> Optional[re.Pattern]:
+    """Build (or rebuild on config change) a compiled word-boundary regex for keywords."""
+    global _insult_keyword_re, _insult_keyword_signature
+    keywords = tuple(getattr(config, "INSULT_KEYWORDS", ()) or ())
+    if not keywords:
+        _insult_keyword_re = None
+        _insult_keyword_signature = ()
+        return None
+    if keywords != _insult_keyword_signature:
+        # Word-boundary on alphanumeric tokens; phrases with spaces fall through
+        # to the substring check below.
+        token_words = [re.escape(k) for k in keywords if " " not in k]
+        _insult_keyword_re = (
+            re.compile(r"\b(?:" + "|".join(token_words) + r")\b", re.IGNORECASE)
+            if token_words else None
+        )
+        _insult_keyword_signature = keywords
+    return _insult_keyword_re
+
+
+def is_obvious_insult(text: str) -> bool:
+    """
+    Layer-1 fast insult check — keyword/phrase match, no LLM call.
+
+    Returns True for clearly hostile utterances Rex should react to immediately.
+    Ambiguous rudeness still gets caught by layer 2 (llm.analyze_sentiment).
+    """
+    if not text or not text.strip():
+        return False
+    lowered = text.lower()
+    for phrase in getattr(config, "INSULT_PHRASES", ()) or ():
+        if phrase in lowered:
+            return True
+    pattern = _get_insult_keyword_re()
+    if pattern is not None and pattern.search(text):
+        return True
+    return False
 
 
 def increment_anger(person_id: Optional[int] = None) -> int:
