@@ -2056,3 +2056,170 @@ returned and started talking again.
 - `audio/speech_queue.py` — checks conditions on queued items at playback time
 - `intelligence/personality.py` — `force_family_safe` overrides anger and roast parameters
 - `intelligence/interaction.py` — `user_mid_sentence` suppresses curiosity questions mid-turn
+
+---
+
+## Implementation Reference
+
+This section maps the behaviors above to the code that realizes them. Anything
+not listed here either has not been implemented yet or lives at the file path
+already referenced in its spec section. Configurable knobs are noted in
+parentheses; all live in `config.py`.
+
+### Recognition-time greeting pipeline
+
+The startup-greeting branch in `intelligence/consciousness.py:_step_presence_tracking`
+resolves the line Rex opens with on first-sight-this-session in this priority
+order. Each tier short-circuits the rest:
+
+1. **Birthday window** — `_pick_birthday_window()` reads the `birthday` fact
+   (`category=birthday, key=birthday, value=MM-DD`) and projects to the next
+   occurrence. Fires when within `BIRTHDAY_REMINDER_WINDOW_DAYS` (default 7).
+2. **Visit milestone** — `_pick_milestone()` checks if `visit_count + 1` (the
+   incoming visit) is in `VISIT_MILESTONES`. `update_visit()` runs at session
+   end so the DB count at recognition time still reflects prior visits.
+3. **Anticipated upcoming event** — `_pick_anticipated_event()` queries
+   `memory.events.get_upcoming_events()` and picks the soonest non-anticipated
+   event within `ANTICIPATION_LOOKAHEAD_DAYS` (30). Per-session dedupe via
+   `_anticipated_events: set[(person_db_id, event_id)]`. Probability of firing
+   when an event qualifies: `ANTICIPATION_PROBABILITY` (0.85).
+4. **Long absence / recent return** — `_pick_absence_phase()` returns
+   `("long_absence", days)` when last visit ≥ `LONG_ABSENCE_THRESHOLD_DAYS`
+   (60) ago, or `("recent_return", hours)` when ≤ `RECENT_RETURN_THRESHOLD_HOURS`
+   (48) ago.
+5. **Generic greeting** — fallback.
+
+The return-after-frame-absence branch (re-entry within the same session) only
+runs anticipation + appearance riff + generic; it deliberately does not redo
+milestone/long-absence/recent-return because those are between-visit semantics.
+
+### Recurring events
+
+**Birthdays** are stored as ordinary `person_facts` rows with
+`category=birthday, key=birthday, value=MM-DD`. `intelligence/llm.py:extract_facts`
+catches them from natural-language phrasings ("my birthday is X", "I was
+born on X", "today is my birthday" — today's date is injected into the
+extraction prompt so the last form resolves correctly). The extracted fact is
+written by the existing post-response background fact pass — no special path.
+Birthdays are excluded from the stale-fact confirmation prompt (immutable).
+
+**Public holidays** are fetched on demand from `date.nager.at` (no API key) by
+`awareness/holidays.py`. The full year is cached in-memory; cache is refreshed
+on first miss for a new year, so Easter and other moving holidays stay
+accurate. Each holiday is tagged `major` if its name contains "christmas" /
+"new year" / "easter sunday" / "thanksgiving"; everything else is `minor`.
+- `HOLIDAY_COUNTRY_CODE` (default `"US"`) selects the country.
+- `upcoming_holidays()` returns holidays whose approach window includes today —
+  `HOLIDAY_MAJOR_WINDOW_DAYS` (30) for major, `HOLIDAY_MINOR_WINDOW_DAYS` (7)
+  for minor.
+
+**Holiday plans questioning** lives in
+`intelligence/consciousness.py:_step_holiday_plans` (Step 10d). It runs only
+when there's an active conversation partner with a DB id, picks the soonest
+in-window holiday this person hasn't been asked about yet, and rolls
+`HOLIDAY_PLANS_PROBABILITY` (0.25) per check tick. Major holidays use a
+"plans for X?" framing; minor holidays use a "any 3-day weekend plans?"
+framing. Per-session dedupe via `_holiday_plans_asked: set[(person_db_id, iso_date)]` —
+the iso date includes the year so next year naturally resets. Cross-session
+dedupe is **not** persisted; restarts re-enable previously asked holidays.
+
+### Anger escalation — two-layer insult detection
+
+- **Layer 1 (sync, pre-LLM):** `intelligence/personality.py:is_obvious_insult`
+  matches against `INSULT_KEYWORDS` (word-boundary regex) and `INSULT_PHRASES`
+  (substring). Called from `intelligence/interaction.py` immediately before
+  `_stream_llm_response`. On hit: `personality.increment_anger(person_id)` and
+  `+0.03` antagonism fire synchronously, so this turn's system prompt already
+  reflects the new escalation level. The hit also sets `pre_classified_insult=True`
+  on the `_post_response` call.
+- **Layer 2 (async, post-LLM):** `intelligence/llm.py:analyze_sentiment` runs
+  in the existing post-response background thread and catches ambiguous or
+  context-dependent rudeness. When `pre_classified_insult=True`, layer 2
+  skips its own anger/antagonism bump so a single utterance is never
+  double-counted.
+
+### Surprise pause (stream-parallel)
+
+`intelligence/interaction.py:_call_llm_and_speak` runs `llm.classify_surprise`
+(a tight yes/no LLM call, `max_tokens=3`) in a daemon thread in parallel with
+the main response stream. After `llm.get_response()` returns, the classifier
+thread is joined with a 300 ms cap so a slow classifier never delays Rex
+perceptibly. On `is_surprising=True`, a randomized `pre_beat_ms` from
+`SURPRISE_PAUSE_MS_MIN..MAX` (500–1000) is passed to `_speak_blocking` →
+`speech_queue.enqueue(pre_beat_ms=...)`. The speech-queue worker holds the
+silence open before TTS starts.
+
+### Post-punchline beat
+
+`intelligence/interaction.py:_speak_blocking` applies a randomized
+`POST_PUNCHLINE_BEAT_MS_MIN..MAX` (800–1500 ms) to **priority-1** speech only
+(normal LLM responses). Wake-acks (priority 2), interrupt acks, idle filler,
+and presence reactions (priority 0) skip it. Implemented via a
+`post_beat_ms` parameter on `audio/speech_queue.enqueue` — the worker sleeps
+that long after `tts.speak()` returns, before setting `done` and releasing the
+queue.
+
+### Idle micro-behaviors
+
+`intelligence/consciousness.py:_step_idle_micro_behavior` (Step 9) randomly
+dispatches one of: `ambient_scan`, `private_thought`, `aspiration`, `idle_clip`,
+`ambient_observation`, `appearance_riff`, `live_vision_comment`. Aspirations
+read from `config.ASPIRATIONS` with a `_last_aspiration` anti-repeat guard,
+gated by `suppress_proactive` and `suppress_system_comments` so they cannot
+fire mid-conversation.
+
+### Nostalgia callbacks
+
+`intelligence/llm.py:_pick_nostalgia_callback` is called inside
+`_build_person_context` during system-prompt assembly. Eligible only for tiers
+in `NOSTALGIA_ELIGIBLE_TIERS` (`close_friend`, `best_friend`). Per-turn roll
+at `NOSTALGIA_TRIGGER_PROBABILITY` (0.05). Draws from
+`get_conversation_history(limit=NOSTALGIA_HISTORY_DEPTH=10)`, **excluding the
+most recent** (already injected as "Last conversation"). Per-session dedupe
+via `_nostalgia_used_this_session: set[conversation_id]`. On hit, a
+`NOSTALGIA HOOK:` instruction is appended to the person-context section and
+the LLM weaves the callback into its reply naturally — no extra API call.
+
+### Stale fact confirmation
+
+`intelligence/llm.py:_pick_stale_fact` queries
+`memory.facts.get_stale_facts(person_id, STALE_FACT_THRESHOLD_DAYS=365)`,
+ordered oldest-first. Skips immutables (`skin_color`, `hometown`, `birthday`,
+`birth_year`). Per-session dedupe via `_stale_facts_asked_this_session: set[fact_id]`.
+On hit, appends a `STALE FACT HOOK:` instruction to person context so Rex
+weaves the confirmation question into his reply.
+
+### Third-party awareness
+
+`intelligence/consciousness.py:_step_third_party_awareness` (Step 10c). Active
+only when there's a dominant speaker and ≥2 people in scene. For each
+non-dominant person whose `engagement` is in
+`awareness.social._DISENGAGED_ENGAGEMENT` (`low` / `none` / `disengaged`),
+tracks lurk time via `_third_party_seen_at`. After
+`THIRD_PARTY_LURK_SECS` (30), rolls `THIRD_PARTY_CALLOUT_PROBABILITY` (0.10).
+On hit, calls `_generate_and_speak_presence` with a tag-coalesced presence
+reaction. Per-session dedupe via `_third_party_called_out`. Rate-limited to
+one real check every `THIRD_PARTY_CHECK_INTERVAL_SECS` (5).
+
+### Prompt context layering — additions
+
+`intelligence/llm.py:assemble_system_prompt` injects two additional behavioral
+modifiers beyond what the spec describes:
+
+- **Seasonal tone** — looks up `world_state.time.season` (set by
+  `awareness.chronoception`) in `_SEASONAL_TONE` and appends one short
+  modifier line per season.
+- **Social mode** — calls `awareness.situation.assessor.evaluate().social_mode`
+  and appends the matching `_SOCIAL_MODE_RULES` line. This shifts Rex between
+  `one_on_one` (intimate, quieter), `small_group`, `crowd` (performative), and
+  `performance` (full DJ stage energy).
+
+The WorldState summary block also gains `Season: {season}.` on the time line.
+
+### Speech queue — beat capability
+
+`audio/speech_queue.py` exposes `pre_beat_ms` and `post_beat_ms` parameters on
+both `enqueue()` and `enqueue_audio_file()`. The single worker holds the
+queue open during the beat (sleep happens inside the same `try` block that
+sets `_speaking=True`), so nothing slips into the silence. Higher-priority
+items still preempt via the existing `_speaking` / `sd.stop()` mechanism.
