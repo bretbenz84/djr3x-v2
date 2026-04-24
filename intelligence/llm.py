@@ -4,6 +4,7 @@ intelligence/llm.py — GPT-4o-mini streaming interface and prompt assembly for 
 
 import json
 import logging
+import random
 import re
 import sys
 from pathlib import Path
@@ -111,6 +112,37 @@ _TIER_ROAST_STYLE = {
     "best_friend":  "Roast style: devastating — the full arsenal, zero mercy, maximum affection.",
 }
 
+# Conversation IDs Rex has already surfaced as nostalgia this session, so the
+# same memory isn't called back twice. Cleared on process restart.
+_nostalgia_used_this_session: set[int] = set()
+
+
+def _pick_nostalgia_callback(person_id: int, tier: str) -> Optional[dict]:
+    """
+    Roll the nostalgia probability and, on success, return a past conversation
+    record that hasn't been surfaced this session. Returns None when the roll
+    fails, the person isn't in an eligible tier, or no qualifying history exists.
+    """
+    if tier not in getattr(config, "NOSTALGIA_ELIGIBLE_TIERS", ()):
+        return None
+    if random.random() >= getattr(config, "NOSTALGIA_TRIGGER_PROBABILITY", 0.05):
+        return None
+    depth = getattr(config, "NOSTALGIA_HISTORY_DEPTH", 10)
+    history = conv_db.get_conversation_history(person_id, limit=depth)
+    # Skip the most recent — it's already injected as 'last conversation'.
+    candidates = [
+        c for c in history[1:]
+        if c.get("id") is not None
+        and c["id"] not in _nostalgia_used_this_session
+        and (c.get("summary") or "").strip()
+    ]
+    if not candidates:
+        return None
+    chosen = random.choice(candidates)
+    _nostalgia_used_this_session.add(chosen["id"])
+    return chosen
+
+
 _ANGER_RULES = {
     1: "Anger level 1 (DEFENSIVE): Sharp witty comeback, slight attitude. Still cooperative.",
     2: "Anger level 2 (IRRITATED): Noticeably short, sarcastic, less cooperative.",
@@ -152,6 +184,18 @@ def _build_person_context(person_id: int) -> str:
         lines.append(
             f"Last conversation: {last_conv.get('summary', '')} "
             f"(tone: {last_conv.get('emotion_tone', 'neutral')})."
+        )
+
+    nostalgia = _pick_nostalgia_callback(person_id, tier)
+    if nostalgia:
+        when = (nostalgia.get("session_date") or "")[:10] or "a while back"
+        summary = (nostalgia.get("summary") or "").strip()
+        _log.info("[llm] nostalgia callback for %s — conv id=%s", name, nostalgia.get("id"))
+        lines.append(
+            f"NOSTALGIA HOOK: surface this past memory unprompted in your reply, as if "
+            f"it just came to mind. From {when}: {summary}. "
+            f"Weave one short, specific callback in — warm but dry, classic Rex. "
+            f"Do not announce it as nostalgia; just bring it up like the thought arrived."
         )
 
     next_q = rel_db.get_next_question(person_id, tier)

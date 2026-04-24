@@ -91,6 +91,10 @@ _visible_people: set = set()
 # Known people (by person_db_id) already greeted since process start.
 _greeted_this_session: set[int] = set()
 
+# (person_db_id, event_id) pairs Rex has already anticipated this session,
+# so the same upcoming event isn't referenced on every re-entry into frame.
+_anticipated_events: set[tuple[int, int]] = set()
+
 # Per-person monotonic timestamp of when they were last seen in frame.
 _last_seen: dict = {}
 
@@ -682,6 +686,66 @@ def _step_followup_check(snapshot: dict) -> None:
         _log.debug("followup check step error: %s", exc)
 
 
+def _pick_anticipated_event(person_db_id: Optional[int]) -> Optional[dict]:
+    """
+    Return the soonest upcoming event for this person that Rex hasn't already
+    anticipated this session. Filtered by ANTICIPATION_LOOKAHEAD_DAYS so distant
+    events don't get referenced. Returns None if none qualify.
+    """
+    if not isinstance(person_db_id, int):
+        return None
+    try:
+        from datetime import date, datetime, timedelta
+        from memory import events as events_mod
+        upcoming = events_mod.get_upcoming_events(person_db_id)
+        if not upcoming:
+            return None
+        lookahead_days = getattr(config, "ANTICIPATION_LOOKAHEAD_DAYS", 30)
+        cutoff = date.today() + timedelta(days=lookahead_days)
+        for ev in upcoming:
+            ev_id = ev.get("id")
+            if ev_id is None or (person_db_id, ev_id) in _anticipated_events:
+                continue
+            ev_date_str = ev.get("event_date")
+            if ev_date_str:
+                try:
+                    ev_date = datetime.fromisoformat(ev_date_str).date()
+                except ValueError:
+                    continue
+                if ev_date > cutoff:
+                    continue
+            return ev
+    except Exception as exc:
+        _log.debug("anticipation lookup error: %s", exc)
+    return None
+
+
+def _build_anticipation_prompt(
+    first_name: str, event: dict, situation: str
+) -> Optional[str]:
+    """
+    Build a Rex prompt that opens with a preemptive reference to an upcoming
+    event. `situation` is a short phrase describing the recognition moment
+    (e.g. "you just booted and see them", "they just walked back into frame").
+    """
+    if random.random() >= getattr(config, "ANTICIPATION_PROBABILITY", 0.85):
+        return None
+    event_name = (event.get("event_name") or "").strip()
+    if not event_name:
+        return None
+    event_date = event.get("event_date") or ""
+    notes = (event.get("event_notes") or "").strip()
+    when_clause = f" coming up on {event_date}" if event_date else " coming up"
+    notes_clause = f" Context they gave: {notes}." if notes else ""
+    return (
+        f"You see '{first_name}', someone you know — {situation}. "
+        f"You remember they have '{event_name}'{when_clause}.{notes_clause} "
+        f"Open with a short in-character Rex line that PREEMPTIVELY references "
+        f"this event — like you've been thinking about it and are bringing it up "
+        f"before they do. Warm but dry. Address {first_name} by name. One line only."
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 7 — Disengagement detection
 # ─────────────────────────────────────────────────────────────────────────────
@@ -835,6 +899,7 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
     behavior = random.choice([
         "ambient_scan",
         "private_thought",
+        "aspiration",
         "idle_clip",
         "ambient_observation",
         "appearance_riff",
@@ -849,6 +914,9 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
         # system-comment gates so Rex doesn't mutter about himself mid-conversation.
         if not profile.suppress_proactive and not profile.suppress_system_comments:
             _do_private_thought()
+    elif behavior == "aspiration":
+        if not profile.suppress_proactive and not profile.suppress_system_comments:
+            _do_aspiration()
     elif behavior == "idle_clip":
         if not profile.suppress_proactive:
             _do_idle_clip()
@@ -889,6 +957,24 @@ def _do_private_thought() -> None:
         return
     line = random.choice(config.PRIVATE_THOUGHTS)
     _speak_async(line, emotion="neutral")
+
+
+# Anti-repeat for aspirations — never play the same line back-to-back.
+_last_aspiration: Optional[str] = None
+
+
+def _do_aspiration() -> None:
+    """Speak one of Rex's forward-looking aspirations as an idle micro-behavior."""
+    global _last_aspiration
+    if not _can_proactive_speak():
+        return
+    pool = getattr(config, "ASPIRATIONS", None)
+    if not pool:
+        return
+    candidates = [line for line in pool if line != _last_aspiration] or list(pool)
+    chosen = random.choice(candidates)
+    _last_aspiration = chosen
+    _speak_async(chosen, emotion="curious")
 
 
 def _do_ambient_observation(snapshot: dict) -> None:
@@ -1326,15 +1412,36 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 _greeted_this_session.add(key)
                 if _should_fire_presence(key, person_db_id, profile):
                     first_name = person_name.split()[0]
-                    _log.info("consciousness: startup greeting for %s", person_name)
-                    _generate_and_speak_presence(
-                        f"You just started up and immediately see '{first_name}', someone you know. "
-                        f"Greet them in one short in-character Rex line. "
-                        f"Address {first_name} by name. Make it feel like Rex just booted and is glad to see a familiar face.",
-                        label=f"startup greeting for {person_name}",
-                        tag_key=key,
-                        emotion="excited",
+                    anticipated = _pick_anticipated_event(person_db_id)
+                    anticipation_prompt = (
+                        _build_anticipation_prompt(
+                            first_name, anticipated, "you just booted up and immediately spot them"
+                        )
+                        if anticipated
+                        else None
                     )
+                    if anticipation_prompt:
+                        _anticipated_events.add((person_db_id, anticipated["id"]))
+                        _log.info(
+                            "consciousness: startup anticipation for %s (event=%s)",
+                            person_name, anticipated.get("event_name"),
+                        )
+                        _generate_and_speak_presence(
+                            anticipation_prompt,
+                            label=f"startup anticipation for {person_name}",
+                            tag_key=key,
+                            emotion="excited",
+                        )
+                    else:
+                        _log.info("consciousness: startup greeting for %s", person_name)
+                        _generate_and_speak_presence(
+                            f"You just started up and immediately see '{first_name}', someone you know. "
+                            f"Greet them in one short in-character Rex line. "
+                            f"Address {first_name} by name. Make it feel like Rex just booted and is glad to see a familiar face.",
+                            label=f"startup greeting for {person_name}",
+                            tag_key=key,
+                            emotion="excited",
+                        )
             continue
 
         absent_secs = now - _last_seen[key]
@@ -1350,6 +1457,29 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         if is_known:
             first_name = person_name.split()[0]
             _log.info("consciousness: return detected — queuing reaction for %s (absent %.1fs)", person_name, absent_secs)
+            anticipated = _pick_anticipated_event(person_db_id)
+            anticipation_prompt = (
+                _build_anticipation_prompt(
+                    first_name,
+                    anticipated,
+                    f"they just walked back into your camera view after about {int(absent_secs)} seconds away",
+                )
+                if anticipated
+                else None
+            )
+            if anticipation_prompt:
+                _anticipated_events.add((person_db_id, anticipated["id"]))
+                _log.info(
+                    "consciousness: return anticipation for %s (event=%s)",
+                    person_name, anticipated.get("event_name"),
+                )
+                _generate_and_speak_presence(
+                    anticipation_prompt,
+                    label=f"return anticipation for {person_name}",
+                    tag_key=key,
+                    emotion="curious",
+                )
+                continue
             appearance_hint = _pick_appearance_hint(person_db_id)
             if appearance_hint and random.random() < getattr(config, "APPEARANCE_RIFF_PROBABILITY", 0.35):
                 prompt = (

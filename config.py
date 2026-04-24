@@ -636,6 +636,13 @@ MOOD_DECAY_RATE_PER_MINUTE = 0.10
 # Only fires for close_friend and best_friend tiers
 NOSTALGIA_TRIGGER_PROBABILITY = 0.05
 
+# Friendship tiers eligible for nostalgia callbacks
+NOSTALGIA_ELIGIBLE_TIERS = ("close_friend", "best_friend")
+
+# How many recent conversation summaries Rex draws from for nostalgia
+# (excludes the most recent — that's already in 'last conversation' context)
+NOSTALGIA_HISTORY_DEPTH = 10
+
 # Probability Rex shares a private thought during IDLE between interactions
 PRIVATE_THOUGHT_TRIGGER_PROBABILITY = 0.08
 
@@ -654,6 +661,16 @@ RECENT_RETURN_THRESHOLD_HOURS = 48
 
 # Days after mentioned_at before a dateless event is due for follow-up
 FOLLOWUP_UNDATED_DAYS = 7
+
+# ANTICIPATION — preemptive event greeting
+# When a known person is recognized, Rex may open with a reference to a stored
+# upcoming event (event_date in the future, not yet followed up) instead of a
+# generic greeting. Each (person, event) pair fires at most once per session.
+# Probability is the chance the anticipation reference is used when an upcoming
+# event is available; otherwise the normal greeting fires.
+ANTICIPATION_PROBABILITY = 0.85
+# Only events occurring within this many days qualify — distant events feel forced.
+ANTICIPATION_LOOKAHEAD_DAYS = 30
 
 # Visit count milestones Rex acknowledges in character
 VISIT_MILESTONES = [5, 10, 25, 50, 100]
