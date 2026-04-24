@@ -33,6 +33,10 @@ _PERSON_TABLES = [
     "person_events",
 ]
 
+# person_relationships uses from_person_id/to_person_id rather than person_id,
+# so it can't share the simple _PERSON_TABLES delete path.
+_RELATIONSHIP_TABLE = "person_relationships"
+
 # Tier order used for antagonism cap comparisons.
 _TIER_ORDER = ["stranger", "acquaintance", "friend", "close_friend", "best_friend"]
 
@@ -255,6 +259,10 @@ def delete_person(person_id: int) -> None:
     """Delete all rows for a person across every person-related table."""
     for table in _PERSON_TABLES:
         db.execute(f"DELETE FROM {table} WHERE person_id = ?", (person_id,))
+    db.execute(
+        f"DELETE FROM {_RELATIONSHIP_TABLE} WHERE from_person_id = ? OR to_person_id = ?",
+        (person_id, person_id),
+    )
     db.execute("DELETE FROM people WHERE id = ?", (person_id,))
 
 
@@ -267,4 +275,5 @@ def delete_all_people() -> None:
     """
     for table in _PERSON_TABLES:
         db.execute(f"DELETE FROM {table}")
+    db.execute(f"DELETE FROM {_RELATIONSHIP_TABLE}")
     db.execute("DELETE FROM people")

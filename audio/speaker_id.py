@@ -73,7 +73,8 @@ def identify_speaker(
     query = embedding.astype(np.float32)
     query_norm = query / (np.linalg.norm(query) + 1e-10)
 
-    best_id, best_sim = None, -1.0
+    # Score every stored voice so we can log a ranked diagnostic line.
+    scored: list[tuple[int, float]] = []  # (person_id, similarity)
     for row in rows:
         stored = np.frombuffer(bytes(row["encoding"]), dtype=np.float32)
         if stored.shape != query.shape:
@@ -84,12 +85,28 @@ def identify_speaker(
             continue
         stored_norm = stored / (np.linalg.norm(stored) + 1e-10)
         sim = float(np.dot(stored_norm, query_norm))
-        if sim > best_sim:
-            best_sim = sim
-            best_id = row["person_id"]
+        scored.append((row["person_id"], sim))
 
-    if best_id is None or best_sim < config.SPEAKER_ID_SIMILARITY_THRESHOLD:
-        logger.debug("[speaker_id] no match above threshold (best_sim=%.3f)", best_sim)
+    scored.sort(key=lambda t: t[1], reverse=True)
+
+    # Always log the top candidates with their scores — makes voice-print
+    # tuning possible from the live log, not just unit tests.
+    top_summary_parts = []
+    for pid, sim in scored[:3]:
+        person = people.get_person(pid)
+        nm = (person.get("name") if person else None) or "?"
+        top_summary_parts.append(f"{nm}#{pid}={sim:.3f}")
+    top_summary = ", ".join(top_summary_parts) if top_summary_parts else "(no voice prints enrolled)"
+    logger.info(
+        "[speaker_id] scan — threshold=%.3f, candidates: %s",
+        config.SPEAKER_ID_SIMILARITY_THRESHOLD, top_summary,
+    )
+
+    if not scored:
+        return (None, None, 0.0)
+
+    best_id, best_sim = scored[0]
+    if best_sim < config.SPEAKER_ID_SIMILARITY_THRESHOLD:
         return (None, None, 0.0)
 
     person = people.get_person(best_id)

@@ -184,6 +184,46 @@ def is_engaged_with(person_id: Optional[int]) -> bool:
         return (time.monotonic() - _engaged_last_touch_at) <= window
 
 
+def get_recent_engagement(window_secs: Optional[float] = None) -> Optional[dict]:
+    """
+    Return the most recently engaged person within window_secs, even if the
+    engagement technically ended (session cleared). Used by interaction.py to
+    chain "who are you?" into "how do you know <engaged_name>?"
+
+    Returns dict {person_id, name} or None.
+    """
+    if window_secs is None:
+        window_secs = float(getattr(config, "RECENT_ENGAGEMENT_WINDOW_SECS", 60.0))
+    with _engaged_lock:
+        pid = _engaged_person_id
+        touch = _engaged_last_touch_at
+    if pid is None or touch <= 0.0:
+        return None
+    if (time.monotonic() - touch) > window_secs:
+        return None
+    try:
+        from memory import people as _people_mod
+        row = _people_mod.get_person(pid)
+        if row and row.get("name"):
+            return {"person_id": pid, "name": row["name"]}
+    except Exception:
+        pass
+    return {"person_id": pid, "name": None}
+
+
+def set_relationship_prompt_context(ctx: dict) -> None:
+    """
+    Externally open a relationship-prompt window. Used by interaction.py after
+    enrolling a newcomer to request that their NEXT utterance be parsed as
+    {relationship} relative to a previously-engaged person.
+    """
+    if not ctx:
+        return
+    _pending_relationship_context.clear()
+    _pending_relationship_context.update(ctx)
+    _pending_relationship_prompt.set()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Public follow-up API
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1341,15 +1381,19 @@ def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> Non
         # Reuse the identity-prompt cooldown so Rex doesn't spam prompts.
         return
 
-    # Find engaged person (if any) from current snapshot.
+    # Find engaged person — allow RECENT engagement (within window) so we still
+    # ask "who's this?" if a newcomer arrives right as a session is winding down.
     engaged_id: Optional[int] = None
     engaged_name: Optional[str] = None
+    recent_window = float(getattr(config, "RECENT_ENGAGEMENT_WINDOW_SECS", 60.0))
     with _engaged_lock:
-        if _engaged_person_id is None:
-            # Not currently engaged; drop all unknown timers to avoid stale state.
-            _unknown_first_seen_at.clear()
-            return
-        engaged_id = _engaged_person_id
+        pid = _engaged_person_id
+        touch = _engaged_last_touch_at
+    if pid is None or (touch > 0 and (now - touch) > recent_window):
+        # No recent engagement; drop all unknown timers to avoid stale state.
+        _unknown_first_seen_at.clear()
+        return
+    engaged_id = pid
 
     people = snapshot.get("people", []) or []
     known_visible = False

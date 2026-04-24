@@ -90,6 +90,11 @@ _NAME_MAX_WORDS = 3
 # event row so the next user utterance can be captured as the outcome.
 _awaiting_followup_event: Optional[dict] = None
 
+# Single-cell list so nested closures can mutate without `global`.
+# When set, the post-response hook will fire a "how do you know <name>?"
+# question and open a relationship-prompt window for the newcomer's next reply.
+_pending_post_greet_relationship: list[Optional[dict]] = [None]
+
 _NAME_PATTERNS = [
     re.compile(r"\bmy name is\s+(.+)$", re.IGNORECASE),
     re.compile(r"\bi am\s+(.+)$", re.IGNORECASE),
@@ -329,29 +334,52 @@ def _handle_relationship_reply(
     speaker_person_name: Optional[str],
 ) -> None:
     """
-    Process the engaged person's reply to Rex's "who's this?" question.
+    Process a reply to one of two relationship-flow questions:
 
-    Extracts {name, relationship}. If both present and the speaker matches the
-    engaged person Rex asked, enroll the newcomer (face + DB row), save the
-    relationship edge, and speak a brief acknowledgment.
+    Mode A — "who's this?" asked of the ENGAGED person.
+        ctx has engaged_person_id but no newcomer_person_id. The speaker is
+        expected to be the engaged person; their reply is parsed for BOTH a
+        {name, relationship} and we enroll a brand-new person for the newcomer.
+
+    Mode B — "how do you know <engaged>?" asked of the NEWCOMER after identity
+        enrollment.
+        ctx has both engaged_person_id AND newcomer_person_id. The speaker is
+        expected to be the newcomer (already enrolled). Reply is parsed for a
+        {relationship} (the name is already known); the edge is saved from the
+        newcomer to the engaged person (speaker's perspective).
+
+    In either mode, if the speaker is plausibly correct and the parse produces
+    a relationship label, an edge is stored and the slot is marked handled.
     """
     engaged_id = rel_ctx.get("engaged_person_id")
     engaged_name = rel_ctx.get("engaged_name") or "friend"
+    newcomer_pid_pre = rel_ctx.get("newcomer_person_id")  # Mode B only
     slot_id = rel_ctx.get("slot_id") or ""
 
-    # Only trust the reply if it came from the person Rex actually asked. If a
-    # different speaker answered first, re-open the window for the real engaged
-    # person by not marking the slot handled.
-    if speaker_person_id is not None and engaged_id is not None and speaker_person_id != engaged_id:
+    mode_b = newcomer_pid_pre is not None
+
+    # Speaker validity check. If this reply clearly came from a different
+    # person than the one Rex asked, don't consume the prompt.
+    expected_speaker = newcomer_pid_pre if mode_b else engaged_id
+    if (
+        speaker_person_id is not None
+        and expected_speaker is not None
+        and speaker_person_id != expected_speaker
+    ):
         _log.info(
             "[interaction] relationship reply came from person_id=%s but Rex asked "
-            "person_id=%s — ignoring",
-            speaker_person_id, engaged_id,
+            "person_id=%s (mode_%s) — ignoring",
+            speaker_person_id, expected_speaker, "B" if mode_b else "A",
         )
         return
 
+    # Extract. In both modes the LLM call returns {name, relationship}; in mode
+    # B we ignore the name because we already know the speaker.
     try:
-        parsed = llm.extract_relationship_introduction(user_text, speaker_person_name or engaged_name)
+        parsed = llm.extract_relationship_introduction(
+            user_text,
+            speaker_person_name or (engaged_name if not mode_b else "newcomer"),
+        )
     except Exception as exc:
         _log.debug("relationship extraction error: %s", exc)
         parsed = {"name": None, "relationship": None}
@@ -359,11 +387,40 @@ def _handle_relationship_reply(
     name = parsed.get("name")
     relationship = parsed.get("relationship")
 
+    # ── Mode B: just save the edge, no enrollment needed ──────────────────────
+    if mode_b:
+        if not relationship:
+            _log.info(
+                "[interaction] mode-B relationship reply had no label — user_text=%r parsed=%r",
+                user_text, parsed,
+            )
+            consciousness.note_relationship_slot_handled(slot_id)
+            return
+        try:
+            from memory import social as social_memory
+            # Speaker (newcomer) is describing their relationship to the engaged
+            # person. from_id = newcomer (speaker), to_id = engaged.
+            social_memory.save_relationship(
+                from_person_id=newcomer_pid_pre,
+                to_person_id=engaged_id,
+                relationship=relationship,
+                described_by=newcomer_pid_pre,
+            )
+            _log.info(
+                "[interaction] mode-B saved edge: person_id=%s --[%s]--> person_id=%s (%s)",
+                newcomer_pid_pre, relationship, engaged_id, engaged_name,
+            )
+        except Exception as exc:
+            _log.warning("social.save_relationship failed (mode B): %s", exc)
+        consciousness.note_relationship_slot_handled(slot_id)
+        return
+
+    # ── Mode A: enroll newcomer + save edge ────────────────────────────────────
     if not name:
         # Deflection or no name given. Don't badger — mark slot handled so Rex
         # moves on. Relationship could still be saved if name later surfaces.
         _log.info(
-            "[interaction] relationship reply had no name — user_text=%r parsed=%r",
+            "[interaction] mode-A relationship reply had no name — user_text=%r parsed=%r",
             user_text, parsed,
         )
         consciousness.note_relationship_slot_handled(slot_id)
@@ -395,7 +452,7 @@ def _handle_relationship_reply(
                 name=f"appearance-enroll-{new_id}",
             ).start()
 
-        # Save the relationship edge (speaker → newcomer).
+        # Save the edge (engaged speaker → newcomer, per speaker's perspective).
         if engaged_id and relationship:
             try:
                 from memory import social as social_memory
@@ -409,7 +466,7 @@ def _handle_relationship_reply(
                 _log.warning("social.save_relationship failed: %s", exc)
 
         _log.info(
-            "[interaction] enrolled newcomer %s (person_id=%s) as %s of %s",
+            "[interaction] mode-A enrolled newcomer %s (person_id=%s) as %s of %s",
             name, new_id, relationship or "acquaintance", engaged_name,
         )
     except Exception as exc:
@@ -418,10 +475,19 @@ def _handle_relationship_reply(
         consciousness.note_relationship_slot_handled(slot_id)
 
 
-def _enroll_new_person(name: str, audio_array: np.ndarray) -> Optional[int]:
+def _enroll_new_person(
+    name: str,
+    audio_array: np.ndarray,
+    enroll_unknown_face: bool = False,
+) -> Optional[int]:
     """
     Enroll a brand-new person and attach available voice/face biometrics.
     Returns person_id on success.
+
+    If enroll_unknown_face=True, use face_mod.enroll_unknown_face which picks
+    the largest face NOT already matched to an existing known person. Use this
+    when a known person is visible alongside the newcomer so we don't rebind
+    the known person's face to the new name.
     """
     person_id = people_memory.enroll_person(name)
     if person_id is None:
@@ -443,7 +509,10 @@ def _enroll_new_person(name: str, audio_array: np.ndarray) -> Optional[int]:
 
         frame = camera_mod.capture_still()
         if frame is not None:
-            face_mod.enroll_face(person_id, frame)
+            if enroll_unknown_face:
+                face_mod.enroll_unknown_face(person_id, frame)
+            else:
+                face_mod.enroll_face(person_id, frame)
             # Appearance extraction is useful but non-blocking.
             threading.Thread(
                 target=face_mod.update_appearance,
@@ -1326,20 +1395,58 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
 
         # If we don't recognize the speaker but there is an unknown person visible,
         # attempt self-identification enrollment from this utterance.
+        #
+        # Also: when Rex has *just asked* an unknown person for their name
+        # (_identity_prompt_until > now) and an unknown face is visible, force
+        # the enrollment path even if speaker-ID wrongly matched the voice to
+        # an existing known person. Without this, a newcomer whose voice is not
+        # yet enrolled gets collapsed into the nearest known voice print and
+        # their reply never triggers enrollment.
         now_mono = time.monotonic()
+        identity_prompt_active = now_mono <= _identity_prompt_until
+        has_unknown = _has_unknown_visible_person()
         should_attempt_enroll = (
-            person_id is None
-            and (_has_unknown_visible_person() or now_mono <= _identity_prompt_until)
+            (person_id is None and (has_unknown or identity_prompt_active))
+            or (identity_prompt_active and has_unknown)
         )
         if should_attempt_enroll:
-            allow_bare = now_mono <= _identity_prompt_until
+            allow_bare = identity_prompt_active
             intro_name = _extract_introduced_name(text, allow_bare_name=allow_bare)
             if intro_name:
-                enrolled_id = _enroll_new_person(intro_name, audio_array)
+                # Use the face-aware enrollment path when we have a known-person
+                # context to preserve; otherwise normal _enroll_new_person is fine.
+                prior_engagement = None
+                try:
+                    prior_engagement = consciousness.get_recent_engagement()
+                except Exception:
+                    prior_engagement = None
+
+                enrolled_id = _enroll_new_person(
+                    intro_name,
+                    audio_array,
+                    enroll_unknown_face=bool(prior_engagement),
+                )
                 if enrolled_id is not None:
+                    if person_id is not None and person_id != enrolled_id:
+                        _log.info(
+                            "[interaction] enrollment overrode speaker-ID mismatch: "
+                            "speaker_id said person_id=%s, identity prompt replied %r → new person_id=%s",
+                            person_id, intro_name, enrolled_id,
+                        )
                     person_id = enrolled_id
                     person_name = intro_name
                     _identity_prompt_until = 0.0
+
+                    # Chain into a relationship follow-up if we were just
+                    # engaged with someone else — set a flag for the post-
+                    # response hook to ask "how do you know <name>?"
+                    if prior_engagement and prior_engagement.get("person_id") != enrolled_id:
+                        _pending_post_greet_relationship[0] = {
+                            "prior_engaged_id": prior_engagement["person_id"],
+                            "prior_engaged_name": prior_engagement.get("name"),
+                            "newcomer_person_id": enrolled_id,
+                            "newcomer_name": intro_name,
+                        }
 
         # If Rex had an outstanding event follow-up question, treat this utterance
         # as the outcome and close the loop in memory.
@@ -1420,10 +1527,58 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             _register_rex_utterance(response_text)
             assistant_asked_question = _assistant_asked_question(response_text)
 
-        # Curiosity routine — only on pure conversational responses, not commands.
-        # Commands handle their own phrasing (sleep, shutdown, DJ, etc.) and a
-        # tacked-on follow-up question would be contextually wrong for most of them.
-        if match is None and response_text and not _interrupted.is_set():
+        # Post-greeting relationship hook: we just enrolled a newcomer while a
+        # different known person was recently engaged. Ask them how they know
+        # each other, and open a relationship-prompt window so the next reply
+        # gets parsed and saved as an edge.
+        post_greet_fired = False
+        pending_rel = _pending_post_greet_relationship[0]
+        if pending_rel and not _interrupted.is_set() and person_id == pending_rel.get("newcomer_person_id"):
+            _pending_post_greet_relationship[0] = None
+            prior_name = pending_rel.get("prior_engaged_name") or "the other person"
+            newcomer_name = pending_rel.get("newcomer_name") or "you"
+            prior_first = prior_name.split()[0] if prior_name else "them"
+            newcomer_first = newcomer_name.split()[0] if newcomer_name else "there"
+            try:
+                q_text = llm.get_response(
+                    f"You just learned a new person named '{newcomer_first}' is here. "
+                    f"Your friend '{prior_first}' is also present (you were just talking "
+                    f"with them). In ONE short in-character Rex line, ask {newcomer_first} "
+                    f"how they know {prior_first}. Warm, curious, one line ending in a "
+                    f"question mark. Use names naturally."
+                )
+                if q_text:
+                    _speak_blocking(q_text)
+                    conv_memory.add_to_transcript("Rex", q_text)
+                    conv_log.log_rex(q_text)
+                    _register_rex_utterance(q_text)
+                    assistant_asked_question = True
+                    post_greet_fired = True
+                    try:
+                        consciousness.set_relationship_prompt_context({
+                            "engaged_person_id": pending_rel["prior_engaged_id"],
+                            "engaged_name": pending_rel.get("prior_engaged_name"),
+                            "newcomer_person_id": pending_rel["newcomer_person_id"],
+                            "slot_id": f"post_greet_{pending_rel['newcomer_person_id']}",
+                            "asked_at": time.monotonic(),
+                        })
+                    except Exception as exc:
+                        _log.debug("set_relationship_prompt_context failed: %s", exc)
+                    _log.info(
+                        "[interaction] post-greet relationship ask fired for "
+                        "newcomer=%s prior=%s",
+                        newcomer_name, prior_name,
+                    )
+            except Exception as exc:
+                _log.debug("post-greet relationship ask error: %s", exc)
+
+        # Curiosity routine — skip if we just asked a relationship question.
+        if (
+            match is None
+            and response_text
+            and not _interrupted.is_set()
+            and not post_greet_fired
+        ):
             curiosity_q = _curiosity_check(response_text, text, person_id, person_name)
             if curiosity_q:
                 conv_memory.add_to_transcript("Rex", curiosity_q)

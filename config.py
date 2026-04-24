@@ -622,6 +622,12 @@ UNKNOWN_WITH_ENGAGED_CONFIRM_SECS = 5.0
 # Cooldown on relationship-inquiry prompts so Rex doesn't badger.
 RELATIONSHIP_PROMPT_COOLDOWN_SECS = 45.0
 
+# Time window during which Rex treats a prior engagement as "still recent" —
+# used to chain identity enrollment into a relationship follow-up question,
+# and to allow "who's this?" prompts to fire even if engagement technically
+# ended (e.g. conversation idle-timed out right as a newcomer arrived).
+RECENT_ENGAGEMENT_WINDOW_SECS = 60.0
+
 # ─────────────────────────────────────────────────────────────────────────────
 # IDLE MICRO-BEHAVIORS
 # ─────────────────────────────────────────────────────────────────────────────
