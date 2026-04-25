@@ -222,6 +222,14 @@ def _speak_blocking(
     return True
 
 
+def _arm_post_tts_window() -> None:
+    """Arm the post-TTS deaf window. Registered with speech_queue so it fires
+    after every queue item — not just items played via _speak_blocking."""
+    global _listen_resume_at, _post_tts_flush_needed
+    _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
+    _post_tts_flush_needed = True
+
+
 def _speak_async(text: str, emotion: str = "neutral") -> None:
     if not _can_speak() or not text:
         return
@@ -2700,6 +2708,7 @@ def start() -> None:
     except Exception:
         pass
 
+    speech_queue.register_on_item_done(_arm_post_tts_window)
     wake_word.start(_on_wake_word)
     if not wake_word.is_ready():
         _log.warning(

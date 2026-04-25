@@ -242,6 +242,11 @@ class _SpeechQueue:
                     _sit.set_rex_speaking(False)
                 except Exception:
                     pass
+                for _cb in _on_item_done_callbacks:
+                    try:
+                        _cb()
+                    except Exception:
+                        pass
                 with self._lock:
                     self._speaking = False
                     self._current_priority = -1
@@ -271,6 +276,22 @@ class _SpeechQueue:
                     echo_cancel.set_playing(False)
         except Exception as exc:
             logger.error("speech_queue: failed to play file %s: %s", path, exc)
+
+
+# ── Post-item-done hooks ───────────────────────────────────────────────────────
+
+_on_item_done_callbacks: list = []
+
+
+def register_on_item_done(fn) -> None:
+    """Register a callback invoked after each queue item finishes playing.
+
+    Called from the worker thread before the item's done-event is set, so any
+    post-TTS deaf windows are armed before a waiting caller (e.g. _speak_blocking)
+    unblocks and the interaction loop resumes listening.
+    """
+    if fn not in _on_item_done_callbacks:
+        _on_item_done_callbacks.append(fn)
 
 
 # ── Module-level singleton + thin wrappers ─────────────────────────────────────
