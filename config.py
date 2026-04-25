@@ -273,7 +273,8 @@ VAD_THRESHOLD = 0.5
 
 # Sample rate required by Silero VAD and Whisper — do not change without updating both
 AUDIO_SAMPLE_RATE    = 16000  # Hz
-AUDIO_CHANNELS       = 1      # mono
+AUDIO_CHANNELS       = 1      # mono — pipeline always works with 1-channel arrays
+AUDIO_INPUT_CHANNELS = 2      # hardware capture channels (ReSpeaker Lite is stereo)
 AUDIO_BUFFER_SECONDS = 30     # rolling circular buffer duration
 
 # ─────────────────────────────────────────────────────────────────────────────

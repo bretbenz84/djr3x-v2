@@ -91,6 +91,10 @@ def connect() -> bool:
         return False
     try:
         _ser = serial.Serial(ARDUINO_CHEST_PORT, config.CHEST_ARDUINO_BAUD, timeout=1)
+        # Opening the port toggles DTR on CH340 adapters, resetting the Arduino.
+        # Wait for boot to complete before sending any commands.
+        time.sleep(2.0)
+        _ser.reset_input_buffer()
         _log.info("Chest Arduino connected on %s at %d baud", ARDUINO_CHEST_PORT, config.CHEST_ARDUINO_BAUD)
         _flush_drop_summary("reconnected")
         return True

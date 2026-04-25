@@ -29,6 +29,7 @@ _MAXLEN: int = math.ceil(config.AUDIO_SAMPLE_RATE * config.AUDIO_BUFFER_SECONDS 
 
 _buf: deque = deque(maxlen=_MAXLEN)
 _stream = None  # sounddevice.InputStream, or None when disabled
+_input_channels: int = 1  # actual device channels; set during start()
 
 
 # ── Callback ──────────────────────────────────────────────────────────────────
@@ -38,14 +39,18 @@ def _callback(indata, frames, time_info, status):  # noqa: ANN001
         _log.warning("sounddevice status: %s", status)
     # Non-blocking: only append, never block or acquire locks.
     # CPython's GIL makes deque.append thread-safe for this single-writer pattern.
-    _buf.append(indata[:, 0].copy())
+    # Mix stereo → mono by averaging channels so both capsules contribute.
+    if _input_channels > 1:
+        _buf.append(indata.mean(axis=1).copy())
+    else:
+        _buf.append(indata[:, 0].copy())
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 def start() -> None:
     """Open the microphone and begin filling the rolling buffer."""
-    global _stream
+    global _stream, _input_channels
 
     if AUDIO_DEVICE_INDEX is None:
         _log.warning(
@@ -57,23 +62,25 @@ def start() -> None:
     if _stream is not None and _stream.active:
         return
 
+    _input_channels = getattr(config, "AUDIO_INPUT_CHANNELS", config.AUDIO_CHANNELS)
+
     try:
         import sounddevice as sd
 
         _stream = sd.InputStream(
             device=AUDIO_DEVICE_INDEX,
             samplerate=config.AUDIO_SAMPLE_RATE,
-            channels=config.AUDIO_CHANNELS,
+            channels=_input_channels,
             dtype="float32",
             blocksize=_BLOCKSIZE,
             callback=_callback,
         )
         _stream.start()
         _log.info(
-            "Audio stream started — device %d, %d Hz, %d-ch, %ds buffer.",
+            "Audio stream started — device %d, %d Hz, %d-ch input → mono, %ds buffer.",
             AUDIO_DEVICE_INDEX,
             config.AUDIO_SAMPLE_RATE,
-            config.AUDIO_CHANNELS,
+            _input_channels,
             config.AUDIO_BUFFER_SECONDS,
         )
     except Exception as exc:
