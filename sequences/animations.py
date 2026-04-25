@@ -24,6 +24,7 @@ import time
 import state as _state_module
 from state import State as _State
 from hardware import servos, leds_head, leds_chest
+from world_state import world_state
 
 # Set while a TTS utterance is in progress — gates both speaking gestures and wander.
 _speaking = threading.Event()
@@ -85,19 +86,24 @@ HEROARM_BACK    = 7200
 # ---------------------------------------------------------------------------
 
 def startup() -> None:
-    """Power-on: chest startup burst, head slowly raises from shutdown pose, looks around."""
+    """Power-on: chest startup burst, head raises and looks around in parallel."""
     leds_chest.startup()
     leds_head.active()
     leds_head.set_eye_color(255, 200, 0)    # warm gold boot-up eyes
 
-    # Phase 1: Slowly raise head and open visor from the shutdown resting position.
-    servos.move_to(
-        {1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL, 3: VISOR_HALF},
-        step_us=25, step_delay=0.025,
+    # Raise head + open visor in a background thread while the main thread
+    # runs the neck sweep — gives the impression of waking up and looking around
+    # simultaneously, instead of head-up-then-look.
+    lift_thread = threading.Thread(
+        target=servos.move_to,
+        args=({1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL, 3: VISOR_HALF},),
+        kwargs={"step_us": 25, "step_delay": 0.025},
+        daemon=True,
+        name="startup_lift",
     )
-    time.sleep(0.3)
+    lift_thread.start()
 
-    # Phase 2: Look around as if waking up — randomly choose left-right or right-left.
+    # Look around as if waking up — randomly choose left-right or right-left.
     if random.random() < 0.5:
         servos.move_to({0: NECK_LEFT},  step_us=40, step_delay=0.025)
         time.sleep(0.3)
@@ -109,7 +115,10 @@ def startup() -> None:
         servos.move_to({0: NECK_LEFT},  step_us=40, step_delay=0.025)
         time.sleep(0.3)
 
-    # Phase 3: Return to center.
+    # Wait for the head lift to finish before centering the neck.
+    lift_thread.join()
+
+    # Return to center.
     servos.move_to({0: NECK_CENTER}, step_us=40, step_delay=0.025)
     time.sleep(0.2)
 
@@ -177,9 +186,19 @@ def wander_thread() -> None:
     Randomly picks from neck scans, headtilt shifts, thoughtful glances, and resets.
     Suppressed while speaking or in SLEEP/SHUTDOWN states.
     Call as a daemon thread from main.py alongside breathing_thread.
+
+    When nobody is detected in frame, the thread runs more frequently and uses
+    wider neck/headtilt sweeps — Rex actively looks around as if scanning for
+    company, instead of holding gaze on a person who isn't there.
     """
     while True:
-        time.sleep(random.uniform(4.0, 10.0))
+        # No one in frame → wander more often and sweep further.
+        alone = not world_state.get("people")
+
+        if alone:
+            time.sleep(random.uniform(2.0, 5.0))
+        else:
+            time.sleep(random.uniform(4.0, 10.0))
 
         cur = _state_module.get_state()
         if cur not in (_State.IDLE, _State.ACTIVE):
@@ -187,13 +206,19 @@ def wander_thread() -> None:
         if _speaking.is_set():
             continue
 
+        # Wider sweeps when alone — head turns farther and tilts more.
+        neck_scan_range = (700, 1800) if alone else (300, 700)
+        neck_lean_range = (300, 1000) if alone else (200, 500)
+        neck_nudge_range = (400, 1000) if alone else (-250, 250)
+        tilt_scan_amp    = 180 if alone else 80
+
         choice = random.randint(0, 4)
 
         if choice == 0:
             # Slow neck turn with slight headtilt — like scanning the room
             side = random.choice([-1, 1])
-            neck = NECK_CENTER + side * random.randint(300, 700)
-            tilt = HEADTILT_NEUTRAL + random.randint(-80, 80)
+            neck = NECK_CENTER + side * random.randint(*neck_scan_range)
+            tilt = HEADTILT_NEUTRAL + random.randint(-tilt_scan_amp, tilt_scan_amp)
             servos.move_to({0: neck, 2: tilt}, step_us=20, step_delay=0.03)
             time.sleep(random.uniform(0.8, 2.0))
             servos.move_to({0: NECK_CENTER, 2: HEADTILT_NEUTRAL}, step_us=20, step_delay=0.03)
@@ -208,7 +233,7 @@ def wander_thread() -> None:
         elif choice == 2:
             # Downward contemplative look — slight neck lean + head lower + tilt down
             side = random.choice([-1, 1])
-            neck = NECK_CENTER + side * random.randint(200, 500)
+            neck = NECK_CENTER + side * random.randint(*neck_lean_range)
             servos.move_to(
                 {0: neck, 1: HEADLIFT_NEUTRAL - 200, 2: HEADTILT_SLIGHT_DOWN},
                 step_us=20, step_delay=0.03,
@@ -226,7 +251,10 @@ def wander_thread() -> None:
         else:
             # Subtle visor adjustment + small neck lean
             visor_nudge = VISOR_HALF + random.randint(-80, 80)
-            neck_nudge  = NECK_CENTER + random.randint(-250, 250)
+            if alone:
+                neck_nudge = NECK_CENTER + random.choice([-1, 1]) * random.randint(*neck_nudge_range)
+            else:
+                neck_nudge = NECK_CENTER + random.randint(*neck_nudge_range)
             servos.move_to({3: visor_nudge, 0: neck_nudge}, step_us=20, step_delay=0.03)
             time.sleep(random.uniform(0.8, 1.5))
             servos.move_to({3: VISOR_HALF, 0: NECK_CENTER}, step_us=20, step_delay=0.03)
@@ -260,12 +288,15 @@ def arm_wander_thread() -> None:
         else:
             # Move heroarm and/or pokerarm by a small random offset.
             if random.random() < 0.7:
-                targets[7] = HEROARM_NEUTRAL + random.randint(-250, 250)
+                targets[7] = HEROARM_NEUTRAL + random.randint(-200, 200)
             if random.random() < 0.7 or not targets:
-                targets[6] = POKERARM_NEUTRAL + random.randint(-250, 250)
+                targets[6] = POKERARM_NEUTRAL + random.randint(-200, 200)
 
-        # Slow interpolation — step_us=8 with step_delay=0.05 reads as drift, not gesture.
-        servos.move_to(targets, step_us=8, step_delay=0.05)
+        # Slow, smooth interpolation. step_us=20 (5 µs of pulse-width per tick)
+        # is above the typical hobby-servo deadband, so each step actually moves
+        # the arm a little — avoids the "accumulated-then-jump" jerk that smaller
+        # steps produce. step_delay=0.20 → ~100 qus/sec → ~2 s for a 200-qus drift.
+        servos.move_to(targets, step_us=20, step_delay=0.20)
 
 
 # ---------------------------------------------------------------------------
