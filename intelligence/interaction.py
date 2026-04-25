@@ -1164,6 +1164,81 @@ def _end_session() -> None:
 # Curiosity routine
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Heuristic patterns for detecting when Rex's free-form response has already
+# raised a QUESTION_POOL topic. Used so the curiosity routine doesn't follow
+# up with a near-duplicate question on a later turn.
+_POOL_TOPIC_PATTERNS: dict[str, list[re.Pattern]] = {
+    "hometown": [re.compile(r"\bwhere (?:are|were|you)\s+(?:are\s+)?(?:you\s+)?from\b", re.I),
+                 re.compile(r"\bhometown\b", re.I),
+                 re.compile(r"\bwhere.*\bborn\b", re.I)],
+    "job": [re.compile(r"\bwhat do you do\b", re.I),
+            re.compile(r"\bprofessionally\b", re.I),
+            re.compile(r"\bfor a living\b", re.I),
+            re.compile(r"\boccupation\b", re.I),
+            re.compile(r"\bwhat.*\b(?:job|career)\b", re.I)],
+    "favorite_movie": [re.compile(r"\bfavorite\s+(?:movie|film)\b", re.I)],
+    "favorite_music": [re.compile(r"\bfavorite\s+(?:music|band|artist|song)\b", re.I),
+                       re.compile(r"\bwhat\s+(?:kind\s+of\s+)?music\b", re.I)],
+    "how_found_rex": [re.compile(r"\bhow\s+did\s+you\s+(?:find|end\s+up)\b", re.I)],
+    "hobbies": [re.compile(r"\bhobb(?:y|ies)\b", re.I),
+                re.compile(r"\bfor\s+fun\b", re.I),
+                re.compile(r"\bfree\s+time\b", re.I)],
+    "travel": [re.compile(r"\binteresting\s+place\b", re.I),
+               re.compile(r"\bplaces?\s+you'?ve\s+been\b", re.I)],
+    "proudest_moment": [re.compile(r"\bproud(?:est)?\s+of\b", re.I)],
+    "biggest_challenge": [re.compile(r"\bhardest\s+thing\b", re.I),
+                          re.compile(r"\bbiggest\s+challenge\b", re.I)],
+    "obsession": [re.compile(r"\bobsess(?:ed|ion)\b", re.I)],
+    "relationships": [re.compile(r"\bmost\s+important\s+person\b", re.I)],
+    "values": [re.compile(r"\bbelieve\s+in\b", re.I)],
+    "fears": [re.compile(r"\bkeeps?\s+you\s+up\b", re.I),
+              re.compile(r"\bafraid\s+of\b", re.I)],
+    "life_changing": [re.compile(r"\bchanged\s+you\b", re.I),
+                      re.compile(r"\blife[- ]changing\b", re.I)],
+    "regret": [re.compile(r"\bdo\s+differently\b", re.I),
+               re.compile(r"\bregret\b", re.I)],
+    "meaning_of_life": [re.compile(r"\bpoint\s+of\s+all\s+this\b", re.I),
+                        re.compile(r"\bmeaning\s+of\s+life\b", re.I)],
+    "free_will": [re.compile(r"\bfree\s+will\b", re.I),
+                  re.compile(r"\breal\s+choices\b", re.I)],
+    "consciousness": [re.compile(r"\bnot\s+be\s+conscious\b", re.I)],
+    "good_life": [re.compile(r"\blife\s+worth\s+living\b", re.I)],
+}
+
+
+def _record_pool_topics_in_response(response_text: str, person_id: int) -> None:
+    """Mark any QUESTION_POOL topics raised by Rex's response as already-asked,
+    so the curiosity routine won't re-ask them on a later turn."""
+    try:
+        answered = rel_memory.get_answered_question_keys(person_id)
+    except Exception as exc:
+        _log.debug("record_pool_topics: get_answered error: %s", exc)
+        return
+
+    pool_by_key = {q["key"]: q for q in config.QUESTION_POOL}
+    for key, patterns in _POOL_TOPIC_PATTERNS.items():
+        if key in answered:
+            continue
+        if not any(p.search(response_text) for p in patterns):
+            continue
+        pool_q = pool_by_key.get(key)
+        if pool_q is None:
+            continue
+        try:
+            rel_memory.save_qa(
+                person_id,
+                key,
+                pool_q.get("text", ""),
+                "",
+                pool_q.get("depth", 1),
+            )
+            _log.info(
+                "[interaction] pool topic %r marked asked from Rex's response", key
+            )
+        except Exception as exc:
+            _log.debug("record_pool_topics: save_qa error: %s", exc)
+
+
 def _curiosity_check(
     response_text: str,
     user_text: str,
@@ -1183,6 +1258,8 @@ def _curiosity_check(
     and returns the text, or None if nothing was spoken.
     """
     if "?" in response_text:
+        if person_id is not None:
+            _record_pool_topics_in_response(response_text, person_id)
         return None
 
     if random.random() >= config.CURIOSITY_QUESTION_PROBABILITY:
