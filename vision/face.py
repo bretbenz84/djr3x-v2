@@ -347,3 +347,93 @@ def update_appearance(person_id: int, frame: np.ndarray) -> None:
             _log.debug("update_appearance: stored %s for person_id=%d", key, person_id)
 
     _log.info("update_appearance: appearance profile updated for person_id=%d", person_id)
+
+
+def detect_mood(frame: np.ndarray) -> Optional[dict]:
+    """
+    Send a frame to GPT-4o and read the mood of the most prominent face.
+
+    Returns dict {mood, confidence, notes} or None on failure.
+        mood        one of "happy", "sad", "tired", "angry", "surprised",
+                    "anxious", "neutral"
+        confidence  0.0–1.0
+        notes       short phrase describing the expression, or "" if unclear
+    """
+    try:
+        import apikeys
+        from openai import OpenAI
+    except ImportError as exc:
+        _log.error("detect_mood: missing dependency — %s", exc)
+        return None
+
+    b64 = encode_jpeg_base64(frame, quality=85)
+    if b64 is None:
+        _log.error("detect_mood: failed to JPEG-encode frame")
+        return None
+
+    detail = config.VISION_DETAIL.get("mood_analysis", "low")
+
+    prompt = (
+        "Look at the most prominent person's face in this image and assess "
+        "their apparent mood from their facial expression. Return ONLY a JSON "
+        "object with exactly these keys:\n"
+        '  "mood": one of "happy"|"sad"|"tired"|"angry"|"surprised"|"anxious"|"neutral",\n'
+        '  "confidence": number between 0 and 1,\n'
+        '  "notes": one short phrase describing the expression '
+        '(e.g. "soft smile", "furrowed brow", "tight jaw"), or "" if unclear.\n'
+        "If no face is clearly visible, return mood=\"neutral\" with "
+        "confidence=0. Return only the JSON object, no other text."
+    )
+
+    client = OpenAI(api_key=apikeys.OPENAI_API_KEY)
+    try:
+        response = client.chat.completions.create(
+            model=config.VISION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{b64}",
+                                "detail": detail,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+            max_tokens=120,
+        )
+    except Exception as exc:
+        _log.error("detect_mood: GPT-4o error: %s", exc)
+        return None
+
+    raw = response.choices[0].message.content.strip()
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end   = raw.rfind("}") + 1
+        if start == -1 or end == 0:
+            _log.error("detect_mood: non-JSON response: %.120s", raw)
+            return None
+        try:
+            data = json.loads(raw[start:end])
+        except json.JSONDecodeError as exc:
+            _log.error("detect_mood: JSON parse error: %s", exc)
+            return None
+
+    mood = str(data.get("mood", "") or "").strip().lower()
+    if not mood:
+        return None
+    try:
+        confidence = float(data.get("confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    notes = str(data.get("notes", "") or "").strip()
+
+    _log.info("detect_mood: %s (confidence=%.2f) — %s", mood, confidence, notes or "—")
+    return {"mood": mood, "confidence": confidence, "notes": notes}

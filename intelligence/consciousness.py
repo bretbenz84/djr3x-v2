@@ -125,6 +125,11 @@ _last_holiday_plans_check_at: float = 0.0
 _weekly_smalltalk_asked: set[tuple[int, int, int, str]] = set()
 _last_weekly_smalltalk_check_at: float = 0.0
 
+# Per-person mood cache: person_db_id → ({mood, confidence, notes}, monotonic_ts).
+# Mood vision calls are expensive, so we re-use a recent reading within
+# config.MOOD_ANALYSIS_PER_PERSON_COOLDOWN_SECS instead of re-asking GPT-4o.
+_mood_cache: dict[int, tuple[dict, float]] = {}
+
 # Per-person monotonic timestamp of when they were last seen in frame.
 _last_seen: dict = {}
 
@@ -1173,10 +1178,82 @@ def _do_ambient_scan() -> None:
         _log.debug("ambient scan error: %s", exc)
 
 
+def _get_or_detect_mood(person_id: int) -> Optional[dict]:
+    """
+    Return a recent mood reading for person_id, calling GPT-4o vision if the
+    cached reading is stale. Returns dict {mood, confidence, notes} or None.
+    """
+    cooldown = float(getattr(config, "MOOD_ANALYSIS_PER_PERSON_COOLDOWN_SECS", 180.0))
+    now = time.monotonic()
+    cached = _mood_cache.get(person_id)
+    if cached and (now - cached[1]) < cooldown:
+        return cached[0]
+    try:
+        from vision import camera as _cam
+        from vision import face as face_mod
+        frame = _cam.get_frame()
+        if frame is None:
+            return None
+        mood = face_mod.detect_mood(frame)
+        if mood:
+            _mood_cache[person_id] = (mood, now)
+            return mood
+    except Exception as exc:
+        _log.debug("mood detect error: %s", exc)
+    return None
+
+
+def _mood_clause_for(mood: Optional[dict]) -> tuple[str, str]:
+    """
+    Translate a mood reading into (prompt_clause, emotion) for small-talk.
+    Returns ("", "curious") for neutral / low-confidence / missing reads.
+    """
+    if not mood:
+        return "", "curious"
+    label = (mood.get("mood") or "").lower()
+    confidence = float(mood.get("confidence") or 0.0)
+    notes = (mood.get("notes") or "").strip()
+    if not label or label == "neutral" or confidence < 0.5:
+        return "", "curious"
+
+    notes_clause = f" (you notice: {notes})" if notes else ""
+    cues = {
+        "happy":     ("they look genuinely happy",
+                      "ask what's got them in such a good mood today",
+                      "curious"),
+        "sad":       ("they look down — a little sad",
+                      "gently ask what's got them down, what's on their mind",
+                      "concerned"),
+        "tired":     ("they look tired, maybe wiped out",
+                      "ask if they got any sleep, or what's been wearing them out",
+                      "concerned"),
+        "angry":     ("they look frustrated or annoyed",
+                      "carefully ask what's bugging them",
+                      "concerned"),
+        "anxious":   ("they look tense, on edge",
+                      "ask what's weighing on them, what they're worrying about",
+                      "concerned"),
+        "surprised": ("they look surprised or wide-eyed",
+                      "ask what just happened, what's the look for",
+                      "curious"),
+    }
+    if label not in cues:
+        return "", "curious"
+    observation, ask, emotion = cues[label]
+    clause = (
+        f" Looking at their face right now, {observation}{notes_clause}. "
+        f"Acknowledge what you see and {ask}. Make the question specifically "
+        f"match their expression — not a generic small-talk opener."
+    )
+    return clause, emotion
+
+
 def _do_small_talk_question(snapshot: dict) -> None:
     """
     When the user has gone quiet, initiate small talk by asking them a question.
     Prefers asking a known visible person; falls back to an open question.
+    When a known person is in frame, optionally does a GPT-4o mood read of
+    their face and tailors the question to what Rex sees.
     """
     if not _can_proactive_speak():
         return
@@ -1184,23 +1261,17 @@ def _do_small_talk_question(snapshot: dict) -> None:
     people = snapshot.get("people", []) or []
     known = [p for p in people if p.get("person_db_id") and p.get("face_id")]
     target_name: Optional[str] = None
+    target_db_id: Optional[int] = None
     if known:
         target = random.choice(known)
         if is_engaged_with(target.get("person_db_id")):
             # Mid-conversation — let interaction handle turn-taking.
             return
         target_name = (target.get("face_id") or "").split()[0] or None
+        target_db_id = target.get("person_db_id")
 
     time_of_day = (snapshot.get("time", {}) or {}).get("time_of_day") or ""
     venue = getattr(config, "VENUE_NAME", "")
-
-    target_db_id = None
-    if target_name and known:
-        target_db_id = next(
-            (p.get("person_db_id") for p in known
-             if (p.get("face_id") or "").split()[:1] == [target_name]),
-            None,
-        )
 
     # Prefer asking about a known plan (past or upcoming) over a generic question.
     plan_clause = ""
@@ -1233,32 +1304,57 @@ def _do_small_talk_question(snapshot: dict) -> None:
         except Exception as exc:
             _log.debug("smalltalk plan lookup error: %s", exc)
 
-    if target_name:
-        prompt = (
-            f"It's quiet and you're idly looking at '{target_name}', someone you know. "
-            f"They haven't said anything in a while.{plan_clause} Open small talk by "
-            f"asking them one short, in-character Rex question — how their day is "
-            f"going, what they've been working on, what's on their mind, what they're "
-            f"listening to lately, or some other genuine small-talk hook. Warm but "
-            f"dry. Don't lecture, don't give your opinion — just ask. Address "
-            f"{target_name} by name. One short sentence ending in a question mark."
-        )
-    else:
-        ctx_bits = []
-        if time_of_day:
-            ctx_bits.append(f"part of day: {time_of_day}")
-        if venue:
-            ctx_bits.append(f"venue: {venue}")
-        ctx = "; ".join(ctx_bits) or "no extra context"
-        prompt = (
-            f"It's quiet around you and nobody has said anything in a while ({ctx}). "
-            f"Break the silence by asking the room one short, in-character Rex small-talk "
-            f"question — something open-ended that invites whoever is listening to "
-            f"answer. Don't lecture, don't give your opinion — just ask. One short "
-            f"sentence ending in a question mark."
-        )
+    do_mood = (
+        target_db_id is not None
+        and getattr(config, "MOOD_AWARE_SMALLTALK_ENABLED", True)
+        and not plan_clause   # don't override a fresh follow-up with a mood riff
+        and random.random() < float(getattr(config, "MOOD_ANALYSIS_PROBABILITY", 0.7))
+    )
 
-    _generate_and_speak(prompt, emotion="curious")
+    def _task() -> None:
+        try:
+            mood_clause = ""
+            emotion = "curious"
+            if do_mood:
+                mood = _get_or_detect_mood(target_db_id)
+                mood_clause, emotion = _mood_clause_for(mood)
+
+            if target_name:
+                prompt = (
+                    f"It's quiet and you're idly looking at '{target_name}', someone you know. "
+                    f"They haven't said anything in a while.{plan_clause}{mood_clause} "
+                    f"Open small talk by asking them one short, in-character Rex question. "
+                    f"If a specific cue above tells you what to ask about, ask about THAT. "
+                    f"Otherwise ask something open — how their day is going, what they've "
+                    f"been working on, what's on their mind, what they're listening to lately. "
+                    f"Warm but dry. Don't lecture, don't give your opinion — just ask. "
+                    f"Address {target_name} by name. One short sentence ending in a question mark."
+                )
+            else:
+                ctx_bits = []
+                if time_of_day:
+                    ctx_bits.append(f"part of day: {time_of_day}")
+                if venue:
+                    ctx_bits.append(f"venue: {venue}")
+                ctx = "; ".join(ctx_bits) or "no extra context"
+                prompt = (
+                    f"It's quiet around you and nobody has said anything in a while ({ctx}). "
+                    f"Break the silence by asking the room one short, in-character Rex small-talk "
+                    f"question — something open-ended that invites whoever is listening to "
+                    f"answer. Don't lecture, don't give your opinion — just ask. One short "
+                    f"sentence ending in a question mark."
+                )
+
+            if not _can_proactive_speak():
+                return
+            from intelligence.llm import get_response
+            text = get_response(prompt)
+            if text:
+                _speak_async(text, emotion=emotion)
+        except Exception as exc:
+            _log.debug("_do_small_talk_question task error: %s", exc)
+
+    threading.Thread(target=_task, daemon=True, name="small-talk-question").start()
 
 
 def _do_private_thought() -> None:

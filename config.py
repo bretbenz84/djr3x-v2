@@ -59,6 +59,7 @@ VISION_DETAIL = {
     "appearance_observation": "auto",  # return-visit attribute comparison
     "animal_detection":       "low",   # species identification
     "active_conversation":    "auto",  # general vision queries mid-conversation
+    "mood_analysis":          "low",   # mood read of the engaged person's face
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -691,6 +692,14 @@ LIVE_VISION_COMMENT_COOLDOWN_SECS = 300.0
 
 # Probability a triggered ambient-observation tick actually fires (vs skipping).
 AMBIENT_OBSERVATION_PROBABILITY = 0.5
+
+# Mood-aware small talk: when Rex initiates small talk and a known person is in
+# frame, occasionally do a GPT-4o mood read of their face and tailor the question
+# to what he sees (happy → "what's got you in a good mood?", sad → "you look
+# down today…", etc.). Per-person cooldown keeps the cost bounded.
+MOOD_AWARE_SMALLTALK_ENABLED = True
+MOOD_ANALYSIS_PROBABILITY = 0.7
+MOOD_ANALYSIS_PER_PERSON_COOLDOWN_SECS = 180.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MOOD DECAY
