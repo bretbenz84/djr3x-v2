@@ -1515,6 +1515,53 @@ def _handle_classified_intent(
             f"Describe it in character in one or two lines."
         )
 
+    if intent == "query_music_options":
+        try:
+            stations = getattr(config, "RADIO_STATIONS", []) or []
+            seen: list[str] = []
+            for s in stations:
+                vibes = s.get("vibes") or []
+                if vibes:
+                    primary = str(vibes[0]).strip().lower()
+                    if primary and primary not in seen:
+                        seen.append(primary)
+            genre_list = ", ".join(seen) if seen else "a variety of genres"
+        except Exception as exc:
+            _log.debug("query_music_options enumeration error: %s", exc)
+            genre_list = "a variety of genres"
+        return _say(
+            f"The user asked what kind of music you can play. Your real radio "
+            f"genre buckets are: {genre_list}. You can also play local tracks by "
+            f"title, artist, or vibe. Answer in ONE short Rex-style line — list "
+            f"the genres tersely (comma-separated is fine), no preamble, no fluff."
+        )
+
+    if intent == "play_music":
+        try:
+            from features import dj as dj_mod
+            track = dj_mod.handle_request(raw_text)
+        except Exception as exc:
+            _log.debug("play_music intent dj error: %s", exc)
+            track = None
+        if track is None:
+            return _say(
+                f"The user asked you to play music ('{raw_text}') but no matching "
+                f"track or station was found. Tell them you couldn't find anything "
+                f"matching that in one in-character Rex line."
+            )
+        try:
+            dj_mod.play(track)
+        except Exception as exc:
+            _log.debug("play_music intent play error: %s", exc)
+            return _say(
+                "You tried to play music but the playback system errored. Tell the "
+                "user briefly in one Rex line."
+            )
+        return _say(
+            f"You're now playing '{track.name}' ({track.description}) in response "
+            f"to: '{raw_text}'. Announce it in one short in-character Rex line."
+        )
+
     if intent == "query_who_is_speaking":
         # Build a confidence-aware prompt. Priority order:
         #   1. Face visible + identified → confident by face

@@ -28,6 +28,8 @@ _VALID_INTENTS = {
     "query_uptime",
     "query_what_do_you_see",
     "query_who_is_speaking",
+    "play_music",
+    "query_music_options",
     "general",
 }
 
@@ -35,9 +37,17 @@ _PROMPT_TEMPLATE = (
     'Classify this input into exactly one category. Reply with only the '
     'category name. Categories: query_time, query_weather, query_games, '
     'query_capabilities, query_uptime, query_what_do_you_see, '
-    'query_who_is_speaking, general. '
+    'query_who_is_speaking, play_music, query_music_options, general. '
     'Note: query_who_is_speaking covers "who\'s speaking?", "who am I?", '
     '"do you know who I am?", "you know who that is?", "can you tell who I am?". '
+    'Note: play_music covers any request to play music, a song, a track, an '
+    'artist, a genre, a vibe, or a radio station — e.g. "play some jazz", '
+    '"can you play jazz music?", "put on something chill", "play me a song", '
+    '"play the Beatles", "throw on some lo-fi". Do NOT use play_music for '
+    'volume / skip / stop controls — those are general. '
+    'Note: query_music_options covers asking what music is available, e.g. '
+    '"what kind of music can you play?", "what genres do you have?", '
+    '"what stations can you play?", "what can you play?" (when about music). '
     'Input: "{text}"'
 )
 
