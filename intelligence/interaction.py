@@ -204,6 +204,7 @@ def _speak_blocking(
         if _interrupted.is_set():
             try:
                 import sounddevice as sd
+                echo_cancel.request_cancel()
                 sd.stop()
             except Exception:
                 pass
@@ -2661,6 +2662,7 @@ def _loop() -> None:
             _interrupted.set()
             try:
                 import sounddevice as sd
+                echo_cancel.request_cancel()
                 sd.stop()
             except Exception:
                 pass

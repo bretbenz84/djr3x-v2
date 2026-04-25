@@ -24,6 +24,7 @@ _lock = threading.Lock()
 _playing = False
 _suppress_until: float = 0.0  # monotonic deadline for post-playback tail suppression
 _sequence_active: bool = False  # when True, set_playing(False) is deferred until end_sequence()
+_playback_canceled: bool = False  # set by request_cancel() right before sd.stop()
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -35,11 +36,12 @@ def start_sequence() -> None:
     end_sequence() is called. set_playing(False) calls from individual TTS segments
     are ignored — no mid-sequence flush or tail suppression fires.
     """
-    global _playing, _suppress_until, _sequence_active
+    global _playing, _suppress_until, _sequence_active, _playback_canceled
     with _lock:
         _sequence_active = True
         _playing = True
         _suppress_until = 0.0
+        _playback_canceled = False
     logger.info("[aec] sequence started — suppression held across segments")
 
 
@@ -60,7 +62,7 @@ def end_sequence() -> None:
 
 def set_playing(is_playing: bool) -> None:
     """Called by TTS and playback modules when audio output starts or stops."""
-    global _playing, _suppress_until
+    global _playing, _suppress_until, _playback_canceled
     with _lock:
         if not is_playing and _sequence_active:
             # Mid-sequence: suppress the turn-off so the next segment sees no gap.
@@ -75,8 +77,10 @@ def set_playing(is_playing: bool) -> None:
             from audio import stream as _stream
             _stream.flush()
         else:
-            # Playback starting — cancel any leftover tail from a previous run.
+            # Playback starting — cancel any leftover tail from a previous run
+            # and clear the cancel flag so this segment's duration guard is armed.
             _suppress_until = 0.0
+            _playback_canceled = False
 
     if changed:
         if is_playing:
@@ -109,3 +113,21 @@ def is_suppressed() -> bool:
     """Return True if mic input is currently being suppressed (including tail)."""
     with _lock:
         return _playing or time.monotonic() < _suppress_until
+
+
+def request_cancel() -> None:
+    """Mark the current playback as deliberately stopped.
+
+    Call this immediately before sd.stop() so tts._play() can distinguish a
+    user-initiated interrupt (skip the duration guard) from a CoreAudio glitch
+    that returns sd.wait() early (hold suppression for the full audio duration).
+    """
+    global _playback_canceled
+    with _lock:
+        _playback_canceled = True
+
+
+def was_canceled() -> bool:
+    """True if request_cancel() has been called since the current playback started."""
+    with _lock:
+        return _playback_canceled

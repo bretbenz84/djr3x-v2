@@ -262,11 +262,15 @@ def wander_thread() -> None:
 
 def arm_wander_thread() -> None:
     """
-    Background thread: slow, subtle drift of the heroarm and pokerarm during
-    IDLE/ACTIVE so the arms don't sit perfectly still. Independent from the
-    head wander so arm and head motion don't synchronise. Suppressed while
-    speaking or in SLEEP/SHUTDOWN. Call as a daemon thread from main.py.
+    Background thread: heroarm and pokerarm pick a random target at either 50%
+    or 100% of their range from neutral, in a random direction, during
+    IDLE/ACTIVE. Independent from the head wander so arm and head motion don't
+    synchronise. Suppressed while speaking or in SLEEP/SHUTDOWN. Call as a
+    daemon thread from main.py.
     """
+    # Both arms have ~2000 qus of travel on each side of their 6000 neutral.
+    ARM_HALF_RANGE = 2000
+
     while True:
         time.sleep(random.uniform(6.0, 15.0))
 
@@ -277,25 +281,13 @@ def arm_wander_thread() -> None:
             continue
 
         targets: dict[int, int] = {}
+        for ch, neutral in ((7, HEROARM_NEUTRAL), (6, POKERARM_NEUTRAL)):
+            magnitude = random.choice([0.5, 1.0]) * ARM_HALF_RANGE
+            direction = random.choice([-1, 1])
+            targets[ch] = neutral + int(direction * magnitude)
 
-        # ~1 in 3 ticks: drift back toward neutral instead of picking a new offset.
-        # Keeps the arms from wandering away from center over time.
-        if random.random() < 0.33:
-            if random.random() < 0.5:
-                targets[7] = HEROARM_NEUTRAL
-            if random.random() < 0.5 or not targets:
-                targets[6] = POKERARM_NEUTRAL
-        else:
-            # Move heroarm and/or pokerarm by a small random offset.
-            if random.random() < 0.7:
-                targets[7] = HEROARM_NEUTRAL + random.randint(-200, 200)
-            if random.random() < 0.7 or not targets:
-                targets[6] = POKERARM_NEUTRAL + random.randint(-200, 200)
-
-        # Slow, smooth interpolation. step_us=20 (5 µs of pulse-width per tick)
-        # is above the typical hobby-servo deadband, so each step actually moves
-        # the arm a little — avoids the "accumulated-then-jump" jerk that smaller
-        # steps produce. step_delay=0.20 → ~100 qus/sec → ~2 s for a 200-qus drift.
+        # Slow, smooth interpolation. step_delay=0.20 → ~100 qus/sec, so a 50%
+        # sweep takes ~10 s and a full sweep ~20 s — visible but unhurried.
         servos.move_to(targets, step_us=20, step_delay=0.20)
 
 

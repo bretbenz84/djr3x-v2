@@ -33,6 +33,7 @@ import hashlib
 import io
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -58,15 +59,24 @@ def is_speaking() -> bool:
 
 
 def prewarm() -> None:
-    """Play 100ms of silence to force audio device initialization before first TTS."""
-    try:
-        import sounddevice as sd
-        silence = np.zeros(int(44100 * 0.1), dtype=np.float32)
-        sd.play(silence, samplerate=44100, blocksize=2048)
-        sd.wait()
-        logger.info("[tts] audio output device pre-warmed")
-    except Exception as exc:
-        logger.warning("[tts] prewarm failed (non-fatal): %s", exc)
+    """Play 100ms of silence to force audio device initialization before first TTS.
+
+    Holds the output gate so prewarm waits for any startup clip (played via
+    pygame.mixer) to finish — concurrent pygame + sounddevice access on macOS
+    triggers PaMacCore err=-50 which causes sd.wait() to return early on the
+    first real TTS call.
+    """
+    with output_gate.hold("tts-prewarm") as acquired:
+        if not acquired:
+            return
+        try:
+            import sounddevice as sd
+            silence = np.zeros(int(44100 * 0.1), dtype=np.float32)
+            sd.play(silence, samplerate=44100, blocksize=2048)
+            sd.wait()
+            logger.info("[tts] audio output device pre-warmed")
+        except Exception as exc:
+            logger.warning("[tts] prewarm failed (non-fatal): %s", exc)
 
 
 def speak(text: str, emotion: str = "neutral") -> None:
@@ -130,6 +140,14 @@ def _play(audio: np.ndarray, samplerate: int, emotion: str) -> None:
             name="tts-leds",
         )
 
+        # Hold AEC suppression for at least the audio's actual duration. A
+        # CoreAudio glitch can cause sd.wait() to return early while audio is
+        # still buffered for playback — without this guard, set_playing(False)
+        # fires immediately, the mic unmutes, and Rex hears himself and triggers
+        # an interrupt-ack ("what?") mid-sentence.
+        expected_duration = len(audio) / float(samplerate)
+        play_started_at = time.monotonic()
+
         try:
             leds_head.speak(emotion)
             leds_chest.speak(emotion)
@@ -140,6 +158,15 @@ def _play(audio: np.ndarray, samplerate: int, emotion: str) -> None:
         except Exception as exc:
             logger.error("[tts] playback error: %s", exc)
         finally:
+            elapsed = time.monotonic() - play_started_at
+            remaining = expected_duration - elapsed
+            if remaining > 0.05 and not echo_cancel.was_canceled():
+                logger.warning(
+                    "[tts] sd.wait() returned %.2fs early (likely CoreAudio glitch) — "
+                    "holding suppression for the remaining %.2fs",
+                    remaining, remaining,
+                )
+                time.sleep(remaining)
             stop_event.set()
             if led_thread.is_alive():
                 led_thread.join(timeout=1.0)

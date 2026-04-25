@@ -197,6 +197,8 @@ class _SpeechQueue:
         if should_preempt:
             try:
                 import sounddevice as sd
+                from audio import echo_cancel
+                echo_cancel.request_cancel()
                 sd.stop()
             except Exception:
                 pass
