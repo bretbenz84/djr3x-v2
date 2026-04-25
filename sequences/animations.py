@@ -116,7 +116,7 @@ def shutdown() -> None:
     servos.move_to({3: VISOR_CLOSED}, step_us=30, step_delay=0.025)
     time.sleep(0.3)
     servos.move_to(
-        {0: NECK_CENTER, 1: HEADLIFT_DOWN, 2: HEADTILT_DOWN},
+        {0: NECK_CENTER, 1: HEADLIFT_DROOP, 2: HEADTILT_DOWN},
         step_us=25, step_delay=0.025,
     )
     time.sleep(0.5)
