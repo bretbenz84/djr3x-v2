@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Applications/**)",
+      "Read(//Users/bbenziger/**)",
+      "Bash(brew list *)",
+      "Read(//usr/local/bin/**)",
+      "Bash(arduino-cli compile *)",
+      "Bash(arduino-cli upload *)"
+    ]
+  }
+}

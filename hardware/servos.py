@@ -234,8 +234,44 @@ def idle_animation() -> None:
     set_servos({neck_cfg["ch"]: neck_cfg["neutral"], lift_cfg["ch"]: lift_cfg["neutral"]})
 
 
-def shutdown() -> None:
-    """Move to neutral, then cleanly disconnect. Call before process exit."""
+def move_to(targets: "dict[int, int]", step_us: int = 40, step_delay: float = 0.02) -> None:
+    """Smoothly interpolate specific channels to target positions (quarter-microseconds)."""
+    if not SERVOS_ENABLED:
+        _log.debug("move_to no-op: SERVOS_ENABLED=False")
+        return
+
+    current: dict[int, int] = {}
+    for ch, tgt in targets.items():
+        pos = get_servo(ch)
+        current[ch] = pos if pos is not None else tgt
+
+    done = False
+    while not done:
+        done = True
+        moves: dict[int, int] = {}
+        for ch, tgt in targets.items():
+            cur = current[ch]
+            diff = tgt - cur
+            if diff == 0:
+                continue
+            done = False
+            step = min(step_us, abs(diff)) * (1 if diff > 0 else -1)
+            new_pos = cur + step
+            current[ch] = new_pos
+            moves[ch] = new_pos
+        if moves:
+            with _lock:
+                for ch, pos in moves.items():
+                    _send_set_target(ch, _clamp(ch, pos))
+            time.sleep(step_delay)
+
+
+def stop_breathing() -> None:
+    """Signal the breathing thread to stop. Returns immediately; thread exits within ~50 ms."""
     _stop_breathing.set()
-    neutral()
+
+
+def shutdown() -> None:
+    """Stop breathing thread and cleanly disconnect. Call before process exit."""
+    _stop_breathing.set()
     disconnect()

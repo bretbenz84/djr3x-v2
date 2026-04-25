@@ -1,7 +1,7 @@
 // DJ Rex LED Panels
 // Requires FASTLED Library - https://github.com/FastLED/FastLED
 
-
+#include <FastLED.h>
 #include <math.h>
 
 
@@ -10,8 +10,7 @@
 #define BRIGHTNESS 90
 
 // Setup the LED Matrix
-#define LED_PIN    4
-#define AUDINPIN   3
+#define LED_PIN    6
 #define LED_TYPE    WS2811
 #define COLOR_ORDER GRB
 #define FRAMES_PER_SECOND  30

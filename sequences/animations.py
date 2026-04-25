@@ -78,22 +78,48 @@ HEROARM_BACK    = 7200
 # ---------------------------------------------------------------------------
 
 def startup() -> None:
-    """Power-on: chest startup burst (ShortCircuit), servos to neutral."""
+    """Power-on: chest startup burst, head slowly raises from shutdown pose, looks around."""
     leds_chest.startup()
     leds_head.active()
     leds_head.set_eye_color(255, 200, 0)    # warm gold boot-up eyes
-    servos.neutral(step_us=40)
-    time.sleep(0.8)
-    servos.set_servo(3, VISOR_HALF)         # visor opens to resting position
-    time.sleep(0.4)
+
+    # Phase 1: Slowly raise head and open visor from the shutdown resting position.
+    servos.move_to(
+        {1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL, 3: VISOR_HALF},
+        step_us=25, step_delay=0.025,
+    )
+    time.sleep(0.3)
+
+    # Phase 2: Look around as if waking up — randomly choose left-right or right-left.
+    if random.random() < 0.5:
+        servos.move_to({0: NECK_LEFT},  step_us=40, step_delay=0.025)
+        time.sleep(0.3)
+        servos.move_to({0: NECK_RIGHT}, step_us=40, step_delay=0.025)
+        time.sleep(0.3)
+    else:
+        servos.move_to({0: NECK_RIGHT}, step_us=40, step_delay=0.025)
+        time.sleep(0.3)
+        servos.move_to({0: NECK_LEFT},  step_us=40, step_delay=0.025)
+        time.sleep(0.3)
+
+    # Phase 3: Return to center.
+    servos.move_to({0: NECK_CENTER}, step_us=40, step_delay=0.025)
+    time.sleep(0.2)
 
 
 def shutdown() -> None:
-    """Shutdown: head droops, visor closes, all LEDs off, then servos disconnect."""
-    servos.set_servo(1, HEADLIFT_DOWN)
-    servos.set_servo(2, HEADTILT_DOWN)
-    servos.set_servo(3, VISOR_CLOSED)
-    time.sleep(0.8)
+    """Shutdown: stop breathing, slowly close visor, droop head to rest position, LEDs off."""
+    servos.stop_breathing()
+    time.sleep(0.1)   # let breathing thread exit before we move headlift
+
+    # Close visor first, then slowly center neck and droop head to the rest/startup pose.
+    servos.move_to({3: VISOR_CLOSED}, step_us=30, step_delay=0.025)
+    time.sleep(0.3)
+    servos.move_to(
+        {0: NECK_CENTER, 1: HEADLIFT_DOWN, 2: HEADTILT_DOWN},
+        step_us=25, step_delay=0.025,
+    )
+    time.sleep(0.5)
     leds_head.off()
     leds_chest.off()
 
