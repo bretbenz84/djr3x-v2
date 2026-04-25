@@ -650,6 +650,14 @@ FACE_REVEAL_CONFIRM_WINDOW_SECS = 30.0
 # won't match the engaged person.
 SPEAKER_ID_SOFT_THRESHOLD = 0.60
 
+# Engaged-and-visible attribution floor: when the best voice candidate IS the
+# engaged person AND that engaged person is currently visible on camera, the
+# face presence + voice candidacy together are sufficient evidence even at
+# scores well below SPEAKER_ID_SOFT_THRESHOLD. Prevents "off-camera unknown"
+# misfires when a known speaker's voice happens to score just under the soft
+# floor on a noisy utterance.
+SPEAKER_ID_ENGAGED_VISIBLE_FLOOR = 0.50
+
 # Floor score at which Rex will voice an uncertain guess ("I'm not sure, but
 # it could be Bret") when directly asked "who's speaking?". Below this floor
 # Rex honestly admits he doesn't recognize the voice. Only affects the

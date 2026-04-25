@@ -1714,7 +1714,30 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     recent_engagement is not None
                     and recent_engagement.get("person_id") == ws_pid
                 )
-                if engaged_is_visible and not _has_unknown_visible_person():
+                # Engaged-and-visible attribution: if the best voice candidate
+                # IS the engaged + visible person, even at sub-soft-threshold
+                # score, attribute to them. Face presence + soft voice match
+                # stack together: each is a weak signal alone, both together
+                # are stronger than the soft threshold on voice alone. This
+                # prevents "off-camera unknown" misfires when a known speaker's
+                # voice happens to score just under the soft floor on a noisy
+                # utterance.
+                eng_visible_floor = float(
+                    getattr(config, "SPEAKER_ID_ENGAGED_VISIBLE_FLOOR", 0.50)
+                )
+                if (
+                    engaged_is_visible
+                    and raw_best_id == ws_pid
+                    and speaker_score >= eng_visible_floor
+                ):
+                    person_id = ws_pid
+                    person_name = ws_name
+                    _log.info(
+                        "[interaction] person resolution: engaged+visible attribution — "
+                        "person_id=%s name=%r voice_score=%.3f (floor=%.2f)",
+                        person_id, person_name, speaker_score, eng_visible_floor,
+                    )
+                elif engaged_is_visible and not _has_unknown_visible_person():
                     off_camera_unknown = True
                     _log.info(
                         "[interaction] person resolution: speaker-ID missed while engaged "
