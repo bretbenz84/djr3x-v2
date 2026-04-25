@@ -902,6 +902,11 @@ BIRTHDAY_REMINDER_WINDOW_DAYS = 7
 HOLIDAY_PLANS_PROBABILITY = 0.25
 HOLIDAY_PLANS_CHECK_INTERVAL_SECS = 30.0
 
+# Weekly small-talk (Fri-eve weekend plans, Sun-eve week ahead, Mon-morn recap).
+# Per (person, ISO-week, slot) — fires at most once per slot per week.
+WEEKLY_SMALLTALK_PROBABILITY = 0.6
+WEEKLY_SMALLTALK_CHECK_INTERVAL_SECS = 30.0
+
 # Notable calendar dates Rex reacts to — keys are (month, day) tuples
 NOTABLE_DATES = {
     (5,  4):  "Star Wars Day",

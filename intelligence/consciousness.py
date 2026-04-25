@@ -119,6 +119,12 @@ _last_overheard_mention_handled_at: Optional[float] = None
 _holiday_plans_asked: set[tuple[int, str]] = set()
 _last_holiday_plans_check_at: float = 0.0
 
+# Weekly small-talk dedupe: (person_db_id, iso_year, iso_week, slot) tuples Rex
+# has already asked. Slots: "weekend_plans" (Fri eve), "week_ahead" (Sun eve),
+# "weekend_recap" (Mon morning).
+_weekly_smalltalk_asked: set[tuple[int, int, int, str]] = set()
+_last_weekly_smalltalk_check_at: float = 0.0
+
 # Per-person monotonic timestamp of when they were last seen in frame.
 _last_seen: dict = {}
 
@@ -1185,18 +1191,57 @@ def _do_small_talk_question(snapshot: dict) -> None:
             return
         target_name = (target.get("face_id") or "").split()[0] or None
 
-    time_of_day = (snapshot.get("time", {}) or {}).get("part_of_day") or ""
+    time_of_day = (snapshot.get("time", {}) or {}).get("time_of_day") or ""
     venue = getattr(config, "VENUE_NAME", "")
+
+    target_db_id = None
+    if target_name and known:
+        target_db_id = next(
+            (p.get("person_db_id") for p in known
+             if (p.get("face_id") or "").split()[:1] == [target_name]),
+            None,
+        )
+
+    # Prefer asking about a known plan (past or upcoming) over a generic question.
+    plan_clause = ""
+    if target_db_id is not None:
+        try:
+            from memory import events as events_mod
+            pending = events_mod.get_pending_followups(target_db_id) or []
+            if pending:
+                ev = pending[0]
+                ev_name = ev.get("event_name") or ""
+                if ev_name:
+                    _pending_followups_lock_remove(target_db_id, ev.get("id"))
+                    plan_clause = (
+                        f" You remember they told you they had this coming up: "
+                        f"'{ev_name}'. Specifically ask how it went."
+                    )
+            if not plan_clause:
+                upcoming = events_mod.get_upcoming_events(target_db_id) or []
+                if upcoming:
+                    ev = upcoming[0]
+                    ev_name = ev.get("event_name") or ""
+                    ev_date = ev.get("event_date") or ""
+                    if ev_name:
+                        when = f" on {ev_date}" if ev_date else ""
+                        plan_clause = (
+                            f" You remember they mentioned '{ev_name}'{when} is "
+                            f"coming up. You can ask how they're feeling about it "
+                            f"or whether they're ready."
+                        )
+        except Exception as exc:
+            _log.debug("smalltalk plan lookup error: %s", exc)
 
     if target_name:
         prompt = (
             f"It's quiet and you're idly looking at '{target_name}', someone you know. "
-            f"They haven't said anything in a while. Open small talk by asking them one "
-            f"short, in-character Rex question — how their day is going, what they've "
-            f"been working on, what's on their mind, what they're listening to lately, "
-            f"or some other genuine small-talk hook. Warm but dry. Don't lecture, don't "
-            f"give your opinion — just ask. Address {target_name} by name. One short "
-            f"sentence ending in a question mark."
+            f"They haven't said anything in a while.{plan_clause} Open small talk by "
+            f"asking them one short, in-character Rex question — how their day is "
+            f"going, what they've been working on, what's on their mind, what they're "
+            f"listening to lately, or some other genuine small-talk hook. Warm but "
+            f"dry. Don't lecture, don't give your opinion — just ask. Address "
+            f"{target_name} by name. One short sentence ending in a question mark."
         )
     else:
         ctx_bits = []
@@ -1705,6 +1750,33 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                                 person_name, milestone,
                             )
 
+                    # Priority 2.5 — pending follow-up (something they planned that has now passed)
+                    if prompt is None:
+                        try:
+                            from memory import events as events_mod
+                            pending = events_mod.get_pending_followups(person_db_id) or []
+                        except Exception:
+                            pending = []
+                        if pending:
+                            ev = pending[0]
+                            ev_name = ev.get("event_name") or ""
+                            if ev_name:
+                                _pending_followups_lock_remove(person_db_id, ev.get("id"))
+                                prompt = (
+                                    f"You just started up and immediately see '{first_name}'. "
+                                    f"You remember they told you they had this on their schedule: "
+                                    f"'{ev_name}' — and the date has now passed. Greet them and "
+                                    f"ask specifically how '{ev_name}' went, in two short Rex-style "
+                                    f"sentences. Address {first_name} by name. The second sentence "
+                                    f"must end in a question mark."
+                                )
+                                label = f"startup followup ({ev_name}) for {person_name}"
+                                emotion = "curious"
+                                _log.info(
+                                    "consciousness: startup follow-up for %s — %s",
+                                    person_name, ev_name,
+                                )
+
                     # Priority 3 — anticipated upcoming event
                     if prompt is None:
                         anticipated = _pick_anticipated_event(person_db_id)
@@ -2184,6 +2256,164 @@ def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Step 10e2 — Weekly small talk (weekend plans, week ahead, weekend recap)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _pick_weekly_slot(snapshot: dict) -> Optional[str]:
+    """
+    Map current day-of-week + part-of-day to a small-talk slot, or None.
+      Friday afternoon/evening → "weekend_plans"
+      Sunday evening           → "week_ahead"
+      Monday morning/midday    → "weekend_recap"
+    """
+    t = snapshot.get("time", {}) or {}
+    dow = (t.get("day_of_week") or "").lower()
+    part = (t.get("time_of_day") or "").lower()
+    if dow == "friday" and part in ("afternoon", "evening", "night"):
+        return "weekend_plans"
+    if dow == "sunday" and part in ("evening", "night"):
+        return "week_ahead"
+    if dow == "monday" and part in ("morning", "afternoon"):
+        return "weekend_recap"
+    return None
+
+
+def _step_weekly_smalltalk(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    During an active conversation with a known person, occasionally ask weekly
+    small-talk questions keyed on day-of-week:
+      Friday eve  → "any plans this weekend?"
+      Sunday eve  → "what's on the agenda this week?"
+      Monday a.m. → "how was your weekend?" (referencing stored weekend events when present)
+    Each (person, ISO-week, slot) is asked at most once.
+    """
+    global _last_weekly_smalltalk_check_at
+
+    if profile.suppress_proactive or profile.rapid_exchange:
+        return
+    if not _can_proactive_speak():
+        return
+
+    now = time.monotonic()
+    interval = getattr(config, "WEEKLY_SMALLTALK_CHECK_INTERVAL_SECS", 30.0)
+    if (now - _last_weekly_smalltalk_check_at) < interval:
+        return
+    _last_weekly_smalltalk_check_at = now
+
+    slot = _pick_weekly_slot(snapshot)
+    if slot is None:
+        return
+
+    with _engaged_lock:
+        engaged_id = _engaged_person_id
+        engaged_touch = _engaged_last_touch_at
+    if engaged_id is None:
+        return
+    window = getattr(config, "ENGAGEMENT_WINDOW_SECS", 90.0)
+    if (now - engaged_touch) > window:
+        return
+
+    try:
+        from datetime import date as _date
+        iso_year, iso_week, _ = _date.today().isocalendar()
+        dedupe_key = (engaged_id, iso_year, iso_week, slot)
+        if dedupe_key in _weekly_smalltalk_asked:
+            return
+        if random.random() >= getattr(config, "WEEKLY_SMALLTALK_PROBABILITY", 0.6):
+            return
+
+        from memory import people as people_mod
+        from memory import events as events_mod
+        person = people_mod.get_person(engaged_id)
+        if not person:
+            return
+        first_name = (person.get("name") or "").split()[0] or "you"
+
+        if slot == "weekend_plans":
+            upcoming = events_mod.get_upcoming_events(engaged_id) or []
+            already = ", ".join(
+                f"'{e['event_name']}'"
+                for e in upcoming
+                if e.get("event_date")
+            )
+            already_clause = (
+                f" You already know they have these upcoming: {already}. "
+                f"If relevant, reference them; otherwise just ask openly."
+                if already else ""
+            )
+            prompt = (
+                f"You're mid-conversation with '{first_name}'. It's Friday and the "
+                f"weekend is starting.{already_clause} Ask {first_name} what they "
+                f"have going on this weekend, in one short Rex-style line ending "
+                f"with a question. Don't lecture, just ask."
+            )
+            emotion = "curious"
+        elif slot == "week_ahead":
+            upcoming = events_mod.get_upcoming_events(engaged_id) or []
+            already = ", ".join(
+                f"'{e['event_name']}'"
+                for e in upcoming
+                if e.get("event_date")
+            )
+            already_clause = (
+                f" You already know they mentioned these coming up: {already}. "
+                f"You can reference them or ask broader."
+                if already else ""
+            )
+            prompt = (
+                f"You're mid-conversation with '{first_name}'. It's Sunday evening "
+                f"and a new week is about to start.{already_clause} Ask {first_name} "
+                f"what's on their agenda this week, dryly observant. One short "
+                f"Rex-style line ending with a question."
+            )
+            emotion = "curious"
+        else:  # weekend_recap
+            pending = events_mod.get_pending_followups(engaged_id) or []
+            # Prefer asking specifically about things they told Rex they'd do.
+            ref = next((e for e in pending if e.get("event_name")), None)
+            if ref:
+                ref_name = ref["event_name"]
+                # Mark this specific event as the implicit follow-up so the
+                # post-response handler doesn't re-ask the same thing.
+                _pending_followups_lock_remove(engaged_id, ref.get("id"))
+                prompt = (
+                    f"You're mid-conversation with '{first_name}'. It's Monday and "
+                    f"you remember they told you they were going to do this over the "
+                    f"weekend: '{ref_name}'. Ask how it went, in one short Rex-style "
+                    f"line ending with a question. Reference '{ref_name}' specifically."
+                )
+            else:
+                prompt = (
+                    f"You're mid-conversation with '{first_name}'. It's Monday morning. "
+                    f"Ask {first_name} how their weekend was, in one short Rex-style "
+                    f"line ending with a question. Warm but dry."
+                )
+            emotion = "curious"
+
+        _weekly_smalltalk_asked.add(dedupe_key)
+        _log.info(
+            "consciousness: weekly small-talk for person_id=%s — slot=%s (week %d/%d)",
+            engaged_id, slot, iso_week, iso_year,
+        )
+        _generate_and_speak(prompt, emotion=emotion)
+    except Exception as exc:
+        _log.debug("weekly smalltalk step error: %s", exc)
+
+
+def _pending_followups_lock_remove(person_id: int, event_id) -> None:
+    """Remove a specific event from _pending_followups so two paths don't both ask."""
+    if event_id is None:
+        return
+    with _followup_lock:
+        events = _pending_followups.get(person_id, [])
+        kept = [e for e in events if e.get("id") != event_id]
+        if kept:
+            _pending_followups[person_id] = kept
+        else:
+            _pending_followups.pop(person_id, None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Step 11 — Face tracking
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2321,6 +2551,9 @@ def _loop() -> None:
 
             # 10d. Holiday plans — ask engaged person about upcoming holidays
             _step_holiday_plans(snapshot, profile)
+
+            # 10d2. Weekly small talk — Fri-eve / Sun-eve / Mon-morning prompts
+            _step_weekly_smalltalk(snapshot, profile)
 
             # 10e. Overheard chime-in — react when someone talks ABOUT Rex
             _step_overheard_chime_in(snapshot, profile)

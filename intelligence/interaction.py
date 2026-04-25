@@ -1136,6 +1136,38 @@ def _post_response(
             except Exception as exc:
                 _log.debug("post_response fact extraction error: %s", exc)
 
+            # Event extraction → person_events table for follow-ups + small talk
+            try:
+                transcript = conv_memory.get_session_transcript()
+                recent = transcript[-10:] if len(transcript) >= 10 else transcript
+                new_events = llm.extract_events(person_id, recent, person_name=person_name)
+                saved_events = 0
+                if new_events:
+                    existing = events_memory.get_upcoming_events(person_id) or []
+                    existing_keys = {
+                        ((e.get("event_name") or "").strip().lower(), e.get("event_date"))
+                        for e in existing
+                    }
+                    for ev in new_events:
+                        key = (ev["event_name"].strip().lower(), ev.get("event_date"))
+                        if key in existing_keys:
+                            continue
+                        events_memory.add_event(
+                            person_id,
+                            ev["event_name"],
+                            ev.get("event_date"),
+                            ev.get("event_notes", ""),
+                        )
+                        existing_keys.add(key)
+                        saved_events += 1
+                if saved_events:
+                    _log.info(
+                        "[interaction] events extracted=%d saved=%d for person_id=%s",
+                        len(new_events), saved_events, person_id,
+                    )
+            except Exception as exc:
+                _log.debug("post_response event extraction error: %s", exc)
+
     threading.Thread(target=_background, daemon=True, name="post-response-bg").start()
 
 

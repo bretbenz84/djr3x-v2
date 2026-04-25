@@ -743,3 +743,100 @@ def extract_facts(
     except Exception as exc:
         _log.debug("extract_facts: no facts parsed (%s)", exc)
         return []
+
+
+def extract_events(
+    person_id: int,
+    transcript: list[dict],
+    person_name: Optional[str] = None,
+) -> list[dict]:
+    """
+    Ask the LLM to extract upcoming plans/events the human speaker mentioned in
+    the transcript. Returns a list of dicts with keys:
+      event_name (str), event_date (ISO YYYY-MM-DD or None), event_notes (str).
+
+    Relative dates ("this weekend", "Saturday", "next Monday") are resolved
+    against today. Past events and Rex's own statements are ignored.
+    """
+    if not transcript:
+        return []
+
+    from datetime import date as _date, timedelta as _td
+    today = _date.today()
+    today_iso = today.isoformat()
+    today_dow = today.strftime("%A")
+    # Reference dates for the model so it can resolve "this weekend" etc.
+    wd = today.weekday()  # Mon=0..Sun=6
+    if wd == 5:           # Saturday
+        this_saturday = today
+    elif wd == 6:         # Sunday — treat the just-past Saturday as "this weekend"
+        this_saturday = today - _td(days=1)
+    else:
+        this_saturday = today + _td(days=(5 - wd))
+    this_sunday = this_saturday + _td(days=1)
+    next_monday = today + _td(days=((0 - wd) % 7) or 7)
+
+    speaker_label = person_name or "user"
+    prompt = (
+        f"You are extracting UPCOMING PLANS / EVENTS the human speaker {speaker_label!r} "
+        f"mentioned in a conversation transcript with Rex (a robot DJ).\n\n"
+        f"Today is {today_iso} ({today_dow}). "
+        f"This Saturday = {this_saturday.isoformat()}. "
+        f"This Sunday = {this_sunday.isoformat()}. "
+        f"Next Monday = {next_monday.isoformat()}.\n\n"
+        "Extract every concrete upcoming plan, activity, trip, appointment, deadline, "
+        "or event the speaker said they have. Examples:\n"
+        "  'I'm hiking on Saturday' → event_name='hiking', event_date=this Saturday's ISO date\n"
+        "  'flying to Denver next week' → event_name='trip to Denver', event_date=null (week, not specific day)\n"
+        "  'have a dentist appointment Tuesday at 3' → event_name='dentist appointment', event_date=next Tuesday\n"
+        "  'this weekend I'm just relaxing' → event_name='relaxing weekend', event_date=this Saturday\n"
+        "  'big presentation Monday' → event_name='presentation', event_date=next Monday\n\n"
+        "Resolve all relative dates against today. Use null for event_date only if the "
+        "speaker truly gave no recoverable date (e.g. 'someday', 'eventually'). "
+        "Skip vague aspirations and skip anything Rex said. Skip past events. "
+        "Do not duplicate — one entry per distinct plan.\n\n"
+        "Return a JSON array. Each element MUST have exactly these keys:\n"
+        '  "event_name": short concrete phrase, lowercase where natural (e.g. "hiking trip", "dentist appointment")\n'
+        '  "event_date": "YYYY-MM-DD" or null\n'
+        '  "event_notes": one short sentence of context from the transcript, or empty string\n\n'
+        f"Transcript:\n{_format_transcript(transcript)}\n\n"
+        "Return only the JSON array. No explanation."
+    )
+    _log.debug("[llm] extract_events prompt for %r:\n%s", speaker_label, prompt)
+    try:
+        resp = _client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=400,
+        )
+        content = resp.choices[0].message.content
+        _log.debug("[llm] extract_events raw response for %r: %r", speaker_label, content)
+        if not content or not content.strip():
+            return []
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r"^```[a-z]*\n?", "", stripped)
+            stripped = re.sub(r"\n?```$", "", stripped)
+        result = json.loads(stripped)
+        if not isinstance(result, list):
+            return []
+        cleaned: list[dict] = []
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            name = (item.get("event_name") or "").strip()
+            if not name:
+                continue
+            ev_date = item.get("event_date")
+            if ev_date in ("", "null", "None"):
+                ev_date = None
+            cleaned.append({
+                "event_name": name,
+                "event_date": ev_date,
+                "event_notes": (item.get("event_notes") or "").strip(),
+            })
+        return cleaned
+    except Exception as exc:
+        _log.debug("extract_events: no events parsed (%s)", exc)
+        return []
