@@ -1880,7 +1880,7 @@ Rex occasionally references things he would like to do or experience — gives h
 forward-looking interiority:
 *"One of these cycles I'm going to calculate the optimal hyperspace route just to
 prove I still can."*
-Aspirations pool configurable in `config.py`.
+Aspirations pool configurable in `config.py`.git pull
 
 ### Fear of Shutdown
 A subtle existential thread woven into Rex's character — not played for drama but

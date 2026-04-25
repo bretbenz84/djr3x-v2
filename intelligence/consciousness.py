@@ -884,10 +884,11 @@ def _pick_absence_phase(person_db_id: Optional[int]) -> Optional[tuple[str, floa
 def _build_milestone_prompt(first_name: str, visit_number: int) -> str:
     return (
         f"You see '{first_name}', someone you know — and this is their visit number "
-        f"{visit_number}, a milestone you actually want to acknowledge. Open with one "
-        f"short in-character Rex line that calls out the milestone — dry, slightly "
-        f"begrudging, but the warmth is unmistakable. Address {first_name} by name. "
-        f"One line only."
+        f"{visit_number}, a milestone you actually want to acknowledge. Acknowledge "
+        f"the milestone in one short dry, begrudging-but-warm Rex line, then end with "
+        f"a small-talk question inviting them to share what they've been up to since "
+        f"their last visit. Address {first_name} by name. Two short sentences max — "
+        f"the second must end in a question mark."
     )
 
 
@@ -901,10 +902,10 @@ def _build_long_absence_prompt(first_name: str, days: float) -> str:
         span = f"{days_int} days"
     return (
         f"You see '{first_name}', someone you know — but it's been {span} since their "
-        f"last visit. Open with one short in-character Rex line acknowledging the long "
-        f"absence — dry, faintly accusatory, masking that you're glad they're back. "
-        f"Examples in spirit: 'Look who finally surfaced.', 'I assumed you'd gotten lost "
-        f"in hyperspace.' Address {first_name} by name. One line only."
+        f"last visit. Open with one short dry, faintly accusatory Rex line about the "
+        f"absence, then ask a curious small-talk question — where they've been, what "
+        f"they've been doing, anything that gets them talking. Address {first_name} "
+        f"by name. Two short sentences max — the second must end in a question mark."
     )
 
 
@@ -917,9 +918,10 @@ def _build_recent_return_prompt(first_name: str, hours: float) -> str:
         span = "yesterday"
     return (
         f"You see '{first_name}' again — they were just here {span}. Open with one "
-        f"short in-character Rex line teasing them about the quick return. Examples "
-        f"in spirit: 'Back already?', 'Did you forget something, or did you just miss "
-        f"me?' Address {first_name} by name. One line only."
+        f"short Rex line teasing the quick return, then ask a small-talk question "
+        f"inviting them to share what brought them back or what's on their mind. "
+        f"Address {first_name} by name. Two short sentences max — the second must "
+        f"end in a question mark."
     )
 
 
@@ -1099,18 +1101,28 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
     _last_micro_behavior_at = now
     # Include ambient_observation and appearance_riff/live_vision so Rex talks
     # about his surroundings and the people in them, not just himself.
-    behavior = random.choice([
-        "ambient_scan",
-        "private_thought",
-        "aspiration",
-        "idle_clip",
-        "ambient_observation",
-        "appearance_riff",
-        "live_vision_comment",
-    ])
+    behavior = random.choices(
+        [
+            "small_talk_question",
+            "ambient_scan",
+            "private_thought",
+            "aspiration",
+            "idle_clip",
+            "ambient_observation",
+            "appearance_riff",
+            "live_vision_comment",
+        ],
+        # Bias toward asking the user something when they've gone quiet — Rex
+        # should pull them into conversation, not just narrate his own opinions.
+        weights=[3, 1, 1, 1, 1, 1, 1, 1],
+        k=1,
+    )[0]
     _log.debug("consciousness: idle micro-behavior → %s", behavior)
 
-    if behavior == "ambient_scan":
+    if behavior == "small_talk_question":
+        if not profile.suppress_proactive:
+            _do_small_talk_question(snapshot)
+    elif behavior == "ambient_scan":
         _do_ambient_scan()
     elif behavior == "private_thought":
         # Private thoughts are system monologues — suppressed by both proactive and
@@ -1153,6 +1165,55 @@ def _do_ambient_scan() -> None:
         threading.Thread(target=_scan, daemon=True, name="ambient_scan").start()
     except Exception as exc:
         _log.debug("ambient scan error: %s", exc)
+
+
+def _do_small_talk_question(snapshot: dict) -> None:
+    """
+    When the user has gone quiet, initiate small talk by asking them a question.
+    Prefers asking a known visible person; falls back to an open question.
+    """
+    if not _can_proactive_speak():
+        return
+
+    people = snapshot.get("people", []) or []
+    known = [p for p in people if p.get("person_db_id") and p.get("face_id")]
+    target_name: Optional[str] = None
+    if known:
+        target = random.choice(known)
+        if is_engaged_with(target.get("person_db_id")):
+            # Mid-conversation — let interaction handle turn-taking.
+            return
+        target_name = (target.get("face_id") or "").split()[0] or None
+
+    time_of_day = (snapshot.get("time", {}) or {}).get("part_of_day") or ""
+    venue = getattr(config, "VENUE_NAME", "")
+
+    if target_name:
+        prompt = (
+            f"It's quiet and you're idly looking at '{target_name}', someone you know. "
+            f"They haven't said anything in a while. Open small talk by asking them one "
+            f"short, in-character Rex question — how their day is going, what they've "
+            f"been working on, what's on their mind, what they're listening to lately, "
+            f"or some other genuine small-talk hook. Warm but dry. Don't lecture, don't "
+            f"give your opinion — just ask. Address {target_name} by name. One short "
+            f"sentence ending in a question mark."
+        )
+    else:
+        ctx_bits = []
+        if time_of_day:
+            ctx_bits.append(f"part of day: {time_of_day}")
+        if venue:
+            ctx_bits.append(f"venue: {venue}")
+        ctx = "; ".join(ctx_bits) or "no extra context"
+        prompt = (
+            f"It's quiet around you and nobody has said anything in a while ({ctx}). "
+            f"Break the silence by asking the room one short, in-character Rex small-talk "
+            f"question — something open-ended that invites whoever is listening to "
+            f"answer. Don't lecture, don't give your opinion — just ask. One short "
+            f"sentence ending in a question mark."
+        )
+
+    _generate_and_speak(prompt, emotion="curious")
 
 
 def _do_private_thought() -> None:
@@ -1685,8 +1746,11 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     if prompt is None:
                         prompt = (
                             f"You just started up and immediately see '{first_name}', someone you know. "
-                            f"Greet them in one short in-character Rex line. "
-                            f"Address {first_name} by name. Make it feel like Rex just booted and is glad to see a familiar face."
+                            f"Greet them in-character, then ask them a small-talk question — how "
+                            f"they're doing, what they've been up to, what's on the agenda — "
+                            f"something that invites them to actually talk to you, not just listen "
+                            f"to you have an opinion. Address {first_name} by name. Two short "
+                            f"sentences max — the second must end in a question mark."
                         )
                         _log.info("consciousness: startup greeting for %s", person_name)
 
