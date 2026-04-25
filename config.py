@@ -352,7 +352,7 @@ CHEST_ARDUINO_BAUD = 115200
 PERSONALITY_DEFAULTS = {
     "humor":           75,
     "sarcasm":         80,
-    "roast_intensity": 70,
+    "roast_intensity": 90,
     "honesty":         90,
     "talkativeness":   65,
     "darkness":        40,
@@ -360,7 +360,7 @@ PERSONALITY_DEFAULTS = {
     # How willing Rex is to go along with requests vs. pushing back.
     # Low = reluctant, conditions, refusals with attitude.
     # High = compliant, fewer objections, less commentary.
-    "agreeability":    60,
+    "agreeability":    70,
 }
 
 # Voice command named levels → integer value written to the parameter
@@ -496,8 +496,8 @@ INSULT_PHRASES = [
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Pre-response pause — makes Rex feel less robotic (milliseconds)
-REACTION_DELAY_MS_MIN = 200
-REACTION_DELAY_MS_MAX = 400
+REACTION_DELAY_MS_MIN = 100
+REACTION_DELAY_MS_MAX = 300
 
 # Beat of silence after a high-confidence joke before Rex continues (milliseconds)
 POST_PUNCHLINE_BEAT_MS_MIN = 800
@@ -521,7 +521,7 @@ DEPARTURE_AUDIO_SILENCE_SECS = 3.0
 SYSTEM_COMMENT_SILENCE_SECS = 60
 
 # Maximum roast_intensity when a child or teen is present (family-safe cap)
-CHILD_SAFE_ROAST_MAX = 30
+CHILD_SAFE_ROAST_MAX = 40
 
 # ─────────────────────────────────────────────────────────────────────────────
 # INTERACTION LOOP
@@ -554,10 +554,10 @@ CONVERSATION_IDLE_TIMEOUT_SECS = 30.0
 
 # After Rex asks a direct question, suppress autonomous/proactive speech for a
 # short window so humans get a clean chance to answer.
-QUESTION_RESPONSE_WAIT_SECS = 10.0
+QUESTION_RESPONSE_WAIT_SECS = 7.0
 
 # Longer wait window for unknown-person onboarding prompts ("who are you?").
-IDENTITY_RESPONSE_WAIT_SECS = 20.0
+IDENTITY_RESPONSE_WAIT_SECS = 10.0
 
 # Short acknowledgment lines Rex speaks when a wake word transitions him from
 # IDLE or SLEEP to ACTIVE. Distinct from INTERRUPT_ACKNOWLEDGMENTS (mid-speech).
@@ -579,7 +579,7 @@ WAKE_ACKNOWLEDGMENTS = [
 CONSCIOUSNESS_LOOP_INTERVAL_SECS = 1.0
 
 # Minimum spacing between autonomous/proactive spoken lines from consciousness.
-CONSCIOUSNESS_PROACTIVE_MIN_GAP_SECS = 8.0
+CONSCIOUSNESS_PROACTIVE_MIN_GAP_SECS = 12.0
 
 # If False, consciousness-generated proactive speech only occurs in IDLE.
 CONSCIOUSNESS_ALLOW_PROACTIVE_IN_ACTIVE = True
@@ -929,7 +929,7 @@ NOTABLE_DATES = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 # How often the chronoception background thread refreshes world_state.time (seconds)
-CHRONOCEPTION_UPDATE_INTERVAL_SECS = 60.0
+CHRONOCEPTION_UPDATE_INTERVAL_SECS = 30.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # INTEROCEPTION — System Health Update Interval
