@@ -1998,6 +1998,59 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             # handler above.
             return
 
+        # Newcomer-on-camera: an unknown face is visible AND the speaker's voice
+        # didn't match anyone AND this utterance didn't already enroll them via
+        # the self-introduction path above. Covers the "camera handoff" case
+        # (e.g. Bret hands the device to a friend who says "Hi Rex"): without
+        # this branch, the intent classifier hijacks the utterance into
+        # query_who_is_speaking and Rex says "no idea, who's asking?" with no
+        # follow-up. Here we proactively ask their name (and how they know the
+        # recently-engaged person, if any) and open the identity-reply window
+        # so the next utterance triggers enrollment + the post-greet
+        # relationship chain.
+        if (
+            person_id is None
+            and not identity_prompt_active
+            and _has_unknown_visible_person()
+            and _pending_face_reveal_confirm is None
+            and command_parser.parse(text) is None
+        ):
+            prior_first = ""
+            if recent_engagement and recent_engagement.get("name"):
+                prior_first = recent_engagement["name"].split()[0]
+            if prior_first:
+                ask_prompt = (
+                    f"A new face just appeared on camera and an unfamiliar voice "
+                    f"said: '{text}'. You don't recognize them. You were just "
+                    f"talking with '{prior_first}'. In ONE short in-character Rex "
+                    f"line, greet the newcomer, ask their name, AND ask how they "
+                    f"know {prior_first}. Warm, curious. One line ending in a "
+                    f"question mark."
+                )
+            else:
+                ask_prompt = (
+                    f"A new face just appeared on camera and an unfamiliar voice "
+                    f"said: '{text}'. You don't recognize them. In ONE short "
+                    f"in-character Rex line, greet them and ask who they are / "
+                    f"what name to call them. One line ending in a question mark."
+                )
+            try:
+                q_text = llm.get_response(ask_prompt)
+                if q_text:
+                    _speak_blocking(q_text)
+                    conv_memory.add_to_transcript("Rex", q_text)
+                    conv_log.log_rex(q_text)
+                    _register_rex_utterance(q_text)
+                    _identity_prompt_until = time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS
+                    _log.info(
+                        "[interaction] newcomer-on-camera — Rex asked name "
+                        "(prior=%r): %r",
+                        prior_first or None, q_text,
+                    )
+                    return
+            except Exception as exc:
+                _log.debug("newcomer-on-camera ask error: %s", exc)
+
         # Layer-1 insult pre-check: keyword match → bump anger BEFORE the LLM
         # call so this turn's system prompt reflects the new escalation level.
         # Layer 2 (llm.analyze_sentiment in _post_response) skips its own
