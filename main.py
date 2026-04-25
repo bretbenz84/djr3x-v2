@@ -105,19 +105,26 @@ def _shutdown() -> None:
     logger.info("Stopping audio.stream...")
     stream.stop()
 
-    # Shutdown animation (synchronous/blocking).
+    # Fire shutdown audio first, then run servo animation simultaneously.
+    # Join the audio thread before pygame teardown so the clip isn't cut short.
+    _audio_thread = None
+    if config.PLAY_SHUTDOWN_AUDIO:
+        logger.info("Playing shutdown audio: %s", config.SHUTDOWN_AUDIO_FILE)
+        def _play_shutdown_audio() -> None:
+            try:
+                _play_audio_file(config.SHUTDOWN_AUDIO_FILE)
+            except Exception as e:
+                logger.warning("Could not play shutdown audio: %s", e)
+        _audio_thread = threading.Thread(target=_play_shutdown_audio, daemon=True, name="shutdown_audio")
+        _audio_thread.start()
+    else:
+        logger.info("Shutdown audio disabled by config.PLAY_SHUTDOWN_AUDIO")
+
     logger.info("Playing shutdown animation...")
     animations.shutdown()
 
-    # Shutdown audio.
-    if config.PLAY_SHUTDOWN_AUDIO:
-        logger.info("Playing shutdown audio: %s", config.SHUTDOWN_AUDIO_FILE)
-        try:
-            _play_audio_file(config.SHUTDOWN_AUDIO_FILE)
-        except Exception as e:
-            logger.warning("Could not play shutdown audio: %s", e)
-    else:
-        logger.info("Shutdown audio disabled by config.PLAY_SHUTDOWN_AUDIO")
+    if _audio_thread is not None:
+        _audio_thread.join()
 
     # Close hardware.
     logger.info("Closing hardware...")
@@ -184,20 +191,22 @@ def main() -> None:
     # Step 5: animations module is ready — functions operate directly on the hardware
     # singletons initialized above. No AnimationPlayer class to instantiate.
 
-    # Step 6: Startup animation (synchronous — blocks until complete).
-    logger.info("Playing startup animation...")
-    animations.startup()
-
-    # Step 7: Startup audio — pre-recorded files played in order via pygame.
+    # Steps 6 & 7: Fire startup audio first, then run servo animation simultaneously.
+    # Audio plays in a background thread so the servo motion begins immediately after.
     if config.PLAY_STARTUP_AUDIO:
-        for audio_file in config.STARTUP_AUDIO_FILES:
-            logger.info("Playing startup audio: %s", audio_file)
-            try:
-                _play_audio_file(audio_file)
-            except Exception as e:
-                logger.warning("Could not play %s: %s", audio_file, e)
+        def _play_startup_audio() -> None:
+            for audio_file in config.STARTUP_AUDIO_FILES:
+                logger.info("Playing startup audio: %s", audio_file)
+                try:
+                    _play_audio_file(audio_file)
+                except Exception as e:
+                    logger.warning("Could not play %s: %s", audio_file, e)
+        threading.Thread(target=_play_startup_audio, daemon=True, name="startup_audio").start()
     else:
         logger.info("Startup audio disabled by config.PLAY_STARTUP_AUDIO")
+
+    logger.info("Playing startup animation...")
+    animations.startup()
 
     # Step 8: Start background services in order.
     logger.info("=== Starting background services ===")
