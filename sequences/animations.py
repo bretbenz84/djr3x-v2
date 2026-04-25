@@ -5,9 +5,9 @@ Each function coordinates hardware/servos.py, hardware/leds_head.py, and
 hardware/leds_chest.py into a named, timed behavior.  All sequences are
 synchronous; callers run them in threads as needed.
 
-Background behaviors (headlift breathing, idle neck scan) run as daemon threads
-via servos.breathing_thread() and servos.idle_animation() — those are not
-duplicated here.  This module owns discrete triggered sequences only.
+Background behaviors run as daemon threads: servos.breathing_thread() for the
+sinusoidal headlift oscillation, and animations.wander_thread() for slow
+multi-channel idle head movements.  This module owns all triggered sequences.
 
 Emotion → LED pattern reference (encoded in chest Arduino firmware):
     neutral  → RandomBlocks2, normal brightness
@@ -17,10 +17,16 @@ Emotion → LED pattern reference (encoded in chest Arduino firmware):
     happy    → confetti, normal brightness
 """
 
-import time
 import random
+import threading
+import time
 
+import state as _state_module
+from state import State as _State
 from hardware import servos, leds_head, leds_chest
+
+# Set while a TTS utterance is in progress — gates both speaking gestures and wander.
+_speaking = threading.Event()
 
 # ---------------------------------------------------------------------------
 # Servo position constants (Pololu quarter-microseconds)
@@ -50,7 +56,7 @@ HEADTILT_SLIGHT_DOWN = 4700
 
 # Ch 3 — Visor: 4544–6976, neutral 6000, higher = more open
 VISOR_CLOSED  = 4544   # sleep / privacy — covers camera lens
-VISOR_HALF    = 5760   # comfortable resting open
+VISOR_HALF    = 6400   # default resting open — clear of camera lens
 VISOR_NEUTRAL = 6000
 VISOR_OPEN    = 6976   # max — required before any camera capture
 
@@ -165,17 +171,107 @@ def idle() -> None:
     servos.neutral(step_us=30)
 
 
+def wander_thread() -> None:
+    """
+    Background thread: slow, subtle multi-channel head movements during IDLE/ACTIVE.
+    Randomly picks from neck scans, headtilt shifts, thoughtful glances, and resets.
+    Suppressed while speaking or in SLEEP/SHUTDOWN states.
+    Call as a daemon thread from main.py alongside breathing_thread.
+    """
+    while True:
+        time.sleep(random.uniform(4.0, 10.0))
+
+        cur = _state_module.get_state()
+        if cur not in (_State.IDLE, _State.ACTIVE):
+            continue
+        if _speaking.is_set():
+            continue
+
+        choice = random.randint(0, 4)
+
+        if choice == 0:
+            # Slow neck turn with slight headtilt — like scanning the room
+            side = random.choice([-1, 1])
+            neck = NECK_CENTER + side * random.randint(300, 700)
+            tilt = HEADTILT_NEUTRAL + random.randint(-80, 80)
+            servos.move_to({0: neck, 2: tilt}, step_us=20, step_delay=0.03)
+            time.sleep(random.uniform(0.8, 2.0))
+            servos.move_to({0: NECK_CENTER, 2: HEADTILT_NEUTRAL}, step_us=20, step_delay=0.03)
+
+        elif choice == 1:
+            # Thoughtful upward glance — head lifts and tilts slightly up
+            lift = HEADLIFT_NEUTRAL + random.randint(100, 250)
+            servos.move_to({1: lift, 2: HEADTILT_SLIGHT_UP}, step_us=20, step_delay=0.03)
+            time.sleep(random.uniform(0.8, 1.5))
+            servos.move_to({1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL}, step_us=20, step_delay=0.03)
+
+        elif choice == 2:
+            # Downward contemplative look — slight neck lean + head lower + tilt down
+            side = random.choice([-1, 1])
+            neck = NECK_CENTER + side * random.randint(200, 500)
+            servos.move_to(
+                {0: neck, 1: HEADLIFT_NEUTRAL - 200, 2: HEADTILT_SLIGHT_DOWN},
+                step_us=20, step_delay=0.03,
+            )
+            time.sleep(random.uniform(1.0, 2.0))
+            servos.move_to({0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL}, step_us=20, step_delay=0.03)
+
+        elif choice == 3:
+            # Slow re-center — settle back to neutral from any drift
+            servos.move_to(
+                {0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL},
+                step_us=15, step_delay=0.03,
+            )
+
+        else:
+            # Subtle visor adjustment + small neck lean
+            visor_nudge = VISOR_HALF + random.randint(-80, 80)
+            neck_nudge  = NECK_CENTER + random.randint(-250, 250)
+            servos.move_to({3: visor_nudge, 0: neck_nudge}, step_us=20, step_delay=0.03)
+            time.sleep(random.uniform(0.8, 1.5))
+            servos.move_to({3: VISOR_HALF, 0: NECK_CENTER}, step_us=20, step_delay=0.03)
+
+
 # ---------------------------------------------------------------------------
 # Speech
 # ---------------------------------------------------------------------------
 
+def _speaking_loop() -> None:
+    """Background: subtle expressive head movements during a TTS utterance."""
+    while _speaking.is_set():
+        choice = random.randint(0, 3)
+        if choice == 0:
+            # Slight neck turn — shift gaze as if addressing the room
+            side = random.choice([-1, 1])
+            target = {0: NECK_CENTER + side * random.randint(250, 500)}
+        elif choice == 1:
+            # Emphasis lift — head rises slightly on an important phrase
+            target = {1: HEADLIFT_NEUTRAL + random.randint(80, 200)}
+        elif choice == 2:
+            # Expressive head tilt
+            tilt = random.choice([-1, 1]) * random.randint(50, 120)
+            target = {2: HEADTILT_NEUTRAL + tilt}
+        else:
+            # Drift back toward neutral — natural reset between gestures
+            target = {0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL}
+
+        servos.move_to(target, step_us=50, step_delay=0.02)
+
+        hold = random.uniform(1.0, 3.0)
+        deadline = time.monotonic() + hold
+        while _speaking.is_set() and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+
 def speech_start(emotion: str = "neutral") -> None:
     """
     Call at the start of a TTS utterance.
-    Sends the emotion pattern to both Arduinos and adjusts head pose to match.
-    servos.set_breathing_emotion() is also updated so the breathing thread
-    reflects the emotional state during speech.
+    Sends the emotion pattern to both Arduinos, adjusts head pose to match,
+    and starts a background thread for subtle expressive head movements.
     """
+    _speaking.set()
+    threading.Thread(target=_speaking_loop, daemon=True, name="speech_gestures").start()
+
     leds_chest.speak(emotion)
     leds_head.speak(emotion)
     leds_head.set_eye_emotion(emotion)
@@ -194,11 +290,12 @@ def speech_start(emotion: str = "neutral") -> None:
 
 
 def speech_stop() -> None:
-    """Call when TTS finishes. Resets mouth LEDs and head pose to idle."""
+    """Call when TTS finishes. Stops gesture thread and resets head pose to idle."""
+    _speaking.clear()
     leds_head.speak_stop()
     leds_chest.idle()
     servos.set_breathing_emotion("neutral")
-    servos.set_servos({3: VISOR_HALF, 1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL})
+    servos.set_servos({0: NECK_CENTER, 3: VISOR_HALF, 1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL})
 
 
 def speech_level(amplitude: int) -> None:
