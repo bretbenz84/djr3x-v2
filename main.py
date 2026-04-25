@@ -162,6 +162,19 @@ def main() -> None:
     else:
         logger.info("Chest LEDs: disabled (ARDUINO_CHEST_PORT not set)")
 
+    # Wire chest LEDs to state transitions so they stay in sync without
+    # scattering leds_chest calls across every module.
+    def _chest_state_callback(old: State, new: State) -> None:
+        if new == State.ACTIVE:
+            leds_chest.active()
+        elif new == State.IDLE:
+            leds_chest.idle()
+        elif new == State.SLEEP:
+            leds_chest.sleep()
+        elif new == State.SHUTDOWN:
+            leds_chest.off()
+    state.add_state_change_callback(_chest_state_callback)
+
     logger.info(
         "Camera: %s",
         f"enabled ({CAMERA_SELECTION_DESCRIPTION})" if CAMERA_ENABLED else "disabled",

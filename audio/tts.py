@@ -41,7 +41,7 @@ import numpy as np
 import config
 from audio import echo_cancel
 from audio import output_gate
-from hardware import leds_head
+from hardware import leds_head, leds_chest
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +132,7 @@ def _play(audio: np.ndarray, samplerate: int, emotion: str) -> None:
 
         try:
             leds_head.speak(emotion)
+            leds_chest.speak(emotion)
             echo_cancel.set_playing(True)
             led_thread.start()
             sd.play(audio, samplerate, blocksize=2048)
@@ -143,6 +144,7 @@ def _play(audio: np.ndarray, samplerate: int, emotion: str) -> None:
             if led_thread.is_alive():
                 led_thread.join(timeout=1.0)
             leds_head.speak_stop()
+            leds_chest.active()
             echo_cancel.set_playing(False)
             with _speaking_lock:
                 _speaking = False

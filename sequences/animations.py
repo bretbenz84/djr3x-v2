@@ -17,7 +17,6 @@ Emotion → LED pattern reference (encoded in chest Arduino firmware):
     happy    → confetti, normal brightness
 """
 
-import threading
 import time
 import random
 
@@ -79,15 +78,8 @@ HEROARM_BACK    = 7200
 # ---------------------------------------------------------------------------
 
 def startup() -> None:
-    """Power-on: chest startup burst (ShortCircuit → RandomBlocks2), servos to neutral."""
+    """Power-on: chest startup burst (ShortCircuit), servos to neutral."""
     leds_chest.startup()
-    # ShortCircuit animation runs for ~13 s on the Arduino then auto-switches to
-    # CM_IDLE.  Fire an explicit IDLE command after that to guarantee the standard
-    # blinking pattern is active regardless of firmware timing.
-    def _chest_idle_after_startup():
-        time.sleep(14)
-        leds_chest.idle()
-    threading.Thread(target=_chest_idle_after_startup, daemon=True, name="chest-startup-idle").start()
     leds_head.active()
     leds_head.set_eye_color(255, 200, 0)    # warm gold boot-up eyes
     servos.neutral(step_us=40)
