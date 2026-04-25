@@ -1789,40 +1789,117 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             allow_bare = identity_prompt_active
             intro_name = _extract_introduced_name(text, allow_bare_name=allow_bare)
             if intro_name:
-                # Use the face-aware enrollment path when we have a known-person
-                # context to preserve; otherwise normal _enroll_new_person is fine.
+                # Distinguish "newcomer self-introducing" from "known person
+                # describing the newcomer." When the speaker already resolves
+                # to a known person AND an unknown face is visible, the
+                # utterance is the known person telling Rex who the new face
+                # is — so we must NOT bind the speaker's voice to the new
+                # person's identity and we must NOT reattribute this turn's
+                # speech to the newcomer.
+                describing_newcomer = (
+                    person_id is not None and has_unknown
+                )
                 prior_engagement = None
                 try:
                     prior_engagement = consciousness.get_recent_engagement()
                 except Exception:
                     prior_engagement = None
 
-                enrolled_id = _enroll_new_person(
-                    intro_name,
-                    audio_array,
-                    enroll_unknown_face=bool(prior_engagement),
-                )
-                if enrolled_id is not None:
-                    if person_id is not None and person_id != enrolled_id:
-                        _log.info(
-                            "[interaction] enrollment overrode speaker-ID mismatch: "
-                            "speaker_id said person_id=%s, identity prompt replied %r → new person_id=%s",
-                            person_id, intro_name, enrolled_id,
+                if describing_newcomer:
+                    # Face-only enrollment for the unknown face. Try to extract
+                    # a relationship label from the same utterance; save an
+                    # edge if found. Speaker identity (person_id/person_name)
+                    # is preserved.
+                    parsed_name = intro_name
+                    relationship: Optional[str] = None
+                    try:
+                        parsed = llm.extract_relationship_introduction(
+                            text, person_name or "friend"
                         )
-                    person_id = enrolled_id
-                    person_name = intro_name
-                    _identity_prompt_until = 0.0
+                        parsed_name = parsed.get("name") or intro_name
+                        relationship = parsed.get("relationship")
+                    except Exception as exc:
+                        _log.debug("describe-newcomer extract error: %s", exc)
 
-                    # Chain into a relationship follow-up if we were just
-                    # engaged with someone else — set a flag for the post-
-                    # response hook to ask "how do you know <name>?"
-                    if prior_engagement and prior_engagement.get("person_id") != enrolled_id:
-                        _pending_post_greet_relationship[0] = {
-                            "prior_engaged_id": prior_engagement["person_id"],
-                            "prior_engaged_name": prior_engagement.get("name"),
-                            "newcomer_person_id": enrolled_id,
-                            "newcomer_name": intro_name,
-                        }
+                    new_id: Optional[int] = None
+                    try:
+                        new_id = people_memory.enroll_person(parsed_name)
+                    except Exception as exc:
+                        _log.warning("describe-newcomer enroll_person failed: %s", exc)
+
+                    if new_id is not None:
+                        first_inc = config.FAMILIARITY_INCREMENTS.get(
+                            "first_enrollment", 0.0
+                        )
+                        if first_inc > 0:
+                            people_memory.update_familiarity(new_id, first_inc)
+                        try:
+                            from vision import camera as _cam_mod
+                            from vision import face as _face_mod
+                            frame = _cam_mod.capture_still()
+                            if frame is not None:
+                                _face_mod.enroll_unknown_face(new_id, frame)
+                                threading.Thread(
+                                    target=_face_mod.update_appearance,
+                                    args=(new_id, frame.copy()),
+                                    daemon=True,
+                                    name=f"appearance-enroll-{new_id}",
+                                ).start()
+                        except Exception as exc:
+                            _log.warning(
+                                "describe-newcomer face enroll failed: %s", exc
+                            )
+                        if relationship:
+                            try:
+                                from memory import social as social_memory
+                                social_memory.save_relationship(
+                                    from_person_id=person_id,
+                                    to_person_id=new_id,
+                                    relationship=relationship,
+                                    described_by=person_id,
+                                )
+                            except Exception as exc:
+                                _log.warning(
+                                    "describe-newcomer save_relationship failed: %s",
+                                    exc,
+                                )
+                        _log.info(
+                            "[interaction] describe-newcomer enrollment: "
+                            "speaker=%r (person_id=%s) named the unknown face "
+                            "as %r (person_id=%s, relationship=%s); voice NOT "
+                            "rebound to newcomer.",
+                            person_name, person_id, parsed_name, new_id,
+                            relationship or "—",
+                        )
+                        _identity_prompt_until = 0.0
+                else:
+                    # Newcomer self-introduction. Existing flow.
+                    enrolled_id = _enroll_new_person(
+                        intro_name,
+                        audio_array,
+                        enroll_unknown_face=bool(prior_engagement),
+                    )
+                    if enrolled_id is not None:
+                        if person_id is not None and person_id != enrolled_id:
+                            _log.info(
+                                "[interaction] enrollment overrode speaker-ID mismatch: "
+                                "speaker_id said person_id=%s, identity prompt replied %r → new person_id=%s",
+                                person_id, intro_name, enrolled_id,
+                            )
+                        person_id = enrolled_id
+                        person_name = intro_name
+                        _identity_prompt_until = 0.0
+
+                        # Chain into a relationship follow-up if we were just
+                        # engaged with someone else — set a flag for the post-
+                        # response hook to ask "how do you know <name>?"
+                        if prior_engagement and prior_engagement.get("person_id") != enrolled_id:
+                            _pending_post_greet_relationship[0] = {
+                                "prior_engaged_id": prior_engagement["person_id"],
+                                "prior_engaged_name": prior_engagement.get("name"),
+                                "newcomer_person_id": enrolled_id,
+                                "newcomer_name": intro_name,
+                            }
 
         # If Rex had an outstanding event follow-up question, treat this utterance
         # as the outcome and close the loop in memory.

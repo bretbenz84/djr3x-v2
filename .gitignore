@@ -222,6 +222,8 @@ assets/music/
 
 # Person database — local runtime data, never commit
 assets/memory/people.db
+assets/memory/people.db-shm
+assets/memory/people.db-wal
 
 # Runtime logs
 logs/
