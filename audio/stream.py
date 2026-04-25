@@ -62,30 +62,59 @@ def start() -> None:
     if _stream is not None and _stream.active:
         return
 
-    _input_channels = getattr(config, "AUDIO_INPUT_CHANNELS", config.AUDIO_CHANNELS)
+    requested = getattr(config, "AUDIO_INPUT_CHANNELS", config.AUDIO_CHANNELS)
 
+    import sounddevice as sd
+
+    # Try the configured channel count first, then fall back to the device's
+    # reported max_input_channels, then mono. macOS PortAudio rejects a
+    # request for more channels than the active device exposes, so a fixed
+    # config that assumes the ReSpeaker (2-ch) silently disables the mic
+    # whenever a mono device (built-in/AirPods) is selected instead.
+    candidates = [requested]
     try:
-        import sounddevice as sd
+        device_info = sd.query_devices(AUDIO_DEVICE_INDEX)
+        max_in = int(device_info.get("max_input_channels", 0))
+        if max_in and max_in not in candidates:
+            candidates.append(max_in)
+    except Exception:
+        pass
+    if 1 not in candidates:
+        candidates.append(1)
 
-        _stream = sd.InputStream(
-            device=AUDIO_DEVICE_INDEX,
-            samplerate=config.AUDIO_SAMPLE_RATE,
-            channels=_input_channels,
-            dtype="float32",
-            blocksize=_BLOCKSIZE,
-            callback=_callback,
-        )
-        _stream.start()
+    last_exc = None
+    for ch in candidates:
+        try:
+            stream = sd.InputStream(
+                device=AUDIO_DEVICE_INDEX,
+                samplerate=config.AUDIO_SAMPLE_RATE,
+                channels=ch,
+                dtype="float32",
+                blocksize=_BLOCKSIZE,
+                callback=_callback,
+            )
+            stream.start()
+        except Exception as exc:
+            last_exc = exc
+            continue
+        _stream = stream
+        _input_channels = ch
+        if ch != requested:
+            _log.warning(
+                "Audio device %d does not support %d channels; opened with %d-ch instead.",
+                AUDIO_DEVICE_INDEX, requested, ch,
+            )
         _log.info(
             "Audio stream started — device %d, %d Hz, %d-ch input → mono, %ds buffer.",
             AUDIO_DEVICE_INDEX,
             config.AUDIO_SAMPLE_RATE,
-            _input_channels,
+            ch,
             config.AUDIO_BUFFER_SECONDS,
         )
-    except Exception as exc:
-        _log.error("Failed to open audio stream: %s", exc)
-        _stream = None
+        return
+
+    _log.error("Failed to open audio stream (tried channels %s): %s", candidates, last_exc)
+    _stream = None
 
 
 def stop() -> None:
