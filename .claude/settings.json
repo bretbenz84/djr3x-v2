@@ -6,7 +6,9 @@
       "Bash(brew list *)",
       "Read(//usr/local/bin/**)",
       "Bash(arduino-cli compile *)",
-      "Bash(arduino-cli upload *)"
+      "Bash(arduino-cli upload *)",
+      "Bash(arduino-cli board *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('sequences/animations.py'\\).read\\(\\)\\); ast.parse\\(open\\('main.py'\\).read\\(\\)\\); ast.parse\\(open\\('config.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }

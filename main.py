@@ -256,6 +256,13 @@ def main() -> None:
         name="wander",
     ).start()
 
+    logger.info("Starting servo arm wander thread...")
+    threading.Thread(
+        target=animations.arm_wander_thread,
+        daemon=True,
+        name="arm_wander",
+    ).start()
+
     logger.info("Setting arm to idle position...")
     animations.arm_idle()
 

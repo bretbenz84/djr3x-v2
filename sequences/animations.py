@@ -232,6 +232,42 @@ def wander_thread() -> None:
             servos.move_to({3: VISOR_HALF, 0: NECK_CENTER}, step_us=20, step_delay=0.03)
 
 
+def arm_wander_thread() -> None:
+    """
+    Background thread: slow, subtle drift of the heroarm and pokerarm during
+    IDLE/ACTIVE so the arms don't sit perfectly still. Independent from the
+    head wander so arm and head motion don't synchronise. Suppressed while
+    speaking or in SLEEP/SHUTDOWN. Call as a daemon thread from main.py.
+    """
+    while True:
+        time.sleep(random.uniform(6.0, 15.0))
+
+        cur = _state_module.get_state()
+        if cur not in (_State.IDLE, _State.ACTIVE):
+            continue
+        if _speaking.is_set():
+            continue
+
+        targets: dict[int, int] = {}
+
+        # ~1 in 3 ticks: drift back toward neutral instead of picking a new offset.
+        # Keeps the arms from wandering away from center over time.
+        if random.random() < 0.33:
+            if random.random() < 0.5:
+                targets[7] = HEROARM_NEUTRAL
+            if random.random() < 0.5 or not targets:
+                targets[6] = POKERARM_NEUTRAL
+        else:
+            # Move heroarm and/or pokerarm by a small random offset.
+            if random.random() < 0.7:
+                targets[7] = HEROARM_NEUTRAL + random.randint(-250, 250)
+            if random.random() < 0.7 or not targets:
+                targets[6] = POKERARM_NEUTRAL + random.randint(-250, 250)
+
+        # Slow interpolation — step_us=8 with step_delay=0.05 reads as drift, not gesture.
+        servos.move_to(targets, step_us=8, step_delay=0.05)
+
+
 # ---------------------------------------------------------------------------
 # Speech
 # ---------------------------------------------------------------------------

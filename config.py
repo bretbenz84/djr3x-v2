@@ -231,7 +231,7 @@ CAMERA_FPS    = 30
 CAMERA_RECONNECT_INTERVAL_SECS = 5.0
 
 # Breathing rhythm — slow headlift oscillation that runs continuously in the background
-BREATHING_AMPLITUDE_QUS  = 80   # quarter-microseconds above/below neutral
+BREATHING_AMPLITUDE_QUS  = 180  # quarter-microseconds above/below neutral
 BREATHING_PERIOD_SECS    = 4.0  # full up-down cycle duration in neutral state
 BREATHING_PERIOD_EXCITED = 2.5  # faster during excited emotion
 BREATHING_PERIOD_SAD     = 6.0  # slower during sad emotion
