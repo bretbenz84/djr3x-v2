@@ -617,7 +617,7 @@ UNKNOWN_PERSON_ADDRESSES = ["hey you", "you there", "mystery organic", "that one
 
 # Continuous visible-seconds an unknown face must be present while Rex is
 # engaged with a known person before Rex asks "who's this?"
-UNKNOWN_WITH_ENGAGED_CONFIRM_SECS = 5.0
+UNKNOWN_WITH_ENGAGED_CONFIRM_SECS = 2.5
 
 # Cooldown on relationship-inquiry prompts so Rex doesn't badger.
 RELATIONSHIP_PROMPT_COOLDOWN_SECS = 45.0

@@ -369,6 +369,34 @@ def assemble_system_prompt(person_id: Optional[int] = None) -> str:
             "Never ask depth-2+ relationship questions."
         )
 
+    # Unknown-face awareness: when Rex is replying to a known person AND an
+    # unknown face is also in frame, surface it so curiosity gets woven into
+    # the normal reply instead of waiting for a proactive speech slot.
+    if person_id is not None:
+        unknown_in_frame = any(
+            p.get("person_db_id") is None for p in ws.get("people", [])
+        )
+        if unknown_in_frame:
+            engaged_first = ""
+            try:
+                engaged_person = people_db.get_person(person_id)
+                if engaged_person and engaged_person.get("name"):
+                    engaged_first = engaged_person["name"].split()[0]
+            except Exception:
+                engaged_first = ""
+            who_clause = (
+                f"next to {engaged_first}" if engaged_first else "in the frame"
+            )
+            rules.append(
+                f"UNKNOWN PERSON IN FRAME: there is an unfamiliar face {who_clause} "
+                f"right now that you have not been introduced to. Unless the recent "
+                f"transcript shows you've already asked, work a brief, warm, in-character "
+                f"question into your reply asking who they are and how "
+                f"{engaged_first or 'this person'} knows them. Don't force it if you "
+                f"literally just asked — but if you haven't, prioritize this curiosity "
+                f"over other small talk."
+            )
+
     sections.append("Behavioral rules:\n" + "\n".join(f"- {r}" for r in rules))
 
     return "\n\n---\n\n".join(sections)
