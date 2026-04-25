@@ -51,6 +51,23 @@ _DEFAULTS = {
         "is_weekend": None,
         "notable_date": None,
     },
+    "social": {
+        # Set when Rex hears a referential / instructional mention of himself
+        # (someone talking ABOUT him, not TO him). Consciousness reads this to
+        # decide whether to chime in. Active flag is computed from
+        # last_mention_at by the situation assessor / consciousness step.
+        "being_discussed": {
+            "last_mention_at": None,    # epoch seconds (time.time())
+            "last_snippet": None,       # the transcribed utterance
+            "speaker_id": None,         # person_db_id of who said it (or None)
+            "speaker_name": None,
+            "addressee_id": None,       # who they were talking to (or None)
+            "label": None,              # "referential" or "instructional"
+            "sentiment": None,          # "positive" / "neutral" / "negative"
+            "mentions_in_window": 0,    # rolling count in last 60 s
+            "chimed_in": False,         # set by consciousness after a chime-in
+        },
+    },
 }
 
 

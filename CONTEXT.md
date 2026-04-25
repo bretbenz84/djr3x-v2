@@ -2201,6 +2201,87 @@ On hit, calls `_generate_and_speak_presence` with a tag-coalesced presence
 reaction. Per-session dedupe via `_third_party_called_out`. Rate-limited to
 one real check every `THIRD_PARTY_CHECK_INTERVAL_SECS` (5).
 
+### Address-mode classification & overheard chime-in
+
+When someone mentions Rex but isn't addressing him directly ("say hi to Rex",
+"Rex is so fun, you really did a good job"), Rex no longer fires a normal LLM
+reply. Instead, the mention is recorded to `world_state.social.being_discussed`
+and the consciousness loop rolls a low-probability decision to chime in.
+
+**Classifier — `awareness/address_mode.py`:**
+
+1. **Keyword pre-filter** (`contains_rex_keyword`) — word-boundary match against
+   `ADDRESS_MODE_KEYWORDS` (default: `rex`, `r3x`, `droid`, `robot`,
+   `dj rex`, `dj r3x`, `deejay rex`). No keyword → classifier is skipped
+   entirely (zero cost).
+2. **Hard rules** — `_DIRECT_PREFIXES` ("hey rex", "hi rex", "rex,", "rex?",
+   "rex!", "yo rex", "yo robot", "dj rex", "dj r3x") map to `direct_address`
+   without an LLM call. `_INSTRUCTIONAL_VERBS` ("say hi to", "tell", "show",
+   "ask", "introduce", "meet", "greet", "bring", "take", "wave at") followed
+   by a rex-keyword within 60 chars map to `instructional`.
+3. **LLM fallback** — single `gpt-4o-mini` call returning JSON
+   `{"label", "sentiment"}`. Labels: `direct_address`, `referential`,
+   `instructional`, `unrelated`. Sentiments: `positive` / `neutral` /
+   `negative`. Any error or unparseable response defaults to
+   `direct_address` (fail-safe — better to over-respond than ignore the user).
+
+**Wiring — `intelligence/interaction.py:_handle_speech_segment`:**
+
+Runs after person resolution but before the off-camera identify, face-reveal,
+newcomer-on-camera, command parser, and LLM paths. Skipped when:
+- `_pending_offscreen_identify` is set (this turn IS the answer to "who's that?")
+- `_pending_face_reveal_confirm` is set
+- The identity-prompt window is open (newcomer self-introduction reply)
+- `command_parser.parse(text)` matches (explicit command — treat as direct)
+
+On `referential` / `instructional`, `_record_being_discussed` writes the
+mention to `world_state.social.being_discussed` (snippet, speaker, label,
+sentiment, mentions_in_window) and `_handle_speech_segment` returns early.
+The mention is also appended to the conversation transcript prefixed with
+`(overheard, <label>)` so future turns have context. On `unrelated`,
+processing continues to the LLM as normal — Rex handles a coincidental
+"robot" reference naturally.
+
+**Situation profile additions — `awareness/situation.py`:**
+
+`SituationProfile` gains `being_discussed: bool` and
+`discussion_sentiment: str`. `being_discussed=True` whenever
+`world_state.social.being_discussed.last_mention_at` is within
+`BEING_DISCUSSED_ACTIVE_WINDOW_SECS` (30).
+
+**Chime-in step — `intelligence/consciousness.py:_step_overheard_chime_in`
+(Step 10e):**
+
+Per-tick gating (in order):
+1. `OVERHEARD_CHIME_IN_ENABLED`, `not profile.suppress_proactive`,
+   `not profile.rapid_exchange`, `profile.being_discussed`.
+2. Rate limit: `OVERHEARD_CHECK_INTERVAL_SECS` (2.0) since last real check.
+3. Per-session cap: `OVERHEARD_MAX_PER_SESSION` (3).
+4. Per-window dedupe: `being_discussed.chimed_in` flag, set immediately on
+   firing so a slow LLM call cannot double-fire.
+5. Min gap: `OVERHEARD_MIN_GAP_SECS` (2.0) wall-clock since the mention,
+   so Rex doesn't talk over the speaker's sentence.
+6. Probability composition: `OVERHEARD_CHIME_IN_PROBABILITY` (0.15) +
+   `OVERHEARD_POSITIVE_SENTIMENT_BONUS` (0.15) on positive sentiment, +
+   `OVERHEARD_INSULT_BONUS` (0.30) on negative. With a child present
+   (`force_family_safe`), the negative bonus is reduced by 0.40 — Rex won't
+   bite back at insults around kids.
+7. Friendship floor: `OVERHEARD_REQUIRE_FRIENDSHIP_TIER` ("acquaintance" by
+   default) blocks chime-ins on speakers below that tier — Rex doesn't butt
+   into strangers' conversations. Set to `None` to disable the gate.
+
+On fire, the step composes a sentiment-tuned prompt (instructional / positive /
+negative / neutral variants) and dispatches it through
+`_generate_and_speak_presence` with `tag_key=overheard:<timestamp>` and a
+matching emotion (`happy` / `annoyed` / `curious`).
+
+**Config knobs:** `ADDRESS_MODE_ENABLED`, `ADDRESS_MODE_KEYWORDS`,
+`BEING_DISCUSSED_ACTIVE_WINDOW_SECS`, `BEING_DISCUSSED_ROLLING_WINDOW_SECS`,
+`OVERHEARD_CHIME_IN_ENABLED`, `OVERHEARD_CHIME_IN_PROBABILITY`,
+`OVERHEARD_POSITIVE_SENTIMENT_BONUS`, `OVERHEARD_INSULT_BONUS`,
+`OVERHEARD_MIN_GAP_SECS`, `OVERHEARD_MAX_PER_SESSION`,
+`OVERHEARD_REQUIRE_FRIENDSHIP_TIER`, `OVERHEARD_CHECK_INTERVAL_SECS`.
+
 ### Prompt context layering — additions
 
 `intelligence/llm.py:assemble_system_prompt` injects two additional behavioral

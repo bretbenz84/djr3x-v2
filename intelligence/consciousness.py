@@ -106,6 +106,13 @@ _third_party_seen_at: dict = {}
 _third_party_called_out: set = set()
 _last_third_party_check_at: float = 0.0
 
+# Overheard chime-in tracking. Counts how many times Rex has chimed in on
+# being-discussed mentions this session and rate-limits how often the step
+# considers a chime-in.
+_overheard_chime_in_count: int = 0
+_last_overheard_check_at: float = 0.0
+_last_overheard_mention_handled_at: Optional[float] = None
+
 # Holiday-plans dedupe: (person_db_id, holiday_iso_date) tuples Rex has already
 # asked about this session. The iso date includes the year, so the same holiday
 # next year is fair game without a manual reset.
@@ -1874,6 +1881,151 @@ def _step_third_party_awareness(snapshot: dict, profile: SituationProfile) -> No
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Step 10e — Overheard chime-in
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _step_overheard_chime_in(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    When Rex hears someone talking ABOUT him (referential / instructional
+    address mode), he may choose to chime in unprompted. Reads
+    world_state.social.being_discussed (written by interaction.py) and rolls a
+    low-probability decision biased by sentiment, friendship tier, and
+    family-safe mode.
+
+    Heavy gating:
+      - profile.suppress_proactive must be False
+      - rapid_exchange must be False
+      - at least OVERHEARD_MIN_GAP_SECS since the last mention (let humans finish)
+      - per-active-window dedupe (chimed_in flag on the world_state record)
+      - per-session cap (OVERHEARD_MAX_PER_SESSION)
+      - rate-limited per loop tick
+    """
+    global _overheard_chime_in_count, _last_overheard_check_at
+
+    if not getattr(config, "OVERHEARD_CHIME_IN_ENABLED", True):
+        return
+    if profile.suppress_proactive or profile.rapid_exchange:
+        return
+    if not profile.being_discussed:
+        return
+
+    now = time.monotonic()
+    interval = float(getattr(config, "OVERHEARD_CHECK_INTERVAL_SECS", 2.0))
+    if (now - _last_overheard_check_at) < interval:
+        return
+    _last_overheard_check_at = now
+
+    max_per_session = int(getattr(config, "OVERHEARD_MAX_PER_SESSION", 3))
+    if _overheard_chime_in_count >= max_per_session:
+        return
+
+    social = (snapshot.get("social") or {}) if isinstance(snapshot, dict) else {}
+    bd = social.get("being_discussed") or {}
+    last_at = bd.get("last_mention_at")
+    if last_at is None:
+        return
+    if bd.get("chimed_in"):
+        return
+
+    # Wall-clock gap so humans can finish the thought.
+    min_gap = float(getattr(config, "OVERHEARD_MIN_GAP_SECS", 2.0))
+    age = time.time() - float(last_at)
+    if age < min_gap:
+        return
+
+    # Probability composition.
+    base = float(getattr(config, "OVERHEARD_CHIME_IN_PROBABILITY", 0.15))
+    sentiment = (bd.get("sentiment") or "neutral").lower()
+    if sentiment == "positive":
+        base += float(getattr(config, "OVERHEARD_POSITIVE_SENTIMENT_BONUS", 0.15))
+    elif sentiment == "negative":
+        base += float(getattr(config, "OVERHEARD_INSULT_BONUS", 0.30))
+
+    # Don't bite back at insults if a child is present.
+    if profile.force_family_safe and sentiment == "negative":
+        base = max(0.0, base - 0.40)
+
+    # Friendship gate: only chime in on speakers who are at least the
+    # configured tier (avoids butting in on strangers).
+    required_tier = getattr(config, "OVERHEARD_REQUIRE_FRIENDSHIP_TIER", "acquaintance")
+    speaker_id = bd.get("speaker_id")
+    speaker_name = bd.get("speaker_name") or "someone"
+    if required_tier and speaker_id:
+        try:
+            from memory import people as people_memory
+            person = people_memory.get_person(speaker_id) if hasattr(people_memory, "get_person") else None
+            tier = (person or {}).get("friendship_tier") or "stranger"
+            tier_order = ["stranger", "acquaintance", "friend", "close_friend", "best_friend"]
+            if tier_order.index(tier) < tier_order.index(required_tier):
+                return
+        except Exception:
+            # If we can't look the speaker up, fall through — don't block.
+            pass
+
+    if random.random() >= base:
+        return
+
+    snippet = bd.get("last_snippet") or ""
+    label = bd.get("label") or "referential"
+    speaker_first = (speaker_name or "someone").split()[0]
+
+    if label == "instructional":
+        prompt = (
+            f"You just overheard {speaker_first} tell someone else: "
+            f"'{snippet}'. They were not addressing you directly — they were "
+            f"talking ABOUT you to someone else, instructing them. In ONE short "
+            f"in-character Rex line, chime in playfully — like a robot who "
+            f"realizes he's the topic and can't help but join the conversation. "
+            f"Stay light. One line only."
+        )
+    elif sentiment == "positive":
+        prompt = (
+            f"You just overheard {speaker_first} say to someone else: "
+            f"'{snippet}'. They were talking ABOUT you, not to you. In ONE short "
+            f"in-character Rex line, chime in — pleased they noticed but not "
+            f"sappy, a little proud, slightly cheeky. One line only."
+        )
+    elif sentiment == "negative":
+        prompt = (
+            f"You just overheard {speaker_first} say to someone else: "
+            f"'{snippet}'. They were talking ABOUT you, not to you, and it "
+            f"wasn't flattering. In ONE short in-character Rex line, push back "
+            f"dryly — wounded but witty, no real heat. One line only."
+        )
+    else:
+        prompt = (
+            f"You just overheard {speaker_first} say to someone else: "
+            f"'{snippet}'. They were talking ABOUT you. In ONE short in-character "
+            f"Rex line, chime in observantly — a robot who notices he's the topic. "
+            f"One line only."
+        )
+
+    # Mark chimed_in immediately so a slow LLM call can't double-fire.
+    try:
+        social_now = world_state.get("social") or {}
+        bd_now = social_now.get("being_discussed") or {}
+        bd_now["chimed_in"] = True
+        social_now["being_discussed"] = bd_now
+        world_state.update("social", social_now)
+    except Exception:
+        pass
+
+    _overheard_chime_in_count += 1
+    _log.info(
+        "consciousness: overheard chime-in firing (count=%d label=%s sentiment=%s p=%.2f)",
+        _overheard_chime_in_count, label, sentiment, base,
+    )
+    _generate_and_speak_presence(
+        prompt,
+        label=f"overheard chime-in ({label}/{sentiment})",
+        tag_key=f"overheard:{int(float(last_at))}",
+        emotion="curious" if sentiment == "neutral" else (
+            "happy" if sentiment == "positive" else "annoyed"
+        ),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Step 10d — Holiday plans curiosity
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2106,6 +2258,9 @@ def _loop() -> None:
             # 10d. Holiday plans — ask engaged person about upcoming holidays
             _step_holiday_plans(snapshot, profile)
 
+            # 10e. Overheard chime-in — react when someone talks ABOUT Rex
+            _step_overheard_chime_in(snapshot, profile)
+
             # 11. Face tracking
             _step_face_tracking(frame)
 
@@ -2141,6 +2296,9 @@ def start() -> None:
     _pending_departure_keys.clear()
     _first_missing_at.clear()
     _last_presence_reaction_at.clear()
+    global _overheard_chime_in_count, _last_overheard_check_at
+    _overheard_chime_in_count = 0
+    _last_overheard_check_at = 0.0
     clear_engagement()
     with _turn_lock:
         _response_wait_until = 0.0

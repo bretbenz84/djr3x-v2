@@ -708,6 +708,52 @@ NOSTALGIA_HISTORY_DEPTH = 10
 # Probability Rex shares a private thought during IDLE between interactions
 PRIVATE_THOUGHT_TRIGGER_PROBABILITY = 0.08
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ADDRESS-MODE CLASSIFICATION
+# ─────────────────────────────────────────────────────────────────────────────
+# When an utterance mentions Rex (or "droid"/"robot") but isn't addressed TO him
+# — e.g. "say hi to Rex", "Rex is so fun" — the LLM reply path is suppressed
+# and the mention is recorded to world_state.social.being_discussed instead.
+ADDRESS_MODE_ENABLED = True
+
+# Keywords that trigger address-mode classification. Match is word-boundary,
+# case-insensitive. Skip the cheap LLM call entirely if none are present.
+ADDRESS_MODE_KEYWORDS = (
+    "rex", "r3x",
+    "droid", "robot",
+    "dj rex", "dj r3x", "deejay rex",
+)
+
+# How long after a being-discussed mention the situation profile reports
+# being_discussed=True (and the consciousness step considers a chime-in).
+BEING_DISCUSSED_ACTIVE_WINDOW_SECS = 30.0
+
+# Rolling window for mentions_in_window counter — within this window, repeat
+# mentions accumulate; older mentions reset the counter to 1.
+BEING_DISCUSSED_ROLLING_WINDOW_SECS = 60.0
+
+# OVERHEARD CHIME-IN — Rex spontaneously joins a conversation about himself
+OVERHEARD_CHIME_IN_ENABLED = True
+# Base probability per check tick that an active being-discussed window
+# triggers a chime-in. Sentiment bonuses stack on top of this.
+OVERHEARD_CHIME_IN_PROBABILITY = 0.15
+# Bumps when the discussion sentiment is positive — Rex more likely to
+# graciously chime in on a compliment.
+OVERHEARD_POSITIVE_SENTIMENT_BONUS = 0.15
+# Bumps when the discussion sentiment is negative — Rex more likely to push
+# back when he's being trash-talked.
+OVERHEARD_INSULT_BONUS = 0.30
+# Minimum gap between the overheard mention and the chime-in, so Rex doesn't
+# step on the speaker's sentence.
+OVERHEARD_MIN_GAP_SECS = 2.0
+# Per-session ceiling on how often Rex chimes in unbidden.
+OVERHEARD_MAX_PER_SESSION = 3
+# Friendship floor — Rex won't chime in on mentions from speakers below this
+# tier (avoids butting in on strangers). Set to None to disable the gate.
+OVERHEARD_REQUIRE_FRIENDSHIP_TIER = "acquaintance"
+# Rate-limit the consciousness step itself.
+OVERHEARD_CHECK_INTERVAL_SECS = 2.0
+
 # THIRD-PARTY AWARENESS — calling out a nearby lurker
 # A non-dominant-speaker person who has been visible in-frame this long with
 # disengaged body language becomes eligible to be called out by Rex.

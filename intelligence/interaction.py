@@ -36,6 +36,7 @@ from memory import people as people_memory
 from memory import events as events_memory
 from memory import relationships as rel_memory
 from awareness import interoception
+from awareness import address_mode
 from awareness.situation import assessor as _situation_assessor
 from world_state import world_state
 from utils import conv_log
@@ -260,6 +261,64 @@ def _register_rex_utterance(text: str, wait_secs: Optional[float] = None) -> Non
         consciousness.note_rex_utterance(text, wait_secs=wait_secs)
     except Exception:
         pass
+
+
+def _record_being_discussed(
+    *,
+    text: str,
+    label: str,
+    sentiment: str,
+    speaker_id: Optional[int],
+    speaker_name: Optional[str],
+) -> None:
+    """Update world_state.social.being_discussed with this overheard mention.
+
+    Increments mentions_in_window when the previous mention was within
+    BEING_DISCUSSED_ACTIVE_WINDOW_SECS, otherwise resets the count.
+    """
+    try:
+        social = world_state.get("social") or {}
+        bd = social.get("being_discussed") or {}
+        now_epoch = time.time()
+        last_at = bd.get("last_mention_at")
+        window = float(getattr(config, "BEING_DISCUSSED_ACTIVE_WINDOW_SECS", 30.0))
+        rolling_window = float(
+            getattr(config, "BEING_DISCUSSED_ROLLING_WINDOW_SECS", 60.0)
+        )
+        if last_at is not None and (now_epoch - float(last_at)) <= rolling_window:
+            count = int(bd.get("mentions_in_window") or 0) + 1
+        else:
+            count = 1
+
+        new_bd = {
+            "last_mention_at": now_epoch,
+            "last_snippet": text,
+            "speaker_id": speaker_id,
+            "speaker_name": speaker_name,
+            "addressee_id": None,
+            "label": label,
+            "sentiment": sentiment,
+            "mentions_in_window": count,
+            # Reset chimed_in flag; it's per-active-window so a fresh discussion
+            # earns its own chance for a chime-in.
+            "chimed_in": False if (now_epoch - float(last_at or 0)) > window else bd.get("chimed_in", False),
+        }
+        social["being_discussed"] = new_bd
+        world_state.update("social", social)
+        _log.info(
+            "[interaction] being_discussed updated — label=%s sentiment=%s mentions=%d snippet=%r",
+            label, sentiment, count, text[:120],
+        )
+        # Log to conversation transcript so future turns have context.
+        try:
+            conv_memory.add_to_transcript(
+                speaker_name or "Someone",
+                f"(overheard, {label}) {text}",
+            )
+        except Exception:
+            pass
+    except Exception as exc:
+        _log.debug("_record_being_discussed failed: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1696,12 +1755,65 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         if rel_ctx is not None:
             _handle_relationship_reply(rel_ctx, text, person_id, person_name)
 
+        # ── Address-mode classification ────────────────────────────────────────
+        # If the utterance MENTIONS Rex but is not addressed TO him (e.g.
+        # "say hi to Rex", "Rex is so fun"), do not generate a reply. Record
+        # the mention to world_state.social.being_discussed so the consciousness
+        # loop can decide whether to chime in. Skipped when Rex is in a pending
+        # identity / face-reveal flow (those handlers expect this turn's text
+        # as the user's reply).
+        global _pending_offscreen_identify, _pending_face_reveal_confirm
+        try:
+            _addr_identity_window_active = time.monotonic() <= _identity_prompt_until
+            if (
+                getattr(config, "ADDRESS_MODE_ENABLED", True)
+                and address_mode.contains_rex_keyword(text)
+                and _pending_offscreen_identify is None
+                and _pending_face_reveal_confirm is None
+                and not _addr_identity_window_active
+                # parser handles obvious commands directly; treat as direct.
+                and command_parser.parse(text) is None
+            ):
+                ctx_bits: list[str] = []
+                try:
+                    crowd = world_state.get("crowd") or {}
+                    cnt = crowd.get("count")
+                    if isinstance(cnt, int):
+                        ctx_bits.append(f"{cnt} people present")
+                    dom = crowd.get("dominant_speaker")
+                    if dom:
+                        ctx_bits.append(f"dominant speaker slot {dom}")
+                except Exception:
+                    pass
+                if person_name:
+                    ctx_bits.append(f"speaker is {person_name}")
+                addr = address_mode.classify(text, context="; ".join(ctx_bits))
+                _log.info(
+                    "[interaction] address_mode=%s sentiment=%s rule=%s text=%r",
+                    addr.label, addr.sentiment, addr.rule, text[:120],
+                )
+                if addr.label in (
+                    address_mode.ADDRESS_REFERENTIAL,
+                    address_mode.ADDRESS_INSTRUCTIONAL,
+                ):
+                    _record_being_discussed(
+                        text=text,
+                        label=addr.label,
+                        sentiment=addr.sentiment,
+                        speaker_id=person_id,
+                        speaker_name=person_name,
+                    )
+                    return
+                # ADDRESS_UNRELATED → fall through to LLM; the model will
+                # handle the coincidental reference naturally.
+        except Exception as exc:
+            _log.debug("[interaction] address_mode error (continuing): %s", exc)
+
         # Rex previously asked "who's that speaking?" about an off-camera unknown
         # voice. If this reply came from the engaged person and names the
         # off-camera speaker, enroll their voice (using the STORED audio of the
         # original utterance, not this engaged-person audio) and save a
         # relationship edge if the engaged person also stated one.
-        global _pending_offscreen_identify
         if _pending_offscreen_identify is not None:
             pending = _pending_offscreen_identify
             now_mono = time.monotonic()
@@ -1769,7 +1881,6 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         # "are you on my left or my right?" — parse this reply and, if the
         # person (or the engaged person) confirms, bind the face to X and fire
         # the surprise+roast reaction.
-        global _pending_face_reveal_confirm
         if _pending_face_reveal_confirm is not None:
             pending_fr = _pending_face_reveal_confirm
             now_mono = time.monotonic()

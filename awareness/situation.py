@@ -48,6 +48,8 @@ class SituationProfile:
     suppress_proactive: bool        # don't fire unsolicited speech right now
     suppress_system_comments: bool  # don't mention CPU/uptime mid-conversation
     force_family_safe: bool         # child present — override all adult content
+    being_discussed: bool           # Rex was referenced ABOUT-not-TO recently
+    discussion_sentiment: str       # "positive" / "neutral" / "negative" of the last mention
 
 
 class SituationAssessor:
@@ -196,6 +198,21 @@ class SituationAssessor:
         # force_family_safe: any child or teen present
         force_family_safe = child_present
 
+        # being_discussed: Rex was referenced ABOUT-not-TO within the active window.
+        being_discussed = False
+        discussion_sentiment = "neutral"
+        try:
+            social = world_state.get("social") or {}
+            bd = social.get("being_discussed") or {}
+            last_at = bd.get("last_mention_at")
+            window = float(getattr(config, "BEING_DISCUSSED_ACTIVE_WINDOW_SECS", 30.0))
+            if last_at is not None:
+                if (time.time() - float(last_at)) <= window:
+                    being_discussed = True
+                    discussion_sentiment = bd.get("sentiment") or "neutral"
+        except Exception:
+            pass
+
         return SituationProfile(
             conversation_active=conversation_active,
             user_mid_sentence=user_mid_sentence,
@@ -207,6 +224,8 @@ class SituationAssessor:
             suppress_proactive=suppress_proactive,
             suppress_system_comments=suppress_system_comments,
             force_family_safe=force_family_safe,
+            being_discussed=being_discussed,
+            discussion_sentiment=discussion_sentiment,
         )
 
 
