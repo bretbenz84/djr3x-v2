@@ -33,12 +33,13 @@ NECK_RIGHT    = 8000
 NECK_FAR_LEFT = 2500
 NECK_FAR_RIGHT = 9500
 
-# Ch 1 — Headlift: 1984–7744, neutral 6000, higher = up
+# Ch 1 — Headlift: 1984–7744, neutral 6000, higher = up (larger value = head physically higher)
+HEADLIFT_FLOOR   = 1984  # servo minimum — head fully lowered, shutdown/startup rest pose
+HEADLIFT_DROOP   = 3000  # head drooped low (sleep)
+HEADLIFT_DOWN    = 4800  # head below neutral (sad, lowered)
 HEADLIFT_NEUTRAL = 6000
-HEADLIFT_UP      = 4800
-HEADLIFT_HIGH    = 3500
-HEADLIFT_DOWN    = 7000
-HEADLIFT_DROOP   = 7500
+HEADLIFT_UP      = 7000  # head above neutral (excited, happy, nod)
+HEADLIFT_HIGH    = 7500  # head raised high (surprised)
 
 # Ch 2 — Headtilt: 3904–5504, neutral 4320, INVERTED (low value = head tilted up)
 HEADTILT_NEUTRAL     = 4320
@@ -116,7 +117,7 @@ def shutdown() -> None:
     servos.move_to({3: VISOR_CLOSED}, step_us=30, step_delay=0.025)
     time.sleep(0.3)
     servos.move_to(
-        {0: NECK_CENTER, 1: HEADLIFT_DROOP, 2: HEADTILT_DOWN},
+        {0: NECK_CENTER, 1: HEADLIFT_FLOOR, 2: HEADTILT_DOWN},
         step_us=25, step_delay=0.025,
     )
     time.sleep(0.5)
