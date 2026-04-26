@@ -36,6 +36,7 @@ from intelligence import conversation_agenda
 from intelligence import topic_thread
 from intelligence import user_energy
 from intelligence import question_budget
+from intelligence import repair_moves
 from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
@@ -375,6 +376,10 @@ def _assistant_asked_question(text: str) -> bool:
 def _register_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
     if not text or not text.strip():
         return
+    try:
+        repair_moves.note_assistant_turn(text)
+    except Exception:
+        pass
     try:
         topic_thread.note_assistant_turn(text)
     except Exception:
@@ -1364,6 +1369,10 @@ def _end_session() -> None:
             question_budget.clear()
         except Exception:
             pass
+        try:
+            repair_moves.clear()
+        except Exception:
+            pass
         _identity_prompt_until = 0.0
         _awaiting_followup_event = None
         try:
@@ -1434,6 +1443,10 @@ def _end_session() -> None:
         pass
     try:
         question_budget.clear()
+    except Exception:
+        pass
+    try:
+        repair_moves.clear()
     except Exception:
         pass
     _session_exchange_count = 0
@@ -1692,6 +1705,35 @@ def _handle_conversation_boundary(
     except Exception as exc:
         _log.debug("conversation boundary handler failed: %s", exc)
         return None
+
+
+def _generate_repair_response(person_id: Optional[int], text: str, repair: dict) -> str:
+    """Generate one concise recovery when the human flags a conversational miss."""
+    prompt = repair_moves.build_prompt(repair)
+    try:
+        response = llm.get_response(prompt, person_id)
+    except Exception as exc:
+        _log.debug("repair response generation failed: %s", exc)
+        response = ""
+    response = (response or "").strip()
+    if not response:
+        response = repair_moves.fallback_response(repair)
+    _speak_blocking(
+        response,
+        emotion="neutral",
+        pre_beat_ms=150,
+        post_beat_ms_override=300,
+    )
+    repair_moves.mark_handled()
+    _log.info(
+        "[repair] handled kind=%s severity=%s correction=%r user=%r response=%r",
+        repair.get("kind"),
+        repair.get("severity"),
+        repair.get("correction"),
+        text,
+        response,
+    )
+    return response
 
 
 def _maybe_start_grief_flow(
@@ -3178,12 +3220,34 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             )
             _empathy_thread.start()
 
+        match = None
+        response_text = None
+        used_agenda_llm = False
+        routing_text = text
+
+        repair_move = repair_moves.detect(text)
+        if (
+            repair_move
+            and active_grief_for_turn
+            and repair_move.get("kind") in {"misheard", "misunderstood"}
+            and repair_move.get("correction")
+        ):
+            routing_text = repair_move["correction"]
+            repair_moves.mark_handled()
+            _log.info(
+                "[repair] applying corrected text to active grief flow: %r",
+                routing_text,
+            )
+        elif repair_move:
+            response_text = _generate_repair_response(person_id, text, repair_move)
+            used_agenda_llm = True
+
         # Layer-1 insult pre-check: keyword match → bump anger BEFORE the LLM
         # call so this turn's system prompt reflects the new escalation level.
         # Layer 2 (llm.analyze_sentiment in _post_response) skips its own
         # increment when this flag is set so we never double-count.
-        pre_classified_insult = False
-        if personality.is_obvious_insult(text):
+        pre_classified_insult = bool(repair_move)
+        if response_text is None and personality.is_obvious_insult(text):
             new_level = personality.increment_anger(person_id)
             pre_classified_insult = True
             if person_id is not None:
@@ -3195,11 +3259,8 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         # Active grief flow must consume short replies before command/intent
         # routing. A name like "Tom Foster" can otherwise be misclassified as
         # "who is speaking?" and fall back to roast-first Rex.
-        match = None
-        response_text = None
-        used_agenda_llm = False
-        if active_grief_for_turn:
-            grief_response = _continue_grief_flow(person_id, text)
+        if response_text is None and active_grief_for_turn:
+            grief_response = _continue_grief_flow(person_id, routing_text)
             if grief_response:
                 _log.info(
                     "[interaction] grief flow → person_id=%s step=%s text=%r",
@@ -3641,6 +3702,7 @@ def start() -> None:
     topic_thread.clear()
     user_energy.clear()
     question_budget.clear()
+    repair_moves.clear()
     try:
         consciousness.clear_response_wait()
     except Exception:
@@ -3680,6 +3742,7 @@ def stop() -> None:
     topic_thread.clear()
     user_energy.clear()
     question_budget.clear()
+    repair_moves.clear()
     try:
         consciousness.clear_response_wait()
     except Exception:
