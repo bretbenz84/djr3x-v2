@@ -247,7 +247,46 @@ Useful log lines:
 - `[empathy] ... mode=brief`
 - `[agenda] ... User energy matching`
 
-## 8. Question Budget
+## 8. Social Frame Governor
+
+Goal: verify final replies obey the turn's social frame even if the LLM tries
+to add extra material.
+
+Closure:
+
+> Yeah.
+
+Expected:
+
+- Rex gives one tiny landing beat.
+- No follow-up question.
+- No visual riff.
+
+Direct question:
+
+> Why would TTS finishing mess with listening?
+
+Expected:
+
+- Rex answers directly.
+- No extra interview question after the answer.
+
+Quiet / sensitive turn:
+
+> I don't want to talk about it.
+
+Expected:
+
+- Rex acknowledges briefly.
+- No roast.
+- No visual comment.
+
+Useful log lines:
+
+- `Social frame governor:`
+- `[social_frame] governed response`
+
+## 9. Question Budget
 
 Goal: verify Rex does not become interview-y.
 
@@ -272,7 +311,7 @@ Useful log lines:
 - `curiosity_check suppressed - question budget full`
 - `proactive purpose suppressed by question budget`
 
-## 9. Better Repair Moves
+## 10. Better Repair Moves
 
 Goal: verify direct corrections are treated as repairs, not insults or normal banter.
 
@@ -351,7 +390,7 @@ Useful log line:
 
 - `[repair] handled kind=...`
 
-## 10. Memory Confidence And Freshness
+## 11. Memory Confidence And Freshness
 
 Goal: verify repeated facts become stronger, stale/low-confidence facts are treated cautiously.
 
@@ -394,7 +433,7 @@ Useful log line:
 
 - `[llm] fact confirmation prompt`
 
-## 11. End-Of-Thread Grace
+## 12. End-Of-Thread Grace
 
 Goal: verify Rex lets a thread end without immediately pivoting.
 
@@ -422,7 +461,7 @@ Expected:
 
 - Rex answers normally.
 
-## 12. Proactive Arbiter / No Stacked Speech
+## 13. Proactive Arbiter / No Stacked Speech
 
 Goal: verify multiple background instincts do not talk over or replace each other.
 
@@ -444,7 +483,7 @@ Useful log lines:
 - `consciousness: firing presence reaction`
 - `visual curiosity question`
 
-## 13. Optional Camera-Dependent Check
+## 14. Optional Camera-Dependent Check
 
 This one is optional because camera quality may make it noisy.
 

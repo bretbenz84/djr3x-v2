@@ -629,6 +629,11 @@ CHILD_SAFE_ROAST_MAX = 40
 # Leaving some headroom (0.8) preserves standalone zingers that need no reply.
 CURIOSITY_QUESTION_PROBABILITY = 0.8
 
+# Final response governor: after the LLM writes a turn, enforce the social
+# frame's hard limits before TTS. This trims accidental extra questions,
+# overlong replies, ill-timed visual comments, and roasts during tender turns.
+SOCIAL_FRAME_GOVERNOR_ENABLED = True
+
 # If True, Rex will begin processing normal speech from IDLE without requiring
 # a wake word first. Wake words remain active for explicit attention grabbing and
 # mid-speech interruption behavior.

@@ -39,6 +39,7 @@ from intelligence import question_budget
 from intelligence import repair_moves
 from intelligence import end_thread
 from intelligence import introductions
+from intelligence import social_frame
 from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
@@ -1253,6 +1254,16 @@ def _stream_llm_response(
             person_id,
             answered_question=answered_question,
         )
+        frame = social_frame.build_frame(
+            text,
+            person_id,
+            answered_question=answered_question,
+            agenda_directive=agenda_directive,
+        )
+        agenda_directive = "\n".join([
+            agenda_directive,
+            social_frame.build_directive(frame),
+        ])
         _log.info("[agenda] %s", agenda_directive.replace("\n", " | "))
         full_text = llm.get_response(
             text,
@@ -1267,6 +1278,12 @@ def _stream_llm_response(
     delivery_post_beat_ms = 0
     delivery_voice_settings: Optional[dict] = None
     if full_text and full_text.strip() and not _interrupted.is_set():
+        try:
+            governed = social_frame.govern_response(full_text, frame)
+            full_text = governed.text
+        except Exception as exc:
+            _log.debug("social frame governor failed: %s", exc)
+
         # Brief join — classifier usually finishes before or alongside the
         # main response since its prompt is tiny. Cap the wait so a slow
         # classifier never delays Rex perceptibly.
