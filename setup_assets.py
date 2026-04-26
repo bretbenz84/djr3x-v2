@@ -155,6 +155,22 @@ CREATE TABLE IF NOT EXISTS person_relationships (
 
 CREATE INDEX IF NOT EXISTS idx_rel_from ON person_relationships(from_person_id);
 CREATE INDEX IF NOT EXISTS idx_rel_to   ON person_relationships(to_person_id);
+
+CREATE TABLE IF NOT EXISTS person_emotional_events (
+    id                       INTEGER PRIMARY KEY,
+    person_id                INTEGER REFERENCES people(id),
+    category                 TEXT,
+    valence                  REAL,
+    description              TEXT,
+    mentioned_at             DATETIME,
+    last_acknowledged_at     DATETIME,
+    checkins_muted_at        DATETIME,
+    checkins_muted_reason    TEXT,
+    sensitivity_decay_days   INTEGER,
+    person_invited_topic     INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_emoevent_person ON person_emotional_events(person_id);
 """
 
 
@@ -303,6 +319,32 @@ def _personality_seeded(conn: sqlite3.Connection) -> bool:
     return conn.execute("SELECT COUNT(*) FROM personality_settings").fetchone()[0] > 0
 
 
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> bool:
+    existing = {
+        row[1]
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column in existing:
+        return False
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    return True
+
+
+def _run_schema_updates(conn: sqlite3.Connection) -> list[str]:
+    """Apply idempotent schema additions for DBs created by older setup runs."""
+    applied = []
+    if _ensure_column(conn, "person_emotional_events", "checkins_muted_at", "DATETIME"):
+        applied.append("person_emotional_events.checkins_muted_at")
+    if _ensure_column(conn, "person_emotional_events", "checkins_muted_reason", "TEXT"):
+        applied.append("person_emotional_events.checkins_muted_reason")
+    return applied
+
+
 def initialize_database(
     root: Path,
 ) -> tuple[list[str], list[str], list[str]]:
@@ -313,10 +355,17 @@ def initialize_database(
         conn = sqlite3.connect(db_path)
         conn.execute("PRAGMA journal_mode=WAL")
 
-        if not _tables_exist(conn):
-            conn.executescript(DB_SCHEMA)
-            conn.commit()
+        schema_existed = _tables_exist(conn)
+        conn.executescript(DB_SCHEMA)
+        updates = _run_schema_updates(conn)
+        conn.commit()
+
+        if not schema_existed:
             created.append("memory/people.db — schema")
+        elif updates:
+            created.append(
+                "memory/people.db — schema updates: " + ", ".join(updates)
+            )
         else:
             skipped.append("memory/people.db — schema")
 
