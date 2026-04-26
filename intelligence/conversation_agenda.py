@@ -180,16 +180,24 @@ def release_proactive_claim(token: Optional[str]) -> None:
 
 def proactive_purpose_directive(purpose: str) -> str:
     rule = _PROACTIVE_RULES.get(purpose)
+    energy = ""
+    try:
+        from intelligence import user_energy
+        energy = user_energy.build_directive()
+    except Exception:
+        energy = ""
     if not rule:
-        return (
+        base = (
             "Proactive agenda: this unsolicited line must have exactly ONE "
             "purpose. Do not stack a question, a memory callback, a roast, and "
             "an environment remark together."
         )
-    return (
+        return f"{base}\n{energy}" if energy else base
+    base = (
         "Proactive agenda: this unsolicited line must have exactly ONE purpose. "
         f"Primary purpose: {purpose}. Instruction: {rule[1]}"
     )
+    return f"{base}\n{energy}" if energy else base
 
 
 def with_proactive_directive(prompt: str, purpose: str) -> str:
@@ -252,6 +260,13 @@ def build_turn_directive(
         topic_directive = topic_thread.build_directive()
         if topic_directive:
             lines.append(topic_directive)
+    except Exception:
+        pass
+    try:
+        from intelligence import user_energy
+        energy_directive = user_energy.build_directive()
+        if energy_directive:
+            lines.append(energy_directive)
     except Exception:
         pass
 

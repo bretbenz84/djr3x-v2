@@ -34,6 +34,7 @@ from intelligence import intent_classifier
 from intelligence import empathy
 from intelligence import conversation_agenda
 from intelligence import topic_thread
+from intelligence import user_energy
 from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
@@ -1354,6 +1355,10 @@ def _end_session() -> None:
             topic_thread.clear()
         except Exception:
             pass
+        try:
+            user_energy.clear()
+        except Exception:
+            pass
         _identity_prompt_until = 0.0
         _awaiting_followup_event = None
         try:
@@ -1416,6 +1421,10 @@ def _end_session() -> None:
     conv_memory.clear_transcript()
     try:
         topic_thread.clear()
+    except Exception:
+        pass
+    try:
+        user_energy.clear()
     except Exception:
         pass
     _session_exchange_count = 0
@@ -2810,6 +2819,10 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             topic_thread.note_user_turn(text, person_id)
         except Exception as exc:
             _log.debug("topic thread user update failed: %s", exc)
+        try:
+            user_energy.note_user_turn(text, person_id)
+        except Exception as exc:
+            _log.debug("user energy text update failed: %s", exc)
 
         boundary_response = _handle_emotional_checkin_boundary(person_id, text)
         if boundary_response:
@@ -3070,6 +3083,15 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     result = empathy.classify_affect(text, prosody_features=prosody_features)
                     if not result:
                         return
+                    try:
+                        user_energy.note_user_turn(
+                            text,
+                            person_id,
+                            prosody_features=prosody_features,
+                            affect_result=result,
+                        )
+                    except Exception as exc:
+                        _log.debug("user energy prosody/empathy update failed: %s", exc)
                     person_row = None
                     if person_id is not None:
                         try:
@@ -3589,6 +3611,7 @@ def start() -> None:
     _identity_prompt_until = 0.0
     _awaiting_followup_event = None
     topic_thread.clear()
+    user_energy.clear()
     try:
         consciousness.clear_response_wait()
     except Exception:
@@ -3626,6 +3649,7 @@ def stop() -> None:
     _awaiting_followup_event = None
     _identity_prompt_until = 0.0
     topic_thread.clear()
+    user_energy.clear()
     try:
         consciousness.clear_response_wait()
     except Exception:
