@@ -646,10 +646,10 @@ Expected:
 - Rex names the players and categories, without reading every dollar value on the board.
 - The board stinger plays when the board is ready.
 - Category/value selections like `Birds for 200` produce a clue.
-- Rex listens for answers immediately after the clue; the thinking theme is disabled by default.
+- Rex listens for answers immediately after the clue, even while the thinking theme is playing.
 - Correct answers play the right-answer stinger and update scores.
 - Wrong answers play the incorrect-answer stinger and update scores.
-- `Pass`, `I don't know`, or a silent timeout should reveal the answer.
+- `Pass`, `I don't know`, or a silent timeout should reveal the correct response in question form, like `What is a driver's license?`.
 - `Stop the game` ends Jeopardy and plays the outro clip.
 
 ## Final Pass Criteria

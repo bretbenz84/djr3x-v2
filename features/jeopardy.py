@@ -60,6 +60,33 @@ _QUESTION_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ARTICLE_PREFIX_RE = re.compile(r"^\s*(?:a|an|the|this|that|these|those)\b", re.IGNORECASE)
+
+_PERSON_CONTEXT_RE = re.compile(
+    r"\b("
+    r"who|author|wrote|writer|novelist|poet|actor|actress|singer|composer|"
+    r"president|king|queen|emperor|inventor|artist|person|man|woman|he|she|"
+    r"him|her|his|hers|born|died"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_PLACE_CONTEXT_RE = re.compile(
+    r"\b("
+    r"where|country|city|state|capital|nation|island|continent|province|"
+    r"territory|county|region|located|home\s+to"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_THING_CONTEXT_RE = re.compile(
+    r"\b("
+    r"school|college|university|company|corporation|brand|team|movie|film|"
+    r"book|novel|play|song|album|magazine|newspaper|vehicle|ship"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def _clues_path() -> Path:
     return Path(getattr(config, "JEOPARDY_CLUES_FILE", "assets/jeopardy/clues.tsv"))
@@ -456,6 +483,88 @@ def is_correct(user_answer: str, expected_answer: str) -> bool:
         if _is_reasonable_partial(user, expected, candidate):
             return True
     return False
+
+
+def _answer_for_display(answer: str) -> str:
+    subject = _clean_cell(answer).strip()
+    subject = subject.strip(" .!?")
+    subject = re.sub(r"\s*&\s*", " and ", subject)
+    return subject or "unknown"
+
+
+def _looks_plural_answer(answer: str) -> bool:
+    plain = _plain(answer)
+    if not plain:
+        return False
+    if re.search(r"\s(?:&|and)\s", answer or "", re.IGNORECASE):
+        return True
+    if plain.startswith(("these ", "those ")):
+        return True
+    words = plain.split()
+    if not words:
+        return False
+    last = words[-1]
+    return last.endswith("s") and not last.endswith(("ss", "us", "is"))
+
+
+def _looks_like_person_answer(answer: str) -> bool:
+    cleaned = _answer_for_display(answer)
+    if not cleaned or cleaned[:1].islower():
+        return False
+    stripped = re.sub(r"^(?:the|a|an)\s+", "", cleaned, flags=re.IGNORECASE)
+    capitalized = re.findall(r"\b[A-Z][a-zA-Z'.-]+\b", stripped)
+    if len(capitalized) >= 2:
+        return True
+    return bool(re.search(r"\b(?:Jr|Sr|II|III|IV)\b", stripped))
+
+
+def _response_prefix(answer: str, clue: str = "", category: str = "") -> str:
+    context = f"{category or ''} {clue or ''}"
+    plural = _looks_plural_answer(answer)
+    if _THING_CONTEXT_RE.search(context):
+        return "What are" if plural else "What is"
+    if _PLACE_CONTEXT_RE.search(context):
+        return "Where are" if plural else "Where is"
+    if _PERSON_CONTEXT_RE.search(context) or _looks_like_person_answer(answer):
+        return "Who are" if plural else "Who is"
+    return "What are" if plural else "What is"
+
+
+def _indefinite_article_for(subject: str) -> str:
+    first = re.sub(r"[^A-Za-z0-9]", "", subject or "")
+    if not first:
+        return "a"
+    return "an" if first[:1].lower() in "aeiou" else "a"
+
+
+def _needs_indefinite_article(subject: str, prefix: str, clue: str = "") -> bool:
+    if prefix != "What is":
+        return False
+    if not subject or not subject[:1].islower():
+        return False
+    if _ARTICLE_PREFIX_RE.match(subject):
+        return False
+    if _looks_plural_answer(subject) or "/" in subject:
+        return False
+    return bool(
+        re.search(
+            r"\b("
+            r"one\s+of\s+these|one\s+of\s+those|this\s+item|this\s+object|"
+            r"this\s+thing|this\s+document|this\s+type|kind\s+of"
+            r")\b",
+            clue or "",
+            re.IGNORECASE,
+        )
+    )
+
+
+def format_correct_response(answer: str, clue: str = "", category: str = "") -> str:
+    """Format a revealed answer as a Jeopardy-style response question."""
+    subject = _answer_for_display(answer)
+    prefix = _response_prefix(subject, clue=clue, category=category)
+    if _needs_indefinite_article(subject, prefix, clue=clue):
+        subject = f"{_indefinite_article_for(subject)} {subject}"
+    return f"{prefix} {subject}?"
 
 
 def is_pass_or_timeout(text: str) -> bool:

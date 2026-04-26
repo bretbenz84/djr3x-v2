@@ -637,6 +637,20 @@ def _jeopardy_finish_line(prefix: str = "") -> str:
     )
 
 
+def _jeopardy_correct_response_text(clue: dict) -> str:
+    answer = str((clue or {}).get("answer") or "unknown")
+    try:
+        from features import jeopardy as jeopardy_bank
+        response = jeopardy_bank.format_correct_response(
+            answer,
+            clue=str((clue or {}).get("clue") or ""),
+            category=str((clue or {}).get("category") or ""),
+        )
+    except Exception:
+        response = f"What is {answer.strip(' .!?') or 'unknown'}?"
+    return f'Correct response was: "{response}"'
+
+
 def _jeopardy_timeout_fired(token: str) -> None:
     line = ""
     with _lock:
@@ -653,6 +667,7 @@ def _jeopardy_timeout_fired(token: str) -> None:
         _game_state.pop("answer_timer_token", None)
         _game_state.pop("current_clue", None)
         _game_state["phase"] = "selecting"
+        correct_response = _jeopardy_correct_response_text(clue)
         if int((_game_state.get("board") or {}).get("remaining", 0) or 0) <= 0:
             try:
                 from features import jeopardy as jeopardy_bank
@@ -662,7 +677,7 @@ def _jeopardy_timeout_fired(token: str) -> None:
             _jeopardy_queue_clip("timesup")
             _jeopardy_queue_clip("outro")
             line = (
-                f"Time's up. Correct response was: {clue.get('answer', 'unknown')}. "
+                f"Time's up. {correct_response}. "
                 f"That's the board. Final scores: {scores}. "
                 "Jeopardy systems powering down before someone asks me to host Wheel of Fortune."
             )
@@ -670,7 +685,7 @@ def _jeopardy_timeout_fired(token: str) -> None:
         else:
             next_player = _jeopardy_advance_player()
             line = (
-                f"Time's up. Correct response was: {clue.get('answer', 'unknown')}. "
+                f"Time's up. {correct_response}. "
                 f"{next_player['name']}, pick the next category and value."
             )
 
@@ -848,6 +863,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     player = players[idx]
     answer = clue.get("answer", "unknown")
     value = int(clue.get("effective_value", clue.get("value", 0)) or 0)
+    correct_response = _jeopardy_correct_response_text(clue)
 
     passed = bool(jeopardy_bank and jeopardy_bank.is_pass_or_timeout(text))
     correct = bool(jeopardy_bank and jeopardy_bank.is_correct(text, answer))
@@ -858,12 +874,12 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     if passed:
         _jeopardy_queue_clip("timesup")
         if done:
-            response = _jeopardy_finish_line(f"No answer. Correct response was: {answer}. ")
+            response = _jeopardy_finish_line(f"No answer. {correct_response}. ")
             return (response, True)
         next_player = _jeopardy_advance_player()
         _game_state["phase"] = "selecting"
         return (
-            f"No answer. Correct response was: {answer}. "
+            f"No answer. {correct_response}. "
             f"Scores: {jeopardy_bank.format_scores(players) if jeopardy_bank else 'unknown'}. "
             f"{next_player['name']}, choose the next square.",
             False,
@@ -892,7 +908,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     _jeopardy_queue_clip("wrong")
     if done:
         response = _jeopardy_finish_line(
-            f"Incorrect. Correct response was: {answer}. "
+            f"Incorrect. {correct_response}. "
         )
         return (response, True)
 
@@ -905,7 +921,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         "That answer landed somewhere near Alderaan.",
     ])
     return (
-        f"{roast} Correct response was: {answer}. Scores: {scores}. "
+        f"{roast} {correct_response}. Scores: {scores}. "
         f"{next_player['name']}, choose the next square.",
         False,
     )
