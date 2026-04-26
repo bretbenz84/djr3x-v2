@@ -1,0 +1,189 @@
+"""
+memory/emotional_events.py — CRUD for person_emotional_events.
+
+Sensitive life events (grief, breakup, job loss, illness, milestones) Rex
+should remember across sessions and acknowledge appropriately. Distinct from
+person_events (planned/upcoming things) — access patterns differ.
+
+Events do not delete; they decay. `sensitivity_decay_days` controls when Rex
+stops *leading with* the event on a return visit. The row stays in the DB
+forever so older context is available if a person brings it up themselves.
+"""
+
+import logging
+from datetime import datetime, timedelta
+from typing import Optional
+
+import config
+from memory import database as db
+
+_log = logging.getLogger(__name__)
+
+
+# Default decay windows per category, in days. After this much time since
+# `mentioned_at`, Rex stops surfacing the event proactively (it can still be
+# recalled if the person mentions it). Override by passing an explicit
+# sensitivity_decay_days at insert time.
+_DEFAULT_DECAY_DAYS = {
+    "grief":      180,
+    "death":      180,
+    "breakup":    90,
+    "divorce":    120,
+    "illness":    120,
+    "health":     120,
+    "job_loss":   60,
+    "layoff":     60,
+    "fired":      60,
+    "move":       30,
+    "promotion":  365,
+    "new_baby":   365,
+    "engagement": 365,
+    "wedding":    365,
+    "graduation": 365,
+    "default":    60,
+}
+
+
+def decay_days_for(category: str) -> int:
+    """Return the default decay window for a category."""
+    cat = (category or "").strip().lower()
+    return int(_DEFAULT_DECAY_DAYS.get(cat, _DEFAULT_DECAY_DAYS["default"]))
+
+
+def add_event(
+    person_id: int,
+    category: str,
+    description: str,
+    valence: float = -0.5,
+    sensitivity_decay_days: Optional[int] = None,
+    person_invited_topic: bool = True,
+) -> Optional[int]:
+    """Insert a new emotional event row. Returns lastrowid or None on failure.
+
+    De-duplication: if a row already exists for this person with the same
+    category and a near-duplicate description within the last 7 days, skip.
+    """
+    cat = (category or "other").strip().lower()
+    desc = (description or "").strip()
+    if not desc:
+        return None
+
+    existing = db.fetchall(
+        "SELECT id, description FROM person_emotional_events "
+        "WHERE person_id = ? AND category = ? "
+        "AND mentioned_at >= datetime('now', '-7 days')",
+        (person_id, cat),
+    )
+    for row in existing:
+        if (row["description"] or "").strip().lower() == desc.lower():
+            return row["id"]
+
+    decay = (
+        int(sensitivity_decay_days)
+        if sensitivity_decay_days is not None
+        else decay_days_for(cat)
+    )
+
+    return db.execute(
+        "INSERT INTO person_emotional_events "
+        "(person_id, category, valence, description, mentioned_at, "
+        " sensitivity_decay_days, person_invited_topic) "
+        "VALUES (?, ?, ?, ?, datetime('now'), ?, ?)",
+        (person_id, cat, float(valence), desc, decay, 1 if person_invited_topic else 0),
+    )
+
+
+def get_active_events(person_id: int, limit: int = 3) -> list[dict]:
+    """Return events whose decay window has not yet elapsed, newest first."""
+    rows = db.fetchall(
+        "SELECT id, category, valence, description, mentioned_at, "
+        "       last_acknowledged_at, sensitivity_decay_days, "
+        "       person_invited_topic "
+        "FROM person_emotional_events "
+        "WHERE person_id = ? "
+        "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
+        "ORDER BY mentioned_at DESC LIMIT ?",
+        (person_id, int(limit)),
+    )
+    return [dict(r) for r in rows]
+
+
+def get_unacknowledged_since(person_id: int, since_iso: Optional[str]) -> list[dict]:
+    """Active events not yet acknowledged since the given ISO timestamp.
+
+    Pass None for `since_iso` to mean 'since beginning of time'. Used to decide
+    whether Rex should open with a soft acknowledgment of a recent loss.
+    """
+    active = get_active_events(person_id, limit=10)
+    out = []
+    for ev in active:
+        last_ack = ev.get("last_acknowledged_at")
+        if not last_ack:
+            out.append(ev)
+            continue
+        if since_iso and last_ack < since_iso:
+            out.append(ev)
+    return out
+
+
+def mark_acknowledged(event_id: int) -> None:
+    db.execute(
+        "UPDATE person_emotional_events SET last_acknowledged_at = datetime('now') "
+        "WHERE id = ?",
+        (int(event_id),),
+    )
+
+
+def mark_all_acknowledged_for_person(person_id: int) -> None:
+    """Convenience: mark every active event acknowledged in one shot.
+
+    Called after Rex opens the interaction with a soft acknowledgment so we
+    don't repeat the same opening across consecutive turns within a session.
+    """
+    db.execute(
+        "UPDATE person_emotional_events SET last_acknowledged_at = datetime('now') "
+        "WHERE person_id = ? "
+        "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now')",
+        (int(person_id),),
+    )
+
+
+def summarize_for_prompt(
+    person_id: int,
+    crowd_count: int = 1,
+) -> str:
+    """Render active emotional events as a prompt-ready block.
+
+    Discretion rule: when more than one person is in the scene, suppress
+    surfacing entirely — these are sensitive and shouldn't be aired by Rex
+    in front of bystanders. The person can still bring it up themselves;
+    the LLM just won't be reminded by the system prompt.
+    """
+    if not getattr(config, "EMPATHY_ENABLED", True):
+        return ""
+    suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
+    if suppress_in_crowd and crowd_count > 1:
+        return ""
+
+    events = get_active_events(person_id, limit=3)
+    if not events:
+        return ""
+
+    lines = []
+    now = datetime.utcnow()
+    for ev in events:
+        try:
+            mentioned = datetime.fromisoformat(ev["mentioned_at"].replace("Z", ""))
+            days_ago = max(0, (now - mentioned).days)
+        except Exception:
+            days_ago = None
+        when = (
+            f"{days_ago} days ago" if days_ago is not None and days_ago > 0
+            else "recently"
+        )
+        ack = ev.get("last_acknowledged_at")
+        ack_clause = " (already acknowledged this session)" if ack else " (not yet acknowledged on this return)"
+        lines.append(
+            f"- {ev['category']}: {ev['description']} (mentioned {when}){ack_clause}"
+        )
+    return "Sensitive recent life events for this person:\n" + "\n".join(lines)

@@ -27,14 +27,17 @@ from state import State
 from audio import stream, vad, wake_word, transcription, speaker_id
 from audio import speech_queue, output_gate
 from audio import echo_cancel
+from audio import prosody
 from intelligence import command_parser, llm, personality
 from intelligence import consciousness
 from intelligence import intent_classifier
+from intelligence import empathy
 from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
 from memory import events as events_memory
 from memory import relationships as rel_memory
+from memory import emotional_events
 from awareness import interoception
 from awareness import address_mode
 from awareness.situation import assessor as _situation_assessor
@@ -174,6 +177,8 @@ def _speak_blocking(
     emotion: str = "neutral",
     priority: int = 1,
     pre_beat_ms: int = 0,
+    post_beat_ms_override: int = 0,
+    voice_settings: Optional[dict] = None,
 ) -> bool:
     """
     Enqueue text for speech and block until playback finishes, monitoring for
@@ -182,6 +187,11 @@ def _speak_blocking(
     priority 1 = normal response; priority 2 = urgent acknowledgment.
     Enqueueing drops all waiting items of lower priority and preempts any
     currently-playing item of lower priority.
+
+    `post_beat_ms_override` is used by the empathy delivery layer to extend
+    the post-punchline beat for sympathetic modes (listen/support/etc.) where
+    we want the line to settle rather than snap into the next exchange. The
+    override takes precedence over the default punchline beat when larger.
     """
     if not _can_speak() or not text or not text.strip():
         return True
@@ -194,10 +204,13 @@ def _speak_blocking(
         beat_max = getattr(config, "POST_PUNCHLINE_BEAT_MS_MAX", 0)
         if beat_max > 0 and beat_max >= beat_min:
             post_beat_ms = random.randint(beat_min, beat_max)
+    if post_beat_ms_override > 0:
+        post_beat_ms = max(post_beat_ms, post_beat_ms_override)
 
     done = speech_queue.enqueue(
         text, emotion, priority=priority,
         pre_beat_ms=pre_beat_ms, post_beat_ms=post_beat_ms,
+        voice_settings=voice_settings,
     )
 
     while not done.wait(timeout=0.05):
@@ -783,6 +796,9 @@ def _stream_llm_response(text: str, person_id: Optional[int]) -> str:
     full_text = llm.get_response(text, person_id)
 
     pre_beat_ms = 0
+    delivery_emotion = "neutral"
+    delivery_post_beat_ms = 0
+    delivery_voice_settings: Optional[dict] = None
     if full_text and full_text.strip() and not _interrupted.is_set():
         # Brief join — classifier usually finishes before or alongside the
         # main response since its prompt is tiny. Cap the wait so a slow
@@ -794,7 +810,39 @@ def _stream_llm_response(text: str, person_id: Optional[int]) -> str:
             if beat_max >= beat_min > 0:
                 pre_beat_ms = random.randint(beat_min, beat_max)
                 _log.info("[interaction] surprise beat: %d ms", pre_beat_ms)
-        _speak_blocking(full_text, pre_beat_ms=pre_beat_ms)
+
+        # Empathy-mode delivery shaping: sympathetic posture + pacing for
+        # listen/support/etc. without changing the cached TTS audio (cache key
+        # is text+voice+model — emotion only drives LEDs and body bias).
+        try:
+            overrides = empathy.get_delivery_overrides(person_id)
+        except Exception as exc:
+            _log.debug("empathy.get_delivery_overrides error: %s", exc)
+            overrides = None
+        if overrides:
+            if overrides.get("emotion"):
+                delivery_emotion = overrides["emotion"]
+            extra_pre = int(overrides.get("pre_beat_ms") or 0)
+            if extra_pre > 0:
+                # Take the larger of surprise-beat vs empathy-mode beat — they
+                # serve the same "let it land" purpose and shouldn't stack.
+                pre_beat_ms = max(pre_beat_ms, extra_pre)
+            delivery_post_beat_ms = int(overrides.get("post_beat_ms") or 0)
+            delivery_voice_settings = overrides.get("voice_settings")
+            _log.info(
+                "[empathy] delivery shaping: mode=%s emotion=%s pre=%dms post=%dms voice=%s",
+                overrides.get("mode"), delivery_emotion,
+                pre_beat_ms, delivery_post_beat_ms,
+                delivery_voice_settings if delivery_voice_settings else "default",
+            )
+
+        _speak_blocking(
+            full_text,
+            emotion=delivery_emotion,
+            pre_beat_ms=pre_beat_ms,
+            post_beat_ms_override=delivery_post_beat_ms,
+            voice_settings=delivery_voice_settings,
+        )
     return full_text
 
 
@@ -2427,6 +2475,85 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             except Exception as exc:
                 _log.debug("newcomer-on-camera ask error: %s", exc)
 
+        # Empathy classification — kicked off in parallel so the affect/mode
+        # directive is ready by the time the LLM-fallback path assembles its
+        # system prompt. Result is cached per-person for future turns even if
+        # this turn is handled deterministically by the command parser.
+        _empathy_thread = None
+        if getattr(config, "EMPATHY_ENABLED", True):
+            _audio_for_prosody = audio_array
+            def _run_empathy() -> None:
+                try:
+                    prosody_features = None
+                    if getattr(config, "EMPATHY_PROSODY_ENABLED", True):
+                        try:
+                            prosody_features = prosody.analyze(
+                                _audio_for_prosody,
+                                sample_rate=config.AUDIO_SAMPLE_RATE,
+                                transcript_text=text,
+                            )
+                        except Exception as exc:
+                            _log.debug("prosody.analyze failed: %s", exc)
+                            prosody_features = None
+                    result = empathy.classify_affect(text, prosody_features=prosody_features)
+                    if not result:
+                        return
+                    person_row = None
+                    if person_id is not None:
+                        try:
+                            person_row = people_memory.get_person(person_id)
+                        except Exception:
+                            person_row = None
+                    child_in_scene = False
+                    try:
+                        ws_people = world_state.get("people") or []
+                        child_in_scene = any(
+                            p.get("age_estimate") == "child" for p in ws_people
+                        )
+                    except Exception:
+                        pass
+                    mode_pack = empathy.select_mode(
+                        result, person=person_row, child_in_scene=child_in_scene,
+                        person_id=person_id,
+                    )
+                    empathy.record(person_id, result, mode_pack)
+                    _prosody = result.get("prosody") or {}
+                    _log.info(
+                        "[empathy] affect=%s needs=%s sens=%s invite=%s "
+                        "conf=%.2f prosody=%s → mode=%s (%s)",
+                        result.get("affect"), result.get("needs"),
+                        result.get("topic_sensitivity"),
+                        result.get("invitation"), result.get("confidence", 0.0),
+                        _prosody.get("tag") or "—",
+                        mode_pack.get("mode"), mode_pack.get("reason"),
+                    )
+                    ev = result.get("event")
+                    if ev and person_id is not None:
+                        try:
+                            row_id = emotional_events.add_event(
+                                person_id,
+                                category=ev.get("category", "other"),
+                                description=ev.get("description", ""),
+                                valence=ev.get("valence", -0.5),
+                                person_invited_topic=bool(result.get("invitation")),
+                            )
+                            if row_id:
+                                _log.info(
+                                    "[empathy] stored emotional event id=%s "
+                                    "category=%s for person_id=%s: %s",
+                                    row_id, ev.get("category"), person_id,
+                                    ev.get("description"),
+                                )
+                        except Exception as exc:
+                            _log.debug("emotional_events.add_event failed: %s", exc)
+                except Exception as exc:
+                    _log.debug("empathy classification thread error: %s", exc)
+
+            _empathy_thread = threading.Thread(
+                target=_run_empathy, daemon=True, name="empathy-classify",
+            )
+            _empathy_thread.start()
+
         # Layer-1 insult pre-check: keyword match → bump anger BEFORE the LLM
         # call so this turn's system prompt reflects the new escalation level.
         # Layer 2 (llm.analyze_sentiment in _post_response) skips its own
@@ -2474,6 +2601,31 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                         visible_known_name=_visible_name,
                     )
             if response_text is None:
+                if _empathy_thread is not None:
+                    _empathy_thread.join(
+                        timeout=float(getattr(
+                            config, "EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS", 1.5,
+                        ))
+                    )
+                # If there are unacknowledged emotional events for this person
+                # the system prompt is about to fire the ACKNOWLEDGE-ON-RETURN
+                # directive — mark them acknowledged now so it doesn't repeat
+                # across this person's subsequent turns this session.
+                if person_id is not None:
+                    try:
+                        unack = [
+                            ev for ev in emotional_events.get_active_events(person_id, limit=3)
+                            if not ev.get("last_acknowledged_at")
+                        ]
+                        if unack:
+                            emotional_events.mark_all_acknowledged_for_person(person_id)
+                            _log.info(
+                                "[empathy] marked %d emotional event(s) acknowledged "
+                                "for person_id=%s on this turn",
+                                len(unack), person_id,
+                            )
+                    except Exception as exc:
+                        _log.debug("emotional event ack error: %s", exc)
                 response_text = _stream_llm_response(text, person_id)
 
         assistant_asked_question = False

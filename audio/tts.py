@@ -79,11 +79,21 @@ def prewarm() -> None:
             logger.warning("[tts] prewarm failed (non-fatal): %s", exc)
 
 
-def speak(text: str, emotion: str = "neutral") -> None:
+def speak(
+    text: str,
+    emotion: str = "neutral",
+    voice_settings: Optional[dict] = None,
+) -> None:
     """Convert text to speech and play it, blocking until playback finishes.
 
     On cache hit: plays the cached MP3 with no API call.
     On cache miss: calls ElevenLabs streaming API, saves to cache, then plays.
+
+    `voice_settings` overrides ElevenLabs voice parameters (stability, style,
+    similarity_boost, use_speaker_boost). When provided AND non-empty, it is
+    folded into the cache key so the alternate take is cached separately —
+    the default cache (voice_settings=None) is unaffected, so existing cached
+    lines stay valid for normal-mode delivery.
     """
     if not text or not text.strip():
         return
@@ -92,13 +102,17 @@ def speak(text: str, emotion: str = "neutral") -> None:
 
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID
-    cache_file = _cache_path(text, voice_id, model_id)
+    cache_file = _cache_path(text, voice_id, model_id, voice_settings)
 
     if cache_file.exists():
         logger.info("[tts] cache hit: %s", cache_file.name)
     else:
-        logger.info("[tts] cache miss — calling ElevenLabs API")
-        audio_bytes = _fetch_from_api(text, voice_id, model_id)
+        logger.info(
+            "[tts] cache miss — calling ElevenLabs API%s",
+            f" (voice_settings={_summarize_settings(voice_settings)})"
+            if voice_settings else "",
+        )
+        audio_bytes = _fetch_from_api(text, voice_id, model_id, voice_settings)
         if not audio_bytes:
             return
         cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -196,24 +210,62 @@ def _drive_leds(
 
 # ── Internal: cache & decode ──────────────────────────────────────────────────
 
-def _cache_path(text: str, voice_id: str, model_id: str) -> Path:
+def _settings_cache_token(voice_settings: Optional[dict]) -> str:
+    """Stable token to fold into the cache hash. Empty when no override —
+    preserves the existing cache for default-mode lines.
+    """
+    if not voice_settings:
+        return ""
+    keys = ("stability", "similarity_boost", "style", "use_speaker_boost")
+    parts = []
+    for k in keys:
+        if k in voice_settings and voice_settings[k] is not None:
+            parts.append(f"{k}={voice_settings[k]}")
+    return "|".join(parts)
+
+
+def _summarize_settings(voice_settings: Optional[dict]) -> str:
+    if not voice_settings:
+        return "default"
+    return ", ".join(
+        f"{k}={v}" for k, v in voice_settings.items() if v is not None
+    )
+
+
+def _cache_path(
+    text: str,
+    voice_id: str,
+    model_id: str,
+    voice_settings: Optional[dict] = None,
+) -> Path:
+    settings_token = _settings_cache_token(voice_settings)
     digest = hashlib.sha256(
-        f"{text}{voice_id}{model_id}".encode("utf-8")
+        f"{text}{voice_id}{model_id}{settings_token}".encode("utf-8")
     ).hexdigest()
     return Path(config.TTS_CACHE_DIR) / f"{digest}.mp3"
 
 
-def _fetch_from_api(text: str, voice_id: str, model_id: str) -> Optional[bytes]:
+def _fetch_from_api(
+    text: str,
+    voice_id: str,
+    model_id: str,
+    voice_settings: Optional[dict] = None,
+) -> Optional[bytes]:
     try:
         import apikeys
-        from elevenlabs import ElevenLabs
+        from elevenlabs import ElevenLabs, VoiceSettings
 
         client = ElevenLabs(api_key=apikeys.ELEVENLABS_API_KEY)
-        chunks = client.text_to_speech.stream(
-            voice_id=voice_id,
-            text=text,
-            model_id=model_id,
-        )
+        kwargs = {
+            "voice_id": voice_id,
+            "text": text,
+            "model_id": model_id,
+        }
+        if voice_settings:
+            kwargs["voice_settings"] = VoiceSettings(
+                **{k: v for k, v in voice_settings.items() if v is not None}
+            )
+        chunks = client.text_to_speech.stream(**kwargs)
         data = b"".join(chunks)
         if not data:
             logger.error("[tts] ElevenLabs returned empty audio stream")

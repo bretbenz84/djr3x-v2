@@ -31,6 +31,7 @@ _EXPECTED_TABLES = frozenset({
     "person_events",
     "personality_settings",
     "person_relationships",
+    "person_emotional_events",
 })
 
 # Inline migrations for schema additions introduced after initial deploy.
@@ -50,6 +51,20 @@ _MIGRATIONS = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_rel_from ON person_relationships(from_person_id)",
     "CREATE INDEX IF NOT EXISTS idx_rel_to   ON person_relationships(to_person_id)",
+    """
+    CREATE TABLE IF NOT EXISTS person_emotional_events (
+        id                       INTEGER PRIMARY KEY,
+        person_id                INTEGER REFERENCES people(id),
+        category                 TEXT,
+        valence                  REAL,
+        description              TEXT,
+        mentioned_at             DATETIME,
+        last_acknowledged_at     DATETIME,
+        sensitivity_decay_days   INTEGER,
+        person_invited_topic     INTEGER DEFAULT 0
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_emoevent_person ON person_emotional_events(person_id)",
 ]
 
 

@@ -125,6 +125,15 @@ _last_holiday_plans_check_at: float = 0.0
 _weekly_smalltalk_asked: set[tuple[int, int, int, str]] = set()
 _last_weekly_smalltalk_check_at: float = 0.0
 
+# Emotional check-in dedupe: per-session, per-person. Each engaged person
+# can be the target of at most one proactive emotional check-in per session.
+_emotional_checkin_fired: set[int] = set()
+# Per-person monotonic timestamp of when their cached affect first turned
+# negative this session. Cleared whenever the cached affect goes non-negative.
+# Used to gate "sustained negative" check-ins.
+_negative_streak_started_at: dict[int, float] = {}
+_last_emotional_checkin_check_at: float = 0.0
+
 # Per-person mood cache: person_db_id → ({mood, confidence, notes}, monotonic_ts).
 # Mood vision calls are expensive, so we re-use a recent reading within
 # config.MOOD_ANALYSIS_PER_PERSON_COOLDOWN_SECS instead of re-asking GPT-4o.
@@ -2496,6 +2505,174 @@ def _step_weekly_smalltalk(snapshot: dict, profile: SituationProfile) -> None:
         _log.debug("weekly smalltalk step error: %s", exc)
 
 
+def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    Proactive emotional check-in for the engaged person. Two triggers:
+
+    (A) An unacknowledged active emotional event (recent grief, illness,
+        layoff, milestone) exists for this person — open with a soft, in-
+        character acknowledgment so they don't have to bring it up first.
+
+    (B) The empathy classifier has been reading the engaged person as
+        negatively-valenced (sad / withdrawn / anxious / tired) for at least
+        EMPATHY_CHECKIN_NEGATIVE_STREAK_SECS without an obvious uptick —
+        notice it, ask once.
+
+    Cooldown: at most one emotional check-in per (person, session). After
+    firing, the dedupe set blocks repeats. Trigger (A) marks the events
+    acknowledged through the existing ack helper so the system-prompt
+    ACKNOWLEDGE-ON-RETURN directive doesn't double up. Honors the discretion
+    rule — does not fire trigger (A) when crowd > 1.
+    """
+    global _last_emotional_checkin_check_at
+
+    if not getattr(config, "EMPATHY_ENABLED", True):
+        return
+    if not getattr(config, "EMPATHY_PROACTIVE_CHECKIN_ENABLED", True):
+        return
+    if profile.suppress_proactive or profile.rapid_exchange:
+        return
+    if not _can_proactive_speak():
+        return
+
+    now = time.monotonic()
+    interval = float(getattr(config, "EMPATHY_CHECKIN_CHECK_INTERVAL_SECS", 10.0))
+    if (now - _last_emotional_checkin_check_at) < interval:
+        return
+    _last_emotional_checkin_check_at = now
+
+    with _engaged_lock:
+        engaged_id = _engaged_person_id
+        engaged_touch = _engaged_last_touch_at
+    if engaged_id is None:
+        return
+    window = float(getattr(config, "ENGAGEMENT_WINDOW_SECS", 90.0))
+    if (now - engaged_touch) > window:
+        return
+    if engaged_id in _emotional_checkin_fired:
+        return
+
+    try:
+        from memory import people as people_mod
+        from memory import emotional_events as emo_events
+        from intelligence import empathy as _empathy
+
+        person = people_mod.get_person(engaged_id)
+        if not person:
+            return
+        first_name = (person.get("name") or "").split()[0] or "you"
+        tier = person.get("friendship_tier", "stranger")
+
+        # ── Trigger A: unacknowledged active event ─────────────────────────
+        crowd_count = int((snapshot.get("crowd") or {}).get("count", 1) or 1)
+        suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
+        if not (suppress_in_crowd and crowd_count > 1):
+            try:
+                active = emo_events.get_active_events(engaged_id, limit=3)
+            except Exception:
+                active = []
+            unack = [ev for ev in active if not ev.get("last_acknowledged_at")]
+            if unack:
+                ev = unack[0]
+                desc = (ev.get("description") or "").strip()
+                cat = (ev.get("category") or "").strip().lower()
+                valence = float(ev.get("valence", -0.5) or -0.5)
+                vibe = "positive milestone" if valence > 0 else "hard thing"
+                prompt = (
+                    f"You're talking with '{first_name}' (tier: {tier}). You "
+                    f"remember from a previous session that they mentioned this "
+                    f"{vibe} — category={cat}: \"{desc}\". You haven't yet "
+                    f"acknowledged it on this return visit. In ONE short, soft, "
+                    f"in-character Rex line, gently acknowledge it and yield — "
+                    f"no probing questions, no advice, no roast. Let them steer "
+                    f"the rest. If it was a loss, lean warm. If it was good "
+                    f"news, lean genuine. End with a question ONLY if it's "
+                    f"low-pressure (e.g. 'how are you holding up?' for hard, "
+                    f"'how's that going?' for milestone)."
+                )
+                emotion = "sad" if valence < 0 else "happy"
+                _emotional_checkin_fired.add(engaged_id)
+                try:
+                    emo_events.mark_all_acknowledged_for_person(engaged_id)
+                except Exception:
+                    pass
+                _log.info(
+                    "consciousness: proactive emotional check-in (A: "
+                    "unacknowledged %s event) for person_id=%s",
+                    cat, engaged_id,
+                )
+                _generate_and_speak(prompt, emotion=emotion)
+                return
+
+        # ── Trigger B: sustained negative affect ───────────────────────────
+        entry = _empathy.peek(engaged_id)
+        if not entry:
+            _negative_streak_started_at.pop(engaged_id, None)
+            return
+        result = entry.get("result") or {}
+        affect = (result.get("affect") or "neutral").lower()
+        confidence = float(result.get("confidence", 0.5) or 0.5)
+        sensitivity = (result.get("topic_sensitivity") or "none").lower()
+
+        if not _empathy.is_negative_affect(affect):
+            _negative_streak_started_at.pop(engaged_id, None)
+            return
+
+        # Require minimum confidence so a single ambiguous reading doesn't
+        # start a streak that produces a check-in 30s later.
+        min_conf = float(getattr(config, "EMPATHY_MIN_CONFIDENCE_FOR_MODE_CHANGE", 0.55))
+        if confidence < min_conf:
+            return
+
+        streak_start = _negative_streak_started_at.get(engaged_id)
+        if streak_start is None:
+            _negative_streak_started_at[engaged_id] = now
+            return
+
+        required = float(getattr(config, "EMPATHY_CHECKIN_NEGATIVE_STREAK_SECS", 30.0))
+        if (now - streak_start) < required:
+            return
+
+        # Tier-shaped framing — content is the same caring move regardless of
+        # tier; only the *voice* differs.
+        if tier in ("close_friend", "best_friend"):
+            voice_clause = (
+                "You know them well. Be warm and direct, the way a close friend "
+                "would. Light affection underneath."
+            )
+        elif tier in ("friend",):
+            voice_clause = (
+                "You know them. Warm, dry, lightly attentive — friend territory."
+            )
+        else:
+            voice_clause = (
+                "You don't know them well yet. Reserved warmth, no presumed "
+                "familiarity, no personal callbacks. Just notice and offer."
+            )
+
+        prompt = (
+            f"You're mid-conversation with '{first_name}'. You've noticed they "
+            f"sound {affect}"
+            f"{' and the topic has been heavy' if sensitivity == 'heavy' else ''}"
+            f", and it's been steady. {voice_clause} In ONE short in-character "
+            f"Rex line, gently check in on them. Low-pressure, no probing — "
+            f"something like 'you've gone quiet on me — long day, or something "
+            f"heavier?' Don't fix, don't advise, don't roast. End with a "
+            f"question that's easy to deflect."
+        )
+        emotion = "neutral"
+        _emotional_checkin_fired.add(engaged_id)
+        _negative_streak_started_at.pop(engaged_id, None)
+        _log.info(
+            "consciousness: proactive emotional check-in (B: sustained %s, "
+            "streak=%.1fs, conf=%.2f) for person_id=%s",
+            affect, now - streak_start, confidence, engaged_id,
+        )
+        _generate_and_speak(prompt, emotion=emotion)
+    except Exception as exc:
+        _log.debug("emotional check-in step error: %s", exc)
+
+
 def _pending_followups_lock_remove(person_id: int, event_id) -> None:
     """Remove a specific event from _pending_followups so two paths don't both ask."""
     if event_id is None:
@@ -2651,6 +2828,10 @@ def _loop() -> None:
             # 10d2. Weekly small talk — Fri-eve / Sun-eve / Mon-morning prompts
             _step_weekly_smalltalk(snapshot, profile)
 
+            # 10d3. Proactive emotional check-in — acknowledge an unfollowed-up
+            # sensitive event, or notice sustained negative affect mid-conversation.
+            _step_emotional_checkin(snapshot, profile)
+
             # 10e. Overheard chime-in — react when someone talks ABOUT Rex
             _step_overheard_chime_in(snapshot, profile)
 
@@ -2689,6 +2870,10 @@ def start() -> None:
     _pending_departure_keys.clear()
     _first_missing_at.clear()
     _last_presence_reaction_at.clear()
+    _emotional_checkin_fired.clear()
+    _negative_streak_started_at.clear()
+    global _last_emotional_checkin_check_at
+    _last_emotional_checkin_check_at = 0.0
     global _overheard_chime_in_count, _last_overheard_check_at
     _overheard_chime_in_count = 0
     _last_overheard_check_at = 0.0

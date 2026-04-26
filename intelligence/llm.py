@@ -279,6 +279,36 @@ def _build_person_context(person_id: int) -> str:
     except Exception as exc:
         _log.debug("relationship summary error: %s", exc)
 
+    # Active sensitive emotional events (recent grief, illness, milestones).
+    # Discretion rule inside summarize_for_prompt suppresses output when more
+    # than one person is in the scene — sensitive content shouldn't be aired
+    # by the system prompt in front of bystanders.
+    try:
+        from memory import emotional_events as _emo_events
+        crowd_count = 1
+        try:
+            ws_now = world_state.snapshot()
+            crowd_count = int((ws_now.get("crowd") or {}).get("count", 1) or 1)
+        except Exception:
+            pass
+        emo_summary = _emo_events.summarize_for_prompt(person_id, crowd_count=crowd_count)
+        if emo_summary:
+            unack = [
+                ev for ev in _emo_events.get_active_events(person_id, limit=3)
+                if not ev.get("last_acknowledged_at")
+            ]
+            lines.append(emo_summary)
+            if unack:
+                lines.append(
+                    "ACKNOWLEDGE-ON-RETURN: open this interaction with ONE soft, "
+                    "in-character acknowledgment of the most recent of the above "
+                    "events, then yield to whatever they want to talk about. "
+                    "No probing, no pretending it didn't happen. After that, "
+                    "let them steer."
+                )
+    except Exception as exc:
+        _log.debug("emotional events injection skipped: %s", exc)
+
     return "\n".join(lines)
 
 
@@ -298,10 +328,19 @@ def assemble_system_prompt(person_id: Optional[int] = None) -> str:
     param_lines = "\n".join(f"  {k}: {v}/100" for k, v in params.items())
     sections.append("Current personality parameters:\n" + param_lines)
 
-    # 3. Current emotion state
+    # 3. Current emotion state — Rex's own mood, plus (if known) the person's
+    # affect and the empathy-layer directive for how to respond.
     ws = world_state.snapshot()
     emotion = ws.get("self_state", {}).get("emotion", "neutral")
-    sections.append(f"Current emotion state: {emotion}.")
+    emotion_block = [f"Rex's own emotion state: {emotion}."]
+    try:
+        from intelligence import empathy as _empathy
+        directive = _empathy.get_directive(person_id)
+        if directive:
+            emotion_block.append(directive)
+    except Exception as exc:
+        _log.debug("empathy directive injection skipped: %s", exc)
+    sections.append("\n".join(emotion_block))
 
     # 4. WorldState snapshot summary
     sections.append("World context:\n" + _summarize_world_state(ws))

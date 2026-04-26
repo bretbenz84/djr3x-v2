@@ -195,6 +195,98 @@ COMMAND_FUZZY_THRESHOLD = 0.82
 INTENT_CLASSIFIER_ENABLED = True
 
 # ─────────────────────────────────────────────────────────────────────────────
+# EMPATHY / EMOTIONAL INTELLIGENCE
+# ─────────────────────────────────────────────────────────────────────────────
+# A small GPT-4o-mini call per LLM-bound utterance classifies the speaker's
+# affect (sad/anxious/happy/...), what they seem to need (vent/advice/distract),
+# topic sensitivity, and whether they appear to be opening up. Result feeds a
+# response-mode directive injected into Rex's system prompt so he meets the
+# person where they are. Design rule: support / listen / lift modes are NOT
+# gated by friendship tier — anyone who opens up gets caring mode. See
+# intelligence/empathy.py.
+
+EMPATHY_ENABLED = True
+
+# Cached affect classification per person stays valid this many seconds before
+# the system prompt stops injecting it. Long enough to span a few turns of a
+# conversation, short enough that mood shifts get re-read.
+EMPATHY_CACHE_TTL_SECS = 300.0
+
+# Below this confidence on a distress signal Rex stays in default mode rather
+# than switching to gentle_probe. Avoids over-fitting to a frown / resting face.
+EMPATHY_MIN_CONFIDENCE_FOR_MODE_CHANGE = 0.55
+
+# Max time the LLM-fallback path waits for the in-flight empathy classification
+# to finish before assembling the system prompt. If it runs over this budget
+# the directive simply isn't injected for this turn (still cached for next).
+EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS = 1.5
+
+# When True, sensitive emotional events (grief, illness, etc.) are NOT injected
+# into the system prompt while more than one person is in the scene. The person
+# can still bring up their own event — the prompt just won't volunteer it on
+# Rex's behalf in front of bystanders. Strong default; turn off only if you
+# want Rex to reference these regardless of audience.
+EMPATHY_DISCRETION_IN_CROWD = True
+
+# Local voice-prosody analysis (numpy + scipy). Computes pitch / energy /
+# speech-rate features from each captured speech segment and feeds a
+# one-line acoustic tag to the empathy classifier as additional evidence.
+# Catches mismatches between words and voice (flat "I'm fine" with shaky
+# voice → resolved as anxious). Pure local, no API cost. See audio/prosody.py.
+EMPATHY_PROSODY_ENABLED = True
+
+# Proactive empathy check-ins driven by the consciousness loop. When ON, Rex
+# will (at most once per person per session) acknowledge an unfollowed-up
+# sensitive life event OR notice sustained negative affect and ask a low-
+# pressure check-in question. See intelligence/consciousness._step_emotional_checkin.
+EMPATHY_PROACTIVE_CHECKIN_ENABLED = True
+
+# How long the cached affect for the engaged person must stay negatively
+# valenced (sad/withdrawn/anxious/tired/angry) before trigger B fires. Streak
+# starts on the first reading that's both negative AND above the confidence
+# floor; it resets if affect goes neutral/positive.
+EMPATHY_CHECKIN_NEGATIVE_STREAK_SECS = 30.0
+
+# Rate-limit the consciousness step itself (cheap polling, no API calls per
+# tick — but we still don't need to evaluate it every second).
+EMPATHY_CHECKIN_CHECK_INTERVAL_SECS = 10.0
+
+# When True, the active empathy mode also shapes Rex's BODY for the response:
+# LED/eye color and mouth animation switch to "sad" (sympathetic posture) for
+# listen/support/etc., "happy" for lift, "excited" for amplify. Pre/post-beat
+# pauses also lengthen for sympathetic modes so heavy lines have room to land.
+# This DOES NOT change the TTS cache key — the audio file is identical, only
+# the LED/body envelope around it differs.
+EMPATHY_DELIVERY_SHAPING_ENABLED = True
+
+# Trend tracking across turns. Empathy keeps a small rolling history of
+# classified valence per person; the directive reports improving/steady/
+# worsening so the LLM can lean in or change tack. Fully derived from existing
+# classification calls — no extra API cost.
+EMPATHY_TREND_LOOKBACK_SECS = 180.0  # window for the steady/improving/worsening label
+EMPATHY_TREND_DELTA_THRESHOLD = 0.30  # min |Δvalence| to call a trend non-steady
+
+# Course-correct trigger. When the trend reads "worsening" with a meaningful
+# drop AND a recent prior reading was within COURSE_CORRECT_RECENT_PRIOR_SECS
+# (so the drop is plausibly attributable to Rex's last reply, not "an hour
+# ago"), the picked mode is overridden with `course_correct` so Rex
+# acknowledges the misstep before continuing. Per-person cooldown prevents
+# turn-after-turn re-firing.
+EMPATHY_COURSE_CORRECT_ENABLED = True
+EMPATHY_COURSE_CORRECT_DELTA = 0.40
+EMPATHY_COURSE_CORRECT_RECENT_PRIOR_SECS = 90.0
+EMPATHY_COURSE_CORRECT_COOLDOWN_SECS = 90.0
+
+# Per-mode ElevenLabs voice_settings overrides (stability / style /
+# similarity_boost). When ON, sympathetic modes (listen/support/etc.) request
+# a calmer, less performative voice; lift/amplify request a more expressive
+# one. Each (text, mode) combo is cached separately; default-mode lines
+# continue to hit the existing cache unchanged so this only adds API cost
+# on first encounter of a non-default-mode line. See intelligence/empathy.py
+# _MODE_VOICE_SETTINGS for the full table.
+EMPATHY_VOICE_SETTINGS_ENABLED = True
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SERVOS — Pololu Maestro Mini 18 (all values in quarter-microseconds)
 # ─────────────────────────────────────────────────────────────────────────────
 
