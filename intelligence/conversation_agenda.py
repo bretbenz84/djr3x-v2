@@ -81,6 +81,11 @@ _PROACTIVE_RULES: dict[str, tuple[int, str]] = {
         65,
         "follow up on the remembered plan or date only. No extra question.",
     ),
+    "celebration_checkin": (
+        64,
+        "briefly celebrate the remembered good news only. Keep it warm, optional, "
+        "and do not stack another memory callback.",
+    ),
     "visual_curiosity": (
         55,
         "ask one question based on the visible scene only. Do not also bring up "
@@ -109,12 +114,14 @@ _PROACTIVE_RULES: dict[str, tuple[int, str]] = {
     ),
 }
 _BUDGETED_PROACTIVE_PURPOSES = {
+    "celebration_checkin",
     "memory_followup",
     "visual_curiosity",
     "small_talk",
     "group_turn_invite",
 }
 _GRACE_SUPPRESSED_PROACTIVE_PURPOSES = {
+    "celebration_checkin",
     "memory_followup",
     "visual_curiosity",
     "small_talk",

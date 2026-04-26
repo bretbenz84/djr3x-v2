@@ -277,6 +277,14 @@ def _build_person_context(person_id: int) -> str:
     except Exception as exc:
         _log.debug("conversation boundaries injection skipped: %s", exc)
 
+    try:
+        from intelligence import friendship_patterns as _friendship_patterns
+        friendship_summary = _friendship_patterns.summarize_for_prompt(person_id)
+        if friendship_summary:
+            lines.append(friendship_summary)
+    except Exception as exc:
+        _log.debug("friendship pattern injection skipped: %s", exc)
+
     last_conv = conv_db.get_last_conversation(person_id)
     if last_conv:
         lines.append(
@@ -284,7 +292,26 @@ def _build_person_context(person_id: int) -> str:
             f"(tone: {last_conv.get('emotion_tone', 'neutral')})."
         )
 
-    stale = _pick_stale_fact(person_id)
+    callback_hook_used = False
+    try:
+        from memory import emotional_events as _emo_events_for_hooks
+        ws_now = world_state.snapshot()
+        crowd_count_for_hooks = int((ws_now.get("crowd") or {}).get("count", 1) or 1)
+        suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
+        callback_hook_used = any(
+            not ev.get("last_acknowledged_at")
+            and _emo_events_for_hooks.can_surface_event(ev)
+            and not (
+                suppress_in_crowd
+                and crowd_count_for_hooks > 1
+                and _emo_events_for_hooks.is_heavy_event(ev)
+            )
+            for ev in _emo_events_for_hooks.get_active_events(person_id, limit=3)
+        )
+    except Exception:
+        callback_hook_used = False
+
+    stale = None if callback_hook_used else _pick_stale_fact(person_id)
     if stale:
         key = stale.get("key") or "something"
         value = stale.get("value") or ""
@@ -308,8 +335,9 @@ def _build_person_context(person_id: int) -> str:
             f"Examples in spirit: 'You were working at X — still there?', "
             f"'Last I checked you were into Y. Still on that?' One question only."
         )
+        callback_hook_used = True
 
-    nostalgia = _pick_nostalgia_callback(person_id, tier)
+    nostalgia = None if callback_hook_used else _pick_nostalgia_callback(person_id, tier)
     if nostalgia:
         when = (nostalgia.get("session_date") or "")[:10] or "a while back"
         summary = (nostalgia.get("summary") or "").strip()
@@ -320,13 +348,15 @@ def _build_person_context(person_id: int) -> str:
             f"Weave one short, specific callback in — warm but dry, classic Rex. "
             f"Do not announce it as nostalgia; just bring it up like the thought arrived."
         )
+        callback_hook_used = True
 
-    next_q = rel_db.get_next_question(person_id, tier)
+    next_q = None if callback_hook_used else rel_db.get_next_question(person_id, tier)
     if next_q:
         lines.append(
             f"Next unanswered question to weave in naturally: "
             f"\"{next_q['text']}\" (depth {next_q['depth']})."
         )
+        callback_hook_used = True
 
     # Known inter-person relationships (e.g. "Bret is partner of JT").
     try:
@@ -351,9 +381,16 @@ def _build_person_context(person_id: int) -> str:
             pass
         emo_summary = _emo_events.summarize_for_prompt(person_id, crowd_count=crowd_count)
         if emo_summary:
+            suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
             unack = [
                 ev for ev in _emo_events.get_active_events(person_id, limit=3)
                 if not ev.get("last_acknowledged_at")
+                and _emo_events.can_surface_event(ev)
+                and not (
+                    suppress_in_crowd
+                    and crowd_count > 1
+                    and _emo_events.is_heavy_event(ev)
+                )
             ]
             lines.append(emo_summary)
             if unack:
@@ -453,6 +490,11 @@ def assemble_system_prompt(
                     "low-confidence facts should be treated as tentative and confirmed "
                     "lightly before relying on them."
                 )
+            rules.append(
+                "Callback restraint: use at most one remembered fact, callback, "
+                "inside joke, stale-fact confirmation, or relationship follow-up "
+                "in a single reply. Choose the one that best fits the live turn."
+            )
 
     anger_level = _get_anger_level()
     if anger_level in _ANGER_RULES:

@@ -239,6 +239,17 @@ EMPATHY_DISCRETION_IN_CROWD = True
 # voice → resolved as anxious). Pure local, no API cost. See audio/prosody.py.
 EMPATHY_PROSODY_ENABLED = True
 
+# When the literal words say "fine/okay/all good" but local prosody is
+# confidently negative, Rex may make one light observation and leave an easy
+# out. This is intentionally conservative so he doesn't argue with a person
+# about their own mood.
+EMPATHY_MOOD_MISMATCH_ENABLED = True
+EMPATHY_MOOD_MISMATCH_MIN_PROSODY_CONFIDENCE = 0.55
+EMPATHY_MOOD_MISMATCH_NEGATIVE_VALENCE = -0.30
+EMPATHY_FACE_MOOD_MISMATCH_ENABLED = True
+EMPATHY_FACE_MOOD_MISMATCH_MIN_CONFIDENCE = 0.60
+EMPATHY_FACE_MOOD_CACHE_MAX_AGE_SECS = 180.0
+
 # Proactive empathy check-ins driven by the consciousness loop. When ON, Rex
 # will (at most once per person per session) acknowledge an unfollowed-up
 # sensitive life event OR notice sustained negative affect and ask a low-

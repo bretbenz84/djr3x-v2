@@ -40,10 +40,26 @@ _DEFAULT_DECAY_DAYS = {
     "engagement": 365,
     "wedding":    365,
     "graduation": 365,
+    "achievement": 180,
+    "good_news":  90,
+    "celebration": 90,
+    "birthday":   30,
     "bad_day":    1,
     "work_stress": 1,
     "stress":     1,
     "default":    60,
+}
+
+_MILD_NEGATIVE_CATEGORIES = {"bad_day", "work_stress", "stress"}
+
+_HEAVY_NEGATIVE_CATEGORIES = {
+    "grief", "death", "breakup", "divorce", "illness", "health",
+    "job_loss", "layoff", "fired",
+}
+
+_CELEBRATION_CATEGORIES = {
+    "promotion", "new_baby", "engagement", "wedding", "graduation",
+    "achievement", "good_news", "celebration", "birthday",
 }
 
 _HIGH_INTENSITY_LOSS_SUBJECTS = {
@@ -62,6 +78,40 @@ def decay_days_for(category: str) -> int:
     """Return the default decay window for a category."""
     cat = (category or "").strip().lower()
     return int(_DEFAULT_DECAY_DAYS.get(cat, _DEFAULT_DECAY_DAYS["default"]))
+
+
+def is_celebration_event(event: dict) -> bool:
+    """True when an event is positive enough to deserve a happy callback."""
+    try:
+        valence = float(event.get("valence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        valence = 0.0
+    category = (event.get("category") or "").strip().lower()
+    return valence > 0 or category in _CELEBRATION_CATEGORIES
+
+
+def is_heavy_event(event: dict) -> bool:
+    """True when Rex should only raise this again if the person invited it."""
+    try:
+        valence = float(event.get("valence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        valence = 0.0
+    category = (event.get("category") or "").strip().lower()
+    if category in _MILD_NEGATIVE_CATEGORIES:
+        return False
+    return valence < 0 or category in _HEAVY_NEGATIVE_CATEGORIES
+
+
+def _can_surface_event(event: dict) -> bool:
+    """Return whether proactive/prompt callbacks may raise this event."""
+    if not is_heavy_event(event):
+        return True
+    return bool(event.get("person_invited_topic"))
+
+
+def can_surface_event(event: dict) -> bool:
+    """Public wrapper for prompt/conversation layers."""
+    return _can_surface_event(event)
 
 
 def decay_days_for_event(
@@ -207,6 +257,31 @@ def get_due_checkins(
         "FROM person_emotional_events "
         "WHERE person_id = ? "
         "AND valence < 0 "
+        "AND (person_invited_topic = 1 OR category IN ('bad_day', 'work_stress', 'stress')) "
+        "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
+        "AND checkins_muted_at IS NULL "
+        "AND (last_acknowledged_at IS NULL "
+        "     OR datetime(last_acknowledged_at, '+' || ? || ' days') <= datetime('now')) "
+        "ORDER BY mentioned_at DESC LIMIT ?",
+        (int(person_id), int(min_ack_gap_days), int(limit)),
+    )
+    return [dict(r) for r in rows]
+
+
+def get_due_celebrations(
+    person_id: int,
+    limit: int = 2,
+    min_ack_gap_days: int = 7,
+) -> list[dict]:
+    """Return active positive events due for a light celebratory check-in."""
+    rows = db.fetchall(
+        "SELECT id, category, valence, description, mentioned_at, "
+        "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
+        "       sensitivity_decay_days, "
+        "       person_invited_topic "
+        "FROM person_emotional_events "
+        "WHERE person_id = ? "
+        "AND valence > 0 "
         "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
         "AND checkins_muted_at IS NULL "
         "AND (last_acknowledged_at IS NULL "
@@ -247,6 +322,39 @@ def get_startup_checkins(
         "FROM person_emotional_events "
         "WHERE person_id = ? "
         "AND valence < 0 "
+        "AND (person_invited_topic = 1 OR category IN ('bad_day', 'work_stress', 'stress')) "
+        "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
+        "AND checkins_muted_at IS NULL "
+        f"{ack_clause} "
+        "ORDER BY mentioned_at DESC LIMIT ?",
+        params,
+    )
+    return [dict(r) for r in rows]
+
+
+def get_startup_celebrations(
+    person_id: int,
+    process_started_iso: Optional[str],
+    limit: int = 1,
+) -> list[dict]:
+    """Return positive events that can lead a fresh-process greeting."""
+    if process_started_iso:
+        ack_clause = (
+            "AND (last_acknowledged_at IS NULL OR last_acknowledged_at < ?)"
+        )
+        params = (int(person_id), process_started_iso, int(limit))
+    else:
+        ack_clause = ""
+        params = (int(person_id), int(limit))
+
+    rows = db.fetchall(
+        "SELECT id, category, valence, description, mentioned_at, "
+        "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
+        "       sensitivity_decay_days, "
+        "       person_invited_topic "
+        "FROM person_emotional_events "
+        "WHERE person_id = ? "
+        "AND valence > 0 "
         "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
         "AND checkins_muted_at IS NULL "
         f"{ack_clause} "
@@ -352,17 +460,17 @@ def summarize_for_prompt(
     """Render active emotional events as a prompt-ready block.
 
     Discretion rule: when more than one person is in the scene, suppress
-    surfacing entirely — these are sensitive and shouldn't be aired by Rex
-    in front of bystanders. The person can still bring it up themselves;
-    the LLM just won't be reminded by the system prompt.
+    sensitive callbacks — grief, illness, job loss, etc. — so Rex doesn't air
+    private context in front of bystanders. Positive events may still appear.
     """
     if not getattr(config, "EMPATHY_ENABLED", True):
         return ""
     suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
-    if suppress_in_crowd and crowd_count > 1:
-        return ""
-
-    events = get_active_events(person_id, limit=3)
+    events = [
+        ev for ev in get_active_events(person_id, limit=6)
+        if _can_surface_event(ev)
+        and not (suppress_in_crowd and crowd_count > 1 and is_heavy_event(ev))
+    ][:3]
     if not events:
         return ""
 
@@ -380,7 +488,8 @@ def summarize_for_prompt(
         )
         ack = ev.get("last_acknowledged_at")
         ack_clause = " (already acknowledged this session)" if ack else " (not yet acknowledged on this return)"
+        tone = "celebration" if is_celebration_event(ev) else "sensitive"
         lines.append(
-            f"- {ev['category']}: {ev['description']} (mentioned {when}){ack_clause}"
+            f"- {tone}/{ev['category']}: {ev['description']} (mentioned {when}){ack_clause}"
         )
-    return "Sensitive recent life events for this person:\n" + "\n".join(lines)
+    return "Recent emotional/social events for this person:\n" + "\n".join(lines)

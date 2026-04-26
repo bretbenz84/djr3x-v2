@@ -1132,6 +1132,23 @@ def _pick_due_emotional_checkin(person_db_id: Optional[int]) -> Optional[dict]:
         return None
 
 
+def _pick_due_celebration_checkin(person_db_id: Optional[int]) -> Optional[dict]:
+    """Return the most recent positive event due for a startup celebration."""
+    if not isinstance(person_db_id, int):
+        return None
+    try:
+        from memory import emotional_events as emo_events
+        due = emo_events.get_startup_celebrations(
+            person_db_id,
+            process_started_iso=_process_started_iso,
+            limit=1,
+        )
+        return due[0] if due else None
+    except Exception as exc:
+        _log.debug("celebration check-in lookup error: %s", exc)
+        return None
+
+
 def _first_sight_context(first_name: str) -> tuple[str, str]:
     """Return prompt phrasing for seeing a known person first time this run."""
     if _process_started_mono and (time.monotonic() - _process_started_mono) <= 45.0:
@@ -1199,6 +1216,23 @@ def _build_emotional_checkin_prompt(
         f"expense. End with a low-pressure question. Good shapes for grief: "
         f"'Hey {first_name}, how are you holding up with everything?' or "
         f"'How are you doing with your loss?'"
+    )
+
+
+def _build_celebration_checkin_prompt(
+    first_name: str,
+    event: dict,
+    context_sentence: str,
+) -> str:
+    category = (event.get("category") or "good_news").strip().lower()
+    desc = (event.get("description") or "").strip()
+    return (
+        f"{context_sentence} You remember this good news or milestone for "
+        f"{first_name}: category={category}, description=\"{desc}\". "
+        f"Open with ONE short in-character Rex line that celebrates it without "
+        f"making a huge speech. Warm, dry, no insult at their expense. You may "
+        f"ask one low-pressure follow-up like 'how's that going?' only if it "
+        f"fits naturally. Address {first_name} by name."
     )
 
 
@@ -1467,6 +1501,27 @@ def _get_or_detect_mood(person_id: int) -> Optional[dict]:
             return mood
     except Exception as exc:
         _log.debug("mood detect error: %s", exc)
+    return None
+
+
+def get_cached_mood(person_id: Optional[int], max_age_secs: Optional[float] = None) -> Optional[dict]:
+    """Return a recent face-mood reading without making a new vision call."""
+    if not isinstance(person_id, int):
+        return None
+    try:
+        cooldown = float(
+            max_age_secs
+            if max_age_secs is not None
+            else getattr(config, "MOOD_ANALYSIS_PER_PERSON_COOLDOWN_SECS", 180.0)
+        )
+        cached = _mood_cache.get(person_id)
+        if not cached:
+            return None
+        mood, ts = cached
+        if (time.monotonic() - ts) <= cooldown:
+            return dict(mood)
+    except Exception as exc:
+        _log.debug("cached mood lookup error: %s", exc)
     return None
 
 
@@ -2521,6 +2576,28 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                             person_name, bday_days,
                         )
 
+                    # Priority 1.5 — positive news / milestone check-in
+                    if prompt is None:
+                        celebration = _pick_due_celebration_checkin(person_db_id)
+                        if celebration is not None:
+                            prompt = _build_celebration_checkin_prompt(
+                                first_name, celebration, context_sentence,
+                            )
+                            label = f"first-sight celebration check-in for {person_name}"
+                            emotion = "happy"
+                            try:
+                                from memory import emotional_events as emo_events
+                                emo_events.mark_acknowledged(int(celebration["id"]))
+                            except Exception:
+                                pass
+                            _log.info(
+                                "consciousness: first-sight celebration check-in for %s "
+                                "(category=%s, event_id=%s)",
+                                person_name,
+                                celebration.get("category"),
+                                celebration.get("id"),
+                            )
+
                     # Priority 2 — milestone visit
                     if prompt is None:
                         milestone = _pick_milestone(person_db_id)
@@ -2628,6 +2705,8 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         purpose=(
                             "emotional_checkin"
                             if "emotional check-in" in label
+                            else "celebration_checkin"
+                            if "celebration check-in" in label
                             else "memory_followup"
                             if "followup" in label or "anticipation" in label
                             else "presence_reaction"
@@ -3489,6 +3568,35 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
                         cat, engaged_id,
                     )
                 return
+
+        # ── Trigger A2: remembered positive news / celebration ─────────────
+        try:
+            celebrations = emo_events.get_due_celebrations(engaged_id, limit=2)
+        except Exception:
+            celebrations = []
+        if celebrations:
+            ev = celebrations[0]
+            desc = (ev.get("description") or "").strip()
+            cat = (ev.get("category") or "").strip().lower()
+            prompt = (
+                f"You're talking with '{first_name}' (tier: {tier}). You remember "
+                f"they shared this good news or milestone — category={cat}: "
+                f"\"{desc}\". In ONE short in-character Rex line, celebrate it "
+                f"without turning it into a speech. Warm, dry, no insult at their "
+                f"expense. You may ask one low-pressure follow-up like 'how's that "
+                f"going?' only if it feels natural."
+            )
+            if _generate_and_speak(prompt, emotion="happy", purpose="celebration_checkin"):
+                try:
+                    emo_events.mark_acknowledged(int(ev["id"]))
+                except Exception:
+                    pass
+                _log.info(
+                    "consciousness: proactive celebration check-in "
+                    "(category=%s, event_id=%s) for person_id=%s",
+                    cat, ev.get("id"), engaged_id,
+                )
+            return
 
         # ── Trigger B: sustained negative affect ───────────────────────────
         entry = _empathy.peek(engaged_id)

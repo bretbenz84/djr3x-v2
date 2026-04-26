@@ -17,6 +17,7 @@ from typing import Optional
 import config
 from intelligence import empathy, question_budget, response_length, user_energy
 from memory import boundaries as boundary_memory
+from memory import facts as facts_memory
 from memory import people as people_memory
 from world_state import world_state
 
@@ -326,6 +327,15 @@ def _roast_level(
         try:
             if boundary_memory.is_blocked(person_id, "roast", "anything"):
                 return "none"
+        except Exception:
+            pass
+        try:
+            prefs = facts_memory.get_facts_by_category(person_id, "preference")
+            pref_text = " ".join(str(p.get("value") or "").lower() for p in prefs)
+            if "dislikes sharp roasts" in pref_text or "prefers direct answers" in pref_text:
+                return "none"
+            if "likes light roasts" in pref_text and target not in {"micro", "brief"}:
+                return "light"
         except Exception:
             pass
     if target in {"micro", "brief", "short"}:

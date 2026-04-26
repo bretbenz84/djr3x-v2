@@ -41,6 +41,7 @@ from intelligence import end_thread
 from intelligence import introductions
 from intelligence import social_frame
 from intelligence import turn_completion
+from intelligence import friendship_patterns
 from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
@@ -1704,6 +1705,12 @@ def _post_response(
 
         except Exception as exc:
             _log.debug("post_response sentiment error: %s", exc)
+
+        if person_id is not None:
+            try:
+                friendship_patterns.learn_from_turn(person_id, user_text)
+            except Exception as exc:
+                _log.debug("friendship pattern learning error: %s", exc)
 
         # Fact extraction from recent transcript
         if person_id is not None:
@@ -3943,7 +3950,23 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                         except Exception as exc:
                             _log.debug("prosody.analyze failed: %s", exc)
                             prosody_features = None
-                    result = empathy.classify_affect(text, prosody_features=prosody_features)
+                    face_mood = None
+                    if person_id is not None and getattr(config, "EMPATHY_FACE_MOOD_MISMATCH_ENABLED", True):
+                        try:
+                            face_mood = consciousness.get_cached_mood(
+                                person_id,
+                                max_age_secs=float(
+                                    getattr(config, "EMPATHY_FACE_MOOD_CACHE_MAX_AGE_SECS", 180.0)
+                                ),
+                            )
+                        except Exception as exc:
+                            _log.debug("cached face mood lookup failed: %s", exc)
+                            face_mood = None
+                    result = empathy.classify_affect(
+                        text,
+                        prosody_features=prosody_features,
+                        face_mood=face_mood,
+                    )
                     if not result:
                         return
                     try:
@@ -4188,12 +4211,25 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     # turns this session.
                     if person_id is not None:
                         try:
+                            try:
+                                ws_now = world_state.snapshot()
+                                crowd_count = int((ws_now.get("crowd") or {}).get("count", 1) or 1)
+                            except Exception:
+                                crowd_count = 1
+                            suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
                             unack = [
                                 ev for ev in emotional_events.get_active_events(person_id, limit=3)
                                 if not ev.get("last_acknowledged_at")
+                                and emotional_events.can_surface_event(ev)
+                                and not (
+                                    suppress_in_crowd
+                                    and crowd_count > 1
+                                    and emotional_events.is_heavy_event(ev)
+                                )
                             ]
                             if unack:
-                                emotional_events.mark_all_acknowledged_for_person(person_id)
+                                for ev in unack:
+                                    emotional_events.mark_acknowledged(int(ev["id"]))
                                 _log.info(
                                     "[empathy] marked %d emotional event(s) acknowledged "
                                     "for person_id=%s on this turn",

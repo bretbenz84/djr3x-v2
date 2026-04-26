@@ -575,6 +575,60 @@ Useful log lines:
 - `visual curiosity question`
 - `visual curiosity step error`
 
+## 16. Emotional Social Intelligence
+
+Celebration memory:
+
+> I got promoted today.
+
+Expected:
+
+- Rex celebrates briefly and does not turn it into a long speech.
+- On a later run, Rex may lightly check in on the good news.
+- Logs can show `stored emotional event` with a positive category and later `celebration check-in`.
+
+Heavy-topic consent:
+
+> My dog died today.
+> I don't want to talk about that anymore.
+
+Expected:
+
+- Rex acknowledges the boundary.
+- Later returns should not proactively raise that event unless the person reopens it.
+- In a group, sensitive emotional callbacks should stay suppressed.
+
+Mood mismatch:
+
+> I'm fine.
+
+Expected if prosody or cached face mood is clearly negative:
+
+- Rex may make one light observation and give an easy out.
+- Rex should not pry or interrogate.
+
+## 17. Friendship Patterns
+
+Preference learning:
+
+> That was rude.
+> Just answer directly next time.
+> I like the Star Wars bits.
+
+Expected:
+
+- Rex stores social-style preferences in `person_facts`.
+- Future replies should reduce sharp roasts, answer more directly, and keep Star Wars references optional.
+
+Running jokes:
+
+> Our running joke is that my couch has a better social life than I do.
+
+Expected:
+
+- Rex stores an `inside_joke` fact.
+- Future callbacks should be rare and limited to one per reply.
+
 ## Final Pass Criteria
 
 The run is a pass if:
@@ -587,6 +641,9 @@ The run is a pass if:
 - Corrections get repaired cleanly.
 - Stale or low-confidence memories are tentative.
 - Thread-ending cues produce a graceful stop.
+- Positive milestones can get light check-ins.
+- Sensitive emotional callbacks respect consent and group discretion.
+- Social style preferences influence roasts, callbacks, and directness.
 - Optional proactive speech does not overlap, stack, or interrupt the user's answer.
 
 If something fails, save:

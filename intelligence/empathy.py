@@ -15,6 +15,7 @@ want to be heard. Tier shapes Rex's voice and depth, not whether he shows up.
 
 import json
 import logging
+import re
 import threading
 import time
 from collections import deque
@@ -56,11 +57,83 @@ _AFFECT_VALENCE = {
     "angry":    -0.5,
 }
 
+_FINE_WORDS_PAT = re.compile(
+    r"\b(?:"
+    r"i(?:'m| am)\s+(?:fine|okay|ok|good|alright|all right)|"
+    r"doing\s+(?:fine|okay|ok|good|alright|all right)|"
+    r"all\s+good|"
+    r"fine|okay|ok"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def _result_valence(result: dict) -> float:
     return _AFFECT_VALENCE.get(
         (result.get("affect") or "neutral").lower(), 0.0,
     )
+
+
+def _detect_mood_mismatch(
+    text: str,
+    affect: str,
+    sensitivity: str,
+    confidence: float,
+    prosody_features: Optional[dict],
+    face_mood: Optional[dict] = None,
+) -> Optional[dict]:
+    """Detect "I'm fine" words paired with negative nonverbal signals."""
+    del confidence  # reserved for future fusion with model confidence
+    if not getattr(config, "EMPATHY_MOOD_MISMATCH_ENABLED", True):
+        return None
+    if not _FINE_WORDS_PAT.search(text or ""):
+        return None
+    evidence = []
+    if prosody_features:
+        try:
+            prosody_conf = float(prosody_features.get("confidence", 0.0) or 0.0)
+            prosody_valence = float(prosody_features.get("valence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            prosody_conf = 0.0
+            prosody_valence = 0.0
+        min_conf = float(getattr(config, "EMPATHY_MOOD_MISMATCH_MIN_PROSODY_CONFIDENCE", 0.55))
+        max_valence = float(getattr(config, "EMPATHY_MOOD_MISMATCH_NEGATIVE_VALENCE", -0.30))
+        if prosody_conf >= min_conf and prosody_valence <= max_valence:
+            evidence.append({
+                "source": "prosody",
+                "tag": prosody_features.get("tag") or "",
+                "valence": prosody_valence,
+                "confidence": prosody_conf,
+            })
+
+    if getattr(config, "EMPATHY_FACE_MOOD_MISMATCH_ENABLED", True) and face_mood:
+        label = (face_mood.get("mood") or "").strip().lower()
+        try:
+            face_conf = float(face_mood.get("confidence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            face_conf = 0.0
+        min_face_conf = float(getattr(config, "EMPATHY_FACE_MOOD_MISMATCH_MIN_CONFIDENCE", 0.60))
+        if label in {"sad", "tired", "angry", "anxious"} and face_conf >= min_face_conf:
+            evidence.append({
+                "source": "face",
+                "tag": f"{label}: {face_mood.get('notes') or ''}".strip(": "),
+                "valence": -0.5,
+                "confidence": face_conf,
+            })
+
+    if not evidence:
+        return None
+    strongest = max(evidence, key=lambda item: float(item.get("confidence") or 0.0))
+    return {
+        "kind": "words_ok_nonverbal_not",
+        "words_affect": affect,
+        "words_sensitivity": sensitivity,
+        "source": strongest["source"],
+        "tag": strongest.get("tag") or "",
+        "valence": strongest.get("valence"),
+        "confidence": strongest.get("confidence"),
+        "evidence": evidence,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -88,11 +161,13 @@ _CLASSIFY_PROMPT = (
     "    Set event when the utterance reveals a SPECIFIC emotional life event "
     "the robot should remember across sessions or check in on soon (e.g. "
     "someone died, lost a job, breakup, illness, big milestone like a wedding/"
-    "promotion/new baby, or a concrete mild event like 'I had a bad day at "
+    "promotion/new baby/graduation, good news worth celebrating, or a concrete "
+    "mild event like 'I had a bad day at "
     "work'). Set null for vague mood with no event ('I'm tired', 'meh').\n"
     "    category: short lowercase tag — grief, death, breakup, divorce, "
     "illness, health, job_loss, layoff, fired, move, promotion, new_baby, "
-    "engagement, wedding, graduation, bad_day, work_stress, stress, other\n"
+    "engagement, wedding, graduation, achievement, good_news, celebration, "
+    "birthday, bad_day, work_stress, stress, other\n"
     "    valence: -1.0 to +1.0 (negative = hard, positive = milestone)\n"
     "    description: ONE concise sentence in the third person, e.g. "
     '"father passed away last week", "got laid off from tech job"\n'
@@ -113,6 +188,7 @@ _CLASSIFY_PROMPT = (
 def classify_affect(
     text: str,
     prosody_features: Optional[dict] = None,
+    face_mood: Optional[dict] = None,
 ) -> Optional[dict]:
     """Run the classifier and return a normalized dict, or None on failure.
 
@@ -133,9 +209,22 @@ def classify_affect(
             "literal words (e.g. shaky voice but the words say 'fine'); "
             "otherwise weight the words more."
         )
+    face_clause = ""
+    if face_mood and face_mood.get("mood"):
+        try:
+            face_conf = float(face_mood.get("confidence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            face_conf = 0.0
+        face_clause = (
+            "\nRecent visual mood read of the speaker's face "
+            f"(confidence {face_conf:.2f}): "
+            f"mood={face_mood.get('mood')}, notes={face_mood.get('notes') or 'none'}. "
+            "Use this only as weak supporting context, especially when the words "
+            "say they are fine but the face looks otherwise."
+        )
 
     try:
-        user_msg = _CLASSIFY_PROMPT.format(text=text) + prosody_clause
+        user_msg = _CLASSIFY_PROMPT.format(text=text) + prosody_clause + face_clause
     except Exception as exc:
         _log.warning("empathy.classify_affect prompt build failed: %s", exc)
         return None
@@ -207,6 +296,10 @@ def classify_affect(
     else:
         event = None
 
+    mood_mismatch = _detect_mood_mismatch(
+        text, affect, sensitivity, confidence, prosody_features, face_mood,
+    )
+
     return {
         "affect": affect,
         "needs": needs,
@@ -215,6 +308,7 @@ def classify_affect(
         "crisis": bool(data.get("crisis", False)),
         "confidence": confidence,
         "event": event,
+        "mood_mismatch": mood_mismatch,
         "prosody": (
             {
                 "tag": prosody_features.get("tag"),
@@ -341,6 +435,9 @@ def select_mode(
     is_child = bool(person and person.get("age_category") == "child") or child_in_scene
     if is_child and (affect in _NEGATIVE_AFFECT or sensitivity != "none"):
         return _pack("child_kind", "child + distressed signal")
+
+    if affect_result.get("mood_mismatch"):
+        return _pack("gentle_probe", "words say okay but nonverbal cues suggest strain")
 
     if affect in _POSITIVE_AFFECT and sensitivity == "none":
         if needs == "celebrate" or affect == "excited":
@@ -609,6 +706,13 @@ def get_directive(person_id: Optional[int]) -> Optional[str]:
             f"Acoustic prosody: {prosody['tag']} "
             f"(valence={prosody.get('valence', 0.0):+.2f}, "
             f"arousal={prosody.get('arousal', 0.0):+.2f})."
+        )
+    mismatch = result.get("mood_mismatch")
+    if mismatch:
+        lines.append(
+            "Mood mismatch: their words say they are fine/okay, but their "
+            "voice or face suggests strain. You may lightly notice the mismatch once "
+            "and give them an easy out; do not pry or turn it into an interview."
         )
     trend = get_trend(person_id)
     if trend:
