@@ -1188,7 +1188,7 @@ JEOPARDY_AUDIO_OUTPUT_SAMPLE_RATE = 44100
 JEOPARDY_AUDIO_MUSIC_GAIN = 0.35
 JEOPARDY_AUDIO_STINGER_GAIN = 0.75
 JEOPARDY_THEME_MAX_SECS = 8.0
-JEOPARDY_PLAY_THINKING_THEME = False
+JEOPARDY_PLAY_THINKING_THEME = True
 
 # How many times Rex will agree to play the same game within GAME_REPEAT_WINDOW_SECS
 # before refusing. Scaled up or down by the agreeability personality parameter.
