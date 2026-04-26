@@ -898,6 +898,22 @@ import re
 import sys
 from pathlib import Path
 
+try:
+    _tty = open("/dev/tty", "r+", encoding="utf-8", buffering=1)
+except OSError:
+    _tty = None
+
+
+def prompt_input(prompt: str) -> str:
+    if _tty is None:
+        return input(prompt)
+    _tty.write(prompt)
+    _tty.flush()
+    line = _tty.readline()
+    if line == "":
+        raise EOFError("No input available on /dev/tty")
+    return line.rstrip("\n")
+
 config_path = Path(sys.argv[1])
 env_path = Path(sys.argv[2])
 text = config_path.read_text(encoding="utf-8")
@@ -1004,7 +1020,7 @@ for name, cfg in channel_rows:
         f"neutral {neutral} us. New min-max: "
     )
     while True:
-        raw = input(prompt).strip()
+        raw = prompt_input(prompt).strip()
         if not raw:
             break
         parsed = parse_limits(raw)
@@ -1179,6 +1195,16 @@ _guided_maestro_setup() {
     _configure_servo_limits_interactive
 
     echo ""
+    echo "Disconnect the Pololu Maestro USB now, if it is connected. Keep servo power disconnected."
+    _prompt_continue "Press Enter once the Maestro USB is disconnected..."
+    _print_dev_directory
+
+    if [[ -z "$HARDWARE_BASELINE_FILE" ]]; then
+        HARDWARE_BASELINE_FILE="$(mktemp)"
+    fi
+    _snapshot_dev_names "$HARDWARE_BASELINE_FILE"
+
+    echo ""
     echo "Connect the Pololu Maestro by USB only. Keep servo power disconnected and do not power live servos yet."
     _prompt_continue "Press Enter after connecting the unpowered Maestro..."
 
@@ -1221,20 +1247,16 @@ _configure_droid_hardware_interactive() {
         return
     fi
 
-    echo ""
-    if [[ "$setup_leds" -eq 1 && "$setup_servos" -eq 1 ]]; then
-        echo "Disconnect the Pololu Maestro, chest Arduino, and head Arduino now."
-    elif [[ "$setup_leds" -eq 1 ]]; then
+    if [[ "$setup_leds" -eq 1 ]]; then
+        echo ""
         echo "Disconnect the chest and head LED Arduinos now."
-    else
-        echo "Disconnect the Pololu Maestro now."
+        _prompt_continue "Press Enter once the LED Arduino USB device(s) are disconnected..."
+
+        _print_dev_directory
+
+        HARDWARE_BASELINE_FILE="$(mktemp)"
+        _snapshot_dev_names "$HARDWARE_BASELINE_FILE"
     fi
-    _prompt_continue "Press Enter once the selected USB device(s) are disconnected..."
-
-    _print_dev_directory
-
-    HARDWARE_BASELINE_FILE="$(mktemp)"
-    _snapshot_dev_names "$HARDWARE_BASELINE_FILE"
 
     if [[ "$setup_leds" -eq 1 ]]; then
         _guided_arduino_device_setup \
