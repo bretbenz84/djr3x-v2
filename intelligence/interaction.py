@@ -221,6 +221,9 @@ def _speak_blocking(
             post_beat_ms = random.randint(beat_min, beat_max)
     if post_beat_ms_override > 0:
         post_beat_ms = max(post_beat_ms, post_beat_ms_override)
+    asked_question = _assistant_asked_question(text)
+    if asked_question:
+        post_beat_ms = 0
 
     done = speech_queue.enqueue(
         text, emotion, priority=priority,
@@ -243,9 +246,16 @@ def _speak_blocking(
             return False
 
     # Normal completion — block new speech-onset detections briefly and discard
-    # any mic audio that captured Rex's voice tail during playback.
+    # any mic audio that captured Rex's voice tail during playback. If Rex just
+    # asked a direct question, use a much shorter handoff so immediate answers
+    # do not lose their first syllables.
     global _listen_resume_at, _post_tts_flush_needed
-    _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
+    delay_secs = config.POST_SPEECH_LISTEN_DELAY_SECS
+    if asked_question:
+        delay_secs = float(
+            getattr(config, "POST_QUESTION_LISTEN_DELAY_SECS", delay_secs)
+        )
+    _listen_resume_at = time.monotonic() + delay_secs
     stream.flush()
     _post_tts_flush_needed = True
     return True
@@ -256,6 +266,7 @@ def _arm_post_tts_window() -> None:
     after every queue item — not just items played via _speak_blocking."""
     global _listen_resume_at, _post_tts_flush_needed
     _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
+    stream.flush()
     _post_tts_flush_needed = True
 
 
@@ -279,11 +290,55 @@ def _interrupt_ack() -> None:
 def _speak_filler() -> None:
     """Speak a latency filler line asynchronously, never repeating back-to-back."""
     global _last_filler
+    if not getattr(config, "LATENCY_FILLER_ENABLED", True):
+        return
     pool = config.LATENCY_FILLER_LINES
     candidates = [l for l in pool if l != _last_filler] or pool
     chosen = random.choice(candidates)
+    if getattr(config, "LATENCY_FILLER_REQUIRE_CACHE", True):
+        try:
+            from audio import tts
+            if not tts.is_cached(chosen):
+                _log.debug("[interaction] latency filler skipped — not cached: %r", chosen)
+                return
+        except Exception as exc:
+            _log.debug("[interaction] latency filler cache check failed: %s", exc)
+            return
     _last_filler = chosen
-    _speak_async(chosen)
+    speech_queue.enqueue(chosen, "neutral", priority=1, tag="latency_filler")
+
+
+def _start_latency_filler_timer() -> threading.Event:
+    """Start a delayed filler timer and return an event that cancels it.
+
+    Filler used to fire immediately for every utterance, including short grief
+    flow replies. Delaying it keeps normal turns quiet while still covering
+    genuinely slow LLM calls.
+    """
+    stop = threading.Event()
+    if not getattr(config, "LATENCY_FILLER_ENABLED", True):
+        stop.set()
+        return stop
+
+    delay = float(getattr(config, "LATENCY_FILLER_DELAY_SECS", 1.4))
+    if delay <= 0:
+        _speak_filler()
+        stop.set()
+        return stop
+
+    def _timer() -> None:
+        if stop.wait(delay):
+            return
+        if (
+            state_module.get_state() == State.ACTIVE
+            and not speech_queue.is_speaking()
+            and not output_gate.is_busy()
+            and not _interrupted.is_set()
+        ):
+            _speak_filler()
+
+    threading.Thread(target=_timer, daemon=True, name="latency-filler").start()
+    return stop
 
 
 def _assistant_asked_question(text: str) -> bool:
@@ -808,7 +863,11 @@ def _stream_llm_response(text: str, person_id: Optional[int]) -> str:
     )
     surprise_thread.start()
 
-    full_text = llm.get_response(text, person_id)
+    filler_stop = _start_latency_filler_timer()
+    try:
+        full_text = llm.get_response(text, person_id)
+    finally:
+        filler_stop.set()
 
     pre_beat_ms = 0
     delivery_emotion = "neutral"
@@ -1935,19 +1994,20 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
     delay_ms = random.randint(config.REACTION_DELAY_MS_MIN, config.REACTION_DELAY_MS_MAX)
     time.sleep(delay_ms / 1000.0)
 
-    # Hold AEC suppression open across filler + response as one continuous window.
-    # Individual tts.speak() calls will not turn suppression off mid-sequence;
-    # end_sequence() in the finally block does the final flush and tail.
-    echo_cancel.start_sequence()
+    # Once Rex starts speaking in response, hold AEC suppression open across any
+    # related output as one continuous window. Do not start it before
+    # transcription; that made the logs look like user speech was captured
+    # while playback suppression was active and encouraged premature filler.
+    sequence_started = False
     try:
-        # Speak filler asynchronously while transcription + speaker ID run
-        _speak_filler()
-
         # Concurrent transcription + speaker identification
         text, raw_best_id, raw_best_name, speaker_score = _process_audio(audio_array)
 
         if not text:
             return
+
+        echo_cancel.start_sequence()
+        sequence_started = True
 
         # ── Voice acceptance: hard + session-sticky soft threshold ─────────────
         # Short/noisy utterances cause wild score variance (0.60–0.85 for the
@@ -2993,6 +3053,13 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 _register_rex_utterance(curiosity_q)
                 assistant_asked_question = True
 
+        # Release playback suppression before slower post-response memory work.
+        # Otherwise an immediate human reply can land in the rolling buffer and
+        # then get flushed when the API-backed fact/sentiment pass finishes.
+        if sequence_started:
+            echo_cancel.end_sequence(flush=False)
+            sequence_started = False
+
         _post_response(
             text,
             person_id,
@@ -3001,7 +3068,8 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             pre_classified_insult=pre_classified_insult,
         )
     finally:
-        echo_cancel.end_sequence()
+        if sequence_started:
+            echo_cancel.end_sequence()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3077,13 +3145,13 @@ def _loop() -> None:
                 _stop_event.wait(_CHUNK_SECS)
                 continue
 
-            # First chunk after the post-TTS window: flush decay audio and skip.
+            # First detected speech after the post-TTS window may be the human's
+            # immediate answer to Rex's question. The queue callback already
+            # flushed playback tail when TTS ended, so do not discard this VAD
+            # positive chunk.
             global _post_tts_flush_needed
             if _post_tts_flush_needed:
                 _post_tts_flush_needed = False
-                stream.flush()
-                _stop_event.wait(_CHUNK_SECS)
-                continue
 
             _log.info("[interaction] speech detected in IDLE — activating without wake word")
             state_module.set_state(State.ACTIVE)
@@ -3125,12 +3193,11 @@ def _loop() -> None:
             _stop_event.wait(_CHUNK_SECS)
             continue
 
-        # First chunk after the post-TTS window: flush decay audio and skip.
+        # First detected speech after the post-TTS window may be the human's
+        # immediate answer. Playback tail was already flushed by the TTS-done
+        # callback, so keep this chunk and start accumulating.
         if _post_tts_flush_needed:
             _post_tts_flush_needed = False
-            stream.flush()
-            _stop_event.wait(_CHUNK_SECS)
-            continue
 
         # ── Speech detected ────────────────────────────────────────────────────
         speech_start = time.monotonic()
@@ -3140,7 +3207,7 @@ def _loop() -> None:
         # Rex's voice tail, then WAIT for a fresh VAD rising edge before
         # accumulating. Without this, the rolling buffer still holds ~seconds of
         # Rex's own voice which Whisper concatenates onto the user's utterance.
-        if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
+        if speech_queue.is_speaking() or output_gate.is_busy():
             _interrupted.set()
             try:
                 import sounddevice as sd

@@ -641,10 +641,13 @@ SILENCE_TIMEOUT_SECS = 2.5
 # Prevents single-word transcriptions when the person is still talking.
 MIN_SPEECH_DURATION_SECS = 1.5
 
-# Seconds after TTS completes before VAD detections are accepted.  During this
-# window any speech onset is discarded and the audio buffer is flushed so
-# Rex's own voice tail cannot trigger a new speech segment.
+# Seconds after TTS completes before VAD detections are accepted. The audio
+# buffer is flushed when playback ends; this guard just lets room echo decay.
 POST_SPEECH_LISTEN_DELAY_SECS = 0.8
+
+# When Rex just asked a direct question, humans often answer immediately. Use a
+# shorter guard window so quick replies do not lose their first syllables.
+POST_QUESTION_LISTEN_DELAY_SECS = 0.15
 
 # Seconds of no detected speech in ACTIVE state before returning to IDLE
 CONVERSATION_IDLE_TIMEOUT_SECS = 30.0
@@ -929,6 +932,12 @@ LATENCY_FILLER_LINES = [
     "One sec",
     "Processing...",
 ]
+
+# Filler should only cover real latency, not every turn. This avoids clipped,
+# choppy first-run filler TTS and keeps direct Q&A exchanges clean.
+LATENCY_FILLER_ENABLED = True
+LATENCY_FILLER_DELAY_SECS = 1.4
+LATENCY_FILLER_REQUIRE_CACHE = True
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PRIVATE THOUGHTS — Idle Monologue Pool

@@ -45,15 +45,16 @@ def start_sequence() -> None:
     logger.info("[aec] sequence started — suppression held across segments")
 
 
-def end_sequence() -> None:
+def end_sequence(flush: bool = True) -> None:
     """End the playback sequence and apply normal post-playback tail suppression."""
     global _playing, _suppress_until, _sequence_active
     with _lock:
         _sequence_active = False
         _playing = False
         _suppress_until = time.monotonic() + config.POST_PLAYBACK_SUPPRESSION_SECS
-        from audio import stream as _stream
-        _stream.flush()
+        if flush:
+            from audio import stream as _stream
+            _stream.flush()
     logger.info(
         "[aec] sequence ended — suppression stopped, %.1fs tail active",
         config.POST_PLAYBACK_SUPPRESSION_SECS,

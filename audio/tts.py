@@ -32,6 +32,7 @@ False so no conditional is needed here.
 import hashlib
 import io
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -48,6 +49,22 @@ logger = logging.getLogger(__name__)
 
 _speaking = False
 _speaking_lock = threading.Lock()
+
+
+def _normalize_for_speech(text: str) -> str:
+    """Expand compact forms that ElevenLabs tends to pronounce badly."""
+    spoken = " ".join((text or "").split())
+    replacements = [
+        (r"\bWWII\b", "World War Two"),
+        (r"\bWW2\b", "World War Two"),
+        (r"\bWorld War II\b", "World War Two"),
+        (r"\bWWI\b", "World War One"),
+        (r"\bWW1\b", "World War One"),
+        (r"\bWorld War I\b", "World War One"),
+    ]
+    for pattern, replacement in replacements:
+        spoken = re.sub(pattern, replacement, spoken, flags=re.IGNORECASE)
+    return spoken
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -96,12 +113,12 @@ def speak(
     """
     if not text or not text.strip():
         return
-    spoken_text = " ".join(text.split())
+    spoken_text = _normalize_for_speech(text)
     print(f"[TTS] {spoken_text}", flush=True)
 
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID
-    cache_file = _cache_path(text, voice_id, model_id, voice_settings)
+    cache_file = _cache_path(spoken_text, voice_id, model_id, voice_settings)
 
     if cache_file.exists():
         logger.info("[tts] cache hit: %s", cache_file.name)
@@ -111,7 +128,7 @@ def speak(
             f" (voice_settings={_summarize_settings(voice_settings)})"
             if voice_settings else "",
         )
-        audio_bytes = _fetch_from_api(text, voice_id, model_id, voice_settings)
+        audio_bytes = _fetch_from_api(spoken_text, voice_id, model_id, voice_settings)
         if not audio_bytes:
             return
         cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -242,6 +259,22 @@ def _cache_path(
         f"{text}{voice_id}{model_id}{settings_token}".encode("utf-8")
     ).hexdigest()
     return Path(config.TTS_CACHE_DIR) / f"{digest}.mp3"
+
+
+def is_cached(
+    text: str,
+    voice_settings: Optional[dict] = None,
+) -> bool:
+    """Return True if this text already has cached audio for the active voice."""
+    if not text or not text.strip():
+        return False
+    spoken_text = _normalize_for_speech(text)
+    return _cache_path(
+        spoken_text,
+        config.ELEVENLABS_VOICE_ID,
+        config.TTS_MODEL_ID,
+        voice_settings,
+    ).exists()
 
 
 def _fetch_from_api(

@@ -571,8 +571,9 @@ def generate_session_summary(person_id: int, transcript: list[dict]) -> str:
 
 
 def extract_name_from_reply(text: str) -> Optional[str]:
-    """Extract a single first-name from a short reply like "His name was Joe"
-    or just "Buddy". Returns None when no name is confidently present.
+    """Extract a person's name from a short reply like "His name was Joe",
+    "Tom Foster", or just "Buddy". Returns None when no name is confidently
+    present.
 
     Used by the grief flow's awaiting_name step. Tiny GPT-4o-mini call with
     JSON mode — robust to natural phrasing without regex sprawl.
@@ -580,10 +581,12 @@ def extract_name_from_reply(text: str) -> Optional[str]:
     if not text or not text.strip():
         return None
     prompt = (
-        'Extract a single first name (the deceased\'s, the pet\'s, or the '
-        'person being discussed) from this short reply. Return STRICT JSON '
+        'Extract the deceased\'s, pet\'s, or person\'s name from this short '
+        'reply. Preserve a first+last name when the human provides one. '
+        'Return STRICT JSON '
         'with one key: "name" — a string, or null if no name is present. '
         "Examples: \"His name was Joe\" → {\"name\": \"Joe\"}; "
+        "\"Tom Foster\" → {\"name\": \"Tom Foster\"}; "
         "\"Buddy\" → {\"name\": \"Buddy\"}; "
         "\"I don't really want to say\" → {\"name\": null}; "
         "\"He was a great guy\" → {\"name\": null}.\n\n"
@@ -605,8 +608,9 @@ def extract_name_from_reply(text: str) -> Optional[str]:
         name = name.strip()
         if not name or name.lower() in {"null", "none", "n/a"}:
             return None
-        # First token only — guards against the model returning a sentence.
-        return name.split()[0].strip(".,;:!?\"'")
+        name = re.sub(r"\s+", " ", name)
+        # Keep normal multi-token names, but strip sentence punctuation.
+        return name.strip(".,;:!?\"'")
     except Exception as exc:
         _log.debug("extract_name_from_reply failed: %s", exc)
         return None
