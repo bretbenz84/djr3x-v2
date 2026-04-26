@@ -646,7 +646,7 @@ Expected:
 - Immediate player-name replies after Rex asks who is playing should be heard without waiting for echo suppression logs to clear.
 - Rex names the players and categories, without reading every dollar value on the board.
 - The board stinger plays when the board is ready.
-- Category/value selections like `Birds for 200` produce a clue.
+- Category/value selections like `Birds for 200` produce a clue, even when the source board came from a Double Jeopardy round.
 - Rex listens for answers immediately after the clue, even while the thinking theme is playing.
 - Correct answers play the right-answer stinger and update scores.
 - Wrong answers play the incorrect-answer stinger and update scores.

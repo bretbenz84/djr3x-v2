@@ -208,9 +208,12 @@ def build_board() -> Optional[dict]:
 
     for cat_idx, category in enumerate(selected_categories):
         clues: dict[int, dict] = {}
-        for clue in category["clues"]:
+        for row_idx, clue in enumerate(category["clues"]):
             copy = dict(clue)
-            value = int(copy["value"])
+            source_value = int(copy["value"])
+            value = (row_idx + 1) * 200
+            copy["source_value"] = source_value
+            copy["value"] = value
             clues[value] = copy
             if copy.get("daily_double"):
                 daily_candidates.append((cat_idx, value))
@@ -329,6 +332,17 @@ def _extract_value(text: str, valid_values: list[int]) -> Optional[int]:
     return None
 
 
+def _mentioned_any_value(text: str) -> Optional[int]:
+    plain = _plain(text)
+    match = re.search(r"\b(\d{2,4})\b", plain)
+    if match:
+        return int(match.group(1))
+    for phrase, value in _VALUE_WORDS:
+        if re.search(rf"\b{re.escape(phrase)}\b", plain):
+            return value
+    return None
+
+
 def _selection_query(text: str) -> str:
     query = _plain(text)
     query = re.sub(r"\b\d{2,4}\b", " ", query)
@@ -355,6 +369,10 @@ def parse_selection(text: str, board: dict, last_category: Optional[str] = None)
     })
     value = _extract_value(text, valid_values)
     if value is None:
+        mentioned = _mentioned_any_value(text)
+        if mentioned is not None and valid_values:
+            available_values = ", ".join(f"${v}" for v in valid_values)
+            return None, f"I heard ${mentioned}, but that square is not available. Try one of these values: {available_values}."
         return None, "Pick a dollar value too, before my game-show circuits start smoking."
 
     query = _selection_query(text)
