@@ -3716,7 +3716,7 @@ def _step_face_tracking(frame) -> None:
 
     try:
         from vision import face as face_mod
-        from hardware.servos import set_servo
+        from hardware import servos as servo_mod
 
         neck_cfg = config.SERVO_CHANNELS["neck"]
         neck_ch  = neck_cfg["ch"]
@@ -3749,7 +3749,8 @@ def _step_face_tracking(frame) -> None:
         if abs(new_smooth - _neck_smooth) >= dead_zone_qus:
             _neck_smooth = new_smooth
             clamped = max(neck_cfg["min"], min(neck_cfg["max"], int(_neck_smooth)))
-            set_servo(neck_ch, clamped)
+            servo_mod.set_servo(neck_ch, clamped)
+            servo_mod.set_face_tracking_baseline(neck=clamped)
 
     except Exception as exc:
         _log.debug("face tracking step error: %s", exc)

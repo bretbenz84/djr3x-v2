@@ -330,6 +330,31 @@ EMPATHY_VOICE_SETTINGS_ENABLED = True
 # ─────────────────────────────────────────────────────────────────────────────
 
 SERVO_BAUD = 9600
+SERVO_SERIAL_TIMEOUT_SECS = 0.1
+SERVO_CONNECT_RETRY_ATTEMPTS = 3
+SERVO_CONNECT_RETRY_DELAY_SECS = 0.5
+SERVO_CONNECT_STARTUP_DELAY_SECS = 0.2
+SERVO_RUNTIME_RECONNECT_ATTEMPTS = 1
+SERVO_RUNTIME_RECONNECT_DELAY_SECS = 0.0
+SERVO_RECONNECT_COOLDOWN_SECS = 5.0
+
+# Maestro-native motion profile. Speeds are deliberately modest; Python
+# interpolation still handles most choreography, but direct set_servo calls no
+# longer snap at unlimited speed if the Maestro was freshly connected.
+SERVO_APPLY_STARTUP_MOTION_PROFILE = True
+SERVO_DEFAULT_SPEED = 40
+SERVO_DEFAULT_ACCELERATION = 8
+SERVO_SPEECH_HEAD_SPEED = 45
+SERVO_SPEECH_ARM_SPEED = 35
+SERVO_SPEECH_ACCELERATION = 8
+SERVO_SPEECH_UPDATE_INTERVAL_SECS = 0.12
+SERVO_SPEECH_ARM_INTENSITY_MULT = 1.8
+SERVO_SPEECH_NECK_WOBBLE_QUS = 260
+SERVO_SPEECH_LIFT_WOBBLE_QUS = 160
+SERVO_SPEECH_TILT_WOBBLE_QUS = 120
+SERVO_SPEECH_ELBOW_INTERVAL_MIN_SECS = 0.35
+SERVO_SPEECH_ELBOW_INTERVAL_MAX_SECS = 0.75
+SERVO_SPEECH_HAND_DIVISOR = 3
 
 # Per-channel limits and neutral position
 # headtilt is inverted: low values = head high, high values = head low

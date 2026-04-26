@@ -30,7 +30,18 @@ from world_state import world_state
 # Set while a TTS utterance is in progress — gates both speaking gestures and wander.
 _speaking = threading.Event()
 _motion_lock = threading.Lock()
+_arm_motion_lock = threading.Lock()
 _last_directed_look: str | None = None
+
+
+def speech_activity_start() -> None:
+    """Mark TTS as active so wander loops stand down during playback."""
+    _speaking.set()
+
+
+def speech_activity_stop() -> None:
+    """Clear the TTS activity gate used by wander loops."""
+    _speaking.clear()
 
 # ---------------------------------------------------------------------------
 # Servo position constants (Pololu quarter-microseconds)
@@ -280,7 +291,7 @@ def arm_wander_thread() -> None:
         cur = _state_module.get_state()
         if cur not in (_State.IDLE, _State.ACTIVE):
             continue
-        if _speaking.is_set():
+        if _speaking.is_set() or servos.arm_idle_paused():
             continue
 
         targets: dict[int, int] = {}
@@ -291,7 +302,13 @@ def arm_wander_thread() -> None:
 
         # Slow, smooth interpolation. step_delay=0.20 → ~100 qus/sec, so a 50%
         # sweep takes ~10 s and a full sweep ~20 s — visible but unhurried.
-        servos.move_to(targets, step_us=20, step_delay=0.20)
+        if not _arm_motion_lock.acquire(blocking=False):
+            continue
+        try:
+            if not _speaking.is_set() and not servos.arm_idle_paused():
+                servos.move_to(targets, step_us=20, step_delay=0.20)
+        finally:
+            _arm_motion_lock.release()
 
 
 # ---------------------------------------------------------------------------
@@ -574,22 +591,27 @@ def arm_wave(count: int | None = None) -> None:
     step_us = int(getattr(config, "WAVE_STEP_QUS", 55))
     step_delay = float(getattr(config, "WAVE_STEP_DELAY_SECS", 0.012))
 
-    with _motion_lock:
-        servos.move_to(
-            {7: HEROARM_FORWARD, 5: HAND_NEUTRAL, 4: ELBOW_NEUTRAL},
-            step_us=step_us,
-            step_delay=step_delay,
-        )
-        for _ in range(count):
-            servos.move_to({4: ELBOW_UP}, step_us=step_us, step_delay=step_delay)
-            time.sleep(hold)
-            servos.move_to({4: ELBOW_DOWN}, step_us=step_us, step_delay=step_delay)
-            time.sleep(hold)
-        servos.move_to(
-            {4: ELBOW_NEUTRAL, 5: HAND_NEUTRAL, 7: HEROARM_NEUTRAL},
-            step_us=step_us,
-            step_delay=step_delay,
-        )
+    servos.pause_arm_idle()
+    try:
+        with _arm_motion_lock:
+            with _motion_lock:
+                servos.move_to(
+                    {7: HEROARM_FORWARD, 5: HAND_NEUTRAL, 4: ELBOW_NEUTRAL},
+                    step_us=step_us,
+                    step_delay=step_delay,
+                )
+                for _ in range(count):
+                    servos.move_to({4: ELBOW_UP}, step_us=step_us, step_delay=step_delay)
+                    time.sleep(hold)
+                    servos.move_to({4: ELBOW_DOWN}, step_us=step_us, step_delay=step_delay)
+                    time.sleep(hold)
+                servos.move_to(
+                    {4: ELBOW_NEUTRAL, 5: HAND_NEUTRAL, 7: HEROARM_NEUTRAL},
+                    step_us=step_us,
+                    step_delay=step_delay,
+                )
+    finally:
+        servos.resume_arm_idle()
 
 
 # ---------------------------------------------------------------------------

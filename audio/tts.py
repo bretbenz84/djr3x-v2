@@ -21,12 +21,13 @@ activates for the duration of playback. The call to set_playing(False) is in a
 finally block and fires unconditionally — even if sounddevice raises — so the
 suppression cannot be left permanently active.
 
-Mouth LEDs
-──────────
+Mouth LEDs + servo speech motion
+────────────────────────────────
 A daemon thread iterates through the audio array in TTS_LED_UPDATE_INTERVAL_SECS
 chunks, computes the RMS of each chunk, and calls leds_head.speak_level(brightness)
-at ~30 fps during playback. leds_head calls are no-ops when HEAD_LEDS_ENABLED is
-False so no conditional is needed here.
+at ~30 fps during playback. The same brightness value is offered to the servo
+layer for throttled speech-reactive head/arm motion. Hardware calls are no-ops
+when the corresponding device is disabled.
 """
 
 import hashlib
@@ -43,7 +44,8 @@ import numpy as np
 import config
 from audio import echo_cancel
 from audio import output_gate
-from hardware import leds_head, leds_chest
+from hardware import leds_head, leds_chest, servos
+from sequences import animations
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +181,11 @@ def _play(audio: np.ndarray, samplerate: int, emotion: str) -> None:
         play_started_at = time.monotonic()
 
         try:
+            try:
+                animations.speech_activity_start()
+                servos.begin_speech_motion(emotion)
+            except Exception as exc:
+                logger.debug("[tts] speech servo start failed: %s", exc)
             leds_head.speak(emotion)
             leds_chest.speak(emotion)
             echo_cancel.set_playing(True)
@@ -202,6 +209,14 @@ def _play(audio: np.ndarray, samplerate: int, emotion: str) -> None:
                 led_thread.join(timeout=1.0)
             leds_head.speak_stop()
             leds_chest.active()
+            try:
+                servos.end_speech_motion()
+            except Exception as exc:
+                logger.debug("[tts] speech servo stop failed: %s", exc)
+            try:
+                animations.speech_activity_stop()
+            except Exception as exc:
+                logger.debug("[tts] speech activity clear failed: %s", exc)
             echo_cancel.set_playing(False)
             with _speaking_lock:
                 _speaking = False
@@ -221,6 +236,7 @@ def _drive_leds(
         rms = float(np.sqrt(np.mean(chunk ** 2)))
         brightness = min(255, int(rms * config.TTS_LED_BRIGHTNESS_SCALE))
         leds_head.speak_level(brightness)
+        servos.speech_reactive_move(brightness / 255.0)
         stop_event.wait(timeout=interval)
 
 

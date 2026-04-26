@@ -18,6 +18,12 @@ import config
 from utils.config_loader import MAESTRO_PORT, SERVOS_ENABLED
 
 _log = logging.getLogger(__name__)
+_SERIAL_ERRORS = (serial.SerialException, serial.SerialTimeoutException, OSError)
+
+_CMD_SET_TARGET = 0x84
+_CMD_SET_SPEED = 0x87
+_CMD_SET_ACCEL = 0x89
+_CMD_GET_POSITION = 0x90
 
 _ser: "serial.Serial | None" = None
 _lock = threading.Lock()
@@ -25,11 +31,30 @@ _CHANNEL_TO_NAME = {
     cfg["ch"]: name
     for name, cfg in config.SERVO_CHANNELS.items()
 }
+_ALL_CHANNELS = sorted(_CHANNEL_TO_NAME)
+_commanded_positions: dict[int, int] = {
+    cfg["ch"]: cfg["neutral"]
+    for cfg in config.SERVO_CHANNELS.values()
+}
+_last_reconnect_attempt_at = 0.0
 
 # breathing_thread stop event — set by shutdown()
 _stop_breathing = threading.Event()
 _breathing_emotion = "neutral"
 _breathing_lock = threading.Lock()
+
+# Set while a scripted arm gesture or speech-reactive gesture owns arm channels.
+_arm_idle_pause = threading.Event()
+
+# Speech-reactive servo state.
+_speech_active = threading.Event()
+_speech_baseline: dict[int, int] = {}
+_face_tracking_baseline: dict[int, int] = {}
+_last_speech_move_at = 0.0
+_speech_hand_counter = 0
+_speech_elbow_target: int | None = None
+_speech_elbow_direction = 1
+_next_speech_elbow_at = 0.0
 
 # ── Channel index lookups ──────────────────────────────────────────────────────
 
@@ -40,11 +65,39 @@ def _channel_cfg(channel: int) -> "dict | None":
     return None
 
 
+def _channel(name: str) -> int:
+    return int(config.SERVO_CHANNELS[name]["ch"])
+
+
 def _clamp(channel: int, position: int) -> int:
     cfg = _channel_cfg(channel)
     if cfg is None:
         return position
     return max(cfg["min"], min(cfg["max"], position))
+
+
+def _encode(cmd: int, channel: int, value: int) -> bytes:
+    """Encode a Pololu compact protocol command."""
+    return bytes([cmd, channel, value & 0x7F, (value >> 7) & 0x7F])
+
+
+def _get_config_int(name: str, default: int) -> int:
+    return int(getattr(config, name, default))
+
+
+def _get_config_float(name: str, default: float) -> float:
+    return float(getattr(config, name, default))
+
+
+def _default_head_pose() -> dict[int, int]:
+    return {
+        _channel("neck"): config.SERVO_CHANNELS["neck"]["neutral"],
+        _channel("headlift"): config.SERVO_CHANNELS["headlift"]["neutral"],
+        _channel("headtilt"): config.SERVO_CHANNELS["headtilt"]["neutral"],
+    }
+
+
+_face_tracking_baseline.update(_default_head_pose())
 
 
 def _derive_body_state(positions: dict) -> str:
@@ -95,40 +148,145 @@ def _record_servo_positions(channel_dict: "dict[int, int]") -> None:
 
 # ── Serial connection ──────────────────────────────────────────────────────────
 
-def connect() -> bool:
+def _open_serial_with_retries(
+    *,
+    log_errors: bool = True,
+    attempts: int | None = None,
+    delay: float | None = None,
+) -> "serial.Serial | None":
+    attempts = max(1, attempts if attempts is not None else _get_config_int("SERVO_CONNECT_RETRY_ATTEMPTS", 3))
+    delay = max(0.0, delay if delay is not None else _get_config_float("SERVO_CONNECT_RETRY_DELAY_SECS", 1.0))
+    timeout = max(0.01, _get_config_float("SERVO_SERIAL_TIMEOUT_SECS", 0.1))
+
+    for attempt in range(1, attempts + 1):
+        try:
+            ser = serial.Serial(MAESTRO_PORT, config.SERVO_BAUD, timeout=timeout)
+            _log.info(
+                "Maestro connected on %s at %d baud (attempt %d/%d)",
+                MAESTRO_PORT, config.SERVO_BAUD, attempt, attempts,
+            )
+            startup_delay = max(0.0, _get_config_float("SERVO_CONNECT_STARTUP_DELAY_SECS", 0.2))
+            if startup_delay:
+                time.sleep(startup_delay)
+            return ser
+        except _SERIAL_ERRORS as exc:
+            level = logging.ERROR if attempt == attempts else logging.WARNING
+            if log_errors:
+                _log.log(
+                    level,
+                    "Failed to open Maestro port %s (attempt %d/%d): %s",
+                    MAESTRO_PORT, attempt, attempts, exc,
+                )
+            if attempt < attempts and delay:
+                time.sleep(delay)
+    return None
+
+
+def _close_serial_locked() -> None:
     global _ser
+    if _ser is not None:
+        try:
+            _ser.close()
+        except Exception:
+            pass
+    _ser = None
+
+
+def _send_command_locked(raw: bytes) -> bool:
+    """Write a Maestro command, attempting one throttled reconnect on failure."""
+    global _ser, _last_reconnect_attempt_at
+
+    if _ser is None or not getattr(_ser, "is_open", False):
+        now = time.monotonic()
+        cooldown = max(0.0, _get_config_float("SERVO_RECONNECT_COOLDOWN_SECS", 5.0))
+        if now - _last_reconnect_attempt_at < cooldown:
+            return False
+        _last_reconnect_attempt_at = now
+        _ser = _open_serial_with_retries(
+            log_errors=False,
+            attempts=_get_config_int("SERVO_RUNTIME_RECONNECT_ATTEMPTS", 1),
+            delay=_get_config_float("SERVO_RUNTIME_RECONNECT_DELAY_SECS", 0.0),
+        )
+        if _ser is None:
+            return False
+
+    try:
+        _ser.write(raw)
+        return True
+    except _SERIAL_ERRORS as exc:
+        _log.warning("Maestro write failed — attempting reconnect: %s", exc)
+        _close_serial_locked()
+        _last_reconnect_attempt_at = time.monotonic()
+        _ser = _open_serial_with_retries(
+            log_errors=False,
+            attempts=_get_config_int("SERVO_RUNTIME_RECONNECT_ATTEMPTS", 1),
+            delay=_get_config_float("SERVO_RUNTIME_RECONNECT_DELAY_SECS", 0.0),
+        )
+        if _ser is None:
+            return False
+        try:
+            _ser.write(raw)
+            return True
+        except _SERIAL_ERRORS as retry_exc:
+            _log.warning("Maestro write failed after reconnect: %s", retry_exc)
+            _close_serial_locked()
+            return False
+
+
+def _apply_startup_motion_profile_locked() -> None:
+    default_speed = _get_config_int("SERVO_DEFAULT_SPEED", 40)
+    default_accel = _get_config_int("SERVO_DEFAULT_ACCELERATION", 8)
+    for channel in _ALL_CHANNELS:
+        cfg = _channel_cfg(channel) or {}
+        acceleration = int(cfg.get("acceleration", default_accel))
+        _send_command_locked(_encode(_CMD_SET_ACCEL, channel, max(0, acceleration)))
+    for channel in _ALL_CHANNELS:
+        _send_command_locked(_encode(_CMD_SET_SPEED, channel, max(0, default_speed)))
+
+
+def connect() -> bool:
+    global _ser, _last_reconnect_attempt_at
     if not SERVOS_ENABLED:
         _log.debug("SERVOS_ENABLED=False — skipping connect")
         return False
-    try:
-        _ser = serial.Serial(MAESTRO_PORT, config.SERVO_BAUD, timeout=0.1)
-        _log.info("Maestro connected on %s at %d baud", MAESTRO_PORT, config.SERVO_BAUD)
+    with _lock:
+        _ser = _open_serial_with_retries()
+        if _ser is None:
+            _last_reconnect_attempt_at = time.monotonic()
+            return False
+        if bool(getattr(config, "SERVO_APPLY_STARTUP_MOTION_PROFILE", True)):
+            _apply_startup_motion_profile_locked()
         return True
-    except serial.SerialException as exc:
-        _log.error("Failed to open Maestro port %s: %s", MAESTRO_PORT, exc)
-        _ser = None
-        return False
 
 
 def disconnect() -> None:
     global _ser
     _stop_breathing.set()
     with _lock:
-        if _ser and _ser.is_open:
-            _ser.close()
-        _ser = None
+        _close_serial_locked()
 
 
 # ── Core command primitives ────────────────────────────────────────────────────
 
 def _send_set_target(channel: int, position: int) -> None:
     """Send Maestro compact protocol Set Target command (0x84)."""
-    if _ser is None or not _ser.is_open:
-        return
-    low  = position & 0x7F
-    high = (position >> 7) & 0x7F
-    cmd  = bytes([0x84, channel, low, high])
-    _ser.write(cmd)
+    _send_command_locked(_encode(_CMD_SET_TARGET, channel, position))
+
+
+def _send_set_speed(channel: int, speed: int) -> None:
+    """Send Maestro compact protocol Set Speed command (0x87)."""
+    _send_command_locked(_encode(_CMD_SET_SPEED, channel, max(0, int(speed))))
+
+
+def _send_set_acceleration(channel: int, acceleration: int) -> None:
+    """Send Maestro compact protocol Set Acceleration command (0x89)."""
+    _send_command_locked(_encode(_CMD_SET_ACCEL, channel, max(0, int(acceleration))))
+
+
+def _remember_positions(channel_dict: "dict[int, int]") -> None:
+    for channel, position in channel_dict.items():
+        if channel in _CHANNEL_TO_NAME:
+            _commanded_positions[channel] = _clamp(channel, int(position))
 
 
 def set_servo(channel: int, position: int) -> None:
@@ -139,7 +297,48 @@ def set_servo(channel: int, position: int) -> None:
     position = _clamp(channel, position)
     with _lock:
         _send_set_target(channel, position)
+        _remember_positions({channel: position})
     _record_servo_positions({channel: position})
+
+
+def set_speed(channel: int, speed: int) -> None:
+    """Set the Maestro move speed for one channel."""
+    if not SERVOS_ENABLED:
+        _log.debug("set_speed no-op: SERVOS_ENABLED=False (ch=%d speed=%d)", channel, speed)
+        return
+    with _lock:
+        _send_set_speed(channel, speed)
+
+
+def set_acceleration(channel: int, acceleration: int) -> None:
+    """Set the Maestro acceleration for one channel."""
+    if not SERVOS_ENABLED:
+        _log.debug(
+            "set_acceleration no-op: SERVOS_ENABLED=False (ch=%d accel=%d)",
+            channel, acceleration,
+        )
+        return
+    with _lock:
+        _send_set_acceleration(channel, acceleration)
+
+
+def set_motion_profile(
+    channels: "list[int] | tuple[int, ...] | None" = None,
+    *,
+    speed: int | None = None,
+    acceleration: int | None = None,
+) -> None:
+    """Set speed and/or acceleration for multiple channels."""
+    if not SERVOS_ENABLED:
+        _log.debug("set_motion_profile no-op: SERVOS_ENABLED=False")
+        return
+    selected = list(channels or _ALL_CHANNELS)
+    with _lock:
+        for channel in selected:
+            if acceleration is not None:
+                _send_set_acceleration(channel, acceleration)
+            if speed is not None:
+                _send_set_speed(channel, speed)
 
 
 def get_servo(channel: int) -> "int | None":
@@ -151,10 +350,16 @@ def get_servo(channel: int) -> "int | None":
         _log.debug("get_servo no-op: SERVOS_ENABLED=False (ch=%d)", channel)
         return None
     with _lock:
-        if _ser is None or not _ser.is_open:
+        if not _send_command_locked(bytes([_CMD_GET_POSITION, channel])):
             return None
-        _ser.write(bytes([0x90, channel]))
-        data = _ser.read(2)
+        if _ser is None or not getattr(_ser, "is_open", False):
+            return None
+        try:
+            data = _ser.read(2)
+        except _SERIAL_ERRORS as exc:
+            _log.warning("get_servo: read failed for ch=%d: %s", channel, exc)
+            _close_serial_locked()
+            return None
         if len(data) < 2:
             _log.warning("get_servo: short read for ch=%d", channel)
             return None
@@ -169,7 +374,206 @@ def set_servos(channel_dict: "dict[int, int]") -> None:
     with _lock:
         for channel, position in channel_dict.items():
             _send_set_target(channel, _clamp(channel, position))
+        _remember_positions(channel_dict)
     _record_servo_positions(channel_dict)
+
+
+def pause_arm_idle() -> None:
+    """Prevent idle arm wander from fighting a speech or scripted arm gesture."""
+    _arm_idle_pause.set()
+
+
+def resume_arm_idle() -> None:
+    """Allow idle arm wander to use the arm channels again."""
+    _arm_idle_pause.clear()
+
+
+def arm_idle_paused() -> bool:
+    return _arm_idle_pause.is_set()
+
+
+def speech_motion_active() -> bool:
+    return _speech_active.is_set()
+
+
+def _baseline_position(channel: int) -> int:
+    cfg = _channel_cfg(channel)
+    if cfg is None:
+        return _commanded_positions.get(channel, 6000)
+    return _clamp(
+        channel,
+        _commanded_positions.get(
+            channel,
+            _face_tracking_baseline.get(channel, cfg["neutral"]),
+        ),
+    )
+
+
+def set_face_tracking_baseline(
+    *,
+    neck: int | None = None,
+    lift: int | None = None,
+    tilt: int | None = None,
+) -> None:
+    """
+    Store the last face-tracking head pose so speech gestures wobble around it
+    instead of recentering away from the person Rex is addressing.
+    """
+    updates: dict[int, int] = {}
+    mapping = {
+        _channel("neck"): neck,
+        _channel("headlift"): lift,
+        _channel("headtilt"): tilt,
+    }
+    for channel, value in mapping.items():
+        if value is not None:
+            updates[channel] = _clamp(channel, int(value))
+    if not updates:
+        return
+    with _lock:
+        _face_tracking_baseline.update(updates)
+        _commanded_positions.update(updates)
+        if _speech_active.is_set():
+            _speech_baseline.update(updates)
+
+
+def begin_speech_motion(emotion: str = "neutral") -> None:
+    """Capture the current gaze/pose and prepare speech-reactive servo motion."""
+    global _last_speech_move_at, _speech_hand_counter
+    global _speech_elbow_target, _speech_elbow_direction, _next_speech_elbow_at
+
+    pause_arm_idle()
+    with _lock:
+        _speech_baseline.clear()
+        for channel in (_channel("neck"), _channel("headlift"), _channel("headtilt")):
+            _speech_baseline[channel] = _baseline_position(channel)
+        _last_speech_move_at = 0.0
+        _speech_hand_counter = 0
+        _speech_elbow_target = None
+        _speech_elbow_direction = 1
+        _next_speech_elbow_at = 0.0
+    _speech_active.set()
+
+    if SERVOS_ENABLED:
+        set_motion_profile(
+            config.HEAD_CHANNELS,
+            speed=_get_config_int("SERVO_SPEECH_HEAD_SPEED", 45),
+            acceleration=_get_config_int("SERVO_SPEECH_ACCELERATION", 8),
+        )
+        set_motion_profile(
+            config.ARM_CHANNELS,
+            speed=_get_config_int("SERVO_SPEECH_ARM_SPEED", 35),
+            acceleration=_get_config_int("SERVO_SPEECH_ACCELERATION", 8),
+        )
+
+
+def end_speech_motion() -> None:
+    """Return speech-owned channels toward their baseline and release arms."""
+    _speech_active.clear()
+    try:
+        if SERVOS_ENABLED:
+            set_motion_profile(
+                config.HEAD_CHANNELS + config.ARM_CHANNELS,
+                speed=_get_config_int("SERVO_DEFAULT_SPEED", 40),
+                acceleration=_get_config_int("SERVO_DEFAULT_ACCELERATION", 8),
+            )
+            baseline = dict(_speech_baseline) if _speech_baseline else _default_head_pose()
+            baseline[_channel("visor")] = config.SERVO_CHANNELS["visor"]["neutral"]
+            baseline[_channel("elbow")] = config.SERVO_CHANNELS["elbow"]["neutral"]
+            baseline[_channel("hand")] = config.SERVO_CHANNELS["hand"]["neutral"]
+            baseline[_channel("heroarm")] = config.SERVO_CHANNELS["heroarm"]["neutral"]
+            set_servos(baseline)
+    finally:
+        resume_arm_idle()
+
+
+def speech_reactive_move(intensity: float) -> None:
+    """
+    Move head, visor, and expressive arm channels from a 0-1 speech intensity.
+
+    This is intentionally throttled below the mouth-LED update rate so the
+    Maestro receives natural-looking emphasis beats instead of servo chatter.
+    """
+    global _last_speech_move_at, _speech_hand_counter
+    global _speech_elbow_target, _speech_elbow_direction, _next_speech_elbow_at
+
+    if not SERVOS_ENABLED or not _speech_active.is_set():
+        return
+
+    now = time.monotonic()
+    interval = max(0.04, _get_config_float("SERVO_SPEECH_UPDATE_INTERVAL_SECS", 0.12))
+    if now - _last_speech_move_at < interval:
+        return
+    _last_speech_move_at = now
+
+    intensity = max(0.0, min(1.0, float(intensity)))
+    arm_intensity = min(1.0, intensity * _get_config_float("SERVO_SPEECH_ARM_INTENSITY_MULT", 1.8))
+
+    neck_ch = _channel("neck")
+    lift_ch = _channel("headlift")
+    tilt_ch = _channel("headtilt")
+    visor_ch = _channel("visor")
+    elbow_ch = _channel("elbow")
+    hand_ch = _channel("hand")
+    hero_ch = _channel("heroarm")
+
+    with _lock:
+        base_neck = _clamp(neck_ch, _speech_baseline.get(neck_ch, _baseline_position(neck_ch)))
+        base_lift = _clamp(lift_ch, _speech_baseline.get(lift_ch, _baseline_position(lift_ch)))
+        base_tilt = _clamp(tilt_ch, _speech_baseline.get(tilt_ch, _baseline_position(tilt_ch)))
+
+    neck_wobble = int(_get_config_int("SERVO_SPEECH_NECK_WOBBLE_QUS", 260) * (0.35 + intensity))
+    lift_wobble = int(_get_config_int("SERVO_SPEECH_LIFT_WOBBLE_QUS", 160) * (0.35 + intensity))
+    tilt_wobble = int(_get_config_int("SERVO_SPEECH_TILT_WOBBLE_QUS", 120) * (0.35 + intensity))
+
+    targets: dict[int, int] = {
+        neck_ch: _clamp(neck_ch, base_neck + random.randint(-neck_wobble, neck_wobble)),
+        lift_ch: _clamp(lift_ch, base_lift + random.randint(-lift_wobble, lift_wobble)),
+        tilt_ch: _clamp(tilt_ch, base_tilt + random.randint(-tilt_wobble, tilt_wobble)),
+    }
+
+    visor_cfg = config.SERVO_CHANNELS["visor"]
+    visor_open_floor = max(visor_cfg["neutral"], int(visor_cfg["min"] + (visor_cfg["max"] - visor_cfg["min"]) * 0.55))
+    visor_wave = 0.5 + 0.5 * math.sin(now * 8.0)
+    visor_swing = int((visor_cfg["max"] - visor_open_floor) * (0.35 + 0.40 * intensity))
+    targets[visor_ch] = _clamp(
+        visor_ch,
+        int(visor_open_floor + visor_wave * visor_swing) + random.randint(-45, 45),
+    )
+
+    elbow_lo, elbow_hi = config.SERVO_CHANNELS["elbow"]["min"], config.SERVO_CHANNELS["elbow"]["max"]
+    if _speech_elbow_target is None or now >= _next_speech_elbow_at:
+        span = elbow_hi - elbow_lo
+        center = int(elbow_lo + span * 0.55)
+        amplitude = int(span * (0.10 + 0.12 * arm_intensity))
+        _speech_elbow_target = _clamp(
+            elbow_ch,
+            center + _speech_elbow_direction * amplitude + random.randint(-25, 25),
+        )
+        _speech_elbow_direction *= -1
+        _next_speech_elbow_at = now + random.uniform(
+            _get_config_float("SERVO_SPEECH_ELBOW_INTERVAL_MIN_SECS", 0.35),
+            _get_config_float("SERVO_SPEECH_ELBOW_INTERVAL_MAX_SECS", 0.75),
+        )
+    targets[elbow_ch] = _speech_elbow_target
+
+    _speech_hand_counter += 1
+    hand_divisor = max(1, _get_config_int("SERVO_SPEECH_HAND_DIVISOR", 3))
+    if _speech_hand_counter % hand_divisor == 0:
+        hand_cfg = config.SERVO_CHANNELS["hand"]
+        center = hand_cfg["neutral"]
+        amplitude = int((hand_cfg["max"] - hand_cfg["min"]) * (0.08 + 0.12 * arm_intensity))
+        direction = -1 if (_speech_hand_counter // hand_divisor) % 2 == 0 else 1
+        targets[hand_ch] = _clamp(hand_ch, center + direction * amplitude)
+
+    hero_cfg = config.SERVO_CHANNELS["heroarm"]
+    hero_swing = int((hero_cfg["max"] - hero_cfg["min"]) * (0.10 + 0.18 * arm_intensity))
+    targets[hero_ch] = _clamp(
+        hero_ch,
+        hero_cfg["neutral"] + random.randint(-hero_swing, hero_swing),
+    )
+
+    set_servos(targets)
 
 
 # ── High-level behaviours ──────────────────────────────────────────────────────
@@ -211,6 +615,7 @@ def neutral(step_us: int = 40, step_delay: float = 0.02) -> None:
             with _lock:
                 for ch, pos in moves.items():
                     _send_set_target(ch, pos)
+                _remember_positions(moves)
             time.sleep(step_delay)
     _record_servo_positions({cfg["ch"]: cfg["neutral"] for cfg in config.SERVO_CHANNELS.values()})
 
@@ -316,6 +721,7 @@ def move_to(targets: "dict[int, int]", step_us: int = 40, step_delay: float = 0.
             with _lock:
                 for ch, pos in moves.items():
                     _send_set_target(ch, _clamp(ch, pos))
+                _remember_positions(moves)
             time.sleep(step_delay)
     _record_servo_positions(targets)
 
