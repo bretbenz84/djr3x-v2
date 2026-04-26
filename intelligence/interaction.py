@@ -153,6 +153,7 @@ _pending_face_reveal_confirm: Optional[dict] = None
 # event, saves the relationship, and asks one natural "how did you meet?" beat.
 _pending_introduction: Optional[dict] = None
 _pending_intro_followup: Optional[dict] = None
+_pending_intro_voice_capture: Optional[dict] = None
 
 # Per-session set of (person_id) we've already attempted a face reveal for
 # but were declined ("no") — so Rex doesn't keep re-asking the same question.
@@ -248,6 +249,9 @@ def _speak_blocking(
     """
     if not _can_speak() or not text or not text.strip():
         return True
+    text = llm.clean_response_text(text)
+    if not text:
+        return True
 
     # Post-punchline beat: a brief silence after a normal-priority response so
     # the line lands. Skipped for urgent acks (priority >= 2), filler, etc.
@@ -310,6 +314,9 @@ def _arm_post_tts_window() -> None:
 
 def _speak_async(text: str, emotion: str = "neutral") -> None:
     if not _can_speak() or not text:
+        return
+    text = llm.clean_response_text(text)
+    if not text:
         return
     if speech_queue.is_speaking():
         return
@@ -900,6 +907,8 @@ def _enroll_introduced_person(
     introducer_id: int,
     introducer_name: str,
     relationship: Optional[str],
+    *,
+    enroll_visible_face: bool = True,
 ) -> Optional[int]:
     try:
         new_id = people_memory.enroll_person(name)
@@ -913,22 +922,23 @@ def _enroll_introduced_person(
     if first_inc > 0:
         people_memory.update_familiarity(new_id, first_inc)
 
-    try:
-        from vision import camera as camera_mod
-        from vision import face as face_mod
-        frame = camera_mod.capture_still()
-        if frame is not None:
-            face_mod.enroll_unknown_face(new_id, frame)
-            threading.Thread(
-                target=face_mod.update_appearance,
-                args=(new_id, frame.copy()),
-                daemon=True,
-                name=f"appearance-enroll-{new_id}",
-            ).start()
-    except Exception as exc:
-        _log.warning("introduction face enrollment failed: %s", exc)
+    if enroll_visible_face:
+        try:
+            from vision import camera as camera_mod
+            from vision import face as face_mod
+            frame = camera_mod.capture_still()
+            if frame is not None:
+                face_mod.enroll_unknown_face(new_id, frame)
+                threading.Thread(
+                    target=face_mod.update_appearance,
+                    args=(new_id, frame.copy()),
+                    daemon=True,
+                    name=f"appearance-enroll-{new_id}",
+                ).start()
+        except Exception as exc:
+            _log.warning("introduction face enrollment failed: %s", exc)
 
-    _bind_world_state_identity(new_id, name)
+        _bind_world_state_identity(new_id, name)
     _store_introduction_memories(
         introducer_id,
         introducer_name,
@@ -971,22 +981,34 @@ def _intro_ack_and_followup(
     relationship: Optional[str],
     *,
     subject_kind: str = "person",
+    visible_newcomer: bool = True,
 ) -> str:
-    global _pending_intro_followup
+    global _pending_intro_followup, _pending_intro_voice_capture
 
     introducer_first = (introducer_name or "there").split()[0]
     introduced_first = (introduced_name or "there").split()[0]
     rel_clause = f"{relationship}" if relationship else "guest"
 
-    prompt = (
-        f"{introducer_first} just explicitly introduced {introduced_first} "
-        f"as their {rel_clause}. This is a social introduction with at least "
-        f"three participants. In ONE short in-character Rex line, acknowledge "
-        f"{introduced_first} by name with a funny but friendly quip, then ask "
-        f"one natural question about how {introduced_first} and {introducer_first} "
-        f"know each other or what story Rex is missing. Address {introduced_first}, "
-        f"not just {introducer_first}. Keep it warm, conversational, and not mean."
-    )
+    if visible_newcomer:
+        prompt = (
+            f"{introducer_first} just explicitly introduced {introduced_first} "
+            f"as their {rel_clause}. This is a social introduction with at least "
+            f"three participants. In ONE short in-character Rex line, acknowledge "
+            f"{introduced_first} by name with a funny but friendly quip, then ask "
+            f"one natural question about how {introduced_first} and {introducer_first} "
+            f"know each other or what story Rex is missing. Address {introduced_first}, "
+            f"not just {introducer_first}. Keep it warm, conversational, and not mean."
+        )
+    else:
+        prompt = (
+            f"{introducer_first} just explicitly introduced {introduced_first} "
+            f"as their {rel_clause}, but {introduced_first} is not visible on camera "
+            f"right now. In ONE short in-character Rex line, START with exactly "
+            f"'Nice to meet you, {introduced_first}.' Then invite {introduced_first} "
+            f"to say a quick hello so you can learn their voice. Do not address "
+            f"{introducer_first} as if they are the newcomer, and do not ask how "
+            f"they know each other yet."
+        )
     try:
         text = llm.get_response(prompt) or ""
     except Exception as exc:
@@ -994,9 +1016,14 @@ def _intro_ack_and_followup(
         text = ""
     if not text:
         text = f"{introduced_first}, welcome to the frequency. How did you end up in {introducer_first}'s orbit?"
+    if not visible_newcomer and not text.lower().startswith("nice to meet you"):
+        text = (
+            f"Nice to meet you, {introduced_first}. Give me a quick hello so "
+            f"I can file your voice somewhere more useful than 'mystery guest.'"
+        )
 
     if introduced_id is not None and subject_kind == "person":
-        _pending_intro_followup = {
+        pending = {
             "introducer_id": introducer_id,
             "introducer_name": introducer_name,
             "introduced_id": introduced_id,
@@ -1004,7 +1031,162 @@ def _intro_ack_and_followup(
             "relationship": relationship,
             "asked_at": time.monotonic(),
         }
+        if visible_newcomer:
+            _pending_intro_followup = pending
+        else:
+            _pending_intro_voice_capture = dict(pending)
     return text
+
+
+def _intro_voice_capture_fresh(ctx: Optional[dict]) -> bool:
+    if not ctx:
+        return False
+    ttl = float(getattr(config, "INTRO_VOICE_CAPTURE_WINDOW_SECS", 45.0))
+    return (time.monotonic() - float(ctx.get("asked_at") or 0.0)) <= ttl
+
+
+def _intro_voice_text_sounds_like_newcomer(text: str, name: str) -> bool:
+    cleaned = (text or "").strip().lower()
+    if not cleaned:
+        return False
+    if re.search(r"\b(no|nope|not now|not here|later|wait|hold on|can't|cannot)\b", cleaned):
+        return False
+    first = (name or "").split()[0].lower()
+    if first and re.search(rf"\b(this is|that is|that's)\s+{re.escape(first)}\b", cleaned):
+        return False
+    if re.search(r"\b(he|she|they)\s+(is|isn't|was|wasn't|can't|cannot|will|won't)\b", cleaned):
+        return False
+    if re.search(r"\b(hi|hello|hey|yo|nice to meet|what'?s up|i'?m|i am|my name is)\b", cleaned):
+        return True
+    words = re.findall(r"[a-z']+", cleaned)
+    return 0 < len(words) <= 8
+
+
+def _bind_intro_visible_face_if_present(person_id: int, name: str) -> None:
+    if not _has_unknown_visible_person():
+        return
+    try:
+        from vision import camera as _cam_mod
+        from vision import face as _face_mod
+        frame = _cam_mod.capture_still()
+        if frame is None:
+            return
+        if _face_mod.enroll_unknown_face(person_id, frame):
+            threading.Thread(
+                target=_face_mod.update_appearance,
+                args=(person_id, frame.copy()),
+                daemon=True,
+                name=f"appearance-enroll-{person_id}",
+            ).start()
+            _bind_world_state_identity(person_id, name)
+    except Exception as exc:
+        _log.warning("introduction visible face bind failed: %s", exc)
+
+
+def _handle_intro_voice_capture(
+    text: str,
+    audio_array: np.ndarray,
+    person_id: Optional[int],
+    raw_best_id: Optional[int],
+    speaker_score: float,
+) -> Optional[str]:
+    global _pending_intro_voice_capture, _pending_intro_followup
+
+    ctx = _pending_intro_voice_capture
+    if ctx is None:
+        return None
+    if not _intro_voice_capture_fresh(ctx):
+        _log.info("[introduction] voice capture window expired for %s", ctx.get("introduced_name"))
+        _pending_intro_voice_capture = None
+        return None
+
+    introduced_id = int(ctx["introduced_id"])
+    introduced_name = ctx.get("introduced_name") or "the newcomer"
+    introducer_id = ctx.get("introducer_id")
+    introducer_name = ctx.get("introducer_name") or "the introducer"
+
+    if person_id == introduced_id:
+        _pending_intro_voice_capture = None
+        followup = dict(ctx)
+        followup["asked_at"] = time.monotonic()
+        _pending_intro_followup = followup
+        return None
+
+    hard_threshold = float(config.SPEAKER_ID_SIMILARITY_THRESHOLD)
+    looks_like_newcomer = _intro_voice_text_sounds_like_newcomer(text, introduced_name)
+    accepted_unknown = person_id is None
+    weak_introducer_match = (
+        person_id == introducer_id
+        and raw_best_id == introducer_id
+        and speaker_score < hard_threshold
+        and looks_like_newcomer
+    )
+    if not accepted_unknown and not weak_introducer_match:
+        return None
+
+    if not looks_like_newcomer and not accepted_unknown:
+        return None
+
+    ok = speaker_id.enroll_voice(introduced_id, audio_array)
+    if not ok:
+        ctx["asked_at"] = time.monotonic()
+        first = introduced_name.split()[0]
+        return (
+            f"{first}, my voice scanner got a mouthful of static. Give me one "
+            f"more sentence so I can stop calling you theoretical."
+        )
+
+    _pending_intro_voice_capture = None
+    followup = dict(ctx)
+    followup["asked_at"] = time.monotonic()
+    _pending_intro_followup = followup
+    _bind_intro_visible_face_if_present(introduced_id, introduced_name)
+    _log.info(
+        "[introduction] enrolled voice for introduced person %r (person_id=%s)",
+        introduced_name,
+        introduced_id,
+    )
+    try:
+        _session_person_ids.add(introduced_id)
+        consciousness.mark_engagement(introduced_id)
+        consciousness.note_person_spoke(introduced_id)
+    except Exception:
+        pass
+    try:
+        conv_memory.add_to_transcript(introduced_name, text)
+        conv_log.log_heard(introduced_name, text)
+        print(
+            f"[VOICE] Known voice detected: {introduced_name} (person_id={introduced_id})",
+            flush=True,
+        )
+        print(f"[HEARD] {introduced_name}: {text}", flush=True)
+        _log.info(
+            "[introduction] voice capture speech segment — speaker=%r person_id=%s text=%r",
+            introduced_name,
+            introduced_id,
+            text,
+        )
+    except Exception as exc:
+        _log.debug("intro voice capture transcript log failed: %s", exc)
+    try:
+        topic_thread.note_user_turn(text, introduced_id)
+        user_energy.note_user_turn(text, introduced_id)
+    except Exception as exc:
+        _log.debug("intro voice capture turn tracking failed: %s", exc)
+
+    intro_first = (introducer_name or "there").split()[0]
+    introduced_first = (introduced_name or "there").split()[0]
+    try:
+        return llm.get_response(
+            f"{introduced_first} just responded after {intro_first} introduced them, "
+            f"and you successfully stored {introduced_first}'s voice print. In ONE "
+            f"short in-character Rex line, acknowledge {introduced_first} by name "
+            f"with a light quip, then ask how {introduced_first} and {intro_first} "
+            f"know each other."
+        )
+    except Exception as exc:
+        _log.debug("intro voice capture ack generation failed: %s", exc)
+    return f"Got it, {introduced_first}. Voice filed. So how did you and {intro_first} get tangled up?"
 
 
 def _handle_intro_followup_answer(text: str) -> Optional[str]:
@@ -1067,6 +1249,7 @@ def _handle_introduction_parse(
     *,
     introducer_id: int,
     introducer_name: str,
+    visible_newcomer: bool = True,
 ) -> Optional[str]:
     global _pending_introduction
 
@@ -1093,6 +1276,7 @@ def _handle_introduction_parse(
             "introducer_id": introducer_id,
             "introducer_name": introducer_name,
             "relationship": parsed.relationship,
+            "visible_newcomer": visible_newcomer,
             "created_at": time.monotonic(),
             "asked_at": time.monotonic(),
         }
@@ -1113,6 +1297,7 @@ def _handle_introduction_parse(
         introducer_id,
         introducer_name,
         parsed.relationship,
+        enroll_visible_face=visible_newcomer,
     )
     if new_id is None:
         return None
@@ -1131,6 +1316,7 @@ def _handle_introduction_parse(
         parsed.name,
         parsed.relationship,
         subject_kind=parsed.subject_kind,
+        visible_newcomer=visible_newcomer,
     )
 
 
@@ -1792,7 +1978,7 @@ def _end_session() -> None:
     updates visit records and familiarity, then clears in-memory session state.
     """
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
-    global _pending_introduction, _pending_intro_followup
+    global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
 
     transcript = conv_memory.get_session_transcript()
     if not transcript:
@@ -1826,6 +2012,7 @@ def _end_session() -> None:
         _awaiting_followup_event = None
         _pending_introduction = None
         _pending_intro_followup = None
+        _pending_intro_voice_capture = None
         try:
             consciousness.clear_response_wait()
             consciousness.clear_engagement()
@@ -1914,6 +2101,7 @@ def _end_session() -> None:
     _awaiting_followup_event = None
     _pending_introduction = None
     _pending_intro_followup = None
+    _pending_intro_voice_capture = None
     _voice_refreshed_this_session.clear()
     _face_reveal_declined.clear()
     _grief_flow_state.clear()
@@ -2243,7 +2431,11 @@ def _boundary_fallback_topic() -> Optional[str]:
         return "face"
     if _pending_offscreen_identify is not None:
         return "identity"
-    if _pending_introduction is not None or _pending_intro_followup is not None:
+    if (
+        _pending_introduction is not None
+        or _pending_intro_followup is not None
+        or _pending_intro_voice_capture is not None
+    ):
         return "introductions"
     try:
         pending_rel = consciousness.get_pending_relationship_context()
@@ -2263,7 +2455,7 @@ def _boundary_fallback_topic() -> Optional[str]:
 def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> None:
     """Close optional pending prompts when a person sets a boundary or declines."""
     global _pending_face_reveal_confirm, _pending_offscreen_identify
-    global _pending_introduction, _pending_intro_followup
+    global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
 
     if person_id is not None:
         try:
@@ -2288,6 +2480,8 @@ def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> N
         _pending_introduction = None
     if _pending_intro_followup is not None:
         _pending_intro_followup = None
+    if _pending_intro_voice_capture is not None:
+        _pending_intro_voice_capture = None
 
 
 def _generate_repair_response(person_id: Optional[int], text: str, repair: dict) -> str:
@@ -2888,7 +3082,7 @@ def _handle_classified_intent(
 def _handle_speech_segment(audio_array: np.ndarray) -> None:
     """Full processing pipeline for one detected speech segment in ACTIVE state."""
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
-    global _pending_introduction, _pending_intro_followup
+    global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
 
     answered_question: Optional[dict] = None
 
@@ -3157,6 +3351,26 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         if rel_ctx is not None:
             _handle_relationship_reply(rel_ctx, text, person_id, person_name)
 
+        intro_voice_response = _handle_intro_voice_capture(
+            text,
+            audio_array,
+            person_id,
+            raw_best_id,
+            speaker_score,
+        )
+        if intro_voice_response:
+            _speak_blocking(
+                intro_voice_response,
+                emotion="happy",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            conv_memory.add_to_transcript("Rex", intro_voice_response)
+            conv_log.log_rex(intro_voice_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(intro_voice_response)
+            return
+
         intro_followup_response = _handle_intro_followup_answer(text)
         if intro_followup_response:
             _speak_blocking(
@@ -3184,6 +3398,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                             parsed_intro,
                             introducer_id=int(_pending_introduction["introducer_id"]),
                             introducer_name=_pending_introduction.get("introducer_name") or (person_name or "friend"),
+                            visible_newcomer=bool(_pending_introduction.get("visible_newcomer", True)),
                         )
                         if intro_response:
                             _speak_blocking(
@@ -3207,12 +3422,15 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 has_unknown_face=has_unknown_for_intro,
             )
             if parsed_intro.is_introduction and (
-                parsed_intro.subject_kind == "pet" or has_unknown_for_intro
+                parsed_intro.subject_kind == "pet"
+                or has_unknown_for_intro
+                or bool(parsed_intro.name)
             ):
                 intro_response = _handle_introduction_parse(
                     parsed_intro,
                     introducer_id=person_id,
                     introducer_name=person_name or f"person_{person_id}",
+                    visible_newcomer=has_unknown_for_intro,
                 )
                 if intro_response:
                     _speak_blocking(
@@ -4579,7 +4797,7 @@ def start() -> None:
 def stop() -> None:
     """Stop the interaction loop and wake word detector, waiting for clean exit."""
     global _thread, _awaiting_followup_event, _identity_prompt_until
-    global _pending_introduction, _pending_intro_followup
+    global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
 
     _stop_event.set()
     wake_word.stop()
@@ -4594,6 +4812,7 @@ def stop() -> None:
     _identity_prompt_until = 0.0
     _pending_introduction = None
     _pending_intro_followup = None
+    _pending_intro_voice_capture = None
     topic_thread.clear()
     user_energy.clear()
     question_budget.clear()

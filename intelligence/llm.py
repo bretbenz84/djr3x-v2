@@ -30,10 +30,26 @@ _log = logging.getLogger(__name__)
 
 _client = OpenAI(api_key=apikeys.OPENAI_API_KEY)
 
+_ASSISTANT_LABEL_RE = re.compile(
+    r"^\s*(?:\[(?:rex|dj[- ]?r3x)\]|(?:rex|dj[- ]?r3x))\s*[:\-–—]\s*",
+    re.IGNORECASE,
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def clean_response_text(text: str) -> str:
+    """Remove accidental spoken speaker labels from assistant replies."""
+    cleaned = (text or "").strip()
+    while cleaned:
+        updated = _ASSISTANT_LABEL_RE.sub("", cleaned, count=1).strip()
+        if updated == cleaned:
+            break
+        cleaned = updated
+    return cleaned
+
 
 def _get_personality_params() -> dict:
     """Read current personality parameter values from the DB; fall back to config defaults."""
@@ -577,7 +593,9 @@ def get_response(
     agenda_directive: Optional[str] = None,
 ) -> str:
     """Assemble the system prompt and return the full GPT-4o-mini response as a string."""
-    return "".join(stream_response(user_text, person_id, agenda_directive=agenda_directive))
+    return clean_response_text(
+        "".join(stream_response(user_text, person_id, agenda_directive=agenda_directive))
+    )
 
 
 def classify_surprise(text: str) -> bool:

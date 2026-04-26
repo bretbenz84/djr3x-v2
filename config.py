@@ -9,7 +9,7 @@
 
 # When True, clears logs/djr3x.log and logs/conversation.log at startup so
 # each run begins with fresh log files.
-DEBUG_MODE = True
+DEBUG_MODE = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AI MODELS
@@ -172,8 +172,29 @@ WHISPER_MIN_CHARS = 3
 # Filler-only junk like "uh", "um", "ah" still fails because those tokens are ≤2 chars.
 WHISPER_MIN_WORDS = 1
 
-# Transcriptions that exactly match or contain these phrases (case-insensitive)
-# are discarded entirely — they are known Whisper hallucinations on near-silent audio.
+# Short utterances that are legitimate conversation turns despite being too
+# small for the generic hallucination thresholds. Keep this list conservative:
+# it bypasses WHISPER_MIN_CHARS/WHISPER_MIN_WORDS, but still requires an exact
+# normalized match.
+WHISPER_SHORT_UTTERANCE_ALLOWLIST = [
+    "no",
+    "nope",
+    "nah",
+    "yes",
+    "yeah",
+    "yep",
+    "ok",
+    "okay",
+    "hi",
+    "hey",
+    "yo",
+    "jt",
+    "j t",
+]
+
+# Transcriptions that exactly match these phrases (case-insensitive after basic
+# normalization) are discarded entirely — they are known Whisper hallucinations
+# on near-silent audio.
 HALLUCINATION_BLOCKLIST = [
     "thank you",
     "thanks for watching",

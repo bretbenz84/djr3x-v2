@@ -295,7 +295,8 @@ def build_prompt(repair: dict) -> str:
         "miss without groveling, do not roast the human, do not add a new topic, "
         "do not punish the human for correcting you, and do not ask a question "
         "unless the repair cannot continue without a single clarification. If a "
-        "correction was supplied, accept it."
+        "correction was supplied, accept it. Do not begin with 'Rex:' or any "
+        "speaker label."
     )
 
 

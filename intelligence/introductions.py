@@ -134,6 +134,7 @@ def _parse_intro_text(text: str) -> IntroductionParse:
         rf"\b(?:i'?d like (?:you )?to meet|i would like (?:you )?to meet|introduce you to|let me introduce(?: you to)?)\s+(?:my|our)\s+(?P<rel>{_REL_WORDS})(?:\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}}))?",
         rf"\b(?:this is|meet)\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}}),?\s+(?:my|our)\s+(?P<rel>{_REL_WORDS})\b",
         rf"\b(?:my|our)\s+(?P<rel>{_REL_WORDS})\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}})\b",
+        rf"\b(?:i'?d like to introduce you to|i would like to introduce you to|(?:i'?m|i am) going to introduce you to|introduce you to|let me introduce you to)\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}})\b",
         rf"\b(?:his|her|their)\s+name\s+is\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}})\b",
         rf"\b(?:it'?s|it is|that'?s|that is)\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}})\b",
         rf"\b(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}}),?\s+(?:my|our)\s+(?P<rel>{_REL_WORDS})\b",
