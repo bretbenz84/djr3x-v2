@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 
 _stop_event = threading.Event()
 _thread: threading.Thread | None = None
-_last_output_busy_at: float = 0.0
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -64,17 +63,18 @@ def stop() -> None:
 def _analysis_loop() -> None:
     # _stop_event.wait(timeout) returns True when the event fires (stop requested),
     # False when it times out — so the loop body runs on each timeout.
-    global _last_output_busy_at
     while not _stop_event.wait(timeout=config.SCENE_ANALYSIS_INTERVAL_SECS):
         try:
             # Skip while the robot is playing its own audio, and for one window
             # afterward — speaker bleed into the mic produces rhythmic bursts
             # that trip _detect_laughter, and the analysis buffer still holds
-            # the playback tail until it's overwritten.
-            if output_gate.is_busy() or speech_queue.is_speaking():
-                _last_output_busy_at = time.monotonic()
-                continue
-            if time.monotonic() - _last_output_busy_at < config.SCENE_ANALYSIS_WINDOW_SECS:
+            # the playback tail until it's overwritten. seconds_since_release()
+            # spans module boundaries, so this works even on the first cycle
+            # after startup clips that played before this loop began.
+            if (
+                speech_queue.is_speaking()
+                or output_gate.seconds_since_release() < config.SCENE_ANALYSIS_WINDOW_SECS
+            ):
                 continue
             audio = stream.get_audio_chunk(config.SCENE_ANALYSIS_WINDOW_SECS)
             _analyze_cycle(audio)
