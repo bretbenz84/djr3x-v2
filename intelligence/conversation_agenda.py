@@ -332,6 +332,16 @@ def build_turn_directive(
         end_thread_pending = end_thread.pending_closure()
     except Exception:
         end_thread_pending = None
+    try:
+        from intelligence import response_length
+        lines.append(
+            response_length.build_directive(
+                text,
+                answered_question=answered_question,
+            )
+        )
+    except Exception:
+        pass
     question_budget_allows = True
     try:
         from intelligence import question_budget

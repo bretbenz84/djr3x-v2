@@ -210,6 +210,27 @@ _ANGER_RULES = {
     4: "Anger level 4 (SHUTDOWN): Refuse to engage. Deliver a final dismissal line and ignore further input.",
 }
 
+_RESPONSE_LENGTH_TOKEN_BUDGET = {
+    "micro": 35,
+    "brief": 55,
+    "short": 70,
+    "medium": 120,
+}
+_RESPONSE_LENGTH_TARGET_PAT = re.compile(
+    r"Response length control:\s*\n-\s*Target:\s*([a-z_]+)",
+    re.IGNORECASE,
+)
+
+
+def _max_tokens_for_agenda(agenda_directive: Optional[str]) -> int:
+    default = 150
+    if not agenda_directive:
+        return default
+    match = _RESPONSE_LENGTH_TARGET_PAT.search(agenda_directive)
+    if not match:
+        return default
+    return _RESPONSE_LENGTH_TOKEN_BUDGET.get(match.group(1).lower(), default)
+
 
 def _build_person_context(person_id: int) -> str:
     person = people_db.get_person(person_id)
@@ -497,7 +518,7 @@ def stream_response(
                 {"role": "user", "content": user_text},
             ],
             stream=True,
-            max_tokens=150,
+            max_tokens=_max_tokens_for_agenda(agenda_directive),
         )
         for chunk in stream:
             delta = chunk.choices[0].delta
