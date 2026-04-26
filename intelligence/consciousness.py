@@ -7,6 +7,7 @@ disengagement recovery, proactive world reactions, idle micro-behaviors,
 and continuous neck-servo face tracking.
 """
 
+import json
 import logging
 import random
 import sys
@@ -55,6 +56,13 @@ _REENGAGEMENT_COOLDOWN_SECS = 30.0
 
 # Monotonic timestamp of last live-vision commentary call (cost control).
 _last_live_vision_comment_at: float = 0.0
+
+# Visual curiosity asks: after a real back-and-forth goes quiet, Rex can take a
+# fresh frame, summarize it, and ask one scene-grounded question.
+_last_visual_curiosity_at: float = 0.0
+_visual_curiosity_by_person: dict[int, float] = {}
+_visual_curiosity_in_flight: bool = False
+_visual_curiosity_lock = threading.Lock()
 
 # Pending follow-up events per DB person_id: {db_id: [event_dict, ...]}
 _pending_followups: dict[int, list[dict]] = {}
@@ -1594,6 +1602,179 @@ def _do_live_vision_comment(snapshot: dict) -> None:
     threading.Thread(target=_task, daemon=True, name="live-vision-comment").start()
 
 
+def _visual_curiosity_blocked_by_empathy(person_id: Optional[int]) -> bool:
+    """
+    Avoid visual riffs during tender emotional modes. Rex can be observant and
+    snarky later; right after grief or distress, curiosity should stay relational.
+    """
+    try:
+        from intelligence import empathy as _empathy
+        entry = _empathy.peek(person_id)
+    except Exception:
+        return False
+    if not entry:
+        return False
+
+    result = entry.get("result") or {}
+    mode_pack = entry.get("mode") or {}
+    mode = (mode_pack.get("mode") or "default").lower()
+    sensitivity = (result.get("topic_sensitivity") or "none").lower()
+    affect = (result.get("affect") or "neutral").lower()
+    confidence = float(result.get("confidence", 0.5) or 0.5)
+
+    tender_modes = {
+        "listen",
+        "support",
+        "acknowledge_then_yield",
+        "ground",
+        "course_correct",
+        "crisis",
+        "validate",
+        "gentle_probe",
+        "kind_default",
+    }
+    if mode in tender_modes:
+        return True
+    if sensitivity in {"heavy", "crisis"}:
+        return True
+    if confidence >= 0.55:
+        try:
+            return _empathy.is_negative_affect(affect)
+        except Exception:
+            return affect in {"sad", "anxious", "angry", "tired"}
+    return False
+
+
+def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    After a recent engaged back-and-forth goes quiet, use a fresh visual summary
+    to ask one concrete question about something Rex can see right now.
+
+    This fills the "human stopped talking" gap more naturally than generic
+    small talk, but it is heavily gated because it costs a vision call and
+    should never interrupt an answer, an empathy flow, or another response.
+    """
+    global _last_visual_curiosity_at, _visual_curiosity_in_flight
+
+    if not getattr(config, "VISUAL_CURIOSITY_ENABLED", True):
+        return
+    if profile.suppress_proactive or profile.user_mid_sentence or profile.interaction_busy:
+        return
+    if not profile.conversation_active:
+        return
+    if is_waiting_for_response() or not _can_proactive_speak():
+        return
+
+    now = time.monotonic()
+    min_silence = float(getattr(config, "VISUAL_CURIOSITY_SILENCE_SECS", 8.0))
+    active_window = float(getattr(config, "VISUAL_CURIOSITY_ACTIVE_WINDOW_SECS", 45.0))
+    global_cooldown = float(getattr(config, "VISUAL_CURIOSITY_COOLDOWN_SECS", 300.0))
+    person_cooldown = float(getattr(config, "VISUAL_CURIOSITY_PERSON_COOLDOWN_SECS", 600.0))
+
+    if (now - _last_visual_curiosity_at) < global_cooldown:
+        return
+
+    with _engaged_lock:
+        engaged_id = _engaged_person_id
+        engaged_touch = _engaged_last_touch_at
+    if engaged_id is None:
+        return
+    if engaged_id in _emotional_checkin_fired:
+        return
+
+    quiet_for = now - engaged_touch
+    if quiet_for < min_silence or quiet_for > active_window:
+        return
+    if (now - _visual_curiosity_by_person.get(engaged_id, 0.0)) < person_cooldown:
+        return
+
+    try:
+        turn_window = float(getattr(config, "VISUAL_CURIOSITY_TURN_WINDOW_SECS", 45.0))
+        min_turns = int(getattr(config, "VISUAL_CURIOSITY_MIN_USER_TURNS", 2))
+        if _situation_assessor.recent_speech_turn_count(turn_window) < min_turns:
+            return
+    except Exception:
+        if not profile.rapid_exchange:
+            return
+
+    max_crowd = int(getattr(config, "VISUAL_CURIOSITY_MAX_CROWD_COUNT", 2))
+    crowd_count = int((snapshot.get("crowd") or {}).get("count", 1) or 1)
+    if crowd_count > max_crowd:
+        return
+
+    if _visual_curiosity_blocked_by_empathy(engaged_id):
+        return
+
+    with _visual_curiosity_lock:
+        if _visual_curiosity_in_flight:
+            return
+        if (time.monotonic() - _last_visual_curiosity_at) < global_cooldown:
+            return
+        _visual_curiosity_in_flight = True
+        _last_visual_curiosity_at = time.monotonic()
+        _visual_curiosity_by_person[engaged_id] = _last_visual_curiosity_at
+
+    def _task() -> None:
+        global _visual_curiosity_in_flight
+        try:
+            if not _can_proactive_speak():
+                return
+            from memory import people as people_mod
+            from vision import camera as _cam
+            from vision import scene as _scene
+            from intelligence.llm import get_response
+
+            person = people_mod.get_person(engaged_id) or {}
+            first_name = (person.get("name") or "").split()[0] or "there"
+
+            frame = _cam.get_frame()
+            if frame is None:
+                return
+            visual = _scene.describe_scene_detailed(frame)
+            if not visual:
+                return
+            if not _can_proactive_speak():
+                return
+
+            visual_json = json.dumps(visual, ensure_ascii=False)[:3500]
+            family_clause = (
+                "A child or teen is present, so keep it gentle and family-safe. "
+                if profile.force_family_safe else ""
+            )
+            prompt = (
+                f"You're mid-conversation with {first_name}, and they just went "
+                f"quiet for a few seconds after a back-and-forth. You took a fresh "
+                f"visual snapshot. Use it as a conversational springboard.\n\n"
+                f"Vision summary JSON: {visual_json}\n\n"
+                f"{family_clause}"
+                "Ask exactly ONE short, in-character Rex question grounded in a "
+                "specific visible, non-sensitive detail. It can be dry or mildly "
+                "teasing about clothing, accessories, objects, decor, or what they "
+                "seem to be doing, but do not roast grief, emotions, body, identity, "
+                "health, age, race, religion, politics, disability, money, or private "
+                "screen/document text. Do not say you took a picture. Do not explain "
+                "the visual system. Address them by name if natural. End with a "
+                "question mark."
+            )
+            text = get_response(prompt, engaged_id)
+            if text and _can_proactive_speak():
+                wait = float(getattr(config, "QUESTION_RESPONSE_WAIT_SECS", 7.0))
+                _log.info(
+                    "consciousness: visual curiosity question for person_id=%s "
+                    "after %.1fs quiet",
+                    engaged_id,
+                    quiet_for,
+                )
+                _speak_async(text, emotion="curious", wait_secs=wait)
+        except Exception as exc:
+            _log.debug("visual curiosity step error: %s", exc)
+        finally:
+            with _visual_curiosity_lock:
+                _visual_curiosity_in_flight = False
+
+    threading.Thread(target=_task, daemon=True, name="visual-curiosity").start()
+
+
 def _do_idle_clip() -> None:
     try:
         clips_dir = Path(config.AUDIO_CLIPS_DIR)
@@ -2960,6 +3141,10 @@ def _loop() -> None:
             # 10d3. Proactive emotional check-in — acknowledge an unfollowed-up
             # sensitive event, or notice sustained negative affect mid-conversation.
             _step_emotional_checkin(snapshot, profile)
+
+            # 10d4. Visual curiosity — when conversation goes quiet, look once
+            # and ask a concrete question about a visible non-sensitive detail.
+            _step_visual_curiosity(snapshot, profile)
 
             # 10e. Overheard chime-in — react when someone talks ABOUT Rex
             _step_overheard_chime_in(snapshot, profile)

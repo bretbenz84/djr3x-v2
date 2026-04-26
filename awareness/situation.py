@@ -120,6 +120,15 @@ class SituationAssessor:
         with self._lock:
             return self._interaction_busy
 
+    def recent_speech_turn_count(self, window_secs: float = 30.0) -> int:
+        """Return the number of user speech onsets within the recent window."""
+        cutoff = time.monotonic() - max(0.0, float(window_secs))
+        with self._lock:
+            self._speech_turn_times = [
+                t for t in self._speech_turn_times if t >= cutoff
+            ]
+            return len(self._speech_turn_times)
+
     # ── Main evaluation ────────────────────────────────────────────────────────
 
     def evaluate(self) -> SituationProfile:

@@ -112,7 +112,13 @@ def _parse_json(text: str):
     return None
 
 
-def _call_gpt4o(frame, prompt: str, detail_key: str) -> Optional[str]:
+def _call_gpt4o(
+    frame,
+    prompt: str,
+    detail_key: str,
+    *,
+    max_tokens: int = 400,
+) -> Optional[str]:
     """
     Send frame + prompt to GPT-4o vision. Returns the raw response string or None.
     detail_key is looked up in config.VISION_DETAIL for the image detail level.
@@ -145,7 +151,7 @@ def _call_gpt4o(frame, prompt: str, detail_key: str) -> Optional[str]:
                     {"type": "text", "text": prompt},
                 ],
             }],
-            max_tokens=400,
+            max_tokens=max_tokens,
         )
     except Exception as exc:
         _log.error("_call_gpt4o [%s]: API error: %s", detail_key, exc)
@@ -399,6 +405,66 @@ def describe_scene() -> str:
         parts.append(f"Animals spotted: {animal_list}")
 
     return ". ".join(parts) + "." if parts else "Nothing notable right now."
+
+
+def describe_scene_detailed(frame) -> dict:
+    """
+    Return a detailed, safety-filtered visual summary for conversation hooks.
+
+    This is intentionally separate from analyze_environment(): idle conversation
+    needs concrete details such as clothing, objects, activities, and visible
+    setup, while the environment scanner only needs a cheap room-level label.
+    """
+    if frame is None:
+        return {}
+
+    prompt = (
+        "Analyze this image as visual context for a conversational robot. "
+        "Return a JSON object with exactly these keys:\n"
+        '  "overall_summary": one or two concise sentences about the scene,\n'
+        '  "people": an array of objects with "position", "visible_clothing", '
+        '"accessories", and "activity" fields; use empty strings when unclear,\n'
+        '  "notable_details": an array of concrete visible details such as '
+        "objects, decorations, screens, tools, furniture, logos, colors, or "
+        "interesting layout details,\n"
+        '  "conversation_hooks": an array of 3 to 6 short question ideas based '
+        "only on visible, non-sensitive details.\n"
+        "Safety rules: do not identify anyone. Do not infer or mention race, "
+        "ethnicity, religion, politics, disability, health, attractiveness, body "
+        "size, socioeconomic status, or other sensitive traits. Avoid reading "
+        "private text on screens or documents. Focus on clothing, accessories, "
+        "objects, activities, and environment. Return ONLY the JSON object — no "
+        "markdown, no preamble."
+    )
+
+    raw = _call_gpt4o(
+        frame,
+        prompt,
+        "active_conversation",
+        max_tokens=700,
+    )
+    if raw is None:
+        return {}
+
+    data = _parse_json(raw)
+    if not isinstance(data, dict):
+        _log.error("describe_scene_detailed: expected dict, got: %.120s", raw)
+        return {}
+
+    return {
+        "overall_summary": data.get("overall_summary") or "",
+        "people": data.get("people") if isinstance(data.get("people"), list) else [],
+        "notable_details": (
+            data.get("notable_details")
+            if isinstance(data.get("notable_details"), list)
+            else []
+        ),
+        "conversation_hooks": (
+            data.get("conversation_hooks")
+            if isinstance(data.get("conversation_hooks"), list)
+            else []
+        ),
+    }
 
 
 # ── Periodic scan ─────────────────────────────────────────────────────────────
