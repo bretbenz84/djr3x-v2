@@ -877,6 +877,117 @@ _arduino_upload_failure_action() {
     done
 }
 
+_configure_servo_limits_interactive() {
+    echo ""
+    warn "Servo limits must be measured safely in the Pololu Maestro Control Center before powering DJ-R3X servos."
+    echo "Use the values shown in the Maestro app, like: 496 - 2496"
+    echo "The setup script will multiply those microsecond values by 4 before writing config.py."
+    echo "Press Enter on a servo to keep the current config.py values."
+    echo ""
+
+    if ! _prompt_yes_no "Program servo min/max limits into config.py now? [y/N] " "n"; then
+        warn "Skipping servo limit programming."
+        MANUAL_ATTENTION+=("Update config.py SERVO_CHANNELS manually after measuring Maestro min/max values")
+        return
+    fi
+
+    "$VENV_PYTHON" - "$PROJECT_DIR/config.py" <<'PY'
+import ast
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+match = re.search(r"SERVO_CHANNELS\s*=\s*(\{.*?\n\})", text, re.DOTALL)
+if not match:
+    raise SystemExit("Could not find SERVO_CHANNELS in config.py")
+
+channels = ast.literal_eval(match.group(1))
+channel_rows = sorted(channels.items(), key=lambda item: int(item[1]["ch"]))
+updates: dict[str, tuple[int, int]] = {}
+friendly_names = {
+    "neck": "neck pan / left-right head turn",
+    "headlift": "head lift / up-down head height",
+    "headtilt": "head tilt / nod angle",
+    "visor": "visor",
+    "elbow": "left elbow",
+    "hand": "left hand/wrist",
+    "pokerarm": "right poker arm",
+    "heroarm": "right hero arm",
+}
+
+def fmt_us(q_us: int) -> str:
+    value = q_us / 4
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+def parse_limits(raw: str) -> tuple[int, int] | None:
+    nums = re.findall(r"\d+(?:\.\d+)?", raw)
+    if len(nums) < 2:
+        return None
+    lo_us = float(nums[0])
+    hi_us = float(nums[1])
+    if lo_us <= 0 or hi_us <= 0:
+        return None
+    if lo_us > hi_us:
+        lo_us, hi_us = hi_us, lo_us
+    return round(lo_us * 4), round(hi_us * 4)
+
+print("Servo channels:")
+for name, cfg in channel_rows:
+    ch = int(cfg["ch"])
+    friendly = friendly_names.get(name, name)
+    current = f"{fmt_us(int(cfg['min']))} - {fmt_us(int(cfg['max']))}"
+    neutral = fmt_us(int(cfg["neutral"]))
+    prompt = (
+        f"  ch {ch} {name} ({friendly}) current {current} us, "
+        f"neutral {neutral} us. New min-max: "
+    )
+    while True:
+        raw = input(prompt).strip()
+        if not raw:
+            break
+        parsed = parse_limits(raw)
+        if parsed is None:
+            print("    Enter two numbers like 496 - 2496, or press Enter to keep current.")
+            continue
+        lo_q, hi_q = parsed
+        neutral_q = int(cfg["neutral"])
+        if not (lo_q <= neutral_q <= hi_q):
+            print(
+                f"    Warning: current neutral {fmt_us(neutral_q)} us is outside "
+                f"{fmt_us(lo_q)} - {fmt_us(hi_q)} us. Update neutral later if needed."
+            )
+        updates[name] = (lo_q, hi_q)
+        break
+
+if not updates:
+    print("No servo limit changes requested.")
+    raise SystemExit(0)
+
+new_text = text
+for name, (lo_q, hi_q) in updates.items():
+    pattern = (
+        rf'("{re.escape(name)}"\s*:\s*\{{[^}}]*"min"\s*:\s*)\d+'
+        rf'([^}}]*"max"\s*:\s*)\d+'
+    )
+    replacement = rf"\g<1>{lo_q}\g<2>{hi_q}"
+    new_text, count = re.subn(pattern, replacement, new_text, count=1)
+    if count != 1:
+        raise SystemExit(f"Could not update servo channel {name!r} in config.py")
+
+path.write_text(new_text, encoding="utf-8")
+print("Updated config.py servo limits:")
+for name, (lo_q, hi_q) in sorted(updates.items(), key=lambda item: int(channels[item[0]]["ch"])):
+    ch = int(channels[name]["ch"])
+    friendly = friendly_names.get(name, name)
+    print(f"  ch {ch} {name} ({friendly}): {fmt_us(lo_q)} - {fmt_us(hi_q)} us ({lo_q} - {hi_q} q-us)")
+PY
+    INSTALLED_ITEMS+=("config.py servo min/max limits reviewed")
+}
+
 _compile_and_upload_arduino() {
     local label="$1"
     local sketch_dir="$2"
@@ -1018,9 +1129,9 @@ _guided_maestro_setup() {
 
     echo ""
     warn "Servo safety: determine every servo limit in the Pololu Maestro Control Center first."
-    echo "Write down min, max, neutral, speed, and acceleration values, then update config.py before connecting powered servos."
+    echo "Write down min and max values, then update config.py before connecting powered servos."
     echo "Do not connect the Maestro to live servo power until those limits are programmed."
-    MANUAL_ATTENTION+=("Before powering servos: program Maestro limits in the Pololu Control app and update config.py servo values")
+    _configure_servo_limits_interactive
 
     cp "$after_file" "$HARDWARE_BASELINE_FILE"
     rm -f "$after_file" "$candidate_file"
