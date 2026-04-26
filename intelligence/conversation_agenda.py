@@ -104,6 +104,14 @@ _PROACTIVE_RULES: dict[str, tuple[int, str]] = {
     ),
 }
 _BUDGETED_PROACTIVE_PURPOSES = {"memory_followup", "visual_curiosity", "small_talk"}
+_GRACE_SUPPRESSED_PROACTIVE_PURPOSES = {
+    "memory_followup",
+    "visual_curiosity",
+    "small_talk",
+    "ambient_observation",
+    "appearance_riff",
+    "idle_monologue",
+}
 
 _proactive_lock = threading.Lock()
 _active_proactive_claim: Optional[_ProactiveClaim] = None
@@ -134,6 +142,20 @@ def claim_proactive_purpose(
     now = time.monotonic()
     rule_priority = _PROACTIVE_RULES.get(purpose, (20, ""))[0]
     requested_priority = int(rule_priority if priority is None else priority)
+
+    if purpose in _GRACE_SUPPRESSED_PROACTIVE_PURPOSES:
+        try:
+            from intelligence import end_thread
+            if not end_thread.can_proactive_purpose(purpose):
+                _log.info(
+                    "proactive purpose suppressed by end-of-thread grace — "
+                    "purpose=%s label=%r",
+                    purpose,
+                    label,
+                )
+                return None
+        except Exception as exc:
+            _log.debug("end-of-thread proactive check failed: %s", exc)
 
     if purpose in _BUDGETED_PROACTIVE_PURPOSES:
         try:
@@ -209,6 +231,13 @@ def proactive_purpose_directive(purpose: str) -> str:
         budget = question_budget.build_directive()
         if budget:
             extra_lines.append(budget)
+    except Exception:
+        pass
+    try:
+        from intelligence import end_thread
+        grace = end_thread.build_directive()
+        if grace:
+            extra_lines.append(grace)
     except Exception:
         pass
     if not rule:
@@ -294,6 +323,15 @@ def build_turn_directive(
             lines.append(energy_directive)
     except Exception:
         pass
+    end_thread_pending = None
+    try:
+        from intelligence import end_thread
+        end_thread_directive = end_thread.build_directive()
+        if end_thread_directive:
+            lines.append(end_thread_directive)
+        end_thread_pending = end_thread.pending_closure()
+    except Exception:
+        end_thread_pending = None
     question_budget_allows = True
     try:
         from intelligence import question_budget
@@ -303,6 +341,14 @@ def build_turn_directive(
         question_budget_allows = question_budget.can_ask("agenda_question")
     except Exception:
         question_budget_allows = True
+
+    if end_thread_pending:
+        lines.append(
+            "Primary purpose: close the current thread gracefully. Give a brief "
+            "acknowledgement or soft final beat, then stop. No new questions, "
+            "no unrelated memory hooks, no visual riff."
+        )
+        return "\n".join(lines)
 
     if answered_question:
         q_text = answered_question.get("question_text") or "your previous question"

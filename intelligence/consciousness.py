@@ -3357,6 +3357,11 @@ def start() -> None:
         question_budget.clear()
     except Exception:
         pass
+    try:
+        from intelligence import end_thread
+        end_thread.clear()
+    except Exception:
+        pass
     global _last_emotional_checkin_check_at
     _last_emotional_checkin_check_at = 0.0
     global _overheard_chime_in_count, _last_overheard_check_at
@@ -3383,6 +3388,11 @@ def stop() -> None:
     try:
         from intelligence import question_budget
         question_budget.clear()
+    except Exception:
+        pass
+    try:
+        from intelligence import end_thread
+        end_thread.clear()
     except Exception:
         pass
     with _turn_lock:

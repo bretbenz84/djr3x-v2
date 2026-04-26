@@ -901,6 +901,10 @@ STALE_FACT_THRESHOLD_DAYS = 365
 # Rex to confirm it before using it as reliable memory.
 MEMORY_FACT_LOW_CONFIDENCE_THRESHOLD = 0.60
 
+# When the user gives a closure cue ("that's all", "thanks", "all good"),
+# optional proactive chatter stays quiet this long so the thread can land.
+END_OF_THREAD_GRACE_SECS = 35.0
+
 # If a person hasn't visited in this many days Rex comments on the long absence
 LONG_ABSENCE_THRESHOLD_DAYS = 60
 

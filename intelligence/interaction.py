@@ -37,6 +37,7 @@ from intelligence import topic_thread
 from intelligence import user_energy
 from intelligence import question_budget
 from intelligence import repair_moves
+from intelligence import end_thread
 from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
@@ -378,6 +379,10 @@ def _register_rex_utterance(text: str, wait_secs: Optional[float] = None) -> Non
         return
     try:
         repair_moves.note_assistant_turn(text)
+    except Exception:
+        pass
+    try:
+        end_thread.note_assistant_turn(text)
     except Exception:
         pass
     try:
@@ -1373,6 +1378,10 @@ def _end_session() -> None:
             repair_moves.clear()
         except Exception:
             pass
+        try:
+            end_thread.clear()
+        except Exception:
+            pass
         _identity_prompt_until = 0.0
         _awaiting_followup_event = None
         try:
@@ -1447,6 +1456,10 @@ def _end_session() -> None:
         pass
     try:
         repair_moves.clear()
+    except Exception:
+        pass
+    try:
+        end_thread.clear()
     except Exception:
         pass
     _session_exchange_count = 0
@@ -1920,6 +1933,17 @@ def _curiosity_check(
                 active_mode, person_id,
             )
             return None
+
+    try:
+        if end_thread.is_grace_active():
+            _log.info(
+                "[interaction] curiosity_check suppressed — end-of-thread grace "
+                "(person_id=%s)",
+                person_id,
+            )
+            return None
+    except Exception as exc:
+        _log.debug("end-of-thread curiosity check failed: %s", exc)
 
     try:
         if not question_budget.can_ask("curiosity_followup"):
@@ -2940,6 +2964,20 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             )
         except Exception as exc:
             _log.debug("question budget user update failed: %s", exc)
+        try:
+            closure = end_thread.note_user_turn(
+                text,
+                person_id,
+                answered_question=answered_question,
+            )
+            if closure:
+                _log.info(
+                    "[end_thread] closure cue detected — reason=%s text=%r",
+                    closure.get("reason"),
+                    text,
+                )
+        except Exception as exc:
+            _log.debug("end-of-thread user update failed: %s", exc)
 
         # Face-reveal prompt: speaker-ID matched a known person with HIGH
         # confidence, they have NO face biometric yet (voice-only enrollment),
@@ -3422,6 +3460,10 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             _session_exchange_count += 1
             _register_rex_utterance(response_text)
             assistant_asked_question = _assistant_asked_question(response_text)
+            try:
+                end_thread.mark_closure_spoken()
+            except Exception:
+                pass
 
         # Post-greeting relationship hook: we just enrolled a newcomer while a
         # different known person was recently engaged. Ask them how they know
@@ -3703,6 +3745,7 @@ def start() -> None:
     user_energy.clear()
     question_budget.clear()
     repair_moves.clear()
+    end_thread.clear()
     try:
         consciousness.clear_response_wait()
     except Exception:
@@ -3743,6 +3786,7 @@ def stop() -> None:
     user_energy.clear()
     question_budget.clear()
     repair_moves.clear()
+    end_thread.clear()
     try:
         consciousness.clear_response_wait()
     except Exception:
