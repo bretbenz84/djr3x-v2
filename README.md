@@ -127,3 +127,4 @@ DJ-R3X v2 is an unofficial fan project. It is not affiliated with, endorsed by, 
 
 - Bret Benziger
 - OpenAI Codex
+- Claude Code
