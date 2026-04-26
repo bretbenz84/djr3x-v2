@@ -1618,6 +1618,7 @@ _EMOTIONAL_BOUNDARY_PAT = re.compile(
     r"do not bring (this|that|it) up( anymore| again)?|"
     r"don'?t mention (this|that|it)( anymore| again)?|"
     r"do not mention (this|that|it)( anymore| again)?|"
+    r"forget about (this|that|it)|"
     r"drop it|leave it alone|no more check-?ins?"
     r")\b",
     re.IGNORECASE,
@@ -1630,7 +1631,8 @@ _EMOTIONAL_TOPIC_BOUNDARY_PAT = re.compile(
     r"don'?t bring (this|that|it) up( anymore| again)?|"
     r"do not bring (this|that|it) up( anymore| again)?|"
     r"don'?t mention (this|that|it)( anymore| again)?|"
-    r"do not mention (this|that|it)( anymore| again)?"
+    r"do not mention (this|that|it)( anymore| again)?|"
+    r"forget about (this|that|it)"
     r")\b",
     re.IGNORECASE,
 )
@@ -1664,22 +1666,28 @@ def _handle_emotional_checkin_boundary(
         return None
 
     reason = text.strip()[:240]
+    topic_boundary = _EMOTIONAL_TOPIC_BOUNDARY_PAT.search(text) is not None
+    released_checkin_hold = False
     try:
         muted = emotional_events.mute_recent_checkin_for_person(
             person_id,
             reason=reason,
             window_minutes=int(getattr(config, "EMOTIONAL_CHECKIN_BOUNDARY_WINDOW_MINUTES", 20)),
         )
-        if muted is None and (
-            _grief_flow_active(person_id)
-            or _EMOTIONAL_TOPIC_BOUNDARY_PAT.search(text)
-        ):
+        if muted is None and (_grief_flow_active(person_id) or topic_boundary):
             muted = emotional_events.mute_latest_active_negative_for_person(
                 person_id,
                 reason=reason,
             )
+        if muted is not None or topic_boundary:
+            try:
+                released_checkin_hold = consciousness.note_emotional_checkin_boundary(person_id)
+            except Exception as exc:
+                _log.debug("release emotional check-in visual hold failed: %s", exc)
         if muted is None:
-            return None
+            if not released_checkin_hold:
+                return None
+            muted = {"id": None, "category": "recent_checkin"}
         _grief_flow_clear(person_id)
         _log.info(
             "[empathy] muted proactive emotional check-ins for person_id=%s "

@@ -1792,6 +1792,40 @@ def _note_emotional_checkin_fired(person_id: Optional[int]) -> None:
     _emotional_checkin_fired_at[person_id] = time.monotonic()
 
 
+def note_emotional_checkin_boundary(
+    person_id: Optional[int],
+    *,
+    window_secs: Optional[float] = None,
+) -> bool:
+    """
+    Called when the person closes the door on a recent empathy check-in.
+
+    Keep the per-session check-in dedupe intact so Rex doesn't ask again, but
+    clear the post-care visual curiosity hold. Once someone says "don't talk
+    about that," a neutral visual pivot is allowed if the normal curiosity gates
+    later decide the silence needs one.
+    """
+    if person_id is None:
+        return False
+    fired_at = _emotional_checkin_fired_at.get(person_id)
+    if not fired_at:
+        return False
+
+    if window_secs is None:
+        minutes = float(getattr(config, "EMOTIONAL_CHECKIN_BOUNDARY_WINDOW_MINUTES", 20.0))
+        window_secs = max(0.0, minutes * 60.0)
+    if window_secs and (time.monotonic() - fired_at) > window_secs:
+        return False
+
+    _emotional_checkin_fired_at.pop(person_id, None)
+    _negative_streak_started_at.pop(person_id, None)
+    _log.info(
+        "consciousness: released post-empathy visual curiosity hold for person_id=%s",
+        person_id,
+    )
+    return True
+
+
 def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
     """
     After a recent engaged back-and-forth goes quiet, use a fresh visual summary
