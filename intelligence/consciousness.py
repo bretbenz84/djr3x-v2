@@ -1016,22 +1016,43 @@ def _build_emotional_checkin_prompt(
     if category in {"grief", "death"}:
         stance = (
             "This is a recent death or grief event. Lead with care. No teasing, "
-            "no silver lining, no attempt to cheer them up with a joke."
+            "no silver lining, no attempt to cheer them up with a joke. Name the "
+            "loss gently using the remembered description; do not hide it behind "
+            "vague phrases like 'everything' or 'that thing'."
+        )
+        reference_rule = (
+            f"You MUST explicitly reference the remembered loss in plain language "
+            f"using this description: \"{desc}\". Example shape: 'I remember you "
+            f"said your grandpa died...' Use their actual remembered relation/name "
+            f"if present."
         )
     elif category in {"bad_day", "work_stress", "stress"}:
         stance = (
             "This was a recent rough day or stress event. Keep it light but kind; "
             "it should not feel dramatic."
         )
+        reference_rule = (
+            f"Briefly name the remembered context from this description: \"{desc}\"; "
+            f"do not use vague phrases like 'everything' with no context."
+        )
     elif valence <= -0.7:
         stance = "This is a serious recent hard thing. Be gentle and grounded."
+        reference_rule = (
+            f"Briefly name the remembered context from this description: \"{desc}\"; "
+            f"do not use vague phrases like 'everything' with no context."
+        )
     else:
         stance = "This is a recent difficult thing. Be warm and low-pressure."
+        reference_rule = (
+            f"If you mention it, briefly name the remembered context from this "
+            f"description: \"{desc}\"; do not be cryptic."
+        )
     return (
         f"{context_sentence} FIRST PRIORITY: "
         f"before birthdays, milestones, upcoming plans, long absences, or 'back so soon' "
         f"banter, you remember this sensitive event: category={category}, "
-        f"description=\"{desc}\". {stance} In ONE short in-character Rex line, "
+        f"description=\"{desc}\". {stance} {reference_rule} "
+        f"In ONE short in-character Rex line, "
         f"gently check in on how {first_name} is doing. You may sound like Rex, "
         f"but ROAST OFF: no insults, no appearance comments, no jokes at their "
         f"expense. End with a low-pressure question."
