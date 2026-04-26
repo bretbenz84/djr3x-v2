@@ -386,6 +386,11 @@ def _can_proactive_speak() -> bool:
         return False
     if _proactive_speech_pending.is_set():
         return False
+    try:
+        if _situation_assessor.is_interaction_busy():
+            return False
+    except Exception:
+        pass
 
     with _turn_lock:
         last_spoken = _last_proactive_speech_at
@@ -511,7 +516,7 @@ def _generate_and_speak_presence(
             if delay > 0:
                 time.sleep(delay)
 
-            if not _can_speak():
+            if not _can_proactive_speak():
                 return
 
             from audio import speech_queue
@@ -519,6 +524,7 @@ def _generate_and_speak_presence(
             _log.info("consciousness: firing presence reaction — %s: %r", label, text[:120])
             _last_presence_reaction_at[tag_key] = time.monotonic()
             speech_queue.enqueue(text, emotion, priority=1, tag=tag)
+            note_rex_utterance(text)
         except Exception as exc:
             _log.debug("_generate_and_speak_presence error: %s", exc)
         finally:

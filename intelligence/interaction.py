@@ -89,6 +89,27 @@ _post_tts_flush_needed: bool = False
 _identity_prompt_until: float = 0.0
 
 _IDENTITY_REPLY_WINDOW_SECS = 45.0
+
+
+def _begin_user_turn() -> None:
+    """Suppress proactive speech while the interaction loop handles a user turn."""
+    try:
+        _situation_assessor.set_interaction_busy(True)
+    except Exception:
+        pass
+    try:
+        # User speech makes queued background/presence chatter stale. Drop any
+        # waiting non-urgent speech before it can start mid-answer.
+        speech_queue.clear_below_priority(2)
+    except Exception:
+        pass
+
+
+def _end_user_turn() -> None:
+    try:
+        _situation_assessor.set_interaction_busy(False)
+    except Exception:
+        pass
 _NAME_MAX_WORDS = 3
 
 # If a follow-up question ("how did X go?") is outstanding, this stores the
@@ -3296,13 +3317,16 @@ def _loop() -> None:
             state_module.set_state(State.ACTIVE)
             speech_start = time.monotonic()
             _last_speech_at = speech_start
+            _begin_user_turn()
+            try:
+                audio_segment = _accumulate_speech(speech_start)
+                if audio_segment is None or len(audio_segment) == 0:
+                    continue
 
-            audio_segment = _accumulate_speech(speech_start)
-            if audio_segment is None or len(audio_segment) == 0:
-                continue
-
-            _last_speech_at = time.monotonic()
-            _handle_speech_segment(audio_segment)
+                _last_speech_at = time.monotonic()
+                _handle_speech_segment(audio_segment)
+            finally:
+                _end_user_turn()
             continue
 
         # ── ACTIVE — full continuous listening ─────────────────────────────────
@@ -3341,6 +3365,7 @@ def _loop() -> None:
         # ── Speech detected ────────────────────────────────────────────────────
         speech_start = time.monotonic()
         _last_speech_at = speech_start
+        _begin_user_turn()
 
         # Mid-speech interruption: stop TTS, acknowledge, flush the mic buffer of
         # Rex's voice tail, then WAIT for a fresh VAD rising edge before
@@ -3364,15 +3389,19 @@ def _loop() -> None:
             stream.flush()
             _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
             _post_tts_flush_needed = True
+            _end_user_turn()
             continue
 
-        # Accumulate the full utterance
-        audio_segment = _accumulate_speech(speech_start)
-        if audio_segment is None or len(audio_segment) == 0:
-            continue
+        try:
+            # Accumulate the full utterance
+            audio_segment = _accumulate_speech(speech_start)
+            if audio_segment is None or len(audio_segment) == 0:
+                continue
 
-        _last_speech_at = time.monotonic()
-        _handle_speech_segment(audio_segment)
+            _last_speech_at = time.monotonic()
+            _handle_speech_segment(audio_segment)
+        finally:
+            _end_user_turn()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

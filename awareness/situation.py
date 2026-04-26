@@ -9,6 +9,7 @@ Public API:
     assessor.evaluate()          → SituationProfile
     assessor.set_vad_active(bool)  — called by interaction.py VAD loop
     assessor.set_rex_speaking(bool)— called by audio/speech_queue.py worker
+    assessor.set_interaction_busy(bool)
 """
 
 import sys
@@ -50,6 +51,7 @@ class SituationProfile:
     force_family_safe: bool         # child present — override all adult content
     being_discussed: bool           # Rex was referenced ABOUT-not-TO recently
     discussion_sentiment: str       # "positive" / "neutral" / "negative" of the last mention
+    interaction_busy: bool          # interaction loop is recording/processing/responding
 
 
 class SituationAssessor:
@@ -78,6 +80,10 @@ class SituationAssessor:
         self._last_seen_state: State = State.IDLE
         self._conversation_ended_at: float = 0.0
 
+        # Interaction pipeline state. True from user speech onset until Rex has
+        # finished handling that turn, including transcription/LLM/TTS latency.
+        self._interaction_busy: bool = False
+
     # ── External setters ───────────────────────────────────────────────────────
 
     def set_vad_active(self, active: bool) -> None:
@@ -104,6 +110,16 @@ class SituationAssessor:
                 self._rex_stopped_at = time.monotonic()
             self._rex_speaking = speaking
 
+    def set_interaction_busy(self, busy: bool) -> None:
+        """Called by interaction.py while a user turn is being handled."""
+        with self._lock:
+            self._interaction_busy = bool(busy)
+
+    def is_interaction_busy(self) -> bool:
+        """Return True while the interaction loop is handling a user turn."""
+        with self._lock:
+            return self._interaction_busy
+
     # ── Main evaluation ────────────────────────────────────────────────────────
 
     def evaluate(self) -> SituationProfile:
@@ -116,6 +132,7 @@ class SituationAssessor:
             vad_became_silent = self._vad_became_silent_at
             rex_speaking = self._rex_speaking
             rex_stopped_at = self._rex_stopped_at
+            interaction_busy = self._interaction_busy
 
             # Prune stale turn history (>30 s old)
             cutoff = now - 30.0
@@ -187,7 +204,11 @@ class SituationAssessor:
         )
         state_suppresses = current_state in (State.QUIET, State.SHUTDOWN)
         suppress_proactive = (
-            user_mid_sentence or convo_just_ended or rex_just_spoke or state_suppresses
+            user_mid_sentence
+            or interaction_busy
+            or convo_just_ended
+            or rex_just_spoke
+            or state_suppresses
         )
 
         # suppress_system_comments: conversation active OR speech within silence window
@@ -226,6 +247,7 @@ class SituationAssessor:
             force_family_safe=force_family_safe,
             being_discussed=being_discussed,
             discussion_sentiment=discussion_sentiment,
+            interaction_busy=interaction_busy,
         )
 
 
