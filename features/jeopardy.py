@@ -195,9 +195,24 @@ def load_boards() -> list[dict]:
     return _BOARD_CACHE
 
 
-def build_board() -> Optional[dict]:
+def _board_low_value(board: dict) -> int:
+    values = [
+        int(clue.get("value", 0) or 0)
+        for category in board.get("categories") or []
+        for clue in category.get("clues") or []
+    ]
+    return min(values) if values else 0
+
+
+def build_board(round_no: Optional[int] = None) -> Optional[dict]:
     """Return a fresh six-category board, or None if no board can be built."""
     boards = load_boards()
+    if round_no in (1, 2):
+        boards = [board for board in boards if int(board.get("round", 0) or 0) == round_no]
+        if round_no == 2:
+            double_boards = [board for board in boards if _board_low_value(board) >= 400]
+            if double_boards:
+                boards = double_boards
     if not boards:
         return None
 
@@ -208,12 +223,9 @@ def build_board() -> Optional[dict]:
 
     for cat_idx, category in enumerate(selected_categories):
         clues: dict[int, dict] = {}
-        for row_idx, clue in enumerate(category["clues"]):
+        for clue in category["clues"]:
             copy = dict(clue)
-            source_value = int(copy["value"])
-            value = (row_idx + 1) * 200
-            copy["source_value"] = source_value
-            copy["value"] = value
+            value = int(copy["value"])
             clues[value] = copy
             if copy.get("daily_double"):
                 daily_candidates.append((cat_idx, value))

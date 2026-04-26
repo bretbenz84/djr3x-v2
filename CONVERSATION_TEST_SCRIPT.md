@@ -644,9 +644,10 @@ Expected:
 
 - Rex plays the intro stinger, asks for players, then loads a board.
 - Immediate player-name replies after Rex asks who is playing should be heard without waiting for echo suppression logs to clear.
-- Rex names the players and categories, without reading every dollar value on the board.
+- Rex names the players and round-one categories, without reading every dollar value on the board.
 - The board stinger plays when the board is ready.
-- Category/value selections like `Birds for 200` produce a clue, even when the source board came from a Double Jeopardy round.
+- Category/value selections like `Birds for 200` produce a round-one clue.
+- After round one is cleared, Rex starts Double Jeopardy from round-two clues and reminds players that values start at `$400`.
 - Rex listens for answers immediately after the clue, even while the thinking theme is playing.
 - Correct answers play the right-answer stinger and update scores.
 - Wrong answers play the incorrect-answer stinger and update scores.

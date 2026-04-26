@@ -663,8 +663,88 @@ def _jeopardy_categories_reminder() -> str:
     return f"Remaining categories: {categories}. "
 
 
+def _jeopardy_board_low_value(board: dict) -> int:
+    values = [
+        int(value)
+        for category in board.get("categories") or []
+        for value in (category.get("clues") or {}).keys()
+    ]
+    return min(values) if values else 0
+
+
+def _jeopardy_load_round(
+    round_no: int,
+    players: list[dict],
+    *,
+    current_player_idx: Optional[int] = None,
+) -> Optional[str]:
+    try:
+        from features import jeopardy as jeopardy_bank
+        board = jeopardy_bank.build_board(round_no=round_no)
+    except Exception as exc:
+        _log.error("[jeopardy] round %s board build failed: %s", round_no, exc)
+        board = None
+
+    if not board:
+        return None
+
+    update = {
+        "phase": "selecting",
+        "players": players,
+        "board": board,
+        "last_category": None,
+        "jeopardy_round": round_no,
+    }
+    if current_player_idx is not None:
+        update["current_player_idx"] = current_player_idx
+    _game_state.update(update)
+    _jeopardy_queue_clip("board")
+
+    categories_text = jeopardy_bank.format_categories(board)
+    player = _jeopardy_current_player()
+    if round_no == 2:
+        low_value = _jeopardy_board_low_value(board)
+        start_note = f" Values start at ${low_value}." if low_value else ""
+        return (
+            f"Double Jeopardy is loaded.{start_note} "
+            f"Categories are: {categories_text}. "
+            f"{player['name']}, pick a category and dollar value."
+        )
+    return (
+        f"Categories are: {categories_text}. "
+        f"{player['name']}, pick a category and dollar value."
+    )
+
+
+def _jeopardy_complete_round_or_finish(
+    prefix: str,
+    *,
+    advance_player: bool = False,
+) -> tuple[str, bool]:
+    current_round = int(_game_state.get("jeopardy_round", 1) or 1)
+    if current_round < 2:
+        if advance_player:
+            _jeopardy_advance_player()
+        players = _game_state.get("players") or [{"name": "Player", "score": 0}]
+        current_idx = int(_game_state.get("current_player_idx", 0)) % len(players)
+        try:
+            from features import jeopardy as jeopardy_bank
+            scores = jeopardy_bank.format_scores(players)
+        except Exception:
+            scores = "scores unavailable"
+        next_round = _jeopardy_load_round(2, players, current_player_idx=current_idx)
+        if next_round:
+            return (
+                f"{prefix}That's round one. Scores: {scores}. {next_round}",
+                False,
+            )
+
+    return _jeopardy_finish_line(prefix), True
+
+
 def _jeopardy_timeout_fired(token: str) -> None:
     line = ""
+    queue_timesup = False
     with _lock:
         if _active_game != "jeopardy":
             return
@@ -681,20 +761,15 @@ def _jeopardy_timeout_fired(token: str) -> None:
         _game_state["phase"] = "selecting"
         correct_response = _jeopardy_correct_response_text(clue)
         if int((_game_state.get("board") or {}).get("remaining", 0) or 0) <= 0:
-            try:
-                from features import jeopardy as jeopardy_bank
-                scores = jeopardy_bank.format_scores(_game_state.get("players") or [])
-            except Exception:
-                scores = "scores unavailable"
             _jeopardy_queue_clip("timesup")
-            _jeopardy_queue_clip("outro")
-            line = (
-                f"Time's up. {correct_response}. "
-                f"That's the board. Final scores: {scores}. "
-                "Jeopardy systems powering down before someone asks me to host Wheel of Fortune."
+            line, game_done = _jeopardy_complete_round_or_finish(
+                f"Time's up. {correct_response}. ",
+                advance_player=True,
             )
-            _clear_game()
+            if game_done:
+                _clear_game()
         else:
+            queue_timesup = True
             next_player = _jeopardy_advance_player()
             categories = _jeopardy_categories_reminder()
             line = (
@@ -707,7 +782,7 @@ def _jeopardy_timeout_fired(token: str) -> None:
     try:
         from audio import speech_queue
         from intelligence import llm
-        if "Time's up." in line and _active_game == "jeopardy":
+        if queue_timesup:
             _jeopardy_queue_clip("timesup")
         speech_queue.enqueue(llm.clean_response_text(line), priority=1, tag="jeopardy:timeout")
     except Exception as exc:
@@ -748,38 +823,21 @@ def _jeopardy_start(person_id: Optional[int]) -> str:
 
 
 def _jeopardy_begin_board(names: list[str], person_id: Optional[int]) -> tuple[str, bool]:
-    try:
-        from features import jeopardy as jeopardy_bank
-        board = jeopardy_bank.build_board()
-    except Exception as exc:
-        _log.error("[jeopardy] board build failed: %s", exc)
-        board = None
-
-    if not board:
+    players = [{"name": name, "score": 0} for name in names]
+    round_line = _jeopardy_load_round(1, players, current_player_idx=0)
+    if not round_line:
         _game_state.clear()
         return (
             _rex_respond(
                 "[GAME: Jeopardy — NO BOARD] Rex tried to start Jeopardy but no "
-                "playable clue board was available. Apologize in character and "
-                "suggest Trivia instead.",
+                "playable round-one clue board was available. Apologize in "
+                "character and suggest Trivia instead.",
                 person_id,
             ),
             True,
         )
 
-    players = [{"name": name, "score": 0} for name in names]
-    _game_state.update({
-        "phase": "selecting",
-        "players": players,
-        "current_player_idx": 0,
-        "board": board,
-        "last_category": None,
-    })
-    _jeopardy_queue_clip("board")
-
-    categories_text = jeopardy_bank.format_categories(board)
     player_text = ", ".join(name for name in names)
-    first = players[0]["name"]
     quip = random.choice([
         "Try not to make the scoreboard file a complaint.",
         "May your answers be less questionable than my wiring.",
@@ -787,7 +845,7 @@ def _jeopardy_begin_board(names: list[str], person_id: Optional[int]) -> tuple[s
     ])
     return (
         f"Contestants logged: {player_text}. {quip} "
-        f"Categories are: {categories_text}. {first}, pick a category and dollar value.",
+        f"{round_line}",
         False,
     )
 
@@ -887,8 +945,10 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     if passed:
         _jeopardy_queue_clip("timesup")
         if done:
-            response = _jeopardy_finish_line(f"No answer. {correct_response}. ")
-            return (response, True)
+            return _jeopardy_complete_round_or_finish(
+                f"No answer. {correct_response}. ",
+                advance_player=True,
+            )
         next_player = _jeopardy_advance_player()
         _game_state["phase"] = "selecting"
         categories = _jeopardy_categories_reminder()
@@ -909,8 +969,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
             "Correct. The scoreboard briefly respects you.",
         ])
         if done:
-            response = _jeopardy_finish_line(f"{flourish} ")
-            return (response, True)
+            return _jeopardy_complete_round_or_finish(f"{flourish} ")
         _game_state["phase"] = "selecting"
         scores = jeopardy_bank.format_scores(players) if jeopardy_bank else "scores unavailable"
         categories = _jeopardy_categories_reminder()
@@ -924,10 +983,10 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     player["score"] = int(player.get("score", 0)) - value
     _jeopardy_queue_clip("wrong")
     if done:
-        response = _jeopardy_finish_line(
-            f"Incorrect. {correct_response}. "
+        return _jeopardy_complete_round_or_finish(
+            f"Incorrect. {correct_response}. ",
+            advance_player=True,
         )
-        return (response, True)
 
     next_player = _jeopardy_advance_player()
     _game_state["phase"] = "selecting"
