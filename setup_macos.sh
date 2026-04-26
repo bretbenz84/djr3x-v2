@@ -945,6 +945,12 @@ _format_servo_us() {
     }'
 }
 
+_valid_servo_us_integer() {
+    local value="$1"
+    [[ "$value" =~ ^[0-9]{3,4}$ ]] || return 1
+    awk -v v="$value" 'BEGIN { exit !(v + 0 >= 300 && v + 0 <= 3000) }'
+}
+
 _configure_servo_limits_interactive() {
     echo ""
     warn "Servo limits must be measured safely in the Pololu Maestro Control Center before powering DJ-R3X servos."
@@ -1062,34 +1068,28 @@ PY
     local current_min=""
     local current_max=""
     local neutral=""
-    local raw=""
-    local normalized=""
     local lo_us=""
     local hi_us=""
-    local extra=""
 
     echo "Servo channels:"
     while IFS=$'\t' read -r -u 9 name ch friendly current_min current_max neutral; do
         [[ -n "$name" ]] || continue
         while true; do
-            raw="$(_prompt_input "  ch $ch $name ($friendly) current $current_min - $current_max us, neutral $neutral us. New min-max: ")"
-            raw="$(printf "%s" "$raw" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-            if [[ -z "$raw" ]]; then
+            echo "  ch $ch $name ($friendly) current $current_min - $current_max us, neutral $neutral us."
+            lo_us="$(_prompt_input "    New min us [Enter = keep current]: ")"
+            lo_us="$(printf "%s" "$lo_us" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+            if [[ -z "$lo_us" ]]; then
                 break
             fi
-
-            normalized="$(printf "%s" "$raw" | sed -E 's/[^0-9.]+/ /g')"
-            read -r lo_us hi_us extra <<< "$normalized"
-            if [[ -z "$lo_us" || -z "$hi_us" ]]; then
-                echo "    Enter two Maestro microsecond values like 496 - 2496, within 300 - 3000, or press Enter to keep current."
+            if ! _valid_servo_us_integer "$lo_us"; then
+                echo "    Enter a 3- or 4-digit Maestro microsecond value from 300 to 3000, or press Enter to keep current."
                 continue
             fi
-            if ! awk -v lo="$lo_us" -v hi="$hi_us" 'BEGIN {
-                numeric = (lo ~ /^[0-9]+([.][0-9]+)?$/ && hi ~ /^[0-9]+([.][0-9]+)?$/)
-                inrange = (lo + 0 >= 300 && lo + 0 <= 3000 && hi + 0 >= 300 && hi + 0 <= 3000)
-                exit !(numeric && inrange)
-            }'; then
-                echo "    Enter two Maestro microsecond values like 496 - 2496, within 300 - 3000, or press Enter to keep current."
+
+            hi_us="$(_prompt_input "    New max us: ")"
+            hi_us="$(printf "%s" "$hi_us" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+            if ! _valid_servo_us_integer "$hi_us"; then
+                echo "    Enter a 3- or 4-digit Maestro microsecond value from 300 to 3000."
                 continue
             fi
             if awk -v lo="$lo_us" -v hi="$hi_us" 'BEGIN { exit !(lo + 0 > hi + 0) }'; then
