@@ -41,6 +41,7 @@ _process_started_mono: float = 0.0
 
 # Smoothed neck servo position in quarter-microseconds
 _neck_smooth: float = float(config.SERVO_CHANNELS["neck"]["neutral"])
+_face_tracking_suspended_until: float = 0.0
 
 # WorldState snapshot from the previous loop iteration (for change detection)
 _last_snapshot: dict = {}
@@ -3684,6 +3685,15 @@ def _pending_followups_lock_remove(person_id: int, event_id) -> None:
 # Step 11 — Face tracking
 # ─────────────────────────────────────────────────────────────────────────────
 
+def suspend_face_tracking(seconds: float = 3.0) -> None:
+    """Temporarily stop automatic neck tracking during explicit look commands."""
+    global _face_tracking_suspended_until
+    _face_tracking_suspended_until = max(
+        _face_tracking_suspended_until,
+        time.monotonic() + max(0.0, float(seconds)),
+    )
+
+
 def _face_x_to_neck_target(x: int) -> float:
     """Map pixel x to neck servo position. Center → neutral; edges → extremes."""
     neck_cfg = config.SERVO_CHANNELS["neck"]
@@ -3700,6 +3710,8 @@ def _step_face_tracking(frame) -> None:
     global _neck_smooth
 
     if state_module.get_state() == State.SLEEP:
+        return
+    if time.monotonic() < _face_tracking_suspended_until:
         return
 
     try:

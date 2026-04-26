@@ -21,6 +21,7 @@ import random
 import threading
 import time
 
+import config
 import state as _state_module
 from state import State as _State
 from hardware import servos, leds_head, leds_chest
@@ -28,6 +29,8 @@ from world_state import world_state
 
 # Set while a TTS utterance is in progress — gates both speaking gestures and wander.
 _speaking = threading.Event()
+_motion_lock = threading.Lock()
+_last_directed_look: str | None = None
 
 # ---------------------------------------------------------------------------
 # Servo position constants (Pololu quarter-microseconds)
@@ -427,6 +430,108 @@ def camera_pose() -> None:
     time.sleep(0.5)
 
 
+def _world_self_state() -> dict:
+    try:
+        return world_state.get("self_state")
+    except Exception:
+        return {}
+
+
+def _current_lateral_direction() -> str | None:
+    try:
+        pos = servos.get_servo(0)
+    except Exception:
+        pos = None
+    if pos is None:
+        pos = (_world_self_state().get("servo_positions") or {}).get("neck")
+    try:
+        neck = int(pos)
+    except (TypeError, ValueError):
+        return None
+    if neck <= NECK_CENTER - 400:
+        return "left"
+    if neck >= NECK_CENTER + 400:
+        return "right"
+    return None
+
+
+def _opposite_direction() -> str:
+    lateral = _current_lateral_direction()
+    if lateral == "left":
+        return "right"
+    if lateral == "right":
+        return "left"
+    if _last_directed_look == "left":
+        return "right"
+    if _last_directed_look == "right":
+        return "left"
+    if _last_directed_look == "up":
+        return "down"
+    if _last_directed_look == "down":
+        return "up"
+    return "right"
+
+
+def _record_directed_look(direction: str, target: str = "") -> None:
+    global _last_directed_look
+    _last_directed_look = direction
+    try:
+        self_state = world_state.get("self_state")
+        self_state["last_directed_look"] = direction
+        self_state["last_directed_look_at"] = time.time()
+        self_state["last_look_target"] = target or None
+        world_state.update("self_state", self_state)
+    except Exception:
+        pass
+
+
+def directed_look_pose(direction: str = "current", target: str = "") -> str:
+    """
+    Move Rex's head toward a requested direction for a user-directed visual check.
+
+    Returns the normalized direction actually used. Unlike camera_pose(), this
+    intentionally preserves side/up/down gaze so the next frame represents what
+    Rex was asked to inspect.
+    """
+    norm = (direction or "current").strip().lower()
+    if norm in {"here", "this", "that", "there", "pointed", "show"}:
+        norm = "current"
+    elif norm in {"other", "other_way", "opposite", "opposite_way"}:
+        norm = _opposite_direction()
+    elif norm in {"centre", "front", "forward", "ahead", "straight"}:
+        norm = "center"
+    elif norm not in {"left", "right", "up", "down", "center", "current"}:
+        norm = "current"
+
+    neck_offset = int(getattr(config, "DIRECTED_LOOK_NECK_OFFSET_QUS", 2200))
+    lift_offset = int(getattr(config, "DIRECTED_LOOK_HEADLIFT_OFFSET_QUS", 900))
+    tilt_offset = int(getattr(config, "DIRECTED_LOOK_HEADTILT_OFFSET_QUS", 450))
+    settle = float(getattr(config, "DIRECTED_LOOK_SETTLE_SECS", 0.65))
+    step_us = int(getattr(config, "DIRECTED_LOOK_STEP_QUS", 30))
+    step_delay = float(getattr(config, "DIRECTED_LOOK_STEP_DELAY_SECS", 0.032))
+
+    targets = {3: VISOR_OPEN}
+    if norm == "left":
+        targets[0] = max(1984, NECK_CENTER - neck_offset)
+    elif norm == "right":
+        targets[0] = min(9984, NECK_CENTER + neck_offset)
+    elif norm == "up":
+        targets[1] = min(7744, HEADLIFT_NEUTRAL + lift_offset)
+        # Headtilt is inverted: lower values tilt the head/camera upward.
+        targets[2] = max(3904, HEADTILT_NEUTRAL - tilt_offset)
+    elif norm == "down":
+        targets[1] = max(1984, HEADLIFT_NEUTRAL - lift_offset)
+        targets[2] = min(5504, HEADTILT_NEUTRAL + tilt_offset)
+    elif norm == "center":
+        targets.update({0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL})
+
+    with _motion_lock:
+        servos.move_to(targets, step_us=step_us, step_delay=step_delay)
+        time.sleep(settle)
+    _record_directed_look(norm, target)
+    return norm
+
+
 # ---------------------------------------------------------------------------
 # Arm
 # ---------------------------------------------------------------------------
@@ -458,6 +563,33 @@ def arm_rhythm_tick(beat_phase: float) -> None:
         servos.set_servo(4, ELBOW_DOWN)
     elif beat_phase < 0.5:
         servos.set_servo(4, ELBOW_NEUTRAL)
+
+
+def arm_wave(count: int | None = None) -> None:
+    """Wave the right arm by raising/lowering the elbow a few times."""
+    if count is None:
+        count = int(getattr(config, "WAVE_COUNT", 3))
+    count = max(1, min(6, int(count)))
+    hold = float(getattr(config, "WAVE_HOLD_SECS", 0.12))
+    step_us = int(getattr(config, "WAVE_STEP_QUS", 55))
+    step_delay = float(getattr(config, "WAVE_STEP_DELAY_SECS", 0.012))
+
+    with _motion_lock:
+        servos.move_to(
+            {7: HEROARM_FORWARD, 5: HAND_NEUTRAL, 4: ELBOW_NEUTRAL},
+            step_us=step_us,
+            step_delay=step_delay,
+        )
+        for _ in range(count):
+            servos.move_to({4: ELBOW_UP}, step_us=step_us, step_delay=step_delay)
+            time.sleep(hold)
+            servos.move_to({4: ELBOW_DOWN}, step_us=step_us, step_delay=step_delay)
+            time.sleep(hold)
+        servos.move_to(
+            {4: ELBOW_NEUTRAL, 5: HAND_NEUTRAL, 7: HEROARM_NEUTRAL},
+            step_us=step_us,
+            step_delay=step_delay,
+        )
 
 
 # ---------------------------------------------------------------------------

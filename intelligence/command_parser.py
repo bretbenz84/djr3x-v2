@@ -31,6 +31,123 @@ def _normalize(text: str) -> str:
     return " ".join(text.lower().strip().split())
 
 
+def _plain(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9'\s]", " ", text.lower()).split())
+
+
+_GENERIC_VISUAL_TARGET_WORDS = {
+    "a", "an", "the", "this", "that", "these", "those", "my", "your",
+    "thing", "things", "stuff", "one", "here", "there",
+}
+
+
+def _has_specific_visual_target(text: str) -> bool:
+    words = [w for w in _plain(text).split() if w not in _GENERIC_VISUAL_TARGET_WORDS]
+    return any(len(w) > 2 for w in words)
+
+
+def _parse_directed_look(normalized: str, original: str) -> dict | None:
+    """
+    Parse physical gaze commands: "look left", "look at this", "look down here".
+
+    "look around" remains the normal scene-description command; this helper is
+    for cases where the user is directing Rex's head/camera toward a target.
+    """
+    clean = _plain(normalized)
+    if not clean.startswith("look "):
+        return None
+    if clean in {"look around", "look alive"}:
+        return None
+
+    direction = None
+    if re.search(r"\b(?:the\s+)?other\s+way\b|\bopposite\s+way\b", clean):
+        direction = "other_way"
+
+    for word in ("left", "right", "up", "down"):
+        if direction is None and re.search(rf"\b(?:your\s+)?{word}\b", clean):
+            direction = word
+            break
+
+    if direction is None and re.search(
+        r"\b(?:center|centre|front|forward|ahead|straight ahead)\b", clean
+    ):
+        direction = "center"
+
+    target_hint = ""
+    m_at = re.match(r"look\s+at\s+(.+)$", clean)
+    if m_at:
+        target_hint = m_at.group(1).strip()
+
+    pointing_phrase = bool(re.search(
+        r"\blook\s+(?:at\s+)?(?:this|that|here|there)\b|\blook\s+over\s+there\b",
+        clean,
+    ))
+    broad_look_at = clean.startswith("look at ") and bool(target_hint)
+
+    if direction is None and (pointing_phrase or broad_look_at):
+        direction = "current"
+
+    if direction is None:
+        return None
+
+    return {
+        "direction": direction,
+        "target_hint": target_hint,
+        "search_target": _has_specific_visual_target(target_hint),
+        "utterance": original.strip(),
+    }
+
+
+def _parse_visual_opinion(normalized: str, original: str) -> dict | None:
+    clean = _plain(normalized)
+    patterns = [
+        r"^what\s+do\s+you\s+think\s+(?:of|about)\s+(?:this|that|my|the)\s+(.+)$",
+        r"^what's\s+your\s+opinion\s+(?:of|on)\s+(?:this|that|my|the)\s+(.+)$",
+        r"^check\s+out\s+(?:this|that|my|the)\s+(.+)$",
+        r"^take\s+a\s+look\s+at\s+(?:this|that|my|the)\s+(.+)$",
+    ]
+    for pattern in patterns:
+        m = re.match(pattern, clean)
+        if not m:
+            continue
+        target_hint = m.group(1).strip()
+        return {
+            "direction": "current",
+            "target_hint": target_hint,
+            "search_target": _has_specific_visual_target(target_hint),
+            "utterance": original.strip(),
+        }
+    return None
+
+
+def _parse_wave(normalized: str, original: str) -> dict | None:
+    clean = _plain(normalized)
+    if not clean.startswith(("wave", "please wave", "can you wave", "can you please wave")):
+        return None
+
+    m = re.match(
+        r"^(?:can you\s+)?(?:please\s+)?wave(?:\s+(?:to|at)\s+(.+))?$",
+        clean,
+    )
+    if not m:
+        return None
+
+    target = (m.group(1) or "").strip()
+    if target in {"", "me", "us", "them"}:
+        target = target or "them"
+
+    # Preserve original casing when possible for names like "JT".
+    original_m = re.match(
+        r"^(?:can you\s+)?(?:please\s+)?wave(?:\s+(?:to|at)\s+(.+))?$",
+        original.strip(),
+        re.IGNORECASE,
+    )
+    if original_m and original_m.group(1):
+        target = original_m.group(1).strip()
+
+    return {"target": target}
+
+
 # ─── Exact-match commands ─────────────────────────────────────────────────────
 
 EXACT_COMMANDS: dict[str, str] = {
@@ -226,6 +343,18 @@ def parse(text: str) -> CommandMatch | None:
     # 1. Exact match
     if normalized in EXACT_COMMANDS:
         return CommandMatch(EXACT_COMMANDS[normalized], "exact", {})
+
+    directed_look = _parse_directed_look(normalized, original)
+    if directed_look is not None:
+        return CommandMatch("directed_look", "pattern", directed_look)
+
+    visual_opinion = _parse_visual_opinion(normalized, original)
+    if visual_opinion is not None:
+        return CommandMatch("directed_look", "pattern", visual_opinion)
+
+    wave = _parse_wave(normalized, original)
+    if wave is not None:
+        return CommandMatch("wave_to", "pattern", wave)
 
     # 2a. Prefix match (variable-arg commands)
     for prefix, key, arg_name in PREFIX_COMMANDS:

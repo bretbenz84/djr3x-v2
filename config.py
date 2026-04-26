@@ -347,6 +347,23 @@ ARM_CHANNELS  = [4, 5, 6, 7]
 # Seconds to wait after raising visor and centering neck before capturing a frame
 CAMERA_POSE_SETTLE_SECS = 0.5
 
+# Directed look commands ("look left", "look at this", etc.) move the head before
+# capturing from the current gaze instead of centering the neck.
+DIRECTED_LOOK_NECK_OFFSET_QUS = 2200
+DIRECTED_LOOK_HEADLIFT_OFFSET_QUS = 900
+DIRECTED_LOOK_HEADTILT_OFFSET_QUS = 450
+DIRECTED_LOOK_SETTLE_SECS = 0.65
+DIRECTED_LOOK_STEP_QUS = 30
+DIRECTED_LOOK_STEP_DELAY_SECS = 0.032
+DIRECTED_LOOK_SEARCH_DIRECTIONS = ["current", "left", "right", "down", "up"]
+DIRECTED_LOOK_MAX_SEARCH_ATTEMPTS = 4
+
+# Wave gesture defaults for "wave to X".
+WAVE_COUNT = 3
+WAVE_STEP_QUS = 55
+WAVE_STEP_DELAY_SECS = 0.024
+WAVE_HOLD_SECS = 0.14
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CAMERA
 # ─────────────────────────────────────────────────────────────────────────────

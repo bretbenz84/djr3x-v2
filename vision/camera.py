@@ -218,6 +218,34 @@ def capture_still() -> Optional[np.ndarray]:
         })
 
 
+def capture_current_gaze(settle_secs: float = 0.15) -> Optional[np.ndarray]:
+    """
+    Capture a frame from Rex's current head/gaze direction.
+
+    This opens the visor but does not center or restore the neck. It is intended
+    for directed attention commands like "look left" where the caller has
+    already moved the head and wants the image from that pose.
+    """
+    if not CAMERA_ENABLED:
+        _log.debug("CAMERA_ENABLED=False — capture_current_gaze is a no-op")
+        return None
+
+    from hardware import servos
+
+    visor_cfg = config.SERVO_CHANNELS["visor"]
+    visor_before = servos.get_servo(visor_cfg["ch"]) or visor_cfg["neutral"]
+
+    try:
+        servos.set_servo(visor_cfg["ch"], visor_cfg["max"])
+        time.sleep(max(0.0, float(settle_secs)))
+        frame = get_frame()
+        if frame is None:
+            _log.warning("capture_current_gaze: no frame available from buffer")
+        return frame
+    finally:
+        servos.set_servo(visor_cfg["ch"], visor_before)
+
+
 # ── Internal ──────────────────────────────────────────────────────────────────
 
 def _open_camera() -> bool:

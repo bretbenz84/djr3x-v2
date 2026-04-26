@@ -467,6 +467,130 @@ def describe_scene_detailed(frame) -> dict:
     }
 
 
+def analyze_directed_attention(
+    frame,
+    *,
+    direction: str = "current",
+    utterance: str = "",
+    target_hint: str = "",
+) -> dict:
+    """
+    Analyze the view Rex was explicitly asked to look at.
+
+    Used after the head/neck servos move for commands such as "look left" or
+    "look at this". The output is structured so the dialogue layer can turn it
+    into a short roast-style observation without inventing visual details.
+    """
+    if frame is None:
+        return {}
+
+    direction = (direction or "current").strip().lower()
+    direction_note = {
+        "left": "Rex has turned his head toward his own left.",
+        "right": "Rex has turned his head toward his own right.",
+        "up": "Rex has tilted his camera upward.",
+        "down": "Rex has tilted his camera downward.",
+        "center": "Rex has centered his gaze.",
+        "current": "Rex is inspecting the current view; the user may be pointing or showing something nearby.",
+    }.get(direction, "Rex is inspecting the current view.")
+
+    prompt = (
+        "You are analyzing an image from DJ-R3X's camera after a person told him "
+        f"to look somewhere. {direction_note}\n"
+        f"Original spoken request: {utterance!r}\n"
+        f"Target hint extracted from the request: {target_hint!r}\n\n"
+        "Decide what the person most likely wants Rex to notice. Prioritize "
+        "salient objects, room features, people at the edge of view, children "
+        "low in the frame, pets, or something being held/shown to the camera. Return a "
+        "JSON object with exactly these keys:\n"
+        '  "target_summary": one concise sentence describing the likely target,\n'
+        '  "target_visible": boolean — true if the requested target/hint is '
+        "actually visible; false if it is missing or unclear,\n"
+        '  "subject_type": one of "person", "animal", "object", "room_feature", '
+        '"screen", "unknown",\n'
+        '  "visible_people_count": integer count of visible people, capped at 5,\n'
+        '  "animals": array of objects with "species" and "position", or [],\n'
+        '  "notable_details": array of up to 5 concrete visible details,\n'
+        '  "roast_angle": one friendly roast/opinion based only on visible '
+        "non-sensitive details,\n"
+        '  "confidence": "low", "medium", or "high".\n'
+        "Safety rules: do not identify anyone. Do not infer or mention race, "
+        "ethnicity, religion, politics, disability, health, attractiveness, body "
+        "size, or socioeconomic status. Do not read private text on documents or "
+        "screens. Keep the roast about objects, decor, staging, droid-level taste, "
+        "or general harmless chaos. Return ONLY the JSON object — no markdown, "
+        "no preamble."
+    )
+
+    raw = _call_gpt4o(
+        frame,
+        prompt,
+        "active_conversation",
+        max_tokens=650,
+    )
+    if raw is None:
+        return {}
+
+    data = _parse_json(raw)
+    if not isinstance(data, dict):
+        _log.error("analyze_directed_attention: expected dict, got: %.120s", raw)
+        return {}
+
+    animals_raw = data.get("animals") if isinstance(data.get("animals"), list) else []
+    animals = []
+    for entry in animals_raw:
+        if not isinstance(entry, dict):
+            continue
+        species = str(entry.get("species") or "").strip()
+        if not species:
+            continue
+        animals.append({
+            "species": species,
+            "position": str(entry.get("position") or "unknown").strip() or "unknown",
+        })
+
+    try:
+        visible_people_count = min(max(int(data.get("visible_people_count", 0)), 0), 5)
+    except (TypeError, ValueError):
+        visible_people_count = 0
+
+    result = {
+        "target_summary": str(data.get("target_summary") or "").strip(),
+        "target_visible": bool(data.get("target_visible", False)),
+        "subject_type": str(data.get("subject_type") or "unknown").strip() or "unknown",
+        "visible_people_count": visible_people_count,
+        "animals": animals,
+        "notable_details": (
+            data.get("notable_details")
+            if isinstance(data.get("notable_details"), list)
+            else []
+        )[:5],
+        "roast_angle": str(data.get("roast_angle") or "").strip(),
+        "confidence": str(data.get("confidence") or "low").strip() or "low",
+    }
+
+    if animals:
+        now = time.time()
+        world_state.update("animals", [
+            {
+                "id": f"animal_{i + 1}",
+                "species": item["species"],
+                "position": item["position"],
+                "last_seen": now,
+            }
+            for i, item in enumerate(animals)
+        ])
+
+    _log.info(
+        "analyze_directed_attention: direction=%s subject=%s confidence=%s summary=%r",
+        direction,
+        result.get("subject_type"),
+        result.get("confidence"),
+        result.get("target_summary"),
+    )
+    return result
+
+
 # ── Periodic scan ─────────────────────────────────────────────────────────────
 
 def start_periodic_scan(interval_secs: float) -> None:

@@ -21,6 +21,10 @@ _log = logging.getLogger(__name__)
 
 _ser: "serial.Serial | None" = None
 _lock = threading.Lock()
+_CHANNEL_TO_NAME = {
+    cfg["ch"]: name
+    for name, cfg in config.SERVO_CHANNELS.items()
+}
 
 # breathing_thread stop event — set by shutdown()
 _stop_breathing = threading.Event()
@@ -41,6 +45,52 @@ def _clamp(channel: int, position: int) -> int:
     if cfg is None:
         return position
     return max(cfg["min"], min(cfg["max"], position))
+
+
+def _derive_body_state(positions: dict) -> str:
+    neck_cfg = config.SERVO_CHANNELS["neck"]
+    lift_cfg = config.SERVO_CHANNELS["headlift"]
+    tilt_cfg = config.SERVO_CHANNELS["headtilt"]
+
+    neck = positions.get("neck", neck_cfg["neutral"])
+    lift = positions.get("headlift", lift_cfg["neutral"])
+    tilt = positions.get("headtilt", tilt_cfg["neutral"])
+
+    neck_dead = 450
+    lift_dead = 450
+    tilt_dead = 250
+    if neck <= neck_cfg["neutral"] - neck_dead:
+        return "looking_left"
+    if neck >= neck_cfg["neutral"] + neck_dead:
+        return "looking_right"
+    # Headtilt is inverted: lower value = looking up, higher value = looking down.
+    if lift >= lift_cfg["neutral"] + lift_dead or tilt <= tilt_cfg["neutral"] - tilt_dead:
+        return "looking_up"
+    if lift <= lift_cfg["neutral"] - lift_dead or tilt >= tilt_cfg["neutral"] + tilt_dead:
+        return "looking_down"
+    return "neutral"
+
+
+def _record_servo_positions(channel_dict: "dict[int, int]") -> None:
+    """Mirror commanded servo positions into WorldState proprioception."""
+    updates = {
+        _CHANNEL_TO_NAME[ch]: _clamp(ch, int(pos))
+        for ch, pos in channel_dict.items()
+        if ch in _CHANNEL_TO_NAME
+    }
+    if not updates:
+        return
+    try:
+        from world_state import world_state
+
+        self_state = world_state.get("self_state")
+        positions = dict(self_state.get("servo_positions") or {})
+        positions.update(updates)
+        self_state["servo_positions"] = positions
+        self_state["body_state"] = _derive_body_state(positions)
+        world_state.update("self_state", self_state)
+    except Exception as exc:
+        _log.debug("servo proprioception update failed: %s", exc)
 
 
 # ── Serial connection ──────────────────────────────────────────────────────────
@@ -89,6 +139,7 @@ def set_servo(channel: int, position: int) -> None:
     position = _clamp(channel, position)
     with _lock:
         _send_set_target(channel, position)
+    _record_servo_positions({channel: position})
 
 
 def get_servo(channel: int) -> "int | None":
@@ -118,6 +169,7 @@ def set_servos(channel_dict: "dict[int, int]") -> None:
     with _lock:
         for channel, position in channel_dict.items():
             _send_set_target(channel, _clamp(channel, position))
+    _record_servo_positions(channel_dict)
 
 
 # ── High-level behaviours ──────────────────────────────────────────────────────
@@ -160,6 +212,7 @@ def neutral(step_us: int = 40, step_delay: float = 0.02) -> None:
                 for ch, pos in moves.items():
                     _send_set_target(ch, pos)
             time.sleep(step_delay)
+    _record_servo_positions({cfg["ch"]: cfg["neutral"] for cfg in config.SERVO_CHANNELS.values()})
 
 
 def set_breathing_emotion(emotion: str) -> None:
@@ -264,6 +317,7 @@ def move_to(targets: "dict[int, int]", step_us: int = 40, step_delay: float = 0.
                 for ch, pos in moves.items():
                     _send_set_target(ch, _clamp(ch, pos))
             time.sleep(step_delay)
+    _record_servo_positions(targets)
 
 
 def stop_breathing() -> None:

@@ -13,6 +13,7 @@ Public API:
 """
 
 import logging
+import json
 import random
 import re
 import threading
@@ -1585,6 +1586,191 @@ def _stream_llm_response(
 # Command execution
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _directed_look_label(direction: str) -> str:
+    return {
+        "left": "to your left",
+        "right": "to your right",
+        "up": "upward",
+        "down": "downward",
+        "center": "straight ahead",
+        "current": "at what they were showing you",
+    }.get((direction or "current").lower(), "at what they were showing you")
+
+
+def _fallback_directed_look_response(analysis: dict) -> str:
+    summary = (analysis or {}).get("target_summary") or ""
+    roast = (analysis or {}).get("roast_angle") or ""
+    if summary and roast:
+        return f"{summary} {roast}"
+    if summary:
+        return summary
+    return "I looked, but my photoreceptors found mostly mystery and questionable staging."
+
+
+def _analysis_found_target(analysis: dict, target_hint: str) -> bool:
+    if not analysis:
+        return False
+    if not target_hint:
+        return True
+    if isinstance(analysis.get("target_visible"), bool):
+        return bool(analysis.get("target_visible"))
+    confidence = str(analysis.get("confidence") or "").lower()
+    subject_type = str(analysis.get("subject_type") or "").lower()
+    if confidence == "high" and subject_type not in {"", "unknown"}:
+        return True
+    haystack = " ".join([
+        str(analysis.get("target_summary") or ""),
+        str(analysis.get("roast_angle") or ""),
+        " ".join(str(x) for x in analysis.get("notable_details") or []),
+    ]).lower()
+    target_words = [
+        word for word in re.findall(r"[a-z0-9']+", target_hint.lower())
+        if len(word) > 2 and word not in {"this", "that", "the", "my", "your"}
+    ]
+    return bool(target_words and any(word in haystack for word in target_words))
+
+
+def _directed_search_directions(start_direction: str) -> list[str]:
+    configured = list(getattr(
+        config,
+        "DIRECTED_LOOK_SEARCH_DIRECTIONS",
+        ["current", "left", "right", "down", "up"],
+    ))
+    ordered: list[str] = []
+    for direction in [start_direction, *configured]:
+        direction = (direction or "current").strip().lower()
+        if direction == "other_way":
+            continue
+        if direction not in {"current", "left", "right", "up", "down", "center"}:
+            continue
+        if direction not in ordered:
+            ordered.append(direction)
+    max_attempts = int(getattr(config, "DIRECTED_LOOK_MAX_SEARCH_ATTEMPTS", 4))
+    return ordered[:max(1, max_attempts)]
+
+
+def _not_found_visual_response(target_hint: str) -> str:
+    target = (target_hint or "that").strip()
+    target = re.sub(r"^(?:this|that|the|my|your)\s+", "", target, flags=re.IGNORECASE).strip()
+    target = target or "that"
+    return (
+        f"I don't see the {target} you're talking about. "
+        "Either it's hiding, or my vision sensors have entered their tragic poet era."
+    )
+
+
+def _execute_directed_look_command(
+    args: dict,
+    person_id: Optional[int],
+    person_name: Optional[str],
+    raw_text: str,
+) -> str:
+    direction = (args.get("direction") or "current").strip().lower()
+    target_hint = (args.get("target_hint") or "").strip()
+    search_target = bool(args.get("search_target") and target_hint)
+    actual_direction = direction
+    analysis: dict = {}
+
+    try:
+        from sequences import animations
+        from vision import camera as camera_mod
+        from vision import scene as vision_scene
+
+        suspend_base = (
+            float(getattr(config, "DIRECTED_LOOK_SETTLE_SECS", 0.65))
+            + float(getattr(config, "CAMERA_POSE_SETTLE_SECS", 0.5))
+            + 3.0
+        )
+        directions = _directed_search_directions(direction) if search_target else [direction]
+        for attempt_direction in directions:
+            consciousness.suspend_face_tracking(suspend_base)
+            actual_direction = animations.directed_look_pose(
+                attempt_direction,
+                target=target_hint,
+            )
+            frame = camera_mod.capture_current_gaze(settle_secs=0.12)
+            if frame is None:
+                resp = (
+                    "I looked, but my photoreceptors came back empty. "
+                    "Very dramatic. Terrible evidence."
+                )
+                _speak_blocking(resp)
+                return resp
+
+            analysis = vision_scene.analyze_directed_attention(
+                frame,
+                direction=actual_direction,
+                utterance=raw_text,
+                target_hint=target_hint,
+            )
+            if not search_target or _analysis_found_target(analysis, target_hint):
+                break
+            _log.info(
+                "[interaction] directed look search miss — target=%r direction=%s",
+                target_hint,
+                actual_direction,
+            )
+    except Exception as exc:
+        _log.debug("directed look command failed: %s", exc)
+        resp = "I tried to look, but my neck servos and photoreceptors are staging a tiny rebellion."
+        _speak_blocking(resp)
+        return resp
+
+    if not analysis:
+        resp = "I looked, but the visual intel is thin. Atmospheric, yes. Useful, no."
+        _speak_blocking(resp)
+        return resp
+    if search_target and not _analysis_found_target(analysis, target_hint):
+        resp = _not_found_visual_response(target_hint)
+        _speak_blocking(resp)
+        return resp
+
+    speaker = person_name or "the person"
+    prompt = (
+        f"{speaker} asked you to physically look {_directed_look_label(actual_direction)}. "
+        f"The original request was: {raw_text!r}. "
+        "You moved your head/visor, took a fresh look, and got this vision analysis:\n"
+        f"{json.dumps(analysis, ensure_ascii=False)}\n\n"
+        "Reply as Rex with one concise roast-style observation or opinion based ONLY "
+        "on the analysis. Max 35 words. If the target is a person, child, pet, or "
+        "possible introduction, acknowledge them warmly with a harmless quip and, "
+        "only if useful, ask who they are. Do not mention JSON, APIs, cameras, "
+        "screenshots, or image analysis."
+    )
+    resp = llm.get_response(prompt, person_id) or _fallback_directed_look_response(analysis)
+    _speak_blocking(resp)
+    return llm.clean_response_text(resp)
+
+
+def _execute_wave_command(
+    args: dict,
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> str:
+    target = (args.get("target") or "").strip()
+    if not target or target.lower() == "them":
+        target = person_name or "them"
+
+    try:
+        from sequences import animations
+        threading.Thread(
+            target=animations.arm_wave,
+            daemon=True,
+            name="command_wave",
+        ).start()
+    except Exception as exc:
+        _log.debug("wave command motion failed: %s", exc)
+
+    prompt = (
+        f"You are physically waving your right arm to {target}. "
+        "Give one short Rex-style line, max 16 words. "
+        "Do not mention servos unless joking very lightly."
+    )
+    resp = llm.get_response(prompt, person_id) or f"Fine, {target}, consider yourself waved at."
+    _speak_blocking(resp, emotion="happy")
+    return llm.clean_response_text(resp)
+
+
 def _execute_command(
     match: command_parser.CommandMatch,
     person_id: Optional[int],
@@ -1603,6 +1789,13 @@ def _execute_command(
         resp = llm.get_response(prompt, person_id)
         _speak_blocking(resp, emotion)
         return resp
+
+    # ── Physical attention / movement ─────────────────────────────────────────
+    if key == "directed_look":
+        return _execute_directed_look_command(args, person_id, person_name, raw_text)
+
+    if key == "wave_to":
+        return _execute_wave_command(args, person_id, person_name)
 
     # ── Time & date ────────────────────────────────────────────────────────────
     if key == "time_query":
