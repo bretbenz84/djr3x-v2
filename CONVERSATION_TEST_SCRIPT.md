@@ -306,6 +306,31 @@ Expected:
 - Logs show `[turn_completion] merged incomplete fragment`.
 - Rex responds to the combined meaning: `Tomorrow I am going to Disneyland`.
 
+Repeated bridge word:
+
+> Tomorrow I am going to...
+
+Wait 2-3 seconds, then say:
+
+> to Disneyland.
+
+Expected:
+
+- Rex merges this as `Tomorrow I am going to Disneyland`, not
+  `Tomorrow I am going to to Disneyland`.
+
+Article pause:
+
+> I'm going to the...
+
+Wait 2-3 seconds, then say:
+
+> new movie theater tomorrow.
+
+Expected:
+
+- Rex merges this as `I'm going to the new movie theater tomorrow`.
+
 Timeout repair:
 
 > Tomorrow I am going to...

@@ -33,7 +33,7 @@ _TERMINAL_PUNCT_PAT = re.compile(r"[.!?]\s*$")
 
 _INCOMPLETE_END_WORDS = {
     "about", "after", "and", "because", "before", "but", "for", "from",
-    "if", "into", "or", "than", "to",
+    "if", "into", "or", "than", "the", "to",
     "unless", "until", "when", "where", "while", "who", "with",
     "without",
 }
@@ -67,6 +67,9 @@ _INCOMPLETE_END_PHRASES = (
     "so i",
     "supposed to",
     "the thing is",
+    "to a",
+    "to an",
+    "to the",
     "there was",
     "trying to",
     "wait because",
@@ -323,6 +326,9 @@ def merge_text(prefix: str, suffix: str) -> str:
         return second
     if not second:
         return first
+    second = _drop_boundary_overlap(first, second)
+    if not second:
+        return first
     return f"{first} {second}".strip()
 
 
@@ -369,6 +375,8 @@ def _prompt_for(words: list[str], text: str) -> str:
         return "About what?"
     if last == "for":
         return "For what?"
+    if last == "the" or lower.endswith(("to a", "to an", "to the")):
+        return "The what?"
     if last in {"and", "but", "so", "then"}:
         return "And then?"
     return "You left me hanging. Finish the sentence?"
@@ -380,6 +388,32 @@ def _clean(text: str) -> str:
 
 def _words(text: str) -> list[str]:
     return [m.group(0) for m in _WORD_PAT.finditer(text or "")]
+
+
+def _drop_boundary_overlap(prefix: str, suffix: str) -> str:
+    prefix_words = _words(prefix)
+    suffix_words = _words(suffix)
+    max_overlap = min(4, len(prefix_words), len(suffix_words))
+    for n in range(max_overlap, 0, -1):
+        if [w.lower() for w in prefix_words[-n:]] != [
+            w.lower() for w in suffix_words[:n]
+        ]:
+            continue
+        match_end = 0
+        count = 0
+        for match in _WORD_PAT.finditer(suffix):
+            count += 1
+            match_end = match.end()
+            if count >= n:
+                break
+        trimmed = suffix[match_end:].lstrip(" ,;:")
+        _log.debug(
+            "[turn_completion] dropped %d-word boundary overlap while merging: %r",
+            n,
+            suffix[:match_end],
+        )
+        return trimmed
+    return suffix
 
 
 def _strip_incomplete_punctuation(text: str) -> str:
