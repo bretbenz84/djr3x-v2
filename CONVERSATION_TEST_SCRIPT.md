@@ -629,7 +629,24 @@ Expected:
 - Rex stores an `inside_joke` fact.
 - Future callbacks should be rare and limited to one per reply.
 
-## 18. Jeopardy Verbal Game
+## 18. Verbal Game Launches
+
+Try these direct game starts:
+
+> Play I Spy.
+> Play 20 Questions.
+> Play Word Association.
+> What games can you play?
+
+Expected:
+
+- `Play I Spy` or `Play Eye Spy` starts I Spy, using the camera to choose a visible object.
+- `Play 20 Questions` or `Play Twenty Questions` starts a yes/no guessing game.
+- `Play Word Association` starts the word-chain game.
+- `What games can you play?` lists the actual registered games: I Spy, 20 Questions, Trivia, Jeopardy, and Word Association.
+- `Stop the game` exits any active game cleanly.
+
+## 19. Jeopardy Verbal Game
 
 Start the game:
 

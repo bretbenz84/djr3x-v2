@@ -61,11 +61,14 @@ _GAME_DISPLAY_NAMES: dict[str, str] = {
 
 _GAME_ALIASES: dict[str, str] = {
     "i spy":            "i_spy",
+    "eye spy":          "i_spy",
     "ispy":             "i_spy",
     "i_spy":            "i_spy",
     "spy":              "i_spy",
     "20 questions":     "20_questions",
     "twenty questions": "20_questions",
+    "twenty questions game": "20_questions",
+    "20 questions game": "20_questions",
     "20questions":      "20_questions",
     "20_questions":     "20_questions",
     "trivia":           "trivia",
@@ -83,6 +86,15 @@ def _normalize_game(name: str) -> Optional[str]:
     if clean.startswith("jeopardy"):
         return "jeopardy"
     return _GAME_ALIASES.get(clean)
+
+
+def available_game_names() -> list[str]:
+    """Return display names for games that have registered handlers."""
+    return [
+        _GAME_DISPLAY_NAMES[key]
+        for key in _GAME_HANDLERS
+        if key in _GAME_DISPLAY_NAMES
+    ]
 
 
 # ── LLM helpers ───────────────────────────────────────────────────────────────
@@ -1347,7 +1359,11 @@ def start_game(game_name: str, person_id: Optional[int] = None) -> str:
 
     normalized = _normalize_game(game_name)
     if normalized is None:
-        known = "I Spy, 20 Questions, Trivia, Jeopardy, and Word Association"
+        known_names = available_game_names()
+        if len(known_names) > 1:
+            known = ", ".join(known_names[:-1]) + f", and {known_names[-1]}"
+        else:
+            known = known_names[0] if known_names else "no games, somehow"
         return _rex_respond(
             f"[GAME: Unknown] Player asked to play \"{game_name}\" — Rex doesn't know that game. "
             f"Rex lists the games he does know ({known}) in character.",

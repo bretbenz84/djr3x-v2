@@ -1998,15 +1998,30 @@ def _execute_command(
             _log.debug("DJ command error: %s", exc)
 
     # ── Games ──────────────────────────────────────────────────────────────────
-    if key in ("start_trivia", "start_jeopardy", "start_game", "stop_game"):
+    if key in (
+        "start_trivia", "start_i_spy", "start_20_questions",
+        "start_jeopardy", "start_word_association", "start_game", "stop_game",
+    ):
         try:
             from features import games as games_mod
             if key == "start_trivia":
                 resp = games_mod.start_trivia(person_id)
                 _speak_blocking(resp)
                 return resp
+            if key == "start_i_spy":
+                resp = games_mod.start_game("i_spy", person_id)
+                _speak_blocking(resp)
+                return resp
+            if key == "start_20_questions":
+                resp = games_mod.start_game("20_questions", person_id)
+                _speak_blocking(resp)
+                return resp
             if key == "start_jeopardy":
                 resp = games_mod.start_game("jeopardy", person_id)
+                _speak_blocking(resp)
+                return resp
+            if key == "start_word_association":
+                resp = games_mod.start_game("word_association", person_id)
                 _speak_blocking(resp)
                 return resp
             if key == "start_game":
@@ -3165,20 +3180,8 @@ def _handle_classified_intent(
         )
 
     if intent == "query_games":
-        # Surface the actual aliases users would say, not the internal keys.
         from features import games as games_mod
-        seen: list[str] = []
-        for alias, key in games_mod._GAME_ALIASES.items():
-            label = {
-                "i_spy": "I Spy",
-                "20_questions": "20 Questions",
-                "trivia": "Trivia",
-                "jeopardy": "Jeopardy",
-                "word_association": "Word Association",
-            }.get(key)
-            if label and label not in seen:
-                seen.append(label)
-        game_list = ", ".join(seen) if seen else "none right now"
+        game_list = ", ".join(games_mod.available_game_names()) or "none right now"
         return _say(
             f"The user asked what games you can play. Your actual game list: {game_list}. "
             f"Tell them in one Rex-style line. Be brief."
