@@ -2869,26 +2869,32 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                         voice_settings=grief_voice,
                     )
                     response_text = grief_response
-                # If there are unacknowledged emotional events for this person
-                # the system prompt is about to fire the ACKNOWLEDGE-ON-RETURN
-                # directive — mark them acknowledged now so it doesn't repeat
-                # across this person's subsequent turns this session.
-                if person_id is not None:
-                    try:
-                        unack = [
-                            ev for ev in emotional_events.get_active_events(person_id, limit=3)
-                            if not ev.get("last_acknowledged_at")
-                        ]
-                        if unack:
-                            emotional_events.mark_all_acknowledged_for_person(person_id)
-                            _log.info(
-                                "[empathy] marked %d emotional event(s) acknowledged "
-                                "for person_id=%s on this turn",
-                                len(unack), person_id,
-                            )
-                    except Exception as exc:
-                        _log.debug("emotional event ack error: %s", exc)
-                response_text = _stream_llm_response(text, person_id)
+                # If the grief flow handled this turn, do NOT also fire the
+                # LLM streaming path — that would speak a second response on
+                # top of the grief line. Fall through to LLM only when grief
+                # didn't intercept.
+                if response_text is None:
+                    # If there are unacknowledged emotional events for this
+                    # person the system prompt is about to fire the
+                    # ACKNOWLEDGE-ON-RETURN directive — mark them acknowledged
+                    # now so it doesn't repeat across this person's subsequent
+                    # turns this session.
+                    if person_id is not None:
+                        try:
+                            unack = [
+                                ev for ev in emotional_events.get_active_events(person_id, limit=3)
+                                if not ev.get("last_acknowledged_at")
+                            ]
+                            if unack:
+                                emotional_events.mark_all_acknowledged_for_person(person_id)
+                                _log.info(
+                                    "[empathy] marked %d emotional event(s) acknowledged "
+                                    "for person_id=%s on this turn",
+                                    len(unack), person_id,
+                                )
+                        except Exception as exc:
+                            _log.debug("emotional event ack error: %s", exc)
+                    response_text = _stream_llm_response(text, person_id)
 
         assistant_asked_question = False
         if response_text:
