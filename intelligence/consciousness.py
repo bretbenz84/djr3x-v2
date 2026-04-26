@@ -35,6 +35,7 @@ _log = logging.getLogger(__name__)
 _stop_event = threading.Event()
 _thread: Optional[threading.Thread] = None
 _process_started_iso: Optional[str] = None
+_process_started_mono: float = 0.0
 
 # Smoothed neck servo position in quarter-microseconds
 _neck_smooth: float = float(config.SERVO_CHANNELS["neck"]["neutral"])
@@ -990,7 +991,25 @@ def _pick_due_emotional_checkin(person_db_id: Optional[int]) -> Optional[dict]:
         return None
 
 
-def _build_emotional_checkin_prompt(first_name: str, event: dict) -> str:
+def _first_sight_context(first_name: str) -> tuple[str, str]:
+    """Return prompt phrasing for seeing a known person first time this run."""
+    if _process_started_mono and (time.monotonic() - _process_started_mono) <= 45.0:
+        return (
+            f"You just started up and immediately see '{first_name}'.",
+            "you just booted up and immediately spot them",
+        )
+    return (
+        f"'{first_name}', someone you know, just came into your camera view "
+        f"for the first time this run.",
+        "they just came into your camera view for the first time this run",
+    )
+
+
+def _build_emotional_checkin_prompt(
+    first_name: str,
+    event: dict,
+    context_sentence: str,
+) -> str:
     category = (event.get("category") or "event").strip().lower()
     desc = (event.get("description") or "").strip()
     valence = float(event.get("valence", -0.5) or -0.5)
@@ -1009,7 +1028,7 @@ def _build_emotional_checkin_prompt(first_name: str, event: dict) -> str:
     else:
         stance = "This is a recent difficult thing. Be warm and low-pressure."
     return (
-        f"You just started up and immediately see '{first_name}'. FIRST PRIORITY: "
+        f"{context_sentence} FIRST PRIORITY: "
         f"before birthdays, milestones, upcoming plans, long absences, or 'back so soon' "
         f"banter, you remember this sensitive event: category={category}, "
         f"description=\"{desc}\". {stance} In ONE short in-character Rex line, "
@@ -1878,8 +1897,9 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 _greeted_this_session.add(key)
                 if _should_fire_presence(key, person_db_id, profile):
                     first_name = person_name.split()[0]
+                    context_sentence, situation_phrase = _first_sight_context(first_name)
                     prompt: Optional[str] = None
-                    label = f"startup greeting for {person_name}"
+                    label = f"first-sight greeting for {person_name}"
                     emotion = "excited"
 
                     # Priority 0 — recent sensitive emotional event.
@@ -1894,8 +1914,10 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     if not (suppress_in_crowd and crowd_count > 1):
                         emotional = _pick_due_emotional_checkin(person_db_id)
                     if emotional is not None:
-                        prompt = _build_emotional_checkin_prompt(first_name, emotional)
-                        label = f"startup emotional check-in for {person_name}"
+                        prompt = _build_emotional_checkin_prompt(
+                            first_name, emotional, context_sentence,
+                        )
+                        label = f"first-sight emotional check-in for {person_name}"
                         emotion = "sad" if float(emotional.get("valence", -0.5) or -0.5) < 0 else "happy"
                         _emotional_checkin_fired.add(person_db_id)
                         try:
@@ -1904,7 +1926,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         except Exception:
                             pass
                         _log.info(
-                            "consciousness: startup emotional check-in for %s "
+                            "consciousness: first-sight emotional check-in for %s "
                             "(category=%s, event_id=%s)",
                             person_name, emotional.get("category"), emotional.get("id"),
                         )
@@ -1946,7 +1968,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                             if ev_name:
                                 _pending_followups_lock_remove(person_db_id, ev.get("id"))
                                 prompt = (
-                                    f"You just started up and immediately see '{first_name}'. "
+                                    f"{context_sentence} "
                                     f"You remember they told you they had this on their schedule: "
                                     f"'{ev_name}' — and the date has now passed. Greet them and "
                                     f"ask specifically how '{ev_name}' went, in two short Rex-style "
@@ -1966,7 +1988,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         if anticipated is not None:
                             anti_prompt = _build_anticipation_prompt(
                                 first_name, anticipated,
-                                "you just booted up and immediately spot them",
+                                situation_phrase,
                             )
                             if anti_prompt:
                                 _anticipated_events.add((person_db_id, anticipated["id"]))
@@ -2000,7 +2022,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     # Fallback — generic greeting
                     if prompt is None:
                         prompt = (
-                            f"You just started up and immediately see '{first_name}', someone you know. "
+                            f"{context_sentence} "
                             f"Greet them in-character, then ask them a small-talk question — how "
                             f"they're doing, what they've been up to, what's on the agenda — "
                             f"something that invites them to actually talk to you, not just listen "
@@ -2934,11 +2956,12 @@ def _loop() -> None:
 def start() -> None:
     """Start the consciousness daemon thread. No-op if already running."""
     global _thread, _response_wait_until, _last_proactive_speech_at, _pending_departure_keys
-    global _process_started_iso
+    global _process_started_iso, _process_started_mono
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
     _process_started_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    _process_started_mono = time.monotonic()
     _stop_event.clear()
     _pending_identity_prompt.clear()
     _pending_relationship_prompt.clear()
