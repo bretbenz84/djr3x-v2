@@ -68,6 +68,11 @@ _PROACTIVE_RULES: dict[str, tuple[int, str]] = {
         "acknowledge the nearby third party only. Do not redirect the whole "
         "conversation or ask another question.",
     ),
+    "group_turn_invite": (
+        68,
+        "invite the quiet visible participant into the current conversation only. "
+        "Make it optional, warm, and one short line; do not pressure them.",
+    ),
     "reengagement": (
         70,
         "recapture attention with one line only. Do not ask an unrelated question.",
@@ -103,11 +108,17 @@ _PROACTIVE_RULES: dict[str, tuple[int, str]] = {
         "say one idle/private line only. Do not pull in another topic.",
     ),
 }
-_BUDGETED_PROACTIVE_PURPOSES = {"memory_followup", "visual_curiosity", "small_talk"}
+_BUDGETED_PROACTIVE_PURPOSES = {
+    "memory_followup",
+    "visual_curiosity",
+    "small_talk",
+    "group_turn_invite",
+}
 _GRACE_SUPPRESSED_PROACTIVE_PURPOSES = {
     "memory_followup",
     "visual_curiosity",
     "small_talk",
+    "group_turn_invite",
     "ambient_observation",
     "appearance_riff",
     "idle_monologue",

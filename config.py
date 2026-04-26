@@ -897,6 +897,24 @@ THIRD_PARTY_CALLOUT_PROBABILITY = 0.10
 # Per-loop-tick rate limit to keep the dispatcher cheap.
 THIRD_PARTY_CHECK_INTERVAL_SECS = 5.0
 
+# GROUP TURN-TAKING — softly invite a quiet known person into a small-group chat
+# The current engaged speaker must have carried this many identified turns in
+# the recent window before Rex considers opening the floor to someone else.
+GROUP_TURN_TAKING_ENABLED = True
+GROUP_TURN_RECENT_WINDOW_SECS = 180.0
+GROUP_TURN_DOMINANT_MIN_TURNS = 3
+# The quiet person must be visible and unspeaking for these windows. This keeps
+# the invitation from firing immediately when someone sits down.
+GROUP_TURN_QUIET_MIN_VISIBLE_SECS = 25.0
+GROUP_TURN_QUIET_MIN_SILENCE_SECS = 45.0
+# Rex waits for a lull after the engaged speaker's last turn before inviting.
+GROUP_TURN_MIN_CONVERSATION_LULL_SECS = 8.0
+GROUP_TURN_ACTIVE_WINDOW_SECS = 75.0
+# Rate limits: one check every few seconds, one invite per person per session,
+# and a long per-person cooldown in case the session state is reset manually.
+GROUP_TURN_CHECK_INTERVAL_SECS = 5.0
+GROUP_TURN_PERSON_COOLDOWN_SECS = 900.0
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MEMORY STALENESS
 # ─────────────────────────────────────────────────────────────────────────────

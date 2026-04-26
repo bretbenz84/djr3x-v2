@@ -3373,6 +3373,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             # uses this to suppress presence reactions about them while engaged.
             try:
                 consciousness.mark_engagement(person_id)
+                consciousness.note_person_spoke(person_id)
             except Exception:
                 pass
         else:

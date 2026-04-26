@@ -13,6 +13,7 @@ import random
 import sys
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -117,6 +118,15 @@ _third_party_seen_at: dict = {}
 _third_party_called_out: set = set()
 _last_third_party_check_at: float = 0.0
 
+# Group turn-taking state.
+# Tracks known visible people who have not spoken much while another known person
+# has been carrying the conversation, so Rex can occasionally invite them in.
+_group_turn_speaker_times: dict[int, deque[float]] = {}
+_group_turn_visible_since: dict[int, float] = {}
+_group_turn_invited_at: dict[int, float] = {}
+_group_turn_invited_this_session: set[int] = set()
+_last_group_turn_check_at: float = 0.0
+
 # Overheard chime-in tracking. Counts how many times Rex has chimed in on
 # being-discussed mentions this session and rate-limits how often the step
 # considers a chime-in.
@@ -202,6 +212,24 @@ def mark_engagement(person_id: Optional[int]) -> None:
     with _engaged_lock:
         _engaged_person_id = person_id
         _engaged_last_touch_at = time.monotonic()
+
+
+def note_person_spoke(person_id: Optional[int]) -> None:
+    """Record an identified speech turn for lightweight group turn-taking."""
+    if person_id is None:
+        return
+    try:
+        pid = int(person_id)
+    except Exception:
+        return
+    now = time.monotonic()
+    window = float(getattr(config, "GROUP_TURN_RECENT_WINDOW_SECS", 180.0))
+    max_age = max(window, 60.0)
+    turns = _group_turn_speaker_times.setdefault(pid, deque())
+    turns.append(now)
+    cutoff = now - max_age
+    while turns and turns[0] < cutoff:
+        turns.popleft()
 
 
 def clear_engagement() -> None:
@@ -2651,6 +2679,181 @@ def _step_third_party_awareness(snapshot: dict, profile: SituationProfile) -> No
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Step 10c2 — Group turn-taking
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _first_name(name: Optional[str], fallback: str = "there") -> str:
+    cleaned = (name or "").strip()
+    if not cleaned:
+        return fallback
+    return cleaned.split()[0]
+
+
+def _group_turn_count(person_id: int, now: float, window_secs: float) -> int:
+    turns = _group_turn_speaker_times.get(person_id)
+    if not turns:
+        return 0
+    cutoff = now - max(0.0, window_secs)
+    while turns and turns[0] < cutoff:
+        turns.popleft()
+    return len(turns)
+
+
+def _group_turn_last_spoke(person_id: int, now: float, window_secs: float) -> Optional[float]:
+    _group_turn_count(person_id, now, window_secs)
+    turns = _group_turn_speaker_times.get(person_id)
+    if not turns:
+        return None
+    return turns[-1]
+
+
+def _step_group_turn_taking(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    Softly invite a known, visible quiet person into an active small-group
+    conversation after one person has been carrying the floor for a while.
+
+    This is intentionally gentler than true turn arbitration: it only fires in
+    a lull, only once per target per session, and respects empathy, closure, and
+    question-budget gates.
+    """
+    global _last_group_turn_check_at
+
+    if not getattr(config, "GROUP_TURN_TAKING_ENABLED", True):
+        return
+    if profile.suppress_proactive or profile.user_mid_sentence or profile.interaction_busy:
+        return
+    if profile.rapid_exchange or not profile.conversation_active:
+        return
+    if is_waiting_for_response() or not _can_proactive_speak():
+        return
+
+    now = time.monotonic()
+    interval = float(getattr(config, "GROUP_TURN_CHECK_INTERVAL_SECS", 5.0))
+    if (now - _last_group_turn_check_at) < max(0.0, interval):
+        return
+    _last_group_turn_check_at = now
+
+    try:
+        people = snapshot.get("people", []) or []
+        known: dict[int, dict] = {}
+        for person in people:
+            pid = person.get("person_db_id")
+            name = person.get("face_id")
+            if not isinstance(pid, int) or not name:
+                continue
+            known.setdefault(pid, person)
+
+        if len(known) < 2:
+            _group_turn_visible_since.clear()
+            return
+
+        visible_ids = set(known.keys())
+        for pid in visible_ids:
+            _group_turn_visible_since.setdefault(pid, now)
+        for pid in list(_group_turn_visible_since.keys()):
+            if pid not in visible_ids:
+                _group_turn_visible_since.pop(pid, None)
+
+        with _engaged_lock:
+            engaged_id = _engaged_person_id
+            engaged_touch = _engaged_last_touch_at
+
+        if engaged_id is None or engaged_id not in known:
+            return
+        if _visual_curiosity_blocked_by_empathy(engaged_id):
+            return
+
+        min_lull = float(getattr(config, "GROUP_TURN_MIN_CONVERSATION_LULL_SECS", 8.0))
+        active_window = float(getattr(config, "GROUP_TURN_ACTIVE_WINDOW_SECS", 75.0))
+        lull_secs = now - engaged_touch
+        if lull_secs < min_lull or lull_secs > active_window:
+            return
+
+        recent_window = float(getattr(config, "GROUP_TURN_RECENT_WINDOW_SECS", 180.0))
+        min_dominant_turns = int(getattr(config, "GROUP_TURN_DOMINANT_MIN_TURNS", 3))
+        if _group_turn_count(engaged_id, now, recent_window) < min_dominant_turns:
+            return
+
+        min_visible = float(getattr(config, "GROUP_TURN_QUIET_MIN_VISIBLE_SECS", 25.0))
+        min_silence = float(getattr(config, "GROUP_TURN_QUIET_MIN_SILENCE_SECS", 45.0))
+        cooldown = float(getattr(config, "GROUP_TURN_PERSON_COOLDOWN_SECS", 900.0))
+
+        target: Optional[dict] = None
+        target_visible_secs = 0.0
+        target_silence_secs = 0.0
+        best_score = -1.0
+
+        for pid, person in known.items():
+            if pid == engaged_id:
+                continue
+            if pid in _group_turn_invited_this_session:
+                continue
+            if (now - _group_turn_invited_at.get(pid, 0.0)) < max(0.0, cooldown):
+                continue
+            if _visual_curiosity_blocked_by_empathy(pid):
+                continue
+
+            visible_since = _group_turn_visible_since.get(pid, now)
+            visible_secs = now - visible_since
+            if visible_secs < min_visible:
+                continue
+
+            last_spoke = _group_turn_last_spoke(pid, now, recent_window)
+            silence_secs = now - last_spoke if last_spoke is not None else visible_secs
+            if silence_secs < min_silence:
+                continue
+
+            recent_turns = _group_turn_count(pid, now, recent_window)
+            score = silence_secs + visible_secs - (recent_turns * 15.0)
+            if score > best_score:
+                best_score = score
+                target = person
+                target_visible_secs = visible_secs
+                target_silence_secs = silence_secs
+
+        if not target:
+            return
+
+        target_id = target.get("person_db_id")
+        if not isinstance(target_id, int):
+            return
+        target_name = target.get("face_id") or "there"
+        engaged_name = known[engaged_id].get("face_id") or "your friend"
+        target_first = _first_name(target_name)
+        engaged_first = _first_name(engaged_name, "the main talker")
+
+        _group_turn_invited_this_session.add(target_id)
+        _group_turn_invited_at[target_id] = now
+
+        prompt = (
+            f"You are in a small-group conversation. {engaged_name} has been "
+            f"doing most of the talking, and {target_name} is visible nearby "
+            f"but has been quiet. In ONE short in-character Rex line, gently "
+            f"invite {target_first} into this same conversation. Make it feel "
+            f"optional, warm, and lightly funny, not accusatory. You may mention "
+            f"{engaged_first} only if it helps. Ask at most one easy question. "
+            f"Do not mention cameras, tracking, silence timers, or that you are "
+            f"monitoring turn-taking. Max 22 words."
+        )
+        _log.info(
+            "consciousness: group turn invite for %s (visible %.1fs, quiet %.1fs, engaged=%s)",
+            target_name,
+            target_visible_secs,
+            target_silence_secs,
+            engaged_name,
+        )
+        _generate_and_speak(
+            prompt,
+            emotion="curious",
+            wait_secs=getattr(config, "QUESTION_RESPONSE_WAIT_SECS", 8.0),
+            purpose="group_turn_invite",
+            label=f"group turn invite for {target_name}",
+        )
+    except Exception as exc:
+        _log.debug("group turn-taking step error: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Step 10e — Overheard chime-in
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -3352,6 +3555,9 @@ def _loop() -> None:
             # 10c. Third-party awareness — call out a lingering bystander
             _step_third_party_awareness(snapshot, profile)
 
+            # 10c2. Group turn-taking — softly invite a quiet visible known person
+            _step_group_turn_taking(snapshot, profile)
+
             # 10d. Holiday plans — ask engaged person about upcoming holidays
             _step_holiday_plans(snapshot, profile)
 
@@ -3410,6 +3616,10 @@ def start() -> None:
     _emotional_checkin_fired.clear()
     _emotional_checkin_fired_at.clear()
     _negative_streak_started_at.clear()
+    _group_turn_speaker_times.clear()
+    _group_turn_visible_since.clear()
+    _group_turn_invited_at.clear()
+    _group_turn_invited_this_session.clear()
     try:
         from intelligence import question_budget
         question_budget.clear()
@@ -3420,8 +3630,9 @@ def start() -> None:
         end_thread.clear()
     except Exception:
         pass
-    global _last_emotional_checkin_check_at
+    global _last_emotional_checkin_check_at, _last_group_turn_check_at
     _last_emotional_checkin_check_at = 0.0
+    _last_group_turn_check_at = 0.0
     global _overheard_chime_in_count, _last_overheard_check_at
     _overheard_chime_in_count = 0
     _last_overheard_check_at = 0.0
@@ -3443,6 +3654,10 @@ def stop() -> None:
     _stop_event.set()
     _pending_identity_prompt.clear()
     _proactive_speech_pending.clear()
+    _group_turn_speaker_times.clear()
+    _group_turn_visible_since.clear()
+    _group_turn_invited_at.clear()
+    _group_turn_invited_this_session.clear()
     try:
         from intelligence import question_budget
         question_budget.clear()
