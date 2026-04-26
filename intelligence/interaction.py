@@ -2044,13 +2044,37 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                         person_id, person_name, speaker_score, eng_visible_floor,
                     )
                 elif engaged_is_visible and not _has_unknown_visible_person():
-                    off_camera_unknown = True
-                    _log.info(
-                        "[interaction] person resolution: speaker-ID missed while engaged "
-                        "person %r is visible and no unknown face — treating as off-camera "
-                        "unknown voice",
-                        ws_name,
+                    # Grief-flow override: Rex just asked this engaged person
+                    # a direct question and is awaiting their reply. Voice-ID
+                    # can score just below the engaged-visible floor on short
+                    # utterances (a single name like "Joe", or noisy audio),
+                    # but face match + top-candidate match is plenty of
+                    # evidence in this context. Don't divert to off-camera
+                    # handling and lose the grief flow's turn.
+                    grief_floor = float(
+                        getattr(config, "SPEAKER_ID_GRIEF_FLOW_FLOOR", 0.30)
                     )
+                    if (
+                        _grief_flow_active(ws_pid)
+                        and raw_best_id == ws_pid
+                        and speaker_score >= grief_floor
+                    ):
+                        person_id = ws_pid
+                        person_name = ws_name
+                        _log.info(
+                            "[interaction] person resolution: grief flow active for "
+                            "engaged+visible person %r — attributing despite voice "
+                            "score %.3f below engaged+visible floor (grief floor=%.2f)",
+                            ws_name, speaker_score, grief_floor,
+                        )
+                    else:
+                        off_camera_unknown = True
+                        _log.info(
+                            "[interaction] person resolution: speaker-ID missed while engaged "
+                            "person %r is visible and no unknown face — treating as off-camera "
+                            "unknown voice",
+                            ws_name,
+                        )
                 else:
                     person_id = ws_pid
                     person_name = ws_name

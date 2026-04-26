@@ -757,6 +757,14 @@ SPEAKER_ID_SOFT_THRESHOLD = 0.60
 # floor on a noisy utterance.
 SPEAKER_ID_ENGAGED_VISIBLE_FLOOR = 0.50
 
+# Grief-flow attribution floor: when the structured loss/grief flow has an
+# active step awaiting THIS engaged-and-visible person's reply (Rex just asked
+# them a direct question like "What was your grandpa's name?"), short utterances
+# such as single names can score below the engaged+visible floor. Face match +
+# top-candidate match + Rex-just-asked-them is plenty of evidence — don't
+# divert to off-camera handling on a near-miss and derail the conversation.
+SPEAKER_ID_GRIEF_FLOW_FLOOR = 0.30
+
 # Floor score at which Rex will voice an uncertain guess ("I'm not sure, but
 # it could be Bret") when directly asked "who's speaking?". Below this floor
 # Rex honestly admits he doesn't recognize the voice. Only affects the
