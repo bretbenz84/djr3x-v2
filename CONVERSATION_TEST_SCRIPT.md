@@ -286,7 +286,57 @@ Useful log lines:
 - `Social frame governor:`
 - `[social_frame] governed response`
 
-## 9. Question Budget
+## 9. Incomplete Turn Completion
+
+Goal: verify Rex waits briefly when a human pauses mid-sentence instead of
+pouncing on the fragment as a finished turn.
+
+Fast continuation:
+
+> Tomorrow I am going to...
+
+Wait 2-3 seconds, then say:
+
+> Disneyland.
+
+Expected:
+
+- Rex does not respond between the two fragments.
+- Logs show `[turn_completion] holding incomplete fragment`.
+- Logs show `[turn_completion] merged incomplete fragment`.
+- Rex responds to the combined meaning: `Tomorrow I am going to Disneyland`.
+
+Timeout repair:
+
+> Tomorrow I am going to...
+
+Wait longer than `INCOMPLETE_TURN_HOLD_SECS`.
+
+Expected:
+
+- Rex asks a tiny repair question like `Going where?`
+- If you then say `Disneyland`, Rex treats it as the completion of the earlier
+  thought instead of a disconnected one-word answer.
+
+Cancel:
+
+> I wanted to...
+
+Then say:
+
+> Never mind.
+
+Expected:
+
+- Rex clears the pending fragment and handles `Never mind` normally.
+
+Useful log lines:
+
+- `[turn_completion] holding incomplete fragment`
+- `[turn_completion] incomplete hold expired`
+- `[turn_completion] merged incomplete fragment`
+
+## 10. Question Budget
 
 Goal: verify Rex does not become interview-y.
 
@@ -311,7 +361,7 @@ Useful log lines:
 - `curiosity_check suppressed - question budget full`
 - `proactive purpose suppressed by question budget`
 
-## 10. Better Repair Moves
+## 11. Better Repair Moves
 
 Goal: verify direct corrections are treated as repairs, not insults or normal banter.
 
@@ -390,7 +440,7 @@ Useful log line:
 
 - `[repair] handled kind=...`
 
-## 11. Memory Confidence And Freshness
+## 12. Memory Confidence And Freshness
 
 Goal: verify repeated facts become stronger, stale/low-confidence facts are treated cautiously.
 
@@ -433,7 +483,7 @@ Useful log line:
 
 - `[llm] fact confirmation prompt`
 
-## 12. End-Of-Thread Grace
+## 13. End-Of-Thread Grace
 
 Goal: verify Rex lets a thread end without immediately pivoting.
 
@@ -461,7 +511,7 @@ Expected:
 
 - Rex answers normally.
 
-## 13. Proactive Arbiter / No Stacked Speech
+## 14. Proactive Arbiter / No Stacked Speech
 
 Goal: verify multiple background instincts do not talk over or replace each other.
 
@@ -483,7 +533,7 @@ Useful log lines:
 - `consciousness: firing presence reaction`
 - `visual curiosity question`
 
-## 14. Optional Camera-Dependent Check
+## 15. Optional Camera-Dependent Check
 
 This one is optional because camera quality may make it noisy.
 

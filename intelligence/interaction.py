@@ -40,6 +40,7 @@ from intelligence import repair_moves
 from intelligence import end_thread
 from intelligence import introductions
 from intelligence import social_frame
+from intelligence import turn_completion
 from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
@@ -1170,6 +1171,69 @@ def _process_audio(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Turn completion repair
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _maybe_prompt_incomplete_turn() -> bool:
+    """Ask a tiny repair question when a held fragment times out."""
+    global _session_exchange_count
+    if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
+        return False
+
+    pending = turn_completion.mark_prompt_due()
+    if pending is None:
+        turn_completion.clear_stale_prompted()
+        return False
+
+    prompt = pending.prompt
+    if not prompt:
+        return False
+
+    speaker_label = "user"
+    heard_name: Optional[str] = None
+    try:
+        if (
+            pending.raw_best_name
+            and pending.raw_best_score >= float(getattr(config, "SPEAKER_ID_SOFT_THRESHOLD", 0.60))
+        ):
+            speaker_label = pending.raw_best_name
+            heard_name = pending.raw_best_name
+    except Exception:
+        pass
+    try:
+        conv_memory.add_to_transcript(speaker_label, pending.text)
+        conv_log.log_heard(heard_name, pending.text)
+    except Exception as exc:
+        _log.debug("turn completion partial transcript log failed: %s", exc)
+    print(f"[HEARD] {speaker_label}: {pending.text}", flush=True)
+    _log.info(
+        "[turn_completion] prompting for completion — speaker=%r text=%r prompt=%r",
+        speaker_label,
+        pending.text,
+        prompt,
+    )
+
+    completed = _speak_blocking(
+        prompt,
+        emotion="neutral",
+        pre_beat_ms=100,
+        post_beat_ms_override=150,
+    )
+    if completed:
+        conv_memory.add_to_transcript("Rex", prompt)
+        conv_log.log_rex(prompt)
+        _session_exchange_count += 1
+        try:
+            wait_secs = float(
+                getattr(config, "INCOMPLETE_TURN_PROMPT_REPLY_WINDOW_SECS", 10.0)
+            )
+        except Exception:
+            wait_secs = 10.0
+        _register_rex_utterance(prompt, wait_secs=wait_secs)
+    return True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Speech accumulation
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1739,6 +1803,10 @@ def _end_session() -> None:
             end_thread.clear()
         except Exception:
             pass
+        try:
+            turn_completion.clear()
+        except Exception:
+            pass
         _identity_prompt_until = 0.0
         _awaiting_followup_event = None
         _pending_introduction = None
@@ -1819,6 +1887,10 @@ def _end_session() -> None:
         pass
     try:
         end_thread.clear()
+    except Exception:
+        pass
+    try:
+        turn_completion.clear()
     except Exception:
         pass
     _session_exchange_count = 0
@@ -2821,6 +2893,45 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         if not text:
             return
 
+        heard_log_text = text
+        completion = turn_completion.consume_continuation(
+            text=text,
+            audio_array=audio_array,
+            raw_best_id=raw_best_id,
+            raw_best_name=raw_best_name,
+            raw_best_score=speaker_score,
+        )
+        if completion and completion.get("action") == "merge":
+            text = completion["text"]
+            merged_audio = completion.get("audio_array")
+            if merged_audio is not None:
+                audio_array = merged_audio
+            raw_best_id = completion.get("raw_best_id")
+            raw_best_name = completion.get("raw_best_name")
+            speaker_score = float(completion.get("raw_best_score") or 0.0)
+            if completion.get("was_prompted"):
+                heard_log_text = completion.get("continuation_text") or heard_log_text
+            else:
+                heard_log_text = text
+        else:
+            signal = turn_completion.classify(text)
+            if signal is not None:
+                pending = turn_completion.hold(
+                    text=text,
+                    audio_array=audio_array,
+                    raw_best_id=raw_best_id,
+                    raw_best_name=raw_best_name,
+                    raw_best_score=speaker_score,
+                    signal=signal,
+                )
+                try:
+                    consciousness.begin_response_wait(
+                        max(0.5, pending.hold_until - time.monotonic()) + 0.5
+                    )
+                except Exception as exc:
+                    _log.debug("turn completion response-wait failed: %s", exc)
+                return
+
         echo_cancel.start_sequence()
         sequence_started = True
 
@@ -3506,9 +3617,9 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             print("[VOICE] Unknown voice detected", flush=True)
 
         speaker_label = person_name or "user"
-        conv_memory.add_to_transcript(speaker_label, text)
-        conv_log.log_heard(person_name, text)
-        print(f"[HEARD] {speaker_label}: {text}", flush=True)
+        conv_memory.add_to_transcript(speaker_label, heard_log_text)
+        conv_log.log_heard(person_name, heard_log_text)
+        print(f"[HEARD] {speaker_label}: {heard_log_text}", flush=True)
         _log.info(
             "[interaction] speech segment — speaker=%r person_id=%s text=%r",
             speaker_label, person_id, text,
@@ -4310,6 +4421,8 @@ def _loop() -> None:
         _active_speech = vad.is_speech(chunk)
         _situation_assessor.set_vad_active(_active_speech)
         if not _active_speech:
+            if _maybe_prompt_incomplete_turn():
+                _last_speech_at = time.monotonic()
             _stop_event.wait(_CHUNK_SECS)
             continue
 

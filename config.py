@@ -647,6 +647,13 @@ SILENCE_TIMEOUT_SECS = 0.9
 # Prevents single-word transcriptions when the person is still talking.
 MIN_SPEECH_DURATION_SECS = 0.45
 
+# If a transcribed utterance ends like an unfinished sentence ("I'm going to",
+# "the thing is", "because..."), hold it briefly before responding. A second
+# utterance inside the hold window is merged into one turn.
+INCOMPLETE_TURN_ENABLED = True
+INCOMPLETE_TURN_HOLD_SECS = 4.0
+INCOMPLETE_TURN_PROMPT_REPLY_WINDOW_SECS = 10.0
+
 # Seconds after TTS completes before VAD detections are accepted. The audio
 # buffer is flushed when playback ends; this guard just lets room echo decay.
 POST_SPEECH_LISTEN_DELAY_SECS = 0.35
