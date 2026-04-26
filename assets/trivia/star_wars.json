@@ -1,0 +1,50 @@
+[
+  {
+    "question": "What color is Luke Skywalker's lightsaber in Return of the Jedi?",
+    "answer": "green",
+    "alternatives": ["green lightsaber"],
+    "difficulty": 1
+  },
+  {
+    "question": "What planet is Princess Leia from?",
+    "answer": "Alderaan",
+    "alternatives": [],
+    "difficulty": 1
+  },
+  {
+    "question": "What species is Chewbacca?",
+    "answer": "Wookiee",
+    "alternatives": ["Wookie"],
+    "difficulty": 1
+  },
+  {
+    "question": "Who built C-3PO?",
+    "answer": "Anakin Skywalker",
+    "alternatives": ["Anakin", "Darth Vader"],
+    "difficulty": 2
+  },
+  {
+    "question": "What is the name of Han Solo's ship?",
+    "answer": "Millennium Falcon",
+    "alternatives": ["the Falcon", "Millenium Falcon"],
+    "difficulty": 2
+  },
+  {
+    "question": "What bounty hunter captures Han Solo on Cloud City?",
+    "answer": "Boba Fett",
+    "alternatives": ["Fett"],
+    "difficulty": 2
+  },
+  {
+    "question": "What is the name of the Mandalorian's small green companion?",
+    "answer": "Grogu",
+    "alternatives": ["Baby Yoda", "the Child"],
+    "difficulty": 3
+  },
+  {
+    "question": "What planet is home to the clone army in Attack of the Clones?",
+    "answer": "Kamino",
+    "alternatives": [],
+    "difficulty": 3
+  }
+]

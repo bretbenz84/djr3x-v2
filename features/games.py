@@ -6,7 +6,7 @@ Manages one active game at a time. All games are interruptible via stop_game().
 Supported games:
     "i_spy"            — Rex picks an object from the camera frame; player guesses
     "20_questions"     — Rex thinks of something; player asks yes/no questions
-    "trivia"           — Rex asks one trivia question and judges the answer
+    "trivia"           — Rex runs a short scored trivia round
     "jeopardy"         — A verbal Jeopardy-style board with real clue data
     "word_association" — Rapid back-and-forth word chain
 
@@ -458,6 +458,124 @@ def _20q_stop(person_id: Optional[int]) -> str:
 
 # ── Trivia game ───────────────────────────────────────────────────────────────
 
+_TRIVIA_CORRECT_LINES = [
+    "Correct. Apparently the organic processor still boots.",
+    "Correct. I am recording that as suspicious competence.",
+    "Correct. Tiny parade, very tiny budget.",
+]
+
+_TRIVIA_WRONG_LINES = [
+    "Nope. A brave answer, if bravery means ignoring facts.",
+    "Incorrect. The answer wandered off and you chased a chair.",
+    "No. The trivia board remains unimpressed.",
+]
+
+
+def _trivia_round_length() -> int:
+    return max(1, int(getattr(config, "TRIVIA_ROUND_LENGTH", 5) or 5))
+
+
+def _trivia_format_categories(categories: list[str]) -> str:
+    if not categories:
+        return "none"
+    if len(categories) == 1:
+        return categories[0]
+    return ", ".join(categories[:-1]) + f", or {categories[-1]}"
+
+
+def _trivia_setup_line(categories: list[str]) -> str:
+    return (
+        f"Trivia systems online. Choose a category and difficulty. "
+        f"Categories are: {_trivia_format_categories(categories)}. "
+        "Difficulties are easy, medium, hard, or mixed. "
+        "Say something like 'Science medium' or 'surprise me.'"
+    )
+
+
+def _trivia_question_line(*, prefix: str = "") -> str:
+    question = _game_state.get("question") or {}
+    q_num = int(_game_state.get("question_number", 1) or 1)
+    total = int(_game_state.get("total_questions", _trivia_round_length()) or 1)
+    category = _game_state.get("category", "Trivia")
+    difficulty_label = _game_state.get("difficulty_label", "mixed")
+    return (
+        f"{prefix}{category}, {difficulty_label}. "
+        f"Question {q_num} of {total}: {question.get('question', 'Question missing. Blame the card catalog.')}"
+    )
+
+
+def _trivia_prepare_question() -> bool:
+    try:
+        from features import trivia as trivia_bank
+        question = trivia_bank.get_question(
+            str(_game_state.get("category") or ""),
+            _game_state.get("difficulty"),
+        )
+    except Exception as exc:
+        _log.error("[games] trivia question load failed: %s", exc)
+        question = None
+    if not question:
+        return False
+    _game_state["question"] = question
+    _game_state["phase"] = "awaiting_answer"
+    return True
+
+
+def _trivia_begin_round(
+    category: str,
+    difficulty: Optional[int],
+    *,
+    person_id: Optional[int],
+) -> tuple[str, bool]:
+    try:
+        from features import trivia as trivia_bank
+        difficulty_label = trivia_bank.difficulty_label(difficulty)
+    except Exception:
+        difficulty_label = "mixed"
+
+    _game_state.update({
+        "phase": "awaiting_answer",
+        "category": category,
+        "difficulty": difficulty,
+        "difficulty_label": difficulty_label,
+        "score": 0,
+        "question_number": 1,
+        "total_questions": _trivia_round_length(),
+        "history": [],
+    })
+
+    if not _trivia_prepare_question():
+        return (
+            _rex_respond(
+                f"[GAME: Trivia — NO QUESTION] Rex tried to load a {difficulty_label} "
+                f"question from category \"{category}\" but came up empty. Apologize in character.",
+                person_id,
+            ),
+            True,
+        )
+
+    return (_trivia_question_line(prefix="Locked in. "), False)
+
+
+def _trivia_is_pass(text: str) -> bool:
+    clean = " ".join(text.lower().strip().split())
+    return clean in {"pass", "skip", "i don't know", "i dont know", "no idea", "not sure"}
+
+
+def _trivia_final_line(prefix: str) -> str:
+    score = int(_game_state.get("score", 0) or 0)
+    total = int(_game_state.get("total_questions", _trivia_round_length()) or 1)
+    if score == total:
+        verdict = "Perfect score. Annoying, but statistically elegant."
+    elif score >= max(1, round(total * 0.7)):
+        verdict = "Respectable. I will pretend not to be mildly impressed."
+    elif score > 0:
+        verdict = "Not catastrophic. A low bar, but you cleared it."
+    else:
+        verdict = "Zero correct. The scoreboard is now filing a grievance."
+    return f"{prefix} Final score: {score} out of {total}. {verdict}"
+
+
 def _trivia_start(person_id: Optional[int]) -> str:
     try:
         from features import trivia as trivia_bank
@@ -477,29 +595,38 @@ def _trivia_start(person_id: Optional[int]) -> str:
             person_id,
         )
 
-    category = "General Knowledge" if "General Knowledge" in categories else categories[0]
-    question = trivia_bank.get_question(category)
-    if not question:
-        return _rex_respond(
-            f"[GAME: Trivia — NO QUESTION] Rex tried to load a trivia question from "
-            f"category \"{category}\" but came up empty. Apologize in character.",
-            person_id,
-        )
-
     _game_state.update({
-        "category": category,
-        "question": question,
+        "phase": "setup",
+        "categories": categories,
     })
 
-    return _rex_respond(
-        f"[GAME: Trivia — START] Rex is starting a trivia round in category "
-        f"\"{category}\". After a brief Rex-style intro, ask this question exactly: "
-        f"\"{question['question']}\"",
-        person_id,
-    )
+    return _trivia_setup_line(categories)
 
 
 def _trivia_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
+    phase = _game_state.get("phase", "setup")
+    if phase == "setup":
+        try:
+            from features import trivia as trivia_bank
+            categories = list(_game_state.get("categories") or trivia_bank.get_categories())
+            category = trivia_bank.resolve_category(text, categories)
+            difficulty = trivia_bank.parse_difficulty(text)
+        except Exception as exc:
+            _log.error("[games] trivia setup parse failed: %s", exc)
+            categories = list(_game_state.get("categories") or [])
+            category = None
+            difficulty = None
+
+        if not category:
+            return (
+                f"Pick a category first, carbon-based contestant. "
+                f"Categories are: {_trivia_format_categories(categories)}. "
+                "You can add easy, medium, hard, or mixed.",
+                False,
+            )
+
+        return _trivia_begin_round(category, difficulty, person_id=person_id)
+
     question = _game_state.get("question")
     category = _game_state.get("category", "Trivia")
     if not isinstance(question, dict):
@@ -515,46 +642,70 @@ def _trivia_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
 
     try:
         from features import trivia as trivia_bank
-        is_correct = trivia_bank.check_answer(question, text)
+        is_correct = False if _trivia_is_pass(text) else trivia_bank.check_answer(question, text)
     except Exception as exc:
         _log.error("[games] trivia answer check failed: %s", exc)
         is_correct = False
 
     answer = question.get("answer", "unknown")
-    _game_state.clear()
+    q_num = int(_game_state.get("question_number", 1) or 1)
+    total = int(_game_state.get("total_questions", _trivia_round_length()) or 1)
+    score = int(_game_state.get("score", 0) or 0)
 
     if is_correct:
+        score += 1
+        _game_state["score"] = score
+
+    history = list(_game_state.get("history") or [])
+    history.append({
+        "question": question.get("question", ""),
+        "answer": answer,
+        "user_answer": text.strip(),
+        "correct": bool(is_correct),
+    })
+    _game_state["history"] = history
+
+    if is_correct:
+        feedback = f"{random.choice(_TRIVIA_CORRECT_LINES)} Score: {score} out of {q_num}. "
+    elif _trivia_is_pass(text):
+        feedback = f"No answer. Correct answer was {answer}. Score: {score} out of {q_num}. "
+    else:
+        feedback = (
+            f"{random.choice(_TRIVIA_WRONG_LINES)} Correct answer was {answer}. "
+            f"Score: {score} out of {q_num}. "
+        )
+
+    if q_num >= total:
+        return (_trivia_final_line(feedback), True)
+
+    _game_state["question_number"] = q_num + 1
+    if not _trivia_prepare_question():
         return (
-            _rex_respond(
-                f"[GAME: Trivia — CORRECT] Category: \"{category}\". "
-                f"Question: \"{question.get('question', '')}\". "
-                f"Player answered: \"{text.strip()}\". Correct answer: \"{answer}\". "
-                "Rex celebrates briefly in character.",
-                person_id,
+            _trivia_final_line(
+                f"{feedback}I ran out of {category} questions before the round ended. "
             ),
             True,
         )
 
     return (
-        _rex_respond(
-            f"[GAME: Trivia — WRONG] Category: \"{category}\". "
-            f"Question: \"{question.get('question', '')}\". "
-            f"Player answered: \"{text.strip()}\". Correct answer: \"{answer}\". "
-            "Rex reveals the answer and lightly roasts the miss in character.",
-            person_id,
-        ),
-        True,
+        _trivia_question_line(prefix=feedback),
+        False,
     )
 
 
 def _trivia_stop(person_id: Optional[int]) -> str:
     question = _game_state.get("question", {})
     answer = question.get("answer", "unknown") if isinstance(question, dict) else "unknown"
+    score = int(_game_state.get("score", 0) or 0)
+    total = int(_game_state.get("total_questions", _trivia_round_length()) or 1)
+    q_num = int(_game_state.get("question_number", 1) or 1)
+    answered = len(_game_state.get("history") or [])
     _game_state.clear()
-    return _rex_respond(
-        f"[GAME: Trivia — STOPPED] Trivia ended early. The answer was \"{answer}\". "
-        "Rex delivers a brief in-character close.",
-        person_id,
+    suffix = f" Current answer was {answer}." if answer != "unknown" else ""
+    return (
+        f"Trivia stopped on question {q_num} of {total}. "
+        f"Score: {score} out of {answered}.{suffix} "
+        "A merciful pause for the neurons."
     )
 
 

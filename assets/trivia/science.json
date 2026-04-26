@@ -1,0 +1,50 @@
+[
+  {
+    "question": "What planet is known as the Red Planet?",
+    "answer": "Mars",
+    "alternatives": [],
+    "difficulty": 1
+  },
+  {
+    "question": "What force keeps planets in orbit around the Sun?",
+    "answer": "gravity",
+    "alternatives": ["gravitational force"],
+    "difficulty": 1
+  },
+  {
+    "question": "What part of the cell contains DNA in humans?",
+    "answer": "nucleus",
+    "alternatives": ["the nucleus"],
+    "difficulty": 1
+  },
+  {
+    "question": "What is the chemical symbol for gold?",
+    "answer": "Au",
+    "alternatives": ["A U"],
+    "difficulty": 2
+  },
+  {
+    "question": "What type of energy is stored in food and batteries?",
+    "answer": "chemical energy",
+    "alternatives": ["chemical"],
+    "difficulty": 2
+  },
+  {
+    "question": "What is the hardest natural substance on Earth?",
+    "answer": "diamond",
+    "alternatives": ["diamonds"],
+    "difficulty": 2
+  },
+  {
+    "question": "What is the SI unit of electric current?",
+    "answer": "ampere",
+    "alternatives": ["amp", "amps", "amperes"],
+    "difficulty": 3
+  },
+  {
+    "question": "What organelle is often called the powerhouse of the cell?",
+    "answer": "mitochondria",
+    "alternatives": ["mitochondrion", "the mitochondria"],
+    "difficulty": 3
+  }
+]

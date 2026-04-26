@@ -1181,6 +1181,8 @@ INTEROCEPTION_UPDATE_INTERVAL_SECS = 5.0
 # Fuzzy match threshold for accepting trivia answers (0.0–1.0).
 # Applies to both fuzz.ratio and fuzz.partial_ratio comparisons.
 TRIVIA_FUZZY_THRESHOLD = 0.75
+TRIVIA_CATEGORY_FUZZY_THRESHOLD = 0.68
+TRIVIA_ROUND_LENGTH = 5
 
 # Jeopardy verbal game tuning. The answer timeout is timed to the thinking
 # theme bed so "time's up" lands as the clip ends instead of after dead air.

@@ -635,6 +635,7 @@ Try these direct game starts:
 
 > Play I Spy.
 > Play 20 Questions.
+> Play Trivia.
 > Play Word Association.
 > What games can you play?
 
@@ -642,6 +643,9 @@ Expected:
 
 - `Play I Spy` or `Play Eye Spy` starts I Spy, using the camera to choose a visible object.
 - `Play 20 Questions` or `Play Twenty Questions` starts a yes/no guessing game.
+- `Play Trivia` asks for category and difficulty, then runs a five-question scored round.
+- Trivia accepts category/difficulty setup like `Science medium`, `Star Wars hard`, or `surprise me`.
+- Trivia gives feedback after each answer, reveals the correct answer on misses or passes, tracks score, and gives a final result.
 - `Play Word Association` starts the word-chain game.
 - `What games can you play?` lists the actual registered games: I Spy, 20 Questions, Trivia, Jeopardy, and Word Association.
 - `Stop the game` exits any active game cleanly.

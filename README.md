@@ -14,7 +14,7 @@ The project is built for live, in-room use: Rex can recognize people, remember d
 - Persistent memory database for people, relationships, preferences, and events
 - Social intelligence layers for repairs, boundaries, grief, celebrations, callbacks, and group discretion
 - Servo and LED hardware hooks for a physical droid body
-- Music controls and verbal games: I Spy, 20 Questions, Trivia, Jeopardy, and Word Association
+- Music controls and verbal games: I Spy, 20 Questions, five-question Trivia rounds, Jeopardy, and Word Association
 
 ## Requirements
 

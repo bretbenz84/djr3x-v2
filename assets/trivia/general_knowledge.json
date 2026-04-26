@@ -1,0 +1,50 @@
+[
+  {
+    "question": "What is the largest ocean on Earth?",
+    "answer": "Pacific Ocean",
+    "alternatives": ["the Pacific", "Pacific"],
+    "difficulty": 1
+  },
+  {
+    "question": "How many continents are there?",
+    "answer": "7",
+    "alternatives": ["seven"],
+    "difficulty": 1
+  },
+  {
+    "question": "What gas do plants absorb from the atmosphere for photosynthesis?",
+    "answer": "carbon dioxide",
+    "alternatives": ["CO2", "carbon dioxide gas"],
+    "difficulty": 1
+  },
+  {
+    "question": "What is the capital city of Canada?",
+    "answer": "Ottawa",
+    "alternatives": [],
+    "difficulty": 2
+  },
+  {
+    "question": "What is the smallest prime number?",
+    "answer": "2",
+    "alternatives": ["two"],
+    "difficulty": 2
+  },
+  {
+    "question": "What is the name of the process by which water changes from a liquid to a gas?",
+    "answer": "evaporation",
+    "alternatives": ["vaporization", "vapourization"],
+    "difficulty": 2
+  },
+  {
+    "question": "What ancient wonder was located in Alexandria, Egypt?",
+    "answer": "Lighthouse of Alexandria",
+    "alternatives": ["the lighthouse", "Pharos of Alexandria", "the Pharos"],
+    "difficulty": 3
+  },
+  {
+    "question": "What is the study of maps called?",
+    "answer": "cartography",
+    "alternatives": [],
+    "difficulty": 3
+  }
+]

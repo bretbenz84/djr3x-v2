@@ -1,0 +1,50 @@
+[
+  {
+    "question": "How many strings does a standard violin have?",
+    "answer": "4",
+    "alternatives": ["four"],
+    "difficulty": 1
+  },
+  {
+    "question": "What instrument has black and white keys and is often used in classical music?",
+    "answer": "piano",
+    "alternatives": [],
+    "difficulty": 1
+  },
+  {
+    "question": "What does BPM stand for in music?",
+    "answer": "beats per minute",
+    "alternatives": ["beat per minute"],
+    "difficulty": 1
+  },
+  {
+    "question": "Who composed the Four Seasons?",
+    "answer": "Antonio Vivaldi",
+    "alternatives": ["Vivaldi"],
+    "difficulty": 2
+  },
+  {
+    "question": "What musical term means to gradually get louder?",
+    "answer": "crescendo",
+    "alternatives": [],
+    "difficulty": 2
+  },
+  {
+    "question": "What family of instruments includes trumpets and trombones?",
+    "answer": "brass",
+    "alternatives": ["brass instruments"],
+    "difficulty": 2
+  },
+  {
+    "question": "What is the name for a group of five musicians?",
+    "answer": "quintet",
+    "alternatives": [],
+    "difficulty": 3
+  },
+  {
+    "question": "In Western music, how many semitones are in an octave?",
+    "answer": "12",
+    "alternatives": ["twelve"],
+    "difficulty": 3
+  }
+]

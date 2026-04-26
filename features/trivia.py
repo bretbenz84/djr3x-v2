@@ -10,12 +10,15 @@ Public API:
     get_categories()                        → list[str]
     get_question(category, difficulty=None) → dict | None
     check_answer(question, user_answer)     → bool
+    parse_difficulty(text)                  → int | None
+    resolve_category(text, categories)       → str | None
     reset_session()
 """
 
 import json
 import logging
 import random
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -49,6 +52,27 @@ _STARTER_CATEGORIES = [
 ]
 
 _QUESTIONS_PER_CATEGORY = 20
+
+DIFFICULTY_LABELS = {
+    1: "easy",
+    2: "medium",
+    3: "hard",
+}
+
+_DIFFICULTY_WORDS = {
+    "easy": 1,
+    "easier": 1,
+    "simple": 1,
+    "beginner": 1,
+    "medium": 2,
+    "normal": 2,
+    "average": 2,
+    "regular": 2,
+    "hard": 3,
+    "difficult": 3,
+    "expert": 3,
+    "brutal": 3,
+}
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -224,7 +248,67 @@ def get_question(category: str, difficulty: Optional[int] = None) -> Optional[di
 
     idx = random.choice(candidates)
     asked.add(idx)
-    return questions[idx]
+    question = questions[idx]
+    if not isinstance(question, dict) or not question.get("question") or not question.get("answer"):
+        _log.warning("[trivia] Malformed question in category %r at index %s", category, idx)
+        return None
+    return question
+
+
+def parse_difficulty(text: str) -> Optional[int]:
+    """Extract easy/medium/hard from free-form setup text."""
+    clean = _normalize_answer_text(text)
+    for word, difficulty in _DIFFICULTY_WORDS.items():
+        if re.search(rf"\b{re.escape(word)}\b", clean):
+            return difficulty
+    return None
+
+
+def resolve_category(text: str, categories: list[str]) -> Optional[str]:
+    """Resolve a spoken category mention against loaded category names."""
+    if not categories:
+        return None
+
+    clean = _normalize_answer_text(text)
+    if any(phrase in clean for phrase in ("surprise me", "random", "dealer s choice", "dealers choice", "any category")):
+        return random.choice(categories)
+
+    best_category = None
+    best_score = 0.0
+    for category in categories:
+        cat_clean = _normalize_answer_text(category)
+        if not cat_clean:
+            continue
+        if cat_clean in clean or clean in cat_clean:
+            return category
+        score = max(
+            fuzz.ratio(clean, cat_clean),
+            fuzz.partial_ratio(clean, cat_clean),
+            fuzz.token_set_ratio(clean, cat_clean),
+        )
+        if score > best_score:
+            best_score = score
+            best_category = category
+
+    threshold = getattr(config, "TRIVIA_CATEGORY_FUZZY_THRESHOLD", 0.68) * 100
+    return best_category if best_category and best_score >= threshold else None
+
+
+def difficulty_label(difficulty: Optional[int]) -> str:
+    return DIFFICULTY_LABELS.get(difficulty, "mixed")
+
+
+def _normalize_answer_text(text: str) -> str:
+    clean = (text or "").lower()
+    clean = re.sub(r"\b(?:what|who|where|when|which)\s+(?:is|are|was|were)\b", " ", clean)
+    clean = re.sub(r"\b(?:it'?s|it is|the answer is|answer is|i think it'?s|i think|my answer is)\b", " ", clean)
+    clean = re.sub(r"[^a-z0-9\s]", " ", clean)
+    words = [
+        word
+        for word in clean.split()
+        if word not in {"a", "an", "the"}
+    ]
+    return " ".join(words)
 
 
 def check_answer(question: dict, user_answer: str) -> bool:
@@ -233,16 +317,28 @@ def check_answer(question: dict, user_answer: str) -> bool:
     Uses config.TRIVIA_FUZZY_THRESHOLD (0–1 scale) as the acceptance threshold.
     """
     threshold = getattr(config, "TRIVIA_FUZZY_THRESHOLD", 0.75) * 100
-    user = user_answer.strip().lower()
+    user = _normalize_answer_text(user_answer)
+    compact_user = re.sub(r"[^a-z0-9]", "", (user_answer or "").lower())
+    if not user and not compact_user:
+        return False
     candidates = [question.get("answer", "")] + list(question.get("alternatives", []))
 
     for candidate in candidates:
-        normalized = candidate.strip().lower()
-        if not normalized:
+        normalized = _normalize_answer_text(candidate)
+        compact_candidate = re.sub(r"[^a-z0-9]", "", (candidate or "").lower())
+        if compact_candidate and compact_user == compact_candidate and len(compact_candidate) <= 4:
+            return True
+        if not normalized or not user:
             continue
+        if user == normalized:
+            return True
+        if len(normalized) > 3 and (normalized in user or user in normalized):
+            return True
         if fuzz.ratio(user, normalized) >= threshold:
             return True
-        if fuzz.partial_ratio(user, normalized) >= threshold:
+        if fuzz.token_set_ratio(user, normalized) >= threshold:
+            return True
+        if len(normalized) > 4 and fuzz.partial_ratio(user, normalized) >= threshold:
             return True
     return False
 
