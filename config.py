@@ -217,9 +217,14 @@ EMPATHY_CACHE_TTL_SECS = 300.0
 EMPATHY_MIN_CONFIDENCE_FOR_MODE_CHANGE = 0.55
 
 # Max time the LLM-fallback path waits for the in-flight empathy classification
-# to finish before assembling the system prompt. If it runs over this budget
-# the directive simply isn't injected for this turn (still cached for next).
-EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS = 1.5
+# to finish before assembling the system prompt and (importantly) before the
+# grief-flow detector reads the empathy cache. If it runs over this budget
+# the directive isn't injected for this turn AND the structured grief flow
+# can't intercept — so we'd rather wait a little longer than miss the
+# "would you like to talk about them?" moment. Empathy.classify_affect is a
+# small JSON-mode GPT-4o-mini call; ~1–2s typical, can spike to ~3s on a slow
+# network. Setting this generously keeps the grief flow reliable.
+EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS = 4.0
 
 # When True, sensitive emotional events (grief, illness, etc.) are NOT injected
 # into the system prompt while more than one person is in the scene. The person

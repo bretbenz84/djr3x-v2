@@ -2819,11 +2819,17 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     )
             if response_text is None:
                 if _empathy_thread is not None:
-                    _empathy_thread.join(
-                        timeout=float(getattr(
-                            config, "EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS", 1.5,
-                        ))
-                    )
+                    _empathy_join_timeout = float(getattr(
+                        config, "EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS", 4.0,
+                    ))
+                    _empathy_thread.join(timeout=_empathy_join_timeout)
+                    if _empathy_thread.is_alive():
+                        _log.warning(
+                            "[empathy] classification thread did not finish "
+                            "within %.1fs — grief flow / mode directive may "
+                            "be missing from this turn",
+                            _empathy_join_timeout,
+                        )
                 # Grief flow — intercept the LLM path with a structured
                 # condolence/consent/name walk when the empathy classifier
                 # has detected (or is mid-conversation about) a loss.
