@@ -1,0 +1,146 @@
+[
+  {
+    "question": "In Star Trek II, what is the subtitle of the film?",
+    "answer": "The Wrath of Khan",
+    "alternatives": ["Wrath of Khan", "Star Trek II: The Wrath of Khan"],
+    "difficulty": 1
+  },
+  {
+    "question": "What species of whales are rescued in Star Trek IV: The Voyage Home?",
+    "answer": "humpback whales",
+    "alternatives": ["humpbacks", "humpback whale"],
+    "difficulty": 1
+  },
+  {
+    "question": "In Star Trek: First Contact, which enemy travels back in time to stop first contact?",
+    "answer": "the Borg",
+    "alternatives": ["Borg"],
+    "difficulty": 1
+  },
+  {
+    "question": "Who commands the Enterprise-D in Star Trek: The Next Generation?",
+    "answer": "Jean-Luc Picard",
+    "alternatives": ["Picard", "Captain Picard"],
+    "difficulty": 1
+  },
+  {
+    "question": "What kind of being is Data in The Next Generation?",
+    "answer": "android",
+    "alternatives": ["an android", "Soong-type android"],
+    "difficulty": 1
+  },
+  {
+    "question": "What Alpha Quadrant planet is Deep Space Nine near?",
+    "answer": "Bajor",
+    "alternatives": ["the planet Bajor"],
+    "difficulty": 1
+  },
+  {
+    "question": "Who commands Deep Space Nine for most of the series?",
+    "answer": "Benjamin Sisko",
+    "alternatives": ["Sisko", "Captain Sisko", "Commander Sisko"],
+    "difficulty": 1
+  },
+  {
+    "question": "Who commands the USS Voyager?",
+    "answer": "Kathryn Janeway",
+    "alternatives": ["Janeway", "Captain Janeway"],
+    "difficulty": 1
+  },
+  {
+    "question": "In which quadrant of the galaxy is Voyager stranded?",
+    "answer": "Delta Quadrant",
+    "alternatives": ["the Delta Quadrant"],
+    "difficulty": 1
+  },
+  {
+    "question": "In The Next Generation, what device does Geordi La Forge wear over his eyes?",
+    "answer": "VISOR",
+    "alternatives": ["a VISOR", "visor"],
+    "difficulty": 2
+  },
+  {
+    "question": "What name does Picard take after being assimilated by the Borg?",
+    "answer": "Locutus",
+    "alternatives": ["Locutus of Borg"],
+    "difficulty": 2
+  },
+  {
+    "question": "What recurring omnipotent character frequently tests Picard and humanity?",
+    "answer": "Q",
+    "alternatives": ["the Q", "Q Continuum"],
+    "difficulty": 2
+  },
+  {
+    "question": "What is the name of the bar on Deep Space Nine run by Quark?",
+    "answer": "Quark's",
+    "alternatives": ["Quark's Bar", "Quarks", "Quark's bar"],
+    "difficulty": 2
+  },
+  {
+    "question": "What shapeshifting security chief works on Deep Space Nine?",
+    "answer": "Odo",
+    "alternatives": ["Constable Odo"],
+    "difficulty": 2
+  },
+  {
+    "question": "What major enemy power dominates the Gamma Quadrant in Deep Space Nine?",
+    "answer": "the Dominion",
+    "alternatives": ["Dominion"],
+    "difficulty": 2
+  },
+  {
+    "question": "What former Borg drone joins the Voyager crew?",
+    "answer": "Seven of Nine",
+    "alternatives": ["Seven", "Annika Hansen"],
+    "difficulty": 2
+  },
+  {
+    "question": "What is the name of Voyager's holographic chief medical officer?",
+    "answer": "The Doctor",
+    "alternatives": ["Doctor", "EMH", "Emergency Medical Hologram"],
+    "difficulty": 2
+  },
+  {
+    "question": "What Maquis officer becomes Voyager's first officer?",
+    "answer": "Chakotay",
+    "alternatives": ["Commander Chakotay"],
+    "difficulty": 2
+  },
+  {
+    "question": "In Star Trek III, on what planet does Spock's regenerated body rapidly age?",
+    "answer": "Genesis",
+    "alternatives": ["Genesis planet", "the Genesis planet"],
+    "difficulty": 3
+  },
+  {
+    "question": "Who is the Klingon antagonist played by Christopher Plummer in Star Trek VI?",
+    "answer": "Chang",
+    "alternatives": ["General Chang"],
+    "difficulty": 3
+  },
+  {
+    "question": "In First Contact, what is the name of the warp pioneer whose flight enables first contact?",
+    "answer": "Zefram Cochrane",
+    "alternatives": ["Cochrane", "Zephram Cochrane"],
+    "difficulty": 3
+  },
+  {
+    "question": "What is the name of the Bajoran wormhole's alien inhabitants in Deep Space Nine?",
+    "answer": "Prophets",
+    "alternatives": ["the Prophets", "wormhole aliens"],
+    "difficulty": 3
+  },
+  {
+    "question": "What species is Jadzia Dax's symbiont in Deep Space Nine?",
+    "answer": "Trill",
+    "alternatives": ["a Trill symbiont"],
+    "difficulty": 3
+  },
+  {
+    "question": "What array sends Voyager to the Delta Quadrant in the pilot episode?",
+    "answer": "Caretaker's Array",
+    "alternatives": ["the Caretaker's Array", "Caretaker array"],
+    "difficulty": 3
+  }
+]

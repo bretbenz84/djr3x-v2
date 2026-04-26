@@ -43,6 +43,7 @@ _STARTER_CATEGORIES = [
     "General Knowledge",
     "Science",
     "Star Wars",
+    "Star Trek",
     "Space & Astronomy",
     "History",
     "Pop Culture",

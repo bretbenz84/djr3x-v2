@@ -85,6 +85,8 @@ def _normalize_game(name: str) -> Optional[str]:
     clean = name.strip().lower()
     if clean.startswith("jeopardy"):
         return "jeopardy"
+    if clean != "trivia" and (clean.endswith(" trivia") or clean.endswith(" trivia game")):
+        return "trivia"
     return _GAME_ALIASES.get(clean)
 
 
@@ -475,6 +477,28 @@ def _trivia_round_length() -> int:
     return max(1, int(getattr(config, "TRIVIA_ROUND_LENGTH", 5) or 5))
 
 
+def _trivia_theme_from_game_name(name: str) -> Optional[str]:
+    clean = " ".join(name.lower().strip().split())
+    for suffix in (" trivia game", " trivia"):
+        if clean.endswith(suffix):
+            theme = clean[: -len(suffix)].strip()
+            if theme:
+                return theme
+    return None
+
+
+def _trivia_resolve_preset_category(game_name: str) -> Optional[str]:
+    theme = _trivia_theme_from_game_name(game_name)
+    if not theme:
+        return None
+    try:
+        from features import trivia as trivia_bank
+        return trivia_bank.resolve_category(theme, trivia_bank.get_categories())
+    except Exception as exc:
+        _log.debug("[games] trivia preset category resolution failed: %s", exc)
+        return None
+
+
 def _trivia_format_categories(categories: list[str]) -> str:
     if not categories:
         return "none"
@@ -576,7 +600,7 @@ def _trivia_final_line(prefix: str) -> str:
     return f"{prefix} Final score: {score} out of {total}. {verdict}"
 
 
-def _trivia_start(person_id: Optional[int]) -> str:
+def _trivia_start(person_id: Optional[int], preset_category: Optional[str] = None) -> str:
     try:
         from features import trivia as trivia_bank
     except Exception as exc:
@@ -594,6 +618,9 @@ def _trivia_start(person_id: Optional[int]) -> str:
             "Rex apologizes in character and suggests another game.",
             person_id,
         )
+
+    if preset_category and preset_category in categories:
+        return _trivia_begin_round(preset_category, None, person_id=person_id)[0]
 
     _game_state.update({
         "phase": "setup",
@@ -1509,6 +1536,11 @@ def start_game(game_name: str, person_id: Optional[int] = None) -> str:
         return refusal
 
     normalized = _normalize_game(game_name)
+    trivia_preset_category = (
+        _trivia_resolve_preset_category(game_name)
+        if normalized == "trivia"
+        else None
+    )
     if normalized is None:
         known_names = available_game_names()
         if len(known_names) > 1:
@@ -1529,6 +1561,8 @@ def start_game(game_name: str, person_id: Optional[int] = None) -> str:
     _game_play_log.setdefault(normalized, []).append(time.monotonic())
 
     _log.info("[games] Starting game: %s", normalized)
+    if normalized == "trivia" and trivia_preset_category:
+        return _trivia_start(person_id, preset_category=trivia_preset_category)
     return _GAME_HANDLERS[normalized]["start"](person_id)
 
 

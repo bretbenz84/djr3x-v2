@@ -131,6 +131,22 @@ def _parse_play_options(normalized: str) -> dict | None:
     return None
 
 
+def _parse_themed_trivia(normalized: str, original: str) -> dict | None:
+    clean = _plain(normalized)
+    patterns = [
+        r"^(?:play|start|run)\s+(.+?)\s+trivia(?:\s+game)?$",
+        r"^(?:let's|lets)\s+(?:play|do)\s+(.+?)\s+trivia(?:\s+game)?$",
+    ]
+    for pattern in patterns:
+        m = re.match(pattern, clean)
+        if not m:
+            continue
+        theme = m.group(1).strip()
+        if theme:
+            return {"game": f"{theme} trivia"}
+    return None
+
+
 def _parse_wave(normalized: str, original: str) -> dict | None:
     clean = _plain(normalized)
     if not clean.startswith(("wave", "please wave", "can you wave", "can you please wave")):
@@ -387,6 +403,10 @@ def parse(text: str) -> CommandMatch | None:
     play_options = _parse_play_options(normalized)
     if play_options is not None:
         return CommandMatch("query_play_options", "pattern", play_options)
+
+    themed_trivia = _parse_themed_trivia(normalized, original)
+    if themed_trivia is not None:
+        return CommandMatch("start_game", "pattern", themed_trivia)
 
     wave = _parse_wave(normalized, original)
     if wave is not None:
