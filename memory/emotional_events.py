@@ -157,11 +157,13 @@ def get_active_events(person_id: int, limit: int = 3) -> list[dict]:
     """Return events whose decay window has not yet elapsed, newest first."""
     rows = db.fetchall(
         "SELECT id, category, valence, description, mentioned_at, "
-        "       last_acknowledged_at, sensitivity_decay_days, "
+        "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
+        "       sensitivity_decay_days, "
         "       person_invited_topic "
         "FROM person_emotional_events "
         "WHERE person_id = ? "
         "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
+        "AND checkins_muted_at IS NULL "
         "ORDER BY mentioned_at DESC LIMIT ?",
         (person_id, int(limit)),
     )
@@ -199,12 +201,14 @@ def get_due_checkins(
     """
     rows = db.fetchall(
         "SELECT id, category, valence, description, mentioned_at, "
-        "       last_acknowledged_at, sensitivity_decay_days, "
+        "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
+        "       sensitivity_decay_days, "
         "       person_invited_topic "
         "FROM person_emotional_events "
         "WHERE person_id = ? "
         "AND valence < 0 "
         "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
+        "AND checkins_muted_at IS NULL "
         "AND (last_acknowledged_at IS NULL "
         "     OR datetime(last_acknowledged_at, '+' || ? || ' days') <= datetime('now')) "
         "ORDER BY mentioned_at DESC LIMIT ?",
@@ -237,12 +241,14 @@ def get_startup_checkins(
 
     rows = db.fetchall(
         "SELECT id, category, valence, description, mentioned_at, "
-        "       last_acknowledged_at, sensitivity_decay_days, "
+        "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
+        "       sensitivity_decay_days, "
         "       person_invited_topic "
         "FROM person_emotional_events "
         "WHERE person_id = ? "
         "AND valence < 0 "
         "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
+        "AND checkins_muted_at IS NULL "
         f"{ack_clause} "
         "ORDER BY mentioned_at DESC LIMIT ?",
         params,
@@ -258,6 +264,72 @@ def mark_acknowledged(event_id: int) -> None:
     )
 
 
+def mute_checkins(event_id: int, reason: str = "") -> None:
+    """Stop proactive check-ins for one event without deleting the memory."""
+    db.execute(
+        "UPDATE person_emotional_events "
+        "SET checkins_muted_at = datetime('now'), checkins_muted_reason = ? "
+        "WHERE id = ?",
+        ((reason or "").strip(), int(event_id)),
+    )
+
+
+def mute_recent_checkin_for_person(
+    person_id: int,
+    reason: str = "",
+    window_minutes: int = 15,
+) -> Optional[dict]:
+    """
+    Mute the most recent active negative event Rex acknowledged recently.
+
+    This is the consent-boundary path for replies like "I'd rather not talk
+    about it" after Rex has proactively checked in. Returns the muted event.
+    """
+    rows = db.fetchall(
+        "SELECT id, category, valence, description, mentioned_at, "
+        "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
+        "       sensitivity_decay_days, person_invited_topic "
+        "FROM person_emotional_events "
+        "WHERE person_id = ? "
+        "AND valence < 0 "
+        "AND checkins_muted_at IS NULL "
+        "AND last_acknowledged_at IS NOT NULL "
+        "AND datetime(last_acknowledged_at, '+' || ? || ' minutes') >= datetime('now') "
+        "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
+        "ORDER BY last_acknowledged_at DESC, mentioned_at DESC LIMIT 1",
+        (int(person_id), int(window_minutes)),
+    )
+    if not rows:
+        return None
+    event = dict(rows[0])
+    mute_checkins(int(event["id"]), reason=reason)
+    return event
+
+
+def mute_latest_active_negative_for_person(
+    person_id: int,
+    reason: str = "",
+) -> Optional[dict]:
+    """Mute the newest active negative event for explicit in-flow boundaries."""
+    rows = db.fetchall(
+        "SELECT id, category, valence, description, mentioned_at, "
+        "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
+        "       sensitivity_decay_days, person_invited_topic "
+        "FROM person_emotional_events "
+        "WHERE person_id = ? "
+        "AND valence < 0 "
+        "AND checkins_muted_at IS NULL "
+        "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
+        "ORDER BY mentioned_at DESC LIMIT 1",
+        (int(person_id),),
+    )
+    if not rows:
+        return None
+    event = dict(rows[0])
+    mute_checkins(int(event["id"]), reason=reason)
+    return event
+
+
 def mark_all_acknowledged_for_person(person_id: int) -> None:
     """Convenience: mark every active event acknowledged in one shot.
 
@@ -267,6 +339,7 @@ def mark_all_acknowledged_for_person(person_id: int) -> None:
     db.execute(
         "UPDATE person_emotional_events SET last_acknowledged_at = datetime('now') "
         "WHERE person_id = ? "
+        "AND checkins_muted_at IS NULL "
         "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now')",
         (int(person_id),),
     )

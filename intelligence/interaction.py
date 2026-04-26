@@ -1543,6 +1543,20 @@ _DECLINE_PAT = re.compile(
     r"not now|skip|drop it|leave it)\b",
     re.IGNORECASE,
 )
+_EMOTIONAL_BOUNDARY_PAT = re.compile(
+    r"\b("
+    r"i'?d rather not|i would rather not|rather not talk|"
+    r"don'?t want to talk|do not want to talk|"
+    r"let'?s change (the )?subject|change (the )?subject|"
+    r"talk about something else|something else please|"
+    r"don'?t ask me (about (that|it) )?again|do not ask me (about (that|it) )?again|"
+    r"please don'?t ask|please do not ask|"
+    r"stop asking|stop bringing (that|it) up|"
+    r"can we not|not talk about (that|it)|"
+    r"drop it|leave it alone|no more check-?ins?"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _classify_consent(text: str) -> Optional[bool]:
@@ -1554,6 +1568,64 @@ def _classify_consent(text: str) -> Optional[bool]:
     if _AFFIRM_PAT.search(text):
         return True
     return None
+
+
+def _handle_emotional_checkin_boundary(
+    person_id: Optional[int],
+    text: str,
+) -> Optional[str]:
+    """
+    Honor consent boundaries after Rex checks in on a recent hard event.
+
+    If the person asks not to discuss it, mute proactive check-ins for that
+    specific emotional event. The memory remains stored; Rex just stops leading
+    with it unless the person brings it up again.
+    """
+    if person_id is None or not text:
+        return None
+    if not _EMOTIONAL_BOUNDARY_PAT.search(text):
+        return None
+
+    reason = text.strip()[:240]
+    try:
+        muted = emotional_events.mute_recent_checkin_for_person(
+            person_id,
+            reason=reason,
+            window_minutes=int(getattr(config, "EMOTIONAL_CHECKIN_BOUNDARY_WINDOW_MINUTES", 20)),
+        )
+        if muted is None and _grief_flow_active(person_id):
+            muted = emotional_events.mute_latest_active_negative_for_person(
+                person_id,
+                reason=reason,
+            )
+        if muted is None:
+            return None
+        _grief_flow_clear(person_id)
+        _log.info(
+            "[empathy] muted proactive emotional check-ins for person_id=%s "
+            "event_id=%s category=%s due to boundary reply: %r",
+            person_id,
+            muted.get("id"),
+            muted.get("category"),
+            text,
+        )
+        try:
+            empathy.force_mode(
+                person_id,
+                "brief",
+                affect="neutral",
+                needs="boundary",
+                sensitivity="heavy",
+                invitation=False,
+                confidence=1.0,
+                reason="person set emotional check-in boundary",
+            )
+        except Exception:
+            pass
+        return "Understood. I won't bring it up again unless you do."
+    except Exception as exc:
+        _log.debug("emotional check-in boundary handler failed: %s", exc)
+        return None
 
 
 def _maybe_start_grief_flow(
@@ -2686,6 +2758,24 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             "[interaction] speech segment — speaker=%r person_id=%s text=%r",
             speaker_label, person_id, text,
         )
+        boundary_response = _handle_emotional_checkin_boundary(person_id, text)
+        if boundary_response:
+            try:
+                consciousness.clear_response_wait()
+            except Exception:
+                pass
+            _speak_blocking(
+                boundary_response,
+                emotion="neutral",
+                pre_beat_ms=200,
+                post_beat_ms_override=300,
+            )
+            conv_memory.add_to_transcript("Rex", boundary_response)
+            conv_log.log_rex(boundary_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(boundary_response)
+            return
+
         answered_question = _maybe_capture_pending_qa(
             person_id,
             text,

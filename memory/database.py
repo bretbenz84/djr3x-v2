@@ -60,6 +60,8 @@ _MIGRATIONS = [
         description              TEXT,
         mentioned_at             DATETIME,
         last_acknowledged_at     DATETIME,
+        checkins_muted_at        DATETIME,
+        checkins_muted_reason    TEXT,
         sensitivity_decay_days   INTEGER,
         person_invited_topic     INTEGER DEFAULT 0
     )
@@ -73,8 +75,34 @@ def _run_migrations() -> None:
         with connection() as conn:
             for stmt in _MIGRATIONS:
                 conn.execute(stmt)
+            _ensure_column(
+                conn,
+                "person_emotional_events",
+                "checkins_muted_at",
+                "DATETIME",
+            )
+            _ensure_column(
+                conn,
+                "person_emotional_events",
+                "checkins_muted_reason",
+                "TEXT",
+            )
     except Exception as exc:
         _log.warning("schema migration skipped: %s", exc)
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    existing = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 @contextmanager
