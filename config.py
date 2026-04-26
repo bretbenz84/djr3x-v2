@@ -11,8 +11,49 @@ try:
 except Exception:
     load_dotenv = None
 
+_ENV_PATH = Path(__file__).resolve().parent / ".env"
+
+
+def _read_env_file_values(path: Path) -> dict[str, str]:
+    """Parse simple KEY=VALUE entries from .env without mutating os.environ."""
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            continue
+        key, raw = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        values[key] = raw.strip().strip("'\"")
+    return values
+
+
+def _load_env_fallback(path: Path) -> None:
+    """Minimal .env loader for safety-critical local hardware overrides."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            continue
+        key, raw = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        value = raw.strip().strip("'\"")
+        os.environ[key] = value
+
+
 if load_dotenv is not None:
-    load_dotenv(Path(__file__).resolve().parent / ".env")
+    load_dotenv(_ENV_PATH, override=False)
+_load_env_fallback(_ENV_PATH)
+_ENV_FILE_VALUES = _read_env_file_values(_ENV_PATH)
+
+_SERVO_ENV_US_MIN = 300.0
+_SERVO_ENV_US_MAX = 3000.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DEBUG
@@ -370,6 +411,8 @@ SERVO_SPEECH_HAND_DIVISOR = 3
 # Per-channel default limits and neutral position.
 # Build-specific min/max overrides can be stored in .env as SERVO_<NAME>_MIN_US
 # and SERVO_<NAME>_MAX_US using Maestro Control Center microsecond values.
+# The .env file wins over inherited shell env for servo safety keys, and invalid
+# or incomplete servo limit values raise at startup instead of falling back.
 # headtilt is inverted: low values = head high, high values = head low
 SERVO_CHANNELS = {
     "neck":     {"ch": 0, "min": 1984, "max": 9984, "neutral": 6000},
@@ -383,25 +426,58 @@ SERVO_CHANNELS = {
 }
 
 
+def _servo_env_raw(env_key: str) -> str:
+    # Servo safety values are build-specific, so the project .env file wins
+    # over inherited shell environment values when both are present.
+    raw = _ENV_FILE_VALUES.get(env_key)
+    if raw is None:
+        raw = os.getenv(env_key, "")
+    return raw.strip()
+
+
+def _servo_env_is_set(env_key: str) -> bool:
+    return bool(_servo_env_raw(env_key))
+
+
 def _servo_env_us_to_qus(env_key: str, fallback: int) -> int:
     """Read Maestro Control Center microseconds from .env and return q-us."""
-    raw = os.getenv(env_key, "").strip()
+    raw = _servo_env_raw(env_key)
     if not raw:
         return fallback
     try:
-        return int(round(float(raw) * 4))
+        value_us = float(raw)
     except ValueError:
-        return fallback
+        raise RuntimeError(f"{env_key} must be a number of microseconds, got {raw!r}")
+    if not (_SERVO_ENV_US_MIN <= value_us <= _SERVO_ENV_US_MAX):
+        raise RuntimeError(
+            f"{env_key}={raw!r} is outside the expected Maestro microsecond range "
+            f"{_SERVO_ENV_US_MIN:g}-{_SERVO_ENV_US_MAX:g}. "
+            "Use the values shown in Pololu Maestro Control Center, not q-us values."
+        )
+    return int(round(value_us * 4))
 
 
 def _apply_servo_env_overrides() -> None:
     for name, cfg in SERVO_CHANNELS.items():
         prefix = f"SERVO_{name.upper()}"
-        cfg["min"] = _servo_env_us_to_qus(f"{prefix}_MIN_US", cfg["min"])
-        cfg["max"] = _servo_env_us_to_qus(f"{prefix}_MAX_US", cfg["max"])
+        min_key = f"{prefix}_MIN_US"
+        max_key = f"{prefix}_MAX_US"
+        min_set = _servo_env_is_set(min_key)
+        max_set = _servo_env_is_set(max_key)
+        if min_set != max_set:
+            missing = max_key if min_set else min_key
+            present = min_key if min_set else max_key
+            raise RuntimeError(
+                f"{present} is set but {missing} is blank. Servo min/max limits "
+                "must be provided as a pair so startup never mixes a build-specific "
+                "limit with a tracked default."
+            )
+        cfg["min"] = _servo_env_us_to_qus(min_key, cfg["min"])
+        cfg["max"] = _servo_env_us_to_qus(max_key, cfg["max"])
         cfg["neutral"] = _servo_env_us_to_qus(f"{prefix}_NEUTRAL_US", cfg["neutral"])
         if cfg["min"] > cfg["max"]:
             cfg["min"], cfg["max"] = cfg["max"], cfg["min"]
+        cfg["neutral"] = max(cfg["min"], min(cfg["max"], cfg["neutral"]))
 
 
 _apply_servo_env_overrides()

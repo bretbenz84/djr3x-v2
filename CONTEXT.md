@@ -31,7 +31,10 @@
 Tracked values in `config.py` are safe defaults. Build-specific min/max travel
 limits belong in `.env` as Maestro Control Center microsecond values, for
 example `SERVO_NECK_MIN_US=496` and `SERVO_NECK_MAX_US=2496`; `config.py`
-converts those overrides to quarter-microseconds at runtime.
+converts those overrides to quarter-microseconds at runtime. Servo safety keys
+prefer the project `.env` file over inherited shell environment variables.
+Non-numeric values, values outside `300 - 3000` microseconds, or one side of a
+min/max pair without the other stop startup instead of falling back silently.
 
 | Ch | Name | Min | Max | Neutral | Notes |
 |----|------|-----|-----|---------|-------|

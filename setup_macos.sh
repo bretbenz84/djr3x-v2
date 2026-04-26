@@ -882,12 +882,13 @@ _configure_servo_limits_interactive() {
     warn "Servo limits must be measured safely in the Pololu Maestro Control Center before powering DJ-R3X servos."
     echo "Use the values shown in the Maestro app, like: 496 - 2496"
     echo "The values are stored in .env as microseconds. config.py converts them to quarter-microseconds at runtime."
-    echo "Press Enter on a servo to keep the current .env/default values."
+    echo "Startup fails closed for non-numeric values, values outside 300-3000, or incomplete min/max pairs."
+    echo "Press Enter on a servo only if the current .env/default values are safe for this build."
     echo ""
 
     if ! _prompt_yes_no "Save servo min/max limits to .env now? [y/N] " "n"; then
         warn "Skipping servo limit programming."
-        MANUAL_ATTENTION+=("Update .env servo limit overrides after measuring Maestro min/max values")
+        MANUAL_ATTENTION+=("Update .env servo limit overrides after measuring Maestro min/max values before powering servos")
         return
     fi
 
@@ -984,6 +985,8 @@ def parse_limits(raw: str) -> tuple[float, float] | None:
     hi_us = float(nums[1])
     if lo_us <= 0 or hi_us <= 0:
         return None
+    if not (300 <= lo_us <= 3000 and 300 <= hi_us <= 3000):
+        return None
     if lo_us > hi_us:
         lo_us, hi_us = hi_us, lo_us
     return lo_us, hi_us
@@ -1006,7 +1009,7 @@ for name, cfg in channel_rows:
             break
         parsed = parse_limits(raw)
         if parsed is None:
-            print("    Enter two numbers like 496 - 2496, or press Enter to keep current.")
+            print("    Enter two Maestro microsecond values like 496 - 2496, within 300 - 3000, or press Enter to keep current.")
             continue
         lo_us, hi_us = parsed
         neutral_us = int(cfg["neutral"]) / 4

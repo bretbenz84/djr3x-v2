@@ -270,7 +270,7 @@ def disconnect() -> None:
 
 def _send_set_target(channel: int, position: int) -> None:
     """Send Maestro compact protocol Set Target command (0x84)."""
-    _send_command_locked(_encode(_CMD_SET_TARGET, channel, position))
+    _send_command_locked(_encode(_CMD_SET_TARGET, channel, _clamp(channel, int(position))))
 
 
 def _send_set_speed(channel: int, speed: int) -> None:
@@ -587,13 +587,16 @@ def neutral(step_us: int = 40, step_delay: float = 0.02) -> None:
         _log.debug("neutral() no-op: SERVOS_ENABLED=False")
         return
 
-    targets = {name: cfg["neutral"] for name, cfg in config.SERVO_CHANNELS.items()}
+    targets = {
+        name: _clamp(cfg["ch"], cfg["neutral"])
+        for name, cfg in config.SERVO_CHANNELS.items()
+    }
 
     # Read current positions
     current: dict[str, int] = {}
     for name, cfg in config.SERVO_CHANNELS.items():
         pos = get_servo(cfg["ch"])
-        current[name] = pos if pos is not None else cfg["neutral"]
+        current[name] = _clamp(cfg["ch"], pos if pos is not None else targets[name])
 
     # Step toward neutral
     done = False
@@ -614,10 +617,13 @@ def neutral(step_us: int = 40, step_delay: float = 0.02) -> None:
         if moves:
             with _lock:
                 for ch, pos in moves.items():
-                    _send_set_target(ch, pos)
+                    _send_set_target(ch, _clamp(ch, pos))
                 _remember_positions(moves)
             time.sleep(step_delay)
-    _record_servo_positions({cfg["ch"]: cfg["neutral"] for cfg in config.SERVO_CHANNELS.values()})
+    _record_servo_positions({
+        cfg["ch"]: _clamp(cfg["ch"], cfg["neutral"])
+        for cfg in config.SERVO_CHANNELS.values()
+    })
 
 
 def set_breathing_emotion(emotion: str) -> None:
@@ -697,11 +703,12 @@ def move_to(targets: "dict[int, int]", step_us: int = 40, step_delay: float = 0.
     if not SERVOS_ENABLED:
         _log.debug("move_to no-op: SERVOS_ENABLED=False")
         return
+    targets = {ch: _clamp(ch, int(tgt)) for ch, tgt in targets.items()}
 
     current: dict[int, int] = {}
     for ch, tgt in targets.items():
         pos = get_servo(ch)
-        current[ch] = pos if pos is not None else tgt
+        current[ch] = _clamp(ch, pos if pos is not None else tgt)
 
     done = False
     while not done:
