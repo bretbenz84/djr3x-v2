@@ -316,7 +316,10 @@ def _build_person_context(person_id: int) -> str:
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
-def assemble_system_prompt(person_id: Optional[int] = None) -> str:
+def assemble_system_prompt(
+    person_id: Optional[int] = None,
+    agenda_directive: Optional[str] = None,
+) -> str:
     """Build the full layered system prompt in the order specified by CONTEXT.md."""
     sections = []
 
@@ -344,6 +347,9 @@ def assemble_system_prompt(person_id: Optional[int] = None) -> str:
 
     # 4. WorldState snapshot summary
     sections.append("World context:\n" + _summarize_world_state(ws))
+
+    if agenda_directive:
+        sections.append(agenda_directive.strip())
 
     # 5. Person context (if known)
     if person_id is not None:
@@ -444,9 +450,10 @@ def assemble_system_prompt(person_id: Optional[int] = None) -> str:
 def stream_response(
     user_text: str,
     person_id: Optional[int] = None,
+    agenda_directive: Optional[str] = None,
 ) -> Generator[str, None, None]:
     """Assemble the system prompt and stream GPT-4o-mini response chunks."""
-    system_prompt = assemble_system_prompt(person_id)
+    system_prompt = assemble_system_prompt(person_id, agenda_directive=agenda_directive)
     try:
         stream = _client.chat.completions.create(
             model=config.LLM_MODEL,
@@ -466,9 +473,13 @@ def stream_response(
         yield "...my circuits are experiencing some turbulence. Try again."
 
 
-def get_response(user_text: str, person_id: Optional[int] = None) -> str:
+def get_response(
+    user_text: str,
+    person_id: Optional[int] = None,
+    agenda_directive: Optional[str] = None,
+) -> str:
     """Assemble the system prompt and return the full GPT-4o-mini response as a string."""
-    return "".join(stream_response(user_text, person_id))
+    return "".join(stream_response(user_text, person_id, agenda_directive=agenda_directive))
 
 
 def classify_surprise(text: str) -> bool:

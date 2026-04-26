@@ -32,6 +32,7 @@ from intelligence import command_parser, llm, personality
 from intelligence import consciousness
 from intelligence import intent_classifier
 from intelligence import empathy
+from intelligence import conversation_agenda
 from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
@@ -840,7 +841,11 @@ def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
 # LLM streaming to TTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _stream_llm_response(text: str, person_id: Optional[int]) -> str:
+def _stream_llm_response(
+    text: str,
+    person_id: Optional[int],
+    answered_question: Optional[dict] = None,
+) -> str:
     """Collect the full LLM response, then speak it in a single TTS call.
 
     Collecting before speaking keeps AEC suppression as one continuous window
@@ -865,7 +870,17 @@ def _stream_llm_response(text: str, person_id: Optional[int]) -> str:
 
     filler_stop = _start_latency_filler_timer()
     try:
-        full_text = llm.get_response(text, person_id)
+        agenda_directive = conversation_agenda.build_turn_directive(
+            text,
+            person_id,
+            answered_question=answered_question,
+        )
+        _log.info("[agenda] %s", agenda_directive.replace("\n", " | "))
+        full_text = llm.get_response(
+            text,
+            person_id,
+            agenda_directive=agenda_directive,
+        )
     finally:
         filler_stop.set()
 
@@ -1433,14 +1448,14 @@ def _record_pool_topics_in_response(response_text: str, person_id: int) -> None:
     """Mark any QUESTION_POOL topics raised by Rex's response as already-asked,
     so the curiosity routine won't re-ask them on a later turn."""
     try:
-        answered = rel_memory.get_answered_question_keys(person_id)
+        asked = rel_memory.get_asked_question_keys(person_id)
     except Exception as exc:
-        _log.debug("record_pool_topics: get_answered error: %s", exc)
+        _log.debug("record_pool_topics: get_asked error: %s", exc)
         return
 
     pool_by_key = {q["key"]: q for q in config.QUESTION_POOL}
     for key, patterns in _POOL_TOPIC_PATTERNS.items():
-        if key in answered:
+        if key in asked:
             continue
         if not any(p.search(response_text) for p in patterns):
             continue
@@ -1448,11 +1463,10 @@ def _record_pool_topics_in_response(response_text: str, person_id: int) -> None:
         if pool_q is None:
             continue
         try:
-            rel_memory.save_qa(
+            rel_memory.save_question_asked(
                 person_id,
                 key,
-                pool_q.get("text", ""),
-                "",
+                response_text.strip(),
                 pool_q.get("depth", 1),
             )
             _log.info(
@@ -1718,7 +1732,7 @@ def _curiosity_check(
             person = people_memory.get_person(person_id)
             tier = (person.get("friendship_tier", "stranger") if person else "stranger")
             max_depth = config.TIER_MAX_DEPTH.get(tier, 1)
-            answered = rel_memory.get_answered_question_keys(person_id)
+            asked = rel_memory.get_asked_question_keys(person_id)
 
             # Load all known facts once so we can skip questions whose topic is
             # already covered — e.g. don't ask about job if a job fact exists.
@@ -1734,7 +1748,7 @@ def _curiosity_check(
             for candidate in config.QUESTION_POOL:
                 if candidate["depth"] > max_depth:
                     continue
-                if candidate["key"] in answered:
+                if candidate["key"] in asked:
                     continue
                 # Skip if Rex already knows something about this topic
                 q_key = candidate["key"]
@@ -1767,17 +1781,59 @@ def _curiosity_check(
     # person responds; what matters now is the key is in the DB.
     if pool_question is not None and person_id is not None:
         try:
-            rel_memory.save_qa(
+            rel_memory.save_question_asked(
                 person_id,
                 pool_question["key"],
                 question_text,
-                "",
                 pool_question.get("depth", 1),
             )
         except Exception as exc:
             _log.debug("curiosity_check save_qa error: %s", exc)
 
     return question_text
+
+
+def _maybe_capture_pending_qa(
+    person_id: Optional[int],
+    text: str,
+    *,
+    identity_prompt_active: bool = False,
+) -> Optional[dict]:
+    """
+    If Rex asked this person a curiosity question on the previous turn, treat
+    this utterance as the answer and store it before generating the next reply.
+    """
+    if person_id is None:
+        return None
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    if identity_prompt_active:
+        return None
+    if _pending_offscreen_identify is not None or _pending_face_reveal_confirm is not None:
+        return None
+    if _awaiting_followup_event is not None:
+        return None
+    if command_parser.parse(cleaned) is not None:
+        return None
+    # If the user is asking a new question instead of answering Rex's last one,
+    # leave the pending question open. Real conversations branch sometimes.
+    if "?" in cleaned:
+        return None
+    try:
+        answered = rel_memory.answer_latest_pending_question(person_id, cleaned)
+        if answered:
+            _log.info(
+                "[interaction] captured answer to pending Q&A — person_id=%s "
+                "key=%r answer=%r",
+                person_id,
+                answered.get("question_key"),
+                cleaned[:160],
+            )
+        return answered
+    except Exception as exc:
+        _log.debug("pending Q&A capture failed: %s", exc)
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2009,6 +2065,8 @@ def _handle_classified_intent(
 def _handle_speech_segment(audio_array: np.ndarray) -> None:
     """Full processing pipeline for one detected speech segment in ACTIVE state."""
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
+
+    answered_question: Optional[dict] = None
 
     # Randomised pre-response pause — prevents Rex from feeling instant/robotic
     delay_ms = random.randint(config.REACTION_DELAY_MS_MIN, config.REACTION_DELAY_MS_MAX)
@@ -2607,6 +2665,11 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             "[interaction] speech segment — speaker=%r person_id=%s text=%r",
             speaker_label, person_id, text,
         )
+        answered_question = _maybe_capture_pending_qa(
+            person_id,
+            text,
+            identity_prompt_active=identity_prompt_active,
+        )
 
         # Face-reveal prompt: speaker-ID matched a known person with HIGH
         # confidence, they have NO face biometric yet (voice-only enrollment),
@@ -2897,6 +2960,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         # "who is speaking?" and fall back to roast-first Rex.
         match = None
         response_text = None
+        used_agenda_llm = False
         if active_grief_for_turn:
             grief_response = _continue_grief_flow(person_id, text)
             if grief_response:
@@ -3046,7 +3110,12 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                                 )
                         except Exception as exc:
                             _log.debug("emotional event ack error: %s", exc)
-                    response_text = _stream_llm_response(text, person_id)
+                    response_text = _stream_llm_response(
+                        text,
+                        person_id,
+                        answered_question=answered_question,
+                    )
+                    used_agenda_llm = True
 
         assistant_asked_question = False
         if response_text:
@@ -3107,6 +3176,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             and response_text
             and not _interrupted.is_set()
             and not post_greet_fired
+            and not used_agenda_llm
         ):
             curiosity_q = _curiosity_check(response_text, text, person_id, person_name)
             if curiosity_q:
@@ -3114,6 +3184,13 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 conv_log.log_rex(curiosity_q)
                 _register_rex_utterance(curiosity_q)
                 assistant_asked_question = True
+        elif (
+            used_agenda_llm
+            and response_text
+            and person_id is not None
+            and "?" in response_text
+        ):
+            _record_pool_topics_in_response(response_text, person_id)
 
         # Release playback suppression before slower post-response memory work.
         # Otherwise an immediate human reply can land in the rolling buffer and
