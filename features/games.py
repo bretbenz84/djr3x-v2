@@ -651,6 +651,18 @@ def _jeopardy_correct_response_text(clue: dict) -> str:
     return f'Correct response was: "{response}"'
 
 
+def _jeopardy_categories_reminder() -> str:
+    board = _game_state.get("board") or {}
+    try:
+        from features import jeopardy as jeopardy_bank
+        categories = jeopardy_bank.format_categories(board, remaining_only=True)
+    except Exception:
+        categories = ""
+    if not categories:
+        return ""
+    return f"Remaining categories: {categories}. "
+
+
 def _jeopardy_timeout_fired(token: str) -> None:
     line = ""
     with _lock:
@@ -684,9 +696,10 @@ def _jeopardy_timeout_fired(token: str) -> None:
             _clear_game()
         else:
             next_player = _jeopardy_advance_player()
+            categories = _jeopardy_categories_reminder()
             line = (
                 f"Time's up. {correct_response}. "
-                f"{next_player['name']}, pick the next category and value."
+                f"{categories}{next_player['name']}, pick the next category and value."
             )
 
     if not line:
@@ -878,9 +891,11 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
             return (response, True)
         next_player = _jeopardy_advance_player()
         _game_state["phase"] = "selecting"
+        categories = _jeopardy_categories_reminder()
         return (
             f"No answer. {correct_response}. "
             f"Scores: {jeopardy_bank.format_scores(players) if jeopardy_bank else 'unknown'}. "
+            f"{categories}"
             f"{next_player['name']}, choose the next square.",
             False,
         )
@@ -898,8 +913,10 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
             return (response, True)
         _game_state["phase"] = "selecting"
         scores = jeopardy_bank.format_scores(players) if jeopardy_bank else "scores unavailable"
+        categories = _jeopardy_categories_reminder()
         return (
             f"{flourish} ${value} to {player['name']}. Scores: {scores}. "
+            f"{categories}"
             f"{player['name']}, pick the next category and value.",
             False,
         )
@@ -915,6 +932,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     next_player = _jeopardy_advance_player()
     _game_state["phase"] = "selecting"
     scores = jeopardy_bank.format_scores(players) if jeopardy_bank else "scores unavailable"
+    categories = _jeopardy_categories_reminder()
     roast = random.choice([
         "A bold miss.",
         "The board accepts your sacrifice.",
@@ -922,6 +940,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     ])
     return (
         f"{roast} {correct_response}. Scores: {scores}. "
+        f"{categories}"
         f"{next_player['name']}, choose the next square.",
         False,
     )

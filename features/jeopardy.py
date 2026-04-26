@@ -241,10 +241,11 @@ def format_board(board: dict) -> str:
     return "; ".join(bits)
 
 
-def format_categories(board: dict) -> str:
+def format_categories(board: dict, *, remaining_only: bool = False) -> str:
     return ", ".join(
         str(category.get("name") or "Potpourri")
         for category in board.get("categories") or []
+        if not remaining_only or (category.get("clues") or {})
     )
 
 

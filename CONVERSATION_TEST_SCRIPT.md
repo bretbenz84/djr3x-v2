@@ -650,6 +650,7 @@ Expected:
 - Rex listens for answers immediately after the clue, even while the thinking theme is playing.
 - Correct answers play the right-answer stinger and update scores.
 - Wrong answers play the incorrect-answer stinger and update scores.
+- Between clues, Rex repeats the remaining categories before asking for the next square.
 - `Pass`, `I don't know`, or a silent timeout should reveal the correct response in question form, like `What is a driver's license?`.
 - `Stop the game` ends Jeopardy and plays the outro clip.
 
