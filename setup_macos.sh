@@ -635,6 +635,32 @@ _rank_serial_candidates() {
     done < "$candidate_file" | sort -n | cut -f2-
 }
 
+_print_numbered_serial_choices() {
+    local ranked_file="$1"
+    local current="$2"
+    local idx=1
+    local path=""
+    while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        local suffix=""
+        case "$path" in
+            /dev/cu.*) suffix=" (recommended for app use on macOS)" ;;
+            /dev/tty.*) suffix=" (alternate tty device)" ;;
+        esac
+        if [[ -n "$current" && "$path" == "$current" ]]; then
+            suffix="$suffix (current)"
+        fi
+        echo "  [$idx] $path$suffix"
+        idx=$((idx + 1))
+    done < "$ranked_file"
+}
+
+_serial_choice_by_index() {
+    local ranked_file="$1"
+    local choice="$2"
+    sed -n "${choice}p" "$ranked_file"
+}
+
 _maybe_open_usb_driver_links() {
     echo ""
     warn "No likely USB serial device appeared."
@@ -668,7 +694,6 @@ _select_serial_port_for_env() {
 
     if [[ -s "$ranked_file" ]]; then
         log "Likely serial device(s) for $label:"
-        sed 's/^/  /' "$ranked_file"
     else
         warn "No likely serial device was detected for $label."
         echo "Serial-looking devices currently attached:"
@@ -681,19 +706,32 @@ _select_serial_port_for_env() {
     current="$(_env_current_value "$env_key")"
     local reply=""
 
+    if [[ -s "$ranked_file" ]]; then
+        _print_numbered_serial_choices "$ranked_file" "$current"
+        echo "On macOS, the /dev/cu.* entry is usually the right one for Arduino/Maestro serial communication."
+    fi
+
     if _env_value_is_good_port "$env_key" "$current"; then
-        echo "Press Enter to keep the current value, type 'use' to use the detected device, or enter a custom /dev path."
-        reply="$(_prompt_input "Choice for $env_key: ")"
-        if [[ -z "$reply" || "$reply" == "skip" ]]; then
+        echo "Press Enter to keep the current value, enter a number above, or enter a custom /dev path."
+        reply="$(_prompt_input "Choice for $env_key [keep current]: ")"
+        if [[ -z "$reply" || "$reply" == "keep" || "$reply" == "skip" ]]; then
             SELECTED_DEVICE_PORT="$current"
             rm -f "$ranked_file"
             return 0
-        elif [[ "$reply" == "use" ]]; then
+        elif [[ "$reply" =~ ^[0-9]+$ ]]; then
+            reply="$(_serial_choice_by_index "$ranked_file" "$reply")"
+            if [[ -z "$reply" ]]; then
+                warn "That number is not in the detected-device list — keeping current value."
+                SELECTED_DEVICE_PORT="$current"
+                rm -f "$ranked_file"
+                return 0
+            fi
+        elif [[ "$reply" == "use" && -n "$detected" ]]; then
             reply="$detected"
         fi
     else
         if [[ -n "$detected" ]]; then
-            echo "Press Enter to use the detected device, type 'skip' to leave the current value, or enter a custom /dev path."
+            echo "Press Enter to use the recommended device, enter a number above, type 'skip', or enter a custom /dev path."
             reply="$(_prompt_input "Choice for $env_key [$detected]: ")"
             if [[ -z "$reply" ]]; then
                 reply="$detected"
@@ -701,6 +739,14 @@ _select_serial_port_for_env() {
                 SELECTED_DEVICE_PORT="$current"
                 rm -f "$ranked_file"
                 return 0
+            elif [[ "$reply" =~ ^[0-9]+$ ]]; then
+                reply="$(_serial_choice_by_index "$ranked_file" "$reply")"
+                if [[ -z "$reply" ]]; then
+                    warn "That number is not in the detected-device list — leaving $env_key unchanged."
+                    SELECTED_DEVICE_PORT="$current"
+                    rm -f "$ranked_file"
+                    return 0
+                fi
             fi
         else
             echo "Enter a custom /dev path, or press Enter to keep the current value."
