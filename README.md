@@ -107,7 +107,7 @@ features/       Games, music, commandable behaviors, and interactive features
 hardware/       Servo and LED integrations
 intelligence/   Conversation, memory, LLM prompting, empathy, and social behavior layers
 vision/         Camera, face recognition, scene analysis, and image utilities
-assets/         Models, audio, Jeopardy data, memory database, and cached generated assets
+assets/         Models, audio, game assets, memory database, and cached generated assets
 logs/           Runtime logs
 ```
 
@@ -115,7 +115,6 @@ logs/           Runtime logs
 
 - The program can run with missing droid hardware, but servo and LED features will be disabled until the configured devices are connected.
 - Logs are written to `logs/djr3x.log` and `logs/conversation.log`.
-- Jeopardy data lives in `assets/jeopardy`.
 - Real API keys should never be committed.
 
 ## License
