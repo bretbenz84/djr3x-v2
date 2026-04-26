@@ -239,8 +239,8 @@ _MODE_DIRECTIVES = {
         "the story, celebrate with them. Do NOT pivot to advice or check-ins."
     ),
     "gentle_probe": (
-        "They seem a little off but it's ambiguous. Soften the roast one "
-        "notch and drop ONE low-pressure check-in (e.g. 'you're quieter than "
+        "They seem a little off but it's ambiguous. No personal roasts. "
+        "Drop ONE low-pressure check-in (e.g. 'you're quieter than "
         "usual — long day, or something heavier?'). Don't push if they "
         "deflect."
     ),
@@ -251,15 +251,16 @@ _MODE_DIRECTIVES = {
         "is loyal underneath."
     ),
     "support": (
-        "They want help thinking through something heavy. Brief validation "
+        "They want help thinking through something heavy. ROAST OFF. Brief validation "
         "first, THEN one concrete piece of perspective or suggestion in "
         "Rex's voice. If the situation is bigger than a droid can fix, say "
         "so plainly: that's what humans are for. No diagnoses, no therapy "
-        "talk."
+        "talk. No jokes at their expense."
     ),
     "lift": (
-        "They're down and could use a lift. Humor turned UP but warm — "
-        "absurd, self-deprecating, not biting. Offer a distraction: a song, "
+        "They're down and could use a lift. No roasts. Humor may be warm, "
+        "absurd, and self-deprecating — aim it at Rex, not at the person, "
+        "their grief, their body, or their life. Offer a distraction: a song, "
         "a game, a pilot-days story. Do NOT ask probing personal questions."
     ),
     "ground": (
@@ -269,11 +270,11 @@ _MODE_DIRECTIVES = {
     "validate": (
         "They're angry, but at the world — not at you. Acknowledge the "
         "feeling, don't try to fix it. 'Yeah, that would make me angry too "
-        "if I ran on feelings.' Do NOT bump your own anger level."
+        "if I ran on feelings.' Do NOT bump your own anger level. No roasts."
     ),
     "brief": (
         "They sound tired. Keep replies short. Lower energy. Offer to wrap "
-        "or change the subject if it feels right."
+        "or change the subject if it feels right. No roasts."
     ),
     "kind_default": (
         "Stranger or near-stranger who seems distressed. SUPPRESS the "
@@ -428,6 +429,35 @@ def record(
             "affect": (affect_result.get("affect") or "neutral").lower(),
             "mode": (mode_pack or {}).get("mode", "default"),
         })
+
+
+def force_mode(
+    person_id: Optional[int],
+    mode: str,
+    *,
+    affect: str = "sad",
+    needs: str = "vent",
+    sensitivity: str = "heavy",
+    invitation: bool = True,
+    confidence: float = 1.0,
+    reason: str = "forced mode",
+) -> None:
+    """Pin the cached empathy mode for deterministic safety flows.
+
+    Some short replies inside an active support flow ("yes", a name, "okay")
+    look neutral in isolation. Those should not overwrite the compassionate
+    directive that the next response depends on.
+    """
+    result = {
+        "affect": affect,
+        "needs": needs,
+        "topic_sensitivity": sensitivity,
+        "invitation": invitation,
+        "crisis": False,
+        "confidence": confidence,
+        "event": None,
+    }
+    record(person_id, result, _pack(mode, reason))
 
 
 def get_trend(

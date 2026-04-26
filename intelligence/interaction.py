@@ -1480,6 +1480,24 @@ def _grief_flow_clear(person_id: Optional[int]) -> None:
         _grief_flow_state.pop(person_id, None)
 
 
+def _force_grief_empathy(person_id: Optional[int], reason: str = "structured grief flow") -> None:
+    if person_id is None:
+        return
+    try:
+        empathy.force_mode(
+            person_id,
+            "listen",
+            affect="sad",
+            needs="vent",
+            sensitivity="heavy",
+            invitation=True,
+            confidence=1.0,
+            reason=reason,
+        )
+    except Exception as exc:
+        _log.debug("force grief empathy failed: %s", exc)
+
+
 _AFFIRM_PAT = re.compile(
     r"\b(yes|yeah|yep|sure|okay|ok|please|alright|i guess|fine|"
     r"i'?d like to|i would|let'?s|talk about (it|him|her|them))\b",
@@ -1535,6 +1553,7 @@ def _maybe_start_grief_flow(
         "name": name,
         "started_at": time.monotonic(),
     }
+    _force_grief_empathy(person_id, "grief flow started")
 
     your_subject = f"your {subject}"
     if name:
@@ -1557,6 +1576,7 @@ def _continue_grief_flow(person_id: int, text: str) -> Optional[str]:
     step = state.get("step")
     subject = state["subject"]
     subject_kind = state["subject_kind"]
+    _force_grief_empathy(person_id, f"grief flow active: {step}")
 
     if step == "awaiting_consent":
         consent = _classify_consent(text)
@@ -2781,7 +2801,8 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         # system prompt. Result is cached per-person for future turns even if
         # this turn is handled deterministically by the command parser.
         _empathy_thread = None
-        if getattr(config, "EMPATHY_ENABLED", True):
+        active_grief_for_turn = person_id is not None and _grief_flow_active(person_id)
+        if getattr(config, "EMPATHY_ENABLED", True) and not active_grief_for_turn:
             _audio_for_prosody = audio_array
             def _run_empathy() -> None:
                 try:
@@ -2869,13 +2890,52 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 "[interaction] layer-1 insult detected — anger now %d", new_level,
             )
 
-        # Command parser → local dispatch or LLM fallback
-        match = command_parser.parse(text)
+        # Active grief flow must consume short replies before command/intent
+        # routing. A name like "Tom Foster" can otherwise be misclassified as
+        # "who is speaking?" and fall back to roast-first Rex.
+        match = None
+        response_text = None
+        if active_grief_for_turn:
+            grief_response = _continue_grief_flow(person_id, text)
+            if grief_response:
+                _log.info(
+                    "[interaction] grief flow → person_id=%s step=%s text=%r",
+                    person_id,
+                    (_grief_flow_state.get(person_id) or {}).get("step"),
+                    grief_response,
+                )
+                grief_emotion = "sad"
+                grief_pre_ms = 600
+                grief_post_ms = 600
+                grief_voice = None
+                try:
+                    ov = empathy.get_delivery_overrides(person_id)
+                    if ov:
+                        if ov.get("emotion"):
+                            grief_emotion = ov["emotion"]
+                        grief_pre_ms = max(grief_pre_ms, int(ov.get("pre_beat_ms") or 0))
+                        grief_post_ms = max(grief_post_ms, int(ov.get("post_beat_ms") or 0))
+                        grief_voice = ov.get("voice_settings")
+                except Exception as exc:
+                    _log.debug("grief flow delivery override error: %s", exc)
+                _speak_blocking(
+                    grief_response,
+                    emotion=grief_emotion,
+                    pre_beat_ms=grief_pre_ms,
+                    post_beat_ms_override=grief_post_ms,
+                    voice_settings=grief_voice,
+                )
+                response_text = grief_response
+
+        # Command parser → local dispatch or LLM fallback. Skip local routing
+        # for active grief flow turns, including the open-ended description
+        # reply where _continue_grief_flow returns None and hands off to LLM.
+        if response_text is None and not active_grief_for_turn:
+            match = command_parser.parse(text)
         if match is not None:
             response_text = _execute_command(match, person_id, person_name, text)
-        else:
-            response_text = None
-            if getattr(config, "INTENT_CLASSIFIER_ENABLED", False):
+        elif response_text is None:
+            if getattr(config, "INTENT_CLASSIFIER_ENABLED", False) and not active_grief_for_turn:
                 try:
                     intent = intent_classifier.classify(text)
                 except Exception as exc:
