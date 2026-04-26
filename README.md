@@ -16,6 +16,8 @@ The project is built for live, in-room use: Rex can recognize people, remember d
 - Servo and LED hardware hooks for a physical droid body
 - Music controls and verbal games: I Spy, 20 Questions, themed five-question Trivia rounds, Jeopardy, and Word Association
 
+See [CONTEXT.md](CONTEXT.md) for more detailed project features, architecture notes, hardware mappings, and behavior design.
+
 ## Requirements
 
 - macOS, preferably Apple Silicon
