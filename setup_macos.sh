@@ -1172,6 +1172,13 @@ _guided_arduino_device_setup() {
 _guided_maestro_setup() {
     echo ""
     echo -e "${BOLD}Pololu Maestro servo controller${NC}"
+
+    warn "Servo safety: determine every servo limit in the Pololu Maestro Control Center first."
+    echo "Write down min and max values, then save them to .env before connecting powered servos."
+    echo "Do not connect the Maestro to live servo power until those limits are programmed."
+    _configure_servo_limits_interactive
+
+    echo ""
     echo "Connect the Pololu Maestro by USB only. Keep servo power disconnected and do not power live servos yet."
     _prompt_continue "Press Enter after connecting the unpowered Maestro..."
 
@@ -1182,12 +1189,6 @@ _guided_maestro_setup() {
     _scan_for_serial_device_with_retry "Pololu Maestro" "$after_file" "$candidate_file" || true
 
     _select_serial_port_for_env "Pololu Maestro" "MAESTRO_PORT" "maestro" "$candidate_file"
-
-    echo ""
-    warn "Servo safety: determine every servo limit in the Pololu Maestro Control Center first."
-    echo "Write down min and max values, then save them to .env before connecting powered servos."
-    echo "Do not connect the Maestro to live servo power until those limits are programmed."
-    _configure_servo_limits_interactive
 
     cp "$after_file" "$HARDWARE_BASELINE_FILE"
     rm -f "$after_file" "$candidate_file"
