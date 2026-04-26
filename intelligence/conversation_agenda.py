@@ -9,6 +9,7 @@ turning the current context into a single short directive for the LLM.
 from __future__ import annotations
 
 import re
+import logging
 import threading
 import time
 import uuid
@@ -21,6 +22,7 @@ from memory import people as people_memory
 from memory import relationships as rel_memory
 from world_state import world_state
 
+_log = logging.getLogger(__name__)
 
 _QUESTION_START = re.compile(
     r"^\s*(who|what|when|where|why|how|can|could|would|will|do|does|did|is|are|am|should)\b",
@@ -101,6 +103,7 @@ _PROACTIVE_RULES: dict[str, tuple[int, str]] = {
         "say one idle/private line only. Do not pull in another topic.",
     ),
 }
+_BUDGETED_PROACTIVE_PURPOSES = {"memory_followup", "visual_curiosity", "small_talk"}
 
 _proactive_lock = threading.Lock()
 _active_proactive_claim: Optional[_ProactiveClaim] = None
@@ -131,6 +134,19 @@ def claim_proactive_purpose(
     now = time.monotonic()
     rule_priority = _PROACTIVE_RULES.get(purpose, (20, ""))[0]
     requested_priority = int(rule_priority if priority is None else priority)
+
+    if purpose in _BUDGETED_PROACTIVE_PURPOSES:
+        try:
+            from intelligence import question_budget
+            if not question_budget.can_ask(purpose):
+                _log.info(
+                    "proactive purpose suppressed by question budget — purpose=%s label=%r",
+                    purpose,
+                    label,
+                )
+                return None
+        except Exception as exc:
+            _log.debug("question budget proactive check failed: %s", exc)
 
     with _proactive_lock:
         if (
@@ -180,24 +196,33 @@ def release_proactive_claim(token: Optional[str]) -> None:
 
 def proactive_purpose_directive(purpose: str) -> str:
     rule = _PROACTIVE_RULES.get(purpose)
-    energy = ""
+    extra_lines = []
     try:
         from intelligence import user_energy
         energy = user_energy.build_directive()
+        if energy:
+            extra_lines.append(energy)
     except Exception:
-        energy = ""
+        pass
+    try:
+        from intelligence import question_budget
+        budget = question_budget.build_directive()
+        if budget:
+            extra_lines.append(budget)
+    except Exception:
+        pass
     if not rule:
         base = (
             "Proactive agenda: this unsolicited line must have exactly ONE "
             "purpose. Do not stack a question, a memory callback, a roast, and "
             "an environment remark together."
         )
-        return f"{base}\n{energy}" if energy else base
+        return "\n".join([base, *extra_lines]) if extra_lines else base
     base = (
         "Proactive agenda: this unsolicited line must have exactly ONE purpose. "
         f"Primary purpose: {purpose}. Instruction: {rule[1]}"
     )
-    return f"{base}\n{energy}" if energy else base
+    return "\n".join([base, *extra_lines]) if extra_lines else base
 
 
 def with_proactive_directive(prompt: str, purpose: str) -> str:
@@ -269,6 +294,15 @@ def build_turn_directive(
             lines.append(energy_directive)
     except Exception:
         pass
+    question_budget_allows = True
+    try:
+        from intelligence import question_budget
+        budget_directive = question_budget.build_directive()
+        if budget_directive:
+            lines.append(budget_directive)
+        question_budget_allows = question_budget.can_ask("agenda_question")
+    except Exception:
+        question_budget_allows = True
 
     if answered_question:
         q_text = answered_question.get("question_text") or "your previous question"
@@ -282,11 +316,18 @@ def build_turn_directive(
         return "\n".join(lines)
 
     if _looks_like_user_question(text):
-        lines.append(
-            "Primary purpose: answer the human's question directly first. "
-            "After answering, ask at most one short follow-up only if it flows "
-            "from their question or from something currently visible."
-        )
+        if question_budget_allows:
+            lines.append(
+                "Primary purpose: answer the human's question directly first. "
+                "After answering, ask at most one short follow-up only if it flows "
+                "from their question or from something currently visible."
+            )
+        else:
+            lines.append(
+                "Primary purpose: answer the human's question directly first. "
+                "Do not add a new follow-up question; the recent question budget "
+                "is full."
+            )
         return "\n".join(lines)
 
     # Unknown people are socially urgent: identify them before generic small talk.
@@ -304,7 +345,7 @@ def build_turn_directive(
             f"Primary purpose: there are {unknown_count} unfamiliar face(s) visible "
             f"while talking with {known_name}. If Rex has not just asked, briefly "
             "ask who the unfamiliar person is and how they know each other. "
-            "This beats generic small talk."
+            "This beats generic small talk and may bypass the optional question budget."
         )
         return "\n".join(lines)
 
@@ -319,13 +360,19 @@ def build_turn_directive(
             )
             return "\n".join(lines)
 
-        next_q = _next_useful_question(person_id)
+        next_q = _next_useful_question(person_id) if question_budget_allows else None
         if next_q:
             lines.append(
                 "Primary purpose: keep the conversation moving with curiosity. "
                 f"If the user's utterance does not demand a direct answer, weave "
                 f"in this one question naturally: {next_q['text']!r}. "
                 "Ask only this one question, and make it feel motivated by the turn."
+            )
+        elif not question_budget_allows:
+            lines.append(
+                "Primary purpose: respond to the human's latest thought without "
+                "adding a new question. The recent question budget is full; leave "
+                "space instead of interviewing."
             )
         else:
             lines.append(

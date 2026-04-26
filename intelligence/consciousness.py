@@ -355,6 +355,11 @@ def note_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
     """
     global _last_proactive_speech_at, _response_wait_until
     now = time.monotonic()
+    try:
+        from intelligence import question_budget
+        question_budget.note_rex_utterance(text)
+    except Exception:
+        pass
 
     with _turn_lock:
         _last_proactive_speech_at = now
@@ -3347,6 +3352,11 @@ def start() -> None:
     _last_presence_reaction_at.clear()
     _emotional_checkin_fired.clear()
     _negative_streak_started_at.clear()
+    try:
+        from intelligence import question_budget
+        question_budget.clear()
+    except Exception:
+        pass
     global _last_emotional_checkin_check_at
     _last_emotional_checkin_check_at = 0.0
     global _overheard_chime_in_count, _last_overheard_check_at
@@ -3370,6 +3380,11 @@ def stop() -> None:
     _stop_event.set()
     _pending_identity_prompt.clear()
     _proactive_speech_pending.clear()
+    try:
+        from intelligence import question_budget
+        question_budget.clear()
+    except Exception:
+        pass
     with _turn_lock:
         _response_wait_until = 0.0
     if _thread:

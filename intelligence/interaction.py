@@ -35,6 +35,7 @@ from intelligence import empathy
 from intelligence import conversation_agenda
 from intelligence import topic_thread
 from intelligence import user_energy
+from intelligence import question_budget
 from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
@@ -1359,6 +1360,10 @@ def _end_session() -> None:
             user_energy.clear()
         except Exception:
             pass
+        try:
+            question_budget.clear()
+        except Exception:
+            pass
         _identity_prompt_until = 0.0
         _awaiting_followup_event = None
         try:
@@ -1425,6 +1430,10 @@ def _end_session() -> None:
         pass
     try:
         user_energy.clear()
+    except Exception:
+        pass
+    try:
+        question_budget.clear()
     except Exception:
         pass
     _session_exchange_count = 0
@@ -1869,6 +1878,17 @@ def _curiosity_check(
                 active_mode, person_id,
             )
             return None
+
+    try:
+        if not question_budget.can_ask("curiosity_followup"):
+            _log.info(
+                "[interaction] curiosity_check suppressed — question budget full "
+                "(person_id=%s)",
+                person_id,
+            )
+            return None
+    except Exception as exc:
+        _log.debug("question budget curiosity check failed: %s", exc)
 
     if random.random() >= config.CURIOSITY_QUESTION_PROBABILITY:
         return None
@@ -2870,6 +2890,14 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 topic_thread.note_answered_question(answered_question)
         except Exception as exc:
             _log.debug("topic thread answer update failed: %s", exc)
+        try:
+            question_budget.note_user_turn(
+                text,
+                person_id,
+                answered_question=answered_question,
+            )
+        except Exception as exc:
+            _log.debug("question budget user update failed: %s", exc)
 
         # Face-reveal prompt: speaker-ID matched a known person with HIGH
         # confidence, they have NO face biometric yet (voice-only enrollment),
@@ -3612,6 +3640,7 @@ def start() -> None:
     _awaiting_followup_event = None
     topic_thread.clear()
     user_energy.clear()
+    question_budget.clear()
     try:
         consciousness.clear_response_wait()
     except Exception:
@@ -3650,6 +3679,7 @@ def stop() -> None:
     _identity_prompt_until = 0.0
     topic_thread.clear()
     user_energy.clear()
+    question_budget.clear()
     try:
         consciousness.clear_response_wait()
     except Exception:
