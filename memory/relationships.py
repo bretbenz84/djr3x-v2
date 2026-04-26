@@ -136,6 +136,26 @@ def answer_latest_pending_question(person_id: int, answer_text: str) -> Optional
     return pending
 
 
+def decline_latest_pending_question(person_id: int, reason: str = "") -> Optional[dict]:
+    """
+    Close the newest pending optional question without treating it as a factful
+    answer. Used when the person sets a boundary or declines the topic.
+    """
+    pending = get_latest_pending_question(person_id)
+    if not pending:
+        return None
+    note = "[declined]"
+    reason = (reason or "").strip()
+    if reason:
+        note = f"{note} {reason[:160]}"
+    db.execute(
+        "UPDATE person_qa SET answer_text = ? WHERE id = ?",
+        (note, pending["id"]),
+    )
+    pending["answer_text"] = note
+    return pending
+
+
 def get_next_question(person_id: int, friendship_tier: str) -> Optional[dict]:
     """
     Return the next unanswered question appropriate for the current friendship tier,

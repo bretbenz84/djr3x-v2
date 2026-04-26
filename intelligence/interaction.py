@@ -1867,6 +1867,46 @@ _POOL_TOPIC_PATTERNS: dict[str, list[re.Pattern]] = {
 }
 
 
+_QUESTION_BOUNDARY_TOPICS = {
+    "hometown": "hometown",
+    "job": "work",
+    "favorite_movie": "movies",
+    "favorite_music": "music",
+    "how_found_rex": "rex",
+    "hobbies": "hobbies",
+    "travel": "travel",
+    "proudest_moment": "personal history",
+    "biggest_challenge": "personal history",
+    "obsession": "interests",
+    "relationships": "relationships",
+    "values": "values",
+    "fears": "fears",
+    "life_changing": "personal history",
+    "regret": "regret",
+    "meaning_of_life": "philosophy",
+    "free_will": "philosophy",
+    "consciousness": "philosophy",
+    "good_life": "philosophy",
+}
+
+
+def _question_blocked_by_boundary(person_id: Optional[int], question: dict) -> bool:
+    if person_id is None or not question:
+        return False
+    topic = _QUESTION_BOUNDARY_TOPICS.get(question.get("key") or "")
+    if not topic:
+        return False
+    try:
+        return (
+            boundary_memory.is_blocked(person_id, "ask", topic)
+            or boundary_memory.is_blocked(person_id, "mention", topic)
+            or boundary_memory.is_blocked(person_id, "ask", "questions")
+        )
+    except Exception as exc:
+        _log.debug("question boundary check failed: %s", exc)
+        return False
+
+
 def _record_pool_topics_in_response(response_text: str, person_id: int) -> None:
     """Mark any QUESTION_POOL topics raised by Rex's response as already-asked,
     so the curiosity routine won't re-ask them on a later turn."""
@@ -2068,10 +2108,9 @@ def _handle_conversation_boundary(
     if person_id is None or not text:
         return None
     try:
-        thread = topic_thread.snapshot() or {}
         detected = boundary_memory.detect_boundary(
             text,
-            fallback_topic=thread.get("label"),
+            fallback_topic=_boundary_fallback_topic(),
         )
         if not detected:
             return None
@@ -2092,6 +2131,59 @@ def _handle_conversation_boundary(
     except Exception as exc:
         _log.debug("conversation boundary handler failed: %s", exc)
         return None
+
+
+def _boundary_fallback_topic() -> Optional[str]:
+    """Best current topic for generic boundaries like 'don't ask me that again'."""
+    if _pending_face_reveal_confirm is not None:
+        return "face"
+    if _pending_offscreen_identify is not None:
+        return "identity"
+    if _pending_introduction is not None or _pending_intro_followup is not None:
+        return "introductions"
+    try:
+        pending_rel = consciousness.get_pending_relationship_context()
+        if pending_rel:
+            return "relationships"
+    except Exception:
+        pass
+    try:
+        thread = topic_thread.snapshot() or {}
+        if thread.get("label"):
+            return thread.get("label")
+    except Exception:
+        pass
+    return None
+
+
+def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> None:
+    """Close optional pending prompts when a person sets a boundary or declines."""
+    global _pending_face_reveal_confirm, _pending_offscreen_identify
+    global _pending_introduction, _pending_intro_followup
+
+    if person_id is not None:
+        try:
+            declined = rel_memory.decline_latest_pending_question(person_id, reason=reason)
+            if declined:
+                _log.info(
+                    "[boundaries] declined pending Q&A person_id=%s key=%r reason=%r",
+                    person_id,
+                    declined.get("question_key"),
+                    reason,
+                )
+        except Exception as exc:
+            _log.debug("decline pending Q&A failed: %s", exc)
+
+    if _pending_face_reveal_confirm is not None:
+        if person_id is None or _pending_face_reveal_confirm.get("person_id") == person_id:
+            _face_reveal_declined.add(_pending_face_reveal_confirm["person_id"])
+            _pending_face_reveal_confirm = None
+    if _pending_offscreen_identify is not None:
+        _pending_offscreen_identify = None
+    if _pending_introduction is not None:
+        _pending_introduction = None
+    if _pending_intro_followup is not None:
+        _pending_intro_followup = None
 
 
 def _generate_repair_response(person_id: Optional[int], text: str, repair: dict) -> str:
@@ -2367,6 +2459,13 @@ def _curiosity_check(
                         "curiosity_check: skipping %r — fact already recorded", q_key
                     )
                     continue
+                if _question_blocked_by_boundary(person_id, candidate):
+                    _log.info(
+                        "[boundaries] curiosity_check suppressed question=%r for person_id=%s",
+                        q_key,
+                        person_id,
+                    )
+                    continue
                 question_text = candidate.get("text", "")
                 pool_question = candidate
                 break
@@ -2375,6 +2474,16 @@ def _curiosity_check(
 
     # LLM fallback — contextual question when pool is empty or person is unknown
     if not question_text:
+        if person_id is not None:
+            try:
+                if boundary_memory.is_blocked(person_id, "ask", "questions"):
+                    _log.info(
+                        "[boundaries] curiosity_check LLM fallback suppressed — questions blocked person_id=%s",
+                        person_id,
+                    )
+                    return None
+            except Exception as exc:
+                _log.debug("curiosity fallback boundary check failed: %s", exc)
         try:
             question_text = llm.generate_curiosity_question(response_text, user_text)
         except Exception as exc:
@@ -3398,6 +3507,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
 
         boundary_response = _handle_emotional_checkin_boundary(person_id, text)
         if boundary_response:
+            _dismiss_pending_consent_prompts(person_id, text)
             try:
                 consciousness.clear_response_wait()
             except Exception:
@@ -3416,6 +3526,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
 
         preference_response = _handle_conversation_boundary(person_id, text)
         if preference_response:
+            _dismiss_pending_consent_prompts(person_id, text)
             try:
                 consciousness.clear_response_wait()
             except Exception:
@@ -3477,81 +3588,98 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             and speaker_score >= float(getattr(config, "FACE_REVEAL_MIN_SCORE", 0.80))
             and not people_memory.has_face_biometric(person_id)
         ):
-            # Collect unknown faces currently visible with x-position and encoding.
+            face_reveal_blocked = False
             try:
-                from vision import camera as _cam_mod
-                from vision import face as _face_mod
-                frame = _cam_mod.get_frame()
-                unknown_candidates: list[dict] = []
-                if frame is not None:
-                    detected = _face_mod.detect_faces(frame)
-                    for det in detected:
-                        if _face_mod.identify_face(det["encoding"]) is None:
-                            x, _y, w, _h = det["bounding_box"]
-                            unknown_candidates.append({
-                                "slot_id": f"face_{x}_{_y}",
-                                "encoding": det["encoding"],
-                                "x": x + w // 2,
-                            })
+                if (
+                    boundary_memory.is_blocked(person_id, "ask", "face")
+                    or boundary_memory.is_blocked(person_id, "ask", "identity")
+                ):
+                    face_reveal_blocked = True
+                    _face_reveal_declined.add(person_id)
+                    _log.info(
+                        "[boundaries] face-reveal skipped — face/identity ask blocked for person_id=%s",
+                        person_id,
+                    )
             except Exception as exc:
-                _log.debug("face-reveal candidate capture error: %s", exc)
-                unknown_candidates = []
-
-            if len(unknown_candidates) == 1:
-                mode = "binary"
-                name_for_prompt = (person_name or "").split()[0] or "you"
-                ask_prompt = (
-                    f"You recognize this speaker's VOICE as '{name_for_prompt}' — but "
-                    f"you've never seen their face before. Now there's one unfamiliar "
-                    f"face in view and it's almost certainly them. In ONE short "
-                    f"in-character Rex line, ask {name_for_prompt} to confirm that "
-                    f"IS them — express surprise at what they look like compared to "
-                    f"the voice you'd imagined. End with a clear yes/no question."
-                )
-            elif len(unknown_candidates) == 2:
-                mode = "lateral"
-                name_for_prompt = (person_name or "").split()[0] or "you"
-                ask_prompt = (
-                    f"You recognize this speaker's VOICE as '{name_for_prompt}' but "
-                    f"two unfamiliar faces are in view and you can't tell which is "
-                    f"{name_for_prompt}. In ONE short in-character Rex line, ask "
-                    f"{name_for_prompt} whether they are the one on YOUR LEFT or on "
-                    f"YOUR RIGHT — phrase it from your perspective. End with a clear "
-                    f"'left or right?' question."
-                )
+                _log.debug("face-reveal boundary check failed: %s", exc)
+            if face_reveal_blocked:
+                pass
             else:
-                mode = None
-                _log.info(
-                    "[interaction] face-reveal skipped — %d unknown candidates (need 1 or 2)",
-                    len(unknown_candidates),
-                )
-
-            if mode is not None:
-                _pending_face_reveal_confirm = {
-                    "person_id": person_id,
-                    "name": person_name,
-                    "mode": mode,
-                    "candidates": unknown_candidates,
-                    "asked_at": time.monotonic(),
-                }
+                # Collect unknown faces currently visible with x-position and encoding.
                 try:
-                    q_text = llm.get_response(ask_prompt)
-                    if q_text:
-                        _speak_blocking(q_text)
-                        conv_memory.add_to_transcript("Rex", q_text)
-                        conv_log.log_rex(q_text)
-                        _register_rex_utterance(q_text)
-                        _log.info(
-                            "[interaction] face-reveal asked (mode=%s, person_id=%s): %r",
-                            mode, person_id, q_text,
-                        )
-                        # Skip normal LLM response — this turn IS the reveal question.
-                        return
-                    else:
-                        _pending_face_reveal_confirm = None
+                    from vision import camera as _cam_mod
+                    from vision import face as _face_mod
+                    frame = _cam_mod.get_frame()
+                    unknown_candidates: list[dict] = []
+                    if frame is not None:
+                        detected = _face_mod.detect_faces(frame)
+                        for det in detected:
+                            if _face_mod.identify_face(det["encoding"]) is None:
+                                x, _y, w, _h = det["bounding_box"]
+                                unknown_candidates.append({
+                                    "slot_id": f"face_{x}_{_y}",
+                                    "encoding": det["encoding"],
+                                    "x": x + w // 2,
+                                })
                 except Exception as exc:
-                    _log.debug("face-reveal ask error: %s", exc)
-                    _pending_face_reveal_confirm = None
+                    _log.debug("face-reveal candidate capture error: %s", exc)
+                    unknown_candidates = []
+
+                if len(unknown_candidates) == 1:
+                    mode = "binary"
+                    name_for_prompt = (person_name or "").split()[0] or "you"
+                    ask_prompt = (
+                        f"You recognize this speaker's VOICE as '{name_for_prompt}' — but "
+                        f"you've never seen their face before. Now there's one unfamiliar "
+                        f"face in view and it's almost certainly them. In ONE short "
+                        f"in-character Rex line, ask {name_for_prompt} to confirm that "
+                        f"IS them — express surprise at what they look like compared to "
+                        f"the voice you'd imagined. End with a clear yes/no question."
+                    )
+                elif len(unknown_candidates) == 2:
+                    mode = "lateral"
+                    name_for_prompt = (person_name or "").split()[0] or "you"
+                    ask_prompt = (
+                        f"You recognize this speaker's VOICE as '{name_for_prompt}' but "
+                        f"two unfamiliar faces are in view and you can't tell which is "
+                        f"{name_for_prompt}. In ONE short in-character Rex line, ask "
+                        f"{name_for_prompt} whether they are the one on YOUR LEFT or on "
+                        f"YOUR RIGHT — phrase it from your perspective. End with a clear "
+                        f"'left or right?' question."
+                    )
+                else:
+                    mode = None
+                    _log.info(
+                        "[interaction] face-reveal skipped — %d unknown candidates (need 1 or 2)",
+                        len(unknown_candidates),
+                    )
+
+                if mode is not None:
+                    _pending_face_reveal_confirm = {
+                        "person_id": person_id,
+                        "name": person_name,
+                        "mode": mode,
+                        "candidates": unknown_candidates,
+                        "asked_at": time.monotonic(),
+                    }
+                    try:
+                        q_text = llm.get_response(ask_prompt)
+                        if q_text:
+                            _speak_blocking(q_text)
+                            conv_memory.add_to_transcript("Rex", q_text)
+                            conv_log.log_rex(q_text)
+                            _register_rex_utterance(q_text)
+                            _log.info(
+                                "[interaction] face-reveal asked (mode=%s, person_id=%s): %r",
+                                mode, person_id, q_text,
+                            )
+                            # Skip normal LLM response — this turn IS the reveal question.
+                            return
+                        else:
+                            _pending_face_reveal_confirm = None
+                    except Exception as exc:
+                        _log.debug("face-reveal ask error: %s", exc)
+                        _pending_face_reveal_confirm = None
 
         # Off-camera unknown voice: if the person-resolution pass flagged this
         # utterance as coming from someone we can neither see nor voice-ID, fire
@@ -3559,46 +3687,59 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         # engaged person's next reply can enroll the unknown's voice.
         # Skip if a pending identify is already in flight (from a previous turn).
         if off_camera_unknown and _pending_offscreen_identify is None:
-            engaged_name_local = (
-                recent_engagement.get("name") if recent_engagement else None
-            ) or ""
-            first_name_local = engaged_name_local.split()[0] if engaged_name_local else "friend"
-            _pending_offscreen_identify = {
-                "audio": audio_array.copy(),
-                "asked_at": time.monotonic(),
-                "prior_engaged_id": (recent_engagement or {}).get("person_id"),
-                "prior_engaged_name": engaged_name_local,
-                "overheard_text": text,
-            }
-            try:
-                q_text = llm.get_response(
-                    f"You just heard an UNFAMILIAR voice but you cannot see who said it "
-                    f"(no face in view). They said: '{text}'. Your friend "
-                    f"'{first_name_local}' is here with you and you were talking "
-                    f"with them. In ONE short in-character Rex line, ask who that "
-                    f"was off-camera — curious, slightly wary. Address "
-                    f"{first_name_local} naturally. Examples: "
-                    f"'Who's that, {first_name_local}? I can't see them.', "
-                    f"'Hold up — who just chimed in back there?', "
-                    f"'Someone's lurking off-camera, {first_name_local}. Friend of yours?' "
-                    f"One line ending in a question mark."
-                )
-                if q_text:
-                    _speak_blocking(q_text)
-                    conv_memory.add_to_transcript("Rex", q_text)
-                    conv_log.log_rex(q_text)
-                    _register_rex_utterance(q_text)
-                    _log.info(
-                        "[interaction] off-camera unknown — Rex asked: %r (overheard: %r)",
-                        q_text, text,
+            if person_id is not None:
+                try:
+                    if boundary_memory.is_blocked(person_id, "ask", "identity"):
+                        _log.info(
+                            "[boundaries] off-camera identity ask skipped for person_id=%s",
+                            person_id,
+                        )
+                        off_camera_unknown = False
+                except Exception as exc:
+                    _log.debug("off-camera identity boundary check failed: %s", exc)
+            if not off_camera_unknown:
+                pass
+            else:
+                engaged_name_local = (
+                    recent_engagement.get("name") if recent_engagement else None
+                ) or ""
+                first_name_local = engaged_name_local.split()[0] if engaged_name_local else "friend"
+                _pending_offscreen_identify = {
+                    "audio": audio_array.copy(),
+                    "asked_at": time.monotonic(),
+                    "prior_engaged_id": (recent_engagement or {}).get("person_id"),
+                    "prior_engaged_name": engaged_name_local,
+                    "overheard_text": text,
+                }
+                try:
+                    q_text = llm.get_response(
+                        f"You just heard an UNFAMILIAR voice but you cannot see who said it "
+                        f"(no face in view). They said: '{text}'. Your friend "
+                        f"'{first_name_local}' is here with you and you were talking "
+                        f"with them. In ONE short in-character Rex line, ask who that "
+                        f"was off-camera — curious, slightly wary. Address "
+                        f"{first_name_local} naturally. Examples: "
+                        f"'Who's that, {first_name_local}? I can't see them.', "
+                        f"'Hold up — who just chimed in back there?', "
+                        f"'Someone's lurking off-camera, {first_name_local}. Friend of yours?' "
+                        f"One line ending in a question mark."
                     )
-            except Exception as exc:
-                _log.debug("off-camera identify ask error: %s", exc)
-            # Skip normal LLM response — we don't want to treat the unknown
-            # utterance as something Rex should respond to directly. The engaged
-            # person's next reply gets consumed by the _pending_offscreen_identify
-            # handler above.
-            return
+                    if q_text:
+                        _speak_blocking(q_text)
+                        conv_memory.add_to_transcript("Rex", q_text)
+                        conv_log.log_rex(q_text)
+                        _register_rex_utterance(q_text)
+                        _log.info(
+                            "[interaction] off-camera unknown — Rex asked: %r (overheard: %r)",
+                            q_text, text,
+                        )
+                except Exception as exc:
+                    _log.debug("off-camera identify ask error: %s", exc)
+                # Skip normal LLM response — we don't want to treat the unknown
+                # utterance as something Rex should respond to directly. The engaged
+                # person's next reply gets consumed by the _pending_offscreen_identify
+                # handler above.
+                return
 
         # Newcomer-on-camera: an unknown face is visible AND the speaker's voice
         # didn't match anyone AND this utterance didn't already enroll them via

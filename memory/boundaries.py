@@ -20,6 +20,16 @@ _log = logging.getLogger(__name__)
 _DEFAULT_TOPIC = "current topic"
 
 _TOPIC_ALIASES = {
+    "all": "anything",
+    "anything": "anything",
+    "everything": "anything",
+    "questions": "questions",
+    "question": "questions",
+    "personal questions": "questions",
+    "that": _DEFAULT_TOPIC,
+    "this": _DEFAULT_TOPIC,
+    "it": _DEFAULT_TOPIC,
+    "me": "anything",
     "how i am doing": "how are you",
     "how i'm doing": "how are you",
     "how im doing": "how are you",
@@ -28,6 +38,12 @@ _TOPIC_ALIASES = {
     "how i feel": "how are you",
     "my appearance": "appearance",
     "appearance": "appearance",
+    "my face": "face",
+    "face": "face",
+    "my voice": "voice",
+    "voice": "voice",
+    "identity": "identity",
+    "name": "identity",
     "my body": "body",
     "body": "body",
     "my weight": "body",
@@ -66,12 +82,55 @@ _BOUNDARY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"(?:about\s+)?(?P<topic>[^.?!,;]+)",
         re.IGNORECASE,
     )),
+    ("ask", re.compile(
+        r"\b(?:no more|stop with the|enough with the)\s+"
+        r"(?P<topic>questions?|personal questions?)\b",
+        re.IGNORECASE,
+    )),
+]
+
+_GENERIC_BOUNDARY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("roast", re.compile(
+        r"\b(?:don'?t|do not|stop|please don'?t|please do not)\s+"
+        r"(?:roast|tease|make fun of|joke about)\s+me\b",
+        re.IGNORECASE,
+    )),
+    ("mention", re.compile(
+        r"\b(?:drop it|leave it alone|let'?s leave it|"
+        r"stop talking about (?:that|this|it)|"
+        r"don'?t talk about (?:that|this|it)(?: anymore| again)?|"
+        r"do not talk about (?:that|this|it)(?: anymore| again)?|"
+        r"don'?t bring (?:that|this|it) up(?: anymore| again)?|"
+        r"do not bring (?:that|this|it) up(?: anymore| again)?|"
+        r"forget about (?:that|this|it))\b",
+        re.IGNORECASE,
+    )),
+    ("ask", re.compile(
+        r"\b(?:don'?t ask me (?:that|about that|about this|about it)(?: again)?|"
+        r"do not ask me (?:that|about that|about this|about it)(?: again)?|"
+        r"stop asking(?: me)?(?: about (?:that|this|it))?|"
+        r"no more questions(?: about (?:that|this|it))?)\b",
+        re.IGNORECASE,
+    )),
+    ("roast", re.compile(
+        r"\b(?:don'?t roast me about (?:that|this|it)|"
+        r"do not roast me about (?:that|this|it)|"
+        r"stop joking about (?:that|this|it)|"
+        r"stop teasing me about (?:that|this|it))\b",
+        re.IGNORECASE,
+    )),
 ]
 
 _CLEAR_PAT = re.compile(
     r"\b(?:you can|it's okay to|it is okay to|feel free to|you may)\s+"
     r"(?P<behavior>ask|mention|roast|tease|joke about|talk about)\s+"
     r"(?:me\s+)?(?:about\s+|on\s+)?(?P<topic>[^.?!,;]+)",
+    re.IGNORECASE,
+)
+_GENERIC_CLEAR_PAT = re.compile(
+    r"\b(?:you can|it's okay to|it is okay to|feel free to|you may)\s+"
+    r"(?P<behavior>ask|mention|roast|tease|joke about|talk about)\s+"
+    r"(?:me\s+)?(?:about\s+|on\s+)?(?:that|this|it)(?: again)?\b",
     re.IGNORECASE,
 )
 
@@ -165,6 +224,16 @@ def is_blocked(person_id: int, behavior: str, topic: str) -> bool:
     for row in get_boundaries(person_id, active_only=True):
         row_behavior = row.get("behavior") or ""
         row_topic = row.get("topic") or ""
+        if row_topic == "anything":
+            if row_behavior == "mention":
+                return True
+            if row_behavior == behavior:
+                return True
+            if behavior == "roast" and row_behavior in {"roast", "mention"}:
+                return True
+            continue
+        if row_topic == "questions" and row_behavior == "ask" and behavior == "ask":
+            return True
         if row_behavior not in {behavior, "mention"} and behavior != "roast":
             continue
         if behavior == "roast" and row_behavior not in {"roast", "mention"}:
@@ -185,10 +254,21 @@ def detect_boundary(
 
     clear = _CLEAR_PAT.search(cleaned)
     if clear:
+        topic = _normalize_topic(clear.group("topic"))
+        if topic in {"again", "anymore", "any more"}:
+            topic = _normalize_topic(fallback_topic or _DEFAULT_TOPIC)
         return {
             "action": "clear",
             "behavior": _normalize_behavior(clear.group("behavior")),
-            "topic": _normalize_topic(clear.group("topic")),
+            "topic": topic,
+            "source_text": cleaned,
+        }
+    clear_generic = _GENERIC_CLEAR_PAT.search(cleaned)
+    if clear_generic:
+        return {
+            "action": "clear",
+            "behavior": _normalize_behavior(clear_generic.group("behavior")),
+            "topic": _normalize_topic(fallback_topic or _DEFAULT_TOPIC),
             "source_text": cleaned,
         }
 
@@ -197,6 +277,19 @@ def detect_boundary(
         if not match:
             continue
         topic = _normalize_topic(match.groupdict().get("topic") or fallback_topic or _DEFAULT_TOPIC)
+        if topic in {"again", "anymore", "any more"}:
+            topic = _normalize_topic(fallback_topic or _DEFAULT_TOPIC)
+        return {
+            "action": "add",
+            "behavior": behavior,
+            "topic": topic,
+            "description": _description_for(behavior, topic),
+            "source_text": cleaned,
+        }
+    for behavior, pattern in _GENERIC_BOUNDARY_PATTERNS:
+        if not pattern.search(cleaned):
+            continue
+        topic = _normalize_topic(fallback_topic or ("anything" if behavior == "roast" else _DEFAULT_TOPIC))
         return {
             "action": "add",
             "behavior": behavior,
@@ -259,6 +352,14 @@ def _normalize_topic(value: str) -> str:
 def _description_for(behavior: str, topic: str) -> str:
     behavior = _normalize_behavior(behavior)
     topic = _normalize_topic(topic)
+    if topic == "anything":
+        if behavior == "roast":
+            return "Do not roast or tease them."
+        if behavior == "ask":
+            return "Do not proactively ask them questions."
+        return "Do not proactively mention or continue that topic."
+    if topic == "questions":
+        return "Do not proactively ask them personal questions."
     if topic == "how are you":
         return "Do not proactively ask how they are doing."
     if behavior == "roast":
@@ -275,7 +376,10 @@ def _topics_overlap(a: str, b: str) -> bool:
         return True
     clusters = [
         {"appearance", "body", "clothing", "hair", "shirt", "clothes"},
+        {"face", "appearance", "identity"},
+        {"voice", "identity"},
         {"work", "job", "boss", "office"},
         {"how are you", "feelings", "mood", "check in"},
+        {"questions", "personal questions"},
     ]
     return any(a in cluster and b in cluster for cluster in clusters)

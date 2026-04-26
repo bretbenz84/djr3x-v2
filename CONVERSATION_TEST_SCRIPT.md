@@ -193,6 +193,34 @@ Expected:
 
 - Boundary is deactivated or cleared.
 
+Generic current-topic boundary:
+
+> Drop it.
+
+Expected:
+
+- Rex acknowledges the boundary and stops pursuing the current thread.
+- The newest pending optional question should be marked declined, not captured
+  as an answer on the next turn.
+
+Question consent boundary:
+
+> No more personal questions.
+
+Expected:
+
+- Rex acknowledges that personal questions are off limits.
+- Later curiosity questions should be suppressed by boundary checks.
+
+Face / identity consent boundary:
+
+> Don't ask me about my face.
+
+Expected:
+
+- Rex stores a face/identity ask boundary.
+- Voice-only face reveal prompts should be skipped for that person.
+
 ## 7. User Energy Matching
 
 Goal: verify Rex changes pacing based on the user's energy.
