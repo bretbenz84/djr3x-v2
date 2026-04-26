@@ -26,7 +26,7 @@ The project is built for live, in-room use: Rex can recognize people, remember d
 - ElevenLabs API key
 - Optional hardware:
   - Pololu Maestro servo controller
-  - Head and chest Arduino controllers
+  - Head and chest LED controllers using Arduino Nano or Arduino Uno variants
   - Camera and microphone
 
 The macOS setup script installs Homebrew dependencies, pyenv, Python 3.11.9, the virtual environment, Python packages, config templates, assets, models, and database setup.
