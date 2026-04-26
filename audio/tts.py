@@ -61,10 +61,9 @@ def is_speaking() -> bool:
 def prewarm() -> None:
     """Play 100ms of silence to force audio device initialization before first TTS.
 
-    Holds the output gate so prewarm waits for any startup clip (played via
-    pygame.mixer) to finish — concurrent pygame + sounddevice access on macOS
-    triggers PaMacCore err=-50 which causes sd.wait() to return early on the
-    first real TTS call.
+    Holds the output gate so prewarm waits for any startup clip to finish
+    before opening the output device — back-to-back sd.play() calls during
+    device init can cause sd.wait() to return early on the first real TTS call.
     """
     with output_gate.hold("tts-prewarm") as acquired:
         if not acquired:

@@ -31,7 +31,9 @@ except RuntimeError as e:
 import time
 import threading
 
-import pygame
+import numpy as np
+import sounddevice as sd
+import soundfile as sf
 
 import config
 import state
@@ -67,14 +69,21 @@ def _verify_local_whisper_model() -> None:
 
 
 def _play_audio_file(path: str) -> None:
-    """Play a pre-recorded audio file synchronously via pygame."""
+    """Play a pre-recorded audio file synchronously via sounddevice.
+
+    Using sounddevice (PortAudio) here — not pygame.mixer (SDL) — keeps all
+    playback on a single backend. Concurrent SDL + PortAudio on macOS produces
+    PaMacCore err=-50 glitches, which surface as choppy clip playback and
+    duplicated/echoed TTS output.
+    """
     with output_gate.hold("startup_or_shutdown_clip") as acquired:
         if not acquired:
             return
-        pygame.mixer.music.load(path)
-        pygame.mixer.music.play()
-        while pygame.mixer.music.get_busy():
-            time.sleep(0.05)
+        audio, samplerate = sf.read(path, dtype="float32", always_2d=False)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1).astype(np.float32)
+        sd.play(audio, samplerate, blocksize=2048)
+        sd.wait()
 
 
 def _shutdown() -> None:
@@ -106,7 +115,7 @@ def _shutdown() -> None:
     stream.stop()
 
     # Fire shutdown audio first, then run servo animation simultaneously.
-    # Join the audio thread before pygame teardown so the clip isn't cut short.
+    # Join the audio thread so the clip isn't cut short by shutdown teardown.
     _audio_thread = None
     if config.PLAY_SHUTDOWN_AUDIO:
         logger.info("Playing shutdown audio: %s", config.SHUTDOWN_AUDIO_FILE)
@@ -132,15 +141,12 @@ def _shutdown() -> None:
     leds_head.disconnect()
     leds_chest.disconnect()
 
-    pygame.mixer.quit()
     logger.info("=== Shutdown complete ===")
 
 
 def main() -> None:
     logger.info("Verifying local Whisper model...")
     _verify_local_whisper_model()
-
-    pygame.mixer.init()
 
     # Step 4: Initialize hardware and log enabled/disabled status.
     logger.info("=== Initializing hardware ===")
