@@ -247,6 +247,13 @@ def build_turn_directive(
         "Conversation agenda: choose ONE purpose for this turn. Do not stack "
         "multiple follow-up questions, presence reactions, and environment remarks."
     ]
+    try:
+        from intelligence import topic_thread
+        topic_directive = topic_thread.build_directive()
+        if topic_directive:
+            lines.append(topic_directive)
+    except Exception:
+        pass
 
     if answered_question:
         q_text = answered_question.get("question_text") or "your previous question"

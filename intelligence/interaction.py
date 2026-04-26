@@ -33,6 +33,7 @@ from intelligence import consciousness
 from intelligence import intent_classifier
 from intelligence import empathy
 from intelligence import conversation_agenda
+from intelligence import topic_thread
 from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
@@ -371,6 +372,10 @@ def _assistant_asked_question(text: str) -> bool:
 def _register_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
     if not text or not text.strip():
         return
+    try:
+        topic_thread.note_assistant_turn(text)
+    except Exception:
+        pass
     try:
         consciousness.note_rex_utterance(text, wait_secs=wait_secs)
     except Exception:
@@ -1344,6 +1349,10 @@ def _end_session() -> None:
     if not transcript:
         _session_exchange_count = 0
         _session_person_ids.clear()
+        try:
+            topic_thread.clear()
+        except Exception:
+            pass
         _identity_prompt_until = 0.0
         _awaiting_followup_event = None
         try:
@@ -1404,6 +1413,10 @@ def _end_session() -> None:
             _log.error("session end error for person_id=%s: %s", person_id, exc)
 
     conv_memory.clear_transcript()
+    try:
+        topic_thread.clear()
+    except Exception:
+        pass
     _session_exchange_count = 0
     _session_person_ids.clear()
     _identity_prompt_until = 0.0
@@ -2758,6 +2771,11 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             "[interaction] speech segment — speaker=%r person_id=%s text=%r",
             speaker_label, person_id, text,
         )
+        try:
+            topic_thread.note_user_turn(text, person_id)
+        except Exception as exc:
+            _log.debug("topic thread user update failed: %s", exc)
+
         boundary_response = _handle_emotional_checkin_boundary(person_id, text)
         if boundary_response:
             try:
@@ -2781,6 +2799,11 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             text,
             identity_prompt_active=identity_prompt_active,
         )
+        try:
+            if answered_question:
+                topic_thread.note_answered_question(answered_question)
+        except Exception as exc:
+            _log.debug("topic thread answer update failed: %s", exc)
 
         # Face-reveal prompt: speaker-ID matched a known person with HIGH
         # confidence, they have NO face biometric yet (voice-only enrollment),
@@ -3512,6 +3535,7 @@ def start() -> None:
     _session_person_ids.clear()
     _identity_prompt_until = 0.0
     _awaiting_followup_event = None
+    topic_thread.clear()
     try:
         consciousness.clear_response_wait()
     except Exception:
@@ -3548,6 +3572,7 @@ def stop() -> None:
 
     _awaiting_followup_event = None
     _identity_prompt_until = 0.0
+    topic_thread.clear()
     try:
         consciousness.clear_response_wait()
     except Exception:
