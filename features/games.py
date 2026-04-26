@@ -749,17 +749,17 @@ def _jeopardy_begin_board(names: list[str], person_id: Optional[int]) -> tuple[s
     })
     _jeopardy_queue_clip("board")
 
-    board_text = jeopardy_bank.format_board(board)
+    categories_text = jeopardy_bank.format_categories(board)
     player_text = ", ".join(name for name in names)
     first = players[0]["name"]
+    quip = random.choice([
+        "Try not to make the scoreboard file a complaint.",
+        "May your answers be less questionable than my wiring.",
+        "Brains armed, dignity optional.",
+    ])
     return (
-        _rex_respond(
-            f"[GAME: Jeopardy — BOARD READY] Players: {player_text}. "
-            f"The board categories and values are: {board_text}. "
-            f"Rex welcomes the players with one funny quip, then names the categories "
-            f"and asks {first} to pick a category and value. Keep it concise but clear.",
-            person_id,
-        ),
+        f"Contestants logged: {player_text}. {quip} "
+        f"Categories are: {categories_text}. {first}, pick a category and dollar value.",
         False,
     )
 
@@ -824,7 +824,7 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
     )
     return (
         f"{daily_line}{player['name']}, {clue.get('category')} for ${clue.get('value')}. "
-        f"{clue.get('clue')} Answer in the form of a question.",
+        f"Clue: {clue.get('clue')}.",
         False,
     )
 

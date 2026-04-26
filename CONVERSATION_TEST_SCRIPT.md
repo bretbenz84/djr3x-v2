@@ -643,7 +643,7 @@ When Rex asks who is playing, try one of:
 Expected:
 
 - Rex plays the intro stinger, asks for players, then loads a board.
-- Rex names the players and categories.
+- Rex names the players and categories, without reading every dollar value on the board.
 - The board stinger plays when the board is ready.
 - Category/value selections like `Birds for 200` produce a clue.
 - The theme plays after the clue while answers are open.

@@ -214,6 +214,13 @@ def format_board(board: dict) -> str:
     return "; ".join(bits)
 
 
+def format_categories(board: dict) -> str:
+    return ", ".join(
+        str(category.get("name") or "Potpourri")
+        for category in board.get("categories") or []
+    )
+
+
 def format_scores(players: list[dict]) -> str:
     if not players:
         return "no players"
@@ -414,7 +421,11 @@ def is_correct(user_answer: str, expected_answer: str) -> bool:
 
 def is_pass_or_timeout(text: str) -> bool:
     plain = _plain(text)
+    if re.search(r"\b(?:i\s+)?(?:don\s+t|dont|do\s+not)\s+know\b", plain):
+        return True
+    if "not sure" in plain:
+        return True
     return plain in {
         "pass", "i pass", "skip", "times up", "time up", "time s up",
-        "i don t know", "i dont know", "no idea", "not sure",
+        "i don t know", "i dont know", "no idea",
     }

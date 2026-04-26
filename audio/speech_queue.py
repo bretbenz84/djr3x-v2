@@ -22,6 +22,7 @@ items from the queue, e.g. when an interrupt is being processed.
 import heapq
 import logging
 import threading
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -267,15 +268,66 @@ class _SpeechQueue:
 
     def _play_file(self, path: str) -> None:
         try:
+            import math
             import numpy as np
             import sounddevice as sd
             import soundfile as sf
 
             from audio import echo_cancel, output_gate
+            import config
 
             audio, samplerate = sf.read(str(path), dtype="float32", always_2d=False)
             if audio.ndim > 1:
                 audio = audio.mean(axis=1)
+            audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+            path_obj = Path(str(path))
+            is_jeopardy = path_obj.parent.name == "jeopardy"
+            if is_jeopardy:
+                target_sr = int(getattr(config, "JEOPARDY_AUDIO_OUTPUT_SAMPLE_RATE", 44100) or 0)
+                if target_sr > 0 and samplerate != target_sr and audio.size:
+                    try:
+                        from scipy.signal import resample_poly
+                        common = math.gcd(int(samplerate), int(target_sr))
+                        audio = resample_poly(
+                            audio,
+                            target_sr // common,
+                            int(samplerate) // common,
+                        ).astype(np.float32)
+                        samplerate = target_sr
+                    except Exception as exc:
+                        logger.debug("speech_queue: jeopardy resample skipped: %s", exc)
+
+                if path_obj.name == "jeopardy-theme.mp3":
+                    max_secs = float(getattr(config, "JEOPARDY_THEME_MAX_SECS", 0.0) or 0.0)
+                    if max_secs > 0:
+                        audio = audio[: int(max_secs * samplerate)]
+
+                music_files = {
+                    "jeopardy-intro.mp3",
+                    "jeopardy-theme.mp3",
+                    "jeopardy-final-jeopardy-thinking-music.mp3",
+                    "jeopardy-outro-no-talking.mp3",
+                    "jeopardy-daily-double.mp3",
+                }
+                gain = (
+                    float(getattr(config, "JEOPARDY_AUDIO_MUSIC_GAIN", 0.35))
+                    if path_obj.name in music_files
+                    else float(getattr(config, "JEOPARDY_AUDIO_STINGER_GAIN", 0.75))
+                )
+                audio = audio * gain
+
+                # Prevent hard clicks at clip boundaries and leave headroom for
+                # small speakers that distort well before digital full scale.
+                fade_samples = min(int(0.015 * samplerate), max(0, audio.size // 2))
+                if fade_samples > 1:
+                    fade = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+                    audio[:fade_samples] *= fade
+                    audio[-fade_samples:] *= fade[::-1]
+
+            peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+            if peak > 0.85:
+                audio = audio * (0.85 / peak)
 
             with output_gate.hold("speech-queue-file") as acquired:
                 if not acquired:
@@ -283,7 +335,7 @@ class _SpeechQueue:
                     return
                 try:
                     echo_cancel.set_playing(True)
-                    sd.play(audio, samplerate)
+                    sd.play(audio, samplerate, blocksize=2048)
                     sd.wait()
                 finally:
                     echo_cancel.set_playing(False)
