@@ -726,13 +726,15 @@ _select_serial_port_for_env() {
 _choose_arduino_board_fqbn() {
     local label="$1"
     local default_fqbn="$2"
-    echo ""
-    echo "What kind of Arduino is connected for $label?"
-    echo "  [1] Default for this device: $default_fqbn"
-    echo "  [2] Arduino Uno / Uno-compatible: arduino:avr:uno"
-    echo "  [3] Arduino Nano ATmega328P, current bootloader: arduino:avr:nano"
-    echo "  [4] Arduino Nano ATmega328P, old bootloader / many CH340 clones: arduino:avr:nano:cpu=atmega328old"
-    echo "  [5] Custom FQBN"
+    {
+        echo ""
+        echo "What kind of Arduino is connected for $label?"
+        echo "  [1] Default for this device: $default_fqbn"
+        echo "  [2] Arduino Uno / Uno-compatible: arduino:avr:uno"
+        echo "  [3] Arduino Nano ATmega328P, current bootloader: arduino:avr:nano"
+        echo "  [4] Arduino Nano ATmega328P, old bootloader / many CH340 clones: arduino:avr:nano:cpu=atmega328old"
+        echo "  [5] Custom FQBN"
+    } >&2
     local choice=""
     choice="$(_prompt_input "Arduino board [1]: ")"
     case "$choice" in
@@ -746,10 +748,60 @@ _choose_arduino_board_fqbn() {
             printf "%s" "$custom"
             ;;
         *)
-            warn "Unknown board choice — using $default_fqbn."
+            warn "Unknown board choice — using $default_fqbn." >&2
             printf "%s" "$default_fqbn"
             ;;
     esac
+}
+
+_arduino_compile_failure_action() {
+    local label="$1"
+    while true; do
+        {
+            echo ""
+            echo "$label firmware did not compile."
+            echo "This is often the wrong Arduino type/bootloader selection, or a missing Arduino library."
+            echo "Choose what to do next:"
+            echo "  [1] Change Arduino type/bootloader and try again"
+            echo "  [2] Try compiling again with the same selection"
+            echo "  [3] Skip firmware upload for now"
+        } >&2
+        local choice=""
+        choice="$(_prompt_input "Next step [1]: ")"
+        choice="$(printf "%s" "$choice" | tr '[:upper:]' '[:lower:]')"
+        case "$choice" in
+            ""|1|board|b|change|c) printf "%s" "change_board"; return ;;
+            2|retry|r|same) printf "%s" "retry"; return ;;
+            3|skip|s|n|no) printf "%s" "skip"; return ;;
+            *) warn "Please choose 1, 2, or 3." >&2 ;;
+        esac
+    done
+}
+
+_arduino_upload_failure_action() {
+    local label="$1"
+    while true; do
+        {
+            echo ""
+            echo "$label firmware did not upload."
+            echo "This is often the wrong bootloader, a busy/wrong serial port, or a charge-only USB cable."
+            echo "Choose what to do next:"
+            echo "  [1] Change Arduino type/bootloader and try again"
+            echo "  [2] Change serial port and try again"
+            echo "  [3] Try uploading again with the same settings"
+            echo "  [4] Skip firmware upload for now"
+        } >&2
+        local choice=""
+        choice="$(_prompt_input "Next step [1]: ")"
+        choice="$(printf "%s" "$choice" | tr '[:upper:]' '[:lower:]')"
+        case "$choice" in
+            ""|1|board|b|bootloader|change|c) printf "%s" "change_board"; return ;;
+            2|port|p) printf "%s" "change_port"; return ;;
+            3|retry|r|same) printf "%s" "retry"; return ;;
+            4|skip|s|n|no) printf "%s" "skip"; return ;;
+            *) warn "Please choose 1, 2, 3, or 4." >&2 ;;
+        esac
+    done
 }
 
 _compile_and_upload_arduino() {
@@ -786,21 +838,22 @@ _compile_and_upload_arduino() {
             ok "$label firmware compiled."
         else
             warn "$label firmware compile failed."
-            echo "Options: [r]etry, change Arduino [b]oard, or [s]kip."
-            local compile_choice=""
-            compile_choice="$(_prompt_input "Compile failure choice [r/b/s]: ")"
-            compile_choice="$(printf "%s" "$compile_choice" | tr '[:upper:]' '[:lower:]')"
-            case "$compile_choice" in
-                b|board)
+            local compile_action=""
+            compile_action="$(_arduino_compile_failure_action "$label")"
+            case "$compile_action" in
+                change_board)
                     fqbn="$(_choose_arduino_board_fqbn "$label" "$default_fqbn")"
                     [[ -n "$fqbn" ]] || return
                     continue
                     ;;
-                s|skip)
+                retry)
+                    continue
+                    ;;
+                skip)
                     MANUAL_ATTENTION+=("Skipped $label firmware upload after compile failure")
                     return
                     ;;
-                * )
+                *)
                     continue
                     ;;
             esac
@@ -815,28 +868,28 @@ _compile_and_upload_arduino() {
             fi
 
             warn "$label firmware upload failed."
-            echo "Options: [r]etry upload, change Arduino [b]oard, change [p]ort, or [s]kip."
-            local upload_choice=""
-            upload_choice="$(_prompt_input "Upload failure choice [r/b/p/s]: ")"
-            upload_choice="$(printf "%s" "$upload_choice" | tr '[:upper:]' '[:lower:]')"
-            case "$upload_choice" in
-                b|board)
+            local upload_action=""
+            upload_action="$(_arduino_upload_failure_action "$label")"
+            case "$upload_action" in
+                change_board)
                     fqbn="$(_choose_arduino_board_fqbn "$label" "$default_fqbn")"
                     [[ -n "$fqbn" ]] || return
                     break
                     ;;
-                p|port)
+                change_port)
                     local new_port=""
                     new_port="$(_prompt_input "Upload port [$port]: ")"
                     if [[ -n "$new_port" ]]; then
                         port="$new_port"
                     fi
                     ;;
-                s|skip)
+                retry)
+                    ;;
+                skip)
                     MANUAL_ATTENTION+=("Skipped $label firmware upload after upload failure")
                     return
                     ;;
-                * )
+                *)
                     ;;
             esac
         done
