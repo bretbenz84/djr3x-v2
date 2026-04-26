@@ -1016,15 +1016,15 @@ def _build_emotional_checkin_prompt(
     if category in {"grief", "death"}:
         stance = (
             "This is a recent death or grief event. Lead with care. No teasing, "
-            "no silver lining, no attempt to cheer them up with a joke. Name the "
-            "loss gently using the remembered description; do not hide it behind "
-            "vague phrases like 'everything' or 'that thing'."
+            "no silver lining, no attempt to cheer them up with a joke. Do not "
+            "make it sound like they just told you for the first time."
         )
         reference_rule = (
-            f"You MUST explicitly reference the remembered loss in plain language "
-            f"using this description: \"{desc}\". Example shape: 'I remember you "
-            f"said your grandpa died...' Use their actual remembered relation/name "
-            f"if present."
+            f"This is shared context from memory: \"{desc}\". You may refer to it "
+            f"softly as 'your loss' or 'everything' because you both know the "
+            f"context. Do NOT explicitly remind them with robotic phrasing like "
+            f"'I remember you said your grandpa died yesterday.' Do NOT say "
+            f"'that sounds really tough' or similar first-time-listener phrases."
         )
     elif category in {"bad_day", "work_stress", "stress"}:
         stance = (
@@ -1055,7 +1055,9 @@ def _build_emotional_checkin_prompt(
         f"In ONE short in-character Rex line, "
         f"gently check in on how {first_name} is doing. You may sound like Rex, "
         f"but ROAST OFF: no insults, no appearance comments, no jokes at their "
-        f"expense. End with a low-pressure question."
+        f"expense. End with a low-pressure question. Good shapes for grief: "
+        f"'Hey {first_name}, how are you holding up with everything?' or "
+        f"'How are you doing with your loss?'"
     )
 
 
