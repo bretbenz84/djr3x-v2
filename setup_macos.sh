@@ -1015,7 +1015,7 @@ PY
     local extra=""
 
     echo "Servo channels:"
-    while IFS=$'\t' read -r name ch friendly current_min current_max neutral; do
+    while IFS=$'\t' read -r -u 9 name ch friendly current_min current_max neutral; do
         [[ -n "$name" ]] || continue
         while true; do
             raw="$(_prompt_input "  ch $ch $name ($friendly) current $current_min - $current_max us, neutral $neutral us. New min-max: ")"
@@ -1058,7 +1058,7 @@ PY
             updated_summary+=("  ch $ch $name ($friendly): $lo_us - $hi_us us ($(awk -v v="$lo_us" 'BEGIN { printf "%d", v * 4 }') - $(awk -v v="$hi_us" 'BEGIN { printf "%d", v * 4 }') q-us runtime)")
             break
         done
-    done < "$servo_rows_file"
+    done 9< "$servo_rows_file"
     rm -f "$servo_rows_file"
 
     if [[ "$updates_count" -eq 0 ]]; then
