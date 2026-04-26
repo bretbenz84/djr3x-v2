@@ -877,6 +877,20 @@ _arduino_upload_failure_action() {
     done
 }
 
+_format_servo_us() {
+    local value="$1"
+    awk -v v="$value" 'BEGIN {
+        if (v == int(v)) {
+            printf "%d", v
+        } else {
+            s = sprintf("%.2f", v)
+            sub(/0+$/, "", s)
+            sub(/[.]$/, "", s)
+            printf "%s", s
+        }
+    }'
+}
+
 _configure_servo_limits_interactive() {
     echo ""
     warn "Servo limits must be measured safely in the Pololu Maestro Control Center before powering DJ-R3X servos."
@@ -892,27 +906,13 @@ _configure_servo_limits_interactive() {
         return
     fi
 
-    "$VENV_PYTHON" - "$PROJECT_DIR/config.py" "$ENV_DST" <<'PY'
+    local servo_rows_file=""
+    servo_rows_file="$(mktemp)"
+    "$VENV_PYTHON" - "$PROJECT_DIR/config.py" "$ENV_DST" > "$servo_rows_file" <<'PY'
 import ast
 import re
 import sys
 from pathlib import Path
-
-try:
-    _tty = open("/dev/tty", "r+", encoding="utf-8", buffering=1)
-except OSError:
-    _tty = None
-
-
-def prompt_input(prompt: str) -> str:
-    if _tty is None:
-        return input(prompt)
-    _tty.write(prompt)
-    _tty.flush()
-    line = _tty.readline()
-    if line == "":
-        raise EOFError("No input available on /dev/tty")
-    return line.rstrip("\n")
 
 config_path = Path(sys.argv[1])
 env_path = Path(sys.argv[2])
@@ -923,7 +923,6 @@ if not match:
 
 channels = ast.literal_eval(match.group(1))
 channel_rows = sorted(channels.items(), key=lambda item: int(item[1]["ch"]))
-updates: dict[str, tuple[float, float]] = {}
 friendly_names = {
     "neck": "neck pan / left-right head turn",
     "headlift": "head lift / up-down head height",
@@ -952,25 +951,6 @@ def parse_env(path: Path) -> dict[str, str]:
         env[key] = value
     return env
 
-def write_env_values(path: Path, values: dict[str, str]) -> None:
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    used: set[str] = set()
-    rendered: list[str] = []
-    for line in lines:
-        if "=" not in line or line.lstrip().startswith("#"):
-            rendered.append(line)
-            continue
-        key = line.split("=", 1)[0].strip()
-        if key in values:
-            rendered.append(f"{key}={values[key]}")
-            used.add(key)
-        else:
-            rendered.append(line)
-    for key, value in values.items():
-        if key not in used:
-            rendered.append(f"{key}={value}")
-    path.write_text("\n".join(rendered) + "\n", encoding="utf-8")
-
 env_values = parse_env(env_path)
 
 def fmt_us(q_us: int) -> str:
@@ -993,70 +973,100 @@ def current_us(name: str, key: str, fallback_q_us: int) -> float:
             pass
     return fallback_q_us / 4
 
-def parse_limits(raw: str) -> tuple[float, float] | None:
-    nums = re.findall(r"\d+(?:\.\d+)?", raw)
-    if len(nums) < 2:
-        return None
-    lo_us = float(nums[0])
-    hi_us = float(nums[1])
-    if lo_us <= 0 or hi_us <= 0:
-        return None
-    if not (300 <= lo_us <= 3000 and 300 <= hi_us <= 3000):
-        return None
-    if lo_us > hi_us:
-        lo_us, hi_us = hi_us, lo_us
-    return lo_us, hi_us
-
-print("Servo channels:")
 for name, cfg in channel_rows:
     ch = int(cfg["ch"])
     friendly = friendly_names.get(name, name)
     current_min = current_us(name, "MIN", int(cfg["min"]))
     current_max = current_us(name, "MAX", int(cfg["max"]))
-    current = f"{fmt_raw_us(current_min)} - {fmt_raw_us(current_max)}"
     neutral = fmt_us(int(cfg["neutral"]))
-    prompt = (
-        f"  ch {ch} {name} ({friendly}) current {current} us, "
-        f"neutral {neutral} us. New min-max: "
-    )
-    while True:
-        raw = prompt_input(prompt).strip()
-        if not raw:
-            break
-        parsed = parse_limits(raw)
-        if parsed is None:
-            print("    Enter two Maestro microsecond values like 496 - 2496, within 300 - 3000, or press Enter to keep current.")
-            continue
-        lo_us, hi_us = parsed
-        neutral_us = int(cfg["neutral"]) / 4
-        if not (lo_us <= neutral_us <= hi_us):
-            print(
-                f"    Warning: current neutral {fmt_raw_us(neutral_us)} us is outside "
-                f"{fmt_raw_us(lo_us)} - {fmt_raw_us(hi_us)} us. Update neutral later if needed."
-            )
-        updates[name] = (lo_us, hi_us)
-        break
-
-if not updates:
-    print("No servo limit changes requested.")
-    raise SystemExit(0)
-
-new_values: dict[str, str] = {}
-for name, (lo_us, hi_us) in updates.items():
-    new_values[env_key(name, "MIN")] = fmt_raw_us(lo_us)
-    new_values[env_key(name, "MAX")] = fmt_raw_us(hi_us)
-
-write_env_values(env_path, new_values)
-print("Updated .env servo limit overrides:")
-for name, (lo_us, hi_us) in sorted(updates.items(), key=lambda item: int(channels[item[0]]["ch"])):
-    ch = int(channels[name]["ch"])
-    friendly = friendly_names.get(name, name)
     print(
-        f"  ch {ch} {name} ({friendly}): "
-        f"{fmt_raw_us(lo_us)} - {fmt_raw_us(hi_us)} us "
-        f"({round(lo_us * 4)} - {round(hi_us * 4)} q-us runtime)"
+        "\t".join(
+            [
+                name,
+                str(ch),
+                friendly,
+                fmt_raw_us(current_min),
+                fmt_raw_us(current_max),
+                neutral,
+            ]
+        )
     )
 PY
+
+    if [[ ! -s "$servo_rows_file" ]]; then
+        rm -f "$servo_rows_file"
+        warn "Could not read SERVO_CHANNELS from config.py; skipping servo limit prompt."
+        MANUAL_ATTENTION+=("Review .env servo min/max values manually before powering servos")
+        return
+    fi
+
+    local updates_count=0
+    local updated_summary=()
+    local name=""
+    local ch=""
+    local friendly=""
+    local current_min=""
+    local current_max=""
+    local neutral=""
+    local raw=""
+    local normalized=""
+    local lo_us=""
+    local hi_us=""
+    local extra=""
+
+    echo "Servo channels:"
+    while IFS=$'\t' read -r name ch friendly current_min current_max neutral; do
+        [[ -n "$name" ]] || continue
+        while true; do
+            raw="$(_prompt_input "  ch $ch $name ($friendly) current $current_min - $current_max us, neutral $neutral us. New min-max: ")"
+            raw="$(printf "%s" "$raw" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+            if [[ -z "$raw" ]]; then
+                break
+            fi
+
+            normalized="$(printf "%s" "$raw" | sed -E 's/[^0-9.]+/ /g')"
+            read -r lo_us hi_us extra <<< "$normalized"
+            if [[ -z "$lo_us" || -z "$hi_us" ]]; then
+                echo "    Enter two Maestro microsecond values like 496 - 2496, within 300 - 3000, or press Enter to keep current."
+                continue
+            fi
+            if ! awk -v lo="$lo_us" -v hi="$hi_us" 'BEGIN {
+                numeric = (lo ~ /^[0-9]+([.][0-9]+)?$/ && hi ~ /^[0-9]+([.][0-9]+)?$/)
+                inrange = (lo + 0 >= 300 && lo + 0 <= 3000 && hi + 0 >= 300 && hi + 0 <= 3000)
+                exit !(numeric && inrange)
+            }'; then
+                echo "    Enter two Maestro microsecond values like 496 - 2496, within 300 - 3000, or press Enter to keep current."
+                continue
+            fi
+            if awk -v lo="$lo_us" -v hi="$hi_us" 'BEGIN { exit !(lo + 0 > hi + 0) }'; then
+                local tmp="$lo_us"
+                lo_us="$hi_us"
+                hi_us="$tmp"
+            fi
+
+            lo_us="$(_format_servo_us "$lo_us")"
+            hi_us="$(_format_servo_us "$hi_us")"
+            if ! awk -v lo="$lo_us" -v n="$neutral" -v hi="$hi_us" 'BEGIN { exit !(lo + 0 <= n + 0 && n + 0 <= hi + 0) }'; then
+                echo "    Warning: current neutral $neutral us is outside $lo_us - $hi_us us. Update neutral later if needed."
+            fi
+
+            local upper_name=""
+            upper_name="$(printf "%s" "$name" | tr '[:lower:]' '[:upper:]')"
+            _set_env_value "SERVO_${upper_name}_MIN_US" "$lo_us"
+            _set_env_value "SERVO_${upper_name}_MAX_US" "$hi_us"
+            updates_count=$((updates_count + 1))
+            updated_summary+=("  ch $ch $name ($friendly): $lo_us - $hi_us us ($(awk -v v="$lo_us" 'BEGIN { printf "%d", v * 4 }') - $(awk -v v="$hi_us" 'BEGIN { printf "%d", v * 4 }') q-us runtime)")
+            break
+        done
+    done < "$servo_rows_file"
+    rm -f "$servo_rows_file"
+
+    if [[ "$updates_count" -eq 0 ]]; then
+        echo "No servo limit changes requested."
+    else
+        echo "Updated .env servo limit overrides:"
+        printf "%s\n" "${updated_summary[@]}"
+    fi
     INSTALLED_ITEMS+=(".env servo min/max limits reviewed")
 }
 
