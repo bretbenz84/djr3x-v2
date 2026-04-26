@@ -745,6 +745,9 @@ def extract_relationship_introduction(
         '"brother", "son", "coworker", "roommate", "boss", "stranger"), or null '
         "if no relationship was mentioned.\n\n"
         "Rules:\n"
+        "- If the entire reply is a plausible bare name, treat it as the "
+        "newcomer's name even if it is also a common word or emotion "
+        "(examples: Joy, Hope, Rose, May).\n"
         "- If the speaker declined, deflected, or said they don't know the person, "
         "return null for both.\n"
         "- Normalize relationship to a single short word (e.g. \"best friend\" → "

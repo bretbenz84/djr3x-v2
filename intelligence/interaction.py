@@ -511,6 +511,29 @@ def _extract_introduced_name(text: str, allow_bare_name: bool = False) -> Option
     return None
 
 
+def _extract_offscreen_identify_reply(
+    text: str,
+    speaker_name: str,
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    Parse the engaged person's answer to "who just chimed in?"
+
+    In this slot a bare one-word reply is usually a name. Trust that context
+    before letting words like "Joy" drift into ordinary sentiment/content.
+    """
+    try:
+        parsed = llm.extract_relationship_introduction(text, speaker_name)
+    except Exception as exc:
+        _log.debug("offscreen identify extract error: %s", exc)
+        parsed = {"name": None, "relationship": None}
+
+    intro_name = parsed.get("name")
+    rel_label = parsed.get("relationship")
+    if not intro_name:
+        intro_name = _extract_introduced_name(text, allow_bare_name=True)
+    return intro_name, rel_label
+
+
 def _has_unknown_visible_person() -> bool:
     """True if WorldState currently includes at least one person without a face match."""
     try:
@@ -2629,18 +2652,14 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 _pending_offscreen_identify = None
             elif person_id is not None and person_id == prior_engaged_id:
                 # The engaged person is answering Rex's "who's that?" question.
-                # Use the LLM to extract BOTH a name AND a relationship label.
-                try:
-                    parsed = llm.extract_relationship_introduction(
-                        text, person_name or "friend"
-                    )
-                except Exception as exc:
-                    _log.debug("offscreen identify extract error: %s", exc)
-                    parsed = {"name": None, "relationship": None}
-                intro_name = parsed.get("name")
-                rel_label = parsed.get("relationship")
+                # This context makes a bare reply like "Joy" a name, not a mood.
+                intro_name, rel_label = _extract_offscreen_identify_reply(
+                    text,
+                    person_name or "friend",
+                )
 
                 if intro_name:
+                    new_pid = None
                     try:
                         new_pid = people_memory.enroll_person(intro_name)
                         if new_pid is not None:
@@ -2650,6 +2669,26 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                             first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
                             if first_inc > 0:
                                 people_memory.update_familiarity(new_pid, first_inc)
+
+                            if _has_unknown_visible_person():
+                                try:
+                                    from vision import camera as _cam_mod
+                                    from vision import face as _face_mod
+                                    frame = _cam_mod.capture_still()
+                                    if frame is not None:
+                                        _face_mod.enroll_unknown_face(new_pid, frame)
+                                        threading.Thread(
+                                            target=_face_mod.update_appearance,
+                                            args=(new_pid, frame.copy()),
+                                            daemon=True,
+                                            name=f"appearance-enroll-{new_pid}",
+                                        ).start()
+                                except Exception as exc:
+                                    _log.warning(
+                                        "off-camera visible face enroll failed: %s",
+                                        exc,
+                                    )
+                            _bind_world_state_identity(new_pid, intro_name)
 
                             if rel_label and prior_engaged_id:
                                 try:
@@ -2672,6 +2711,29 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                         _log.error("off-camera identify enrollment failed: %s", exc)
                     # Consume whether or not we succeeded — don't retry on next turn.
                     _pending_offscreen_identify = None
+                    if new_pid is not None:
+                        ack_text = (
+                            f"Got it: {intro_name}. Welcome to the frequency."
+                        )
+                        try:
+                            introducer_name = (person_name or "the engaged person").split()[0]
+                            ack_text = llm.get_response(
+                                f"You just learned the nearby/off-camera person's "
+                                f"name is {intro_name}. {introducer_name} introduced "
+                                f"or named them. In ONE very short in-character Rex line, "
+                                f"acknowledge {intro_name} by name and welcome "
+                                f"them. Address {intro_name}, not {introducer_name}. "
+                                f"Do not ask another question."
+                            ) or ack_text
+                        except Exception as exc:
+                            _log.debug("off-camera identify ack generation failed: %s", exc)
+                        _speak_blocking(ack_text)
+                        conv_memory.add_to_transcript("Rex", ack_text)
+                        conv_log.log_rex(ack_text)
+                        _session_exchange_count += 1
+                        _register_rex_utterance(ack_text)
+                        return
+                    return
                 else:
                     # No name in this reply. Drop the pending state so Rex doesn't
                     # badger; if the off-camera voice speaks again we'll re-ask.
