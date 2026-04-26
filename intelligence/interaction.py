@@ -3327,6 +3327,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
 
     answered_question: Optional[dict] = None
+    assistant_asked_question = False
 
     # Randomised pre-response pause — prevents Rex from feeling instant/robotic
     delay_ms = random.randint(config.REACTION_DELAY_MS_MIN, config.REACTION_DELAY_MS_MAX)
@@ -4610,18 +4611,15 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     if command_key not in game_escape_commands:
                         response_text = games_mod.handle_input(text, person_id)
                         completed = _speak_blocking(response_text)
-                        after_audio = games_mod.consume_pending_audio_after_response()
-                        if completed and after_audio and not _interrupted.is_set():
-                            done = speech_queue.enqueue_audio_file(
-                                after_audio,
-                                priority=1,
-                                tag="game:after_audio",
-                            )
-                            while not done.wait(timeout=0.05):
-                                if _interrupted.is_set():
-                                    speech_queue.clear_below_priority(2)
-                                    break
-                        games_mod.on_response_spoken()
+                        if completed:
+                            games_mod.on_response_spoken()
+                            after_audio = games_mod.consume_pending_audio_after_response()
+                            if after_audio and not _interrupted.is_set():
+                                speech_queue.enqueue_audio_file(
+                                    after_audio,
+                                    priority=1,
+                                    tag="game:after_audio",
+                                )
                         used_agenda_llm = True
                         match = None
             except Exception as exc:
@@ -4759,7 +4757,6 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     )
                     used_agenda_llm = True
 
-        assistant_asked_question = False
         if response_text:
             conv_memory.add_to_transcript("Rex", response_text)
             conv_log.log_rex(response_text)
@@ -4843,7 +4840,16 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         # Otherwise an immediate human reply can land in the rolling buffer and
         # then get flushed when the API-backed fact/sentiment pass finishes.
         if sequence_started:
-            echo_cancel.end_sequence(flush=False)
+            question_tail = None
+            if assistant_asked_question:
+                question_tail = float(
+                    getattr(
+                        config,
+                        "POST_QUESTION_PLAYBACK_SUPPRESSION_SECS",
+                        getattr(config, "POST_PLAYBACK_SUPPRESSION_SECS", 0.5),
+                    )
+                )
+            echo_cancel.end_sequence(flush=False, tail_secs=question_tail)
             sequence_started = False
 
         _post_response(
@@ -5014,6 +5020,12 @@ def _loop() -> None:
         speech_start = time.monotonic()
         _last_speech_at = speech_start
         _begin_user_turn()
+        try:
+            from features import games as games_mod
+            if games_mod.is_active():
+                speech_queue.drop_by_tag("game:after_audio")
+        except Exception:
+            pass
 
         # Mid-speech interruption: stop TTS, acknowledge, flush the mic buffer of
         # Rex's voice tail, then WAIT for a fresh VAD rising edge before

@@ -441,6 +441,10 @@ AEC_SUPPRESSION_FACTOR = 0.05
 # voice tail that has already bled into the mic buffer from passing the VAD.
 POST_PLAYBACK_SUPPRESSION_SECS = 0.5
 
+# Direct questions need a faster handoff so quick answers like player names
+# are not swallowed by the general-purpose echo tail.
+POST_QUESTION_PLAYBACK_SUPPRESSION_SECS = 0.05
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AUDITORY SCENE ANALYSIS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1178,12 +1182,12 @@ INTEROCEPTION_UPDATE_INTERVAL_SECS = 5.0
 # Applies to both fuzz.ratio and fuzz.partial_ratio comparisons.
 TRIVIA_FUZZY_THRESHOLD = 0.75
 
-# Jeopardy verbal game tuning. Answer timeout is intentionally generous because
-# users may be thinking, laughing, or taking turns in a room.
+# Jeopardy verbal game tuning. The answer timeout is timed to the thinking
+# theme bed so "time's up" lands as the clip ends instead of after dead air.
 JEOPARDY_FUZZY_THRESHOLD = 0.78
 JEOPARDY_SELECTION_FUZZY_THRESHOLD = 0.58
 JEOPARDY_MAX_PLAYERS = 3
-JEOPARDY_ANSWER_TIMEOUT_SECS = 14.0
+JEOPARDY_ANSWER_TIMEOUT_SECS = 8.0
 JEOPARDY_AUDIO_OUTPUT_SAMPLE_RATE = 44100
 JEOPARDY_AUDIO_MUSIC_GAIN = 0.35
 JEOPARDY_AUDIO_STINGER_GAIN = 0.75

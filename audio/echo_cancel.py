@@ -13,6 +13,7 @@ wired up.
 import logging
 import threading
 import time
+from typing import Optional
 
 import numpy as np
 
@@ -45,19 +46,24 @@ def start_sequence() -> None:
     logger.info("[aec] sequence started — suppression held across segments")
 
 
-def end_sequence(flush: bool = True) -> None:
+def end_sequence(flush: bool = True, tail_secs: Optional[float] = None) -> None:
     """End the playback sequence and apply normal post-playback tail suppression."""
     global _playing, _suppress_until, _sequence_active
+    tail = (
+        config.POST_PLAYBACK_SUPPRESSION_SECS
+        if tail_secs is None
+        else max(0.0, float(tail_secs))
+    )
     with _lock:
         _sequence_active = False
         _playing = False
-        _suppress_until = time.monotonic() + config.POST_PLAYBACK_SUPPRESSION_SECS
+        _suppress_until = time.monotonic() + tail
         if flush:
             from audio import stream as _stream
             _stream.flush()
     logger.info(
         "[aec] sequence ended — suppression stopped, %.1fs tail active",
-        config.POST_PLAYBACK_SUPPRESSION_SECS,
+        tail,
     )
 
 

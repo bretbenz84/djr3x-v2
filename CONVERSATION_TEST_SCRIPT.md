@@ -643,6 +643,7 @@ When Rex asks who is playing, try one of:
 Expected:
 
 - Rex plays the intro stinger, asks for players, then loads a board.
+- Immediate player-name replies after Rex asks who is playing should be heard without waiting for echo suppression logs to clear.
 - Rex names the players and categories, without reading every dollar value on the board.
 - The board stinger plays when the board is ready.
 - Category/value selections like `Birds for 200` produce a clue.
