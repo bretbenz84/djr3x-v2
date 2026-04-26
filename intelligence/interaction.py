@@ -2858,6 +2858,8 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                                 description=ev.get("description", ""),
                                 valence=ev.get("valence", -0.5),
                                 person_invited_topic=bool(result.get("invitation")),
+                                loss_subject=ev.get("loss_subject"),
+                                loss_subject_kind=ev.get("loss_subject_kind"),
                             )
                             if row_id:
                                 _log.info(

@@ -40,7 +40,21 @@ _DEFAULT_DECAY_DAYS = {
     "engagement": 365,
     "wedding":    365,
     "graduation": 365,
+    "bad_day":    1,
+    "work_stress": 1,
+    "stress":     1,
     "default":    60,
+}
+
+_HIGH_INTENSITY_LOSS_SUBJECTS = {
+    "mom", "mother", "dad", "father", "parent",
+    "son", "daughter", "child", "kid", "baby",
+    "wife", "husband", "spouse", "partner",
+}
+
+_FAMILY_LOSS_SUBJECTS = {
+    "grandma", "grandmother", "grandpa", "grandfather", "grandparent",
+    "brother", "sister", "sibling",
 }
 
 
@@ -50,6 +64,44 @@ def decay_days_for(category: str) -> int:
     return int(_DEFAULT_DECAY_DAYS.get(cat, _DEFAULT_DECAY_DAYS["default"]))
 
 
+def decay_days_for_event(
+    category: str,
+    *,
+    loss_subject: Optional[str] = None,
+    loss_subject_kind: Optional[str] = None,
+    valence: Optional[float] = None,
+    description: str = "",
+) -> int:
+    """Return a surfacing window calibrated by event severity.
+
+    Rows never delete; this only controls how long Rex proactively checks in.
+    A parent/child/partner loss should stay tender much longer than generic
+    bad-day venting, which should cool down after roughly 24 hours.
+    """
+    cat = (category or "").strip().lower()
+    subject = (loss_subject or "").strip().lower()
+    kind = (loss_subject_kind or "").strip().lower()
+    desc = (description or "").strip().lower()
+
+    if cat in {"bad_day", "work_stress", "stress"}:
+        return 1
+
+    if cat in {"grief", "death"}:
+        if kind == "pet" or any(word in subject or word in desc for word in ("dog", "cat", "pet")):
+            return 120
+        if subject in _HIGH_INTENSITY_LOSS_SUBJECTS:
+            return 365
+        if subject in _FAMILY_LOSS_SUBJECTS:
+            return 180
+        return decay_days_for(cat)
+
+    # Strongly negative life disruptions stay active longer than minor stress.
+    if valence is not None and float(valence) <= -0.8:
+        return max(decay_days_for(cat), 90)
+
+    return decay_days_for(cat)
+
+
 def add_event(
     person_id: int,
     category: str,
@@ -57,6 +109,8 @@ def add_event(
     valence: float = -0.5,
     sensitivity_decay_days: Optional[int] = None,
     person_invited_topic: bool = True,
+    loss_subject: Optional[str] = None,
+    loss_subject_kind: Optional[str] = None,
 ) -> Optional[int]:
     """Insert a new emotional event row. Returns lastrowid or None on failure.
 
@@ -81,7 +135,13 @@ def add_event(
     decay = (
         int(sensitivity_decay_days)
         if sensitivity_decay_days is not None
-        else decay_days_for(cat)
+        else decay_days_for_event(
+            cat,
+            loss_subject=loss_subject,
+            loss_subject_kind=loss_subject_kind,
+            valence=valence,
+            description=desc,
+        )
     )
 
     return db.execute(
@@ -124,6 +184,33 @@ def get_unacknowledged_since(person_id: int, since_iso: Optional[str]) -> list[d
         if since_iso and last_ack < since_iso:
             out.append(ev)
     return out
+
+
+def get_due_checkins(
+    person_id: int,
+    limit: int = 3,
+    min_ack_gap_days: int = 1,
+) -> list[dict]:
+    """Return active negative events due for a soft check-in.
+
+    Acknowledgment is persisted, but check-ins can repeat gently across days
+    while the event remains active. This means a recent death can be surfaced
+    on a later boot, while a bad day at work naturally expires after ~24h.
+    """
+    rows = db.fetchall(
+        "SELECT id, category, valence, description, mentioned_at, "
+        "       last_acknowledged_at, sensitivity_decay_days, "
+        "       person_invited_topic "
+        "FROM person_emotional_events "
+        "WHERE person_id = ? "
+        "AND valence < 0 "
+        "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
+        "AND (last_acknowledged_at IS NULL "
+        "     OR datetime(last_acknowledged_at, '+' || ? || ' days') <= datetime('now')) "
+        "ORDER BY mentioned_at DESC LIMIT ?",
+        (int(person_id), int(min_ack_gap_days), int(limit)),
+    )
+    return [dict(r) for r in rows]
 
 
 def mark_acknowledged(event_id: int) -> None:

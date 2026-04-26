@@ -85,13 +85,14 @@ _CLASSIFY_PROMPT = (
     '  "confidence": 0.0–1.0 — how confident you are overall\n'
     '  "event": null OR an object with keys category, valence, description, '
     "loss_subject, loss_subject_kind, loss_subject_name.\n"
-    "    Set event ONLY when the utterance reveals a SPECIFIC sensitive life "
-    "event the robot should remember across sessions (e.g. someone died, "
-    "lost a job, breakup, illness, big milestone like a wedding/promotion/"
-    "new baby). Set null for vague bad-day venting.\n"
+    "    Set event when the utterance reveals a SPECIFIC emotional life event "
+    "the robot should remember across sessions or check in on soon (e.g. "
+    "someone died, lost a job, breakup, illness, big milestone like a wedding/"
+    "promotion/new baby, or a concrete mild event like 'I had a bad day at "
+    "work'). Set null for vague mood with no event ('I'm tired', 'meh').\n"
     "    category: short lowercase tag — grief, death, breakup, divorce, "
     "illness, health, job_loss, layoff, fired, move, promotion, new_baby, "
-    "engagement, wedding, graduation, other\n"
+    "engagement, wedding, graduation, bad_day, work_stress, stress, other\n"
     "    valence: -1.0 to +1.0 (negative = hard, positive = milestone)\n"
     "    description: ONE concise sentence in the third person, e.g. "
     '"father passed away last week", "got laid off from tech job"\n'

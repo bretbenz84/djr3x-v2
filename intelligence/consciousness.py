@@ -971,6 +971,48 @@ def _build_anticipation_prompt(
     )
 
 
+def _pick_due_emotional_checkin(person_db_id: Optional[int]) -> Optional[dict]:
+    """Return the most recent active negative event due for a startup check-in."""
+    if not isinstance(person_db_id, int):
+        return None
+    try:
+        from memory import emotional_events as emo_events
+        due = emo_events.get_due_checkins(person_db_id, limit=1)
+        return due[0] if due else None
+    except Exception as exc:
+        _log.debug("emotional check-in lookup error: %s", exc)
+        return None
+
+
+def _build_emotional_checkin_prompt(first_name: str, event: dict) -> str:
+    category = (event.get("category") or "event").strip().lower()
+    desc = (event.get("description") or "").strip()
+    valence = float(event.get("valence", -0.5) or -0.5)
+    if category in {"grief", "death"}:
+        stance = (
+            "This is a recent death or grief event. Lead with care. No teasing, "
+            "no silver lining, no attempt to cheer them up with a joke."
+        )
+    elif category in {"bad_day", "work_stress", "stress"}:
+        stance = (
+            "This was a recent rough day or stress event. Keep it light but kind; "
+            "it should not feel dramatic."
+        )
+    elif valence <= -0.7:
+        stance = "This is a serious recent hard thing. Be gentle and grounded."
+    else:
+        stance = "This is a recent difficult thing. Be warm and low-pressure."
+    return (
+        f"You just started up and immediately see '{first_name}'. FIRST PRIORITY: "
+        f"before birthdays, milestones, upcoming plans, long absences, or 'back so soon' "
+        f"banter, you remember this sensitive event: category={category}, "
+        f"description=\"{desc}\". {stance} In ONE short in-character Rex line, "
+        f"gently check in on how {first_name} is doing. You may sound like Rex, "
+        f"but ROAST OFF: no insults, no appearance comments, no jokes at their "
+        f"expense. End with a low-pressure question."
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 7 — Disengagement detection
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1834,8 +1876,38 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     label = f"startup greeting for {person_name}"
                     emotion = "excited"
 
+                    # Priority 0 — recent sensitive emotional event.
+                    # This intentionally outranks temporal banter like
+                    # "back so soon"; care comes before the bit.
+                    emotional = None
+                    try:
+                        crowd_count = int((snapshot.get("crowd") or {}).get("count", 1) or 1)
+                    except Exception:
+                        crowd_count = 1
+                    suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
+                    if not (suppress_in_crowd and crowd_count > 1):
+                        emotional = _pick_due_emotional_checkin(person_db_id)
+                    if emotional is not None:
+                        prompt = _build_emotional_checkin_prompt(first_name, emotional)
+                        label = f"startup emotional check-in for {person_name}"
+                        emotion = "sad" if float(emotional.get("valence", -0.5) or -0.5) < 0 else "happy"
+                        _emotional_checkin_fired.add(person_db_id)
+                        try:
+                            from memory import emotional_events as emo_events
+                            emo_events.mark_acknowledged(int(emotional["id"]))
+                        except Exception:
+                            pass
+                        _log.info(
+                            "consciousness: startup emotional check-in for %s "
+                            "(category=%s, event_id=%s)",
+                            person_name, emotional.get("category"), emotional.get("id"),
+                        )
+
                     # Priority 1 — birthday within reminder window
-                    bday_days = _pick_birthday_window(person_db_id)
+                    if prompt is None:
+                        bday_days = _pick_birthday_window(person_db_id)
+                    else:
+                        bday_days = None
                     if bday_days is not None:
                         prompt = _build_birthday_prompt(first_name, bday_days)
                         label = f"startup birthday (T-{bday_days}) for {person_name}"
@@ -2568,12 +2640,12 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
         suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
         if not (suppress_in_crowd and crowd_count > 1):
             try:
-                active = emo_events.get_active_events(engaged_id, limit=3)
+                active = emo_events.get_due_checkins(engaged_id, limit=3)
             except Exception:
                 active = []
-            unack = [ev for ev in active if not ev.get("last_acknowledged_at")]
-            if unack:
-                ev = unack[0]
+            due_checkins = active
+            if due_checkins:
+                ev = due_checkins[0]
                 desc = (ev.get("description") or "").strip()
                 cat = (ev.get("category") or "").strip().lower()
                 valence = float(ev.get("valence", -0.5) or -0.5)
@@ -2593,7 +2665,7 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
                 emotion = "sad" if valence < 0 else "happy"
                 _emotional_checkin_fired.add(engaged_id)
                 try:
-                    emo_events.mark_all_acknowledged_for_person(engaged_id)
+                    emo_events.mark_acknowledged(int(ev["id"]))
                 except Exception:
                     pass
                 _log.info(
