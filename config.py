@@ -693,12 +693,30 @@ VISUAL_CURIOSITY_AFTER_EMPATHY_COOLDOWN_SECS = 90.0
 # How often GPT-4o runs a full environment/scene analysis (seconds)
 ENVIRONMENT_SCAN_INTERVAL_SECS = 180
 
+# Animal detection runs alongside periodic scene scans. It is intentionally not
+# frame-by-frame; this is for social arrivals like "a dog wandered in," not
+# realtime pet tracking.
+ANIMAL_DETECTION_ENABLED = True
+ANIMAL_ARRIVAL_COOLDOWN_SECS = 300
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PRESENCE TRACKING
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Minimum seconds Rex must be absent from tracking before a return reaction fires.
 PRESENCE_RETURN_MIN_ABSENT_SECS = 30
+
+# First-sight greetings wait for a person to remain visible briefly. This avoids
+# greeting someone because a face detector recovered from a hand/arm occlusion.
+PRESENCE_FIRST_SIGHT_CONFIRM_SECS = 3.0
+
+# During process startup, do not use "back already" / recent-return banter. The
+# camera may still be settling or recognition may appear after a brief occlusion.
+PRESENCE_STARTUP_RECENT_RETURN_GRACE_SECS = 45.0
+
+# If a known face briefly becomes an unknown slot in the same position/index,
+# keep treating it as the same known person for this long.
+PRESENCE_IDENTITY_BRIDGE_SECS = 12.0
 
 # Cooldown between departure/return reactions for the same person (avoids jitter spam).
 PRESENCE_DEPARTURE_COOLDOWN_SECS = 30

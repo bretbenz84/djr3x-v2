@@ -531,6 +531,8 @@ def _scan_loop(interval_secs: float) -> None:
             frame = camera.get_frame()
             if frame is not None:
                 analyze_environment(frame)
+                if getattr(config, "ANIMAL_DETECTION_ENABLED", True):
+                    detect_animals(frame)
             else:
                 _log.debug("_scan_loop: no frame available — skipping scan")
 

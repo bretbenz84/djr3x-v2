@@ -192,6 +192,19 @@ _last_presence_reaction_at: dict = {}
 # missing for PRESENCE_DEPARTURE_CONFIRM_SECS before a departure is staged.
 _first_missing_at: dict = {}
 
+# Confirmed absent keys have passed the absence hysteresis. Return reactions are
+# only eligible for these keys, which prevents recognition flicker from becoming
+# "oh, you're back" banter.
+_confirmed_absent_at: dict = {}
+
+# First-sight greeting candidates must remain visible briefly before Rex speaks.
+_first_sight_seen_at: dict = {}
+
+# Animal arrival dedupe uses species/position signatures instead of unstable
+# animal_1/animal_2 IDs returned by the vision prompt.
+_animal_seen_signatures: set[str] = set()
+_animal_reacted_at: dict[str, float] = {}
+
 # Engagement tracking: the person_db_id Rex is currently talking with, if any.
 # Presence reactions for this person are suppressed while the engagement is open.
 _engaged_lock = threading.Lock()
@@ -1255,16 +1268,42 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                 "curious",
             ))
 
-        # Animal detected
-        prev_animal_ids = {a.get("id") for a in _last_snapshot.get("animals", [])}
+        # Animal detected. Animal IDs are positional and can be unstable across
+        # scans, so dedupe by species + rough position with a cooldown.
+        animal_cooldown = float(getattr(config, "ANIMAL_ARRIVAL_COOLDOWN_SECS", 300.0))
+        prev_animal_signatures = {
+            f"{(a.get('species') or 'creature').strip().lower()}:"
+            f"{(a.get('position') or 'unknown').strip().lower()}"
+            for a in _last_snapshot.get("animals", [])
+            if a.get("species")
+        }
         for animal in snapshot.get("animals", []):
-            if animal.get("id") not in prev_animal_ids:
-                species = animal.get("species", "creature")
-                triggers.append((
-                    f"You just spotted a {species} in your immediate environment. "
-                    "One short in-character reaction — genuinely surprised, unmistakably Rex.",
-                    "excited",
-                ))
+            species = (animal.get("species") or "creature").strip().lower()
+            position = (animal.get("position") or "unknown").strip().lower()
+            if not species:
+                continue
+            signature = f"{species}:{position}"
+            last_reacted = _animal_reacted_at.get(signature, 0.0)
+            if signature in prev_animal_signatures:
+                _animal_seen_signatures.add(signature)
+                continue
+            if (time.monotonic() - last_reacted) < animal_cooldown:
+                continue
+            _animal_seen_signatures.add(signature)
+            _animal_reacted_at[signature] = time.monotonic()
+            if species == "dog":
+                prompt = (
+                    f"You just spotted a dog in your immediate environment at {position}. "
+                    "One short in-character Rex reaction — delighted but dry. Do not ask "
+                    "who the dog is unless a human has introduced it. One line only."
+                )
+            else:
+                prompt = (
+                    f"You just spotted a {species} in your immediate environment at {position}. "
+                    "One short in-character reaction — genuinely surprised, unmistakably Rex. "
+                    "One line only."
+                )
+            triggers.append((prompt, "excited"))
 
         # Crowd size label changed significantly
         prev_label = _last_snapshot.get("crowd", {}).get("count_label")
@@ -2084,6 +2123,94 @@ def _tracking_key(person: dict):
     return db_id if db_id is not None else person.get("id", "unknown")
 
 
+def _person_by_slot(people: list[dict], slot_id: Optional[str]) -> Optional[dict]:
+    if not slot_id:
+        return None
+    for person in people:
+        if person.get("id") == slot_id:
+            return person
+    return None
+
+
+def _bridge_unknown_presence(person: dict, now: float) -> Optional[tuple[int, Optional[str]]]:
+    """
+    If a known face temporarily becomes an unknown slot, keep presence tracking
+    keyed to the known person. This covers hand/arm occlusions and recognition
+    flicker without enrolling or greeting a phantom newcomer.
+    """
+    if person.get("person_db_id") is not None:
+        return None
+
+    bridge_secs = float(getattr(config, "PRESENCE_IDENTITY_BRIDGE_SECS", 12.0))
+    if bridge_secs <= 0:
+        return None
+
+    slot_id = person.get("id")
+    previous = _person_by_slot(_last_snapshot.get("people", []) or [], slot_id)
+    candidates: list[tuple[int, Optional[str], float]] = []
+
+    if previous and isinstance(previous.get("person_db_id"), int):
+        pid = int(previous["person_db_id"])
+        last_seen = _last_seen.get(pid, now)
+        candidates.append((pid, previous.get("face_id"), now - last_seen))
+
+    # If there is exactly one visible unknown and one recently visible known
+    # person, bridge that too. This catches the people=[] → unknown-slot → known
+    # sequence after a brief face cover.
+    visible_known = [key for key in _visible_people if isinstance(key, int)]
+    current_people = _last_snapshot.get("people", []) or []
+    if len(visible_known) == 1 and not current_people:
+        pid = visible_known[0]
+        last_seen = _last_seen.get(pid, now)
+        candidates.append((pid, None, now - last_seen))
+    else:
+        recent_known = [
+            (key, now - seen_at)
+            for key, seen_at in _last_seen.items()
+            if isinstance(key, int) and (now - seen_at) <= bridge_secs
+        ]
+        if len(recent_known) == 1:
+            pid, missing_for = recent_known[0]
+            candidates.append((pid, None, missing_for))
+
+    for pid, name, missing_for in candidates:
+        if missing_for <= bridge_secs:
+            if not name:
+                try:
+                    from memory import people as _people_mod
+                    row = _people_mod.get_person(pid)
+                    name = row.get("name") if row else None
+                except Exception:
+                    name = None
+            _log.debug(
+                "consciousness: bridged unknown slot %s to known person %s after %.1fs",
+                slot_id,
+                pid,
+                missing_for,
+            )
+            return pid, name
+    return None
+
+
+def _presence_tracking_map(snapshot: dict, now: float) -> dict:
+    """Build current tracking_key → (name, db_id), bridging brief identity flicker."""
+    current_tracked: dict = {}
+    people = snapshot.get("people", []) or []
+    visible_unknowns = [p for p in people if p.get("person_db_id") is None]
+
+    for person in people:
+        bridged = None
+        if len(visible_unknowns) == 1:
+            bridged = _bridge_unknown_presence(person, now)
+        if bridged:
+            key = bridged[0]
+            current_tracked[key] = bridged
+            continue
+        key = _tracking_key(person)
+        current_tracked[key] = (person.get("face_id"), person.get("person_db_id"))
+    return current_tracked
+
+
 def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> None:
     """
     When Rex is engaged with a known person and an UNKNOWN face has been
@@ -2215,11 +2342,9 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
     return_min_absent = getattr(config, "PRESENCE_RETURN_MIN_ABSENT_SECS", 30)
     unknown_addresses = getattr(config, "UNKNOWN_PERSON_ADDRESSES", ["hey you"])
 
-    # Build current tracked set: tracking_key → (name, db_id).
-    current_tracked: dict = {}
-    for person in snapshot.get("people", []):
-        key = _tracking_key(person)
-        current_tracked[key] = (person.get("face_id"), person.get("person_db_id"))
+    # Build current tracked set: tracking_key → (name, db_id), with a short
+    # bridge for known faces that momentarily recognize as unknown.
+    current_tracked = _presence_tracking_map(snapshot, now)
 
     current_keys = set(current_tracked.keys())
 
@@ -2264,6 +2389,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
             except Exception:
                 pass
         _pending_departure_keys[key] = (first_missing, person_name, person_db_id)
+        _confirmed_absent_at[key] = first_missing
         _log.debug(
             "consciousness: staged departure for key=%s name=%r after %.1fs absent",
             key, person_name, now - first_missing,
@@ -2333,12 +2459,18 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
             )
 
     # ── Returned: absent last tick, visible now ────────────────────────────────
+    first_sight_pending_keys: set = set()
     for key in current_keys - _visible_people:
         person_name, person_db_id = current_tracked[key]
 
         # First time ever seen this session.
         if key not in _last_seen:
             if isinstance(key, int) and person_name and key not in _greeted_this_session:
+                first_visible = _first_sight_seen_at.setdefault(key, now)
+                confirm_visible = float(getattr(config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 3.0))
+                if (now - first_visible) < max(0.0, confirm_visible):
+                    first_sight_pending_keys.add(key)
+                    continue
                 _greeted_this_session.add(key)
                 if _should_fire_presence(key, person_db_id, profile):
                     first_name = person_name.split()[0]
@@ -2447,6 +2579,14 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     # Priority 4 — long absence or recent return
                     if prompt is None:
                         absence = _pick_absence_phase(person_db_id)
+                        startup_recent_grace = float(
+                            getattr(config, "PRESENCE_STARTUP_RECENT_RETURN_GRACE_SECS", 45.0)
+                        )
+                        process_uptime = (
+                            now - _process_started_mono
+                            if _process_started_mono > 0.0
+                            else startup_recent_grace
+                        )
                         if absence and absence[0] == "long_absence":
                             prompt = _build_long_absence_prompt(first_name, absence[1])
                             label = f"startup long-absence for {person_name}"
@@ -2455,7 +2595,11 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                                 "consciousness: startup long-absence for %s (%.1f days)",
                                 person_name, absence[1],
                             )
-                        elif absence and absence[0] == "recent_return":
+                        elif (
+                            absence
+                            and absence[0] == "recent_return"
+                            and process_uptime >= startup_recent_grace
+                        ):
                             prompt = _build_recent_return_prompt(first_name, absence[1])
                             label = f"startup recent-return for {person_name}"
                             emotion = "curious"
@@ -2493,12 +2637,16 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
 
         absent_secs = now - _last_seen[key]
         if absent_secs < return_min_absent:
+            _confirmed_absent_at.pop(key, None)
+            continue
+        if key not in _confirmed_absent_at:
             continue
 
         if not _should_fire_presence(key, person_db_id, profile):
             continue
 
         _last_return_reaction_at[key] = now
+        _confirmed_absent_at.pop(key, None)
         is_known = isinstance(key, int) and person_name
 
         if is_known:
@@ -2568,9 +2716,14 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
             )
 
     # Update last-seen timestamps after absence checks so the pre-tick value is accurate.
+    for key in list(_first_sight_seen_at):
+        if key not in current_keys:
+            _first_sight_seen_at.pop(key, None)
     for key in current_keys:
+        if key in first_sight_pending_keys:
+            continue
         _last_seen[key] = now
-    _visible_people = current_keys
+    _visible_people = current_keys - first_sight_pending_keys
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3612,7 +3765,11 @@ def start() -> None:
     _greeted_this_session.clear()
     _pending_departure_keys.clear()
     _first_missing_at.clear()
+    _confirmed_absent_at.clear()
+    _first_sight_seen_at.clear()
     _last_presence_reaction_at.clear()
+    _animal_seen_signatures.clear()
+    _animal_reacted_at.clear()
     _emotional_checkin_fired.clear()
     _emotional_checkin_fired_at.clear()
     _negative_streak_started_at.clear()
@@ -3654,6 +3811,10 @@ def stop() -> None:
     _stop_event.set()
     _pending_identity_prompt.clear()
     _proactive_speech_pending.clear()
+    _confirmed_absent_at.clear()
+    _first_sight_seen_at.clear()
+    _animal_seen_signatures.clear()
+    _animal_reacted_at.clear()
     _group_turn_speaker_times.clear()
     _group_turn_visible_since.clear()
     _group_turn_invited_at.clear()
