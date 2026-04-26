@@ -1,8 +1,32 @@
 #!/usr/bin/env python3
 """DJ-R3X v2 — main entry point."""
 
+import os
 import sys
 from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parent
+_PROJECT_VENV = (_PROJECT_ROOT / "venv").resolve()
+
+
+def _verify_project_virtualenv() -> None:
+    """Require the project venv interpreter before startup side effects begin."""
+    running_prefix = Path(sys.prefix).resolve()
+    if running_prefix == _PROJECT_VENV:
+        return
+
+    active_env = os.environ.get("VIRTUAL_ENV", "").strip() or "(none)"
+    print("[FATAL] DJ-R3X must be run from this project's virtual environment.", file=sys.stderr)
+    print(f"Expected venv: {_PROJECT_VENV}", file=sys.stderr)
+    print(f"Current Python: {Path(sys.executable).resolve()}", file=sys.stderr)
+    print(f"Current VIRTUAL_ENV: {active_env}", file=sys.stderr)
+    print("Run:", file=sys.stderr)
+    print("  source venv/bin/activate", file=sys.stderr)
+    print("  python main.py", file=sys.stderr)
+    sys.exit(1)
+
+
+_verify_project_virtualenv()
 
 # Step 1: Logging must be configured before any other module logs.
 from utils.logging import setup_logging, get_logger
