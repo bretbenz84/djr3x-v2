@@ -1410,6 +1410,27 @@ def _curiosity_check(
             _record_pool_topics_in_response(response_text, person_id)
         return None
 
+    # Empathy gate — never fire a separate snarky follow-up question when the
+    # active mode is sympathetic. The curiosity step uses a stand-alone LLM
+    # call with no system-prompt scaffolding, so left ungated it produces
+    # tone-deaf lines like "guess you'll need a new best friend" right after
+    # someone mentions their pet died. Only allow curiosity in modes where
+    # snark is appropriate.
+    _CURIOSITY_OK_MODES = {"default", "amplify", "lift", "gentle_probe"}
+    try:
+        cached = empathy.peek(person_id)
+    except Exception:
+        cached = None
+    if cached:
+        active_mode = (cached.get("mode") or {}).get("mode", "default")
+        if active_mode not in _CURIOSITY_OK_MODES:
+            _log.info(
+                "[interaction] curiosity_check suppressed — empathy mode=%s "
+                "(person_id=%s)",
+                active_mode, person_id,
+            )
+            return None
+
     if random.random() >= config.CURIOSITY_QUESTION_PROBABILITY:
         return None
 
@@ -2547,7 +2568,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                         except Exception as exc:
                             _log.debug("emotional_events.add_event failed: %s", exc)
                 except Exception as exc:
-                    _log.debug("empathy classification thread error: %s", exc)
+                    _log.warning("empathy classification thread error: %s", exc, exc_info=True)
 
             _empathy_thread = threading.Thread(
                 target=_run_empathy, daemon=True, name="empathy-classify",

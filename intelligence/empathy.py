@@ -83,7 +83,7 @@ _CLASSIFY_PROMPT = (
     '  "crisis": true|false — true ONLY if there is explicit self-harm, '
     "suicide ideation, or someone-in-immediate-danger language\n"
     '  "confidence": 0.0–1.0 — how confident you are overall\n'
-    '  "event": null OR {category, valence, description}\n'
+    '  "event": null OR an object with keys category, valence, description.\n'
     "    Set event ONLY when the utterance reveals a SPECIFIC sensitive life "
     "event the robot should remember across sessions (e.g. someone died, "
     "lost a job, breakup, illness, big milestone like a wedding/promotion/"
@@ -124,7 +124,11 @@ def classify_affect(
             "otherwise weight the words more."
         )
 
-    user_msg = _CLASSIFY_PROMPT.format(text=text) + prosody_clause
+    try:
+        user_msg = _CLASSIFY_PROMPT.format(text=text) + prosody_clause
+    except Exception as exc:
+        _log.warning("empathy.classify_affect prompt build failed: %s", exc)
+        return None
 
     try:
         resp = _client.chat.completions.create(
@@ -136,7 +140,7 @@ def classify_affect(
         )
         raw = (resp.choices[0].message.content or "").strip()
     except Exception as exc:
-        _log.debug("empathy.classify_affect call failed: %s", exc)
+        _log.warning("empathy.classify_affect call failed: %s", exc)
         return None
 
     try:

@@ -575,12 +575,20 @@ def generate_curiosity_question(response_text: str, user_text: str) -> str:
     Generate one short contextual follow-up question in Rex's voice.
     Used by the curiosity routine when the question pool is exhausted or unavailable.
     """
+    tone_clause = (
+        "If the human just shared something heavy (grief, loss, illness, "
+        "breakup, fear, job loss, anything painful), DROP the snark entirely. "
+        "Either return an empty string or ONE warm, low-pressure question "
+        "that gives them room (e.g. 'how are you holding up?'). Never a joke, "
+        "never a roast, never a 'silver lining.'"
+    )
     prompt = (
         f'Rex just said: "{response_text}"\n'
         f'The human said: "{user_text}"\n\n'
         "Generate ONE short follow-up question Rex would naturally ask next, "
         "in his snarky droid character. One sentence only. "
-        "Make it feel natural, not interrogative."
+        "Make it feel natural, not interrogative.\n\n"
+        f"{tone_clause}"
     )
     try:
         resp = _client.chat.completions.create(
