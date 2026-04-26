@@ -11,6 +11,7 @@ locally with real data instead of letting Rex hallucinate over them.
 """
 
 import logging
+import re
 
 import config
 import apikeys
@@ -33,6 +34,95 @@ _VALID_INTENTS = {
     "general",
 }
 
+_MUSIC_OPTION_CONTEXT_RE = re.compile(
+    r"\b("
+    r"music|songs?|tracks?|albums?|artists?|bands?|playlists?|stations?|radio|"
+    r"genres?|dj|tunes?"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_MUSIC_PLAY_ACTION_RE = re.compile(
+    r"\b("
+    r"play|start\s+playing|put\s+on|throw\s+on|spin|queue|cue|turn\s+on"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_NON_MUSIC_PLAY_CONTEXT_RE = re.compile(
+    r"\b("
+    r"game|games|trivia|i\s+spy|20\s+questions|twenty\s+questions|"
+    r"word\s+association|movie|video|clip"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_MUSIC_NEGATION_RE = re.compile(
+    r"\b("
+    r"didn['’]?t|did\s+not|don['’]?t|do\s+not|wasn['’]?t|was\s+not|"
+    r"isn['’]?t|is\s+not|not|no"
+    r")\b.{0,40}\b("
+    r"music|songs?|tracks?|albums?|artists?|bands?|playlists?|stations?|radio|"
+    r"genres?|dj|tunes?"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_MUSIC_VIBE_FALLBACKS = {
+    "ambient", "chill", "relaxing", "downtempo", "mellow", "space",
+    "electronic", "house", "dance", "jazz", "rock", "metal", "reggae",
+    "country", "folk", "hiphop", "hip hop", "lofi", "lo-fi", "classical",
+    "synthpop", "pop", "lounge", "retro", "upbeat", "quiet",
+}
+
+
+def _known_music_vibes() -> set[str]:
+    vibes = set(_MUSIC_VIBE_FALLBACKS)
+    for station in getattr(config, "RADIO_STATIONS", []) or []:
+        for vibe in station.get("vibes") or []:
+            vibe = str(vibe).strip().lower()
+            if vibe:
+                vibes.add(vibe)
+    return vibes
+
+
+def _contains_known_music_vibe(text: str) -> bool:
+    normalized = " ".join(re.sub(r"[^a-z0-9\s-]", " ", text.lower()).split())
+    return any(
+        re.search(rf"\b{re.escape(vibe)}\b", normalized)
+        for vibe in _known_music_vibes()
+    )
+
+
+def _music_intent_allowed(text: str, label: str) -> bool:
+    """Deterministic guardrail for high-impact music intents.
+
+    The classifier has no conversation context, so labels like
+    query_music_options must require explicit music wording. This prevents
+    generic closure/correction turns such as "nevermind" from dumping the DJ
+    genre list.
+    """
+    if label == "query_music_options":
+        if _MUSIC_NEGATION_RE.search(text):
+            return False
+        return bool(_MUSIC_OPTION_CONTEXT_RE.search(text))
+
+    if label == "play_music":
+        if _MUSIC_NEGATION_RE.search(text):
+            return False
+        if not _MUSIC_PLAY_ACTION_RE.search(text):
+            return False
+        if _NON_MUSIC_PLAY_CONTEXT_RE.search(text) and not _MUSIC_OPTION_CONTEXT_RE.search(text):
+            return False
+        return bool(
+            _MUSIC_OPTION_CONTEXT_RE.search(text)
+            or _contains_known_music_vibe(text)
+            or re.search(r"\bsomething\b", text, re.IGNORECASE)
+        )
+
+    return True
+
+
 _PROMPT_TEMPLATE = (
     'Classify this input into exactly one category. Reply with only the '
     'category name. Categories: query_time, query_weather, query_games, '
@@ -47,7 +137,10 @@ _PROMPT_TEMPLATE = (
     'volume / skip / stop controls — those are general. '
     'Note: query_music_options covers asking what music is available, e.g. '
     '"what kind of music can you play?", "what genres do you have?", '
-    '"what stations can you play?", "what can you play?" (when about music). '
+    '"what stations can you play?". Do NOT classify "what can you play?" as '
+    'music unless the input explicitly says music, songs, stations, radio, '
+    'genres, artist, track, or playlist. Closure/correction phrases like '
+    '"nevermind", "no", "that was not about music" are general. '
     'Input: "{text}"'
 )
 
@@ -76,10 +169,27 @@ def classify(text: str) -> str:
     # Tolerate stray punctuation / quotes from the model.
     label = label.strip(' "\'.`')
     if label in _VALID_INTENTS:
+        if label in {"play_music", "query_music_options"} and not _music_intent_allowed(text, label):
+            _log.info(
+                "[intent_classifier] overriding %s → general; no explicit music intent in %r",
+                label,
+                text,
+            )
+            return "general"
         return label
 
     for candidate in _VALID_INTENTS:
         if candidate in label:
+            if (
+                candidate in {"play_music", "query_music_options"}
+                and not _music_intent_allowed(text, candidate)
+            ):
+                _log.info(
+                    "[intent_classifier] overriding %s → general; no explicit music intent in %r",
+                    candidate,
+                    text,
+                )
+                return "general"
             return candidate
 
     return "general"
