@@ -100,7 +100,9 @@ CREATE TABLE IF NOT EXISTS person_facts (
     confidence  REAL,
     source      TEXT,
     created_at  DATETIME,
-    updated_at  DATETIME
+    updated_at  DATETIME,
+    last_confirmed_at DATETIME,
+    evidence_count INTEGER DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS person_qa (
@@ -357,6 +359,20 @@ def _run_schema_updates(conn: sqlite3.Connection) -> list[str]:
         applied.append("person_emotional_events.checkins_muted_at")
     if _ensure_column(conn, "person_emotional_events", "checkins_muted_reason", "TEXT"):
         applied.append("person_emotional_events.checkins_muted_reason")
+    if _ensure_column(conn, "person_facts", "last_confirmed_at", "DATETIME"):
+        applied.append("person_facts.last_confirmed_at")
+    if _ensure_column(conn, "person_facts", "evidence_count", "INTEGER DEFAULT 1"):
+        applied.append("person_facts.evidence_count")
+    conn.execute(
+        """UPDATE person_facts
+           SET last_confirmed_at = COALESCE(last_confirmed_at, updated_at, created_at)
+           WHERE last_confirmed_at IS NULL"""
+    )
+    conn.execute(
+        """UPDATE person_facts
+           SET evidence_count = 1
+           WHERE evidence_count IS NULL OR evidence_count < 1"""
+    )
     return applied
 
 

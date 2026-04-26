@@ -103,6 +103,28 @@ def _run_migrations() -> None:
                 "checkins_muted_reason",
                 "TEXT",
             )
+            _ensure_column(
+                conn,
+                "person_facts",
+                "last_confirmed_at",
+                "DATETIME",
+            )
+            _ensure_column(
+                conn,
+                "person_facts",
+                "evidence_count",
+                "INTEGER DEFAULT 1",
+            )
+            conn.execute(
+                """UPDATE person_facts
+                   SET last_confirmed_at = COALESCE(last_confirmed_at, updated_at, created_at)
+                   WHERE last_confirmed_at IS NULL"""
+            )
+            conn.execute(
+                """UPDATE person_facts
+                   SET evidence_count = 1
+                   WHERE evidence_count IS NULL OR evidence_count < 1"""
+            )
     except Exception as exc:
         _log.warning("schema migration skipped: %s", exc)
 

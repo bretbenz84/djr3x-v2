@@ -140,27 +140,39 @@ _stale_facts_asked_this_session: set[int] = set()
 
 def _pick_stale_fact(person_id: int) -> Optional[dict]:
     """
-    Return one stale fact (older than STALE_FACT_THRESHOLD_DAYS) for Rex to
-    confirm in this turn, or None. Each fact is surfaced at most once per
-    session. Skips skin_color (never injected) and biographical immutables.
+    Return one stale or low-confidence fact for Rex to confirm in this turn.
+
+    Each fact is surfaced at most once per session. Skips skin_color (never
+    injected) and biographical immutables.
     """
     days = getattr(config, "STALE_FACT_THRESHOLD_DAYS", 365)
+    min_conf = float(getattr(config, "MEMORY_FACT_LOW_CONFIDENCE_THRESHOLD", 0.60))
     try:
-        stale = facts_db.get_stale_facts(person_id, days)
+        facts = facts_db.get_facts(person_id)
     except Exception as exc:
-        _log.debug("stale fact lookup error: %s", exc)
+        _log.debug("fact freshness lookup error: %s", exc)
         return None
     # Categories whose values don't go stale — skip confirmation prompts.
     immutable_keys = {"skin_color", "hometown", "birthday", "birth_year"}
     candidates = [
-        f for f in stale
+        f for f in facts
         if f.get("id") is not None
         and f["id"] not in _stale_facts_asked_this_session
         and (f.get("key") or "") not in immutable_keys
+        and (
+            (f.get("age_days") is not None and f.get("age_days") >= days)
+            or float(f.get("confidence") or 0.0) < min_conf
+        )
     ]
     if not candidates:
         return None
-    chosen = candidates[0]  # oldest first — get_stale_facts orders by updated_at
+    candidates.sort(
+        key=lambda f: (
+            float(f.get("confidence") or 0.0),
+            -(f.get("age_days") or 0),
+        )
+    )
+    chosen = candidates[0]
     _stale_facts_asked_this_session.add(chosen["id"])
     return chosen
 
@@ -221,11 +233,21 @@ def _build_person_context(person_id: int) -> str:
         lines.append(f"Lifetime insults from this person: {insult_count}.")
 
     # skin_color is stored for recognition only — never inject into LLM context
-    facts = [f for f in facts_db.get_facts(person_id) if f.get("key") != "skin_color"]
+    facts = facts_db.get_prompt_facts(person_id, limit=12)
     _log.info("[llm] loaded %d facts for %s", len(facts), name)
     if facts:
-        fact_strs = [f"{f['key']}: {f['value']}" for f in facts[:12]]
+        fact_strs = [facts_db.format_fact_for_prompt(f) for f in facts]
         lines.append("Known facts: " + ", ".join(fact_strs) + ".")
+        if any(
+            f.get("confidence_label") != "high"
+            or f.get("freshness_label") in {"aging", "stale", "unknown"}
+            for f in facts
+        ):
+            lines.append(
+                "Memory quality rule: stale or low-confidence facts are tentative. "
+                "Phrase them as memories, not certainties; don't build sharp roasts "
+                "or important decisions on them without confirming first."
+            )
 
     try:
         boundary_summary = boundaries_db.summarize_for_prompt(person_id)
@@ -245,14 +267,21 @@ def _build_person_context(person_id: int) -> str:
     if stale:
         key = stale.get("key") or "something"
         value = stale.get("value") or ""
-        updated_at = (stale.get("updated_at") or "")[:10] or "a long time ago"
+        confirmed_at = (
+            stale.get("last_confirmed_at")
+            or stale.get("updated_at")
+            or stale.get("created_at")
+            or ""
+        )
+        updated_at = confirmed_at[:10] or "a long time ago"
+        reason = stale.get("memory_quality") or "uncertain memory"
         _log.info(
-            "[llm] stale fact prompt for %s — %s=%s (updated %s)",
-            name, key, value, updated_at,
+            "[llm] fact confirmation prompt for %s — %s=%s (%s, %s)",
+            name, key, value, updated_at, reason,
         )
         lines.append(
-            f"STALE FACT HOOK: it's been a long time since you confirmed this fact. "
-            f"You believe their {key} is '{value}' (last updated {updated_at}). "
+            f"MEMORY CONFIRMATION HOOK: this remembered fact is {reason}. "
+            f"You believe their {key} is '{value}' (last confirmed {updated_at}). "
             f"Find a natural moment in your reply to ask, in classic Rex style, "
             f"whether that's still true — light, dry, not a formal interrogation. "
             f"Examples in spirit: 'You were working at X — still there?', "
@@ -395,15 +424,13 @@ def assemble_system_prompt(
             tier = person.get("friendship_tier", "stranger")
             if tier in _TIER_ROAST_STYLE:
                 rules.append(_TIER_ROAST_STYLE[tier])
-            known_facts = [
-                f for f in facts_db.get_facts(person_id)
-                if f.get("key") != "skin_color"
-            ]
+            known_facts = facts_db.get_prompt_facts(person_id, limit=12)
             if known_facts:
                 rules.append(
-                    "You already know the following facts about this person — do NOT ask about "
-                    "things already listed in their facts or mentioned in the conversation summary. "
-                    "Use what you know naturally in conversation instead of re-asking it."
+                    "You have memory facts about this person. Fresh, high-confidence "
+                    "facts can be used naturally instead of re-asked. Stale or "
+                    "low-confidence facts should be treated as tentative and confirmed "
+                    "lightly before relying on them."
                 )
 
     anger_level = _get_anger_level()

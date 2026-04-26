@@ -897,6 +897,10 @@ THIRD_PARTY_CHECK_INTERVAL_SECS = 5.0
 # person_facts older than this many days may prompt Rex to confirm they still apply
 STALE_FACT_THRESHOLD_DAYS = 365
 
+# Below this confidence, a stored fact is treated as tentative and may prompt
+# Rex to confirm it before using it as reliable memory.
+MEMORY_FACT_LOW_CONFIDENCE_THRESHOLD = 0.60
+
 # If a person hasn't visited in this many days Rex comments on the long absence
 LONG_ABSENCE_THRESHOLD_DAYS = 60
 
