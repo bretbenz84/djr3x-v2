@@ -217,14 +217,11 @@ EMPATHY_CACHE_TTL_SECS = 300.0
 EMPATHY_MIN_CONFIDENCE_FOR_MODE_CHANGE = 0.55
 
 # Max time the LLM-fallback path waits for the in-flight empathy classification
-# to finish before assembling the system prompt and (importantly) before the
-# grief-flow detector reads the empathy cache. If it runs over this budget
-# the directive isn't injected for this turn AND the structured grief flow
-# can't intercept — so we'd rather wait a little longer than miss the
-# "would you like to talk about them?" moment. Empathy.classify_affect is a
-# small JSON-mode GPT-4o-mini call; ~1–2s typical, can spike to ~3s on a slow
-# network. Setting this generously keeps the grief flow reliable.
-EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS = 4.0
+# before assembling the main reply. Keep this short for live conversation:
+# the empathy result is still cached for future turns if it finishes later.
+# Grief/sensitive-topic handling may occasionally land one turn later, but
+# Rex no longer feels frozen while a sidecar classifier waits on the network.
+EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS = 0.75
 
 # When True, sensitive emotional events (grief, illness, etc.) are NOT injected
 # into the system prompt while more than one person is in the scene. The person
@@ -592,17 +589,18 @@ INSULT_PHRASES = [
 # TIMING
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Pre-response pause — makes Rex feel less robotic (milliseconds)
-REACTION_DELAY_MS_MIN = 100
-REACTION_DELAY_MS_MAX = 300
+# Pre-response pause — keep tiny for live conversation. Personality should
+# come from the generated line and delivery, not from waiting before work starts.
+REACTION_DELAY_MS_MIN = 0
+REACTION_DELAY_MS_MAX = 80
 
 # Beat of silence after a high-confidence joke before Rex continues (milliseconds)
 POST_PUNCHLINE_BEAT_MS_MIN = 800
 POST_PUNCHLINE_BEAT_MS_MAX = 1500
 
 # Pause after genuine surprise event before Rex responds (milliseconds)
-SURPRISE_PAUSE_MS_MIN = 500
-SURPRISE_PAUSE_MS_MAX = 1000
+SURPRISE_PAUSE_MS_MIN = 200
+SURPRISE_PAUSE_MS_MAX = 500
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SITUATION ASSESSMENT
@@ -634,20 +632,21 @@ CURIOSITY_QUESTION_PROBABILITY = 0.8
 # mid-speech interruption behavior.
 IDLE_LISTEN_WITHOUT_WAKE_WORD = True
 
-# Seconds of sustained silence after speech before the segment is processed
-SILENCE_TIMEOUT_SECS = 2.5
+# Seconds of sustained silence after speech before the segment is processed.
+# This is the largest "I stopped talking, why is Rex waiting?" knob.
+SILENCE_TIMEOUT_SECS = 0.9
 
 # Minimum seconds of accumulated audio before silence can end a recording.
 # Prevents single-word transcriptions when the person is still talking.
-MIN_SPEECH_DURATION_SECS = 1.5
+MIN_SPEECH_DURATION_SECS = 0.45
 
 # Seconds after TTS completes before VAD detections are accepted. The audio
 # buffer is flushed when playback ends; this guard just lets room echo decay.
-POST_SPEECH_LISTEN_DELAY_SECS = 0.8
+POST_SPEECH_LISTEN_DELAY_SECS = 0.35
 
 # When Rex just asked a direct question, humans often answer immediately. Use a
 # shorter guard window so quick replies do not lose their first syllables.
-POST_QUESTION_LISTEN_DELAY_SECS = 0.15
+POST_QUESTION_LISTEN_DELAY_SECS = 0.05
 
 # Seconds of no detected speech in ACTIVE state before returning to IDLE
 CONVERSATION_IDLE_TIMEOUT_SECS = 30.0
@@ -936,7 +935,7 @@ LATENCY_FILLER_LINES = [
 # Filler should only cover real latency, not every turn. This avoids clipped,
 # choppy first-run filler TTS and keeps direct Q&A exchanges clean.
 LATENCY_FILLER_ENABLED = True
-LATENCY_FILLER_DELAY_SECS = 1.4
+LATENCY_FILLER_DELAY_SECS = 0.9
 LATENCY_FILLER_REQUIRE_CACHE = True
 
 # ─────────────────────────────────────────────────────────────────────────────
