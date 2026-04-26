@@ -12,6 +12,7 @@ import random
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +34,7 @@ _log = logging.getLogger(__name__)
 
 _stop_event = threading.Event()
 _thread: Optional[threading.Thread] = None
+_process_started_iso: Optional[str] = None
 
 # Smoothed neck servo position in quarter-microseconds
 _neck_smooth: float = float(config.SERVO_CHANNELS["neck"]["neutral"])
@@ -977,7 +979,11 @@ def _pick_due_emotional_checkin(person_db_id: Optional[int]) -> Optional[dict]:
         return None
     try:
         from memory import emotional_events as emo_events
-        due = emo_events.get_due_checkins(person_db_id, limit=1)
+        due = emo_events.get_startup_checkins(
+            person_db_id,
+            process_started_iso=_process_started_iso,
+            limit=1,
+        )
         return due[0] if due else None
     except Exception as exc:
         _log.debug("emotional check-in lookup error: %s", exc)
@@ -2928,9 +2934,11 @@ def _loop() -> None:
 def start() -> None:
     """Start the consciousness daemon thread. No-op if already running."""
     global _thread, _response_wait_until, _last_proactive_speech_at, _pending_departure_keys
+    global _process_started_iso
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
+    _process_started_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     _stop_event.clear()
     _pending_identity_prompt.clear()
     _pending_relationship_prompt.clear()

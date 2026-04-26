@@ -213,6 +213,43 @@ def get_due_checkins(
     return [dict(r) for r in rows]
 
 
+def get_startup_checkins(
+    person_id: int,
+    process_started_iso: Optional[str],
+    limit: int = 3,
+) -> list[dict]:
+    """Return active negative events that should lead a fresh process greeting.
+
+    Startup is a different social moment from an in-session check-in. If Rex
+    acknowledged a loss during the original disclosure, he should still check
+    in on a later boot while the event is active. Once startup fires and marks
+    the event acknowledged again, this query stops returning it for the rest of
+    the same process.
+    """
+    if process_started_iso:
+        ack_clause = (
+            "AND (last_acknowledged_at IS NULL OR last_acknowledged_at < ?)"
+        )
+        params = (int(person_id), process_started_iso, int(limit))
+    else:
+        ack_clause = ""
+        params = (int(person_id), int(limit))
+
+    rows = db.fetchall(
+        "SELECT id, category, valence, description, mentioned_at, "
+        "       last_acknowledged_at, sensitivity_decay_days, "
+        "       person_invited_topic "
+        "FROM person_emotional_events "
+        "WHERE person_id = ? "
+        "AND valence < 0 "
+        "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
+        f"{ack_clause} "
+        "ORDER BY mentioned_at DESC LIMIT ?",
+        params,
+    )
+    return [dict(r) for r in rows]
+
+
 def mark_acknowledged(event_id: int) -> None:
     db.execute(
         "UPDATE person_emotional_events SET last_acknowledged_at = datetime('now') "
