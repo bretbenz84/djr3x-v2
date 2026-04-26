@@ -52,12 +52,13 @@ Run the setup script:
 ./setup_macos.sh
 ```
 
-The setup script creates local config files from templates:
+The setup script creates local config files from templates and prompts for local setup choices:
 
 - `apikeys.py` for OpenAI and ElevenLabs credentials
 - `.env` for machine-specific camera, audio, and hardware device paths
+- Optional replacement of `ELEVENLABS_VOICE_ID` in `config.py`
 
-Open those files and fill in your real values before running the program.
+You can leave a prompt blank to keep the current value, or edit the generated files manually later.
 
 ## How To Run
 
