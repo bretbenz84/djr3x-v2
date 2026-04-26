@@ -118,6 +118,12 @@ logs/           Runtime logs
 - Jeopardy data lives in `assets/jeopardy`.
 - Real API keys should never be committed.
 
+## License
+
+Except where otherwise noted, this project is licensed under the [Creative Commons Attribution-NonCommercial 4.0 International License](LICENSE). You may share and modify it with attribution for noncommercial purposes, but commercial use is not permitted without prior written permission.
+
+DJ-R3X v2 is an unofficial fan project. It is not affiliated with, endorsed by, or sponsored by Disney, Lucasfilm, OpenAI, ElevenLabs, Jeopardy Productions, or any other referenced rights holder. Third-party names, trademarks, sound clips, clue data, models, libraries, and other materials remain the property of their respective owners and may be subject to separate terms.
+
 ## Authors
 
 - Bret Benziger
