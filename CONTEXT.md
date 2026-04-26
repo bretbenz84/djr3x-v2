@@ -28,6 +28,11 @@
 | Speakers | 3.5mm jack | Via stereo amp, passive resistor mixer |
 
 ### Servo Channels (Pololu Maestro Mini 18, quarter-microseconds)
+Tracked values in `config.py` are safe defaults. Build-specific min/max travel
+limits belong in `.env` as Maestro Control Center microsecond values, for
+example `SERVO_NECK_MIN_US=496` and `SERVO_NECK_MAX_US=2496`; `config.py`
+converts those overrides to quarter-microseconds at runtime.
+
 | Ch | Name | Min | Max | Neutral | Notes |
 |----|------|-----|-----|---------|-------|
 | 0 | Neck | 1984 | 9984 | 6000 | Rotates head left/right |
@@ -55,7 +60,7 @@ djr3x-v2/
 ├── main.py                    # Entry point, startup sequence, main loop
 ├── state.py                   # State machine (IDLE, ACTIVE, QUIET, SLEEP, SHUTDOWN)
 ├── world_state.py             # WorldState object and thread-safe update logic
-├── config.py                  # User tunable settings (tracked in git)
+├── config.py                  # User-tunable defaults (tracked in git)
 ├── apikeys.py                 # API credentials (excluded from git)
 ├── apikeys.example.py         # Placeholder template (tracked in git)
 ├── .env                       # Host-specific hardware config (excluded from git)
@@ -163,9 +168,9 @@ djr3x-v2/
 
 ## Configuration Files
 
-### `config.py` — User Tunable Settings (tracked in git)
+### `config.py` — User Tunable Defaults (tracked in git)
 All user-configurable options: AI model selections, wake word models and thresholds,
-personality settings, servo ranges, ElevenLabs voice ID, vision settings, LED behavior,
+personality settings, default servo ranges, ElevenLabs voice ID, vision settings, LED behavior,
 timing values, familiarity thresholds, and any other tunable parameters.
 
 ### `apikeys.py` — API Credentials (excluded from git)
@@ -173,7 +178,8 @@ OpenAI and ElevenLabs API keys only. Never committed. Listed in `.gitignore`.
 A template `apikeys.example.py` with placeholder values is committed instead.
 
 ### `.env` — Host-Specific Hardware Config (excluded from git)
-Camera index and serial port paths. Different per machine.
+Camera index, serial port paths, and build-specific servo min/max overrides.
+Different per machine and per physical droid build.
 A template `.env.example` with placeholder values is committed instead.
 When a device entry is missing or blank, that hardware feature is gracefully disabled.
 Audio output uses macOS system default device (3.5mm audio jack on the M1).
@@ -939,8 +945,8 @@ on the Python side. The Arduino sketches own all color order logic:
 
 ## Environment & Setup
 - API keys in `apikeys.py` (excluded from git — see `apikeys.example.py`)
-- Hardware device config in `.env` (excluded from git — see `.env.example`)
-- User settings in `config.py` (tracked in git)
+- Hardware device config and servo limit overrides in `.env` (excluded from git — see `.env.example`)
+- User-tunable defaults in `config.py` (tracked in git)
 - Dependencies in `requirements.txt`
 - Run `python3 setup_assets.py` after pip install to download models and initialize database
 
@@ -999,9 +1005,11 @@ fully operational development environment with no manual steps required.
 6. **pip packages** — activates the venv and installs all dependencies from `requirements.txt`
 7. **Config bootstrap** — copies `apikeys.example.py` → `apikeys.py` and `.env.example` → `.env`
    if those files do not already exist, so the user has real files to fill in
-8. **Model and asset downloads** — runs `python3 setup_assets.py` to download all AI models
+8. **Interactive local setup** — prompts for API keys, ElevenLabs voice ID, mic/camera choices,
+   optional Arduino LED setup, optional Maestro setup, and `.env` servo limit overrides
+9. **Model and asset downloads** — runs `python3 setup_assets.py` to download all AI models
    and initialize the SQLite database
-9. **Verification** — prints a summary of what was installed and flags anything that needs
+10. **Verification** — prints a summary of what was installed and flags anything that needs
    manual attention (API keys not filled in, hardware not connected, etc.)
 
 The script is idempotent — safe to run multiple times. Existing files, installed packages,

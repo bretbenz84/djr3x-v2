@@ -881,31 +881,32 @@ _configure_servo_limits_interactive() {
     echo ""
     warn "Servo limits must be measured safely in the Pololu Maestro Control Center before powering DJ-R3X servos."
     echo "Use the values shown in the Maestro app, like: 496 - 2496"
-    echo "The setup script will multiply those microsecond values by 4 before writing config.py."
-    echo "Press Enter on a servo to keep the current config.py values."
+    echo "The values are stored in .env as microseconds. config.py converts them to quarter-microseconds at runtime."
+    echo "Press Enter on a servo to keep the current .env/default values."
     echo ""
 
-    if ! _prompt_yes_no "Program servo min/max limits into config.py now? [y/N] " "n"; then
+    if ! _prompt_yes_no "Save servo min/max limits to .env now? [y/N] " "n"; then
         warn "Skipping servo limit programming."
-        MANUAL_ATTENTION+=("Update config.py SERVO_CHANNELS manually after measuring Maestro min/max values")
+        MANUAL_ATTENTION+=("Update .env servo limit overrides after measuring Maestro min/max values")
         return
     fi
 
-    "$VENV_PYTHON" - "$PROJECT_DIR/config.py" <<'PY'
+    "$VENV_PYTHON" - "$PROJECT_DIR/config.py" "$ENV_DST" <<'PY'
 import ast
 import re
 import sys
 from pathlib import Path
 
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
+config_path = Path(sys.argv[1])
+env_path = Path(sys.argv[2])
+text = config_path.read_text(encoding="utf-8")
 match = re.search(r"SERVO_CHANNELS\s*=\s*(\{.*?\n\})", text, re.DOTALL)
 if not match:
     raise SystemExit("Could not find SERVO_CHANNELS in config.py")
 
 channels = ast.literal_eval(match.group(1))
 channel_rows = sorted(channels.items(), key=lambda item: int(item[1]["ch"]))
-updates: dict[str, tuple[int, int]] = {}
+updates: dict[str, tuple[float, float]] = {}
 friendly_names = {
     "neck": "neck pan / left-right head turn",
     "headlift": "head lift / up-down head height",
@@ -917,13 +918,65 @@ friendly_names = {
     "heroarm": "right hero arm",
 }
 
+def env_key(name: str, suffix: str) -> str:
+    return f"SERVO_{name.upper()}_{suffix}_US"
+
+def parse_env(path: Path) -> dict[str, str]:
+    env: dict[str, str] = {}
+    if not path.exists():
+        return env
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            continue
+        key, raw = line.split("=", 1)
+        key = key.strip()
+        value = raw.strip().strip("'\"")
+        env[key] = value
+    return env
+
+def write_env_values(path: Path, values: dict[str, str]) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    used: set[str] = set()
+    rendered: list[str] = []
+    for line in lines:
+        if "=" not in line or line.lstrip().startswith("#"):
+            rendered.append(line)
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key in values:
+            rendered.append(f"{key}={values[key]}")
+            used.add(key)
+        else:
+            rendered.append(line)
+    for key, value in values.items():
+        if key not in used:
+            rendered.append(f"{key}={value}")
+    path.write_text("\n".join(rendered) + "\n", encoding="utf-8")
+
+env_values = parse_env(env_path)
+
 def fmt_us(q_us: int) -> str:
     value = q_us / 4
     if value.is_integer():
         return str(int(value))
     return f"{value:.2f}".rstrip("0").rstrip(".")
 
-def parse_limits(raw: str) -> tuple[int, int] | None:
+def fmt_raw_us(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+def current_us(name: str, key: str, fallback_q_us: int) -> float:
+    raw = env_values.get(env_key(name, key))
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return fallback_q_us / 4
+
+def parse_limits(raw: str) -> tuple[float, float] | None:
     nums = re.findall(r"\d+(?:\.\d+)?", raw)
     if len(nums) < 2:
         return None
@@ -933,13 +986,15 @@ def parse_limits(raw: str) -> tuple[int, int] | None:
         return None
     if lo_us > hi_us:
         lo_us, hi_us = hi_us, lo_us
-    return round(lo_us * 4), round(hi_us * 4)
+    return lo_us, hi_us
 
 print("Servo channels:")
 for name, cfg in channel_rows:
     ch = int(cfg["ch"])
     friendly = friendly_names.get(name, name)
-    current = f"{fmt_us(int(cfg['min']))} - {fmt_us(int(cfg['max']))}"
+    current_min = current_us(name, "MIN", int(cfg["min"]))
+    current_max = current_us(name, "MAX", int(cfg["max"]))
+    current = f"{fmt_raw_us(current_min)} - {fmt_raw_us(current_max)}"
     neutral = fmt_us(int(cfg["neutral"]))
     prompt = (
         f"  ch {ch} {name} ({friendly}) current {current} us, "
@@ -953,39 +1008,37 @@ for name, cfg in channel_rows:
         if parsed is None:
             print("    Enter two numbers like 496 - 2496, or press Enter to keep current.")
             continue
-        lo_q, hi_q = parsed
-        neutral_q = int(cfg["neutral"])
-        if not (lo_q <= neutral_q <= hi_q):
+        lo_us, hi_us = parsed
+        neutral_us = int(cfg["neutral"]) / 4
+        if not (lo_us <= neutral_us <= hi_us):
             print(
-                f"    Warning: current neutral {fmt_us(neutral_q)} us is outside "
-                f"{fmt_us(lo_q)} - {fmt_us(hi_q)} us. Update neutral later if needed."
+                f"    Warning: current neutral {fmt_raw_us(neutral_us)} us is outside "
+                f"{fmt_raw_us(lo_us)} - {fmt_raw_us(hi_us)} us. Update neutral later if needed."
             )
-        updates[name] = (lo_q, hi_q)
+        updates[name] = (lo_us, hi_us)
         break
 
 if not updates:
     print("No servo limit changes requested.")
     raise SystemExit(0)
 
-new_text = text
-for name, (lo_q, hi_q) in updates.items():
-    pattern = (
-        rf'("{re.escape(name)}"\s*:\s*\{{[^}}]*"min"\s*:\s*)\d+'
-        rf'([^}}]*"max"\s*:\s*)\d+'
-    )
-    replacement = rf"\g<1>{lo_q}\g<2>{hi_q}"
-    new_text, count = re.subn(pattern, replacement, new_text, count=1)
-    if count != 1:
-        raise SystemExit(f"Could not update servo channel {name!r} in config.py")
+new_values: dict[str, str] = {}
+for name, (lo_us, hi_us) in updates.items():
+    new_values[env_key(name, "MIN")] = fmt_raw_us(lo_us)
+    new_values[env_key(name, "MAX")] = fmt_raw_us(hi_us)
 
-path.write_text(new_text, encoding="utf-8")
-print("Updated config.py servo limits:")
-for name, (lo_q, hi_q) in sorted(updates.items(), key=lambda item: int(channels[item[0]]["ch"])):
+write_env_values(env_path, new_values)
+print("Updated .env servo limit overrides:")
+for name, (lo_us, hi_us) in sorted(updates.items(), key=lambda item: int(channels[item[0]]["ch"])):
     ch = int(channels[name]["ch"])
     friendly = friendly_names.get(name, name)
-    print(f"  ch {ch} {name} ({friendly}): {fmt_us(lo_q)} - {fmt_us(hi_q)} us ({lo_q} - {hi_q} q-us)")
+    print(
+        f"  ch {ch} {name} ({friendly}): "
+        f"{fmt_raw_us(lo_us)} - {fmt_raw_us(hi_us)} us "
+        f"({round(lo_us * 4)} - {round(hi_us * 4)} q-us runtime)"
+    )
 PY
-    INSTALLED_ITEMS+=("config.py servo min/max limits reviewed")
+    INSTALLED_ITEMS+=(".env servo min/max limits reviewed")
 }
 
 _compile_and_upload_arduino() {
@@ -1129,7 +1182,7 @@ _guided_maestro_setup() {
 
     echo ""
     warn "Servo safety: determine every servo limit in the Pololu Maestro Control Center first."
-    echo "Write down min and max values, then update config.py before connecting powered servos."
+    echo "Write down min and max values, then save them to .env before connecting powered servos."
     echo "Do not connect the Maestro to live servo power until those limits are programmed."
     _configure_servo_limits_interactive
 

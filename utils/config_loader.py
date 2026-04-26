@@ -2,6 +2,7 @@
 Single entry point for all project configuration.
 
 Loads apikeys.py (API credentials) and .env (hardware device paths).
+config.py also reads .env directly for build-specific servo limit overrides.
 config.py can still be imported directly anywhere — it's plain Python with no side effects.
 
 Raises RuntimeError at import time if any required API key contains a placeholder value.

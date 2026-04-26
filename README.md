@@ -80,7 +80,7 @@ You need to activate the virtual environment in every new terminal session befor
 
 ## Configuration
 
-User-tunable settings live in [config.py](config.py). API keys should stay in `apikeys.py`, and host-specific hardware paths should stay in `.env`; both are intentionally excluded from git.
+User-tunable defaults live in [config.py](config.py). API keys should stay in `apikeys.py`, and host-specific hardware paths plus build-specific servo limit overrides should stay in `.env`; both are intentionally excluded from git.
 
 Useful setup checks:
 
@@ -92,7 +92,7 @@ The setup script can walk you through serial device detection for Maestro and Ar
 
 ## Servo Safety
 
-Do not connect a Pololu Maestro to live servos until the servo limits have been configured in the Maestro Control Center app. Set safe minimum, maximum, neutral, speed, and acceleration values there first, write those values down, and then update the matching servo limits in [config.py](config.py).
+Do not connect a Pololu Maestro to live servos until the servo limits have been configured in the Maestro Control Center app. Set safe minimum and maximum values there first, write those values down, and then store the matching servo limit overrides in `.env` using the setup script or the `SERVO_<NAME>_MIN_US` / `SERVO_<NAME>_MAX_US` keys from [.env.example](.env.example).
 
 Connecting the Maestro before limits are programmed can drive a servo past its safe travel range and damage the mechanism.
 

@@ -1,7 +1,18 @@
-# config.py — DJ-R3X User-Tunable Settings
-# All user-configurable parameters live here and are tracked in git.
+# config.py — DJ-R3X User-Tunable Defaults
+# Shared user-configurable defaults live here and are tracked in git.
 # API keys go in apikeys.py (excluded from git).
-# Hardware device paths (camera index, serial ports) go in .env (excluded from git).
+# Hardware device paths and build-specific servo limits go in .env (excluded from git).
+
+import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except Exception:
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DEBUG
@@ -356,7 +367,9 @@ SERVO_SPEECH_ELBOW_INTERVAL_MIN_SECS = 0.35
 SERVO_SPEECH_ELBOW_INTERVAL_MAX_SECS = 0.75
 SERVO_SPEECH_HAND_DIVISOR = 3
 
-# Per-channel limits and neutral position
+# Per-channel default limits and neutral position.
+# Build-specific min/max overrides can be stored in .env as SERVO_<NAME>_MIN_US
+# and SERVO_<NAME>_MAX_US using Maestro Control Center microsecond values.
 # headtilt is inverted: low values = head high, high values = head low
 SERVO_CHANNELS = {
     "neck":     {"ch": 0, "min": 1984, "max": 9984, "neutral": 6000},
@@ -368,6 +381,30 @@ SERVO_CHANNELS = {
     "pokerarm": {"ch": 6, "min": 3968, "max": 8000, "neutral": 6000},
     "heroarm":  {"ch": 7, "min": 3968, "max": 8000, "neutral": 6000},
 }
+
+
+def _servo_env_us_to_qus(env_key: str, fallback: int) -> int:
+    """Read Maestro Control Center microseconds from .env and return q-us."""
+    raw = os.getenv(env_key, "").strip()
+    if not raw:
+        return fallback
+    try:
+        return int(round(float(raw) * 4))
+    except ValueError:
+        return fallback
+
+
+def _apply_servo_env_overrides() -> None:
+    for name, cfg in SERVO_CHANNELS.items():
+        prefix = f"SERVO_{name.upper()}"
+        cfg["min"] = _servo_env_us_to_qus(f"{prefix}_MIN_US", cfg["min"])
+        cfg["max"] = _servo_env_us_to_qus(f"{prefix}_MAX_US", cfg["max"])
+        cfg["neutral"] = _servo_env_us_to_qus(f"{prefix}_NEUTRAL_US", cfg["neutral"])
+        if cfg["min"] > cfg["max"]:
+            cfg["min"], cfg["max"] = cfg["max"], cfg["min"]
+
+
+_apply_servo_env_overrides()
 
 HEAD_CHANNELS = [0, 1, 2, 3]
 ARM_CHANNELS  = [4, 5, 6, 7]
