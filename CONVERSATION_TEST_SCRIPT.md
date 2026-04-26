@@ -649,6 +649,7 @@ Expected:
 - Category/value selections like `Birds for 200` produce a round-one clue.
 - After round one is cleared, Rex starts Double Jeopardy from round-two clues and reminds players that values start at `$400`.
 - Rex listens for answers immediately after the clue, even while the thinking theme is playing.
+- The thinking theme should keep playing until a player answers or the timer expires; it should not cut out after a brief burst.
 - Correct answers play the right-answer stinger and update scores.
 - Wrong answers play the incorrect-answer stinger and update scores.
 - Between clues, Rex repeats the remaining categories before asking for the next square.

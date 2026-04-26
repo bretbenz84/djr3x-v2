@@ -235,6 +235,14 @@ def _dj_is_playing() -> bool:
         return False
 
 
+def _chunk_for_vad(audio_chunk: np.ndarray) -> np.ndarray:
+    """Apply playback suppression before VAD so background audio does not self-trigger."""
+    try:
+        return echo_cancel.filter(audio_chunk)
+    except Exception:
+        return audio_chunk
+
+
 def _duck_dj_for_speech() -> Optional[float]:
     if not bool(getattr(config, "DJ_DUCK_DURING_SPEECH", True)):
         return None
@@ -1481,7 +1489,7 @@ def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
             _stop_event.wait(_CHUNK_SECS)
             continue
 
-        is_speech = vad.is_speech(chunk)
+        is_speech = vad.is_speech(_chunk_for_vad(chunk))
         _situation_assessor.set_vad_active(is_speech)
         if is_speech:
             silence_elapsed = 0.0
@@ -3328,6 +3336,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
 
     answered_question: Optional[dict] = None
     assistant_asked_question = False
+    game_after_audio_path: Optional[str] = None
 
     # Randomised pre-response pause — prevents Rex from feeling instant/robotic
     delay_ms = random.randint(config.REACTION_DELAY_MS_MIN, config.REACTION_DELAY_MS_MAX)
@@ -4615,11 +4624,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                             games_mod.on_response_spoken()
                             after_audio = games_mod.consume_pending_audio_after_response()
                             if after_audio and not _interrupted.is_set():
-                                speech_queue.enqueue_audio_file(
-                                    after_audio,
-                                    priority=1,
-                                    tag="game:after_audio",
-                                )
+                                game_after_audio_path = after_audio
                         used_agenda_llm = True
                         match = None
             except Exception as exc:
@@ -4851,6 +4856,13 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 )
             echo_cancel.end_sequence(flush=False, tail_secs=question_tail)
             sequence_started = False
+            if game_after_audio_path and not _interrupted.is_set():
+                speech_queue.enqueue_audio_file(
+                    game_after_audio_path,
+                    priority=1,
+                    tag="game:after_audio",
+                )
+                game_after_audio_path = None
 
         _post_response(
             text,
@@ -4935,7 +4947,7 @@ def _loop() -> None:
             if len(chunk) == 0:
                 _stop_event.wait(_CHUNK_SECS)
                 continue
-            _idle_speech = vad.is_speech(chunk)
+            _idle_speech = vad.is_speech(_chunk_for_vad(chunk))
             _situation_assessor.set_vad_active(_idle_speech)
             if not _idle_speech:
                 _stop_event.wait(_CHUNK_SECS)
@@ -4996,7 +5008,7 @@ def _loop() -> None:
             _stop_event.wait(_CHUNK_SECS)
             continue
 
-        _active_speech = vad.is_speech(chunk)
+        _active_speech = vad.is_speech(_chunk_for_vad(chunk))
         _situation_assessor.set_vad_active(_active_speech)
         if not _active_speech:
             if _maybe_prompt_incomplete_turn():
