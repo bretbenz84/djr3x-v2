@@ -7,6 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
 PYTHON_VERSION="3.11.9"
 VENV_DIR="$PROJECT_DIR/venv"
+VENV_PYTHON="$VENV_DIR/bin/python"
+VENV_PIP="$VENV_DIR/bin/pip"
 ZSHRC="$HOME/.zshrc"
 
 # ── Terminal colors ───────────────────────────────────────────────────────────
@@ -66,11 +68,57 @@ _prompt_yes_no() {
     [[ "$reply" == "y" || "$reply" == "yes" ]]
 }
 
+_venv_has_contents() {
+    [[ -d "$VENV_DIR" ]] || return 1
+    [[ -n "$(find "$VENV_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]
+}
+
+_venv_python_usable() {
+    [[ -x "$VENV_PYTHON" ]] || return 1
+    "$VENV_PYTHON" - "$VENV_DIR" >/dev/null 2>&1 <<'PY'
+import sys
+from pathlib import Path
+
+expected = Path(sys.argv[1]).resolve()
+actual = Path(sys.prefix).resolve()
+raise SystemExit(0 if actual == expected else 1)
+PY
+}
+
+_venv_functional() {
+    _venv_python_usable || return 1
+    [[ -x "$VENV_PIP" ]] || return 1
+    "$VENV_PYTHON" -m pip --version >/dev/null 2>&1
+}
+
 echo ""
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BOLD}  DJ-R3X v2 — macOS Setup${NC}"
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
+
+RUN_ENV_SETUP=1
+if _venv_has_contents; then
+    if _venv_functional; then
+        ok "Existing functional virtual environment found at $VENV_DIR."
+        if _prompt_yes_no "Set up/repair the venv and dependencies first? [y/N] " "n"; then
+            RUN_ENV_SETUP=1
+        else
+            RUN_ENV_SETUP=0
+            ok "Skipping Homebrew, Python, venv, pip, and asset setup; continuing to hardware configuration."
+        fi
+    else
+        warn "A venv exists at $VENV_DIR, but it does not look fully functional."
+        if _prompt_yes_no "Set up/repair the venv and dependencies first? [Y/n] " "y"; then
+            RUN_ENV_SETUP=1
+        else
+            RUN_ENV_SETUP=0
+            warn "Continuing without dependency repair. Hardware setup helpers require a usable project venv."
+        fi
+    fi
+else
+    log "No populated venv found at $VENV_DIR — environment and dependencies will be set up first."
+fi
 
 # ── Platform check ────────────────────────────────────────────────────────────
 ARCH=$(uname -m)
@@ -87,6 +135,8 @@ _brew_shellenv() {
     fi
 }
 _brew_shellenv
+
+if [[ "$RUN_ENV_SETUP" -eq 1 ]]; then
 
 # ── 1. Homebrew ───────────────────────────────────────────────────────────────
 log "Checking Homebrew..."
@@ -213,9 +263,6 @@ else
     ok "Virtual environment created."
 fi
 
-VENV_PYTHON="$VENV_DIR/bin/python"
-VENV_PIP="$VENV_DIR/bin/pip"
-
 # ── 6. pip packages ───────────────────────────────────────────────────────────
 REQUIREMENTS="$PROJECT_DIR/requirements.txt"
 log "Installing pip packages from requirements.txt..."
@@ -228,6 +275,13 @@ if [[ -f "$REQUIREMENTS" ]]; then
 else
     warn "requirements.txt not found — skipping pip install."
     MANUAL_ATTENTION+=("requirements.txt missing — run: $VENV_PIP install -r requirements.txt")
+fi
+
+else
+    log "Skipping Homebrew/Python/venv/pip dependency setup by request."
+    if ! _venv_python_usable; then
+        die "Cannot continue: $VENV_PYTHON is not usable. Re-run setup and choose to repair the venv."
+    fi
 fi
 
 # ── 7. Config bootstrap ───────────────────────────────────────────────────────
@@ -1450,11 +1504,37 @@ _configure_local_interactive() {
     fi
 }
 
-_configure_local_interactive
+_configure_hardware_only_interactive() {
+    if ! _is_interactive; then
+        warn "Non-interactive shell detected — skipping hardware prompts."
+        MANUAL_ATTENTION+=("Update hardware ports and servo limits in .env manually")
+        return
+    fi
+
+    echo ""
+    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BOLD}  Hardware Configuration${NC}"
+    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+
+    if _prompt_yes_no "Are you setting this up for a physical DJ-R3X droid? [y/N] " "n"; then
+        _configure_droid_hardware_interactive
+    else
+        _configure_software_only_hardware_ports
+    fi
+}
+
+if [[ "$RUN_ENV_SETUP" -eq 1 ]]; then
+    _configure_local_interactive
+else
+    _configure_hardware_only_interactive
+fi
 
 # ── 9. Asset and model downloads ──────────────────────────────────────────────
 SETUP_ASSETS="$PROJECT_DIR/setup_assets.py"
-if [[ -f "$SETUP_ASSETS" ]]; then
+if [[ "$RUN_ENV_SETUP" -eq 0 ]]; then
+    log "Skipping setup_assets.py because dependency setup was skipped."
+elif [[ -f "$SETUP_ASSETS" ]]; then
     log "Running setup_assets.py (model downloads + database init)..."
     "$VENV_PYTHON" "$SETUP_ASSETS"
     ok "setup_assets.py completed."
