@@ -443,24 +443,87 @@ def _speak_async(
         return False
 
 
+def _claim_proactive_purpose(
+    purpose: str,
+    *,
+    priority: Optional[int] = None,
+    label: str = "",
+) -> Optional[str]:
+    try:
+        from intelligence import conversation_agenda
+        return conversation_agenda.claim_proactive_purpose(
+            purpose,
+            priority=priority,
+            label=label,
+        )
+    except Exception as exc:
+        _log.debug("proactive purpose claim failed: %s", exc)
+        return None
+
+
+def _release_proactive_purpose(token: Optional[str]) -> None:
+    try:
+        from intelligence import conversation_agenda
+        conversation_agenda.release_proactive_claim(token)
+    except Exception:
+        pass
+
+
+def _proactive_purpose_current(token: Optional[str]) -> bool:
+    try:
+        from intelligence import conversation_agenda
+        return conversation_agenda.proactive_claim_is_current(token)
+    except Exception:
+        return True
+
+
+def _apply_proactive_directive(prompt: str, purpose: Optional[str]) -> str:
+    if not purpose:
+        return prompt
+    try:
+        from intelligence import conversation_agenda
+        return conversation_agenda.with_proactive_directive(prompt, purpose)
+    except Exception:
+        return prompt
+
+
 def _generate_and_speak(
     prompt: str,
     emotion: str = "neutral",
     *,
     wait_secs: Optional[float] = None,
-) -> None:
+    purpose: Optional[str] = None,
+    priority: Optional[int] = None,
+    label: str = "",
+) -> bool:
+    token = None
+    if purpose:
+        token = _claim_proactive_purpose(
+            purpose,
+            priority=priority,
+            label=label or purpose,
+        )
+        if token is None:
+            return False
+    prompt = _apply_proactive_directive(prompt, purpose)
+
     def _task():
         try:
+            if not _proactive_purpose_current(token):
+                return
             if not _can_proactive_speak():
                 return
             from intelligence.llm import get_response
             text = get_response(prompt)
-            if text:
+            if text and _proactive_purpose_current(token):
                 _speak_async(text, emotion, wait_secs=wait_secs)
         except Exception as exc:
             _log.debug("_generate_and_speak error: %s", exc)
+        finally:
+            _release_proactive_purpose(token)
 
     threading.Thread(target=_task, daemon=True).start()
+    return True
 
 
 def _should_fire_presence(key, person_db_id: Optional[int], profile: SituationProfile) -> bool:
@@ -498,6 +561,9 @@ def _generate_and_speak_presence(
     label: str,
     tag_key,
     emotion: str = "neutral",
+    *,
+    purpose: str = "presence_reaction",
+    priority: Optional[int] = None,
 ) -> None:
     """
     Presence-reaction variant of _generate_and_speak.
@@ -506,16 +572,26 @@ def _generate_and_speak_presence(
     The tag_key is used to coalesce duplicate queued reactions for the same
     person (newer replaces older).
     """
+    token = _claim_proactive_purpose(purpose, priority=priority, label=label)
+    if token is None:
+        return
+    prompt = _apply_proactive_directive(prompt, purpose)
+
     def _task():
         if not _presence_reaction_lock.acquire(blocking=False):
             _log.debug("_generate_and_speak_presence: reaction already in progress, skipping — %s", label)
+            _release_proactive_purpose(token)
             return
         try:
+            if not _proactive_purpose_current(token):
+                return
             if not _can_speak():
                 return
             from intelligence.llm import get_response
             text = get_response(prompt)
             if not text or not text.strip():
+                return
+            if not _proactive_purpose_current(token):
                 return
             if not _can_speak():
                 return
@@ -524,6 +600,8 @@ def _generate_and_speak_presence(
             if delay > 0:
                 time.sleep(delay)
 
+            if not _proactive_purpose_current(token):
+                return
             if not _can_proactive_speak():
                 return
 
@@ -536,6 +614,7 @@ def _generate_and_speak_presence(
         except Exception as exc:
             _log.debug("_generate_and_speak_presence error: %s", exc)
         finally:
+            _release_proactive_purpose(token)
             _presence_reaction_lock.release()
 
     threading.Thread(target=_task, daemon=True).start()
@@ -732,6 +811,7 @@ def _step_person_recognition(frame) -> None:
                         "you should store for them.",
                         emotion="curious",
                         wait_secs=getattr(config, "IDENTITY_RESPONSE_WAIT_SECS", 20.0),
+                        purpose="identity_prompt",
                     )
             _last_face_feedback_signature = signature
 
@@ -1106,6 +1186,7 @@ def _step_disengagement(snapshot: dict, profile: SituationProfile) -> None:
             "Generate one short, in-character line to recapture their attention. "
             "Not desperate — Rex doesn't beg. One punchy line only.",
             emotion="curious",
+            purpose="reengagement",
         )
     except Exception as exc:
         _log.debug("disengagement step error: %s", exc)
@@ -1183,7 +1264,7 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
 
         if triggers:
             prompt, emotion = random.choice(triggers)
-            _generate_and_speak(prompt, emotion)
+            _generate_and_speak(prompt, emotion, purpose="world_reaction")
 
     except Exception as exc:
         _log.debug("proactive reactions step error: %s", exc)
@@ -1423,9 +1504,15 @@ def _do_small_talk_question(snapshot: dict) -> None:
         and not plan_clause   # don't override a fresh follow-up with a mood riff
         and random.random() < float(getattr(config, "MOOD_ANALYSIS_PROBABILITY", 0.7))
     )
+    purpose = "memory_followup" if plan_clause else "small_talk"
+    token = _claim_proactive_purpose(purpose, label="small-talk question")
+    if token is None:
+        return
 
     def _task() -> None:
         try:
+            if not _proactive_purpose_current(token):
+                return
             mood_clause = ""
             emotion = "curious"
             if do_mood:
@@ -1460,12 +1547,15 @@ def _do_small_talk_question(snapshot: dict) -> None:
 
             if not _can_proactive_speak():
                 return
+            prompt = _apply_proactive_directive(prompt, purpose)
             from intelligence.llm import get_response
             text = get_response(prompt)
-            if text:
+            if text and _proactive_purpose_current(token):
                 _speak_async(text, emotion=emotion)
         except Exception as exc:
             _log.debug("_do_small_talk_question task error: %s", exc)
+        finally:
+            _release_proactive_purpose(token)
 
     threading.Thread(target=_task, daemon=True, name="small-talk-question").start()
 
@@ -1473,8 +1563,15 @@ def _do_small_talk_question(snapshot: dict) -> None:
 def _do_private_thought() -> None:
     if not _can_proactive_speak():
         return
+    token = _claim_proactive_purpose("idle_monologue", label="private thought")
+    if token is None:
+        return
     line = random.choice(config.PRIVATE_THOUGHTS)
-    _speak_async(line, emotion="neutral")
+    try:
+        if _proactive_purpose_current(token):
+            _speak_async(line, emotion="neutral")
+    finally:
+        _release_proactive_purpose(token)
 
 
 # Anti-repeat for aspirations — never play the same line back-to-back.
@@ -1489,10 +1586,17 @@ def _do_aspiration() -> None:
     pool = getattr(config, "ASPIRATIONS", None)
     if not pool:
         return
+    token = _claim_proactive_purpose("idle_monologue", label="aspiration")
+    if token is None:
+        return
     candidates = [line for line in pool if line != _last_aspiration] or list(pool)
     chosen = random.choice(candidates)
     _last_aspiration = chosen
-    _speak_async(chosen, emotion="curious")
+    try:
+        if _proactive_purpose_current(token):
+            _speak_async(chosen, emotion="curious")
+    finally:
+        _release_proactive_purpose(token)
 
 
 def _do_ambient_observation(snapshot: dict) -> None:
@@ -1530,6 +1634,7 @@ def _do_ambient_observation(snapshot: dict) -> None:
         f"anyone, don't ask a question; just a dry remark about the space or vibe. "
         f"One line only.",
         emotion="neutral",
+        purpose="ambient_observation",
     )
 
 
@@ -1557,6 +1662,7 @@ def _do_appearance_riff(snapshot: dict) -> None:
         f"the kind of thing you'd say while looking them over. Warm, dry, observational. "
         f"Address {first_name} by name. One line only.",
         emotion="neutral",
+        purpose="appearance_riff",
     )
 
 
@@ -1595,6 +1701,7 @@ def _do_live_vision_comment(snapshot: dict) -> None:
                 f"greeting, not a question, just a passing observation as if thinking out "
                 f"loud. One line only.",
                 emotion="curious",
+                purpose="visual_curiosity",
             )
         except Exception as exc:
             _log.debug("live vision comment error: %s", exc)
@@ -1705,10 +1812,19 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
     if _visual_curiosity_blocked_by_empathy(engaged_id):
         return
 
+    token = _claim_proactive_purpose(
+        "visual_curiosity",
+        label=f"visual curiosity for {engaged_id}",
+    )
+    if token is None:
+        return
+
     with _visual_curiosity_lock:
         if _visual_curiosity_in_flight:
+            _release_proactive_purpose(token)
             return
         if (time.monotonic() - _last_visual_curiosity_at) < global_cooldown:
+            _release_proactive_purpose(token)
             return
         _visual_curiosity_in_flight = True
         _last_visual_curiosity_at = time.monotonic()
@@ -1717,6 +1833,8 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
     def _task() -> None:
         global _visual_curiosity_in_flight
         try:
+            if not _proactive_purpose_current(token):
+                return
             if not _can_proactive_speak():
                 return
             from memory import people as people_mod
@@ -1732,6 +1850,8 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
                 return
             visual = _scene.describe_scene_detailed(frame)
             if not visual:
+                return
+            if not _proactive_purpose_current(token):
                 return
             if not _can_proactive_speak():
                 return
@@ -1756,8 +1876,9 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
                 "the visual system. Address them by name if natural. End with a "
                 "question mark."
             )
+            prompt = _apply_proactive_directive(prompt, "visual_curiosity")
             text = get_response(prompt, engaged_id)
-            if text and _can_proactive_speak():
+            if text and _proactive_purpose_current(token) and _can_proactive_speak():
                 wait = float(getattr(config, "QUESTION_RESPONSE_WAIT_SECS", 7.0))
                 _log.info(
                     "consciousness: visual curiosity question for person_id=%s "
@@ -1769,6 +1890,7 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
         except Exception as exc:
             _log.debug("visual curiosity step error: %s", exc)
         finally:
+            _release_proactive_purpose(token)
             with _visual_curiosity_lock:
                 _visual_curiosity_in_flight = False
 
@@ -1777,14 +1899,20 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
 
 def _do_idle_clip() -> None:
     try:
+        token = _claim_proactive_purpose("idle_monologue", label="idle clip")
+        if token is None:
+            return
         clips_dir = Path(config.AUDIO_CLIPS_DIR)
         clips = list(clips_dir.glob("*.mp3")) + list(clips_dir.glob("*.wav"))
         if not clips:
+            _release_proactive_purpose(token)
             return
         clip_path = random.choice(clips)
 
         def _play():
             try:
+                if not _proactive_purpose_current(token):
+                    return
                 import sounddevice as sd
                 import soundfile as sf
                 from audio import output_gate
@@ -1797,6 +1925,8 @@ def _do_idle_clip() -> None:
                     sd.wait()
             except Exception as exc:
                 _log.debug("idle clip playback error: %s", exc)
+            finally:
+                _release_proactive_purpose(token)
 
         threading.Thread(target=_play, daemon=True, name="idle_clip").start()
     except Exception as exc:
@@ -1944,7 +2074,7 @@ def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> Non
         "consciousness: asking %s about unknown visitor (slot=%s)",
         engaged_name, ripe_slot,
     )
-    _generate_and_speak(
+    if not _generate_and_speak(
         f"You're talking with '{first_name}' and a new unfamiliar face has just "
         f"joined the view. In one short in-character Rex line, ask {first_name} "
         f"who the newcomer is AND what their relationship to {first_name} is — "
@@ -1952,7 +2082,10 @@ def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> Non
         f"and curious, one line only, ending with a question mark.",
         emotion="curious",
         wait_secs=getattr(config, "IDENTITY_RESPONSE_WAIT_SECS", 20.0),
-    )
+        purpose="relationship_inquiry",
+    ):
+        _pending_relationship_prompt.clear()
+        _pending_relationship_context.clear()
 
 
 def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
@@ -2242,7 +2375,17 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         _log.info("consciousness: startup greeting for %s", person_name)
 
                     _generate_and_speak_presence(
-                        prompt, label=label, tag_key=key, emotion=emotion,
+                        prompt,
+                        label=label,
+                        tag_key=key,
+                        emotion=emotion,
+                        purpose=(
+                            "emotional_checkin"
+                            if "emotional check-in" in label
+                            else "memory_followup"
+                            if "followup" in label or "anticipation" in label
+                            else "presence_reaction"
+                        ),
                     )
             continue
 
@@ -2280,6 +2423,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     label=f"return anticipation for {person_name}",
                     tag_key=key,
                     emotion="curious",
+                    purpose="memory_followup",
                 )
                 continue
             appearance_hint = _pick_appearance_hint(person_db_id)
@@ -2419,6 +2563,7 @@ def _step_third_party_awareness(snapshot: dict, profile: SituationProfile) -> No
                 label=f"third-party callout for {pid}",
                 tag_key=f"third_party:{pid}",
                 emotion="curious",
+                purpose="third_party_awareness",
             )
             # One callout per tick to avoid stacking lines.
             break
@@ -2573,6 +2718,7 @@ def _step_overheard_chime_in(snapshot: dict, profile: SituationProfile) -> None:
         emotion="curious" if sentiment == "neutral" else (
             "happy" if sentiment == "positive" else "annoyed"
         ),
+        purpose="overheard_chime_in",
     )
 
 
@@ -2660,12 +2806,12 @@ def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
             f"the holiday — just ask the question, in Rex's voice."
         )
 
-        _holiday_plans_asked.add((engaged_id, target["date"]))
-        _log.info(
-            "consciousness: holiday plans question for person_id=%s — %s (T-%dd, %s)",
-            engaged_id, target["name"], days_until, target["window"],
-        )
-        _generate_and_speak(prompt, emotion="curious")
+        if _generate_and_speak(prompt, emotion="curious", purpose="memory_followup"):
+            _holiday_plans_asked.add((engaged_id, target["date"]))
+            _log.info(
+                "consciousness: holiday plans question for person_id=%s — %s (T-%dd, %s)",
+                engaged_id, target["name"], days_until, target["window"],
+            )
     except Exception as exc:
         _log.debug("holiday plans step error: %s", exc)
 
@@ -2805,12 +2951,12 @@ def _step_weekly_smalltalk(snapshot: dict, profile: SituationProfile) -> None:
                 )
             emotion = "curious"
 
-        _weekly_smalltalk_asked.add(dedupe_key)
-        _log.info(
-            "consciousness: weekly small-talk for person_id=%s — slot=%s (week %d/%d)",
-            engaged_id, slot, iso_week, iso_year,
-        )
-        _generate_and_speak(prompt, emotion=emotion)
+        if _generate_and_speak(prompt, emotion=emotion, purpose="small_talk"):
+            _weekly_smalltalk_asked.add(dedupe_key)
+            _log.info(
+                "consciousness: weekly small-talk for person_id=%s — slot=%s (week %d/%d)",
+                engaged_id, slot, iso_week, iso_year,
+            )
     except Exception as exc:
         _log.debug("weekly smalltalk step error: %s", exc)
 
@@ -2901,17 +3047,17 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
                     f"'how's that going?' for milestone)."
                 )
                 emotion = "sad" if valence < 0 else "happy"
-                _emotional_checkin_fired.add(engaged_id)
-                try:
-                    emo_events.mark_acknowledged(int(ev["id"]))
-                except Exception:
-                    pass
-                _log.info(
-                    "consciousness: proactive emotional check-in (A: "
-                    "unacknowledged %s event) for person_id=%s",
-                    cat, engaged_id,
-                )
-                _generate_and_speak(prompt, emotion=emotion)
+                if _generate_and_speak(prompt, emotion=emotion, purpose="emotional_checkin"):
+                    _emotional_checkin_fired.add(engaged_id)
+                    try:
+                        emo_events.mark_acknowledged(int(ev["id"]))
+                    except Exception:
+                        pass
+                    _log.info(
+                        "consciousness: proactive emotional check-in (A: "
+                        "unacknowledged %s event) for person_id=%s",
+                        cat, engaged_id,
+                    )
                 return
 
         # ── Trigger B: sustained negative affect ───────────────────────────
@@ -2971,14 +3117,14 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
             f"question that's easy to deflect."
         )
         emotion = "neutral"
-        _emotional_checkin_fired.add(engaged_id)
-        _negative_streak_started_at.pop(engaged_id, None)
-        _log.info(
-            "consciousness: proactive emotional check-in (B: sustained %s, "
-            "streak=%.1fs, conf=%.2f) for person_id=%s",
-            affect, now - streak_start, confidence, engaged_id,
-        )
-        _generate_and_speak(prompt, emotion=emotion)
+        if _generate_and_speak(prompt, emotion=emotion, purpose="emotional_checkin"):
+            _emotional_checkin_fired.add(engaged_id)
+            _negative_streak_started_at.pop(engaged_id, None)
+            _log.info(
+                "consciousness: proactive emotional check-in (B: sustained %s, "
+                "streak=%.1fs, conf=%.2f) for person_id=%s",
+                affect, now - streak_start, confidence, engaged_id,
+            )
     except Exception as exc:
         _log.debug("emotional check-in step error: %s", exc)
 

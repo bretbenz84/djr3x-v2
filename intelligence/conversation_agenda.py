@@ -9,6 +9,10 @@ turning the current context into a single short directive for the LLM.
 from __future__ import annotations
 
 import re
+import threading
+import time
+import uuid
+from dataclasses import dataclass
 from typing import Optional
 
 import config
@@ -24,9 +28,172 @@ _QUESTION_START = re.compile(
 )
 
 
+@dataclass
+class _ProactiveClaim:
+    token: str
+    purpose: str
+    priority: int
+    label: str
+    expires_at: float
+
+
+_PROACTIVE_RULES: dict[str, tuple[int, str]] = {
+    "emotional_checkin": (
+        100,
+        "check in about the sensitive emotional context only. No roasts, no "
+        "extra small talk, no visual riff unless the human invites it.",
+    ),
+    "relationship_inquiry": (
+        95,
+        "identify or ask about the unfamiliar person only. Do not add unrelated "
+        "banter or a second question.",
+    ),
+    "identity_prompt": (
+        92,
+        "ask the unknown person who they are only. Do not stack another topic.",
+    ),
+    "presence_reaction": (
+        80,
+        "react to the person entering or leaving only. Keep it to one line.",
+    ),
+    "overheard_chime_in": (
+        75,
+        "briefly chime in because Rex was being discussed. Do not start an "
+        "interview or change topics.",
+    ),
+    "third_party_awareness": (
+        72,
+        "acknowledge the nearby third party only. Do not redirect the whole "
+        "conversation or ask another question.",
+    ),
+    "reengagement": (
+        70,
+        "recapture attention with one line only. Do not ask an unrelated question.",
+    ),
+    "memory_followup": (
+        65,
+        "follow up on the remembered plan or date only. No extra question.",
+    ),
+    "visual_curiosity": (
+        55,
+        "ask one question based on the visible scene only. Do not also bring up "
+        "memory, holidays, or emotional check-ins.",
+    ),
+    "small_talk": (
+        45,
+        "ask one small-talk question only. Do not stack a second prompt.",
+    ),
+    "world_reaction": (
+        40,
+        "react to the world-state change only. No follow-up question unless the "
+        "prompt explicitly requires one.",
+    ),
+    "ambient_observation": (
+        30,
+        "make one ambient observation only. Do not ask a question.",
+    ),
+    "appearance_riff": (
+        28,
+        "make one appearance or style observation only. Keep it non-sensitive.",
+    ),
+    "idle_monologue": (
+        15,
+        "say one idle/private line only. Do not pull in another topic.",
+    ),
+}
+
+_proactive_lock = threading.Lock()
+_active_proactive_claim: Optional[_ProactiveClaim] = None
+
+
 def _looks_like_user_question(text: str) -> bool:
     cleaned = (text or "").strip()
     return bool(cleaned) and ("?" in cleaned or bool(_QUESTION_START.search(cleaned)))
+
+
+def claim_proactive_purpose(
+    purpose: str,
+    *,
+    priority: Optional[int] = None,
+    label: str = "",
+    ttl_secs: float = 18.0,
+) -> Optional[str]:
+    """
+    Reserve the next proactive speech slot for one conversational purpose.
+
+    Background behaviors often launch LLM calls in parallel. A claim gives the
+    highest-priority purpose ownership while the line is being generated, so a
+    lower-priority visual riff or idle thought cannot sneak in underneath an
+    emotional check-in or identity prompt.
+    """
+    global _active_proactive_claim
+
+    now = time.monotonic()
+    rule_priority = _PROACTIVE_RULES.get(purpose, (20, ""))[0]
+    requested_priority = int(rule_priority if priority is None else priority)
+
+    with _proactive_lock:
+        if (
+            _active_proactive_claim is not None
+            and _active_proactive_claim.expires_at <= now
+        ):
+            _active_proactive_claim = None
+
+        if _active_proactive_claim is not None:
+            if requested_priority <= _active_proactive_claim.priority:
+                return None
+
+        token = uuid.uuid4().hex
+        _active_proactive_claim = _ProactiveClaim(
+            token=token,
+            purpose=purpose,
+            priority=requested_priority,
+            label=label,
+            expires_at=now + max(1.0, float(ttl_secs)),
+        )
+        return token
+
+
+def proactive_claim_is_current(token: Optional[str]) -> bool:
+    if not token:
+        return True
+    now = time.monotonic()
+    with _proactive_lock:
+        return (
+            _active_proactive_claim is not None
+            and _active_proactive_claim.token == token
+            and _active_proactive_claim.expires_at > now
+        )
+
+
+def release_proactive_claim(token: Optional[str]) -> None:
+    global _active_proactive_claim
+    if not token:
+        return
+    with _proactive_lock:
+        if (
+            _active_proactive_claim is not None
+            and _active_proactive_claim.token == token
+        ):
+            _active_proactive_claim = None
+
+
+def proactive_purpose_directive(purpose: str) -> str:
+    rule = _PROACTIVE_RULES.get(purpose)
+    if not rule:
+        return (
+            "Proactive agenda: this unsolicited line must have exactly ONE "
+            "purpose. Do not stack a question, a memory callback, a roast, and "
+            "an environment remark together."
+        )
+    return (
+        "Proactive agenda: this unsolicited line must have exactly ONE purpose. "
+        f"Primary purpose: {purpose}. Instruction: {rule[1]}"
+    )
+
+
+def with_proactive_directive(prompt: str, purpose: str) -> str:
+    return f"{proactive_purpose_directive(purpose)}\n\n{prompt}"
 
 
 def _known_fact_keys(person_id: int) -> tuple[set[str], set[str]]:
