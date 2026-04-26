@@ -1611,7 +1611,26 @@ _EMOTIONAL_BOUNDARY_PAT = re.compile(
     r"please don'?t ask|please do not ask|"
     r"stop asking|stop bringing (that|it) up|"
     r"can we not|not talk about (that|it)|"
+    r"don'?t talk about (this|that|it)( anymore| again)?|"
+    r"do not talk about (this|that|it)( anymore| again)?|"
+    r"stop talking about (this|that|it)|"
+    r"don'?t bring (this|that|it) up( anymore| again)?|"
+    r"do not bring (this|that|it) up( anymore| again)?|"
+    r"don'?t mention (this|that|it)( anymore| again)?|"
+    r"do not mention (this|that|it)( anymore| again)?|"
     r"drop it|leave it alone|no more check-?ins?"
+    r")\b",
+    re.IGNORECASE,
+)
+_EMOTIONAL_TOPIC_BOUNDARY_PAT = re.compile(
+    r"\b("
+    r"don'?t talk about (this|that|it)( anymore| again)?|"
+    r"do not talk about (this|that|it)( anymore| again)?|"
+    r"stop talking about (this|that|it)|"
+    r"don'?t bring (this|that|it) up( anymore| again)?|"
+    r"do not bring (this|that|it) up( anymore| again)?|"
+    r"don'?t mention (this|that|it)( anymore| again)?|"
+    r"do not mention (this|that|it)( anymore| again)?"
     r")\b",
     re.IGNORECASE,
 )
@@ -1651,7 +1670,10 @@ def _handle_emotional_checkin_boundary(
             reason=reason,
             window_minutes=int(getattr(config, "EMOTIONAL_CHECKIN_BOUNDARY_WINDOW_MINUTES", 20)),
         )
-        if muted is None and _grief_flow_active(person_id):
+        if muted is None and (
+            _grief_flow_active(person_id)
+            or _EMOTIONAL_TOPIC_BOUNDARY_PAT.search(text)
+        ):
             muted = emotional_events.mute_latest_active_negative_for_person(
                 person_id,
                 reason=reason,
