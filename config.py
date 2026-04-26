@@ -403,7 +403,7 @@ SCENE_AMBIENT_LOUD_RMS  = 0.07   # above → "loud"; between → "moderate"
 
 # Music detection: mean squared energy per frequency band (after normalising FFT
 # by window length) must exceed this to count a band as active.
-SCENE_MUSIC_BAND_ENERGY_MIN  = 2e-6
+SCENE_MUSIC_BAND_ENERGY_MIN  = 2-6
 # Minimum number of the three bands (bass/mid/treble) that must be active.
 SCENE_MUSIC_ACTIVE_BANDS_MIN = 2
 
@@ -970,8 +970,8 @@ ASPIRATIONS = [
 # Controls pre-recorded startup/shutdown clip playback only.
 # Set either to True to enable clip playback for that phase.
 # These toggles do not affect live TTS, wake-word listening, or DJ playback.
-PLAY_STARTUP_AUDIO = True
-PLAY_SHUTDOWN_AUDIO = True
+PLAY_STARTUP_AUDIO = False
+PLAY_SHUTDOWN_AUDIO = False
 
 STARTUP_AUDIO_FILES = [
     "assets/audio/startup/light_speed.mp3",
