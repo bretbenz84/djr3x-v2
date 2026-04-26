@@ -88,6 +88,12 @@ ls /dev/tty.usb*
 
 Use that to find connected serial devices for Maestro and Arduino hardware. For camera setup, update `CAMERA_INDEX` or `CAMERA_DEVICE_NAME` in `.env`.
 
+## Servo Safety
+
+Do not connect a Pololu Maestro to live servos until the servo limits have been configured in the Maestro Control Center app. Set safe minimum, maximum, neutral, speed, and acceleration values there first, write those values down, and then update the matching servo limits in [config.py](config.py).
+
+Connecting the Maestro before limits are programmed can drive a servo past its safe travel range and damage the mechanism.
+
 ## Project Layout
 
 ```text
