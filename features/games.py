@@ -815,8 +815,9 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
         "current_clue": clue,
         "last_category": clue.get("category"),
         "awaiting_prompt_delivery": True,
-        "pending_after_response_clip": "theme",
     })
+    if bool(getattr(config, "JEOPARDY_PLAY_THINKING_THEME", False)):
+        _game_state["pending_after_response_clip"] = "theme"
 
     daily_line = (
         "Daily Double. Automatic double, because my wagering subsystem was built during lunch. "

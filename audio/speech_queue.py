@@ -80,6 +80,7 @@ class _SpeechQueue:
         self._seq = 0
         self._speaking = False
         self._current_priority: int = -1
+        self._current_audio_path: Optional[str] = None
 
         threading.Thread(
             target=self._worker, daemon=True, name="speech-queue-worker"
@@ -164,6 +165,11 @@ class _SpeechQueue:
         with self._lock:
             return self._speaking
 
+    def current_audio_path(self) -> Optional[str]:
+        """Return the direct audio file currently playing, if any."""
+        with self._lock:
+            return self._current_audio_path
+
     # ── Internal ───────────────────────────────────────────────────────────────
 
     def _add(
@@ -227,6 +233,7 @@ class _SpeechQueue:
             with self._lock:
                 self._speaking = True
                 self._current_priority = item.priority
+                self._current_audio_path = item.audio_path
 
             try:
                 try:
@@ -264,6 +271,7 @@ class _SpeechQueue:
                 with self._lock:
                     self._speaking = False
                     self._current_priority = -1
+                    self._current_audio_path = None
                 item.done.set()
 
     def _play_file(self, path: str) -> None:
@@ -408,3 +416,8 @@ def has_waiting_with_tag(tag: str) -> bool:
 def is_speaking() -> bool:
     """True while the worker is actively playing audio."""
     return _queue.is_speaking()
+
+
+def current_audio_path() -> Optional[str]:
+    """Return the direct audio file currently playing, if any."""
+    return _queue.current_audio_path()

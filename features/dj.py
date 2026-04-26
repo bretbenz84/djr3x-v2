@@ -242,6 +242,11 @@ def set_volume(level: float) -> None:
     logger.debug("[dj] Volume → %.2f", _volume)
 
 
+def get_volume() -> float:
+    """Return current playback volume."""
+    return _volume
+
+
 def volume_up(step: float = _VOLUME_STEP) -> float:
     """Increase playback volume by step and return the new level."""
     set_volume(_volume + step)

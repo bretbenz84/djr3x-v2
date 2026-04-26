@@ -646,7 +646,7 @@ Expected:
 - Rex names the players and categories, without reading every dollar value on the board.
 - The board stinger plays when the board is ready.
 - Category/value selections like `Birds for 200` produce a clue.
-- The theme plays after the clue while answers are open.
+- Rex listens for answers immediately after the clue; the thinking theme is disabled by default.
 - Correct answers play the right-answer stinger and update scores.
 - Wrong answers play the incorrect-answer stinger and update scores.
 - `Pass`, `I don't know`, or a silent timeout should reveal the answer.

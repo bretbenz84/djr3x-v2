@@ -399,6 +399,41 @@ def normalize_answer(text: str) -> str:
     return " ".join(text.split())
 
 
+def _meaningful_tokens(text: str) -> list[str]:
+    return [
+        token
+        for token in normalize_answer(text).split()
+        if len(token) > 1 and token not in {"to", "of", "in", "on", "for"}
+    ]
+
+
+def _requires_all_parts(raw_answer: str) -> bool:
+    return bool(re.search(r"\s(?:&|and)\s", raw_answer or "", re.IGNORECASE))
+
+
+def _is_reasonable_partial(user: str, expected: str, raw_answer: str) -> bool:
+    """Accept natural shorthand like "license" for "driver's license".
+
+    Avoid accepting one piece of a genuinely two-part answer, such as
+    "license" for "license & registration".
+    """
+    if _requires_all_parts(raw_answer):
+        return False
+
+    user_tokens = set(_meaningful_tokens(user))
+    expected_tokens = set(_meaningful_tokens(expected))
+    if not user_tokens or not expected_tokens:
+        return False
+
+    # The user supplied a specific core noun from a short modifier+noun answer.
+    if user_tokens < expected_tokens and len(user_tokens) == 1 and len(expected_tokens) <= 2:
+        token = next(iter(user_tokens))
+        return len(token) >= 5
+
+    # The user included all expected words plus harmless extras.
+    return expected_tokens.issubset(user_tokens)
+
+
 def is_correct(user_answer: str, expected_answer: str) -> bool:
     threshold = int(getattr(config, "JEOPARDY_FUZZY_THRESHOLD", 0.78) * 100)
     user = normalize_answer(user_answer)
@@ -412,9 +447,13 @@ def is_correct(user_answer: str, expected_answer: str) -> bool:
             return True
         if fuzz.ratio(user, expected) >= threshold:
             return True
-        if len(expected) >= 5 and fuzz.partial_ratio(user, expected) >= threshold + 5:
+        if (
+            not _requires_all_parts(candidate)
+            and len(expected) >= 5
+            and fuzz.partial_ratio(user, expected) >= threshold + 5
+        ):
             return True
-        if fuzz.token_set_ratio(user, expected) >= threshold:
+        if _is_reasonable_partial(user, expected, candidate):
             return True
     return False
 

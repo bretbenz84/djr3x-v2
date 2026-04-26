@@ -74,9 +74,10 @@ def set_playing(is_playing: bool) -> None:
             # Keep suppression active for a short tail so any of Rex's voice
             # that has already bled into the mic buffer is still attenuated.
             _suppress_until = time.monotonic() + config.POST_PLAYBACK_SUPPRESSION_SECS
-            # Drop accumulated mic audio so Whisper never sees Rex's own voice.
-            from audio import stream as _stream
-            _stream.flush()
+            if not _playback_canceled:
+                # Drop accumulated mic audio so Whisper never sees Rex's own voice.
+                from audio import stream as _stream
+                _stream.flush()
         else:
             # Playback starting — cancel any leftover tail from a previous run
             # and clear the cancel flag so this segment's duration guard is armed.

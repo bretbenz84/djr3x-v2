@@ -227,6 +227,42 @@ def _can_speak() -> bool:
     return state_module.get_state() not in (State.QUIET, State.SHUTDOWN)
 
 
+def _dj_is_playing() -> bool:
+    try:
+        from features import dj as dj_mod
+        return bool(dj_mod.is_playing())
+    except Exception:
+        return False
+
+
+def _duck_dj_for_speech() -> Optional[float]:
+    if not bool(getattr(config, "DJ_DUCK_DURING_SPEECH", True)):
+        return None
+    try:
+        from features import dj as dj_mod
+        if not dj_mod.is_playing():
+            return None
+        original = float(dj_mod.get_volume())
+        ducked = min(original, float(getattr(config, "DJ_LISTEN_DUCK_VOLUME", 0.18)))
+        if ducked < original:
+            dj_mod.set_volume(ducked)
+            return original
+    except Exception as exc:
+        _log.debug("DJ duck failed: %s", exc)
+    return None
+
+
+def _restore_dj_volume(volume: Optional[float]) -> None:
+    if volume is None:
+        return
+    try:
+        from features import dj as dj_mod
+        if dj_mod.is_playing():
+            dj_mod.set_volume(volume)
+    except Exception as exc:
+        _log.debug("DJ volume restore failed: %s", exc)
+
+
 def _speak_blocking(
     text: str,
     emotion: str = "neutral",
@@ -4871,7 +4907,15 @@ def _loop() -> None:
 
             # Never let Rex's own playback in IDLE self-trigger the interaction
             # loop into ACTIVE.
-            if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
+            listen_during_dj = (
+                bool(getattr(config, "IDLE_LISTEN_DURING_DJ_PLAYBACK", True))
+                and _dj_is_playing()
+            )
+            if (
+                speech_queue.is_speaking()
+                or output_gate.is_busy()
+                or (echo_cancel.is_suppressed() and not listen_during_dj)
+            ):
                 _stop_event.wait(0.05)
                 continue
 
@@ -4908,6 +4952,7 @@ def _loop() -> None:
             speech_start = time.monotonic()
             _last_speech_at = speech_start
             _begin_user_turn()
+            _dj_restore_volume = _duck_dj_for_speech()
             try:
                 audio_segment = _accumulate_speech(speech_start)
                 if audio_segment is None or len(audio_segment) == 0:
@@ -4916,13 +4961,24 @@ def _loop() -> None:
                 _last_speech_at = time.monotonic()
                 _handle_speech_segment(audio_segment)
             finally:
+                _restore_dj_volume(_dj_restore_volume)
                 _end_user_turn()
             continue
 
         # ── ACTIVE — full continuous listening ─────────────────────────────────
 
         # Idle timeout → end session and return to IDLE
-        if time.monotonic() - _last_speech_at >= idle_timeout:
+        effective_idle_timeout = idle_timeout
+        try:
+            from features import games as games_mod
+            if games_mod.is_active():
+                effective_idle_timeout = max(
+                    effective_idle_timeout,
+                    float(getattr(config, "ACTIVE_GAME_IDLE_TIMEOUT_SECS", effective_idle_timeout)),
+                )
+        except Exception:
+            pass
+        if time.monotonic() - _last_speech_at >= effective_idle_timeout:
             _log.info("[interaction] conversation idle timeout — returning to IDLE")
             _end_session()
             state_module.set_state(State.IDLE)
@@ -4963,6 +5019,11 @@ def _loop() -> None:
         # Rex's voice tail, then WAIT for a fresh VAD rising edge before
         # accumulating. Without this, the rolling buffer still holds ~seconds of
         # Rex's own voice which Whisper concatenates onto the user's utterance.
+        direct_audio_path = None
+        try:
+            direct_audio_path = speech_queue.current_audio_path()
+        except Exception:
+            direct_audio_path = None
         if speech_queue.is_speaking() or output_gate.is_busy():
             _interrupted.set()
             try:
@@ -4974,16 +5035,22 @@ def _loop() -> None:
             # Brief settle so the worker can clean up its finally block
             time.sleep(0.1)
             _interrupted.clear()
-            _interrupt_ack()
+            if direct_audio_path:
+                # Non-speech clips/music beds are interruptible: keep the user's
+                # current utterance instead of saying "yeah?" and forcing a repeat.
+                _log.info("[interaction] direct audio interrupted by user speech: %s", direct_audio_path)
+            else:
+                _interrupt_ack()
 
-            # Drop the polluted buffer and re-arm. The next user utterance must
-            # trigger VAD again; the original speech_start is discarded.
-            stream.flush()
-            _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
-            _post_tts_flush_needed = True
-            _end_user_turn()
-            continue
+                # Drop the polluted buffer and re-arm. The next user utterance must
+                # trigger VAD again; the original speech_start is discarded.
+                stream.flush()
+                _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
+                _post_tts_flush_needed = True
+                _end_user_turn()
+                continue
 
+        _dj_restore_volume = _duck_dj_for_speech()
         try:
             # Accumulate the full utterance
             audio_segment = _accumulate_speech(speech_start)
@@ -4993,6 +5060,7 @@ def _loop() -> None:
             _last_speech_at = time.monotonic()
             _handle_speech_segment(audio_segment)
         finally:
+            _restore_dj_volume(_dj_restore_volume)
             _end_user_turn()
 
 
