@@ -723,23 +723,23 @@ _select_serial_port_for_env() {
     rm -f "$ranked_file"
 }
 
-_choose_arduino_fqbn() {
+_choose_arduino_board_fqbn() {
     local label="$1"
     local default_fqbn="$2"
     echo ""
-    echo "Arduino board profile for $label:"
+    echo "What kind of Arduino is connected for $label?"
     echo "  [1] Default for this device: $default_fqbn"
-    echo "  [2] Arduino Nano ATmega328P: arduino:avr:nano"
-    echo "  [3] Arduino Nano old bootloader: arduino:avr:nano:cpu=atmega328old"
-    echo "  [4] Arduino Uno: arduino:avr:uno"
+    echo "  [2] Arduino Uno / Uno-compatible: arduino:avr:uno"
+    echo "  [3] Arduino Nano ATmega328P, current bootloader: arduino:avr:nano"
+    echo "  [4] Arduino Nano ATmega328P, old bootloader / many CH340 clones: arduino:avr:nano:cpu=atmega328old"
     echo "  [5] Custom FQBN"
     local choice=""
-    choice="$(_prompt_input "Board profile [1]: ")"
+    choice="$(_prompt_input "Arduino board [1]: ")"
     case "$choice" in
         ""|1) printf "%s" "$default_fqbn" ;;
-        2) printf "%s" "arduino:avr:nano" ;;
-        3) printf "%s" "arduino:avr:nano:cpu=atmega328old" ;;
-        4) printf "%s" "arduino:avr:uno" ;;
+        2) printf "%s" "arduino:avr:uno" ;;
+        3) printf "%s" "arduino:avr:nano" ;;
+        4) printf "%s" "arduino:avr:nano:cpu=atmega328old" ;;
         5)
             local custom=""
             custom="$(_prompt_input "Custom FQBN: ")"
@@ -774,7 +774,7 @@ _compile_and_upload_arduino() {
     fi
 
     local fqbn=""
-    fqbn="$(_choose_arduino_fqbn "$label" "$default_fqbn")"
+    fqbn="$(_choose_arduino_board_fqbn "$label" "$default_fqbn")"
     if [[ -z "$fqbn" ]]; then
         warn "No FQBN entered — skipping $label firmware upload."
         return
@@ -786,13 +786,13 @@ _compile_and_upload_arduino() {
             ok "$label firmware compiled."
         else
             warn "$label firmware compile failed."
-            echo "Options: [r]etry, change [b]oard profile, or [s]kip."
+            echo "Options: [r]etry, change Arduino [b]oard, or [s]kip."
             local compile_choice=""
             compile_choice="$(_prompt_input "Compile failure choice [r/b/s]: ")"
             compile_choice="$(printf "%s" "$compile_choice" | tr '[:upper:]' '[:lower:]')"
             case "$compile_choice" in
                 b|board)
-                    fqbn="$(_choose_arduino_fqbn "$label" "$default_fqbn")"
+                    fqbn="$(_choose_arduino_board_fqbn "$label" "$default_fqbn")"
                     [[ -n "$fqbn" ]] || return
                     continue
                     ;;
@@ -815,13 +815,13 @@ _compile_and_upload_arduino() {
             fi
 
             warn "$label firmware upload failed."
-            echo "Options: [r]etry upload, change [b]oard profile, change [p]ort, or [s]kip."
+            echo "Options: [r]etry upload, change Arduino [b]oard, change [p]ort, or [s]kip."
             local upload_choice=""
             upload_choice="$(_prompt_input "Upload failure choice [r/b/p/s]: ")"
             upload_choice="$(printf "%s" "$upload_choice" | tr '[:upper:]' '[:lower:]')"
             case "$upload_choice" in
                 b|board)
-                    fqbn="$(_choose_arduino_fqbn "$label" "$default_fqbn")"
+                    fqbn="$(_choose_arduino_board_fqbn "$label" "$default_fqbn")"
                     [[ -n "$fqbn" ]] || return
                     break
                     ;;
@@ -930,11 +930,11 @@ _configure_droid_hardware_interactive() {
     _snapshot_dev_names "$HARDWARE_BASELINE_FILE"
 
     _guided_arduino_device_setup \
-        "Chest Arduino Nano" \
+        "Chest LED Arduino" \
         "ARDUINO_CHEST_PORT" \
         "chest" \
         "$PROJECT_DIR/arduino/chest_nano" \
-        "Connect the chest Arduino Nano by USB, then press Enter..." \
+        "Connect the chest LED Arduino by USB, then press Enter..." \
         "After upload, connect the chest LEDs: data to Arduino pin 6, plus 5V and ground to the LED power rails." \
         "arduino:avr:nano"
 
