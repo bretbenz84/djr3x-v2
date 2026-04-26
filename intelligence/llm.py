@@ -736,8 +736,8 @@ def extract_relationship_introduction(
     prompt = (
         f'The person speaking is named {speaker_name!r}. They just said:\n'
         f'  "{user_text}"\n\n'
-        "Rex had just asked them who a new unfamiliar person in the room is, and "
-        "what that person's relationship to them is.\n\n"
+        "This may be either a direct introduction (\"this is my partner JT\") "
+        "or an answer after Rex asked who an unfamiliar person is.\n\n"
         "From the speaker's reply, extract:\n"
         '  "name": the newcomer\'s first name (string), or null if not stated.\n'
         '  "relationship": a single lowercase label for the relationship FROM THE '

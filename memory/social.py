@@ -26,7 +26,7 @@ _log = logging.getLogger(__name__)
 
 # Labels that are symmetric — if A→B is "partner" then B→A is also "partner".
 _SYMMETRIC_LABELS = frozenset({
-    "partner", "spouse", "wife", "husband",
+    "partner", "spouse", "wife", "husband", "girlfriend", "boyfriend",
     "friend", "bestfriend", "best_friend",
     "sibling", "brother", "sister",
     "cousin",
@@ -35,6 +35,24 @@ _SYMMETRIC_LABELS = frozenset({
     "colleague", "coworker", "co_worker",
     "classmate",
 })
+
+# Directional labels are stored from the speaker's perspective:
+# Bret -> Bob, "father" means "Bob is Bret's father."
+_DIRECTIONAL_DISPLAY = {
+    "father": "{to} is {from_}'s father",
+    "mother": "{to} is {from_}'s mother",
+    "parent": "{to} is {from_}'s parent",
+    "aunt": "{to} is {from_}'s aunt",
+    "uncle": "{to} is {from_}'s uncle",
+    "boss": "{to} is {from_}'s boss",
+    "supervisor": "{to} is {from_}'s supervisor",
+    "manager": "{to} is {from_}'s manager",
+    "employee": "{to} is {from_}'s employee",
+    "child": "{to} is {from_}'s child",
+    "son": "{to} is {from_}'s son",
+    "daughter": "{to} is {from_}'s daughter",
+    "owner": "{to} is {from_}'s owner",
+}
 
 
 def _now() -> str:
@@ -143,12 +161,19 @@ def summarize_for_prompt(person_id: int, person_name: str) -> str:
         return ""
     parts: list[str] = []
     for edge in edges:
+        rel = edge["relationship"]
         if edge["from_person_id"] == person_id:
             other = edge.get("to_name") or f"person_{edge['to_person_id']}"
-            parts.append(f"{person_name} is {edge['relationship']} of {other}")
+            if rel in _DIRECTIONAL_DISPLAY:
+                parts.append(_DIRECTIONAL_DISPLAY[rel].format(from_=person_name, to=other))
+            else:
+                parts.append(f"{person_name} is {rel} of {other}")
         else:
             other = edge.get("from_name") or f"person_{edge['from_person_id']}"
-            parts.append(f"{other} says {person_name} is their {edge['relationship']}")
+            if rel in _DIRECTIONAL_DISPLAY:
+                parts.append(_DIRECTIONAL_DISPLAY[rel].format(from_=other, to=person_name))
+            else:
+                parts.append(f"{other} says {person_name} is their {rel}")
     # Dedup identical lines (symmetric mirrors can produce duplicates once joined on names)
     seen: set[str] = set()
     unique = []
