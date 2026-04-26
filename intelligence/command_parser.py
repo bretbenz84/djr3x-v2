@@ -120,6 +120,17 @@ def _parse_visual_opinion(normalized: str, original: str) -> dict | None:
     return None
 
 
+def _parse_play_options(normalized: str) -> dict | None:
+    clean = _plain(normalized)
+    if clean in {
+        "what can you play",
+        "what do you play",
+        "what are you able to play",
+    }:
+        return {}
+    return None
+
+
 def _parse_wave(normalized: str, original: str) -> dict | None:
     clean = _plain(normalized)
     if not clean.startswith(("wave", "please wave", "can you wave", "can you please wave")):
@@ -351,6 +362,10 @@ def parse(text: str) -> CommandMatch | None:
     visual_opinion = _parse_visual_opinion(normalized, original)
     if visual_opinion is not None:
         return CommandMatch("directed_look", "pattern", visual_opinion)
+
+    play_options = _parse_play_options(normalized)
+    if play_options is not None:
+        return CommandMatch("query_play_options", "pattern", play_options)
 
     wave = _parse_wave(normalized, original)
     if wave is not None:

@@ -1797,6 +1797,11 @@ def _execute_command(
     if key == "wave_to":
         return _execute_wave_command(args, person_id, person_name)
 
+    if key == "query_play_options":
+        resp = "I can play music or games, which would you like?"
+        _speak_blocking(resp)
+        return resp
+
     # ── Time & date ────────────────────────────────────────────────────────────
     if key == "time_query":
         from awareness.chronoception import get_time_context
