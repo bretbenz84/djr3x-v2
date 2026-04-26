@@ -676,6 +676,33 @@ _maybe_open_usb_driver_links() {
     fi
 }
 
+_scan_for_serial_device_with_retry() {
+    local label="$1"
+    local after_file="$2"
+    local candidate_file="$3"
+
+    while true; do
+        _snapshot_dev_names "$after_file"
+        _print_new_dev_entries "$HARDWARE_BASELINE_FILE" "$after_file" || true
+        _serial_candidates_from_snapshot_diff "$HARDWARE_BASELINE_FILE" "$after_file" > "$candidate_file"
+
+        if [[ -s "$candidate_file" ]]; then
+            return 0
+        fi
+
+        _maybe_open_usb_driver_links
+        echo ""
+        echo "After installing drivers, swapping cables, or reconnecting $label, the device may need to be unplugged and plugged back in."
+        if _prompt_yes_no "Scan again for $label? [Y/n] " "y"; then
+            _prompt_continue "Connect or reconnect $label by USB, then press Enter..."
+            continue
+        fi
+
+        warn "Continuing without a newly detected $label device."
+        return 1
+    done
+}
+
 SELECTED_DEVICE_PORT=""
 SELECTED_DEVICE_CHANGED=0
 _select_serial_port_for_env() {
@@ -959,13 +986,7 @@ _guided_arduino_device_setup() {
     local candidate_file=""
     after_file="$(mktemp)"
     candidate_file="$(mktemp)"
-    _snapshot_dev_names "$after_file"
-    _print_new_dev_entries "$HARDWARE_BASELINE_FILE" "$after_file" || true
-    _serial_candidates_from_snapshot_diff "$HARDWARE_BASELINE_FILE" "$after_file" > "$candidate_file"
-
-    if [[ ! -s "$candidate_file" ]]; then
-        _maybe_open_usb_driver_links
-    fi
+    _scan_for_serial_device_with_retry "$label" "$after_file" "$candidate_file" || true
 
     _select_serial_port_for_env "$label" "$env_key" "$kind" "$candidate_file"
 
@@ -991,9 +1012,7 @@ _guided_maestro_setup() {
     local candidate_file=""
     after_file="$(mktemp)"
     candidate_file="$(mktemp)"
-    _snapshot_dev_names "$after_file"
-    _print_new_dev_entries "$HARDWARE_BASELINE_FILE" "$after_file" || true
-    _serial_candidates_from_snapshot_diff "$HARDWARE_BASELINE_FILE" "$after_file" > "$candidate_file"
+    _scan_for_serial_device_with_retry "Pololu Maestro" "$after_file" "$candidate_file" || true
 
     _select_serial_port_for_env "Pololu Maestro" "MAESTRO_PORT" "maestro" "$candidate_file"
 
