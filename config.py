@@ -85,6 +85,9 @@ MUSIC_DIR          = "assets/music"
 TTS_CACHE_DIR      = "assets/audio/tts_cache"
 AUDIO_CLIPS_DIR    = "assets/audio/clips"
 AUDIO_STARTUP_DIR  = "assets/audio/startup"
+JEOPARDY_DIR       = "assets/jeopardy"
+JEOPARDY_CLUES_FILE = "assets/jeopardy/clues.tsv"
+JEOPARDY_AUDIO_DIR = "assets/audio/jeopardy"
 DB_PATH            = "assets/memory/people.db"
 TRIVIA_DIR         = "assets/trivia"
 
@@ -1170,6 +1173,13 @@ INTEROCEPTION_UPDATE_INTERVAL_SECS = 5.0
 # Fuzzy match threshold for accepting trivia answers (0.0–1.0).
 # Applies to both fuzz.ratio and fuzz.partial_ratio comparisons.
 TRIVIA_FUZZY_THRESHOLD = 0.75
+
+# Jeopardy verbal game tuning. Answer timeout is intentionally generous because
+# users may be thinking, laughing, or taking turns in a room.
+JEOPARDY_FUZZY_THRESHOLD = 0.78
+JEOPARDY_SELECTION_FUZZY_THRESHOLD = 0.58
+JEOPARDY_MAX_PLAYERS = 3
+JEOPARDY_ANSWER_TIMEOUT_SECS = 14.0
 
 # How many times Rex will agree to play the same game within GAME_REPEAT_WINDOW_SECS
 # before refusing. Scaled up or down by the agreeability personality parameter.

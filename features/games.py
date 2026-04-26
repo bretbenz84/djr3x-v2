@@ -7,6 +7,7 @@ Supported games:
     "i_spy"            — Rex picks an object from the camera frame; player guesses
     "20_questions"     — Rex thinks of something; player asks yes/no questions
     "trivia"           — Rex asks one trivia question and judges the answer
+    "jeopardy"         — A verbal Jeopardy-style board with real clue data
     "word_association" — Rapid back-and-forth word chain
 
 Public API:
@@ -52,6 +53,7 @@ _GAME_DISPLAY_NAMES: dict[str, str] = {
     "i_spy":            "I Spy",
     "20_questions":     "20 Questions",
     "trivia":           "Trivia",
+    "jeopardy":         "Jeopardy",
     "word_association": "Word Association",
 }
 
@@ -67,6 +69,8 @@ _GAME_ALIASES: dict[str, str] = {
     "20questions":      "20_questions",
     "20_questions":     "20_questions",
     "trivia":           "trivia",
+    "jeopardy":         "jeopardy",
+    "jeopardy!":        "jeopardy",
     "word association": "word_association",
     "word_association": "word_association",
     "word assoc":       "word_association",
@@ -75,7 +79,10 @@ _GAME_ALIASES: dict[str, str] = {
 
 
 def _normalize_game(name: str) -> Optional[str]:
-    return _GAME_ALIASES.get(name.strip().lower())
+    clean = name.strip().lower()
+    if clean.startswith("jeopardy"):
+        return "jeopardy"
+    return _GAME_ALIASES.get(clean)
 
 
 # ── LLM helpers ───────────────────────────────────────────────────────────────
@@ -539,6 +546,397 @@ def _trivia_stop(person_id: Optional[int]) -> str:
     )
 
 
+# ── Jeopardy-style verbal game ────────────────────────────────────────────────
+
+_JEOPARDY_CLIPS = {
+    "intro": "jeopardy-intro.mp3",
+    "board": "jeopardy-board-sms.mp3",
+    "daily_double": "jeopardy-daily-double.mp3",
+    "right": "jeopardy-rightanswer.mp3",
+    "wrong": "jeopardy-incorrect-answer.mp3",
+    "timesup": "jeopardy-timesup.mp3",
+    "theme": "jeopardy-theme.mp3",
+    "outro": "jeopardy-outro-no-talking.mp3",
+}
+
+
+def _jeopardy_clip_path(key: str) -> Optional[str]:
+    filename = _JEOPARDY_CLIPS.get(key)
+    if not filename:
+        return None
+    path = Path(getattr(config, "JEOPARDY_AUDIO_DIR", "assets/audio/jeopardy")) / filename
+    if not path.exists():
+        _log.debug("[jeopardy] audio clip missing: %s", path)
+        return None
+    return str(path)
+
+
+def _jeopardy_queue_clip(key: str, *, priority: int = 1) -> None:
+    path = _jeopardy_clip_path(key)
+    if not path:
+        return
+    try:
+        from audio import speech_queue
+        speech_queue.enqueue_audio_file(
+            path,
+            priority=priority,
+            tag=f"jeopardy:{key}",
+        )
+    except Exception as exc:
+        _log.debug("[jeopardy] could not queue clip %s: %s", key, exc)
+
+
+def _jeopardy_person_name(person_id: Optional[int]) -> Optional[str]:
+    if person_id is None:
+        return None
+    try:
+        from memory import people as people_memory
+        row = people_memory.get_person(person_id)
+        if row and row.get("name"):
+            return str(row["name"])
+    except Exception as exc:
+        _log.debug("[jeopardy] person lookup failed: %s", exc)
+    return None
+
+
+def _jeopardy_current_player() -> dict:
+    players = _game_state.get("players") or [{"name": "Player", "score": 0}]
+    idx = int(_game_state.get("current_player_idx", 0)) % len(players)
+    return players[idx]
+
+
+def _jeopardy_advance_player() -> dict:
+    players = _game_state.get("players") or [{"name": "Player", "score": 0}]
+    idx = (int(_game_state.get("current_player_idx", 0)) + 1) % len(players)
+    _game_state["current_player_idx"] = idx
+    return players[idx]
+
+
+def _jeopardy_cancel_timeout() -> None:
+    timer = _game_state.pop("answer_timer", None)
+    _game_state.pop("answer_timer_token", None)
+    _game_state.pop("awaiting_prompt_delivery", None)
+    if timer is not None:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+
+
+def _jeopardy_finish_line(prefix: str = "") -> str:
+    try:
+        from features import jeopardy as jeopardy_bank
+        scores = jeopardy_bank.format_scores(_game_state.get("players") or [])
+    except Exception:
+        scores = "scores unavailable, naturally"
+    _jeopardy_cancel_timeout()
+    _jeopardy_queue_clip("outro")
+    return (
+        f"{prefix}That's the board. Final scores: {scores}. "
+        "Jeopardy systems powering down before someone asks me to host Wheel of Fortune."
+    )
+
+
+def _jeopardy_timeout_fired(token: str) -> None:
+    line = ""
+    with _lock:
+        if _active_game != "jeopardy":
+            return
+        if _game_state.get("phase") != "awaiting_answer":
+            return
+        if _game_state.get("answer_timer_token") != token:
+            return
+        clue = dict(_game_state.get("current_clue") or {})
+        if not clue:
+            return
+        _game_state.pop("answer_timer", None)
+        _game_state.pop("answer_timer_token", None)
+        _game_state.pop("current_clue", None)
+        _game_state["phase"] = "selecting"
+        if int((_game_state.get("board") or {}).get("remaining", 0) or 0) <= 0:
+            try:
+                from features import jeopardy as jeopardy_bank
+                scores = jeopardy_bank.format_scores(_game_state.get("players") or [])
+            except Exception:
+                scores = "scores unavailable"
+            _jeopardy_queue_clip("timesup")
+            _jeopardy_queue_clip("outro")
+            line = (
+                f"Time's up. Correct response was: {clue.get('answer', 'unknown')}. "
+                f"That's the board. Final scores: {scores}. "
+                "Jeopardy systems powering down before someone asks me to host Wheel of Fortune."
+            )
+            _clear_game()
+        else:
+            next_player = _jeopardy_advance_player()
+            line = (
+                f"Time's up. Correct response was: {clue.get('answer', 'unknown')}. "
+                f"{next_player['name']}, pick the next category and value."
+            )
+
+    if not line:
+        return
+    try:
+        from audio import speech_queue
+        from intelligence import llm
+        if "Time's up." in line and _active_game == "jeopardy":
+            _jeopardy_queue_clip("timesup")
+        speech_queue.enqueue(llm.clean_response_text(line), priority=1, tag="jeopardy:timeout")
+    except Exception as exc:
+        _log.debug("[jeopardy] timeout speech failed: %s", exc)
+
+
+def _jeopardy_arm_timeout() -> None:
+    if _active_game != "jeopardy":
+        return
+    if _game_state.get("phase") != "awaiting_answer":
+        return
+    if not _game_state.pop("awaiting_prompt_delivery", False):
+        return
+    timeout = float(getattr(config, "JEOPARDY_ANSWER_TIMEOUT_SECS", 14.0))
+    if timeout <= 0:
+        return
+    token = f"{time.monotonic():.6f}:{random.random():.6f}"
+    timer = threading.Timer(timeout, _jeopardy_timeout_fired, args=(token,))
+    timer.daemon = True
+    _game_state["answer_timer_token"] = token
+    _game_state["answer_timer"] = timer
+    timer.start()
+
+
+def _jeopardy_start(person_id: Optional[int]) -> str:
+    speaker_name = _jeopardy_person_name(person_id)
+    _jeopardy_queue_clip("intro")
+    _game_state.update({
+        "phase": "awaiting_players",
+        "speaker_name": speaker_name,
+    })
+    return _rex_respond(
+        "[GAME: Jeopardy — PLAYER SETUP] Rex is starting a verbal Jeopardy-style "
+        "game. Ask who is playing. Tell them they can say one, two, or three names "
+        "in one reply. Make it feel like a game-show intro, but keep it brief.",
+        person_id,
+    )
+
+
+def _jeopardy_begin_board(names: list[str], person_id: Optional[int]) -> tuple[str, bool]:
+    try:
+        from features import jeopardy as jeopardy_bank
+        board = jeopardy_bank.build_board()
+    except Exception as exc:
+        _log.error("[jeopardy] board build failed: %s", exc)
+        board = None
+
+    if not board:
+        _game_state.clear()
+        return (
+            _rex_respond(
+                "[GAME: Jeopardy — NO BOARD] Rex tried to start Jeopardy but no "
+                "playable clue board was available. Apologize in character and "
+                "suggest Trivia instead.",
+                person_id,
+            ),
+            True,
+        )
+
+    players = [{"name": name, "score": 0} for name in names]
+    _game_state.update({
+        "phase": "selecting",
+        "players": players,
+        "current_player_idx": 0,
+        "board": board,
+        "last_category": None,
+    })
+    _jeopardy_queue_clip("board")
+
+    board_text = jeopardy_bank.format_board(board)
+    player_text = ", ".join(name for name in names)
+    first = players[0]["name"]
+    return (
+        _rex_respond(
+            f"[GAME: Jeopardy — BOARD READY] Players: {player_text}. "
+            f"The board categories and values are: {board_text}. "
+            f"Rex welcomes the players with one funny quip, then names the categories "
+            f"and asks {first} to pick a category and value. Keep it concise but clear.",
+            person_id,
+        ),
+        False,
+    )
+
+
+def _jeopardy_handle_player_setup(text: str, person_id: Optional[int]) -> tuple[str, bool]:
+    try:
+        from features import jeopardy as jeopardy_bank
+        max_players = int(getattr(config, "JEOPARDY_MAX_PLAYERS", 3))
+        names = jeopardy_bank.parse_player_names(
+            text,
+            speaker_name=_game_state.get("speaker_name"),
+            limit=max_players,
+        )
+    except Exception as exc:
+        _log.debug("[jeopardy] player parse failed: %s", exc)
+        names = []
+
+    if not names:
+        return (
+            "I need actual player names, not mysterious cantina fog. Say something like 'Bret and Joy'.",
+            False,
+        )
+
+    return _jeopardy_begin_board(names, person_id)
+
+
+def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str, bool]:
+    try:
+        from features import jeopardy as jeopardy_bank
+        board = _game_state.get("board") or {}
+        clue, error = jeopardy_bank.parse_selection(
+            text,
+            board,
+            last_category=_game_state.get("last_category"),
+        )
+    except Exception as exc:
+        _log.error("[jeopardy] selection parse failed: %s", exc)
+        clue, error = None, "My board parser fell into a reactor shaft. Try the category and value again."
+
+    if not clue:
+        return (error, False)
+
+    player = _jeopardy_current_player()
+    effective_value = int(clue.get("value", 0) or 0)
+    daily = bool(clue.get("daily_double"))
+    if daily:
+        effective_value *= 2
+        _jeopardy_queue_clip("daily_double")
+
+    clue["effective_value"] = effective_value
+    _game_state.update({
+        "phase": "awaiting_answer",
+        "current_clue": clue,
+        "last_category": clue.get("category"),
+        "awaiting_prompt_delivery": True,
+        "pending_after_response_clip": "theme",
+    })
+
+    daily_line = (
+        "Daily Double. Automatic double, because my wagering subsystem was built during lunch. "
+        if daily else ""
+    )
+    return (
+        f"{daily_line}{player['name']}, {clue.get('category')} for ${clue.get('value')}. "
+        f"{clue.get('clue')} Answer in the form of a question.",
+        False,
+    )
+
+
+def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, bool]:
+    try:
+        from features import jeopardy as jeopardy_bank
+    except Exception as exc:
+        _log.error("[jeopardy] answer helper import failed: %s", exc)
+        jeopardy_bank = None
+
+    _jeopardy_cancel_timeout()
+    clue = dict(_game_state.get("current_clue") or {})
+    if not clue:
+        _game_state["phase"] = "selecting"
+        return ("I lost the clue state. Pick another square before I blame a power converter.", False)
+
+    players = _game_state.get("players") or [{"name": "Player", "score": 0}]
+    idx = int(_game_state.get("current_player_idx", 0)) % len(players)
+    player = players[idx]
+    answer = clue.get("answer", "unknown")
+    value = int(clue.get("effective_value", clue.get("value", 0)) or 0)
+
+    passed = bool(jeopardy_bank and jeopardy_bank.is_pass_or_timeout(text))
+    correct = bool(jeopardy_bank and jeopardy_bank.is_correct(text, answer))
+
+    _game_state.pop("current_clue", None)
+
+    done = int((_game_state.get("board") or {}).get("remaining", 0) or 0) <= 0
+    if passed:
+        _jeopardy_queue_clip("timesup")
+        if done:
+            response = _jeopardy_finish_line(f"No answer. Correct response was: {answer}. ")
+            return (response, True)
+        next_player = _jeopardy_advance_player()
+        _game_state["phase"] = "selecting"
+        return (
+            f"No answer. Correct response was: {answer}. "
+            f"Scores: {jeopardy_bank.format_scores(players) if jeopardy_bank else 'unknown'}. "
+            f"{next_player['name']}, choose the next square.",
+            False,
+        )
+
+    if correct:
+        player["score"] = int(player.get("score", 0)) + value
+        _jeopardy_queue_clip("right")
+        flourish = random.choice([
+            "Correct. The organics survive another clue.",
+            "Correct. I am marking this as suspiciously competent.",
+            "Correct. The scoreboard briefly respects you.",
+        ])
+        if done:
+            response = _jeopardy_finish_line(f"{flourish} ")
+            return (response, True)
+        _game_state["phase"] = "selecting"
+        scores = jeopardy_bank.format_scores(players) if jeopardy_bank else "scores unavailable"
+        return (
+            f"{flourish} ${value} to {player['name']}. Scores: {scores}. "
+            f"{player['name']}, pick the next category and value.",
+            False,
+        )
+
+    player["score"] = int(player.get("score", 0)) - value
+    _jeopardy_queue_clip("wrong")
+    if done:
+        response = _jeopardy_finish_line(
+            f"Incorrect. Correct response was: {answer}. "
+        )
+        return (response, True)
+
+    next_player = _jeopardy_advance_player()
+    _game_state["phase"] = "selecting"
+    scores = jeopardy_bank.format_scores(players) if jeopardy_bank else "scores unavailable"
+    roast = random.choice([
+        "A bold miss.",
+        "The board accepts your sacrifice.",
+        "That answer landed somewhere near Alderaan.",
+    ])
+    return (
+        f"{roast} Correct response was: {answer}. Scores: {scores}. "
+        f"{next_player['name']}, choose the next square.",
+        False,
+    )
+
+
+def _jeopardy_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
+    phase = _game_state.get("phase")
+    if phase == "awaiting_players":
+        return _jeopardy_handle_player_setup(text, person_id)
+    if phase == "selecting":
+        return _jeopardy_handle_selection(text, person_id)
+    if phase == "awaiting_answer":
+        return _jeopardy_handle_answer(text, person_id)
+    _game_state.clear()
+    return ("Jeopardy state went sideways. Game over before the lawyers arrive.", True)
+
+
+def _jeopardy_stop(person_id: Optional[int]) -> str:
+    try:
+        from features import jeopardy as jeopardy_bank
+        scores = jeopardy_bank.format_scores(_game_state.get("players") or [])
+    except Exception:
+        scores = "scores unavailable"
+    _jeopardy_cancel_timeout()
+    _jeopardy_queue_clip("outro")
+    _game_state.clear()
+    return (
+        f"Jeopardy stopped. Final scores: {scores}. "
+        "A merciful ending for everyone with a central nervous system."
+    )
+
+
 # ── Word Association game ─────────────────────────────────────────────────────
 
 _WORD_ASSOC_STARTERS = [
@@ -670,6 +1068,11 @@ _GAME_HANDLERS: dict[str, dict] = {
         "handle": _trivia_handle,
         "stop":   _trivia_stop,
     },
+    "jeopardy": {
+        "start":  _jeopardy_start,
+        "handle": _jeopardy_handle,
+        "stop":   _jeopardy_stop,
+    },
     "word_association": {
         "start":  _wordassoc_start,
         "handle": _wordassoc_handle,
@@ -755,7 +1158,7 @@ def start_game(game_name: str, person_id: Optional[int] = None) -> str:
 
     normalized = _normalize_game(game_name)
     if normalized is None:
-        known = "I Spy, 20 Questions, and Word Association"
+        known = "I Spy, 20 Questions, Trivia, Jeopardy, and Word Association"
         return _rex_respond(
             f"[GAME: Unknown] Player asked to play \"{game_name}\" — Rex doesn't know that game. "
             f"Rex lists the games he does know ({known}) in character.",
@@ -826,6 +1229,24 @@ def stop_game(person_id: Optional[int] = None) -> str:
         _clear_game()
 
     return response
+
+
+def consume_pending_audio_after_response() -> Optional[str]:
+    """Return an audio file that should play after Rex's just-spoken game line."""
+    with _lock:
+        if _active_game != "jeopardy":
+            return None
+        clip_key = _game_state.pop("pending_after_response_clip", None)
+    if not clip_key:
+        return None
+    return _jeopardy_clip_path(str(clip_key))
+
+
+def on_response_spoken() -> None:
+    """Notify the active game that Rex's spoken response has finished."""
+    with _lock:
+        if _active_game == "jeopardy":
+            _jeopardy_arm_timeout()
 
 
 def is_active() -> bool:

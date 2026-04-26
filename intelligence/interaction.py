@@ -1954,16 +1954,22 @@ def _execute_command(
             _log.debug("DJ command error: %s", exc)
 
     # ── Games ──────────────────────────────────────────────────────────────────
-    if key in ("start_trivia", "start_game", "stop_game"):
+    if key in ("start_trivia", "start_jeopardy", "start_game", "stop_game"):
         try:
             from features import games as games_mod
             if key == "start_trivia":
-                games_mod.start_trivia()
-                return _say("Starting trivia now. Introduce it in one in-character line.")
+                resp = games_mod.start_trivia(person_id)
+                _speak_blocking(resp)
+                return resp
+            if key == "start_jeopardy":
+                resp = games_mod.start_game("jeopardy", person_id)
+                _speak_blocking(resp)
+                return resp
             if key == "start_game":
                 game = args.get("game", "")
-                games_mod.start_game(game)
-                return _say(f"Starting '{game}'. Introduce it in one in-character line.")
+                resp = games_mod.start_game(game, person_id)
+                _speak_blocking(resp)
+                return resp
             if key == "stop_game":
                 if not games_mod.is_active():
                     try:
@@ -1973,8 +1979,9 @@ def _execute_command(
                             return _say("The music just stopped. One in-character line.")
                     except Exception as exc:
                         _log.debug("DJ fallback for stop_game command failed: %s", exc)
-                games_mod.stop_game()
-                return _say("Game stopped. One in-character line.")
+                resp = games_mod.stop_game(person_id)
+                _speak_blocking(resp)
+                return resp
         except Exception as exc:
             _log.debug("Games command error: %s", exc)
 
@@ -3122,6 +3129,7 @@ def _handle_classified_intent(
                 "i_spy": "I Spy",
                 "20_questions": "20 Questions",
                 "trivia": "Trivia",
+                "jeopardy": "Jeopardy",
                 "word_association": "Word Association",
             }.get(key)
             if label and label not in seen:
@@ -3136,7 +3144,7 @@ def _handle_classified_intent(
         capabilities = (
             "hold a real conversation and remember people across visits; "
             "recognize faces and voices; describe what you see through your camera; "
-            "play games (Trivia, I Spy, 20 Questions, Word Association); "
+            "play games (Trivia, Jeopardy, I Spy, 20 Questions, Word Association); "
             "DJ music with skip / stop / volume control; "
             "tell time, date, and weather; "
             "track your own mood, anger, and uptime"
@@ -4542,6 +4550,46 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         # reply where _continue_grief_flow returns None and hands off to LLM.
         if response_text is None and not active_grief_for_turn:
             match = command_parser.parse(text)
+            try:
+                from features import games as games_mod
+                if games_mod.is_active():
+                    command_key = match.command_key if match is not None else None
+                    normalized_game_text = " ".join(text.lower().strip().split())
+                    if match is None and normalized_game_text in {"quit", "end", "end game", "quit game"}:
+                        match = command_parser.CommandMatch("stop_game", "active_game_stop", {})
+                        command_key = "stop_game"
+                    elif (
+                        command_key == "dj_stop"
+                        and normalized_game_text in {"stop", "quit", "end", "stop playing"}
+                    ):
+                        match = command_parser.CommandMatch("stop_game", "active_game_stop", {})
+                        command_key = "stop_game"
+                    elif command_key == "dj_skip" and normalized_game_text == "skip":
+                        command_key = None
+
+                    game_escape_commands = {
+                        "stop_game", "sleep", "shutdown", "quiet_mode", "wake_up",
+                        "dj_stop", "dj_skip", "volume_up", "volume_down",
+                    }
+                    if command_key not in game_escape_commands:
+                        response_text = games_mod.handle_input(text, person_id)
+                        completed = _speak_blocking(response_text)
+                        after_audio = games_mod.consume_pending_audio_after_response()
+                        if completed and after_audio and not _interrupted.is_set():
+                            done = speech_queue.enqueue_audio_file(
+                                after_audio,
+                                priority=1,
+                                tag="game:after_audio",
+                            )
+                            while not done.wait(timeout=0.05):
+                                if _interrupted.is_set():
+                                    speech_queue.clear_below_priority(2)
+                                    break
+                        games_mod.on_response_spoken()
+                        used_agenda_llm = True
+                        match = None
+            except Exception as exc:
+                _log.debug("active game routing failed: %s", exc)
         if match is not None:
             response_text = _execute_command(match, person_id, person_name, text)
         elif response_text is None:

@@ -52,7 +52,7 @@ _MUSIC_PLAY_ACTION_RE = re.compile(
 _NON_MUSIC_PLAY_CONTEXT_RE = re.compile(
     r"\b("
     r"game|games|trivia|i\s+spy|20\s+questions|twenty\s+questions|"
-    r"word\s+association|movie|video|clip"
+    r"jeopardy|word\s+association|movie|video|clip"
     r")\b",
     re.IGNORECASE,
 )
@@ -134,7 +134,8 @@ _PROMPT_TEMPLATE = (
     'artist, a genre, a vibe, or a radio station — e.g. "play some jazz", '
     '"can you play jazz music?", "put on something chill", "play me a song", '
     '"play the Beatles", "throw on some lo-fi". Do NOT use play_music for '
-    'volume / skip / stop controls — those are general. '
+    'games such as Jeopardy, Trivia, I Spy, 20 Questions, or Word Association; '
+    'volume / skip / stop controls are general. '
     'Note: query_music_options covers asking what music is available, e.g. '
     '"what kind of music can you play?", "what genres do you have?", '
     '"what stations can you play?". Do NOT classify "what can you play?" as '

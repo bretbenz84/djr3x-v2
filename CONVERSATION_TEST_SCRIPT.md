@@ -629,6 +629,29 @@ Expected:
 - Rex stores an `inside_joke` fact.
 - Future callbacks should be rare and limited to one per reply.
 
+## 18. Jeopardy Verbal Game
+
+Start the game:
+
+> Play Jeopardy.
+
+When Rex asks who is playing, try one of:
+
+> Bret and Joy.
+> Bret, Joy, and JT.
+
+Expected:
+
+- Rex plays the intro stinger, asks for players, then loads a board.
+- Rex names the players and categories.
+- The board stinger plays when the board is ready.
+- Category/value selections like `Birds for 200` produce a clue.
+- The theme plays after the clue while answers are open.
+- Correct answers play the right-answer stinger and update scores.
+- Wrong answers play the incorrect-answer stinger and update scores.
+- `Pass`, `I don't know`, or a silent timeout should reveal the answer.
+- `Stop the game` ends Jeopardy and plays the outro clip.
+
 ## Final Pass Criteria
 
 The run is a pass if:
@@ -644,6 +667,7 @@ The run is a pass if:
 - Positive milestones can get light check-ins.
 - Sensitive emotional callbacks respect consent and group discretion.
 - Social style preferences influence roasts, callbacks, and directness.
+- Jeopardy starts, routes answers through the game engine, plays stingers, and keeps score.
 - Optional proactive speech does not overlap, stack, or interrupt the user's answer.
 
 If something fails, save:
