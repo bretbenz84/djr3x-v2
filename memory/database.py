@@ -59,6 +59,9 @@ _MIGRATIONS = [
         category                 TEXT,
         valence                  REAL,
         description              TEXT,
+        loss_subject             TEXT,
+        loss_subject_kind        TEXT,
+        loss_subject_name        TEXT,
         mentioned_at             DATETIME,
         last_acknowledged_at     DATETIME,
         checkins_muted_at        DATETIME,
@@ -103,6 +106,13 @@ def _run_migrations() -> None:
                 "checkins_muted_reason",
                 "TEXT",
             )
+            for column in ("loss_subject", "loss_subject_kind", "loss_subject_name"):
+                _ensure_column(
+                    conn,
+                    "person_emotional_events",
+                    column,
+                    "TEXT",
+                )
             _ensure_column(
                 conn,
                 "person_facts",

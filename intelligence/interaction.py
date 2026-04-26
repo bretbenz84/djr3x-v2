@@ -1581,6 +1581,14 @@ def _execute_command(
                 games_mod.start_game(game)
                 return _say(f"Starting '{game}'. Introduce it in one in-character line.")
             if key == "stop_game":
+                if not games_mod.is_active():
+                    try:
+                        from features import dj as dj_mod
+                        if dj_mod.is_playing():
+                            dj_mod.stop()
+                            return _say("The music just stopped. One in-character line.")
+                    except Exception as exc:
+                        _log.debug("DJ fallback for stop_game command failed: %s", exc)
                 games_mod.stop_game()
                 return _say("Game stopped. One in-character line.")
         except Exception as exc:
@@ -3820,8 +3828,12 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         # utterance as coming from someone we can neither see nor voice-ID, fire
         # Rex's "who's that speaking?" question and store the audio so the
         # engaged person's next reply can enroll the unknown's voice.
-        # Skip if a pending identify is already in flight (from a previous turn).
-        if off_camera_unknown and _pending_offscreen_identify is None:
+        # Skip if a pending identify is already in flight or this is a local command.
+        if (
+            off_camera_unknown
+            and _pending_offscreen_identify is None
+            and command_parser.parse(text) is None
+        ):
             if person_id is not None:
                 try:
                     if boundary_memory.is_blocked(person_id, "ask", "identity"):
@@ -4018,6 +4030,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                                 person_invited_topic=bool(result.get("invitation")),
                                 loss_subject=ev.get("loss_subject"),
                                 loss_subject_kind=ev.get("loss_subject_kind"),
+                                loss_subject_name=ev.get("loss_subject_name"),
                             )
                             if row_id:
                                 _log.info(
@@ -4039,6 +4052,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         match = None
         response_text = None
         used_agenda_llm = False
+        used_classified_intent = False
         routing_text = text
 
         repair_move = repair_moves.detect(text)
@@ -4123,6 +4137,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     intent = "general"
                 _log.info("[interaction] intent classifier: %s", intent)
                 if intent != "general":
+                    used_classified_intent = True
                     # Pass raw voice-match data and currently-visible identified
                     # face so handlers like query_who_is_speaking can answer with
                     # real biometric ground truth instead of LLM hallucination.
@@ -4308,6 +4323,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             and not _interrupted.is_set()
             and not post_greet_fired
             and not used_agenda_llm
+            and not used_classified_intent
         ):
             curiosity_q = _curiosity_check(response_text, text, person_id, person_name)
             if curiosity_q:

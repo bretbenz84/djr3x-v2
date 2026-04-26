@@ -164,6 +164,9 @@ CREATE TABLE IF NOT EXISTS person_emotional_events (
     category                 TEXT,
     valence                  REAL,
     description              TEXT,
+    loss_subject             TEXT,
+    loss_subject_kind        TEXT,
+    loss_subject_name        TEXT,
     mentioned_at             DATETIME,
     last_acknowledged_at     DATETIME,
     checkins_muted_at        DATETIME,
@@ -359,6 +362,9 @@ def _run_schema_updates(conn: sqlite3.Connection) -> list[str]:
         applied.append("person_emotional_events.checkins_muted_at")
     if _ensure_column(conn, "person_emotional_events", "checkins_muted_reason", "TEXT"):
         applied.append("person_emotional_events.checkins_muted_reason")
+    for column in ("loss_subject", "loss_subject_kind", "loss_subject_name"):
+        if _ensure_column(conn, "person_emotional_events", column, "TEXT"):
+            applied.append(f"person_emotional_events.{column}")
     if _ensure_column(conn, "person_facts", "last_confirmed_at", "DATETIME"):
         applied.append("person_facts.last_confirmed_at")
     if _ensure_column(conn, "person_facts", "evidence_count", "INTEGER DEFAULT 1"):

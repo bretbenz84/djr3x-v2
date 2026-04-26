@@ -161,6 +161,7 @@ def add_event(
     person_invited_topic: bool = True,
     loss_subject: Optional[str] = None,
     loss_subject_kind: Optional[str] = None,
+    loss_subject_name: Optional[str] = None,
 ) -> Optional[int]:
     """Insert a new emotional event row. Returns lastrowid or None on failure.
 
@@ -171,6 +172,9 @@ def add_event(
     desc = (description or "").strip()
     if not desc:
         return None
+    subject = (loss_subject or "").strip() or None
+    subject_kind = (loss_subject_kind or "").strip().lower() or None
+    subject_name = (loss_subject_name or "").strip() or None
 
     existing = db.fetchall(
         "SELECT id, description FROM person_emotional_events "
@@ -196,17 +200,29 @@ def add_event(
 
     return db.execute(
         "INSERT INTO person_emotional_events "
-        "(person_id, category, valence, description, mentioned_at, "
+        "(person_id, category, valence, description, "
+        " loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         " sensitivity_decay_days, person_invited_topic) "
-        "VALUES (?, ?, ?, ?, datetime('now'), ?, ?)",
-        (person_id, cat, float(valence), desc, decay, 1 if person_invited_topic else 0),
+        "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)",
+        (
+            person_id,
+            cat,
+            float(valence),
+            desc,
+            subject,
+            subject_kind,
+            subject_name,
+            decay,
+            1 if person_invited_topic else 0,
+        ),
     )
 
 
 def get_active_events(person_id: int, limit: int = 3) -> list[dict]:
     """Return events whose decay window has not yet elapsed, newest first."""
     rows = db.fetchall(
-        "SELECT id, category, valence, description, mentioned_at, "
+        "SELECT id, category, valence, description, "
+        "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
         "       sensitivity_decay_days, "
         "       person_invited_topic "
@@ -250,7 +266,8 @@ def get_due_checkins(
     on a later boot, while a bad day at work naturally expires after ~24h.
     """
     rows = db.fetchall(
-        "SELECT id, category, valence, description, mentioned_at, "
+        "SELECT id, category, valence, description, "
+        "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
         "       sensitivity_decay_days, "
         "       person_invited_topic "
@@ -275,7 +292,8 @@ def get_due_celebrations(
 ) -> list[dict]:
     """Return active positive events due for a light celebratory check-in."""
     rows = db.fetchall(
-        "SELECT id, category, valence, description, mentioned_at, "
+        "SELECT id, category, valence, description, "
+        "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
         "       sensitivity_decay_days, "
         "       person_invited_topic "
@@ -315,7 +333,8 @@ def get_startup_checkins(
         params = (int(person_id), int(limit))
 
     rows = db.fetchall(
-        "SELECT id, category, valence, description, mentioned_at, "
+        "SELECT id, category, valence, description, "
+        "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
         "       sensitivity_decay_days, "
         "       person_invited_topic "
@@ -348,7 +367,8 @@ def get_startup_celebrations(
         params = (int(person_id), int(limit))
 
     rows = db.fetchall(
-        "SELECT id, category, valence, description, mentioned_at, "
+        "SELECT id, category, valence, description, "
+        "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
         "       sensitivity_decay_days, "
         "       person_invited_topic "
@@ -394,7 +414,8 @@ def mute_recent_checkin_for_person(
     about it" after Rex has proactively checked in. Returns the muted event.
     """
     rows = db.fetchall(
-        "SELECT id, category, valence, description, mentioned_at, "
+        "SELECT id, category, valence, description, "
+        "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
         "       sensitivity_decay_days, person_invited_topic "
         "FROM person_emotional_events "
@@ -420,7 +441,8 @@ def mute_latest_active_negative_for_person(
 ) -> Optional[dict]:
     """Mute the newest active negative event for explicit in-flow boundaries."""
     rows = db.fetchall(
-        "SELECT id, category, valence, description, mentioned_at, "
+        "SELECT id, category, valence, description, "
+        "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
         "       sensitivity_decay_days, person_invited_topic "
         "FROM person_emotional_events "
