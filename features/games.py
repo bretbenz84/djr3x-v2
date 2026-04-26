@@ -655,12 +655,105 @@ def _jeopardy_categories_reminder() -> str:
     board = _game_state.get("board") or {}
     try:
         from features import jeopardy as jeopardy_bank
-        categories = jeopardy_bank.format_categories(board, remaining_only=True)
+        categories = jeopardy_bank.format_categories(
+            board,
+            remaining_only=True,
+            separator=". ",
+        )
     except Exception:
         categories = ""
     if not categories:
         return ""
     return f"Remaining categories: {categories}. "
+
+
+def _jeopardy_offer_rebound() -> Optional[dict]:
+    """Give the same clue to the next player who has not tried it yet."""
+    players = _game_state.get("players") or []
+    if len(players) <= 1:
+        return None
+
+    current_idx = int(_game_state.get("current_player_idx", 0)) % len(players)
+    attempted = set(int(i) for i in (_game_state.get("current_clue_attempts") or []))
+    attempted.add(current_idx)
+    _game_state["current_clue_attempts"] = sorted(attempted)
+
+    for offset in range(1, len(players)):
+        next_idx = (current_idx + offset) % len(players)
+        if next_idx in attempted:
+            continue
+        _game_state["current_player_idx"] = next_idx
+        _game_state["phase"] = "awaiting_answer"
+        _game_state["awaiting_prompt_delivery"] = True
+        if bool(getattr(config, "JEOPARDY_PLAY_THINKING_THEME", False)):
+            _game_state["pending_after_response_clip"] = "theme"
+        return players[next_idx]
+
+    return None
+
+
+def _jeopardy_rebound_prompt(prefix: str, next_player: dict, clue: dict) -> str:
+    return (
+        f"{prefix}{next_player['name']}'s turn. "
+        f"{clue.get('category')} for ${clue.get('value')}. "
+        f"Clue: {clue.get('clue')}."
+    )
+
+
+def _jeopardy_finish_missed_clue(
+    prefix: str,
+    correct_response: str,
+    *,
+    done: bool,
+    players: list[dict],
+    score_line: bool = True,
+) -> tuple[str, bool]:
+    _game_state.pop("current_clue", None)
+    _game_state.pop("current_clue_attempts", None)
+    _game_state["phase"] = "selecting"
+
+    if done:
+        return _jeopardy_complete_round_or_finish(
+            f"{prefix}{correct_response}. ",
+            advance_player=True,
+        )
+
+    next_player = _jeopardy_advance_player()
+    scores = ""
+    if score_line:
+        try:
+            from features import jeopardy as jeopardy_bank
+            scores = f"Scores: {jeopardy_bank.format_scores(players)} "
+        except Exception:
+            scores = "Scores unavailable. "
+    categories = _jeopardy_categories_reminder()
+    return (
+        f"{prefix}{correct_response}. {scores}{categories}"
+        f"{next_player['name']}, choose the next square.",
+        False,
+    )
+
+
+def _jeopardy_schedule_post_timeout_rebound(done_event: threading.Event) -> None:
+    """Start the rebound timer/theme after a timeout prompt finishes speaking."""
+    def _wait_then_start() -> None:
+        try:
+            if not done_event.wait(timeout=45.0):
+                return
+            on_response_spoken()
+            after_audio = consume_pending_audio_after_response()
+            if not after_audio:
+                return
+            from audio import speech_queue
+            speech_queue.enqueue_audio_file(after_audio, priority=1, tag="game:after_audio")
+        except Exception as exc:
+            _log.debug("[jeopardy] post-timeout rebound scheduling failed: %s", exc)
+
+    threading.Thread(
+        target=_wait_then_start,
+        daemon=True,
+        name="jeopardy-timeout-rebound",
+    ).start()
 
 
 def _jeopardy_board_low_value(board: dict) -> int:
@@ -700,7 +793,7 @@ def _jeopardy_load_round(
     _game_state.update(update)
     _jeopardy_queue_clip("board")
 
-    categories_text = jeopardy_bank.format_categories(board)
+    categories_text = jeopardy_bank.format_categories(board, separator=". ")
     player = _jeopardy_current_player()
     if round_no == 2:
         low_value = _jeopardy_board_low_value(board)
@@ -744,7 +837,8 @@ def _jeopardy_complete_round_or_finish(
 
 def _jeopardy_timeout_fired(token: str) -> None:
     line = ""
-    queue_timesup = False
+    queue_timesup = True
+    schedule_rebound = False
     with _lock:
         if _active_game != "jeopardy":
             return
@@ -757,25 +851,22 @@ def _jeopardy_timeout_fired(token: str) -> None:
             return
         _game_state.pop("answer_timer", None)
         _game_state.pop("answer_timer_token", None)
-        _game_state.pop("current_clue", None)
-        _game_state["phase"] = "selecting"
         correct_response = _jeopardy_correct_response_text(clue)
-        if int((_game_state.get("board") or {}).get("remaining", 0) or 0) <= 0:
-            _jeopardy_queue_clip("timesup")
-            line, game_done = _jeopardy_complete_round_or_finish(
-                f"Time's up. {correct_response}. ",
-                advance_player=True,
+        next_player = _jeopardy_offer_rebound()
+        if next_player:
+            line = _jeopardy_rebound_prompt("Time's up. ", next_player, clue)
+            schedule_rebound = True
+        else:
+            done = int((_game_state.get("board") or {}).get("remaining", 0) or 0) <= 0
+            line, game_done = _jeopardy_finish_missed_clue(
+                "Time's up. ",
+                correct_response,
+                done=done,
+                players=_game_state.get("players") or [{"name": "Player", "score": 0}],
+                score_line=False,
             )
             if game_done:
                 _clear_game()
-        else:
-            queue_timesup = True
-            next_player = _jeopardy_advance_player()
-            categories = _jeopardy_categories_reminder()
-            line = (
-                f"Time's up. {correct_response}. "
-                f"{categories}{next_player['name']}, pick the next category and value."
-            )
 
     if not line:
         return
@@ -784,7 +875,13 @@ def _jeopardy_timeout_fired(token: str) -> None:
         from intelligence import llm
         if queue_timesup:
             _jeopardy_queue_clip("timesup")
-        speech_queue.enqueue(llm.clean_response_text(line), priority=1, tag="jeopardy:timeout")
+        done_event = speech_queue.enqueue(
+            llm.clean_response_text(line),
+            priority=1,
+            tag="jeopardy:timeout",
+        )
+        if schedule_rebound:
+            _jeopardy_schedule_post_timeout_rebound(done_event)
     except Exception as exc:
         _log.debug("[jeopardy] timeout speech failed: %s", exc)
 
@@ -899,6 +996,7 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
     _game_state.update({
         "phase": "awaiting_answer",
         "current_clue": clue,
+        "current_clue_attempts": [],
         "last_category": clue.get("category"),
         "awaiting_prompt_delivery": True,
     })
@@ -939,29 +1037,24 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     passed = bool(jeopardy_bank and jeopardy_bank.is_pass_or_timeout(text))
     correct = bool(jeopardy_bank and jeopardy_bank.is_correct(text, answer))
 
-    _game_state.pop("current_clue", None)
-
     done = int((_game_state.get("board") or {}).get("remaining", 0) or 0) <= 0
     if passed:
         _jeopardy_queue_clip("timesup")
-        if done:
-            return _jeopardy_complete_round_or_finish(
-                f"No answer. {correct_response}. ",
-                advance_player=True,
-            )
-        next_player = _jeopardy_advance_player()
-        _game_state["phase"] = "selecting"
-        categories = _jeopardy_categories_reminder()
-        return (
-            f"No answer. {correct_response}. "
-            f"Scores: {jeopardy_bank.format_scores(players) if jeopardy_bank else 'unknown'}. "
-            f"{categories}"
-            f"{next_player['name']}, choose the next square.",
-            False,
+        next_player = _jeopardy_offer_rebound()
+        if next_player:
+            return (_jeopardy_rebound_prompt("No answer. ", next_player, clue), False)
+        return _jeopardy_finish_missed_clue(
+            "No answer. ",
+            correct_response,
+            done=done,
+            players=players,
+            score_line=False,
         )
 
     if correct:
         player["score"] = int(player.get("score", 0)) + value
+        _game_state.pop("current_clue", None)
+        _game_state.pop("current_clue_attempts", None)
         _jeopardy_queue_clip("right")
         flourish = random.choice([
             "Correct. The organics survive another clue.",
@@ -982,26 +1075,27 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
 
     player["score"] = int(player.get("score", 0)) - value
     _jeopardy_queue_clip("wrong")
-    if done:
-        return _jeopardy_complete_round_or_finish(
-            f"Incorrect. {correct_response}. ",
-            advance_player=True,
-        )
-
-    next_player = _jeopardy_advance_player()
-    _game_state["phase"] = "selecting"
-    scores = jeopardy_bank.format_scores(players) if jeopardy_bank else "scores unavailable"
-    categories = _jeopardy_categories_reminder()
     roast = random.choice([
         "A bold miss.",
         "The board accepts your sacrifice.",
         "That answer landed somewhere near Alderaan.",
     ])
-    return (
-        f"{roast} {correct_response}. Scores: {scores}. "
-        f"{categories}"
-        f"{next_player['name']}, choose the next square.",
-        False,
+    next_player = _jeopardy_offer_rebound()
+    if next_player:
+        return (
+            _jeopardy_rebound_prompt(
+                f"{roast} ${value} off {player['name']}. ",
+                next_player,
+                clue,
+            ),
+            False,
+        )
+
+    return _jeopardy_finish_missed_clue(
+        f"{roast} ",
+        correct_response,
+        done=done,
+        players=players,
     )
 
 

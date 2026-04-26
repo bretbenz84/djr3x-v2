@@ -652,8 +652,9 @@ Expected:
 - The thinking theme should keep playing until a player answers or the timer expires; it should not cut out after a brief burst.
 - Correct answers play the right-answer stinger and update scores.
 - Wrong answers play the incorrect-answer stinger and update scores.
+- In multi-player games, a wrong answer, pass, or timeout should hand the same clue to the next player, repeat the clue, then restart the thinking theme and timer.
 - Between clues, Rex repeats the remaining categories before asking for the next square.
-- `Pass`, `I don't know`, or a silent timeout should reveal the correct response in question form, like `What is a driver's license?`.
+- After all eligible players miss, `Pass`, `I don't know`, or a silent timeout should reveal the correct response in question form, like `What is a driver's license?`.
 - `Stop the game` ends Jeopardy and plays the outro clip.
 
 ## Final Pass Criteria
