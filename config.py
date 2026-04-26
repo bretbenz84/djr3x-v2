@@ -683,6 +683,11 @@ CONSCIOUSNESS_PROACTIVE_MIN_GAP_SECS = 12.0
 # If False, consciousness-generated proactive speech only occurs in IDLE.
 CONSCIOUSNESS_ALLOW_PROACTIVE_IN_ACTIVE = True
 
+# After an emotional check-in, visual curiosity stays quiet briefly. This keeps
+# camera-based riffs from stepping on care, without blocking visual questions
+# for the entire session.
+VISUAL_CURIOSITY_AFTER_EMPATHY_COOLDOWN_SECS = 90.0
+
 # How often GPT-4o runs a full environment/scene analysis (seconds)
 ENVIRONMENT_SCAN_INTERVAL_SECS = 180
 

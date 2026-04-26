@@ -139,6 +139,7 @@ _last_weekly_smalltalk_check_at: float = 0.0
 # Emotional check-in dedupe: per-session, per-person. Each engaged person
 # can be the target of at most one proactive emotional check-in per session.
 _emotional_checkin_fired: set[int] = set()
+_emotional_checkin_fired_at: dict[int, float] = {}
 # Per-person monotonic timestamp of when their cached affect first turned
 # negative this session. Cleared whenever the cached affect goes non-negative.
 # Used to gate "sustained negative" check-ins.
@@ -1769,6 +1770,28 @@ def _visual_curiosity_blocked_by_empathy(person_id: Optional[int]) -> bool:
     return False
 
 
+def _visual_curiosity_recently_blocked_by_checkin(person_id: Optional[int]) -> bool:
+    """
+    Keep visual curiosity quiet briefly after a care move, but don't suppress it
+    for the rest of the session. Active grief/distress is still handled by
+    _visual_curiosity_blocked_by_empathy().
+    """
+    if person_id is None:
+        return False
+    fired_at = _emotional_checkin_fired_at.get(person_id)
+    if not fired_at:
+        return False
+    cooldown = float(getattr(config, "VISUAL_CURIOSITY_AFTER_EMPATHY_COOLDOWN_SECS", 90.0))
+    return (time.monotonic() - fired_at) < max(0.0, cooldown)
+
+
+def _note_emotional_checkin_fired(person_id: Optional[int]) -> None:
+    if person_id is None:
+        return
+    _emotional_checkin_fired.add(person_id)
+    _emotional_checkin_fired_at[person_id] = time.monotonic()
+
+
 def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
     """
     After a recent engaged back-and-forth goes quiet, use a fresh visual summary
@@ -1803,7 +1826,7 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
         engaged_touch = _engaged_last_touch_at
     if engaged_id is None:
         return
-    if engaged_id in _emotional_checkin_fired:
+    if _visual_curiosity_recently_blocked_by_checkin(engaged_id):
         return
 
     quiet_for = now - engaged_touch
@@ -2279,7 +2302,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         )
                         label = f"first-sight emotional check-in for {person_name}"
                         emotion = "sad" if float(emotional.get("valence", -0.5) or -0.5) < 0 else "happy"
-                        _emotional_checkin_fired.add(person_db_id)
+                        _note_emotional_checkin_fired(person_db_id)
                         try:
                             from memory import emotional_events as emo_events
                             emo_events.mark_acknowledged(int(emotional["id"]))
@@ -3065,7 +3088,7 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
                 )
                 emotion = "sad" if valence < 0 else "happy"
                 if _generate_and_speak(prompt, emotion=emotion, purpose="emotional_checkin"):
-                    _emotional_checkin_fired.add(engaged_id)
+                    _note_emotional_checkin_fired(engaged_id)
                     try:
                         emo_events.mark_acknowledged(int(ev["id"]))
                     except Exception:
@@ -3135,7 +3158,7 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
         )
         emotion = "neutral"
         if _generate_and_speak(prompt, emotion=emotion, purpose="emotional_checkin"):
-            _emotional_checkin_fired.add(engaged_id)
+            _note_emotional_checkin_fired(engaged_id)
             _negative_streak_started_at.pop(engaged_id, None)
             _log.info(
                 "consciousness: proactive emotional check-in (B: sustained %s, "
@@ -3351,6 +3374,7 @@ def start() -> None:
     _first_missing_at.clear()
     _last_presence_reaction_at.clear()
     _emotional_checkin_fired.clear()
+    _emotional_checkin_fired_at.clear()
     _negative_streak_started_at.clear()
     try:
         from intelligence import question_budget
