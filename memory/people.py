@@ -31,6 +31,8 @@ _PERSON_TABLES = [
     "person_qa",
     "conversations",
     "person_events",
+    "person_emotional_events",
+    "person_conversation_boundaries",
 ]
 
 # person_relationships uses from_person_id/to_person_id rather than person_id,

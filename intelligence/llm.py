@@ -22,6 +22,7 @@ from memory import people as people_db
 from memory import facts as facts_db
 from memory import conversations as conv_db
 from memory import relationships as rel_db
+from memory import boundaries as boundaries_db
 
 from openai import OpenAI
 
@@ -225,6 +226,13 @@ def _build_person_context(person_id: int) -> str:
     if facts:
         fact_strs = [f"{f['key']}: {f['value']}" for f in facts[:12]]
         lines.append("Known facts: " + ", ".join(fact_strs) + ".")
+
+    try:
+        boundary_summary = boundaries_db.summarize_for_prompt(person_id)
+        if boundary_summary:
+            lines.append(boundary_summary)
+    except Exception as exc:
+        _log.debug("conversation boundaries injection skipped: %s", exc)
 
     last_conv = conv_db.get_last_conversation(person_id)
     if last_conv:
@@ -807,7 +815,10 @@ def extract_facts(
         "      If the year is mentioned use MM-DD only — drop the year.\n"
         "      If the speaker says 'today is my birthday', use today's MM-DD.\n\n"
         "Only extract facts the human speaker stated. Do not extract anything Rex said. "
-        "Do not infer or guess. If no facts are present, return an empty array.\n\n"
+        "Do not infer or guess. Do NOT extract conversational boundaries like "
+        "'don't ask me about X', 'don't roast me about X', or 'don't mention X'; "
+        "those are handled by a separate preference system. If no facts are "
+        "present, return an empty array.\n\n"
         "Return a JSON array where each element has exactly these fields:\n"
         '  "category": one of "job", "hometown", "hobby", "pet", "family", "belief", "preference", "other"\n'
         '  "key": a snake_case identifier (e.g. "hometown", "job_title", "favorite_band")\n'

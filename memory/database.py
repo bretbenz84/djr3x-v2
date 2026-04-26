@@ -32,6 +32,7 @@ _EXPECTED_TABLES = frozenset({
     "personality_settings",
     "person_relationships",
     "person_emotional_events",
+    "person_conversation_boundaries",
 })
 
 # Inline migrations for schema additions introduced after initial deploy.
@@ -67,6 +68,21 @@ _MIGRATIONS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_emoevent_person ON person_emotional_events(person_id)",
+    """
+    CREATE TABLE IF NOT EXISTS person_conversation_boundaries (
+        id              INTEGER PRIMARY KEY,
+        person_id       INTEGER REFERENCES people(id),
+        behavior        TEXT,
+        topic           TEXT,
+        description     TEXT,
+        source_text     TEXT,
+        active          INTEGER DEFAULT 1,
+        created_at      DATETIME,
+        updated_at      DATETIME,
+        UNIQUE(person_id, behavior, topic)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_boundary_person ON person_conversation_boundaries(person_id)",
 ]
 
 

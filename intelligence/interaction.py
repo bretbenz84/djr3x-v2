@@ -40,6 +40,7 @@ from memory import people as people_memory
 from memory import events as events_memory
 from memory import relationships as rel_memory
 from memory import emotional_events
+from memory import boundaries as boundary_memory
 from awareness import interoception
 from awareness import address_mode
 from awareness.situation import assessor as _situation_assessor
@@ -1641,6 +1642,40 @@ def _handle_emotional_checkin_boundary(
         return None
 
 
+def _handle_conversation_boundary(
+    person_id: Optional[int],
+    text: str,
+) -> Optional[str]:
+    """Store durable conversational boundaries like "don't ask about work"."""
+    if person_id is None or not text:
+        return None
+    try:
+        thread = topic_thread.snapshot() or {}
+        detected = boundary_memory.detect_boundary(
+            text,
+            fallback_topic=thread.get("label"),
+        )
+        if not detected:
+            return None
+        applied = boundary_memory.apply_detected_boundary(person_id, detected)
+        if not applied:
+            return None
+        topic = applied.get("topic") or "that"
+        topic_phrase = "how you're doing" if topic == "how are you" else topic
+        action = applied.get("action")
+        behavior = applied.get("behavior") or "mention"
+        if action == "clear":
+            return f"Got it. {topic_phrase} is back on the table, cautiously."
+        if behavior == "roast":
+            return f"Noted. I won't roast you about {topic_phrase}."
+        if behavior == "ask":
+            return f"Got it. I won't ask about {topic_phrase} unless you bring it up."
+        return f"Understood. I won't bring up {topic_phrase} unless you do."
+    except Exception as exc:
+        _log.debug("conversation boundary handler failed: %s", exc)
+        return None
+
+
 def _maybe_start_grief_flow(
     person_id: Optional[int],
     empathy_event: Optional[dict],
@@ -2792,6 +2827,24 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             conv_log.log_rex(boundary_response)
             _session_exchange_count += 1
             _register_rex_utterance(boundary_response)
+            return
+
+        preference_response = _handle_conversation_boundary(person_id, text)
+        if preference_response:
+            try:
+                consciousness.clear_response_wait()
+            except Exception:
+                pass
+            _speak_blocking(
+                preference_response,
+                emotion="neutral",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            conv_memory.add_to_transcript("Rex", preference_response)
+            conv_log.log_rex(preference_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(preference_response)
             return
 
         answered_question = _maybe_capture_pending_qa(

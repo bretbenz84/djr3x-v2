@@ -1549,7 +1549,7 @@ def _do_small_talk_question(snapshot: dict) -> None:
                 return
             prompt = _apply_proactive_directive(prompt, purpose)
             from intelligence.llm import get_response
-            text = get_response(prompt)
+            text = get_response(prompt, target_db_id)
             if text and _proactive_purpose_current(token):
                 _speak_async(text, emotion=emotion)
         except Exception as exc:
@@ -1652,6 +1652,18 @@ def _do_appearance_riff(snapshot: dict) -> None:
     hint = _pick_appearance_hint(target.get("person_db_id"))
     if not hint:
         return
+    try:
+        from memory import boundaries as _boundaries
+        target_id = target.get("person_db_id")
+        if (
+            _boundaries.is_blocked(target_id, "mention", "appearance")
+            or _boundaries.is_blocked(target_id, "roast", "appearance")
+            or _boundaries.is_blocked(target_id, "mention", "clothing")
+            or _boundaries.is_blocked(target_id, "roast", "clothing")
+        ):
+            return
+    except Exception:
+        pass
     # Don't riff on the engaged person — it'd feel interruptive mid-conversation.
     if is_engaged_with(target.get("person_db_id")):
         return
