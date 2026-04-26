@@ -83,7 +83,8 @@ _CLASSIFY_PROMPT = (
     '  "crisis": true|false — true ONLY if there is explicit self-harm, '
     "suicide ideation, or someone-in-immediate-danger language\n"
     '  "confidence": 0.0–1.0 — how confident you are overall\n'
-    '  "event": null OR an object with keys category, valence, description.\n'
+    '  "event": null OR an object with keys category, valence, description, '
+    "loss_subject, loss_subject_kind, loss_subject_name.\n"
     "    Set event ONLY when the utterance reveals a SPECIFIC sensitive life "
     "event the robot should remember across sessions (e.g. someone died, "
     "lost a job, breakup, illness, big milestone like a wedding/promotion/"
@@ -94,6 +95,14 @@ _CLASSIFY_PROMPT = (
     "    valence: -1.0 to +1.0 (negative = hard, positive = milestone)\n"
     "    description: ONE concise sentence in the third person, e.g. "
     '"father passed away last week", "got laid off from tech job"\n'
+    "    loss_subject: ONLY for grief/death/illness events — the relation "
+    "or kind of being lost, lowercase, as the speaker would say it (e.g. "
+    '"grandpa", "dog", "mom", "best friend", "cat", "uncle"). Null otherwise.\n'
+    "    loss_subject_kind: ONLY for grief/death/illness — one of "
+    '"person", "pet", "other". Null otherwise.\n'
+    "    loss_subject_name: the name of the deceased/affected person/pet IF "
+    "explicitly mentioned in the utterance (e.g. \"my dog Buddy died\" → "
+    '"Buddy"). Null otherwise — DO NOT guess.\n'
     "Return ONLY the JSON object, no prose. Default to neutral / none / false "
     "/ event=null when unsure. Most utterances are neutral.\n\n"
     'Utterance: "{text}"'
@@ -176,8 +185,22 @@ def classify_affect(
         except (TypeError, ValueError):
             ev_val = -0.5
         ev_val = max(-1.0, min(1.0, ev_val))
+
+        ev_subject = str(event.get("loss_subject") or "").strip().lower() or None
+        ev_subject_kind = str(event.get("loss_subject_kind") or "").strip().lower() or None
+        if ev_subject_kind not in {"person", "pet", "other", None}:
+            ev_subject_kind = "other"
+        ev_subject_name = str(event.get("loss_subject_name") or "").strip() or None
+
         event = (
-            {"category": ev_cat or "other", "description": ev_desc, "valence": ev_val}
+            {
+                "category": ev_cat or "other",
+                "description": ev_desc,
+                "valence": ev_val,
+                "loss_subject": ev_subject,
+                "loss_subject_kind": ev_subject_kind,
+                "loss_subject_name": ev_subject_name,
+            }
             if ev_desc else None
         )
     else:

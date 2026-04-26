@@ -570,6 +570,48 @@ def generate_session_summary(person_id: int, transcript: list[dict]) -> str:
         return ""
 
 
+def extract_name_from_reply(text: str) -> Optional[str]:
+    """Extract a single first-name from a short reply like "His name was Joe"
+    or just "Buddy". Returns None when no name is confidently present.
+
+    Used by the grief flow's awaiting_name step. Tiny GPT-4o-mini call with
+    JSON mode — robust to natural phrasing without regex sprawl.
+    """
+    if not text or not text.strip():
+        return None
+    prompt = (
+        'Extract a single first name (the deceased\'s, the pet\'s, or the '
+        'person being discussed) from this short reply. Return STRICT JSON '
+        'with one key: "name" — a string, or null if no name is present. '
+        "Examples: \"His name was Joe\" → {\"name\": \"Joe\"}; "
+        "\"Buddy\" → {\"name\": \"Buddy\"}; "
+        "\"I don't really want to say\" → {\"name\": null}; "
+        "\"He was a great guy\" → {\"name\": null}.\n\n"
+        f'Reply: "{text}"'
+    )
+    try:
+        resp = _client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=30,
+            response_format={"type": "json_object"},
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        data = json.loads(raw)
+        name = data.get("name")
+        if not name or not isinstance(name, str):
+            return None
+        name = name.strip()
+        if not name or name.lower() in {"null", "none", "n/a"}:
+            return None
+        # First token only — guards against the model returning a sentence.
+        return name.split()[0].strip(".,;:!?\"'")
+    except Exception as exc:
+        _log.debug("extract_name_from_reply failed: %s", exc)
+        return None
+
+
 def generate_curiosity_question(response_text: str, user_text: str) -> str:
     """
     Generate one short contextual follow-up question in Rex's voice.

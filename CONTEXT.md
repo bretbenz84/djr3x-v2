@@ -92,6 +92,7 @@ djr3x-v2/
 │   ├── command_parser.py      # Command handling — bypasses LLM for known commands
 │   ├── intent_classifier.py   # Fast GPT-4o-mini intent routing for LLM fallback path
 │   ├── interaction.py         # Continuous listening loop, speech pipeline
+│   ├── empathy.py             # Emotional-affect classifier, mode switchboard, trend tracking
 │   └── personality.py         # TARS parameters, emotion state, mood decay
 │
 ├── memory/
@@ -100,6 +101,7 @@ djr3x-v2/
 │   ├── facts.py               # person_facts — observed and stated attributes
 │   ├── conversations.py       # Session summaries, callbacks, transcript buffer
 │   ├── events.py              # Upcoming events, follow-up tracking
+│   ├── emotional_events.py    # person_emotional_events — sensitive life events with decay
 │   ├── relationships.py       # Q&A history and question depth (person_qa)
 │   └── social.py              # Inter-person relationship edges (person_relationships)
 │
@@ -118,6 +120,7 @@ djr3x-v2/
 │   ├── speech_queue.py        # Priority heap + intent-tag coalescing worker
 │   ├── speaker_id.py          # Resemblyzer voice prints (identify_speaker_raw)
 │   ├── echo_cancel.py         # Suppression + sequence-held AEC
+│   ├── prosody.py             # Local pitch/energy/rate analysis for empathy fusion
 │   └── (transcription, tts, vad, wake_word, stream, output_gate, scene)
 │
 ├── tools/
@@ -548,6 +551,26 @@ CREATE TABLE person_relationships (
 );
 CREATE INDEX idx_rel_from ON person_relationships(from_person_id);
 CREATE INDEX idx_rel_to   ON person_relationships(to_person_id);
+
+-- Sensitive life events (grief, illness, breakup, milestones, etc.) the
+-- emotional intelligence layer remembers across sessions. Distinct from
+-- person_events which tracks planned/upcoming things; access patterns and
+-- decay rules differ. Rows never delete — `sensitivity_decay_days` controls
+-- when Rex stops surfacing the event proactively, but it can still be
+-- recalled if the person mentions it. See memory/emotional_events.py.
+CREATE TABLE person_emotional_events (
+    id                       INTEGER PRIMARY KEY,
+    person_id                INTEGER REFERENCES people(id),
+    category                 TEXT,        -- grief, death, breakup, illness, job_loss,
+                                          -- promotion, new_baby, wedding, etc.
+    valence                  REAL,        -- -1.0..+1.0 (negative=hard, positive=milestone)
+    description              TEXT,
+    mentioned_at             DATETIME,
+    last_acknowledged_at     DATETIME,    -- set when Rex opens with a soft acknowledgment
+    sensitivity_decay_days   INTEGER,     -- per-category, see DEFAULT_DECAY_DAYS
+    person_invited_topic     INTEGER DEFAULT 0
+);
+CREATE INDEX idx_emoevent_person ON person_emotional_events(person_id);
 ```
 
 Schema additions made after initial deploy are applied by the inline
@@ -1540,7 +1563,10 @@ Rex's GPT-4o-mini system prompt is assembled from layered components at runtime:
 1. **Core character prompt**: the base Rex prompt above — always first
 2. **Personality parameters**: current TARS parameter values injected as modifiers
    (e.g. "Current sarcasm level: 80/100. Current sentimentality: 35/100.")
-3. **Current emotion state**: colors the tone of all responses
+3. **Current emotion state**: Rex's own mood, plus (when present) the
+   empathy-layer block — engaged person's affect / needs / topic_sensitivity /
+   acoustic prosody / trend label / picked response mode / mode directive.
+   See **Emotional Intelligence** for the full switchboard.
 4. **WorldState summary**: environment, crowd, time, audio scene, self state
 5. **Person context** (if known): name, tier, key facts, last conversation summary,
    relationship scores, unanswered questions at current depth
@@ -1810,6 +1836,204 @@ how to fly. You don't."*
 When a known person with stored upcoming events approaches, Rex shows recognition
 *before* they speak — head turns toward them, slight visor movement — and the opening
 greeting preemptively references the stored event rather than waiting to be asked.
+
+---
+
+## Emotional Intelligence
+
+A multi-signal layer that classifies what the person across from Rex is feeling
+and what they need from him, then shapes the response — words, voice, body — to
+match. The goal is to lift moods through humor or genuine support, calibrated to
+what the moment actually calls for. Rex stays Rex (snarky, dramatic, loyal) but
+the snark softens and the warmth surfaces when someone needs it.
+
+**Design rule (durable):** support / listen / lift modes are NOT gated by
+friendship tier. Anyone — stranger included — gets caring mode the moment they
+signal they want to be heard. Tier shapes Rex's *voice and depth*, not whether
+he shows up. Opening up IS the trust signal.
+
+### Affect Classification (`intelligence/empathy.py`)
+A single GPT-4o-mini JSON-mode call per LLM-bound utterance returns:
+
+| Field | Values |
+|---|---|
+| `affect` | happy, excited, neutral, tired, anxious, sad, withdrawn, angry |
+| `needs` | vent, advice, distract, celebrate, none |
+| `topic_sensitivity` | none, mild, heavy |
+| `invitation` | true/false — are they opening up / asking to be heard? |
+| `crisis` | true ONLY for explicit self-harm or someone-in-danger language |
+| `confidence` | 0.0–1.0 |
+| `event` | `null` OR `{category, valence, description, loss_subject, loss_subject_kind, loss_subject_name}` for sensitive life events |
+
+Runs in a background thread so command-parser-handled turns also get cached
+classifications for future turns. The LLM-fallback path joins the thread
+(`EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS`, default 1.5s) before assembling its
+system prompt so the directive is always fresh.
+
+### Voice Prosody (`audio/prosody.py`)
+Pure numpy + scipy — no extra dependency, no API call. Computes from the same
+audio array Whisper just transcribed:
+- Pitch (autocorrelation F0 in 80–400 Hz, mean + std over voiced frames)
+- RMS energy on voiced frames
+- Voiced ratio (fraction of frames above the energy floor)
+- Speech rate (words per second from the transcript)
+
+Reduces to a one-line tag like *"voice: slow pace, quiet, flat pitch"* plus a
+(valence, arousal) estimate. The tag is appended to the empathy classifier
+prompt as additional acoustic evidence, used to resolve text/voice mismatches
+(flat *"I'm fine"* with a shaky voice → resolved as anxious, not neutral).
+Stored on the cached affect record so it also appears in the *next* turn's
+system-prompt directive.
+
+### Response Mode Switchboard
+Given fused affect + needs + person context (tier, child-in-scene, recent
+emotional events), `empathy.select_mode()` picks one of:
+
+| Mode | When | Behavior |
+|---|---|---|
+| `default` | positive/neutral, no distress | Normal Rex. No caretaking. |
+| `amplify` | positive + wants to share | Match the energy. Roast affectionately. |
+| `gentle_probe` | mild ambiguous distress | Soften roast one notch, ONE low-pressure check-in. |
+| `listen` | opened up, wants to be heard | ROAST OFF. Short, warm, present. Validate first. |
+| `support` | opened up, asked for advice | Brief validation + ONE concrete piece of perspective. |
+| `lift` | opened up, wants distraction | Humor turned UP but warm; offer song / game / pilot-days story. |
+| `ground` | anxious / overwhelmed | Slow down, short sentences, lower energy. |
+| `validate` | angry at the world (not Rex) | Acknowledge, don't fix. Don't bump anger level. |
+| `brief` | tired, nothing heavy | Short, low energy, offer to wrap. |
+| `kind_default` | distressed stranger | Suppress roast-first greeting entirely. Warm, light, brief. |
+| `child_kind` | child + distressed | Family-friendly + extra gentleness. |
+| `acknowledge_then_yield` | unfollowed-up event from prior session | Soft acknowledgment, then yield. |
+| `course_correct` | trend worsening on Rex's last reply | "That landed wrong. Let me try that again." |
+| `crisis` | explicit crisis language | In-character but not joking. Point to real human help. |
+
+The picked mode + a one-paragraph directive + the affect summary + acoustic
+prosody + trend label are injected into slot 3 of the system prompt
+(`Rex's own emotion state` block). The character system prompt is never
+touched; modes are an additional layer of behavioral guidance.
+
+### Mode Delivery Shaping
+Each mode also shapes Rex's body and voice for the response, beyond the words:
+
+| Mode | LED/body emotion | Pre-beat | Post-beat | ElevenLabs voice |
+|---|---|---|---|---|
+| `listen` / `support` / `acknowledge_then_yield` | sad | 600–900ms | 400–800ms | stability=0.78, style=0.15 |
+| `ground` | sad | 300–500ms | 200–400ms | stability=0.82, style=0.10 |
+| `crisis` | sad | 800–1200ms | 600–1000ms | stability=0.88, style=0.05 |
+| `course_correct` | sad | 400–600ms | 300–500ms | stability=0.72, style=0.20 |
+| `kind_default` / `validate` / `gentle_probe` / `brief` | neutral | 200–400ms | 100–300ms | softer than baseline |
+| `child_kind` | happy | 200–400ms | 100–300ms | warm, expressive but gentle |
+| `lift` | happy | 0 | 0 | stability=0.42, style=0.55 |
+| `amplify` | excited | 0 | 0 | stability=0.32, style=0.70 |
+| `default` | (Rex's own emotion stands) | 0 | 0 | None — uses default cache |
+
+**TTS cache safety**: cache key is `SHA(text + voice_id + model_id + voice_settings_token)`.
+`voice_settings=None` and `voice_settings={}` produce the same hash as before
+this layer existed, so every existing cached MP3 stays valid for default-mode
+delivery. Mode-specific takes get distinct hashes and cache separately — first
+encounter of a non-default-mode line costs one ElevenLabs call; subsequent
+plays hit cache.
+
+### Emotional Events Memory (`memory/emotional_events.py`)
+Sensitive life events Rex remembers across sessions:
+
+- **Inline detection**: when `topic_sensitivity == "heavy"`, the empathy
+  classifier also returns `{category, valence, description}` and the event is
+  written to `person_emotional_events` immediately during the empathy thread.
+- **Decay, not deletion**: rows stay in the DB forever, but `sensitivity_decay_days`
+  controls when Rex stops *surfacing* the event proactively. Defaults: grief
+  180d, breakup 90d, illness 120d, job_loss 60d, milestones (promotion/new_baby/
+  wedding/graduation/engagement) 365d, default 60d.
+- **Recall**: `_build_person_context` injects up to 3 active events into the
+  system prompt. When unacknowledged on a return visit, an
+  `ACKNOWLEDGE-ON-RETURN` directive instructs Rex to open with one soft
+  acknowledgment then yield.
+- **Discretion rule**: when more than one person is in the scene, the prompt
+  injection is suppressed entirely (`EMPATHY_DISCRETION_IN_CROWD`). The person
+  can still bring up their own event — the system prompt just won't volunteer
+  it on Rex's behalf in front of bystanders.
+- **Acknowledge-once-per-session**: the first turn that surfaces unacknowledged
+  events also marks them acked, so Rex doesn't repeat the same condolence on
+  every subsequent turn.
+
+### Structured Loss / Grief Flow
+When the empathy classifier detects a death/grief/illness event with an
+identifiable `loss_subject` (grandpa, dog, mother, best friend, etc.), Rex
+walks a **deterministic** condolence exchange instead of streaming free-form
+LLM text — the LLM has already been observed to fire snarky follow-ups in
+this context even with empathy directives. State machine in
+`intelligence/interaction.py`:
+
+| Step | Trigger | Rex says |
+|---|---|---|
+| `awaiting_consent` | first mention | *"I'm sorry to hear about your grandpa. Would you like to talk about them?"* (or *"about Buddy"* if a name was in the original utterance) |
+| `awaiting_name` | "yes" | *"What was your grandpa's name?"* |
+| `awaiting_description` | name given (extracted via `llm.extract_name_from_reply`) | *"I'm so sorry to hear Joe passed. That's got to be difficult. What were they like?"* |
+| (cleared) | "no" or ambiguous | *"Of course. I'm not going anywhere — say the word if you ever want to."* |
+| (cleared, hand back to LLM) | description shared | normal LLM with full context — name now persisted onto the emotional event row |
+
+Per-person TTL of 10 minutes guards against stale state. State cleared on
+session end. Each line is spoken with the empathy delivery envelope
+(sympathetic LEDs, calmer voice settings, longer beats).
+
+### Trend Tracking & Course Correction
+Per-person rolling history (deque, maxlen=8) of `{ts, valence, confidence,
+affect, mode}`, populated by `record()`. Affect labels project to a -1..+1
+valence axis (excited +0.9, happy +0.7, sad/anxious -0.6, etc.).
+
+`get_trend(person_id)` returns `{label, delta, prior_valence,
+current_valence, samples}` using the median of in-window prior readings as
+baseline so a single anomalous reading doesn't dominate. Label is one of
+`improving`, `steady`, `worsening` (threshold `EMPATHY_TREND_DELTA_THRESHOLD`,
+default 0.30). The label is injected into the system prompt directive with
+explicit guidance — *"if this reflects your last reply working, keep going"*
+vs *"if this reflects your last reply landing poorly, change tack"*.
+
+**Course-correct trigger**: when the trend reads worsening with delta ≤
+`EMPATHY_COURSE_CORRECT_DELTA` (default 0.40), confidence is above the floor,
+and the prior reading was within `EMPATHY_COURSE_CORRECT_RECENT_PRIOR_SECS`
+(default 90s), the picked mode is overridden with `course_correct` so Rex
+acknowledges the misstep before continuing. Per-person cooldown
+(`EMPATHY_COURSE_CORRECT_COOLDOWN_SECS`, default 90s) prevents
+turn-after-turn re-firing. Crisis still wins over course-correct.
+
+### Proactive Empathy Check-Ins
+A consciousness step (`_step_emotional_checkin`) runs at most once per
+(person, session). Two triggers:
+
+- **A — unacknowledged event**: an active `person_emotional_events` row exists
+  for the engaged person and `last_acknowledged_at` is older than this
+  session. Rex opens with a soft acknowledgment himself and marks events
+  acked. Skipped when crowd > 1.
+- **B — sustained negative affect**: empathy classifier has been reading the
+  engaged person as sad/withdrawn/anxious/tired/angry above the confidence
+  floor for ≥ `EMPATHY_CHECKIN_NEGATIVE_STREAK_SECS` (default 30s). Streak
+  resets if affect goes neutral or positive.
+
+Both gated by `_can_proactive_speak()`, `profile.suppress_proactive`, and
+`profile.rapid_exchange` so check-ins never fire mid-sentence or during
+back-and-forth exchanges.
+
+### Curiosity Suppression in Sympathetic Modes
+The post-response `_curiosity_check` step (which fires a separate snarky
+follow-up question with no system-prompt scaffolding) is gated to only run in
+`{default, amplify, lift, gentle_probe}` modes. Without this, even a perfect
+sympathetic main response was being followed by tone-deaf lines like *"guess
+you'll need a new best friend"* after a pet-loss disclosure. The fallback
+prompt in `llm.generate_curiosity_question` also includes an explicit
+"if topic is heavy, drop snark or return empty" clause as belt-and-suspenders.
+
+### Configuration Surface (in `config.py`)
+- `EMPATHY_ENABLED` — master kill switch
+- `EMPATHY_CACHE_TTL_SECS` (300) — affect cache TTL per person
+- `EMPATHY_MIN_CONFIDENCE_FOR_MODE_CHANGE` (0.55) — over-fitting guard
+- `EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS` (1.5) — max wait on the LLM-fallback path
+- `EMPATHY_DISCRETION_IN_CROWD` (True) — suppress sensitive event injection in crowds
+- `EMPATHY_PROSODY_ENABLED` (True)
+- `EMPATHY_DELIVERY_SHAPING_ENABLED` (True) — LEDs / beats / body bias
+- `EMPATHY_VOICE_SETTINGS_ENABLED` (True) — ElevenLabs voice_settings overrides
+- `EMPATHY_PROACTIVE_CHECKIN_ENABLED` (True), `_NEGATIVE_STREAK_SECS` (30), `_CHECK_INTERVAL_SECS` (10)
+- `EMPATHY_TREND_LOOKBACK_SECS` (180), `EMPATHY_TREND_DELTA_THRESHOLD` (0.30)
+- `EMPATHY_COURSE_CORRECT_ENABLED` (True), `_DELTA` (0.40), `_RECENT_PRIOR_SECS` (90), `_COOLDOWN_SECS` (90)
 
 ---
 

@@ -125,6 +125,21 @@ _face_reveal_declined: set[int] = set()
 # biometric rows when someone speaks a lot.
 _voice_refreshed_this_session: set[int] = set()
 
+# Per-person grief / loss conversation flow. When the empathy classifier
+# detects a death/grief/illness event with an identifiable subject, Rex
+# walks a small structured exchange instead of streaming a free-form LLM
+# reply: condolence + consent → name → name-aware acknowledgment → hand
+# back to the normal LLM. Keyed by person_id. TTL guards against stale
+# state when a conversation drifts away from the topic.
+#   step: "awaiting_consent" | "awaiting_name" | "awaiting_description"
+#   subject: e.g. "grandpa" / "dog" / "best friend"
+#   subject_kind: "person" | "pet" | "other"
+#   name: deceased's name once known (None until provided)
+#   started_at: time.monotonic() when the flow began
+_grief_flow_state: dict[int, dict] = {}
+_GRIEF_FLOW_TTL_SECS = 600.0  # 10 minutes — clears stale flows
+_GRIEF_FLOW_KEYWORDS = ("grief", "death", "illness")
+
 _NAME_PATTERNS = [
     re.compile(r"\bmy name is\s+(.+)$", re.IGNORECASE),
     re.compile(r"\bi am\s+(.+)$", re.IGNORECASE),
@@ -1300,6 +1315,7 @@ def _end_session() -> None:
     _awaiting_followup_event = None
     _voice_refreshed_this_session.clear()
     _face_reveal_declined.clear()
+    _grief_flow_state.clear()
     try:
         consciousness.clear_response_wait()
         consciousness.clear_engagement()
@@ -1385,6 +1401,186 @@ def _record_pool_topics_in_response(response_text: str, person_id: int) -> None:
             )
         except Exception as exc:
             _log.debug("record_pool_topics: save_qa error: %s", exc)
+
+
+def _grief_flow_active(person_id: Optional[int]) -> bool:
+    """True when this person has an unfinished grief flow within TTL."""
+    if person_id is None:
+        return False
+    state = _grief_flow_state.get(person_id)
+    if not state:
+        return False
+    if (time.monotonic() - state["started_at"]) > _GRIEF_FLOW_TTL_SECS:
+        _grief_flow_state.pop(person_id, None)
+        return False
+    return True
+
+
+def _grief_flow_clear(person_id: Optional[int]) -> None:
+    if person_id is not None:
+        _grief_flow_state.pop(person_id, None)
+
+
+_AFFIRM_PAT = re.compile(
+    r"\b(yes|yeah|yep|sure|okay|ok|please|alright|i guess|fine|"
+    r"i'?d like to|i would|let'?s|talk about (it|him|her|them))\b",
+    re.IGNORECASE,
+)
+_DECLINE_PAT = re.compile(
+    r"\b(no|nope|not really|don'?t want to|rather not|maybe later|"
+    r"not now|skip|drop it|leave it)\b",
+    re.IGNORECASE,
+)
+
+
+def _classify_consent(text: str) -> Optional[bool]:
+    """Heuristic yes/no classifier for the consent step. None when ambiguous."""
+    if not text:
+        return None
+    if _DECLINE_PAT.search(text):
+        return False
+    if _AFFIRM_PAT.search(text):
+        return True
+    return None
+
+
+def _maybe_start_grief_flow(
+    person_id: Optional[int],
+    empathy_event: Optional[dict],
+) -> Optional[str]:
+    """Return Rex's first-line response if a grief flow should kick off, else None.
+
+    Conditions: person_id known, no active flow already, empathy classified
+    a fresh event whose category indicates loss AND has an identifiable
+    loss_subject. The structured response replaces the LLM-streamed one for
+    this turn; subsequent turns from the same person are routed through
+    _continue_grief_flow until the flow closes.
+    """
+    if person_id is None or empathy_event is None:
+        return None
+    if _grief_flow_active(person_id):
+        return None
+    category = (empathy_event.get("category") or "").lower()
+    if category not in _GRIEF_FLOW_KEYWORDS:
+        return None
+    subject = (empathy_event.get("loss_subject") or "").strip().lower()
+    if not subject:
+        return None
+    subject_kind = (empathy_event.get("loss_subject_kind") or "other").lower()
+    name = (empathy_event.get("loss_subject_name") or "").strip() or None
+
+    _grief_flow_state[person_id] = {
+        "step": "awaiting_consent",
+        "subject": subject,
+        "subject_kind": subject_kind,
+        "name": name,
+        "started_at": time.monotonic(),
+    }
+
+    your_subject = f"your {subject}"
+    if name:
+        return (
+            f"I'm so sorry to hear about {name}. That's a lot. "
+            f"Would you like to talk about {'them' if subject_kind != 'pet' else 'them'}?"
+        )
+    return (
+        f"I'm sorry to hear about {your_subject}. "
+        f"Would you like to talk about {'them' if subject_kind != 'pet' else 'them'}?"
+    )
+
+
+def _continue_grief_flow(person_id: int, text: str) -> Optional[str]:
+    """Advance the grief flow one step. Returns Rex's response or None to fall
+    back to the normal LLM path (with empathy directive still applied)."""
+    state = _grief_flow_state.get(person_id)
+    if not state:
+        return None
+    step = state.get("step")
+    subject = state["subject"]
+    subject_kind = state["subject_kind"]
+
+    if step == "awaiting_consent":
+        consent = _classify_consent(text)
+        if consent is False:
+            _grief_flow_clear(person_id)
+            return (
+                "Of course. I'm not going anywhere — say the word "
+                "if you ever want to."
+            )
+        if consent is True:
+            if state.get("name"):
+                # Name was already in the original utterance — skip the name
+                # ask, go straight to an open question that invites them to
+                # share. The "I'm sorry" condolence already happened on the
+                # first turn, so don't repeat it.
+                state["step"] = "awaiting_description"
+                return f"What were they like?"
+            state["step"] = "awaiting_name"
+            return f"What was your {subject}'s name?"
+        # Ambiguous — don't push. Treat as decline-soft.
+        _grief_flow_clear(person_id)
+        return (
+            "No pressure. I'm here if you want to circle back to it."
+        )
+
+    if step == "awaiting_name":
+        try:
+            name = llm.extract_name_from_reply(text)
+        except Exception as exc:
+            _log.debug("extract_name_from_reply failed: %s", exc)
+            name = None
+        if name:
+            state["name"] = name
+            state["step"] = "awaiting_description"
+            # Persist the name onto the most recent emotional event so future
+            # sessions and the system-prompt recall layer can use it.
+            try:
+                rows = _db_fetch_latest_emo_event(person_id)
+                if rows:
+                    new_desc = rows[0]["description"]
+                    if name.lower() not in (new_desc or "").lower():
+                        new_desc = f"{new_desc} (name: {name})"
+                        _db_update_emo_description(rows[0]["id"], new_desc)
+            except Exception as exc:
+                _log.debug("emotional event name persist failed: %s", exc)
+            return (
+                f"I'm so sorry to hear {name} passed. That's got to be "
+                f"difficult. What were they like?"
+            )
+        # No name extracted — gracefully proceed without one.
+        state["step"] = "awaiting_description"
+        return (
+            "I'm so sorry. What were they like?"
+        )
+
+    if step == "awaiting_description":
+        # Hand back to the normal LLM with the empathy directive intact —
+        # the response now has rich context (name, transcript, mode=listen)
+        # so the LLM can naturally validate and stay present.
+        _grief_flow_clear(person_id)
+        return None
+
+    # Unknown step → bail safely.
+    _grief_flow_clear(person_id)
+    return None
+
+
+def _db_fetch_latest_emo_event(person_id: int) -> list[dict]:
+    from memory import database as _db
+    rows = _db.fetchall(
+        "SELECT id, description FROM person_emotional_events "
+        "WHERE person_id = ? ORDER BY id DESC LIMIT 1",
+        (person_id,),
+    )
+    return [dict(r) for r in rows]
+
+
+def _db_update_emo_description(event_id: int, new_description: str) -> None:
+    from memory import database as _db
+    _db.execute(
+        "UPDATE person_emotional_events SET description = ? WHERE id = ?",
+        (new_description, int(event_id)),
+    )
 
 
 def _curiosity_check(
@@ -2628,6 +2824,51 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                             config, "EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS", 1.5,
                         ))
                     )
+                # Grief flow — intercept the LLM path with a structured
+                # condolence/consent/name walk when the empathy classifier
+                # has detected (or is mid-conversation about) a loss.
+                grief_response = None
+                if person_id is not None:
+                    if _grief_flow_active(person_id):
+                        grief_response = _continue_grief_flow(person_id, text)
+                    else:
+                        cached = empathy.peek(person_id)
+                        ev = (
+                            (cached.get("result") or {}).get("event")
+                            if cached else None
+                        )
+                        grief_response = _maybe_start_grief_flow(person_id, ev)
+                if grief_response:
+                    _log.info(
+                        "[interaction] grief flow → person_id=%s step=%s text=%r",
+                        person_id,
+                        (_grief_flow_state.get(person_id) or {}).get("step"),
+                        grief_response,
+                    )
+                    # Speak the structured response with the empathy delivery
+                    # envelope (sympathetic LEDs/voice, longer pre/post beats).
+                    grief_emotion = "sad"
+                    grief_pre_ms = 600
+                    grief_post_ms = 600
+                    grief_voice = None
+                    try:
+                        ov = empathy.get_delivery_overrides(person_id)
+                        if ov:
+                            if ov.get("emotion"):
+                                grief_emotion = ov["emotion"]
+                            grief_pre_ms = max(grief_pre_ms, int(ov.get("pre_beat_ms") or 0))
+                            grief_post_ms = max(grief_post_ms, int(ov.get("post_beat_ms") or 0))
+                            grief_voice = ov.get("voice_settings")
+                    except Exception as exc:
+                        _log.debug("grief flow delivery override error: %s", exc)
+                    _speak_blocking(
+                        grief_response,
+                        emotion=grief_emotion,
+                        pre_beat_ms=grief_pre_ms,
+                        post_beat_ms_override=grief_post_ms,
+                        voice_settings=grief_voice,
+                    )
+                    response_text = grief_response
                 # If there are unacknowledged emotional events for this person
                 # the system prompt is about to fire the ACKNOWLEDGE-ON-RETURN
                 # directive — mark them acknowledged now so it doesn't repeat
