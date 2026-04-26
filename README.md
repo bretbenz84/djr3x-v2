@@ -57,6 +57,8 @@ The setup script creates local config files from templates and prompts for local
 - `apikeys.py` for OpenAI and ElevenLabs credentials
 - `.env` for machine-specific camera, audio, and hardware device paths
 - Optional replacement of `ELEVENLABS_VOICE_ID` in `config.py`
+- Optional guided droid hardware setup for the chest Arduino, head LED Arduino, and Pololu Maestro
+- Arduino CLI, Arduino AVR core, and FastLED setup for uploading the included LED firmware
 
 You can leave a prompt blank to keep the current value, or edit the generated files manually later.
 
@@ -86,7 +88,7 @@ Useful setup checks:
 ls /dev/tty.usb*
 ```
 
-Use that to find connected serial devices for Maestro and Arduino hardware. For camera setup, update `CAMERA_INDEX` or `CAMERA_DEVICE_NAME` in `.env`.
+The setup script can walk you through serial device detection for Maestro and Arduino hardware. For camera setup, update `CAMERA_INDEX` or `CAMERA_DEVICE_NAME` in `.env`.
 
 ## Servo Safety
 
