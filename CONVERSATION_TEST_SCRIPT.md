@@ -282,6 +282,43 @@ Expected:
 
 - Rex gives the floor back.
 
+Wrong person repair:
+
+> That wasn't me, that was Joy.
+
+Expected:
+
+- Rex accepts the corrected speaker/referent.
+- Rex does not keep addressing the wrong person.
+
+Pronoun repair:
+
+> She uses she/her pronouns.
+
+Expected:
+
+- Rex accepts the pronoun correction plainly.
+- Rex does not make the correction into a roast.
+
+Factual overreach repair:
+
+> You made that up.
+
+Expected:
+
+- Rex admits the overreach and drops the invented detail.
+- Rex continues only from known/stated information.
+
+Repeat / clarify repair:
+
+> Say that again.
+> What do you mean?
+
+Expected:
+
+- Rex repeats or clarifies the immediately previous line.
+- Rex does not add a new topic or another interview question.
+
 Useful log line:
 
 - `[repair] handled kind=...`
