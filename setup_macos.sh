@@ -921,33 +921,76 @@ _configure_droid_hardware_interactive() {
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
-    echo "Disconnect the Pololu Maestro, chest Arduino, and head Arduino now."
-    _prompt_continue "Press Enter once all three USB devices are disconnected..."
+    local setup_leds=0
+    local setup_servos=0
+    if _prompt_yes_no "Set up Arduino LED controllers now? [Y/n] " "y"; then
+        setup_leds=1
+    fi
+    if _prompt_yes_no "Set up a Pololu Maestro servo controller now? [y/N] " "n"; then
+        setup_servos=1
+    fi
+
+    if [[ "$setup_leds" -eq 0 && "$setup_servos" -eq 0 ]]; then
+        warn "No physical hardware component selected — skipping droid hardware setup."
+        return
+    fi
+
+    echo ""
+    if [[ "$setup_leds" -eq 1 && "$setup_servos" -eq 1 ]]; then
+        echo "Disconnect the Pololu Maestro, chest Arduino, and head Arduino now."
+    elif [[ "$setup_leds" -eq 1 ]]; then
+        echo "Disconnect the chest and head LED Arduinos now."
+    else
+        echo "Disconnect the Pololu Maestro now."
+    fi
+    _prompt_continue "Press Enter once the selected USB device(s) are disconnected..."
 
     _print_dev_directory
 
     HARDWARE_BASELINE_FILE="$(mktemp)"
     _snapshot_dev_names "$HARDWARE_BASELINE_FILE"
 
-    _guided_arduino_device_setup \
-        "Chest LED Arduino" \
-        "ARDUINO_CHEST_PORT" \
-        "chest" \
-        "$PROJECT_DIR/arduino/chest_nano" \
-        "Connect the chest LED Arduino by USB, then press Enter..." \
-        "After upload, connect the chest LEDs: data to Arduino pin 6, plus 5V and ground to the LED power rails." \
-        "arduino:avr:nano"
+    if [[ "$setup_leds" -eq 1 ]]; then
+        _guided_arduino_device_setup \
+            "Chest LED Arduino" \
+            "ARDUINO_CHEST_PORT" \
+            "chest" \
+            "$PROJECT_DIR/arduino/chest_nano" \
+            "Connect the chest LED Arduino by USB, then press Enter..." \
+            "After upload, connect the chest LEDs: data to Arduino pin 6, plus 5V and ground to the LED power rails." \
+            "arduino:avr:nano"
 
-    _guided_arduino_device_setup \
-        "Head LED Arduino" \
-        "ARDUINO_HEAD_PORT" \
-        "head" \
-        "$PROJECT_DIR/arduino/head_nano" \
-        "Connect the head LED Arduino by USB, then press Enter..." \
-        "After upload, connect the eyes data line to Arduino pin 6, then daisy-chain the data output from the eyes into the mouth PCB. Connect shared 5V and ground." \
-        "arduino:avr:uno"
+        _guided_arduino_device_setup \
+            "Head LED Arduino" \
+            "ARDUINO_HEAD_PORT" \
+            "head" \
+            "$PROJECT_DIR/arduino/head_nano" \
+            "Connect the head LED Arduino by USB, then press Enter..." \
+            "After upload, connect the eyes data line to Arduino pin 6, then daisy-chain the data output from the eyes into the mouth PCB. Connect shared 5V and ground." \
+            "arduino:avr:uno"
+    else
+        local current_led_port=""
+        for key in ARDUINO_HEAD_PORT ARDUINO_CHEST_PORT; do
+            current_led_port="$(_env_current_value "$key")"
+            if [[ -z "$current_led_port" ]] || _env_value_is_template_placeholder "$key" "$current_led_port"; then
+                _set_env_value "$key" ""
+                INSTALLED_ITEMS+=(".env $key disabled")
+            fi
+        done
+        ok "LED Arduino setup skipped."
+    fi
 
-    _guided_maestro_setup
+    if [[ "$setup_servos" -eq 1 ]]; then
+        _guided_maestro_setup
+    else
+        local current_maestro_port=""
+        current_maestro_port="$(_env_current_value "MAESTRO_PORT")"
+        if [[ -z "$current_maestro_port" ]] || _env_value_is_template_placeholder "MAESTRO_PORT" "$current_maestro_port"; then
+            _set_env_value "MAESTRO_PORT" ""
+            INSTALLED_ITEMS+=(".env MAESTRO_PORT disabled")
+        fi
+        ok "Pololu Maestro setup skipped."
+    fi
 
     rm -f "$HARDWARE_BASELINE_FILE"
     HARDWARE_BASELINE_FILE=""
