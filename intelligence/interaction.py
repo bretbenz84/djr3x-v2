@@ -40,6 +40,7 @@ from intelligence import question_budget
 from intelligence import repair_moves
 from intelligence import end_thread
 from intelligence import introductions
+from intelligence import memory_query
 from intelligence import social_frame
 from intelligence import turn_completion
 from intelligence import friendship_patterns
@@ -3578,6 +3579,64 @@ def _handle_classified_intent(
             f"title, artist, or vibe. Answer in ONE short Rex-style line — list "
             f"the genres tersely (comma-separated is fine), no preamble, no fluff."
         )
+
+    if intent == "query_memory":
+        try:
+            target = memory_query.resolve_target(raw_text, person_id)
+            if target.ambiguous_names:
+                names = ", ".join(target.ambiguous_names[:5])
+                return _say(
+                    f"The user asked a memory question ({raw_text!r}), but their "
+                    f"relationship phrase matched multiple people: {names}. Ask "
+                    f"which one they mean in ONE short Rex-style line. Do not guess."
+                )
+            if not target.resolved:
+                if target.detail == "relationship_query_without_current_person":
+                    rel = target.relation_label or "relationship"
+                    return _say(
+                        f"The user asked about their {rel}, but you do not know who "
+                        f"is speaking with enough confidence. In ONE short Rex-style "
+                        f"line, say you need to know who they are first before pulling "
+                        f"that relationship memory. Do not invent a name."
+                    )
+                if target.detail == "no_relationship_match":
+                    rel = target.relation_label or "relationship"
+                    return _say(
+                        f"The user asked about their {rel}, but no matching "
+                        f"relationship is stored in memory. In ONE short Rex-style "
+                        f"line, say you do not have that relationship saved yet. "
+                        f"Do not invent a person."
+                    )
+                if target.detail == "no_person_match" and target.name:
+                    return _say(
+                        f"The user asked what you know about {target.name!r}, but "
+                        f"there is no matching person in memory. In ONE short "
+                        f"Rex-style line, say you do not have memory for that person "
+                        f"yet. Do not invent facts."
+                    )
+                return _say(
+                    f"The user asked a memory question ({raw_text!r}), but you "
+                    f"cannot resolve who it is about. In ONE short Rex-style line, "
+                    f"ask them to name the person. Do not invent."
+                )
+
+            context = memory_query.build_context(target, person_id)
+            if not context.has_memory:
+                return _say(
+                    f"The user asked a memory question ({raw_text!r}). You resolved "
+                    f"the target as {target.name or 'that person'}, but only the "
+                    f"person record exists and no facts, relationships, events, or "
+                    f"conversation summaries were found. Say that honestly in ONE "
+                    f"short Rex-style line."
+                )
+            return _say(memory_query.build_response_prompt(raw_text, context))
+        except Exception as exc:
+            _log.debug("query_memory intent failed: %s", exc)
+            return _say(
+                "The user asked a memory question, but your memory lookup errored. "
+                "Tell them briefly in one Rex-style line that the memory banks "
+                "hiccuped and you cannot pull it up right now."
+            )
 
     if intent == "play_music":
         try:
