@@ -29,7 +29,7 @@ from audio import stream, vad, wake_word, transcription, speaker_id
 from audio import speech_queue, output_gate
 from audio import echo_cancel
 from audio import prosody
-from intelligence import command_parser, llm, personality
+from intelligence import action_router, command_parser, llm, personality
 from intelligence import consciousness
 from intelligence import intent_classifier
 from intelligence import empathy
@@ -86,6 +86,7 @@ _session_person_ids: set[int] = set()
 _session_exchange_count: int = 0
 _last_speech_at: float = 0.0  # monotonic timestamp of most recent speech chunk
 _session_forget_terms: dict[int, set[str]] = {}
+_session_router_control_topics: dict[int, str] = {}
 
 # Anti-repeat for latency filler lines
 _last_filler: Optional[str] = None
@@ -236,6 +237,95 @@ def _dj_is_playing() -> bool:
         return bool(dj_mod.is_playing())
     except Exception:
         return False
+
+
+def _action_router_context(
+    text: str,
+    *,
+    person_id: Optional[int],
+    person_name: Optional[str],
+    raw_best_id: Optional[int],
+    raw_best_name: Optional[str],
+    speaker_score: float,
+    recent_engagement: Optional[dict],
+    off_camera_unknown: bool,
+    identity_prompt_active: bool,
+) -> dict:
+    """Build compact turn context for the shadow action router."""
+    visible_people = []
+    try:
+        for p in world_state.get("people") or []:
+            visible_people.append({
+                "person_id": p.get("person_db_id"),
+                "face_id": p.get("face_id"),
+                "voice_id": p.get("voice_id"),
+                "age_estimate": p.get("age_estimate"),
+                "is_unknown": p.get("person_db_id") is None,
+            })
+    except Exception:
+        visible_people = []
+
+    active_game = False
+    try:
+        from features import games as games_mod
+        active_game = bool(games_mod.is_active())
+    except Exception:
+        active_game = False
+
+    legacy_command = None
+    try:
+        match = command_parser.parse(text)
+        if match is not None:
+            legacy_command = {
+                "command_key": match.command_key,
+                "match_type": match.match_type,
+                "args": match.args,
+            }
+    except Exception:
+        legacy_command = None
+
+    pending_event = None
+    if _awaiting_followup_event is not None:
+        pending_event = {
+            "event_id": _awaiting_followup_event.get("event_id"),
+            "event_name": _awaiting_followup_event.get("event_name"),
+            "person_id": _awaiting_followup_event.get("person_id"),
+        }
+
+    return {
+        "speaker": {
+            "person_id": person_id,
+            "name": person_name,
+            "raw_best_id": raw_best_id,
+            "raw_best_name": raw_best_name,
+            "voice_score": round(float(speaker_score or 0.0), 3),
+            "off_camera_unknown": off_camera_unknown,
+        },
+        "visible_people": visible_people[:6],
+        "recent_engagement": recent_engagement,
+        "active_game": active_game,
+        "active_music": _dj_is_playing(),
+        "pending": {
+            "identity_prompt_active": identity_prompt_active,
+            "awaiting_followup_event": pending_event,
+            "offscreen_identify": _pending_offscreen_identify is not None,
+            "introduction": _pending_introduction is not None,
+            "intro_followup": _pending_intro_followup is not None,
+        },
+        "legacy": {
+            "command_key": (legacy_command or {}).get("command_key"),
+            "command_match": legacy_command,
+        },
+    }
+
+
+def _router_decision_executable(decision: Optional[action_router.ActionDecision]) -> bool:
+    if decision is None:
+        return False
+    if decision.action not in action_router.EXECUTABLE_ACTIONS:
+        return False
+    threshold = float(getattr(config, "ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE", 0.85))
+    return float(decision.confidence or 0.0) >= threshold
 
 
 def _chunk_for_vad(audio_chunk: np.ndarray) -> np.ndarray:
@@ -2501,6 +2591,7 @@ def _end_session() -> None:
         _session_exchange_count = 0
         _session_person_ids.clear()
         _session_forget_terms.clear()
+        _session_router_control_topics.clear()
         try:
             topic_thread.clear()
         except Exception:
@@ -2596,6 +2687,7 @@ def _end_session() -> None:
 
     conv_memory.clear_transcript()
     _session_forget_terms.clear()
+    _session_router_control_topics.clear()
     try:
         topic_thread.clear()
     except Exception:
@@ -2914,6 +3006,66 @@ def _handle_emotional_checkin_boundary(
         return "Understood. I won't bring it up again unless you do."
     except Exception as exc:
         _log.debug("emotional check-in boundary handler failed: %s", exc)
+        return None
+
+
+def _handle_router_emotional_boundary(
+    person_id: Optional[int],
+    text: str,
+    *,
+    topic_hint: Optional[str] = None,
+) -> Optional[str]:
+    """Fallback boundary action when the action router catches user intent."""
+    if person_id is None:
+        return None
+    try:
+        released = False
+        muted = emotional_events.mute_latest_active_negative_for_person(
+            person_id,
+            reason=text.strip()[:240],
+        )
+        try:
+            released = consciousness.note_emotional_checkin_boundary(person_id)
+        except Exception as exc:
+            _log.debug("router boundary release hold failed: %s", exc)
+
+        topic = (topic_hint or "").strip() or _boundary_fallback_topic() or "current topic"
+        applied = boundary_memory.apply_detected_boundary(
+            person_id,
+            {
+                "action": "add",
+                "behavior": "mention",
+                "topic": topic,
+                "description": f"Do not bring up {topic} unless the person does.",
+                "source_text": text.strip(),
+            },
+        )
+        _grief_flow_clear(person_id)
+        try:
+            empathy.force_mode(
+                person_id,
+                "brief",
+                affect="neutral",
+                needs="boundary",
+                sensitivity="heavy",
+                invitation=False,
+                confidence=1.0,
+                reason="action router detected emotional boundary",
+            )
+        except Exception:
+            pass
+        _log.info(
+            "[action_router] executed emotional.boundary person_id=%s muted_event=%s "
+            "saved_boundary=%s released_hold=%s text=%r",
+            person_id,
+            (muted or {}).get("id"),
+            (applied or {}).get("id"),
+            released,
+            text,
+        )
+        return "Got it. I won't bring it up again unless you do."
+    except Exception as exc:
+        _log.debug("router emotional boundary handler failed: %s", exc)
         return None
 
 
@@ -3809,6 +3961,8 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
     game_after_audio_path: Optional[str] = None
     event_cancellation_ack: Optional[str] = None
     repair_move: Optional[dict] = None
+    router_decision: Optional[action_router.ActionDecision] = None
+    suppress_memory_learning = False
 
     # Randomised pre-response pause — prevents Rex from feeling instant/robotic
     delay_ms = random.randint(config.REACTION_DELAY_MS_MIN, config.REACTION_DELAY_MS_MAX)
@@ -4741,6 +4895,27 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             speaker_label, person_id, text,
         )
         try:
+            router_context = _action_router_context(
+                text,
+                person_id=person_id,
+                person_name=person_name,
+                raw_best_id=raw_best_id,
+                raw_best_name=raw_best_name,
+                speaker_score=speaker_score,
+                recent_engagement=recent_engagement,
+                off_camera_unknown=off_camera_unknown,
+                identity_prompt_active=identity_prompt_active,
+            )
+            if bool(getattr(config, "ACTION_ROUTER_EXECUTE_ENABLED", False)):
+                router_decision = action_router.decide(text, router_context)
+                action_router.log_decision(router_decision, router_context, mode="execute")
+            else:
+                action_router.start_shadow_decision(text, router_context)
+            if _router_decision_executable(router_decision):
+                suppress_memory_learning = True
+        except Exception as exc:
+            _log.debug("action router shadow start failed: %s", exc)
+        try:
             topic_thread.note_user_turn(text, person_id)
         except Exception as exc:
             _log.debug("topic thread user update failed: %s", exc)
@@ -4804,6 +4979,43 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             _session_exchange_count += 1
             _register_rex_utterance(preference_response)
             return
+
+        if (
+            _router_decision_executable(router_decision)
+            and router_decision.action == "emotional.boundary"
+        ):
+            router_boundary_person_id = boundary_person_id or person_id
+            if router_boundary_person_id is None and recent_engagement and not _has_unknown_visible_person():
+                try:
+                    router_boundary_person_id = int(recent_engagement.get("person_id"))
+                except (TypeError, ValueError):
+                    router_boundary_person_id = None
+            boundary_response = _handle_router_emotional_boundary(
+                router_boundary_person_id,
+                text,
+                topic_hint=(
+                    _session_router_control_topics.get(int(router_boundary_person_id))
+                    if router_boundary_person_id is not None
+                    else None
+                ),
+            )
+            if boundary_response:
+                _dismiss_pending_consent_prompts(router_boundary_person_id, text)
+                try:
+                    consciousness.clear_response_wait()
+                except Exception:
+                    pass
+                _speak_blocking(
+                    boundary_response,
+                    emotion="neutral",
+                    pre_beat_ms=200,
+                    post_beat_ms_override=300,
+                )
+                conv_memory.add_to_transcript("Rex", boundary_response)
+                conv_log.log_rex(boundary_response)
+                _session_exchange_count += 1
+                _register_rex_utterance(boundary_response)
+                return
 
         answered_question = _maybe_capture_pending_qa(
             person_id,
@@ -5148,6 +5360,15 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                                 specific_forget_target_for_turn,
                             )
                             return
+                        if suppress_memory_learning:
+                            _log.info(
+                                "[empathy] skipped emotional memory write because "
+                                "this turn was handled as memory/control intent "
+                                "person_id=%s: %s",
+                                person_id,
+                                ev.get("description"),
+                            )
+                            return
                         if not _extracted_memory_allowed(ev, person_id):
                             _log.info(
                                 "[empathy] skipped emotional memory write matching "
@@ -5188,7 +5409,6 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         response_text = None
         used_agenda_llm = False
         used_classified_intent = False
-        suppress_memory_learning = False
         routing_text = text
 
         if response_text is None:
@@ -5200,7 +5420,38 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     except Exception:
                         cancel_person_id = None
                 labels = _cancel_stale_event_memory(cancel_person_id, text)
+                if (
+                    not labels
+                    and _router_decision_executable(router_decision)
+                    and router_decision.action == "event.cancel"
+                ):
+                    event_hint = (
+                        router_decision.args.get("event_hint")
+                        or router_decision.args.get("target")
+                        or router_decision.args.get("plan")
+                        or ""
+                    )
+                    if event_hint:
+                        labels = _cancel_stale_event_memory(
+                            cancel_person_id,
+                            text,
+                            event_hint={"event_name": str(event_hint)},
+                        )
+                    if not labels:
+                        labels = [str(event_hint).strip() or "that plan"]
+                        _log.info(
+                            "[action_router] executed event.cancel without matching "
+                            "stored row person_id=%s label=%r text=%r",
+                            cancel_person_id,
+                            labels[0],
+                            text,
+                        )
                 if labels:
+                    if cancel_person_id is not None:
+                        try:
+                            _session_router_control_topics[int(cancel_person_id)] = labels[0]
+                        except (TypeError, ValueError):
+                            pass
                     event_cancellation_ack = _event_cancellation_ack(labels, cancel_person_id)
             if event_cancellation_ack:
                 _speak_blocking(event_cancellation_ack, emotion="neutral")
@@ -5790,6 +6041,7 @@ def start() -> None:
     _wake_word_fired.clear()
     _interrupted.clear()
     _session_person_ids.clear()
+    _session_router_control_topics.clear()
     _identity_prompt_until = 0.0
     _awaiting_followup_event = None
     topic_thread.clear()

@@ -61,7 +61,7 @@ _SERVO_ENV_US_MAX = 3000.0
 
 # When True, clears logs/djr3x.log and logs/conversation.log at startup so
 # each run begins with fresh log files.
-DEBUG_MODE = False
+DEBUG_MODE = True
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AI MODELS
@@ -905,6 +905,17 @@ ACTION_GOVERNOR_SHADOW_MODE = True
 ACTION_GOVERNOR_LOG_CANDIDATES = True
 ACTION_GOVERNOR_LOG_EMPTY_CYCLES = False
 ACTION_GOVERNOR_MIN_SCORE = 20
+
+# Higher-level user-turn action router.
+#
+# Execution is limited by intelligence.action_router.EXECUTABLE_ACTIONS; all
+# other actions are still logged for comparison with the legacy path.
+ACTION_ROUTER_SHADOW_ENABLED = True
+ACTION_ROUTER_LOG_DECISIONS = True
+ACTION_ROUTER_EXECUTE_ENABLED = True
+ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE = 0.85
+ACTION_ROUTER_MODEL = LLM_MODEL
+ACTION_ROUTER_MAX_CONTEXT_CHARS = 5000
 
 # After an emotional check-in, visual curiosity stays quiet briefly. This keeps
 # camera-based riffs from stepping on care, without blocking visual questions
