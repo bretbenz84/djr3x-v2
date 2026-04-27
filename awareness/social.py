@@ -81,14 +81,29 @@ def analyze_crowd(people_list: list[dict]) -> dict:
     crowd = world_state.get("crowd")
     dominant_speaker = crowd.get("dominant_speaker")
 
+    if count <= 1:
+        count_label = "alone"
+    elif count == 2:
+        count_label = "pair"
+    elif count <= 4:
+        count_label = "small_group"
+    else:
+        count_label = "crowd"
+
+    crowd["count"] = count
+    crowd["count_label"] = count_label
     crowd["interaction_mode"] = mode
+    crowd["engaged_count"] = engaged_count
     crowd["disengaged_people"] = disengaged
     crowd["last_updated"] = datetime.now(timezone.utc).isoformat()
     world_state.update("crowd", crowd)
 
     return {
+        "count": count,
+        "count_label": count_label,
         "interaction_mode": mode,
         "dominant_speaker": dominant_speaker,
+        "engaged_count": engaged_count,
         "disengaged_people": disengaged,
     }
 

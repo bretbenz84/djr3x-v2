@@ -178,7 +178,8 @@ class SituationAssessor:
             people = world_state.get("people")
             face_gone = not bool(people)
             child_present = any(
-                p.get("age_category") in ("child", "teen") for p in people
+                (p.get("age_category") or p.get("age_estimate")) in ("child", "teen")
+                for p in people
             )
         except Exception:
             pass
@@ -193,13 +194,17 @@ class SituationAssessor:
         # likely_still_present: face gone but user is still talking (moved, not left)
         likely_still_present = face_gone and user_mid_sentence
 
-        # social_mode: derived from crowd count_label
+        # social_mode: prefer pose/proxemic crowd interaction mode, fall back
+        # to simple count labels from the vision scene counter.
         count_label = "alone"
+        interaction_mode = None
         try:
-            count_label = world_state.get("crowd").get("count_label") or "alone"
+            crowd = world_state.get("crowd")
+            interaction_mode = crowd.get("interaction_mode")
+            count_label = crowd.get("count_label") or "alone"
         except Exception:
             pass
-        social_mode = _SOCIAL_MODE_MAP.get(count_label, "one_on_one")
+        social_mode = interaction_mode or _SOCIAL_MODE_MAP.get(count_label, "one_on_one")
 
         # suppress_proactive: any condition that means Rex should stay quiet right now
         convo_just_ended = (

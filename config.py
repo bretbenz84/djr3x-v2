@@ -535,11 +535,22 @@ TRACKING_DEAD_ZONE_PX = 40
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PROXEMICS — Distance Zone Thresholds
-# Face bounding box height as a fraction of total frame height (larger = closer)
+# Face bounding box width as a fraction of total frame width (larger = closer)
 # ─────────────────────────────────────────────────────────────────────────────
 
 PROXEMICS_INTIMATE_MIN_FRACTION = 0.65  # above this → intimate zone
 PROXEMICS_SOCIAL_MIN_FRACTION   = 0.30  # above this → social zone; below → public zone
+
+# MediaPipe pose can be heavier than face recognition, so sample it at a lower
+# rate. Set to 0 to attempt pose analysis every consciousness tick.
+POSE_ANALYSIS_INTERVAL_SECS = 2.0
+
+# Personal-space reaction for camera proxemics. "Intimate" means the face fills
+# enough of the frame that, by American conversational norms, Rex can treat the
+# person as comically too close.
+PERSONAL_SPACE_REACTION_ENABLED = True
+PERSONAL_SPACE_REACTION_COOLDOWN_SECS = 45.0
+PERSONAL_SPACE_REACTION_MIN_ZONE = "intimate"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SPEAKER & FACE RECOGNITION — Similarity Thresholds

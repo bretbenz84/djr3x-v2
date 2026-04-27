@@ -32,6 +32,7 @@ _PURPOSE_PRIORITIES: dict[str, int] = {
     "third_party_awareness": 72,
     "reengagement": 70,
     "group_turn_invite": 68,
+    "personal_space": 67,
     "memory_followup": 65,
     "celebration_checkin": 64,
     "visual_curiosity": 55,

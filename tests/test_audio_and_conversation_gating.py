@@ -217,6 +217,114 @@ class ConversationGatingTest(unittest.TestCase):
         )
         self.assertIn(directive, prompt)
 
+    def test_agenda_surfaces_intimate_personal_space_cue(self):
+        from intelligence import conversation_agenda
+
+        ws = {
+            "crowd": {
+                "count": 1,
+                "interaction_mode": "one_on_one",
+                "engaged_count": 1,
+            },
+            "people": [
+                {
+                    "id": "person_1",
+                    "face_id": "Bret",
+                    "distance_zone": "intimate",
+                }
+            ],
+            "environment": {},
+        }
+        with (
+            mock.patch.object(conversation_agenda.world_state, "snapshot", return_value=ws),
+            mock.patch.object(
+                conversation_agenda.people_memory,
+                "get_person",
+                return_value={"id": 1, "name": "Bret", "friendship_tier": "friend"},
+            ),
+            mock.patch.object(
+                conversation_agenda.rel_memory,
+                "get_latest_pending_question",
+                return_value=None,
+            ),
+            mock.patch.object(conversation_agenda, "_next_useful_question", return_value=None),
+            mock.patch("intelligence.question_budget.can_ask", return_value=True),
+            mock.patch("intelligence.question_budget.build_directive", return_value=""),
+        ):
+            directive = conversation_agenda.build_turn_directive("hello", 1)
+
+        self.assertIn("Proxemics cue", directive)
+        self.assertIn("American norms", directive)
+        self.assertIn("boundary joke or roast", directive)
+
+
+class SocialVisionIntegrationTest(unittest.TestCase):
+    def test_social_crowd_updates_count_and_engagement(self):
+        from awareness import social
+
+        with mock.patch.object(social.world_state, "get", return_value={}):
+            updated = {}
+            with mock.patch.object(
+                social.world_state,
+                "update",
+                side_effect=lambda field, value: updated.setdefault(field, value),
+            ):
+                result = social.analyze_crowd([
+                    {"id": "a", "engagement": "high", "distance_zone": "social"},
+                    {"id": "b", "engagement": "low", "distance_zone": "public"},
+                ])
+
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["count_label"], "pair")
+        self.assertEqual(result["engaged_count"], 1)
+        self.assertEqual(result["interaction_mode"], "small_group")
+        self.assertEqual(updated["crowd"]["count"], 2)
+
+    def test_personal_space_helper_treats_intimate_as_too_close(self):
+        from intelligence import consciousness
+
+        self.assertTrue(
+            consciousness._too_close_for_personal_space(
+                {"distance_zone": "intimate"}
+            )
+        )
+        self.assertFalse(
+            consciousness._too_close_for_personal_space(
+                {"distance_zone": "social"}
+            )
+        )
+
+    def test_llm_world_summary_includes_visible_social_cues(self):
+        from intelligence import llm
+
+        summary = llm._summarize_world_state({
+            "environment": {},
+            "crowd": {
+                "count": 1,
+                "count_label": "alone",
+                "interaction_mode": "one_on_one",
+                "engaged_count": 1,
+            },
+            "people": [
+                {
+                    "face_id": "Bret",
+                    "distance_zone": "intimate",
+                    "approach_vector": "approaching",
+                    "pose": "facing_forward",
+                    "gesture": "leaning_in",
+                    "engagement": "high",
+                }
+            ],
+            "audio_scene": {},
+            "self_state": {},
+            "time": {},
+            "animals": [],
+        })
+
+        self.assertIn("Interaction mode: one_on_one", summary)
+        self.assertIn("Bret: distance=intimate", summary)
+        self.assertIn("too close for comfort", summary)
+
 
 if __name__ == "__main__":
     unittest.main()

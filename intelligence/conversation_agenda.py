@@ -84,6 +84,11 @@ _PROACTIVE_RULES: dict[str, tuple[int, str]] = {
         "invite the quiet visible participant into the current conversation only. "
         "Make it optional, warm, and one short line; do not pressure them.",
     ),
+    "personal_space": (
+        67,
+        "react to the person being comically too close only. One short boundary "
+        "joke or playful roast; do not ask a question.",
+    ),
     "reengagement": (
         70,
         "recapture attention with one line only. Do not ask an unrelated question.",
@@ -153,6 +158,41 @@ def _looks_like_user_question(text: str) -> bool:
 
 def _is_compliment_or_ack(text: str) -> bool:
     return bool(_COMPLIMENT_OR_ACK_PAT.search(text or ""))
+
+
+def _social_context_lines(ws: dict) -> list[str]:
+    crowd = ws.get("crowd", {}) or {}
+    people = ws.get("people", []) or []
+    lines: list[str] = []
+    if crowd.get("interaction_mode"):
+        lines.append(
+            "Live social context: "
+            f"mode={crowd.get('interaction_mode')}; "
+            f"count={crowd.get('count', len(people))}; "
+            f"engaged={crowd.get('engaged_count', 'unknown')}."
+        )
+    close_people = [
+        p for p in people
+        if (p.get("distance_zone") or "").lower() == "intimate"
+    ]
+    if close_people:
+        names = [
+            str(p.get("face_id") or p.get("voice_id") or p.get("id") or "someone")
+            for p in close_people[:2]
+        ]
+        lines.append(
+            "Proxemics cue: "
+            + ", ".join(names)
+            + " is extremely close to Rex's personal space by American norms. "
+            "A short boundary joke or roast is allowed if it fits the turn."
+        )
+    disengaged = crowd.get("disengaged_people") or []
+    if disengaged:
+        lines.append(
+            "Engagement cue: at least one visible person appears disengaged; "
+            "avoid piling on questions unless re-engaging them is the single purpose."
+        )
+    return lines
 
 
 def claim_proactive_purpose(
@@ -385,6 +425,8 @@ def build_turn_directive(
         question_budget_allows = question_budget.can_ask("agenda_question")
     except Exception:
         question_budget_allows = True
+
+    lines.extend(_social_context_lines(ws))
 
     if end_thread_pending:
         lines.append(

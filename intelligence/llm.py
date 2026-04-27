@@ -87,7 +87,37 @@ def _summarize_world_state(ws: dict) -> str:
         )
 
     crowd = ws.get("crowd", {})
-    parts.append(f"Crowd: {crowd.get('count_label', 'unknown')} ({crowd.get('count', 0)} people).")
+    crowd_line = f"Crowd: {crowd.get('count_label', 'unknown')} ({crowd.get('count', 0)} people)."
+    if crowd.get("interaction_mode"):
+        crowd_line += f" Interaction mode: {crowd['interaction_mode']}."
+    if crowd.get("engaged_count") is not None:
+        crowd_line += f" Engaged visible people: {crowd.get('engaged_count')}."
+    parts.append(crowd_line)
+
+    people = ws.get("people", []) or []
+    social_cues = []
+    for person in people[:4]:
+        name = person.get("face_id") or person.get("voice_id") or person.get("id") or "unknown person"
+        bits = []
+        if person.get("distance_zone"):
+            bits.append(f"distance={person['distance_zone']}")
+        if person.get("approach_vector"):
+            bits.append(f"movement={person['approach_vector']}")
+        if person.get("pose"):
+            bits.append(f"pose={person['pose']}")
+        if person.get("gesture") and person.get("gesture") != "neutral":
+            bits.append(f"gesture={person['gesture']}")
+        if person.get("engagement"):
+            bits.append(f"engagement={person['engagement']}")
+        if bits:
+            social_cues.append(f"{name}: " + ", ".join(bits))
+    if social_cues:
+        parts.append(
+            "Visible social cues: "
+            + "; ".join(social_cues)
+            + ". Treat intimate camera distance as physically close; by American "
+            "personal-space norms, someone extremely close may be playfully too close for comfort."
+        )
 
     audio = ws.get("audio_scene", {})
     audio_notes = [f"ambient noise is {audio.get('ambient_level', 'moderate')}"]

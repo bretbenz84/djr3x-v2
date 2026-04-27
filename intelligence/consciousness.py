@@ -102,6 +102,9 @@ _proactive_speech_pending = threading.Event()
 
 # Face detection terminal feedback de-duplication signature.
 _last_face_feedback_signature: Optional[str] = None
+_last_pose_analysis_at: float = 0.0
+_previous_face_boxes: dict[str, tuple[int, int, int, int]] = {}
+_personal_space_reacted_at: dict[str, float] = {}
 
 # Presence tracking: set of tracking keys visible in the previous loop tick.
 # Key type: int (person_db_id) for known people, str (slot id e.g. "person_1") for unknown.
@@ -1010,6 +1013,7 @@ def _step_person_recognition(frame) -> None:
             # No visible faces this tick — clear transient person slots.
             if world_state.get("people"):
                 world_state.update("people", [])
+            _previous_face_boxes.clear()
             _last_face_feedback_signature = None
             return
 
@@ -1036,6 +1040,8 @@ def _step_person_recognition(frame) -> None:
                     "face_id": base.get("face_id"),
                     "voice_id": base.get("voice_id"),
                     "distance_zone": base.get("distance_zone"),
+                    "approach_vector": base.get("approach_vector"),
+                    "face_box_fraction": base.get("face_box_fraction"),
                     "pose": base.get("pose"),
                     "gesture": base.get("gesture"),
                     "engagement": base.get("engagement"),
@@ -1048,50 +1054,86 @@ def _step_person_recognition(frame) -> None:
         recognized_names: list[str] = []
         unknown_count = 0
         any_identified_this_tick = False
-        for det in detected:
+        frame_width = int(getattr(frame, "shape", [0, 0])[1] or 0)
+        active_box_keys: set[str] = set()
+        for idx, det in enumerate(detected):
             person_record = face_mod.identify_face(det["encoding"])
             if person_record is None and apply_sticky:
                 # Carry forward last solo identity through a single-face miss.
                 sticky_id, sticky_name, _ = _last_solo_identity
                 person_record = {"id": sticky_id, "name": sticky_name}
-            if person_record is None:
-                unknown_count += 1
-                continue
-            any_identified_this_tick = True
-            recognized_name = person_record.get("name") or f"person_{person_record.get('id')}"
-            recognized_names.append(recognized_name)
+            target_slot = people[idx] if idx < len(people) else None
+            if person_record is not None:
+                any_identified_this_tick = True
+                recognized_name = person_record.get("name") or f"person_{person_record.get('id')}"
+                recognized_names.append(recognized_name)
 
-            # Prefer matching an already-assigned DB slot; otherwise fill first unknown slot.
-            target_slot = None
-            for ws_person in people:
-                if ws_person.get("person_db_id") == person_record.get("id"):
-                    target_slot = ws_person
-                    break
-            if target_slot is None:
+                # Prefer matching an already-assigned DB slot; otherwise fill first unknown slot.
+                target_slot = None
                 for ws_person in people:
-                    if ws_person.get("face_id") is None:
+                    if ws_person.get("person_db_id") == person_record.get("id"):
                         target_slot = ws_person
                         break
+                if target_slot is None:
+                    for ws_person in people:
+                        if ws_person.get("face_id") is None:
+                            target_slot = ws_person
+                            break
+            else:
+                unknown_count += 1
 
             if target_slot is None:
                 continue
 
-            incoming_name = person_record.get("name")
-            incoming_id = person_record.get("id")
-            if (
-                target_slot.get("face_id") != incoming_name
-                or target_slot.get("person_db_id") != incoming_id
-            ):
-                target_slot["face_id"] = incoming_name
-                target_slot["person_db_id"] = incoming_id
-                if target_slot.get("voice_id") is None and incoming_name:
-                    target_slot["voice_id"] = incoming_name
-                changed = True
-                _log.info(
-                    "consciousness: face identified → %s (db_id=%s)",
-                    incoming_name,
-                    incoming_id,
+            box = det.get("bounding_box")
+            if box:
+                slot_key = str(
+                    person_record.get("id")
+                    if person_record is not None
+                    else target_slot.get("id") or f"person_{idx + 1}"
                 )
+                active_box_keys.add(slot_key)
+                try:
+                    from vision import proxemics
+                    target_slot["distance_zone"] = proxemics.get_distance_zone(
+                        box,
+                        frame_width,
+                    )
+                    previous_box = _previous_face_boxes.get(slot_key)
+                    target_slot["approach_vector"] = (
+                        proxemics.get_approach_vector(box, previous_box)
+                        if previous_box
+                        else "stationary"
+                    )
+                    target_slot["face_box_fraction"] = (
+                        (box[2] / frame_width) if frame_width > 0 else None
+                    )
+                    _previous_face_boxes[slot_key] = box
+                    changed = True
+                except Exception as exc:
+                    _log.debug("proxemics update failed: %s", exc)
+
+            if person_record is not None:
+                incoming_name = person_record.get("name")
+                incoming_id = person_record.get("id")
+                if (
+                    target_slot.get("face_id") != incoming_name
+                    or target_slot.get("person_db_id") != incoming_id
+                ):
+                    target_slot["face_id"] = incoming_name
+                    target_slot["person_db_id"] = incoming_id
+                    if target_slot.get("voice_id") is None and incoming_name:
+                        target_slot["voice_id"] = incoming_name
+                    changed = True
+                    _log.info(
+                        "consciousness: face identified → %s (db_id=%s)",
+                        incoming_name,
+                        incoming_id,
+                    )
+
+        for stale_key in list(_previous_face_boxes.keys()):
+            if stale_key not in active_box_keys:
+                _previous_face_boxes.pop(stale_key, None)
 
         known_unique = sorted(set(recognized_names))
         signature = f"known={','.join(known_unique)}|unknown={unknown_count}"
@@ -1144,6 +1186,33 @@ def _step_person_recognition(frame) -> None:
             _last_solo_identity = None
     except Exception as exc:
         _log.debug("person recognition step error: %s", exc)
+
+
+def _step_body_social_analysis(frame) -> None:
+    """
+    Merge pose/gesture engagement into visible people and refresh crowd context.
+
+    Face recognition owns identity and proxemic face boxes. Pose owns body
+    engagement. Social analysis combines the latest people slots into a crowd
+    mode so downstream conversation logic can use it.
+    """
+    global _last_pose_analysis_at
+
+    now = time.monotonic()
+    interval = float(getattr(config, "POSE_ANALYSIS_INTERVAL_SECS", 2.0) or 0.0)
+    if frame is not None and (interval <= 0.0 or (now - _last_pose_analysis_at) >= interval):
+        _last_pose_analysis_at = now
+        try:
+            from vision import pose as pose_mod
+            pose_mod.detect_pose(frame)
+        except Exception as exc:
+            _log.debug("pose analysis step error: %s", exc)
+
+    try:
+        from awareness import social as social_mod
+        social_mod.analyze_crowd(world_state.get("people") or [])
+    except Exception as exc:
+        _log.debug("social crowd analysis step error: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1624,6 +1693,73 @@ def _step_disengagement(snapshot: dict, profile: SituationProfile) -> None:
         )
     except Exception as exc:
         _log.debug("disengagement step error: %s", exc)
+
+
+def _person_space_key(person: dict) -> str:
+    return str(
+        person.get("person_db_id")
+        or person.get("face_id")
+        or person.get("id")
+        or "unknown"
+    )
+
+
+def _too_close_for_personal_space(person: dict) -> bool:
+    min_zone = str(
+        getattr(config, "PERSONAL_SPACE_REACTION_MIN_ZONE", "intimate") or "intimate"
+    ).lower()
+    zone = (person.get("distance_zone") or "").lower()
+    if min_zone == "social":
+        return zone in {"intimate", "social"}
+    return zone == "intimate"
+
+
+def _step_personal_space(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    React once in a while when someone is extremely close to the camera.
+
+    Camera proxemics are treated like American personal-space norms: a huge
+    face in frame maps to "intimate" distance, which is fair game for a short
+    boundary joke or roast.
+    """
+    if not getattr(config, "PERSONAL_SPACE_REACTION_ENABLED", True):
+        return
+    if profile.suppress_proactive or profile.user_mid_sentence or profile.interaction_busy:
+        return
+    if not _can_proactive_speak():
+        return
+
+    now = time.monotonic()
+    cooldown = float(getattr(config, "PERSONAL_SPACE_REACTION_COOLDOWN_SECS", 45.0))
+    for person in snapshot.get("people", []) or []:
+        if not _too_close_for_personal_space(person):
+            continue
+        key = _person_space_key(person)
+        if (now - _personal_space_reacted_at.get(key, 0.0)) < max(0.0, cooldown):
+            continue
+        _personal_space_reacted_at[key] = now
+        name = person.get("face_id") or person.get("voice_id") or "this person"
+        approach = person.get("approach_vector") or "stationary"
+        prompt = (
+            f"{name} is extremely close, in intimate personal-space range by "
+            f"American norms. Approach vector: {approach}. Give ONE short "
+            f"in-character Rex boundary joke or roast about them being too close "
+            f"for comfort. Playful, not hostile. Do not mention sensors, cameras, "
+            f"or tracking. Do not ask a question. Max 18 words."
+        )
+        _log.info(
+            "consciousness: personal-space reaction for %s zone=%s approach=%s",
+            key,
+            person.get("distance_zone"),
+            approach,
+        )
+        _generate_and_speak(
+            prompt,
+            emotion="curious",
+            purpose="personal_space",
+            label=f"personal space {key}",
+        )
+        return
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4289,7 +4425,17 @@ def _loop() -> None:
             # 5. Person recognition (may update world_state.people)
             _step_person_recognition(frame)
 
-            # Snapshot after recognition so steps 6–11 see identified persons
+            # 5b. Pose/proxemic social context. Face recognition fills identity
+            # and distance; pose fills engagement; social analysis derives crowd mode.
+            _step_body_social_analysis(frame)
+            profile = _situation_assessor.evaluate()
+            try:
+                from intelligence.personality import set_family_safe
+                set_family_safe(profile.force_family_safe)
+            except Exception as exc:
+                _log.debug("family_safe refresh error: %s", exc)
+
+            # Snapshot after recognition/social analysis so steps 6–11 see identified persons
             snapshot = world_state.snapshot()
 
             # 6. Startup group greeting. This runs before individual follow-up
@@ -4302,6 +4448,9 @@ def _loop() -> None:
 
             # 7. Disengagement detection
             _step_disengagement(snapshot, profile)
+
+            # 7b. Personal-space boundary joke when someone is comically too close
+            _step_personal_space(snapshot, profile)
 
             # 8. Proactive reactions
             _step_proactive_reactions(snapshot, profile)
@@ -4370,6 +4519,7 @@ def start() -> None:
     global _recent_engaged_person_id, _recent_engaged_touch_at
     global _process_started_iso, _process_started_mono
     global _startup_group_signature, _startup_group_seen_at, _startup_solo_seen_at
+    global _last_pose_analysis_at
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
@@ -4398,6 +4548,9 @@ def start() -> None:
     _group_turn_invited_at.clear()
     _group_turn_invited_this_session.clear()
     _group_lull_fired_at.clear()
+    _previous_face_boxes.clear()
+    _personal_space_reacted_at.clear()
+    _last_pose_analysis_at = 0.0
     _startup_group_signature = None
     _startup_group_seen_at = 0.0
     _startup_solo_seen_at = 0.0
@@ -4442,6 +4595,7 @@ def stop() -> None:
     global _thread, _response_wait_until, _last_rex_utterance_text
     global _last_memory_hint_text, _last_memory_hint_at, _last_memory_hint_person_id
     global _recent_engaged_person_id, _recent_engaged_touch_at
+    global _last_pose_analysis_at
     _stop_event.set()
     _pending_identity_prompt.clear()
     _proactive_speech_pending.clear()
@@ -4454,6 +4608,9 @@ def stop() -> None:
     _group_turn_invited_at.clear()
     _group_turn_invited_this_session.clear()
     _group_lull_fired_at.clear()
+    _previous_face_boxes.clear()
+    _personal_space_reacted_at.clear()
+    _last_pose_analysis_at = 0.0
     _startup_group_greeted_signatures.clear()
     _last_rex_utterance_text = ""
     _last_memory_hint_text = ""
