@@ -42,7 +42,8 @@ ACTION_CATALOG: dict[str, str] = {
     "music.skip": "User asks Rex to skip the current track.",
     "music.options": "User asks what music, genres, stations, or songs Rex can play.",
     "vision.describe_scene": "User asks what Rex sees or asks Rex to look/inspect something.",
-    "time.query": "User asks for the time or date.",
+    "time.query": "User asks for the current clock time.",
+    "date.query": "User asks for today's date or day of week.",
     "weather.query": "User asks for weather.",
     "status.capabilities": "User asks what Rex can do.",
     "status.uptime": "User asks how long Rex has been running/awake.",
@@ -57,6 +58,8 @@ EXECUTABLE_ACTIONS = {
     "emotional.boundary",
     "game.stop",
     "music.stop",
+    "time.query",
+    "date.query",
 }
 
 _SYSTEM_PROMPT = """You are DJ-R3X's action router.
@@ -72,6 +75,8 @@ Rules:
 - If the utterance asks not to talk about a topic anymore, use emotional.boundary.
 - If a game is active and the utterance asks to stop, quit, end, or stop playing, use game.stop.
 - If music is active and the utterance asks to stop, pause, or stop playing music, use music.stop.
+- If the utterance asks for the clock time, use time.query.
+- If the utterance asks for today's date or day of week, use date.query.
 - If a game is active and the utterance is a short fragment that is not clearly a stop/control command, prefer game.answer over identity or general actions.
 - Do not use identity.introduce_person for first-person facts like "I'm an IT systems administrator"; those are normal conversation.reply turns so memory extraction can learn them.
 - If the utterance is normal chat, use conversation.reply.

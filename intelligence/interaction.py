@@ -18,6 +18,7 @@ import random
 import re
 import threading
 import time
+from datetime import datetime
 from typing import Optional
 
 import numpy as np
@@ -461,6 +462,30 @@ def _speak_async(text: str, emotion: str = "neutral") -> None:
     if speech_queue.is_speaking():
         return
     speech_queue.enqueue(text, emotion, priority=0)
+
+
+def _format_current_time_response(now: Optional[datetime] = None) -> str:
+    """Return a deterministic clock answer without an LLM round trip."""
+    now = now or datetime.now()
+    h12 = now.hour % 12 or 12
+    ampm = "AM" if now.hour < 12 else "PM"
+    return f"It's {h12}:{now.minute:02d} {ampm}."
+
+
+def _format_current_date_response(now: Optional[datetime] = None) -> str:
+    """Return a deterministic date answer without an LLM round trip."""
+    now = now or datetime.now()
+    return f"Today is {now.strftime('%A, %B')} {now.day}, {now.year}."
+
+
+_DATE_QUERY_PAT = re.compile(
+    r"\b(date|today|today's|todays|day of week)\b|^\s*what\s+day\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_date_query(text: str) -> bool:
+    return bool(_DATE_QUERY_PAT.search(text or ""))
 
 
 def _wake_ack() -> None:
@@ -2112,27 +2137,14 @@ def _execute_command(
 
     # ── Time & date ────────────────────────────────────────────────────────────
     if key == "time_query":
-        from awareness.chronoception import get_time_context
-        ctx = get_time_context()
-        h = ctx.get("hour", 0)
-        minute = ctx.get("minute", 0)
-        ampm = "AM" if h < 12 else "PM"
-        h12 = h % 12 or 12
-        return _say(
-            f"The exact current time is {h12}:{minute:02d} {ampm}. "
-            f"Tell the person the time in one in-character line. "
-            f"You MUST state both the hour and the minute exactly as given "
-            f"({h12}:{minute:02d}) — do not round to the hour, do not omit the minute."
-        )
+        resp = _format_current_time_response()
+        _speak_blocking(resp)
+        return resp
 
     if key == "date_query":
-        from awareness.chronoception import get_time_context
-        ctx = get_time_context()
-        return _say(
-            f"Today is {ctx.get('day_of_week', 'unknown')}, time of day is "
-            f"{ctx.get('time_of_day', 'unknown')}. "
-            f"State the date in one in-character line."
-        )
+        resp = _format_current_date_response()
+        _speak_blocking(resp)
+        return resp
 
     # ── State transitions ──────────────────────────────────────────────────────
     if key == "sleep":
@@ -3177,6 +3189,24 @@ def _handle_router_takeover_action(
             visible_known_name=_visible_known_name_for_intent(),
         )
 
+    if action == "time.query":
+        _log.info(
+            "[action_router] executing time.query person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        if _looks_like_date_query(text):
+            return _handle_classified_intent("query_date", text, person_id)
+        return _handle_classified_intent("query_time", text, person_id)
+
+    if action == "date.query":
+        _log.info(
+            "[action_router] executing date.query person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _handle_classified_intent("query_date", text, person_id)
+
     return None
 
 
@@ -3238,6 +3268,22 @@ def _handle_fast_local_takeover(
             "active_music=%s text=%r",
             person_id,
             was_playing,
+            text,
+        )
+        _speak_blocking(resp, emotion="neutral")
+        return resp
+
+    if key in {"time_query", "date_query"}:
+        action = "time.query" if key == "time_query" else "date.query"
+        resp = (
+            _format_current_time_response()
+            if key == "time_query"
+            else _format_current_date_response()
+        )
+        _log.info(
+            "[action_router] fast_lane action=%s person_id=%s text=%r",
+            action,
+            person_id,
             text,
         )
         _speak_blocking(resp, emotion="neutral")
@@ -3885,16 +3931,14 @@ def _handle_classified_intent(
         return resp
 
     if intent == "query_time":
-        from datetime import datetime
-        now = datetime.now()
-        h12 = now.hour % 12 or 12
-        ampm = "AM" if now.hour < 12 else "PM"
-        return _say(
-            f"Tell the user the current time is exactly {h12}:{now.minute:02d} {ampm} "
-            f"in Rex character. Be brief. You MUST state both the hour and the minute "
-            f"exactly as given ({h12}:{now.minute:02d}) — do not round to the hour, "
-            f"do not omit the minute."
-        )
+        resp = _format_current_time_response()
+        _speak_blocking(resp)
+        return resp
+
+    if intent == "query_date":
+        resp = _format_current_date_response()
+        _speak_blocking(resp)
+        return resp
 
     if intent == "query_weather":
         from awareness.chronoception import fetch_weather
@@ -5090,7 +5134,6 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 person_name=person_name,
             )
             if fast_takeover_response:
-                action_router.start_shadow_decision(text, router_context)
                 _dismiss_pending_consent_prompts(person_id, text)
                 try:
                     consciousness.clear_response_wait()
@@ -5696,7 +5739,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         # call so this turn's system prompt reflects the new escalation level.
         # Layer 2 (llm.analyze_sentiment in _post_response) skips its own
         # increment when this flag is set so we never double-count.
-        pre_classified_insult = bool(repair_move)
+        pre_classified_insult = False
         if response_text is None and personality.is_obvious_insult(text):
             new_level = personality.increment_anger(person_id)
             pre_classified_insult = True

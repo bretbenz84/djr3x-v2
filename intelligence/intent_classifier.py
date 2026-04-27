@@ -23,6 +23,7 @@ _client = OpenAI(api_key=apikeys.OPENAI_API_KEY)
 
 _VALID_INTENTS = {
     "query_time",
+    "query_date",
     "query_weather",
     "query_games",
     "query_capabilities",
@@ -126,9 +127,12 @@ def _music_intent_allowed(text: str, label: str) -> bool:
 
 _PROMPT_TEMPLATE = (
     'Classify this input into exactly one category. Reply with only the '
-    'category name. Categories: query_time, query_weather, query_games, '
+    'category name. Categories: query_time, query_date, query_weather, query_games, '
     'query_capabilities, query_uptime, query_what_do_you_see, '
     'query_who_is_speaking, query_memory, play_music, query_music_options, general. '
+    'Note: query_time covers clock-time questions like "what time is it?" '
+    'or "tell me the time". query_date covers date/day questions like '
+    '"what day is it?", "what is today?", "tell me today\'s date". '
     'Note: query_who_is_speaking covers "who\'s speaking?", "who am I?", '
     '"do you know who I am?", "you know who that is?", "can you tell who I am?". '
     'Note: query_memory covers requests to recall stored memory about a person '

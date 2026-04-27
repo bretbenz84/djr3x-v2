@@ -868,6 +868,13 @@ DJ_LISTEN_DUCK_VOLUME = 0.18
 # short window so humans get a clean chance to answer.
 QUESTION_RESPONSE_WAIT_SECS = 7.0
 
+# Optional question pacing. Raised 3x from the original fallback budget of
+# 2 questions per 90s plus 1 engaged-extra slot.
+QUESTION_BUDGET_WINDOW_SECS = 90.0
+QUESTION_BUDGET_MAX_QUESTIONS = 6
+QUESTION_BUDGET_ENGAGED_GRACE_SECS = 45.0
+QUESTION_BUDGET_ENGAGED_EXTRA = 3
+
 # Longer wait window for unknown-person onboarding prompts ("who are you?").
 IDENTITY_RESPONSE_WAIT_SECS = 10.0
 

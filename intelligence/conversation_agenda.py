@@ -28,6 +28,15 @@ _QUESTION_START = re.compile(
     r"^\s*(who|what|when|where|why|how|can|could|would|will|do|does|did|is|are|am|should)\b",
     re.IGNORECASE,
 )
+_COMPLIMENT_OR_ACK_PAT = re.compile(
+    r"\b(thanks?|thank you|appreciate|good job|great job|nice work|"
+    r"well done|you'?re (?:good|great|swell|awesome|amazing)|"
+    r"you are (?:good|great|swell|awesome|amazing)|"
+    r"that'?s (?:good|great|nice|cool|awesome)|"
+    r"i'?m (?:good|fine|okay|ok|alright)|"
+    r"doing (?:good|great|fine|okay|ok|alright))\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -138,6 +147,10 @@ _active_proactive_claim: Optional[_ProactiveClaim] = None
 def _looks_like_user_question(text: str) -> bool:
     cleaned = (text or "").strip()
     return bool(cleaned) and ("?" in cleaned or bool(_QUESTION_START.search(cleaned)))
+
+
+def _is_compliment_or_ack(text: str) -> bool:
+    return bool(_COMPLIMENT_OR_ACK_PAT.search(text or ""))
 
 
 def claim_proactive_purpose(
@@ -434,13 +447,24 @@ def build_turn_directive(
             )
             return "\n".join(lines)
 
-        next_q = _next_useful_question(person_id) if question_budget_allows else None
+        low_pressure_ack = _is_compliment_or_ack(text)
+        next_q = (
+            _next_useful_question(person_id)
+            if question_budget_allows and not low_pressure_ack
+            else None
+        )
         if next_q:
             lines.append(
                 "Primary purpose: keep the conversation moving with curiosity. "
                 f"If the user's utterance does not demand a direct answer, weave "
                 f"in this one question naturally: {next_q['text']!r}. "
                 "Ask only this one question, and make it feel motivated by the turn."
+            )
+        elif low_pressure_ack:
+            lines.append(
+                "Primary purpose: briefly acknowledge the human's compliment, "
+                "status update, or simple conversational beat. Do not pivot into "
+                "a new interview question just because question budget remains."
             )
         elif not question_budget_allows:
             lines.append(
