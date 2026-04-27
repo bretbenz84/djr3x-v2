@@ -588,6 +588,16 @@ POST_QUESTION_PLAYBACK_SUPPRESSION_SECS = 0.05
 # while Rex was finishing the question. Non-question speech still flushes.
 POST_QUESTION_FLUSH_AUDIO_BUFFER = False
 
+# If Rex asks a question and the human does not answer, wait this long before
+# letting him recover with one joke/quip and move on.
+CONVERSATION_NO_RESPONSE_QUIP_SECS = 7.0
+CONVERSATION_NO_RESPONSE_QUIPS = [
+    "Guess that question landed in the cargo bay.",
+    "No answer. Bold strategy. I will pretend that was mysterious on purpose.",
+    "All right, saving that question for the historians.",
+    "Silence. My favorite review from the committee.",
+]
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AUDITORY SCENE ANALYSIS
 # ─────────────────────────────────────────────────────────────────────────────

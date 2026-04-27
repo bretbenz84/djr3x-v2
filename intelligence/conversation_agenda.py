@@ -32,6 +32,8 @@ _COMPLIMENT_OR_ACK_PAT = re.compile(
     r"\b(thanks?|thank you|appreciate|good job|great job|nice work|"
     r"well done|you'?re (?:good|great|swell|awesome|amazing)|"
     r"you are (?:good|great|swell|awesome|amazing)|"
+    r"you'?re such a (?:good|great|swell|awesome|amazing) robot|"
+    r"you are such a (?:good|great|swell|awesome|amazing) robot|"
     r"that'?s (?:good|great|nice|cool|awesome)|"
     r"i'?m (?:good|fine|okay|ok|alright)|"
     r"doing (?:good|great|fine|okay|ok|alright))\b",
@@ -338,7 +340,8 @@ def build_turn_directive(
 
     lines = [
         "Conversation agenda: choose ONE purpose for this turn. Do not stack "
-        "multiple follow-up questions, presence reactions, and environment remarks."
+        "multiple follow-up questions, presence reactions, opinions, roasts, "
+        "and environment remarks."
     ]
     try:
         from intelligence import topic_thread
@@ -394,12 +397,23 @@ def build_turn_directive(
     if answered_question:
         q_text = answered_question.get("question_text") or "your previous question"
         a_text = answered_question.get("answer_text") or text
-        lines.append(
-            "Primary purpose: the human just answered a question Rex asked. "
-            f"Question: {q_text!r}. Answer: {a_text!r}. "
-            "Briefly acknowledge the answer and use it naturally. Do not ask "
-            "another unrelated interview question in the same breath."
-        )
+        if question_budget_allows and not _is_compliment_or_ack(a_text):
+            lines.append(
+                "Primary purpose: the human just answered a question Rex asked. "
+                f"Question: {q_text!r}. Answer: {a_text!r}. "
+                "Briefly acknowledge the answer and use it naturally. You may "
+                "add one tightly related follow-up question, or carry the turn "
+                "with a specific Rex opinion / light roast instead. Do not pivot "
+                "into a new interview topic."
+            )
+        else:
+            lines.append(
+                "Primary purpose: the human just answered a question Rex asked. "
+                f"Question: {q_text!r}. Answer: {a_text!r}. "
+                "Briefly acknowledge the answer and use it naturally. Do not ask "
+                "another question in the same breath; a short opinion or light "
+                "roast is okay if it fits the answer."
+            )
         return "\n".join(lines)
 
     if _looks_like_user_question(text):
@@ -463,14 +477,17 @@ def build_turn_directive(
         elif low_pressure_ack:
             lines.append(
                 "Primary purpose: briefly acknowledge the human's compliment, "
-                "status update, or simple conversational beat. Do not pivot into "
-                "a new interview question just because question budget remains."
+                "status update, or simple conversational beat. You may add a "
+                "specific Rex opinion, playful observation, or light roast if it "
+                "fits. Do not pivot into a new interview question just because "
+                "question budget remains."
             )
         elif not question_budget_allows:
             lines.append(
                 "Primary purpose: respond to the human's latest thought without "
                 "adding a new question. The recent question budget is full; leave "
-                "space instead of interviewing."
+                "space instead of interviewing, but you may keep the turn alive "
+                "with a specific opinion, observation, or roast if socially safe."
             )
         else:
             lines.append(

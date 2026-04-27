@@ -52,12 +52,12 @@ _DANGLING_WORDS = {
 _HARD_NO_QUESTION_PAT = re.compile(
     r"(do not ask|don't ask|no new questions|without adding a new question|"
     r"do not add a new follow-up|question budget is spent|"
-    r"do not ask another|no unrelated.*question)",
+    r"do not ask another question|no follow-up question)",
     re.IGNORECASE,
 )
 _ASK_ALLOWED_PAT = re.compile(
     r"(ask who|ask .* name|ask .* question|one question|one short follow-up|"
-    r"weave in this one question|ending in a question mark)",
+    r"tightly related follow-up|weave in this one question|ending in a question mark)",
     re.IGNORECASE,
 )
 
@@ -106,13 +106,15 @@ def build_frame(
     if unknown_count and person_id is not None and _ASK_ALLOWED_PAT.search(agenda_directive):
         allow_question = True
     elif answered_question is not None:
-        allow_question = False
-    elif user_asked_question:
-        allow_question = False
+        allow_question = bool(
+            budget_allows and _ASK_ALLOWED_PAT.search(agenda_directive)
+        )
     elif _HARD_NO_QUESTION_PAT.search(agenda_directive):
         allow_question = False
     elif budget_allows and _ASK_ALLOWED_PAT.search(agenda_directive):
         allow_question = True
+    elif user_asked_question:
+        allow_question = False
     elif budget_allows and plan.target not in {"micro"}:
         allow_question = False
 
@@ -154,6 +156,10 @@ def build_directive(frame: SocialFrame) -> str:
         if frame.allow_question
         else "Do not ask a question. No tag questions, no new prompt, no interview pivot."
     )
+    engagement_rule = (
+        "If no question is allowed, do not go inert: offer a concrete opinion, "
+        "playful observation, or Rex-style banter beat when it fits the turn."
+    )
     visual_rule = (
         "A visual remark is allowed only if it directly connects to the human's turn."
         if frame.allow_visual_comment
@@ -165,11 +171,14 @@ def build_directive(frame: SocialFrame) -> str:
         "normal": "Normal Rex banter is allowed, but keep it socially on-target.",
     }.get(frame.allow_roast, "Keep teasing mild and socially on-target.")
     return (
-        "Social frame governor:\n"
+        "Final response shape contract:\n"
+        "- Generate the reply in this shape now; the final cleanup layer should "
+        "not need to remove sentences.\n"
         f"- Addressee: {frame.addressee}; purpose={frame.purpose}.\n"
         f"- Hard shape: max_words={frame.max_words}; "
         f"max_sentences={frame.max_sentences}.\n"
         f"- Question permission: {question_rule}\n"
+        f"- Engagement permission: {engagement_rule}\n"
         f"- Roast permission: {roast_rule}\n"
         f"- Visual permission: {visual_rule}\n"
         "- If these instructions conflict with personality style, obey this "
@@ -345,7 +354,7 @@ def _roast_level(
                 return "light"
         except Exception:
             pass
-    if target in {"micro", "brief", "short"}:
+    if target in {"micro", "brief"}:
         return "light"
     return "normal"
 

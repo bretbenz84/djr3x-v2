@@ -459,9 +459,6 @@ def assemble_system_prompt(
     # 4. WorldState snapshot summary
     sections.append("World context:\n" + _summarize_world_state(ws))
 
-    if agenda_directive:
-        sections.append(agenda_directive.strip())
-
     # 5. Person context (if known)
     if person_id is not None:
         ctx = _build_person_context(person_id)
@@ -557,6 +554,11 @@ def assemble_system_prompt(
             )
 
     sections.append("Behavioral rules:\n" + "\n".join(f"- {r}" for r in rules))
+
+    if agenda_directive:
+        sections.append(
+            "Turn-specific response contract:\n" + agenda_directive.strip()
+        )
 
     return "\n\n---\n\n".join(sections)
 

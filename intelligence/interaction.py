@@ -96,6 +96,8 @@ _session_exchange_count: int = 0
 _last_speech_at: float = 0.0  # monotonic timestamp of most recent speech chunk
 _session_forget_terms: dict[int, set[str]] = {}
 _session_router_control_topics: dict[int, str] = {}
+_no_response_recovery_token: int = 0
+_no_response_recovery_lock = threading.Lock()
 
 # Anti-repeat for latency filler lines
 _last_filler: Optional[str] = None
@@ -593,6 +595,91 @@ def _start_latency_filler_timer() -> threading.Event:
 def _assistant_asked_question(text: str) -> bool:
     cleaned = (text or "").strip()
     return bool(cleaned) and ("?" in cleaned)
+
+
+def _question_recovery_cooldown_secs() -> float:
+    return max(
+        0.0,
+        float(getattr(config, "CONVERSATION_NO_RESPONSE_QUIP_SECS", 7.0) or 0.0),
+    )
+
+
+def _should_no_response_recovery_fire(
+    *,
+    asked_at: float,
+    now: Optional[float] = None,
+    last_speech_at: Optional[float] = None,
+) -> bool:
+    cooldown = _question_recovery_cooldown_secs()
+    if cooldown <= 0:
+        return False
+    current = time.monotonic() if now is None else now
+    latest_speech = _last_speech_at if last_speech_at is None else last_speech_at
+    return current - asked_at >= cooldown and latest_speech <= asked_at
+
+
+def _arm_no_response_recovery(
+    question_text: str,
+    person_id: Optional[int],
+) -> None:
+    """After Rex asks a question, recover with one quip if nobody answers."""
+    global _no_response_recovery_token
+
+    if not _assistant_asked_question(question_text):
+        return
+    cooldown = _question_recovery_cooldown_secs()
+    if cooldown <= 0:
+        return
+
+    asked_at = time.monotonic()
+    with _no_response_recovery_lock:
+        _no_response_recovery_token += 1
+        token = _no_response_recovery_token
+
+    def _timer() -> None:
+        _stop_event.wait(cooldown)
+        if _stop_event.is_set():
+            return
+        with _no_response_recovery_lock:
+            if token != _no_response_recovery_token:
+                return
+        if not _should_no_response_recovery_fire(asked_at=asked_at):
+            return
+        if state_module.get_state() != State.ACTIVE:
+            return
+        if (
+            speech_queue.is_speaking()
+            or output_gate.is_busy()
+            or echo_cancel.is_suppressed()
+            or _interrupted.is_set()
+        ):
+            return
+
+        try:
+            if person_id is not None:
+                rel_memory.decline_latest_pending_question(
+                    person_id,
+                    reason="no response after Rex question",
+                )
+        except Exception as exc:
+            _log.debug("no-response pending question close failed: %s", exc)
+
+        quips = getattr(config, "CONVERSATION_NO_RESPONSE_QUIPS", None) or [
+            "Guess that question landed in the cargo bay."
+        ]
+        quip = random.choice(list(quips))
+        _log.info("[interaction] no-response recovery quip after question=%r", question_text)
+        completed = _speak_blocking(quip, emotion="neutral", priority=1)
+        if completed:
+            conv_memory.add_to_transcript("Rex", quip)
+            conv_log.log_rex(quip)
+            _register_rex_utterance(quip)
+
+    threading.Thread(
+        target=_timer,
+        daemon=True,
+        name="question-no-response-recovery",
+    ).start()
 
 
 def _register_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
@@ -6002,10 +6089,13 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             _session_exchange_count += 1
             _register_rex_utterance(response_text)
             assistant_asked_question = _assistant_asked_question(response_text)
+            question_recovery_text = response_text if assistant_asked_question else ""
             try:
                 end_thread.mark_closure_spoken()
             except Exception:
                 pass
+        else:
+            question_recovery_text = ""
 
         # Post-greeting relationship hook: we just enrolled a newcomer while a
         # different known person was recently engaged. Ask them how they know
@@ -6033,6 +6123,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     conv_log.log_rex(q_text)
                     _register_rex_utterance(q_text)
                     assistant_asked_question = True
+                    question_recovery_text = q_text
                     post_greet_fired = True
                     try:
                         consciousness.set_relationship_prompt_context({
@@ -6067,6 +6158,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 conv_log.log_rex(curiosity_q)
                 _register_rex_utterance(curiosity_q)
                 assistant_asked_question = True
+                question_recovery_text = curiosity_q
         elif (
             used_agenda_llm
             and response_text
@@ -6097,6 +6189,9 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     tag="game:after_audio",
                 )
                 game_after_audio_path = None
+
+        if assistant_asked_question and question_recovery_text:
+            _arm_no_response_recovery(question_recovery_text, person_id)
 
         _post_response(
             text,
