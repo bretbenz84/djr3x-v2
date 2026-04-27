@@ -10,6 +10,7 @@ and continuous neck-servo face tracking.
 import json
 import logging
 import random
+import re
 import sys
 import threading
 import time
@@ -92,6 +93,9 @@ _unknown_first_seen_at: dict[str, float] = {}
 _response_wait_until: float = 0.0
 _last_proactive_speech_at: float = 0.0
 _last_rex_utterance_text: str = ""
+_last_memory_hint_text: str = ""
+_last_memory_hint_at: float = 0.0
+_last_memory_hint_person_id: Optional[int] = None
 _turn_lock = threading.Lock()
 _proactive_speech_pending = threading.Event()
 
@@ -128,6 +132,8 @@ _group_turn_visible_since: dict[int, float] = {}
 _group_turn_invited_at: dict[int, float] = {}
 _group_turn_invited_this_session: set[int] = set()
 _last_group_turn_check_at: float = 0.0
+_last_group_lull_check_at: float = 0.0
+_group_lull_fired_at: dict[str, float] = {}
 
 # Startup group greeting state. When two known people are visible together as
 # the camera settles, Rex should greet the room once instead of stacking
@@ -220,6 +226,8 @@ _animal_reacted_at: dict[str, float] = {}
 _engaged_lock = threading.Lock()
 _engaged_person_id: Optional[int] = None
 _engaged_last_touch_at: float = 0.0
+_recent_engaged_person_id: Optional[int] = None
+_recent_engaged_touch_at: float = 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -230,11 +238,15 @@ def mark_engagement(person_id: Optional[int]) -> None:
     """Record that Rex is actively conversing with person_id. Called on every
     identified speech segment. Resets the engagement window."""
     global _engaged_person_id, _engaged_last_touch_at
+    global _recent_engaged_person_id, _recent_engaged_touch_at
     if person_id is None:
         return
+    now = time.monotonic()
     with _engaged_lock:
         _engaged_person_id = person_id
-        _engaged_last_touch_at = time.monotonic()
+        _engaged_last_touch_at = now
+        _recent_engaged_person_id = person_id
+        _recent_engaged_touch_at = now
 
 
 def note_person_spoke(person_id: Optional[int]) -> None:
@@ -256,7 +268,7 @@ def note_person_spoke(person_id: Optional[int]) -> None:
 
 
 def clear_engagement() -> None:
-    """Clear engagement state — called on session end."""
+    """Clear active engagement state, but keep recent engagement for attribution."""
     global _engaged_person_id, _engaged_last_touch_at
     with _engaged_lock:
         _engaged_person_id = None
@@ -285,8 +297,8 @@ def get_recent_engagement(window_secs: Optional[float] = None) -> Optional[dict]
     if window_secs is None:
         window_secs = float(getattr(config, "RECENT_ENGAGEMENT_WINDOW_SECS", 60.0))
     with _engaged_lock:
-        pid = _engaged_person_id
-        touch = _engaged_last_touch_at
+        pid = _engaged_person_id if _engaged_person_id is not None else _recent_engaged_person_id
+        touch = _engaged_last_touch_at if _engaged_person_id is not None else _recent_engaged_touch_at
     if pid is None or touch <= 0.0:
         return None
     if (time.monotonic() - touch) > window_secs:
@@ -444,13 +456,25 @@ def _utterance_expects_reply(text: str) -> bool:
     return "?" in cleaned
 
 
+_MEMORY_HINT_PAT = re.compile(
+    r"\b(remember|told me|you said|plan|planned|schedule|trip|congrats|"
+    r"how'?s|how is|how did|did .* go|survive|ready for)\b",
+    re.IGNORECASE,
+)
+
+
 def note_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
     """
     Track when Rex last spoke and, if it was a question, open a reply window.
     """
     global _last_proactive_speech_at, _response_wait_until, _last_rex_utterance_text
+    global _last_memory_hint_text, _last_memory_hint_at, _last_memory_hint_person_id
     now = time.monotonic()
     _last_rex_utterance_text = (text or "").strip()
+    if _last_rex_utterance_text and _MEMORY_HINT_PAT.search(_last_rex_utterance_text):
+        _last_memory_hint_text = _last_rex_utterance_text
+        _last_memory_hint_at = now
+        _last_memory_hint_person_id = None
     try:
         from intelligence import question_budget
         question_budget.note_rex_utterance(text)
@@ -475,6 +499,36 @@ def note_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
 def get_last_rex_utterance() -> str:
     """Return the latest Rex line observed by consciousness/interaction."""
     return _last_rex_utterance_text
+
+
+def get_last_memory_hint(max_age_secs: float = 300.0) -> str:
+    """Return Rex's latest memory-callback-looking line within a short TTL."""
+    if not _last_memory_hint_text:
+        return ""
+    if (time.monotonic() - _last_memory_hint_at) > max(0.0, float(max_age_secs)):
+        return ""
+    return _last_memory_hint_text
+
+
+def note_memory_hint(text: str, person_id: Optional[int]) -> None:
+    """Remember a just-spoken memory callback and whom it was addressed to."""
+    global _last_memory_hint_text, _last_memory_hint_at, _last_memory_hint_person_id
+    if not text or person_id is None:
+        return
+    try:
+        pid = int(person_id)
+    except (TypeError, ValueError):
+        return
+    _last_memory_hint_text = text.strip()
+    _last_memory_hint_at = time.monotonic()
+    _last_memory_hint_person_id = pid
+
+
+def get_last_memory_hint_target(max_age_secs: float = 300.0) -> Optional[int]:
+    """Return the person id for the latest remembered memory callback."""
+    if not get_last_memory_hint(max_age_secs=max_age_secs):
+        return None
+    return _last_memory_hint_person_id
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -717,6 +771,11 @@ def _generate_and_speak_presence(
             _last_presence_reaction_at[tag_key] = time.monotonic()
             speech_queue.enqueue(text, emotion, priority=1, tag=tag)
             note_rex_utterance(text)
+            if (
+                purpose in {"memory_followup", "celebration_checkin", "emotional_checkin"}
+                and isinstance(tag_key, int)
+            ):
+                note_memory_hint(text, tag_key)
         except Exception as exc:
             _log.debug("_generate_and_speak_presence error: %s", exc)
         finally:
@@ -3241,6 +3300,79 @@ def _step_group_turn_taking(snapshot: dict, profile: SituationProfile) -> None:
         _log.debug("group turn-taking step error: %s", exc)
 
 
+def _step_group_lull(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    If a known group stays visible after a greeting or brief reply but nobody
+    says much, open the room with one easy social question.
+    """
+    global _last_group_lull_check_at
+
+    if not getattr(config, "GROUP_LULL_ENABLED", True):
+        return
+    if profile.suppress_proactive or profile.user_mid_sentence or profile.interaction_busy:
+        return
+    if profile.rapid_exchange or is_waiting_for_response() or not _can_proactive_speak():
+        return
+
+    now = time.monotonic()
+    interval = float(getattr(config, "GROUP_LULL_CHECK_INTERVAL_SECS", 3.0))
+    if (now - _last_group_lull_check_at) < max(0.0, interval):
+        return
+    _last_group_lull_check_at = now
+
+    try:
+        from intelligence import social_scene
+        scene = social_scene.from_snapshot(snapshot)
+        if len(scene.known) < 2:
+            return
+
+        signature = scene.signature
+        cooldown = float(getattr(config, "GROUP_LULL_COOLDOWN_SECS", 180.0))
+        if (now - _group_lull_fired_at.get(signature, 0.0)) < max(0.0, cooldown):
+            return
+
+        with _engaged_lock:
+            active_touch = _engaged_last_touch_at
+            recent_touch = _recent_engaged_touch_at
+
+        last_relevant = max(active_touch, recent_touch, _last_proactive_speech_at)
+        if last_relevant <= 0.0:
+            return
+
+        quiet_for = now - last_relevant
+        min_silence = float(getattr(config, "GROUP_LULL_MIN_SILENCE_SECS", 14.0))
+        active_window = float(getattr(config, "GROUP_LULL_ACTIVE_WINDOW_SECS", 90.0))
+        if quiet_for < min_silence or quiet_for > active_window:
+            return
+
+        label = social_scene.visible_group_label(scene)
+        _group_lull_fired_at[signature] = now
+        prompt = (
+            f"You are with this visible known group: {label}. They answered or "
+            f"sat quietly, and the room has gone quiet for about {quiet_for:.0f} "
+            f"seconds. In ONE short in-character Rex line, gently reopen the "
+            f"conversation with an easy social question for the group. Good "
+            f"directions: ask what brings them both here tonight, what the "
+            f"occasion is, or what they have going on. Warm, curious, lightly "
+            f"funny. Do not mention cameras, timers, monitoring, or that they "
+            f"are being analyzed. Max 22 words; end with a question mark."
+        )
+        _log.info(
+            "consciousness: group lull prompt for %s after %.1fs quiet",
+            label,
+            quiet_for,
+        )
+        _generate_and_speak(
+            prompt,
+            emotion="curious",
+            wait_secs=getattr(config, "QUESTION_RESPONSE_WAIT_SECS", 8.0),
+            purpose="small_talk",
+            label=f"group lull for {label}",
+        )
+    except Exception as exc:
+        _log.debug("group-lull step error: %s", exc)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 10e — Overheard chime-in
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3992,6 +4124,9 @@ def _loop() -> None:
             # 10c2. Group turn-taking — softly invite a quiet visible known person
             _step_group_turn_taking(snapshot, profile)
 
+            # 10c3. Group lull — when the whole visible group goes quiet, reopen gently
+            _step_group_lull(snapshot, profile)
+
             # 10d. Holiday plans — ask engaged person about upcoming holidays
             _step_holiday_plans(snapshot, profile)
 
@@ -4030,7 +4165,9 @@ def _loop() -> None:
 def start() -> None:
     """Start the consciousness daemon thread. No-op if already running."""
     global _thread, _response_wait_until, _last_proactive_speech_at, _pending_departure_keys
-    global _last_rex_utterance_text
+    global _last_rex_utterance_text, _last_memory_hint_text, _last_memory_hint_at
+    global _last_memory_hint_person_id
+    global _recent_engaged_person_id, _recent_engaged_touch_at
     global _process_started_iso, _process_started_mono
     global _startup_group_signature, _startup_group_seen_at, _startup_solo_seen_at
     if _thread and _thread.is_alive():
@@ -4060,11 +4197,17 @@ def start() -> None:
     _group_turn_visible_since.clear()
     _group_turn_invited_at.clear()
     _group_turn_invited_this_session.clear()
+    _group_lull_fired_at.clear()
     _startup_group_signature = None
     _startup_group_seen_at = 0.0
     _startup_solo_seen_at = 0.0
     _startup_group_greeted_signatures.clear()
     _last_rex_utterance_text = ""
+    _last_memory_hint_text = ""
+    _last_memory_hint_at = 0.0
+    _last_memory_hint_person_id = None
+    _recent_engaged_person_id = None
+    _recent_engaged_touch_at = 0.0
     try:
         from intelligence import question_budget
         question_budget.clear()
@@ -4075,9 +4218,10 @@ def start() -> None:
         end_thread.clear()
     except Exception:
         pass
-    global _last_emotional_checkin_check_at, _last_group_turn_check_at
+    global _last_emotional_checkin_check_at, _last_group_turn_check_at, _last_group_lull_check_at
     _last_emotional_checkin_check_at = 0.0
     _last_group_turn_check_at = 0.0
+    _last_group_lull_check_at = 0.0
     global _overheard_chime_in_count, _last_overheard_check_at
     _overheard_chime_in_count = 0
     _last_overheard_check_at = 0.0
@@ -4096,6 +4240,8 @@ def start() -> None:
 def stop() -> None:
     """Stop the consciousness daemon thread and wait for it to exit."""
     global _thread, _response_wait_until, _last_rex_utterance_text
+    global _last_memory_hint_text, _last_memory_hint_at, _last_memory_hint_person_id
+    global _recent_engaged_person_id, _recent_engaged_touch_at
     _stop_event.set()
     _pending_identity_prompt.clear()
     _proactive_speech_pending.clear()
@@ -4107,8 +4253,14 @@ def stop() -> None:
     _group_turn_visible_since.clear()
     _group_turn_invited_at.clear()
     _group_turn_invited_this_session.clear()
+    _group_lull_fired_at.clear()
     _startup_group_greeted_signatures.clear()
     _last_rex_utterance_text = ""
+    _last_memory_hint_text = ""
+    _last_memory_hint_at = 0.0
+    _last_memory_hint_person_id = None
+    _recent_engaged_person_id = None
+    _recent_engaged_touch_at = 0.0
     try:
         from intelligence import question_budget
         question_budget.clear()

@@ -1150,6 +1150,16 @@ GROUP_TURN_ACTIVE_WINDOW_SECS = 75.0
 GROUP_TURN_CHECK_INTERVAL_SECS = 5.0
 GROUP_TURN_PERSON_COOLDOWN_SECS = 900.0
 
+# GROUP LULL — after a group greeting or a short group reply, Rex may nudge the
+# room once if multiple known people stay visible but nobody talks. This is
+# intentionally sooner than GROUP_TURN_TAKING because it opens the room rather
+# than singling out a quiet person.
+GROUP_LULL_ENABLED = True
+GROUP_LULL_MIN_SILENCE_SECS = 14.0
+GROUP_LULL_ACTIVE_WINDOW_SECS = 90.0
+GROUP_LULL_CHECK_INTERVAL_SECS = 3.0
+GROUP_LULL_COOLDOWN_SECS = 180.0
+
 # STARTUP GROUP GREETING — if multiple known people are visible during startup,
 # greet the group once instead of firing separate memory callbacks for each
 # person. The solo hold gives the camera a few seconds to settle before Rex

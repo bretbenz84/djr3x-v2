@@ -2312,6 +2312,10 @@ def _post_response(
                                     "event_id": int(event_id),
                                     "event_name": event_name,
                                 }
+                            try:
+                                consciousness.note_memory_hint(resp, person_id)
+                            except Exception as exc:
+                                _log.debug("note follow-up memory hint failed: %s", exc)
                         else:
                             consciousness.set_pending_followup(person_id, event)
                     else:
@@ -2868,7 +2872,7 @@ def _recent_rex_memory_hint() -> str:
             return text
         return ""
     try:
-        text = consciousness.get_last_rex_utterance()
+        text = consciousness.get_last_memory_hint()
     except Exception:
         text = ""
     if text and _MEMORY_HINT_PAT.search(text):
@@ -2896,6 +2900,11 @@ def _cancel_stale_event_memory(
     Returns short labels for canceled or muted memories. Empty means the text
     did not look like a cancellation or nothing matched safely.
     """
+    if person_id is None:
+        try:
+            person_id = consciousness.get_last_memory_hint_target()
+        except Exception:
+            person_id = None
     if person_id is None or not events_memory.looks_like_cancellation(text):
         return []
 
@@ -4983,9 +4992,15 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
 
         if response_text is None:
             if event_cancellation_ack is None:
-                labels = _cancel_stale_event_memory(person_id, text)
+                cancel_person_id = person_id
+                if cancel_person_id is None:
+                    try:
+                        cancel_person_id = consciousness.get_last_memory_hint_target()
+                    except Exception:
+                        cancel_person_id = None
+                labels = _cancel_stale_event_memory(cancel_person_id, text)
                 if labels:
-                    event_cancellation_ack = _event_cancellation_ack(labels, person_id)
+                    event_cancellation_ack = _event_cancellation_ack(labels, cancel_person_id)
             if event_cancellation_ack:
                 _speak_blocking(event_cancellation_ack, emotion="neutral")
                 response_text = event_cancellation_ack
