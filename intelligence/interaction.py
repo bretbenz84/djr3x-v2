@@ -948,6 +948,39 @@ def _intro_relationship_self_explanatory(relationship: Optional[str]) -> bool:
     return rel in _INTRO_SELF_EXPLANATORY_RELATIONSHIPS
 
 
+def _intro_relationship_question_instruction(
+    relationship: Optional[str],
+    introducer_first: str,
+    introduced_first: str,
+) -> str:
+    rel = (relationship or "").strip().lower().replace(" ", "_")
+    if rel in {"father", "mother", "parent", "dad", "mom"}:
+        return (
+            f"Then ask {introduced_first} exactly one easy, playful question "
+            f"about {introducer_first}'s origin story or what {introducer_first} "
+            f"was like before the current firmware."
+        )
+    if rel in {"partner", "girlfriend", "boyfriend", "fiance", "fiancee", "wife", "husband", "spouse"}:
+        return (
+            f"Then ask {introduced_first} exactly one easy, playful question "
+            f"about what it is like being in {introducer_first}'s orbit."
+        )
+    if rel in {"brother", "sister", "sibling"}:
+        return (
+            f"Then ask {introduced_first} exactly one easy, playful question "
+            f"about shared family lore or what {introducer_first} was like growing up."
+        )
+    if rel in {"aunt", "uncle", "grandfather", "grandmother", "grandparent"}:
+        return (
+            f"Then ask {introduced_first} exactly one easy question about family "
+            f"lore or what {introducer_first} was like from their angle."
+        )
+    return (
+        f"Then ask {introduced_first} exactly one easy question that fits their "
+        f"relationship to {introducer_first}."
+    )
+
+
 def _intro_inverse_relationship(relationship: Optional[str]) -> str:
     rel = (relationship or "acquaintance").strip().lower()
     if rel in _INTRO_SYMMETRIC_RELATIONSHIPS:
@@ -1083,17 +1116,24 @@ def _intro_ack_and_followup(
     introduced_first = (introduced_name or "there").split()[0]
     rel_clause = f"{relationship}" if relationship else "guest"
     self_explanatory_relationship = _intro_relationship_self_explanatory(relationship)
+    followup_kind = (
+        "relationship_color" if self_explanatory_relationship else "connection_story"
+    )
 
     if visible_newcomer and self_explanatory_relationship:
+        question_instruction = _intro_relationship_question_instruction(
+            relationship,
+            introducer_first,
+            introduced_first,
+        )
         prompt = (
             f"{introducer_first} just explicitly introduced {introduced_first} "
             f"as {introducer_first}'s {rel_clause}. This already explains their "
-            f"relationship. In ONE short in-character Rex line, acknowledge "
+            f"relationship. In one or two short in-character Rex sentences, acknowledge "
             f"{introduced_first} by name with a funny but friendly quip about "
-            f"their connection to {introducer_first}. Address {introduced_first}, "
-            f"not {introducer_first}. Do NOT ask how they know each other. Do NOT "
-            f"ask a follow-up question. Do NOT imply {introduced_first} is related "
-            f"to Rex."
+            f"their connection to {introducer_first}. {question_instruction} "
+            f"Address {introduced_first}, not {introducer_first}. Do NOT ask how "
+            f"they know each other. Do NOT imply {introduced_first} is related to Rex."
         )
     elif visible_newcomer:
         prompt = (
@@ -1124,7 +1164,8 @@ def _intro_ack_and_followup(
         if self_explanatory_relationship:
             text = (
                 f"{introduced_first}, welcome. So you're {introducer_first}'s "
-                f"{rel_clause}; suddenly several mysteries have useful context."
+                f"{rel_clause}; suddenly several mysteries have useful context. "
+                f"What should I know about {introducer_first} from your side of the evidence locker?"
             )
         else:
             text = f"{introduced_first}, welcome to the frequency. How did you end up in {introducer_first}'s orbit?"
@@ -1141,12 +1182,17 @@ def _intro_ack_and_followup(
             "introduced_id": introduced_id,
             "introduced_name": introduced_name,
             "relationship": relationship,
+            "followup_kind": followup_kind,
             "asked_at": time.monotonic(),
         }
         if not visible_newcomer:
             _pending_intro_voice_capture = dict(pending)
-        elif not self_explanatory_relationship:
+        else:
             _pending_intro_followup = pending
+        try:
+            consciousness.note_person_greeted_this_session(introduced_id)
+        except Exception:
+            pass
     return text
 
 
@@ -1218,13 +1264,16 @@ def _handle_intro_voice_capture(
     introducer_name = ctx.get("introducer_name") or "the introducer"
     relationship = ctx.get("relationship")
     self_explanatory_relationship = _intro_relationship_self_explanatory(relationship)
+    followup_kind = (
+        "relationship_color" if self_explanatory_relationship else "connection_story"
+    )
 
     if person_id == introduced_id:
         _pending_intro_voice_capture = None
-        if not self_explanatory_relationship:
-            followup = dict(ctx)
-            followup["asked_at"] = time.monotonic()
-            _pending_intro_followup = followup
+        followup = dict(ctx)
+        followup["followup_kind"] = followup_kind
+        followup["asked_at"] = time.monotonic()
+        _pending_intro_followup = followup
         return None
 
     hard_threshold = float(config.SPEAKER_ID_SIMILARITY_THRESHOLD)
@@ -1252,10 +1301,10 @@ def _handle_intro_voice_capture(
         )
 
     _pending_intro_voice_capture = None
-    if not self_explanatory_relationship:
-        followup = dict(ctx)
-        followup["asked_at"] = time.monotonic()
-        _pending_intro_followup = followup
+    followup = dict(ctx)
+    followup["followup_kind"] = followup_kind
+    followup["asked_at"] = time.monotonic()
+    _pending_intro_followup = followup
     _bind_intro_visible_face_if_present(introduced_id, introduced_name)
     _log.info(
         "[introduction] enrolled voice for introduced person %r (person_id=%s)",
@@ -1294,13 +1343,18 @@ def _handle_intro_voice_capture(
     introduced_first = (introduced_name or "there").split()[0]
     try:
         if self_explanatory_relationship:
+            question_instruction = _intro_relationship_question_instruction(
+                relationship,
+                intro_first,
+                introduced_first,
+            )
             return llm.get_response(
                 f"{introduced_first} just responded after {intro_first} introduced "
                 f"them as {intro_first}'s {relationship}. You successfully stored "
-                f"{introduced_first}'s voice print. In ONE short in-character Rex "
-                f"line, acknowledge {introduced_first} by name with a friendly quip. "
-                f"Do NOT ask how they know each other. Do NOT ask a follow-up "
-                f"question. Do NOT imply they are related to Rex."
+                f"{introduced_first}'s voice print. In one or two short "
+                f"in-character Rex sentences, acknowledge {introduced_first} by "
+                f"name with a friendly quip. {question_instruction} Do NOT ask "
+                f"how they know each other. Do NOT imply they are related to Rex."
             )
         return llm.get_response(
             f"{introduced_first} just responded after {intro_first} introduced them, "
@@ -1312,7 +1366,10 @@ def _handle_intro_voice_capture(
     except Exception as exc:
         _log.debug("intro voice capture ack generation failed: %s", exc)
     if self_explanatory_relationship:
-        return f"Got it, {introduced_first}. Voice filed, family tree branch labeled."
+        return (
+            f"Got it, {introduced_first}. Voice filed. What should I know about "
+            f"{intro_first} from your side of the evidence locker?"
+        )
     return f"Got it, {introduced_first}. Voice filed. So how did you and {intro_first} get tangled up?"
 
 
@@ -1331,28 +1388,41 @@ def _handle_intro_followup_answer(text: str) -> Optional[str]:
     introduced_id = int(ctx["introduced_id"])
     intro_name = ctx.get("introducer_name") or "the introducer"
     introduced_name = ctx.get("introduced_name") or "the newcomer"
+    relationship = ctx.get("relationship")
+    followup_kind = ctx.get("followup_kind") or "connection_story"
     detail = text.strip()
 
     try:
-        value = f"{intro_name} and {introduced_name}: {detail}"
+        if followup_kind == "relationship_color":
+            rel_phrase = f" ({relationship})" if relationship else ""
+            fact_key_a = f"intro_note_{introduced_id}"
+            fact_key_b = f"intro_note_{intro_id}"
+            source = "relationship_color_followup"
+            value = f"{intro_name} introduced {introduced_name}{rel_phrase}: {detail}"
+        else:
+            fact_key_a = f"connection_story_{introduced_id}"
+            fact_key_b = f"connection_story_{intro_id}"
+            source = "introduction_followup"
+            value = f"{intro_name} and {introduced_name}: {detail}"
         facts_memory.add_fact(
             intro_id,
             "relationship",
-            f"connection_story_{introduced_id}",
+            fact_key_a,
             value,
-            "introduction_followup",
+            source,
             confidence=0.90,
         )
         facts_memory.add_fact(
             introduced_id,
             "relationship",
-            f"connection_story_{intro_id}",
+            fact_key_b,
             value,
-            "introduction_followup",
+            source,
             confidence=0.90,
         )
         _log.info(
-            "[introduction] stored connection story for person_id=%s and person_id=%s: %r",
+            "[introduction] stored intro followup (%s) for person_id=%s and person_id=%s: %r",
+            followup_kind,
             intro_id,
             introduced_id,
             detail,
@@ -1361,6 +1431,13 @@ def _handle_intro_followup_answer(text: str) -> Optional[str]:
         _log.debug("intro followup fact save failed: %s", exc)
 
     try:
+        if followup_kind == "relationship_color":
+            return llm.get_response(
+                f"You asked a light introduction question after learning "
+                f"{introduced_name} is {intro_name}'s {relationship or 'person'}. "
+                f"They answered: '{detail}'. In ONE short Rex line, acknowledge "
+                f"the detail with a light quip. No new question."
+            )
         return llm.get_response(
             f"You just learned how {intro_name} and {introduced_name} know each "
             f"other: '{detail}'. In ONE short Rex line, acknowledge the story "

@@ -368,6 +368,24 @@ def note_relationship_slot_handled(slot_id: str) -> None:
         _asked_relationship_slots.add(slot_id)
 
 
+def note_person_greeted_this_session(person_id: Optional[int]) -> None:
+    """
+    Mark a person as already greeted by an explicit interaction path.
+
+    Introductions produce their own welcome line, so the first-sight presence
+    loop should not immediately stack a second startup greeting for the same
+    newly enrolled person.
+    """
+    if person_id is None:
+        return
+    try:
+        pid = int(person_id)
+    except (TypeError, ValueError):
+        return
+    _greeted_this_session.add(pid)
+    _last_presence_reaction_at[pid] = time.monotonic()
+
+
 def begin_response_wait(window_secs: Optional[float] = None) -> None:
     """
     Extend the "waiting for user response" window.
@@ -2504,7 +2522,8 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
             _log.info("consciousness: departure reaction firing for %s", person_name)
             _generate_and_speak_presence(
                 f"The person named '{first_name}' just left your camera view. "
-                "React in one short in-character line as Rex. Examples: "
+                "React in one short in-character line as Rex — playful and dry, "
+                "but not mean. Do not imply nobody likes or misses them. Examples: "
                 f"'Where are you going, {first_name}?', 'Oh, leaving already?', "
                 "'Don't go too far, I can't roast you from a distance.' "
                 f"Address {first_name} by name. One line only.",
