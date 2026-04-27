@@ -56,10 +56,21 @@ EXECUTABLE_ACTIONS = {
     "memory.forget_specific",
     "event.cancel",
     "emotional.boundary",
+    "identity.who_is_speaking",
+    "game.start",
     "game.stop",
+    "game.answer",
+    "music.play",
     "music.stop",
+    "music.skip",
+    "music.options",
+    "vision.describe_scene",
     "time.query",
     "date.query",
+    "weather.query",
+    "status.capabilities",
+    "status.uptime",
+    "system.sleep",
 }
 
 _SYSTEM_PROMPT = """You are DJ-R3X's action router.

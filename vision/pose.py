@@ -112,7 +112,15 @@ def _load_model() -> bool:
 
     try:
         import mediapipe as mp
-        _mp_pose = mp.solutions.pose
+        solutions = getattr(mp, "solutions", None)
+        if solutions is None or not hasattr(solutions, "pose"):
+            _log.warning(
+                "MediaPipe Pose unavailable: installed mediapipe %s does not expose "
+                "the legacy mp.solutions.pose API; pose/proxemic body cues disabled.",
+                getattr(mp, "__version__", "unknown"),
+            )
+            return False
+        _mp_pose = solutions.pose
         _pose    = _mp_pose.Pose(
             static_image_mode=False,
             model_complexity=1,          # 0=lite, 1=full, 2=heavy — balance speed/accuracy
@@ -124,7 +132,7 @@ def _load_model() -> bool:
         _mp_ok = True
         _log.info("MediaPipe Pose loaded (model_complexity=1)")
     except ImportError:
-        _log.error("mediapipe not installed — pose detection unavailable")
+        _log.warning("mediapipe not installed — pose detection unavailable")
     except Exception as exc:
         _log.error("Failed to init MediaPipe Pose: %s", exc)
 

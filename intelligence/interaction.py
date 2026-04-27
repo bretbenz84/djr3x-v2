@@ -3235,6 +3235,18 @@ def _visible_known_name_for_intent() -> Optional[str]:
     return None
 
 
+def _router_system_command(text: str, decision: action_router.ActionDecision) -> str:
+    mode = _router_arg_text(decision, "mode", "state", "target")
+    haystack = f"{text} {mode}".lower()
+    if any(word in haystack for word in ("shutdown", "shut down", "power off", "turn off")):
+        return "shutdown"
+    if any(word in haystack for word in ("quiet", "mute", "silent")):
+        return "quiet_mode"
+    if "wake" in haystack:
+        return "wake_up"
+    return "sleep"
+
+
 def _handle_router_takeover_action(
     decision: Optional[action_router.ActionDecision],
     text: str,
@@ -3250,6 +3262,9 @@ def _handle_router_takeover_action(
         return None
 
     action = decision.action
+    if action == "conversation.reply":
+        return None
+
     if action == "memory.forget_specific":
         target = _router_arg_text(decision, "target", "topic", "memory")
         if not target:
@@ -3273,6 +3288,41 @@ def _handle_router_takeover_action(
             text,
         )
 
+    if action == "identity.who_is_speaking":
+        _log.info(
+            "[action_router] executing identity.who_is_speaking person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _handle_classified_intent(
+            "query_who_is_speaking",
+            text,
+            person_id,
+            raw_best_id=raw_best_id,
+            raw_best_name=raw_best_name,
+            raw_best_score=raw_best_score,
+            visible_known_name=_visible_known_name_for_intent(),
+        )
+
+    if action == "game.start":
+        game = _router_arg_text(decision, "game", "game_name", "target")
+        _log.info(
+            "[action_router] executing game.start person_id=%s game=%r text=%r",
+            person_id,
+            game,
+            text,
+        )
+        return _execute_command(
+            command_parser.CommandMatch(
+                "start_game",
+                "action_router",
+                {"game": game or text},
+            ),
+            person_id,
+            person_name,
+            text,
+        )
+
     if action == "game.stop":
         _log.info(
             "[action_router] executing game.stop person_id=%s text=%r",
@@ -3286,6 +3336,40 @@ def _handle_router_takeover_action(
             text,
         )
 
+    if action == "game.answer":
+        try:
+            from features import games as games_mod
+            if not games_mod.is_active():
+                return None
+            _log.info(
+                "[action_router] executing game.answer person_id=%s text=%r",
+                person_id,
+                text,
+            )
+            resp = games_mod.handle_input(text, person_id)
+            completed = _speak_blocking(resp)
+            if completed:
+                games_mod.on_response_spoken()
+                after_audio = games_mod.consume_pending_audio_after_response()
+                if after_audio and not _interrupted.is_set():
+                    speech_queue.enqueue_audio_file(
+                        after_audio,
+                        priority=1,
+                        tag="game:after_audio",
+                    )
+            return resp
+        except Exception as exc:
+            _log.debug("router game.answer failed: %s", exc)
+            return None
+
+    if action == "music.play":
+        _log.info(
+            "[action_router] executing music.play person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _handle_classified_intent("play_music", text, person_id)
+
     if action == "music.stop":
         _log.info(
             "[action_router] executing music.stop person_id=%s text=%r",
@@ -3298,6 +3382,35 @@ def _handle_router_takeover_action(
             person_name,
             text,
         )
+
+    if action == "music.skip":
+        _log.info(
+            "[action_router] executing music.skip person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _execute_command(
+            command_parser.CommandMatch("dj_skip", "action_router", {}),
+            person_id,
+            person_name,
+            text,
+        )
+
+    if action == "music.options":
+        _log.info(
+            "[action_router] executing music.options person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _handle_classified_intent("query_music_options", text, person_id)
+
+    if action == "vision.describe_scene":
+        _log.info(
+            "[action_router] executing vision.describe_scene person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _handle_classified_intent("query_what_do_you_see", text, person_id)
 
     if action == "memory.query":
         _log.info(
@@ -3332,6 +3445,45 @@ def _handle_router_takeover_action(
             text,
         )
         return _handle_classified_intent("query_date", text, person_id)
+
+    if action == "weather.query":
+        _log.info(
+            "[action_router] executing weather.query person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _handle_classified_intent("query_weather", text, person_id)
+
+    if action == "status.capabilities":
+        _log.info(
+            "[action_router] executing status.capabilities person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _handle_classified_intent("query_capabilities", text, person_id)
+
+    if action == "status.uptime":
+        _log.info(
+            "[action_router] executing status.uptime person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _handle_classified_intent("query_uptime", text, person_id)
+
+    if action == "system.sleep":
+        key = _router_system_command(text, decision)
+        _log.info(
+            "[action_router] executing system.sleep mapped_key=%s person_id=%s text=%r",
+            key,
+            person_id,
+            text,
+        )
+        return _execute_command(
+            command_parser.CommandMatch(key, "action_router", {}),
+            person_id,
+            person_name,
+            text,
+        )
 
     return None
 
