@@ -14,6 +14,7 @@ import re
 import sys
 import threading
 import time
+import inspect
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -585,15 +586,31 @@ def _speak_async(
     emotion: str = "neutral",
     *,
     wait_secs: Optional[float] = None,
+    purpose: Optional[str] = None,
+    label: str = "",
+    governed: bool = True,
 ) -> bool:
+    candidate_id = None
+    if governed:
+        candidate_id = _observe_governor_candidate(
+            purpose=purpose or "direct_speech",
+            label=label,
+            suggested_text=text,
+            emotion=emotion,
+            wait_secs=wait_secs,
+            requires_llm=False,
+        )
     try:
         if not _can_proactive_speak():
+            _mark_governor_candidate(candidate_id, "dropped", "can_proactive_speak_false")
             return False
         if not text or not text.strip():
+            _mark_governor_candidate(candidate_id, "dropped", "empty_text")
             return False
         from audio import speech_queue
         _proactive_speech_pending.set()
         done = speech_queue.enqueue(text, emotion, priority=0)
+        _mark_governor_candidate(candidate_id, "accepted", "current_behavior_enqueued_speech")
 
         def _on_done() -> None:
             done.wait()
@@ -603,6 +620,7 @@ def _speak_async(
         note_rex_utterance(text, wait_secs=wait_secs)
         return True
     except Exception as exc:
+        _mark_governor_candidate(candidate_id, "dropped", "speak_async_error")
         _proactive_speech_pending.clear()
         _log.debug("_speak_async error: %s", exc)
         return False
@@ -652,6 +670,97 @@ def _apply_proactive_directive(prompt: str, purpose: Optional[str]) -> str:
         return prompt
 
 
+def _governor_source() -> str:
+    try:
+        for frame in inspect.stack(context=0):
+            name = frame.function
+            if name.startswith("_step_") or name.startswith("_do_"):
+                return name
+    except Exception:
+        pass
+    return "consciousness"
+
+
+def _governor_speech_metadata() -> dict:
+    metadata = {
+        "waiting_for_response": is_waiting_for_response(),
+        "can_speak": _can_speak(),
+    }
+    with _turn_lock:
+        last_spoken = _last_proactive_speech_at
+    if last_spoken:
+        metadata["seconds_since_rex_spoke"] = time.monotonic() - last_spoken
+    return metadata
+
+
+def _observe_governor_candidate(
+    *,
+    purpose: Optional[str],
+    label: str = "",
+    prompt: str = "",
+    suggested_text: str = "",
+    emotion: str = "neutral",
+    wait_secs: Optional[float] = None,
+    priority: Optional[int] = None,
+    target_person_id: Optional[int] = None,
+    target_label: str = "",
+    requires_llm: bool = True,
+    source: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> Optional[str]:
+    try:
+        from intelligence.action_governor import CandidateMove, governor
+        if not governor.active():
+            return None
+        merged = _governor_speech_metadata()
+        if metadata:
+            merged.update(metadata)
+        candidate = CandidateMove(
+            source=source or _governor_source(),
+            purpose=purpose or "direct_speech",
+            label=label or purpose or "",
+            prompt=prompt,
+            suggested_text=suggested_text,
+            emotion=emotion,
+            priority=priority,
+            target_person_id=target_person_id,
+            target_label=target_label,
+            requires_llm=requires_llm,
+            wait_secs=wait_secs,
+            metadata=merged,
+        )
+        return governor.observe(candidate)
+    except Exception as exc:
+        _log.debug("action governor observe failed: %s", exc)
+        return None
+
+
+def _mark_governor_candidate(candidate_id: Optional[str], outcome: str, reason: str = "") -> None:
+    if not candidate_id:
+        return
+    try:
+        from intelligence.action_governor import governor
+        governor.mark_outcome(candidate_id, outcome, reason)
+    except Exception as exc:
+        _log.debug("action governor outcome update failed: %s", exc)
+
+
+def _start_governor_cycle(profile: SituationProfile) -> None:
+    try:
+        from intelligence.action_governor import governor
+        governor.start_cycle(profile=profile)
+    except Exception as exc:
+        _log.debug("action governor cycle start failed: %s", exc)
+
+
+def _finish_governor_cycle() -> None:
+    try:
+        from intelligence.action_governor import governor
+        governor.finish_cycle()
+    except Exception as exc:
+        _log.debug("action governor cycle finish failed: %s", exc)
+
+
 def _generate_and_speak(
     prompt: str,
     emotion: str = "neutral",
@@ -661,6 +770,15 @@ def _generate_and_speak(
     priority: Optional[int] = None,
     label: str = "",
 ) -> bool:
+    candidate_id = _observe_governor_candidate(
+        purpose=purpose,
+        label=label,
+        prompt=prompt,
+        emotion=emotion,
+        wait_secs=wait_secs,
+        priority=priority,
+        requires_llm=True,
+    )
     token = None
     if purpose:
         token = _claim_proactive_purpose(
@@ -669,7 +787,13 @@ def _generate_and_speak(
             label=label or purpose,
         )
         if token is None:
+            _mark_governor_candidate(
+                candidate_id,
+                "dropped",
+                "conversation_agenda_claim_rejected",
+            )
             return False
+    _mark_governor_candidate(candidate_id, "accepted", "current_behavior_queued_llm")
     prompt = _apply_proactive_directive(prompt, purpose)
 
     def _task():
@@ -681,7 +805,7 @@ def _generate_and_speak(
             from intelligence.llm import get_response
             text = get_response(prompt)
             if text and _proactive_purpose_current(token):
-                _speak_async(text, emotion, wait_secs=wait_secs)
+                _speak_async(text, emotion, wait_secs=wait_secs, governed=False)
         except Exception as exc:
             _log.debug("_generate_and_speak error: %s", exc)
         finally:
@@ -737,9 +861,25 @@ def _generate_and_speak_presence(
     The tag_key is used to coalesce duplicate queued reactions for the same
     person (newer replaces older).
     """
+    candidate_id = _observe_governor_candidate(
+        purpose=purpose,
+        label=label,
+        prompt=prompt,
+        emotion=emotion,
+        priority=priority,
+        target_person_id=tag_key if isinstance(tag_key, int) else None,
+        target_label=str(tag_key) if not isinstance(tag_key, int) else "",
+        requires_llm=True,
+    )
     token = _claim_proactive_purpose(purpose, priority=priority, label=label)
     if token is None:
+        _mark_governor_candidate(
+            candidate_id,
+            "dropped",
+            "conversation_agenda_claim_rejected",
+        )
         return
+    _mark_governor_candidate(candidate_id, "accepted", "current_behavior_queued_llm")
     prompt = _apply_proactive_directive(prompt, purpose)
 
     def _task():
@@ -1846,9 +1986,26 @@ def _do_small_talk_question(snapshot: dict) -> None:
         and random.random() < float(getattr(config, "MOOD_ANALYSIS_PROBABILITY", 0.7))
     )
     purpose = "memory_followup" if plan_clause else "small_talk"
+    candidate_id = _observe_governor_candidate(
+        purpose=purpose,
+        label="small-talk question",
+        prompt=(
+            "Small-talk candidate: choose a known visible person if available, "
+            "optionally use mood or plan context, then ask one short question."
+        ),
+        emotion="curious",
+        target_person_id=target_db_id,
+        requires_llm=True,
+    )
     token = _claim_proactive_purpose(purpose, label="small-talk question")
     if token is None:
+        _mark_governor_candidate(
+            candidate_id,
+            "dropped",
+            "conversation_agenda_claim_rejected",
+        )
         return
+    _mark_governor_candidate(candidate_id, "accepted", "current_behavior_queued_llm")
 
     def _task() -> None:
         try:
@@ -1892,7 +2049,7 @@ def _do_small_talk_question(snapshot: dict) -> None:
             from intelligence.llm import get_response
             text = get_response(prompt, target_db_id)
             if text and _proactive_purpose_current(token):
-                _speak_async(text, emotion=emotion)
+                _speak_async(text, emotion=emotion, governed=False)
         except Exception as exc:
             _log.debug("_do_small_talk_question task error: %s", exc)
         finally:
@@ -1910,7 +2067,12 @@ def _do_private_thought() -> None:
     line = random.choice(config.PRIVATE_THOUGHTS)
     try:
         if _proactive_purpose_current(token):
-            _speak_async(line, emotion="neutral")
+            _speak_async(
+                line,
+                emotion="neutral",
+                purpose="idle_monologue",
+                label="private thought",
+            )
     finally:
         _release_proactive_purpose(token)
 
@@ -1935,7 +2097,12 @@ def _do_aspiration() -> None:
     _last_aspiration = chosen
     try:
         if _proactive_purpose_current(token):
-            _speak_async(chosen, emotion="curious")
+            _speak_async(
+                chosen,
+                emotion="curious",
+                purpose="idle_monologue",
+                label="aspiration",
+            )
     finally:
         _release_proactive_purpose(token)
 
@@ -2221,18 +2388,38 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
     if _visual_curiosity_blocked_by_empathy(engaged_id):
         return
 
+    candidate_id = _observe_governor_candidate(
+        purpose="visual_curiosity",
+        label=f"visual curiosity for {engaged_id}",
+        prompt=(
+            "Visual curiosity candidate: take a fresh visual snapshot after a "
+            "mid-conversation lull and ask one grounded question."
+        ),
+        emotion="curious",
+        wait_secs=float(getattr(config, "QUESTION_RESPONSE_WAIT_SECS", 7.0)),
+        target_person_id=engaged_id,
+        requires_llm=True,
+    )
     token = _claim_proactive_purpose(
         "visual_curiosity",
         label=f"visual curiosity for {engaged_id}",
     )
     if token is None:
+        _mark_governor_candidate(
+            candidate_id,
+            "dropped",
+            "conversation_agenda_claim_rejected",
+        )
         return
+    _mark_governor_candidate(candidate_id, "accepted", "current_behavior_queued_llm")
 
     with _visual_curiosity_lock:
         if _visual_curiosity_in_flight:
+            _mark_governor_candidate(candidate_id, "dropped", "visual_curiosity_in_flight")
             _release_proactive_purpose(token)
             return
         if (time.monotonic() - _last_visual_curiosity_at) < global_cooldown:
+            _mark_governor_candidate(candidate_id, "dropped", "visual_curiosity_global_cooldown")
             _release_proactive_purpose(token)
             return
         _visual_curiosity_in_flight = True
@@ -2295,7 +2482,7 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
                     engaged_id,
                     quiet_for,
                 )
-                _speak_async(text, emotion="curious", wait_secs=wait)
+                _speak_async(text, emotion="curious", wait_secs=wait, governed=False)
         except Exception as exc:
             _log.debug("visual curiosity step error: %s", exc)
         finally:
@@ -4067,6 +4254,7 @@ def _loop() -> None:
         try:
             # 0. Situation assessment — evaluated once per tick, passed to all steps
             profile = _situation_assessor.evaluate()
+            _start_governor_cycle(profile)
 
             # Apply family-safe personality overrides based on current scene
             try:
@@ -4152,10 +4340,13 @@ def _loop() -> None:
             # 11. Face tracking
             _step_face_tracking(frame)
 
+            _finish_governor_cycle()
+
             # Preserve snapshot for next iteration's change detection
             _last_snapshot = snapshot
 
         except Exception as exc:
+            _finish_governor_cycle()
             _log.error("consciousness loop unhandled error: %s", exc)
 
         # Sleep for the remainder of the interval (or yield immediately if overrun)

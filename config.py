@@ -895,6 +895,16 @@ CONSCIOUSNESS_PROACTIVE_MIN_GAP_SECS = 12.0
 # If False, consciousness-generated proactive speech only occurs in IDLE.
 CONSCIOUSNESS_ALLOW_PROACTIVE_IN_ACTIVE = True
 
+# Deterministic proactive action governor.
+#
+# Shadow mode is the first rollout step: consciousness still behaves exactly as
+# before, while logs show each speech candidate and what the governor would have
+# selected.
+ACTION_GOVERNOR_SHADOW_MODE = True
+ACTION_GOVERNOR_LOG_CANDIDATES = True
+ACTION_GOVERNOR_LOG_EMPTY_CYCLES = False
+ACTION_GOVERNOR_MIN_SCORE = 20
+
 # After an emotional check-in, visual curiosity stays quiet briefly. This keeps
 # camera-based riffs from stepping on care, without blocking visual questions
 # for the entire session.
