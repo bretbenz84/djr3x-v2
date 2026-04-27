@@ -569,6 +569,22 @@ def _wake_ack() -> None:
     _speak_blocking(chosen, priority=2)
 
 
+_BARE_WAKE_ADDRESS_PAT = re.compile(
+    r"^\s*(?:"
+    r"hey\s+(?:dj[\s-]*)?r(?:ex|3x)|"
+    r"hi\s+(?:dj[\s-]*)?r(?:ex|3x)|"
+    r"hello\s+(?:dj[\s-]*)?r(?:ex|3x)|"
+    r"yo\s+(?:robot|(?:dj[\s-]*)?r(?:ex|3x))|"
+    r"(?:dj[\s-]*)?r(?:ex|3x)"
+    r")\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_bare_wake_address(text: str) -> bool:
+    return bool(_BARE_WAKE_ADDRESS_PAT.match(text or ""))
+
+
 def _prefill_wake_ack_cache() -> None:
     """Warm the tiny wake-ack TTS set so wake feedback is instant."""
     if not getattr(config, "WAKE_ACK_REQUIRE_CACHE", True):
@@ -5595,6 +5611,15 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             "[interaction] speech segment — speaker=%r person_id=%s text=%r",
             speaker_label, person_id, text,
         )
+
+        if _is_bare_wake_address(text):
+            _log.info("[wake_word] transcribed wake address fast-ack text=%r", text)
+            _wake_ack()
+            try:
+                consciousness.clear_response_wait()
+            except Exception:
+                pass
+            return
 
         music_offer_response = _handle_pending_music_offer_reply(person_id, text)
         if music_offer_response:

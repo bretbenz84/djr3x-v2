@@ -107,6 +107,15 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         speak.assert_not_called()
 
+    def test_bare_wake_address_detection(self):
+        from intelligence import interaction
+
+        for text in ("Hey Rex", "hey dj-rex", "DJ Rex", "yo robot", "R3X"):
+            self.assertTrue(interaction._is_bare_wake_address(text), text)
+
+        self.assertFalse(interaction._is_bare_wake_address("Hey Rex what time is it"))
+        self.assertFalse(interaction._is_bare_wake_address("Rex play jazz"))
+
 
 class ConversationGatingTest(unittest.TestCase):
     def test_agenda_allows_related_followup_when_curated_pool_is_exhausted(self):
