@@ -3673,6 +3673,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
     assistant_asked_question = False
     game_after_audio_path: Optional[str] = None
     event_cancellation_ack: Optional[str] = None
+    repair_move: Optional[dict] = None
 
     # Randomised pre-response pause — prevents Rex from feeling instant/robotic
     delay_ms = random.randint(config.REACTION_DELAY_MS_MIN, config.REACTION_DELAY_MS_MAX)
@@ -4520,6 +4521,17 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         # If Rex had an outstanding event follow-up question, treat this utterance
         # as the outcome and close the loop in memory.
         if _awaiting_followup_event:
+            repair_move = repair_moves.detect(text)
+            followup_repair = (
+                repair_move is not None
+                and repair_move.get("kind") in {
+                    "clarify",
+                    "factual",
+                    "misunderstood",
+                    "bare_negation",
+                    "repeat",
+                }
+            )
             pending_pid = _awaiting_followup_event.get("person_id")
             pending_event_id = _awaiting_followup_event.get("event_id")
             pending_event_name = _awaiting_followup_event.get("event_name")
@@ -4528,7 +4540,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 or person_id is None
                 or pending_pid == person_id
             )
-            if pending_event_id is not None and pid_matches:
+            if pending_event_id is not None and pid_matches and not followup_repair:
                 try:
                     if events_memory.looks_like_cancellation(text):
                         target_pid = person_id if person_id is not None else pending_pid
@@ -4551,6 +4563,14 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     _awaiting_followup_event = None
                 except Exception as exc:
                     _log.debug("follow-up outcome write failed: %s", exc)
+            elif followup_repair:
+                _log.info(
+                    "[interaction] follow-up outcome held open because user requested repair — "
+                    "event_id=%s kind=%s text=%r",
+                    pending_event_id,
+                    repair_move.get("kind"),
+                    text,
+                )
 
         if person_id is not None:
             _session_person_ids.add(person_id)
@@ -5006,7 +5026,8 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 response_text = event_cancellation_ack
                 used_agenda_llm = True
 
-        repair_move = repair_moves.detect(text)
+        if repair_move is None:
+            repair_move = repair_moves.detect(text)
         if (
             repair_move
             and active_grief_for_turn

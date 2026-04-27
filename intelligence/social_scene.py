@@ -15,6 +15,53 @@ from world_state import world_state
 from memory import social as social_memory
 
 
+_SYMMETRIC_PAIR_LABELS = {
+    "partner": "partners",
+    "spouse": "couple",
+    "wife": "couple",
+    "husband": "couple",
+    "girlfriend": "couple",
+    "boyfriend": "couple",
+    "fiance": "engaged duo",
+    "fiancee": "engaged duo",
+    "friend": "friends",
+    "bestfriend": "best friends",
+    "best_friend": "best friends",
+    "sibling": "siblings",
+    "brother": "siblings",
+    "sister": "siblings",
+    "cousin": "cousins",
+    "coworker": "work duo",
+    "co_worker": "work duo",
+    "colleague": "work duo",
+    "roommate": "roommates",
+    "flatmate": "roommates",
+    "neighbor": "neighbors",
+    "neighbour": "neighbors",
+}
+
+_DIRECTIONAL_PAIR_LABELS = {
+    "father": "father-son duo",
+    "dad": "father-son duo",
+    "mother": "mother-child duo",
+    "mom": "mother-child duo",
+    "parent": "parent-child duo",
+    "aunt": "family duo",
+    "uncle": "family duo",
+    "boss": "work duo",
+    "supervisor": "work duo",
+    "manager": "work duo",
+    "employee": "work duo",
+    "child": "family duo",
+    "son": "family duo",
+    "daughter": "family duo",
+    "owner": "person-and-pet duo",
+    "dog": "person-and-dog duo",
+    "cat": "person-and-cat duo",
+    "pet": "person-and-pet duo",
+}
+
+
 @dataclass(frozen=True)
 class VisiblePerson:
     person_id: int
@@ -87,6 +134,7 @@ def pair_label(a: VisiblePerson, b: VisiblePerson) -> str:
         return f"{a.first_name} and {b.first_name}"
 
     rel = (edge.get("relationship") or "").replace("_", " ").strip().lower()
+    rel_key = rel.replace(" ", "_")
     from_id = int(edge.get("from_person_id") or 0)
     to_id = int(edge.get("to_person_id") or 0)
     from_name = edge.get("from_name") or ""
@@ -94,22 +142,25 @@ def pair_label(a: VisiblePerson, b: VisiblePerson) -> str:
     from_first = (from_name.split() or [""])[0]
     to_first = (to_name.split() or [""])[0]
 
-    if rel in {"father", "dad"}:
+    if rel_key in {"father", "dad"}:
         child = from_first if from_id != b.person_id else b.first_name
         father = to_first if to_id != a.person_id else a.first_name
         return f"father-son duo {child} and {father}"
-    if rel in {"mother", "mom"}:
+    if rel_key in {"mother", "mom"}:
         child = from_first if from_id != b.person_id else b.first_name
         mother = to_first if to_id != a.person_id else a.first_name
         return f"mother-child duo {child} and {mother}"
-    if rel == "parent":
+    if rel_key == "parent":
         child = from_first if from_id != b.person_id else b.first_name
         parent = to_first if to_id != a.person_id else a.first_name
         return f"parent-child duo {child} and {parent}"
-    if rel in {"partner", "girlfriend", "boyfriend", "fiance", "wife", "husband", "spouse"}:
-        return f"{a.first_name} and {b.first_name}"
-    if rel:
-        return f"{a.first_name} and {b.first_name} ({rel})"
+
+    if rel_key in _SYMMETRIC_PAIR_LABELS:
+        return f"{_SYMMETRIC_PAIR_LABELS[rel_key]} {a.first_name} and {b.first_name}"
+    if rel_key in _DIRECTIONAL_PAIR_LABELS:
+        return f"{_DIRECTIONAL_PAIR_LABELS[rel_key]} {a.first_name} and {b.first_name}"
+    if rel_key:
+        return f"{a.first_name} and {b.first_name} ({rel.replace('_', ' ')})"
     return f"{a.first_name} and {b.first_name}"
 
 

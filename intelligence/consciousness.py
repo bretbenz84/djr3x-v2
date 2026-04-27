@@ -480,6 +480,11 @@ def note_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
         question_budget.note_rex_utterance(text)
     except Exception:
         pass
+    try:
+        from intelligence import repair_moves
+        repair_moves.note_assistant_turn(text)
+    except Exception:
+        pass
 
     with _turn_lock:
         _last_proactive_speech_at = now

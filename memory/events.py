@@ -5,7 +5,7 @@ memory/events.py — Upcoming events and follow-up tracking (person_events table
 import logging
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -38,6 +38,16 @@ _STOPWORDS = {
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _today_local() -> str:
+    """Return the robot host's local calendar date as YYYY-MM-DD."""
+    return date.today().isoformat()
+
+
+def _undated_followup_cutoff() -> str:
+    days = int(getattr(config, "FOLLOWUP_UNDATED_DAYS", 7))
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
 def looks_like_cancellation(text: str) -> bool:
@@ -81,21 +91,27 @@ def add_event(
 def get_pending_followups(person_id: int) -> list[dict]:
     """
     Return events that are due for follow-up: followed_up is FALSE and either:
-      - event_date is set and has already passed (event_date <= today), or
+      - event_date is set and has already passed locally (event_date < today), or
       - event_date is NULL and mentioned_at is older than config.FOLLOWUP_UNDATED_DAYS.
+
+    SQLite date('now') is UTC, which can make "tomorrow" events look due the
+    evening before on a Mac in Pacific time. Use the host's local date for
+    date-only plans because that is how the spoken plan was understood.
     """
+    today = _today_local()
+    undated_cutoff = _undated_followup_cutoff()
     rows = db.fetchall(
         """SELECT * FROM person_events
            WHERE person_id = ?
              AND followed_up = FALSE
              AND COALESCE(status, 'planned') = 'planned'
              AND (
-               (event_date IS NOT NULL AND event_date <= date('now'))
+               (event_date IS NOT NULL AND event_date < ?)
                OR
-               (event_date IS NULL AND mentioned_at < datetime('now', ?))
+               (event_date IS NULL AND mentioned_at < ?)
              )
            ORDER BY mentioned_at""",
-        (person_id, f"-{config.FOLLOWUP_UNDATED_DAYS} days"),
+        (person_id, today, undated_cutoff),
     )
     return [dict(r) for r in rows]
 
@@ -126,15 +142,16 @@ def cancel_event(event_id: int, reason: str = "") -> None:
 
 
 def get_upcoming_events(person_id: int) -> list[dict]:
-    """Return future events that have not yet been followed up on."""
+    """Return today-or-future events that have not yet been followed up on."""
+    today = _today_local()
     rows = db.fetchall(
         """SELECT * FROM person_events
            WHERE person_id = ?
              AND followed_up = FALSE
              AND COALESCE(status, 'planned') = 'planned'
-             AND event_date > date('now')
+             AND event_date >= ?
            ORDER BY event_date""",
-        (person_id,),
+        (person_id, today),
     )
     return [dict(r) for r in rows]
 

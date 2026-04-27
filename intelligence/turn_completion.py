@@ -30,6 +30,13 @@ _CANCEL_PAT = re.compile(
     re.IGNORECASE,
 )
 _TERMINAL_PUNCT_PAT = re.compile(r"[.!?]\s*$")
+_TERMINAL_QUESTION_PAT = re.compile(r"\?\s*$")
+_COMPLETE_PREPOSITION_QUESTION_PAT = re.compile(
+    r"^\s*(?:who|what|when|where|why|how|which|whose|whom|"
+    r"can|could|would|will|do|does|did|is|are|am|should)\b"
+    r".*\b(?:about|for|from|to|with)\s*\??\s*$",
+    re.IGNORECASE,
+)
 
 _INCOMPLETE_END_WORDS = {
     "about", "after", "and", "because", "before", "but", "for", "from",
@@ -135,6 +142,12 @@ def classify(text: str) -> Optional[IncompleteSignal]:
     if _ELLIPSIS_PAT.search(text or ""):
         return IncompleteSignal("explicit ellipsis", _prompt_for(words, cleaned))
 
+    # A transcribed full question can naturally end with a preposition:
+    # "What are you talking about?", "Who are you with?", "Where are you from?"
+    # Those are complete turns, not dangling fragments.
+    if _TERMINAL_QUESTION_PAT.search(text or ""):
+        return None
+
     # If ASR gave us strong final punctuation, trust it unless the sentence
     # still ends on an impossible cliffhanger like "going to."
     has_terminal_punct = bool(_TERMINAL_PUNCT_PAT.search(text or ""))
@@ -150,6 +163,9 @@ def classify(text: str) -> Optional[IncompleteSignal]:
             f"ends with phrase {phrase_tail!r}",
             _prompt_for(words, lower),
         )
+
+    if _COMPLETE_PREPOSITION_QUESTION_PAT.match(cleaned):
+        return None
 
     if last in _INCOMPLETE_END_WORDS:
         if has_terminal_punct and last not in {"to", "because", "with", "about"}:
