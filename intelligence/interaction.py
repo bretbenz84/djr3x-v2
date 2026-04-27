@@ -51,6 +51,7 @@ from memory import events as events_memory
 from memory import relationships as rel_memory
 from memory import emotional_events
 from memory import boundaries as boundary_memory
+from memory import forgetting
 from awareness import interoception
 from awareness import address_mode
 from awareness.situation import assessor as _situation_assessor
@@ -84,6 +85,7 @@ _interrupted = threading.Event()
 _session_person_ids: set[int] = set()
 _session_exchange_count: int = 0
 _last_speech_at: float = 0.0  # monotonic timestamp of most recent speech chunk
+_session_forget_terms: dict[int, set[str]] = {}
 
 # Anti-repeat for latency filler lines
 _last_filler: Optional[str] = None
@@ -2072,6 +2074,30 @@ def _execute_command(
         return resp
 
     # ── Memory ─────────────────────────────────────────────────────────────────
+    if key == "forget_specific":
+        target = (args.get("target") or "").strip()
+        if person_id is None:
+            resp = "I need to know who I'm forgetting that for first."
+            _speak_blocking(resp)
+            return resp
+        result = forgetting.forget_specific_memory(person_id, target)
+        if result.terms:
+            existing = _session_forget_terms.setdefault(int(person_id), set())
+            existing.update(result.terms)
+        _log.info(
+            "[memory] targeted forget person_id=%s target=%r terms=%s deleted=%s",
+            person_id,
+            target,
+            sorted(result.terms),
+            result.deleted,
+        )
+        if result.total_deleted <= 0:
+            resp = f"I couldn't find a stored memory matching {target}."
+        else:
+            resp = f"Okay. I forgot the stored memory I found about {target}."
+        _speak_blocking(resp, emotion="neutral")
+        return resp
+
     if key == "forget_me":
         if person_id is None:
             resp = "I don't have any record of you to forget."
@@ -2246,6 +2272,32 @@ def _execute_command(
 # Post-response processing
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _forgotten_terms_for_person(person_id: Optional[int]) -> set[str]:
+    if person_id is None:
+        return set()
+    return set(_session_forget_terms.get(int(person_id), set()))
+
+
+def _filter_forgotten_transcript(
+    transcript: list[dict],
+    person_id: Optional[int],
+) -> list[dict]:
+    terms = _forgotten_terms_for_person(person_id)
+    if not terms:
+        return transcript
+    return [
+        turn for turn in transcript
+        if not forgetting.text_matches_terms(turn.get("text") or "", terms)
+    ]
+
+
+def _extracted_memory_allowed(payload: dict, person_id: Optional[int]) -> bool:
+    terms = _forgotten_terms_for_person(person_id)
+    if not terms:
+        return True
+    return not forgetting.fact_or_event_matches(payload, terms)
+
+
 def _post_response(
     user_text: str,
     person_id: Optional[int],
@@ -2253,6 +2305,7 @@ def _post_response(
     *,
     assistant_asked_question: bool = False,
     pre_classified_insult: bool = False,
+    suppress_memory_learning: bool = False,
 ) -> None:
     """
     Run after every response in ACTIVE state. Sentiment, facts, follow-up,
@@ -2355,23 +2408,28 @@ def _post_response(
         except Exception as exc:
             _log.debug("post_response sentiment error: %s", exc)
 
-        if person_id is not None:
+        if person_id is not None and not suppress_memory_learning:
             try:
                 friendship_patterns.learn_from_turn(person_id, user_text)
             except Exception as exc:
                 _log.debug("friendship pattern learning error: %s", exc)
 
         # Fact extraction from recent transcript
-        if person_id is not None:
+        if person_id is not None and not suppress_memory_learning:
             try:
                 transcript = conv_memory.get_session_transcript()
                 # Last 10 entries (~5 exchanges) — wider window than before so
                 # facts mentioned a few turns back are still in scope.
                 recent = transcript[-10:] if len(transcript) >= 10 else transcript
+                recent = _filter_forgotten_transcript(recent, person_id)
                 new_facts = llm.extract_facts(person_id, recent, person_name=person_name)
                 saved_count = 0
                 for fact in new_facts:
-                    if fact.get("key") and fact.get("value"):
+                    if (
+                        fact.get("key")
+                        and fact.get("value")
+                        and _extracted_memory_allowed(fact, person_id)
+                    ):
                         facts_memory.add_fact(
                             person_id,
                             fact.get("category", "other"),
@@ -2392,6 +2450,7 @@ def _post_response(
             try:
                 transcript = conv_memory.get_session_transcript()
                 recent = transcript[-10:] if len(transcript) >= 10 else transcript
+                recent = _filter_forgotten_transcript(recent, person_id)
                 new_events = llm.extract_events(person_id, recent, person_name=person_name)
                 saved_events = 0
                 if new_events:
@@ -2401,6 +2460,8 @@ def _post_response(
                         for e in existing
                     }
                     for ev in new_events:
+                        if not _extracted_memory_allowed(ev, person_id):
+                            continue
                         key = (ev["event_name"].strip().lower(), ev.get("event_date"))
                         if key in existing_keys:
                             continue
@@ -2439,6 +2500,7 @@ def _end_session() -> None:
     if not transcript:
         _session_exchange_count = 0
         _session_person_ids.clear()
+        _session_forget_terms.clear()
         try:
             topic_thread.clear()
         except Exception:
@@ -2479,38 +2541,45 @@ def _end_session() -> None:
         try:
             person_row = people_memory.get_person(person_id)
             person_name = person_row.get("name") if person_row else None
+            person_transcript = _filter_forgotten_transcript(transcript, person_id)
 
-            summary = llm.generate_session_summary(person_id, transcript)
-            if summary:
-                conv_memory.save_conversation(
-                    person_id,
-                    summary,
-                    emotion_tone="neutral",
-                    topics="",
-                )
+            if person_transcript:
+                summary = llm.generate_session_summary(person_id, person_transcript)
+                if summary:
+                    conv_memory.save_conversation(
+                        person_id,
+                        summary,
+                        emotion_tone="neutral",
+                        topics="",
+                    )
 
             # Full-transcript fact extraction at session end — catches facts the
             # per-exchange rolling window may have missed.
-            try:
-                end_facts = llm.extract_facts(person_id, transcript, person_name=person_name)
-                saved = 0
-                for fact in end_facts:
-                    if fact.get("key") and fact.get("value"):
-                        facts_memory.add_fact(
-                            person_id,
-                            fact.get("category", "other"),
-                            fact["key"],
-                            fact["value"],
-                            source="stated",
-                            confidence=0.9,
-                        )
-                        saved += 1
-                _log.info(
-                    "[interaction] session-end facts extracted=%d saved=%d for person_id=%s (%s)",
-                    len(end_facts), saved, person_id, person_name,
-                )
-            except Exception as exc:
-                _log.error("session-end fact extraction error for person_id=%s: %s", person_id, exc)
+            if person_transcript:
+                try:
+                    end_facts = llm.extract_facts(person_id, person_transcript, person_name=person_name)
+                    saved = 0
+                    for fact in end_facts:
+                        if (
+                            fact.get("key")
+                            and fact.get("value")
+                            and _extracted_memory_allowed(fact, person_id)
+                        ):
+                            facts_memory.add_fact(
+                                person_id,
+                                fact.get("category", "other"),
+                                fact["key"],
+                                fact["value"],
+                                source="stated",
+                                confidence=0.9,
+                            )
+                            saved += 1
+                    _log.info(
+                        "[interaction] session-end facts extracted=%d saved=%d for person_id=%s (%s)",
+                        len(end_facts), saved, person_id, person_name,
+                    )
+                except Exception as exc:
+                    _log.error("session-end fact extraction error for person_id=%s: %s", person_id, exc)
 
             # update_visit increments visit_count, last_seen, and applies the
             # return_visit familiarity increment defined in config.
@@ -2526,6 +2595,7 @@ def _end_session() -> None:
             _log.error("session end error for person_id=%s: %s", person_id, exc)
 
     conv_memory.clear_transcript()
+    _session_forget_terms.clear()
     try:
         topic_thread.clear()
     except Exception:
@@ -2986,6 +3056,12 @@ def _event_cancellation_ack(labels: list[str], person_id: Optional[int]) -> str:
     except Exception as exc:
         _log.debug("event cancellation ack generation failed: %s", exc)
         resp = ""
+    resp = re.sub(
+        r"^\s*processing\s*(?:[.。…:;-]+\s*)?",
+        "",
+        resp or "",
+        flags=re.IGNORECASE,
+    ).strip()
     return (resp or f"Got it - {label} is scrubbed from the flight plan.").strip()
 
 
@@ -3788,6 +3864,8 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 except Exception as exc:
                     _log.debug("turn completion response-wait failed: %s", exc)
                 return
+
+        specific_forget_target_for_turn = forgetting.extract_specific_forget_target(text)
 
         echo_cancel.start_sequence()
         sequence_started = True
@@ -4671,9 +4749,27 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         except Exception as exc:
             _log.debug("user energy text update failed: %s", exc)
 
-        boundary_response = _handle_emotional_checkin_boundary(person_id, text)
+        boundary_person_id = person_id
+        if boundary_person_id is None and _EMOTIONAL_BOUNDARY_PAT.search(text):
+            try:
+                boundary_person_id = consciousness.get_last_memory_hint_target()
+            except Exception:
+                boundary_person_id = None
+            if boundary_person_id is None and recent_engagement and not _has_unknown_visible_person():
+                try:
+                    boundary_person_id = int(recent_engagement.get("person_id"))
+                except (TypeError, ValueError):
+                    boundary_person_id = None
+            if boundary_person_id is not None:
+                _log.info(
+                    "[interaction] emotional boundary attributed to recent memory target "
+                    "person_id=%s despite uncertain speaker",
+                    boundary_person_id,
+                )
+
+        boundary_response = _handle_emotional_checkin_boundary(boundary_person_id, text)
         if boundary_response:
-            _dismiss_pending_consent_prompts(person_id, text)
+            _dismiss_pending_consent_prompts(boundary_person_id, text)
             try:
                 consciousness.clear_response_wait()
             except Exception:
@@ -5044,6 +5140,22 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     )
                     ev = result.get("event")
                     if ev and person_id is not None:
+                        if specific_forget_target_for_turn:
+                            _log.info(
+                                "[empathy] skipped emotional memory write for targeted "
+                                "forget request person_id=%s target=%r",
+                                person_id,
+                                specific_forget_target_for_turn,
+                            )
+                            return
+                        if not _extracted_memory_allowed(ev, person_id):
+                            _log.info(
+                                "[empathy] skipped emotional memory write matching "
+                                "forgotten terms for person_id=%s: %s",
+                                person_id,
+                                ev.get("description"),
+                            )
+                            return
                         try:
                             row_id = emotional_events.add_event(
                                 person_id,
@@ -5076,6 +5188,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         response_text = None
         used_agenda_llm = False
         used_classified_intent = False
+        suppress_memory_learning = False
         routing_text = text
 
         if response_text is None:
@@ -5201,6 +5314,8 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 _log.debug("active game routing failed: %s", exc)
         if match is not None:
             response_text = _execute_command(match, person_id, person_name, text)
+            if match.command_key in {"forget_specific", "forget_me", "forget_everyone"}:
+                suppress_memory_learning = True
         elif response_text is None:
             if getattr(config, "INTENT_CLASSIFIER_ENABLED", False) and not active_grief_for_turn:
                 try:
@@ -5440,6 +5555,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             person_name,
             assistant_asked_question=assistant_asked_question,
             pre_classified_insult=pre_classified_insult,
+            suppress_memory_learning=suppress_memory_learning,
         )
     finally:
         if sequence_started:

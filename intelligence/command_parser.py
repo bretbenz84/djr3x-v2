@@ -175,6 +175,17 @@ def _parse_wave(normalized: str, original: str) -> dict | None:
     return {"target": target}
 
 
+def _parse_forget_specific(original: str) -> dict | None:
+    try:
+        from memory import forgetting
+    except Exception:
+        return None
+    target = forgetting.extract_specific_forget_target(original)
+    if not target:
+        return None
+    return {"target": target}
+
+
 # ─── Exact-match commands ─────────────────────────────────────────────────────
 
 EXACT_COMMANDS: dict[str, str] = {
@@ -411,6 +422,10 @@ def parse(text: str) -> CommandMatch | None:
     wave = _parse_wave(normalized, original)
     if wave is not None:
         return CommandMatch("wave_to", "pattern", wave)
+
+    forget_specific = _parse_forget_specific(original)
+    if forget_specific is not None:
+        return CommandMatch("forget_specific", "pattern", forget_specific)
 
     # 2a. Prefix match (variable-arg commands)
     for prefix, key, arg_name in PREFIX_COMMANDS:
