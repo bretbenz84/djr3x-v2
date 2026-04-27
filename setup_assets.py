@@ -133,7 +133,10 @@ CREATE TABLE IF NOT EXISTS person_events (
     mentioned_at    DATETIME,
     followed_up     BOOLEAN DEFAULT FALSE,
     follow_up_at    DATETIME,
-    outcome         TEXT
+    outcome         TEXT,
+    status          TEXT DEFAULT 'planned',
+    canceled_at     DATETIME,
+    updated_at      DATETIME
 );
 
 CREATE TABLE IF NOT EXISTS personality_settings (
@@ -369,6 +372,23 @@ def _run_schema_updates(conn: sqlite3.Connection) -> list[str]:
         applied.append("person_facts.last_confirmed_at")
     if _ensure_column(conn, "person_facts", "evidence_count", "INTEGER DEFAULT 1"):
         applied.append("person_facts.evidence_count")
+    for column, definition in (
+        ("status", "TEXT DEFAULT 'planned'"),
+        ("canceled_at", "DATETIME"),
+        ("updated_at", "DATETIME"),
+    ):
+        if _ensure_column(conn, "person_events", column, definition):
+            applied.append(f"person_events.{column}")
+    conn.execute(
+        """UPDATE person_events
+           SET status = 'planned'
+           WHERE status IS NULL OR status = ''"""
+    )
+    conn.execute(
+        """UPDATE person_events
+           SET updated_at = COALESCE(updated_at, follow_up_at, mentioned_at)
+           WHERE updated_at IS NULL"""
+    )
     conn.execute(
         """UPDATE person_facts
            SET last_confirmed_at = COALESCE(last_confirmed_at, updated_at, created_at)

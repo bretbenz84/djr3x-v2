@@ -91,6 +91,7 @@ _unknown_first_seen_at: dict[str, float] = {}
 # pauses briefly so people can answer without being talked over.
 _response_wait_until: float = 0.0
 _last_proactive_speech_at: float = 0.0
+_last_rex_utterance_text: str = ""
 _turn_lock = threading.Lock()
 _proactive_speech_pending = threading.Event()
 
@@ -127,6 +128,14 @@ _group_turn_visible_since: dict[int, float] = {}
 _group_turn_invited_at: dict[int, float] = {}
 _group_turn_invited_this_session: set[int] = set()
 _last_group_turn_check_at: float = 0.0
+
+# Startup group greeting state. When two known people are visible together as
+# the camera settles, Rex should greet the room once instead of stacking
+# person-by-person memory callbacks.
+_startup_group_signature: Optional[str] = None
+_startup_group_seen_at: float = 0.0
+_startup_group_greeted_signatures: set[str] = set()
+_startup_solo_seen_at: float = 0.0
 
 # Overheard chime-in tracking. Counts how many times Rex has chimed in on
 # being-discussed mentions this session and rate-limits how often the step
@@ -325,6 +334,20 @@ def get_pending_followup(person_id: int) -> Optional[list[dict]]:
     return events if events else None
 
 
+def drop_pending_followups(person_id: int, event_ids: Optional[set[int]] = None) -> None:
+    """Remove queued follow-ups that are no longer valid after a correction."""
+    with _followup_lock:
+        if event_ids is None:
+            _pending_followups.pop(person_id, None)
+            return
+        events = _pending_followups.get(person_id, [])
+        kept = [e for e in events if int(e.get("id") or -1) not in event_ids]
+        if kept:
+            _pending_followups[person_id] = kept
+        else:
+            _pending_followups.pop(person_id, None)
+
+
 def consume_identity_prompt_request() -> bool:
     """
     Return True once when an unknown-person identity prompt was recently spoken.
@@ -425,8 +448,9 @@ def note_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
     """
     Track when Rex last spoke and, if it was a question, open a reply window.
     """
-    global _last_proactive_speech_at, _response_wait_until
+    global _last_proactive_speech_at, _response_wait_until, _last_rex_utterance_text
     now = time.monotonic()
+    _last_rex_utterance_text = (text or "").strip()
     try:
         from intelligence import question_budget
         question_budget.note_rex_utterance(text)
@@ -446,6 +470,11 @@ def note_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
             else max(0.0, float(wait_secs))
         )
         _response_wait_until = max(_response_wait_until, now + wait_for)
+
+
+def get_last_rex_utterance() -> str:
+    """Return the latest Rex line observed by consciousness/interaction."""
+    return _last_rex_utterance_text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -942,6 +971,96 @@ def _step_followup_check(snapshot: dict) -> None:
                         )
     except Exception as exc:
         _log.debug("followup check step error: %s", exc)
+
+
+def _within_startup_group_window(now: Optional[float] = None) -> bool:
+    if not getattr(config, "STARTUP_GROUP_GREETING_ENABLED", True):
+        return False
+    now = time.monotonic() if now is None else now
+    window = float(getattr(config, "STARTUP_GROUP_GREETING_WINDOW_SECS", 45.0))
+    if _process_started_mono <= 0.0:
+        return False
+    return (now - _process_started_mono) <= max(0.0, window)
+
+
+def _step_startup_group_greeting(snapshot: dict, profile: SituationProfile) -> None:
+    """Fire one relationship-aware group greeting during startup."""
+    global _startup_group_signature, _startup_group_seen_at, _startup_solo_seen_at
+
+    now = time.monotonic()
+    if not _within_startup_group_window(now):
+        return
+    if not _can_proactive_speak() or profile.user_mid_sentence:
+        return
+
+    try:
+        from intelligence import social_scene
+        scene = social_scene.from_snapshot(snapshot)
+    except Exception as exc:
+        _log.debug("startup group scene build failed: %s", exc)
+        return
+
+    if len(scene.known) < 2:
+        if len(scene.known) == 1 and _startup_solo_seen_at <= 0.0:
+            _startup_solo_seen_at = now
+        return
+
+    signature = scene.signature
+    if signature in _startup_group_greeted_signatures:
+        return
+    if _startup_group_signature != signature:
+        _startup_group_signature = signature
+        _startup_group_seen_at = now
+        return
+
+    confirm = float(getattr(config, "STARTUP_GROUP_GREETING_CONFIRM_SECS", 2.0))
+    if (now - _startup_group_seen_at) < max(0.0, confirm):
+        return
+
+    if not _should_fire_presence(f"group:{signature}", None, profile):
+        return
+
+    _startup_group_greeted_signatures.add(signature)
+    for person in scene.known:
+        _greeted_this_session.add(person.person_id)
+        _last_presence_reaction_at[person.person_id] = now
+        _first_sight_seen_at.pop(person.person_id, None)
+
+    label = social_scene.visible_group_label(scene)
+    _log.info("consciousness: startup group greeting for %s", label)
+    _generate_and_speak_presence(
+        social_scene.startup_group_prompt(scene),
+        label=f"startup group greeting for {label}",
+        tag_key=f"group:{signature}",
+        emotion="curious",
+        purpose="presence_reaction",
+    )
+
+
+def _hold_startup_individual_greeting(snapshot: dict, now: float) -> bool:
+    """
+    During startup, briefly hold solo first-sight callbacks so a second known
+    face can settle into the scene and receive a group greeting.
+    """
+    if not _within_startup_group_window(now):
+        return False
+    if _startup_group_greeted_signatures:
+        return False
+    try:
+        known_count = sum(
+            1
+            for person in snapshot.get("people", []) or []
+            if person.get("person_db_id") is not None
+        )
+    except Exception:
+        known_count = 0
+    if known_count >= 2:
+        return True
+    if known_count == 1:
+        first_seen = _startup_solo_seen_at or now
+        hold = float(getattr(config, "STARTUP_GROUP_SOLO_HOLD_SECS", 8.0))
+        return (now - first_seen) < max(0.0, hold)
+    return False
 
 
 def _pick_anticipated_event(person_db_id: Optional[int]) -> Optional[dict]:
@@ -2554,6 +2673,10 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         # First time ever seen this session.
         if key not in _last_seen:
             if isinstance(key, int) and person_name and key not in _greeted_this_session:
+                if _hold_startup_individual_greeting(snapshot, now):
+                    first_sight_pending_keys.add(key)
+                    _first_sight_seen_at.setdefault(key, now)
+                    continue
                 first_visible = _first_sight_seen_at.setdefault(key, now)
                 confirm_visible = float(getattr(config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 3.0))
                 if (now - first_visible) < max(0.0, confirm_visible):
@@ -3840,7 +3963,12 @@ def _loop() -> None:
             # Snapshot after recognition so steps 6–11 see identified persons
             snapshot = world_state.snapshot()
 
-            # 6. Follow-up check
+            # 6. Startup group greeting. This runs before individual follow-up
+            # memory checks so a room with two known people gets one social
+            # opening instead of stacked callbacks.
+            _step_startup_group_greeting(snapshot, profile)
+
+            # 6b. Follow-up check
             _step_followup_check(snapshot)
 
             # 7. Disengagement detection
@@ -3902,7 +4030,9 @@ def _loop() -> None:
 def start() -> None:
     """Start the consciousness daemon thread. No-op if already running."""
     global _thread, _response_wait_until, _last_proactive_speech_at, _pending_departure_keys
+    global _last_rex_utterance_text
     global _process_started_iso, _process_started_mono
+    global _startup_group_signature, _startup_group_seen_at, _startup_solo_seen_at
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
@@ -3930,6 +4060,11 @@ def start() -> None:
     _group_turn_visible_since.clear()
     _group_turn_invited_at.clear()
     _group_turn_invited_this_session.clear()
+    _startup_group_signature = None
+    _startup_group_seen_at = 0.0
+    _startup_solo_seen_at = 0.0
+    _startup_group_greeted_signatures.clear()
+    _last_rex_utterance_text = ""
     try:
         from intelligence import question_budget
         question_budget.clear()
@@ -3960,7 +4095,7 @@ def start() -> None:
 
 def stop() -> None:
     """Stop the consciousness daemon thread and wait for it to exit."""
-    global _thread, _response_wait_until
+    global _thread, _response_wait_until, _last_rex_utterance_text
     _stop_event.set()
     _pending_identity_prompt.clear()
     _proactive_speech_pending.clear()
@@ -3972,6 +4107,8 @@ def stop() -> None:
     _group_turn_visible_since.clear()
     _group_turn_invited_at.clear()
     _group_turn_invited_this_session.clear()
+    _startup_group_greeted_signatures.clear()
+    _last_rex_utterance_text = ""
     try:
         from intelligence import question_budget
         question_budget.clear()

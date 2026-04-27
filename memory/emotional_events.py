@@ -11,6 +11,7 @@ forever so older context is available if a person brings it up themselves.
 """
 
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -72,6 +73,21 @@ _FAMILY_LOSS_SUBJECTS = {
     "grandma", "grandmother", "grandpa", "grandfather", "grandparent",
     "brother", "sister", "sibling",
 }
+
+_TOKEN_PAT = re.compile(r"[a-z0-9']+")
+_STOPWORDS = {
+    "a", "an", "and", "are", "at", "be", "for", "from", "going", "i",
+    "im", "i'm", "it", "my", "not", "of", "on", "or", "our", "the",
+    "this", "that", "to", "we", "you", "anymore", "any", "more",
+}
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        t.strip("'").lower()
+        for t in _TOKEN_PAT.findall(text or "")
+        if len(t.strip("'")) >= 3 and t.strip("'").lower() not in _STOPWORDS
+    }
 
 
 def decay_days_for(category: str) -> int:
@@ -400,6 +416,50 @@ def mute_checkins(event_id: int, reason: str = "") -> None:
         "WHERE id = ?",
         ((reason or "").strip(), int(event_id)),
     )
+
+
+def mute_matching_positive_events(
+    person_id: int,
+    text: str,
+    *,
+    reason: str = "",
+    event_hint: str = "",
+) -> list[dict]:
+    """
+    Mute positive callbacks that the person just corrected or canceled.
+
+    The emotional memory remains available if the person brings it up, but Rex
+    stops proactively leading with a celebration that is no longer happening.
+    """
+    haystack_tokens = _tokens(" ".join([text or "", event_hint or ""]))
+    if not haystack_tokens:
+        return []
+    rows = db.fetchall(
+        "SELECT id, category, valence, description, "
+        "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
+        "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
+        "       sensitivity_decay_days, person_invited_topic "
+        "FROM person_emotional_events "
+        "WHERE person_id = ? "
+        "AND valence > 0 "
+        "AND checkins_muted_at IS NULL "
+        "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
+        "ORDER BY mentioned_at DESC",
+        (int(person_id),),
+    )
+    muted: list[dict] = []
+    for row in rows:
+        event = dict(row)
+        event_tokens = _tokens(
+            " ".join([
+                event.get("category") or "",
+                event.get("description") or "",
+            ])
+        )
+        if haystack_tokens & event_tokens:
+            mute_checkins(int(event["id"]), reason=reason or text)
+            muted.append(event)
+    return muted
 
 
 def mute_recent_checkin_for_person(

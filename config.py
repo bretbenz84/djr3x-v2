@@ -994,6 +994,13 @@ SPEAKER_ID_SOFT_THRESHOLD = 0.60
 # floor on a noisy utterance.
 SPEAKER_ID_ENGAGED_VISIBLE_FLOOR = 0.50
 
+# Multi-person visible attribution floors. When two known people are in frame,
+# a weak voice score should not automatically become "some unseen stranger."
+# These values let face presence + conversational continuity keep the turn with
+# a visible person when the voice model is noisy.
+SPEAKER_ID_MULTI_VISIBLE_FLOOR = 0.50
+SPEAKER_ID_MULTI_VISIBLE_RECENT_FLOOR = 0.45
+
 # Grief-flow attribution floor: when the structured loss/grief flow has an
 # active step awaiting THIS engaged-and-visible person's reply (Rex just asked
 # them a direct question like "What was your grandpa's name?"), short utterances
@@ -1142,6 +1149,15 @@ GROUP_TURN_ACTIVE_WINDOW_SECS = 75.0
 # and a long per-person cooldown in case the session state is reset manually.
 GROUP_TURN_CHECK_INTERVAL_SECS = 5.0
 GROUP_TURN_PERSON_COOLDOWN_SECS = 900.0
+
+# STARTUP GROUP GREETING — if multiple known people are visible during startup,
+# greet the group once instead of firing separate memory callbacks for each
+# person. The solo hold gives the camera a few seconds to settle before Rex
+# decides someone is alone.
+STARTUP_GROUP_GREETING_ENABLED = True
+STARTUP_GROUP_GREETING_WINDOW_SECS = 45.0
+STARTUP_GROUP_GREETING_CONFIRM_SECS = 2.0
+STARTUP_GROUP_SOLO_HOLD_SECS = 8.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MEMORY STALENESS

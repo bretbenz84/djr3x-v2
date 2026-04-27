@@ -125,6 +125,27 @@ def _run_migrations() -> None:
                 "evidence_count",
                 "INTEGER DEFAULT 1",
             )
+            for column, definition in (
+                ("status", "TEXT DEFAULT 'planned'"),
+                ("canceled_at", "DATETIME"),
+                ("updated_at", "DATETIME"),
+            ):
+                _ensure_column(
+                    conn,
+                    "person_events",
+                    column,
+                    definition,
+                )
+            conn.execute(
+                """UPDATE person_events
+                   SET status = 'planned'
+                   WHERE status IS NULL OR status = ''"""
+            )
+            conn.execute(
+                """UPDATE person_events
+                   SET updated_at = COALESCE(updated_at, follow_up_at, mentioned_at)
+                   WHERE updated_at IS NULL"""
+            )
             conn.execute(
                 """UPDATE person_facts
                    SET last_confirmed_at = COALESCE(last_confirmed_at, updated_at, created_at)

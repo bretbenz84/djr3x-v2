@@ -143,6 +143,23 @@ def get_all_involving(person_id: int) -> list[dict]:
     return merged
 
 
+def get_between(person_a_id: int, person_b_id: int) -> list[dict]:
+    """Return relationship edges directly connecting two people in either direction."""
+    rows = db.fetchall(
+        """SELECT r.*,
+                  pf.name AS from_name,
+                  pt.name AS to_name
+           FROM person_relationships r
+           JOIN people pf ON pf.id = r.from_person_id
+           JOIN people pt ON pt.id = r.to_person_id
+           WHERE (r.from_person_id = ? AND r.to_person_id = ?)
+              OR (r.from_person_id = ? AND r.to_person_id = ?)
+           ORDER BY r.updated_at DESC""",
+        (int(person_a_id), int(person_b_id), int(person_b_id), int(person_a_id)),
+    )
+    return [dict(r) for r in rows]
+
+
 def delete_for_person(person_id: int) -> None:
     """Remove all relationship edges involving person_id (both directions)."""
     db.execute(

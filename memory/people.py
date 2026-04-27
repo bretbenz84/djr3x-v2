@@ -8,6 +8,7 @@ Metric note:
 """
 
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +42,7 @@ _RELATIONSHIP_TABLE = "person_relationships"
 
 # Tier order used for antagonism cap comparisons.
 _TIER_ORDER = ["stranger", "acquaintance", "friend", "close_friend", "best_friend"]
+_NAME_TOKEN_PAT = re.compile(r"[a-z0-9']+")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -58,6 +60,11 @@ def _to_blob(encoding: np.ndarray) -> bytes:
 
 def _from_blob(blob: bytes) -> np.ndarray:
     return np.frombuffer(blob, dtype=np.float32)
+
+
+def _normalize_name(value: str) -> str:
+    tokens = _NAME_TOKEN_PAT.findall((value or "").lower())
+    return " ".join(t.strip("'") for t in tokens if t.strip("'"))
 
 
 def _compute_tier(familiarity: float, antagonism: float) -> str:
@@ -156,6 +163,64 @@ def enroll_person(name: str) -> Optional[int]:
         """,
         (name, now, now),
     )
+
+
+def find_person_by_name(name: str) -> Optional[dict]:
+    """
+    Return the best existing person row for this spoken/stored name.
+
+    Full names require an exact normalized match. A one-token name reuses an
+    existing person only when exactly one stored person has that first token.
+    This prevents duplicate rows like "Jeff Benziger" while still avoiding wild
+    first-name collisions.
+    """
+    norm = _normalize_name(name)
+    if not norm:
+        return None
+    query_tokens = norm.split()
+    rows = db.fetchall(
+        """
+        SELECT p.*,
+               SUM(CASE WHEN b.type = 'face' THEN 1 ELSE 0 END) AS face_count,
+               SUM(CASE WHEN b.type = 'voice' THEN 1 ELSE 0 END) AS voice_count
+        FROM people p
+        LEFT JOIN biometrics b ON b.person_id = p.id
+        GROUP BY p.id
+        """,
+    )
+    exact: list[dict] = []
+    first_name: list[dict] = []
+    for row in rows:
+        person = dict(row)
+        stored_norm = _normalize_name(person.get("name") or "")
+        if not stored_norm:
+            continue
+        stored_tokens = stored_norm.split()
+        if stored_norm == norm:
+            exact.append(person)
+        elif len(query_tokens) == 1 and stored_tokens and stored_tokens[0] == query_tokens[0]:
+            first_name.append(person)
+
+    def _score(person: dict) -> tuple[int, int, float, int]:
+        face_count = int(person.get("face_count") or 0)
+        voice_count = int(person.get("voice_count") or 0)
+        visit_count = int(person.get("visit_count") or 0)
+        familiarity = float(person.get("familiarity_score") or 0.0)
+        return (face_count + voice_count, visit_count, familiarity, -int(person["id"]))
+
+    if exact:
+        return max(exact, key=_score)
+    if len(first_name) == 1:
+        return first_name[0]
+    return None
+
+
+def find_or_create_person(name: str) -> tuple[Optional[int], bool]:
+    """Return (person_id, created). Reuses an existing row when the name is clear."""
+    existing = find_person_by_name(name)
+    if existing:
+        return int(existing["id"]), False
+    return enroll_person(name), True
 
 
 def add_biometric(person_id: int, type: str, encoding: np.ndarray) -> Optional[int]:

@@ -763,14 +763,14 @@ def _handle_relationship_reply(
         from vision import camera as camera_mod
         from vision import face as face_mod
 
-        new_id = people_memory.enroll_person(name)
+        new_id, created = people_memory.find_or_create_person(name)
         if new_id is None:
             _log.error("[interaction] failed to create DB row for newcomer %r", name)
             consciousness.note_relationship_slot_handled(slot_id)
             return None
 
         first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
-        if first_inc > 0:
+        if created and first_inc > 0:
             people_memory.update_familiarity(new_id, first_inc)
 
         frame = camera_mod.capture_still()
@@ -876,13 +876,13 @@ def _enroll_new_person(
     when a known person is visible alongside the newcomer so we don't rebind
     the known person's face to the new name.
     """
-    person_id = people_memory.enroll_person(name)
+    person_id, created = people_memory.find_or_create_person(name)
     if person_id is None:
         _log.error("failed to enroll new person row for name=%r", name)
         return None
 
     first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
-    if first_inc > 0:
+    if created and first_inc > 0:
         people_memory.update_familiarity(person_id, first_inc)
 
     try:
@@ -1038,15 +1038,15 @@ def _enroll_introduced_person(
     enroll_visible_face: bool = True,
 ) -> Optional[int]:
     try:
-        new_id = people_memory.enroll_person(name)
+        new_id, created = people_memory.find_or_create_person(name)
     except Exception as exc:
-        _log.warning("introduction enroll_person failed: %s", exc)
+        _log.warning("introduction find_or_create_person failed: %s", exc)
         return None
     if new_id is None:
         return None
 
     first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
-    if first_inc > 0:
+    if created and first_inc > 0:
         people_memory.update_familiarity(new_id, first_inc)
 
     if enroll_visible_face:
@@ -2261,7 +2261,23 @@ def _post_response(
     # ── Follow-up delivery (sync — spoken as part of this turn) ───────────────
     global _awaiting_followup_event
 
-    if person_id is not None:
+    suppress_stale_followup = False
+    try:
+        suppress_stale_followup = events_memory.looks_like_cancellation(user_text)
+    except Exception:
+        suppress_stale_followup = False
+    try:
+        visible_known_count = sum(
+            1
+            for p in (world_state.get("people") or [])
+            if p.get("person_db_id") is not None
+        )
+        if visible_known_count > 1:
+            suppress_stale_followup = True
+    except Exception:
+        pass
+
+    if person_id is not None and not suppress_stale_followup:
         try:
             followups = consciousness.get_pending_followup(person_id)
             if followups:
@@ -2294,6 +2310,7 @@ def _post_response(
                                 _awaiting_followup_event = {
                                     "person_id": person_id,
                                     "event_id": int(event_id),
+                                    "event_name": event_name,
                                 }
                         else:
                             consciousness.set_pending_followup(person_id, event)
@@ -2823,6 +2840,143 @@ def _handle_emotional_checkin_boundary(
     except Exception as exc:
         _log.debug("emotional check-in boundary handler failed: %s", exc)
         return None
+
+
+_MEMORY_HINT_PAT = re.compile(
+    r"\b(remember|told me|you said|plan|planned|schedule|trip|congrats|"
+    r"how'?s|how is|how did|did .* go|survive|ready for)\b",
+    re.IGNORECASE,
+)
+_CANCEL_CONTEXT_STOPWORDS = {
+    "any", "anymore", "going", "gonna", "not", "now", "more", "the", "this",
+    "that", "there", "where", "what", "when", "with", "you", "your", "i'm",
+    "im",
+}
+
+
+def _recent_rex_memory_hint() -> str:
+    """Return the last Rex line when it looks like a memory callback."""
+    try:
+        transcript = conv_memory.get_session_transcript()
+    except Exception:
+        return ""
+    for turn in reversed(transcript[-8:]):
+        if (turn.get("speaker") or "").lower() != "rex":
+            continue
+        text = (turn.get("text") or "").strip()
+        if text and _MEMORY_HINT_PAT.search(text):
+            return text
+        return ""
+    try:
+        text = consciousness.get_last_rex_utterance()
+    except Exception:
+        text = ""
+    if text and _MEMORY_HINT_PAT.search(text):
+        return text
+    return ""
+
+
+def _has_specific_memory_token(text: str) -> bool:
+    tokens = [
+        t.lower().strip("'")
+        for t in re.findall(r"[A-Za-z0-9']+", text or "")
+    ]
+    return any(len(t) >= 3 and t not in _CANCEL_CONTEXT_STOPWORDS for t in tokens)
+
+
+def _cancel_stale_event_memory(
+    person_id: Optional[int],
+    text: str,
+    *,
+    event_hint: Optional[dict] = None,
+) -> list[str]:
+    """
+    Apply corrections like "I'm not going anymore" to planned/social memories.
+
+    Returns short labels for canceled or muted memories. Empty means the text
+    did not look like a cancellation or nothing matched safely.
+    """
+    if person_id is None or not events_memory.looks_like_cancellation(text):
+        return []
+
+    labels: list[str] = []
+    event_hint_name = ""
+    effective_event_hint = event_hint
+    if event_hint:
+        event_hint_name = (event_hint.get("event_name") or "").strip()
+    elif not _has_specific_memory_token(text):  # generic "I'm not going anymore"
+        event_hint_name = _recent_rex_memory_hint()
+        if event_hint_name:
+            effective_event_hint = {"event_name": event_hint_name}
+
+    try:
+        canceled = events_memory.cancel_matching_events(
+            int(person_id),
+            text,
+            event_hint=effective_event_hint,
+        )
+    except Exception as exc:
+        _log.debug("event cancellation matching failed: %s", exc)
+        canceled = []
+
+    if canceled:
+        try:
+            ids = {int(ev["id"]) for ev in canceled if ev.get("id") is not None}
+            consciousness.drop_pending_followups(int(person_id), ids)
+        except Exception as exc:
+            _log.debug("drop canceled pending followups failed: %s", exc)
+        for ev in canceled:
+            name = (ev.get("event_name") or "").strip()
+            if name:
+                labels.append(name)
+
+    try:
+        muted = emotional_events.mute_matching_positive_events(
+            int(person_id),
+            text,
+            reason=text,
+            event_hint=event_hint_name,
+        )
+    except Exception as exc:
+        _log.debug("positive emotional event mute failed: %s", exc)
+        muted = []
+    for ev in muted:
+        desc = (ev.get("description") or "").strip()
+        if desc:
+            labels.append(desc)
+
+    # Keep order but remove duplicates.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for label in labels:
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(label)
+    if unique:
+        _log.info(
+            "[memory] canceled/staled event memory for person_id=%s: %s",
+            person_id,
+            "; ".join(unique),
+        )
+    return unique
+
+
+def _event_cancellation_ack(labels: list[str], person_id: Optional[int]) -> str:
+    label = labels[0] if labels else "that plan"
+    prompt = (
+        f"The person just corrected a stale plan/memory: '{label}' is no longer "
+        f"happening. In ONE short in-character Rex line, acknowledge the update "
+        f"and say you won't keep treating it like an upcoming or completed plan. "
+        f"No question."
+    )
+    try:
+        resp = llm.get_response(prompt, person_id)
+    except Exception as exc:
+        _log.debug("event cancellation ack generation failed: %s", exc)
+        resp = ""
+    return (resp or f"Got it - {label} is scrubbed from the flight plan.").strip()
 
 
 def _handle_conversation_boundary(
@@ -3509,6 +3663,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
     answered_question: Optional[dict] = None
     assistant_asked_question = False
     game_after_audio_path: Optional[str] = None
+    event_cancellation_ack: Optional[str] = None
 
     # Randomised pre-response pause — prevents Rex from feeling instant/robotic
     delay_ms = random.randint(config.REACTION_DELAY_MS_MIN, config.REACTION_DELAY_MS_MAX)
@@ -3608,11 +3763,13 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         # Consciousness runs face ID independently; if speaker ID missed or is absent,
         # fall back to whoever consciousness already identified in world_state.people.
         # Only use this when exactly one identified person is visible (unambiguous).
+        ws_identified = []
         try:
             ws_people = world_state.get("people")
             ws_identified = [p for p in ws_people if p.get("person_db_id") is not None]
             ws_person = ws_identified[0] if len(ws_identified) == 1 else None
         except Exception:
+            ws_identified = []
             ws_person = None
 
         # Detect "off-camera unknown voice": speaker-ID found no match AND nobody
@@ -3626,6 +3783,53 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             recent_engagement = consciousness.get_recent_engagement()
         except Exception:
             recent_engagement = None
+
+        visible_known_by_id = {}
+        try:
+            visible_known_by_id = {
+                int(p["person_db_id"]): p
+                for p in ws_identified
+                if p.get("person_db_id") is not None
+            }
+        except Exception:
+            visible_known_by_id = {}
+
+        # Multi-person scenes need a gentler fallback than "unseen stranger."
+        # If the top voice candidate is one of the visible known faces, accept
+        # it at a weaker floor. If not, keep conversational continuity with the
+        # recently engaged visible person instead of derailing into "who said
+        # that?" when two known faces are already in frame.
+        if person_id is None and len(visible_known_by_id) >= 2:
+            multi_floor = float(getattr(config, "SPEAKER_ID_MULTI_VISIBLE_FLOOR", 0.50))
+            recent_floor = float(getattr(config, "SPEAKER_ID_MULTI_VISIBLE_RECENT_FLOOR", 0.45))
+            if raw_best_id in visible_known_by_id and speaker_score >= multi_floor:
+                vis = visible_known_by_id[int(raw_best_id)]
+                person_id = int(raw_best_id)
+                person_name = raw_best_name or vis.get("face_id") or vis.get("voice_id")
+                _log.info(
+                    "[interaction] person resolution: multi-visible voice+face attribution — "
+                    "person_id=%s name=%r voice_score=%.3f (floor=%.2f)",
+                    person_id, person_name, speaker_score, multi_floor,
+                )
+            else:
+                recent_id = (recent_engagement or {}).get("person_id")
+                if (
+                    recent_id in visible_known_by_id
+                    and not _has_unknown_visible_person()
+                    and speaker_score >= recent_floor
+                ):
+                    vis = visible_known_by_id[int(recent_id)]
+                    person_id = int(recent_id)
+                    person_name = (
+                        (recent_engagement or {}).get("name")
+                        or vis.get("face_id")
+                        or vis.get("voice_id")
+                    )
+                    _log.info(
+                        "[interaction] person resolution: multi-visible recent speaker fallback — "
+                        "person_id=%s name=%r voice_score=%.3f (floor=%.2f, raw_best=%s)",
+                        person_id, person_name, speaker_score, recent_floor, raw_best_id,
+                    )
 
         if ws_person is not None:
             ws_pid = ws_person.get("person_db_id")
@@ -3730,12 +3934,17 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             # Neither face-ID nor speaker-ID matched anyone. If a known person
             # was engaged recently but isn't visible right now, and no unknown
             # face is visible either, this is still an off-camera unknown voice.
-            if recent_engagement and not _has_unknown_visible_person():
+            if recent_engagement and not _has_unknown_visible_person() and len(ws_identified) < 2:
                 off_camera_unknown = True
                 _log.info(
                     "[interaction] person resolution: no face, no voice match, "
                     "but %r was engaged recently — off-camera unknown voice",
                     recent_engagement.get("name"),
+                )
+            elif recent_engagement and len(ws_identified) >= 2:
+                _log.info(
+                    "[interaction] person resolution: ambiguous low-score voice "
+                    "while multiple known faces visible — not treating as off-camera unknown"
                 )
             # Else: falls through to normal enrollment logic below
 
@@ -4005,13 +4214,13 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 if intro_name:
                     new_pid = None
                     try:
-                        new_pid = people_memory.enroll_person(intro_name)
+                        new_pid, created = people_memory.find_or_create_person(intro_name)
                         if new_pid is not None:
                             # Enroll the VOICE from the off-camera audio we stored
                             # when Rex asked — not the engaged person's audio.
                             speaker_id.enroll_voice(new_pid, pending["audio"])
                             first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
-                            if first_inc > 0:
+                            if created and first_inc > 0:
                                 people_memory.update_familiarity(new_pid, first_inc)
 
                             if _has_unknown_visible_person():
@@ -4221,15 +4430,15 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
 
                     new_id: Optional[int] = None
                     try:
-                        new_id = people_memory.enroll_person(parsed_name)
+                        new_id, created = people_memory.find_or_create_person(parsed_name)
                     except Exception as exc:
-                        _log.warning("describe-newcomer enroll_person failed: %s", exc)
+                        _log.warning("describe-newcomer find_or_create_person failed: %s", exc)
 
                     if new_id is not None:
                         first_inc = config.FAMILIARITY_INCREMENTS.get(
                             "first_enrollment", 0.0
                         )
-                        if first_inc > 0:
+                        if created and first_inc > 0:
                             people_memory.update_familiarity(new_id, first_inc)
                         try:
                             from vision import camera as _cam_mod
@@ -4304,6 +4513,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         if _awaiting_followup_event:
             pending_pid = _awaiting_followup_event.get("person_id")
             pending_event_id = _awaiting_followup_event.get("event_id")
+            pending_event_name = _awaiting_followup_event.get("event_name")
             pid_matches = (
                 pending_pid is None
                 or person_id is None
@@ -4311,7 +4521,24 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             )
             if pending_event_id is not None and pid_matches:
                 try:
-                    events_memory.mark_followed_up(int(pending_event_id), text.strip())
+                    if events_memory.looks_like_cancellation(text):
+                        target_pid = person_id if person_id is not None else pending_pid
+                        event_hint = {
+                            "id": int(pending_event_id),
+                            "event_name": pending_event_name or "",
+                        }
+                        labels = _cancel_stale_event_memory(
+                            target_pid,
+                            text,
+                            event_hint=event_hint,
+                        )
+                        if labels:
+                            event_cancellation_ack = _event_cancellation_ack(
+                                labels,
+                                target_pid,
+                            )
+                    else:
+                        events_memory.mark_followed_up(int(pending_event_id), text.strip())
                     _awaiting_followup_event = None
                 except Exception as exc:
                     _log.debug("follow-up outcome write failed: %s", exc)
@@ -4753,6 +4980,16 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         used_agenda_llm = False
         used_classified_intent = False
         routing_text = text
+
+        if response_text is None:
+            if event_cancellation_ack is None:
+                labels = _cancel_stale_event_memory(person_id, text)
+                if labels:
+                    event_cancellation_ack = _event_cancellation_ack(labels, person_id)
+            if event_cancellation_ack:
+                _speak_blocking(event_cancellation_ack, emotion="neutral")
+                response_text = event_cancellation_ack
+                used_agenda_llm = True
 
         repair_move = repair_moves.detect(text)
         if (
