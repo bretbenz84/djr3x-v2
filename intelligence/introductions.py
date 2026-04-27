@@ -20,7 +20,7 @@ INTRO_FOLLOWUP_TTL_SECS = 90.0
 _REL_WORDS = (
     "friend|best friend|father|dad|mother|mom|parent|coworker|co-worker|"
     "colleague|boss|supervisor|manager|aunt|uncle|partner|girlfriend|"
-    "boyfriend|wife|husband|spouse|sister|brother|sibling|cousin|"
+    "boyfriend|fiancee|fiance|wife|husband|spouse|sister|brother|sibling|cousin|"
     "roommate|neighbor|neighbour|dog|cat|pet"
 )
 _INTRO_PAT = re.compile(
@@ -46,6 +46,7 @@ _REL_NORMALIZE = {
     "colleague": "coworker",
     "dad": "father",
     "mom": "mother",
+    "fiancee": "fiance",
     "manager": "supervisor",
     "neighbour": "neighbor",
 }
@@ -130,10 +131,10 @@ def _parse_intro_text(text: str) -> IntroductionParse:
     name = None
 
     patterns = [
-        rf"\b(?:this is|that'?s|that is|meet|say hi to)\s+(?:my|our)\s+(?P<rel>{_REL_WORDS})(?:\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}}))?",
-        rf"\b(?:i'?d like (?:you )?to meet|i would like (?:you )?to meet|introduce you to|let me introduce(?: you to)?)\s+(?:my|our)\s+(?P<rel>{_REL_WORDS})(?:\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}}))?",
+        rf"\b(?:this is|that'?s|that is|meet|say hi to)\s+(?:my|our)\s+(?P<rel>{_REL_WORDS})(?:[\s,]+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}}))?",
+        rf"\b(?:i'?d like (?:you )?to meet|i would like (?:you )?to meet|introduce you to|let me introduce(?: you to)?)\s+(?:my|our)\s+(?P<rel>{_REL_WORDS})(?:[\s,]+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}}))?",
         rf"\b(?:this is|meet)\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}}),?\s+(?:my|our)\s+(?P<rel>{_REL_WORDS})\b",
-        rf"\b(?:my|our)\s+(?P<rel>{_REL_WORDS})\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}})\b",
+        rf"\b(?:my|our)\s+(?P<rel>{_REL_WORDS})[\s,]+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}})\b",
         rf"\b(?:i'?d like to introduce you to|i would like to introduce you to|(?:i'?m|i am) going to introduce you to|introduce you to|let me introduce you to)\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}})\b",
         rf"\b(?:his|her|their)\s+name\s+is\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}})\b",
         rf"\b(?:it'?s|it is|that'?s|that is)\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}})\b",

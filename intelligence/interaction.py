@@ -634,7 +634,7 @@ def _handle_relationship_reply(
     user_text: str,
     speaker_person_id: Optional[int],
     speaker_person_name: Optional[str],
-) -> None:
+) -> Optional[str]:
     """
     Process a reply to one of two relationship-flow questions:
 
@@ -653,6 +653,8 @@ def _handle_relationship_reply(
     In either mode, if the speaker is plausibly correct and the parse produces
     a relationship label, an edge is stored and the slot is marked handled.
     """
+    global _pending_introduction
+
     engaged_id = rel_ctx.get("engaged_person_id")
     engaged_name = rel_ctx.get("engaged_name") or "friend"
     newcomer_pid_pre = rel_ctx.get("newcomer_person_id")  # Mode B only
@@ -673,7 +675,7 @@ def _handle_relationship_reply(
             "person_id=%s (mode_%s) — ignoring",
             speaker_person_id, expected_speaker, "B" if mode_b else "A",
         )
-        return
+        return None
 
     # Extract. In both modes the LLM call returns {name, relationship}; in mode
     # B we ignore the name because we already know the speaker.
@@ -697,7 +699,7 @@ def _handle_relationship_reply(
                 user_text, parsed,
             )
             consciousness.note_relationship_slot_handled(slot_id)
-            return
+            return None
         try:
             from memory import social as social_memory
             # Speaker (newcomer) is describing their relationship to the engaged
@@ -715,21 +717,48 @@ def _handle_relationship_reply(
         except Exception as exc:
             _log.warning("social.save_relationship failed (mode B): %s", exc)
         consciousness.note_relationship_slot_handled(slot_id)
-        return
+        return None
 
     # ── Mode A: enroll newcomer + save edge ────────────────────────────────────
     if not name:
+        if relationship:
+            introducer_for_pending = engaged_id or speaker_person_id
+            if introducer_for_pending is None:
+                consciousness.note_relationship_slot_handled(slot_id)
+                return None
+            _pending_introduction = {
+                "introducer_id": introducer_for_pending,
+                "introducer_name": engaged_name,
+                "relationship": relationship,
+                "visible_newcomer": True,
+                "created_at": time.monotonic(),
+                "asked_at": time.monotonic(),
+            }
+            consciousness.note_relationship_slot_handled(slot_id)
+            try:
+                first = (engaged_name or "friend").split()[0]
+                return llm.get_response(
+                    f"{first} said the visible newcomer is their {relationship}, "
+                    f"but did not give the person's name yet. In ONE short "
+                    f"in-character Rex line, ask {first} ONLY for the newcomer's "
+                    f"name. Do NOT ask how they are related. Do NOT imply the "
+                    f"newcomer is related to Rex."
+                )
+            except Exception:
+                return f"Got the {relationship} part. What name am I filing for them?"
+
         # Deflection or no name given. Don't badger — mark slot handled so Rex
-        # moves on. Relationship could still be saved if name later surfaces.
+        # moves on.
         _log.info(
             "[interaction] mode-A relationship reply had no name — user_text=%r parsed=%r",
             user_text, parsed,
         )
         consciousness.note_relationship_slot_handled(slot_id)
-        return
+        return None
 
     # Enroll the newcomer. Use enroll_unknown_face so we don't rebind the
     # engaged person's face to the new name.
+    new_id = None
     try:
         from vision import camera as camera_mod
         from vision import face as face_mod
@@ -738,7 +767,7 @@ def _handle_relationship_reply(
         if new_id is None:
             _log.error("[interaction] failed to create DB row for newcomer %r", name)
             consciousness.note_relationship_slot_handled(slot_id)
-            return
+            return None
 
         first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
         if first_inc > 0:
@@ -754,25 +783,34 @@ def _handle_relationship_reply(
                 name=f"appearance-enroll-{new_id}",
             ).start()
 
-        # Save the edge (engaged speaker → newcomer, per speaker's perspective).
-        if engaged_id and relationship:
-            try:
-                from memory import social as social_memory
-                social_memory.save_relationship(
-                    from_person_id=engaged_id,
-                    to_person_id=new_id,
-                    relationship=relationship,
-                    described_by=engaged_id,
-                )
-            except Exception as exc:
-                _log.warning("social.save_relationship failed: %s", exc)
+        _bind_world_state_identity(new_id, name)
+        if engaged_id:
+            _store_introduction_memories(
+                int(engaged_id),
+                engaged_name,
+                new_id,
+                name,
+                relationship,
+            )
 
         _log.info(
             "[interaction] mode-A enrolled newcomer %s (person_id=%s) as %s of %s",
             name, new_id, relationship or "acquaintance", engaged_name,
         )
+        introducer_for_ack = engaged_id or speaker_person_id
+        if introducer_for_ack is None:
+            return f"{name.split()[0]}, welcome. Identity filed under 'better than mystery organic.'"
+        return _intro_ack_and_followup(
+            int(introducer_for_ack),
+            engaged_name,
+            new_id,
+            name,
+            relationship,
+            visible_newcomer=True,
+        )
     except Exception as exc:
         _log.error("relationship enrollment failed: %s", exc)
+        return None
     finally:
         consciousness.note_relationship_slot_handled(slot_id)
 
@@ -895,8 +933,19 @@ _INTRO_INVERSE_RELATIONSHIP = {
 _INTRO_SYMMETRIC_RELATIONSHIPS = {
     "friend", "best_friend", "partner", "girlfriend", "boyfriend", "wife",
     "husband", "spouse", "sister", "brother", "sibling", "cousin",
-    "coworker", "colleague", "roommate", "neighbor",
+    "coworker", "colleague", "roommate", "neighbor", "fiance", "fiancee",
 }
+_INTRO_SELF_EXPLANATORY_RELATIONSHIPS = {
+    "father", "mother", "parent", "dad", "mom", "son", "daughter", "child",
+    "aunt", "uncle", "grandfather", "grandmother", "grandparent",
+    "brother", "sister", "sibling", "wife", "husband", "spouse",
+    "partner", "girlfriend", "boyfriend", "fiance", "fiancee",
+}
+
+
+def _intro_relationship_self_explanatory(relationship: Optional[str]) -> bool:
+    rel = (relationship or "").strip().lower().replace(" ", "_")
+    return rel in _INTRO_SELF_EXPLANATORY_RELATIONSHIPS
 
 
 def _intro_inverse_relationship(relationship: Optional[str]) -> str:
@@ -1033,8 +1082,20 @@ def _intro_ack_and_followup(
     introducer_first = (introducer_name or "there").split()[0]
     introduced_first = (introduced_name or "there").split()[0]
     rel_clause = f"{relationship}" if relationship else "guest"
+    self_explanatory_relationship = _intro_relationship_self_explanatory(relationship)
 
-    if visible_newcomer:
+    if visible_newcomer and self_explanatory_relationship:
+        prompt = (
+            f"{introducer_first} just explicitly introduced {introduced_first} "
+            f"as {introducer_first}'s {rel_clause}. This already explains their "
+            f"relationship. In ONE short in-character Rex line, acknowledge "
+            f"{introduced_first} by name with a funny but friendly quip about "
+            f"their connection to {introducer_first}. Address {introduced_first}, "
+            f"not {introducer_first}. Do NOT ask how they know each other. Do NOT "
+            f"ask a follow-up question. Do NOT imply {introduced_first} is related "
+            f"to Rex."
+        )
+    elif visible_newcomer:
         prompt = (
             f"{introducer_first} just explicitly introduced {introduced_first} "
             f"as their {rel_clause}. This is a social introduction with at least "
@@ -1060,7 +1121,13 @@ def _intro_ack_and_followup(
         _log.debug("intro ack generation failed: %s", exc)
         text = ""
     if not text:
-        text = f"{introduced_first}, welcome to the frequency. How did you end up in {introducer_first}'s orbit?"
+        if self_explanatory_relationship:
+            text = (
+                f"{introduced_first}, welcome. So you're {introducer_first}'s "
+                f"{rel_clause}; suddenly several mysteries have useful context."
+            )
+        else:
+            text = f"{introduced_first}, welcome to the frequency. How did you end up in {introducer_first}'s orbit?"
     if not visible_newcomer and not text.lower().startswith("nice to meet you"):
         text = (
             f"Nice to meet you, {introduced_first}. Give me a quick hello so "
@@ -1076,10 +1143,10 @@ def _intro_ack_and_followup(
             "relationship": relationship,
             "asked_at": time.monotonic(),
         }
-        if visible_newcomer:
-            _pending_intro_followup = pending
-        else:
+        if not visible_newcomer:
             _pending_intro_voice_capture = dict(pending)
+        elif not self_explanatory_relationship:
+            _pending_intro_followup = pending
     return text
 
 
@@ -1149,12 +1216,15 @@ def _handle_intro_voice_capture(
     introduced_name = ctx.get("introduced_name") or "the newcomer"
     introducer_id = ctx.get("introducer_id")
     introducer_name = ctx.get("introducer_name") or "the introducer"
+    relationship = ctx.get("relationship")
+    self_explanatory_relationship = _intro_relationship_self_explanatory(relationship)
 
     if person_id == introduced_id:
         _pending_intro_voice_capture = None
-        followup = dict(ctx)
-        followup["asked_at"] = time.monotonic()
-        _pending_intro_followup = followup
+        if not self_explanatory_relationship:
+            followup = dict(ctx)
+            followup["asked_at"] = time.monotonic()
+            _pending_intro_followup = followup
         return None
 
     hard_threshold = float(config.SPEAKER_ID_SIMILARITY_THRESHOLD)
@@ -1182,9 +1252,10 @@ def _handle_intro_voice_capture(
         )
 
     _pending_intro_voice_capture = None
-    followup = dict(ctx)
-    followup["asked_at"] = time.monotonic()
-    _pending_intro_followup = followup
+    if not self_explanatory_relationship:
+        followup = dict(ctx)
+        followup["asked_at"] = time.monotonic()
+        _pending_intro_followup = followup
     _bind_intro_visible_face_if_present(introduced_id, introduced_name)
     _log.info(
         "[introduction] enrolled voice for introduced person %r (person_id=%s)",
@@ -1222,6 +1293,15 @@ def _handle_intro_voice_capture(
     intro_first = (introducer_name or "there").split()[0]
     introduced_first = (introduced_name or "there").split()[0]
     try:
+        if self_explanatory_relationship:
+            return llm.get_response(
+                f"{introduced_first} just responded after {intro_first} introduced "
+                f"them as {intro_first}'s {relationship}. You successfully stored "
+                f"{introduced_first}'s voice print. In ONE short in-character Rex "
+                f"line, acknowledge {introduced_first} by name with a friendly quip. "
+                f"Do NOT ask how they know each other. Do NOT ask a follow-up "
+                f"question. Do NOT imply they are related to Rex."
+            )
         return llm.get_response(
             f"{introduced_first} just responded after {intro_first} introduced them, "
             f"and you successfully stored {introduced_first}'s voice print. In ONE "
@@ -1231,6 +1311,8 @@ def _handle_intro_voice_capture(
         )
     except Exception as exc:
         _log.debug("intro voice capture ack generation failed: %s", exc)
+    if self_explanatory_relationship:
+        return f"Got it, {introduced_first}. Voice filed, family tree branch labeled."
     return f"Got it, {introduced_first}. Voice filed. So how did you and {intro_first} get tangled up?"
 
 
@@ -1327,6 +1409,14 @@ def _handle_introduction_parse(
         }
         rel_hint = f" your {parsed.relationship}" if parsed.relationship else ""
         try:
+            if parsed.relationship:
+                return llm.get_response(
+                    f"{introducer_name} said this visible newcomer is{rel_hint}, "
+                    f"but did not give the person's name yet. In ONE short "
+                    f"in-character Rex line, ask {introducer_name} ONLY for the "
+                    f"newcomer's name. Do NOT ask how they are related. Do NOT "
+                    f"imply the newcomer is related to Rex."
+                )
             return llm.get_response(
                 f"{introducer_name} said they want to introduce you to{rel_hint} "
                 f"someone, and an unknown face is visible, but you do not have "
@@ -1335,6 +1425,8 @@ def _handle_introduction_parse(
                 f"Make it feel like a real introduction, not a form."
             )
         except Exception:
+            if parsed.relationship:
+                return f"Got the {parsed.relationship} part. What name am I filing for them?"
             return "Fine, I see the mystery organic. What name and relationship am I filing under?"
 
     new_id = _enroll_introduced_person(
@@ -3598,13 +3690,70 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS,
             )
 
+        relationship_prompt_consumed = False
+
+        # If the engaged person answers the unknown-face prompt with an actual
+        # introduction ("this is my dad, Jeff"), let the dedicated introduction
+        # flow consume it before the generic relationship extractor. That path
+        # gives a welcome line, binds the visible face, and avoids asking the
+        # already-answered "how do you know them?" question again.
+        if person_id is not None:
+            has_unknown_for_intro = _has_unknown_visible_person()
+            parsed_intro = introductions.detect(
+                text,
+                has_unknown_face=has_unknown_for_intro,
+            )
+            if parsed_intro.is_introduction and (
+                parsed_intro.subject_kind == "pet"
+                or has_unknown_for_intro
+                or bool(parsed_intro.name)
+            ):
+                intro_response = _handle_introduction_parse(
+                    parsed_intro,
+                    introducer_id=person_id,
+                    introducer_name=person_name or f"person_{person_id}",
+                    visible_newcomer=has_unknown_for_intro,
+                )
+                rel_ctx_for_intro = consciousness.consume_relationship_prompt_request()
+                if rel_ctx_for_intro is not None:
+                    relationship_prompt_consumed = True
+                    consciousness.note_relationship_slot_handled(
+                        str(rel_ctx_for_intro.get("slot_id") or "")
+                    )
+                if intro_response:
+                    _speak_blocking(
+                        intro_response,
+                        emotion="happy",
+                        pre_beat_ms=150,
+                        post_beat_ms_override=300,
+                    )
+                    conv_memory.add_to_transcript("Rex", intro_response)
+                    conv_log.log_rex(intro_response)
+                    _session_exchange_count += 1
+                    _register_rex_utterance(intro_response)
+                    return
+
         # Consciousness asked the ENGAGED person about an unknown newcomer.
         # Try to extract {name, relationship}, enroll the newcomer using the
         # current unknown face, and save the relationship edge.
         rel_ctx = consciousness.consume_relationship_prompt_request()
-        relationship_prompt_consumed = rel_ctx is not None
+        relationship_prompt_consumed = relationship_prompt_consumed or rel_ctx is not None
         if rel_ctx is not None:
-            _handle_relationship_reply(rel_ctx, text, person_id, person_name)
+            relationship_response = _handle_relationship_reply(
+                rel_ctx, text, person_id, person_name
+            )
+            if relationship_response:
+                _speak_blocking(
+                    relationship_response,
+                    emotion="happy",
+                    pre_beat_ms=150,
+                    post_beat_ms_override=300,
+                )
+                conv_memory.add_to_transcript("Rex", relationship_response)
+                conv_log.log_rex(relationship_response)
+                _session_exchange_count += 1
+                _register_rex_utterance(relationship_response)
+                return
 
         intro_voice_response = _handle_intro_voice_capture(
             text,

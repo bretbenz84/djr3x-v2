@@ -350,6 +350,17 @@ def consume_relationship_prompt_request() -> Optional[dict]:
     return None
 
 
+def get_pending_relationship_context() -> Optional[dict]:
+    """
+    Return a copy of the current relationship-prompt context without consuming it.
+    Used by boundary/topic logic that only needs to know what kind of prompt is
+    active.
+    """
+    if _pending_relationship_prompt.is_set() and _pending_relationship_context:
+        return dict(_pending_relationship_context)
+    return None
+
+
 def note_relationship_slot_handled(slot_id: str) -> None:
     """Called by interaction after it resolves (or gives up on) a slot so
     consciousness won't re-ask about the same unknown face in this session."""
@@ -2482,6 +2493,8 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
             continue
 
         _last_departure_reaction_at[key] = now
+        _last_presence_reaction_at[key] = now
+        _first_missing_at.pop(key, None)
         del _pending_departure_keys[key]
 
         is_known = isinstance(key, int) and person_name
