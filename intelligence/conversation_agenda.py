@@ -475,7 +475,9 @@ def build_turn_directive(
         else:
             lines.append(
                 "Primary purpose: respond to the human's latest thought. Use known "
-                "facts and the environment if relevant, but do not force a question."
+                "facts and the environment if relevant. You may ask one tightly "
+                "related follow-up question if it naturally continues this exact "
+                "thread; do not pivot into a new interview topic."
             )
     else:
         lines.append(

@@ -265,7 +265,13 @@ class _SpeechQueue:
                     pass
                 for _cb in _on_item_done_callbacks:
                     try:
-                        _cb()
+                        _cb(item)
+                    except TypeError:
+                        # Older callbacks accepted no item context.
+                        try:
+                            _cb()
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                 with self._lock:

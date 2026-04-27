@@ -18,6 +18,7 @@ import random
 import re
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
@@ -66,6 +67,13 @@ _log = logging.getLogger(__name__)
 _CHUNK_SECS = 0.032
 
 
+@dataclass(frozen=True)
+class _PostTtsHandoffPolicy:
+    asked_question: bool
+    listen_delay_secs: float
+    flush_buffer: bool
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Module-level state
 # ─────────────────────────────────────────────────────────────────────────────
@@ -97,8 +105,9 @@ _last_filler: Optional[str] = None
 # immediately triggering a new speech segment.
 _listen_resume_at: float = 0.0
 
-# When True, the main loop flushes the buffer once after the post-TTS delay
-# expires to drop any room-decay audio accumulated during the silent wait.
+# When True, a post-TTS cleanup flush already happened and the next detected
+# speech onset should simply clear this marker. Question handoffs usually leave
+# this False so a fast human answer is not deleted.
 _post_tts_flush_needed: bool = False
 
 # Time window (set by consciousness) where a short bare-name reply is accepted.
@@ -428,29 +437,59 @@ def _speak_blocking(
             done.wait(timeout=0.5)
             return False
 
-    # Normal completion — block new speech-onset detections briefly and discard
-    # any mic audio that captured Rex's voice tail during playback. If Rex just
-    # asked a direct question, use a much shorter handoff so immediate answers
-    # do not lose their first syllables.
-    global _listen_resume_at, _post_tts_flush_needed
-    delay_secs = config.POST_SPEECH_LISTEN_DELAY_SECS
+    # Normal completion — arm the post-TTS handoff. Questions get a shorter
+    # listen delay and preserve the rolling mic buffer so fast answers are not
+    # deleted by a cleanup flush.
+    _apply_post_tts_handoff(text, source="blocking")
+    return True
+
+
+def _post_tts_handoff_policy(text: Optional[str]) -> _PostTtsHandoffPolicy:
+    asked_question = _assistant_asked_question(text or "")
+    delay_secs = float(getattr(config, "POST_SPEECH_LISTEN_DELAY_SECS", 0.35))
+    flush_buffer = True
     if asked_question:
         delay_secs = float(
             getattr(config, "POST_QUESTION_LISTEN_DELAY_SECS", delay_secs)
         )
-    _listen_resume_at = time.monotonic() + delay_secs
-    stream.flush()
-    _post_tts_flush_needed = True
-    return True
+        flush_buffer = bool(
+            getattr(config, "POST_QUESTION_FLUSH_AUDIO_BUFFER", False)
+        )
+    return _PostTtsHandoffPolicy(
+        asked_question=asked_question,
+        listen_delay_secs=max(0.0, delay_secs),
+        flush_buffer=flush_buffer,
+    )
 
 
-def _arm_post_tts_window() -> None:
+def _apply_post_tts_handoff(
+    text: Optional[str],
+    *,
+    source: str = "speech_queue",
+) -> _PostTtsHandoffPolicy:
+    global _listen_resume_at, _post_tts_flush_needed
+    policy = _post_tts_handoff_policy(text)
+    _listen_resume_at = time.monotonic() + policy.listen_delay_secs
+    if policy.flush_buffer:
+        stream.flush()
+        _post_tts_flush_needed = True
+    else:
+        _post_tts_flush_needed = False
+    _log.debug(
+        "[aec] post-tts handoff source=%s asked_question=%s delay=%.3fs flush=%s",
+        source,
+        policy.asked_question,
+        policy.listen_delay_secs,
+        policy.flush_buffer,
+    )
+    return policy
+
+
+def _arm_post_tts_window(item=None) -> None:
     """Arm the post-TTS deaf window. Registered with speech_queue so it fires
     after every queue item — not just items played via _speak_blocking."""
-    global _listen_resume_at, _post_tts_flush_needed
-    _listen_resume_at = time.monotonic() + config.POST_SPEECH_LISTEN_DELAY_SECS
-    stream.flush()
-    _post_tts_flush_needed = True
+    text = getattr(item, "text", None)
+    _apply_post_tts_handoff(text, source="speech_queue")
 
 
 def _speak_async(text: str, emotion: str = "neutral") -> None:
@@ -6154,9 +6193,8 @@ def _loop() -> None:
                 continue
 
             # First detected speech after the post-TTS window may be the human's
-            # immediate answer to Rex's question. The queue callback already
-            # flushed playback tail when TTS ended, so do not discard this VAD
-            # positive chunk.
+            # immediate answer to Rex's question. If cleanup already happened,
+            # just clear the marker; do not discard this VAD-positive chunk.
             global _post_tts_flush_needed
             if _post_tts_flush_needed:
                 _post_tts_flush_needed = False
@@ -6219,8 +6257,8 @@ def _loop() -> None:
             continue
 
         # First detected speech after the post-TTS window may be the human's
-        # immediate answer. Playback tail was already flushed by the TTS-done
-        # callback, so keep this chunk and start accumulating.
+        # immediate answer. If cleanup already happened, just clear the marker;
+        # keep this chunk and start accumulating.
         if _post_tts_flush_needed:
             _post_tts_flush_needed = False
 

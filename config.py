@@ -583,6 +583,11 @@ POST_PLAYBACK_SUPPRESSION_SECS = 0.5
 # are not swallowed by the general-purpose echo tail.
 POST_QUESTION_PLAYBACK_SUPPRESSION_SECS = 0.05
 
+# After Rex asks a direct question, preserve the rolling mic buffer at handoff.
+# Flushing here can delete the first syllables of a fast human answer that began
+# while Rex was finishing the question. Non-question speech still flushes.
+POST_QUESTION_FLUSH_AUDIO_BUFFER = False
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AUDITORY SCENE ANALYSIS
 # ─────────────────────────────────────────────────────────────────────────────
