@@ -322,6 +322,8 @@ def _action_router_context(
 def _router_decision_executable(decision: Optional[action_router.ActionDecision]) -> bool:
     if decision is None:
         return False
+    if bool(decision.requires_confirmation):
+        return False
     if decision.action not in action_router.EXECUTABLE_ACTIONS:
         return False
     threshold = float(getattr(config, "ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE", 0.85))
@@ -3069,6 +3071,181 @@ def _handle_router_emotional_boundary(
         return None
 
 
+def _router_arg_text(
+    decision: Optional[action_router.ActionDecision],
+    *keys: str,
+) -> str:
+    if decision is None:
+        return ""
+    for key in keys:
+        value = decision.args.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _visible_known_name_for_intent() -> Optional[str]:
+    try:
+        for p in world_state.get("people") or []:
+            if p.get("person_db_id") is not None and p.get("face_id"):
+                return str(p["face_id"])
+    except Exception:
+        pass
+    return None
+
+
+def _handle_router_takeover_action(
+    decision: Optional[action_router.ActionDecision],
+    text: str,
+    *,
+    person_id: Optional[int],
+    person_name: Optional[str],
+    raw_best_id: Optional[int],
+    raw_best_name: Optional[str],
+    raw_best_score: float,
+) -> Optional[str]:
+    """Execute router-owned actions that map to stable local handlers."""
+    if not _router_decision_executable(decision):
+        return None
+
+    action = decision.action
+    if action == "memory.forget_specific":
+        target = _router_arg_text(decision, "target", "topic", "memory")
+        if not target:
+            target = forgetting.extract_specific_forget_target(text)
+        if not target:
+            return None
+        _log.info(
+            "[action_router] executing memory.forget_specific person_id=%s target=%r text=%r",
+            person_id,
+            target,
+            text,
+        )
+        return _execute_command(
+            command_parser.CommandMatch(
+                "forget_specific",
+                "action_router",
+                {"target": target},
+            ),
+            person_id,
+            person_name,
+            text,
+        )
+
+    if action == "game.stop":
+        _log.info(
+            "[action_router] executing game.stop person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _execute_command(
+            command_parser.CommandMatch("stop_game", "action_router", {}),
+            person_id,
+            person_name,
+            text,
+        )
+
+    if action == "music.stop":
+        _log.info(
+            "[action_router] executing music.stop person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _execute_command(
+            command_parser.CommandMatch("dj_stop", "action_router", {}),
+            person_id,
+            person_name,
+            text,
+        )
+
+    if action == "memory.query":
+        _log.info(
+            "[action_router] executing memory.query person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _handle_classified_intent(
+            "query_memory",
+            text,
+            person_id,
+            raw_best_id=raw_best_id,
+            raw_best_name=raw_best_name,
+            raw_best_score=raw_best_score,
+            visible_known_name=_visible_known_name_for_intent(),
+        )
+
+    return None
+
+
+def _handle_fast_local_takeover(
+    text: str,
+    *,
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> Optional[str]:
+    """Handle obvious local control commands before the blocking router call."""
+    try:
+        match = command_parser.parse(text)
+    except Exception as exc:
+        _log.debug("fast local command parse failed: %s", exc)
+        match = None
+    if match is None:
+        return None
+
+    key = match.command_key
+    if key == "forget_specific":
+        target = str((match.args or {}).get("target") or "").strip()
+        if not target:
+            return None
+        _log.info(
+            "[action_router] fast_lane action=memory.forget_specific "
+            "person_id=%s target=%r text=%r",
+            person_id,
+            target,
+            text,
+        )
+        return _execute_command(match, person_id, person_name, text)
+
+    if key == "stop_game":
+        try:
+            from features import games as games_mod
+            resp = games_mod.stop_game_fast(person_id)
+        except Exception as exc:
+            _log.debug("fast game stop failed: %s", exc)
+            return None
+        _log.info(
+            "[action_router] fast_lane action=game.stop person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        _speak_blocking(resp, emotion="neutral")
+        return resp
+
+    if key == "dj_stop":
+        try:
+            from features import dj as dj_mod
+            was_playing = bool(dj_mod.is_playing())
+            dj_mod.stop()
+        except Exception as exc:
+            _log.debug("fast music stop failed: %s", exc)
+            return None
+        resp = "Music stopped." if was_playing else "No music is playing."
+        _log.info(
+            "[action_router] fast_lane action=music.stop person_id=%s "
+            "active_music=%s text=%r",
+            person_id,
+            was_playing,
+            text,
+        )
+        _speak_blocking(resp, emotion="neutral")
+        return resp
+
+    return None
+
+
 _MEMORY_HINT_PAT = re.compile(
     r"\b(remember|told me|you said|plan|planned|schedule|trip|congrats|"
     r"how'?s|how is|how did|did .* go|survive|ready for)\b",
@@ -4894,6 +5071,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             "[interaction] speech segment — speaker=%r person_id=%s text=%r",
             speaker_label, person_id, text,
         )
+        router_context = None
         try:
             router_context = _action_router_context(
                 text,
@@ -4906,6 +5084,23 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 off_camera_unknown=off_camera_unknown,
                 identity_prompt_active=identity_prompt_active,
             )
+            fast_takeover_response = _handle_fast_local_takeover(
+                text,
+                person_id=person_id,
+                person_name=person_name,
+            )
+            if fast_takeover_response:
+                action_router.start_shadow_decision(text, router_context)
+                _dismiss_pending_consent_prompts(person_id, text)
+                try:
+                    consciousness.clear_response_wait()
+                except Exception:
+                    pass
+                conv_memory.add_to_transcript("Rex", fast_takeover_response)
+                conv_log.log_rex(fast_takeover_response)
+                _session_exchange_count += 1
+                _register_rex_utterance(fast_takeover_response)
+                return
             if bool(getattr(config, "ACTION_ROUTER_EXECUTE_ENABLED", False)):
                 router_decision = action_router.decide(text, router_context)
                 action_router.log_decision(router_decision, router_context, mode="execute")
@@ -4978,6 +5173,27 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             conv_log.log_rex(preference_response)
             _session_exchange_count += 1
             _register_rex_utterance(preference_response)
+            return
+
+        router_takeover_response = _handle_router_takeover_action(
+            router_decision,
+            text,
+            person_id=person_id,
+            person_name=person_name,
+            raw_best_id=raw_best_id,
+            raw_best_name=raw_best_name,
+            raw_best_score=speaker_score,
+        )
+        if router_takeover_response:
+            _dismiss_pending_consent_prompts(person_id, text)
+            try:
+                consciousness.clear_response_wait()
+            except Exception:
+                pass
+            conv_memory.add_to_transcript("Rex", router_takeover_response)
+            conv_log.log_rex(router_takeover_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(router_takeover_response)
             return
 
         if (

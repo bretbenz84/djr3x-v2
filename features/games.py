@@ -1621,6 +1621,29 @@ def stop_game(person_id: Optional[int] = None) -> str:
     return response
 
 
+def stop_game_fast(person_id: Optional[int] = None) -> str:
+    """End the current game without an LLM-generated closing line."""
+    global _active_game
+
+    with _lock:
+        game = _active_game
+
+    if not game:
+        return "No game is running."
+
+    if game == "jeopardy":
+        try:
+            _jeopardy_cancel_timeout()
+        except Exception:
+            pass
+
+    display_name = _GAME_DISPLAY_NAMES.get(game, game.replace("_", " ").title())
+    _log.info("[games] Fast stopping game: %s", game)
+    with _lock:
+        _clear_game()
+    return f"{display_name} stopped."
+
+
 def consume_pending_audio_after_response() -> Optional[str]:
     """Return an audio file that should play after Rex's just-spoken game line."""
     with _lock:

@@ -33,7 +33,7 @@ ACTION_CATALOG: dict[str, str] = {
     "event.cancel": "User says a remembered plan/event is canceled, stale, or no longer happening.",
     "emotional.boundary": "User asks not to discuss a sensitive topic anymore or rejects an emotional check-in.",
     "identity.who_is_speaking": "User asks who they are, who is speaking, or whether Rex recognizes them.",
-    "identity.introduce_person": "User introduces a person or relationship, such as 'this is my dad Jeff'.",
+    "identity.introduce_person": "User introduces a person or relationship, such as 'this is my dad Jeff'. Not for professions, jobs, hobbies, or other personal facts.",
     "game.start": "User asks to start/play a game.",
     "game.stop": "User asks to stop/quit/end the current game.",
     "game.answer": "User is answering or choosing inside an active game.",
@@ -51,8 +51,12 @@ ACTION_CATALOG: dict[str, str] = {
 
 _VALID_ACTIONS = set(ACTION_CATALOG)
 EXECUTABLE_ACTIONS = {
+    "memory.query",
+    "memory.forget_specific",
     "event.cancel",
     "emotional.boundary",
+    "game.stop",
+    "music.stop",
 }
 
 _SYSTEM_PROMPT = """You are DJ-R3X's action router.
@@ -62,11 +66,16 @@ Return JSON only. Do not write a conversational reply.
 Rules:
 - Prefer the user's actual intent over keyword matching.
 - If the utterance asks to forget/delete/remove a specific memory, use memory.forget_specific and put the target phrase in args.target.
+- If the utterance asks what you remember or know about someone, use memory.query.
 - If the utterance says a remembered plan is no longer happening, use event.cancel.
 - For event.cancel, put the plan/topic being canceled in args.event_hint when possible.
 - If the utterance asks not to talk about a topic anymore, use emotional.boundary.
+- If a game is active and the utterance asks to stop, quit, end, or stop playing, use game.stop.
+- If music is active and the utterance asks to stop, pause, or stop playing music, use music.stop.
+- If a game is active and the utterance is a short fragment that is not clearly a stop/control command, prefer game.answer over identity or general actions.
+- Do not use identity.introduce_person for first-person facts like "I'm an IT systems administrator"; those are normal conversation.reply turns so memory extraction can learn them.
 - If the utterance is normal chat, use conversation.reply.
-- Use requires_confirmation=true when an action is destructive or ambiguous.
+- Use requires_confirmation=true when an action is broad/destructive or ambiguous. A specific forget request with a clear target does not require confirmation.
 - Confidence is 0.0 to 1.0.
 """
 
@@ -130,10 +139,10 @@ def _coerce_decision(payload: Any) -> ActionDecision:
         args = {}
 
     requires_confirmation = bool(payload.get("requires_confirmation", False))
-    if action in {"memory.forget_specific", "memory.forget_person"}:
+    if action == "memory.forget_person":
         requires_confirmation = True
-        if action == "memory.forget_specific" and not str(args.get("target") or "").strip():
-            confidence = min(confidence, 0.45)
+    if action == "memory.forget_specific" and not str(args.get("target") or "").strip():
+        confidence = min(confidence, 0.45)
 
     reason = str(payload.get("reason") or "").strip()
     if len(reason) > 240:
