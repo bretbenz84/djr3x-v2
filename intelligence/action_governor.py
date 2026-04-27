@@ -44,6 +44,18 @@ _PURPOSE_PRIORITIES: dict[str, int] = {
 }
 
 _LOW_PRIORITY_RAPID_EXCHANGE_CUTOFF = 55
+_ACTIVE_CONVERSATION_LOW_PRIORITY = {
+    "small_talk",
+    "ambient_observation",
+    "appearance_riff",
+    "idle_monologue",
+}
+_ACTIVE_CONVERSATION_ALLOWED_SOURCES = {
+    "_step_group_lull",
+    "_step_group_turn_taking",
+    "_step_visual_curiosity",
+    "_step_emotional_checkin",
+}
 
 
 @dataclass
@@ -193,6 +205,13 @@ class ActionGovernor:
             ):
                 score -= 25
                 reasons.append("rapid_exchange_low_priority")
+            if (
+                getattr(profile, "conversation_active", False)
+                and candidate.purpose in _ACTIVE_CONVERSATION_LOW_PRIORITY
+                and candidate.source not in _ACTIVE_CONVERSATION_ALLOWED_SOURCES
+            ):
+                score -= 35
+                reasons.append("conversation_active_low_priority")
             if getattr(profile, "force_family_safe", False):
                 candidate.metadata.setdefault("family_safe", True)
 

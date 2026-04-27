@@ -827,6 +827,7 @@ CURIOSITY_QUESTION_PROBABILITY = 0.8
 # frame's hard limits before TTS. This trims accidental extra questions,
 # overlong replies, ill-timed visual comments, and roasts during tender turns.
 SOCIAL_FRAME_GOVERNOR_ENABLED = True
+TONE_REPAIR_NO_ROAST_SECS = 180.0
 
 # If True, Rex will begin processing normal speech from IDLE without requiring
 # a wake word first. Wake words remain active for explicit attention grabbing and
@@ -1325,6 +1326,7 @@ HOLIDAY_PLANS_CHECK_INTERVAL_SECS = 30.0
 # Per (person, ISO-week, slot) — fires at most once per slot per week.
 WEEKLY_SMALLTALK_PROBABILITY = 0.6
 WEEKLY_SMALLTALK_CHECK_INTERVAL_SECS = 30.0
+WEEKLY_SMALLTALK_MIN_SILENCE_SECS = 45.0
 
 # Notable calendar dates Rex reacts to — keys are (month, day) tuples
 NOTABLE_DATES = {

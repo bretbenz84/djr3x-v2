@@ -3860,7 +3860,11 @@ def _step_weekly_smalltalk(snapshot: dict, profile: SituationProfile) -> None:
     if engaged_id is None:
         return
     window = getattr(config, "ENGAGEMENT_WINDOW_SECS", 90.0)
-    if (now - engaged_touch) > window:
+    quiet_for = now - engaged_touch
+    if quiet_for > window:
+        return
+    min_silence = float(getattr(config, "WEEKLY_SMALLTALK_MIN_SILENCE_SECS", 45.0) or 0.0)
+    if min_silence and quiet_for < min_silence:
         return
 
     try:

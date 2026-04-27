@@ -3097,7 +3097,7 @@ def _generate_repair_response(person_id: Optional[int], text: str, repair: dict)
         pre_beat_ms=150,
         post_beat_ms_override=300,
     )
-    repair_moves.mark_handled()
+    repair_moves.mark_handled(repair.get("kind") or "")
     _log.info(
         "[repair] handled kind=%s severity=%s correction=%r user=%r response=%r",
         repair.get("kind"),
@@ -3988,12 +3988,20 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
 
         relationship_prompt_consumed = False
 
-        # If the engaged person answers the unknown-face prompt with an actual
-        # introduction ("this is my dad, Jeff"), let the dedicated introduction
-        # flow consume it before the generic relationship extractor. That path
-        # gives a welcome line, binds the visible face, and avoids asking the
-        # already-answered "how do you know them?" question again.
-        if person_id is not None:
+        # If the engaged person answers an unknown-face/off-camera moment with
+        # an actual introduction ("this is my dad, Jeff"), let the dedicated
+        # introduction flow consume it before generic identity handling. Speaker
+        # ID often misses the introducer here, so fall back to recent engagement.
+        intro_introducer_id = person_id
+        intro_introducer_name = person_name
+        if intro_introducer_id is None and recent_engagement is not None:
+            recent_id = recent_engagement.get("person_id")
+            try:
+                intro_introducer_id = int(recent_id) if recent_id is not None else None
+            except (TypeError, ValueError):
+                intro_introducer_id = None
+            intro_introducer_name = recent_engagement.get("name")
+        if intro_introducer_id is not None:
             has_unknown_for_intro = _has_unknown_visible_person()
             parsed_intro = introductions.detect(
                 text,
@@ -4006,10 +4014,11 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             ):
                 intro_response = _handle_introduction_parse(
                     parsed_intro,
-                    introducer_id=person_id,
-                    introducer_name=person_name or f"person_{person_id}",
+                    introducer_id=intro_introducer_id,
+                    introducer_name=intro_introducer_name or f"person_{intro_introducer_id}",
                     visible_newcomer=has_unknown_for_intro,
                 )
+                off_camera_unknown = False
                 rel_ctx_for_intro = consciousness.consume_relationship_prompt_request()
                 if rel_ctx_for_intro is not None:
                     relationship_prompt_consumed = True
@@ -5035,7 +5044,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             and repair_move.get("correction")
         ):
             routing_text = repair_move["correction"]
-            repair_moves.mark_handled()
+            repair_moves.mark_handled(repair_move.get("kind") or "")
             _log.info(
                 "[repair] applying corrected text to active grief flow: %r",
                 routing_text,

@@ -15,7 +15,7 @@ import re
 from typing import Optional
 
 import config
-from intelligence import empathy, question_budget, response_length, user_energy
+from intelligence import empathy, question_budget, repair_moves, response_length, user_energy
 from memory import boundaries as boundary_memory
 from memory import facts as facts_memory
 from memory import people as people_memory
@@ -40,7 +40,8 @@ _VISUAL_PAT = re.compile(
 _ROAST_PAT = re.compile(
     r"\b(pathetic|pitiful|sad excuse|glorified|not-so-mighty|mediocrity|"
     r"blunder|organic thoughts|exhaust ports|can't handle the truth|"
-    r"disaster|tragic)\b",
+    r"disaster|tragic|lower your standards|pretend i have friends|"
+    r"let'?s pretend|life decisions|embarrass yourself|brilliance in basic)\b",
     re.IGNORECASE,
 )
 _DANGLING_WORDS = {
@@ -319,6 +320,12 @@ def _roast_level(
     affect: str,
     sensitivity: str,
 ) -> str:
+    try:
+        cooldown = float(getattr(config, "TONE_REPAIR_NO_ROAST_SECS", 180.0) or 0.0)
+        if cooldown and repair_moves.recent_tone_repair(cooldown):
+            return "none"
+    except Exception:
+        pass
     if empathy_mode in {"listen", "support", "validate", "ground", "brief"}:
         return "none"
     if affect in {"sad", "withdrawn", "angry", "anxious"} or sensitivity == "heavy":

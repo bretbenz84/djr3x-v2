@@ -39,7 +39,8 @@ _FACTUAL_PAT = re.compile(
 _TONE_PAT = re.compile(
     r"\b(that was (rude|mean|harsh|uncalled for|distasteful|not funny|too much)|"
     r"that wasn't funny|that wasnt funny|you were (rude|mean|harsh)|"
-    r"don'?t roast|do not roast|stop roasting|not a joke|not funny)\b",
+    r"don'?t roast|do not roast|stop roasting|not a joke|not (?:very )?funny|"
+    r"too mean|you went too far)\b",
     re.IGNORECASE,
 )
 _PACING_PAT = re.compile(
@@ -100,6 +101,7 @@ _lock = threading.Lock()
 _last_assistant_text: str = ""
 _last_assistant_at: float = 0.0
 _last_repair_at: float = 0.0
+_last_tone_repair_at: float = 0.0
 
 
 @dataclass
@@ -114,11 +116,12 @@ class RepairMove:
 
 
 def clear() -> None:
-    global _last_assistant_text, _last_assistant_at, _last_repair_at
+    global _last_assistant_text, _last_assistant_at, _last_repair_at, _last_tone_repair_at
     with _lock:
         _last_assistant_text = ""
         _last_assistant_at = 0.0
         _last_repair_at = 0.0
+        _last_tone_repair_at = 0.0
 
 
 def note_assistant_turn(text: str) -> None:
@@ -193,6 +196,8 @@ def detect(user_text: str) -> Optional[dict]:
         return None
 
     correction = _extract_correction(cleaned)
+    if kind in {"tone", "pacing", "interruption", "repeat", "clarify", "bare_negation"}:
+        correction = ""
     if not correction and kind in {"misheard", "misunderstood", "wrong_person", "pronoun", "factual"}:
         # Preserve the useful part in common forms like "no, Tom Foster".
         no_match = _NO_COMMA_CORRECTION_PAT.match(cleaned)
@@ -212,10 +217,21 @@ def detect(user_text: str) -> Optional[dict]:
     return asdict(move)
 
 
-def mark_handled() -> None:
-    global _last_repair_at
+def mark_handled(kind: str = "") -> None:
+    global _last_repair_at, _last_tone_repair_at
     with _lock:
-        _last_repair_at = time.monotonic()
+        now = time.monotonic()
+        _last_repair_at = now
+        if (kind or "").lower() == "tone":
+            _last_tone_repair_at = now
+
+
+def recent_tone_repair(max_age_secs: Optional[float] = None) -> bool:
+    if max_age_secs is None:
+        max_age_secs = 180.0
+    with _lock:
+        last = _last_tone_repair_at
+    return last > 0.0 and (time.monotonic() - last) <= max_age_secs
 
 
 def build_prompt(repair: dict) -> str:
