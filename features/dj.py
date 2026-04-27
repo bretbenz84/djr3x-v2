@@ -13,6 +13,7 @@ with a single code path.
 import logging
 import os
 import random
+import re
 import subprocess
 import threading
 from collections import namedtuple
@@ -153,12 +154,13 @@ def _vibe_match(request_text: str, snapshot: list[dict]) -> Optional[TrackInfo]:
     Returns the highest-scoring TrackInfo above the 50-point threshold, or None.
     """
     req = request_text.lower()
+    normalized_req = _normalize_vibe_text(req)
     best_score = 0
     best: Optional[TrackInfo] = None
 
     for station in config.RADIO_STATIONS:
         for vibe in station["vibes"]:
-            score = fuzz.partial_ratio(req, vibe.lower())
+            score = _station_vibe_score(normalized_req, str(vibe))
             if score > best_score:
                 best_score = score
                 best = TrackInfo(
@@ -190,6 +192,27 @@ def _vibe_match(request_text: str, snapshot: list[dict]) -> Optional[TrackInfo]:
     if best_score >= 50:
         return best
     return None
+
+
+def _normalize_vibe_text(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9\s-]", " ", (text or "").lower()).split())
+
+
+def _station_vibe_score(normalized_request: str, vibe: str) -> float:
+    """Score station tags conservatively to avoid classic/classical false hits."""
+    normalized_vibe = _normalize_vibe_text(vibe)
+    if not normalized_request or not normalized_vibe:
+        return 0.0
+
+    req_tokens = set(normalized_request.split())
+    vibe_tokens = set(normalized_vibe.split())
+    if normalized_vibe in normalized_request:
+        return 100.0
+    if vibe_tokens and vibe_tokens.issubset(req_tokens):
+        return 100.0
+
+    score = fuzz.WRatio(normalized_request, normalized_vibe)
+    return score if score >= 85 else 0.0
 
 
 # ── Playback controls ─────────────────────────────────────────────────────────

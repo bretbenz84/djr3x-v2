@@ -72,7 +72,7 @@ from utils.config_loader import (
     AUDIO_ENABLED,
 )
 from sequences import animations
-from audio import stream, scene as audio_scene, output_gate, tts
+from audio import stream, scene as audio_scene, output_gate, tts, speech_queue
 from vision import camera, scene as vision_scene
 from awareness import chronoception, interoception
 from intelligence import consciousness, interaction
@@ -108,6 +108,27 @@ def _play_audio_file(path: str) -> None:
             audio = audio.mean(axis=1).astype(np.float32)
         sd.play(audio, samplerate, blocksize=2048)
         sd.wait()
+
+
+def _play_listening_chime_async(reason: str) -> None:
+    """Queue the listening chime through speech_queue so AEC suppresses it."""
+    if not bool(getattr(config, "PLAY_LISTENING_CHIME", True)):
+        return
+    path = Path(getattr(config, "LISTENING_CHIME_FILE", "") or "")
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent / path
+    if not path.exists():
+        logger.warning("Listening chime missing: %s", path)
+        return
+    try:
+        logger.info("Playing listening chime (%s): %s", reason, path)
+        speech_queue.enqueue_audio_file(
+            str(path),
+            priority=1,
+            tag="system:listening_chime",
+        )
+    except Exception as exc:
+        logger.warning("Could not queue listening chime (%s): %s", reason, exc)
 
 
 def _shutdown() -> None:
@@ -212,6 +233,11 @@ def main() -> None:
             leds_chest.off()
     state.add_state_change_callback(_chest_state_callback)
 
+    def _listening_chime_state_callback(old: State, new: State) -> None:
+        if old == State.ACTIVE and new == State.IDLE:
+            _play_listening_chime_async("active_to_idle")
+    state.add_state_change_callback(_listening_chime_state_callback)
+
     logger.info(
         "Camera: %s",
         f"enabled ({CAMERA_SELECTION_DESCRIPTION})" if CAMERA_ENABLED else "disabled",
@@ -270,6 +296,7 @@ def main() -> None:
 
     logger.info("Starting intelligence.interaction (+ audio.wake_word)...")
     interaction.start()
+    _play_listening_chime_async("startup_listening")
 
     # Step 9: Breathing thread and arm idle.
     logger.info("Starting servo breathing thread...")

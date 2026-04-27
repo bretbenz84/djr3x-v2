@@ -114,9 +114,10 @@ def _load_model() -> bool:
         import mediapipe as mp
         solutions = getattr(mp, "solutions", None)
         if solutions is None or not hasattr(solutions, "pose"):
-            _log.warning(
-                "MediaPipe Pose unavailable: installed mediapipe %s does not expose "
-                "the legacy mp.solutions.pose API; pose/proxemic body cues disabled.",
+            _log.info(
+                "MediaPipe body pose unavailable: installed mediapipe %s does not "
+                "expose the legacy mp.solutions.pose API. Body pose/gesture cues "
+                "disabled; face-based proxemics remain active.",
                 getattr(mp, "__version__", "unknown"),
             )
             return False

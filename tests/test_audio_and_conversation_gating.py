@@ -70,6 +70,43 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 )
             )
 
+    def test_wake_ack_never_repeats_back_to_back_and_requires_cache(self):
+        from intelligence import interaction
+
+        interaction._last_wake_ack = None
+        with (
+            mock.patch.object(
+                interaction.config,
+                "WAKE_ACKNOWLEDGMENTS",
+                ["yeah?", "what?"],
+            ),
+            mock.patch.object(interaction.config, "WAKE_ACK_REQUIRE_CACHE", True),
+            mock.patch("audio.tts.is_cached", return_value=True),
+            mock.patch.object(interaction, "_speak_blocking") as speak,
+            mock.patch.object(interaction.random, "choice", side_effect=lambda seq: seq[0]),
+        ):
+            interaction._wake_ack()
+            interaction._wake_ack()
+
+        self.assertEqual(
+            [call.args[0] for call in speak.call_args_list],
+            ["yeah?", "what?"],
+        )
+
+    def test_wake_ack_skips_uncached_lines(self):
+        from intelligence import interaction
+
+        interaction._last_wake_ack = None
+        with (
+            mock.patch.object(interaction.config, "WAKE_ACKNOWLEDGMENTS", ["yeah?"]),
+            mock.patch.object(interaction.config, "WAKE_ACK_REQUIRE_CACHE", True),
+            mock.patch("audio.tts.is_cached", return_value=False),
+            mock.patch.object(interaction, "_speak_blocking") as speak,
+        ):
+            interaction._wake_ack()
+
+        speak.assert_not_called()
+
 
 class ConversationGatingTest(unittest.TestCase):
     def test_agenda_allows_related_followup_when_curated_pool_is_exhausted(self):
@@ -256,6 +293,168 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertIn("Proxemics cue", directive)
         self.assertIn("American norms", directive)
         self.assertIn("boundary joke or roast", directive)
+
+
+class PendingMusicPreferenceTest(unittest.TestCase):
+    def tearDown(self):
+        from intelligence import interaction
+
+        interaction._pending_music_offer = None
+
+    def test_bare_music_preference_answer_is_not_played_immediately(self):
+        from intelligence import interaction
+
+        pending = {
+            "question_key": "favorite_music",
+            "question_text": "What kind of music are you into?",
+        }
+        answered = {"question_key": "favorite_music", "answer": "classical music"}
+
+        with (
+            mock.patch.object(
+                interaction.rel_memory,
+                "answer_latest_pending_question",
+                return_value=answered,
+            ) as answer,
+            mock.patch.object(interaction.facts_memory, "add_fact") as add_fact,
+            mock.patch.object(interaction, "_speak_blocking") as speak,
+        ):
+            response, captured = interaction._handle_pending_music_preference_answer(
+                1,
+                "classical music",
+                pending_question=pending,
+            )
+
+        self.assertEqual(captured, answered)
+        self.assertIn("Want me to play some classical music", response)
+        answer.assert_called_once_with(1, "classical music")
+        add_fact.assert_called_once_with(
+            1,
+            "preference",
+            "favorite_music",
+            "classical music",
+            "pending_qa:favorite_music",
+            confidence=0.95,
+        )
+        speak.assert_called_once()
+        self.assertEqual(
+            interaction._pending_music_offer["music_query"],
+            "classical music",
+        )
+
+    def test_pending_music_offer_yes_starts_playback(self):
+        from features import dj
+        from intelligence import interaction
+
+        track = dj.TrackInfo(
+            source="radio",
+            name="Classical Test",
+            url_or_path="http://example.test/stream",
+            description="test station",
+        )
+        interaction._pending_music_offer = {
+            "person_id": 1,
+            "music_query": "classical music",
+            "asked_at": 100.0,
+        }
+
+        with (
+            mock.patch.object(interaction.time, "monotonic", return_value=101.0),
+            mock.patch.object(dj, "handle_request", return_value=track) as handle,
+            mock.patch.object(dj, "play") as play,
+            mock.patch.object(interaction, "_speak_blocking") as speak,
+        ):
+            response = interaction._handle_pending_music_offer_reply(1, "yes")
+
+        self.assertIn("Spinning Classical Test", response)
+        handle.assert_called_once_with("classical music")
+        play.assert_called_once_with(track)
+        speak.assert_called_once()
+        self.assertIsNone(interaction._pending_music_offer)
+
+    def test_router_downgrades_bare_music_answer_under_pending_question(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="music.play",
+            confidence=0.90,
+            args={"music_query": "classical music"},
+            reason="genre phrase",
+        )
+        context = {
+            "pending": {
+                "pending_question": {
+                    "question_key": "favorite_music",
+                    "question_text": "What kind of music are you into?",
+                }
+            }
+        }
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "classical music",
+            context,
+        )
+
+        self.assertEqual(routed.action, "conversation.reply")
+        self.assertLess(routed.confidence, 0.85)
+
+    def test_router_allows_explicit_music_play_under_pending_question(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="music.play",
+            confidence=0.90,
+            args={"music_query": "classical music"},
+            reason="explicit play",
+        )
+        context = {
+            "pending": {
+                "pending_question": {
+                    "question_key": "favorite_music",
+                    "question_text": "What kind of music are you into?",
+                }
+            }
+        }
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "play classical music",
+            context,
+        )
+
+        self.assertEqual(routed.action, "music.play")
+
+    def test_dj_vibe_match_does_not_confuse_classical_with_classic_rock(self):
+        import config
+        from features import dj
+
+        stations = [
+            {
+                "name": "Left Coast 70s",
+                "url": "https://example.test/70s.pls",
+                "vibes": ["70s", "classic rock", "retro"],
+            }
+        ]
+        with mock.patch.object(config, "RADIO_STATIONS", stations):
+            self.assertIsNone(dj._vibe_match("classical music", []))
+
+    def test_dj_vibe_match_still_allows_exact_classic_rock(self):
+        import config
+        from features import dj
+
+        stations = [
+            {
+                "name": "Left Coast 70s",
+                "url": "https://example.test/70s.pls",
+                "vibes": ["70s", "classic rock", "retro"],
+            }
+        ]
+        with mock.patch.object(config, "RADIO_STATIONS", stations):
+            match = dj._vibe_match("classic rock", [])
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.name, "Left Coast 70s")
 
 
 class SocialVisionIntegrationTest(unittest.TestCase):

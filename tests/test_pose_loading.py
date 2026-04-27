@@ -21,13 +21,15 @@ class PoseLoadingTest(unittest.TestCase):
             pose._mp_attempted = False
             with (
                 mock.patch.dict("sys.modules", {"mediapipe": fake_mp}),
-                self.assertLogs("vision.pose", level="WARNING") as logs,
+                self.assertLogs("vision.pose", level="INFO") as logs,
             ):
                 self.assertFalse(pose._load_model())
 
             self.assertTrue(pose._mp_attempted)
             self.assertFalse(pose._mp_ok)
-            self.assertIn("does not expose the legacy mp.solutions.pose API", "\n".join(logs.output))
+            log_text = "\n".join(logs.output)
+            self.assertIn("does not expose the legacy mp.solutions.pose API", log_text)
+            self.assertIn("face-based proxemics remain active", log_text)
         finally:
             (
                 pose._pose,

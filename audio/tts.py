@@ -293,6 +293,30 @@ def is_cached(
     ).exists()
 
 
+def ensure_cached(
+    text: str,
+    voice_settings: Optional[dict] = None,
+) -> bool:
+    """Ensure text has a cached TTS file without playing it."""
+    if not text or not text.strip():
+        return False
+    spoken_text = _normalize_for_speech(text)
+    voice_id = config.ELEVENLABS_VOICE_ID
+    model_id = config.TTS_MODEL_ID
+    cache_file = _cache_path(spoken_text, voice_id, model_id, voice_settings)
+    if cache_file.exists():
+        return True
+
+    logger.info("[tts] cache prefill miss — calling ElevenLabs API for %r", spoken_text)
+    audio_bytes = _fetch_from_api(spoken_text, voice_id, model_id, voice_settings)
+    if not audio_bytes:
+        return False
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_bytes(audio_bytes)
+    logger.info("[tts] prefilled cache: %s", cache_file.name)
+    return True
+
+
 def _fetch_from_api(
     text: str,
     voice_id: str,

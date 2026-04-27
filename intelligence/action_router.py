@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import logging
+import re
 import threading
 from typing import Any
 
@@ -79,6 +80,11 @@ Return JSON only. Do not write a conversational reply.
 
 Rules:
 - Prefer the user's actual intent over keyword matching.
+- If context.pending.pending_question exists, treat short fragments as answers
+  to Rex's pending question, not as new feature commands.
+- If the pending question key is favorite_music, a bare genre/artist/style like
+  "classical music" is a preference answer. Use conversation.reply unless the
+  user explicitly asks to play/put on/start music.
 - If the utterance asks to forget/delete/remove a specific memory, use memory.forget_specific and put the target phrase in args.target.
 - If the utterance asks what you remember or know about someone, use memory.query.
 - If the utterance says a remembered plan is no longer happening, use event.cancel.
@@ -94,6 +100,11 @@ Rules:
 - Use requires_confirmation=true when an action is broad/destructive or ambiguous. A specific forget request with a clear target does not require confirmation.
 - Confidence is 0.0 to 1.0.
 """
+
+_MUSIC_PLAY_REQUEST_RE = re.compile(
+    r"\b(play|start\s+playing|put\s+on|throw\s+on|spin|queue|cue|turn\s+on)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -173,6 +184,44 @@ def _coerce_decision(payload: Any) -> ActionDecision:
     )
 
 
+def _pending_question_context(context: dict[str, Any]) -> dict[str, Any] | None:
+    pending = (context or {}).get("pending")
+    if not isinstance(pending, dict):
+        return None
+    question = pending.get("pending_question")
+    return question if isinstance(question, dict) else None
+
+
+def _apply_context_overrides(
+    decision: ActionDecision,
+    text: str,
+    context: dict[str, Any],
+) -> ActionDecision:
+    """Deterministic safety rails for contexts the LLM router often misses."""
+    pending_question = _pending_question_context(context)
+    if not pending_question:
+        return decision
+
+    question_key = str(pending_question.get("question_key") or "").strip()
+    if (
+        question_key == "favorite_music"
+        and decision.action == "music.play"
+        and not _MUSIC_PLAY_REQUEST_RE.search(text or "")
+    ):
+        return ActionDecision(
+            action="conversation.reply",
+            confidence=min(float(decision.confidence or 0.0), 0.40),
+            args={},
+            requires_confirmation=False,
+            reason=(
+                "pending favorite_music answer should be stored/acknowledged; "
+                "no explicit play request"
+            ),
+        )
+
+    return decision
+
+
 def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
     """Return the router's best action decision for this turn."""
     if not text or not text.strip():
@@ -206,7 +255,7 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
         )
         raw = resp.choices[0].message.content or ""
         payload = json.loads(_strip_code_fence(raw))
-        return _coerce_decision(payload)
+        return _apply_context_overrides(_coerce_decision(payload), text, context)
     except Exception as exc:
         _log.debug("[action_router] decision failed: %s", exc)
         return ActionDecision(reason=f"router error: {type(exc).__name__}")

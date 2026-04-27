@@ -96,11 +96,13 @@ _session_exchange_count: int = 0
 _last_speech_at: float = 0.0  # monotonic timestamp of most recent speech chunk
 _session_forget_terms: dict[int, set[str]] = {}
 _session_router_control_topics: dict[int, str] = {}
+_pending_music_offer: Optional[dict] = None
 _no_response_recovery_token: int = 0
 _no_response_recovery_lock = threading.Lock()
 
 # Anti-repeat for latency filler lines
 _last_filler: Optional[str] = None
+_last_wake_ack: Optional[str] = None
 
 # Monotonic deadline before which VAD speech-onset detections are discarded.
 # Set at the end of each TTS utterance; prevents Rex's own voice tail from
@@ -304,6 +306,20 @@ def _action_router_context(
             "person_id": _awaiting_followup_event.get("person_id"),
         }
 
+    pending_question = None
+    if person_id is not None:
+        try:
+            pending = rel_memory.get_latest_pending_question(person_id)
+            if pending:
+                pending_question = {
+                    "question_key": pending.get("question_key"),
+                    "question_text": pending.get("question_text"),
+                    "depth": pending.get("depth"),
+                    "asked_at": pending.get("asked_at"),
+                }
+        except Exception:
+            pending_question = None
+
     return {
         "speaker": {
             "person_id": person_id,
@@ -319,6 +335,7 @@ def _action_router_context(
         "active_music": _dj_is_playing(),
         "pending": {
             "identity_prompt_active": identity_prompt_active,
+            "pending_question": pending_question,
             "awaiting_followup_event": pending_event,
             "offscreen_identify": _pending_offscreen_identify is not None,
             "introduction": _pending_introduction is not None,
@@ -530,8 +547,44 @@ def _looks_like_date_query(text: str) -> bool:
 
 
 def _wake_ack() -> None:
-    pool = config.WAKE_ACKNOWLEDGMENTS
-    _speak_blocking(random.choice(pool), priority=2)
+    global _last_wake_ack
+    pool = list(getattr(config, "WAKE_ACKNOWLEDGMENTS", []) or [])
+    if not pool:
+        return
+    candidates = [line for line in pool if line != _last_wake_ack] or pool
+    chosen = random.choice(candidates)
+    if getattr(config, "WAKE_ACK_REQUIRE_CACHE", True):
+        try:
+            from audio import tts
+            if not tts.is_cached(chosen):
+                _log.warning(
+                    "[wake_word] wake ack skipped because TTS is not cached: %r",
+                    chosen,
+                )
+                return
+        except Exception as exc:
+            _log.debug("[wake_word] wake ack cache check failed: %s", exc)
+            return
+    _last_wake_ack = chosen
+    _speak_blocking(chosen, priority=2)
+
+
+def _prefill_wake_ack_cache() -> None:
+    """Warm the tiny wake-ack TTS set so wake feedback is instant."""
+    if not getattr(config, "WAKE_ACK_REQUIRE_CACHE", True):
+        return
+    pool = list(getattr(config, "WAKE_ACKNOWLEDGMENTS", []) or [])
+    if not pool:
+        return
+    try:
+        from audio import tts
+        for line in pool:
+            try:
+                tts.ensure_cached(line)
+            except Exception as exc:
+                _log.debug("[wake_word] wake ack cache prefill failed for %r: %s", line, exc)
+    except Exception as exc:
+        _log.debug("[wake_word] wake ack cache prefill unavailable: %s", exc)
 
 
 def _interrupt_ack() -> None:
@@ -3034,6 +3087,10 @@ _DECLINE_PAT = re.compile(
     r"not now|skip|drop it|leave it)\b",
     re.IGNORECASE,
 )
+_MUSIC_PLAY_REQUEST_PAT = re.compile(
+    r"\b(play|start\s+playing|put\s+on|throw\s+on|spin|queue|cue|turn\s+on)\b",
+    re.IGNORECASE,
+)
 _EMOTIONAL_BOUNDARY_PAT = re.compile(
     r"\b("
     r"i'?d rather not|i would rather not|rather not talk|"
@@ -4177,6 +4234,151 @@ def _maybe_capture_pending_qa(
     except Exception as exc:
         _log.debug("pending Q&A capture failed: %s", exc)
         return None
+
+
+def _latest_pending_question(person_id: Optional[int]) -> Optional[dict]:
+    if person_id is None:
+        return None
+    try:
+        return rel_memory.get_latest_pending_question(person_id)
+    except Exception as exc:
+        _log.debug("pending Q&A lookup failed: %s", exc)
+        return None
+
+
+def _store_music_preference_fact(person_id: Optional[int], preference: str) -> None:
+    if person_id is None:
+        return
+    cleaned = (preference or "").strip()
+    if not cleaned:
+        return
+    try:
+        facts_memory.add_fact(
+            person_id,
+            "preference",
+            "favorite_music",
+            cleaned,
+            "pending_qa:favorite_music",
+            confidence=0.95,
+        )
+    except Exception as exc:
+        _log.debug("favorite_music fact save failed: %s", exc)
+
+
+def _music_offer_reply(preference: str) -> str:
+    cleaned = (preference or "").strip().rstrip(".!?")
+    if not cleaned:
+        cleaned = "that"
+    return f"Good to know. Want me to play some {cleaned}, or keep the jukebox muzzled?"
+
+
+def _music_offer_play_response(track, preference: str) -> str:
+    name = getattr(track, "name", "") or preference
+    return f"Yes detected. Spinning {name} now."
+
+
+def _handle_pending_music_offer_reply(
+    person_id: Optional[int],
+    text: str,
+) -> Optional[str]:
+    """Handle yes/no replies to Rex's follow-up music offer."""
+    global _pending_music_offer
+    offer = _pending_music_offer
+    if not offer:
+        return None
+
+    ttl = float(getattr(config, "MUSIC_OFFER_REPLY_WINDOW_SECS", 25.0))
+    if time.monotonic() - float(offer.get("asked_at") or 0.0) > ttl:
+        _pending_music_offer = None
+        return None
+
+    if offer.get("person_id") is not None and person_id != offer.get("person_id"):
+        return None
+
+    consent = _classify_consent(text)
+    if consent is None:
+        return None
+
+    preference = str(offer.get("music_query") or "").strip()
+    _pending_music_offer = None
+
+    if consent is False:
+        resp = "Got it. I logged the taste and spared the room a soundtrack ambush."
+        _speak_blocking(resp, emotion="neutral")
+        return resp
+
+    try:
+        from features import dj as dj_mod
+        track = dj_mod.handle_request(preference)
+    except Exception as exc:
+        _log.debug("pending music offer lookup failed: %s", exc)
+        track = None
+
+    if track is None:
+        resp = f"I logged {preference} as your taste, but I can't find a station for it yet."
+        _speak_blocking(resp, emotion="neutral")
+        return resp
+
+    try:
+        dj_mod.play(track)
+    except Exception as exc:
+        _log.debug("pending music offer play failed: %s", exc)
+        resp = "I tried to play it, but the DJ deck coughed up a bolt."
+        _speak_blocking(resp, emotion="neutral")
+        return resp
+
+    resp = _music_offer_play_response(track, preference)
+    _speak_blocking(resp, emotion="happy")
+    return resp
+
+
+def _handle_pending_music_preference_answer(
+    person_id: Optional[int],
+    text: str,
+    *,
+    pending_question: Optional[dict],
+    identity_prompt_active: bool = False,
+) -> tuple[Optional[str], Optional[dict]]:
+    """
+    Consume answers to Rex's music-preference question before the action router.
+
+    A bare genre/artist/style is a memory answer. Rex asks for explicit consent
+    before starting playback, so "classical music" cannot accidentally become
+    a DJ command.
+    """
+    global _pending_music_offer
+    if person_id is None or not pending_question:
+        return None, None
+    if pending_question.get("question_key") != "favorite_music":
+        return None, None
+    if identity_prompt_active:
+        return None, None
+
+    cleaned = (text or "").strip()
+    if not cleaned or "?" in cleaned:
+        return None, None
+
+    answered = _maybe_capture_pending_qa(
+        person_id,
+        cleaned,
+        identity_prompt_active=identity_prompt_active,
+    )
+    if not answered:
+        return None, None
+
+    _store_music_preference_fact(person_id, cleaned)
+
+    if _MUSIC_PLAY_REQUEST_PAT.search(cleaned):
+        return None, answered
+
+    _pending_music_offer = {
+        "person_id": person_id,
+        "music_query": cleaned,
+        "asked_at": time.monotonic(),
+    }
+    resp = _music_offer_reply(cleaned)
+    _speak_blocking(resp, emotion="neutral")
+    return resp, answered
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5393,6 +5595,67 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             "[interaction] speech segment — speaker=%r person_id=%s text=%r",
             speaker_label, person_id, text,
         )
+
+        music_offer_response = _handle_pending_music_offer_reply(person_id, text)
+        if music_offer_response:
+            _dismiss_pending_consent_prompts(person_id, text)
+            try:
+                consciousness.clear_response_wait()
+            except Exception:
+                pass
+            conv_memory.add_to_transcript("Rex", music_offer_response)
+            conv_log.log_rex(music_offer_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(music_offer_response)
+            return
+
+        pending_question_for_turn = _latest_pending_question(person_id)
+        music_pref_response, answered_question = _handle_pending_music_preference_answer(
+            person_id,
+            text,
+            pending_question=pending_question_for_turn,
+            identity_prompt_active=identity_prompt_active,
+        )
+        if music_pref_response:
+            try:
+                if answered_question:
+                    topic_thread.note_answered_question(answered_question)
+            except Exception as exc:
+                _log.debug("topic thread music preference answer update failed: %s", exc)
+            try:
+                question_budget.note_user_turn(
+                    text,
+                    person_id,
+                    answered_question=answered_question,
+                )
+            except Exception as exc:
+                _log.debug("question budget music preference update failed: %s", exc)
+            try:
+                end_thread.note_user_turn(
+                    text,
+                    person_id,
+                    answered_question=answered_question,
+                )
+            except Exception as exc:
+                _log.debug("end thread music preference update failed: %s", exc)
+            _dismiss_pending_consent_prompts(person_id, text)
+            try:
+                consciousness.clear_response_wait()
+            except Exception:
+                pass
+            conv_memory.add_to_transcript("Rex", music_pref_response)
+            conv_log.log_rex(music_pref_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(music_pref_response)
+            return
+
+        if answered_question is None and pending_question_for_turn:
+            answered_question = _maybe_capture_pending_qa(
+                person_id,
+                text,
+                identity_prompt_active=identity_prompt_active,
+            )
+
         router_context = None
         try:
             router_context = _action_router_context(
@@ -5554,11 +5817,12 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 _register_rex_utterance(boundary_response)
                 return
 
-        answered_question = _maybe_capture_pending_qa(
-            person_id,
-            text,
-            identity_prompt_active=identity_prompt_active,
-        )
+        if answered_question is None:
+            answered_question = _maybe_capture_pending_qa(
+                person_id,
+                text,
+                identity_prompt_active=identity_prompt_active,
+            )
         try:
             if answered_question:
                 topic_thread.note_answered_question(answered_question)
@@ -6466,6 +6730,17 @@ def _loop() -> None:
 
         # ── ACTIVE — full continuous listening ─────────────────────────────────
 
+        if _wake_word_fired.is_set():
+            _wake_word_fired.clear()
+            _last_speech_at = time.monotonic()
+            if not (
+                speech_queue.is_speaking()
+                or output_gate.is_busy()
+                or echo_cancel.is_suppressed()
+            ):
+                _wake_ack()
+            continue
+
         # Idle timeout → end session and return to IDLE
         effective_idle_timeout = idle_timeout
         try:
@@ -6600,6 +6875,11 @@ def start() -> None:
 
     speech_queue.register_on_item_done(_arm_post_tts_window)
     wake_word.start(_on_wake_word)
+    threading.Thread(
+        target=_prefill_wake_ack_cache,
+        daemon=True,
+        name="wake-ack-cache-prefill",
+    ).start()
     if not wake_word.is_ready():
         _log.warning(
             "[interaction] wake word unavailable — entering ACTIVE fallback so speech can still be processed"

@@ -909,12 +909,10 @@ IDENTITY_RESPONSE_WAIT_SECS = 10.0
 WAKE_ACKNOWLEDGMENTS = [
     "yeah?",
     "what's up?",
-    "I'm here.",
-    "...go ahead.",
-    "you have my attention.",
-    "systems online. What do you need?",
-    "DJ-R3X at your service. Briefly.",
+    "I'm listening.",
+    "what?",
 ]
+WAKE_ACK_REQUIRE_CACHE = True
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSCIOUSNESS LOOP
@@ -949,6 +947,11 @@ ACTION_ROUTER_EXECUTE_ENABLED = True
 ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE = 0.85
 ACTION_ROUTER_MODEL = LLM_MODEL
 ACTION_ROUTER_MAX_CONTEXT_CHARS = 5000
+
+# When Rex turns a remembered music preference into a "want me to play it?"
+# offer, short yes/no replies in this window are consumed by that offer before
+# the general action router runs.
+MUSIC_OFFER_REPLY_WINDOW_SECS = 25.0
 
 # After an emotional check-in, visual curiosity stays quiet briefly. This keeps
 # camera-based riffs from stepping on care, without blocking visual questions
@@ -1314,6 +1317,12 @@ ASPIRATIONS = [
 # These toggles do not affect live TTS, wake-word listening, or DJ playback.
 PLAY_STARTUP_AUDIO = False
 PLAY_SHUTDOWN_AUDIO = False
+
+# Short readiness / return-to-idle cue. This is intentionally separate from
+# PLAY_STARTUP_AUDIO so it still fires when the theatrical startup clips are
+# disabled.
+LISTENING_CHIME_FILE = "assets/audio/startup/startup_chime.mp3"
+PLAY_LISTENING_CHIME = True
 
 STARTUP_AUDIO_FILES = [
     "assets/audio/startup/light_speed.mp3",
