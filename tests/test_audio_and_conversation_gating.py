@@ -188,8 +188,10 @@ class ConversationGatingTest(unittest.TestCase):
         )
 
         self.assertIn("Greet Bret", prompt)
-        self.assertIn("what are you up to today", prompt)
-        self.assertIn("what do you want to talk about", prompt)
+        self.assertIn("what are you up to today", prompt.lower())
+        self.assertIn("what do you want to talk about", prompt.lower())
+        self.assertIn("Pick one from this menu", prompt)
+        self.assertIn("do not reuse the same wording every run", prompt)
         self.assertIn("do NOT call this one visible person 'they' or 'them'", prompt)
 
     def test_startup_known_greeting_pending_suppresses_generic_world_reactions(self):
@@ -1133,8 +1135,10 @@ class ConversationGatingTest(unittest.TestCase):
         prompt = social_scene.startup_group_prompt(scene)
 
         self.assertIn("conversation-steering question", prompt)
-        self.assertIn("what are you up to today", prompt)
-        self.assertIn("what do you want to talk about", prompt)
+        self.assertIn("what are you up to today", prompt.lower())
+        self.assertIn("what do you want to talk about", prompt.lower())
+        self.assertIn("Pick one from this menu", prompt)
+        self.assertIn("do not reuse the same wording every run", prompt)
         self.assertIn("What mission are we pretending is important today?", prompt)
 
     def test_acknowledge_on_return_prompt_ends_with_steering_question(self):
@@ -1179,7 +1183,8 @@ class ConversationGatingTest(unittest.TestCase):
 
         self.assertIn("ACKNOWLEDGE-ON-RETURN", prompt)
         self.assertIn("conversation-steering question", prompt)
-        self.assertIn("what are you up to today", prompt)
+        self.assertIn("what are you up to today", prompt.lower())
+        self.assertIn("do not reuse the same wording every run", prompt)
         self.assertIn("What topic gets the honor", prompt)
 
     def test_agenda_surfaces_intimate_personal_space_cue(self):

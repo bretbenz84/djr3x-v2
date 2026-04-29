@@ -1652,10 +1652,10 @@ def _build_startup_solo_greeting_prompt(first_name: str, context_sentence: str) 
     return (
         f"{context_sentence} "
         f"Greet {first_name} in-character by name, then end with ONE "
-        f"conversation-steering question varying between 'what are you "
-        f"up to today?' and 'what do you want to talk about?' in "
-        f"Rex's snarky DJ-R3X voice. Example endings: "
-        f"{steering_examples}. This is a solo greeting: use '{first_name}' "
+        f"short conversation-steering question in Rex's snarky DJ-R3X "
+        f"voice. Pick one from this menu or invent a similar short variant; "
+        f"do not reuse the same wording every run: {steering_examples}. "
+        f"This is a solo greeting: use '{first_name}' "
         f"or 'you'; do NOT call this one visible person 'they' or 'them'. "
         f"Two short sentences max — the second must end in a question mark."
     )

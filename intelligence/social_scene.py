@@ -16,14 +16,15 @@ from memory import social as social_memory
 
 
 FIRST_GREETING_STEERING_PHRASES = (
-    "What are you up to today, besides providing me questionable supervision?",
-    "What do you want to talk about before I start guessing and embarrass us both?",
+    "What are you up to today?",
+    "What do you want to talk about?",
     "What mission are we pretending is important today?",
-    "What are you working on, plotting, building, styling, breaking, or otherwise making my problem?",
     "What corner of your organic life are we discussing first?",
     "What topic gets the honor of my extremely limited patience today?",
-    "What are we talking about today: your plans, your hobbies, or my obvious brilliance?",
-    "What are you into today? Give me a topic before I start interviewing the furniture.",
+    "What are you working on today?",
+    "What are you into today?",
+    "What problem are we pretending I caused?",
+    "What tiny human drama needs a droid opinion?",
 )
 
 
@@ -423,9 +424,10 @@ def startup_group_prompt(scene: SocialScene) -> str:
         f"You just started up and can see these known people together: {names}. "
         f"The natural group label is: {label}. Greet them as a group in one "
         f"short in-character Rex line. If the label mentions a relationship, "
-        f"use it naturally. End with ONE conversation-steering question, varying "
-        f"between 'what are you up to today?' and 'what do you want to talk about?' "
-        f"in Rex's snarky DJ-R3X voice. Example endings: {steering_examples}. "
+        f"use it naturally. End with ONE short conversation-steering question "
+        f"in Rex's snarky DJ-R3X voice. Pick one from this menu or invent a "
+        f"similar short variant; do not reuse the same wording every run: "
+        f"{steering_examples}. "
         f"Do NOT bring up "
         f"individual memories, trips, old plans, or private callbacks in this "
         f"group startup greeting."

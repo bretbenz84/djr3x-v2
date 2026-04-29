@@ -446,9 +446,9 @@ def _build_person_context(person_id: int) -> str:
                     "ACKNOWLEDGE-ON-RETURN: open this interaction with ONE soft, "
                     "in-character acknowledgment of the most recent of the above "
                     "events, then end with ONE conversation-steering question "
-                    "that lets them choose the next topic. Vary between 'what "
-                    "are you up to today?' and 'what do you want to talk about?' "
-                    "in Rex's voice; acceptable example endings include: "
+                    "that lets them choose the next topic. Pick one short "
+                    "Rex-style opener from this menu, or invent a similar short "
+                    "variant; do not reuse the same wording every run: "
                     + "; ".join(social_scene.FIRST_GREETING_STEERING_PHRASES)
                     + ". No probing, no pretending it didn't happen. After that, "
                     "let them steer."
