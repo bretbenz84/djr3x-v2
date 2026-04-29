@@ -479,6 +479,50 @@ class ConversationGatingTest(unittest.TestCase):
         )
         conversation_steering.clear()
 
+    def test_topic_thread_startup_answer_fallback_becomes_interest_thread(self):
+        from intelligence import conversation_steering, interaction, topic_thread
+
+        conversation_steering.clear()
+        topic_thread.clear()
+        topic_thread.note_assistant_turn(
+            "Hey, Bret. What topic gets the honor of my extremely limited patience today?"
+        )
+        with (
+            mock.patch.object(
+                interaction.rel_memory,
+                "answer_latest_pending_question",
+                return_value=None,
+            ),
+            mock.patch(
+                "intelligence.conversation_steering.boundary_memory.is_blocked",
+                return_value=False,
+            ),
+            mock.patch(
+                "intelligence.conversation_steering.facts_memory.add_fact",
+            ) as add_fact,
+        ):
+            captured = interaction._maybe_capture_topic_thread_answer(
+                1,
+                "Star Trek",
+            )
+
+        ctx = conversation_steering.build_context(1)
+        self.assertIsNotNone(captured)
+        self.assertEqual(captured["question_key"], "startup_conversation_steering")
+        self.assertEqual(captured["answer_text"], "Star Trek")
+        self.assertIsNotNone(ctx)
+        self.assertEqual(ctx.topic, "Star Trek")
+        add_fact.assert_any_call(
+            1,
+            "interest",
+            "interest_star_trek",
+            "Star Trek",
+            "startup_thread_answer",
+            confidence=0.95,
+        )
+        topic_thread.clear()
+        conversation_steering.clear()
+
     def test_startup_answer_gets_room_for_followup_question(self):
         from intelligence import response_length
 

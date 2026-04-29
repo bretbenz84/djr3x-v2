@@ -4510,6 +4510,72 @@ def _maybe_capture_pending_qa(
         return None
 
 
+def _looks_like_startup_steering_question(question: str) -> bool:
+    q = (question or "").lower()
+    return any(
+        phrase in q
+        for phrase in (
+            "what topic",
+            "what corner",
+            "what mission",
+            "what are you up to",
+            "what do you want to talk",
+            "what should we talk",
+            "what are we discussing",
+            "discussing first",
+        )
+    )
+
+
+def _maybe_capture_topic_thread_answer(
+    person_id: Optional[int],
+    text: str,
+    *,
+    identity_prompt_active: bool = False,
+) -> Optional[dict]:
+    """Fallback answer capture when Rex's latest question lives only in thread state."""
+    if person_id is None or identity_prompt_active:
+        return None
+    cleaned = (text or "").strip()
+    if not cleaned or "?" in cleaned:
+        return None
+    if command_parser.parse(cleaned) is not None:
+        return None
+    try:
+        snap = topic_thread.snapshot() or {}
+        question = str(snap.get("unresolved_question") or "").strip()
+    except Exception:
+        question = ""
+    if not question or not _looks_like_startup_steering_question(question):
+        return None
+    try:
+        ctx = conversation_steering.note_bare_interest_answer(
+            person_id,
+            cleaned,
+            source="startup_thread_answer",
+        )
+    except Exception as exc:
+        _log.debug("topic-thread steering answer capture failed: %s", exc)
+        ctx = None
+    if ctx is None:
+        return None
+    answered = {
+        "question_key": "startup_conversation_steering",
+        "question_text": question,
+        "answer_text": cleaned,
+        "depth_level": 1,
+        "source": "topic_thread",
+    }
+    _log.info(
+        "[interaction] captured topic-thread answer — person_id=%s "
+        "key=%r answer=%r",
+        person_id,
+        answered["question_key"],
+        cleaned[:160],
+    )
+    return answered
+
+
 def _latest_pending_question(person_id: Optional[int]) -> Optional[dict]:
     if person_id is None:
         return None
@@ -5938,6 +6004,12 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 text,
                 identity_prompt_active=identity_prompt_active,
             )
+        if answered_question is None:
+            answered_question = _maybe_capture_topic_thread_answer(
+                person_id,
+                text,
+                identity_prompt_active=identity_prompt_active,
+            )
 
         router_context = None
         try:
@@ -6102,6 +6174,12 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
 
         if answered_question is None:
             answered_question = _maybe_capture_pending_qa(
+                person_id,
+                text,
+                identity_prompt_active=identity_prompt_active,
+            )
+        if answered_question is None:
+            answered_question = _maybe_capture_topic_thread_answer(
                 person_id,
                 text,
                 identity_prompt_active=identity_prompt_active,
