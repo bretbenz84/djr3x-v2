@@ -15,6 +15,7 @@ import re
 
 import config
 import apikeys
+from intelligence import local_llm
 from openai import OpenAI
 
 _log = logging.getLogger(__name__)
@@ -92,6 +93,51 @@ _PERSON_MEMORY_QUERY_RE = re.compile(
 )
 _BARE_TOPIC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 '&:-]{2,60}$")
 
+_TIME_QUERY_RE = re.compile(
+    r"\b(what(?:'s| is)?|tell me|give me|do you know)\b.{0,30}\b(time|clock)\b|"
+    r"\b(time|clock)\b.{0,20}\b(now|is it)\b",
+    re.IGNORECASE,
+)
+_DATE_QUERY_RE = re.compile(
+    r"\b(what(?:'s| is)?|tell me|give me|do you know)\b.{0,35}\b("
+    r"date|day|today|weekday"
+    r")\b|"
+    r"\bwhat day is it\b|"
+    r"\bwhat day\b.{0,35}\b(dealing with|today|is it|are we|we are)\b",
+    re.IGNORECASE,
+)
+_WEATHER_QUERY_RE = re.compile(
+    r"\b(weather|temperature|forecast|rain|raining|hot|cold|outside)\b",
+    re.IGNORECASE,
+)
+_GAMES_QUERY_RE = re.compile(
+    r"\b(what games|which games|games can you|play a game|start a game|"
+    r"trivia|jeopardy|i spy|20 questions|twenty questions|word association)\b",
+    re.IGNORECASE,
+)
+_CAPABILITIES_QUERY_RE = re.compile(
+    r"\b(what can you do|what are you capable of|capabilities|"
+    r"what do you do|help me|commands)\b",
+    re.IGNORECASE,
+)
+_UPTIME_QUERY_RE = re.compile(
+    r"\b(how long have you been|how long are you|uptime|been running|"
+    r"been awake|when did you start)\b",
+    re.IGNORECASE,
+)
+_VISION_QUERY_RE = re.compile(
+    r"\b(what do you see|what can you see|look at|take a look|"
+    r"what am i holding|describe (?:the )?(room|scene)|see me)\b",
+    re.IGNORECASE,
+)
+_WHO_QUERY_RE = re.compile(
+    r"\b(who am i|who'?s speaking|who is speaking|do you know who i am|"
+    r"recognize (?:me|my voice)|can you tell who i am|"
+    r"identify whoever is talking|identify who(?:ever)? is talking|"
+    r"who(?:ever)? is talking right now)\b",
+    re.IGNORECASE,
+)
+
 
 def _known_music_vibes() -> set[str]:
     vibes = set(_MUSIC_VIBE_FALLBACKS)
@@ -140,6 +186,60 @@ def _music_intent_allowed(text: str, label: str) -> bool:
     return True
 
 
+def _deterministic_label(text: str) -> str:
+    """Cheap rules for common routing intents.
+
+    The old classifier made an OpenAI call even for ordinary chat that was
+    almost certainly going to return "general". These rules preserve the
+    latency-sensitive local handlers for obvious requests and let everything
+    else fall straight through to the main response path.
+    """
+    if not text or not text.strip():
+        return "general"
+
+    cleaned = " ".join(text.strip().split())
+    if _WHO_QUERY_RE.search(cleaned):
+        return "query_who_is_speaking"
+    if _VISION_QUERY_RE.search(cleaned):
+        return "query_what_do_you_see"
+    if _UPTIME_QUERY_RE.search(cleaned):
+        return "query_uptime"
+    if _CAPABILITIES_QUERY_RE.search(cleaned):
+        return "query_capabilities"
+    if _DATE_QUERY_RE.search(cleaned):
+        return "query_date"
+    if _TIME_QUERY_RE.search(cleaned):
+        return "query_time"
+    if _WEATHER_QUERY_RE.search(cleaned):
+        return "query_weather"
+    if _GAMES_QUERY_RE.search(cleaned):
+        return "query_games"
+    if re.search(
+        r"\b(do you have|have you got|got any|anything by|something by)\b",
+        cleaned,
+        re.IGNORECASE,
+    ) and _contains_known_music_vibe(cleaned):
+        return "play_music"
+    if _music_intent_allowed(cleaned, "query_music_options") and re.search(
+        r"\b(what|which|kind|genres?|stations?|songs?|music).{0,50}\b("
+        r"play|have|available|options"
+        r")\b",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        return "query_music_options"
+    if _music_intent_allowed(cleaned, "play_music"):
+        return "play_music"
+    if re.search(
+        r"\b(what do you remember|what do you know about me|"
+        r"tell me what you know about|remember about)\b",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        return "query_memory"
+    return "general"
+
+
 _PROMPT_TEMPLATE = (
     'Classify this input into exactly one category. Reply with only the '
     'category name. Categories: query_time, query_date, query_weather, query_games, '
@@ -171,6 +271,11 @@ _PROMPT_TEMPLATE = (
     'Input: "{text}"'
 )
 
+_LOCAL_SYSTEM_PROMPT = (
+    "You are a strict intent classifier. Return exactly one category name and "
+    "nothing else. Never explain your choice."
+)
+
 
 def classify(text: str) -> str:
     """Return one of _VALID_INTENTS for the given user utterance.
@@ -182,10 +287,15 @@ def classify(text: str) -> str:
         return "general"
 
     cleaned = " ".join(text.strip().split())
+    label = _deterministic_label(cleaned)
+    if label != "general":
+        return label
+
     topic_match = _TOPIC_KNOWLEDGE_QUERY_RE.search(cleaned)
     topic = (topic_match.group("topic") if topic_match else "").strip()
     if topic and not _PERSON_MEMORY_QUERY_RE.search(topic):
         return "general"
+
     if (
         _BARE_TOPIC_RE.match(cleaned)
         and "?" not in cleaned
@@ -193,15 +303,11 @@ def classify(text: str) -> str:
         and not _MUSIC_PLAY_ACTION_RE.search(cleaned)
     ):
         return "general"
+    if not bool(getattr(config, "INTENT_CLASSIFIER_LLM_FALLBACK_ENABLED", True)):
+        return "general"
 
     try:
-        resp = _client.chat.completions.create(
-            model=config.LLM_MODEL,
-            messages=[{"role": "user", "content": _PROMPT_TEMPLATE.format(text=text)}],
-            temperature=0,
-            max_tokens=20,
-        )
-        label = (resp.choices[0].message.content or "").strip().lower()
+        label = _classify_with_llm(cleaned)
     except Exception as exc:
         _log.debug("intent_classifier classify failed: %s", exc)
         return "general"
@@ -233,3 +339,26 @@ def classify(text: str) -> str:
             return candidate
 
     return "general"
+
+
+def _classify_with_llm(text: str) -> str:
+    backend = str(getattr(config, "INTENT_CLASSIFIER_LLM_BACKEND", "ollama")).lower()
+    prompt = _PROMPT_TEMPLATE.format(text=text)
+
+    if backend == "ollama":
+        return local_llm.generate(
+            prompt,
+            system=_LOCAL_SYSTEM_PROMPT,
+            temperature=0,
+            max_tokens=8,
+            timeout_secs=float(getattr(config, "INTENT_CLASSIFIER_LOCAL_TIMEOUT_SECS", 0.75)),
+        ).strip().lower()
+
+    resp = _client.chat.completions.create(
+        model=config.LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        max_tokens=20,
+        timeout=float(getattr(config, "INTENT_CLASSIFIER_OPENAI_TIMEOUT_SECS", 1.5)),
+    )
+    return (resp.choices[0].message.content or "").strip().lower()

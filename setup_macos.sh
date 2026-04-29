@@ -167,6 +167,41 @@ for pkg in "${BREW_PACKAGES[@]}"; do
     fi
 done
 
+# ── 2a. Ollama local LLM runtime ─────────────────────────────────────────────
+log "Checking Ollama..."
+if command -v ollama &>/dev/null; then
+    ok "Ollama CLI already installed."
+else
+    log "Installing Ollama for macOS..."
+    if curl -fsSL https://ollama.com/install.sh | sh; then
+        INSTALLED_ITEMS+=("Ollama")
+        ok "Ollama installed."
+    else
+        warn "Could not install Ollama automatically."
+        MANUAL_ATTENTION+=("Install Ollama manually from https://ollama.com/download/mac, then run: python setup_assets.py")
+    fi
+fi
+
+if command -v ollama &>/dev/null; then
+    if curl -fsS --max-time 2 http://localhost:11434/ >/dev/null 2>&1; then
+        ok "Ollama server is running."
+    else
+        log "Starting Ollama in the background..."
+        open -ga Ollama --args hidden >/dev/null 2>&1 || true
+        for _ in {1..40}; do
+            if curl -fsS --max-time 2 http://localhost:11434/ >/dev/null 2>&1; then
+                ok "Ollama server started."
+                break
+            fi
+            sleep 0.25
+        done
+        if ! curl -fsS --max-time 2 http://localhost:11434/ >/dev/null 2>&1; then
+            warn "Ollama CLI is installed, but the local server is not responding yet."
+            MANUAL_ATTENTION+=("Start Ollama before model setup: open -ga Ollama --args hidden")
+        fi
+    fi
+fi
+
 # ── 2b. Arduino CLI core and libraries ───────────────────────────────────────
 log "Checking Arduino CLI support..."
 if command -v arduino-cli &>/dev/null; then

@@ -228,6 +228,9 @@ Audio output uses macOS system default device (3.5mm audio jack on the M1).
 ### LLM
 - OpenAI `gpt-4o-mini` streaming (cloud only)
 - OpenAI `gpt-4o` for vision queries
+- Local Ollama sidecar model: `qwen2.5:1.5b` is installed by `setup_assets.py`
+  and preloaded at startup before interaction begins. It is kept resident with
+  `keep_alive=-1` for low-latency classifier/shaping calls.
 - **Intent classifier** (`intelligence/intent_classifier.py`) sits between the
   command parser and the full LLM call. A single tiny GPT-4o-mini request
   returns one of: `query_time`, `query_weather`, `query_games`,

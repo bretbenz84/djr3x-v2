@@ -61,7 +61,7 @@ _SERVO_ENV_US_MAX = 3000.0
 
 # When True, clears logs/djr3x.log and logs/conversation.log at startup so
 # each run begins with fresh log files.
-DEBUG_MODE = False
+DEBUG_MODE = True
 
 # conversation.log is written by a tiny custom logger rather than Python's
 # RotatingFileHandler. Keep recent lines only so debug sessions do not leave a
@@ -78,6 +78,18 @@ WHISPER_FALLBACK_MODEL = "whisper-1"   # OpenAI Whisper API — used if local un
 WHISPER_LANGUAGE      = "en"           # Force English to suppress non-Latin hallucinations
 LLM_MODEL             = "gpt-4o-mini"  # Streaming chat completions
 VISION_MODEL          = "gpt-4o-mini"  # All image and scene analysis queries
+
+# Local Ollama model used for low-latency sidecar intelligence (intent routing,
+# empathy/shaping classifiers, etc.). The main conversational LLM can remain
+# cloud-backed while these smaller helper calls run locally.
+LOCAL_LLM_ENABLED = True
+LOCAL_LLM_PROVIDER = "ollama"
+OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_MODEL = "qwen2.5:1.5b"
+OLLAMA_KEEP_ALIVE = -1  # Negative keeps the model loaded until explicitly stopped.
+OLLAMA_PRELOAD_ON_STARTUP = True
+OLLAMA_PRELOAD_REQUIRED = True
+OLLAMA_STARTUP_TIMEOUT_SECS = 30.0
 
 # Base character prompt — always the first section of the GPT-4o-mini system prompt.
 # WorldState, person context, and behavioral modifiers are appended after this by llm.py.
@@ -278,6 +290,14 @@ COMMAND_FUZZY_THRESHOLD = 0.82
 # with real data instead of free-form LLM guesses. Disable if latency suffers.
 INTENT_CLASSIFIER_ENABLED = True
 
+# Deterministic intent rules handle the common low-latency intents locally.
+# Anything the rules do not recognize can use the configured sidecar classifier
+# before falling through to the main conversation path.
+INTENT_CLASSIFIER_LLM_FALLBACK_ENABLED = True
+INTENT_CLASSIFIER_LLM_BACKEND = "ollama"  # "ollama" or "openai"
+INTENT_CLASSIFIER_LOCAL_TIMEOUT_SECS = 0.75
+INTENT_CLASSIFIER_OPENAI_TIMEOUT_SECS = 1.5
+
 # ─────────────────────────────────────────────────────────────────────────────
 # EMPATHY / EMOTIONAL INTELLIGENCE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -305,7 +325,7 @@ EMPATHY_MIN_CONFIDENCE_FOR_MODE_CHANGE = 0.55
 # the empathy result is still cached for future turns if it finishes later.
 # Grief/sensitive-topic handling may occasionally land one turn later, but
 # Rex no longer feels frozen while a sidecar classifier waits on the network.
-EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS = 0.75
+EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS = 0.20
 
 # When True, sensitive emotional events (grief, illness, etc.) are NOT injected
 # into the system prompt while more than one person is in the scene. The person
@@ -947,12 +967,17 @@ ACTION_GOVERNOR_MIN_SCORE = 20
 #
 # Execution is limited by intelligence.action_router.EXECUTABLE_ACTIONS; all
 # other actions are still logged for comparison with the legacy path.
-ACTION_ROUTER_SHADOW_ENABLED = True
+ACTION_ROUTER_SHADOW_ENABLED = False
 ACTION_ROUTER_LOG_DECISIONS = True
-ACTION_ROUTER_EXECUTE_ENABLED = True
+ACTION_ROUTER_EXECUTE_ENABLED = False
 ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE = 0.85
 ACTION_ROUTER_MODEL = LLM_MODEL
 ACTION_ROUTER_MAX_CONTEXT_CHARS = 5000
+
+# Log coarse timings for the live speech-response path. These are intentionally
+# INFO-level because latency tuning is only useful when it is visible in normal
+# debug runs.
+LATENCY_TELEMETRY_ENABLED = True
 
 # When Rex turns a remembered music preference into a "want me to play it?"
 # offer, short yes/no replies in this window are consumed by that offer before

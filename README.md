@@ -31,7 +31,7 @@ See [CONTEXT.md](CONTEXT.md) for more detailed project features, architecture no
   - Head and chest LED controllers using Arduino Nano or Arduino Uno variants
   - Camera and microphone
 
-The macOS setup script installs Homebrew dependencies, pyenv, Python 3.11.9, the virtual environment, Python packages, config templates, assets, models, and database setup.
+The macOS setup script installs Homebrew dependencies, Ollama, pyenv, Python 3.11.9, the virtual environment, Python packages, config templates, assets, models, and database setup.
 
 ## How To Install
 
@@ -61,6 +61,7 @@ The setup script creates local config files from templates and prompts for local
 - Optional replacement of `ELEVENLABS_VOICE_ID` in `config.py`
 - Optional guided droid hardware setup for the chest Arduino, head LED Arduino, and Pololu Maestro
 - Arduino CLI, Arduino AVR core, and FastLED setup for uploading the included LED firmware
+- Ollama plus `qwen2.5:1.5b` for local low-latency classifier/shaping work
 
 You can leave a prompt blank to keep the current value, or edit the generated files manually later.
 
@@ -77,6 +78,8 @@ Start DJ-R3X:
 ```bash
 python main.py
 ```
+
+At startup, DJ-R3X preloads the local Ollama `qwen2.5:1.5b` model before accepting input and keeps it loaded for the run.
 
 You need to activate the virtual environment in every new terminal session before running project commands.
 

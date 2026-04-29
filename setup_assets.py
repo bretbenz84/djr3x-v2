@@ -5,9 +5,12 @@ Safe to run multiple times: never overwrites existing models or wipes existing d
 """
 
 import bz2
+import platform
 import shutil
 import sqlite3
+import subprocess
 import sys
+import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +20,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     DB_PATH,
     FACE_MODELS_DIR,
+    LOCAL_LLM_ENABLED,
+    LOCAL_LLM_PROVIDER,
+    OLLAMA_BASE_URL,
+    OLLAMA_MODEL,
     PERSONALITY_DEFAULTS,
     RESEMBLYZER_MODEL_DIR,
     WHISPER_LOCAL_MODEL,
@@ -329,7 +336,111 @@ def download_resemblyzer_model(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 5 — Database schema and personality_settings seed
+# Step 5 — Ollama local sidecar model
+# ─────────────────────────────────────────────────────────────────────────────
+def _ollama_url(path: str) -> str:
+    return str(OLLAMA_BASE_URL).rstrip("/") + path
+
+
+def _ollama_api_ready(timeout_secs: float = 0.5) -> bool:
+    try:
+        with urllib.request.urlopen(_ollama_url("/"), timeout=timeout_secs) as resp:
+            return resp.status < 500
+    except Exception:
+        return False
+
+
+def _start_ollama_server() -> None:
+    if _ollama_api_ready():
+        return
+    if platform.system() == "Darwin":
+        try:
+            proc = subprocess.run(
+                ["open", "-ga", "Ollama", "--args", "hidden"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if proc.returncode == 0:
+                return
+        except Exception:
+            pass
+    try:
+        subprocess.Popen(
+            ["ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+
+def _wait_for_ollama(timeout_secs: float = 30.0) -> bool:
+    _start_ollama_server()
+    deadline = time.monotonic() + timeout_secs
+    while time.monotonic() < deadline:
+        if _ollama_api_ready():
+            return True
+        time.sleep(0.25)
+    return _ollama_api_ready()
+
+
+def _ollama_model_present(model: str) -> bool:
+    try:
+        proc = subprocess.run(
+            ["ollama", "list"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return False
+    if proc.returncode != 0:
+        return False
+    return any(
+        line.split(None, 1)[0] == model
+        for line in proc.stdout.splitlines()
+        if line.strip() and not line.startswith("NAME")
+    )
+
+
+def install_ollama_model() -> tuple[list[str], list[str], list[str]]:
+    created, skipped, failed = [], [], []
+    provider = str(LOCAL_LLM_PROVIDER).lower()
+    model = str(OLLAMA_MODEL).strip()
+    label = f"ollama/{model}"
+
+    if not LOCAL_LLM_ENABLED or provider != "ollama" or not model:
+        skipped.append("ollama/local sidecar model disabled")
+        return created, skipped, failed
+
+    if shutil.which("ollama") is None:
+        failed.append(
+            f"{label}: ollama CLI not found — run ./setup_macos.sh or install Ollama"
+        )
+        return created, skipped, failed
+
+    if not _wait_for_ollama():
+        failed.append(f"{label}: Ollama server not reachable at {OLLAMA_BASE_URL}")
+        return created, skipped, failed
+
+    if _ollama_model_present(model):
+        skipped.append(label)
+        return created, skipped, failed
+
+    try:
+        print(f"    Pulling Ollama model {model} ...")
+        subprocess.run(["ollama", "pull", model], check=True)
+        created.append(label)
+    except Exception as exc:
+        failed.append(f"{label}: {exc}")
+
+    return created, skipped, failed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 6 — Database schema and personality_settings seed
 # ─────────────────────────────────────────────────────────────────────────────
 def _tables_exist(conn: sqlite3.Connection) -> bool:
     row = conn.execute(
@@ -499,7 +610,7 @@ def main() -> None:
     print("DJ-R3X v2 — setup_assets.py")
     print()
 
-    print("[1/5] Creating project directories ...")
+    print("[1/6] Creating project directories ...")
     dir_created = create_directories(root)
     count = len(dir_created)
     print(f"      {count} created." if count else "      All already exist.")
@@ -508,22 +619,27 @@ def main() -> None:
     all_skipped: list[str] = []
     all_failed:  list[str] = []
 
-    print("[2/5] dlib face recognition models ...")
+    print("[2/6] dlib face recognition models ...")
     c, s, f = download_dlib_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[3/5] mlx-whisper large-v3-turbo model ...")
+    print("[3/6] mlx-whisper large-v3-turbo model ...")
     c, s, f = download_whisper_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[4/5] Resemblyzer speaker-ID model ...")
+    print("[4/6] Resemblyzer speaker-ID model ...")
     c, s, f = download_resemblyzer_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[5/5] Database schema and personality defaults ...")
+    print("[5/6] Ollama local sidecar model ...")
+    c, s, f = install_ollama_model()
+    all_created += c; all_skipped += s; all_failed += f
+    _report(c, s, f)
+
+    print("[6/6] Database schema and personality defaults ...")
     c, s, f = initialize_database(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)

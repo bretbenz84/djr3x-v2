@@ -75,7 +75,7 @@ from sequences import animations
 from audio import stream, scene as audio_scene, output_gate, tts, speech_queue
 from vision import camera, scene as vision_scene
 from awareness import chronoception, interoception
-from intelligence import consciousness, interaction
+from intelligence import consciousness, interaction, local_llm
 
 
 def _verify_local_whisper_model() -> None:
@@ -140,6 +140,9 @@ def _shutdown() -> None:
 
     logger.info("Stopping intelligence.consciousness...")
     consciousness.stop()
+
+    logger.info("Unloading local LLM...")
+    local_llm.unload()
 
     logger.info("Stopping awareness.interoception...")
     interoception.stop()
@@ -267,6 +270,18 @@ def main() -> None:
 
     logger.info("Pre-warming audio output device...")
     tts.prewarm()
+
+    logger.info("Pre-loading local LLM...")
+    local_llm_ok = local_llm.preload()
+    if not local_llm_ok and bool(getattr(config, "OLLAMA_PRELOAD_REQUIRED", True)):
+        print(
+            f"[FATAL] Local Ollama model could not be preloaded: {config.OLLAMA_MODEL}",
+            file=sys.stderr,
+        )
+        print("Run:  python setup_assets.py", file=sys.stderr)
+        sys.exit(1)
+    if not local_llm_ok:
+        logger.warning("Local LLM preload failed; continuing without local sidecar model.")
 
     # audio.wake_word is started internally by intelligence.interaction.start() —
     # starting it separately would create a duplicate daemon thread.

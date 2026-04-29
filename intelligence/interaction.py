@@ -135,6 +135,21 @@ def _begin_user_turn() -> None:
         pass
 
 
+def _latency_log(turn_start: float, stage: str, stage_start: Optional[float] = None) -> None:
+    if not bool(getattr(config, "LATENCY_TELEMETRY_ENABLED", False)):
+        return
+    now = time.monotonic()
+    if stage_start is None:
+        _log.info("[latency] %s total=%.3fs", stage, now - turn_start)
+    else:
+        _log.info(
+            "[latency] %s stage=%.3fs total=%.3fs",
+            stage,
+            now - stage_start,
+            now - turn_start,
+        )
+
+
 def _end_user_turn() -> None:
     try:
         _situation_assessor.set_interaction_busy(False)
@@ -2084,6 +2099,7 @@ def _stream_llm_response(
     text: str,
     person_id: Optional[int],
     answered_question: Optional[dict] = None,
+    turn_start: Optional[float] = None,
 ) -> str:
     """Collect the full LLM response, then speak it in a single TTS call.
 
@@ -2125,11 +2141,14 @@ def _stream_llm_response(
             social_frame.build_directive(frame),
         ])
         _log.info("[agenda] %s", agenda_directive.replace("\n", " | "))
+        llm_started = time.monotonic()
         full_text = llm.get_response(
             text,
             person_id,
             agenda_directive=agenda_directive,
         )
+        if turn_start is not None:
+            _latency_log(turn_start, "llm_response", llm_started)
     finally:
         filler_stop.set()
 
@@ -2180,6 +2199,7 @@ def _stream_llm_response(
                 delivery_voice_settings if delivery_voice_settings else "default",
             )
 
+        speak_started = time.monotonic()
         completed = _speak_blocking(
             full_text,
             emotion=delivery_emotion,
@@ -2187,6 +2207,8 @@ def _stream_llm_response(
             post_beat_ms_override=delivery_post_beat_ms,
             voice_settings=delivery_voice_settings,
         )
+        if turn_start is not None:
+            _latency_log(turn_start, "tts_playback_complete", speak_started)
         if completed and frame.purpose == "identity" and "?" in full_text:
             _arm_visible_unknown_identity_followup(
                 person_id,
@@ -5021,6 +5043,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
 
+    turn_start = time.monotonic()
     answered_question: Optional[dict] = None
     assistant_asked_question = False
     game_after_audio_path: Optional[str] = None
@@ -5030,8 +5053,10 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
     suppress_memory_learning = False
 
     # Randomised pre-response pause — prevents Rex from feeling instant/robotic
+    delay_started = time.monotonic()
     delay_ms = random.randint(config.REACTION_DELAY_MS_MIN, config.REACTION_DELAY_MS_MAX)
     time.sleep(delay_ms / 1000.0)
+    _latency_log(turn_start, "reaction_delay", delay_started)
 
     # Once Rex starts speaking in response, hold AEC suppression open across any
     # related output as one continuous window. Do not start it before
@@ -5040,7 +5065,9 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
     sequence_started = False
     try:
         # Concurrent transcription + speaker identification
+        process_started = time.monotonic()
         text, raw_best_id, raw_best_name, speaker_score = _process_audio(audio_array)
+        _latency_log(turn_start, "transcribe_and_speaker_id", process_started)
 
         if not text:
             return
@@ -6092,7 +6119,9 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 _register_rex_utterance(fast_takeover_response)
                 return
             if bool(getattr(config, "ACTION_ROUTER_EXECUTE_ENABLED", False)):
+                router_started = time.monotonic()
                 router_decision = action_router.decide(text, router_context)
+                _latency_log(turn_start, "action_router", router_started)
                 action_router.log_decision(router_decision, router_context, mode="execute")
             else:
                 action_router.start_shadow_decision(text, router_context)
@@ -6789,7 +6818,9 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         elif response_text is None:
             if getattr(config, "INTENT_CLASSIFIER_ENABLED", False) and not active_grief_for_turn:
                 try:
+                    intent_started = time.monotonic()
                     intent = intent_classifier.classify(text)
+                    _latency_log(turn_start, "intent_classifier", intent_started)
                 except Exception as exc:
                     _log.debug("intent classification error: %s", exc)
                     intent = "general"
@@ -6819,7 +6850,9 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     _empathy_join_timeout = float(getattr(
                         config, "EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS", 4.0,
                     ))
+                    empathy_wait_started = time.monotonic()
                     _empathy_thread.join(timeout=_empathy_join_timeout)
+                    _latency_log(turn_start, "empathy_join", empathy_wait_started)
                     if _empathy_thread.is_alive():
                         _log.warning(
                             "[empathy] classification thread did not finish "
@@ -6914,6 +6947,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                         text,
                         person_id,
                         answered_question=answered_question,
+                        turn_start=turn_start,
                     )
                     used_agenda_llm = True
 
