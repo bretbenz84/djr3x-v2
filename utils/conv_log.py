@@ -18,7 +18,11 @@ _LOG_PATH = Path(__file__).parent.parent / "logs" / "conversation.log"
 _lock = threading.Lock()
 _last_rex_norm: str = ""
 _last_rex_at: float = 0.0
-_REX_DEDUPE_WINDOW_SECS = 2.0
+# Central TTS logging writes when playback starts; legacy call sites often log
+# again after blocking speech returns. Keep this long enough to cover a normal
+# generated line plus TTS/API/playback latency without suppressing intentional
+# repeats later in the conversation.
+_REX_DEDUPE_WINDOW_SECS = 30.0
 
 
 def _write(line: str) -> None:

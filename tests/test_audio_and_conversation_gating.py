@@ -21,6 +21,26 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertIn("REX", lines[0])
         conv_log.clear_dedupe_state()
 
+    def test_conversation_log_dedupes_same_rex_line_after_blocking_tts_return(self):
+        from utils import conv_log
+
+        times = iter([100.0, 110.0])
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "conversation.log"
+            with (
+                mock.patch.object(conv_log, "_LOG_PATH", log_path),
+                mock.patch.object(conv_log.time, "monotonic", side_effect=lambda: next(times)),
+            ):
+                conv_log.clear_dedupe_state()
+                line = "Ah, Star Trek! Where humans boldly go where no one has gone before."
+                conv_log.log_rex(line)
+                conv_log.log_rex(line)
+
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(len(lines), 1)
+        conv_log.clear_dedupe_state()
+
     def test_tts_speak_logs_spoken_text_to_conversation_log(self):
         import numpy as np
         from audio import tts
