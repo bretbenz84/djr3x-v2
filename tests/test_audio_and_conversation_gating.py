@@ -85,6 +85,22 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertIn("line 4", lines[-1])
         conv_log.clear_dedupe_state()
 
+    def test_conversation_log_labels_unknown_speakers_explicitly(self):
+        from utils import conv_log
+
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "conversation.log"
+            with mock.patch.object(conv_log, "_LOG_PATH", log_path):
+                conv_log.log_heard(None, "hello")
+                conv_log.log_heard("  ", "still me")
+                conv_log.log_heard("Bret Benziger", "known voice")
+
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertIn("HEARD | Unknown: hello", lines[0])
+        self.assertIn("HEARD | Unknown: still me", lines[1])
+        self.assertIn("HEARD | Bret Benziger: known voice", lines[2])
+
     def test_tts_speak_logs_spoken_text_to_conversation_log(self):
         import numpy as np
         from audio import tts

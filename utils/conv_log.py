@@ -62,7 +62,7 @@ def _normalize(text: str) -> str:
 
 def log_heard(speaker: str | None, text: str) -> None:
     """Log a transcribed utterance. speaker is a name or None for unknown."""
-    label = speaker.strip() if speaker and speaker.strip() else "Guest"
+    label = speaker.strip() if speaker and speaker.strip() else "Unknown"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     _write(f"{ts} | HEARD | {label}: {text}")
 
