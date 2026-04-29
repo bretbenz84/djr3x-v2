@@ -14,6 +14,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import config
+
 _LOG_PATH = Path(__file__).parent.parent / "logs" / "conversation.log"
 _lock = threading.Lock()
 _last_rex_norm: str = ""
@@ -25,10 +27,33 @@ _last_rex_at: float = 0.0
 _REX_DEDUPE_WINDOW_SECS = 30.0
 
 
+def _max_lines() -> int:
+    if getattr(config, "DEBUG_MODE", False):
+        return int(getattr(config, "CONVERSATION_LOG_DEBUG_MAX_LINES", 120) or 0)
+    return int(getattr(config, "CONVERSATION_LOG_MAX_LINES", 400) or 0)
+
+
+def _trim_locked() -> None:
+    max_lines = _max_lines()
+    if max_lines <= 0 or not _LOG_PATH.exists():
+        return
+    lines = _LOG_PATH.read_text(encoding="utf-8").splitlines()
+    if len(lines) <= max_lines:
+        return
+    kept = lines[-max_lines:]
+    _LOG_PATH.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+
+def _append_locked(line: str) -> None:
+    _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _LOG_PATH.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+    _trim_locked()
+
+
 def _write(line: str) -> None:
     with _lock:
-        with _LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        _append_locked(line)
 
 
 def _normalize(text: str) -> str:
@@ -55,8 +80,7 @@ def log_rex(text: str) -> None:
         _last_rex_norm = norm
         _last_rex_at = now
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with _LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(f"{ts} | REX   | {text.strip()}\n")
+        _append_locked(f"{ts} | REX   | {text.strip()}")
 
 
 def clear_dedupe_state() -> None:

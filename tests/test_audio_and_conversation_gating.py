@@ -64,6 +64,27 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         conv_log.clear_dedupe_state()
 
+    def test_conversation_log_trims_to_debug_line_limit(self):
+        from utils import conv_log
+
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "conversation.log"
+            with (
+                mock.patch.object(conv_log, "_LOG_PATH", log_path),
+                mock.patch("config.DEBUG_MODE", True),
+                mock.patch("config.CONVERSATION_LOG_DEBUG_MAX_LINES", 3),
+            ):
+                conv_log.clear_dedupe_state()
+                for idx in range(5):
+                    conv_log.log_heard("Bret", f"line {idx}")
+
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(len(lines), 3)
+        self.assertIn("line 2", lines[0])
+        self.assertIn("line 4", lines[-1])
+        conv_log.clear_dedupe_state()
+
     def test_tts_speak_logs_spoken_text_to_conversation_log(self):
         import numpy as np
         from audio import tts
