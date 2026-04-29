@@ -3359,6 +3359,8 @@ _EMOTIONAL_BOUNDARY_PAT = re.compile(
     r"\b("
     r"i'?d rather not|i would rather not|rather not talk|"
     r"don'?t want to talk|do not want to talk|"
+    r"i told you i didn'?t want to talk about (?:this|that|it)|"
+    r"i told you i did not want to talk about (?:this|that|it)|"
     r"let'?s change (the )?subject|change (the )?subject|"
     r"talk about something else|something else please|"
     r"don'?t ask me (about (that|it) )?again|do not ask me (about (that|it) )?again|"
@@ -3464,6 +3466,7 @@ def _handle_emotional_checkin_boundary(
             )
         except Exception:
             pass
+        _apply_topic_boundary_side_effects(person_id, text)
         return "Understood. I won't bring it up again unless you do."
     except Exception as exc:
         _log.debug("emotional check-in boundary handler failed: %s", exc)
@@ -4062,6 +4065,7 @@ def _handle_conversation_boundary(
         behavior = applied.get("behavior") or "mention"
         if action == "clear":
             return f"Got it. {topic_phrase} is back on the table, cautiously."
+        _apply_topic_boundary_side_effects(person_id, text)
         if behavior == "roast":
             return f"Noted. I won't roast you about {topic_phrase}."
         if behavior == "ask":
@@ -4070,6 +4074,22 @@ def _handle_conversation_boundary(
     except Exception as exc:
         _log.debug("conversation boundary handler failed: %s", exc)
         return None
+
+
+def _apply_topic_boundary_side_effects(person_id: Optional[int], text: str) -> None:
+    """Stop proactive continuation when the human closes or rejects a topic."""
+    try:
+        conversation_steering.clear(person_id)
+    except Exception as exc:
+        _log.debug("clear conversation steering after boundary failed: %s", exc)
+    try:
+        topic_thread.clear()
+    except Exception as exc:
+        _log.debug("clear topic thread after boundary failed: %s", exc)
+    try:
+        end_thread.note_user_turn(text, person_id)
+    except Exception as exc:
+        _log.debug("end-thread boundary grace failed: %s", exc)
 
 
 def _boundary_fallback_topic() -> Optional[str]:
@@ -4645,6 +4665,8 @@ def _maybe_capture_pending_qa(
     if _awaiting_followup_event is not None:
         return None
     if command_parser.parse(cleaned) is not None:
+        return None
+    if _EMOTIONAL_BOUNDARY_PAT.search(cleaned):
         return None
     if _looks_like_incomplete_pending_answer(cleaned):
         _log.info(

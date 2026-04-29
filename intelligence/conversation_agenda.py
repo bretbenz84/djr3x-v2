@@ -677,7 +677,7 @@ _HEALTH_RESOLVED_PAT = re.compile(
     r"\b("
     r"(?:pain|ache|hurt|back|neck|headache|migraine|soreness).{0,50}"
     r"(?:gone away|went away|resolved|cleared up|is gone|has gone|better now|"
-    r"feels better|feeling better)|"
+    r"is mostly gone|has mostly gone|mostly gone|feels better|feeling better)|"
     r"(?:i'?m|i am) (?:better|fine|okay|ok) now"
     r")\b",
     re.IGNORECASE,

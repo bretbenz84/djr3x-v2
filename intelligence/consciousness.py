@@ -867,7 +867,14 @@ def _generate_and_speak(
     return True
 
 
-def _should_fire_presence(key, person_db_id: Optional[int], profile: SituationProfile) -> bool:
+def _should_fire_presence(
+    key,
+    person_db_id: Optional[int],
+    profile: SituationProfile,
+    *,
+    allow_engaged: bool = False,
+    bypass_cooldown: bool = False,
+) -> bool:
     """
     Unified gate for presence (departure/return) reactions.
 
@@ -882,12 +889,12 @@ def _should_fire_presence(key, person_db_id: Optional[int], profile: SituationPr
         return False
     if profile.user_mid_sentence:
         return False
-    if is_engaged_with(person_db_id):
+    if not allow_engaged and is_engaged_with(person_db_id):
         return False
 
     cooldown = getattr(config, "PRESENCE_PER_PERSON_COOLDOWN_SECS", 120.0)
     last = _last_presence_reaction_at.get(key, 0.0)
-    if last and (time.monotonic() - last) < cooldown:
+    if not bypass_cooldown and last and (time.monotonic() - last) < cooldown:
         return False
 
     try:
@@ -3544,7 +3551,13 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         if key not in _confirmed_absent_at:
             continue
 
-        if not _should_fire_presence(key, person_db_id, profile):
+        if not _should_fire_presence(
+            key,
+            person_db_id,
+            profile,
+            allow_engaged=True,
+            bypass_cooldown=True,
+        ):
             continue
 
         _last_return_reaction_at[key] = now

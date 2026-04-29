@@ -1647,13 +1647,64 @@ class ConversationGatingTest(unittest.TestCase):
             mock.patch("intelligence.question_budget.build_directive", return_value=""),
         ):
             directive = conversation_agenda.build_turn_directive(
-                "my back pain has gone away",
+                "My back pain is mostly gone now",
                 1,
             )
 
         self.assertIn("acknowledge relief", directive)
         self.assertIn("Let the worry de-escalate", directive)
         self.assertIn("do not ask a new question", directive)
+
+    def test_topic_boundary_clears_interest_and_starts_grace(self):
+        from intelligence import conversation_steering, end_thread, interaction
+
+        conversation_steering.clear()
+        end_thread.clear()
+        with (
+            mock.patch(
+                "intelligence.conversation_steering.boundary_memory.is_blocked",
+                return_value=False,
+            ),
+            mock.patch("intelligence.conversation_steering.facts_memory.add_fact"),
+        ):
+            conversation_steering.note_user_turn(1, "I like Star Trek Voyager")
+        self.assertIsNotNone(conversation_steering.build_context(1))
+
+        with (
+            mock.patch.object(
+                interaction.emotional_events,
+                "mute_recent_checkin_for_person",
+                return_value={"id": 4, "category": "health"},
+            ),
+            mock.patch.object(interaction.consciousness, "note_emotional_checkin_boundary", return_value=True),
+            mock.patch.object(interaction.empathy, "force_mode"),
+        ):
+            response = interaction._handle_emotional_checkin_boundary(
+                1,
+                "I don't want to talk about it anymore",
+            )
+
+        self.assertIn("won't bring it up", response)
+        self.assertIsNone(conversation_steering.build_context(1))
+        self.assertTrue(end_thread.is_grace_active())
+        conversation_steering.clear()
+        end_thread.clear()
+
+    def test_pending_qa_does_not_capture_topic_boundary(self):
+        from intelligence import interaction
+
+        with mock.patch.object(
+            interaction.rel_memory,
+            "answer_latest_pending_question",
+            return_value={"question_key": "interest_star_trek_voyager_idle_followup"},
+        ) as answer:
+            captured = interaction._maybe_capture_pending_qa(
+                1,
+                "I told you I didn't want to talk about it",
+            )
+
+        self.assertIsNone(captured)
+        answer.assert_not_called()
 
     def test_topic_thread_explicit_interest_switches_out_of_heavy_health(self):
         from intelligence import topic_thread
@@ -1690,6 +1741,46 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertEqual(governed.text, "Catch you later, Bret!")
         self.assertNotIn("Probably not me", governed.text)
         self.assertNotIn("Fun for who", governed.text)
+
+    def test_return_presence_can_acknowledge_engaged_person_after_cooldown(self):
+        import time
+        from awareness.situation import SituationProfile
+        from intelligence import consciousness
+
+        profile = SituationProfile(
+            conversation_active=True,
+            user_mid_sentence=False,
+            rapid_exchange=False,
+            child_present=False,
+            apparent_departure=False,
+            likely_still_present=False,
+            social_mode="one_on_one",
+            suppress_proactive=False,
+            suppress_system_comments=False,
+            force_family_safe=False,
+            being_discussed=False,
+            discussion_sentiment="neutral",
+            interaction_busy=False,
+        )
+        consciousness._last_presence_reaction_at[1] = time.monotonic()
+        try:
+            with (
+                mock.patch.object(consciousness, "_can_speak", return_value=True),
+                mock.patch.object(consciousness, "is_engaged_with", return_value=True),
+                mock.patch("audio.speech_queue.has_waiting_with_tag", return_value=False),
+            ):
+                self.assertFalse(consciousness._should_fire_presence(1, 1, profile))
+                self.assertTrue(
+                    consciousness._should_fire_presence(
+                        1,
+                        1,
+                        profile,
+                        allow_engaged=True,
+                        bypass_cooldown=True,
+                    )
+                )
+        finally:
+            consciousness._last_presence_reaction_at.pop(1, None)
 
 
 class PendingMusicPreferenceTest(unittest.TestCase):
