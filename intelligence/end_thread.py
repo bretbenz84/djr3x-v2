@@ -20,15 +20,18 @@ import config
 _CLOSURE_PAT = re.compile(
     r"\b(that'?s all|that is all|that'?s it|that is it|all good|i'?m good|"
     r"i am good|nothing else|no more|let'?s leave it there|leave it there|"
-    r"we can stop|let'?s stop|moving on|anyway,? never mind|never mind|"
+    r"we can stop|let'?s stop|moving on|anyway,? never ?mind|never ?mind|"
     r"thanks|thank you|appreciate it|sounds good|fair enough|got it|"
-    r"makes sense|okay,? cool|ok,? cool)\b",
+    r"makes sense|okay,? cool|ok,? cool|bye|goodbye|good-bye|"
+    r"see you|see ya|later|talk to you later|talk later|nice speaking|"
+    r"nice talking)\b",
     re.IGNORECASE,
 )
 _SHORT_ACK_PAT = re.compile(
     r"^\s*(ok|okay|cool|nice|yeah|yep|alright|right|gotcha|thanks|thank you)\s*[.!]?\s*$",
     re.IGNORECASE,
 )
+_THANKS_FOR_ASKING_PAT = re.compile(r"\bthanks?(?:\s+you)?\s+for\s+asking\b", re.IGNORECASE)
 _QUESTION_START = re.compile(
     r"^\s*(who|what|when|where|why|how|can|could|would|will|do|does|did|"
     r"is|are|am|should)\b",
@@ -163,6 +166,8 @@ def _starts_new_thread(text: str) -> bool:
 
 
 def _closure_reason(text: str, *, answered_question: Optional[dict]) -> str:
+    if _THANKS_FOR_ASKING_PAT.search(text):
+        return ""
     if _CLOSURE_PAT.search(text):
         return "explicit closure cue"
     if _SHORT_ACK_PAT.match(text):

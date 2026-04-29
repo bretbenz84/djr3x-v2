@@ -60,6 +60,11 @@ _INTEREST_PATTERNS: list[re.Pattern[str]] = [
         re.IGNORECASE,
     ),
     re.compile(
+        r"\bmy\s+(?:favorite|favourite)\s+kind\s+of\s+"
+        r"(?P<category>[^.?!,;]{3,40})\s+is\s+(?P<topic>[^.?!,;]{3,90})",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"\b(?:my\s+hobby\s+is|one\s+of\s+my\s+hobbies\s+is)\s+"
         r"(?P<topic>[^.?!,;]{3,90})",
         re.IGNORECASE,
@@ -114,7 +119,11 @@ def detect_interest(text: str) -> Optional[str]:
         match = pat.search(cleaned)
         if not match:
             continue
-        topic = _clean_topic(match.group("topic"))
+        topic_text = match.group("topic")
+        category = match.groupdict().get("category")
+        if category:
+            topic_text = f"{topic_text} {category}"
+        topic = _clean_topic(topic_text)
         if topic:
             return topic
     return None

@@ -912,6 +912,13 @@ POST_QUESTION_LISTEN_DELAY_SECS = 0.05
 # Seconds of no detected speech in ACTIVE state before returning to IDLE
 CONVERSATION_IDLE_TIMEOUT_SECS = 30.0
 ACTIVE_GAME_IDLE_TIMEOUT_SECS = 180.0
+
+# If a person has just volunteered a favorite thing or interest, give Rex one
+# topic-aware chance to keep the thread alive before the normal idle timeout.
+INTEREST_IDLE_FOLLOWUP_ENABLED = True
+INTEREST_IDLE_FOLLOWUP_SECS = 12.0
+INTEREST_IDLE_FOLLOWUP_MAX_WORDS = 22
+
 IDLE_LISTEN_DURING_DJ_PLAYBACK = True
 DJ_DUCK_DURING_SPEECH = True
 DJ_LISTEN_DUCK_VOLUME = 0.18
@@ -1317,11 +1324,12 @@ VISIT_MILESTONES = [5, 10, 25, 50, 100]
 # ─────────────────────────────────────────────────────────────────────────────
 
 LATENCY_FILLER_LINES = [
-    "Um...",
-    "Um..um...",
-    "Hmm...",
-    "One sec",
-    "Processing...",
+    "One sec, thinking.",
+    "Hang on, processing.",
+    "Running that thought through hyperspace.",
+    "Stand by, recalibrating the answer.",
+    "Processing. Try not to look impressed.",
+    "One sec, consulting the memory banks.",
 ]
 
 # Filler should only cover real latency, not every turn. This avoids clipped,

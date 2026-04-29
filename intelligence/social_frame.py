@@ -38,6 +38,10 @@ _QUESTION_START = re.compile(
 )
 _SENTENCE_SPLIT = re.compile(r"[^.!?]+[.!?]*")
 _WORD_PAT = re.compile(r"[A-Za-z0-9']+")
+_ABBREVIATION_PAT = re.compile(
+    r"\b(?:[A-Z]\.){2,}(?:[A-Z]\.)?|"
+    r"\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|e\.g|i\.e)\.",
+)
 _VISUAL_PAT = re.compile(
     r"\b(i can see|i see you|you look|you're looking|you are looking|"
     r"in the frame|on camera|your face|your shirt|your outfit|lying on|"
@@ -51,7 +55,8 @@ _ROAST_PAT = re.compile(
     r"let'?s pretend|life decisions|embarrass yourself|brilliance in basic|"
     r"walking software outage|dumpster fire|trainwreck|train wreck|clown show|"
     r"bad decisions?|questionable choices?|questionable life choices?|"
-    r"meatbag|carbon-based|meat-based|malfunctioning organic)\b",
+    r"meatbag|carbon-based|meat-based|malfunctioning organic|"
+    r"crushing roasts?|savage roasts?)\b",
     re.IGNORECASE,
 )
 _DIRECT_ROAST_PAT = re.compile(
@@ -67,10 +72,10 @@ _DIRECT_ROAST_PAT = re.compile(
 _CONDESCENDING_ORGANIC_PAT = re.compile(
     r"(?:\b(organic|organics|meatbag|carbon-based|meat-based|biological)\b"
     r".{0,80}\b("
-    r"confused|primitive|fragile|malfunctioning|squishy|limited|inferior|"
+    r"boring|confused|primitive|fragile|malfunctioning|squishy|limited|inferior|"
     r"questionable|disaster|mess|bad decisions?|life choices"
     r")\b|\b("
-    r"confused|primitive|fragile|malfunctioning|squishy|limited|inferior|"
+    r"boring|confused|primitive|fragile|malfunctioning|squishy|limited|inferior|"
     r"questionable|disaster|mess"
     r")\b.{0,80}\b(organic|organics|meatbag|carbon-based|meat-based|biological)\b)",
     re.IGNORECASE,
@@ -94,7 +99,8 @@ _HARSH_ROAST_PAT = re.compile(
 _DANGLING_WORDS = {
     "a", "an", "and", "are", "as", "at", "because", "but", "for", "from",
     "if", "in", "into", "like", "of", "on", "or", "so", "than", "that",
-    "the", "to", "with", "according",
+    "the", "to", "with", "according", "whatever",
+    "delivering", "giving", "making", "doing", "having", "being",
 }
 _HARD_NO_QUESTION_PAT = re.compile(
     r"(do not ask|don't ask|no new questions|without adding a new question|"
@@ -180,6 +186,11 @@ def build_frame(
     if urgent_identity and unknown_count:
         allow_question = True
         plan.max_words = max(plan.max_words, 28)
+        plan.max_sentences = max(plan.max_sentences, 2)
+    elif allow_question:
+        # The agenda often asks for "one compact beat, then one natural
+        # follow-up." A one-sentence frame was trimming away the actual
+        # follow-up and leaving inert acknowledgements like "Voyager, huh?"
         plan.max_sentences = max(plan.max_sentences, 2)
 
     allow_visual = _visual_allowed(
@@ -309,6 +320,10 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
     if trimmed != current:
         current = trimmed
         notes.append("trimmed_words")
+        repaired = _repair_trimmed_fragment(current)
+        if repaired != current:
+            current = repaired
+            notes.append("repaired_fragment")
 
     current = _normalize_text(current)
     if not current:
@@ -488,8 +503,28 @@ def _normalize_text(text: str) -> str:
 
 
 def _sentences(text: str) -> list[str]:
-    pieces = [m.group(0).strip() for m in _SENTENCE_SPLIT.finditer(text or "")]
-    return [p for p in pieces if p]
+    protected, replacements = _protect_abbreviations(text or "")
+    pieces = [m.group(0).strip() for m in _SENTENCE_SPLIT.finditer(protected)]
+    restored = [_restore_abbreviations(p, replacements) for p in pieces if p]
+    return [p for p in restored if p]
+
+
+def _protect_abbreviations(text: str) -> tuple[str, dict[str, str]]:
+    replacements: dict[str, str] = {}
+
+    def _replace(match: re.Match[str]) -> str:
+        token = f"__ABBR{len(replacements)}__"
+        replacements[token] = match.group(0)
+        return token
+
+    return _ABBREVIATION_PAT.sub(_replace, text), replacements
+
+
+def _restore_abbreviations(text: str, replacements: dict[str, str]) -> str:
+    restored = text
+    for token, value in replacements.items():
+        restored = restored.replace(token, value)
+    return restored
 
 
 def _trim_sentences(sentences: list[str], frame: SocialFrame) -> list[str]:
@@ -559,6 +594,22 @@ def _trim_words(text: str, max_words: int) -> str:
     if trimmed and trimmed[-1] not in ".!?":
         trimmed += "."
     return trimmed
+
+
+def _repair_trimmed_fragment(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return cleaned
+    words = _WORD_PAT.findall(cleaned)
+    if not words:
+        return cleaned
+    last = words[-1].lower()
+    if last not in _DANGLING_WORDS:
+        return cleaned
+    sentences = _sentences(cleaned)
+    if len(sentences) > 1:
+        return " ".join(sentences[:-1]).strip()
+    return ""
 
 
 def _fallback(frame: SocialFrame) -> str:

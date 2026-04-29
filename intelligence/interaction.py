@@ -97,6 +97,7 @@ _session_exchange_count: int = 0
 _last_speech_at: float = 0.0  # monotonic timestamp of most recent speech chunk
 _session_forget_terms: dict[int, set[str]] = {}
 _session_router_control_topics: dict[int, str] = {}
+_interest_idle_followups_spoken: set[tuple[Optional[int], str]] = set()
 _pending_music_offer: Optional[dict] = None
 _no_response_recovery_token: int = 0
 _no_response_recovery_lock = threading.Lock()
@@ -805,6 +806,136 @@ def _register_rex_utterance(text: str, wait_secs: Optional[float] = None) -> Non
         consciousness.note_rex_utterance(text, wait_secs=wait_secs)
     except Exception:
         pass
+
+
+def _primary_session_person_id() -> Optional[int]:
+    if len(_session_person_ids) == 1:
+        return next(iter(_session_person_ids))
+    try:
+        people = world_state.get("people", []) or []
+    except Exception:
+        people = []
+    known_visible = [
+        p.get("person_db_id")
+        for p in people
+        if p.get("person_db_id") is not None
+    ]
+    unique = {int(pid) for pid in known_visible if pid is not None}
+    if len(unique) == 1:
+        return next(iter(unique))
+    return None
+
+
+def _maybe_interest_idle_followup(
+    *,
+    idle_for: float,
+    effective_idle_timeout: float,
+) -> bool:
+    """Give one topic-aware nudge before an active interest thread goes idle."""
+    global _session_exchange_count
+    if not bool(getattr(config, "INTEREST_IDLE_FOLLOWUP_ENABLED", True)):
+        return False
+    threshold = float(getattr(config, "INTEREST_IDLE_FOLLOWUP_SECS", 12.0) or 0.0)
+    if threshold <= 0 or idle_for < threshold:
+        return False
+    # Leave at least a little room between the nudge and the hard idle cutoff.
+    if idle_for >= max(0.0, effective_idle_timeout - 1.0):
+        return False
+    if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
+        return False
+    if _interrupted.is_set():
+        return False
+    try:
+        if end_thread.is_grace_active():
+            return False
+    except Exception:
+        pass
+
+    person_id = _primary_session_person_id()
+    if person_id is None:
+        return False
+    try:
+        steering = conversation_steering.build_context(person_id)
+    except Exception as exc:
+        _log.debug("interest idle follow-up steering context failed: %s", exc)
+        return False
+    if not steering:
+        return False
+
+    key = (person_id, steering.fact_key)
+    if key in _interest_idle_followups_spoken:
+        return False
+
+    allow_question = True
+    try:
+        allow_question = question_budget.can_ask("interest_idle_followup")
+    except Exception:
+        allow_question = True
+
+    max_words = int(getattr(config, "INTEREST_IDLE_FOLLOWUP_MAX_WORDS", 22) or 22)
+    question_rule = (
+        "Prefer one natural, low-pressure question that deepens this topic."
+        if allow_question else
+        "Do not ask a question; offer one specific opinion or curious observation."
+    )
+    try:
+        line = llm.get_response(
+            "Generate ONE short DJ-R3X line to re-engage a person after a quiet "
+            f"pause. Active interest: {steering.topic!r}. {question_rule} "
+            "Sound genuinely interested in what they told Rex they like. "
+            "Do not mention the silence, the camera, the room, or the idle timer. "
+            f"Maximum {max_words} words. Return only the line.",
+            person_id,
+        )
+    except Exception as exc:
+        _log.debug("interest idle follow-up LLM failed: %s", exc)
+        return False
+
+    line = llm.clean_response_text(line or "")
+    if not line:
+        return False
+    frame = social_frame.build_frame(
+        f"I like {steering.topic}",
+        person_id,
+        agenda_directive=(
+            steering.directive
+            + " Primary purpose: after a quiet pause, keep the active interest "
+            "thread alive with one compact, topic-aware follow-up."
+        ),
+    )
+    if not allow_question:
+        frame.allow_question = False
+    frame.max_words = min(frame.max_words, max_words)
+    frame.max_sentences = max(frame.max_sentences, 2 if frame.allow_question else 1)
+    governed = social_frame.govern_response(line, frame)
+    line = governed.text
+    if not line:
+        return False
+
+    _interest_idle_followups_spoken.add(key)
+    _log.info(
+        "[interaction] interest idle follow-up — person_id=%s topic=%r text=%r",
+        person_id,
+        steering.topic,
+        line,
+    )
+    completed = _speak_blocking(line, emotion="curious", priority=1)
+    if completed:
+        conv_memory.add_to_transcript("Rex", line)
+        conv_log.log_rex(line)
+        _register_rex_utterance(line)
+        _session_exchange_count += 1
+        if "?" in line:
+            try:
+                rel_memory.save_question_asked(
+                    person_id,
+                    f"{steering.fact_key}_idle_followup",
+                    line,
+                    1,
+                )
+            except Exception as exc:
+                _log.debug("interest idle follow-up save_qa failed: %s", exc)
+    return completed
 
 
 def _record_being_discussed(
@@ -2425,6 +2556,12 @@ def _execute_command(
         _speak_blocking(resp, emotion)
         return resp
 
+    def _target_for_user(target: str) -> str:
+        cleaned = (target or "").strip()
+        if re.match(r"(?i)^my\b", cleaned):
+            return re.sub(r"(?i)^my\b", "your", cleaned, count=1)
+        return cleaned
+
     # ── Physical attention / movement ─────────────────────────────────────────
     if key == "directed_look":
         return _execute_directed_look_command(args, person_id, person_name, raw_text)
@@ -2498,9 +2635,9 @@ def _execute_command(
             result.deleted,
         )
         if result.total_deleted <= 0:
-            resp = f"I couldn't find a stored memory matching {target}."
+            resp = f"I couldn't find a stored memory matching {_target_for_user(target)}."
         else:
-            resp = f"Okay. I forgot the stored memory I found about {target}."
+            resp = f"Okay. I forgot the stored memory I found about {_target_for_user(target)}."
         _speak_blocking(resp, emotion="neutral")
         return resp
 
@@ -2908,6 +3045,7 @@ def _end_session() -> None:
         _session_person_ids.clear()
         _session_forget_terms.clear()
         _session_router_control_topics.clear()
+        _interest_idle_followups_spoken.clear()
         try:
             topic_thread.clear()
         except Exception:
@@ -3004,6 +3142,7 @@ def _end_session() -> None:
     conv_memory.clear_transcript()
     _session_forget_terms.clear()
     _session_router_control_topics.clear()
+    _interest_idle_followups_spoken.clear()
     try:
         topic_thread.clear()
     except Exception:
@@ -4796,6 +4935,12 @@ def _handle_classified_intent(
         _speak_blocking(resp)
         return resp
 
+    tool_scope = (
+        "Stay strictly on the user's requested tool answer. Do not mention "
+        "unrelated memories, grief, death, sensitive events, visual observations, "
+        "or personal facts unless the user asked for them in this turn."
+    )
+
     if intent == "query_time":
         resp = _format_current_time_response()
         _speak_blocking(resp)
@@ -4817,14 +4962,14 @@ def _handle_classified_intent(
             return _say(
                 "The user asked about the weather but your weather feed is offline "
                 "right now. Tell them you can't reach the weather service in one "
-                "Rex-style line. Do NOT make up a temperature or conditions."
+                f"Rex-style line. Do NOT make up a temperature or conditions. {tool_scope}"
             )
         return _say(
             f"The real current weather in {location} is exactly {temp}°F and "
             f"{desc}. Tell the user the weather in one Rex-style line. "
             f"You MUST state the temperature exactly as given ({temp}°F) and the "
             f"conditions ({desc}) — do not round, do not invent different numbers, "
-            f"do not substitute different conditions."
+            f"do not substitute different conditions. {tool_scope}"
         )
 
     if intent == "query_games":
@@ -4832,7 +4977,7 @@ def _handle_classified_intent(
         game_list = ", ".join(games_mod.available_game_names()) or "none right now"
         return _say(
             f"The user asked what games you can play. Your actual game list: {game_list}. "
-            f"Tell them in one Rex-style line. Be brief."
+            f"Tell them in one Rex-style line. Be brief. {tool_scope}"
         )
 
     if intent == "query_capabilities":
@@ -4846,7 +4991,7 @@ def _handle_classified_intent(
         )
         return _say(
             f"The user asked what you can do. Your real capabilities: {capabilities}. "
-            f"Summarize in one or two Rex-style lines. Be brief."
+            f"Summarize in one or two Rex-style lines. Be brief. {tool_scope}"
         )
 
     if intent == "query_uptime":
@@ -4859,7 +5004,7 @@ def _handle_classified_intent(
         minutes = (up % 3600) // 60
         return _say(
             f"Tell the user your uptime is exactly {hours} hours and {minutes} minutes "
-            f"in Rex character. Be brief."
+            f"in Rex character. Be brief. {tool_scope}"
         )
 
     if intent == "query_what_do_you_see":
@@ -7204,7 +7349,14 @@ def _loop() -> None:
                 )
         except Exception:
             pass
-        if time.monotonic() - _last_speech_at >= effective_idle_timeout:
+        idle_for = time.monotonic() - _last_speech_at
+        if _maybe_interest_idle_followup(
+            idle_for=idle_for,
+            effective_idle_timeout=effective_idle_timeout,
+        ):
+            continue
+
+        if idle_for >= effective_idle_timeout:
             _log.info("[interaction] conversation idle timeout — returning to IDLE")
             _end_session()
             state_module.set_state(State.IDLE)
@@ -7313,6 +7465,7 @@ def start() -> None:
     _interrupted.clear()
     _session_person_ids.clear()
     _session_router_control_topics.clear()
+    _interest_idle_followups_spoken.clear()
     _identity_prompt_until = 0.0
     _awaiting_followup_event = None
     topic_thread.clear()

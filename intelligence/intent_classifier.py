@@ -117,7 +117,9 @@ _GAMES_QUERY_RE = re.compile(
 )
 _CAPABILITIES_QUERY_RE = re.compile(
     r"\b(what can you do|what are you capable of|capabilities|"
-    r"what do you do|help me|commands)\b",
+    r"what do you do|what (?:sort|kind) of (?:stuff|things) are you good for|"
+    r"what are you good (?:for|at)|what are you useful for|what can i ask you|"
+    r"what should i ask you|help me|commands)\b",
     re.IGNORECASE,
 )
 _UPTIME_QUERY_RE = re.compile(
@@ -135,6 +137,28 @@ _WHO_QUERY_RE = re.compile(
     r"recognize (?:me|my voice)|can you tell who i am|"
     r"identify whoever is talking|identify who(?:ever)? is talking|"
     r"who(?:ever)? is talking right now)\b",
+    re.IGNORECASE,
+)
+_CLOSURE_RE = re.compile(
+    r"\b("
+    r"bye|goodbye|good-bye|see you|see ya|talk to you later|talk later|"
+    r"catch you later|later|nice speaking|nice talking|that'?s all|"
+    r"that is all|never ?mind|forget it|we can stop|let'?s stop"
+    r")\b",
+    re.IGNORECASE,
+)
+_CONTEXTUAL_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:what|how|and)\s+(?:about|bout)\s+[^?!.]{2,80}\??\s*$",
+    re.IGNORECASE,
+)
+_MEMORY_SELF_QUERY_RE = re.compile(
+    r"\b("
+    r"tell me about myself|tell me about me|what do you know about me|"
+    r"what do you remember about me|what do you remember about myself|"
+    r"tell me what you know about me|tell me what you remember about me|"
+    r"what are my plans|what(?:'s| is) my plan|what do i have planned|"
+    r"what am i doing"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -198,6 +222,12 @@ def _deterministic_label(text: str) -> str:
         return "general"
 
     cleaned = " ".join(text.strip().split())
+    if _CLOSURE_RE.search(cleaned):
+        return "general"
+    if _CONTEXTUAL_FOLLOWUP_RE.match(cleaned):
+        return "general"
+    if _MEMORY_SELF_QUERY_RE.search(cleaned):
+        return "query_memory"
     if _WHO_QUERY_RE.search(cleaned):
         return "query_who_is_speaking"
     if _VISION_QUERY_RE.search(cleaned):
@@ -315,6 +345,13 @@ def classify(text: str) -> str:
     # Tolerate stray punctuation / quotes from the model.
     label = label.strip(' "\'.`')
     if label in _VALID_INTENTS:
+        if label != "general" and _llm_label_blocked(cleaned, label):
+            _log.info(
+                "[intent_classifier] overriding %s → general; deterministic guard for %r",
+                label,
+                text,
+            )
+            return "general"
         if label in {"play_music", "query_music_options"} and not _music_intent_allowed(text, label):
             _log.info(
                 "[intent_classifier] overriding %s → general; no explicit music intent in %r",
@@ -326,6 +363,13 @@ def classify(text: str) -> str:
 
     for candidate in _VALID_INTENTS:
         if candidate in label:
+            if candidate != "general" and _llm_label_blocked(cleaned, candidate):
+                _log.info(
+                    "[intent_classifier] overriding %s → general; deterministic guard for %r",
+                    candidate,
+                    text,
+                )
+                return "general"
             if (
                 candidate in {"play_music", "query_music_options"}
                 and not _music_intent_allowed(text, candidate)
@@ -339,6 +383,29 @@ def classify(text: str) -> str:
             return candidate
 
     return "general"
+
+
+def _llm_label_blocked(text: str, label: str) -> bool:
+    """Reject feature intents the fallback LLM often invents for ordinary chat."""
+    if _CLOSURE_RE.search(text):
+        return True
+    if _CONTEXTUAL_FOLLOWUP_RE.match(text):
+        return True
+    if label == "query_date" and not _DATE_QUERY_RE.search(text):
+        return True
+    if label == "query_time" and not _TIME_QUERY_RE.search(text):
+        return True
+    if label == "query_weather" and not _WEATHER_QUERY_RE.search(text):
+        return True
+    if label == "query_games" and not _GAMES_QUERY_RE.search(text):
+        return True
+    if label == "query_capabilities" and not _CAPABILITIES_QUERY_RE.search(text):
+        return True
+    if label == "query_what_do_you_see" and not _VISION_QUERY_RE.search(text):
+        return True
+    if label == "query_who_is_speaking" and not _WHO_QUERY_RE.search(text):
+        return True
+    return False
 
 
 def _classify_with_llm(text: str) -> str:

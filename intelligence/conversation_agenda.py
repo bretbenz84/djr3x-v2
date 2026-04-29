@@ -38,8 +38,19 @@ _COMPLIMENT_OR_ACK_PAT = re.compile(
     r"you'?re such a (?:good|great|swell|awesome|amazing) robot|"
     r"you are such a (?:good|great|swell|awesome|amazing) robot|"
     r"that'?s (?:good|great|nice|cool|awesome)|"
+    r"it (?:turned out|came out|worked out) (?:totally |really |pretty )?"
+    r"(?:good|great|nice|cool|awesome)|"
     r"i'?m (?:good|fine|okay|ok|alright)|"
     r"doing (?:good|great|fine|okay|ok|alright))\b",
+    re.IGNORECASE,
+)
+_PLAN_STATEMENT_PAT = re.compile(
+    r"\b(i'?m|i am|we'?re|we are|i will|i'?ll|we will|we'?ll)\s+"
+    r"(?:going|heading|traveling|travelling|flying|driving|visiting|leaving|"
+    r"coming|meeting|seeing)\b|"
+    r"\b(?:on|this|next)\s+"
+    r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)\b|"
+    r"\b(?:tomorrow|tonight|next week|this weekend)\b",
     re.IGNORECASE,
 )
 
@@ -366,6 +377,30 @@ def _next_useful_question(person_id: int) -> Optional[dict]:
     return None
 
 
+def _friendship_question_allowed(text: str, person_id: Optional[int]) -> bool:
+    if person_id is None:
+        return False
+    if _looks_like_user_question(text):
+        return False
+    if _PLAN_STATEMENT_PAT.search(text or ""):
+        return False
+    if len(re.findall(r"[A-Za-z0-9']+", text or "")) <= 5:
+        return False
+    try:
+        entry = empathy.peek(person_id) or {}
+        mode = ((entry.get("mode") or {}).get("mode") or "").lower()
+        result = entry.get("result") or {}
+        affect = (result.get("affect") or "").lower()
+        sensitivity = (result.get("topic_sensitivity") or "").lower()
+        if mode in {"listen", "support", "validate", "ground", "brief", "gentle_probe"}:
+            return False
+        if affect in {"sad", "withdrawn", "angry", "anxious"} or sensitivity in {"heavy", "medium"}:
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def build_turn_directive(
     user_text: str,
     person_id: Optional[int],
@@ -551,9 +586,21 @@ def build_turn_directive(
             return "\n".join(lines)
 
         low_pressure_ack = _is_compliment_or_ack(text)
+        if _PLAN_STATEMENT_PAT.search(text):
+            lines.append(
+                "Primary purpose: acknowledge the human's plan or upcoming event. "
+                "Give one concrete positive or curious beat connected to that plan, "
+                "then stop. Do not pivot into an unrelated interview question."
+            )
+            return "\n".join(lines)
+
         next_q = (
             _next_useful_question(person_id)
-            if question_budget_allows and not low_pressure_ack
+            if (
+                question_budget_allows
+                and not low_pressure_ack
+                and _friendship_question_allowed(text, person_id)
+            )
             else None
         )
         if next_q:

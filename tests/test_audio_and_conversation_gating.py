@@ -254,6 +254,19 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
 
 class ConversationGatingTest(unittest.TestCase):
+    def test_latency_fillers_are_in_character_not_human_disfluencies(self):
+        import config
+
+        joined = " ".join(config.LATENCY_FILLER_LINES).lower()
+
+        self.assertNotRegex(joined, r"\b(?:um+|uh+|hmm+)\b")
+        self.assertTrue(
+            any(
+                phrase in joined
+                for phrase in ("one sec", "processing", "recalibrating", "memory banks")
+            )
+        )
+
     def test_startup_solo_greeting_prompt_names_person_and_avoids_they_them(self):
         from intelligence import consciousness
 
@@ -332,6 +345,12 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertEqual(
             conversation_steering.detect_interest("My favorite activity is hair styling."),
             "hair styling",
+        )
+        self.assertEqual(
+            conversation_steering.detect_interest(
+                "My favorite kind of ice cream is mint chocolate chip"
+            ),
+            "mint chocolate chip ice cream",
         )
         self.assertEqual(
             conversation_steering.detect_interest("Let's talk about Star Trek."),
@@ -1100,7 +1119,61 @@ class ConversationGatingTest(unittest.TestCase):
 
         self.assertEqual(frame.purpose, "interest")
         self.assertTrue(frame.allow_question)
+        self.assertGreaterEqual(frame.max_sentences, 2)
         self.assertIn("What do you love most about it?", governed.text)
+
+    def test_interest_idle_followup_speaks_before_idle_timeout(self):
+        from intelligence import conversation_steering, interaction
+
+        conversation_steering.clear()
+        interaction._session_person_ids.clear()
+        interaction._interest_idle_followups_spoken.clear()
+        interaction._session_person_ids.add(1)
+        with (
+            mock.patch(
+                "intelligence.conversation_steering.boundary_memory.is_blocked",
+                return_value=False,
+            ),
+            mock.patch("intelligence.conversation_steering.facts_memory.add_fact"),
+        ):
+            conversation_steering.note_user_turn(
+                1,
+                "My favorite kind of ice cream is mint chocolate chip",
+            )
+
+        with (
+            mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+            mock.patch.object(interaction.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch.object(interaction.question_budget, "can_ask", return_value=True),
+            mock.patch.object(
+                interaction.llm,
+                "get_response",
+                return_value="Mint chocolate chip has main-character freezer energy. What makes it your pick?",
+            ),
+            mock.patch.object(
+                interaction,
+                "_speak_blocking",
+                return_value=True,
+            ) as speak,
+            mock.patch.object(interaction.conv_memory, "add_to_transcript") as transcript,
+            mock.patch.object(interaction.conv_log, "log_rex") as log_rex,
+            mock.patch.object(interaction.rel_memory, "save_question_asked") as save_q,
+        ):
+            spoken = interaction._maybe_interest_idle_followup(
+                idle_for=13.0,
+                effective_idle_timeout=30.0,
+            )
+
+        self.assertTrue(spoken)
+        speak.assert_called_once()
+        self.assertIn("mint chocolate", speak.call_args.args[0].lower())
+        transcript.assert_called_once()
+        log_rex.assert_called_once()
+        save_q.assert_called_once()
+        interaction._session_person_ids.clear()
+        interaction._interest_idle_followups_spoken.clear()
+        conversation_steering.clear()
 
     def test_social_frame_allows_followup_after_user_question_when_agenda_allows(self):
         from intelligence import social_frame
@@ -1772,6 +1845,173 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             "general",
         )
         self.assertEqual(intent_classifier.classify("Star Trek"), "general")
+
+    def test_intent_classifier_keeps_contextual_followups_in_conversation(self):
+        from intelligence import intent_classifier
+
+        self.assertEqual(intent_classifier.classify("what about the tech?"), "general")
+        self.assertEqual(intent_classifier.classify("and the transporters?"), "general")
+
+    def test_intent_classifier_does_not_route_closure_to_tools(self):
+        from intelligence import intent_classifier
+
+        self.assertEqual(intent_classifier.classify("later."), "general")
+        self.assertEqual(
+            intent_classifier.classify("Well it was nice speaking, I'll talk to you later."),
+            "general",
+        )
+        self.assertEqual(intent_classifier.classify("Goodbye"), "general")
+
+    def test_intent_classifier_does_not_treat_weekday_statement_as_date_query(self):
+        from intelligence import intent_classifier
+
+        self.assertEqual(
+            intent_classifier.classify("I'm going to Las Vegas on Thursday"),
+            "general",
+        )
+
+    def test_intent_classifier_routes_capability_variants_deterministically(self):
+        from intelligence import intent_classifier
+
+        self.assertEqual(
+            intent_classifier.classify("What sort of stuff are you good for?"),
+            "query_capabilities",
+        )
+        self.assertEqual(
+            intent_classifier.classify("what are you good at?"),
+            "query_capabilities",
+        )
+
+    def test_intent_classifier_routes_self_memory_question_to_memory(self):
+        from intelligence import intent_classifier
+
+        self.assertEqual(
+            intent_classifier.classify("Can you tell me about myself?"),
+            "query_memory",
+        )
+        self.assertEqual(
+            intent_classifier.classify("What are my plans for Thursday?"),
+            "query_memory",
+        )
+
+    def test_intent_classifier_blocks_false_game_routes_for_star_trek_chat(self):
+        from intelligence import intent_classifier
+
+        self.assertEqual(
+            intent_classifier.classify("I want to talk about Star Trek The Next Generation"),
+            "general",
+        )
+        self.assertEqual(
+            intent_classifier.classify("Star Trek Voyager, and Captain Janeway"),
+            "general",
+        )
+
+    def test_thanks_for_asking_is_not_closure(self):
+        from intelligence import end_thread, response_length
+
+        end_thread.clear()
+        closure = end_thread.note_user_turn("I'm doing okay, thanks for asking", 1)
+        plan = response_length.classify("I'm doing okay, thanks for asking")
+
+        self.assertIsNone(closure)
+        self.assertNotEqual(plan.target, "micro")
+        end_thread.clear()
+
+    def test_social_frame_sentence_split_preserves_abbreviations(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="interest",
+            max_words=125,
+            max_sentences=7,
+            allow_question=True,
+            allow_roast="normal",
+            allow_visual_comment=False,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "Star Trek started in 1966. The U.S.S. Enterprise explores strange new worlds. The tech is transporters, tricorders, and warp drive.",
+            frame,
+        )
+
+        self.assertIn("U.S.S. Enterprise", governed.text)
+        self.assertIn("The tech is transporters", governed.text)
+
+    def test_social_frame_repairs_word_trimmed_fragments(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="answer",
+            max_words=22,
+            max_sentences=2,
+            allow_question=False,
+            allow_roast="none",
+            allow_visual_comment=False,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "I excel at spinning tracks that make even the most boring organics want to dance. Plus, I've mastered the art of delivering crushing roasts.",
+            frame,
+        )
+        governed_whatever = social_frame.govern_response(
+            'Well, the results are in: still the galaxy\'s best DJ, despite whatever this "test" is.',
+            social_frame.SocialFrame(
+                addressee="Bret",
+                purpose="answer_ack",
+                max_words=12,
+                max_sentences=1,
+                allow_question=False,
+                allow_roast="none",
+                allow_visual_comment=False,
+                reason="test",
+            ),
+        )
+
+        self.assertNotIn("delivering.", governed.text)
+        self.assertTrue(governed.text in {"I hear you.", "Fair enough.", ""} or governed.text.endswith("dance."))
+        self.assertNotIn("despite whatever.", governed_whatever.text)
+
+    def test_agenda_does_not_inject_friendship_question_after_short_ack(self):
+        from intelligence import conversation_agenda
+
+        ws = {"people": [], "crowd": {}}
+        with (
+            mock.patch.object(conversation_agenda.world_state, "snapshot", return_value=ws),
+            mock.patch.object(
+                conversation_agenda.people_memory,
+                "get_person",
+                return_value={"id": 1, "name": "Bret", "friendship_tier": "stranger"},
+            ),
+            mock.patch.object(conversation_agenda.rel_memory, "get_asked_question_keys", return_value=set()),
+            mock.patch.object(conversation_agenda.facts_memory, "get_facts", return_value=[]),
+            mock.patch.object(conversation_agenda.empathy, "classify_local_sensitivity", return_value=None),
+            mock.patch.object(conversation_agenda.empathy, "peek", return_value=None),
+        ):
+            directive = conversation_agenda.build_turn_directive(
+                "It turned out totally cool",
+                1,
+            )
+
+        self.assertNotIn("How did you end up talking to a droid DJ?", directive)
+        self.assertIn("briefly acknowledge", directive)
+
+    def test_agenda_does_not_inject_friendship_question_after_plan_statement(self):
+        from intelligence import conversation_agenda
+
+        ws = {"people": [], "crowd": {}}
+        with (
+            mock.patch.object(conversation_agenda.world_state, "snapshot", return_value=ws),
+            mock.patch.object(conversation_agenda.empathy, "classify_local_sensitivity", return_value=None),
+        ):
+            directive = conversation_agenda.build_turn_directive(
+                "I'm going to Las Vegas on Thursday",
+                1,
+            )
+
+        self.assertIn("upcoming event", directive)
+        self.assertNotIn("How did you end up talking to a droid DJ?", directive)
 
     def test_dj_vibe_match_does_not_confuse_classical_with_classic_rock(self):
         import config

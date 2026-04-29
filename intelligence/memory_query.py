@@ -26,7 +26,9 @@ _SELF_RE = re.compile(
     r"\b("
     r"about\s+me|about\s+myself|know\s+about\s+me|know\s+about\s+myself|"
     r"remember\s+about\s+me|remember\s+about\s+myself|tell\s+me\s+about\s+me|"
-    r"tell\s+me\s+about\s+myself|my\s+memory|what\s+do\s+you\s+remember"
+    r"tell\s+me\s+about\s+myself|my\s+memory|what\s+do\s+you\s+remember|"
+    r"what\s+are\s+my\s+plans|what(?:'s|\s+is)\s+my\s+plan|"
+    r"what\s+do\s+i\s+have\s+planned|what\s+am\s+i\s+doing"
     r")\b",
     re.IGNORECASE,
 )

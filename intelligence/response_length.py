@@ -25,9 +25,12 @@ _CHECK_ALIVE_PAT = re.compile(
 )
 _CLOSURE_PAT = re.compile(
     r"\b(that'?s all|that is all|that'?s it|that is it|all good|i'?m good|"
-    r"thanks|thank you|got it|sounds good|fair enough|never mind)\b",
+    r"thanks|thank you|got it|sounds good|fair enough|never ?mind|bye|"
+    r"goodbye|good-bye|see you|see ya|later|talk to you later|talk later|"
+    r"nice speaking|nice talking)\b",
     re.IGNORECASE,
 )
+_THANKS_FOR_ASKING_PAT = re.compile(r"\bthanks?(?:\s+you)?\s+for\s+asking\b", re.IGNORECASE)
 _DEPTH_QUESTION_PAT = re.compile(r"^\s*(why|how|explain|tell me)\b", re.IGNORECASE)
 _TOPIC_KNOWLEDGE_QUESTION_PAT = re.compile(
     r"\b(?:what\s+do\s+you\s+know|do\s+you\s+know\s+anything|"
@@ -83,7 +86,7 @@ def classify(
     is_question = "?" in cleaned or bool(_QUESTION_START.search(cleaned))
 
     # Closure and short answers after Rex's own question should land and stop.
-    if _CLOSURE_PAT.search(cleaned):
+    if _CLOSURE_PAT.search(cleaned) and not _THANKS_FOR_ASKING_PAT.search(cleaned):
         return _plan(
             "micro",
             12,
