@@ -287,6 +287,7 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertIn("astrophotography", directive)
         self.assertIn("subject-specific observation", directive)
         self.assertIn("natural follow-up", directive)
+        self.assertIn("do not confuse franchises or fields", directive)
         add_fact.assert_any_call(
             1,
             "interest",
@@ -443,8 +444,34 @@ class ConversationGatingTest(unittest.TestCase):
         )
 
         self.assertEqual(plan.target, "short")
-        self.assertGreaterEqual(plan.max_sentences, 2)
+        self.assertGreaterEqual(plan.max_words, 50)
+        self.assertGreaterEqual(plan.max_sentences, 3)
+        self.assertIn("follow-up question", plan.instruction)
         self.assertIn("startup steering", plan.reason)
+
+    def test_social_frame_preserves_allowed_interest_followup_when_trimming(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="interest",
+            max_words=60,
+            max_sentences=2,
+            allow_question=True,
+            allow_roast="normal",
+            allow_visual_comment=True,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "Ah, Star Trek! Tiny starship sermon. What's your favorite corner of the Federation?",
+            frame,
+        )
+
+        self.assertEqual(
+            governed.text,
+            "Ah, Star Trek! What's your favorite corner of the Federation?",
+        )
+        self.assertIn("trimmed_sentences", governed.notes)
 
     def test_presence_startup_question_is_saved_as_pending_qa(self):
         from intelligence import consciousness

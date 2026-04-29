@@ -225,8 +225,10 @@ def _directive_for(topic: str, *, fresh: bool) -> str:
         "Use the main LLM to add one compact subject-specific observation or "
         "'did you know' style tidbit when you can do it confidently, then ask at "
         "most one natural follow-up about their experience with it. Keep it "
-        "funny and in-character; light roasts are allowed only about the hobby "
-        "or Rex's ignorance, not the person's competence."
+        "funny and in-character; do not confuse franchises or fields as if they "
+        "are the same thing, and ask instead of bluffing if you are unsure. "
+        "Light roasts are allowed only about the hobby or Rex's ignorance, not "
+        "the person's competence."
     )
 
 

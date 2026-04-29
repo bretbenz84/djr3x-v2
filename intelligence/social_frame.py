@@ -300,7 +300,7 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
         notes.append("fallback")
     else:
         if len(sentences) > frame.max_sentences:
-            sentences = sentences[:frame.max_sentences]
+            sentences = _trim_sentences(sentences, frame)
             notes.append("trimmed_sentences")
         current = " ".join(s.strip() for s in sentences if s.strip())
 
@@ -487,6 +487,29 @@ def _normalize_text(text: str) -> str:
 def _sentences(text: str) -> list[str]:
     pieces = [m.group(0).strip() for m in _SENTENCE_SPLIT.finditer(text or "")]
     return [p for p in pieces if p]
+
+
+def _trim_sentences(sentences: list[str], frame: SocialFrame) -> list[str]:
+    limit = max(0, int(frame.max_sentences or 0))
+    if limit <= 0:
+        return []
+
+    # If a follow-up question is permitted, keep one in the final shape instead
+    # of letting an opener like "Ah, Star Trek!" consume the whole budget.
+    if frame.allow_question and limit >= 2:
+        question_index = next(
+            (idx for idx, sentence in enumerate(sentences) if "?" in sentence),
+            None,
+        )
+        if question_index is not None and question_index >= limit:
+            prefix = [
+                sentence
+                for idx, sentence in enumerate(sentences)
+                if idx != question_index and "?" not in sentence
+            ][: limit - 1]
+            return [*prefix, sentences[question_index]]
+
+    return sentences[:limit]
 
 
 def _is_roast_sentence(sentence: str) -> bool:

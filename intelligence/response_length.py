@@ -93,10 +93,11 @@ def classify(
     ):
         return _plan(
             "short",
-            34,
-            2,
+            55,
+            3,
             "answer to Rex's startup steering question",
-            "Acknowledge the chosen topic, then ask one natural follow-up if useful.",
+            "Acknowledge the chosen topic, add one compact subject-aware beat, "
+            "then end with one short natural follow-up question.",
         )
 
     if answered_question and word_count <= 5:
