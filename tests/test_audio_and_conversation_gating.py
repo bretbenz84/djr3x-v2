@@ -1252,6 +1252,80 @@ class PendingMusicPreferenceTest(unittest.TestCase):
 
         self.assertEqual(routed.action, "music.play")
 
+    def test_router_downgrades_preference_misread_as_forget(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="memory.forget_specific",
+            confidence=0.90,
+            args={"target": "Disneyland"},
+            reason="misread preference as forget request",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "I like Disneyland",
+            {},
+        )
+
+        self.assertEqual(routed.action, "conversation.reply")
+        self.assertLess(routed.confidence, 0.85)
+
+    def test_router_allows_explicit_specific_forget_request(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="memory.forget_specific",
+            confidence=0.90,
+            args={"target": "Disneyland"},
+            reason="explicit forget request",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "Forget Disneyland from your memory",
+            {},
+        )
+
+        self.assertEqual(routed.action, "memory.forget_specific")
+
+    def test_router_downgrades_bare_sensitive_topic_as_boundary(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="emotional.boundary",
+            confidence=0.90,
+            args={},
+            reason="misread health topic as boundary",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "back pain",
+            {},
+        )
+
+        self.assertEqual(routed.action, "conversation.reply")
+        self.assertLess(routed.confidence, 0.85)
+
+    def test_router_allows_explicit_topic_boundary(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="emotional.boundary",
+            confidence=0.90,
+            args={"topic": "back pain"},
+            reason="explicit boundary",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "Please don't ask me about back pain again",
+            {},
+        )
+
+        self.assertEqual(routed.action, "emotional.boundary")
+
     def test_dj_vibe_match_does_not_confuse_classical_with_classic_rock(self):
         import config
         from features import dj

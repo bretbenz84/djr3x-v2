@@ -1223,11 +1223,11 @@ GROUP_LULL_COOLDOWN_SECS = 180.0
 # STARTUP GROUP GREETING — if multiple known people are visible during startup,
 # greet the group once instead of firing separate memory callbacks for each
 # person. The solo hold gives the camera a few seconds to settle before Rex
-# decides someone is alone.
+# decides someone is alone, but keep it short so startup does not feel stalled.
 STARTUP_GROUP_GREETING_ENABLED = True
 STARTUP_GROUP_GREETING_WINDOW_SECS = 45.0
 STARTUP_GROUP_GREETING_CONFIRM_SECS = 2.0
-STARTUP_GROUP_SOLO_HOLD_SECS = 8.0
+STARTUP_GROUP_SOLO_HOLD_SECS = 2.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MEMORY STALENESS

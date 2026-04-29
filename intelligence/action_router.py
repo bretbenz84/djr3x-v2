@@ -85,11 +85,15 @@ Rules:
 - If the pending question key is favorite_music, a bare genre/artist/style like
   "classical music" is a preference answer. Use conversation.reply unless the
   user explicitly asks to play/put on/start music.
-- If the utterance asks to forget/delete/remove a specific memory, use memory.forget_specific and put the target phrase in args.target.
+- Only use memory.forget_specific when the utterance explicitly asks to forget,
+  delete, remove, erase, wipe, or clear a remembered thing. Preference statements
+  like "I like Disneyland" are conversation.reply and may be learned as interests.
 - If the utterance asks what you remember or know about someone, use memory.query.
 - If the utterance says a remembered plan is no longer happening, use event.cancel.
 - For event.cancel, put the plan/topic being canceled in args.event_hint when possible.
-- If the utterance asks not to talk about a topic anymore, use emotional.boundary.
+- Only use emotional.boundary when the user explicitly asks not to talk about,
+  ask about, mention, or bring up a topic. A bare health/sad topic like "back pain"
+  is conversation.reply unless the user says not to discuss it.
 - If a game is active and the utterance asks to stop, quit, end, or stop playing, use game.stop.
 - If music is active and the utterance asks to stop, pause, or stop playing music, use music.stop.
 - If the utterance asks for the clock time, use time.query.
@@ -103,6 +107,28 @@ Rules:
 
 _MUSIC_PLAY_REQUEST_RE = re.compile(
     r"\b(play|start\s+playing|put\s+on|throw\s+on|spin|queue|cue|turn\s+on)\b",
+    re.IGNORECASE,
+)
+_FORGET_SPECIFIC_REQUEST_RE = re.compile(
+    r"\b("
+    r"forget|delete|remove|erase|wipe|clear"
+    r")\b.{0,80}\b("
+    r"memory|remember|remembered|about|that|this|it|from your memory"
+    r")\b|"
+    r"\b("
+    r"forget|delete|remove|erase|wipe|clear"
+    r")\b\s+.+",
+    re.IGNORECASE,
+)
+_BOUNDARY_REQUEST_RE = re.compile(
+    r"\b("
+    r"don'?t|do not|stop|quit|please don'?t|please do not"
+    r")\b.{0,80}\b("
+    r"talk|ask|bring|mention|discuss"
+    r")\b|"
+    r"\b(rather not|don'?t want to|do not want to|can we not|"
+    r"change the subject|talk about something else|drop it|leave it alone|"
+    r"no more check-?ins?)\b",
     re.IGNORECASE,
 )
 
@@ -198,6 +224,30 @@ def _apply_context_overrides(
     context: dict[str, Any],
 ) -> ActionDecision:
     """Deterministic safety rails for contexts the LLM router often misses."""
+    if (
+        decision.action == "memory.forget_specific"
+        and not _FORGET_SPECIFIC_REQUEST_RE.search(text or "")
+    ):
+        return ActionDecision(
+            action="conversation.reply",
+            confidence=min(float(decision.confidence or 0.0), 0.40),
+            args={},
+            requires_confirmation=False,
+            reason="preference/topic mention is not an explicit forget request",
+        )
+
+    if (
+        decision.action == "emotional.boundary"
+        and not _BOUNDARY_REQUEST_RE.search(text or "")
+    ):
+        return ActionDecision(
+            action="conversation.reply",
+            confidence=min(float(decision.confidence or 0.0), 0.40),
+            args={},
+            requires_confirmation=False,
+            reason="sensitive topic mention is not an explicit boundary request",
+        )
+
     pending_question = _pending_question_context(context)
     if not pending_question:
         return decision
