@@ -46,6 +46,7 @@ from audio import echo_cancel
 from audio import output_gate
 from hardware import leds_head, leds_chest, servos
 from sequences import animations
+from utils import conv_log
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,11 @@ def speak(
     if audio is None or len(audio) == 0:
         logger.error("[tts] audio decode produced empty array — skipping playback")
         return
+
+    try:
+        conv_log.log_rex(spoken_text)
+    except Exception as exc:
+        logger.debug("[tts] conversation log write failed: %s", exc)
 
     _play(audio, samplerate, emotion)
 

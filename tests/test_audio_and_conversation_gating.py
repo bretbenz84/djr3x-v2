@@ -1,8 +1,49 @@
 import unittest
 from unittest import mock
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 class PostTtsHandoffPolicyTest(unittest.TestCase):
+    def test_conversation_log_dedupes_same_rex_line_briefly(self):
+        from utils import conv_log
+
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "conversation.log"
+            with mock.patch.object(conv_log, "_LOG_PATH", log_path):
+                conv_log.clear_dedupe_state()
+                conv_log.log_rex("Bret, what mission are we pretending is important today?")
+                conv_log.log_rex("  Bret, what mission are we pretending is important today?  ")
+
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(len(lines), 1)
+        self.assertIn("REX", lines[0])
+        conv_log.clear_dedupe_state()
+
+    def test_tts_speak_logs_spoken_text_to_conversation_log(self):
+        import numpy as np
+        from audio import tts
+
+        cache_file = mock.MagicMock()
+        cache_file.exists.return_value = True
+        cache_file.name = "cached.mp3"
+
+        with (
+            mock.patch.object(tts, "_cache_path", return_value=cache_file),
+            mock.patch.object(
+                tts,
+                "_read_audio",
+                return_value=(np.zeros(80, dtype=np.float32), 16000),
+            ),
+            mock.patch.object(tts, "_play") as play,
+            mock.patch.object(tts.conv_log, "log_rex") as log_rex,
+        ):
+            tts.speak("R3X sees WWII trivia.")
+
+        log_rex.assert_called_once_with("R3X sees World War Two trivia.")
+        play.assert_called_once()
+
     def test_question_handoff_preserves_buffer_and_uses_short_delay(self):
         from intelligence import interaction
         import config

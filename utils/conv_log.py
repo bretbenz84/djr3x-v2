@@ -10,17 +10,25 @@ Thread-safe; appends only; creates the file on first write.
 """
 
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
 _LOG_PATH = Path(__file__).parent.parent / "logs" / "conversation.log"
 _lock = threading.Lock()
+_last_rex_norm: str = ""
+_last_rex_at: float = 0.0
+_REX_DEDUPE_WINDOW_SECS = 2.0
 
 
 def _write(line: str) -> None:
     with _lock:
         with _LOG_PATH.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
+
+
+def _normalize(text: str) -> str:
+    return " ".join((text or "").strip().lower().split())
 
 
 def log_heard(speaker: str | None, text: str) -> None:
@@ -32,7 +40,24 @@ def log_heard(speaker: str | None, text: str) -> None:
 
 def log_rex(text: str) -> None:
     """Log something Rex said."""
+    global _last_rex_norm, _last_rex_at
     if not text or not text.strip():
         return
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    _write(f"{ts} | REX   | {text.strip()}")
+    norm = _normalize(text)
+    now = time.monotonic()
+    with _lock:
+        if norm and norm == _last_rex_norm and (now - _last_rex_at) <= _REX_DEDUPE_WINDOW_SECS:
+            return
+        _last_rex_norm = norm
+        _last_rex_at = now
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with _LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(f"{ts} | REX   | {text.strip()}\n")
+
+
+def clear_dedupe_state() -> None:
+    """Test/debug hook."""
+    global _last_rex_norm, _last_rex_at
+    with _lock:
+        _last_rex_norm = ""
+        _last_rex_at = 0.0
