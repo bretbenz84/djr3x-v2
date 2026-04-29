@@ -27,6 +27,14 @@ _QUESTION_START = re.compile(
     r"^\s*(who|what|when|where|why|how|can|could|would|will|do|does|did|is|are|am|should)\b",
     re.IGNORECASE,
 )
+_EXPLICIT_INTEREST_SWITCH_PAT = re.compile(
+    r"\b("
+    r"i (?:really )?(?:like|love|am into|enjoy)|"
+    r"i'?d like to talk about|i would like to talk about|"
+    r"let'?s talk about|my favorite|favorite kind of"
+    r")\b",
+    re.IGNORECASE,
+)
 
 _TOPIC_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ("grief/loss", re.compile(r"\b(died|death|dead|passed|loss|grief|funeral)\b", re.I), "heavy"),
@@ -244,6 +252,7 @@ def _looks_like_explicit_switch(text: str) -> bool:
         or "anyway" in lowered
         or "new subject" in lowered
         or "let's talk about" in lowered
+        or bool(_EXPLICIT_INTEREST_SWITCH_PAT.search(text))
         or bool(_QUESTION_START.search(text))
     )
 

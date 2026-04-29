@@ -1010,7 +1010,9 @@ ANIMAL_ARRIVAL_COOLDOWN_SECS = 300
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Minimum seconds Rex must be absent from tracking before a return reaction fires.
-PRESENCE_RETURN_MIN_ABSENT_SECS = 30
+# Kept short enough to acknowledge camera-away / camera-back beats without
+# narrating tiny detector flickers.
+PRESENCE_RETURN_MIN_ABSENT_SECS = 10
 
 # First-sight greetings wait for a person to remain visible briefly. This avoids
 # greeting someone because a face detector recovered from a hand/arm occlusion.

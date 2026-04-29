@@ -491,6 +491,24 @@ def build_turn_directive(
         )
         return "\n".join(lines)
 
+    if _looks_like_offscreen_correction(text):
+        lines.append(
+            "Primary purpose: acknowledge the correction that the person is still "
+            "present but out of camera view. Briefly say you have them / there "
+            "they are, using their name if known, then stop. No new questions, "
+            "no interest-thread pivot, no generic friendship question."
+        )
+        return "\n".join(lines)
+
+    if _looks_like_health_resolved(text):
+        lines.append(
+            "Primary purpose: acknowledge relief that the health issue or pain has "
+            "resolved. Let the worry de-escalate now: warm, pleased, and brief. "
+            "Do not keep probing the health topic, do not ask a new question, and "
+            "do not pivot into an unrelated interview topic."
+        )
+        return "\n".join(lines)
+
     if end_thread_pending:
         lines.append(
             "Primary purpose: close the current thread gracefully. Give a brief "
@@ -646,3 +664,29 @@ def build_turn_directive(
         )
 
     return "\n".join(lines)
+
+
+_OFFSCREEN_CORRECTION_PAT = re.compile(
+    r"\b("
+    r"i'?m still here|i am still here|still here|out of view|off[- ]camera|"
+    r"camera (?:is )?(?:turned|pointed) away|you can'?t see me|you cannot see me"
+    r")\b",
+    re.IGNORECASE,
+)
+_HEALTH_RESOLVED_PAT = re.compile(
+    r"\b("
+    r"(?:pain|ache|hurt|back|neck|headache|migraine|soreness).{0,50}"
+    r"(?:gone away|went away|resolved|cleared up|is gone|has gone|better now|"
+    r"feels better|feeling better)|"
+    r"(?:i'?m|i am) (?:better|fine|okay|ok) now"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_offscreen_correction(text: str) -> bool:
+    return bool(_OFFSCREEN_CORRECTION_PAT.search(text or ""))
+
+
+def _looks_like_health_resolved(text: str) -> bool:
+    return bool(_HEALTH_RESOLVED_PAT.search(text or ""))

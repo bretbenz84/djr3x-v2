@@ -96,6 +96,11 @@ _HARSH_ROAST_PAT = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_BAD_CLOSURE_PAT = re.compile(
+    r"\b(fun for who|probably not me|not me|can'?t say i enjoyed|"
+    r"finally over|good riddance)\b",
+    re.IGNORECASE,
+)
 _DANGLING_WORDS = {
     "a", "an", "and", "are", "as", "at", "because", "but", "for", "from",
     "if", "in", "into", "like", "of", "on", "or", "so", "than", "that",
@@ -162,6 +167,10 @@ def build_frame(
     urgent_identity = _urgent_group_identity(agenda_directive)
     user_asked_question = _looks_like_user_question(user_text)
     budget_allows = _question_budget_allows()
+    fresh_interest_followup = (
+        "human just volunteered a genuine interest" in (agenda_directive or "").lower()
+        and _ASK_ALLOWED_PAT.search(agenda_directive or "") is not None
+    )
 
     allow_question = False
     if urgent_identity and unknown_count:
@@ -174,6 +183,8 @@ def build_frame(
         )
     elif _HARD_NO_QUESTION_PAT.search(agenda_directive):
         allow_question = False
+    elif fresh_interest_followup:
+        allow_question = True
     elif budget_allows and _ASK_ALLOWED_PAT.search(agenda_directive):
         allow_question = True
     elif user_asked_question:
@@ -202,6 +213,8 @@ def build_frame(
         sensitivity,
     )
     roast_level = _roast_level(person_id, plan.target, empathy_mode, affect, sensitivity)
+    if purpose == "closure":
+        roast_level = "none"
 
     reasons = [
         f"length={plan.target}",
@@ -326,6 +339,9 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
             notes.append("repaired_fragment")
 
     current = _normalize_text(current)
+    if frame.purpose == "closure" and _BAD_CLOSURE_PAT.search(current):
+        current = _fallback(frame)
+        notes.append("fallback_bad_closure")
     if not current:
         current = _fallback(frame)
         notes.append("fallback")
@@ -534,11 +550,13 @@ def _trim_sentences(sentences: list[str], frame: SocialFrame) -> list[str]:
 
     # If a follow-up question is permitted, keep one in the final shape instead
     # of letting an opener like "Ah, Star Trek!" consume the whole budget.
-    if frame.allow_question and limit >= 2:
+    if frame.allow_question and limit >= 1:
         question_index = next(
             (idx for idx, sentence in enumerate(sentences) if "?" in sentence),
             None,
         )
+        if question_index is not None and limit == 1:
+            return [sentences[question_index]]
         if question_index is not None and question_index >= limit:
             prefix = [
                 sentence
@@ -562,6 +580,7 @@ def _is_roast_sentence(sentence: str) -> bool:
             _DIRECT_ROAST_PAT,
             _CONDESCENDING_ORGANIC_PAT,
             _SARCASTIC_PRAISE_PAT,
+            _BAD_CLOSURE_PAT,
         )
     )
 
@@ -615,7 +634,9 @@ def _repair_trimmed_fragment(text: str) -> str:
 def _fallback(frame: SocialFrame) -> str:
     if frame.purpose == "check_alive":
         return "I'm here."
-    if frame.purpose in {"closure", "answer_ack"} or frame.max_words <= 12:
+    if frame.purpose == "closure":
+        return "Catch you later."
+    if frame.purpose == "answer_ack" or frame.max_words <= 12:
         return "Got it."
     if frame.allow_roast == "none":
         return "I hear you."

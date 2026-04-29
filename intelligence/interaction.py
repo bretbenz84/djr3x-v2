@@ -874,7 +874,7 @@ def _maybe_interest_idle_followup(
 
     max_words = int(getattr(config, "INTEREST_IDLE_FOLLOWUP_MAX_WORDS", 22) or 22)
     question_rule = (
-        "Prefer one natural, low-pressure question that deepens this topic."
+        "Ask one simple, low-pressure question that deepens this topic."
         if allow_question else
         "Do not ask a question; offer one specific opinion or curious observation."
     )
@@ -883,6 +883,8 @@ def _maybe_interest_idle_followup(
             "Generate ONE short DJ-R3X line to re-engage a person after a quiet "
             f"pause. Active interest: {steering.topic!r}. {question_rule} "
             "Sound genuinely interested in what they told Rex they like. "
+            "Use one sentence only. Do not add a second sentence, self-reference, "
+            "flight jokes, roasts, or 'I bet...' riffs. "
             "Do not mention the silence, the camera, the room, or the idle timer. "
             f"Maximum {max_words} words. Return only the line.",
             person_id,
@@ -906,7 +908,7 @@ def _maybe_interest_idle_followup(
     if not allow_question:
         frame.allow_question = False
     frame.max_words = min(frame.max_words, max_words)
-    frame.max_sentences = max(frame.max_sentences, 2 if frame.allow_question else 1)
+    frame.max_sentences = 2 if frame.allow_question else 1
     governed = social_frame.govern_response(line, frame)
     line = governed.text
     if not line:
@@ -4644,6 +4646,12 @@ def _maybe_capture_pending_qa(
         return None
     if command_parser.parse(cleaned) is not None:
         return None
+    if _looks_like_incomplete_pending_answer(cleaned):
+        _log.info(
+            "[interaction] pending Q&A capture held — incomplete fragment %r",
+            cleaned,
+        )
+        return None
     # If the user is asking a new question instead of answering Rex's last one,
     # leave the pending question open. Real conversations branch sometimes.
     if "?" in cleaned:
@@ -4671,6 +4679,23 @@ def _maybe_capture_pending_qa(
     except Exception as exc:
         _log.debug("pending Q&A capture failed: %s", exc)
         return None
+
+
+_INCOMPLETE_PENDING_ANSWER_PAT = re.compile(
+    r"^\s*(?:"
+    r"i\s+(?:like|love|want|think|mean|prefer|would|was|am|have|had|feel)|"
+    r"i'?d\s+(?:like|love|rather)|"
+    r"my|the|it(?:'?s| is)?|because|when|what i"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_incomplete_pending_answer(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    return bool(_INCOMPLETE_PENDING_ANSWER_PAT.match(cleaned))
 
 
 def _looks_like_startup_steering_question(question: str) -> bool:

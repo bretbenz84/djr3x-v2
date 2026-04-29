@@ -597,6 +597,19 @@ class ConversationGatingTest(unittest.TestCase):
         )
         conversation_steering.clear()
 
+    def test_incomplete_pending_answer_is_not_captured(self):
+        from intelligence import interaction
+
+        with mock.patch.object(
+            interaction.rel_memory,
+            "answer_latest_pending_question",
+            return_value={"question_key": "interest_star_trek_voyager_idle_followup"},
+        ) as answer:
+            captured = interaction._maybe_capture_pending_qa(1, "I like")
+
+        self.assertIsNone(captured)
+        answer.assert_not_called()
+
     def test_topic_thread_startup_answer_fallback_becomes_interest_thread(self):
         from intelligence import conversation_steering, interaction, topic_thread
 
@@ -1594,6 +1607,89 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertIn("Proxemics cue", directive)
         self.assertIn("American norms", directive)
         self.assertIn("boundary joke or roast", directive)
+
+    def test_agenda_acknowledges_offscreen_correction_without_topic_pivot(self):
+        from intelligence import conversation_agenda, conversation_steering
+
+        conversation_steering.clear()
+        with (
+            mock.patch.object(
+                conversation_agenda.world_state,
+                "snapshot",
+                return_value={"crowd": {"count": 0}, "people": [], "environment": {}},
+            ),
+            mock.patch.object(conversation_agenda.rel_memory, "get_latest_pending_question", return_value=None),
+            mock.patch.object(conversation_agenda, "_next_useful_question", return_value={"text": "What do you do when you're not wandering into cantinas?"}),
+            mock.patch("intelligence.question_budget.can_ask", return_value=True),
+            mock.patch("intelligence.question_budget.build_directive", return_value=""),
+        ):
+            directive = conversation_agenda.build_turn_directive(
+                "I'm still here. I'm just out of view of you.",
+                1,
+            )
+
+        self.assertIn("still present but out of camera view", directive)
+        self.assertIn("there they are", directive)
+        self.assertIn("no generic friendship question", directive)
+        self.assertNotIn("wandering into cantinas", directive)
+
+    def test_agenda_health_resolved_deescalates_without_new_question(self):
+        from intelligence import conversation_agenda
+
+        with (
+            mock.patch.object(
+                conversation_agenda.world_state,
+                "snapshot",
+                return_value={"crowd": {"count": 1}, "people": [], "environment": {}},
+            ),
+            mock.patch.object(conversation_agenda.rel_memory, "get_latest_pending_question", return_value=None),
+            mock.patch("intelligence.question_budget.can_ask", return_value=True),
+            mock.patch("intelligence.question_budget.build_directive", return_value=""),
+        ):
+            directive = conversation_agenda.build_turn_directive(
+                "my back pain has gone away",
+                1,
+            )
+
+        self.assertIn("acknowledge relief", directive)
+        self.assertIn("Let the worry de-escalate", directive)
+        self.assertIn("do not ask a new question", directive)
+
+    def test_topic_thread_explicit_interest_switches_out_of_heavy_health(self):
+        from intelligence import topic_thread
+
+        topic_thread.clear()
+        topic_thread.note_user_turn("my back pain hurt so bad", 1)
+        topic_thread.note_user_turn("I like Star Trek Voyager", 1)
+        snap = topic_thread.snapshot()
+
+        self.assertIsNotNone(snap)
+        self.assertNotEqual(snap["label"], "health")
+        self.assertEqual(snap["emotional_weight"], "light")
+        topic_thread.clear()
+
+    def test_social_frame_closure_does_not_keep_hostile_fragment(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="closure",
+            max_words=12,
+            max_sentences=1,
+            allow_question=False,
+            allow_roast="none",
+            allow_visual_comment=False,
+            reason="test",
+        )
+
+        governed = social_frame.govern_response(
+            "Fun for who? Probably not me. Catch you later, Bret!",
+            frame,
+        )
+
+        self.assertEqual(governed.text, "Catch you later, Bret!")
+        self.assertNotIn("Probably not me", governed.text)
+        self.assertNotIn("Fun for who", governed.text)
 
 
 class PendingMusicPreferenceTest(unittest.TestCase):

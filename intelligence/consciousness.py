@@ -3296,11 +3296,13 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
             first_name = person_name.split()[0]
             _log.info("consciousness: departure reaction firing for %s", person_name)
             _generate_and_speak_presence(
-                f"The person named '{first_name}' just left your camera view. "
+                f"The person named '{first_name}' just slipped out of your camera view. "
                 "React in one short in-character line as Rex — playful and dry, "
-                "but not mean. Do not imply nobody likes or misses them. Examples: "
-                f"'Where are you going, {first_name}?', 'Oh, leaving already?', "
-                "'Don't go too far, I can't roast you from a distance.' "
+                "but not mean or needy. Do not imply they literally left the room; "
+                "they may only be off-camera. Do not imply nobody likes or misses "
+                f"them. Examples: 'Lost visual on {first_name}. Dramatic.', "
+                f"'And {first_name} exits frame, stage left.', "
+                f"'Fine, {first_name}, hide from the optics.' "
                 f"Address {first_name} by name. One line only.",
                 label=f"departure for {person_name}",
                 tag_key=key,
@@ -3590,8 +3592,9 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     f"The person named '{first_name}' just came back into your camera view after "
                     f"being away for about {int(absent_secs)} seconds. "
                     "React in one short in-character line as Rex — warm but dry. Examples: "
-                    f"'Oh, you're back.', 'Miss me already, {first_name}?', "
-                    "'I knew you couldn't stay away.' "
+                    f"'Oh, there you are, {first_name}.', "
+                    f"'Visual reacquired. There you are, {first_name}.', "
+                    f"'There you are, {first_name}; optics are back online.' "
                     f"Address {first_name} by name. One line only."
                 )
             _generate_and_speak_presence(
