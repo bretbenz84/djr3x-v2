@@ -1357,12 +1357,29 @@ def _step_startup_group_greeting(snapshot: dict, profile: SituationProfile) -> N
         _first_sight_seen_at.pop(person.person_id, None)
 
     label = social_scene.visible_group_label(scene)
+    prompt = None
+    emotion = "curious"
+    if (
+        getattr(config, "MOOD_AWARE_FIRST_SIGHT_ENABLED", True)
+        and len(scene.known) == 2
+        and scene.unknown_count == 0
+        and scene.crowd_count <= int(getattr(config, "MOOD_AWARE_FIRST_SIGHT_MAX_PEOPLE", 2) or 2)
+    ):
+        moods = _detect_group_startup_moods()
+        prompt = _build_group_smile_startup_prompt(scene, moods)
+        if prompt:
+            emotion = "happy"
+            _log.info(
+                "consciousness: startup group smile greeting for %s moods=%r",
+                label,
+                moods,
+            )
     _log.info("consciousness: startup group greeting for %s", label)
     _generate_and_speak_presence(
-        social_scene.startup_group_prompt(scene),
+        prompt or social_scene.startup_group_prompt(scene),
         label=f"startup group greeting for {label}",
         tag_key=f"group:{signature}",
-        emotion="curious",
+        emotion=emotion,
         purpose="presence_reaction",
     )
 
@@ -2155,6 +2172,137 @@ def _mood_clause_for(mood: Optional[dict]) -> tuple[str, str]:
         f"match their expression — not a generic small-talk opener."
     )
     return clause, emotion
+
+
+def _first_sight_mood_confidence_floor() -> float:
+    return float(getattr(config, "MOOD_AWARE_FIRST_SIGHT_CONFIDENCE", 0.65))
+
+
+def _first_sight_mood_enabled() -> bool:
+    return bool(getattr(config, "MOOD_AWARE_FIRST_SIGHT_ENABLED", True))
+
+
+def _build_first_sight_mood_prompt(
+    first_name: str,
+    context_sentence: str,
+    mood: Optional[dict],
+) -> Optional[tuple[str, str]]:
+    if not _first_sight_mood_enabled() or not mood:
+        return None
+    label = (mood.get("mood") or "").lower()
+    try:
+        confidence = float(mood.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < _first_sight_mood_confidence_floor():
+        return None
+    notes = (mood.get("notes") or "").strip()
+    notes_clause = f" Expression note: {notes}." if notes else ""
+    cues = {
+        "happy": (
+            "they appear to be smiling or in a good mood",
+            "ask what's got them smiling today",
+            "happy",
+        ),
+        "sad": (
+            "they appear a little down or frowning",
+            "gently ask what's got them down or what's on their mind",
+            "concerned",
+        ),
+        "tired": (
+            "they appear tired or worn out",
+            "ask if sleep betrayed them or what's been wearing them out",
+            "concerned",
+        ),
+        "angry": (
+            "they appear frustrated or annoyed",
+            "carefully ask what's bugging them",
+            "concerned",
+        ),
+        "anxious": (
+            "they appear tense or worried",
+            "ask what's weighing on them",
+            "concerned",
+        ),
+        "surprised": (
+            "they appear surprised or wide-eyed",
+            "ask what just happened",
+            "curious",
+        ),
+    }
+    if label not in cues:
+        return None
+    observation, ask, emotion = cues[label]
+    prompt = (
+        f"{context_sentence} You have a fresh low-confidence visual read of "
+        f"{first_name}'s expression: {observation}.{notes_clause} "
+        f"Greet {first_name} in-character by name, then {ask}. Phrase it as an "
+        f"apparent read, not a diagnosis; do not say you analyzed an image or "
+        f"mention OpenAI. Warm, dry Rex voice. Two short sentences max — the "
+        f"second must end in a question mark."
+    )
+    return prompt, emotion
+
+
+def _get_first_sight_mood(person_id: Optional[int]) -> Optional[dict]:
+    if not isinstance(person_id, int) or not _first_sight_mood_enabled():
+        return None
+    return _get_or_detect_mood(person_id)
+
+
+def _build_group_smile_startup_prompt(scene, moods: list[dict]) -> Optional[str]:
+    if not _first_sight_mood_enabled():
+        return None
+    max_people = int(getattr(config, "MOOD_AWARE_FIRST_SIGHT_MAX_PEOPLE", 2) or 2)
+    if len(scene.known) != 2 or scene.unknown_count > 0 or scene.crowd_count > max_people:
+        return None
+    if len(moods) < 2:
+        return None
+    floor = _first_sight_mood_confidence_floor()
+    for mood in moods[:2]:
+        label = (mood.get("mood") or "").lower()
+        try:
+            confidence = float(mood.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if label != "happy" or confidence < floor:
+            return None
+    from intelligence import social_scene
+
+    label = social_scene.visible_group_label(scene)
+    names = ", ".join(scene.first_names)
+    notes = "; ".join(
+        (m.get("notes") or "").strip()
+        for m in moods[:2]
+        if (m.get("notes") or "").strip()
+    )
+    notes_clause = f" Expression notes: {notes}." if notes else ""
+    return (
+        f"You just started up and can see these two known people together: {names}. "
+        f"The natural group label is: {label}. They both appear to be smiling or "
+        f"in a good mood.{notes_clause} Greet them as a group in one short "
+        f"in-character Rex line, then ask what's got them both smiling today. "
+        f"Phrase it as an apparent read, not certainty. Do not mention cameras, "
+        f"OpenAI, or image analysis. Two short sentences max — the second must "
+        f"end in a question mark."
+    )
+
+
+def _detect_group_startup_moods() -> list[dict]:
+    try:
+        from vision import camera as _cam
+        from vision import face as face_mod
+
+        frame = _cam.get_frame()
+        if frame is None:
+            return []
+        return face_mod.detect_group_moods(
+            frame,
+            max_people=int(getattr(config, "MOOD_AWARE_FIRST_SIGHT_MAX_PEOPLE", 2) or 2),
+        )
+    except Exception as exc:
+        _log.debug("group startup mood detect error: %s", exc)
+        return []
 
 
 def _do_small_talk_question(snapshot: dict) -> None:
@@ -3351,11 +3499,24 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
 
                     # Fallback — generic greeting
                     if prompt is None:
-                        prompt = _build_startup_solo_greeting_prompt(
+                        mood_prompt = _build_first_sight_mood_prompt(
                             first_name,
                             context_sentence,
+                            _get_first_sight_mood(person_db_id),
                         )
-                        _log.info("consciousness: startup greeting for %s", person_name)
+                        if mood_prompt:
+                            prompt, emotion = mood_prompt
+                            label = f"first-sight mood greeting for {person_name}"
+                            _log.info(
+                                "consciousness: startup mood greeting for %s",
+                                person_name,
+                            )
+                        else:
+                            prompt = _build_startup_solo_greeting_prompt(
+                                first_name,
+                                context_sentence,
+                            )
+                            _log.info("consciousness: startup greeting for %s", person_name)
 
                     _generate_and_speak_presence(
                         prompt,

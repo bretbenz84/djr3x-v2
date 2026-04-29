@@ -1254,6 +1254,79 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertIn("do not reuse the same wording every run", prompt)
         self.assertIn("What mission are we pretending is important today?", prompt)
 
+    def test_first_sight_mood_prompt_uses_high_confidence_expression(self):
+        from intelligence import consciousness
+
+        built = consciousness._build_first_sight_mood_prompt(
+            "Bret",
+            "You just started up and immediately see 'Bret'.",
+            {"mood": "happy", "confidence": 0.9, "notes": "broad smile"},
+        )
+
+        self.assertIsNotNone(built)
+        prompt, emotion = built
+        self.assertEqual(emotion, "happy")
+        self.assertIn("what's got them smiling", prompt)
+        self.assertIn("apparent read", prompt)
+
+    def test_first_sight_mood_prompt_ignores_low_confidence(self):
+        from intelligence import consciousness
+
+        built = consciousness._build_first_sight_mood_prompt(
+            "Bret",
+            "You just started up and immediately see 'Bret'.",
+            {"mood": "sad", "confidence": 0.2, "notes": "unclear"},
+        )
+
+        self.assertIsNone(built)
+
+    def test_group_smile_startup_prompt_only_for_two_happy_people(self):
+        from intelligence import consciousness, social_scene
+
+        scene = social_scene.SocialScene(
+            known=(
+                social_scene.VisiblePerson(1, "Bret Benziger", "Bret", "person_1"),
+                social_scene.VisiblePerson(2, "Joy Example", "Joy", "person_2"),
+            ),
+            unknown_count=0,
+            crowd_count=2,
+        )
+
+        prompt = consciousness._build_group_smile_startup_prompt(
+            scene,
+            [
+                {"mood": "happy", "confidence": 0.9, "notes": "smiling"},
+                {"mood": "happy", "confidence": 0.85, "notes": "grinning"},
+            ],
+        )
+
+        self.assertIsNotNone(prompt)
+        self.assertIn("both appear to be smiling", prompt)
+        self.assertIn("what's got them both smiling", prompt)
+
+    def test_group_smile_startup_prompt_ignores_three_person_room(self):
+        from intelligence import consciousness, social_scene
+
+        scene = social_scene.SocialScene(
+            known=(
+                social_scene.VisiblePerson(1, "Bret Benziger", "Bret", "person_1"),
+                social_scene.VisiblePerson(2, "Joy Example", "Joy", "person_2"),
+                social_scene.VisiblePerson(3, "JT Example", "JT", "person_3"),
+            ),
+            unknown_count=0,
+            crowd_count=3,
+        )
+
+        prompt = consciousness._build_group_smile_startup_prompt(
+            scene,
+            [
+                {"mood": "happy", "confidence": 0.9, "notes": "smiling"},
+                {"mood": "happy", "confidence": 0.85, "notes": "grinning"},
+            ],
+        )
+
+        self.assertIsNone(prompt)
+
     def test_acknowledge_on_return_prompt_ends_with_steering_question(self):
         from intelligence import llm
 

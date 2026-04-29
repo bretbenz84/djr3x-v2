@@ -437,3 +437,94 @@ def detect_mood(frame: np.ndarray) -> Optional[dict]:
 
     _log.info("detect_mood: %s (confidence=%.2f) — %s", mood, confidence, notes or "—")
     return {"mood": mood, "confidence": confidence, "notes": notes}
+
+
+def detect_group_moods(frame: np.ndarray, max_people: int = 2) -> list[dict]:
+    """
+    Send a frame to GPT-4o and read apparent moods for up to max_people visible faces.
+
+    Intended for small startup groups, not crowd analysis. Returns a list of
+    dicts with {mood, confidence, notes}. Empty list on failure.
+    """
+    try:
+        import apikeys
+        from openai import OpenAI
+    except ImportError as exc:
+        _log.error("detect_group_moods: missing dependency — %s", exc)
+        return []
+
+    b64 = encode_jpeg_base64(frame, quality=85)
+    if b64 is None:
+        _log.error("detect_group_moods: failed to JPEG-encode frame")
+        return []
+
+    max_people = max(1, int(max_people or 1))
+    detail = config.VISION_DETAIL.get("mood_analysis", "low")
+    prompt = (
+        f"Look at the people in this image and assess apparent facial mood for "
+        f"up to {max_people} clearly visible faces, left to right. Return ONLY a "
+        "JSON array. Each item must have exactly these keys:\n"
+        '  "mood": one of "happy"|"sad"|"tired"|"angry"|"surprised"|"anxious"|"neutral",\n'
+        '  "confidence": number between 0 and 1,\n'
+        '  "notes": one short phrase describing the expression.\n'
+        "If a face is unclear, use mood=\"neutral\" and low confidence. "
+        "No markdown, no explanation."
+    )
+
+    client = OpenAI(api_key=apikeys.OPENAI_API_KEY)
+    try:
+        response = client.chat.completions.create(
+            model=config.VISION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{b64}",
+                                "detail": detail,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+            max_tokens=220,
+        )
+    except Exception as exc:
+        _log.error("detect_group_moods: GPT-4o error: %s", exc)
+        return []
+
+    raw = response.choices[0].message.content.strip()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("[")
+        end = raw.rfind("]") + 1
+        if start == -1 or end == 0:
+            _log.error("detect_group_moods: non-JSON response: %.120s", raw)
+            return []
+        try:
+            data = json.loads(raw[start:end])
+        except json.JSONDecodeError as exc:
+            _log.error("detect_group_moods: JSON parse error: %s", exc)
+            return []
+    if not isinstance(data, list):
+        _log.error("detect_group_moods: expected list, got: %.120s", raw)
+        return []
+
+    moods: list[dict] = []
+    for item in data[:max_people]:
+        if not isinstance(item, dict):
+            continue
+        mood = str(item.get("mood", "") or "").strip().lower() or "neutral"
+        try:
+            confidence = float(item.get("confidence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        notes = str(item.get("notes", "") or "").strip()
+        moods.append({"mood": mood, "confidence": confidence, "notes": notes})
+
+    _log.info("detect_group_moods: %s", moods)
+    return moods

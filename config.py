@@ -1116,6 +1116,14 @@ MOOD_AWARE_SMALLTALK_ENABLED = True
 MOOD_ANALYSIS_PROBABILITY = 0.7
 MOOD_ANALYSIS_PER_PERSON_COOLDOWN_SECS = 180.0
 
+# Mood-aware first-sight greetings: when Rex first sees one known person, or a
+# two-person known group, he may use OpenAI vision to read apparent facial mood
+# and tailor the greeting. Kept confidence-gated because facial affect is a
+# guess, not a fact.
+MOOD_AWARE_FIRST_SIGHT_ENABLED = True
+MOOD_AWARE_FIRST_SIGHT_CONFIDENCE = 0.65
+MOOD_AWARE_FIRST_SIGHT_MAX_PEOPLE = 2
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MOOD DECAY
 # ─────────────────────────────────────────────────────────────────────────────
