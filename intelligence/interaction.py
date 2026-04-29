@@ -4526,6 +4526,13 @@ def _looks_like_startup_steering_question(question: str) -> bool:
             "what should we talk",
             "what are we discussing",
             "discussing first",
+            "what's been rolling around",
+            "what’s been rolling around",
+            "been rolling around in your mind",
+            "in your mind today",
+            "what's on your mind",
+            "what’s on your mind",
+            "what is on your mind",
         )
     )
 

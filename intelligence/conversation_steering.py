@@ -36,7 +36,7 @@ _BARE_TOPIC_MAX_WORDS = 6
 
 _INTEREST_PATTERNS: list[re.Pattern[str]] = [
     re.compile(
-        r"\b(?:i\s*(?:want|wanna|would like)\s+to\s+talk\s+about|"
+        r"\b(?:i\s*(?:really\s+)?(?:want|wanna|would like)\s+to\s+talk\s+about|"
         r"let'?s\s+talk\s+about|can\s+we\s+talk\s+about)\s+"
         r"(?P<topic>[^.?!,;]{3,90})",
         re.IGNORECASE,

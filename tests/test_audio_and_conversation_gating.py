@@ -300,6 +300,10 @@ class ConversationGatingTest(unittest.TestCase):
             conversation_steering.detect_interest("Let's talk about Star Trek."),
             "Star Trek",
         )
+        self.assertEqual(
+            conversation_steering.detect_interest("I really want to talk about Star Trek."),
+            "Star Trek",
+        )
         self.assertIsNone(conversation_steering.detect_interest("I do not know."))
 
     def test_conversation_steering_detects_topic_knowledge_questions(self):
@@ -578,6 +582,40 @@ class ConversationGatingTest(unittest.TestCase):
             "startup_thread_answer",
             confidence=0.95,
         )
+        topic_thread.clear()
+        conversation_steering.clear()
+
+    def test_mind_opener_bare_topic_gets_startup_interest_budget(self):
+        from intelligence import conversation_steering, interaction, response_length, topic_thread
+
+        conversation_steering.clear()
+        topic_thread.clear()
+        topic_thread.note_assistant_turn(
+            "Hey Bret, what's been rolling around in your mind today?"
+        )
+        with (
+            mock.patch(
+                "intelligence.conversation_steering.boundary_memory.is_blocked",
+                return_value=False,
+            ),
+            mock.patch(
+                "intelligence.conversation_steering.facts_memory.add_fact",
+            ),
+        ):
+            captured = interaction._maybe_capture_topic_thread_answer(
+                1,
+                "Star Trek",
+            )
+
+        plan = response_length.classify("Star Trek", answered_question=captured)
+        ctx = conversation_steering.build_context(1)
+
+        self.assertIsNotNone(captured)
+        self.assertEqual(captured["question_key"], "startup_conversation_steering")
+        self.assertIsNotNone(ctx)
+        self.assertEqual(ctx.topic, "Star Trek")
+        self.assertGreaterEqual(plan.max_words, 50)
+        self.assertGreaterEqual(plan.max_sentences, 3)
         topic_thread.clear()
         conversation_steering.clear()
 
