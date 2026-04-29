@@ -105,15 +105,6 @@ def classify(
             "then end with one short natural follow-up question.",
         )
 
-    if answered_question and word_count <= 5:
-        return _plan(
-            "micro",
-            12,
-            1,
-            "short answer to Rex's question",
-            "Acknowledge in one small beat, then stop. Do not squeeze in a new prompt.",
-        )
-
     try:
         from intelligence import conversation_steering
         volunteered_interest = conversation_steering.detect_interest(cleaned)
@@ -127,6 +118,15 @@ def classify(
             "user volunteered a topic interest",
             "Acknowledge the interest, add one compact subject-aware beat, "
             "then ask one short follow-up about their angle, taste, or favorite part.",
+        )
+
+    if answered_question and word_count <= 5:
+        return _plan(
+            "micro",
+            12,
+            1,
+            "short answer to Rex's question",
+            "Acknowledge in one small beat, then stop. Do not squeeze in a new prompt.",
         )
 
     if word_count <= 3 and _CHECK_ALIVE_PAT.search(cleaned):

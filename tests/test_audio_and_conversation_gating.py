@@ -639,6 +639,19 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertIn("follow-up", plan.instruction)
         self.assertIn("topic interest", plan.reason)
 
+    def test_interest_answer_to_startup_question_is_not_micro_shortened(self):
+        from intelligence import response_length
+
+        plan = response_length.classify(
+            "I really like Star Trek",
+            answered_question={"question_key": "startup_conversation_steering_reply"},
+        )
+
+        self.assertEqual(plan.target, "short")
+        self.assertGreaterEqual(plan.max_words, 40)
+        self.assertGreaterEqual(plan.max_sentences, 2)
+        self.assertIn("topic interest", plan.reason)
+
     def test_topic_knowledge_question_gets_longer_budget(self):
         from intelligence import llm, response_length
 
