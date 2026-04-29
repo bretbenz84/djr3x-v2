@@ -256,7 +256,23 @@ class ConversationGatingTest(unittest.TestCase):
             conversation_steering.detect_interest("My favorite activity is hair styling."),
             "hair styling",
         )
+        self.assertEqual(
+            conversation_steering.detect_interest("Let's talk about Star Trek."),
+            "Star Trek",
+        )
         self.assertIsNone(conversation_steering.detect_interest("I do not know."))
+
+    def test_conversation_steering_detects_topic_knowledge_questions(self):
+        from intelligence import conversation_steering
+
+        self.assertEqual(
+            conversation_steering.detect_topic_question("What do you know about Star Trek?"),
+            "Star Trek",
+        )
+        self.assertEqual(
+            conversation_steering.detect_topic_question("Do you know anything about droid building?"),
+            "droid building",
+        )
 
     def test_interest_declaration_is_stored_and_steers_agenda(self):
         from intelligence import conversation_agenda, conversation_steering
@@ -296,6 +312,34 @@ class ConversationGatingTest(unittest.TestCase):
             "interest_declaration",
             confidence=0.95,
         )
+        conversation_steering.clear()
+
+    def test_topic_question_steers_agenda_without_personal_memory_shrug(self):
+        from intelligence import conversation_agenda, conversation_steering
+
+        conversation_steering.clear()
+        with (
+            mock.patch.object(
+                conversation_agenda.world_state,
+                "snapshot",
+                return_value={"people": [], "environment": {}},
+            ),
+            mock.patch("intelligence.question_budget.can_ask", return_value=True),
+            mock.patch("intelligence.question_budget.build_directive", return_value=""),
+            mock.patch(
+                "intelligence.conversation_steering.boundary_memory.is_blocked",
+                return_value=False,
+            ),
+        ):
+            directive = conversation_agenda.build_turn_directive(
+                "What do you know about Star Trek?",
+                1,
+            )
+
+        self.assertIn("Conversation steering", directive)
+        self.assertIn("Star Trek", directive)
+        self.assertIn("answer from general knowledge first", directive)
+        self.assertIn("general topic knowledge question", directive)
         conversation_steering.clear()
 
     def test_interest_thread_stores_notable_followup_notes(self):
@@ -448,6 +492,19 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertGreaterEqual(plan.max_sentences, 3)
         self.assertIn("follow-up question", plan.instruction)
         self.assertIn("startup steering", plan.reason)
+
+    def test_topic_knowledge_question_gets_longer_budget(self):
+        from intelligence import llm, response_length
+
+        directive = response_length.build_directive(
+            "What do you know about Star Trek?",
+        )
+        plan = response_length.classify("What do you know about Star Trek?")
+
+        self.assertEqual(plan.target, "long")
+        self.assertGreaterEqual(plan.max_words, 100)
+        self.assertIn("general knowledge", plan.instruction)
+        self.assertGreaterEqual(llm._max_tokens_for_agenda(directive), 200)
 
     def test_social_frame_preserves_allowed_interest_followup_when_trimming(self):
         from intelligence import social_frame
@@ -1325,6 +1382,52 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         )
 
         self.assertEqual(routed.action, "emotional.boundary")
+
+    def test_router_downgrades_general_topic_knowledge_from_memory_query(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="memory.query",
+            confidence=0.90,
+            args={"person_name": "Star Trek"},
+            reason="misread topic as memory target",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "What do you know about Star Trek?",
+            {},
+        )
+
+        self.assertEqual(routed.action, "conversation.reply")
+        self.assertLess(routed.confidence, 0.85)
+
+    def test_router_keeps_person_memory_question_as_memory_query(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="memory.query",
+            confidence=0.90,
+            args={},
+            reason="person memory question",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "What do you know about my dad?",
+            {},
+        )
+
+        self.assertEqual(routed.action, "memory.query")
+
+    def test_intent_classifier_short_circuits_topic_knowledge_questions(self):
+        from intelligence import intent_classifier
+
+        self.assertEqual(
+            intent_classifier.classify("What do you know about Star Trek?"),
+            "general",
+        )
+        self.assertEqual(intent_classifier.classify("Star Trek"), "general")
 
     def test_dj_vibe_match_does_not_confuse_classical_with_classic_rock(self):
         import config

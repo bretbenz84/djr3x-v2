@@ -36,6 +36,12 @@ _BARE_TOPIC_MAX_WORDS = 6
 
 _INTEREST_PATTERNS: list[re.Pattern[str]] = [
     re.compile(
+        r"\b(?:i\s*(?:want|wanna|would like)\s+to\s+talk\s+about|"
+        r"let'?s\s+talk\s+about|can\s+we\s+talk\s+about)\s+"
+        r"(?P<topic>[^.?!,;]{3,90})",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"\b(?:i\s*(?:really\s*)?(?:like|love|enjoy|dig)|"
         r"i'?m\s+(?:really\s+)?into|i\s+am\s+(?:really\s+)?into|"
         r"i'?m\s+(?:really\s+)?obsessed\s+with|"
@@ -59,6 +65,11 @@ _INTEREST_PATTERNS: list[re.Pattern[str]] = [
         re.IGNORECASE,
     ),
 ]
+_TOPIC_KNOWLEDGE_PAT = re.compile(
+    r"\b(?:what\s+do\s+you\s+know|do\s+you\s+know\s+anything|"
+    r"tell\s+me|explain)\s+(?:about\s+)?(?P<topic>[^?.,!;]{3,90})",
+    re.IGNORECASE,
+)
 
 _AVOID_PAT = re.compile(
     r"\b(?:don'?t|do not|stop|no more|not)\s+"
@@ -109,6 +120,16 @@ def detect_interest(text: str) -> Optional[str]:
     return None
 
 
+def detect_topic_question(text: str) -> Optional[str]:
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned or _AVOID_PAT.search(cleaned):
+        return None
+    match = _TOPIC_KNOWLEDGE_PAT.search(cleaned)
+    if not match:
+        return None
+    return _clean_topic(match.group("topic"))
+
+
 def note_user_turn(
     person_id: Optional[int],
     text: str,
@@ -138,10 +159,21 @@ def note_user_turn(
         if person_id is not None and not suppress_memory_learning:
             _store_interest_fact(person_id, topic, source="interest_declaration")
     else:
-        active = _read_active(person_id)
-        topic = active.get("topic") if active else None
-        if not topic:
-            return None
+        topic = detect_topic_question(cleaned)
+        if topic:
+            if person_id is not None and _topic_blocked(int(person_id), topic):
+                clear(person_id)
+                return None
+            _active[person_id] = {
+                "topic": topic,
+                "ts": time.monotonic(),
+                "source": "topic_question",
+            }
+        else:
+            active = _read_active(person_id)
+            topic = active.get("topic") if active else None
+            if not topic:
+                return None
 
     if person_id is not None and not suppress_memory_learning:
         _maybe_store_interest_note(person_id, topic, cleaned, fresh=fresh)
@@ -227,6 +259,10 @@ def _directive_for(topic: str, *, fresh: bool) -> str:
         "most one natural follow-up about their experience with it. Keep it "
         "funny and in-character; do not confuse franchises or fields as if they "
         "are the same thing, and ask instead of bluffing if you are unsure. "
+        "If the human asked what you know about the topic, answer from general "
+        "knowledge first instead of saying it is missing from personal memory. "
+        "You may ask if this is a subject they are into before treating it as "
+        "a remembered interest. "
         "Light roasts are allowed only about the hobby or Rex's ignorance, not "
         "the person's competence."
     )

@@ -262,6 +262,7 @@ _RESPONSE_LENGTH_TOKEN_BUDGET = {
     "brief": 55,
     "short": 70,
     "medium": 120,
+    "long": 240,
 }
 _RESPONSE_LENGTH_TARGET_PAT = re.compile(
     r"Response length control:\s*\n-\s*Target:\s*([a-z_]+)",

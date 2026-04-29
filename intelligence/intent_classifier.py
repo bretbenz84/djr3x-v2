@@ -76,6 +76,21 @@ _MUSIC_VIBE_FALLBACKS = {
     "country", "folk", "hiphop", "hip hop", "lofi", "lo-fi", "classical",
     "synthpop", "pop", "lounge", "retro", "upbeat", "quiet",
 }
+_TOPIC_KNOWLEDGE_QUERY_RE = re.compile(
+    r"\b(?:what\s+do\s+you\s+know|do\s+you\s+know\s+anything|"
+    r"tell\s+me|explain)\s+(?:about\s+)?(?P<topic>[^?.,!;]{3,100})",
+    re.IGNORECASE,
+)
+_PERSON_MEMORY_QUERY_RE = re.compile(
+    r"\b("
+    r"me|myself|my\s+|mine|i\s+told\s+you|i'?ve\s+told\s+you|"
+    r"remember|memory|memories|person|people|friend|partner|wife|husband|"
+    r"mom|mother|dad|father|brother|sister|kid|child|son|daughter|"
+    r"jeff|joy|jt|bret"
+    r")\b",
+    re.IGNORECASE,
+)
+_BARE_TOPIC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 '&:-]{2,60}$")
 
 
 def _known_music_vibes() -> set[str]:
@@ -164,6 +179,19 @@ def classify(text: str) -> str:
     never blocks the normal LLM path.
     """
     if not text or not text.strip():
+        return "general"
+
+    cleaned = " ".join(text.strip().split())
+    topic_match = _TOPIC_KNOWLEDGE_QUERY_RE.search(cleaned)
+    topic = (topic_match.group("topic") if topic_match else "").strip()
+    if topic and not _PERSON_MEMORY_QUERY_RE.search(topic):
+        return "general"
+    if (
+        _BARE_TOPIC_RE.match(cleaned)
+        and "?" not in cleaned
+        and 2 <= len(re.findall(r"[A-Za-z0-9']+", cleaned)) <= 5
+        and not _MUSIC_PLAY_ACTION_RE.search(cleaned)
+    ):
         return "general"
 
     try:

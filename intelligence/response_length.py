@@ -29,6 +29,11 @@ _CLOSURE_PAT = re.compile(
     re.IGNORECASE,
 )
 _DEPTH_QUESTION_PAT = re.compile(r"^\s*(why|how|explain|tell me)\b", re.IGNORECASE)
+_TOPIC_KNOWLEDGE_QUESTION_PAT = re.compile(
+    r"\b(?:what\s+do\s+you\s+know|do\s+you\s+know\s+anything|"
+    r"tell\s+me|explain)\s+(?:about\s+)?[^?.,!;]{3,100}",
+    re.IGNORECASE,
+)
 _DEPTH_STATEMENT_PAT = re.compile(
     r"\b(because|actually|honestly|i think|i feel|it feels|the thing is|"
     r"what happened was|i'm worried|i am worried|i've been|i have been)\b",
@@ -120,6 +125,17 @@ def classify(
 
     # Direct questions may need space, but simple ones still should not sprawl.
     if is_question:
+        if _TOPIC_KNOWLEDGE_QUESTION_PAT.search(cleaned):
+            return _plan(
+                "long",
+                125,
+                7,
+                "general topic knowledge question",
+                "Use the main LLM's general knowledge to give a more substantive "
+                "answer about the topic. Be concrete, accurate, and in character. "
+                "End with at most one short question asking whether this is a "
+                "subject they are into or what angle they want next.",
+            )
         if _DEPTH_QUESTION_PAT.search(cleaned) or word_count >= 10:
             return _plan(
                 "medium",

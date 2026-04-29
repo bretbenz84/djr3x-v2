@@ -28,7 +28,7 @@ _client = OpenAI(api_key=apikeys.OPENAI_API_KEY)
 
 ACTION_CATALOG: dict[str, str] = {
     "conversation.reply": "Normal conversational response; no tool/feature should run.",
-    "memory.query": "User asks what Rex remembers or knows about a person, relationship, or themselves.",
+    "memory.query": "User asks what Rex remembers or knows about a person, relationship, or themselves. Not for general topic knowledge.",
     "memory.forget_specific": "User asks Rex to forget/delete a specific remembered detail or topic.",
     "memory.forget_person": "User asks Rex to forget a whole person, themselves, or everyone.",
     "event.cancel": "User says a remembered plan/event is canceled, stale, or no longer happening.",
@@ -89,6 +89,8 @@ Rules:
   delete, remove, erase, wipe, or clear a remembered thing. Preference statements
   like "I like Disneyland" are conversation.reply and may be learned as interests.
 - If the utterance asks what you remember or know about someone, use memory.query.
+  If it asks what Rex generally knows about a topic, franchise, place, hobby,
+  object, or field, use conversation.reply so the main LLM can answer.
 - If the utterance says a remembered plan is no longer happening, use event.cancel.
 - For event.cancel, put the plan/topic being canceled in args.event_hint when possible.
 - Only use emotional.boundary when the user explicitly asks not to talk about,
@@ -129,6 +131,20 @@ _BOUNDARY_REQUEST_RE = re.compile(
     r"\b(rather not|don'?t want to|do not want to|can we not|"
     r"change the subject|talk about something else|drop it|leave it alone|"
     r"no more check-?ins?)\b",
+    re.IGNORECASE,
+)
+_TOPIC_KNOWLEDGE_QUERY_RE = re.compile(
+    r"\b(?:what\s+do\s+you\s+know|do\s+you\s+know\s+anything|"
+    r"tell\s+me|explain)\s+(?:about\s+)?(?P<topic>[^?.,!;]{3,100})",
+    re.IGNORECASE,
+)
+_PERSON_MEMORY_QUERY_RE = re.compile(
+    r"\b("
+    r"me|myself|me\?|my\s+|mine|i\s+told\s+you|i'?ve\s+told\s+you|"
+    r"remember|memory|memories|person|people|friend|partner|wife|husband|"
+    r"mom|mother|dad|father|brother|sister|kid|child|son|daughter|"
+    r"jeff|joy|jt|bret"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -247,6 +263,18 @@ def _apply_context_overrides(
             requires_confirmation=False,
             reason="sensitive topic mention is not an explicit boundary request",
         )
+
+    if decision.action == "memory.query":
+        topic_match = _TOPIC_KNOWLEDGE_QUERY_RE.search(text or "")
+        topic = (topic_match.group("topic") if topic_match else "").strip()
+        if topic and not _PERSON_MEMORY_QUERY_RE.search(topic):
+            return ActionDecision(
+                action="conversation.reply",
+                confidence=min(float(decision.confidence or 0.0), 0.40),
+                args={},
+                requires_confirmation=False,
+                reason="general topic knowledge question should use LLM conversation",
+            )
 
     pending_question = _pending_question_context(context)
     if not pending_question:
