@@ -104,6 +104,7 @@ _HARD_NO_QUESTION_PAT = re.compile(
 )
 _ASK_ALLOWED_PAT = re.compile(
     r"(ask who|ask .* name|ask .* question|one question|one short follow-up|"
+    r"one natural follow-up|natural follow-up|ask at most one|"
     r"tightly related follow-up|weave in this one question|ending in a question mark)",
     re.IGNORECASE,
 )
@@ -352,6 +353,8 @@ def _purpose_from(agenda_directive: str, length_reason: str, energy: dict) -> st
         return "answer"
     if "unfamiliar face" in lower or "unknown person" in lower:
         return "identity"
+    if "conversation steering:" in lower or "interest thread" in lower:
+        return "interest"
     if "repair" in lower:
         return "repair"
     mode = (energy.get("mode") or "").lower()

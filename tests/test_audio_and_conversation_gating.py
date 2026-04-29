@@ -1031,6 +1031,40 @@ class ConversationGatingTest(unittest.TestCase):
 
         self.assertTrue(frame.allow_question)
 
+    def test_social_frame_allows_interest_natural_followup_directive(self):
+        from intelligence import social_frame
+
+        directive = (
+            "Conversation steering: The current thread matches a known/active "
+            "interest: 'Star Trek'. Keep this turn steered toward that subject. "
+            "Primary purpose: deepen the interest thread the human opened. "
+            "Give one specific subject-aware reaction or tidbit, then ask one "
+            "natural follow-up about their experience with that topic."
+        )
+        with (
+            mock.patch("intelligence.question_budget.can_ask", return_value=True),
+            mock.patch.object(
+                social_frame.world_state,
+                "snapshot",
+                return_value={"people": []},
+            ),
+        ):
+            frame = social_frame.build_frame(
+                "I like Star Trek Voyager",
+                person_id=1,
+                agenda_directive=directive,
+            )
+            governed = social_frame.govern_response(
+                "Ah, Voyager! The show that proved even the most advanced "
+                "starship can get lost in the space equivalent of a parking "
+                "garage. What do you love most about it?",
+                frame,
+            )
+
+        self.assertEqual(frame.purpose, "interest")
+        self.assertTrue(frame.allow_question)
+        self.assertIn("What do you love most about it?", governed.text)
+
     def test_social_frame_allows_followup_after_user_question_when_agenda_allows(self):
         from intelligence import social_frame
 
