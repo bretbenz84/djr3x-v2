@@ -994,8 +994,10 @@ PRESENCE_DEPARTURE_COOLDOWN_SECS = 30
 PRESENCE_PER_PERSON_COOLDOWN_SECS = 120
 
 # Hysteresis: face must be continuously absent for this many seconds before we
-# even begin staging a departure. Guards against frame-level face-detection flicker.
-PRESENCE_DEPARTURE_CONFIRM_SECS = 8.0
+# even begin staging a departure. Guards against frame-level face-detection
+# flicker, especially FaceTime/HOG runs where a stationary face can disappear
+# for several seconds and then reappear.
+PRESENCE_DEPARTURE_CONFIRM_SECS = 20.0
 
 # Seconds to pause after current TTS finishes before firing a presence reaction.
 PRESENCE_REACTION_DELAY_SECS = 2.0

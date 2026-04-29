@@ -29,6 +29,7 @@ import state as state_module
 from state import State
 from world_state import world_state
 from awareness.situation import assessor as _situation_assessor, SituationProfile
+from utils import conv_log
 
 _log = logging.getLogger(__name__)
 
@@ -620,6 +621,10 @@ def _speak_async(
             _proactive_speech_pending.clear()
 
         threading.Thread(target=_on_done, daemon=True, name="speech-pending-clear").start()
+        try:
+            conv_log.log_rex(text)
+        except Exception as exc:
+            _log.debug("conversation log write failed for proactive speech: %s", exc)
         note_rex_utterance(text, wait_secs=wait_secs)
         return True
     except Exception as exc:
@@ -1576,12 +1581,33 @@ def _first_sight_context(first_name: str) -> tuple[str, str]:
     if _process_started_mono and (time.monotonic() - _process_started_mono) <= 45.0:
         return (
             f"You just started up and immediately see '{first_name}'.",
-            "you just booted up and immediately spot them",
+            f"you just booted up and immediately spot {first_name}",
         )
     return (
         f"'{first_name}', someone you know, just came into your camera view "
         f"for the first time this run.",
-        "they just came into your camera view for the first time this run",
+        f"{first_name} just came into your camera view for the first time this run",
+    )
+
+
+def _build_startup_solo_greeting_prompt(first_name: str, context_sentence: str) -> str:
+    try:
+        from intelligence import social_scene
+        steering_examples = "; ".join(social_scene.FIRST_GREETING_STEERING_PHRASES)
+    except Exception:
+        steering_examples = (
+            "What are you up to today?; "
+            "What do you want to talk about?"
+        )
+    return (
+        f"{context_sentence} "
+        f"Greet {first_name} in-character by name, then end with ONE "
+        f"conversation-steering question varying between 'what are you "
+        f"up to today?' and 'what do you want to talk about?' in "
+        f"Rex's snarky DJ-R3X voice. Example endings: "
+        f"{steering_examples}. This is a solo greeting: use '{first_name}' "
+        f"or 'you'; do NOT call this one visible person 'they' or 'them'. "
+        f"Two short sentences max — the second must end in a question mark."
     )
 
 
@@ -1777,14 +1803,18 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
         return
     if not _last_snapshot or not _can_proactive_speak():
         return
+    if _startup_known_greeting_pending(snapshot):
+        return
 
     try:
         triggers: list[tuple[str, str]] = []  # (llm_prompt, emotion)
 
-        # New person entered frame
+        # New person entered frame. During startup, known-person greetings own
+        # the first line; crowd-count flicker should not steal the opening with
+        # generic "someone new walked in" banter.
         prev_count = _last_snapshot.get("crowd", {}).get("count", 0)
         curr_count = snapshot.get("crowd", {}).get("count", 0)
-        if curr_count > prev_count:
+        if curr_count > prev_count and not _startup_known_greeting_pending(snapshot):
             triggers.append((
                 "Someone new just walked into your view. React in one short in-character line — "
                 "somewhere between a greeting and a roast, delivered as you clock them entering.",
@@ -1864,6 +1894,18 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
 
     except Exception as exc:
         _log.debug("proactive reactions step error: %s", exc)
+
+
+def _startup_known_greeting_pending(snapshot: dict, now: Optional[float] = None) -> bool:
+    """True while startup should reserve speech for known-person greetings."""
+    now = time.monotonic() if now is None else now
+    if not _within_startup_group_window(now):
+        return False
+    for person in snapshot.get("people", []) or []:
+        pid = person.get("person_db_id")
+        if pid is not None and int(pid) not in _greeted_this_session:
+            return True
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3230,13 +3272,9 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
 
                     # Fallback — generic greeting
                     if prompt is None:
-                        prompt = (
-                            f"{context_sentence} "
-                            f"Greet them in-character, then ask them a small-talk question — how "
-                            f"they're doing, what they've been up to, what's on the agenda — "
-                            f"something that invites them to actually talk to you, not just listen "
-                            f"to you have an opinion. Address {first_name} by name. Two short "
-                            f"sentences max — the second must end in a question mark."
+                        prompt = _build_startup_solo_greeting_prompt(
+                            first_name,
+                            context_sentence,
                         )
                         _log.info("consciousness: startup greeting for %s", person_name)
 

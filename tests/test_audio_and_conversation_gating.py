@@ -118,6 +118,68 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
 
 class ConversationGatingTest(unittest.TestCase):
+    def test_startup_solo_greeting_prompt_names_person_and_avoids_they_them(self):
+        from intelligence import consciousness
+
+        prompt = consciousness._build_startup_solo_greeting_prompt(
+            "Bret",
+            "You just started up and immediately see 'Bret'.",
+        )
+
+        self.assertIn("Greet Bret", prompt)
+        self.assertIn("what are you up to today", prompt)
+        self.assertIn("what do you want to talk about", prompt)
+        self.assertIn("do NOT call this one visible person 'they' or 'them'", prompt)
+
+    def test_startup_known_greeting_pending_suppresses_generic_world_reactions(self):
+        from intelligence import consciousness
+
+        old_started = consciousness._process_started_mono
+        old_greeted = set(consciousness._greeted_this_session)
+        try:
+            consciousness._process_started_mono = 100.0
+            consciousness._greeted_this_session.clear()
+            snapshot = {
+                "people": [
+                    {"person_db_id": 1, "face_id": "Bret Benziger"},
+                ]
+            }
+
+            self.assertTrue(
+                consciousness._startup_known_greeting_pending(snapshot, now=110.0)
+            )
+            consciousness._greeted_this_session.add(1)
+            self.assertFalse(
+                consciousness._startup_known_greeting_pending(snapshot, now=110.0)
+            )
+        finally:
+            consciousness._process_started_mono = old_started
+            consciousness._greeted_this_session.clear()
+            consciousness._greeted_this_session.update(old_greeted)
+
+    def test_proactive_speech_writes_conversation_log(self):
+        from intelligence import consciousness
+
+        class _Done:
+            def wait(self):
+                return None
+
+        with (
+            mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+            mock.patch("audio.speech_queue.enqueue", return_value=_Done()),
+            mock.patch.object(consciousness.conv_log, "log_rex") as log_rex,
+            mock.patch.object(consciousness, "note_rex_utterance"),
+        ):
+            ok = consciousness._speak_async(
+                "Bret, what mission are we pretending is important today?",
+                governed=False,
+            )
+
+        self.assertTrue(ok)
+        log_rex.assert_called_once_with(
+            "Bret, what mission are we pretending is important today?"
+        )
+
     def test_conversation_steering_detects_interest_declarations(self):
         from intelligence import conversation_steering
 
