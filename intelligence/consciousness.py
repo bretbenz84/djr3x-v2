@@ -2596,6 +2596,8 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
         engaged_touch = _engaged_last_touch_at
     if engaged_id is None:
         return
+    if _visual_curiosity_blocked_by_interest_thread(engaged_id):
+        return
     if _visual_curiosity_recently_blocked_by_checkin(engaged_id):
         return
 
@@ -2725,6 +2727,27 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
                 _visual_curiosity_in_flight = False
 
     threading.Thread(target=_task, daemon=True, name="visual-curiosity").start()
+
+
+def _visual_curiosity_blocked_by_interest_thread(person_id: Optional[int]) -> bool:
+    if person_id is None:
+        return False
+    try:
+        from intelligence import conversation_steering
+
+        steering = conversation_steering.build_context(person_id)
+    except Exception as exc:
+        _log.debug("visual curiosity interest-thread check failed: %s", exc)
+        return False
+    if not steering:
+        return False
+    _log.info(
+        "consciousness: visual curiosity suppressed — active interest thread %r "
+        "for person_id=%s",
+        steering.topic,
+        person_id,
+    )
+    return True
 
 
 def _do_idle_clip() -> None:

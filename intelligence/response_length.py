@@ -114,6 +114,21 @@ def classify(
             "Acknowledge in one small beat, then stop. Do not squeeze in a new prompt.",
         )
 
+    try:
+        from intelligence import conversation_steering
+        volunteered_interest = conversation_steering.detect_interest(cleaned)
+    except Exception:
+        volunteered_interest = None
+    if volunteered_interest:
+        return _plan(
+            "short",
+            45,
+            2,
+            "user volunteered a topic interest",
+            "Acknowledge the interest, add one compact subject-aware beat, "
+            "then ask one short follow-up about their angle, taste, or favorite part.",
+        )
+
     if word_count <= 3 and _CHECK_ALIVE_PAT.search(cleaned):
         return _plan(
             "micro",

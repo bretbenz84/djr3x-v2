@@ -124,6 +124,21 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         flush.assert_not_called()
 
+    def test_post_tts_handoff_refreshes_idle_timer(self):
+        from intelligence import interaction
+
+        interaction._last_speech_at = 10.0
+        with (
+            mock.patch.object(interaction.time, "monotonic", return_value=50.0),
+            mock.patch.object(interaction.stream, "flush"),
+        ):
+            interaction._apply_post_tts_handoff(
+                "Long Star Trek answer complete.",
+                source="test",
+            )
+
+        self.assertEqual(interaction._last_speech_at, 50.0)
+
     def test_no_response_recovery_waits_for_cooldown_and_user_speech(self):
         from intelligence import interaction
 
@@ -455,6 +470,24 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertEqual(save_qa.call_args.args[1], "interest_hair_styling_followup")
         conversation_steering.clear()
 
+    def test_visual_curiosity_suppressed_during_active_interest_thread(self):
+        from intelligence import consciousness, conversation_steering
+
+        conversation_steering.clear()
+        with (
+            mock.patch(
+                "intelligence.conversation_steering.facts_memory.add_fact",
+            ),
+            mock.patch(
+                "intelligence.conversation_steering.boundary_memory.is_blocked",
+                return_value=False,
+            ),
+        ):
+            conversation_steering.note_user_turn(1, "I really like Star Trek")
+
+        self.assertTrue(consciousness._visual_curiosity_blocked_by_interest_thread(1))
+        conversation_steering.clear()
+
     def test_bare_startup_answer_becomes_interest_thread(self):
         from intelligence import conversation_steering, interaction
 
@@ -548,6 +581,39 @@ class ConversationGatingTest(unittest.TestCase):
         topic_thread.clear()
         conversation_steering.clear()
 
+    def test_topic_thread_startup_correction_clears_question_without_interest(self):
+        from intelligence import conversation_steering, interaction, topic_thread
+
+        conversation_steering.clear()
+        topic_thread.clear()
+        topic_thread.note_assistant_turn(
+            "Bret! Look who finally decided to grace us with their presence. "
+            "What problem are we pretending I caused?"
+        )
+        with (
+            mock.patch(
+                "intelligence.conversation_steering.boundary_memory.is_blocked",
+                return_value=False,
+            ),
+            mock.patch(
+                "intelligence.conversation_steering.facts_memory.add_fact",
+            ) as add_fact,
+        ):
+            captured = interaction._maybe_capture_topic_thread_answer(
+                1,
+                "You didn't cause any problem",
+            )
+            topic_thread.note_answered_question(captured)
+
+        snap = topic_thread.snapshot()
+        self.assertIsNotNone(captured)
+        self.assertEqual(captured["question_key"], "startup_conversation_steering_reply")
+        self.assertIsNone(conversation_steering.build_context(1))
+        self.assertIsNone(snap.get("unresolved_question"))
+        add_fact.assert_not_called()
+        topic_thread.clear()
+        conversation_steering.clear()
+
     def test_startup_answer_gets_room_for_followup_question(self):
         from intelligence import response_length
 
@@ -561,6 +627,17 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertGreaterEqual(plan.max_sentences, 3)
         self.assertIn("follow-up question", plan.instruction)
         self.assertIn("startup steering", plan.reason)
+
+    def test_interest_declaration_gets_room_for_followup_question(self):
+        from intelligence import response_length
+
+        plan = response_length.classify("I really like Star Trek")
+
+        self.assertEqual(plan.target, "short")
+        self.assertGreaterEqual(plan.max_words, 40)
+        self.assertGreaterEqual(plan.max_sentences, 2)
+        self.assertIn("follow-up", plan.instruction)
+        self.assertIn("topic interest", plan.reason)
 
     def test_topic_knowledge_question_gets_longer_budget(self):
         from intelligence import llm, response_length

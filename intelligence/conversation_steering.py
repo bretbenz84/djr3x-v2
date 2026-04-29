@@ -349,6 +349,12 @@ def _clean_bare_topic(text: str) -> Optional[str]:
     words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'+#-]*", cleaned)
     if not words or len(words) > _BARE_TOPIC_MAX_WORDS:
         return None
+    if len(words) > 3 and re.search(
+        r"\b(?:i|you|we|they|he|she|did|didn'?t|do|don'?t|am|are|is|was|were)\b",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        return None
     lowered = cleaned.lower()
     if lowered in _BAD_TOPIC:
         return None

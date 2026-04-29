@@ -61,7 +61,7 @@ _SERVO_ENV_US_MAX = 3000.0
 
 # When True, clears logs/djr3x.log and logs/conversation.log at startup so
 # each run begins with fresh log files.
-DEBUG_MODE = True
+DEBUG_MODE = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AI MODELS
@@ -1053,6 +1053,12 @@ SPEAKER_ID_SOFT_THRESHOLD = 0.60
 # misfires when a known speaker's voice happens to score just under the soft
 # floor on a noisy utterance.
 SPEAKER_ID_ENGAGED_VISIBLE_FLOOR = 0.50
+
+# Single visible engaged continuity floor: when exactly one known person is
+# visible, that person is already engaged, and no unknown face is visible, do
+# not derail into "who said that?" just because the voice model's top low-score
+# candidate was someone else. Face tracking plus conversation continuity win.
+SPEAKER_ID_SINGLE_VISIBLE_CONTINUITY_FLOOR = 0.45
 
 # Multi-person visible attribution floors. When two known people are in frame,
 # a weak voice score should not automatically become "some unseen stranger."

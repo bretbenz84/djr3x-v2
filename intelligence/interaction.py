@@ -504,9 +504,11 @@ def _apply_post_tts_handoff(
     *,
     source: str = "speech_queue",
 ) -> _PostTtsHandoffPolicy:
-    global _listen_resume_at, _post_tts_flush_needed
+    global _listen_resume_at, _post_tts_flush_needed, _last_speech_at
     policy = _post_tts_handoff_policy(text)
-    _listen_resume_at = time.monotonic() + policy.listen_delay_secs
+    now = time.monotonic()
+    _last_speech_at = now
+    _listen_resume_at = now + policy.listen_delay_secs
     if policy.flush_buffer:
         stream.flush()
         _post_tts_flush_needed = True
@@ -4518,6 +4520,7 @@ def _looks_like_startup_steering_question(question: str) -> bool:
             "what topic",
             "what corner",
             "what mission",
+            "what problem",
             "what are you up to",
             "what do you want to talk",
             "what should we talk",
@@ -4558,7 +4561,21 @@ def _maybe_capture_topic_thread_answer(
         _log.debug("topic-thread steering answer capture failed: %s", exc)
         ctx = None
     if ctx is None:
-        return None
+        answered = {
+            "question_key": "startup_conversation_steering_reply",
+            "question_text": question,
+            "answer_text": cleaned,
+            "depth_level": 1,
+            "source": "topic_thread",
+        }
+        _log.info(
+            "[interaction] captured topic-thread reply without storing interest — "
+            "person_id=%s key=%r answer=%r",
+            person_id,
+            answered["question_key"],
+            cleaned[:160],
+        )
+        return answered
     answered = {
         "question_key": "startup_conversation_steering",
         "question_text": question,
@@ -5209,6 +5226,26 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                         person_id, person_name, speaker_score, eng_visible_floor,
                     )
                 elif engaged_is_visible and not _has_unknown_visible_person():
+                    single_visible_continuity_floor = float(
+                        getattr(config, "SPEAKER_ID_SINGLE_VISIBLE_CONTINUITY_FLOOR", 0.45)
+                    )
+                    if (
+                        len(visible_known_by_id) == 1
+                        and raw_best_id is not None
+                        and speaker_score >= single_visible_continuity_floor
+                    ):
+                        person_id = ws_pid
+                        person_name = ws_name
+                        _log.info(
+                            "[interaction] person resolution: single visible engaged "
+                            "continuity — person_id=%s name=%r voice_score=%.3f "
+                            "(floor=%.2f, raw_best=%s)",
+                            person_id,
+                            person_name,
+                            speaker_score,
+                            single_visible_continuity_floor,
+                            raw_best_id,
+                        )
                     # Grief-flow override: Rex just asked this engaged person
                     # a direct question and is awaiting their reply. Voice-ID
                     # can score just below the engaged-visible floor on short
@@ -5216,22 +5253,29 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     # but face match + top-candidate match is plenty of
                     # evidence in this context. Don't divert to off-camera
                     # handling and lose the grief flow's turn.
-                    grief_floor = float(
-                        getattr(config, "SPEAKER_ID_GRIEF_FLOW_FLOOR", 0.30)
-                    )
-                    if (
-                        _grief_flow_active(ws_pid)
-                        and raw_best_id == ws_pid
-                        and speaker_score >= grief_floor
+                    elif _grief_flow_active(ws_pid) and (
+                        raw_best_id == ws_pid
                     ):
-                        person_id = ws_pid
-                        person_name = ws_name
-                        _log.info(
-                            "[interaction] person resolution: grief flow active for "
-                            "engaged+visible person %r — attributing despite voice "
-                            "score %.3f below engaged+visible floor (grief floor=%.2f)",
-                            ws_name, speaker_score, grief_floor,
+                        grief_floor = float(
+                            getattr(config, "SPEAKER_ID_GRIEF_FLOW_FLOOR", 0.30)
                         )
+                        if speaker_score >= grief_floor:
+                            person_id = ws_pid
+                            person_name = ws_name
+                            _log.info(
+                                "[interaction] person resolution: grief flow active for "
+                                "engaged+visible person %r — attributing despite voice "
+                                "score %.3f below engaged+visible floor (grief floor=%.2f)",
+                                ws_name, speaker_score, grief_floor,
+                            )
+                        else:
+                            off_camera_unknown = True
+                            _log.info(
+                                "[interaction] person resolution: speaker-ID missed while engaged "
+                                "person %r is visible and no unknown face — treating as off-camera "
+                                "unknown voice",
+                                ws_name,
+                            )
                     else:
                         off_camera_unknown = True
                         _log.info(
