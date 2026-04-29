@@ -87,6 +87,18 @@ def classify(
             "Use a tiny landing acknowledgement. A fragment is allowed. No question.",
         )
 
+    if (
+        answered_question
+        and answered_question.get("question_key") == "startup_conversation_steering"
+    ):
+        return _plan(
+            "short",
+            34,
+            2,
+            "answer to Rex's startup steering question",
+            "Acknowledge the chosen topic, then ask one natural follow-up if useful.",
+        )
+
     if answered_question and word_count <= 5:
         return _plan(
             "micro",

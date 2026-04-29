@@ -4495,6 +4495,15 @@ def _maybe_capture_pending_qa(
                 answered.get("question_key"),
                 cleaned[:160],
             )
+            if answered.get("question_key") == "startup_conversation_steering":
+                try:
+                    conversation_steering.note_bare_interest_answer(
+                        person_id,
+                        cleaned,
+                        source="startup_steering_answer",
+                    )
+                except Exception as exc:
+                    _log.debug("startup steering answer capture failed: %s", exc)
         return answered
     except Exception as exc:
         _log.debug("pending Q&A capture failed: %s", exc)

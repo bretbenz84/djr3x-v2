@@ -32,6 +32,7 @@ _BAD_TOPIC = {
     "it", "that", "this", "things", "stuff", "you", "him", "her", "them",
     "myself", "everything", "nothing",
 }
+_BARE_TOPIC_MAX_WORDS = 6
 
 _INTEREST_PATTERNS: list[re.Pattern[str]] = [
     re.compile(
@@ -146,6 +147,31 @@ def note_user_turn(
         _maybe_store_interest_note(person_id, topic, cleaned, fresh=fresh)
 
     return build_context(person_id, topic=topic, fresh=fresh)
+
+
+def note_bare_interest_answer(
+    person_id: Optional[int],
+    text: str,
+    *,
+    source: str = "interest_answer",
+    suppress_memory_learning: bool = False,
+) -> Optional[SteeringContext]:
+    """Treat a short answer to Rex's opener as the topic they want to discuss."""
+    topic = _clean_bare_topic(text)
+    if not topic:
+        return None
+    if person_id is not None and _topic_blocked(int(person_id), topic):
+        clear(person_id)
+        return None
+    _active[person_id] = {
+        "topic": topic,
+        "ts": time.monotonic(),
+        "source": source,
+    }
+    if person_id is not None and not suppress_memory_learning:
+        _store_interest_fact(int(person_id), topic, source=source)
+        _maybe_store_interest_note(int(person_id), topic, text.strip(), fresh=True)
+    return build_context(person_id, topic=topic, fresh=True)
 
 
 def build_context(
@@ -274,6 +300,23 @@ def _clean_topic(topic: str) -> Optional[str]:
     if len(cleaned) > _MAX_TOPIC_CHARS:
         cleaned = cleaned[:_MAX_TOPIC_CHARS].rsplit(" ", 1)[0].strip()
     return cleaned
+
+
+def _clean_bare_topic(text: str) -> Optional[str]:
+    cleaned = " ".join((text or "").strip(" .?!,;:-").split())
+    if not cleaned or _AVOID_PAT.search(cleaned):
+        return None
+    if "?" in cleaned:
+        return None
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'+#-]*", cleaned)
+    if not words or len(words) > _BARE_TOPIC_MAX_WORDS:
+        return None
+    lowered = cleaned.lower()
+    if lowered in _BAD_TOPIC:
+        return None
+    if re.fullmatch(r"(?:yes|yeah|yep|no|nope|okay|ok|sure|nothing|i don'?t know)", lowered):
+        return None
+    return _clean_topic(cleaned)
 
 
 def _slug(topic: str) -> str:

@@ -490,6 +490,11 @@ def note_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
         repair_moves.note_assistant_turn(text)
     except Exception:
         pass
+    try:
+        from intelligence import topic_thread
+        topic_thread.note_assistant_turn(text)
+    except Exception:
+        pass
 
     with _turn_lock:
         _last_proactive_speech_at = now
@@ -504,6 +509,45 @@ def note_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
             else max(0.0, float(wait_secs))
         )
         _response_wait_until = max(_response_wait_until, now + wait_for)
+
+
+def _question_key_for_presence_line(label: str, purpose: str) -> Optional[str]:
+    label_l = (label or "").lower()
+    if "first-sight greeting" in label_l or "startup group greeting" in label_l:
+        return "startup_conversation_steering"
+    if purpose == "small_talk":
+        return "proactive_small_talk"
+    return None
+
+
+def _record_proactive_question(
+    person_id: Optional[int],
+    text: str,
+    *,
+    label: str,
+    purpose: str,
+) -> None:
+    if person_id is None or "?" not in (text or ""):
+        return
+    question_key = _question_key_for_presence_line(label, purpose)
+    if not question_key:
+        return
+    try:
+        from memory import relationships as rel_memory
+        rel_memory.save_question_asked(
+            int(person_id),
+            question_key,
+            text.strip(),
+            1,
+        )
+        _log.info(
+            "consciousness: recorded proactive question key=%s person_id=%s label=%s",
+            question_key,
+            person_id,
+            label,
+        )
+    except Exception as exc:
+        _log.debug("proactive question record failed: %s", exc)
 
 
 def get_last_rex_utterance() -> str:
@@ -924,6 +968,12 @@ def _generate_and_speak_presence(
             _last_presence_reaction_at[tag_key] = time.monotonic()
             speech_queue.enqueue(text, emotion, priority=1, tag=tag)
             note_rex_utterance(text)
+            _record_proactive_question(
+                tag_key if isinstance(tag_key, int) else None,
+                text,
+                label=label,
+                purpose=purpose,
+            )
             if (
                 purpose in {"memory_followup", "celebration_checkin", "emotional_checkin"}
                 and isinstance(tag_key, int)

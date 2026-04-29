@@ -365,6 +365,85 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertEqual(save_qa.call_args.args[1], "interest_hair_styling_followup")
         conversation_steering.clear()
 
+    def test_bare_startup_answer_becomes_interest_thread(self):
+        from intelligence import conversation_steering, interaction
+
+        conversation_steering.clear()
+        pending = {
+            "id": 7,
+            "question_key": "startup_conversation_steering",
+            "question_text": "What corner of your organic life are we discussing first?",
+            "depth_level": 1,
+        }
+        answered = dict(pending, answer_text="Droid Development")
+        with (
+            mock.patch.object(
+                interaction.rel_memory,
+                "get_latest_pending_question",
+                return_value=pending,
+            ),
+            mock.patch.object(
+                interaction.rel_memory,
+                "answer_latest_pending_question",
+                return_value=answered,
+            ),
+            mock.patch(
+                "intelligence.conversation_steering.boundary_memory.is_blocked",
+                return_value=False,
+            ),
+            mock.patch(
+                "intelligence.conversation_steering.facts_memory.add_fact",
+            ) as add_fact,
+        ):
+            captured = interaction._maybe_capture_pending_qa(
+                1,
+                "Droid Development",
+            )
+
+        ctx = conversation_steering.build_context(1)
+        self.assertEqual(captured["question_key"], "startup_conversation_steering")
+        self.assertIsNotNone(ctx)
+        self.assertEqual(ctx.topic, "Droid Development")
+        add_fact.assert_any_call(
+            1,
+            "interest",
+            "interest_droid_development",
+            "Droid Development",
+            "startup_steering_answer",
+            confidence=0.95,
+        )
+        conversation_steering.clear()
+
+    def test_startup_answer_gets_room_for_followup_question(self):
+        from intelligence import response_length
+
+        plan = response_length.classify(
+            "Droid Development",
+            answered_question={"question_key": "startup_conversation_steering"},
+        )
+
+        self.assertEqual(plan.target, "short")
+        self.assertGreaterEqual(plan.max_sentences, 2)
+        self.assertIn("startup steering", plan.reason)
+
+    def test_presence_startup_question_is_saved_as_pending_qa(self):
+        from intelligence import consciousness
+
+        with mock.patch("memory.relationships.save_question_asked") as save:
+            consciousness._record_proactive_question(
+                1,
+                "Hey there, Bret! What corner of your organic life are we discussing first?",
+                label="first-sight greeting for Bret Benziger",
+                purpose="presence_reaction",
+            )
+
+        save.assert_called_once_with(
+            1,
+            "startup_conversation_steering",
+            "Hey there, Bret! What corner of your organic life are we discussing first?",
+            1,
+        )
+
     def test_local_sensitive_classifier_detects_death_subject(self):
         from intelligence import empathy
 
