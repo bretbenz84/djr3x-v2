@@ -17,6 +17,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 import config
+from intelligence import empathy
+from intelligence import conversation_steering
+from intelligence import social_scene
 from memory import facts as facts_memory
 from memory import people as people_memory
 from memory import relationships as rel_memory
@@ -427,6 +430,31 @@ def build_turn_directive(
         question_budget_allows = True
 
     lines.extend(_social_context_lines(ws))
+    try:
+        cast = social_scene.conversation_cast_context(
+            ws,
+            current_person_id=person_id,
+        )
+        if cast.directive:
+            lines.append(cast.directive)
+    except Exception as exc:
+        _log.debug("conversation cast directive skipped: %s", exc)
+
+    local_sensitive = empathy.classify_local_sensitivity(text)
+    if local_sensitive:
+        event = local_sensitive.get("event") or {}
+        category = event.get("category") or (
+            "crisis" if local_sensitive.get("crisis") else "sensitive"
+        )
+        lines.append(
+            "Primary purpose: respond to the sensitive disclosure detected in "
+            f"this exact user turn (category={category}). Drop roast-first mode "
+            "completely. No personal roasts, no visual riff, no comic pivot, "
+            "and no memory callback. Be brief, warm, and grounded in Rex's voice. "
+            "For death, grief, illness, or crisis language, acknowledge plainly; "
+            "ask at most one low-pressure support question only if it helps."
+        )
+        return "\n".join(lines)
 
     if end_thread_pending:
         lines.append(
@@ -434,6 +462,44 @@ def build_turn_directive(
             "acknowledgement or soft final beat, then stop. No new questions, "
             "no unrelated memory hooks, no visual riff."
         )
+        return "\n".join(lines)
+
+    unknown_context = social_scene.unknown_group_context(
+        ws,
+        current_person_id=person_id,
+    )
+    if unknown_context:
+        if _looks_like_user_question(text):
+            lines.append(
+                unknown_context.directive
+                + " If the human also asked a direct practical question, answer it "
+                "in one very short clause first, then use the one allowed question "
+                "to handle the group introduction."
+            )
+        else:
+            lines.append(unknown_context.directive)
+        return "\n".join(lines)
+
+    steering_directive = conversation_steering.build_directive(person_id, text)
+    if steering_directive:
+        lines.append(steering_directive)
+        if _looks_like_user_question(text):
+            lines.append(
+                "Primary purpose: answer the human's direct question first, then "
+                "keep the reply connected to their interest thread if it still fits."
+            )
+        elif question_budget_allows:
+            lines.append(
+                "Primary purpose: deepen the interest thread the human opened. "
+                "Give one specific subject-aware reaction or tidbit, then ask one "
+                "natural follow-up about their experience with that topic."
+            )
+        else:
+            lines.append(
+                "Primary purpose: deepen the interest thread the human opened. "
+                "Give one specific subject-aware reaction or tidbit, but do not "
+                "add a new question because the recent question budget is full."
+            )
         return "\n".join(lines)
 
     if answered_question:
@@ -471,25 +537,6 @@ def build_turn_directive(
                 "Do not add a new follow-up question; the recent question budget "
                 "is full."
             )
-        return "\n".join(lines)
-
-    # Unknown people are socially urgent: identify them before generic small talk.
-    people = ws.get("people", []) or []
-    unknown_count = sum(1 for p in people if p.get("person_db_id") is None)
-    if person_id is not None and unknown_count:
-        known_name = "them"
-        try:
-            row = people_memory.get_person(person_id)
-            if row and row.get("name"):
-                known_name = row["name"].split()[0]
-        except Exception:
-            pass
-        lines.append(
-            f"Primary purpose: there are {unknown_count} unfamiliar face(s) visible "
-            f"while talking with {known_name}. If Rex has not just asked, briefly "
-            "ask who the unfamiliar person is and how they know each other. "
-            "This beats generic small talk and may bypass the optional question budget."
-        )
         return "\n".join(lines)
 
     if person_id is not None:

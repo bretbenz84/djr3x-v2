@@ -46,6 +46,7 @@ from intelligence import memory_query
 from intelligence import social_frame
 from intelligence import turn_completion
 from intelligence import friendship_patterns
+from intelligence import conversation_steering
 from memory import facts as facts_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
@@ -197,6 +198,23 @@ _voice_refreshed_this_session: set[int] = set()
 _grief_flow_state: dict[int, dict] = {}
 _GRIEF_FLOW_TTL_SECS = 600.0  # 10 minutes — clears stale flows
 _GRIEF_FLOW_KEYWORDS = ("grief", "death", "illness")
+_PRONOUN_VALUE_RE = re.compile(r"\b(he/him|she/her|they/them)\b", re.IGNORECASE)
+_PRONOUN_NAMED_RE = re.compile(
+    r"\b([A-Za-z][A-Za-z'\-]{1,40})\s+"
+    r"(?:uses|use|goes by|go by|has|have)\s+"
+    r"(he/him|she/her|they/them)\b",
+    re.IGNORECASE,
+)
+_PRONOUN_SELF_RE = re.compile(
+    r"\b(?:i\s+(?:use|go by|have)|my pronouns are)\s+"
+    r"(he/him|she/her|they/them)\b",
+    re.IGNORECASE,
+)
+_PRONOUN_THIRD_PERSON_RE = re.compile(
+    r"\b(?:he|she|they)\s+(?:uses|use|goes by|go by|has|have)\s+"
+    r"(he/him|she/her|they/them)\b",
+    re.IGNORECASE,
+)
 
 _NAME_PATTERNS = [
     re.compile(r"\bmy name is\s+(.+)$", re.IGNORECASE),
@@ -1949,6 +1967,66 @@ def _maybe_prompt_incomplete_turn() -> bool:
     return True
 
 
+def _arm_visible_unknown_identity_followup(
+    person_id: Optional[int],
+    *,
+    source: str,
+) -> None:
+    """
+    When Rex has just asked about a visible mystery guest from the normal LLM
+    path, open the same parsing window used by proactive relationship prompts.
+
+    Without this, a natural bare reply like "JT" after "who's this?" can fall
+    through as ordinary chat instead of enrolling the visible newcomer.
+    """
+    unknown_slot = None
+    try:
+        for p in world_state.get("people") or []:
+            if p.get("person_db_id") is None:
+                unknown_slot = str(p.get("id") or "unknown_visible")
+                break
+    except Exception:
+        unknown_slot = None
+    if not unknown_slot:
+        return
+
+    if person_id is None:
+        global _identity_prompt_until
+        _identity_prompt_until = max(
+            _identity_prompt_until,
+            time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS,
+        )
+        _log.info(
+            "[interaction] armed visible-unknown self-identity followup source=%s slot=%s",
+            source,
+            unknown_slot,
+        )
+        return
+
+    engaged_name = None
+    try:
+        row = people_memory.get_person(person_id)
+        engaged_name = row.get("name") if row else None
+    except Exception:
+        engaged_name = None
+    try:
+        consciousness.set_relationship_prompt_context({
+            "engaged_person_id": person_id,
+            "engaged_name": engaged_name,
+            "slot_id": unknown_slot,
+            "asked_at": time.monotonic(),
+        })
+        _log.info(
+            "[interaction] armed visible-unknown relationship followup "
+            "source=%s engaged_id=%s slot=%s",
+            source,
+            person_id,
+            unknown_slot,
+        )
+    except Exception as exc:
+        _log.debug("visible unknown relationship followup arm failed: %s", exc)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Speech accumulation
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2100,13 +2178,18 @@ def _stream_llm_response(
                 delivery_voice_settings if delivery_voice_settings else "default",
             )
 
-        _speak_blocking(
+        completed = _speak_blocking(
             full_text,
             emotion=delivery_emotion,
             pre_beat_ms=pre_beat_ms,
             post_beat_ms_override=delivery_post_beat_ms,
             voice_settings=delivery_voice_settings,
         )
+        if completed and frame.purpose == "identity" and "?" in full_text:
+            _arm_visible_unknown_identity_followup(
+                person_id,
+                source="agenda_llm_identity",
+            )
     return full_text
 
 
@@ -3885,6 +3968,8 @@ def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> N
 
 def _generate_repair_response(person_id: Optional[int], text: str, repair: dict) -> str:
     """Generate one concise recovery when the human flags a conversational miss."""
+    if repair.get("kind") == "pronoun":
+        _maybe_store_pronoun_repair(person_id, text)
     prompt = repair_moves.build_prompt(repair)
     try:
         response = llm.get_response(prompt, person_id)
@@ -3910,6 +3995,141 @@ def _generate_repair_response(person_id: Optional[int], text: str, repair: dict)
         response,
     )
     return response
+
+
+def _maybe_store_pronoun_repair(person_id: Optional[int], text: str) -> None:
+    """Persist explicit pronoun corrections for future group-cast prompts."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return
+
+    target_id = None
+    pronouns = None
+
+    self_match = _PRONOUN_SELF_RE.search(cleaned)
+    if self_match and person_id is not None:
+        target_id = person_id
+        pronouns = self_match.group(1)
+
+    if target_id is None:
+        named_match = _PRONOUN_NAMED_RE.search(cleaned)
+        if named_match:
+            name = named_match.group(1)
+            if name.lower() not in {"he", "she", "they", "i", "my"}:
+                try:
+                    row = people_memory.find_person_by_name(name)
+                    if row and row.get("id") is not None:
+                        target_id = int(row["id"])
+                        pronouns = named_match.group(2)
+                except Exception as exc:
+                    _log.debug("pronoun repair name lookup failed: %s", exc)
+
+    if target_id is None:
+        third_match = _PRONOUN_THIRD_PERSON_RE.search(cleaned)
+        if third_match:
+            candidates = []
+            try:
+                for p in world_state.get("people") or []:
+                    pid = p.get("person_db_id")
+                    if pid is not None and pid != person_id:
+                        candidates.append(int(pid))
+            except Exception:
+                candidates = []
+            if len(candidates) == 1:
+                target_id = candidates[0]
+                pronouns = third_match.group(1)
+
+    if target_id is None or not pronouns:
+        return
+
+    normalized = pronouns.lower()
+    if not _PRONOUN_VALUE_RE.fullmatch(normalized):
+        return
+    try:
+        facts_memory.add_fact(
+            int(target_id),
+            "identity",
+            "pronouns",
+            normalized,
+            "pronoun_repair",
+            confidence=0.95,
+        )
+        _log.info(
+            "[repair] stored pronoun correction person_id=%s pronouns=%s",
+            target_id,
+            normalized,
+        )
+    except Exception as exc:
+        _log.debug("pronoun repair fact save failed: %s", exc)
+
+
+def _apply_local_sensitive_topic_prepass(
+    person_id: Optional[int],
+    text: str,
+) -> Optional[dict]:
+    """Cache a same-turn safety mode before the async empathy classifier returns."""
+    result = empathy.classify_local_sensitivity(text)
+    if not result:
+        return None
+
+    person_row = None
+    if person_id is not None:
+        try:
+            person_row = people_memory.get_person(person_id)
+        except Exception:
+            person_row = None
+
+    child_in_scene = False
+    try:
+        ws_people = world_state.get("people") or []
+        child_in_scene = any(
+            p.get("age_estimate") == "child" for p in ws_people
+        )
+    except Exception:
+        pass
+
+    mode_pack = empathy.select_mode(
+        result,
+        person=person_row,
+        child_in_scene=child_in_scene,
+        person_id=person_id,
+    )
+    empathy.record(person_id, result, mode_pack)
+    _log.info(
+        "[empathy] local sensitive prepass affect=%s sens=%s crisis=%s "
+        "event=%s → mode=%s",
+        result.get("affect"),
+        result.get("topic_sensitivity"),
+        result.get("crisis"),
+        (result.get("event") or {}).get("category"),
+        mode_pack.get("mode"),
+    )
+    return result
+
+
+def _merge_with_local_sensitive_prepass(
+    result: Optional[dict],
+    local_result: Optional[dict],
+) -> Optional[dict]:
+    """Preserve same-turn safety if the slower classifier comes back weaker."""
+    if not result or not local_result:
+        return result
+
+    rank = {"none": 0, "mild": 1, "heavy": 2}
+    result_rank = rank.get((result.get("topic_sensitivity") or "none").lower(), 0)
+    local_rank = rank.get((local_result.get("topic_sensitivity") or "none").lower(), 0)
+    if bool(local_result.get("crisis")) and not bool(result.get("crisis")):
+        return local_result
+    if result_rank < local_rank:
+        return local_result
+
+    local_event = local_result.get("event")
+    if local_event and not result.get("event"):
+        merged = dict(result)
+        merged["event"] = local_event
+        merged["source"] = result.get("source") or "llm_with_local_sensitive_event"
+        return merged
+    return result
 
 
 def _maybe_start_grief_flow(
@@ -4125,8 +4345,37 @@ def _curiosity_check(
     question_text: Optional[str] = None
     pool_question: Optional[dict] = None
 
-    # Try question pool first — structured, depth-gated, no extra LLM call
+    # Interest steering wins over the generic question pool. If someone just
+    # opened a hobby/skill thread, the add-on question should deepen *that*
+    # instead of suddenly asking where they are from like a clipboard with LEDs.
     if person_id is not None:
+        try:
+            steering = conversation_steering.build_context(person_id)
+        except Exception as exc:
+            _log.debug("curiosity_check steering context failed: %s", exc)
+            steering = None
+        if steering:
+            try:
+                question_text = llm.get_response(
+                    "Generate ONE short DJ-R3X follow-up question about this "
+                    f"person's interest in {steering.topic!r}. It should ask "
+                    "about their skill, process, tools, taste, or favorite part. "
+                    "Optional: include one tiny subject-specific tidbit if you "
+                    "are confident. Funny and snarky is fine, but do not roast "
+                    "their competence. Return only the line.",
+                    person_id,
+                )
+                if question_text:
+                    pool_question = {
+                        "key": f"{steering.fact_key}_followup",
+                        "text": question_text,
+                        "depth": 1,
+                    }
+            except Exception as exc:
+                _log.debug("curiosity_check steering question error: %s", exc)
+
+    # Try question pool first — structured, depth-gated, no extra LLM call
+    if person_id is not None and not question_text:
         try:
             person = people_memory.get_person(person_id)
             tier = (person.get("friendship_tier", "stranger") if person else "stranger")
@@ -6104,7 +6353,9 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         # this turn is handled deterministically by the command parser.
         _empathy_thread = None
         active_grief_for_turn = person_id is not None and _grief_flow_active(person_id)
+        local_sensitive_result = None
         if getattr(config, "EMPATHY_ENABLED", True) and not active_grief_for_turn:
+            local_sensitive_result = _apply_local_sensitive_topic_prepass(person_id, text)
             _audio_for_prosody = audio_array
             def _run_empathy() -> None:
                 try:
@@ -6138,6 +6389,10 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                     )
                     if not result:
                         return
+                    result = _merge_with_local_sensitive_prepass(
+                        result,
+                        local_sensitive_result,
+                    )
                     try:
                         user_energy.note_user_turn(
                             text,

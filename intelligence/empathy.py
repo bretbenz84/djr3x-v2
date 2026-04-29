@@ -66,12 +66,178 @@ _FINE_WORDS_PAT = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_LOCAL_CRISIS_PAT = re.compile(
+    r"\b(?:"
+    r"kill myself|killing myself|suicide|suicidal|self[-\s]?harm|"
+    r"hurt myself|end it all|don'?t want to live|do not want to live|"
+    r"want to die|going to die tonight"
+    r")\b",
+    re.IGNORECASE,
+)
+_LOCAL_DEATH_PAT = re.compile(
+    r"\b(?:"
+    r"died|dead|death|passed away|passed on|loss of|"
+    r"funeral|memorial|grief|grieving|bereaved|killed"
+    r")\b",
+    re.IGNORECASE,
+)
+_LOCAL_ILLNESS_PAT = re.compile(
+    r"\b(?:"
+    r"cancer|chemo|chemotherapy|radiation treatment|hospice|terminal|"
+    r"diagnosed|diagnosis|hospital|icu|stroke|heart attack|surgery|"
+    r"seriously sick|really sick|very sick"
+    r")\b",
+    re.IGNORECASE,
+)
+_LOCAL_HARD_LIFE_PAT = re.compile(
+    r"\b(?:"
+    r"got laid off|laid me off|lost my job|fired me|got fired|"
+    r"breakup|broke up|divorce|panic attack|depressed|depression"
+    r")\b",
+    re.IGNORECASE,
+)
+_LOSS_SUBJECT_PAT = re.compile(
+    r"\b(?:"
+    r"my|our|his|her|their"
+    r")\s+("
+    r"mom|mother|mum|dad|father|parent|grandma|grandmother|grandpa|"
+    r"grandfather|grandparent|wife|husband|partner|spouse|son|daughter|"
+    r"child|kid|brother|sister|uncle|aunt|cousin|friend|best friend|"
+    r"dog|cat|pet|puppy|kitten"
+    r")\b",
+    re.IGNORECASE,
+)
+_PET_SUBJECTS = {"dog", "cat", "pet", "puppy", "kitten"}
+_DEATH_FALSE_ALARMS_PAT = re.compile(
+    r"\b(?:dead tired|dead battery|dead serious|dead end|deadlift|dead line)\b",
+    re.IGNORECASE,
+)
 
 
 def _result_valence(result: dict) -> float:
     return _AFFECT_VALENCE.get(
         (result.get("affect") or "neutral").lower(), 0.0,
     )
+
+
+def _local_loss_subject(text: str) -> tuple[Optional[str], Optional[str]]:
+    match = _LOSS_SUBJECT_PAT.search(text or "")
+    if not match:
+        return None, None
+    subject = " ".join(match.group(1).lower().split())
+    kind = "pet" if subject in _PET_SUBJECTS else "person"
+    return subject, kind
+
+
+def classify_local_sensitivity(text: str) -> Optional[dict]:
+    """Fast deterministic safety read used before the async empathy LLM returns.
+
+    This is intentionally narrow and high-precision: it only catches topics
+    where Rex should never spend the current turn roasting or riffing while the
+    richer classifier is still running.
+    """
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return None
+    lowered = cleaned.lower()
+
+    if _LOCAL_CRISIS_PAT.search(cleaned):
+        return {
+            "affect": "anxious",
+            "needs": "vent",
+            "topic_sensitivity": "heavy",
+            "invitation": True,
+            "crisis": True,
+            "confidence": 0.92,
+            "event": None,
+            "mood_mismatch": None,
+            "prosody": None,
+            "source": "local_sensitive_topic",
+        }
+
+    loss_subject_for_hit, _ = _local_loss_subject(cleaned)
+    death_hit = bool(_LOCAL_DEATH_PAT.search(cleaned)) or (
+        bool(re.search(r"\blost\b", lowered)) and bool(loss_subject_for_hit)
+    )
+    if death_hit and _DEATH_FALSE_ALARMS_PAT.search(cleaned):
+        death_hit = False
+    if death_hit:
+        subject, subject_kind = _local_loss_subject(cleaned)
+        category = "death" if re.search(r"\b(?:died|dead|death|passed away|passed on|killed)\b", lowered) else "grief"
+        description = (
+            f"shared that {subject} was affected by death or grief"
+            if subject else
+            "shared a death or grief event"
+        )
+        return {
+            "affect": "sad",
+            "needs": "vent",
+            "topic_sensitivity": "heavy",
+            "invitation": True,
+            "crisis": False,
+            "confidence": 0.88,
+            "event": {
+                "category": category,
+                "description": description,
+                "valence": -0.9,
+                "loss_subject": subject,
+                "loss_subject_kind": subject_kind,
+                "loss_subject_name": None,
+            },
+            "mood_mismatch": None,
+            "prosody": None,
+            "source": "local_sensitive_topic",
+        }
+
+    if _LOCAL_ILLNESS_PAT.search(cleaned):
+        subject, subject_kind = _local_loss_subject(cleaned)
+        return {
+            "affect": "sad",
+            "needs": "vent",
+            "topic_sensitivity": "heavy",
+            "invitation": True,
+            "crisis": False,
+            "confidence": 0.82,
+            "event": {
+                "category": "illness",
+                "description": "shared a serious illness or health scare",
+                "valence": -0.75,
+                "loss_subject": subject,
+                "loss_subject_kind": subject_kind,
+                "loss_subject_name": None,
+            },
+            "mood_mismatch": None,
+            "prosody": None,
+            "source": "local_sensitive_topic",
+        }
+
+    if _LOCAL_HARD_LIFE_PAT.search(cleaned):
+        category = "other"
+        if re.search(r"\b(?:laid off|lost my job|fired)\b", lowered):
+            category = "job_loss"
+        elif re.search(r"\b(?:breakup|broke up|divorce)\b", lowered):
+            category = "breakup"
+        return {
+            "affect": "sad",
+            "needs": "vent",
+            "topic_sensitivity": "heavy",
+            "invitation": True,
+            "crisis": False,
+            "confidence": 0.78,
+            "event": {
+                "category": category,
+                "description": "shared a difficult personal event",
+                "valence": -0.65,
+                "loss_subject": None,
+                "loss_subject_kind": None,
+                "loss_subject_name": None,
+            },
+            "mood_mismatch": None,
+            "prosody": None,
+            "source": "local_sensitive_topic",
+        }
+
+    return None
 
 
 def _detect_mood_mismatch(

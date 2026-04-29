@@ -16,6 +16,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 import config
 import apikeys
+from intelligence import social_scene
 from world_state import world_state
 from memory import database as db
 from memory import people as people_db
@@ -443,8 +444,12 @@ def _build_person_context(person_id: int) -> str:
                 lines.append(
                     "ACKNOWLEDGE-ON-RETURN: open this interaction with ONE soft, "
                     "in-character acknowledgment of the most recent of the above "
-                    "events, then yield to whatever they want to talk about. "
-                    "No probing, no pretending it didn't happen. After that, "
+                    "events, then end with ONE conversation-steering question "
+                    "that lets them choose the next topic. Vary between 'what "
+                    "are you up to today?' and 'what do you want to talk about?' "
+                    "in Rex's voice; acceptable example endings include: "
+                    + "; ".join(social_scene.FIRST_GREETING_STEERING_PHRASES)
+                    + ". No probing, no pretending it didn't happen. After that, "
                     "let them steer."
                 )
     except Exception as exc:
@@ -488,6 +493,16 @@ def assemble_system_prompt(
 
     # 4. WorldState snapshot summary
     sections.append("World context:\n" + _summarize_world_state(ws))
+
+    try:
+        cast = social_scene.conversation_cast_context(
+            ws,
+            current_person_id=person_id,
+        )
+        if cast.directive:
+            sections.append("Conversation cast and referents:\n" + cast.directive)
+    except Exception as exc:
+        _log.debug("conversation cast injection skipped: %s", exc)
 
     # 5. Person context (if known)
     if person_id is not None:
@@ -963,7 +978,7 @@ def extract_facts(
         "those are handled by a separate preference system. If no facts are "
         "present, return an empty array.\n\n"
         "Return a JSON array where each element has exactly these fields:\n"
-        '  "category": one of "job", "hometown", "hobby", "pet", "family", "belief", "preference", "other"\n'
+        '  "category": one of "job", "hometown", "hobby", "interest", "pet", "family", "belief", "preference", "other"\n'
         '  "key": a snake_case identifier (e.g. "hometown", "job_title", "favorite_band")\n'
         '  "value": the fact value as a concise string\n\n'
         f"Transcript:\n{_format_transcript(transcript)}\n\n"

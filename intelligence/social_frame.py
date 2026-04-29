@@ -15,7 +15,14 @@ import re
 from typing import Optional
 
 import config
-from intelligence import empathy, question_budget, repair_moves, response_length, user_energy
+from intelligence import (
+    empathy,
+    question_budget,
+    repair_moves,
+    response_length,
+    social_scene,
+    user_energy,
+)
 from memory import boundaries as boundary_memory
 from memory import facts as facts_memory
 from memory import people as people_memory
@@ -41,7 +48,47 @@ _ROAST_PAT = re.compile(
     r"\b(pathetic|pitiful|sad excuse|glorified|not-so-mighty|mediocrity|"
     r"blunder|organic thoughts|exhaust ports|can't handle the truth|"
     r"disaster|tragic|lower your standards|pretend i have friends|"
-    r"let'?s pretend|life decisions|embarrass yourself|brilliance in basic)\b",
+    r"let'?s pretend|life decisions|embarrass yourself|brilliance in basic|"
+    r"walking software outage|dumpster fire|trainwreck|train wreck|clown show|"
+    r"bad decisions?|questionable choices?|questionable life choices?|"
+    r"meatbag|carbon-based|meat-based|malfunctioning organic)\b",
+    re.IGNORECASE,
+)
+_DIRECT_ROAST_PAT = re.compile(
+    r"\b(?:you|you're|you are|your|you've|you have|you look|you sound|"
+    r"buddy|pal|genius|champ)\b.{0,80}\b("
+    r"idiot|moron|stupid|dumb|fool|clown|loser|failure|mess|disaster|"
+    r"trainwreck|train wreck|dumpster fire|embarrassing|tragic|pathetic|"
+    r"pitiful|useless|hopeless|basic|mediocre|questionable|concerning|"
+    r"suspicious|malfunction|malfunctioning|bad decisions?|life choices"
+    r")\b",
+    re.IGNORECASE,
+)
+_CONDESCENDING_ORGANIC_PAT = re.compile(
+    r"(?:\b(organic|organics|meatbag|carbon-based|meat-based|biological)\b"
+    r".{0,80}\b("
+    r"confused|primitive|fragile|malfunctioning|squishy|limited|inferior|"
+    r"questionable|disaster|mess|bad decisions?|life choices"
+    r")\b|\b("
+    r"confused|primitive|fragile|malfunctioning|squishy|limited|inferior|"
+    r"questionable|disaster|mess"
+    r")\b.{0,80}\b(organic|organics|meatbag|carbon-based|meat-based|biological)\b)",
+    re.IGNORECASE,
+)
+_SARCASTIC_PRAISE_PAT = re.compile(
+    r"\b(nice work|great job|bold choice|stellar|brilliant|genius move|"
+    r"excellent decision)\b.{0,80}\b("
+    r"genius|champ|captain|pal|buddy|disaster|mess|questionable|tragic|somehow|"
+    r"against all odds|low bar|standards"
+    r")\b",
+    re.IGNORECASE,
+)
+_HARSH_ROAST_PAT = re.compile(
+    r"\b("
+    r"idiot|moron|stupid|dumb|loser|failure|worthless|useless|pathetic|"
+    r"pitiful|embarrassing|body|weight|ugly|gross|disgusting|dumpster fire|"
+    r"trainwreck|train wreck|clown show|shut up|hate you"
+    r")\b",
     re.IGNORECASE,
 )
 _DANGLING_WORDS = {
@@ -58,6 +105,12 @@ _HARD_NO_QUESTION_PAT = re.compile(
 _ASK_ALLOWED_PAT = re.compile(
     r"(ask who|ask .* name|ask .* question|one question|one short follow-up|"
     r"tightly related follow-up|weave in this one question|ending in a question mark)",
+    re.IGNORECASE,
+)
+_URGENT_GROUP_IDENTITY_PAT = re.compile(
+    r"(urgent group identity handoff|identity question may bypass|"
+    r"group introduction|unfamiliar (?:guest|guests|face|faces)|"
+    r"mystery (?:guest|guests|lineup))",
     re.IGNORECASE,
 )
 
@@ -99,11 +152,14 @@ def build_frame(
 
     purpose = _purpose_from(agenda_directive, plan.reason, energy)
     unknown_count = _unknown_visible_count()
+    urgent_identity = _urgent_group_identity(agenda_directive)
     user_asked_question = _looks_like_user_question(user_text)
     budget_allows = _question_budget_allows()
 
     allow_question = False
-    if unknown_count and person_id is not None and _ASK_ALLOWED_PAT.search(agenda_directive):
+    if urgent_identity and unknown_count:
+        allow_question = True
+    elif unknown_count and person_id is not None and _ASK_ALLOWED_PAT.search(agenda_directive):
         allow_question = True
     elif answered_question is not None:
         allow_question = bool(
@@ -120,6 +176,10 @@ def build_frame(
 
     if plan.max_words <= 12 or plan.target == "micro":
         allow_question = False
+    if urgent_identity and unknown_count:
+        allow_question = True
+        plan.max_words = max(plan.max_words, 28)
+        plan.max_sentences = max(plan.max_sentences, 2)
 
     allow_visual = _visual_allowed(
         user_text,
@@ -139,7 +199,10 @@ def build_frame(
         f"visual={'yes' if allow_visual else 'no'}",
     ]
     return SocialFrame(
-        addressee=_addressee(person_id),
+        addressee=_addressee(
+            person_id,
+            urgent_identity=urgent_identity,
+        ),
         purpose=purpose,
         max_words=plan.max_words,
         max_sentences=plan.max_sentences,
@@ -151,11 +214,19 @@ def build_frame(
 
 
 def build_directive(frame: SocialFrame) -> str:
-    question_rule = (
-        "You may ask one question only if it directly serves the primary purpose."
-        if frame.allow_question
-        else "Do not ask a question. No tag questions, no new prompt, no interview pivot."
-    )
+    if frame.purpose == "identity":
+        question_rule = (
+            "Ask exactly one group identity question that gets the newcomer name(s) "
+            "and their connection to the known person or group."
+            if frame.allow_question
+            else "Do not ask a question unless identity safety requires it."
+        )
+    else:
+        question_rule = (
+            "You may ask one question only if it directly serves the primary purpose."
+            if frame.allow_question
+            else "Do not ask a question. No tag questions, no new prompt, no interview pivot."
+        )
     engagement_rule = (
         "If no question is allowed, do not go inert: offer a concrete opinion, "
         "playful observation, or Rex-style banter beat when it fits the turn."
@@ -175,6 +246,10 @@ def build_directive(frame: SocialFrame) -> str:
         "- Generate the reply in this shape now; the final cleanup layer should "
         "not need to remove sentences.\n"
         f"- Addressee: {frame.addressee}; purpose={frame.purpose}.\n"
+        "- Referents: if the room has multiple visible people, use names or "
+        "'you two' / 'you all' when the target is the group. Use he/she/they "
+        "only when the referent is unambiguous from the live cast and latest "
+        "turn; otherwise use a name or ask one tiny clarification if needed.\n"
         f"- Hard shape: max_words={frame.max_words}; "
         f"max_sentences={frame.max_sentences}.\n"
         f"- Question permission: {question_rule}\n"
@@ -210,10 +285,15 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
             notes.append("removed_visual")
 
     if frame.allow_roast == "none":
-        kept = [s for s in sentences if not _ROAST_PAT.search(s)]
+        kept = [s for s in sentences if not _is_roast_sentence(s)]
         if len(kept) != len(sentences):
             sentences = kept
             notes.append("removed_roast")
+    elif frame.allow_roast == "light":
+        kept = [s for s in sentences if not _is_sharp_roast_sentence(s)]
+        if len(kept) != len(sentences):
+            sentences = kept
+            notes.append("removed_sharp_roast")
 
     if not sentences:
         current = _fallback(frame)
@@ -262,6 +342,8 @@ def _safe_empathy(person_id: Optional[int]) -> Optional[dict]:
 
 def _purpose_from(agenda_directive: str, length_reason: str, energy: dict) -> str:
     lower = (agenda_directive or "").lower()
+    if "urgent group identity handoff" in lower:
+        return "identity"
     if "end-of-thread grace" in lower or "close the current thread" in lower:
         return "closure"
     if "human just answered a question" in lower:
@@ -295,6 +377,10 @@ def _question_budget_allows() -> bool:
         return question_budget.can_ask("social_frame")
     except Exception:
         return True
+
+
+def _urgent_group_identity(agenda_directive: str) -> bool:
+    return bool(_URGENT_GROUP_IDENTITY_PAT.search(agenda_directive or ""))
 
 
 def _looks_like_user_question(text: str) -> bool:
@@ -359,7 +445,30 @@ def _roast_level(
     return "normal"
 
 
-def _addressee(person_id: Optional[int]) -> str:
+def _addressee(
+    person_id: Optional[int],
+    *,
+    urgent_identity: bool = False,
+) -> str:
+    if urgent_identity:
+        try:
+            ctx = social_scene.unknown_group_context(
+                world_state.snapshot(),
+                current_person_id=person_id,
+            )
+            if ctx and ctx.addressee:
+                return ctx.addressee
+        except Exception:
+            pass
+    try:
+        cast = social_scene.conversation_cast_context(
+            world_state.snapshot(),
+            current_person_id=person_id,
+        )
+        if cast and cast.addressee:
+            return cast.addressee
+    except Exception:
+        pass
     if person_id is None:
         return "unknown person"
     try:
@@ -378,6 +487,35 @@ def _normalize_text(text: str) -> str:
 def _sentences(text: str) -> list[str]:
     pieces = [m.group(0).strip() for m in _SENTENCE_SPLIT.finditer(text or "")]
     return [p for p in pieces if p]
+
+
+def _is_roast_sentence(sentence: str) -> bool:
+    """Broad heuristic for pointed teasing that should vanish in no-roast mode."""
+    text = (sentence or "").strip()
+    if not text:
+        return False
+    return any(
+        pat.search(text)
+        for pat in (
+            _ROAST_PAT,
+            _DIRECT_ROAST_PAT,
+            _CONDESCENDING_ORGANIC_PAT,
+            _SARCASTIC_PRAISE_PAT,
+        )
+    )
+
+
+def _is_sharp_roast_sentence(sentence: str) -> bool:
+    """Return True for roasts too pointed for light-roast turns."""
+    text = (sentence or "").strip()
+    if not text:
+        return False
+    if _HARSH_ROAST_PAT.search(text):
+        return True
+    if _CONDESCENDING_ORGANIC_PAT.search(text):
+        return True
+    # "You are a disaster" is sharp; "Bold choice, captain" can remain light.
+    return bool(_DIRECT_ROAST_PAT.search(text) and not _SARCASTIC_PRAISE_PAT.search(text))
 
 
 def _trim_words(text: str, max_words: int) -> str:

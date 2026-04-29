@@ -118,6 +118,376 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
 
 class ConversationGatingTest(unittest.TestCase):
+    def test_conversation_steering_detects_interest_declarations(self):
+        from intelligence import conversation_steering
+
+        self.assertEqual(
+            conversation_steering.detect_interest("I'm into astrophotography."),
+            "astrophotography",
+        )
+        self.assertEqual(
+            conversation_steering.detect_interest("3D printing is my hobby."),
+            "3D printing",
+        )
+        self.assertEqual(
+            conversation_steering.detect_interest("My favorite activity is hair styling."),
+            "hair styling",
+        )
+        self.assertIsNone(conversation_steering.detect_interest("I do not know."))
+
+    def test_interest_declaration_is_stored_and_steers_agenda(self):
+        from intelligence import conversation_agenda, conversation_steering
+
+        conversation_steering.clear()
+        with (
+            mock.patch.object(
+                conversation_agenda.world_state,
+                "snapshot",
+                return_value={"people": [], "environment": {}},
+            ),
+            mock.patch("intelligence.question_budget.can_ask", return_value=True),
+            mock.patch("intelligence.question_budget.build_directive", return_value=""),
+            mock.patch(
+                "intelligence.conversation_steering.boundary_memory.is_blocked",
+                return_value=False,
+            ),
+            mock.patch(
+                "intelligence.conversation_steering.facts_memory.add_fact",
+            ) as add_fact,
+        ):
+            directive = conversation_agenda.build_turn_directive(
+                "I'm really into astrophotography.",
+                1,
+            )
+
+        self.assertIn("Conversation steering", directive)
+        self.assertIn("astrophotography", directive)
+        self.assertIn("subject-specific observation", directive)
+        self.assertIn("natural follow-up", directive)
+        add_fact.assert_any_call(
+            1,
+            "interest",
+            "interest_astrophotography",
+            "astrophotography",
+            "interest_declaration",
+            confidence=0.95,
+        )
+        conversation_steering.clear()
+
+    def test_interest_thread_stores_notable_followup_notes(self):
+        from intelligence import conversation_steering
+
+        conversation_steering.clear()
+        with (
+            mock.patch(
+                "intelligence.conversation_steering.facts_memory.add_fact",
+            ) as add_fact,
+            mock.patch(
+                "intelligence.conversation_steering.boundary_memory.is_blocked",
+                return_value=False,
+            ),
+        ):
+            conversation_steering.note_user_turn(1, "I like 3D printing.")
+            conversation_steering.note_user_turn(
+                1,
+                "I usually build little brackets because my printer is tiny.",
+            )
+
+        calls = add_fact.call_args_list
+        self.assertTrue(
+            any(call.args[1] == "interest_note" for call in calls),
+            calls,
+        )
+        conversation_steering.clear()
+
+    def test_interest_steering_respects_topic_boundaries(self):
+        from intelligence import conversation_steering
+
+        conversation_steering.clear()
+        with (
+            mock.patch(
+                "intelligence.conversation_steering.facts_memory.add_fact",
+            ),
+            mock.patch(
+                "intelligence.conversation_steering.boundary_memory.is_blocked",
+                return_value=True,
+            ),
+        ):
+            ctx = conversation_steering.note_user_turn(1, "I'm into hair styling.")
+
+        self.assertIsNone(ctx)
+        conversation_steering.clear()
+
+    def test_curiosity_followup_prefers_active_interest_thread(self):
+        from intelligence import conversation_steering, interaction
+
+        conversation_steering.clear()
+        with (
+            mock.patch(
+                "intelligence.conversation_steering.facts_memory.add_fact",
+            ),
+            mock.patch(
+                "intelligence.conversation_steering.boundary_memory.is_blocked",
+                return_value=False,
+            ),
+        ):
+            conversation_steering.note_user_turn(1, "I'm into hair styling.")
+
+        with (
+            mock.patch.object(interaction.random, "random", return_value=0.0),
+            mock.patch.object(interaction.question_budget, "can_ask", return_value=True),
+            mock.patch.object(interaction.empathy, "peek", return_value=None),
+            mock.patch.object(interaction.end_thread, "is_grace_active", return_value=False),
+            mock.patch.object(
+                interaction.llm,
+                "get_response",
+                return_value="What's the hardest hair disaster you've rescued?",
+            ) as get_response,
+            mock.patch.object(interaction, "_speak_blocking") as speak,
+            mock.patch.object(interaction.rel_memory, "save_question_asked") as save_qa,
+        ):
+            question = interaction._curiosity_check(
+                "Hair styling logged. My circuits fear curling irons.",
+                "I'm into hair styling.",
+                1,
+                "Joy",
+            )
+
+        self.assertEqual(
+            question,
+            "What's the hardest hair disaster you've rescued?",
+        )
+        self.assertIn("hair styling", get_response.call_args.args[0])
+        speak.assert_called_once_with(question)
+        self.assertEqual(save_qa.call_args.args[1], "interest_hair_styling_followup")
+        conversation_steering.clear()
+
+    def test_local_sensitive_classifier_detects_death_subject(self):
+        from intelligence import empathy
+
+        result = empathy.classify_local_sensitivity("My dad died yesterday.")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["topic_sensitivity"], "heavy")
+        self.assertEqual(result["affect"], "sad")
+        self.assertFalse(result["crisis"])
+        self.assertEqual(result["event"]["category"], "death")
+        self.assertEqual(result["event"]["loss_subject"], "dad")
+        self.assertEqual(result["event"]["loss_subject_kind"], "person")
+
+    def test_local_sensitive_classifier_avoids_common_death_false_alarms(self):
+        from intelligence import empathy
+
+        self.assertIsNone(empathy.classify_local_sensitivity("I lost my keys."))
+        self.assertIsNone(empathy.classify_local_sensitivity("I'm dead tired."))
+
+    def test_agenda_suppresses_roasts_for_same_turn_sensitive_disclosure(self):
+        from intelligence import conversation_agenda
+
+        with (
+            mock.patch.object(
+                conversation_agenda.world_state,
+                "snapshot",
+                return_value={"people": [], "environment": {}},
+            ),
+            mock.patch("intelligence.question_budget.can_ask", return_value=True),
+            mock.patch("intelligence.question_budget.build_directive", return_value=""),
+        ):
+            directive = conversation_agenda.build_turn_directive(
+                "My dog died last night.",
+                1,
+            )
+
+        self.assertIn("sensitive disclosure detected in this exact user turn", directive)
+        self.assertIn("Drop roast-first mode completely", directive)
+        self.assertIn("No personal roasts", directive)
+
+    def test_local_sensitive_prepass_records_current_turn_mode(self):
+        from intelligence import empathy, interaction
+
+        empathy.clear()
+        with (
+            mock.patch.object(
+                interaction.people_memory,
+                "get_person",
+                return_value={"id": 1, "name": "Bret", "friendship_tier": "friend"},
+            ),
+            mock.patch.object(interaction.world_state, "get", return_value=[]),
+        ):
+            result = interaction._apply_local_sensitive_topic_prepass(
+                1,
+                "My mom passed away.",
+            )
+
+        cached = empathy.peek(1)
+        self.assertIsNotNone(result)
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached["result"]["event"]["loss_subject"], "mom")
+        self.assertEqual(cached["mode"]["mode"], "listen")
+        empathy.clear()
+
+    def test_local_sensitive_prepass_allows_grief_flow_if_async_classifier_times_out(self):
+        from intelligence import empathy, interaction
+
+        empathy.clear()
+        interaction._grief_flow_state.clear()
+        with (
+            mock.patch.object(
+                interaction.people_memory,
+                "get_person",
+                return_value={"id": 1, "name": "Bret", "friendship_tier": "friend"},
+            ),
+            mock.patch.object(interaction.world_state, "get", return_value=[]),
+        ):
+            interaction._apply_local_sensitive_topic_prepass(1, "My cat died.")
+
+        cached = empathy.peek(1)
+        response = interaction._maybe_start_grief_flow(
+            1,
+            cached["result"]["event"],
+        )
+
+        self.assertIsNotNone(response)
+        self.assertIn("cat", response)
+        self.assertIn(1, interaction._grief_flow_state)
+        empathy.clear()
+        interaction._grief_flow_state.clear()
+
+    def test_late_weaker_empathy_result_cannot_erase_local_sensitive_prepass(self):
+        from intelligence import empathy, interaction
+
+        local = empathy.classify_local_sensitivity("My dad died yesterday.")
+        late_neutral = {
+            "affect": "neutral",
+            "needs": "none",
+            "topic_sensitivity": "none",
+            "invitation": False,
+            "crisis": False,
+            "confidence": 0.7,
+            "event": None,
+        }
+
+        merged = interaction._merge_with_local_sensitive_prepass(late_neutral, local)
+
+        self.assertEqual(merged["topic_sensitivity"], "heavy")
+        self.assertEqual(merged["event"]["loss_subject"], "dad")
+
+    def test_social_scene_cast_summarizes_group_and_pronouns(self):
+        from intelligence import social_scene
+
+        ws = {
+            "people": [
+                {
+                    "id": "person_1",
+                    "person_db_id": 1,
+                    "face_id": "Bret Benziger",
+                },
+                {
+                    "id": "person_2",
+                    "person_db_id": 2,
+                    "face_id": "JT Example",
+                },
+            ],
+        }
+        facts = {
+            1: [],
+            2: [{"category": "identity", "key": "pronouns", "value": "they/them"}],
+        }
+        with mock.patch(
+            "memory.facts.get_facts",
+            side_effect=lambda person_id: facts.get(person_id, []),
+        ):
+            cast = social_scene.conversation_cast_context(
+                ws,
+                current_person_id=1,
+            )
+
+        self.assertIn("Bret primarily; visible group", cast.addressee)
+        self.assertIn("JT (they/them)", cast.directive)
+        self.assertIn("Referent candidates besides the speaker: JT", cast.directive)
+        self.assertIn("Pronoun and group-address rules", cast.directive)
+
+    def test_social_frame_uses_group_addressee_when_multiple_known_people_visible(self):
+        from intelligence import social_frame
+
+        ws = {
+            "people": [
+                {"id": "person_1", "person_db_id": 1, "face_id": "Bret Benziger"},
+                {"id": "person_2", "person_db_id": 2, "face_id": "JT Example"},
+            ],
+        }
+        with (
+            mock.patch.object(social_frame.world_state, "snapshot", return_value=ws),
+            mock.patch("intelligence.question_budget.can_ask", return_value=True),
+            mock.patch("memory.facts.get_facts", return_value=[]),
+        ):
+            frame = social_frame.build_frame(
+                "that was funny",
+                person_id=1,
+                agenda_directive="Primary purpose: respond to the human's latest thought.",
+            )
+
+        self.assertIn("Bret primarily; visible group", frame.addressee)
+        self.assertIn("Bret and JT", frame.addressee)
+
+    def test_visible_unknown_followup_arms_relationship_parser(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(
+                interaction.world_state,
+                "get",
+                return_value=[
+                    {"id": "person_1", "person_db_id": 1, "face_id": "Bret"},
+                    {"id": "person_2", "person_db_id": None, "face_id": None},
+                ],
+            ),
+            mock.patch.object(
+                interaction.people_memory,
+                "get_person",
+                return_value={"id": 1, "name": "Bret Benziger"},
+            ),
+            mock.patch.object(
+                interaction.consciousness,
+                "set_relationship_prompt_context",
+            ) as set_ctx,
+        ):
+            interaction._arm_visible_unknown_identity_followup(
+                1,
+                source="test",
+            )
+
+        set_ctx.assert_called_once()
+        ctx = set_ctx.call_args.args[0]
+        self.assertEqual(ctx["engaged_person_id"], 1)
+        self.assertEqual(ctx["engaged_name"], "Bret Benziger")
+        self.assertEqual(ctx["slot_id"], "person_2")
+
+    def test_pronoun_repair_stores_explicit_named_pronouns(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(
+                interaction.people_memory,
+                "find_person_by_name",
+                return_value={"id": 2, "name": "JT Example"},
+            ),
+            mock.patch.object(interaction.facts_memory, "add_fact") as add_fact,
+        ):
+            interaction._maybe_store_pronoun_repair(
+                1,
+                "JT uses they/them pronouns.",
+            )
+
+        add_fact.assert_called_once_with(
+            2,
+            "identity",
+            "pronouns",
+            "they/them",
+            "pronoun_repair",
+            confidence=0.95,
+        )
+
     def test_agenda_allows_related_followup_when_curated_pool_is_exhausted(self):
         from intelligence import conversation_agenda
 
@@ -202,6 +572,161 @@ class ConversationGatingTest(unittest.TestCase):
 
         self.assertTrue(frame.allow_question)
 
+    def test_unknown_group_agenda_prioritizes_identity_handoff(self):
+        from intelligence import conversation_agenda
+
+        ws = {
+            "crowd": {"count": 2, "interaction_mode": "small_group"},
+            "people": [
+                {
+                    "id": "person_1",
+                    "person_db_id": 1,
+                    "face_id": "Bret Benziger",
+                },
+                {
+                    "id": "person_2",
+                    "person_db_id": None,
+                    "face_id": None,
+                },
+            ],
+            "environment": {},
+        }
+        with (
+            mock.patch.object(conversation_agenda.world_state, "snapshot", return_value=ws),
+            mock.patch("intelligence.question_budget.can_ask", return_value=False),
+            mock.patch("intelligence.question_budget.build_directive", return_value=""),
+        ):
+            directive = conversation_agenda.build_turn_directive("hello there", 1)
+
+        self.assertIn("urgent group identity handoff", directive)
+        self.assertIn("Bret", directive)
+        self.assertIn("may bypass the optional question budget", directive)
+
+    def test_unknown_group_social_frame_keeps_identity_question(self):
+        from intelligence import social_frame
+
+        ws = {
+            "people": [
+                {
+                    "id": "person_1",
+                    "person_db_id": 1,
+                    "face_id": "Bret Benziger",
+                },
+                {
+                    "id": "person_2",
+                    "person_db_id": None,
+                    "face_id": None,
+                },
+            ],
+        }
+        directive = (
+            "Primary purpose: urgent group identity handoff. "
+            "There is an unfamiliar guest visible. Ask who they are and get a name. "
+            "This identity question may bypass the optional question budget."
+        )
+        with (
+            mock.patch("intelligence.question_budget.can_ask", return_value=False),
+            mock.patch.object(social_frame.world_state, "snapshot", return_value=ws),
+        ):
+            frame = social_frame.build_frame(
+                "thanks",
+                person_id=1,
+                agenda_directive=directive,
+            )
+            governed = social_frame.govern_response(
+                "Great, Bret. Who is your mystery guest, and should I be concerned?",
+                frame,
+            )
+
+        self.assertEqual(frame.purpose, "identity")
+        self.assertTrue(frame.allow_question)
+        self.assertIn("mystery guest", frame.addressee)
+        self.assertIn("?", governed.text)
+
+    def test_social_frame_removes_novel_roast_in_no_roast_mode(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="support",
+            max_words=40,
+            max_sentences=3,
+            allow_question=False,
+            allow_roast="none",
+            allow_visual_comment=True,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "I hear you. You are a walking software outage in sneakers.",
+            frame,
+        )
+
+        self.assertEqual(governed.text, "I hear you.")
+        self.assertIn("removed_roast", governed.notes)
+
+    def test_social_frame_removes_condescending_organic_roast_in_no_roast_mode(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="the room",
+            purpose="support",
+            max_words=40,
+            max_sentences=3,
+            allow_question=False,
+            allow_roast="none",
+            allow_visual_comment=True,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "That sounds hard. Classic fragile organic decision-making.",
+            frame,
+        )
+
+        self.assertEqual(governed.text, "That sounds hard.")
+        self.assertIn("removed_roast", governed.notes)
+
+    def test_social_frame_removes_tiny_tap_in_no_roast_mode(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="support",
+            max_words=40,
+            max_sentences=3,
+            allow_question=False,
+            allow_roast="none",
+            allow_visual_comment=True,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "That sounds hard. Bold choice, captain.",
+            frame,
+        )
+
+        self.assertEqual(governed.text, "That sounds hard.")
+        self.assertIn("removed_roast", governed.notes)
+
+    def test_social_frame_allows_tiny_tap_but_removes_sharp_roast_in_light_mode(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="banter",
+            max_words=40,
+            max_sentences=3,
+            allow_question=False,
+            allow_roast="light",
+            allow_visual_comment=True,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "Bold choice, captain. You are a pathetic disaster.",
+            frame,
+        )
+
+        self.assertEqual(governed.text, "Bold choice, captain.")
+        self.assertIn("removed_sharp_roast", governed.notes)
+
     def test_agenda_invites_opinions_and_roasts_after_simple_ack(self):
         from intelligence import conversation_agenda
 
@@ -262,6 +787,70 @@ class ConversationGatingTest(unittest.TestCase):
             prompt.rfind("Behavioral rules"),
         )
         self.assertIn(directive, prompt)
+
+    def test_startup_group_prompt_uses_conversation_steering_openers(self):
+        from intelligence import social_scene
+
+        scene = social_scene.SocialScene(
+            known=(
+                social_scene.VisiblePerson(1, "Bret Benziger", "Bret", "person_1"),
+                social_scene.VisiblePerson(2, "Joy Example", "Joy", "person_2"),
+            ),
+            unknown_count=0,
+            crowd_count=2,
+        )
+
+        prompt = social_scene.startup_group_prompt(scene)
+
+        self.assertIn("conversation-steering question", prompt)
+        self.assertIn("what are you up to today", prompt)
+        self.assertIn("what do you want to talk about", prompt)
+        self.assertIn("What mission are we pretending is important today?", prompt)
+
+    def test_acknowledge_on_return_prompt_ends_with_steering_question(self):
+        from intelligence import llm
+
+        with (
+            mock.patch.object(
+                llm.world_state,
+                "snapshot",
+                return_value={
+                    "environment": {},
+                    "crowd": {"count": 1},
+                    "audio_scene": {},
+                    "self_state": {},
+                    "time": {},
+                    "animals": [],
+                    "people": [],
+                },
+            ),
+            mock.patch.object(llm.conv_db, "get_session_transcript", return_value=[]),
+            mock.patch.object(llm.people_db, "get_person", return_value={"id": 1, "name": "Bret"}),
+            mock.patch.object(llm.facts_db, "get_prompt_facts", return_value=[]),
+            mock.patch.object(llm, "_get_personality_params", return_value={}),
+            mock.patch(
+                "memory.emotional_events.summarize_for_prompt",
+                return_value="Recent emotional context: had a hard week.",
+            ),
+            mock.patch(
+                "memory.emotional_events.get_active_events",
+                return_value=[{"id": 1, "last_acknowledged_at": None}],
+            ),
+            mock.patch(
+                "memory.emotional_events.can_surface_event",
+                return_value=True,
+            ),
+            mock.patch(
+                "memory.emotional_events.is_heavy_event",
+                return_value=False,
+            ),
+        ):
+            prompt = llm.assemble_system_prompt(1)
+
+        self.assertIn("ACKNOWLEDGE-ON-RETURN", prompt)
+        self.assertIn("conversation-steering question", prompt)
+        self.assertIn("what are you up to today", prompt)
+        self.assertIn("What topic gets the honor", prompt)
 
     def test_agenda_surfaces_intimate_personal_space_cue(self):
         from intelligence import conversation_agenda
