@@ -2172,6 +2172,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
                 return_value={"id": 1, "name": "Bret", "friendship_tier": "stranger"},
             ),
             mock.patch.object(conversation_agenda.rel_memory, "get_asked_question_keys", return_value=set()),
+            mock.patch.object(conversation_agenda.rel_memory, "get_latest_pending_question", return_value=None),
             mock.patch.object(conversation_agenda.facts_memory, "get_facts", return_value=[]),
             mock.patch.object(conversation_agenda.empathy, "classify_local_sensitivity", return_value=None),
             mock.patch.object(conversation_agenda.empathy, "peek", return_value=None),
@@ -2191,6 +2192,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         with (
             mock.patch.object(conversation_agenda.world_state, "snapshot", return_value=ws),
             mock.patch.object(conversation_agenda.empathy, "classify_local_sensitivity", return_value=None),
+            mock.patch.object(conversation_agenda.rel_memory, "get_latest_pending_question", return_value=None),
         ):
             directive = conversation_agenda.build_turn_directive(
                 "I'm going to Las Vegas on Thursday",

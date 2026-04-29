@@ -1014,6 +1014,11 @@ ANIMAL_ARRIVAL_COOLDOWN_SECS = 300
 # narrating tiny detector flickers.
 PRESENCE_RETURN_MIN_ABSENT_SECS = 10
 
+# Short camera-away returns should be simple presence acknowledgements ("there
+# you are") rather than memory follow-ups about plans. Save memory callbacks for
+# longer actual absences.
+PRESENCE_RETURN_MEMORY_FOLLOWUP_MIN_ABSENT_SECS = 120.0
+
 # First-sight greetings wait for a person to remain visible briefly. This avoids
 # greeting someone because a face detector recovered from a hand/arm occlusion.
 PRESENCE_FIRST_SIGHT_CONFIRM_SECS = 3.0

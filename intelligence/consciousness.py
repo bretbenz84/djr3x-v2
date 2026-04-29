@@ -585,6 +585,14 @@ def get_last_memory_hint_target(max_age_secs: float = 300.0) -> Optional[int]:
     return _last_memory_hint_person_id
 
 
+def _end_thread_grace_active() -> bool:
+    try:
+        from intelligence import end_thread
+        return bool(end_thread.is_grace_active())
+    except Exception:
+        return False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1890,7 +1898,14 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
         # generic "someone new walked in" banter.
         prev_count = _last_snapshot.get("crowd", {}).get("count", 0)
         curr_count = snapshot.get("crowd", {}).get("count", 0)
-        if curr_count > prev_count and not _startup_known_greeting_pending(snapshot):
+        people_now = snapshot.get("people", []) or []
+        known_now = [p for p in people_now if p.get("person_db_id") is not None]
+        unknown_now = [p for p in people_now if p.get("person_db_id") is None]
+        if (
+            curr_count > prev_count
+            and not _startup_known_greeting_pending(snapshot)
+            and not (known_now and not unknown_now)
+        ):
             triggers.append((
                 "Someone new just walked into your view. React in one short in-character line — "
                 "somewhere between a greeting and a roast, delivered as you clock them entering.",
@@ -3199,9 +3214,6 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
     """
     global _visible_people, _pending_departure_keys, _first_missing_at
 
-    if not _can_speak():
-        return
-
     now = time.monotonic()
     departure_cooldown = getattr(config, "PRESENCE_DEPARTURE_COOLDOWN_SECS", 30)
     departure_audio_silence = getattr(config, "DEPARTURE_AUDIO_SILENCE_SECS", 3.0)
@@ -3288,8 +3300,13 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         if not should_fire:
             continue
 
-        if not _should_fire_presence(key, person_db_id, profile):
-            del _pending_departure_keys[key]
+        if not _should_fire_presence(
+            key,
+            person_db_id,
+            profile,
+            allow_engaged=True,
+            bypass_cooldown=True,
+        ):
             continue
 
         _last_departure_reaction_at[key] = now
@@ -3567,7 +3584,12 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         if is_known:
             first_name = person_name.split()[0]
             _log.info("consciousness: return detected — queuing reaction for %s (absent %.1fs)", person_name, absent_secs)
-            anticipated = _pick_anticipated_event(person_db_id)
+            allow_return_memory = (
+                absent_secs
+                >= float(getattr(config, "PRESENCE_RETURN_MEMORY_FOLLOWUP_MIN_ABSENT_SECS", 120.0))
+                and not _end_thread_grace_active()
+            )
+            anticipated = _pick_anticipated_event(person_db_id) if allow_return_memory else None
             anticipation_prompt = (
                 _build_anticipation_prompt(
                     first_name,
