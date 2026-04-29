@@ -5,6 +5,29 @@ from tempfile import TemporaryDirectory
 
 
 class PostTtsHandoffPolicyTest(unittest.TestCase):
+    def test_first_text_enqueue_inserts_startup_chime_once(self):
+        from audio import speech_queue
+
+        with TemporaryDirectory() as tmp:
+            chime = Path(tmp) / "startup_chime.mp3"
+            chime.write_bytes(b"fake")
+            with (
+                mock.patch.object(speech_queue._SpeechQueue, "_worker", lambda self: None),
+                mock.patch("config.PLAY_LISTENING_CHIME", True),
+                mock.patch("config.LISTENING_CHIME_FILE", str(chime)),
+            ):
+                queue = speech_queue._SpeechQueue()
+                queue.enqueue("Hello there.", priority=1)
+                queue.enqueue("Second line.", priority=1)
+
+            queued = sorted(queue._heap, key=lambda item: item.seq)
+
+        self.assertEqual(len(queued), 3)
+        self.assertEqual(queued[0].tag, "system:first_listening_chime")
+        self.assertEqual(queued[0].audio_path, str(chime))
+        self.assertEqual(queued[1].text, "Hello there.")
+        self.assertEqual(queued[2].text, "Second line.")
+
     def test_conversation_log_dedupes_same_rex_line_briefly(self):
         from utils import conv_log
 
@@ -1508,6 +1531,52 @@ class PendingMusicPreferenceTest(unittest.TestCase):
 
         self.assertIsNotNone(match)
         self.assertEqual(match.name, "Left Coast 70s")
+
+    def test_laughter_sound_event_reactions_are_disabled_by_default(self):
+        from awareness.situation import SituationProfile
+        from intelligence import consciousness
+
+        old_snapshot = consciousness._last_snapshot
+        profile = SituationProfile(
+            conversation_active=False,
+            user_mid_sentence=False,
+            rapid_exchange=False,
+            child_present=False,
+            apparent_departure=False,
+            likely_still_present=False,
+            social_mode="one_on_one",
+            suppress_proactive=False,
+            suppress_system_comments=False,
+            force_family_safe=False,
+            being_discussed=False,
+            discussion_sentiment="neutral",
+            interaction_busy=False,
+        )
+        prev = {
+            "crowd": {"count": 1, "count_label": "alone"},
+            "audio_scene": {},
+            "animals": [],
+            "time": {},
+        }
+        curr = {
+            "crowd": {"count": 1, "count_label": "alone"},
+            "audio_scene": {"last_sound_event": "laughter"},
+            "animals": [],
+            "time": {},
+        }
+        try:
+            consciousness._last_snapshot = prev
+            with (
+                mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+                mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
+                mock.patch.object(consciousness, "_generate_and_speak") as speak,
+                mock.patch("config.WORLD_SOUND_EVENT_REACTIONS_ENABLED", False),
+            ):
+                consciousness._step_proactive_reactions(curr, profile)
+        finally:
+            consciousness._last_snapshot = old_snapshot
+
+        speak.assert_not_called()
 
 
 class SocialVisionIntegrationTest(unittest.TestCase):

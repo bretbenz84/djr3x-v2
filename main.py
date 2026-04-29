@@ -233,11 +233,6 @@ def main() -> None:
             leds_chest.off()
     state.add_state_change_callback(_chest_state_callback)
 
-    def _listening_chime_state_callback(old: State, new: State) -> None:
-        if old == State.ACTIVE and new == State.IDLE:
-            _play_listening_chime_async("active_to_idle")
-    state.add_state_change_callback(_listening_chime_state_callback)
-
     logger.info(
         "Camera: %s",
         f"enabled ({CAMERA_SELECTION_DESCRIPTION})" if CAMERA_ENABLED else "disabled",
@@ -296,7 +291,6 @@ def main() -> None:
 
     logger.info("Starting intelligence.interaction (+ audio.wake_word)...")
     interaction.start()
-    _play_listening_chime_async("startup_listening")
 
     # Step 9: Breathing thread and arm idle.
     logger.info("Starting servo breathing thread...")

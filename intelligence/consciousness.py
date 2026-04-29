@@ -878,6 +878,8 @@ def _should_fire_presence(key, person_db_id: Optional[int], profile: SituationPr
     """
     if not _can_speak():
         return False
+    if profile.suppress_proactive or profile.interaction_busy:
+        return False
     if profile.user_mid_sentence:
         return False
     if is_engaged_with(person_db_id):
@@ -942,7 +944,7 @@ def _generate_and_speak_presence(
         try:
             if not _proactive_purpose_current(token):
                 return
-            if not _can_speak():
+            if not _can_proactive_speak():
                 return
             from intelligence.llm import get_response
             text = get_response(prompt)
@@ -950,7 +952,7 @@ def _generate_and_speak_presence(
                 return
             if not _proactive_purpose_current(token):
                 return
-            if not _can_speak():
+            if not _can_proactive_speak():
                 return
 
             delay = getattr(config, "PRESENCE_REACTION_DELAY_SECS", 2.0)
@@ -1921,7 +1923,11 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
         # Notable sound event
         prev_sound = _last_snapshot.get("audio_scene", {}).get("last_sound_event")
         curr_sound = snapshot.get("audio_scene", {}).get("last_sound_event")
-        if curr_sound and curr_sound != prev_sound:
+        if (
+            bool(getattr(config, "WORLD_SOUND_EVENT_REACTIONS_ENABLED", False))
+            and curr_sound
+            and curr_sound != prev_sound
+        ):
             triggers.append((
                 f"You just registered a notable sound event: '{curr_sound}'. "
                 "One punchy in-character line reacting to it.",

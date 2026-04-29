@@ -81,6 +81,7 @@ class _SpeechQueue:
         self._speaking = False
         self._current_priority: int = -1
         self._current_audio_path: Optional[str] = None
+        self._startup_chime_queued: bool = False
 
         threading.Thread(
             target=self._worker, daemon=True, name="speech-queue-worker"
@@ -203,6 +204,9 @@ class _SpeechQueue:
             if self._speaking and self._current_priority < priority:
                 should_preempt = True
 
+            if text and not self._startup_chime_queued:
+                self._maybe_add_startup_chime_locked(priority)
+
             seq = self._seq
             self._seq += 1
             heapq.heappush(
@@ -222,6 +226,42 @@ class _SpeechQueue:
                 pass
 
         return done
+
+    def _maybe_add_startup_chime_locked(self, priority: int) -> None:
+        self._startup_chime_queued = True
+        try:
+            import config
+
+            if not bool(getattr(config, "PLAY_LISTENING_CHIME", True)):
+                return
+            path = Path(getattr(config, "LISTENING_CHIME_FILE", "") or "")
+            if not path.is_absolute():
+                path = Path(__file__).resolve().parent.parent / path
+            if not path.exists():
+                logger.warning("speech_queue: startup listening chime missing: %s", path)
+                return
+            chime_done = threading.Event()
+            seq = self._seq
+            self._seq += 1
+            heapq.heappush(
+                self._heap,
+                _Item(
+                    priority,
+                    seq,
+                    None,
+                    "neutral",
+                    str(path),
+                    chime_done,
+                    "system:first_listening_chime",
+                ),
+            )
+            logger.info("speech_queue: queued first listening chime before speech: %s", path)
+        except Exception as exc:
+            logger.debug("speech_queue: first listening chime skipped: %s", exc)
+
+    def reset_startup_chime_for_tests(self) -> None:
+        with self._lock:
+            self._startup_chime_queued = False
 
     def _worker(self) -> None:
         while True:
@@ -402,6 +442,10 @@ def enqueue_audio_file(
 ) -> threading.Event:
     """Enqueue an audio file for playback. Returns an Event set when done."""
     return _queue.enqueue_audio_file(path, priority, tag, pre_beat_ms, post_beat_ms)
+
+
+def reset_startup_chime_for_tests() -> None:
+    _queue.reset_startup_chime_for_tests()
 
 
 def clear_below_priority(n: int) -> None:

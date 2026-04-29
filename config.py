@@ -1320,11 +1320,17 @@ ASPIRATIONS = [
 PLAY_STARTUP_AUDIO = False
 PLAY_SHUTDOWN_AUDIO = False
 
-# Short readiness / return-to-idle cue. This is intentionally separate from
-# PLAY_STARTUP_AUDIO so it still fires when the theatrical startup clips are
-# disabled.
+# Short readiness cue played immediately before Rex's first spoken line in a
+# run. This is intentionally separate from PLAY_STARTUP_AUDIO so it still fires
+# when the theatrical startup clips are disabled.
 LISTENING_CHIME_FILE = "assets/audio/startup/startup_chime.mp3"
 PLAY_LISTENING_CHIME = True
+
+# Audio-scene laughter/applause detection is useful as context, but it is too
+# easy for startup playback, room noise, or ASR artifacts to trigger an
+# unsolicited "ah, laughter" line. Keep direct sound-event banter disabled by
+# default; the data still remains in world_state for prompts.
+WORLD_SOUND_EVENT_REACTIONS_ENABLED = False
 
 STARTUP_AUDIO_FILES = [
     "assets/audio/startup/light_speed.mp3",
