@@ -44,6 +44,23 @@ _MUSIC_OPTION_CONTEXT_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_MUSIC_OPTIONS_REQUEST_RE = re.compile(
+    r"\b("
+    r"(?:what|which)\s+(?:kind|kinds|type|types|sort|sorts)\s+of\s+"
+    r"(?:music|songs?|tracks?|stations?|radio|genres?|playlists?)|"
+    r"(?:what|which)\s+(?:music|songs?|tracks?|stations?|radio|genres?|playlists?)\s+"
+    r"(?:can|could|do|are|have|you)|"
+    r"(?:what|which)\s+(?:music|songs?|tracks?|stations?|radio|genres?|playlists?)"
+    r".{0,40}\b(?:play|have|available|options|offer|do)|"
+    r"(?:music|songs?|tracks?|stations?|radio|genres?|playlists?)"
+    r".{0,40}\b(?:can you play|do you have|available|options|offer)|"
+    r"(?:can|could)\s+you\s+(?:play|do)\s+"
+    r"(?:music|songs?|tracks?|stations?|radio|genres?|playlists?)|"
+    r"(?:list|tell me|show me)\s+.{0,20}"
+    r"(?:music|songs?|tracks?|stations?|radio|genres?|playlists?)"
+    r")\b",
+    re.IGNORECASE,
+)
 
 _MUSIC_PLAY_ACTION_RE = re.compile(
     r"\b("
@@ -67,6 +84,17 @@ _MUSIC_NEGATION_RE = re.compile(
     r")\b.{0,40}\b("
     r"music|songs?|tracks?|albums?|artists?|bands?|playlists?|stations?|radio|"
     r"genres?|dj|tunes?"
+    r")\b",
+    re.IGNORECASE,
+)
+_MUSIC_PREFERENCE_QUESTION_RE = re.compile(
+    r"\b("
+    r"(?:what|which|any)\s+(?:favorite|favourite)\s+"
+    r"(?:music|songs?|tracks?|albums?|artists?|bands?|genres?|playlists?)|"
+    r"(?:favorite|favourite)\s+"
+    r"(?:music|songs?|tracks?|albums?|artists?|bands?|genres?|playlists?)|"
+    r"(?:music|songs?|tracks?|albums?|artists?|bands?|genres?|playlists?)"
+    r".{0,30}\b(?:you|she|he|they)\s+(?:like|enjoy|prefer|love|spin)"
     r")\b",
     re.IGNORECASE,
 )
@@ -192,10 +220,15 @@ def _music_intent_allowed(text: str, label: str) -> bool:
     if label == "query_music_options":
         if _MUSIC_NEGATION_RE.search(text):
             return False
-        return bool(_MUSIC_OPTION_CONTEXT_RE.search(text))
+        return bool(
+            _MUSIC_OPTION_CONTEXT_RE.search(text)
+            and _MUSIC_OPTIONS_REQUEST_RE.search(text)
+        )
 
     if label == "play_music":
         if _MUSIC_NEGATION_RE.search(text):
+            return False
+        if _MUSIC_PREFERENCE_QUESTION_RE.search(text):
             return False
         if not _MUSIC_PLAY_ACTION_RE.search(text):
             return False
@@ -245,18 +278,12 @@ def _deterministic_label(text: str) -> str:
     if _GAMES_QUERY_RE.search(cleaned):
         return "query_games"
     if re.search(
-        r"\b(do you have|have you got|got any|anything by|something by)\b",
+        r"\b(anything by|something by)\b",
         cleaned,
         re.IGNORECASE,
     ) and _contains_known_music_vibe(cleaned):
         return "play_music"
-    if _music_intent_allowed(cleaned, "query_music_options") and re.search(
-        r"\b(what|which|kind|genres?|stations?|songs?|music).{0,50}\b("
-        r"play|have|available|options"
-        r")\b",
-        cleaned,
-        re.IGNORECASE,
-    ):
+    if _music_intent_allowed(cleaned, "query_music_options"):
         return "query_music_options"
     if _music_intent_allowed(cleaned, "play_music"):
         return "play_music"

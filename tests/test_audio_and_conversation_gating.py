@@ -176,6 +176,21 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         self.assertEqual(interaction._last_speech_at, 50.0)
 
+    def test_rhetorical_question_does_not_expect_no_response_recovery(self):
+        from intelligence import interaction
+
+        self.assertFalse(
+            interaction._question_expects_response(
+                "Ah, a wise choice! Why risk credits when you could just let "
+                "the universe take your money for free?"
+            )
+        )
+        self.assertTrue(
+            interaction._question_expects_response(
+                "Vegas without gambling. So what's actually on the agenda?"
+            )
+        )
+
     def test_no_response_recovery_waits_for_cooldown_and_user_speech(self):
         from intelligence import interaction
 
@@ -265,6 +280,122 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         ):
             self.assertTrue(interaction._should_play_active_wake_ack())
 
+    def test_idle_outro_speaks_once_before_session_returns_idle(self):
+        from intelligence import interaction
+
+        interaction._idle_outro_spoken = False
+        with (
+            mock.patch.object(interaction.config, "IDLE_OUTRO_ENABLED", True),
+            mock.patch.object(interaction.config, "IDLE_OUTRO_LINES", ["Nobody talking now."]),
+            mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+            mock.patch.object(interaction.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+            mock.patch.object(interaction.conv_memory, "add_to_transcript") as transcript,
+            mock.patch.object(interaction.conv_log, "log_rex") as log_rex,
+            mock.patch.object(interaction, "_register_rex_utterance") as register,
+        ):
+            first = interaction._maybe_idle_outro()
+            second = interaction._maybe_idle_outro()
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        speak.assert_called_once_with("Nobody talking now.", emotion="neutral", priority=1)
+        transcript.assert_called_once_with("Rex", "Nobody talking now.")
+        log_rex.assert_called_once_with("Nobody talking now.")
+        register.assert_called_once_with("Nobody talking now.")
+        interaction._idle_outro_spoken = False
+
+    def test_low_memory_idle_question_asks_profile_question_once(self):
+        from intelligence import interaction
+
+        interaction._low_memory_idle_questions_spoken.clear()
+        question = {"key": "job", "text": "What do you do — professionally speaking?", "depth": 1}
+        spoken = "I don't know you well yet, Bret, What do you do — professionally speaking?"
+        with (
+            mock.patch.object(interaction.config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True),
+            mock.patch.object(interaction.config, "LOW_MEMORY_IDLE_QUESTION_SECS", 10.0),
+            mock.patch.object(interaction.config, "LOW_MEMORY_PROFILE_MAX_FACTS", 4),
+            mock.patch.object(
+                interaction.config,
+                "LOW_MEMORY_IDLE_QUESTION_PREFIX",
+                "I don't know you well yet, {name}, {question}",
+            ),
+            mock.patch.object(interaction, "_primary_session_person_id", return_value=1),
+            mock.patch.object(interaction, "_profile_fact_count", return_value=1),
+            mock.patch.object(interaction, "_next_profile_question", return_value=question),
+            mock.patch.object(
+                interaction.people_memory,
+                "get_person",
+                return_value={"id": 1, "name": "Bret Benziger"},
+            ),
+            mock.patch.object(interaction.question_budget, "can_ask", return_value=True),
+            mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+            mock.patch.object(interaction.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+            mock.patch.object(interaction.conv_memory, "add_to_transcript") as transcript,
+            mock.patch.object(interaction.conv_log, "log_rex") as log_rex,
+            mock.patch.object(interaction, "_register_rex_utterance") as register,
+            mock.patch.object(interaction.rel_memory, "save_question_asked") as save_q,
+        ):
+            first = interaction._maybe_low_memory_idle_question(
+                idle_for=11.0,
+                effective_idle_timeout=30.0,
+            )
+            second = interaction._maybe_low_memory_idle_question(
+                idle_for=20.0,
+                effective_idle_timeout=30.0,
+            )
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        speak.assert_called_once_with(spoken, emotion="curious", priority=1)
+        transcript.assert_called_once_with("Rex", spoken)
+        log_rex.assert_called_once_with(spoken)
+        register.assert_called_once_with(spoken)
+        save_q.assert_called_once_with(1, "job", spoken, 1)
+        interaction._low_memory_idle_questions_spoken.clear()
+
+    def test_low_memory_question_prefix_uses_first_name(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(
+                interaction.people_memory,
+                "get_person",
+                return_value={"id": 1, "name": "Bret Benziger"},
+            ),
+            mock.patch.object(
+                interaction.config,
+                "LOW_MEMORY_IDLE_QUESTION_PREFIX",
+                "I don't know you well yet, {name}, {question}",
+            ),
+        ):
+            line = interaction._format_low_memory_question(
+                1,
+                "So where are you from?",
+            )
+
+        self.assertEqual(line, "I don't know you well yet, Bret, So where are you from?")
+
+    def test_low_memory_idle_question_skips_rich_profiles(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction.config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True),
+            mock.patch.object(interaction, "_primary_session_person_id", return_value=1),
+            mock.patch.object(interaction, "_profile_fact_count", return_value=12),
+            mock.patch.object(interaction, "_next_profile_question") as next_q,
+        ):
+            asked = interaction._maybe_low_memory_idle_question(
+                idle_for=20.0,
+                effective_idle_timeout=30.0,
+            )
+
+        self.assertFalse(asked)
+        next_q.assert_not_called()
+
     def test_wake_word_does_not_interrupt_current_question(self):
         from intelligence import interaction
 
@@ -291,6 +422,112 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         self.assertFalse(interaction._is_bare_wake_address("Hey Rex what time is it"))
         self.assertFalse(interaction._is_bare_wake_address("Rex play jazz"))
+
+    def test_bare_identity_name_rejects_filler_words(self):
+        from intelligence import interaction
+
+        for filler in ("both", "someone", "everybody", "whoever", "okay"):
+            self.assertIsNone(
+                interaction._extract_introduced_name(filler, allow_bare_name=True),
+                filler,
+            )
+        self.assertEqual(
+            interaction._extract_introduced_name("Bret", allow_bare_name=True),
+            "Bret",
+        )
+
+    def test_name_update_extracts_common_corrections(self):
+        from intelligence import interaction
+
+        self.assertEqual(interaction._extract_name_update("Call me Bret instead"), "Bret")
+        self.assertEqual(
+            interaction._extract_name_update(
+                "My name is BretMichael but you can call me Bret"
+            ),
+            "Bret",
+        )
+        self.assertEqual(
+            interaction._extract_name_update("you got my name wrong, my name is Joe"),
+            "Joe",
+        )
+        self.assertEqual(interaction._extract_name_update("rename me to JT"), "JT")
+        self.assertIsNone(interaction._extract_name_update("call me both"))
+        self.assertIsNone(interaction._extract_name_update("that's not my name"))
+
+    def test_name_update_renames_current_person_and_world_state(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(
+                interaction,
+                "_resolve_name_update_target",
+                return_value=(1, "Both"),
+            ),
+            mock.patch.object(interaction.people_memory, "rename_person", return_value=True) as rename,
+            mock.patch.object(interaction, "_refresh_world_state_person_name") as refresh,
+            mock.patch.object(interaction, "_speak_blocking") as speak,
+        ):
+            response = interaction._handle_name_update_request(
+                "Call me Bret instead",
+                person_id=1,
+                person_name="Both",
+            )
+
+        self.assertEqual(response, "Got it. I'll call you Bret.")
+        rename.assert_called_once_with(1, "Bret")
+        refresh.assert_called_once_with(1, "Bret")
+        speak.assert_called_once()
+
+    def test_idle_background_speech_ignored_when_unrecognized_and_off_camera(self):
+        from intelligence import interaction
+
+        self.assertTrue(
+            interaction._should_ignore_idle_background_speech(
+                from_idle_activation=True,
+                person_id=None,
+                has_unknown_visible=False,
+                identity_prompt_active=False,
+                text="and there was no imminent threat.",
+            )
+        )
+
+    def test_idle_background_speech_not_ignored_for_known_or_visible_unknown_contexts(self):
+        from intelligence import interaction
+
+        self.assertFalse(
+            interaction._should_ignore_idle_background_speech(
+                from_idle_activation=True,
+                person_id=1,
+                has_unknown_visible=False,
+                identity_prompt_active=False,
+                text="hello there",
+            )
+        )
+        self.assertFalse(
+            interaction._should_ignore_idle_background_speech(
+                from_idle_activation=True,
+                person_id=None,
+                has_unknown_visible=True,
+                identity_prompt_active=False,
+                text="hello there",
+            )
+        )
+        self.assertFalse(
+            interaction._should_ignore_idle_background_speech(
+                from_idle_activation=True,
+                person_id=None,
+                has_unknown_visible=False,
+                identity_prompt_active=True,
+                text="Bret",
+            )
+        )
+
+    def test_vad_barge_in_is_disabled_by_default(self):
+        import config
+        from intelligence import interaction
+
+        self.assertFalse(config.VAD_BARGE_IN_ENABLED)
+        self.assertFalse(interaction._vad_barge_in_enabled())
 
 
 class ConversationGatingTest(unittest.TestCase):
@@ -347,6 +584,77 @@ class ConversationGatingTest(unittest.TestCase):
             consciousness._process_started_mono = old_started
             consciousness._greeted_this_session.clear()
             consciousness._greeted_this_session.update(old_greeted)
+
+    def test_startup_known_greeting_pending_suppresses_idle_micro_behavior(self):
+        from intelligence import consciousness
+        from state import State
+
+        old_started = consciousness._process_started_mono
+        old_greeted = set(consciousness._greeted_this_session)
+        old_micro = consciousness._last_micro_behavior_at
+        try:
+            consciousness._process_started_mono = 100.0
+            consciousness._greeted_this_session.clear()
+            consciousness._last_micro_behavior_at = 0.0
+            snapshot = {
+                "people": [
+                    {"person_db_id": 1, "face_id": "Bret Benziger"},
+                ],
+                "self_state": {"last_interaction_ago": 999.0},
+            }
+            with (
+                mock.patch.object(consciousness.state_module, "get_state", return_value=State.IDLE),
+                mock.patch.object(consciousness, "is_waiting_for_response", return_value=False),
+                mock.patch.object(consciousness.time, "monotonic", return_value=120.0),
+                mock.patch.object(consciousness.random, "uniform", return_value=0.0),
+                mock.patch.object(consciousness, "_do_private_thought") as thought,
+            ):
+                consciousness._step_idle_micro_behavior(
+                    snapshot,
+                    mock.Mock(suppress_proactive=False, suppress_system_comments=False),
+                )
+
+            thought.assert_not_called()
+        finally:
+            consciousness._process_started_mono = old_started
+            consciousness._greeted_this_session.clear()
+            consciousness._greeted_this_session.update(old_greeted)
+            consciousness._last_micro_behavior_at = old_micro
+
+    def test_startup_window_suppresses_idle_micro_behavior_before_any_greeting(self):
+        from intelligence import consciousness
+        from state import State
+
+        old_started = consciousness._process_started_mono
+        old_greeted = set(consciousness._greeted_this_session)
+        old_micro = consciousness._last_micro_behavior_at
+        try:
+            consciousness._process_started_mono = 100.0
+            consciousness._greeted_this_session.clear()
+            consciousness._last_micro_behavior_at = 0.0
+            snapshot = {
+                "people": [],
+                "self_state": {"last_interaction_ago": 999.0},
+            }
+            profile = mock.Mock(
+                suppress_proactive=False,
+                suppress_system_comments=False,
+            )
+            with (
+                mock.patch.object(consciousness.state_module, "get_state", return_value=State.IDLE),
+                mock.patch.object(consciousness, "is_waiting_for_response", return_value=False),
+                mock.patch.object(consciousness.time, "monotonic", return_value=120.0),
+                mock.patch.object(consciousness.random, "uniform", return_value=0.0),
+                mock.patch.object(consciousness, "_do_small_talk_question") as small_talk,
+            ):
+                consciousness._step_idle_micro_behavior(snapshot, profile)
+
+            small_talk.assert_not_called()
+        finally:
+            consciousness._process_started_mono = old_started
+            consciousness._greeted_this_session.clear()
+            consciousness._greeted_this_session.update(old_greeted)
+            consciousness._last_micro_behavior_at = old_micro
 
     def test_proactive_speech_writes_conversation_log(self):
         from intelligence import consciousness
@@ -761,6 +1069,34 @@ class ConversationGatingTest(unittest.TestCase):
         topic_thread.clear()
         conversation_steering.clear()
 
+    def test_topic_thread_short_confirmation_answers_tag_question(self):
+        from intelligence import topic_thread
+
+        topic_thread.clear()
+        topic_thread.note_assistant_turn(
+            "Bret, don't let the neon lights of Vegas fry your circuits; "
+            "your trip's tomorrow, right?"
+        )
+        topic_thread.note_user_turn("Yeah", person_id=1)
+
+        snap = topic_thread.snapshot()
+        self.assertIsNotNone(snap)
+        self.assertIsNone(snap.get("unresolved_question"))
+        self.assertEqual(snap.get("user_stance"), "engaged")
+        topic_thread.clear()
+
+    def test_topic_thread_short_confirmation_does_not_answer_open_question(self):
+        from intelligence import topic_thread
+
+        topic_thread.clear()
+        topic_thread.note_assistant_turn("Where are you off to, anyway?")
+        topic_thread.note_user_turn("Yeah", person_id=1)
+
+        snap = topic_thread.snapshot()
+        self.assertIsNotNone(snap)
+        self.assertEqual(snap.get("unresolved_question"), "Where are you off to, anyway?")
+        topic_thread.clear()
+
     def test_startup_answer_gets_room_for_followup_question(self):
         from intelligence import response_length
 
@@ -860,6 +1196,167 @@ class ConversationGatingTest(unittest.TestCase):
             "Ah, JT! Welcome to this wild ride of banter.",
         )
         self.assertIn("removed_question", governed.notes)
+
+    def test_social_frame_drops_disallowed_question_without_fragment_salvage(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="quiet",
+            max_words=36,
+            max_sentences=2,
+            allow_question=False,
+            allow_roast="normal",
+            allow_visual_comment=False,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "Bret Benziger, huh? Sounds like a name that could get stuck in hyperspace. "
+            "So, where are you from — some planet where everyone just has impressive names?",
+            frame,
+        )
+
+        self.assertEqual(
+            governed.text,
+            "Sounds like a name that could get stuck in hyperspace.",
+        )
+        self.assertIn("removed_question", governed.notes)
+        self.assertNotIn("salvaged_question_lead", governed.notes)
+        self.assertNotIn("where are you from", governed.text.lower())
+
+    def test_social_frame_generic_question_budget_does_not_invite_interview_pivot(self):
+        from intelligence import social_frame
+
+        directive = (
+            "Treat the user's latest utterance as a likely answer if it fits; "
+            "do not ask an unrelated new question in the same breath. "
+            "Response shape: Ask at most one, and only if it naturally serves this turn."
+        )
+        with (
+            mock.patch("intelligence.question_budget.can_ask", return_value=True),
+            mock.patch.object(
+                social_frame.world_state,
+                "snapshot",
+                return_value={"people": []},
+            ),
+        ):
+            frame = social_frame.build_frame(
+                "I'm from Waterford",
+                person_id=1,
+                agenda_directive=directive,
+            )
+
+        self.assertFalse(frame.allow_question)
+
+    def test_social_frame_generic_primary_purpose_followup_does_not_invite_pivot(self):
+        from intelligence import social_frame
+
+        directive = (
+            "Primary purpose: respond to the human's latest thought. "
+            "You may ask one tightly related follow-up question if it naturally "
+            "continues this exact thread; do not pivot into a new interview topic."
+        )
+        with (
+            mock.patch("intelligence.question_budget.can_ask", return_value=True),
+            mock.patch.object(
+                social_frame.world_state,
+                "snapshot",
+                return_value={"people": []},
+            ),
+        ):
+            frame = social_frame.build_frame(
+                "I'm sure she'll pick the music",
+                person_id=1,
+                agenda_directive=directive,
+            )
+
+        self.assertFalse(frame.allow_question)
+
+    def test_social_frame_keeps_only_one_allowed_question(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="interest",
+            max_words=60,
+            max_sentences=3,
+            allow_question=True,
+            allow_roast="normal",
+            allow_visual_comment=False,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "Mischief, huh? What's on the menu for your taste buds? "
+            "What do you do professionally?",
+            frame,
+        )
+
+        self.assertEqual(governed.text.count("?"), 1)
+        self.assertIn("What's on the menu", governed.text)
+        self.assertNotIn("professionally", governed.text)
+        self.assertIn("removed_extra_questions", governed.notes)
+
+    def test_social_frame_converts_short_rhetorical_question_opener(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="interest",
+            max_words=60,
+            max_sentences=3,
+            allow_question=True,
+            allow_roast="normal",
+            allow_visual_comment=False,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "Fun in Vegas? Bold strategy. What are you actually doing there?",
+            frame,
+        )
+
+        self.assertEqual(governed.text.count("?"), 1)
+        self.assertIn("Fun in Vegas.", governed.text)
+        self.assertIn("What are you actually doing there?", governed.text)
+
+    def test_social_frame_keeps_real_short_question_opener(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="interest",
+            max_words=60,
+            max_sentences=3,
+            allow_question=True,
+            allow_roast="normal",
+            allow_visual_comment=False,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "What now? Bold strategy. Another question?",
+            frame,
+        )
+
+        self.assertEqual(governed.text.count("?"), 1)
+        self.assertIn("What now?", governed.text)
+        self.assertNotIn("Another question?", governed.text)
+
+    def test_actor_harness_strips_speaker_prefixes(self):
+        from tools import conversation_text_harness
+
+        self.assertEqual(
+            conversation_text_harness._clean_actor_reply(
+                "Bret Benziger: I am just testing this thing.",
+                "Bret Benziger",
+            ),
+            "I am just testing this thing.",
+        )
+        self.assertEqual(
+            conversation_text_harness._clean_actor_reply(
+                "Human: Yeah, that question got weird.",
+                "Bret",
+            ),
+            "Yeah, that question got weird.",
+        )
 
     def test_social_frame_keeps_tiny_opener_with_next_sentence(self):
         from intelligence import social_frame
@@ -1165,7 +1662,7 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertIn("tightly related follow-up question", directive)
         self.assertIn("do not pivot into a new interview topic", directive)
 
-    def test_social_frame_allows_the_related_followup_directive(self):
+    def test_social_frame_generic_related_followup_directive_does_not_invite_pivot(self):
         from intelligence import social_frame
 
         directive = (
@@ -1187,7 +1684,7 @@ class ConversationGatingTest(unittest.TestCase):
                 agenda_directive=directive,
             )
 
-        self.assertTrue(frame.allow_question)
+        self.assertFalse(frame.allow_question)
 
     def test_social_frame_allows_interest_natural_followup_directive(self):
         from intelligence import social_frame
@@ -2002,6 +2499,81 @@ class PendingMusicPreferenceTest(unittest.TestCase):
 
         self.assertEqual(routed.action, "music.play")
 
+    def test_intent_classifier_does_not_treat_music_mention_as_options_query(self):
+        from intelligence import intent_classifier
+
+        casual_mentions = [
+            "I'm sure she'll pick the music, I won't have anything to do with that",
+            "The music at that place was fine, I guess",
+            "I don't want to talk about music right now",
+            "What music does she like?",
+        ]
+        for text in casual_mentions:
+            with (
+                self.subTest(text=text),
+                mock.patch.object(
+                    intent_classifier,
+                    "_classify_with_llm",
+                    return_value="query_music_options",
+                ),
+            ):
+                label = intent_classifier.classify(text)
+
+            self.assertEqual(label, "general")
+
+    def test_intent_classifier_allows_explicit_music_options_query(self):
+        from intelligence import intent_classifier
+
+        self.assertEqual(
+            intent_classifier.classify("What kind of music can you play?"),
+            "query_music_options",
+        )
+        self.assertEqual(
+            intent_classifier.classify("What genres do you have?"),
+            "query_music_options",
+        )
+
+    def test_intent_classifier_does_not_play_non_music_games_with_play_word(self):
+        from intelligence import intent_classifier
+
+        with mock.patch.object(
+            intent_classifier,
+            "_classify_with_llm",
+            return_value="play_music",
+        ):
+            label = intent_classifier.classify("play a game with me")
+
+        self.assertNotEqual(label, "play_music")
+
+    def test_intent_classifier_does_not_play_music_for_preference_question(self):
+        from intelligence import intent_classifier
+
+        preference_questions = [
+            "Got any favorite tracks you like to spin?",
+            "What music does she like?",
+            "Any favorite songs you enjoy?",
+        ]
+        for text in preference_questions:
+            with (
+                self.subTest(text=text),
+                mock.patch.object(
+                    intent_classifier,
+                    "_classify_with_llm",
+                    return_value="play_music",
+                ),
+            ):
+                label = intent_classifier.classify(text)
+
+            self.assertNotEqual(label, "play_music")
+
+    def test_intent_classifier_allows_explicit_music_play_request(self):
+        from intelligence import intent_classifier
+
+        self.assertEqual(
+            intent_classifier.classify("play some jazz music"),
+            "play_music",
+        )
+
     def test_router_downgrades_preference_misread_as_forget(self):
         from intelligence import action_router
 
@@ -2292,6 +2864,31 @@ class PendingMusicPreferenceTest(unittest.TestCase):
 
         self.assertIn("upcoming event", directive)
         self.assertNotIn("How did you end up talking to a droid DJ?", directive)
+
+    def test_agenda_does_not_inject_friendship_question_into_reactive_turns(self):
+        from intelligence import conversation_agenda
+
+        ws = {"people": [], "crowd": {}}
+        with (
+            mock.patch.object(conversation_agenda.world_state, "snapshot", return_value=ws),
+            mock.patch.object(
+                conversation_agenda.people_memory,
+                "get_person",
+                return_value={"id": 1, "name": "Bret", "friendship_tier": "stranger"},
+            ),
+            mock.patch.object(conversation_agenda.rel_memory, "get_asked_question_keys", return_value=set()),
+            mock.patch.object(conversation_agenda.rel_memory, "get_latest_pending_question", return_value=None),
+            mock.patch.object(conversation_agenda.facts_memory, "get_facts", return_value=[]),
+            mock.patch.object(conversation_agenda.empathy, "classify_local_sensitivity", return_value=None),
+            mock.patch.object(conversation_agenda.empathy, "peek", return_value=None),
+        ):
+            directive = conversation_agenda.build_turn_directive(
+                "I'm sure she'll pick the music, I won't have anything to do with that",
+                1,
+            )
+
+        self.assertNotIn("What do you do", directive)
+        self.assertNotIn("weave in this one question", directive)
 
     def test_dj_vibe_match_does_not_confuse_classical_with_classic_rock(self):
         import config

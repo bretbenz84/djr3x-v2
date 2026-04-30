@@ -113,7 +113,9 @@ _DANGLING_WORDS = {
     "delivering", "giving", "making", "doing", "having", "being",
 }
 _HARD_NO_QUESTION_PAT = re.compile(
-    r"(do not ask|don't ask|no new questions|without adding a new question|"
+    r"(do not ask (?:a|any|another|new|follow-up )?question|"
+    r"don't ask (?:a|any|another|new|follow-up )?question|"
+    r"no new questions|without adding a new question|"
     r"do not add a new follow-up|question budget is spent|"
     r"do not ask another question|no follow-up question)",
     re.IGNORECASE,
@@ -123,6 +125,14 @@ _ASK_ALLOWED_PAT = re.compile(
     r"one natural follow-up|natural follow-up|ask at most one|"
     r"tightly related follow-up|weave in this one question|ending in a question mark)",
     re.IGNORECASE,
+)
+_EXPLICIT_FOLLOWUP_PAT = re.compile(
+    r"(after answering, ask at most one short follow-up|"
+    r"deepen the interest thread.*?ask one natural follow-up|"
+    r"give one .*? then ask one .*?follow-up|"
+    r"weave in this one question|"
+    r"ask who|ask .* name)",
+    re.IGNORECASE | re.DOTALL,
 )
 _URGENT_GROUP_IDENTITY_PAT = re.compile(
     r"(urgent group identity handoff|identity question may bypass|"
@@ -176,6 +186,7 @@ def build_frame(
         "human just volunteered a genuine interest" in (agenda_directive or "").lower()
         and _ASK_ALLOWED_PAT.search(agenda_directive or "") is not None
     )
+    explicit_followup = _explicit_followup_allowed(agenda_directive, purpose)
 
     allow_question = False
     if urgent_identity and unknown_count:
@@ -183,14 +194,12 @@ def build_frame(
     elif unknown_count and person_id is not None and _ASK_ALLOWED_PAT.search(agenda_directive):
         allow_question = True
     elif answered_question is not None:
-        allow_question = bool(
-            budget_allows and _ASK_ALLOWED_PAT.search(agenda_directive)
-        )
+        allow_question = bool(budget_allows and explicit_followup)
     elif _HARD_NO_QUESTION_PAT.search(agenda_directive):
         allow_question = False
     elif fresh_interest_followup:
         allow_question = True
-    elif budget_allows and _ASK_ALLOWED_PAT.search(agenda_directive):
+    elif budget_allows and explicit_followup:
         allow_question = True
     elif user_asked_question:
         allow_question = False
@@ -244,6 +253,21 @@ def build_frame(
         allow_visual_comment=allow_visual,
         reason=", ".join(reasons),
     )
+
+
+def _explicit_followup_allowed(agenda_directive: str, purpose: str) -> bool:
+    """Distinguish real follow-up instructions from generic question-budget text."""
+    directive = agenda_directive or ""
+    if not _ASK_ALLOWED_PAT.search(directive):
+        return False
+    if _EXPLICIT_FOLLOWUP_PAT.search(directive):
+        return True
+    lowered = directive.lower()
+    if purpose == "interest" and "natural follow-up" in lowered:
+        return True
+    if purpose == "answer" and "after answering" in lowered:
+        return True
+    return False
 
 
 def build_directive(frame: SocialFrame) -> str:
@@ -307,20 +331,17 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
     sentences = _sentences(current)
     if not frame.allow_question:
         kept = []
-        salvaged_question = False
         for sentence in sentences:
             if "?" not in sentence:
                 kept.append(sentence)
                 continue
-            salvaged = _salvage_non_question_lead(sentence)
-            if salvaged:
-                kept.append(salvaged)
-                salvaged_question = True
         if len(kept) != len(sentences):
             sentences = kept
             notes.append("removed_question")
-            if salvaged_question:
-                notes.append("salvaged_question_lead")
+    else:
+        sentences, removed_extra_questions = _keep_one_question(sentences)
+        if removed_extra_questions:
+            notes.append("removed_extra_questions")
 
     if not frame.allow_visual_comment:
         kept = [s for s in sentences if not _VISUAL_PAT.search(s)]
@@ -596,6 +617,50 @@ def _trim_sentences(sentences: list[str], frame: SocialFrame) -> list[str]:
         return sentences[:2]
 
     return sentences[:limit]
+
+
+def _keep_one_question(sentences: list[str]) -> tuple[list[str], bool]:
+    """Keep at most one question sentence even when length trimming is disabled."""
+    kept: list[str] = []
+    saw_question = False
+    removed = False
+    for sentence in sentences:
+        if "?" not in sentence:
+            kept.append(sentence)
+            continue
+        if _is_tiny_question_opener(sentence):
+            kept.append(re.sub(r"\?+\s*$", ".", sentence.strip()))
+            removed = True
+            continue
+        if saw_question:
+            removed = True
+            continue
+        kept.append(sentence)
+        saw_question = True
+    return kept, removed
+
+
+def _is_tiny_question_opener(sentence: str) -> bool:
+    text = (sentence or "").strip()
+    if not text or "?" not in text:
+        return False
+    words = _WORD_PAT.findall(text)
+    if len(words) > 4:
+        return False
+    if re.match(
+        r"\s*(who|what|when|where|why|how|can|could|would|will|do|does|did|"
+        r"is|are|should|may|might)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    return bool(
+        re.search(
+            r"\b(huh|right|yeah|okay|ok|well|really|seriously|nice|mischief)\b",
+            text,
+            re.IGNORECASE,
+        )
+    ) or len(words) <= 4
 
 
 def _salvage_non_question_lead(sentence: str) -> Optional[str]:

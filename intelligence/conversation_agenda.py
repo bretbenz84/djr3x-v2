@@ -612,15 +612,17 @@ def build_turn_directive(
             )
             return "\n".join(lines)
 
-        next_q = (
-            _next_useful_question(person_id)
-            if (
-                question_budget_allows
-                and not low_pressure_ack
-                and _friendship_question_allowed(text, person_id)
+        next_q = None
+        if bool(getattr(config, "REACTIVE_FRIENDSHIP_QUESTIONS_ENABLED", False)):
+            next_q = (
+                _next_useful_question(person_id)
+                if (
+                    question_budget_allows
+                    and not low_pressure_ack
+                    and _friendship_question_allowed(text, person_id)
+                )
+                else None
             )
-            else None
-        )
         if next_q:
             lines.append(
                 "Primary purpose: keep the conversation moving with curiosity. "

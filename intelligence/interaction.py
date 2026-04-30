@@ -98,6 +98,8 @@ _last_speech_at: float = 0.0  # monotonic timestamp of most recent speech chunk
 _session_forget_terms: dict[int, set[str]] = {}
 _session_router_control_topics: dict[int, str] = {}
 _interest_idle_followups_spoken: set[tuple[Optional[int], str]] = set()
+_low_memory_idle_questions_spoken: set[int] = set()
+_idle_outro_spoken: bool = False
 _pending_music_offer: Optional[dict] = None
 _no_response_recovery_token: int = 0
 _no_response_recovery_lock = threading.Lock()
@@ -105,6 +107,7 @@ _no_response_recovery_lock = threading.Lock()
 # Anti-repeat for latency filler lines
 _last_filler: Optional[str] = None
 _last_wake_ack: Optional[str] = None
+_last_vad_barge_in_suppressed_log_at: float = 0.0
 
 # Monotonic deadline before which VAD speech-onset detections are discarded.
 # Set at the end of each TTS utterance; prevents Rex's own voice tail from
@@ -239,20 +242,47 @@ _NAME_PATTERNS = [
     re.compile(r"\bim\s+(.+)$", re.IGNORECASE),
     re.compile(r"\bthis is\s+(.+)$", re.IGNORECASE),
     re.compile(r"\bcall me\s+(.+)$", re.IGNORECASE),
+    re.compile(r"\brename me(?:\s+to)?\s+(.+)$", re.IGNORECASE),
 ]
+_CALL_ME_NAME_RE = re.compile(
+    r"\b(?:you can\s+)?call me\s+(.+)$",
+    re.IGNORECASE,
+)
+_NAME_CORRECTION_RE = re.compile(
+    r"\b(?:you\s+(?:got|have)\s+my\s+name\s+wrong|"
+    r"that's\s+not\s+my\s+name|that\s+isn['’]?t\s+my\s+name|"
+    r"you\s+called\s+me\s+the\s+wrong\s+name|"
+    r"my\s+name\s+is|call\s+me|rename\s+me)\b",
+    re.IGNORECASE,
+)
+_PREFERRED_NAME_SPLIT_RE = re.compile(
+    r"\b(?:but\s+)?(?:you can\s+)?call me\b",
+    re.IGNORECASE,
+)
+_NAME_TRAILING_FILLER_RE = re.compile(
+    r"\b(?:instead|from now on|please|thanks|thank you)\b.*$",
+    re.IGNORECASE,
+)
 
 _NAME_STOPWORDS = {
     "again",
     "back",
+    "both",
+    "everybody",
+    "everyone",
     "fine",
     "good",
     "great",
     "here",
+    "nobody",
     "okay",
     "ok",
+    "someone",
+    "somebody",
     "ready",
     "sorry",
     "there",
+    "whoever",
 }
 
 
@@ -610,6 +640,10 @@ def _wake_ack() -> None:
     _speak_blocking(chosen, priority=2)
 
 
+def _vad_barge_in_enabled() -> bool:
+    return bool(getattr(config, "VAD_BARGE_IN_ENABLED", False))
+
+
 def _response_wait_active() -> bool:
     try:
         return bool(consciousness.is_waiting_for_response())
@@ -723,6 +757,24 @@ def _assistant_asked_question(text: str) -> bool:
     return bool(cleaned) and ("?" in cleaned)
 
 
+def _question_expects_response(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if not _assistant_asked_question(cleaned):
+        return False
+    last_question = ""
+    for part in re.split(r"(?<=[.!?])\s+", cleaned):
+        if "?" in part:
+            last_question = part.strip()
+    if not last_question:
+        return False
+    lowered = last_question.lower()
+    if re.search(r"\b(right|okay|ok|huh|yeah)\?\s*$", lowered):
+        return False
+    if re.search(r"\bwhy\s+(?:risk|bother|would|not)\b.+\bwhen\b", lowered):
+        return False
+    return True
+
+
 def _question_recovery_cooldown_secs() -> float:
     return max(
         0.0,
@@ -751,7 +803,7 @@ def _arm_no_response_recovery(
     """After Rex asks a question, recover with one quip if nobody answers."""
     global _no_response_recovery_token
 
-    if not _assistant_asked_question(question_text):
+    if not _question_expects_response(question_text):
         return
     cooldown = _question_recovery_cooldown_secs()
     if cooldown <= 0:
@@ -845,6 +897,72 @@ def _primary_session_person_id() -> Optional[int]:
     if len(unique) == 1:
         return next(iter(unique))
     return None
+
+
+def _profile_fact_count(person_id: int) -> int:
+    try:
+        return len(
+            [
+                fact
+                for fact in facts_memory.get_facts(person_id)
+                if fact.get("key") and fact.get("key") != "skin_color"
+            ]
+        )
+    except Exception as exc:
+        _log.debug("profile fact count failed for person_id=%s: %s", person_id, exc)
+        return 0
+
+
+def _next_profile_question(person_id: int) -> Optional[dict]:
+    try:
+        person = people_memory.get_person(person_id)
+        tier = (person.get("friendship_tier", "stranger") if person else "stranger")
+        max_depth = config.TIER_MAX_DEPTH.get(tier, 1)
+        asked = rel_memory.get_asked_question_keys(person_id)
+        known_fact_keys: set[str] = set()
+        known_fact_categories: set[str] = set()
+        for fact in facts_memory.get_facts(person_id):
+            if fact.get("key"):
+                known_fact_keys.add(fact["key"])
+            if fact.get("category"):
+                known_fact_categories.add(fact["category"])
+        for candidate in config.QUESTION_POOL:
+            q_key = candidate.get("key")
+            if candidate.get("depth", 1) > max_depth:
+                continue
+            if q_key in asked or q_key in known_fact_keys or q_key in known_fact_categories:
+                continue
+            if _question_blocked_by_boundary(person_id, candidate):
+                continue
+            return candidate
+    except Exception as exc:
+        _log.debug("next profile question failed for person_id=%s: %s", person_id, exc)
+    return None
+
+
+def _format_low_memory_question(person_id: int, question_text: str) -> str:
+    text = (question_text or "").strip()
+    if not text:
+        return ""
+    try:
+        person = people_memory.get_person(person_id) or {}
+    except Exception:
+        person = {}
+    full_name = str(person.get("name") or "").strip()
+    first_name = full_name.split()[0] if full_name else "there"
+    template = str(
+        getattr(
+            config,
+            "LOW_MEMORY_IDLE_QUESTION_PREFIX",
+            "I don't know you well yet, {name}, {question}",
+        )
+        or "{question}"
+    )
+    try:
+        formatted = template.format(name=first_name, question=text)
+    except Exception:
+        formatted = f"I don't know you well yet, {first_name}, {text}"
+    return llm.clean_response_text(formatted)
 
 
 def _maybe_interest_idle_followup(
@@ -961,6 +1079,105 @@ def _maybe_interest_idle_followup(
     return completed
 
 
+def _maybe_low_memory_idle_question(
+    *,
+    idle_for: float,
+    effective_idle_timeout: float,
+) -> bool:
+    """Ask one profile-building question during a lull for known sparse profiles."""
+    if not bool(getattr(config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True)):
+        return False
+    threshold = float(getattr(config, "LOW_MEMORY_IDLE_QUESTION_SECS", 10.0) or 0.0)
+    if threshold <= 0 or idle_for < threshold:
+        return False
+    if idle_for >= max(0.0, effective_idle_timeout - 1.0):
+        return False
+    if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
+        return False
+    if _interrupted.is_set():
+        return False
+    try:
+        if end_thread.is_grace_active():
+            return False
+    except Exception:
+        pass
+
+    person_id = _primary_session_person_id()
+    if person_id is None or person_id in _low_memory_idle_questions_spoken:
+        return False
+    max_facts = int(getattr(config, "LOW_MEMORY_PROFILE_MAX_FACTS", 4) or 4)
+    if _profile_fact_count(person_id) > max_facts:
+        return False
+    try:
+        if not question_budget.can_ask("low_memory_idle_question"):
+            return False
+    except Exception:
+        pass
+
+    question = _next_profile_question(person_id)
+    if not question:
+        return False
+    question_text = str(question.get("text") or "").strip()
+    if not question_text:
+        return False
+    spoken_text = _format_low_memory_question(person_id, question_text)
+    if not spoken_text:
+        return False
+
+    _low_memory_idle_questions_spoken.add(person_id)
+    _log.info(
+        "[interaction] low-memory idle profile question — person_id=%s fact_count=%d key=%r text=%r",
+        person_id,
+        _profile_fact_count(person_id),
+        question.get("key"),
+        spoken_text,
+    )
+    completed = _speak_blocking(spoken_text, emotion="curious", priority=1)
+    if completed:
+        conv_memory.add_to_transcript("Rex", spoken_text)
+        conv_log.log_rex(spoken_text)
+        _register_rex_utterance(spoken_text)
+        try:
+            rel_memory.save_question_asked(
+                person_id,
+                question["key"],
+                spoken_text,
+                question.get("depth", 1),
+            )
+        except Exception as exc:
+            _log.debug("low-memory idle question save_qa failed: %s", exc)
+    return completed
+
+
+def _maybe_idle_outro() -> bool:
+    """Say one tiny silence-aware line before an active session returns to IDLE."""
+    global _idle_outro_spoken
+    if _idle_outro_spoken:
+        return False
+    if not bool(getattr(config, "IDLE_OUTRO_ENABLED", True)):
+        return False
+    if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
+        return False
+    if _interrupted.is_set():
+        return False
+    pool = list(getattr(config, "IDLE_OUTRO_LINES", []) or [])
+    if not pool:
+        return False
+    line = random.choice(pool)
+    line = llm.clean_response_text(line or "")
+    if not line:
+        return False
+
+    _idle_outro_spoken = True
+    _log.info("[interaction] idle outro before IDLE: %r", line)
+    completed = _speak_blocking(line, emotion="neutral", priority=1)
+    if completed:
+        conv_memory.add_to_transcript("Rex", line)
+        conv_log.log_rex(line)
+        _register_rex_utterance(line)
+    return completed
+
+
 def _record_being_discussed(
     *,
     text: str,
@@ -1032,8 +1249,15 @@ def _normalize_name(candidate: str) -> Optional[str]:
     if not text:
         return None
 
+    # Prefer the explicit nickname in phrases like
+    # "my name is BretMichael but you can call me Bret".
+    call_me_parts = _PREFERRED_NAME_SPLIT_RE.split(text, maxsplit=1)
+    if len(call_me_parts) > 1:
+        text = call_me_parts[1].strip()
+
     # Keep the first clause only ("my name is Bret, nice to meet you").
     text = re.split(r"[,.!?;:]", text, maxsplit=1)[0].strip()
+    text = _NAME_TRAILING_FILLER_RE.sub("", text).strip()
     text = re.sub(r"\s+", " ", text)
 
     tokens = []
@@ -1075,6 +1299,143 @@ def _extract_introduced_name(text: str, allow_bare_name: bool = False) -> Option
         return _normalize_name(normalized)
 
     return None
+
+
+def _extract_name_update(text: str) -> Optional[str]:
+    """Extract an explicit request/correction to rename the current person."""
+    normalized = (text or "").strip()
+    if not normalized or not _NAME_CORRECTION_RE.search(normalized):
+        return None
+
+    # When a preferred short name is supplied, use it over the formal name.
+    call_match = _CALL_ME_NAME_RE.search(normalized)
+    if call_match:
+        name = _normalize_name(call_match.group(1))
+        if name:
+            return name
+
+    return _extract_introduced_name(normalized, allow_bare_name=False)
+
+
+def _single_visible_person_identity() -> tuple[Optional[int], Optional[str]]:
+    """Return the only visible known person identity, when unambiguous."""
+    try:
+        people = world_state.get("people") or []
+    except Exception:
+        return None, None
+
+    identities: dict[int, Optional[str]] = {}
+    for person in people:
+        pid = person.get("person_db_id")
+        if pid is None:
+            continue
+        try:
+            pid_int = int(pid)
+        except (TypeError, ValueError):
+            continue
+        identities[pid_int] = (
+            person.get("face_id")
+            or person.get("voice_id")
+            or identities.get(pid_int)
+        )
+
+    if len(identities) != 1:
+        return None, None
+    pid, name = next(iter(identities.items()))
+    return pid, name
+
+
+def _resolve_name_update_target(
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> tuple[Optional[int], Optional[str]]:
+    """Resolve which known person row an explicit name correction should edit."""
+    if person_id is not None:
+        return int(person_id), person_name
+    return _single_visible_person_identity()
+
+
+def _refresh_world_state_person_name(person_id: int, name: str) -> None:
+    """Keep live face/voice labels in sync after a memory rename."""
+    try:
+        people = world_state.get("people") or []
+        changed = False
+        for person in people:
+            try:
+                pid = int(person.get("person_db_id"))
+            except (TypeError, ValueError):
+                continue
+            if pid != int(person_id):
+                continue
+            person["face_id"] = name
+            person["voice_id"] = name
+            changed = True
+        if changed:
+            world_state.update("people", people)
+
+        crowd = world_state.get("crowd") or {}
+        if crowd.get("dominant_speaker"):
+            crowd["dominant_speaker"] = name
+            world_state.update("crowd", crowd)
+    except Exception as exc:
+        _log.debug("world_state name refresh failed: %s", exc)
+
+
+def _handle_name_update_request(
+    text: str,
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> Optional[str]:
+    """Apply an explicit "call me / my name is / you got my name wrong" update."""
+    new_name = _extract_name_update(text)
+    if not new_name:
+        return None
+
+    target_id, old_name = _resolve_name_update_target(person_id, person_name)
+    if target_id is None:
+        _log.info("[identity] name update had no clear target text=%r", text)
+        return None
+
+    old_clean = (old_name or "").strip()
+    if old_clean.lower() == new_name.lower():
+        response = f"Already got you as {new_name}."
+        _speak_blocking(response)
+        return response
+
+    if not people_memory.rename_person(target_id, new_name):
+        response = f"I couldn't safely rename that memory to {new_name}."
+        _speak_blocking(response)
+        return response
+
+    _refresh_world_state_person_name(target_id, new_name)
+    _log.info(
+        "[identity] renamed person_id=%s old=%r new=%r text=%r",
+        target_id,
+        old_name,
+        new_name,
+        text,
+    )
+    response = f"Got it. I'll call you {new_name}."
+    _speak_blocking(response, emotion="happy")
+    return response
+
+
+def _should_ignore_idle_background_speech(
+    *,
+    from_idle_activation: bool,
+    person_id: Optional[int],
+    has_unknown_visible: bool,
+    identity_prompt_active: bool,
+    text: str,
+) -> bool:
+    """Ignore no-wake IDLE activations that sound like off-camera background speech."""
+    if not from_idle_activation:
+        return False
+    if person_id is not None:
+        return False
+    if has_unknown_visible or identity_prompt_active:
+        return False
+    return bool((text or "").strip())
 
 
 def _extract_offscreen_identify_reply(
@@ -2693,16 +3054,8 @@ def _execute_command(
         )
 
     if key == "rename_me":
-        name = args.get("name", "").strip()
-        if not name:
-            return ""
-        if person_id is not None:
-            from memory import database as _db
-            _db.execute("UPDATE people SET name = ? WHERE id = ?", (name, person_id))
-        return _say(
-            f"The person you're talking to just told you to call them '{name}'. "
-            f"Acknowledge in one in-character line."
-        )
+        response = _handle_name_update_request(raw_text, person_id, person_name)
+        return response or ""
 
     # ── Status ─────────────────────────────────────────────────────────────────
     if key == "status_uptime":
@@ -3060,6 +3413,7 @@ def _end_session() -> None:
     updates visit records and familiarity, then clears in-memory session state.
     """
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
+    global _idle_outro_spoken
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
 
     transcript = conv_memory.get_session_transcript()
@@ -3069,6 +3423,8 @@ def _end_session() -> None:
         _session_forget_terms.clear()
         _session_router_control_topics.clear()
         _interest_idle_followups_spoken.clear()
+        _low_memory_idle_questions_spoken.clear()
+        _idle_outro_spoken = False
         try:
             topic_thread.clear()
         except Exception:
@@ -3166,6 +3522,8 @@ def _end_session() -> None:
     _session_forget_terms.clear()
     _session_router_control_topics.clear()
     _interest_idle_followups_spoken.clear()
+    _low_memory_idle_questions_spoken.clear()
+    _idle_outro_spoken = False
     try:
         topic_thread.clear()
     except Exception:
@@ -5251,7 +5609,11 @@ def _handle_classified_intent(
 # Speech segment processing
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _handle_speech_segment(audio_array: np.ndarray) -> None:
+def _handle_speech_segment(
+    audio_array: np.ndarray,
+    *,
+    from_idle_activation: bool = False,
+) -> None:
     """Full processing pipeline for one detected speech segment in ACTIVE state."""
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
@@ -5441,6 +5803,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
             ws_pid = ws_person.get("person_db_id")
             ws_name = ws_person.get("face_id") or ws_person.get("voice_id")
             if person_id is None:
+                unknown_visible = _has_unknown_visible_person()
                 # Speaker-ID missed. Only fall back to ws_person if they are NOT
                 # the engaged person — otherwise we'd be claiming the engaged
                 # person spoke when the voice didn't actually match them. That
@@ -5472,7 +5835,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                         "person_id=%s name=%r voice_score=%.3f (floor=%.2f)",
                         person_id, person_name, speaker_score, eng_visible_floor,
                     )
-                elif engaged_is_visible and not _has_unknown_visible_person():
+                elif engaged_is_visible and not unknown_visible:
                     single_visible_continuity_floor = float(
                         getattr(config, "SPEAKER_ID_SINGLE_VISIBLE_CONTINUITY_FLOOR", 0.45)
                     )
@@ -5581,6 +5944,29 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 )
             # Else: falls through to normal enrollment logic below
 
+        identity_prompt_active = time.monotonic() <= _identity_prompt_until
+        has_unknown_visible_now = _has_unknown_visible_person()
+        if _should_ignore_idle_background_speech(
+            from_idle_activation=from_idle_activation,
+            person_id=person_id,
+            has_unknown_visible=has_unknown_visible_now,
+            identity_prompt_active=identity_prompt_active,
+            text=text,
+        ):
+            _log.info(
+                "[interaction] ignoring no-wake IDLE speech from unrecognized/off-camera "
+                "source text=%r raw_best=%s score=%.3f visible_known=%d",
+                text,
+                raw_best_id,
+                speaker_score,
+                len(visible_known_by_id),
+            )
+            try:
+                state_module.set_state(State.IDLE)
+            except Exception:
+                pass
+            return
+
         # Any non-empty user utterance means we should stop waiting for a reply.
         try:
             consciousness.clear_response_wait()
@@ -5625,7 +6011,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 intro_introducer_id = None
             intro_introducer_name = recent_engagement.get("name")
         if intro_introducer_id is not None:
-            has_unknown_for_intro = _has_unknown_visible_person()
+            has_unknown_for_intro = has_unknown_visible_now
             parsed_intro = introductions.detect(
                 text,
                 has_unknown_face=has_unknown_for_intro,
@@ -5748,7 +6134,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 _pending_introduction = None
 
         if person_id is not None and not relationship_prompt_consumed:
-            has_unknown_for_intro = _has_unknown_visible_person()
+            has_unknown_for_intro = has_unknown_visible_now
             parsed_intro = introductions.detect(
                 text,
                 has_unknown_face=has_unknown_for_intro,
@@ -5786,7 +6172,7 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
         # as the user's reply).
         global _pending_offscreen_identify, _pending_face_reveal_confirm
         try:
-            _addr_identity_window_active = time.monotonic() <= _identity_prompt_until
+            _addr_identity_window_active = identity_prompt_active
             if (
                 getattr(config, "ADDRESS_MODE_ENABLED", True)
                 and address_mode.contains_rex_keyword(text)
@@ -6234,6 +6620,23 @@ def _handle_speech_segment(audio_array: np.ndarray) -> None:
                 consciousness.clear_response_wait()
             except Exception:
                 pass
+            return
+
+        name_update_response = _handle_name_update_request(
+            text,
+            person_id,
+            person_name,
+        )
+        if name_update_response:
+            _dismiss_pending_consent_prompts(person_id, text)
+            try:
+                consciousness.clear_response_wait()
+            except Exception:
+                pass
+            conv_memory.add_to_transcript("Rex", name_update_response)
+            conv_log.log_rex(name_update_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(name_update_response)
             return
 
         music_offer_response = _handle_pending_music_offer_reply(person_id, text)
@@ -7353,6 +7756,12 @@ def _loop() -> None:
             if not getattr(config, "IDLE_LISTEN_WITHOUT_WAKE_WORD", False):
                 _stop_event.wait(0.05)
                 continue
+            try:
+                if consciousness.is_identity_prompt_in_flight():
+                    _stop_event.wait(0.05)
+                    continue
+            except Exception:
+                pass
 
             chunk = stream.get_audio_chunk(_CHUNK_SECS)
             if len(chunk) == 0:
@@ -7387,7 +7796,7 @@ def _loop() -> None:
                     continue
 
                 _last_speech_at = time.monotonic()
-                _handle_speech_segment(audio_segment)
+                _handle_speech_segment(audio_segment, from_idle_activation=True)
             finally:
                 _restore_dj_volume(_dj_restore_volume)
                 _end_user_turn()
@@ -7423,9 +7832,15 @@ def _loop() -> None:
             effective_idle_timeout=effective_idle_timeout,
         ):
             continue
+        if _maybe_low_memory_idle_question(
+            idle_for=idle_for,
+            effective_idle_timeout=effective_idle_timeout,
+        ):
+            continue
 
         if idle_for >= effective_idle_timeout:
             _log.info("[interaction] conversation idle timeout — returning to IDLE")
+            _maybe_idle_outro()
             _end_session()
             state_module.set_state(State.IDLE)
             continue
@@ -7477,6 +7892,17 @@ def _loop() -> None:
         except Exception:
             direct_audio_path = None
         if speech_queue.is_speaking() or output_gate.is_busy():
+            if not _vad_barge_in_enabled():
+                global _last_vad_barge_in_suppressed_log_at
+                now = time.monotonic()
+                if now - _last_vad_barge_in_suppressed_log_at >= 2.0:
+                    _last_vad_barge_in_suppressed_log_at = now
+                    _log.info(
+                        "[interaction] VAD barge-in suppressed while Rex is speaking; use wake word to interrupt"
+                    )
+                _end_user_turn()
+                _stop_event.wait(_CHUNK_SECS)
+                continue
             _interrupted.set()
             try:
                 import sounddevice as sd

@@ -216,6 +216,11 @@ INTERRUPT_ACKNOWLEDGMENTS = [
     "you have my attention. Briefly.",
 ]
 
+# Plain VAD barge-in while Rex is speaking is noisy with the current simple
+# playback-suppression AEC: Rex can hear his own tail and "interrupt" himself.
+# Wake words remain the intentional mid-speech interruption path.
+VAD_BARGE_IN_ENABLED = False
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TRANSCRIPTION — Whisper Accuracy Tuning
 # ─────────────────────────────────────────────────────────────────────────────
@@ -923,6 +928,22 @@ INTEREST_IDLE_FOLLOWUP_ENABLED = True
 INTEREST_IDLE_FOLLOWUP_SECS = 12.0
 INTEREST_IDLE_FOLLOWUP_MAX_WORDS = 22
 
+# When an ACTIVE conversation expires from silence, let Rex make one tiny
+# closing remark instead of silently snapping back to IDLE.
+IDLE_OUTRO_ENABLED = True
+IDLE_OUTRO_LINES = [
+    "Ah, the room has chosen silence. Bold, mysterious, mildly rude.",
+    "Nobody talking now. Excellent. I shall pretend this was my idea.",
+    "And there it is: conversational hyperspace. I'll be here, judging the ambience.",
+]
+
+# If Rex knows who someone is but barely knows anything about them, use a lull
+# before idle to ask one profile-building question from QUESTION_POOL.
+LOW_MEMORY_IDLE_QUESTION_ENABLED = True
+LOW_MEMORY_IDLE_QUESTION_SECS = 10.0
+LOW_MEMORY_PROFILE_MAX_FACTS = 4
+LOW_MEMORY_IDLE_QUESTION_PREFIX = "I don't know you well yet, {name}, {question}"
+
 IDLE_LISTEN_DURING_DJ_PLAYBACK = True
 DJ_DUCK_DURING_SPEECH = True
 DJ_LISTEN_DUCK_VOLUME = 0.18
@@ -999,6 +1020,14 @@ MUSIC_OFFER_REPLY_WINDOW_SECS = 25.0
 # camera-based riffs from stepping on care, without blocking visual questions
 # for the entire session.
 VISUAL_CURIOSITY_AFTER_EMPATHY_COOLDOWN_SECS = 90.0
+VISUAL_CURIOSITY_ENABLED = True
+VISUAL_CURIOSITY_SILENCE_SECS = 6.0
+VISUAL_CURIOSITY_ACTIVE_WINDOW_SECS = 90.0
+VISUAL_CURIOSITY_COOLDOWN_SECS = 120.0
+VISUAL_CURIOSITY_PERSON_COOLDOWN_SECS = 240.0
+VISUAL_CURIOSITY_TURN_WINDOW_SECS = 60.0
+VISUAL_CURIOSITY_MIN_USER_TURNS = 1
+VISUAL_CURIOSITY_MAX_CROWD_COUNT = 2
 
 # How often GPT-4o runs a full environment/scene analysis (seconds)
 ENVIRONMENT_SCAN_INTERVAL_SECS = 180

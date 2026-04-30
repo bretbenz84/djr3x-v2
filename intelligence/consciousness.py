@@ -18,7 +18,7 @@ import inspect
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -75,6 +75,7 @@ _followup_lock = threading.Lock()
 
 # Pending identity prompt for unknown-person enrollment.
 _pending_identity_prompt = threading.Event()
+_identity_prompt_in_flight = threading.Event()
 _last_identity_prompt_at: float = 0.0
 _IDENTITY_PROMPT_COOLDOWN_SECS = 45.0
 
@@ -376,6 +377,11 @@ def consume_identity_prompt_request() -> bool:
     return False
 
 
+def is_identity_prompt_in_flight() -> bool:
+    """True while an unknown-person identity prompt is being queued/spoken."""
+    return _identity_prompt_in_flight.is_set()
+
+
 def consume_relationship_prompt_request() -> Optional[dict]:
     """
     If Rex recently asked the engaged person about an unknown stranger, return
@@ -645,6 +651,7 @@ def _speak_async(
     purpose: Optional[str] = None,
     label: str = "",
     governed: bool = True,
+    on_done: Optional[Callable[[], None]] = None,
 ) -> bool:
     candidate_id = None
     if governed:
@@ -670,7 +677,11 @@ def _speak_async(
 
         def _on_done() -> None:
             done.wait()
-            _proactive_speech_pending.clear()
+            try:
+                if on_done is not None:
+                    on_done()
+            finally:
+                _proactive_speech_pending.clear()
 
         threading.Thread(target=_on_done, daemon=True, name="speech-pending-clear").start()
         try:
@@ -1227,16 +1238,22 @@ def _step_person_recognition(frame) -> None:
                     and (now - _last_identity_prompt_at) >= _IDENTITY_PROMPT_COOLDOWN_SECS
                 ):
                     _last_identity_prompt_at = now
-                    _pending_identity_prompt.set()
                     _log.info("consciousness: prompting unknown person for identity")
-                    _generate_and_speak(
-                        "You can see someone you don't recognize. "
-                        "In one short in-character line, ask who they are and what name "
-                        "you should store for them.",
+                    _identity_prompt_in_flight.set()
+
+                    def _identity_prompt_done() -> None:
+                        _pending_identity_prompt.set()
+                        _identity_prompt_in_flight.clear()
+
+                    if not _speak_async(
+                        "Hold up, I don't know you yet. What name should I save for you?",
                         emotion="curious",
                         wait_secs=getattr(config, "IDENTITY_RESPONSE_WAIT_SECS", 20.0),
                         purpose="identity_prompt",
-                    )
+                        label="identity_prompt",
+                        on_done=_identity_prompt_done,
+                    ):
+                        _identity_prompt_in_flight.clear()
             _last_face_feedback_signature = signature
 
         if changed:
@@ -2018,8 +2035,12 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
         return
     if is_waiting_for_response():
         return
-
     now = time.monotonic()
+    if _within_startup_group_window(now) and not _greeted_this_session:
+        return
+    if _startup_known_greeting_pending(snapshot):
+        return
+
     interval_min = getattr(config, "MICRO_BEHAVIOR_INTERVAL_SECS_MIN", 15)
     interval_max = getattr(config, "MICRO_BEHAVIOR_INTERVAL_SECS_MAX", 45)
     since_last = now - _last_micro_behavior_at
@@ -4843,6 +4864,7 @@ def start() -> None:
     _process_started_mono = time.monotonic()
     _stop_event.clear()
     _pending_identity_prompt.clear()
+    _identity_prompt_in_flight.clear()
     _pending_relationship_prompt.clear()
     _pending_relationship_context.clear()
     _asked_relationship_slots.clear()
@@ -4914,6 +4936,7 @@ def stop() -> None:
     global _last_pose_analysis_at
     _stop_event.set()
     _pending_identity_prompt.clear()
+    _identity_prompt_in_flight.clear()
     _proactive_speech_pending.clear()
     _confirmed_absent_at.clear()
     _first_sight_seen_at.clear()

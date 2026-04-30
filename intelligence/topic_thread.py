@@ -27,6 +27,17 @@ _QUESTION_START = re.compile(
     r"^\s*(who|what|when|where|why|how|can|could|would|will|do|does|did|is|are|am|should)\b",
     re.IGNORECASE,
 )
+_SHORT_CONFIRMATION_PAT = re.compile(
+    r"^\s*(?:yes|yeah|yep|yup|correct|right|affirmative|sure|"
+    r"no|nope|nah|negative)(?:[,.! ]|$)",
+    re.IGNORECASE,
+)
+_POLAR_QUESTION_START = re.compile(
+    r"^\s*(?:is|are|am|was|were|do|does|did|will|would|can|could|"
+    r"should|have|has|had|didn'?t|don'?t|doesn'?t|isn'?t|aren'?t|"
+    r"won'?t|wouldn'?t|can'?t|couldn'?t)\b",
+    re.IGNORECASE,
+)
 _EXPLICIT_INTEREST_SWITCH_PAT = re.compile(
     r"\b("
     r"i (?:really )?(?:like|love|am into|enjoy)|"
@@ -119,9 +130,15 @@ def note_user_turn(
     if not cleaned:
         return
 
+    unresolved_before = _current.unresolved_question if _current is not None else ""
+    answers_unresolved = _answers_unresolved_question(cleaned, unresolved_before)
     now = time.monotonic()
     label, weight = _classify_topic(cleaned)
-    stance = _classify_stance(cleaned, answered_question=answered_question)
+    stance = _classify_stance(
+        cleaned,
+        answered_question=answered_question,
+        answers_unresolved=answers_unresolved,
+    )
 
     if _current is None or _should_start_new_thread(cleaned, label, stance):
         _current = TopicThread(
@@ -143,7 +160,7 @@ def note_user_turn(
         _current.turn_count += 1
         _current.last_user_text = cleaned
 
-    if answered_question or stance in {"engaged", "avoidant"}:
+    if answered_question or answers_unresolved or stance in {"engaged", "avoidant"}:
         _current.unresolved_question = None
 
 
@@ -217,13 +234,18 @@ def _classify_topic(text: str) -> tuple[str, str]:
     return "current exchange", "light"
 
 
-def _classify_stance(text: str, *, answered_question: Optional[dict]) -> str:
+def _classify_stance(
+    text: str,
+    *,
+    answered_question: Optional[dict],
+    answers_unresolved: bool = False,
+) -> str:
     if _AVOID_PAT.search(text):
         return "avoidant"
     if _PLAYFUL_PAT.search(text):
         return "playful"
     words = re.findall(r"[A-Za-z']+", text)
-    if answered_question or len(words) >= 8 or _DEPTH_PAT.search(text):
+    if answered_question or answers_unresolved or len(words) >= 8 or _DEPTH_PAT.search(text):
         return "engaged"
     if len([w for w in words if len(w) > 2]) <= 2:
         return "terse"
@@ -297,3 +319,33 @@ def _last_question_sentence(text: str) -> str:
     if not parts:
         return text[-180:]
     return parts[-1].strip()[-180:]
+
+
+def _answers_unresolved_question(text: str, question: Optional[str]) -> bool:
+    cleaned = (text or "").strip()
+    q = (question or "").strip()
+    if not cleaned or not q or "?" in cleaned:
+        return False
+    if _AVOID_PAT.search(cleaned):
+        return True
+    words = re.findall(r"[A-Za-z']+", cleaned)
+    if len(words) >= 8 or _DEPTH_PAT.search(cleaned):
+        return True
+    if _SHORT_CONFIRMATION_PAT.match(cleaned) and _is_polar_or_tag_question(q):
+        return True
+    return False
+
+
+def _is_polar_or_tag_question(question: str) -> bool:
+    q = (question or "").strip().lower()
+    if not q:
+        return False
+    if _POLAR_QUESTION_START.match(q):
+        return True
+    return bool(
+        re.search(
+            r"(?:,\s*)?(?:right|correct|yeah|yes|no|okay|ok|huh)\?\s*$",
+            q,
+            re.IGNORECASE,
+        )
+    )

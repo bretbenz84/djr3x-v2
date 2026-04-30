@@ -237,6 +237,38 @@ def get_person(person_id: int) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def rename_person(person_id: int, name: str) -> bool:
+    """
+    Update a person's display name.
+
+    Returns False when the name is blank, the person row is missing, or the new
+    name already belongs to another person row. Biometrics remain tied to the
+    same person_id, so correcting a bad spoken name preserves face/voice memory.
+    """
+    clean = re.sub(r"\s+", " ", (name or "").strip())
+    if not clean:
+        return False
+
+    current = get_person(person_id)
+    if current is None:
+        return False
+
+    existing = find_person_by_name(clean)
+    if existing and int(existing["id"]) != int(person_id):
+        _log.warning(
+            "rename_person blocked: target name %r already belongs to person_id=%s",
+            clean,
+            existing["id"],
+        )
+        return False
+
+    db.execute(
+        "UPDATE people SET name = ?, last_seen = ? WHERE id = ?",
+        (clean, _now(), person_id),
+    )
+    return True
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Visit & familiarity tracking
 # ─────────────────────────────────────────────────────────────────────────────
