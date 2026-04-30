@@ -879,6 +879,10 @@ CURIOSITY_QUESTION_PROBABILITY = 0.8
 # frame's hard limits before TTS. This trims accidental extra questions,
 # overlong replies, ill-timed visual comments, and roasts during tender turns.
 SOCIAL_FRAME_GOVERNOR_ENABLED = True
+# Keep the final governor focused on safety/style cleanup. Length is already
+# steered before generation through the agenda directive and LLM token budget;
+# post-hoc sentence/word trimming tends to amputate Rex's personality.
+SOCIAL_FRAME_ENFORCE_LENGTH_LIMITS = False
 TONE_REPAIR_NO_ROAST_SECS = 180.0
 
 # If True, Rex will begin processing normal speech from IDLE without requiring

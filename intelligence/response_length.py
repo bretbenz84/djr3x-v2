@@ -164,10 +164,10 @@ def classify(
             )
         return _plan(
             "brief",
-            22,
+            32,
             2,
             "simple user question",
-            "Answer directly in one short sentence; use a tiny second sentence only for flavor.",
+            "Answer directly in one or two compact sentences. Keep the flavor if it helps.",
         )
 
     # Let the existing energy layer steer normal conversation, but make the
@@ -184,19 +184,19 @@ def classify(
     if response_length == "brief" or mode in {"task", "check_alive"}:
         return _plan(
             "brief",
-            18,
-            1,
+            26,
+            2,
             f"user energy: {mode or response_length}",
-            "One short sentence. No padding, no extra setup.",
+            "Use one or two compact sentences. No padding, no extra setup.",
         )
 
     if mode == "quiet" or response_length == "short":
         return _plan(
             "short",
-            24,
-            1,
+            36,
+            2,
             f"user energy: {mode or response_length}",
-            "One short sentence or clause. If you roast, make it a light tap, not a monologue.",
+            "One or two short sentences. If you roast, make it a light tap, not a monologue.",
         )
 
     if mode == "depth" or response_length == "medium" or word_count >= 12 or _DEPTH_STATEMENT_PAT.search(cleaned):
@@ -211,7 +211,7 @@ def classify(
     if mode == "banter":
         return _plan(
             "short",
-            28,
+            40,
             2,
             "playful banter",
             "A quick jab or comeback. Two sentences only if the second is a tiny button.",
@@ -219,10 +219,10 @@ def classify(
 
     return _plan(
         "brief",
-        22,
-        1,
+        32,
+        2,
         "default conversational turn",
-        "Default to one short line. Do not pad to reach two sentences.",
+        "Default to one compact line, with room for a tiny second sentence when it carries personality.",
     )
 
 

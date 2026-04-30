@@ -36,6 +36,11 @@ _QUESTION_START = re.compile(
     r"is|are|am|should)\b",
     re.IGNORECASE,
 )
+_QUESTION_CLAUSE_START_PAT = re.compile(
+    r"\b(who|what|when|where|why|how|can|could|would|will|do|does|did|"
+    r"is|are|am|should|got|any|care to|want to|wanna)\b",
+    re.IGNORECASE,
+)
 _SENTENCE_SPLIT = re.compile(r"[^.!?]+[.!?]*")
 _WORD_PAT = re.compile(r"[A-Za-z0-9']+")
 _ABBREVIATION_PAT = re.compile(
@@ -203,6 +208,9 @@ def build_frame(
         # follow-up." A one-sentence frame was trimming away the actual
         # follow-up and leaving inert acknowledgements like "Voyager, huh?"
         plan.max_sentences = max(plan.max_sentences, 2)
+    elif plan.target != "micro":
+        plan.max_words = max(plan.max_words, 32)
+        plan.max_sentences = max(plan.max_sentences, 2)
 
     allow_visual = _visual_allowed(
         user_text,
@@ -298,10 +306,21 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
 
     sentences = _sentences(current)
     if not frame.allow_question:
-        kept = [s for s in sentences if "?" not in s]
+        kept = []
+        salvaged_question = False
+        for sentence in sentences:
+            if "?" not in sentence:
+                kept.append(sentence)
+                continue
+            salvaged = _salvage_non_question_lead(sentence)
+            if salvaged:
+                kept.append(salvaged)
+                salvaged_question = True
         if len(kept) != len(sentences):
             sentences = kept
             notes.append("removed_question")
+            if salvaged_question:
+                notes.append("salvaged_question_lead")
 
     if not frame.allow_visual_comment:
         kept = [s for s in sentences if not _VISUAL_PAT.search(s)]
@@ -320,23 +339,26 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
             sentences = kept
             notes.append("removed_sharp_roast")
 
+    enforce_length = bool(getattr(config, "SOCIAL_FRAME_ENFORCE_LENGTH_LIMITS", False))
+
     if not sentences:
         current = _fallback(frame)
         notes.append("fallback")
     else:
-        if len(sentences) > frame.max_sentences:
+        if enforce_length and len(sentences) > frame.max_sentences:
             sentences = _trim_sentences(sentences, frame)
             notes.append("trimmed_sentences")
         current = " ".join(s.strip() for s in sentences if s.strip())
 
-    trimmed = _trim_words(current, frame.max_words)
-    if trimmed != current:
-        current = trimmed
-        notes.append("trimmed_words")
-        repaired = _repair_trimmed_fragment(current)
-        if repaired != current:
-            current = repaired
-            notes.append("repaired_fragment")
+    if enforce_length:
+        trimmed = _trim_words(current, frame.max_words)
+        if trimmed != current:
+            current = trimmed
+            notes.append("trimmed_words")
+            repaired = _repair_trimmed_fragment(current)
+            if repaired != current:
+                current = repaired
+                notes.append("repaired_fragment")
 
     current = _normalize_text(current)
     if frame.purpose == "closure" and _BAD_CLOSURE_PAT.search(current):
@@ -565,7 +587,55 @@ def _trim_sentences(sentences: list[str], frame: SocialFrame) -> list[str]:
             ][: limit - 1]
             return [*prefix, sentences[question_index]]
 
+    if (
+        limit == 1
+        and len(sentences) > 1
+        and frame.purpose not in {"closure", "answer_ack"}
+        and _is_tiny_opener(sentences[0])
+    ):
+        return sentences[:2]
+
     return sentences[:limit]
+
+
+def _salvage_non_question_lead(sentence: str) -> Optional[str]:
+    text = (sentence or "").strip()
+    if "?" not in text:
+        return text
+    if _QUESTION_START.search(text):
+        return None
+
+    question_at = None
+    for match in _QUESTION_CLAUSE_START_PAT.finditer(text):
+        prefix = text[: match.start()].strip(" ,;:-")
+        if len(_WORD_PAT.findall(prefix)) >= 4:
+            question_at = match.start()
+            break
+    if question_at is None:
+        return None
+
+    prefix = text[:question_at].strip(" ,;:-")
+    if not prefix:
+        return None
+    if prefix[-1] not in ".!?":
+        prefix += "."
+    return prefix
+
+
+def _is_tiny_opener(sentence: str) -> bool:
+    text = (sentence or "").strip()
+    if not text or "?" in text:
+        return False
+    words = _WORD_PAT.findall(text)
+    if len(words) > 4:
+        return False
+    return bool(
+        re.search(
+            r"\b(ah|hey|hi|hello|okay|ok|well|great|nice|got it|understood)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _is_roast_sentence(sentence: str) -> bool:

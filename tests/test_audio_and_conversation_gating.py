@@ -243,6 +243,46 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         speak.assert_not_called()
 
+    def test_active_wake_ack_suppressed_while_waiting_for_response(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+            mock.patch.object(interaction.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch.object(interaction.consciousness, "is_waiting_for_response", return_value=True),
+        ):
+            self.assertFalse(interaction._should_play_active_wake_ack())
+
+    def test_active_wake_ack_allowed_when_idle_and_not_waiting(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+            mock.patch.object(interaction.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch.object(interaction.consciousness, "is_waiting_for_response", return_value=False),
+        ):
+            self.assertTrue(interaction._should_play_active_wake_ack())
+
+    def test_wake_word_does_not_interrupt_current_question(self):
+        from intelligence import interaction
+
+        interaction._interrupted.clear()
+        interaction._wake_word_fired.clear()
+        try:
+            with (
+                mock.patch.object(interaction.speech_queue, "is_speaking", return_value=True),
+                mock.patch.object(interaction.consciousness, "is_waiting_for_response", return_value=True),
+            ):
+                interaction._on_wake_word("Hey_rex")
+
+            self.assertFalse(interaction._interrupted.is_set())
+            self.assertTrue(interaction._wake_word_fired.is_set())
+        finally:
+            interaction._interrupted.clear()
+            interaction._wake_word_fired.clear()
+
     def test_bare_wake_address_detection(self):
         from intelligence import interaction
 
@@ -772,7 +812,7 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertIn("general knowledge", plan.instruction)
         self.assertGreaterEqual(llm._max_tokens_for_agenda(directive), 200)
 
-    def test_social_frame_preserves_allowed_interest_followup_when_trimming(self):
+    def test_social_frame_does_not_shorten_allowed_interest_followup_by_default(self):
         from intelligence import social_frame
 
         frame = social_frame.SocialFrame(
@@ -792,9 +832,58 @@ class ConversationGatingTest(unittest.TestCase):
 
         self.assertEqual(
             governed.text,
-            "Ah, Star Trek! What's your favorite corner of the Federation?",
+            "Ah, Star Trek! Tiny starship sermon. What's your favorite corner of the Federation?",
         )
-        self.assertIn("trimmed_sentences", governed.notes)
+        self.assertNotIn("trimmed_sentences", governed.notes)
+
+    def test_social_frame_salvages_banter_before_removed_question(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="JT",
+            purpose="identity",
+            max_words=32,
+            max_sentences=2,
+            allow_question=False,
+            allow_roast="normal",
+            allow_visual_comment=False,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "Ah, JT! Welcome to this wild ride of banter. Got any juicy tales, "
+            "or just here to soak up the snark like a soggy towel?",
+            frame,
+        )
+
+        self.assertEqual(
+            governed.text,
+            "Ah, JT! Welcome to this wild ride of banter.",
+        )
+        self.assertIn("removed_question", governed.notes)
+
+    def test_social_frame_keeps_tiny_opener_with_next_sentence(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="JT",
+            purpose="identity",
+            max_words=32,
+            max_sentences=1,
+            allow_question=False,
+            allow_roast="normal",
+            allow_visual_comment=False,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "Ah, JT! Welcome to this wild ride of banter.",
+            frame,
+        )
+
+        self.assertEqual(
+            governed.text,
+            "Ah, JT! Welcome to this wild ride of banter.",
+        )
+        self.assertNotIn("trimmed_sentences", governed.notes)
 
     def test_presence_startup_question_is_saved_as_pending_qa(self):
         from intelligence import consciousness
@@ -2125,7 +2214,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         self.assertIn("U.S.S. Enterprise", governed.text)
         self.assertIn("The tech is transporters", governed.text)
 
-    def test_social_frame_repairs_word_trimmed_fragments(self):
+    def test_social_frame_length_trimming_is_opt_in(self):
         from intelligence import social_frame
 
         frame = social_frame.SocialFrame(
@@ -2138,27 +2227,29 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             allow_visual_comment=False,
             reason="test",
         )
-        governed = social_frame.govern_response(
-            "I excel at spinning tracks that make even the most boring organics want to dance. Plus, I've mastered the art of delivering crushing roasts.",
-            frame,
+        text = (
+            "I can spin tracks, run lights, remember context, manage awkward introductions, "
+            "and still complain about the paperwork while sounding mostly intentional "
+            "during a chaotic little social experiment."
         )
-        governed_whatever = social_frame.govern_response(
-            'Well, the results are in: still the galaxy\'s best DJ, despite whatever this "test" is.',
-            social_frame.SocialFrame(
-                addressee="Bret",
-                purpose="answer_ack",
-                max_words=12,
-                max_sentences=1,
-                allow_question=False,
-                allow_roast="none",
-                allow_visual_comment=False,
-                reason="test",
-            ),
-        )
+        with mock.patch.object(
+            social_frame.config,
+            "SOCIAL_FRAME_ENFORCE_LENGTH_LIMITS",
+            False,
+        ):
+            governed = social_frame.govern_response(text, frame)
 
-        self.assertNotIn("delivering.", governed.text)
-        self.assertTrue(governed.text in {"I hear you.", "Fair enough.", ""} or governed.text.endswith("dance."))
-        self.assertNotIn("despite whatever.", governed_whatever.text)
+        with mock.patch.object(
+            social_frame.config,
+            "SOCIAL_FRAME_ENFORCE_LENGTH_LIMITS",
+            True,
+        ):
+            governed_trimmed = social_frame.govern_response(text, frame)
+
+        self.assertEqual(governed.text, text)
+        self.assertNotIn("trimmed_words", governed.notes)
+        self.assertIn("trimmed_words", governed_trimmed.notes)
+        self.assertLess(len(governed_trimmed.text), len(text))
 
     def test_agenda_does_not_inject_friendship_question_after_short_ack(self):
         from intelligence import conversation_agenda

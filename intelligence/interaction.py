@@ -266,7 +266,12 @@ def _on_wake_word(model_name: str) -> None:
         _last_wake_word = model_name
 
     if speech_queue.is_speaking():
-        _interrupted.set()
+        if _response_wait_active():
+            _log.info(
+                "[wake_word] ignored mid-question wake interruption while waiting for response"
+            )
+        else:
+            _interrupted.set()
 
     _wake_word_fired.set()
 
@@ -603,6 +608,22 @@ def _wake_ack() -> None:
             return
     _last_wake_ack = chosen
     _speak_blocking(chosen, priority=2)
+
+
+def _response_wait_active() -> bool:
+    try:
+        return bool(consciousness.is_waiting_for_response())
+    except Exception as exc:
+        _log.debug("[wake_word] response-wait check failed: %s", exc)
+        return False
+
+
+def _should_play_active_wake_ack() -> bool:
+    if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
+        return False
+    if _response_wait_active():
+        return False
+    return True
 
 
 _BARE_WAKE_ADDRESS_PAT = re.compile(
@@ -7377,12 +7398,12 @@ def _loop() -> None:
         if _wake_word_fired.is_set():
             _wake_word_fired.clear()
             _last_speech_at = time.monotonic()
-            if not (
-                speech_queue.is_speaking()
-                or output_gate.is_busy()
-                or echo_cancel.is_suppressed()
-            ):
+            if _should_play_active_wake_ack():
                 _wake_ack()
+            else:
+                _log.info(
+                    "[wake_word] active wake ack suppressed — busy or waiting for response"
+                )
             continue
 
         # Idle timeout → end session and return to IDLE
