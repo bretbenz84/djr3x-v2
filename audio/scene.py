@@ -87,12 +87,22 @@ def _analyze_cycle(audio: np.ndarray) -> None:
     music     = _detect_music(audio)
     laughter  = _detect_laughter(audio)
     applause  = _detect_applause(audio)
+    chatter   = _detect_group_chatter(audio, music=music, laughter=laughter, applause=applause)
+    now_ts    = time.time()
 
     scene = world_state.get("audio_scene")
     scene["ambient_level"]      = ambient
     scene["music_detected"]     = music
     scene["laughter_detected"]  = laughter
     scene["applause_detected"]  = applause
+    scene["group_chatter_detected"] = chatter
+    if chatter:
+        hold = float(getattr(config, "GROUP_CHATTER_HOLD_SECS", 6.0))
+        scene["group_chatter_until"] = now_ts + max(0.0, hold)
+        scene["group_chatter_reason"] = "sustained_speech_density"
+    elif scene.get("group_chatter_until") and now_ts > float(scene["group_chatter_until"]):
+        scene["group_chatter_until"] = None
+        scene["group_chatter_reason"] = None
     scene["last_updated"]       = datetime.now(timezone.utc).isoformat()
 
     if laughter:
@@ -186,3 +196,53 @@ def _detect_applause(audio: np.ndarray) -> bool:
     spectrum = np.abs(np.fft.rfft(window)) + 1e-10
     flatness = float(np.exp(np.mean(np.log(spectrum))) / np.mean(spectrum))
     return flatness >= config.SCENE_APPLAUSE_SPECTRAL_FLATNESS_MIN
+
+
+def _detect_group_chatter(
+    audio: np.ndarray,
+    *,
+    music: bool = False,
+    laughter: bool = False,
+    applause: bool = False,
+) -> bool:
+    """
+    True when recent audio looks like sustained background conversation.
+
+    This is intentionally conservative and non-identifying: it only asks whether
+    speech-like energy has been nearly continuous for a few seconds, with enough
+    short on/off changes to resemble back-and-forth banter instead of one clear
+    addressed utterance.
+    """
+    if music or applause:
+        return False
+    if len(audio) == 0:
+        return False
+
+    sr = config.AUDIO_SAMPLE_RATE
+    min_secs = float(getattr(config, "GROUP_CHATTER_MIN_WINDOW_SECS", 3.0))
+    if len(audio) < int(sr * min_secs):
+        return False
+
+    window_secs = float(getattr(config, "GROUP_CHATTER_AUDIO_WINDOW_SECS", 4.0))
+    window = audio[-int(sr * window_secs):].astype(np.float32)
+    chunk_len = max(1, int(sr * float(getattr(config, "GROUP_CHATTER_CHUNK_SECS", 0.08))))
+    n_chunks = len(window) // chunk_len
+    if n_chunks < 8:
+        return False
+
+    rms_values = np.array([
+        np.sqrt(np.mean(window[i * chunk_len:(i + 1) * chunk_len] ** 2))
+        for i in range(n_chunks)
+    ])
+    active_floor = float(getattr(config, "GROUP_CHATTER_ACTIVE_RMS_MIN", 0.014))
+    active = rms_values >= active_floor
+    coverage = float(np.mean(active))
+    transitions = int(np.count_nonzero(active[1:] != active[:-1])) if len(active) > 1 else 0
+
+    if laughter and coverage < 0.85:
+        return False
+
+    return (
+        coverage >= float(getattr(config, "GROUP_CHATTER_MIN_SPEECH_COVERAGE", 0.58))
+        and transitions >= int(getattr(config, "GROUP_CHATTER_MIN_ENERGY_TRANSITIONS", 3))
+    )

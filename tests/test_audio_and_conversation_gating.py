@@ -3036,5 +3036,59 @@ class SocialVisionIntegrationTest(unittest.TestCase):
         self.assertIn("too close for comfort", summary)
 
 
+class GroupChatterGatingTest(unittest.TestCase):
+    def test_audio_scene_detects_sustained_banter_pattern(self):
+        import numpy as np
+        from audio import scene
+        import config
+
+        sr = config.AUDIO_SAMPLE_RATE
+        chunk = int(sr * 0.08)
+        chunks = []
+        for idx in range(int(4.0 / 0.08)):
+            if idx % 5 == 0:
+                chunks.append(np.zeros(chunk, dtype=np.float32))
+            else:
+                chunks.append(np.full(chunk, 0.03, dtype=np.float32))
+        audio = np.concatenate(chunks)
+
+        self.assertTrue(scene._detect_group_chatter(audio))
+
+    def test_voice_turn_changes_mark_group_chatter(self):
+        from intelligence import interaction
+
+        interaction._recent_voice_turns.clear()
+        try:
+            self.assertFalse(
+                interaction._note_voice_turn_for_group_chatter(
+                    person_id=None,
+                    raw_best_id=1,
+                    raw_best_score=0.40,
+                )
+            )
+            self.assertFalse(
+                interaction._note_voice_turn_for_group_chatter(
+                    person_id=None,
+                    raw_best_id=2,
+                    raw_best_score=0.41,
+                )
+            )
+            self.assertTrue(
+                interaction._note_voice_turn_for_group_chatter(
+                    person_id=None,
+                    raw_best_id=1,
+                    raw_best_score=0.39,
+                )
+            )
+            self.assertTrue(interaction._audio_group_chatter_active())
+        finally:
+            interaction._recent_voice_turns.clear()
+            audio_scene = interaction.world_state.get("audio_scene")
+            audio_scene["group_chatter_detected"] = False
+            audio_scene["group_chatter_until"] = None
+            audio_scene["group_chatter_reason"] = None
+            interaction.world_state.update("audio_scene", audio_scene)
+
+
 if __name__ == "__main__":
     unittest.main()

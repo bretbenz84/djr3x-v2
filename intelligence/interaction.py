@@ -18,6 +18,7 @@ import random
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -108,6 +109,10 @@ _no_response_recovery_lock = threading.Lock()
 _last_filler: Optional[str] = None
 _last_wake_ack: Optional[str] = None
 _last_vad_barge_in_suppressed_log_at: float = 0.0
+
+# Rolling raw voice-turn history used to distinguish one unfamiliar interjection
+# from background group banter. Entries are (epoch_time, label, low_confidence).
+_recent_voice_turns = deque()
 
 # Monotonic deadline before which VAD speech-onset detections are discarded.
 # Set at the end of each TTS utterance; prevents Rex's own voice tail from
@@ -591,6 +596,105 @@ def _speak_async(text: str, emotion: str = "neutral") -> None:
     if speech_queue.is_speaking():
         return
     speech_queue.enqueue(text, emotion, priority=0)
+
+
+def _audio_group_chatter_active() -> bool:
+    if not bool(getattr(config, "GROUP_CHATTER_ENABLED", True)):
+        return False
+    try:
+        scene = world_state.get("audio_scene") or {}
+    except Exception:
+        return False
+    until = scene.get("group_chatter_until")
+    if until is not None:
+        try:
+            if time.time() <= float(until):
+                return True
+            scene["group_chatter_detected"] = False
+            scene["group_chatter_until"] = None
+            scene["group_chatter_reason"] = None
+            world_state.update("audio_scene", scene)
+            return False
+        except (TypeError, ValueError):
+            pass
+    return bool(scene.get("group_chatter_detected"))
+
+
+def _set_audio_group_chatter(reason: str) -> None:
+    if not bool(getattr(config, "GROUP_CHATTER_ENABLED", True)):
+        return
+    try:
+        scene = world_state.get("audio_scene") or {}
+        hold = float(getattr(config, "GROUP_CHATTER_HOLD_SECS", 6.0))
+        scene["group_chatter_detected"] = True
+        scene["group_chatter_until"] = time.time() + max(0.0, hold)
+        scene["group_chatter_reason"] = reason
+        world_state.update("audio_scene", scene)
+    except Exception as exc:
+        _log.debug("group chatter world_state update failed: %s", exc)
+
+
+def _voice_turn_label(
+    *,
+    person_id: Optional[int],
+    raw_best_id: Optional[int],
+    raw_best_score: float,
+) -> str:
+    if person_id is not None:
+        return f"known:{person_id}"
+    candidate_floor = float(getattr(config, "GROUP_CHATTER_VOICE_CANDIDATE_FLOOR", 0.30))
+    if raw_best_id is not None and raw_best_score >= candidate_floor:
+        return f"candidate:{raw_best_id}"
+    return "unknown"
+
+
+def _note_voice_turn_for_group_chatter(
+    *,
+    person_id: Optional[int],
+    raw_best_id: Optional[int],
+    raw_best_score: float,
+) -> bool:
+    """
+    Mark group chatter when the raw voice candidate changes repeatedly.
+
+    Resemblyzer only compares against known prints, so unknown adults may appear
+    as low-confidence swings between known candidates. Those swings are exactly
+    the useful signal here: not "who is this?", but "there are multiple voices."
+    """
+    if not bool(getattr(config, "GROUP_CHATTER_ENABLED", True)):
+        return False
+
+    now = time.time()
+    window = float(getattr(config, "GROUP_CHATTER_VOICE_WINDOW_SECS", 10.0))
+    low_conf_max = float(getattr(config, "GROUP_CHATTER_VOICE_LOW_CONF_MAX", 0.62))
+    label = _voice_turn_label(
+        person_id=person_id,
+        raw_best_id=raw_best_id,
+        raw_best_score=raw_best_score,
+    )
+    low_confidence = person_id is None or raw_best_score <= low_conf_max
+
+    _recent_voice_turns.append((now, label, low_confidence))
+    cutoff = now - max(0.0, window)
+    while _recent_voice_turns and _recent_voice_turns[0][0] < cutoff:
+        _recent_voice_turns.popleft()
+
+    labels = [entry[1] for entry in _recent_voice_turns]
+    low_conf_count = sum(1 for entry in _recent_voice_turns if entry[2])
+    changes = sum(1 for a, b in zip(labels, labels[1:]) if a != b)
+    if (
+        len(labels) >= int(getattr(config, "GROUP_CHATTER_VOICE_MIN_TURNS", 3))
+        and changes >= int(getattr(config, "GROUP_CHATTER_VOICE_MIN_CHANGES", 2))
+        and low_conf_count >= 2
+    ):
+        _set_audio_group_chatter("rapid_voice_changes")
+        _log.info(
+            "[interaction] group chatter detected from voice changes "
+            "(turns=%d changes=%d labels=%s raw_score=%.3f)",
+            len(labels), changes, labels[-6:], raw_best_score,
+        )
+        return True
+    return False
 
 
 def _format_current_time_response(now: Optional[datetime] = None) -> str:
@@ -5946,6 +6050,12 @@ def _handle_speech_segment(
 
         identity_prompt_active = time.monotonic() <= _identity_prompt_until
         has_unknown_visible_now = _has_unknown_visible_person()
+        voice_group_chatter = _note_voice_turn_for_group_chatter(
+            person_id=person_id,
+            raw_best_id=raw_best_id,
+            raw_best_score=speaker_score,
+        )
+        group_chatter_active = voice_group_chatter or _audio_group_chatter_active()
         if _should_ignore_idle_background_speech(
             from_idle_activation=from_idle_activation,
             person_id=person_id,
@@ -5965,6 +6075,21 @@ def _handle_speech_segment(
                 state_module.set_state(State.IDLE)
             except Exception:
                 pass
+            return
+
+        if (
+            group_chatter_active
+            and person_id is None
+            and not identity_prompt_active
+            and command_parser.parse(text) is None
+        ):
+            _log.info(
+                "[interaction] ignoring unknown speech during group chatter "
+                "text=%r raw_best=%s score=%.3f",
+                text,
+                raw_best_id,
+                speaker_score,
+            )
             return
 
         # Any non-empty user utterance means we should stop waiting for a reply.
@@ -7023,6 +7148,13 @@ def _handle_speech_segment(
             and _pending_offscreen_identify is None
             and command_parser.parse(text) is None
         ):
+            if group_chatter_active:
+                _log.info(
+                    "[interaction] suppressing off-camera identity ask during "
+                    "group chatter; treating utterance as background text=%r",
+                    text,
+                )
+                return
             if person_id is not None:
                 try:
                     if boundary_memory.is_blocked(person_id, "ask", "identity"):
@@ -7094,6 +7226,13 @@ def _handle_speech_segment(
             and _pending_face_reveal_confirm is None
             and command_parser.parse(text) is None
         ):
+            if group_chatter_active:
+                _log.info(
+                    "[interaction] suppressing newcomer identity ask during "
+                    "group chatter; treating utterance as background text=%r",
+                    text,
+                )
+                return
             prior_first = ""
             if recent_engagement and recent_engagement.get("name"):
                 prior_first = recent_engagement["name"].split()[0]
@@ -8012,6 +8151,7 @@ def stop() -> None:
     _pending_introduction = None
     _pending_intro_followup = None
     _pending_intro_voice_capture = None
+    _recent_voice_turns.clear()
     topic_thread.clear()
     user_energy.clear()
     question_budget.clear()

@@ -3132,6 +3132,19 @@ def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> Non
     if _pending_relationship_prompt.is_set():
         return
 
+    audio_scene = snapshot.get("audio_scene", {}) or {}
+    try:
+        chatter_until = audio_scene.get("group_chatter_until")
+        if chatter_until is not None:
+            group_chatter = time.time() <= float(chatter_until)
+        else:
+            group_chatter = bool(audio_scene.get("group_chatter_detected"))
+    except (TypeError, ValueError):
+        group_chatter = bool(audio_scene.get("group_chatter_detected"))
+    if group_chatter:
+        _unknown_first_seen_at.clear()
+        return
+
     now = time.monotonic()
     cooldown = getattr(config, "RELATIONSHIP_PROMPT_COOLDOWN_SECS", _RELATIONSHIP_PROMPT_COOLDOWN_SECS)
     if (now - _last_identity_prompt_at) < cooldown:

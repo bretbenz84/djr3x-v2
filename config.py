@@ -668,6 +668,26 @@ SCENE_LAUGHTER_BURST_VARIANCE_MIN = 3e-4   # minimum variance of per-chunk RMS v
 SCENE_APPLAUSE_RMS_MIN              = 0.04  # minimum overall RMS
 SCENE_APPLAUSE_SPECTRAL_FLATNESS_MIN = 0.30  # geometric/arithmetic mean of spectrum
 
+# Group chatter detection: suppress identity prompts when the mic hears
+# sustained back-and-forth banter instead of a clear speaker addressing Rex.
+GROUP_CHATTER_ENABLED = True
+GROUP_CHATTER_AUDIO_WINDOW_SECS = 4.0
+GROUP_CHATTER_MIN_WINDOW_SECS = 3.0
+GROUP_CHATTER_CHUNK_SECS = 0.08
+GROUP_CHATTER_ACTIVE_RMS_MIN = 0.014
+GROUP_CHATTER_MIN_SPEECH_COVERAGE = 0.58
+GROUP_CHATTER_MIN_ENERGY_TRANSITIONS = 3
+GROUP_CHATTER_HOLD_SECS = 6.0
+
+# Voice-turn version of the same idea. If raw speaker-ID candidates keep
+# changing within a short window, treat unknown/off-camera speech as group
+# background instead of asking the engaged person "who's that?"
+GROUP_CHATTER_VOICE_WINDOW_SECS = 10.0
+GROUP_CHATTER_VOICE_MIN_TURNS = 3
+GROUP_CHATTER_VOICE_MIN_CHANGES = 2
+GROUP_CHATTER_VOICE_LOW_CONF_MAX = 0.62
+GROUP_CHATTER_VOICE_CANDIDATE_FLOOR = 0.30
+
 # ─────────────────────────────────────────────────────────────────────────────
 # LED — Head Arduino (82 NeoPixels)
 # ─────────────────────────────────────────────────────────────────────────────
