@@ -231,6 +231,13 @@ class _SpeechQueue:
         self._startup_chime_queued = True
         try:
             import config
+            try:
+                from features import games as games_mod
+                if games_mod.is_active():
+                    logger.debug("speech_queue: first listening chime skipped during active game")
+                    return
+            except Exception:
+                pass
 
             if not bool(getattr(config, "PLAY_LISTENING_CHIME", True)):
                 return

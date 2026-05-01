@@ -28,6 +28,31 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertEqual(queued[1].text, "Hello there.")
         self.assertEqual(queued[2].text, "Second line.")
 
+    def test_first_text_enqueue_skips_startup_chime_during_active_game(self):
+        from audio import speech_queue
+
+        with (
+            mock.patch.object(speech_queue._SpeechQueue, "_worker", lambda self: None),
+            mock.patch("features.games.is_active", return_value=True),
+        ):
+            queue = speech_queue._SpeechQueue()
+            queue.enqueue("Who is playing Jeopardy?", priority=1)
+
+        queued = sorted(queue._heap, key=lambda item: item.seq)
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(queued[0].text, "Who is playing Jeopardy?")
+
+    def test_begin_user_turn_keeps_game_prompts_queued(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction, "_game_suppresses_conversation", return_value=True),
+            mock.patch.object(interaction.speech_queue, "clear_below_priority") as clear,
+        ):
+            interaction._begin_user_turn()
+
+        clear.assert_not_called()
+
     def test_conversation_log_dedupes_same_rex_line_briefly(self):
         from utils import conv_log
 

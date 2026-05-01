@@ -142,6 +142,8 @@ def _begin_user_turn() -> None:
         _situation_assessor.set_interaction_busy(True)
     except Exception:
         pass
+    if _game_suppresses_conversation():
+        return
     try:
         # User speech makes queued background/presence chatter stale. Drop any
         # waiting non-urgent speech before it can start mid-answer.
