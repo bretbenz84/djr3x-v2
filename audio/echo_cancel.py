@@ -123,6 +123,14 @@ def is_suppressed() -> bool:
         return _playing or time.monotonic() < _suppress_until
 
 
+def clear_suppression_tail() -> None:
+    """Clear post-playback attenuation without flushing the microphone buffer."""
+    global _suppress_until
+    with _lock:
+        if not _playing:
+            _suppress_until = 0.0
+
+
 def request_cancel() -> None:
     """Mark the current playback as deliberately stopped.
 

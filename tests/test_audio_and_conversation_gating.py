@@ -236,6 +236,21 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 )
             )
 
+    def test_jeopardy_audio_is_interruptible_game_audio(self):
+        from intelligence import interaction
+
+        with mock.patch("features.games.is_active", return_value=True):
+            self.assertTrue(
+                interaction._is_interruptible_game_audio_path(
+                    "/tmp/assets/audio/jeopardy/jeopardy-theme.mp3"
+                )
+            )
+            self.assertFalse(
+                interaction._is_interruptible_game_audio_path(
+                    "/tmp/assets/audio/startup/startup_chime.mp3"
+                )
+            )
+
     def test_wake_ack_never_repeats_back_to_back_and_requires_cache(self):
         from intelligence import interaction
 
@@ -3304,6 +3319,7 @@ class ConversationGatingTest(unittest.TestCase):
         try:
             with (
                 mock.patch.object(consciousness, "_can_speak", return_value=True),
+                mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
                 mock.patch.object(consciousness, "is_engaged_with", return_value=True),
                 mock.patch("audio.speech_queue.has_waiting_with_tag", return_value=False),
             ):
@@ -3319,6 +3335,39 @@ class ConversationGatingTest(unittest.TestCase):
                 )
         finally:
             consciousness._last_presence_reaction_at.pop(1, None)
+
+    def test_presence_reactions_are_suppressed_during_active_game(self):
+        from awareness.situation import SituationProfile
+        from intelligence import consciousness
+
+        profile = SituationProfile(
+            conversation_active=False,
+            user_mid_sentence=False,
+            rapid_exchange=False,
+            child_present=False,
+            apparent_departure=False,
+            likely_still_present=False,
+            social_mode="one_on_one",
+            suppress_proactive=False,
+            suppress_system_comments=False,
+            force_family_safe=False,
+            being_discussed=False,
+            discussion_sentiment="neutral",
+            interaction_busy=False,
+        )
+        with mock.patch(
+            "features.games.suppresses_conversation_interruptions",
+            return_value=True,
+        ):
+            self.assertFalse(
+                consciousness._should_fire_presence(
+                    1,
+                    1,
+                    profile,
+                    allow_engaged=True,
+                    bypass_cooldown=True,
+                )
+            )
 
 
 class PendingMusicPreferenceTest(unittest.TestCase):

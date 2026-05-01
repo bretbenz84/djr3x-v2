@@ -21,6 +21,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -779,6 +780,22 @@ def _wake_ack() -> None:
 
 def _vad_barge_in_enabled() -> bool:
     return bool(getattr(config, "VAD_BARGE_IN_ENABLED", False))
+
+
+def _is_interruptible_game_audio_path(path: Optional[str]) -> bool:
+    if not path:
+        return False
+    try:
+        from features import games as games_mod
+        if not games_mod.is_active():
+            return False
+    except Exception:
+        return False
+    try:
+        path_obj = Path(str(path))
+    except Exception:
+        return False
+    return path_obj.parent.name == "jeopardy"
 
 
 def _response_wait_active() -> bool:
@@ -10174,7 +10191,27 @@ def _loop() -> None:
         except Exception:
             direct_audio_path = None
         if speech_queue.is_speaking() or output_gate.is_busy():
-            if not _vad_barge_in_enabled():
+            if _is_interruptible_game_audio_path(direct_audio_path):
+                _interrupted.set()
+                try:
+                    import sounddevice as sd
+                    echo_cancel.request_cancel()
+                    sd.stop()
+                except Exception:
+                    pass
+                time.sleep(0.1)
+                try:
+                    echo_cancel.clear_suppression_tail()
+                except Exception:
+                    pass
+                _interrupted.clear()
+                speech_start = time.monotonic()
+                _last_speech_at = speech_start
+                _log.info(
+                    "[interaction] interrupted game audio for player speech: %s",
+                    direct_audio_path,
+                )
+            elif not _vad_barge_in_enabled():
                 global _last_vad_barge_in_suppressed_log_at
                 now = time.monotonic()
                 if now - _last_vad_barge_in_suppressed_log_at >= 2.0:

@@ -1631,16 +1631,16 @@ TRIVIA_FUZZY_THRESHOLD = 0.75
 TRIVIA_CATEGORY_FUZZY_THRESHOLD = 0.68
 TRIVIA_ROUND_LENGTH = 5
 
-# Jeopardy verbal game tuning. The answer timeout is timed to the thinking
-# theme bed so "time's up" lands as the clip ends instead of after dead air.
+# Jeopardy verbal game tuning. Keep the answer timeout longer than the thinking
+# theme bed so players still have room if they wait until the music fades.
 JEOPARDY_FUZZY_THRESHOLD = 0.78
 JEOPARDY_SELECTION_FUZZY_THRESHOLD = 0.58
 JEOPARDY_MAX_PLAYERS = 4
-JEOPARDY_ANSWER_TIMEOUT_SECS = 8.0
+JEOPARDY_ANSWER_TIMEOUT_SECS = 12.0
 JEOPARDY_AUDIO_OUTPUT_SAMPLE_RATE = 44100
-JEOPARDY_AUDIO_MUSIC_GAIN = 0.35
+JEOPARDY_AUDIO_MUSIC_GAIN = 0.22
 JEOPARDY_AUDIO_STINGER_GAIN = 0.75
-JEOPARDY_THEME_MAX_SECS = 8.0
+JEOPARDY_THEME_MAX_SECS = 6.0
 JEOPARDY_PLAY_THINKING_THEME = True
 
 # How many times Rex will agree to play the same game within GAME_REPEAT_WINDOW_SECS

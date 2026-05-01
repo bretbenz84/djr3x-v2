@@ -865,6 +865,10 @@ def _governor_speech_metadata() -> dict:
         "waiting_for_response": is_waiting_for_response(),
         "can_speak": _can_speak(),
     }
+    try:
+        metadata["can_proactive_speak"] = _can_proactive_speak()
+    except Exception:
+        pass
     with _turn_lock:
         last_spoken = _last_proactive_speech_at
     if last_spoken:
@@ -1011,6 +1015,8 @@ def _should_fire_presence(
     never more often than PRESENCE_PER_PERSON_COOLDOWN_SECS per person.
     """
     if not _can_speak():
+        return False
+    if not _can_proactive_speak():
         return False
     if profile.suppress_proactive or profile.interaction_busy:
         return False
