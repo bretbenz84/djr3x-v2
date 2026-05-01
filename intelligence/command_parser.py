@@ -186,6 +186,100 @@ def _parse_forget_specific(original: str) -> dict | None:
     return {"target": target}
 
 
+def _parse_memory_review(normalized: str, original: str) -> dict | None:
+    clean = _plain(normalized)
+    m = re.match(
+        r"^(?:what\s+do\s+you\s+remember|what\s+do\s+you\s+know)"
+        r"\s+about\s+(.+?)(?:\s+including\s+sensitive\s+memories)?$",
+        clean,
+    )
+    if not m:
+        return None
+    target = m.group(1).strip()
+    include_sensitive = bool(re.search(r"\bincluding\s+sensitive\s+memories\b", clean))
+    original_m = re.match(
+        r"^(?:what\s+do\s+you\s+remember|what\s+do\s+you\s+know)"
+        r"\s+about\s+(.+?)(?:\s+including\s+sensitive\s+memories)?[?.!]*$",
+        original.strip(),
+        re.IGNORECASE,
+    )
+    if original_m:
+        target = original_m.group(1).strip()
+    return {
+        "target": target,
+        "self_ref": target.lower() in {"me", "myself", "i"},
+        "include_sensitive": include_sensitive,
+    }
+
+
+def _parse_memory_forget_fact(normalized: str, original: str) -> dict | None:
+    clean = _plain(normalized)
+    m = re.match(r"^(?:forget|delete|remove|erase)\s+that\s+(.+)$", clean)
+    if not m:
+        return None
+    statement = m.group(1).strip()
+    original_m = re.match(
+        r"^(?:forget|delete|remove|erase)\s+that\s+(.+?)[?.!]*$",
+        original.strip(),
+        re.IGNORECASE,
+    )
+    if original_m:
+        statement = original_m.group(1).strip()
+    return {"statement": statement}
+
+
+def _parse_memory_boundary(normalized: str, original: str) -> dict | None:
+    clean = _plain(normalized)
+    if clean in {
+        "don't remember that",
+        "do not remember that",
+        "dont remember that",
+        "don't store that",
+        "do not store that",
+        "dont store that",
+        "don't save that",
+        "do not save that",
+        "dont save that",
+    }:
+        return {"scope": "recent"}
+    return None
+
+
+def _parse_memory_correct_fact(normalized: str, original: str) -> dict | None:
+    clean = _plain(normalized)
+    patterns = [
+        r"^(?:that's|that is|you got that|you have that)\s+wrong\s*,?\s+(.+)$",
+        r"^(?:actually|no|nope)\s*,?\s+(.+)$",
+    ]
+    for pattern in patterns:
+        m = re.match(pattern, clean)
+        if not m:
+            continue
+        correction = m.group(1).strip()
+        original_m = re.match(pattern, original.strip(), re.IGNORECASE)
+        if original_m:
+            correction = original_m.group(1).strip(" .!?")
+        if correction:
+            return {"correction": correction}
+    return None
+
+
+def _parse_memory_remember_fact(normalized: str, original: str) -> dict | None:
+    clean = _plain(normalized)
+    m = re.match(r"^remember\s+that\s+(.+)$", clean)
+    if not m:
+        return None
+    statement = m.group(1).strip()
+    original_m = re.match(
+        r"^remember\s+that\s+(.+?)[?.!]*$",
+        original.strip(),
+        re.IGNORECASE,
+    )
+    if original_m:
+        statement = original_m.group(1).strip()
+    return {"statement": statement}
+
+
 # ─── Exact-match commands ─────────────────────────────────────────────────────
 
 EXACT_COMMANDS: dict[str, str] = {
@@ -402,6 +496,26 @@ def parse(text: str) -> CommandMatch | None:
     # 1. Exact match
     if normalized in EXACT_COMMANDS:
         return CommandMatch(EXACT_COMMANDS[normalized], "exact", {})
+
+    memory_boundary = _parse_memory_boundary(normalized, original)
+    if memory_boundary is not None:
+        return CommandMatch("memory_boundary", "pattern", memory_boundary)
+
+    memory_review = _parse_memory_review(normalized, original)
+    if memory_review is not None:
+        return CommandMatch("memory_review", "pattern", memory_review)
+
+    memory_remember = _parse_memory_remember_fact(normalized, original)
+    if memory_remember is not None:
+        return CommandMatch("memory_remember_fact", "pattern", memory_remember)
+
+    memory_forget = _parse_memory_forget_fact(normalized, original)
+    if memory_forget is not None:
+        return CommandMatch("memory_forget_fact", "pattern", memory_forget)
+
+    memory_correct = _parse_memory_correct_fact(normalized, original)
+    if memory_correct is not None:
+        return CommandMatch("memory_correct_fact", "pattern", memory_correct)
 
     directed_look = _parse_directed_look(normalized, original)
     if directed_look is not None:

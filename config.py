@@ -1186,6 +1186,46 @@ SPEAKER_ID_MAYBE_FLOOR = 0.50
 AUTO_VOICE_REFRESH_MIN_SCORE = 0.90
 AUTO_VOICE_REFRESH_MAX_SAMPLES = 5
 
+# If Rex asks a newcomer their name and they answer with only a very common
+# first name, ask for a last name before creating the memory row. This avoids
+# merging multiple people into "John" / "Mike" / "Jennifer" style records.
+COMMON_FIRST_NAME_LAST_NAME_DISAMBIGUATION_ENABLED = True
+COMMON_FIRST_NAME_LAST_NAME_WINDOW_SECS = 30.0
+COMMON_FIRST_NAMES_REQUIRE_LAST_NAME = [
+    "Michael", "Mike", "David", "John", "James", "Robert", "William", "Bill",
+    "Richard", "Rick", "Joseph", "Joe", "Thomas", "Tom", "Christopher", "Chris",
+    "Daniel", "Dan", "Matthew", "Matt", "Anthony", "Tony", "Mark", "Donald",
+    "Steven", "Steve", "Paul", "Andrew", "Andy", "Joshua", "Josh", "Kenneth",
+    "Kevin", "Brian", "George", "Edward", "Ed", "Ronald", "Timothy", "Tim",
+    "Jason", "Jeffrey", "Jeff", "Ryan", "Jacob", "Gary", "Nicholas", "Nick",
+    "Eric", "Jonathan", "Jon", "Stephen", "Larry", "Justin", "Scott",
+    "Brandon", "Benjamin", "Ben", "Samuel", "Sam", "Gregory", "Greg",
+    "Alexander", "Alex", "Patrick", "Frank", "Raymond", "Jack", "Dennis",
+    "Jerry", "Tyler", "Aaron", "Jose", "Henry", "Adam", "Douglas", "Doug",
+    "Nathan", "Peter", "Zachary", "Zach", "Kyle", "Walter", "Harold",
+    "Jeremy", "Ethan", "Carl", "Keith", "Roger", "Gerald", "Christian",
+    "Terry", "Sean", "Arthur", "Austin", "Noah", "Liam", "Mason", "Logan",
+    "Lucas", "Elijah", "Oliver", "Aiden", "Dylan",
+    "Mary", "Patricia", "Pat", "Jennifer", "Jen", "Linda", "Elizabeth",
+    "Liz", "Barbara", "Susan", "Jessica", "Sarah", "Karen", "Nancy", "Lisa",
+    "Betty", "Margaret", "Megan", "Sandra", "Ashley", "Kimberly", "Kim",
+    "Emily", "Donna", "Michelle", "Carol", "Amanda", "Melissa", "Deborah",
+    "Debbie", "Stephanie", "Rebecca", "Laura", "Sharon", "Cynthia",
+    "Kathleen", "Amy", "Shirley", "Angela", "Helen", "Anna", "Brenda",
+    "Pamela", "Pam", "Nicole", "Emma", "Samantha", "Katherine", "Kate",
+    "Christine", "Debra", "Rachel", "Catherine", "Carolyn", "Janet", "Ruth",
+    "Maria", "Heather", "Diane", "Virginia", "Julie", "Joyce", "Victoria",
+    "Kelly", "Christina", "Lauren", "Joan", "Evelyn", "Olivia", "Judith",
+    "Martha", "Cheryl", "Andrea", "Hannah", "Jacqueline", "Mia", "Sophia",
+    "Isabella", "Ava", "Abigail", "Madison", "Charlotte", "Amelia",
+]
+COMMON_FIRST_NAME_LAST_NAME_PROMPTS = [
+    "{first}, how original. Give me a last name too so the memory banks don't file you under 'generic human.'",
+    "{first}. Bold choice, sharing a name with half the species. Last name?",
+    "{first}. Very boutique. I only have twelve of those in the imaginary backlog. Last name?",
+    "{first}, daringly specific. Toss me a last name before the memory banks start fighting.",
+]
+
 # ─────────────────────────────────────────────────────────────────────────────
 # IDLE MICRO-BEHAVIORS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1351,6 +1391,14 @@ STALE_FACT_THRESHOLD_DAYS = 365
 # Below this confidence, a stored fact is treated as tentative and may prompt
 # Rex to confirm it before using it as reliable memory.
 MEMORY_FACT_LOW_CONFIDENCE_THRESHOLD = 0.60
+
+# Session-end memory consolidation turns the noisy transcript into durable
+# structured memory with one JSON-mode pass. If it fails, session teardown
+# continues and the older narrow extractors can still run as fallback.
+MEMORY_CONSOLIDATION_ENABLED = True
+MEMORY_CONSOLIDATION_MODEL = "gpt-4o-mini"
+MEMORY_CONSOLIDATION_MIN_SESSION_EXCHANGES = 3
+MEMORY_CONSOLIDATION_TIMEOUT_SECS = 12.0
 
 # When the user gives a closure cue ("that's all", "thanks", "all good"),
 # optional proactive chatter stays quiet this long so the thread can land.

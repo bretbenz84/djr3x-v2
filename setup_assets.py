@@ -109,7 +109,12 @@ CREATE TABLE IF NOT EXISTS person_facts (
     created_at  DATETIME,
     updated_at  DATETIME,
     last_confirmed_at DATETIME,
-    evidence_count INTEGER DEFAULT 1
+    evidence_count INTEGER DEFAULT 1,
+    importance REAL DEFAULT 0.5,
+    decay_rate TEXT DEFAULT 'normal',
+    last_used_at DATETIME,
+    stale_after_days INTEGER,
+    corrected_at DATETIME
 );
 
 CREATE TABLE IF NOT EXISTS person_qa (
@@ -201,6 +206,47 @@ CREATE TABLE IF NOT EXISTS person_conversation_boundaries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_boundary_person ON person_conversation_boundaries(person_id);
+
+CREATE TABLE IF NOT EXISTS person_preferences (
+    id                  INTEGER PRIMARY KEY,
+    person_id           INTEGER REFERENCES people(id),
+    domain              TEXT,
+    preference_type     TEXT,
+    key                 TEXT,
+    value               TEXT,
+    confidence          REAL DEFAULT 1.0,
+    importance          REAL DEFAULT 0.5,
+    source              TEXT,
+    created_at          DATETIME,
+    updated_at          DATETIME,
+    last_used_at        DATETIME,
+    ask_cooldown_until  DATETIME,
+    UNIQUE(person_id, domain, preference_type, key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pref_person ON person_preferences(person_id);
+CREATE INDEX IF NOT EXISTS idx_pref_lookup ON person_preferences(person_id, domain, key);
+
+CREATE TABLE IF NOT EXISTS person_interests (
+    id                      INTEGER PRIMARY KEY,
+    person_id               INTEGER REFERENCES people(id),
+    name                    TEXT,
+    category                TEXT,
+    interest_strength       TEXT,
+    confidence              REAL DEFAULT 1.0,
+    source                  TEXT,
+    first_mentioned_at      DATETIME,
+    last_mentioned_at       DATETIME,
+    last_asked_about_at     DATETIME,
+    ask_cooldown_until      DATETIME,
+    notes                   TEXT,
+    associated_people       TEXT,
+    associated_stories      TEXT,
+    UNIQUE(person_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_interest_person ON person_interests(person_id);
+CREATE INDEX IF NOT EXISTS idx_interest_lookup ON person_interests(person_id, name);
 """
 
 

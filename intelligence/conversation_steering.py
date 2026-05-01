@@ -19,6 +19,7 @@ from typing import Optional
 
 from memory import boundaries as boundary_memory
 from memory import facts as facts_memory
+from memory import interests as interests_memory
 
 _log = logging.getLogger(__name__)
 
@@ -297,6 +298,17 @@ def _store_interest_fact(person_id: int, topic: str, *, source: str) -> None:
         )
     except Exception as exc:
         _log.debug("interest fact save failed: %s", exc)
+    try:
+        interests_memory.upsert_interest(
+            int(person_id),
+            topic,
+            _category_for_topic(topic),
+            "high",
+            confidence=0.95,
+            source="explicit",
+        )
+    except Exception as exc:
+        _log.debug("typed interest save failed: %s", exc)
 
 
 def _maybe_store_interest_note(
@@ -324,6 +336,18 @@ def _maybe_store_interest_note(
         )
     except Exception as exc:
         _log.debug("interest note save failed: %s", exc)
+    try:
+        interests_memory.upsert_interest(
+            int(person_id),
+            topic,
+            _category_for_topic(topic),
+            "medium",
+            confidence=0.85 if not fresh else 0.75,
+            source="explicit" if fresh else "inferred",
+            notes=text[:220],
+        )
+    except Exception as exc:
+        _log.debug("typed interest note save failed: %s", exc)
 
 
 def _topic_blocked(person_id: int, topic: str) -> bool:
@@ -386,3 +410,20 @@ def _interest_key(topic: str) -> str:
 
 def _interest_note_key(topic: str) -> str:
     return f"interest_note_{_slug(topic)}"
+
+
+def _category_for_topic(topic: str) -> str:
+    lowered = (topic or "").lower()
+    if any(word in lowered for word in ("star wars", "star trek", "marvel", "disney")):
+        return "fandom"
+    if any(word in lowered for word in ("volleyball", "soccer", "basketball", "football", "baseball")):
+        return "sport"
+    if any(word in lowered for word in ("3d print", "printing", "telescope", "robot", "droid", "coding", "programming")):
+        return "technical"
+    if any(word in lowered for word in ("music", "guitar", "piano", "band", "dj")):
+        return "music"
+    if any(word in lowered for word in ("camping", "hiking", "travel")):
+        return "hobby"
+    if any(word in lowered for word in ("art", "paint", "writing", "craft", "photo")):
+        return "creative"
+    return "hobby"

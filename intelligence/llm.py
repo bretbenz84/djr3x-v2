@@ -21,6 +21,8 @@ from world_state import world_state
 from memory import database as db
 from memory import people as people_db
 from memory import facts as facts_db
+from memory import preferences as preferences_db
+from memory import interests as interests_db
 from memory import conversations as conv_db
 from memory import relationships as rel_db
 from memory import boundaries as boundaries_db
@@ -206,8 +208,10 @@ def _pick_stale_fact(person_id: int) -> Optional[dict]:
         if f.get("id") is not None
         and f["id"] not in _stale_facts_asked_this_session
         and (f.get("key") or "") not in immutable_keys
+        and f.get("decay_rate") != "permanent"
         and (
-            (f.get("age_days") is not None and f.get("age_days") >= days)
+            f.get("freshness_label") == "stale"
+            or (f.get("age_days") is not None and f.get("age_days") >= days)
             or float(f.get("confidence") or 0.0) < min_conf
         )
     ]
@@ -215,6 +219,7 @@ def _pick_stale_fact(person_id: int) -> Optional[dict]:
         return None
     candidates.sort(
         key=lambda f: (
+            -float(f.get("importance") or 0.0),
             float(f.get("confidence") or 0.0),
             -(f.get("age_days") or 0),
         )
@@ -302,21 +307,61 @@ def _build_person_context(person_id: int) -> str:
         lines.append(f"Lifetime insults from this person: {insult_count}.")
 
     # skin_color is stored for recognition only — never inject into LLM context
-    facts = facts_db.get_prompt_facts(person_id, limit=12)
+    facts = facts_db.get_prompt_worthy_facts(person_id, limit=12)
     _log.info("[llm] loaded %d facts for %s", len(facts), name)
     if facts:
         fact_strs = [facts_db.format_fact_for_prompt(f) for f in facts]
         lines.append("Known facts: " + ", ".join(fact_strs) + ".")
+        for fact in facts:
+            if fact.get("id") is not None:
+                try:
+                    facts_db.mark_fact_used(int(fact["id"]))
+                except Exception as exc:
+                    _log.debug("mark fact used skipped: %s", exc)
         if any(
             f.get("confidence_label") != "high"
             or f.get("freshness_label") in {"aging", "stale", "unknown"}
+            or f.get("source") == "inferred"
             for f in facts
         ):
             lines.append(
                 "Memory quality rule: stale or low-confidence facts are tentative. "
-                "Phrase them as memories, not certainties; don't build sharp roasts "
-                "or important decisions on them without confirming first."
+                "Explicit or corrected facts may be stated confidently. Inferred facts "
+                "must be hedged as impressions, not certainties; don't build sharp "
+                "roasts or important decisions on tentative facts without confirming first."
             )
+
+    preferences = preferences_db.get_preferences_for_prompt(person_id, limit=10)
+    if preferences:
+        pref_lines = []
+        boundary_lines = []
+        for pref in preferences:
+            rendered = preferences_db.format_preference_for_prompt(pref)
+            if pref.get("preference_type") == "boundary":
+                boundary_lines.append(rendered)
+            else:
+                pref_lines.append(rendered)
+        if pref_lines:
+            lines.append("Preferences: " + "; ".join(pref_lines) + ".")
+        if boundary_lines:
+            lines.append(
+                "Preference boundaries: "
+                + "; ".join(boundary_lines)
+                + ". Treat these as instructions to Rex, never as joke or roast material."
+            )
+
+    interests = interests_db.get_interests_for_prompt(person_id, limit=8)
+    if interests:
+        interest_lines = [
+            interests_db.format_interest_for_prompt(interest)
+            for interest in interests
+        ]
+        lines.append(
+            "Interest profile: "
+            + "; ".join(interest_lines)
+            + ". Do not ask basic 'do you like X?' questions about these known interests; "
+            "use them for deeper, specific follow-ups when cooldown allows."
+        )
 
     try:
         boundary_summary = boundaries_db.summarize_for_prompt(person_id)
@@ -541,7 +586,7 @@ def assemble_system_prompt(
             tier = person.get("friendship_tier", "stranger")
             if tier in _TIER_ROAST_STYLE:
                 rules.append(_TIER_ROAST_STYLE[tier])
-            known_facts = facts_db.get_prompt_facts(person_id, limit=12)
+            known_facts = facts_db.get_prompt_worthy_facts(person_id, limit=12)
             if known_facts:
                 rules.append(
                     "You have memory facts about this person. Fresh, high-confidence "
@@ -791,7 +836,11 @@ def extract_name_from_reply(text: str) -> Optional[str]:
         return None
 
 
-def generate_curiosity_question(response_text: str, user_text: str) -> str:
+def generate_curiosity_question(
+    response_text: str,
+    user_text: str,
+    person_id: Optional[int] = None,
+) -> str:
     """
     Generate one short contextual follow-up question in Rex's voice.
     Used by the curiosity routine when the question pool is exhausted or unavailable.
@@ -803,6 +852,26 @@ def generate_curiosity_question(response_text: str, user_text: str) -> str:
         "that gives them room (e.g. 'how are you holding up?'). Never a joke, "
         "never a roast, never a 'silver lining.'"
     )
+    interest_clause = ""
+    if person_id is not None:
+        try:
+            hooks = interests_db.get_interest_hooks(person_id)[:5]
+        except Exception as exc:
+            _log.debug("curiosity interest hooks failed: %s", exc)
+            hooks = []
+        if hooks:
+            known = "; ".join(
+                interests_db.format_interest_for_prompt(hook)
+                for hook in hooks
+            )
+            interest_clause = (
+                "\nKnown interests ready for deeper follow-up: "
+                f"{known}\n"
+                "Do NOT ask basic discovery questions like 'do you like X?' "
+                "about known interests. Prefer a deeper question about what "
+                "they are making, learning, collecting, practicing, comparing, "
+                "or what changed since they last mentioned it."
+            )
     prompt = (
         f'Rex just said: "{response_text}"\n'
         f'The human said: "{user_text}"\n\n'
@@ -810,6 +879,7 @@ def generate_curiosity_question(response_text: str, user_text: str) -> str:
         "in his snarky droid character. One sentence only. "
         "Make it feel natural, not interrogative.\n\n"
         f"{tone_clause}"
+        f"{interest_clause}"
     )
     try:
         resp = _client.chat.completions.create(
@@ -960,26 +1030,28 @@ def extract_facts(
         f"Today's date is {_date.today().isoformat()} (MM-DD: {today_md}).\n\n"
         "Extract every fact that the human speaker states about themselves — "
         "including but not limited to: where they are from, their job or occupation, "
-        "hobbies, interests, favorite things, family members, pets, beliefs, opinions, "
-        "life experiences, and personal preferences.\n\n"
+        "favorite things, family members, pets, beliefs, opinions, and life experiences. "
+        "Do not extract hobbies or ongoing interests here; those are handled by the "
+        "dedicated person_interests system.\n\n"
         "Common phrasings to capture:\n"
         "  'I'm from X' or 'I live in X'         → category=hometown, key=hometown\n"
         "  'I work as X' or 'I'm a X'             → category=job, key=job_title\n"
         "  'I like/love X' or 'my favorite X is Y'→ category=preference, key=favorite_<x>\n"
         "  'I have a X' (pet/child)               → category=pet or family\n"
-        "  'I'm into X' or 'I do X for fun'       → category=hobby\n"
         "  'I believe X' or 'I think X'           → category=belief\n"
         "  'my birthday is X' / 'I was born on X' / 'today is my birthday'\n"
         "      → category=birthday, key=birthday, value=MM-DD (zero-padded, e.g. '07-04')\n"
         "      If the year is mentioned use MM-DD only — drop the year.\n"
         "      If the speaker says 'today is my birthday', use today's MM-DD.\n\n"
         "Only extract facts the human speaker stated. Do not extract anything Rex said. "
-        "Do not infer or guess. Do NOT extract conversational boundaries like "
+        "Do not infer or guess. Do NOT extract hobbies/interests like "
+        "'I play volleyball', 'I'm into Star Wars', or 'I build telescopes'; "
+        "those are handled by a separate interest system. Do NOT extract conversational boundaries like "
         "'don't ask me about X', 'don't roast me about X', or 'don't mention X'; "
         "those are handled by a separate preference system. If no facts are "
         "present, return an empty array.\n\n"
         "Return a JSON array where each element has exactly these fields:\n"
-        '  "category": one of "job", "hometown", "hobby", "interest", "pet", "family", "belief", "preference", "other"\n'
+        '  "category": one of "job", "hometown", "pet", "family", "belief", "preference", "other"\n'
         '  "key": a snake_case identifier (e.g. "hometown", "job_title", "favorite_band")\n'
         '  "value": the fact value as a concise string\n\n'
         f"Transcript:\n{_format_transcript(transcript)}\n\n"
@@ -1016,6 +1088,213 @@ def extract_facts(
         ]
     except Exception as exc:
         _log.debug("extract_facts: no facts parsed (%s)", exc)
+        return []
+
+
+def extract_preferences(
+    person_id: int,
+    transcript: list[dict],
+    person_name: Optional[str] = None,
+) -> list[dict]:
+    """
+    Extract typed preferences and boundaries from a transcript.
+
+    Returns dicts with: domain, preference_type, key, value, confidence,
+    importance, source.
+    """
+    if not transcript:
+        return []
+
+    speaker_label = person_name or "user"
+    prompt = (
+        f"You are extracting durable typed preferences for a person named "
+        f"{speaker_label!r} from a transcript between {speaker_label!r} and Rex, "
+        "a snarky robot DJ.\n\n"
+        "Extract only preferences, dislikes, interaction style requests, and "
+        "boundaries stated by the HUMAN speaker. Do not extract ordinary facts "
+        "like job, hometown, pet, family, or one-off jokes unless they clearly "
+        "express a preference.\n\n"
+        "Fields:\n"
+        '- "domain": food, music, conversation, humor, travel, interaction, '
+        "entertainment, games, general, etc.\n"
+        '- "preference_type": exactly one of likes, dislikes, prefers, avoids, boundary.\n'
+        '- "key": snake_case canonical object/topic, e.g. sushi, country, '
+        "short_answers, roasting, window_seat, last_name_ask.\n"
+        '- "value": concise natural-language value. For boundaries, phrase as '
+        "an instruction to Rex, not trivia.\n"
+        '- "confidence": 0.0 to 1.0.\n'
+        '- "importance": 0.0 to 1.0. Boundaries must be >= 0.95.\n'
+        '- "source": explicit, inferred, observed, or corrected. Prefer explicit.\n\n'
+        "Examples:\n"
+        '  "I like sushi" -> food/likes/sushi/value "likes sushi"\n'
+        '  "I hate country music" -> music/dislikes/country/value "dislikes country music"\n'
+        '  "I prefer short answers" -> conversation/prefers/short_answers/value "prefers short answers"\n'
+        '  "Don\'t ask me my last name" -> interaction/boundary/last_name_ask/value '
+        '"do not ask for their last name"\n'
+        '  "I like being roasted" -> humor/likes/roasting/value "likes being roasted"\n\n'
+        "Return ONLY a JSON array. If none, return [].\n\n"
+        f"Transcript:\n{_format_transcript(transcript)}"
+    )
+    _log.debug("[llm] extract_preferences prompt for %r:\n%s", speaker_label, prompt)
+    try:
+        resp = _client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=500,
+        )
+        content = resp.choices[0].message.content
+        _log.debug("[llm] extract_preferences raw response for %r: %r", speaker_label, content)
+        if not content or not content.strip():
+            return []
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r"^```[a-z]*\n?", "", stripped)
+            stripped = re.sub(r"\n?```$", "", stripped)
+        result = json.loads(stripped)
+        if not isinstance(result, list):
+            return []
+
+        preferences = []
+        valid_types = {"likes", "dislikes", "prefers", "avoids", "boundary"}
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            domain = str(item.get("domain") or "").strip().lower()
+            pref_type = str(item.get("preference_type") or "").strip().lower()
+            key = str(item.get("key") or "").strip()
+            if not domain or pref_type not in valid_types or not key:
+                continue
+            importance = item.get("importance", 0.5)
+            try:
+                importance = float(importance)
+            except (TypeError, ValueError):
+                importance = 0.5
+            if pref_type == "boundary":
+                importance = max(importance, 0.95)
+            confidence = item.get("confidence", 1.0)
+            try:
+                confidence = float(confidence)
+            except (TypeError, ValueError):
+                confidence = 1.0
+            source = str(item.get("source") or "explicit").strip().lower()
+            if source not in {"explicit", "inferred", "observed", "corrected"}:
+                source = "explicit"
+            preferences.append(
+                {
+                    "domain": domain,
+                    "preference_type": pref_type,
+                    "key": key,
+                    "value": str(item.get("value") or "").strip(),
+                    "confidence": max(0.0, min(1.0, confidence)),
+                    "importance": max(0.0, min(1.0, importance)),
+                    "source": source,
+                }
+            )
+        return preferences
+    except Exception as exc:
+        _log.debug("extract_preferences: no preferences parsed (%s)", exc)
+        return []
+
+
+def extract_interests(
+    person_id: int,
+    transcript: list[dict],
+    person_name: Optional[str] = None,
+) -> list[dict]:
+    """
+    Extract durable hobbies and interests from a transcript.
+
+    Returns dicts with: name, category, interest_strength, confidence, source,
+    notes, associated_people, associated_stories.
+    """
+    if not transcript:
+        return []
+
+    speaker_label = person_name or "user"
+    prompt = (
+        f"You are extracting durable hobbies and interests for a person named "
+        f"{speaker_label!r} from a transcript between {speaker_label!r} and Rex, "
+        "a snarky robot DJ.\n\n"
+        "Extract interests the HUMAN speaker says they enjoy, follow, build, "
+        "play, practice, collect, or are currently doing. These are durable "
+        "conversation hooks, not generic facts. Do not extract Rex's interests. "
+        "Do not extract one-off chores unless the speaker frames them as an "
+        "ongoing interest.\n\n"
+        "Fields:\n"
+        '- "name": display name, e.g. Star Wars, 3D printing, volleyball, camping.\n'
+        '- "category": hobby, fandom, sport, music, creative, technical, food, travel, games, other.\n'
+        '- "interest_strength": low, medium, or high. Use high for strong phrasing '
+        'like "love", "obsessed", "really into", ongoing builds, or repeated mentions.\n'
+        '- "confidence": 0.0 to 1.0.\n'
+        '- "source": explicit, inferred, observed, or corrected. Prefer explicit.\n'
+        '- "notes": optional concise context that would help a future deeper follow-up.\n'
+        '- "associated_people": optional people connected to the interest.\n'
+        '- "associated_stories": optional specific stories/projects connected to it.\n\n'
+        "Examples:\n"
+        '  "I play volleyball" -> name "volleyball", category "sport", strength "high"\n'
+        '  "I\'m into Star Wars" -> name "Star Wars", category "fandom", strength "high"\n'
+        '  "I build telescopes" -> name "telescope building", category "technical", strength "high"\n'
+        '  "I like camping" -> name "camping", category "hobby", strength "medium"\n'
+        '  "I\'ve been 3D printing parts" -> name "3D printing", category "technical", strength "high"\n\n'
+        "Return ONLY a JSON array. If none, return [].\n\n"
+        f"Transcript:\n{_format_transcript(transcript)}"
+    )
+    _log.debug("[llm] extract_interests prompt for %r:\n%s", speaker_label, prompt)
+    try:
+        resp = _client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=500,
+        )
+        content = resp.choices[0].message.content
+        _log.debug("[llm] extract_interests raw response for %r: %r", speaker_label, content)
+        if not content or not content.strip():
+            return []
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r"^```[a-z]*\n?", "", stripped)
+            stripped = re.sub(r"\n?```$", "", stripped)
+        result = json.loads(stripped)
+        if not isinstance(result, list):
+            return []
+
+        interests = []
+        valid_strengths = {"low", "medium", "high"}
+        valid_sources = {"explicit", "inferred", "observed", "corrected"}
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            strength = str(item.get("interest_strength") or "medium").strip().lower()
+            if strength not in valid_strengths:
+                strength = "medium"
+            source = str(item.get("source") or "explicit").strip().lower()
+            if source not in valid_sources:
+                source = "explicit"
+            confidence = item.get("confidence", 1.0)
+            try:
+                confidence = float(confidence)
+            except (TypeError, ValueError):
+                confidence = 1.0
+            interests.append(
+                {
+                    "name": name,
+                    "category": str(item.get("category") or "hobby").strip().lower(),
+                    "interest_strength": strength,
+                    "confidence": max(0.0, min(1.0, confidence)),
+                    "source": source,
+                    "notes": str(item.get("notes") or "").strip(),
+                    "associated_people": str(item.get("associated_people") or "").strip(),
+                    "associated_stories": str(item.get("associated_stories") or "").strip(),
+                }
+            )
+        return interests
+    except Exception as exc:
+        _log.debug("extract_interests: no interests parsed (%s)", exc)
         return []
 
 
@@ -1114,3 +1393,109 @@ def extract_events(
     except Exception as exc:
         _log.debug("extract_events: no events parsed (%s)", exc)
         return []
+
+
+def consolidate_session_memories(
+    person_id: int,
+    transcript: list[dict],
+    *,
+    person_name: Optional[str] = None,
+    existing_memories: Optional[dict] = None,
+    now_iso: Optional[str] = None,
+) -> dict:
+    """
+    Consolidate a full session transcript into durable structured memories.
+
+    Returns a JSON-shaped dict with stable_facts, preferences, interests,
+    relationships, events, emotional_events, discarded_noise, and corrections.
+    """
+    if not transcript:
+        return {
+            "stable_facts": [],
+            "preferences": [],
+            "interests": [],
+            "relationships": [],
+            "events": [],
+            "emotional_events": [],
+            "discarded_noise": [],
+            "corrections": [],
+        }
+
+    from datetime import datetime, timezone
+
+    speaker_label = person_name or "user"
+    now_value = now_iso or datetime.now(timezone.utc).isoformat()
+    existing_json = json.dumps(existing_memories or {}, ensure_ascii=False, default=str)[:12000]
+    transcript_text = _format_transcript(transcript)
+    prompt = (
+        f"You are consolidating one ended conversation session for DJ-R3X's durable "
+        f"memory about person_id={person_id}, name={speaker_label!r}.\n"
+        f"Current date/time: {now_value}.\n\n"
+        "Input includes the full noisy transcript and existing memory. Produce one "
+        "strict JSON object with exactly these top-level keys:\n"
+        "stable_facts, preferences, interests, relationships, events, "
+        "emotional_events, discarded_noise, corrections.\n\n"
+        "Rules:\n"
+        "- Store only durable, useful memories stated by the human, not Rex.\n"
+        "- Do not store random test phrases, repeated Whisper mistakes, filler, jokes "
+        "without durable meaning, or obvious noise.\n"
+        "- Explicit statements beat inferred guesses. Corrections override older facts.\n"
+        "- Boundaries and safety/comfort preferences should always be preserved.\n"
+        "- Sensitive memories require careful classification as emotional_events, not casual facts.\n"
+        "- Do not duplicate existing memories; return an update/correction when appropriate.\n"
+        "- Inferred memories must have lower confidence and a rationale explaining the inference.\n"
+        "- Every memory item must include: type, category/domain, key/name, value, "
+        "confidence, importance, source, decay_rate, rationale.\n\n"
+        "Shape guidance:\n"
+        "stable_facts: items with type='fact', category, key, value.\n"
+        "preferences: type='preference', domain, preference_type "
+        "(likes/dislikes/prefers/avoids/boundary), key, value.\n"
+        "interests: type='interest', category, name, interest_strength "
+        "(low/medium/high), notes optional.\n"
+        "relationships: type='relationship', other_person_name, relationship, "
+        "direction optional ('current_to_other' default).\n"
+        "events: type='event', event_name, event_date as YYYY-MM-DD or null, event_notes.\n"
+        "emotional_events: type='emotional_event', category, description, valence "
+        "(-1..1), sensitivity_decay_days optional, loss_subject fields optional.\n"
+        "corrections: type='correction', target ('fact'/'preference'/'interest'/'identity'), "
+        "category/domain optional, key/name, value, prior_value optional.\n"
+        "discarded_noise: strings or objects explaining what was skipped.\n\n"
+        f"Existing memory snapshot:\n{existing_json}\n\n"
+        f"Transcript:\n{transcript_text}\n\n"
+        "Return only the JSON object."
+    )
+    _log.debug("[llm] consolidate_session_memories prompt for %r:\n%s", speaker_label, prompt)
+    empty = {
+        "stable_facts": [],
+        "preferences": [],
+        "interests": [],
+        "relationships": [],
+        "events": [],
+        "emotional_events": [],
+        "discarded_noise": [],
+        "corrections": [],
+    }
+    try:
+        resp = _client.chat.completions.create(
+            model=getattr(config, "MEMORY_CONSOLIDATION_MODEL", config.LLM_MODEL),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=1800,
+            response_format={"type": "json_object"},
+        )
+        content = resp.choices[0].message.content
+        _log.debug("[llm] consolidate_session_memories raw response for %r: %r", speaker_label, content)
+        if not content or not content.strip():
+            return empty
+        data = json.loads(content.strip())
+        if not isinstance(data, dict):
+            return empty
+        out = dict(empty)
+        for key in out:
+            value = data.get(key, [])
+            if isinstance(value, list):
+                out[key] = value
+        return out
+    except Exception as exc:
+        _log.warning("consolidate_session_memories failed for person_id=%s: %s", person_id, exc)
+        return empty

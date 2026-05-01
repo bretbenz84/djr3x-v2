@@ -157,6 +157,62 @@ def forget_specific_memory(person_id: int, target: str) -> ForgetResult:
         ("question_key", "question_text", "answer_text"),
         terms,
     )
+    result.deleted["preferences"] = _delete_matching(
+        "person_preferences",
+        person_id,
+        ("domain", "preference_type", "key", "value", "source"),
+        terms,
+    )
+    result.deleted["interests"] = _delete_matching(
+        "person_interests",
+        person_id,
+        (
+            "name",
+            "category",
+            "interest_strength",
+            "source",
+            "notes",
+            "associated_people",
+            "associated_stories",
+        ),
+        terms,
+    )
+    return result
+
+
+def forget_memory_detail(person_id: int, target: str) -> ForgetResult:
+    """Delete matching facts/preferences/interests for a person."""
+    terms = target_terms(target)
+    result = ForgetResult(target=(target or "").strip(), terms=terms)
+    if not terms:
+        return result
+
+    result.deleted["facts"] = _delete_matching(
+        "person_facts",
+        person_id,
+        ("category", "key", "value", "source"),
+        terms,
+    )
+    result.deleted["preferences"] = _delete_matching(
+        "person_preferences",
+        person_id,
+        ("domain", "preference_type", "key", "value", "source"),
+        terms,
+    )
+    result.deleted["interests"] = _delete_matching(
+        "person_interests",
+        person_id,
+        (
+            "name",
+            "category",
+            "interest_strength",
+            "source",
+            "notes",
+            "associated_people",
+            "associated_stories",
+        ),
+        terms,
+    )
     return result
 
 
@@ -164,6 +220,20 @@ def fact_or_event_matches(payload: dict, terms: set[str]) -> bool:
     """Return True when an extracted fact/event payload mentions forgotten terms."""
     return row_matches_terms(
         payload,
-        ("category", "key", "value", "event_name", "event_notes", "description"),
+        (
+            "category",
+            "domain",
+            "preference_type",
+            "key",
+            "value",
+            "name",
+            "interest_strength",
+            "notes",
+            "associated_people",
+            "associated_stories",
+            "event_name",
+            "event_notes",
+            "description",
+        ),
         terms,
     )

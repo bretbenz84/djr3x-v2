@@ -454,6 +454,317 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertIsNone(interaction._extract_name_update("call me both"))
         self.assertIsNone(interaction._extract_name_update("that's not my name"))
 
+    def test_common_first_name_only_requires_last_name(self):
+        from intelligence import interaction
+
+        self.assertTrue(interaction._is_common_first_name_only("John"))
+        self.assertTrue(interaction._is_common_first_name_only("Jennifer"))
+        self.assertFalse(interaction._is_common_first_name_only("Bret"))
+        self.assertFalse(interaction._is_common_first_name_only("John Smith"))
+
+    def test_last_name_reply_extracts_last_name_or_full_name(self):
+        from intelligence import interaction
+
+        self.assertEqual(
+            interaction._extract_last_name_reply("Smith", "John"),
+            "Smith",
+        )
+        self.assertEqual(
+            interaction._extract_last_name_reply("my last name is Smith", "John"),
+            "Smith",
+        )
+        self.assertEqual(
+            interaction._extract_last_name_reply("John Smith", "John"),
+            "Smith",
+        )
+        self.assertIsNone(interaction._extract_last_name_reply("John", "John"))
+
+    def test_last_name_refusal_variations_are_recognized(self):
+        from intelligence import interaction
+
+        refusals = [
+            "I'd rather not say",
+            "I'm not telling you my last name",
+            "you don't need my last name",
+            "my last name is private",
+            "none of your business",
+            "first name only",
+            "just John",
+            "you can call me John",
+        ]
+        for text in refusals:
+            self.assertTrue(
+                interaction._is_last_name_refusal(text, "John"),
+                text,
+            )
+
+    def test_common_first_name_pending_reply_enrolls_full_name(self):
+        from intelligence import interaction
+        import numpy as np
+
+        interaction._pending_common_first_name_identity = {
+            "first_name": "John",
+            "audio": np.ones(16, dtype=np.float32),
+            "asked_at": interaction.time.monotonic(),
+            "prior_engagement": None,
+        }
+        try:
+            with mock.patch.object(
+                interaction,
+                "_enroll_new_person",
+                return_value=42,
+            ) as enroll:
+                response, person_id, full_name = (
+                    interaction._handle_common_first_name_last_name_reply("Smith")
+                )
+
+            self.assertEqual(person_id, 42)
+            self.assertEqual(full_name, "John Smith")
+            self.assertIn("John Smith", response)
+            enroll.assert_called_once()
+            self.assertEqual(enroll.call_args.args[0], "John Smith")
+            self.assertIsNone(interaction._pending_common_first_name_identity)
+        finally:
+            interaction._pending_common_first_name_identity = None
+
+    def test_common_first_name_pending_refusal_enrolls_first_name_only(self):
+        from intelligence import interaction
+        import numpy as np
+
+        interaction._pending_common_first_name_identity = {
+            "first_name": "John",
+            "audio": np.ones(16, dtype=np.float32),
+            "asked_at": interaction.time.monotonic(),
+            "prior_engagement": None,
+        }
+        try:
+            with mock.patch.object(
+                interaction,
+                "_enroll_new_person",
+                return_value=42,
+            ) as enroll:
+                response, person_id, full_name = (
+                    interaction._handle_common_first_name_last_name_reply(
+                        "you don't need my last name"
+                    )
+                )
+
+            self.assertEqual(person_id, 42)
+            self.assertEqual(full_name, "John")
+            self.assertIn("John", response)
+            enroll.assert_called_once()
+            self.assertEqual(enroll.call_args.args[0], "John")
+            self.assertIsNone(interaction._pending_common_first_name_identity)
+        finally:
+            interaction._pending_common_first_name_identity = None
+
+    def test_common_first_name_introduction_defers_until_last_name(self):
+        from intelligence import interaction
+
+        parsed = interaction.introductions.IntroductionParse(
+            is_introduction=True,
+            name="Daniel",
+            relationship="acquaintance",
+            subject_kind="person",
+        )
+        interaction._pending_common_first_name_introduction = None
+        try:
+            with mock.patch.object(interaction, "_enroll_introduced_person") as enroll:
+                response = interaction._handle_introduction_parse(
+                    parsed,
+                    introducer_id=1,
+                    introducer_name="Bret Benziger",
+                    visible_newcomer=True,
+                )
+
+            self.assertIn("Daniel", response)
+            self.assertIsNotNone(interaction._pending_common_first_name_introduction)
+            enroll.assert_not_called()
+
+            with (
+                mock.patch.object(
+                    interaction,
+                    "_enroll_introduced_person",
+                    return_value=3,
+                ) as enroll,
+                mock.patch.object(
+                    interaction,
+                    "_intro_ack_and_followup",
+                    return_value="Ack Daniel Smith.",
+                ) as ack,
+            ):
+                completed = interaction._handle_common_first_name_intro_last_name_reply(
+                    "Smith"
+                )
+
+            self.assertEqual(completed, "Ack Daniel Smith.")
+            enroll.assert_called_once_with(
+                "Daniel Smith",
+                1,
+                "Bret Benziger",
+                "acquaintance",
+                enroll_visible_face=True,
+            )
+            ack.assert_called_once()
+            self.assertIsNone(interaction._pending_common_first_name_introduction)
+        finally:
+            interaction._pending_common_first_name_introduction = None
+
+    def test_common_first_name_introduction_refusal_enrolls_first_name_only(self):
+        from intelligence import interaction
+
+        interaction._pending_common_first_name_introduction = {
+            "first_name": "Daniel",
+            "introducer_id": 1,
+            "introducer_name": "Bret Benziger",
+            "relationship": "acquaintance",
+            "visible_newcomer": True,
+            "subject_kind": "person",
+            "asked_at": interaction.time.monotonic(),
+        }
+        try:
+            with (
+                mock.patch.object(
+                    interaction,
+                    "_enroll_introduced_person",
+                    return_value=3,
+                ) as enroll,
+                mock.patch.object(
+                    interaction,
+                    "_intro_ack_and_followup",
+                    return_value="Ack Daniel.",
+                ) as ack,
+            ):
+                completed = interaction._handle_common_first_name_intro_last_name_reply(
+                    "I'd rather not say"
+                )
+
+            self.assertEqual(completed, "Ack Daniel.")
+            enroll.assert_called_once_with(
+                "Daniel",
+                1,
+                "Bret Benziger",
+                "acquaintance",
+                enroll_visible_face=True,
+            )
+            ack.assert_called_once()
+            self.assertIsNone(interaction._pending_common_first_name_introduction)
+        finally:
+            interaction._pending_common_first_name_introduction = None
+
+    def test_returning_common_first_name_person_is_prompted_once(self):
+        from intelligence import interaction
+
+        interaction._pending_existing_common_first_name = None
+        interaction._common_first_name_prompted_this_session.clear()
+        try:
+            with mock.patch.object(
+                interaction,
+                "_has_declined_last_name",
+                return_value=False,
+            ):
+                response = interaction._maybe_prompt_existing_common_first_name(
+                    3,
+                    "Daniel",
+                )
+
+            self.assertIn("Daniel", response)
+            self.assertEqual(
+                interaction._pending_existing_common_first_name["person_id"],
+                3,
+            )
+            self.assertIn(3, interaction._common_first_name_prompted_this_session)
+
+            with mock.patch.object(
+                interaction,
+                "_has_declined_last_name",
+                return_value=False,
+            ):
+                second = interaction._maybe_prompt_existing_common_first_name(
+                    3,
+                    "Daniel",
+                )
+            self.assertIsNone(second)
+        finally:
+            interaction._pending_existing_common_first_name = None
+            interaction._common_first_name_prompted_this_session.clear()
+
+    def test_returning_common_first_name_reply_renames_person(self):
+        from intelligence import interaction
+
+        interaction._pending_existing_common_first_name = {
+            "person_id": 3,
+            "first_name": "Daniel",
+            "asked_at": interaction.time.monotonic(),
+        }
+        interaction._common_first_name_prompted_this_session.clear()
+        try:
+            with (
+                mock.patch.object(
+                    interaction.people_memory,
+                    "rename_person",
+                    return_value=True,
+                ) as rename,
+                mock.patch.object(interaction, "_refresh_world_state_person_name") as refresh,
+            ):
+                response = interaction._handle_existing_common_first_name_last_name_reply(
+                    "Smith"
+                )
+
+            self.assertIn("Daniel Smith", response)
+            rename.assert_called_once_with(3, "Daniel Smith")
+            refresh.assert_called_once_with(3, "Daniel Smith")
+            self.assertIsNone(interaction._pending_existing_common_first_name)
+        finally:
+            interaction._pending_existing_common_first_name = None
+            interaction._common_first_name_prompted_this_session.clear()
+
+    def test_returning_common_first_name_refusal_is_remembered(self):
+        from intelligence import interaction
+
+        interaction._pending_existing_common_first_name = {
+            "person_id": 3,
+            "first_name": "Daniel",
+            "asked_at": interaction.time.monotonic(),
+        }
+        interaction._common_first_name_prompted_this_session.clear()
+        try:
+            with mock.patch.object(
+                interaction,
+                "_remember_last_name_declined",
+            ) as remember:
+                response = interaction._handle_existing_common_first_name_last_name_reply(
+                    "you don't need my last name"
+                )
+
+            self.assertIn("Daniel", response)
+            remember.assert_called_once_with(3, "Daniel")
+            self.assertIsNone(interaction._pending_existing_common_first_name)
+        finally:
+            interaction._pending_existing_common_first_name = None
+            interaction._common_first_name_prompted_this_session.clear()
+
+    def test_returning_common_first_name_not_prompted_after_decline(self):
+        from intelligence import interaction
+
+        interaction._common_first_name_prompted_this_session.clear()
+        try:
+            with mock.patch.object(
+                interaction,
+                "_has_declined_last_name",
+                return_value=True,
+            ):
+                response = interaction._maybe_prompt_existing_common_first_name(
+                    3,
+                    "Daniel",
+                )
+
+            self.assertIsNone(response)
+            self.assertIsNone(interaction._pending_existing_common_first_name)
+        finally:
+            interaction._pending_existing_common_first_name = None
+            interaction._common_first_name_prompted_this_session.clear()
+
     def test_name_update_renames_current_person_and_world_state(self):
         from intelligence import interaction
 
@@ -477,6 +788,266 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         rename.assert_called_once_with(1, "Bret")
         refresh.assert_called_once_with(1, "Bret")
         speak.assert_called_once()
+
+    def test_memory_control_examples_parse_locally(self):
+        from intelligence import command_parser
+
+        examples = {
+            "What do you remember about me?": "memory_review",
+            "What do you remember about Daniel?": "memory_review",
+            "Forget that Daniel likes horses.": "memory_forget_fact",
+            "Forget that I like country music.": "memory_forget_fact",
+            "That's wrong, Daniel's last name is Smith.": "memory_correct_fact",
+            "Actually, call me Bret Michael.": "memory_correct_fact",
+            "Don't remember that.": "memory_boundary",
+            "Remember that Jennifer hates being called Jenny.": "memory_remember_fact",
+        }
+
+        for text, command_key in examples.items():
+            with self.subTest(text=text):
+                match = command_parser.parse(text)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.command_key, command_key)
+
+    def test_memory_forget_named_person_requires_explicit_name_match(self):
+        from intelligence import interaction
+        from memory.forgetting import ForgetResult
+
+        result = ForgetResult(
+            target="likes horses Daniel likes horses",
+            terms={"horses"},
+            deleted={"facts": 1, "preferences": 0, "interests": 0},
+        )
+        match = interaction.command_parser.CommandMatch(
+            "memory_forget_fact",
+            "pattern",
+            {"statement": "Daniel likes horses"},
+        )
+
+        with (
+            mock.patch.object(
+                interaction.people_memory,
+                "find_person_by_name",
+                return_value={"id": 7, "name": "Daniel"},
+            ) as find_person,
+            mock.patch.object(
+                interaction.forgetting,
+                "forget_memory_detail",
+                return_value=result,
+            ) as forget_detail,
+            mock.patch.object(interaction, "_speak_blocking") as speak,
+        ):
+            response = interaction._execute_command(match, 1, "Bret", "Forget that Daniel likes horses.")
+
+        self.assertIn("Deleted that memory for Daniel", response)
+        find_person.assert_called_once_with("Daniel")
+        forget_detail.assert_called_once()
+        self.assertEqual(forget_detail.call_args.args[0], 7)
+        speak.assert_called_once()
+
+    def test_memory_correction_call_me_sets_corrected_identity_fact(self):
+        from intelligence import interaction
+
+        match = interaction.command_parser.CommandMatch(
+            "memory_correct_fact",
+            "pattern",
+            {"correction": "call me Bret Michael"},
+        )
+
+        with (
+            mock.patch.object(interaction.people_memory, "rename_person", return_value=True) as rename,
+            mock.patch.object(interaction.facts_memory, "apply_fact_correction") as correct,
+            mock.patch.object(interaction, "_refresh_world_state_person_name") as refresh,
+            mock.patch.object(interaction, "_speak_blocking") as speak,
+        ):
+            response = interaction._execute_command(match, 4, "Bret", "Actually, call me Bret Michael.")
+
+        self.assertIn("Bret Michael", response)
+        rename.assert_called_once_with(4, "Bret Michael")
+        correct.assert_called_once()
+        self.assertEqual(correct.call_args.args[:3], (4, "name", "Bret Michael"))
+        self.assertEqual(correct.call_args.kwargs["category"], "identity")
+        refresh.assert_called_once_with(4, "Bret Michael")
+        speak.assert_called_once()
+
+    def test_memory_boundary_discards_recent_candidate(self):
+        from intelligence import interaction
+        from memory.forgetting import ForgetResult
+
+        interaction._recent_memory_candidates.clear()
+        interaction._recent_memory_candidates.append({
+            "person_id": 4,
+            "kind": "preference",
+            "target": "music likes country music",
+            "label": "country music",
+            "ts": 100.0,
+        })
+        result = ForgetResult(
+            target="music likes country music",
+            terms={"country", "music"},
+            deleted={"facts": 0, "preferences": 1, "interests": 0},
+        )
+        match = interaction.command_parser.CommandMatch("memory_boundary", "pattern", {"scope": "recent"})
+
+        try:
+            with (
+                mock.patch.object(
+                    interaction.forgetting,
+                    "forget_memory_detail",
+                    return_value=result,
+                ) as forget_detail,
+                mock.patch.object(interaction, "_speak_blocking") as speak,
+            ):
+                response = interaction._execute_command(match, 4, "Bret", "Don't remember that.")
+
+            self.assertIn("discarded the recent memory", response)
+            forget_detail.assert_called_once_with(4, "music likes country music")
+            self.assertFalse(interaction._recent_memory_candidates)
+            speak.assert_called_once()
+        finally:
+            interaction._recent_memory_candidates.clear()
+
+    def test_session_consolidation_json_mode_parses_expected_buckets(self):
+        from types import SimpleNamespace
+        from intelligence import llm
+
+        payload = {
+            "stable_facts": [
+                {
+                    "type": "fact",
+                    "category": "job",
+                    "key": "job_title",
+                    "value": "pilot",
+                    "confidence": 0.95,
+                    "importance": 0.7,
+                    "source": "explicit",
+                    "decay_rate": "normal",
+                    "rationale": "stated directly",
+                }
+            ],
+            "preferences": [],
+            "interests": [],
+            "relationships": [],
+            "events": [],
+            "emotional_events": [],
+            "discarded_noise": ["test phrase"],
+            "corrections": [],
+        }
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=__import__("json").dumps(payload))
+                )
+            ]
+        )
+
+        with mock.patch.object(llm._client.chat.completions, "create", return_value=response) as create:
+            result = llm.consolidate_session_memories(
+                4,
+                [{"speaker": "Bret", "text": "I work as a pilot."}],
+                person_name="Bret",
+                existing_memories={"facts": []},
+                now_iso="2026-05-01T12:00:00+00:00",
+            )
+
+        self.assertEqual(result["stable_facts"][0]["key"], "job_title")
+        self.assertEqual(result["discarded_noise"], ["test phrase"])
+        self.assertEqual(create.call_args.kwargs["response_format"], {"type": "json_object"})
+
+    def test_write_consolidated_memory_routes_to_existing_modules(self):
+        from intelligence import interaction
+
+        consolidated = {
+            "stable_facts": [
+                {
+                    "category": "job",
+                    "key": "job_title",
+                    "value": "mechanic",
+                    "confidence": 0.95,
+                    "importance": 0.7,
+                    "source": "explicit",
+                    "decay_rate": "normal",
+                }
+            ],
+            "preferences": [
+                {
+                    "domain": "music",
+                    "preference_type": "dislikes",
+                    "key": "country",
+                    "value": "dislikes country music",
+                    "confidence": 0.95,
+                    "importance": 0.8,
+                    "source": "explicit",
+                }
+            ],
+            "interests": [
+                {
+                    "name": "3D printing",
+                    "category": "technical",
+                    "interest_strength": "high",
+                    "confidence": 0.9,
+                    "source": "explicit",
+                }
+            ],
+            "relationships": [
+                {
+                    "other_person_name": "Daniel",
+                    "relationship": "friend",
+                }
+            ],
+            "events": [
+                {
+                    "event_name": "camping trip",
+                    "event_date": "2026-06-01",
+                    "event_notes": "Going camping.",
+                }
+            ],
+            "emotional_events": [
+                {
+                    "category": "good_news",
+                    "description": "got promoted",
+                    "valence": 0.8,
+                }
+            ],
+            "discarded_noise": ["hello hello"],
+            "corrections": [
+                {
+                    "target": "fact",
+                    "category": "identity",
+                    "key": "last_name",
+                    "value": "Smith",
+                }
+            ],
+        }
+
+        with (
+            mock.patch.object(interaction.facts_memory, "apply_fact_correction") as correct,
+            mock.patch.object(interaction.facts_memory, "add_fact") as add_fact,
+            mock.patch.object(interaction.preferences_memory, "upsert_preference") as pref,
+            mock.patch.object(interaction.interests_memory, "upsert_interest") as interest,
+            mock.patch.object(interaction.people_memory, "find_or_create_person", return_value=(7, False)),
+            mock.patch.object(interaction.social_memory, "save_relationship") as rel,
+            mock.patch.object(interaction.events_memory, "get_open_events", return_value=[]),
+            mock.patch.object(interaction.events_memory, "add_event") as event,
+            mock.patch.object(interaction.emotional_events, "add_event") as emotional,
+        ):
+            counts = interaction._write_consolidated_memory(
+                4,
+                "Bret",
+                consolidated,
+                forgotten_terms=set(),
+            )
+
+        correct.assert_called_once()
+        add_fact.assert_called_once()
+        pref.assert_called_once()
+        interest.assert_called_once()
+        rel.assert_called_once_with(4, 7, "friend", described_by=4)
+        event.assert_called_once()
+        emotional.assert_called_once()
+        self.assertEqual(counts["stored"], 6)
+        self.assertEqual(counts["updated"], 1)
+        self.assertEqual(counts["skipped"], 1)
 
     def test_idle_background_speech_ignored_when_unrecognized_and_off_camera(self):
         from intelligence import interaction
@@ -1622,8 +2193,10 @@ class ConversationGatingTest(unittest.TestCase):
             "identity",
             "pronouns",
             "they/them",
-            "pronoun_repair",
-            confidence=0.95,
+            source="corrected",
+            confidence=1.0,
+            importance=0.9,
+            decay_rate=None,
         )
 
     def test_agenda_allows_related_followup_when_curated_pool_is_exhausted(self):
@@ -2127,7 +2700,9 @@ class ConversationGatingTest(unittest.TestCase):
             ),
             mock.patch.object(llm.conv_db, "get_session_transcript", return_value=[]),
             mock.patch.object(llm.people_db, "get_person", return_value={"id": 1, "name": "Bret"}),
-            mock.patch.object(llm.facts_db, "get_prompt_facts", return_value=[]),
+            mock.patch.object(llm.facts_db, "get_prompt_worthy_facts", return_value=[]),
+            mock.patch.object(llm.preferences_db, "get_preferences_for_prompt", return_value=[]),
+            mock.patch.object(llm.interests_db, "get_interests_for_prompt", return_value=[]),
             mock.patch.object(llm, "_get_personality_params", return_value={}),
             mock.patch(
                 "memory.emotional_events.summarize_for_prompt",
@@ -2153,6 +2728,257 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertIn("what are you up to today", prompt.lower())
         self.assertIn("do not reuse the same wording every run", prompt)
         self.assertIn("What topic gets the honor", prompt)
+
+    def test_person_context_injects_preferences_and_boundaries(self):
+        from intelligence import llm
+
+        with (
+            mock.patch.object(
+                llm.people_db,
+                "get_person",
+                return_value={
+                    "id": 1,
+                    "name": "Bret",
+                    "friendship_tier": "friend",
+                    "warmth_score": 0.2,
+                    "antagonism_score": 0.0,
+                    "trust_score": 0.7,
+                    "net_relationship_score": 0.2,
+                },
+            ),
+            mock.patch.object(llm.facts_db, "get_prompt_worthy_facts", return_value=[]),
+            mock.patch.object(
+                llm.preferences_db,
+                "get_preferences_for_prompt",
+                return_value=[
+                    {
+                        "id": 1,
+                        "domain": "music",
+                        "preference_type": "dislikes",
+                        "key": "country",
+                        "value": "dislikes country music",
+                    },
+                    {
+                        "id": 2,
+                        "domain": "interaction",
+                        "preference_type": "boundary",
+                        "key": "last_name_ask",
+                        "value": "do not ask for their last name",
+                    },
+                ],
+            ),
+            mock.patch.object(
+                llm.interests_db,
+                "get_interests_for_prompt",
+                return_value=[
+                    {
+                        "id": 3,
+                        "name": "Star Wars",
+                        "category": "fandom",
+                        "interest_strength": "high",
+                        "last_mentioned_at": "2026-04-30T12:00:00+00:00",
+                        "cooldown_active": False,
+                    },
+                    {
+                        "id": 4,
+                        "name": "3D printing",
+                        "category": "technical",
+                        "interest_strength": "high",
+                        "last_mentioned_at": "2026-04-30T12:00:00+00:00",
+                        "ask_cooldown_until": "2026-05-30T12:00:00+00:00",
+                        "cooldown_active": True,
+                    },
+                ],
+            ),
+            mock.patch.object(llm.conv_db, "get_last_conversation", return_value=None),
+            mock.patch.object(llm.boundaries_db, "summarize_for_prompt", return_value=""),
+            mock.patch.object(llm.rel_db, "get_next_question", return_value=None),
+            mock.patch("memory.social.summarize_for_prompt", return_value=""),
+            mock.patch("memory.emotional_events.summarize_for_prompt", return_value=""),
+            mock.patch.object(llm, "_pick_stale_fact", return_value=None),
+            mock.patch.object(llm, "_pick_nostalgia_callback", return_value=None),
+        ):
+            context = llm._build_person_context(1)
+
+        self.assertIn("Preferences: music.dislikes: dislikes country music.", context)
+        self.assertIn("Preference boundaries: interaction.boundary: do not ask for their last name.", context)
+        self.assertIn("never as joke or roast material", context)
+        self.assertIn("Interest profile: Star Wars, high interest, last mentioned 2026-04-30", context)
+        self.assertIn("3D printing, high interest, last mentioned 2026-04-30, ask cooldown active until 2026-05-30", context)
+        self.assertIn("Do not ask basic 'do you like X?'", context)
+
+    def test_preference_upsert_forces_boundary_importance(self):
+        from memory import preferences
+
+        with (
+            mock.patch.object(preferences.db, "fetchone", return_value=None),
+            mock.patch.object(preferences.db, "execute", return_value=9) as execute,
+        ):
+            row_id = preferences.upsert_preference(
+                3,
+                "interaction",
+                "boundary",
+                "last name ask",
+                "do not ask for their last name",
+                importance=0.2,
+            )
+
+        self.assertEqual(row_id, 9)
+        params = execute.call_args.args[1]
+        self.assertEqual(params[1], "interaction")
+        self.assertEqual(params[2], "boundary")
+        self.assertEqual(params[3], "last_name_ask")
+        self.assertGreaterEqual(params[6], 0.95)
+
+    def test_interest_upsert_and_mark_asked(self):
+        from memory import interests
+
+        with (
+            mock.patch.object(interests.db, "fetchone", return_value=None),
+            mock.patch.object(interests.db, "execute", return_value=11) as execute,
+        ):
+            row_id = interests.upsert_interest(
+                3,
+                "3D printing",
+                "technical",
+                "high",
+                notes="prints droid brackets",
+            )
+
+        self.assertEqual(row_id, 11)
+        params = execute.call_args.args[1]
+        self.assertEqual(params[1], "3D printing")
+        self.assertEqual(params[2], "technical")
+        self.assertEqual(params[3], "high")
+        self.assertEqual(params[8], "prints droid brackets")
+
+        with mock.patch.object(interests.db, "execute") as execute:
+            interests.mark_interest_asked(3, "3D printing", cooldown_days=30)
+
+        args = execute.call_args.args
+        self.assertIn("ask_cooldown_until", args[0])
+        self.assertEqual(args[1][2], 3)
+        self.assertEqual(args[1][3], "3D printing")
+
+    def test_fact_defaults_explicit_inferred_and_corrected_metadata(self):
+        from memory import facts
+
+        with (
+            mock.patch.object(facts.db, "fetchone", return_value=None),
+            mock.patch.object(facts.db, "execute") as execute,
+        ):
+            facts.add_fact(1, "job", "job_title", "pilot", "explicit")
+
+        params = execute.call_args.args[1]
+        self.assertEqual(params[4], 0.95)
+        self.assertEqual(params[5], "explicit")
+        self.assertEqual(params[10], 0.5)
+        self.assertEqual(params[11], "normal")
+        self.assertEqual(params[12], 365)
+        self.assertIsNone(params[13])
+
+        with (
+            mock.patch.object(facts.db, "fetchone", return_value=None),
+            mock.patch.object(facts.db, "execute") as execute,
+        ):
+            facts.add_fact(1, "other", "maybe_likes_noise", "likes noise", "inferred")
+
+        params = execute.call_args.args[1]
+        self.assertEqual(params[4], 0.55)
+        self.assertEqual(params[5], "inferred")
+        self.assertEqual(params[10], 0.35)
+        self.assertEqual(params[11], "fast")
+
+        with mock.patch.object(facts, "add_fact") as add_fact:
+            facts.apply_fact_correction(1, "favorite_music", "jazz", category="preference")
+
+        kwargs = add_fact.call_args.kwargs
+        self.assertEqual(kwargs["source"], "corrected")
+        self.assertEqual(kwargs["confidence"], 1.0)
+        self.assertEqual(kwargs["importance"], 0.9)
+
+    def test_fact_prompt_format_hedges_inferred_and_scores_overuse(self):
+        from memory import facts
+
+        inferred = facts._annotate_fact(
+            {
+                "id": 1,
+                "category": "other",
+                "key": "camping",
+                "value": "camping might be their thing",
+                "confidence": 0.55,
+                "source": "inferred",
+                "importance": 0.35,
+                "decay_rate": "fast",
+                "created_at": "2026-04-01T00:00:00+00:00",
+                "updated_at": "2026-04-01T00:00:00+00:00",
+                "last_confirmed_at": "2026-04-01T00:00:00+00:00",
+                "last_used_at": None,
+                "stale_after_days": 30,
+                "evidence_count": 1,
+            }
+        )
+        rendered = facts.format_fact_for_prompt(inferred)
+
+        self.assertIn("inferred; hedge this", rendered)
+        self.assertLess(facts.score_fact_for_prompt(inferred), 0.5)
+
+        corrected = facts._annotate_fact(
+            {
+                "id": 2,
+                "category": "preference",
+                "key": "favorite_music",
+                "value": "jazz",
+                "confidence": 1.0,
+                "source": "corrected",
+                "importance": 0.9,
+                "decay_rate": "normal",
+                "created_at": "2026-04-01T00:00:00+00:00",
+                "updated_at": "2026-04-01T00:00:00+00:00",
+                "last_confirmed_at": "2026-04-01T00:00:00+00:00",
+                "last_used_at": None,
+                "stale_after_days": 365,
+                "evidence_count": 1,
+            }
+        )
+
+        self.assertGreater(facts.score_fact_for_prompt(corrected), facts.score_fact_for_prompt(inferred))
+        self.assertIn("corrected by the person", facts.format_fact_for_prompt(corrected))
+
+    def test_curiosity_uses_known_interest_hooks_before_basic_pool(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction.random, "random", return_value=0.0),
+            mock.patch.object(interaction.question_budget, "can_ask", return_value=True),
+            mock.patch.object(interaction.empathy, "peek", return_value=None),
+            mock.patch.object(interaction.end_thread, "is_grace_active", return_value=False),
+            mock.patch.object(interaction.conversation_steering, "build_context", return_value=None),
+            mock.patch.object(
+                interaction.interests_memory,
+                "get_interest_hooks",
+                return_value=[{"name": "Star Wars", "notes": "building a droid"}],
+            ),
+            mock.patch.object(
+                interaction.llm,
+                "get_response",
+                return_value="Still working on that droid build, or has it finally achieved sentience?",
+            ) as get_response,
+            mock.patch.object(interaction.interests_memory, "mark_interest_asked") as mark_asked,
+            mock.patch.object(interaction, "_speak_blocking") as speak,
+            mock.patch.object(interaction.rel_memory, "save_question_asked"),
+        ):
+            question = interaction._curiosity_check(
+                "Nice. Filed under excellent bad ideas.",
+                "I like Star Wars.",
+                1,
+                "Bret",
+            )
+
+        self.assertIn("droid build", question)
+        self.assertIn("Do not ask whether they like it", get_response.call_args.args[0])
+        mark_asked.assert_called_once_with(1, "Star Wars")
+        speak.assert_called_once_with(question)
 
     def test_agenda_surfaces_intimate_personal_space_cue(self):
         from intelligence import conversation_agenda

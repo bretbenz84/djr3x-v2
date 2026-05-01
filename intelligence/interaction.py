@@ -20,7 +20,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
@@ -49,6 +49,8 @@ from intelligence import turn_completion
 from intelligence import friendship_patterns
 from intelligence import conversation_steering
 from memory import facts as facts_memory
+from memory import preferences as preferences_memory
+from memory import interests as interests_memory
 from memory import conversations as conv_memory
 from memory import people as people_memory
 from memory import events as events_memory
@@ -56,6 +58,8 @@ from memory import relationships as rel_memory
 from memory import emotional_events
 from memory import boundaries as boundary_memory
 from memory import forgetting
+from memory import person_summary
+from memory import social as social_memory
 from awareness import interoception
 from awareness import address_mode
 from awareness.situation import assessor as _situation_assessor
@@ -100,6 +104,7 @@ _session_forget_terms: dict[int, set[str]] = {}
 _session_router_control_topics: dict[int, str] = {}
 _interest_idle_followups_spoken: set[tuple[Optional[int], str]] = set()
 _low_memory_idle_questions_spoken: set[int] = set()
+_recent_memory_candidates = deque(maxlen=12)
 _idle_outro_spoken: bool = False
 _pending_music_offer: Optional[dict] = None
 _no_response_recovery_token: int = 0
@@ -198,6 +203,16 @@ _pending_face_reveal_confirm: Optional[dict] = None
 _pending_introduction: Optional[dict] = None
 _pending_intro_followup: Optional[dict] = None
 _pending_intro_voice_capture: Optional[dict] = None
+
+# Someone answered an identity/intro prompt with a very common first name only,
+# or a returning known person still only has that common first name on file.
+# Hold/enforce the last-name clarification so memory rows stay distinct.
+# Shape: {first_name: str, audio: np.ndarray, asked_at: float,
+#         prior_engagement: Optional[dict]}
+_pending_common_first_name_identity: Optional[dict] = None
+_pending_common_first_name_introduction: Optional[dict] = None
+_pending_existing_common_first_name: Optional[dict] = None
+_common_first_name_prompted_this_session: set[int] = set()
 
 # Per-session set of (person_id) we've already attempted a face reveal for
 # but were declined ("no") — so Rex doesn't keep re-asking the same question.
@@ -1405,6 +1420,146 @@ def _extract_introduced_name(text: str, allow_bare_name: bool = False) -> Option
     return None
 
 
+def _name_word_count(name: str) -> int:
+    return len([part for part in (name or "").split() if part.strip()])
+
+
+def _is_common_first_name_only(name: str) -> bool:
+    if not bool(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_DISAMBIGUATION_ENABLED", True)):
+        return False
+    normalized = _normalize_name(name or "")
+    if not normalized or _name_word_count(normalized) != 1:
+        return False
+    common = {
+        str(item).strip().lower()
+        for item in getattr(config, "COMMON_FIRST_NAMES_REQUIRE_LAST_NAME", [])
+        if str(item).strip()
+    }
+    return normalized.lower() in common
+
+
+def _format_common_first_name_last_name_prompt(first_name: str) -> str:
+    prompts = list(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_PROMPTS", []) or [])
+    if not prompts:
+        prompts = [
+            "{first}, how original. Last name too, please, so the memory banks don't get confused."
+        ]
+    try:
+        template = random.choice(prompts)
+        return template.format(first=first_name)
+    except Exception:
+        return f"{first_name}, how original. Last name too, please."
+
+
+def _extract_last_name_reply(text: str, first_name: str) -> Optional[str]:
+    normalized = (text or "").strip()
+    if not normalized:
+        return None
+
+    patterns = [
+        re.compile(r"\bmy\s+last\s+name\s+is\s+(.+)$", re.IGNORECASE),
+        re.compile(r"\blast\s+name(?:'s| is)?\s+(.+)$", re.IGNORECASE),
+        re.compile(r"\bsurname(?:'s| is)?\s+(.+)$", re.IGNORECASE),
+        re.compile(r"\bit'?s\s+(.+)$", re.IGNORECASE),
+    ]
+    candidate = normalized
+    for pattern in patterns:
+        match = pattern.search(normalized)
+        if match:
+            candidate = match.group(1)
+            break
+
+    parsed = _normalize_name(candidate)
+    if not parsed:
+        return None
+
+    parts = parsed.split()
+    if len(parts) >= 2 and parts[0].lower() == first_name.lower():
+        return " ".join(parts[1:])
+    if len(parts) == 1 and parts[0].lower() != first_name.lower():
+        return parts[0]
+    return None
+
+
+_LAST_NAME_REFUSAL_RE = re.compile(
+    r"\b(?:"
+    r"(?:i\s+)?(?:would\s+)?rather\s+not\s+(?:say|tell|share)|"
+    r"(?:i\s+)?(?:do\s+not|don't|won't|will\s+not|am\s+not|ain't)\s+"
+    r"(?:want\s+to\s+)?(?:say|tell|share|give)\s+(?:you\s+)?(?:my\s+)?(?:last\s+name|surname)|"
+    r"(?:i'?m\s+)?not\s+(?:telling|sharing|giving)\s+(?:you\s+)?(?:my\s+)?(?:last\s+name|surname)|"
+    r"you\s+(?:do\s+not|don't)\s+need\s+(?:to\s+know\s+)?(?:my\s+)?(?:last\s+name|surname)|"
+    r"(?:my\s+)?(?:last\s+name|surname)\s+is\s+(?:private|personal|classified|none\s+of\s+your\s+business)|"
+    r"(?:none\s+of\s+your\s+business|that'?s\s+private|that\s+is\s+private|classified)|"
+    r"(?:first\s+name\s+only|no\s+last\s+name|skip\s+(?:it|the\s+last\s+name))|"
+    r"(?:just|only)\s+{first}\b|"
+    r"(?:call\s+me|you\s+can\s+call\s+me)\s+{first}\b"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_last_name_refusal(text: str, first_name: str) -> bool:
+    cleaned = (text or "").strip()
+    first = re.escape((first_name or "").strip())
+    if not cleaned or not first:
+        return False
+    pattern = _LAST_NAME_REFUSAL_RE.pattern.format(first=first)
+    return bool(re.search(pattern, cleaned, re.IGNORECASE))
+
+
+def _common_first_name_context_fresh(ctx: Optional[dict]) -> bool:
+    if not ctx:
+        return False
+    ttl = float(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_WINDOW_SECS", 30.0))
+    return (time.monotonic() - float(ctx.get("asked_at", 0.0))) <= max(1.0, ttl)
+
+
+_LAST_NAME_DECLINED_FACT_KEY = "last_name_declined"
+
+
+def _remember_last_name_declined(person_id: Optional[int], first_name: str) -> None:
+    if person_id is None:
+        return
+    try:
+        facts_memory.add_fact(
+            int(person_id),
+            "identity",
+            _LAST_NAME_DECLINED_FACT_KEY,
+            f"{first_name} declined to share a last name",
+            "identity_boundary",
+            confidence=1.0,
+        )
+    except Exception as exc:
+        _log.debug("last-name decline fact save failed: %s", exc)
+
+
+def _has_declined_last_name(person_id: Optional[int]) -> bool:
+    if person_id is None:
+        return False
+    try:
+        facts = facts_memory.get_facts_by_category(int(person_id), "identity")
+    except Exception as exc:
+        _log.debug("last-name decline fact check failed: %s", exc)
+        return False
+    for fact in facts:
+        if fact.get("key") != _LAST_NAME_DECLINED_FACT_KEY:
+            continue
+        value = str(fact.get("value") or "").strip().lower()
+        if value:
+            return True
+    return False
+
+
+def _known_person_needs_last_name(person_id: Optional[int], person_name: Optional[str]) -> bool:
+    if person_id is None:
+        return False
+    if int(person_id) in _common_first_name_prompted_this_session:
+        return False
+    if not _is_common_first_name_only(person_name or ""):
+        return False
+    return not _has_declined_last_name(int(person_id))
+
+
 def _extract_name_update(text: str) -> Optional[str]:
     """Extract an explicit request/correction to rename the current person."""
     normalized = (text or "").strip()
@@ -1782,6 +1937,224 @@ def _handle_relationship_reply(
         return None
     finally:
         consciousness.note_relationship_slot_handled(slot_id)
+
+
+def _handle_common_first_name_last_name_reply(
+    text: str,
+    audio_array: Optional[np.ndarray] = None,
+) -> tuple[Optional[str], Optional[int], Optional[str]]:
+    """
+    Complete a deferred identity enrollment after Rex asked for a last name.
+
+    Returns (response_text, enrolled_person_id, full_name). response_text may be
+    None when the pending context expired or the reply was not a usable last name.
+    """
+    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+
+    ctx = _pending_common_first_name_identity
+    if not _common_first_name_context_fresh(ctx):
+        _pending_common_first_name_identity = None
+        return None, None, None
+
+    first_name = str(ctx.get("first_name") or "").strip()
+    refused_last_name = _is_last_name_refusal(text, first_name)
+    if refused_last_name:
+        last_name = None
+    else:
+        last_name = _extract_last_name_reply(text, first_name)
+    if not first_name:
+        return None, None, None
+    if not last_name and not refused_last_name:
+        return None, None, None
+
+    full_name = first_name if refused_last_name else f"{first_name} {last_name}"
+    stored_audio = ctx.get("audio")
+    if (
+        isinstance(stored_audio, np.ndarray)
+        and len(stored_audio) > 0
+        and isinstance(audio_array, np.ndarray)
+        and len(audio_array) > 0
+    ):
+        enroll_audio = np.concatenate([stored_audio, audio_array])
+    elif isinstance(stored_audio, np.ndarray) and len(stored_audio) > 0:
+        enroll_audio = stored_audio
+    elif isinstance(audio_array, np.ndarray) and len(audio_array) > 0:
+        enroll_audio = audio_array
+    else:
+        enroll_audio = np.zeros(1, dtype=np.float32)
+
+    prior_engagement = ctx.get("prior_engagement")
+    enrolled_id = _enroll_new_person(
+        full_name,
+        enroll_audio,
+        enroll_unknown_face=bool(prior_engagement),
+    )
+    _pending_common_first_name_identity = None
+    if enrolled_id is None:
+        return None, None, None
+
+    if prior_engagement and prior_engagement.get("person_id") != enrolled_id:
+        _pending_post_greet_relationship[0] = {
+            "prior_engaged_id": prior_engagement["person_id"],
+            "prior_engaged_name": prior_engagement.get("name"),
+            "newcomer_person_id": enrolled_id,
+            "newcomer_name": full_name,
+        }
+
+    if refused_last_name:
+        _remember_last_name_declined(enrolled_id, first_name)
+        _log.info(
+            "[identity] last-name request declined for %r; filing first name only",
+            first_name,
+        )
+        response = f"Fine. Filed as {first_name}. The memory banks will squint and cope."
+    else:
+        response = f"Filed as {full_name}. The memory banks have stopped panicking."
+    return response, enrolled_id, full_name
+
+
+def _handle_common_first_name_intro_last_name_reply(text: str) -> Optional[str]:
+    """Complete an explicit introduction delayed for a common first name."""
+    global _pending_common_first_name_introduction
+
+    ctx = _pending_common_first_name_introduction
+    if not _common_first_name_context_fresh(ctx):
+        _pending_common_first_name_introduction = None
+        return None
+
+    first_name = str(ctx.get("first_name") or "").strip()
+    refused_last_name = _is_last_name_refusal(text, first_name)
+    if refused_last_name:
+        last_name = None
+    else:
+        last_name = _extract_last_name_reply(text, first_name)
+    if not first_name:
+        return None
+    if not last_name and not refused_last_name:
+        return None
+
+    full_name = first_name if refused_last_name else f"{first_name} {last_name}"
+    introducer_id = int(ctx["introducer_id"])
+    introducer_name = str(ctx.get("introducer_name") or "friend")
+    relationship = ctx.get("relationship")
+    visible_newcomer = bool(ctx.get("visible_newcomer", True))
+    subject_kind = str(ctx.get("subject_kind") or "person")
+
+    new_id = _enroll_introduced_person(
+        full_name,
+        introducer_id,
+        introducer_name,
+        relationship,
+        enroll_visible_face=visible_newcomer,
+    )
+    _pending_common_first_name_introduction = None
+    if new_id is None:
+        return None
+
+    if refused_last_name:
+        _remember_last_name_declined(new_id, first_name)
+        _log.info(
+            "[introduction] last-name request declined for %r; filing first name only",
+            first_name,
+        )
+    else:
+        _log.info(
+            "[introduction] %s introduced %s as %s (person_id=%s) after last-name disambiguation",
+            introducer_name,
+            full_name,
+            relationship or "acquaintance",
+            new_id,
+        )
+    return _intro_ack_and_followup(
+        introducer_id,
+        introducer_name,
+        new_id,
+        full_name,
+        relationship,
+        subject_kind=subject_kind,
+        visible_newcomer=visible_newcomer,
+    )
+
+
+def _handle_existing_common_first_name_last_name_reply(text: str) -> Optional[str]:
+    """Complete a last-name prompt for a returning person already in memory."""
+    global _pending_existing_common_first_name
+
+    ctx = _pending_existing_common_first_name
+    if not _common_first_name_context_fresh(ctx):
+        _pending_existing_common_first_name = None
+        return None
+
+    first_name = str(ctx.get("first_name") or "").strip()
+    person_id = ctx.get("person_id")
+    if not first_name or person_id is None:
+        _pending_existing_common_first_name = None
+        return None
+
+    refused_last_name = _is_last_name_refusal(text, first_name)
+    last_name = None if refused_last_name else _extract_last_name_reply(text, first_name)
+    if not refused_last_name and not last_name:
+        return None
+
+    _pending_existing_common_first_name = None
+    person_id = int(person_id)
+    _common_first_name_prompted_this_session.add(person_id)
+
+    if refused_last_name:
+        _remember_last_name_declined(person_id, first_name)
+        _log.info(
+            "[identity] returning person_id=%s declined last-name request; keeping %r",
+            person_id,
+            first_name,
+        )
+        return f"Fine. I'll keep you as {first_name}. The filing cabinet is judging both of us."
+
+    full_name = f"{first_name} {last_name}"
+    if not people_memory.rename_person(person_id, full_name):
+        _log.info(
+            "[identity] returning person_id=%s last-name rename blocked target=%r",
+            person_id,
+            full_name,
+        )
+        return f"I couldn't safely rename that memory to {full_name}."
+
+    _refresh_world_state_person_name(person_id, full_name)
+    _log.info(
+        "[identity] returning person_id=%s upgraded common first name %r -> %r",
+        person_id,
+        first_name,
+        full_name,
+    )
+    return f"Updated: {full_name}. The memory banks have unclenched."
+
+
+def _maybe_prompt_existing_common_first_name(
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> Optional[str]:
+    """Ask returning common-first-name-only people for a last name once per session."""
+    global _pending_existing_common_first_name
+
+    if not _known_person_needs_last_name(person_id, person_name):
+        return None
+
+    first_name = _normalize_name(person_name or "") or (person_name or "").strip()
+    if not first_name:
+        return None
+
+    pid = int(person_id)
+    _pending_existing_common_first_name = {
+        "person_id": pid,
+        "first_name": first_name,
+        "asked_at": time.monotonic(),
+    }
+    _common_first_name_prompted_this_session.add(pid)
+    _log.info(
+        "[identity] returning common first-name-only person_id=%s name=%r needs last-name disambiguation",
+        pid,
+        first_name,
+    )
+    return _format_common_first_name_last_name_prompt(first_name)
 
 
 def _maybe_auto_refresh_voice(
@@ -2424,7 +2797,7 @@ def _handle_introduction_parse(
     introducer_name: str,
     visible_newcomer: bool = True,
 ) -> Optional[str]:
-    global _pending_introduction
+    global _pending_introduction, _pending_common_first_name_introduction
 
     if parsed.subject_kind == "pet":
         _store_pet_introduction(
@@ -2474,6 +2847,27 @@ def _handle_introduction_parse(
             if parsed.relationship:
                 return f"Got the {parsed.relationship} part. What name am I filing for them?"
             return "Fine, I see the mystery organic. What name and relationship am I filing under?"
+
+    if (
+        parsed.subject_kind == "person"
+        and _is_common_first_name_only(parsed.name)
+    ):
+        first_name = _normalize_name(parsed.name) or parsed.name
+        _pending_common_first_name_introduction = {
+            "first_name": first_name,
+            "introducer_id": introducer_id,
+            "introducer_name": introducer_name,
+            "relationship": parsed.relationship,
+            "visible_newcomer": visible_newcomer,
+            "subject_kind": parsed.subject_kind,
+            "asked_at": time.monotonic(),
+        }
+        _pending_introduction = None
+        _log.info(
+            "[introduction] common first name %r needs last-name disambiguation before enrollment",
+            first_name,
+        )
+        return _format_common_first_name_last_name_prompt(first_name)
 
     new_id = _enroll_introduced_person(
         parsed.name,
@@ -3025,6 +3419,386 @@ def _execute_wave_command(
     return llm.clean_response_text(resp)
 
 
+_MEMORY_SELF_REFS = {"i", "me", "my", "myself"}
+_MEMORY_NAME_RE = re.compile(r"^[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,2}$")
+
+
+def _memory_key(value: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "_", (value or "").strip().lower())
+    return re.sub(r"_+", "_", cleaned).strip("_") or "detail"
+
+
+def _record_recent_memory_candidate(
+    person_id: Optional[int],
+    *,
+    kind: str,
+    target: str,
+    label: str,
+) -> None:
+    if person_id is None or not target:
+        return
+    _recent_memory_candidates.append({
+        "person_id": int(person_id),
+        "kind": kind,
+        "target": target,
+        "label": label or target,
+        "ts": time.time(),
+    })
+
+
+def _register_forget_terms(person_id: Optional[int], result: forgetting.ForgetResult) -> None:
+    if person_id is None:
+        return
+    if result.terms:
+        _session_forget_terms.setdefault(int(person_id), set()).update(result.terms)
+
+
+def _extract_memory_statement_target(
+    statement: str,
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> tuple[Optional[int], Optional[str], str, bool]:
+    """
+    Resolve a spoken memory statement to a person.
+
+    Returns (target_id, target_name, detail, explicitly_named). Self references
+    resolve to the engaged person; another person's memory requires a clear name.
+    """
+    text = (statement or "").strip()
+    if not text:
+        return None, None, "", False
+
+    if re.match(r"(?i)^(?:i|i'm|im|my|me)\b", text):
+        return person_id, person_name, text, False
+
+    possessive = re.match(
+        r"^([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,2})'s\s+(.+)$",
+        text,
+    )
+    if possessive:
+        name = possessive.group(1).strip()
+        detail = possessive.group(2).strip()
+        row = people_memory.find_person_by_name(name)
+        return (
+            int(row["id"]) if row else None,
+            (row.get("name") if row else name),
+            detail,
+            True,
+        )
+
+    subject = re.match(
+        r"^([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,2})\s+"
+        r"(likes|loves|hates|dislikes|prefers|avoids|is|has|works|wants|plays|collects)\b\s*(.*)$",
+        text,
+    )
+    if subject:
+        name = subject.group(1).strip()
+        verb = subject.group(2).strip()
+        rest = subject.group(3).strip()
+        row = people_memory.find_person_by_name(name)
+        return (
+            int(row["id"]) if row else None,
+            (row.get("name") if row else name),
+            f"{verb} {rest}".strip(),
+            True,
+        )
+
+    return person_id, person_name, text, False
+
+
+def _resolve_review_target(
+    args: dict,
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> tuple[Optional[int], Optional[str], Optional[str]]:
+    target = (args.get("target") or "").strip()
+    if args.get("self_ref") or target.lower() in _MEMORY_SELF_REFS:
+        if person_id is None:
+            return None, None, "I need to know who you are before I can review your memory."
+        return person_id, person_name, None
+
+    row = people_memory.find_person_by_name(target)
+    if not row:
+        return None, None, f"I don't have a clear memory record for {target}."
+    return int(row["id"]), row.get("name"), None
+
+
+def _execute_memory_review_command(
+    args: dict,
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> str:
+    target_id, _target_name, error = _resolve_review_target(args, person_id, person_name)
+    if error:
+        _speak_blocking(error)
+        return error
+    resp = person_summary.summarize_for_review(
+        int(target_id),
+        include_sensitive=bool(args.get("include_sensitive")),
+    )
+    _speak_blocking(resp, emotion="neutral")
+    return resp
+
+
+def _execute_memory_forget_fact_command(
+    args: dict,
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> str:
+    statement = (args.get("statement") or "").strip()
+    target_id, target_name, detail, named = _extract_memory_statement_target(
+        statement,
+        person_id,
+        person_name,
+    )
+    if target_id is None:
+        who = target_name or "that person"
+        resp = f"I need a clearer person match before I delete {who}'s memory."
+        _speak_blocking(resp)
+        return resp
+    if named is False and person_id is None:
+        resp = "I need to know whose memory this belongs to before I delete it."
+        _speak_blocking(resp)
+        return resp
+
+    target = " ".join(part for part in [detail, statement] if part).strip()
+    result = forgetting.forget_memory_detail(int(target_id), target)
+    _register_forget_terms(target_id, result)
+    _log.info(
+        "[memory] local forget person_id=%s named=%s statement=%r deleted=%s",
+        target_id,
+        named,
+        statement,
+        result.deleted,
+    )
+    if result.total_deleted <= 0:
+        resp = f"I couldn't find a stored fact or preference matching {detail or statement}."
+    else:
+        resp = f"Deleted that memory for {target_name or 'them'}. Clean, deliberate, logged."
+    _speak_blocking(resp, emotion="neutral")
+    return resp
+
+
+def _execute_memory_boundary_command(
+    person_id: Optional[int],
+) -> str:
+    candidate = None
+    for item in reversed(_recent_memory_candidates):
+        if person_id is None or int(item.get("person_id")) == int(person_id):
+            candidate = item
+            break
+    if not candidate:
+        resp = "Nothing recent to discard. My memory banks are innocent this time."
+        _speak_blocking(resp)
+        return resp
+
+    target_id = int(candidate["person_id"])
+    result = forgetting.forget_memory_detail(target_id, candidate.get("target") or "")
+    _register_forget_terms(target_id, result)
+    try:
+        _recent_memory_candidates.remove(candidate)
+    except ValueError:
+        pass
+    _log.info(
+        "[memory] discarded recent candidate person_id=%s kind=%s target=%r deleted=%s",
+        target_id,
+        candidate.get("kind"),
+        candidate.get("target"),
+        result.deleted,
+    )
+    resp = f"Understood. I discarded the recent memory about {candidate.get('label') or 'that'}."
+    _speak_blocking(resp, emotion="neutral")
+    return resp
+
+
+def _execute_memory_correct_fact_command(
+    args: dict,
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> str:
+    correction = (args.get("correction") or "").strip()
+    call_me = re.match(r"(?i)^(?:please\s+)?call\s+me\s+(.+)$", correction)
+    if call_me:
+        new_name = call_me.group(1).strip(" .!?")
+        if person_id is None:
+            resp = "I need to know who I'm renaming first."
+            _speak_blocking(resp)
+            return resp
+        if not people_memory.rename_person(int(person_id), new_name):
+            resp = f"I couldn't safely rename that memory to {new_name}."
+            _speak_blocking(resp)
+            return resp
+        facts_memory.apply_fact_correction(
+            int(person_id),
+            "name",
+            new_name,
+            category="identity",
+            importance=0.95,
+            decay_rate="permanent",
+        )
+        _refresh_world_state_person_name(int(person_id), new_name)
+        _log.info("[memory] corrected name person_id=%s new=%r", person_id, new_name)
+        resp = f"Corrected. Bret-level bureaucracy complete: I will call you {new_name}."
+        _speak_blocking(resp, emotion="happy")
+        return resp
+
+    target_id, target_name, detail, named = _extract_memory_statement_target(
+        correction,
+        person_id,
+        person_name,
+    )
+    last_name = re.match(r"(?i)^last\s+name\s+is\s+([A-Za-z][A-Za-z' -]+)$", detail)
+    if last_name and target_id is not None:
+        surname = last_name.group(1).strip()
+        first = (target_name or correction).split()[0]
+        full_name = f"{first} {surname}".strip()
+        if people_memory.rename_person(int(target_id), full_name):
+            facts_memory.apply_fact_correction(
+                int(target_id),
+                "last_name",
+                surname,
+                category="identity",
+                importance=0.95,
+                decay_rate="permanent",
+            )
+            _refresh_world_state_person_name(int(target_id), full_name)
+            _log.info("[memory] corrected last name person_id=%s new=%r", target_id, full_name)
+            resp = f"Corrected. {first}'s last name is {surname}. Logged with actual confidence for once."
+        else:
+            resp = f"I couldn't safely update that name to {full_name}."
+        _speak_blocking(resp, emotion="neutral")
+        return resp
+
+    generic = re.match(r"(?i)^(.+?)\s+is\s+(.+)$", detail)
+    if target_id is not None and generic:
+        key = _memory_key(generic.group(1))
+        value = generic.group(2).strip(" .!?")
+        facts_memory.apply_fact_correction(
+            int(target_id),
+            key,
+            value,
+            category="other",
+            importance=0.75,
+        )
+        _log.info(
+            "[memory] corrected fact person_id=%s key=%r value=%r named=%s",
+            target_id,
+            key,
+            value,
+            named,
+        )
+        resp = f"Corrected. I now have {target_name or 'them'} as {generic.group(1)}: {value}."
+        _speak_blocking(resp, emotion="neutral")
+        return resp
+
+    resp = "I heard the correction, but I need one clear fact to update."
+    _speak_blocking(resp)
+    return resp
+
+
+def _store_simple_memory_statement(
+    target_id: int,
+    detail: str,
+    *,
+    source: str = "explicit",
+) -> str:
+    text = (detail or "").strip(" .!?")
+    called = re.match(r"(?i)^hates\s+being\s+called\s+(.+)$", text)
+    if called:
+        nickname = called.group(1).strip(" .!?")
+        preferences_memory.upsert_preference(
+            int(target_id),
+            "interaction",
+            "boundary",
+            f"not_called_{_memory_key(nickname)}",
+            f"Do not call them {nickname}.",
+            confidence=1.0,
+            importance=0.98,
+            source=source,
+        )
+        return f"not being called {nickname}"
+
+    like = re.match(r"(?i)^(likes|loves|hates|dislikes|prefers|avoids)\s+(.+)$", text)
+    if like:
+        verb = like.group(1).lower()
+        thing = like.group(2).strip()
+        pref_type = {
+            "likes": "likes",
+            "loves": "likes",
+            "hates": "dislikes",
+            "dislikes": "dislikes",
+            "prefers": "prefers",
+            "avoids": "avoids",
+        }[verb]
+        domain = "music" if "music" in thing.lower() or thing.lower() in {"country", "country music"} else "general"
+        preferences_memory.upsert_preference(
+            int(target_id),
+            domain,
+            pref_type,
+            _memory_key(thing),
+            thing,
+            confidence=0.95,
+            importance=0.85 if pref_type in {"dislikes", "avoids"} else 0.7,
+            source=source,
+        )
+        return thing
+
+    generic = re.match(r"(?i)^(.+?)\s+is\s+(.+)$", text)
+    if generic:
+        key = _memory_key(generic.group(1))
+        value = generic.group(2).strip()
+        facts_memory.add_fact(
+            int(target_id),
+            "other",
+            key,
+            value,
+            source=source,
+            confidence=0.95,
+        )
+        return f"{generic.group(1)} is {value}"
+
+    facts_memory.add_fact(
+        int(target_id),
+        "other",
+        _memory_key(text[:40]),
+        text,
+        source=source,
+        confidence=0.95,
+        importance=0.35,
+        decay_rate="fast",
+    )
+    return text
+
+
+def _execute_memory_remember_fact_command(
+    args: dict,
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> str:
+    statement = (args.get("statement") or "").strip()
+    target_id, target_name, detail, named = _extract_memory_statement_target(
+        statement,
+        person_id,
+        person_name,
+    )
+    if target_id is None and named and target_name and _MEMORY_NAME_RE.match(target_name):
+        target_id, _created = people_memory.find_or_create_person(target_name)
+    if target_id is None:
+        resp = "I need a clearer person before I store that memory."
+        _speak_blocking(resp)
+        return resp
+    stored_label = _store_simple_memory_statement(int(target_id), detail)
+    _log.info(
+        "[memory] remembered explicit statement person_id=%s named=%s statement=%r",
+        target_id,
+        named,
+        statement,
+    )
+    resp = f"Remembered: {target_name or 'they'} - {stored_label}. Trustworthy memory, minimal theatrics."
+    _speak_blocking(resp, emotion="happy")
+    return resp
+
+
 def _execute_command(
     match: command_parser.CommandMatch,
     person_id: Optional[int],
@@ -3105,6 +3879,21 @@ def _execute_command(
         return resp
 
     # ── Memory ─────────────────────────────────────────────────────────────────
+    if key == "memory_review":
+        return _execute_memory_review_command(args, person_id, person_name)
+
+    if key == "memory_forget_fact":
+        return _execute_memory_forget_fact_command(args, person_id, person_name)
+
+    if key == "memory_boundary":
+        return _execute_memory_boundary_command(person_id)
+
+    if key == "memory_correct_fact":
+        return _execute_memory_correct_fact_command(args, person_id, person_name)
+
+    if key == "memory_remember_fact":
+        return _execute_memory_remember_fact_command(args, person_id, person_name)
+
     if key == "forget_specific":
         target = (args.get("target") or "").strip()
         if person_id is None:
@@ -3458,8 +4247,18 @@ def _post_response(
                             fact.get("category", "other"),
                             fact["key"],
                             fact["value"],
-                            source="stated",
-                            confidence=0.9,
+                            source="explicit",
+                            confidence=0.95,
+                        )
+                        _record_recent_memory_candidate(
+                            person_id,
+                            kind="fact",
+                            target=" ".join([
+                                str(fact.get("category") or ""),
+                                str(fact.get("key") or ""),
+                                str(fact.get("value") or ""),
+                            ]),
+                            label=str(fact.get("value") or fact.get("key") or "that fact"),
                         )
                         saved_count += 1
                 _log.info(
@@ -3468,6 +4267,104 @@ def _post_response(
                 )
             except Exception as exc:
                 _log.debug("post_response fact extraction error: %s", exc)
+
+            # Typed preference extraction — supplements generic facts.
+            try:
+                transcript = conv_memory.get_session_transcript()
+                recent = transcript[-10:] if len(transcript) >= 10 else transcript
+                recent = _filter_forgotten_transcript(recent, person_id)
+                new_preferences = llm.extract_preferences(
+                    person_id,
+                    recent,
+                    person_name=person_name,
+                )
+                saved_preferences = 0
+                for pref in new_preferences:
+                    if (
+                        pref.get("domain")
+                        and pref.get("preference_type")
+                        and pref.get("key")
+                        and _extracted_memory_allowed(pref, person_id)
+                    ):
+                        if pref.get("preference_type") == "boundary":
+                            pref["importance"] = max(
+                                float(pref.get("importance") or 0.0),
+                                0.95,
+                            )
+                        preferences_memory.upsert_preference(
+                            person_id,
+                            pref["domain"],
+                            pref["preference_type"],
+                            pref["key"],
+                            pref.get("value") or "",
+                            confidence=float(pref.get("confidence") or 1.0),
+                            importance=float(pref.get("importance") or 0.5),
+                            source=pref.get("source") or "explicit",
+                        )
+                        _record_recent_memory_candidate(
+                            person_id,
+                            kind="preference",
+                            target=" ".join([
+                                str(pref.get("domain") or ""),
+                                str(pref.get("preference_type") or ""),
+                                str(pref.get("key") or ""),
+                                str(pref.get("value") or ""),
+                            ]),
+                            label=str(pref.get("value") or pref.get("key") or "that preference"),
+                        )
+                        saved_preferences += 1
+                _log.info(
+                    "[interaction] preferences extracted=%d saved=%d for person_id=%s",
+                    len(new_preferences), saved_preferences, person_id,
+                )
+            except Exception as exc:
+                _log.debug("post_response preference extraction error: %s", exc)
+
+            # Typed interest extraction — durable conversation hooks separate
+            # from generic facts.
+            try:
+                transcript = conv_memory.get_session_transcript()
+                recent = transcript[-10:] if len(transcript) >= 10 else transcript
+                recent = _filter_forgotten_transcript(recent, person_id)
+                new_interests = llm.extract_interests(
+                    person_id,
+                    recent,
+                    person_name=person_name,
+                )
+                saved_interests = 0
+                for interest in new_interests:
+                    if (
+                        interest.get("name")
+                        and _extracted_memory_allowed(interest, person_id)
+                    ):
+                        interests_memory.upsert_interest(
+                            person_id,
+                            interest["name"],
+                            interest.get("category") or "hobby",
+                            interest.get("interest_strength") or "medium",
+                            confidence=float(interest.get("confidence") or 1.0),
+                            source=interest.get("source") or "explicit",
+                            notes=interest.get("notes") or "",
+                            associated_people=interest.get("associated_people") or "",
+                            associated_stories=interest.get("associated_stories") or "",
+                        )
+                        _record_recent_memory_candidate(
+                            person_id,
+                            kind="interest",
+                            target=" ".join([
+                                str(interest.get("name") or ""),
+                                str(interest.get("category") or ""),
+                                str(interest.get("notes") or ""),
+                            ]),
+                            label=str(interest.get("name") or "that interest"),
+                        )
+                        saved_interests += 1
+                _log.info(
+                    "[interaction] interests extracted=%d saved=%d for person_id=%s",
+                    len(new_interests), saved_interests, person_id,
+                )
+            except Exception as exc:
+                _log.debug("post_response interest extraction error: %s", exc)
 
             # Event extraction → person_events table for follow-ups + small talk
             try:
@@ -3508,6 +4405,476 @@ def _post_response(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Session memory consolidation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _clamp_memory_float(value: object, default: float = 0.5) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_memory_source(value: object, default: str = "explicit") -> str:
+    source = str(value or default).strip().lower()
+    return source if source in {"explicit", "inferred", "observed", "corrected"} else default
+
+
+def _normalize_decay_rate(value: object, default: str = "normal") -> str:
+    decay = str(value or default).strip().lower()
+    return decay if decay in {"fast", "normal", "permanent"} else default
+
+
+def _existing_memory_snapshot(person_id: int) -> dict:
+    """Build a compact existing-memory snapshot for consolidation prompts."""
+    try:
+        person = people_memory.get_person(person_id) or {}
+    except Exception:
+        person = {}
+    try:
+        facts = facts_memory.get_prompt_worthy_facts(person_id, limit=16)
+    except Exception:
+        facts = []
+    try:
+        preferences = preferences_memory.get_preferences_for_prompt(person_id, limit=16)
+    except Exception:
+        preferences = []
+    try:
+        interests = interests_memory.get_interests_for_prompt(person_id, limit=16)
+    except Exception:
+        interests = []
+    try:
+        events = events_memory.get_open_events(person_id)
+    except Exception:
+        events = []
+    try:
+        relationships = social_memory.get_all_involving(person_id)
+    except Exception:
+        relationships = []
+    try:
+        emotional = emotional_events.get_active_events(person_id, limit=8)
+    except Exception:
+        emotional = []
+    return {
+        "person": {
+            "id": person.get("id"),
+            "name": person.get("name"),
+            "nickname": person.get("nickname"),
+            "friendship_tier": person.get("friendship_tier"),
+        },
+        "facts": [
+            {
+                "category": f.get("category"),
+                "key": f.get("key"),
+                "value": f.get("value"),
+                "confidence": f.get("confidence"),
+                "source": f.get("source"),
+                "importance": f.get("importance"),
+                "decay_rate": f.get("decay_rate"),
+            }
+            for f in facts
+        ],
+        "preferences": preferences,
+        "interests": interests,
+        "events": events,
+        "relationships": relationships,
+        "emotional_events": emotional,
+    }
+
+
+def _payload_allowed_against_terms(payload: dict, terms: set[str]) -> bool:
+    if not terms:
+        return True
+    return not forgetting.fact_or_event_matches(payload, terms)
+
+
+def _store_consolidated_facts(
+    person_id: int,
+    items: list,
+    terms: set[str],
+    counts: dict[str, int],
+) -> None:
+    for item in items:
+        if not isinstance(item, dict):
+            counts["requires_review"] += 1
+            continue
+        key = str(item.get("key") or item.get("name") or "").strip()
+        value = str(item.get("value") or "").strip()
+        if not key or not value:
+            counts["requires_review"] += 1
+            continue
+        if not _payload_allowed_against_terms(item, terms):
+            counts["skipped"] += 1
+            continue
+        source = _normalize_memory_source(item.get("source"))
+        category = str(item.get("category") or "other").strip().lower()
+        if source == "corrected":
+            facts_memory.apply_fact_correction(
+                person_id,
+                key,
+                value,
+                category=category,
+                importance=_clamp_memory_float(item.get("importance"), 0.9),
+                decay_rate=_normalize_decay_rate(item.get("decay_rate"), "normal"),
+            )
+            counts["updated"] += 1
+        else:
+            facts_memory.add_fact(
+                person_id,
+                category,
+                key,
+                value,
+                source=source,
+                confidence=_clamp_memory_float(item.get("confidence"), 0.95),
+                importance=_clamp_memory_float(item.get("importance"), 0.5),
+                decay_rate=_normalize_decay_rate(item.get("decay_rate"), "normal"),
+            )
+            counts["stored"] += 1
+
+
+def _store_consolidated_preferences(
+    person_id: int,
+    items: list,
+    terms: set[str],
+    counts: dict[str, int],
+) -> None:
+    valid_types = {"likes", "dislikes", "prefers", "avoids", "boundary"}
+    for item in items:
+        if not isinstance(item, dict):
+            counts["requires_review"] += 1
+            continue
+        domain = str(item.get("domain") or item.get("category") or "general").strip().lower()
+        pref_type = str(item.get("preference_type") or item.get("type") or "").strip().lower()
+        key = str(item.get("key") or item.get("name") or "").strip()
+        if pref_type not in valid_types or not key:
+            counts["requires_review"] += 1
+            continue
+        if not _payload_allowed_against_terms(item, terms):
+            counts["skipped"] += 1
+            continue
+        importance = _clamp_memory_float(item.get("importance"), 0.5)
+        if pref_type == "boundary":
+            importance = max(importance, 0.95)
+        preferences_memory.upsert_preference(
+            person_id,
+            domain,
+            pref_type,
+            key,
+            str(item.get("value") or "").strip(),
+            confidence=_clamp_memory_float(item.get("confidence"), 0.95),
+            importance=importance,
+            source=_normalize_memory_source(item.get("source")),
+        )
+        counts["stored"] += 1
+
+
+def _store_consolidated_interests(
+    person_id: int,
+    items: list,
+    terms: set[str],
+    counts: dict[str, int],
+) -> None:
+    for item in items:
+        if not isinstance(item, dict):
+            counts["requires_review"] += 1
+            continue
+        name = str(item.get("name") or item.get("key") or "").strip()
+        if not name:
+            counts["requires_review"] += 1
+            continue
+        if not _payload_allowed_against_terms(item, terms):
+            counts["skipped"] += 1
+            continue
+        interests_memory.upsert_interest(
+            person_id,
+            name,
+            str(item.get("category") or "hobby").strip().lower(),
+            str(item.get("interest_strength") or "medium").strip().lower(),
+            confidence=_clamp_memory_float(item.get("confidence"), 0.95),
+            source=_normalize_memory_source(item.get("source")),
+            notes=str(item.get("notes") or item.get("rationale") or "").strip(),
+            associated_people=str(item.get("associated_people") or "").strip(),
+            associated_stories=str(item.get("associated_stories") or "").strip(),
+        )
+        counts["stored"] += 1
+
+
+def _store_consolidated_events(
+    person_id: int,
+    items: list,
+    terms: set[str],
+    counts: dict[str, int],
+) -> None:
+    try:
+        existing = events_memory.get_open_events(person_id) or []
+    except Exception:
+        existing = []
+    existing_keys = {
+        ((e.get("event_name") or "").strip().lower(), e.get("event_date"))
+        for e in existing
+    }
+    for item in items:
+        if not isinstance(item, dict):
+            counts["requires_review"] += 1
+            continue
+        name = str(item.get("event_name") or item.get("name") or item.get("value") or "").strip()
+        if not name:
+            counts["requires_review"] += 1
+            continue
+        if not _payload_allowed_against_terms(item, terms):
+            counts["skipped"] += 1
+            continue
+        event_date = item.get("event_date")
+        if event_date in ("", "null", "None"):
+            event_date = None
+        key = (name.lower(), event_date)
+        if key in existing_keys:
+            counts["updated"] += 1
+            continue
+        events_memory.add_event(
+            person_id,
+            name,
+            event_date,
+            str(item.get("event_notes") or item.get("rationale") or "").strip(),
+        )
+        existing_keys.add(key)
+        counts["stored"] += 1
+
+
+def _store_consolidated_relationships(
+    person_id: int,
+    items: list,
+    terms: set[str],
+    counts: dict[str, int],
+) -> None:
+    for item in items:
+        if not isinstance(item, dict):
+            counts["requires_review"] += 1
+            continue
+        other_name = str(item.get("other_person_name") or item.get("name") or "").strip()
+        relationship = str(item.get("relationship") or item.get("value") or "").strip()
+        if not other_name or not relationship:
+            counts["requires_review"] += 1
+            continue
+        if not _payload_allowed_against_terms(item, terms):
+            counts["skipped"] += 1
+            continue
+        other_id, _created = people_memory.find_or_create_person(other_name)
+        if other_id is None:
+            counts["requires_review"] += 1
+            continue
+        direction = str(item.get("direction") or "current_to_other").strip().lower()
+        if direction == "other_to_current":
+            social_memory.save_relationship(int(other_id), person_id, relationship, described_by=person_id)
+        else:
+            social_memory.save_relationship(person_id, int(other_id), relationship, described_by=person_id)
+        counts["stored"] += 1
+
+
+def _store_consolidated_emotional_events(
+    person_id: int,
+    items: list,
+    terms: set[str],
+    counts: dict[str, int],
+) -> None:
+    for item in items:
+        if not isinstance(item, dict):
+            counts["requires_review"] += 1
+            continue
+        desc = str(item.get("description") or item.get("value") or "").strip()
+        if not desc:
+            counts["requires_review"] += 1
+            continue
+        if not _payload_allowed_against_terms(item, terms):
+            counts["skipped"] += 1
+            continue
+        sensitivity = item.get("sensitivity_decay_days")
+        try:
+            sensitivity = int(sensitivity) if sensitivity is not None else None
+        except (TypeError, ValueError):
+            sensitivity = None
+        try:
+            valence = max(-1.0, min(1.0, float(item.get("valence") or -0.5)))
+        except (TypeError, ValueError):
+            valence = -0.5
+        emotional_events.add_event(
+            person_id,
+            str(item.get("category") or "other").strip().lower(),
+            desc,
+            valence=valence,
+            sensitivity_decay_days=sensitivity,
+            person_invited_topic=bool(item.get("person_invited_topic", True)),
+            loss_subject=item.get("loss_subject"),
+            loss_subject_kind=item.get("loss_subject_kind"),
+            loss_subject_name=item.get("loss_subject_name"),
+        )
+        counts["stored"] += 1
+
+
+def _apply_consolidated_corrections(
+    person_id: int,
+    person_name: Optional[str],
+    items: list,
+    terms: set[str],
+    counts: dict[str, int],
+) -> None:
+    for item in items:
+        if not isinstance(item, dict):
+            counts["requires_review"] += 1
+            continue
+        if not _payload_allowed_against_terms(item, terms):
+            counts["skipped"] += 1
+            continue
+        target = str(item.get("target") or item.get("type") or "fact").strip().lower()
+        key = str(item.get("key") or item.get("name") or target).strip()
+        value = str(item.get("value") or "").strip()
+        if not value:
+            counts["requires_review"] += 1
+            continue
+        if target == "identity" and key in {"name", "display_name", "nickname"}:
+            if people_memory.rename_person(person_id, value):
+                _refresh_world_state_person_name(person_id, value)
+                facts_memory.apply_fact_correction(
+                    person_id,
+                    "name",
+                    value,
+                    category="identity",
+                    importance=0.95,
+                    decay_rate="permanent",
+                )
+                counts["updated"] += 1
+            else:
+                counts["requires_review"] += 1
+            continue
+        if target == "preference":
+            _store_consolidated_preferences(person_id, [dict(item, source="corrected")], terms, counts)
+            continue
+        if target == "interest":
+            _store_consolidated_interests(person_id, [dict(item, source="corrected")], terms, counts)
+            continue
+        facts_memory.apply_fact_correction(
+            person_id,
+            key,
+            value,
+            category=str(item.get("category") or "other").strip().lower(),
+            importance=_clamp_memory_float(item.get("importance"), 0.9),
+            decay_rate=_normalize_decay_rate(item.get("decay_rate"), "normal"),
+        )
+        counts["updated"] += 1
+
+
+def _write_consolidated_memory(
+    person_id: int,
+    person_name: Optional[str],
+    consolidated: dict,
+    forgotten_terms: set[str],
+) -> dict[str, int]:
+    counts = {"stored": 0, "updated": 0, "skipped": 0, "requires_review": 0}
+    _apply_consolidated_corrections(
+        person_id,
+        person_name,
+        consolidated.get("corrections") or [],
+        forgotten_terms,
+        counts,
+    )
+    _store_consolidated_facts(person_id, consolidated.get("stable_facts") or [], forgotten_terms, counts)
+    _store_consolidated_preferences(person_id, consolidated.get("preferences") or [], forgotten_terms, counts)
+    _store_consolidated_interests(person_id, consolidated.get("interests") or [], forgotten_terms, counts)
+    _store_consolidated_relationships(person_id, consolidated.get("relationships") or [], forgotten_terms, counts)
+    _store_consolidated_events(person_id, consolidated.get("events") or [], forgotten_terms, counts)
+    _store_consolidated_emotional_events(
+        person_id,
+        consolidated.get("emotional_events") or [],
+        forgotten_terms,
+        counts,
+    )
+    discarded = consolidated.get("discarded_noise") or []
+    counts["skipped"] += len(discarded) if isinstance(discarded, list) else 0
+    return counts
+
+
+def _consolidate_session_memories(
+    person_id: int,
+    person_name: Optional[str],
+    person_transcript: list[dict],
+    forgotten_terms: set[str],
+) -> bool:
+    """Run bounded session-end memory consolidation. Returns True when completed."""
+    if not bool(getattr(config, "MEMORY_CONSOLIDATION_ENABLED", True)):
+        return False
+    min_exchanges = int(getattr(config, "MEMORY_CONSOLIDATION_MIN_SESSION_EXCHANGES", 3))
+    human_turns = [
+        t for t in person_transcript
+        if str(t.get("speaker") or "").lower() not in {"rex", "dj-r3x", "djr3x"}
+    ]
+    if _session_exchange_count < min_exchanges and len(human_turns) < min_exchanges:
+        _log.info(
+            "[memory_consolidation] skipped person_id=%s exchanges=%s human_turns=%s min=%s",
+            person_id,
+            _session_exchange_count,
+            len(human_turns),
+            min_exchanges,
+        )
+        return True
+
+    result_box: dict[str, object] = {"completed": False}
+
+    def _run() -> None:
+        try:
+            existing = _existing_memory_snapshot(person_id)
+            consolidated = llm.consolidate_session_memories(
+                person_id,
+                person_transcript,
+                person_name=person_name,
+                existing_memories=existing,
+                now_iso=datetime.now(timezone.utc).isoformat(),
+            )
+            counts = _write_consolidated_memory(
+                person_id,
+                person_name,
+                consolidated,
+                forgotten_terms,
+            )
+            result_box["completed"] = True
+            result_box["counts"] = counts
+            _log.info(
+                "[memory_consolidation] person_id=%s stored=%d updated=%d "
+                "skipped_as_noise=%d requires_review=%d",
+                person_id,
+                counts["stored"],
+                counts["updated"],
+                counts["skipped"],
+                counts["requires_review"],
+            )
+        except Exception as exc:
+            result_box["completed"] = True
+            result_box["error"] = str(exc)
+            _log.error(
+                "[memory_consolidation] failed person_id=%s: %s",
+                person_id,
+                exc,
+                exc_info=True,
+            )
+
+    worker = threading.Thread(
+        target=_run,
+        daemon=True,
+        name=f"memory-consolidation-{person_id}",
+    )
+    worker.start()
+    timeout = float(getattr(config, "MEMORY_CONSOLIDATION_TIMEOUT_SECS", 12.0))
+    worker.join(timeout=max(1.0, timeout))
+    if worker.is_alive():
+        _log.warning(
+            "[memory_consolidation] timed out after %.1fs for person_id=%s; continuing teardown",
+            timeout,
+            person_id,
+        )
+        return True
+    return bool(result_box.get("completed"))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Session teardown
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -3519,6 +4886,8 @@ def _end_session() -> None:
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
     global _idle_outro_spoken
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
+    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_existing_common_first_name
 
     transcript = conv_memory.get_session_transcript()
     if not transcript:
@@ -3528,6 +4897,7 @@ def _end_session() -> None:
         _session_router_control_topics.clear()
         _interest_idle_followups_spoken.clear()
         _low_memory_idle_questions_spoken.clear()
+        _recent_memory_candidates.clear()
         _idle_outro_spoken = False
         try:
             topic_thread.clear()
@@ -3558,6 +4928,10 @@ def _end_session() -> None:
         _pending_introduction = None
         _pending_intro_followup = None
         _pending_intro_voice_capture = None
+        _pending_common_first_name_identity = None
+        _pending_common_first_name_introduction = None
+        _pending_existing_common_first_name = None
+        _common_first_name_prompted_this_session.clear()
         try:
             consciousness.clear_response_wait()
             consciousness.clear_engagement()
@@ -3581,9 +4955,20 @@ def _end_session() -> None:
                         topics="",
                     )
 
-            # Full-transcript fact extraction at session end — catches facts the
-            # per-exchange rolling window may have missed.
+            forgotten_terms = _forgotten_terms_for_person(person_id)
+            consolidation_completed = False
             if person_transcript:
+                consolidation_completed = _consolidate_session_memories(
+                    person_id,
+                    person_name,
+                    person_transcript,
+                    forgotten_terms,
+                )
+
+            # Full-transcript extraction fallback — catches facts the
+            # per-exchange rolling window may have missed when consolidation is
+            # disabled, below threshold, or times out/fails before writing.
+            if person_transcript and not consolidation_completed:
                 try:
                     end_facts = llm.extract_facts(person_id, person_transcript, person_name=person_name)
                     saved = 0
@@ -3598,8 +4983,18 @@ def _end_session() -> None:
                                 fact.get("category", "other"),
                                 fact["key"],
                                 fact["value"],
-                                source="stated",
-                                confidence=0.9,
+                                source="explicit",
+                                confidence=0.95,
+                            )
+                            _record_recent_memory_candidate(
+                                person_id,
+                                kind="fact",
+                                target=" ".join([
+                                    str(fact.get("category") or ""),
+                                    str(fact.get("key") or ""),
+                                    str(fact.get("value") or ""),
+                                ]),
+                                label=str(fact.get("value") or fact.get("key") or "that fact"),
                             )
                             saved += 1
                     _log.info(
@@ -3608,6 +5003,95 @@ def _end_session() -> None:
                     )
                 except Exception as exc:
                     _log.error("session-end fact extraction error for person_id=%s: %s", person_id, exc)
+
+                try:
+                    end_preferences = llm.extract_preferences(
+                        person_id,
+                        person_transcript,
+                        person_name=person_name,
+                    )
+                    saved_preferences = 0
+                    for pref in end_preferences:
+                        if (
+                            pref.get("domain")
+                            and pref.get("preference_type")
+                            and pref.get("key")
+                            and _extracted_memory_allowed(pref, person_id)
+                        ):
+                            if pref.get("preference_type") == "boundary":
+                                pref["importance"] = max(
+                                    float(pref.get("importance") or 0.0),
+                                    0.95,
+                                )
+                            preferences_memory.upsert_preference(
+                                person_id,
+                                pref["domain"],
+                                pref["preference_type"],
+                                pref["key"],
+                                pref.get("value") or "",
+                                confidence=float(pref.get("confidence") or 1.0),
+                                importance=float(pref.get("importance") or 0.5),
+                                source=pref.get("source") or "explicit",
+                            )
+                            _record_recent_memory_candidate(
+                                person_id,
+                                kind="preference",
+                                target=" ".join([
+                                    str(pref.get("domain") or ""),
+                                    str(pref.get("preference_type") or ""),
+                                    str(pref.get("key") or ""),
+                                    str(pref.get("value") or ""),
+                                ]),
+                                label=str(pref.get("value") or pref.get("key") or "that preference"),
+                            )
+                            saved_preferences += 1
+                    _log.info(
+                        "[interaction] session-end preferences extracted=%d saved=%d for person_id=%s (%s)",
+                        len(end_preferences), saved_preferences, person_id, person_name,
+                    )
+                except Exception as exc:
+                    _log.error("session-end preference extraction error for person_id=%s: %s", person_id, exc)
+
+                try:
+                    end_interests = llm.extract_interests(
+                        person_id,
+                        person_transcript,
+                        person_name=person_name,
+                    )
+                    saved_interests = 0
+                    for interest in end_interests:
+                        if (
+                            interest.get("name")
+                            and _extracted_memory_allowed(interest, person_id)
+                        ):
+                            interests_memory.upsert_interest(
+                                person_id,
+                                interest["name"],
+                                interest.get("category") or "hobby",
+                                interest.get("interest_strength") or "medium",
+                                confidence=float(interest.get("confidence") or 1.0),
+                                source=interest.get("source") or "explicit",
+                                notes=interest.get("notes") or "",
+                                associated_people=interest.get("associated_people") or "",
+                                associated_stories=interest.get("associated_stories") or "",
+                            )
+                            _record_recent_memory_candidate(
+                                person_id,
+                                kind="interest",
+                                target=" ".join([
+                                    str(interest.get("name") or ""),
+                                    str(interest.get("category") or ""),
+                                    str(interest.get("notes") or ""),
+                                ]),
+                                label=str(interest.get("name") or "that interest"),
+                            )
+                            saved_interests += 1
+                    _log.info(
+                        "[interaction] session-end interests extracted=%d saved=%d for person_id=%s (%s)",
+                        len(end_interests), saved_interests, person_id, person_name,
+                    )
+                except Exception as exc:
+                    _log.error("session-end interest extraction error for person_id=%s: %s", person_id, exc)
 
             # update_visit increments visit_count, last_seen, and applies the
             # return_visit familiarity increment defined in config.
@@ -3627,6 +5111,7 @@ def _end_session() -> None:
     _session_router_control_topics.clear()
     _interest_idle_followups_spoken.clear()
     _low_memory_idle_questions_spoken.clear()
+    _recent_memory_candidates.clear()
     _idle_outro_spoken = False
     try:
         topic_thread.clear()
@@ -3659,6 +5144,10 @@ def _end_session() -> None:
     _pending_introduction = None
     _pending_intro_followup = None
     _pending_intro_voice_capture = None
+    _pending_common_first_name_identity = None
+    _pending_common_first_name_introduction = None
+    _pending_existing_common_first_name = None
+    _common_first_name_prompted_this_session.clear()
     _voice_refreshed_this_session.clear()
     _face_reveal_declined.clear()
     _grief_flow_state.clear()
@@ -4585,6 +6074,9 @@ def _boundary_fallback_topic() -> Optional[str]:
         _pending_introduction is not None
         or _pending_intro_followup is not None
         or _pending_intro_voice_capture is not None
+        or _pending_common_first_name_identity is not None
+        or _pending_common_first_name_introduction is not None
+        or _pending_existing_common_first_name is not None
     ):
         return "introductions"
     try:
@@ -4606,6 +6098,8 @@ def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> N
     """Close optional pending prompts when a person sets a boundary or declines."""
     global _pending_face_reveal_confirm, _pending_offscreen_identify
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
+    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_existing_common_first_name
 
     if person_id is not None:
         try:
@@ -4632,6 +6126,22 @@ def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> N
         _pending_intro_followup = None
     if _pending_intro_voice_capture is not None:
         _pending_intro_voice_capture = None
+    if _pending_common_first_name_identity is not None:
+        _pending_common_first_name_identity = None
+    if _pending_common_first_name_introduction is not None:
+        _pending_common_first_name_introduction = None
+    if _pending_existing_common_first_name is not None:
+        if (
+            person_id is None
+            or _pending_existing_common_first_name.get("person_id") == person_id
+        ):
+            try:
+                _common_first_name_prompted_this_session.add(
+                    int(_pending_existing_common_first_name["person_id"])
+                )
+            except Exception:
+                pass
+            _pending_existing_common_first_name = None
 
 
 def _generate_repair_response(person_id: Optional[int], text: str, repair: dict) -> str:
@@ -4714,13 +6224,11 @@ def _maybe_store_pronoun_repair(person_id: Optional[int], text: str) -> None:
     if not _PRONOUN_VALUE_RE.fullmatch(normalized):
         return
     try:
-        facts_memory.add_fact(
+        facts_memory.apply_fact_correction(
             int(target_id),
-            "identity",
             "pronouns",
             normalized,
-            "pronoun_repair",
-            confidence=0.95,
+            category="identity",
         )
         _log.info(
             "[repair] stored pronoun correction person_id=%s pronouns=%s",
@@ -5039,8 +6547,48 @@ def _curiosity_check(
                         "text": question_text,
                         "depth": 1,
                     }
+                    try:
+                        interests_memory.mark_interest_asked(
+                            person_id,
+                            steering.topic,
+                        )
+                    except Exception as exc:
+                        _log.debug("curiosity_check mark active interest asked failed: %s", exc)
             except Exception as exc:
                 _log.debug("curiosity_check steering question error: %s", exc)
+
+    # Known durable interests are deeper hooks, not basic intake questions.
+    if person_id is not None and not question_text:
+        try:
+            hooks = interests_memory.get_interest_hooks(person_id)
+        except Exception as exc:
+            _log.debug("curiosity_check interest hooks load error: %s", exc)
+            hooks = []
+        if hooks:
+            hook = hooks[0]
+            interest_name = hook.get("name") or ""
+            note = hook.get("notes") or hook.get("associated_stories") or ""
+            try:
+                question_text = llm.get_response(
+                    "Generate ONE short DJ-R3X follow-up question about this "
+                    f"known interest: {interest_name!r}. "
+                    f"Known context: {note!r}. "
+                    "Do not ask whether they like it; Rex already knows that. "
+                    "Ask a deeper, specific follow-up about what they are making, "
+                    "playing, practicing, learning, comparing, or what changed "
+                    "since they last mentioned it. Funny and snarky is fine, "
+                    "but do not roast their competence. Return only the line.",
+                    person_id,
+                )
+                if question_text:
+                    pool_question = {
+                        "key": f"interest_{re.sub(r'[^a-z0-9]+', '_', interest_name.lower()).strip('_')}_deep_followup",
+                        "text": question_text,
+                        "depth": 1,
+                    }
+                    interests_memory.mark_interest_asked(person_id, interest_name)
+            except Exception as exc:
+                _log.debug("curiosity_check known interest question error: %s", exc)
 
     # Try question pool first — structured, depth-gated, no extra LLM call
     if person_id is not None and not question_text:
@@ -5073,6 +6621,16 @@ def _curiosity_check(
                         "curiosity_check: skipping %r — fact already recorded", q_key
                     )
                     continue
+                if q_key in {"hobbies", "favorite_music", "favorite_movie"}:
+                    try:
+                        if interests_memory.get_interests_for_prompt(person_id, limit=1):
+                            _log.debug(
+                                "curiosity_check: skipping %r — interests already recorded",
+                                q_key,
+                            )
+                            continue
+                    except Exception as exc:
+                        _log.debug("curiosity_check interest skip failed: %s", exc)
                 if _question_blocked_by_boundary(person_id, candidate):
                     _log.info(
                         "[boundaries] curiosity_check suppressed question=%r for person_id=%s",
@@ -5099,7 +6657,7 @@ def _curiosity_check(
             except Exception as exc:
                 _log.debug("curiosity fallback boundary check failed: %s", exc)
         try:
-            question_text = llm.generate_curiosity_question(response_text, user_text)
+            question_text = llm.generate_curiosity_question(response_text, user_text, person_id)
         except Exception as exc:
             _log.debug("curiosity_check LLM error: %s", exc)
 
@@ -5721,6 +7279,8 @@ def _handle_speech_segment(
     """Full processing pipeline for one detected speech segment in ACTIVE state."""
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
+    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_existing_common_first_name
 
     turn_start = time.monotonic()
     answered_question: Optional[dict] = None
@@ -6122,6 +7682,57 @@ def _handle_speech_segment(
 
         relationship_prompt_consumed = False
 
+        common_name_response, common_name_person_id, common_name_full = (
+            _handle_common_first_name_last_name_reply(text, audio_array)
+        )
+        if common_name_response:
+            if common_name_person_id is not None:
+                person_id = common_name_person_id
+                person_name = common_name_full
+                _session_person_ids.add(common_name_person_id)
+            _identity_prompt_until = 0.0
+            _speak_blocking(
+                common_name_response,
+                emotion="happy",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            conv_memory.add_to_transcript("Rex", common_name_response)
+            conv_log.log_rex(common_name_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(common_name_response)
+            return
+
+        common_intro_response = _handle_common_first_name_intro_last_name_reply(text)
+        if common_intro_response:
+            _speak_blocking(
+                common_intro_response,
+                emotion="happy",
+                pre_beat_ms=150,
+                post_beat_ms_override=300,
+            )
+            conv_memory.add_to_transcript("Rex", common_intro_response)
+            conv_log.log_rex(common_intro_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(common_intro_response)
+            return
+
+        existing_common_name_response = (
+            _handle_existing_common_first_name_last_name_reply(text)
+        )
+        if existing_common_name_response:
+            _speak_blocking(
+                existing_common_name_response,
+                emotion="happy",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            conv_memory.add_to_transcript("Rex", existing_common_name_response)
+            conv_log.log_rex(existing_common_name_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(existing_common_name_response)
+            return
+
         # If the engaged person answers an unknown-face/off-camera moment with
         # an actual introduction ("this is my dad, Jeff"), let the dedicated
         # introduction flow consume it before generic identity handling. Speaker
@@ -6287,6 +7898,23 @@ def _handle_speech_segment(
                     _session_exchange_count += 1
                     _register_rex_utterance(intro_response)
                     return
+
+        existing_common_name_prompt = _maybe_prompt_existing_common_first_name(
+            person_id,
+            person_name,
+        )
+        if existing_common_name_prompt:
+            _speak_blocking(
+                existing_common_name_prompt,
+                emotion="curious",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            conv_memory.add_to_transcript("Rex", existing_common_name_prompt)
+            conv_log.log_rex(existing_common_name_prompt)
+            _session_exchange_count += 1
+            _register_rex_utterance(existing_common_name_prompt)
+            return
 
         # ── Address-mode classification ────────────────────────────────────────
         # If the utterance MENTIONS Rex but is not addressed TO him (e.g.
@@ -6633,6 +8261,46 @@ def _handle_speech_segment(
                         )
                         _identity_prompt_until = 0.0
                 else:
+                    if (
+                        identity_prompt_active
+                        and _is_common_first_name_only(intro_name)
+                    ):
+                        _pending_common_first_name_identity = {
+                            "first_name": intro_name,
+                            "audio": audio_array.copy(),
+                            "asked_at": time.monotonic(),
+                            "prior_engagement": prior_engagement,
+                        }
+                        _identity_prompt_until = max(
+                            _identity_prompt_until,
+                            time.monotonic()
+                            + float(
+                                getattr(
+                                    config,
+                                    "COMMON_FIRST_NAME_LAST_NAME_WINDOW_SECS",
+                                    30.0,
+                                )
+                            ),
+                        )
+                        last_name_prompt = _format_common_first_name_last_name_prompt(
+                            intro_name
+                        )
+                        _log.info(
+                            "[identity] common first name %r needs last-name disambiguation",
+                            intro_name,
+                        )
+                        _speak_blocking(
+                            last_name_prompt,
+                            emotion="curious",
+                            pre_beat_ms=100,
+                            post_beat_ms_override=200,
+                        )
+                        conv_memory.add_to_transcript("Rex", last_name_prompt)
+                        conv_log.log_rex(last_name_prompt)
+                        _session_exchange_count += 1
+                        _register_rex_utterance(last_name_prompt)
+                        return
+
                     # Newcomer self-introduction. Existing flow.
                     enrolled_id = _enroll_new_person(
                         intro_name,
@@ -7568,7 +9236,16 @@ def _handle_speech_segment(
                 _log.debug("active game routing failed: %s", exc)
         if match is not None:
             response_text = _execute_command(match, person_id, person_name, text)
-            if match.command_key in {"forget_specific", "forget_me", "forget_everyone"}:
+            if match.command_key in {
+                "forget_specific",
+                "forget_me",
+                "forget_everyone",
+                "memory_review",
+                "memory_forget_fact",
+                "memory_correct_fact",
+                "memory_remember_fact",
+                "memory_boundary",
+            }:
                 suppress_memory_learning = True
         elif response_text is None:
             if getattr(config, "INTENT_CLASSIFIER_ENABLED", False) and not active_grief_for_turn:
@@ -8088,6 +9765,8 @@ def _loop() -> None:
 def start() -> None:
     """Start the wake word detector and the continuous interaction loop."""
     global _thread, _identity_prompt_until, _awaiting_followup_event
+    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_existing_common_first_name
 
     if _thread and _thread.is_alive():
         _log.warning("[interaction] already running")
@@ -8101,6 +9780,10 @@ def start() -> None:
     _interest_idle_followups_spoken.clear()
     _identity_prompt_until = 0.0
     _awaiting_followup_event = None
+    _pending_common_first_name_identity = None
+    _pending_common_first_name_introduction = None
+    _pending_existing_common_first_name = None
+    _common_first_name_prompted_this_session.clear()
     topic_thread.clear()
     user_energy.clear()
     question_budget.clear()
@@ -8136,6 +9819,8 @@ def stop() -> None:
     """Stop the interaction loop and wake word detector, waiting for clean exit."""
     global _thread, _awaiting_followup_event, _identity_prompt_until
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
+    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_existing_common_first_name
 
     _stop_event.set()
     wake_word.stop()
@@ -8151,6 +9836,10 @@ def stop() -> None:
     _pending_introduction = None
     _pending_intro_followup = None
     _pending_intro_voice_capture = None
+    _pending_common_first_name_identity = None
+    _pending_common_first_name_introduction = None
+    _pending_existing_common_first_name = None
+    _common_first_name_prompted_this_session.clear()
     _recent_voice_turns.clear()
     topic_thread.clear()
     user_energy.clear()
