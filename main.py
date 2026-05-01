@@ -192,7 +192,11 @@ def _shutdown() -> None:
     logger.info("=== Shutdown complete ===")
 
 
-def main() -> None:
+_gui_bridge_stop = threading.Event()
+_gui_bridge_thread: threading.Thread | None = None
+
+
+def _run_controller_startup() -> None:
     logger.info("Verifying local Whisper model...")
     _verify_local_whisper_model()
 
@@ -334,7 +338,9 @@ def main() -> None:
 
     logger.info("=== DJ-R3X v2 is online ===")
 
-    # Step 10: Keep-alive loop — exit when state transitions to SHUTDOWN.
+
+def _wait_for_shutdown() -> None:
+    """Keep-alive loop — exit when state transitions to SHUTDOWN."""
     try:
         while True:
             if state.is_state(State.SHUTDOWN):
@@ -345,8 +351,147 @@ def main() -> None:
         logger.info("KeyboardInterrupt received — initiating clean shutdown.")
         state.set_state(State.SHUTDOWN)
 
-    # Step 11: Shutdown.
+
+def _run_headless() -> None:
+    _run_controller_startup()
+    _wait_for_shutdown()
     _shutdown()
+
+
+def _gui_requested() -> bool:
+    return bool(getattr(config, "GUI_ENABLED", False))
+
+
+def _load_dashboard_runner():
+    backend = str(getattr(config, "GUI_BACKEND", "pyside6") or "").strip().lower()
+    if backend != "pyside6":
+        logger.warning("GUI disabled: unsupported GUI_BACKEND=%r", backend)
+        return None
+    try:
+        from gui.dashboard import run_dashboard
+        return run_dashboard
+    except Exception as exc:
+        logger.warning("GUI disabled: could not import PySide6 dashboard: %s", exc)
+        return None
+
+
+def _start_gui_bridge_sync() -> None:
+    """Copy camera/world state into the GUI bridge without giving Qt live objects."""
+    global _gui_bridge_thread
+    if _gui_bridge_thread and _gui_bridge_thread.is_alive():
+        return
+
+    _gui_bridge_stop.clear()
+
+    def _sync_loop() -> None:
+        try:
+            from gui.state_bridge import gui_bridge
+        except Exception as exc:
+            logger.warning("GUI bridge sync unavailable: %s", exc)
+            return
+
+        fps = max(1, int(getattr(config, "GUI_FPS", 20) or 20))
+        interval = 1.0 / float(fps)
+        while not _gui_bridge_stop.is_set():
+            try:
+                if bool(getattr(config, "GUI_CAMERA_PREVIEW_ENABLED", True)):
+                    gui_bridge.update_frame(camera.get_frame())
+                else:
+                    gui_bridge.update_frame(None)
+            except Exception:
+                pass
+            try:
+                from world_state import world_state as _ws
+                snapshot = _ws.snapshot()
+                snapshot["state"] = state.get_state().value
+                people = list(snapshot.get("people") or [])
+                if people:
+                    enriched_people = []
+                    for person in people:
+                        person = dict(person)
+                        person_id = person.get("person_db_id")
+                        if person_id is not None and not any(
+                            person.get(key)
+                            for key in ("expression", "mood", "emotion", "affect", "face_mood")
+                        ):
+                            try:
+                                mood = consciousness.get_cached_mood(int(person_id))
+                            except Exception:
+                                mood = None
+                            if mood:
+                                person["face_mood"] = mood
+                                person["expression"] = mood.get("mood") or "neutral"
+                        enriched_people.append(person)
+                    snapshot["people"] = enriched_people
+                gui_bridge.update_world_state_snapshot(snapshot)
+            except Exception as exc:
+                logger.debug("GUI bridge world-state sync failed: %s", exc)
+            _gui_bridge_stop.wait(interval)
+
+    _gui_bridge_thread = threading.Thread(
+        target=_sync_loop,
+        daemon=True,
+        name="gui-bridge-sync",
+    )
+    _gui_bridge_thread.start()
+
+
+def _stop_gui_bridge_sync() -> None:
+    _gui_bridge_stop.set()
+    if _gui_bridge_thread and _gui_bridge_thread.is_alive():
+        _gui_bridge_thread.join(timeout=2.0)
+
+
+def _run_gui_mode(run_dashboard) -> None:
+    _run_controller_startup()
+    _start_gui_bridge_sync()
+
+    shutdown_started = threading.Event()
+
+    def _request_shutdown() -> None:
+        state.set_state(State.SHUTDOWN)
+
+    def _shutdown_watcher() -> None:
+        _wait_for_shutdown()
+        if not shutdown_started.is_set():
+            shutdown_started.set()
+            _shutdown()
+
+    watcher = threading.Thread(
+        target=_shutdown_watcher,
+        daemon=False,
+        name="shutdown-watcher",
+    )
+    watcher.start()
+
+    try:
+        try:
+            run_dashboard(shutdown_callback=_request_shutdown)
+        except Exception as exc:
+            logger.warning("GUI failed at runtime; continuing headless: %s", exc)
+            _wait_for_shutdown()
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received in GUI mode — initiating clean shutdown.")
+        state.set_state(State.SHUTDOWN)
+    finally:
+        state.set_state(State.SHUTDOWN)
+        watcher.join(timeout=60.0)
+        if watcher.is_alive():
+            logger.warning("Shutdown watcher did not finish within timeout")
+        _stop_gui_bridge_sync()
+
+
+def main() -> None:
+    if not _gui_requested():
+        _run_headless()
+        return
+
+    run_dashboard = _load_dashboard_runner()
+    if run_dashboard is None:
+        _run_headless()
+        return
+
+    _run_gui_mode(run_dashboard)
 
 
 if __name__ == "__main__":

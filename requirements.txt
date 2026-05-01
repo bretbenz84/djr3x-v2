@@ -40,6 +40,9 @@ Pillow>=10.0.0
 # mediapipe installs opencv-contrib-python, which already provides cv2
 mediapipe>=0.10.14
 
+# ── Optional macOS GUI dashboard ──────────────────────────────────────────────
+PySide6>=6.7.0
+
 # ── Hardware — serial (Maestro servo controller + Arduino) ───────────────────
 pyserial>=3.5
 

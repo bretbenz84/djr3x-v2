@@ -89,6 +89,13 @@ def _get_config_float(name: str, default: float) -> float:
     return float(getattr(config, name, default))
 
 
+def _gui_servo_sim_enabled() -> bool:
+    return bool(
+        getattr(config, "GUI_ENABLED", False)
+        and getattr(config, "GUI_SERVO_SIM_ENABLED", True)
+    )
+
+
 def _default_head_pose() -> dict[int, int]:
     return {
         _channel("neck"): config.SERVO_CHANNELS["neck"]["neutral"],
@@ -144,6 +151,13 @@ def _record_servo_positions(channel_dict: "dict[int, int]") -> None:
         world_state.update("self_state", self_state)
     except Exception as exc:
         _log.debug("servo proprioception update failed: %s", exc)
+    if bool(getattr(config, "GUI_ENABLED", False)):
+        try:
+            from gui.state_bridge import gui_bridge
+            for name, value in updates.items():
+                gui_bridge.update_servo_position(name, value)
+        except Exception:
+            pass
 
 
 # ── Serial connection ──────────────────────────────────────────────────────────
@@ -291,10 +305,14 @@ def _remember_positions(channel_dict: "dict[int, int]") -> None:
 
 def set_servo(channel: int, position: int) -> None:
     """Move channel to position (quarter-microseconds), clamped to channel limits."""
+    position = _clamp(channel, position)
     if not SERVOS_ENABLED:
         _log.debug("set_servo no-op: SERVOS_ENABLED=False (ch=%d pos=%d)", channel, position)
+        if _gui_servo_sim_enabled():
+            with _lock:
+                _remember_positions({channel: position})
+            _record_servo_positions({channel: position})
         return
-    position = _clamp(channel, position)
     with _lock:
         _send_set_target(channel, position)
         _remember_positions({channel: position})
@@ -368,12 +386,17 @@ def get_servo(channel: int) -> "int | None":
 
 def set_servos(channel_dict: "dict[int, int]") -> None:
     """Set multiple channels in one pass. channel_dict maps channel int → position."""
+    channel_dict = {ch: _clamp(ch, int(pos)) for ch, pos in channel_dict.items()}
     if not SERVOS_ENABLED:
         _log.debug("set_servos no-op: SERVOS_ENABLED=False")
+        if _gui_servo_sim_enabled():
+            with _lock:
+                _remember_positions(channel_dict)
+            _record_servo_positions(channel_dict)
         return
     with _lock:
         for channel, position in channel_dict.items():
-            _send_set_target(channel, _clamp(channel, position))
+            _send_set_target(channel, position)
         _remember_positions(channel_dict)
     _record_servo_positions(channel_dict)
 
@@ -483,6 +506,13 @@ def end_speech_motion() -> None:
             baseline[_channel("hand")] = config.SERVO_CHANNELS["hand"]["neutral"]
             baseline[_channel("heroarm")] = config.SERVO_CHANNELS["heroarm"]["neutral"]
             set_servos(baseline)
+        elif _gui_servo_sim_enabled():
+            baseline = dict(_speech_baseline) if _speech_baseline else _default_head_pose()
+            baseline[_channel("visor")] = config.SERVO_CHANNELS["visor"]["neutral"]
+            baseline[_channel("elbow")] = config.SERVO_CHANNELS["elbow"]["neutral"]
+            baseline[_channel("hand")] = config.SERVO_CHANNELS["hand"]["neutral"]
+            baseline[_channel("heroarm")] = config.SERVO_CHANNELS["heroarm"]["neutral"]
+            set_servos(baseline)
     finally:
         resume_arm_idle()
 
@@ -497,7 +527,9 @@ def speech_reactive_move(intensity: float) -> None:
     global _last_speech_move_at, _speech_hand_counter
     global _speech_elbow_target, _speech_elbow_direction, _next_speech_elbow_at
 
-    if not SERVOS_ENABLED or not _speech_active.is_set():
+    if not _speech_active.is_set():
+        return
+    if not SERVOS_ENABLED and not _gui_servo_sim_enabled():
         return
 
     now = time.monotonic()
@@ -585,6 +617,14 @@ def neutral(step_us: int = 40, step_delay: float = 0.02) -> None:
     """
     if not SERVOS_ENABLED:
         _log.debug("neutral() no-op: SERVOS_ENABLED=False")
+        if _gui_servo_sim_enabled():
+            targets = {
+                cfg["ch"]: _clamp(cfg["ch"], cfg["neutral"])
+                for cfg in config.SERVO_CHANNELS.values()
+            }
+            with _lock:
+                _remember_positions(targets)
+            _record_servo_positions(targets)
         return
 
     targets = {
@@ -639,7 +679,7 @@ def breathing_thread() -> None:
     Amplitude and period come from config.py. Stops cleanly when _stop_breathing is set.
     Call this as a daemon thread from main.py.
     """
-    if not SERVOS_ENABLED:
+    if not SERVOS_ENABLED and not _gui_servo_sim_enabled():
         _log.debug("breathing_thread no-op: SERVOS_ENABLED=False")
         return
 
@@ -666,8 +706,13 @@ def breathing_thread() -> None:
         pos = int(neutral_pos + amplitude * math.sin(2 * math.pi * t / period))
         pos = _clamp(channel, pos)
 
-        with _lock:
-            _send_set_target(channel, pos)
+        if SERVOS_ENABLED:
+            with _lock:
+                _send_set_target(channel, pos)
+        elif _gui_servo_sim_enabled():
+            with _lock:
+                _remember_positions({channel: pos})
+            _record_servo_positions({channel: pos})
 
         _stop_breathing.wait(tick)
 
@@ -681,7 +726,8 @@ def idle_animation() -> None:
     """
     if not SERVOS_ENABLED:
         _log.debug("idle_animation no-op: SERVOS_ENABLED=False")
-        return
+        if not _gui_servo_sim_enabled():
+            return
 
     neck_cfg  = config.SERVO_CHANNELS["neck"]
     lift_cfg  = config.SERVO_CHANNELS["headlift"]
@@ -700,10 +746,14 @@ def idle_animation() -> None:
 
 def move_to(targets: "dict[int, int]", step_us: int = 40, step_delay: float = 0.02) -> None:
     """Smoothly interpolate specific channels to target positions (quarter-microseconds)."""
+    targets = {ch: _clamp(ch, int(tgt)) for ch, tgt in targets.items()}
     if not SERVOS_ENABLED:
         _log.debug("move_to no-op: SERVOS_ENABLED=False")
+        if _gui_servo_sim_enabled():
+            with _lock:
+                _remember_positions(targets)
+            _record_servo_positions(targets)
         return
-    targets = {ch: _clamp(ch, int(tgt)) for ch, tgt in targets.items()}
 
     current: dict[int, int] = {}
     for ch, tgt in targets.items():

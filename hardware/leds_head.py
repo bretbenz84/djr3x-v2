@@ -26,6 +26,28 @@ _dropped_counts: dict[str, int] = {}
 _drop_window_started_at = 0.0
 _next_drop_report_at = 0.0
 _speech_drop_notified = False
+_eye_color: tuple[int, int, int] = (0, 0, 0)
+_eyes_active = False
+_led_mode = "off"
+
+
+def _mirror_gui_head_led_state(
+    *,
+    mode: str | None = None,
+    eye_color: tuple[int, int, int] | None = None,
+    eyes_active: bool | None = None,
+) -> None:
+    """Best-effort mirror of head LED state for the optional GUI avatar."""
+    try:
+        from gui.state_bridge import gui_bridge
+
+        gui_bridge.update_head_led_state(
+            mode=mode,
+            eye_color=eye_color,
+            eyes_active=eyes_active,
+        )
+    except Exception:
+        pass
 
 
 def _cmd_family(cmd: str) -> str:
@@ -159,16 +181,31 @@ def speak_level(brightness: int) -> None:
 
 def speak_stop() -> None:
     """Stop the mouth speak animation and return to idle pattern."""
+    global _eyes_active, _led_mode
+    _led_mode = "speak_stop"
+    _eyes_active = False
+    _mirror_gui_head_led_state(mode=_led_mode, eyes_active=False)
     send_command("SPEAK_STOP")
 
 
 def idle() -> None:
     """Enter idle LED pattern (slow breathing pulse)."""
+    global _eyes_active, _led_mode
+    _led_mode = "idle"
+    if any(_eye_color):
+        _eyes_active = True
+    _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=_eyes_active)
     send_command("IDLE")
 
 
 def active() -> None:
     """Enter active LED pattern (brighter, more energetic)."""
+    global _eye_color, _eyes_active, _led_mode
+    _led_mode = "active"
+    if not any(_eye_color):
+        _eye_color = (255, 255, 255)
+    _eyes_active = True
+    _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=True)
     send_command("ACTIVE")
 
 
@@ -177,9 +214,14 @@ def set_eye_color(r: int, g: int, b: int) -> None:
     Set eye pixels 0–1 to an RGB color.
     Eyes are standard RGB LEDs — values are passed through unchanged.
     """
+    global _eye_color, _eyes_active, _led_mode
     r = max(0, min(255, r))
     g = max(0, min(255, g))
     b = max(0, min(255, b))
+    _eye_color = (r, g, b)
+    _eyes_active = any(_eye_color)
+    _led_mode = "eye"
+    _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=_eyes_active)
     send_command(f"EYE:{r},{g},{b}")
 
 
@@ -191,9 +233,19 @@ def set_eye_emotion(emotion: str) -> None:
 
 def off() -> None:
     """Turn all head LEDs off immediately."""
+    global _eye_color, _eyes_active, _led_mode
+    _eye_color = (0, 0, 0)
+    _eyes_active = False
+    _led_mode = "off"
+    _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=False)
     send_command("OFF")
 
 
 def sleep() -> None:
     """Enter sleep LED state (eyes off, mouth dim or off)."""
+    global _eye_color, _eyes_active, _led_mode
+    _eye_color = (0, 0, 0)
+    _eyes_active = False
+    _led_mode = "sleep"
+    _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=False)
     send_command("SLEEP")

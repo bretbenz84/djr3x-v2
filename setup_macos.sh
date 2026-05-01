@@ -307,6 +307,15 @@ if [[ -f "$REQUIREMENTS" ]]; then
     "$VENV_PIP" install -r "$REQUIREMENTS"
     INSTALLED_ITEMS+=("pip packages from requirements.txt")
     ok "pip packages installed."
+    if "$VENV_PYTHON" - <<'PY' >/dev/null 2>&1
+import PySide6
+PY
+    then
+        ok "PySide6 GUI dependency installed from requirements.txt."
+    else
+        warn "PySide6 did not import after pip install; the optional GUI will run headless until this is resolved."
+        MANUAL_ATTENTION+=("Optional GUI dependency missing: $VENV_PIP install PySide6")
+    fi
 else
     warn "requirements.txt not found — skipping pip install."
     MANUAL_ATTENTION+=("requirements.txt missing — run: $VENV_PIP install -r requirements.txt")

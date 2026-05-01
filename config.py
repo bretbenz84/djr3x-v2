@@ -70,6 +70,23 @@ CONVERSATION_LOG_MAX_LINES = 400
 CONVERSATION_LOG_DEBUG_MAX_LINES = 120
 
 # ─────────────────────────────────────────────────────────────────────────────
+# OPTIONAL MACOS GUI DASHBOARD
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The dashboard is optional and off by default. If enabled but PySide6 or a
+# usable display is unavailable, main.py logs a warning and continues headless.
+GUI_ENABLED = True
+GUI_BACKEND = "pyside6"
+GUI_WINDOW_TITLE = "DJ-R3X Control Dashboard"
+GUI_FPS = 20
+GUI_CAMERA_PREVIEW_ENABLED = True
+GUI_SERVO_SIM_ENABLED = True
+GUI_CONVERSATION_LOG_MAX_LINES = 300
+GUI_AVATAR_SMOOTHING = 0.25
+GUI_SHOW_SERVO_VALUES = True
+GUI_SHOW_FPS = False
+
+# ─────────────────────────────────────────────────────────────────────────────
 # AI MODELS
 # ─────────────────────────────────────────────────────────────────────────────
 

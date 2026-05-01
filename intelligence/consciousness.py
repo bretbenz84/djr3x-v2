@@ -1130,6 +1130,7 @@ def _step_person_recognition(frame) -> None:
                     "engagement": base.get("engagement"),
                     "age_estimate": base.get("age_estimate"),
                     "position": base.get("position"),
+                    "face_box": base.get("face_box"),
                 })
             people = resized
             changed = True
@@ -1170,6 +1171,14 @@ def _step_person_recognition(frame) -> None:
 
             box = det.get("bounding_box")
             if box:
+                target_slot["face_box"] = tuple(box)
+                try:
+                    target_slot["position"] = (
+                        int(box[0] + box[2] / 2),
+                        int(box[1] + box[3] / 2),
+                    )
+                except Exception:
+                    pass
                 slot_key = str(
                     person_record.get("id")
                     if person_record is not None

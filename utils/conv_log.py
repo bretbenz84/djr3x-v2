@@ -60,11 +60,22 @@ def _normalize(text: str) -> str:
     return " ".join((text or "").strip().lower().split())
 
 
+def _mirror_to_gui(speaker: str, text: str, kind: str) -> None:
+    if not bool(getattr(config, "GUI_ENABLED", False)):
+        return
+    try:
+        from gui.state_bridge import gui_bridge
+        gui_bridge.add_conversation_line(speaker, text, kind=kind)
+    except Exception:
+        pass
+
+
 def log_heard(speaker: str | None, text: str) -> None:
     """Log a transcribed utterance. speaker is a name or None for unknown."""
     label = speaker.strip() if speaker and speaker.strip() else "Unknown"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     _write(f"{ts} | HEARD | {label}: {text}")
+    _mirror_to_gui(label if label != "Unknown" else "Unknown speaker", text, "user")
 
 
 def log_rex(text: str) -> None:
@@ -81,6 +92,14 @@ def log_rex(text: str) -> None:
         _last_rex_at = now
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         _append_locked(f"{ts} | REX   | {text.strip()}")
+    _mirror_to_gui("Rex", text.strip(), "rex")
+
+
+def log_system(text: str) -> None:
+    """Log an important system message to the GUI conversation panel."""
+    if not text or not text.strip():
+        return
+    _mirror_to_gui("System", text.strip(), "system")
 
 
 def clear_dedupe_state() -> None:
