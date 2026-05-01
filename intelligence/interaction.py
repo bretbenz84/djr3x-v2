@@ -350,6 +350,16 @@ def _dj_is_playing() -> bool:
         return False
 
 
+def _game_suppresses_conversation() -> bool:
+    try:
+        from features import games as games_mod
+        if hasattr(games_mod, "suppresses_conversation_interruptions"):
+            return bool(games_mod.suppresses_conversation_interruptions())
+        return bool(games_mod.is_active())
+    except Exception:
+        return False
+
+
 def _action_router_context(
     text: str,
     *,
@@ -915,6 +925,8 @@ def _should_no_response_recovery_fire(
     now: Optional[float] = None,
     last_speech_at: Optional[float] = None,
 ) -> bool:
+    if _game_suppresses_conversation():
+        return False
     cooldown = _question_recovery_cooldown_secs()
     if cooldown <= 0:
         return False
@@ -930,6 +942,8 @@ def _arm_no_response_recovery(
     """After Rex asks a question, recover with one quip if nobody answers."""
     global _no_response_recovery_token
 
+    if _game_suppresses_conversation():
+        return
     if not _question_expects_response(question_text):
         return
     cooldown = _question_recovery_cooldown_secs()
@@ -951,6 +965,8 @@ def _arm_no_response_recovery(
         if not _should_no_response_recovery_fire(asked_at=asked_at):
             return
         if state_module.get_state() != State.ACTIVE:
+            return
+        if _game_suppresses_conversation():
             return
         if (
             speech_queue.is_speaking()
@@ -1099,6 +1115,8 @@ def _maybe_interest_idle_followup(
 ) -> bool:
     """Give one topic-aware nudge before an active interest thread goes idle."""
     global _session_exchange_count
+    if _game_suppresses_conversation():
+        return False
     if not bool(getattr(config, "INTEREST_IDLE_FOLLOWUP_ENABLED", True)):
         return False
     threshold = float(getattr(config, "INTEREST_IDLE_FOLLOWUP_SECS", 12.0) or 0.0)
@@ -1212,6 +1230,8 @@ def _maybe_low_memory_idle_question(
     effective_idle_timeout: float,
 ) -> bool:
     """Ask one profile-building question during a lull for known sparse profiles."""
+    if _game_suppresses_conversation():
+        return False
     if not bool(getattr(config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True)):
         return False
     threshold = float(getattr(config, "LOW_MEMORY_IDLE_QUESTION_SECS", 10.0) or 0.0)
@@ -1279,6 +1299,8 @@ def _maybe_low_memory_idle_question(
 def _maybe_idle_outro() -> bool:
     """Say one tiny silence-aware line before an active session returns to IDLE."""
     global _idle_outro_spoken
+    if _game_suppresses_conversation():
+        return False
     if _idle_outro_spoken:
         return False
     if not bool(getattr(config, "IDLE_OUTRO_ENABLED", True)):
@@ -3139,6 +3161,9 @@ def _process_audio(
 def _maybe_prompt_incomplete_turn() -> bool:
     """Ask a tiny repair question when a held fragment times out."""
     global _session_exchange_count
+    if _game_suppresses_conversation():
+        turn_completion.clear_stale_prompted()
+        return False
     if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
         return False
 
@@ -4324,6 +4349,13 @@ def _post_response(
     """
     # ── Follow-up delivery (sync — spoken as part of this turn) ───────────────
     global _awaiting_followup_event
+
+    if _game_suppresses_conversation():
+        try:
+            interoception.record_interaction()
+        except Exception as exc:
+            _log.debug("post_response interoception error: %s", exc)
+        return
 
     suppress_stale_followup = False
     try:
@@ -7489,6 +7521,7 @@ def _handle_speech_segment(
     repair_move: Optional[dict] = None
     router_decision: Optional[action_router.ActionDecision] = None
     suppress_memory_learning = False
+    handled_active_game_turn = False
 
     # Randomised pre-response pause — prevents Rex from feeling instant/robotic
     delay_started = time.monotonic()
@@ -7511,43 +7544,49 @@ def _handle_speech_segment(
             return
 
         heard_log_text = text
-        completion = turn_completion.consume_continuation(
-            text=text,
-            audio_array=audio_array,
-            raw_best_id=raw_best_id,
-            raw_best_name=raw_best_name,
-            raw_best_score=speaker_score,
-        )
-        if completion and completion.get("action") == "merge":
-            text = completion["text"]
-            merged_audio = completion.get("audio_array")
-            if merged_audio is not None:
-                audio_array = merged_audio
-            raw_best_id = completion.get("raw_best_id")
-            raw_best_name = completion.get("raw_best_name")
-            speaker_score = float(completion.get("raw_best_score") or 0.0)
-            if completion.get("was_prompted"):
-                heard_log_text = completion.get("continuation_text") or heard_log_text
+        if not _game_suppresses_conversation():
+            completion = turn_completion.consume_continuation(
+                text=text,
+                audio_array=audio_array,
+                raw_best_id=raw_best_id,
+                raw_best_name=raw_best_name,
+                raw_best_score=speaker_score,
+            )
+            if completion and completion.get("action") == "merge":
+                text = completion["text"]
+                merged_audio = completion.get("audio_array")
+                if merged_audio is not None:
+                    audio_array = merged_audio
+                raw_best_id = completion.get("raw_best_id")
+                raw_best_name = completion.get("raw_best_name")
+                speaker_score = float(completion.get("raw_best_score") or 0.0)
+                if completion.get("was_prompted"):
+                    heard_log_text = completion.get("continuation_text") or heard_log_text
+                else:
+                    heard_log_text = text
             else:
-                heard_log_text = text
-        else:
-            signal = turn_completion.classify(text)
-            if signal is not None:
-                pending = turn_completion.hold(
-                    text=text,
-                    audio_array=audio_array,
-                    raw_best_id=raw_best_id,
-                    raw_best_name=raw_best_name,
-                    raw_best_score=speaker_score,
-                    signal=signal,
-                )
-                try:
-                    consciousness.begin_response_wait(
-                        max(0.5, pending.hold_until - time.monotonic()) + 0.5
+                signal = turn_completion.classify(text)
+                if signal is not None:
+                    pending = turn_completion.hold(
+                        text=text,
+                        audio_array=audio_array,
+                        raw_best_id=raw_best_id,
+                        raw_best_name=raw_best_name,
+                        raw_best_score=speaker_score,
+                        signal=signal,
                     )
-                except Exception as exc:
-                    _log.debug("turn completion response-wait failed: %s", exc)
-                return
+                    try:
+                        consciousness.begin_response_wait(
+                            max(0.5, pending.hold_until - time.monotonic()) + 0.5
+                        )
+                    except Exception as exc:
+                        _log.debug("turn completion response-wait failed: %s", exc)
+                    return
+        else:
+            try:
+                turn_completion.clear_stale_prompted()
+            except Exception:
+                pass
 
         specific_forget_target_for_turn = forgetting.extract_specific_forget_target(text)
 
@@ -7827,6 +7866,7 @@ def _handle_speech_segment(
         identity_prompt_active = time.monotonic() <= _identity_prompt_until
         has_unknown_visible_now = _has_unknown_visible_person()
         has_unknown_visible_or_recent = has_unknown_visible_now or _has_unknown_visible_or_recent()
+        game_conversation_lock = _game_suppresses_conversation()
         voice_group_chatter = _note_voice_turn_for_group_chatter(
             person_id=person_id,
             raw_best_id=raw_best_id,
@@ -7839,7 +7879,7 @@ def _handle_speech_segment(
             has_unknown_visible=has_unknown_visible_now,
             identity_prompt_active=identity_prompt_active,
             text=text,
-        ):
+        ) and not game_conversation_lock:
             _log.info(
                 "[interaction] ignoring no-wake IDLE speech from unrecognized/off-camera "
                 "source text=%r raw_best=%s score=%.3f visible_known=%d",
@@ -7859,6 +7899,7 @@ def _handle_speech_segment(
             and person_id is None
             and not identity_prompt_active
             and command_parser.parse(text) is None
+            and not game_conversation_lock
         ):
             _log.info(
                 "[interaction] ignoring unknown speech during group chatter "
@@ -7891,7 +7932,7 @@ def _handle_speech_segment(
 
         # Consciousness asked an unknown person for their name. Open a short window
         # where single/short name replies are treated as enrollment input.
-        if consciousness.consume_identity_prompt_request():
+        if not game_conversation_lock and consciousness.consume_identity_prompt_request():
             _identity_prompt_until = max(
                 _identity_prompt_until,
                 time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS,
@@ -7899,9 +7940,11 @@ def _handle_speech_segment(
 
         relationship_prompt_consumed = False
 
-        common_name_response, common_name_person_id, common_name_full = (
-            _handle_common_first_name_last_name_reply(text, audio_array)
-        )
+        common_name_response, common_name_person_id, common_name_full = (None, None, None)
+        if not game_conversation_lock:
+            common_name_response, common_name_person_id, common_name_full = (
+                _handle_common_first_name_last_name_reply(text, audio_array)
+            )
         if common_name_response:
             if common_name_person_id is not None:
                 person_id = common_name_person_id
@@ -7920,7 +7963,11 @@ def _handle_speech_segment(
             _register_rex_utterance(common_name_response)
             return
 
-        common_intro_response = _handle_common_first_name_intro_last_name_reply(text)
+        common_intro_response = (
+            _handle_common_first_name_intro_last_name_reply(text)
+            if not game_conversation_lock
+            else None
+        )
         if common_intro_response:
             _speak_blocking(
                 common_intro_response,
@@ -7936,6 +7983,8 @@ def _handle_speech_segment(
 
         existing_common_name_response = (
             _handle_existing_common_first_name_last_name_reply(text)
+            if not game_conversation_lock
+            else None
         )
         if existing_common_name_response:
             _speak_blocking(
@@ -7956,6 +8005,7 @@ def _handle_speech_segment(
             and person_id is not None
             and has_unknown_visible_or_recent
             and not _same_person_name(self_identified_name, person_name)
+            and not game_conversation_lock
         ):
             _log.info(
                 "[identity] explicit self-introduction %r conflicts with weak/current "
@@ -7967,7 +8017,12 @@ def _handle_speech_segment(
             person_name = None
             off_camera_unknown = False
 
-        if self_identified_name and person_id is None and has_unknown_visible_or_recent:
+        if (
+            self_identified_name
+            and person_id is None
+            and has_unknown_visible_or_recent
+            and not game_conversation_lock
+        ):
             prior_engagement = recent_engagement
             if _is_common_first_name_only(self_identified_name):
                 _pending_common_first_name_identity = {
@@ -8086,7 +8141,7 @@ def _handle_speech_segment(
             except (TypeError, ValueError):
                 intro_introducer_id = None
             intro_introducer_name = recent_engagement.get("name")
-        if intro_introducer_id is not None:
+        if intro_introducer_id is not None and not game_conversation_lock:
             has_unknown_for_intro = has_unknown_visible_now
             parsed_intro = introductions.detect(
                 text,
@@ -8126,7 +8181,11 @@ def _handle_speech_segment(
         # Consciousness asked the ENGAGED person about an unknown newcomer.
         # Try to extract {name, relationship}, enroll the newcomer using the
         # current unknown face, and save the relationship edge.
-        rel_ctx = consciousness.consume_relationship_prompt_request()
+        rel_ctx = (
+            consciousness.consume_relationship_prompt_request()
+            if not game_conversation_lock
+            else None
+        )
         relationship_prompt_consumed = relationship_prompt_consumed or rel_ctx is not None
         if rel_ctx is not None:
             relationship_response = _handle_relationship_reply(
@@ -8823,14 +8882,10 @@ def _handle_speech_segment(
                                 priority=1,
                                 tag="game:after_audio",
                             )
-                    _post_response(
-                        text,
-                        person_id,
-                        person_name,
-                        assistant_asked_question=assistant_asked_question,
-                        pre_classified_insult=False,
-                        suppress_memory_learning=True,
-                    )
+                    try:
+                        interoception.record_interaction()
+                    except Exception as exc:
+                        _log.debug("active game interoception error: %s", exc)
                     return
         except Exception as exc:
             _log.debug("early active game routing failed: %s", exc)
@@ -9634,6 +9689,8 @@ def _handle_speech_segment(
                             if after_audio and not _interrupted.is_set():
                                 game_after_audio_path = after_audio
                         used_agenda_llm = True
+                        handled_active_game_turn = True
+                        suppress_memory_learning = True
                         match = None
             except Exception as exc:
                 _log.debug("active game routing failed: %s", exc)
@@ -9893,17 +9950,23 @@ def _handle_speech_segment(
                 )
                 game_after_audio_path = None
 
-        if assistant_asked_question and question_recovery_text:
+        if assistant_asked_question and question_recovery_text and not handled_active_game_turn:
             _arm_no_response_recovery(question_recovery_text, person_id)
 
-        _post_response(
-            text,
-            person_id,
-            person_name,
-            assistant_asked_question=assistant_asked_question,
-            pre_classified_insult=pre_classified_insult,
-            suppress_memory_learning=suppress_memory_learning,
-        )
+        if handled_active_game_turn:
+            try:
+                interoception.record_interaction()
+            except Exception as exc:
+                _log.debug("active game interoception error: %s", exc)
+        else:
+            _post_response(
+                text,
+                person_id,
+                person_name,
+                assistant_asked_question=assistant_asked_question,
+                pre_classified_insult=pre_classified_insult,
+                suppress_memory_learning=suppress_memory_learning,
+            )
     finally:
         if sequence_started:
             echo_cancel.end_sequence()

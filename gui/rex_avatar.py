@@ -63,8 +63,10 @@ def servo_to_offset(name, value) -> float:
 
 
 class RexAvatar(QWidget):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, *, show_background: bool = True, show_grid: bool = True) -> None:
         super().__init__(parent)
+        self._show_background = bool(show_background)
+        self._show_grid = bool(show_grid)
         self._target: dict[str, float] = _neutral_norms()
         self._current: dict[str, float] = dict(self._target)
         self._last_paint = time.monotonic()
@@ -74,6 +76,11 @@ class RexAvatar(QWidget):
             "eyes_active": False,
             "updated_at": 0.0,
         }
+        self._speech_state: dict[str, Any] = {
+            "speaking": False,
+            "audio_path": None,
+            "updated_at": 0.0,
+        }
         self._last_eye_event_at = 0.0
         self._blink_state = "open"
         self._blink_timer = time.monotonic()
@@ -81,9 +88,16 @@ class RexAvatar(QWidget):
         self._blink_duration = 0.0
         self._is_second_blink = False
         self._idle_phase = 0.0
+        self._mouth_phase = 0.0
         self._last_blink_tick = time.monotonic()
         self._sprites = _load_sprites()
-        self.setMinimumSize(430, 470)
+        if not self._show_background:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            self.setAutoFillBackground(False)
+        if self._show_background:
+            self.setMinimumSize(430, 470)
+        else:
+            self.setMinimumSize(1, 1)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         ws = snapshot.get("world_state") or {}
@@ -100,6 +114,9 @@ class RexAvatar(QWidget):
             if event_at != self._last_eye_event_at:
                 self._last_eye_event_at = event_at
                 self._reset_blink_cycle()
+        speech_state = snapshot.get("speech_state") or {}
+        if speech_state:
+            self._speech_state.update(speech_state)
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
@@ -107,8 +124,10 @@ class RexAvatar(QWidget):
         self._tick_eye_animation()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor("#07111a"))
-        self._draw_grid(painter)
+        if self._show_background:
+            painter.fillRect(self.rect(), QColor("#07111a"))
+        if self._show_grid:
+            self._draw_grid(painter)
 
         if self._sprites:
             self._draw_sprite_avatar(painter)
@@ -136,16 +155,20 @@ class RexAvatar(QWidget):
         head = self._sprites["head"]
         right_arm = self._sprites.get("right_arm")
         poker_arm = self._sprites.get("poker_arm")
+        speaking = self._is_speaking()
+        speech_bob = (math.sin(self._mouth_phase * 0.72) * h * 0.010) if speaking else 0.0
 
-        body_h = min(h * 0.76, w * 1.08)
+        embedded = not self._show_background
+        body_h = min(h * (0.88 if embedded else 0.76), w * (1.22 if embedded else 1.08))
         body_w = body_h * body.width() / max(1, body.height())
-        body_rect = QRectF(cx - body_w / 2.0, h * 0.14, body_w, body_h)
+        body_top_ratio = 0.06 if embedded else 0.14
+        body_rect = QRectF(cx - body_w / 2.0, h * body_top_ratio + speech_bob, body_w, body_h)
 
         neck_norm = self._current.get("neck", 0.5)
         lift = servo_to_offset("headlift", self._value("headlift")) * 0.78
         pitch = servo_to_angle("headtilt", self._value("headtilt")) / 18.0
         neck_x = (neck_norm - 0.5) * w * 0.13
-        head_y_shift = lift + pitch * 22.0
+        head_y_shift = lift + pitch * 22.0 + speech_bob * 1.6
         head_squash = 1.0 - abs(pitch) * 0.12
         head_shear = pitch * 0.05
 
@@ -197,6 +220,7 @@ class RexAvatar(QWidget):
         )
         self._draw_visor_overlay(painter, head_rect.size().width(), head_rect.size().height())
         self._draw_eye_overlay(painter, head_rect.size().width(), head_rect.size().height())
+        self._draw_mouth_overlay(painter, head_rect.size().width(), head_rect.size().height())
         painter.restore()
 
     def _draw_pivoted_sprite(
@@ -265,10 +289,50 @@ class RexAvatar(QWidget):
                 painter.drawEllipse(center, radius_x * shrink, radius_y * shrink)
             painter.setPen(QPen(QColor("#08101c"), 2))
 
+    def _draw_mouth_overlay(self, painter: QPainter, head_w: float, head_h: float) -> None:
+        speaking = self._is_speaking()
+        strength = 0.25
+        if speaking:
+            strength = 0.62 + 0.30 * (0.5 + 0.5 * math.sin(self._mouth_phase * 1.25))
+        mouth = QRectF(-head_w * 0.105, head_h * 0.118, head_w * 0.210, head_h * 0.255)
+        painter.setPen(QPen(QColor(3, 9, 14, 190), max(1.0, head_w * 0.006)))
+        painter.setBrush(QColor(5, 12, 18, 145 if speaking else 95))
+        painter.drawRoundedRect(mouth, head_w * 0.014, head_w * 0.014)
+        if speaking:
+            painter.setPen(QPen(QColor(60, 165, 255, 120), max(1.0, head_w * 0.008)))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(mouth.adjusted(-1.5, -1.5, 1.5, 1.5), head_w * 0.016, head_w * 0.016)
+
+        bar_count = 5
+        gap = mouth.height() * 0.08
+        bar_h = (mouth.height() - gap * (bar_count + 1)) / bar_count
+        for idx in range(bar_count):
+            phase = math.sin(self._mouth_phase + idx * 0.92)
+            active = strength * (0.50 + 0.50 * phase) if speaking else 0.10
+            alpha = int(45 + 175 * max(0.0, min(1.0, active)))
+            bar_w = mouth.width() * (0.52 + 0.34 * max(0.0, phase if speaking else 0.0))
+            bar = QRectF(
+                mouth.center().x() - bar_w / 2.0,
+                mouth.top() + gap + idx * (bar_h + gap),
+                bar_w,
+                max(1.0, bar_h),
+            )
+            if idx % 2:
+                color = QColor(48, 148, 255, alpha)
+            else:
+                color = QColor(255, 166, 48, alpha if speaking else int(alpha * 0.55))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawRoundedRect(bar, bar_h * 0.45, bar_h * 0.45)
+
     def _tick_eye_animation(self) -> None:
         now = time.monotonic()
         dt = max(0.0, min(0.25, now - self._last_blink_tick))
         self._last_blink_tick = now
+        if self._is_speaking():
+            self._mouth_phase += dt * 14.0
+        else:
+            self._mouth_phase += dt * 2.0
         if self._eye_state.get("mode") == "idle":
             self._idle_phase += dt * 0.8
         if not bool(self._eye_state.get("eyes_active")) or not any(_eye_color(self._eye_state)):
@@ -310,6 +374,9 @@ class RexAvatar(QWidget):
         self._blink_interval = random.uniform(2.0, 8.0)
         self._blink_duration = 0.0
         self._is_second_blink = False
+
+    def _is_speaking(self) -> bool:
+        return bool(self._speech_state.get("speaking"))
 
     def _draw_grid(self, painter: QPainter) -> None:
         painter.setPen(QPen(QColor(27, 50, 70, 105), 1))
@@ -406,6 +473,11 @@ class RexAvatar(QWidget):
         painter.setPen(QPen(QColor("#5e6978"), 2))
         for x in range(-35, 41, 14):
             painter.drawLine(QPointF(x, 24), QPointF(x, 36))
+        if self._is_speaking():
+            painter.setPen(QPen(QColor("#48a9ff"), 3))
+            for idx, y in enumerate((22, 28, 34)):
+                width = 28 + 18 * (0.5 + 0.5 * math.sin(self._mouth_phase + idx))
+                painter.drawLine(QPointF(-width, y), QPointF(width, y))
 
         painter.restore()
 

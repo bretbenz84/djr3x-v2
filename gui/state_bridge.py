@@ -31,6 +31,11 @@ class GUIDashboardBridge:
             "eyes_active": False,
             "updated_at": time.time(),
         }
+        self._speech_state: dict[str, Any] = {
+            "speaking": False,
+            "audio_path": None,
+            "updated_at": time.time(),
+        }
         self._scene_description: str = ""
         self._conversation_lines: deque[dict[str, Any]] = deque(
             maxlen=max(1, int(max_lines or getattr(config, "GUI_CONVERSATION_LOG_MAX_LINES", 300)))
@@ -101,6 +106,14 @@ class GUIDashboardBridge:
             self._head_led_state["updated_at"] = time.time()
             self._updated_at = time.time()
 
+    def update_speech_state(self, *, speaking: bool, audio_path: Optional[str] = None) -> None:
+        """Mirror active speech playback for avatar animation."""
+        with self._lock:
+            self._speech_state["speaking"] = bool(speaking)
+            self._speech_state["audio_path"] = str(audio_path) if audio_path else None
+            self._speech_state["updated_at"] = time.time()
+            self._updated_at = time.time()
+
     def add_conversation_line(self, speaker: str, text: str, kind: str = "user") -> None:
         text = (text or "").strip()
         if not text:
@@ -138,6 +151,7 @@ class GUIDashboardBridge:
                 "game_state": copy.deepcopy(self._game_state),
                 "servo_positions": dict(self._servo_positions),
                 "head_led_state": copy.deepcopy(self._head_led_state),
+                "speech_state": copy.deepcopy(self._speech_state),
                 "scene_description": self._scene_description,
                 "conversation_lines": list(self._conversation_lines),
                 "updated_at": self._updated_at,

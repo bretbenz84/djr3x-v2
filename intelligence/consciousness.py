@@ -709,6 +709,16 @@ def _can_proactive_speak() -> bool:
     if not _can_speak():
         return False
 
+    try:
+        from features import games as games_mod
+        if hasattr(games_mod, "suppresses_conversation_interruptions"):
+            if games_mod.suppresses_conversation_interruptions():
+                return False
+        elif games_mod.is_active():
+            return False
+    except Exception:
+        pass
+
     current_state = state_module.get_state()
     if (
         current_state == State.ACTIVE

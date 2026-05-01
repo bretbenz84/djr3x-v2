@@ -1817,6 +1817,11 @@ def is_active() -> bool:
         return _active_game is not None
 
 
+def suppresses_conversation_interruptions() -> bool:
+    """Return True while game flow should own the next spoken turn."""
+    return is_active()
+
+
 def current_game() -> Optional[str]:
     """Return the normalized name of the current game, or None if no game is active."""
     with _lock:

@@ -221,6 +221,21 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 )
             )
 
+    def test_no_response_recovery_is_suppressed_during_active_game(self):
+        from intelligence import interaction
+
+        with mock.patch(
+            "features.games.suppresses_conversation_interruptions",
+            return_value=True,
+        ):
+            self.assertFalse(
+                interaction._should_no_response_recovery_fire(
+                    asked_at=100.0,
+                    now=108.0,
+                    last_speech_at=100.0,
+                )
+            )
+
     def test_wake_ack_never_repeats_back_to_back_and_requires_cache(self):
         from intelligence import interaction
 
@@ -2055,6 +2070,15 @@ class ConversationGatingTest(unittest.TestCase):
             1,
         )
 
+    def test_proactive_speech_is_suppressed_during_active_game(self):
+        from intelligence import consciousness
+
+        with mock.patch(
+            "features.games.suppresses_conversation_interruptions",
+            return_value=True,
+        ):
+            self.assertFalse(consciousness._can_proactive_speak())
+
     def test_local_sensitive_classifier_detects_death_subject(self):
         from intelligence import empathy
 
@@ -2430,6 +2454,24 @@ class ConversationGatingTest(unittest.TestCase):
         interaction._session_person_ids.clear()
         interaction._interest_idle_followups_spoken.clear()
         conversation_steering.clear()
+
+    def test_interest_idle_followup_is_suppressed_during_active_game(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch(
+                "features.games.suppresses_conversation_interruptions",
+                return_value=True,
+            ),
+            mock.patch.object(interaction.llm, "get_response") as get_response,
+        ):
+            spoken = interaction._maybe_interest_idle_followup(
+                idle_for=30.0,
+                effective_idle_timeout=60.0,
+            )
+
+        self.assertFalse(spoken)
+        get_response.assert_not_called()
 
     def test_social_frame_allows_followup_after_user_question_when_agenda_allows(self):
         from intelligence import social_frame

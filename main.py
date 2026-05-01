@@ -221,6 +221,20 @@ def _launch_startup_jeopardy() -> None:
         if not response:
             logger.warning("Jeopardy startup returned no opening response.")
             return
+        try:
+            intro_path = Path(getattr(config, "JEOPARDY_AUDIO_DIR", "assets/audio/jeopardy")) / "jeopardy-intro.mp3"
+            current_audio = speech_queue.current_audio_path() or ""
+            intro_is_playing = Path(current_audio).name == intro_path.name if current_audio else False
+            intro_is_waiting = speech_queue.has_waiting_with_tag("jeopardy:intro")
+            if intro_path.exists() and not intro_is_playing and not intro_is_waiting:
+                logger.info("Jeopardy startup intro was not queued; queueing %s", intro_path)
+                speech_queue.enqueue_audio_file(
+                    str(intro_path),
+                    priority=1,
+                    tag="jeopardy:intro",
+                )
+        except Exception as exc:
+            logger.debug("Could not verify Jeopardy startup intro audio: %s", exc)
 
         try:
             conv_memory.add_to_transcript("Rex", response)
@@ -486,6 +500,13 @@ def _start_gui_bridge_sync() -> None:
                 gui_bridge.update_game_state_snapshot(games_mod.snapshot())
             except Exception as exc:
                 logger.debug("GUI bridge game-state sync failed: %s", exc)
+            try:
+                gui_bridge.update_speech_state(
+                    speaking=speech_queue.is_speaking(),
+                    audio_path=speech_queue.current_audio_path(),
+                )
+            except Exception as exc:
+                logger.debug("GUI bridge speech-state sync failed: %s", exc)
             _gui_bridge_stop.wait(interval)
 
     _gui_bridge_thread = threading.Thread(

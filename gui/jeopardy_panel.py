@@ -8,15 +8,20 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
+from gui.rex_avatar import RexAvatar
+
 
 class JeopardyPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._state: dict[str, Any] = {}
+        self._avatar = RexAvatar(self, show_background=False, show_grid=False)
+        self._avatar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setMinimumSize(980, 640)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         self._state = dict(snapshot.get("game_state") or {})
+        self._avatar.set_snapshot(snapshot)
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
@@ -78,8 +83,9 @@ class JeopardyPanel(QWidget):
             prompt,
         )
 
-        bot = rect.adjusted(28, 150, -28, -95)
-        self._draw_rex_badge(painter, bot)
+        bot = rect.adjusted(4, 138, -4, -88)
+        self._avatar.setGeometry(bot.toRect())
+        self._avatar.raise_()
 
         logo = QRectF(rect.left() + 30, rect.bottom() - 82, rect.width() - 60, 56)
         self._blue_panel(painter, logo)
@@ -275,7 +281,7 @@ class JeopardyPanel(QWidget):
                 button = QRectF(rect.left() + 8, y, rect.width() - 16, 48)
                 self._blue_panel(painter, button)
                 painter.setPen(QColor("#f8fbff"))
-                font.setPointSize(14)
+                font.setPointSize(max(10, int(min(14, button.width() / 9.8))))
                 painter.setFont(font)
                 painter.drawText(button, Qt.AlignmentFlag.AlignCenter, label)
                 y += 62
