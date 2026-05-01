@@ -258,6 +258,90 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         speak.assert_not_called()
 
+    def test_self_intro_name_stops_before_introducing_known_person(self):
+        from intelligence import interaction
+
+        self.assertEqual(
+            interaction._extract_self_identified_name(
+                "My name is Jennifer Woodard and this is my brother Bret"
+            ),
+            "Jennifer Woodard",
+        )
+
+    def test_filler_is_not_a_valid_name_or_transcript(self):
+        from audio import transcription
+        from intelligence import interaction
+
+        self.assertIsNone(interaction._extract_introduced_name("mmm", allow_bare_name=True))
+        self.assertIsNone(interaction._extract_introduced_name("mmm wait", allow_bare_name=True))
+        self.assertIsNone(interaction._extract_introduced_name("have you?", allow_bare_name=True))
+        self.assertTrue(transcription._is_hallucination("mmm"))
+
+    def test_intro_name_trims_trailing_greeting(self):
+        from intelligence import introductions
+
+        parsed = introductions.detect("This is my sister Jennifer Hi", has_unknown_face=True)
+
+        self.assertTrue(parsed.is_introduction)
+        self.assertEqual(parsed.name, "Jennifer")
+        self.assertEqual(parsed.relationship, "sister")
+
+    def test_jeopardy_roster_allows_four_players_and_jen_alias(self):
+        from features import jeopardy
+        from features import games
+        from memory import people as people_memory
+
+        self.assertEqual(
+            jeopardy.parse_player_names("Will, Jen, Daniel, and Bret", limit=4),
+            ["Will", "Jen", "Daniel", "Bret"],
+        )
+
+        def find_person(name):
+            rows = {
+                "Jennifer": {"id": 4, "name": "Jennifer Woodard"},
+                "Daniel": {"id": 3, "name": "Daniel"},
+                "Bret": {"id": 1, "name": "Bret Benziger"},
+            }
+            return rows.get(name)
+
+        with (
+            mock.patch.object(people_memory, "find_person_by_name", side_effect=find_person),
+            mock.patch.object(people_memory, "find_or_create_person", return_value=(9, True)),
+            mock.patch.object(people_memory, "has_voice_biometric", side_effect=lambda pid: pid != 4),
+        ):
+            players, needs_voice = games._jeopardy_prepare_players(["Will", "Jen", "Daniel", "Bret"])
+
+        self.assertEqual([p["name"] for p in players], ["Will", "Jennifer", "Daniel", "Bret"])
+        self.assertEqual(needs_voice, [1])
+
+    def test_self_intro_relationship_to_engaged_collapses_sibling_gender(self):
+        from intelligence import interaction
+
+        self.assertEqual(
+            interaction._extract_self_relationship_to_engaged(
+                "My name is Jennifer Woodard and this is my brother Bret",
+                "Bret Benziger",
+            ),
+            "sibling",
+        )
+
+    def test_enroll_unknown_face_refuses_largest_known_fallback(self):
+        from vision import face
+
+        fake_face = {
+            "encoding": object(),
+            "bounding_box": (0, 0, 100, 100),
+        }
+        with (
+            mock.patch.object(face, "detect_faces", return_value=[fake_face]),
+            mock.patch.object(face, "identify_face", return_value={"id": 1, "name": "Bret"}),
+            mock.patch.object(face.people, "add_biometric") as add_biometric,
+        ):
+            ok = face.enroll_unknown_face(4, object())
+
+        self.assertFalse(ok)
+        add_biometric.assert_not_called()
+
     def test_active_wake_ack_suppressed_while_waiting_for_response(self):
         from intelligence import interaction
 

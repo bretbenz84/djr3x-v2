@@ -26,7 +26,7 @@ sys.path.insert(0, str(_ROOT))
 os.chdir(_ROOT)
 
 # Load .env before importing anything that reads hardware config.
-# This must happen before any project import that touches AUDIO_DEVICE_INDEX.
+# This must happen before any project import that touches audio device config.
 try:
     from dotenv import load_dotenv
     load_dotenv(_ROOT / ".env")
@@ -58,6 +58,11 @@ def _die(msg: str) -> None:
 
 
 def _get_device_index() -> "int | None":
+    name = os.getenv("AUDIO_DEVICE_NAME", "").strip()
+    if name:
+        resolved = _resolve_device_name(name)
+        if resolved is not None:
+            return resolved
     raw = os.getenv("AUDIO_DEVICE_INDEX", "").strip()
     if not raw:
         return None
@@ -67,15 +72,40 @@ def _get_device_index() -> "int | None":
         return None
 
 
+def _resolve_device_name(name: str) -> "int | None":
+    try:
+        import sounddevice as sd
+        devices = list(sd.query_devices())
+    except Exception:
+        return None
+    wanted = name.lower()
+    inputs = [
+        (i, str(d.get("name") or ""))
+        for i, d in enumerate(devices)
+        if int(d.get("max_input_channels", 0) or 0) > 0
+    ]
+    exact = [(i, n) for i, n in inputs if n.lower() == wanted]
+    if exact:
+        return exact[0][0]
+    contains = [(i, n) for i, n in inputs if wanted in n.lower()]
+    if len(contains) == 1:
+        return contains[0][0]
+    return None
+
+
 def _list_input_devices() -> None:
     try:
         import sounddevice as sd
         idx = _get_device_index()
+        configured_name = os.getenv("AUDIO_DEVICE_NAME", "").strip()
         print(f"{ts()} Available input devices:")
         for i, d in enumerate(sd.query_devices()):
             if d.get("max_input_channels", 0) > 0:
-                marker = "  ← AUDIO_DEVICE_INDEX" if i == idx else ""
+                marker = "  ← configured mic"
+                marker = marker if i == idx else ""
                 print(f"  {i:2d}: {d['name']} (in: {d['max_input_channels']}){marker}")
+        if configured_name and idx is None:
+            print(f"{ts()} AUDIO_DEVICE_NAME={configured_name!r} did not resolve to a unique input device.")
     except Exception as exc:
         print(f"{ts()} Could not query devices: {exc}")
 
@@ -136,8 +166,8 @@ def test_mic() -> None:
     print()
 
     if device_idx is None:
-        print(f"{ts()} ERROR: AUDIO_DEVICE_INDEX not set in .env")
-        print(f"         Set it to the index of your USB microphone (see device list above).")
+        print(f"{ts()} ERROR: AUDIO_DEVICE_NAME/AUDIO_DEVICE_INDEX not set or not found in .env")
+        print(f"         Set AUDIO_DEVICE_NAME to your microphone name, or AUDIO_DEVICE_INDEX as a fallback.")
         sys.exit(1)
 
     print(f"{ts()} Device: {device_idx}  Sample rate: {sample_rate} Hz")
@@ -174,7 +204,7 @@ def test_mic() -> None:
         print()
         _die(
             f"PortAudio error opening device {device_idx}: {exc}\n"
-            f"  → Check that AUDIO_DEVICE_INDEX={device_idx} is correct and the device is connected.\n"
+            f"  → Check that AUDIO_DEVICE_NAME/AUDIO_DEVICE_INDEX resolves to the correct connected mic.\n"
             f"  → Re-run to see the full device list above."
         )
 
@@ -200,7 +230,7 @@ def test_vad() -> None:
     device_idx = _get_device_index()
     if device_idx is None:
         _list_input_devices()
-        _die("AUDIO_DEVICE_INDEX not set in .env — set it to your mic's index.")
+        _die("AUDIO_DEVICE_NAME/AUDIO_DEVICE_INDEX not set or not found in .env.")
 
     vad_model, vad_ok = _load_silero()
 
@@ -311,7 +341,7 @@ def test_aec() -> None:
     device_idx = _get_device_index()
     if device_idx is None:
         _list_input_devices()
-        _die("AUDIO_DEVICE_INDEX not set in .env")
+        _die("AUDIO_DEVICE_NAME/AUDIO_DEVICE_INDEX not set or not found in .env.")
 
     # Pick first cached TTS file
     mp3_files = sorted(cache_dir.glob("*.mp3")) if cache_dir.exists() else []
@@ -463,7 +493,7 @@ def test_transcription() -> None:
     device_idx = _get_device_index()
     if device_idx is None:
         _list_input_devices()
-        _die("AUDIO_DEVICE_INDEX not set in .env")
+        _die("AUDIO_DEVICE_NAME/AUDIO_DEVICE_INDEX not set or not found in .env.")
 
     # Check backends
     try:
@@ -702,7 +732,7 @@ def test_pipeline() -> None:
     # config_loader validates API keys — give a clear error if they're missing
     try:
         import config
-        from utils.config_loader import AUDIO_DEVICE_INDEX  # noqa: F401 (validates keys)
+        from utils.config_loader import AUDIO_DEVICE_INDEX  # noqa: F401 (validates/resolves audio config)
     except RuntimeError as exc:
         _die(str(exc))
     except Exception as exc:
@@ -717,7 +747,7 @@ def test_pipeline() -> None:
     device_idx = _get_device_index()
     if device_idx is None:
         _list_input_devices()
-        _die("AUDIO_DEVICE_INDEX not set in .env")
+        _die("AUDIO_DEVICE_NAME/AUDIO_DEVICE_INDEX not set or not found in .env.")
 
     print(f"{ts()} Pipeline test — full single interaction cycle")
     print(f"{ts()} Device: {device_idx}  Sample rate: {sample_rate} Hz")
@@ -936,7 +966,7 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 test modes:
-  mic            Real-time mic level meter — verify AUDIO_DEVICE_INDEX and signal
+  mic            Real-time mic level meter — verify configured mic and signal
   vad            Real-time Silero VAD decisions with confidence scores
   aec            Play a cached TTS file and confirm mic suppression activates
   transcription  Record until Ctrl+C or 10s silence, run full transcription pipeline

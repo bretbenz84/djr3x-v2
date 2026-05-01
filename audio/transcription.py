@@ -53,6 +53,12 @@ def _is_hallucination(text: str) -> bool:
     }
     if normalized in short_allowlist:
         return False
+    filler_blocklist = {
+        re.sub(r"\s+", " ", re.sub(r"[^a-z0-9'\s]", " ", item.lower())).strip()
+        for item in getattr(config, "WHISPER_FILLER_UTTERANCE_BLOCKLIST", [])
+    }
+    if normalized in filler_blocklist:
+        return True
     # Minimum meaningful content check — discard pure punctuation/whitespace junk.
     stripped = re.sub(r"[^a-z0-9]", "", normalized)
     if len(stripped) < config.WHISPER_MIN_CHARS:

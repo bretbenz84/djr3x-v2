@@ -83,7 +83,7 @@ class RexAvatar(QWidget):
         self._idle_phase = 0.0
         self._last_blink_tick = time.monotonic()
         self._sprites = _load_sprites()
-        self.setMinimumSize(360, 390)
+        self.setMinimumSize(430, 470)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         ws = snapshot.get("world_state") or {}
@@ -137,9 +137,9 @@ class RexAvatar(QWidget):
         right_arm = self._sprites.get("right_arm")
         poker_arm = self._sprites.get("poker_arm")
 
-        body_h = min(h * 0.68, w * 0.96)
+        body_h = min(h * 0.76, w * 1.08)
         body_w = body_h * body.width() / max(1, body.height())
-        body_rect = QRectF(cx - body_w / 2.0, h * 0.19, body_w, body_h)
+        body_rect = QRectF(cx - body_w / 2.0, h * 0.14, body_w, body_h)
 
         neck_norm = self._current.get("neck", 0.5)
         lift = servo_to_offset("headlift", self._value("headlift")) * 0.78

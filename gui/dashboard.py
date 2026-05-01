@@ -60,8 +60,8 @@ class DashboardWindow(QMainWindow):
         self._fps = 0.0
 
         self.setWindowTitle(getattr(config, "GUI_WINDOW_TITLE", "DJ-R3X Controller"))
-        self.resize(1200, 820)
-        self.setMinimumSize(1040, 720)
+        self.resize(1280, 840)
+        self.setMinimumSize(1100, 740)
 
         self.vision = VisionPanel()
         self.scene = VisionDescriptionPanel()
@@ -109,18 +109,21 @@ class DashboardWindow(QMainWindow):
         center = ChromePanel("☵", "CONVERSATION LOG", self.conversation)
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
-        right.setSpacing(0)
-        right.addWidget(ChromePanel("3", "R3X AVATAR", self.avatar), 8)
-        right.addWidget(ChromePanel("", "SERVO POSITIONS", self.servos), 4)
+        right.setSpacing(12)
+        avatar_panel = ChromePanel("3", "R3X AVATAR", self.avatar)
+        servo_panel = ChromePanel("", "SERVO POSITIONS", self.servos)
+        servo_panel.setMaximumHeight(270)
+        right.addWidget(avatar_panel, 1)
+        right.addWidget(servo_panel, 0)
         right_box = QWidget()
         right_box.setLayout(right)
 
         columns.addWidget(left_box, 0, 0)
         columns.addWidget(center, 0, 1)
         columns.addWidget(right_box, 0, 2)
-        columns.setColumnStretch(0, 12)
-        columns.setColumnStretch(1, 11)
-        columns.setColumnStretch(2, 13)
+        columns.setColumnStretch(0, 11)
+        columns.setColumnStretch(1, 10)
+        columns.setColumnStretch(2, 17)
         shell.addLayout(columns, 1)
         shell.addWidget(self.footer)
 
@@ -304,7 +307,7 @@ class ServoPositionsPanel(QWidget):
             visual_row += 1
 
         layout.setColumnStretch(1, 1)
-        self.setMinimumHeight(250)
+        self.setMinimumHeight(190)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         ws = snapshot.get("world_state") or {}

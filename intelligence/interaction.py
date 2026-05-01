@@ -264,6 +264,7 @@ _NAME_PATTERNS = [
     re.compile(r"\bcall me\s+(.+)$", re.IGNORECASE),
     re.compile(r"\brename me(?:\s+to)?\s+(.+)$", re.IGNORECASE),
 ]
+_SELF_NAME_PATTERNS = _NAME_PATTERNS[:4]
 _CALL_ME_NAME_RE = re.compile(
     r"\b(?:you can\s+)?call me\s+(.+)$",
     re.IGNORECASE,
@@ -280,7 +281,7 @@ _PREFERRED_NAME_SPLIT_RE = re.compile(
     re.IGNORECASE,
 )
 _NAME_TRAILING_FILLER_RE = re.compile(
-    r"\b(?:instead|from now on|please|thanks|thank you)\b.*$",
+    r"\b(?:hi|hello|hey|wait|hold on|actually|instead|from now on|please|thanks|thank you)\b.*$",
     re.IGNORECASE,
 )
 
@@ -293,7 +294,12 @@ _NAME_STOPWORDS = {
     "fine",
     "good",
     "great",
+    "have",
+    "has",
     "here",
+    "hi",
+    "hello",
+    "hey",
     "nobody",
     "okay",
     "ok",
@@ -302,6 +308,8 @@ _NAME_STOPWORDS = {
     "ready",
     "sorry",
     "there",
+    "you",
+    "your",
     "whoever",
 }
 
@@ -1359,13 +1367,33 @@ def _record_being_discussed(
 # Identity enrollment helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+def _normalized_name_tokens(candidate: str) -> list[str]:
+    text = re.sub(r"[^a-z0-9'\s-]", " ", (candidate or "").lower())
+    return [t.strip("'-") for t in re.split(r"\s+", text) if t.strip("'-")]
+
+
+def _is_non_name_candidate(candidate: str) -> bool:
+    tokens = _normalized_name_tokens(candidate)
+    if not tokens:
+        return True
+    filler = {
+        str(item).strip().lower()
+        for item in getattr(config, "WHISPER_FILLER_UTTERANCE_BLOCKLIST", [])
+        if str(item).strip()
+    }
+    if " ".join(tokens) in filler:
+        return True
+    return all(token in filler for token in tokens)
+
+
 def _normalize_name(candidate: str) -> Optional[str]:
     """
     Normalize a spoken/self-reported name candidate.
     Returns None when the candidate does not look like a usable name.
     """
     text = candidate.strip()
-    if not text:
+    if not text or _is_non_name_candidate(text):
         return None
 
     # Prefer the explicit nickname in phrases like
@@ -1376,8 +1404,16 @@ def _normalize_name(candidate: str) -> Optional[str]:
 
     # Keep the first clause only ("my name is Bret, nice to meet you").
     text = re.split(r"[,.!?;:]", text, maxsplit=1)[0].strip()
+    text = re.split(
+        r"\s+\b(?:and\s+)?(?:this|that)\s+is\b|\s+\b(?:and\s+)?(?:meet|say hi to)\b",
+        text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip()
     text = _NAME_TRAILING_FILLER_RE.sub("", text).strip()
     text = re.sub(r"\s+", " ", text)
+    if _is_non_name_candidate(text):
+        return None
 
     tokens = []
     for raw in text.split(" "):
@@ -1388,7 +1424,7 @@ def _normalize_name(candidate: str) -> Optional[str]:
     if not tokens or len(tokens) > _NAME_MAX_WORDS:
         return None
 
-    if len(tokens) == 1 and tokens[0].lower() in _NAME_STOPWORDS:
+    if any(t.lower() in _NAME_STOPWORDS for t in tokens):
         return None
 
     if any(t.lower() in {"i", "im", "i'm", "me", "my", "name"} for t in tokens):
@@ -1399,6 +1435,82 @@ def _normalize_name(candidate: str) -> Optional[str]:
         tokens = [t.capitalize() for t in tokens]
 
     return " ".join(tokens)
+
+
+def _same_person_name(left: Optional[str], right: Optional[str]) -> bool:
+    left_norm = _normalize_name(left or "")
+    right_norm = _normalize_name(right or "")
+    if not left_norm or not right_norm:
+        return False
+    return left_norm.lower() == right_norm.lower()
+
+
+def _extract_self_identified_name(text: str) -> Optional[str]:
+    normalized = (text or "").strip()
+    if not normalized:
+        return None
+    for pattern in _SELF_NAME_PATTERNS:
+        match = pattern.search(normalized)
+        if match:
+            return _normalize_name(match.group(1))
+    return None
+
+
+_RELATIONSHIP_WORD_NORMALIZE = {
+    "best friend": "best_friend",
+    "co-worker": "coworker",
+    "co worker": "coworker",
+    "colleague": "coworker",
+    "dad": "father",
+    "mom": "mother",
+    "brother": "sibling",
+    "sister": "sibling",
+}
+
+
+def _normalize_relationship_word(value: Optional[str]) -> Optional[str]:
+    rel = re.sub(r"\s+", " ", (value or "").strip().lower().replace("-", " "))
+    if not rel:
+        return None
+    return _RELATIONSHIP_WORD_NORMALIZE.get(rel, rel).replace(" ", "_")
+
+
+def _extract_self_relationship_to_engaged(
+    text: str,
+    engaged_name: Optional[str],
+) -> Optional[str]:
+    """
+    Parse a self-intro aside like "my name is Jennifer, this is my brother Bret".
+
+    The relationship is from the speaker toward the already-engaged person.
+    Gendered sibling labels collapse to "sibling" so Jennifer is not stored as
+    Bret's "brother" when she says Bret is her brother.
+    """
+    if not text or not engaged_name:
+        return None
+    engaged_first = (engaged_name or "").split()[0].lower()
+    engaged_full = (engaged_name or "").lower()
+    rel_words = (
+        "best friend|friend|father|dad|mother|mom|parent|coworker|co-worker|"
+        "colleague|boss|supervisor|manager|aunt|uncle|partner|girlfriend|"
+        "boyfriend|fiancee|fiance|wife|husband|spouse|sister|brother|sibling|"
+        "cousin|roommate|neighbor|neighbour|son|daughter|child"
+    )
+    patterns = [
+        rf"\b(?:this is|that'?s|that is)\s+my\s+(?P<rel>{rel_words})\s+(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}})\b",
+        rf"\b(?P<name>[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){{0,2}})\s+is\s+my\s+(?P<rel>{rel_words})\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        candidate = _normalize_name(match.group("name") or "")
+        candidate_lower = (candidate or "").lower()
+        if not candidate_lower:
+            continue
+        if candidate_lower == engaged_full or candidate_lower.split()[0] == engaged_first:
+            return _normalize_relationship_word(match.group("rel"))
+    return None
 
 
 def _extract_introduced_name(text: str, allow_bare_name: bool = False) -> Optional[str]:
@@ -1651,6 +1763,19 @@ def _handle_name_update_request(
         return None
 
     target_id, old_name = _resolve_name_update_target(person_id, person_name)
+    try:
+        existing = people_memory.find_person_by_name(new_name)
+    except Exception:
+        existing = None
+    if existing is not None:
+        existing_id = int(existing["id"])
+        if target_id is None or (
+            existing_id != int(target_id)
+            and _known_person_visible_recently(existing_id)
+        ):
+            target_id = existing_id
+            old_name = existing.get("name")
+
     if target_id is None:
         _log.info("[identity] name update had no clear target text=%r", text)
         return None
@@ -1716,7 +1841,11 @@ def _extract_offscreen_identify_reply(
     intro_name = parsed.get("name")
     rel_label = parsed.get("relationship")
     if not intro_name:
+        if "?" in (text or ""):
+            return None, rel_label
         intro_name = _extract_introduced_name(text, allow_bare_name=True)
+    if intro_name and _is_non_name_candidate(intro_name):
+        intro_name = None
     return intro_name, rel_label
 
 
@@ -1727,6 +1856,45 @@ def _has_unknown_visible_person() -> bool:
     except Exception:
         return False
     return any(p.get("face_id") is None for p in people)
+
+
+def _has_unknown_visible_or_recent() -> bool:
+    """True if an unknown face is visible now or within the configured grace window."""
+    if _has_unknown_visible_person():
+        return True
+    try:
+        return bool(
+            consciousness.unknown_visible_recently(
+                float(getattr(config, "UNKNOWN_FACE_RECENT_GRACE_SECS", 6.0))
+            )
+        )
+    except Exception:
+        return False
+
+
+def _other_known_visible_recently(person_id: Optional[int]) -> bool:
+    """True if another known participant is visible now or just flickered out."""
+    try:
+        return bool(
+            consciousness.known_visible_recently_except(
+                person_id,
+                float(getattr(config, "UNKNOWN_FACE_RECENT_GRACE_SECS", 6.0)),
+            )
+        )
+    except Exception:
+        return False
+
+
+def _known_person_visible_recently(person_id: Optional[int]) -> bool:
+    try:
+        return bool(
+            consciousness.person_visible_recently(
+                person_id,
+                float(getattr(config, "UNKNOWN_FACE_RECENT_GRACE_SECS", 6.0)),
+            )
+        )
+    except Exception:
+        return False
 
 
 def _bind_world_state_identity(person_id: int, name: str) -> None:
@@ -1892,22 +2060,34 @@ def _handle_relationship_reply(
             _log.error("[interaction] failed to create DB row for newcomer %r", name)
             consciousness.note_relationship_slot_handled(slot_id)
             return None
+        if engaged_id is not None and int(new_id) == int(engaged_id):
+            _log.warning(
+                "[interaction] refusing mode-A self-introduction: parsed newcomer %r resolves to engaged person_id=%s; text=%r",
+                name,
+                engaged_id,
+                user_text,
+            )
+            consciousness.note_relationship_slot_handled(slot_id)
+            return None
 
         first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
         if created and first_inc > 0:
             people_memory.update_familiarity(new_id, first_inc)
 
+        face_enrolled = False
         frame = camera_mod.capture_still()
         if frame is not None:
-            face_mod.enroll_unknown_face(new_id, frame)
-            threading.Thread(
-                target=face_mod.update_appearance,
-                args=(new_id, frame.copy()),
-                daemon=True,
-                name=f"appearance-enroll-{new_id}",
-            ).start()
+            face_enrolled = face_mod.enroll_unknown_face(new_id, frame)
+            if face_enrolled:
+                threading.Thread(
+                    target=face_mod.update_appearance,
+                    args=(new_id, frame.copy()),
+                    daemon=True,
+                    name=f"appearance-enroll-{new_id}",
+                ).start()
 
-        _bind_world_state_identity(new_id, name)
+        if face_enrolled:
+            _bind_world_state_identity(new_id, name)
         if engaged_id:
             _store_introduction_memories(
                 int(engaged_id),
@@ -2239,16 +2419,17 @@ def _enroll_new_person(
         frame = camera_mod.capture_still()
         if frame is not None:
             if enroll_unknown_face:
-                face_mod.enroll_unknown_face(person_id, frame)
+                face_enrolled = face_mod.enroll_unknown_face(person_id, frame)
             else:
-                face_mod.enroll_face(person_id, frame)
-            # Appearance extraction is useful but non-blocking.
-            threading.Thread(
-                target=face_mod.update_appearance,
-                args=(person_id, frame.copy()),
-                daemon=True,
-                name=f"appearance-enroll-{person_id}",
-            ).start()
+                face_enrolled = face_mod.enroll_face(person_id, frame)
+            if face_enrolled:
+                # Appearance extraction is useful but non-blocking.
+                threading.Thread(
+                    target=face_mod.update_appearance,
+                    args=(person_id, frame.copy()),
+                    daemon=True,
+                    name=f"appearance-enroll-{person_id}",
+                ).start()
     except Exception as exc:
         _log.warning("face enrollment failed for person_id=%s: %s", person_id, exc)
 
@@ -2337,6 +2518,13 @@ def _store_introduction_memories(
     introduced_name: str,
     relationship: Optional[str],
 ) -> None:
+    if int(introducer_id) == int(introduced_id):
+        _log.warning(
+            "[introduction] refusing self-relationship for person_id=%s relationship=%r",
+            introducer_id,
+            relationship,
+        )
+        return
     rel = (relationship or "acquaintance").strip().lower()
     inverse = _intro_inverse_relationship(rel)
     try:
@@ -2391,22 +2579,25 @@ def _enroll_introduced_person(
     if created and first_inc > 0:
         people_memory.update_familiarity(new_id, first_inc)
 
+    face_enrolled = False
     if enroll_visible_face:
         try:
             from vision import camera as camera_mod
             from vision import face as face_mod
             frame = camera_mod.capture_still()
             if frame is not None:
-                face_mod.enroll_unknown_face(new_id, frame)
-                threading.Thread(
-                    target=face_mod.update_appearance,
-                    args=(new_id, frame.copy()),
-                    daemon=True,
-                    name=f"appearance-enroll-{new_id}",
-                ).start()
+                face_enrolled = face_mod.enroll_unknown_face(new_id, frame)
+                if face_enrolled:
+                    threading.Thread(
+                        target=face_mod.update_appearance,
+                        args=(new_id, frame.copy()),
+                        daemon=True,
+                        name=f"appearance-enroll-{new_id}",
+                    ).start()
         except Exception as exc:
             _log.warning("introduction face enrollment failed: %s", exc)
 
+    if face_enrolled:
         _bind_world_state_identity(new_id, name)
     _store_introduction_memories(
         introducer_id,
@@ -2728,6 +2919,13 @@ def _handle_intro_followup_answer(text: str) -> Optional[str]:
     _pending_intro_followup = None
     intro_id = int(ctx["introducer_id"])
     introduced_id = int(ctx["introduced_id"])
+    if intro_id == introduced_id:
+        _log.warning(
+            "[introduction] refusing intro followup for self relationship person_id=%s text=%r",
+            intro_id,
+            text,
+        )
+        return None
     intro_name = ctx.get("introducer_name") or "the introducer"
     introduced_name = ctx.get("introduced_name") or "the newcomer"
     relationship = ctx.get("relationship")
@@ -7281,6 +7479,7 @@ def _handle_speech_segment(
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name
+    global _pending_offscreen_identify, _pending_face_reveal_confirm
 
     turn_start = time.monotonic()
     answered_question: Optional[dict] = None
@@ -7447,7 +7646,8 @@ def _handle_speech_segment(
                 recent_id = (recent_engagement or {}).get("person_id")
                 if (
                     recent_id in visible_known_by_id
-                    and not _has_unknown_visible_person()
+                    and not _has_unknown_visible_or_recent()
+                    and not _other_known_visible_recently(recent_id)
                     and speaker_score >= recent_floor
                 ):
                     vis = visible_known_by_id[int(recent_id)]
@@ -7467,7 +7667,7 @@ def _handle_speech_segment(
             ws_pid = ws_person.get("person_db_id")
             ws_name = ws_person.get("face_id") or ws_person.get("voice_id")
             if person_id is None:
-                unknown_visible = _has_unknown_visible_person()
+                unknown_visible = _has_unknown_visible_or_recent()
                 # Speaker-ID missed. Only fall back to ws_person if they are NOT
                 # the engaged person — otherwise we'd be claiming the engaged
                 # person spoke when the voice didn't actually match them. That
@@ -7499,7 +7699,11 @@ def _handle_speech_segment(
                         "person_id=%s name=%r voice_score=%.3f (floor=%.2f)",
                         person_id, person_name, speaker_score, eng_visible_floor,
                     )
-                elif engaged_is_visible and not unknown_visible:
+                elif (
+                    engaged_is_visible
+                    and not unknown_visible
+                    and not _other_known_visible_recently(ws_pid)
+                ):
                     single_visible_continuity_floor = float(
                         getattr(config, "SPEAKER_ID_SINGLE_VISIBLE_CONTINUITY_FLOOR", 0.45)
                     )
@@ -7546,7 +7750,7 @@ def _handle_speech_segment(
                             off_camera_unknown = True
                             _log.info(
                                 "[interaction] person resolution: speaker-ID missed while engaged "
-                                "person %r is visible and no unknown face — treating as off-camera "
+                                "person %r is visible and no recent unknown face — treating as off-camera "
                                 "unknown voice",
                                 ws_name,
                             )
@@ -7554,10 +7758,17 @@ def _handle_speech_segment(
                         off_camera_unknown = True
                         _log.info(
                             "[interaction] person resolution: speaker-ID missed while engaged "
-                            "person %r is visible and no unknown face — treating as off-camera "
+                            "person %r is visible and no recent unknown face — treating as off-camera "
                             "unknown voice",
                             ws_name,
                         )
+                elif engaged_is_visible and unknown_visible:
+                    _log.info(
+                        "[interaction] person resolution: speaker-ID missed while engaged "
+                        "person %r is visible but a newcomer is/was recently visible — "
+                        "leaving speaker unknown",
+                        ws_name,
+                    )
                 else:
                     person_id = ws_pid
                     person_name = ws_name
@@ -7594,7 +7805,12 @@ def _handle_speech_segment(
             # Neither face-ID nor speaker-ID matched anyone. If a known person
             # was engaged recently but isn't visible right now, and no unknown
             # face is visible either, this is still an off-camera unknown voice.
-            if recent_engagement and not _has_unknown_visible_person() and len(ws_identified) < 2:
+            if (
+                recent_engagement
+                and not _has_unknown_visible_or_recent()
+                and not _other_known_visible_recently((recent_engagement or {}).get("person_id"))
+                and len(ws_identified) < 2
+            ):
                 off_camera_unknown = True
                 _log.info(
                     "[interaction] person resolution: no face, no voice match, "
@@ -7610,6 +7826,7 @@ def _handle_speech_segment(
 
         identity_prompt_active = time.monotonic() <= _identity_prompt_until
         has_unknown_visible_now = _has_unknown_visible_person()
+        has_unknown_visible_or_recent = has_unknown_visible_now or _has_unknown_visible_or_recent()
         voice_group_chatter = _note_voice_turn_for_group_chatter(
             person_id=person_id,
             raw_best_id=raw_best_id,
@@ -7732,6 +7949,129 @@ def _handle_speech_segment(
             _session_exchange_count += 1
             _register_rex_utterance(existing_common_name_response)
             return
+
+        self_identified_name = _extract_self_identified_name(text)
+        if (
+            self_identified_name
+            and person_id is not None
+            and has_unknown_visible_or_recent
+            and not _same_person_name(self_identified_name, person_name)
+        ):
+            _log.info(
+                "[identity] explicit self-introduction %r conflicts with weak/current "
+                "speaker label %r while newcomer is visible/recent — treating as newcomer",
+                self_identified_name,
+                person_name,
+            )
+            person_id = None
+            person_name = None
+            off_camera_unknown = False
+
+        if self_identified_name and person_id is None and has_unknown_visible_or_recent:
+            prior_engagement = recent_engagement
+            if _is_common_first_name_only(self_identified_name):
+                _pending_common_first_name_identity = {
+                    "first_name": self_identified_name,
+                    "audio": audio_array.copy(),
+                    "asked_at": time.monotonic(),
+                    "prior_engagement": prior_engagement,
+                }
+                _identity_prompt_until = max(
+                    _identity_prompt_until,
+                    time.monotonic()
+                    + float(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_WINDOW_SECS", 30.0)),
+                )
+                prompt = _format_common_first_name_last_name_prompt(self_identified_name)
+                _speak_blocking(prompt, emotion="curious", pre_beat_ms=100, post_beat_ms_override=200)
+                conv_memory.add_to_transcript("Rex", prompt)
+                conv_log.log_rex(prompt)
+                _session_exchange_count += 1
+                _register_rex_utterance(prompt)
+                return
+
+            enrolled_id = _enroll_new_person(
+                self_identified_name,
+                audio_array,
+                enroll_unknown_face=has_unknown_visible_now or bool(prior_engagement),
+            )
+            if enrolled_id is not None:
+                person_id = enrolled_id
+                person_name = self_identified_name
+                _identity_prompt_until = 0.0
+                _pending_offscreen_identify = None
+                try:
+                    rel_ctx = consciousness.consume_relationship_prompt_request()
+                    if rel_ctx is not None:
+                        consciousness.note_relationship_slot_handled(str(rel_ctx.get("slot_id") or ""))
+                except Exception:
+                    pass
+
+                relationship = _extract_self_relationship_to_engaged(
+                    text,
+                    (prior_engagement or {}).get("name"),
+                )
+                if relationship and prior_engagement and prior_engagement.get("person_id") != enrolled_id:
+                    try:
+                        from memory import social as social_memory
+                        social_memory.save_relationship(
+                            from_person_id=enrolled_id,
+                            to_person_id=int(prior_engagement["person_id"]),
+                            relationship=relationship,
+                            described_by=enrolled_id,
+                        )
+                    except Exception as exc:
+                        _log.warning("self-intro relationship save failed: %s", exc)
+                elif prior_engagement and prior_engagement.get("person_id") != enrolled_id:
+                    _pending_post_greet_relationship[0] = {
+                        "prior_engaged_id": prior_engagement["person_id"],
+                        "prior_engaged_name": prior_engagement.get("name"),
+                        "newcomer_person_id": enrolled_id,
+                        "newcomer_name": self_identified_name,
+                    }
+
+                try:
+                    consciousness.mark_engagement(enrolled_id)
+                    consciousness.note_person_spoke(enrolled_id)
+                except Exception:
+                    pass
+
+                speaker_label = person_name or "user"
+                conv_memory.add_to_transcript(speaker_label, text)
+                conv_log.log_heard(person_name, text)
+                print(f"[HEARD] {speaker_label}: {text}", flush=True)
+                _log.info(
+                    "[interaction] visible newcomer self-introduction — speaker=%r person_id=%s text=%r relationship_to_prior=%r",
+                    speaker_label,
+                    person_id,
+                    text,
+                    relationship,
+                )
+
+                first = self_identified_name.split()[0]
+                prior_first = ((prior_engagement or {}).get("name") or "").split()[0]
+                if relationship and prior_first:
+                    rel_words = relationship.replace("_", " ")
+                    ack_text = (
+                        f"{first}. Filed. Relationship to {prior_first}: {rel_words}. That explains at least "
+                        "three suspicious data points."
+                    )
+                else:
+                    ack_text = f"{first}. Filed under 'new biological, probably trouble.'"
+                try:
+                    ack_text = llm.get_response(
+                        f"You just learned a visible newcomer's name is {self_identified_name}. "
+                        f"{('They said their relationship to ' + prior_first + ' is ' + relationship + '.') if relationship and prior_first else ''} "
+                        f"In ONE short in-character Rex line, acknowledge them by name. "
+                        f"Do not ask another question."
+                    ) or ack_text
+                except Exception as exc:
+                    _log.debug("self-intro ack generation failed: %s", exc)
+                _speak_blocking(ack_text, emotion="happy", pre_beat_ms=100, post_beat_ms_override=200)
+                conv_memory.add_to_transcript("Rex", ack_text)
+                conv_log.log_rex(ack_text)
+                _session_exchange_count += 1
+                _register_rex_utterance(ack_text)
+                return
 
         # If the engaged person answers an unknown-face/off-camera moment with
         # an actual introduction ("this is my dad, Jeff"), let the dedicated
@@ -7923,7 +8263,6 @@ def _handle_speech_segment(
         # loop can decide whether to chime in. Skipped when Rex is in a pending
         # identity / face-reveal flow (those handlers expect this turn's text
         # as the user's reply).
-        global _pending_offscreen_identify, _pending_face_reveal_confirm
         try:
             _addr_identity_window_active = identity_prompt_active
             if (
@@ -8010,13 +8349,13 @@ def _handle_speech_segment(
                                     from vision import face as _face_mod
                                     frame = _cam_mod.capture_still()
                                     if frame is not None:
-                                        _face_mod.enroll_unknown_face(new_pid, frame)
-                                        threading.Thread(
-                                            target=_face_mod.update_appearance,
-                                            args=(new_pid, frame.copy()),
-                                            daemon=True,
-                                            name=f"appearance-enroll-{new_pid}",
-                                        ).start()
+                                        if _face_mod.enroll_unknown_face(new_pid, frame):
+                                            threading.Thread(
+                                                target=_face_mod.update_appearance,
+                                                args=(new_pid, frame.copy()),
+                                                daemon=True,
+                                                name=f"appearance-enroll-{new_pid}",
+                                            ).start()
                                 except Exception as exc:
                                     _log.warning(
                                         "off-camera visible face enroll failed: %s",
@@ -8168,7 +8507,7 @@ def _handle_speech_segment(
         # their reply never triggers enrollment.
         now_mono = time.monotonic()
         identity_prompt_active = now_mono <= _identity_prompt_until
-        has_unknown = _has_unknown_visible_person()
+        has_unknown = _has_unknown_visible_or_recent()
         should_attempt_enroll = (
             (person_id is None and (has_unknown or identity_prompt_active))
             or (identity_prompt_active and has_unknown)
@@ -8226,13 +8565,13 @@ def _handle_speech_segment(
                             from vision import face as _face_mod
                             frame = _cam_mod.capture_still()
                             if frame is not None:
-                                _face_mod.enroll_unknown_face(new_id, frame)
-                                threading.Thread(
-                                    target=_face_mod.update_appearance,
-                                    args=(new_id, frame.copy()),
-                                    daemon=True,
-                                    name=f"appearance-enroll-{new_id}",
-                                ).start()
+                                if _face_mod.enroll_unknown_face(new_id, frame):
+                                    threading.Thread(
+                                        target=_face_mod.update_appearance,
+                                        args=(new_id, frame.copy()),
+                                        daemon=True,
+                                        name=f"appearance-enroll-{new_id}",
+                                    ).start()
                         except Exception as exc:
                             _log.warning(
                                 "describe-newcomer face enroll failed: %s", exc
@@ -8432,6 +8771,70 @@ def _handle_speech_segment(
             _register_rex_utterance(name_update_response)
             return
 
+        # Active games get first claim on ordinary utterances after explicit
+        # corrections/stop commands. Identity prompts otherwise steal roster
+        # answers like "Will, Jen, Daniel, and Bret" as mystery voices.
+        try:
+            from features import games as games_mod
+            if games_mod.is_active():
+                game_match = command_parser.parse(text)
+                command_key = game_match.command_key if game_match is not None else None
+                normalized_game_text = " ".join(text.lower().strip().split())
+                if game_match is None and normalized_game_text in {"quit", "end", "end game", "quit game"}:
+                    command_key = "stop_game"
+                elif (
+                    command_key == "dj_stop"
+                    and normalized_game_text in {"stop", "quit", "end", "stop playing"}
+                ):
+                    command_key = "stop_game"
+                elif command_key == "dj_skip" and normalized_game_text == "skip":
+                    command_key = None
+
+                game_escape_commands = {
+                    "stop_game", "sleep", "shutdown", "quiet_mode", "wake_up",
+                    "dj_stop", "dj_skip", "volume_up", "volume_down",
+                }
+                if command_key not in game_escape_commands:
+                    game_response = games_mod.handle_input(text, person_id, audio_array)
+                    completed = _speak_blocking(game_response)
+                    if completed:
+                        games_mod.on_response_spoken()
+                        game_after_audio_path = games_mod.consume_pending_audio_after_response()
+                    conv_memory.add_to_transcript("Rex", game_response)
+                    conv_log.log_rex(game_response)
+                    _session_exchange_count += 1
+                    _register_rex_utterance(game_response)
+                    assistant_asked_question = _assistant_asked_question(game_response)
+                    if sequence_started:
+                        question_tail = None
+                        if assistant_asked_question:
+                            question_tail = float(
+                                getattr(
+                                    config,
+                                    "POST_QUESTION_PLAYBACK_SUPPRESSION_SECS",
+                                    getattr(config, "POST_PLAYBACK_SUPPRESSION_SECS", 0.5),
+                                )
+                            )
+                        echo_cancel.end_sequence(flush=False, tail_secs=question_tail)
+                        sequence_started = False
+                        if game_after_audio_path and not _interrupted.is_set():
+                            speech_queue.enqueue_audio_file(
+                                game_after_audio_path,
+                                priority=1,
+                                tag="game:after_audio",
+                            )
+                    _post_response(
+                        text,
+                        person_id,
+                        person_name,
+                        assistant_asked_question=assistant_asked_question,
+                        pre_classified_insult=False,
+                        suppress_memory_learning=True,
+                    )
+                    return
+        except Exception as exc:
+            _log.debug("early active game routing failed: %s", exc)
+
         music_offer_response = _handle_pending_music_offer_reply(person_id, text)
         if music_offer_response:
             _dismiss_pending_consent_prompts(person_id, text)
@@ -8553,7 +8956,7 @@ def _handle_speech_segment(
                 boundary_person_id = consciousness.get_last_memory_hint_target()
             except Exception:
                 boundary_person_id = None
-            if boundary_person_id is None and recent_engagement and not _has_unknown_visible_person():
+            if boundary_person_id is None and recent_engagement and not _has_unknown_visible_or_recent():
                 try:
                     boundary_person_id = int(recent_engagement.get("person_id"))
                 except (TypeError, ValueError):
@@ -8629,7 +9032,7 @@ def _handle_speech_segment(
             and router_decision.action == "emotional.boundary"
         ):
             router_boundary_person_id = boundary_person_id or person_id
-            if router_boundary_person_id is None and recent_engagement and not _has_unknown_visible_person():
+            if router_boundary_person_id is None and recent_engagement and not _has_unknown_visible_or_recent():
                 try:
                     router_boundary_person_id = int(recent_engagement.get("person_id"))
                 except (TypeError, ValueError):
@@ -8890,7 +9293,7 @@ def _handle_speech_segment(
         if (
             person_id is None
             and not identity_prompt_active
-            and _has_unknown_visible_person()
+            and _has_unknown_visible_or_recent()
             and _pending_face_reveal_confirm is None
             and command_parser.parse(text) is None
         ):
@@ -9223,7 +9626,7 @@ def _handle_speech_segment(
                         "dj_stop", "dj_skip", "volume_up", "volume_down",
                     }
                     if command_key not in game_escape_commands:
-                        response_text = games_mod.handle_input(text, person_id)
+                        response_text = games_mod.handle_input(text, person_id, audio_array)
                         completed = _speak_blocking(response_text)
                         if completed:
                             games_mod.on_response_spoken()

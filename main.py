@@ -70,6 +70,7 @@ from utils.config_loader import (
     CAMERA_ENABLED,
     CAMERA_SELECTION_DESCRIPTION,
     AUDIO_ENABLED,
+    AUDIO_SELECTION_DESCRIPTION,
 )
 from sequences import animations
 from audio import stream, scene as audio_scene, output_gate, tts, speech_queue
@@ -244,7 +245,11 @@ def _run_controller_startup() -> None:
         "Camera: %s",
         f"enabled ({CAMERA_SELECTION_DESCRIPTION})" if CAMERA_ENABLED else "disabled",
     )
-    logger.info("Audio devices: %s", "enabled" if AUDIO_ENABLED else "disabled (AUDIO_DEVICE_INDEX not set)")
+    logger.info(
+        "Audio devices: %s",
+        f"enabled ({AUDIO_SELECTION_DESCRIPTION})"
+        if AUDIO_ENABLED else "disabled (AUDIO_DEVICE_NAME/AUDIO_DEVICE_INDEX not set or not found)",
+    )
 
     # Step 5: animations module is ready — functions operate directly on the hardware
     # singletons initialized above. No AnimationPlayer class to instantiate.

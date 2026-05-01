@@ -1443,7 +1443,7 @@ _configure_local_interactive() {
     if ! _is_interactive; then
         warn "Non-interactive shell detected — skipping mic/camera/API prompts."
         MANUAL_ATTENTION+=("Fill in apikeys.py with OpenAI and ElevenLabs API keys")
-        MANUAL_ATTENTION+=("Update AUDIO_DEVICE_INDEX and camera settings in .env")
+        MANUAL_ATTENTION+=("Update AUDIO_DEVICE_NAME and camera settings in .env")
         return
     fi
 
@@ -1505,18 +1505,23 @@ _configure_local_interactive() {
         _list_audio_inputs
         echo ""
         local audio_choice=""
-        audio_choice="$(_prompt_input "AUDIO_DEVICE_INDEX to use (blank = keep current, 'none' = disable): ")"
+        audio_choice="$(_prompt_input "AUDIO_DEVICE_NAME to use (blank = keep current, 'none' = disable, number = fallback index): ")"
         if [[ -n "$audio_choice" ]]; then
             if [[ "$audio_choice" == "none" ]]; then
+                _set_env_value "AUDIO_DEVICE_NAME" ""
                 _set_env_value "AUDIO_DEVICE_INDEX" ""
-                INSTALLED_ITEMS+=(".env AUDIO_DEVICE_INDEX disabled")
-                ok "AUDIO_DEVICE_INDEX disabled in .env."
+                INSTALLED_ITEMS+=(".env microphone disabled")
+                ok "Microphone disabled in .env."
             elif [[ "$audio_choice" =~ ^[0-9]+$ ]]; then
+                _set_env_value "AUDIO_DEVICE_NAME" ""
                 _set_env_value "AUDIO_DEVICE_INDEX" "$audio_choice"
-                INSTALLED_ITEMS+=(".env AUDIO_DEVICE_INDEX=$audio_choice")
-                ok "AUDIO_DEVICE_INDEX set to $audio_choice."
+                INSTALLED_ITEMS+=(".env AUDIO_DEVICE_INDEX=$audio_choice fallback")
+                ok "AUDIO_DEVICE_INDEX fallback set to $audio_choice."
             else
-                warn "Audio choice must be a numeric device index or 'none' — leaving .env unchanged."
+                _set_env_value "AUDIO_DEVICE_NAME" "$audio_choice"
+                _set_env_value "AUDIO_DEVICE_INDEX" ""
+                INSTALLED_ITEMS+=(".env AUDIO_DEVICE_NAME=$audio_choice")
+                ok "AUDIO_DEVICE_NAME set to $audio_choice."
             fi
         fi
 

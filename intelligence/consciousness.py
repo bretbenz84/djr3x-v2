@@ -106,6 +106,7 @@ _proactive_speech_pending = threading.Event()
 _last_face_feedback_signature: Optional[str] = None
 _last_pose_analysis_at: float = 0.0
 _previous_face_boxes: dict[str, tuple[int, int, int, int]] = {}
+_last_face_seen_at: float = 0.0
 _personal_space_reacted_at: dict[str, float] = {}
 
 # Presence tracking: set of tracking keys visible in the previous loop tick.
@@ -317,6 +318,103 @@ def get_recent_engagement(window_secs: Optional[float] = None) -> Optional[dict]
     except Exception:
         pass
     return {"person_id": pid, "name": None}
+
+
+def unknown_visible_recently(window_secs: Optional[float] = None) -> bool:
+    """
+    True if an unknown face is visible now or was seen very recently.
+
+    Interaction uses this as a small face-detection grace window so a visible
+    newcomer who flickers out for one frame is not treated as off-camera.
+    """
+    if window_secs is None:
+        window_secs = float(getattr(config, "UNKNOWN_FACE_RECENT_GRACE_SECS", 6.0))
+    now = time.monotonic()
+    try:
+        people = world_state.get("people") or []
+        if any(p.get("person_db_id") is None for p in people):
+            return True
+    except Exception:
+        pass
+    try:
+        for key, seen_at in _last_seen.items():
+            if isinstance(key, str) and (now - float(seen_at)) <= window_secs:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def known_visible_recently_except(
+    person_id: Optional[int],
+    window_secs: Optional[float] = None,
+) -> bool:
+    """
+    True if a known person other than person_id is visible now or was seen
+    recently. Interaction uses this to avoid assigning a low-confidence voice to
+    the engaged person when another known participant just flickered out.
+    """
+    if window_secs is None:
+        window_secs = float(getattr(config, "UNKNOWN_FACE_RECENT_GRACE_SECS", 6.0))
+    try:
+        excluded = int(person_id) if person_id is not None else None
+    except (TypeError, ValueError):
+        excluded = None
+    now = time.monotonic()
+    try:
+        people = world_state.get("people") or []
+        for person in people:
+            pid = person.get("person_db_id")
+            if pid is None:
+                continue
+            try:
+                pid_int = int(pid)
+            except (TypeError, ValueError):
+                continue
+            if excluded is None or pid_int != excluded:
+                return True
+    except Exception:
+        pass
+    try:
+        for key, seen_at in _last_seen.items():
+            if not isinstance(key, int):
+                continue
+            if excluded is not None and int(key) == excluded:
+                continue
+            if (now - float(seen_at)) <= window_secs:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def person_visible_recently(
+    person_id: Optional[int],
+    window_secs: Optional[float] = None,
+) -> bool:
+    """True if a specific known person is visible now or was seen recently."""
+    try:
+        target = int(person_id)
+    except (TypeError, ValueError):
+        return False
+    if window_secs is None:
+        window_secs = float(getattr(config, "UNKNOWN_FACE_RECENT_GRACE_SECS", 6.0))
+    now = time.monotonic()
+    try:
+        people = world_state.get("people") or []
+        for person in people:
+            try:
+                if int(person.get("person_db_id")) == target:
+                    return True
+            except (TypeError, ValueError):
+                continue
+    except Exception:
+        pass
+    try:
+        seen_at = _last_seen.get(target)
+        return seen_at is not None and (now - float(seen_at)) <= window_secs
+    except Exception:
+        return False
 
 
 def set_relationship_prompt_context(ctx: dict) -> None:
@@ -1084,6 +1182,7 @@ def _step_person_recognition(frame) -> None:
     drive unknown-person onboarding prompts.
     """
     global _last_face_feedback_signature, _last_identity_prompt_at, _last_solo_identity
+    global _last_face_seen_at
     try:
         from vision import face as face_mod
 
@@ -1093,12 +1192,20 @@ def _step_person_recognition(frame) -> None:
 
         detected = face_mod.detect_faces(frame)
         if not detected:
-            # No visible faces this tick — clear transient person slots.
-            if world_state.get("people"):
+            # No visible faces this tick. Hold the last slots briefly so a
+            # small/partly occluded face does not flicker off the GUI or lose
+            # conversation identity on a single detector miss.
+            hold_secs = float(getattr(config, "FACE_DETECTION_HOLD_SECS", 3.0) or 0.0)
+            people_now = world_state.get("people")
+            if people_now and hold_secs > 0 and (time.monotonic() - _last_face_seen_at) <= hold_secs:
+                return
+            if people_now:
                 world_state.update("people", [])
             _previous_face_boxes.clear()
             _last_face_feedback_signature = None
             return
+
+        _last_face_seen_at = time.monotonic()
 
         # Identity stickiness: HOG face recognition flickers unknown↔known within
         # 1–2 frames. When there's one face and we identified it moments ago,

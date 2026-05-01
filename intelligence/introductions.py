@@ -184,6 +184,12 @@ def _normalize_name(value: str) -> Optional[str]:
     if not text:
         return None
     text = re.split(r"[,.!?;:]", text, maxsplit=1)[0].strip()
+    text = re.sub(
+        r"\b(?:hi|hello|hey|wait|hold on|actually|please|thanks|thank you)\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
     tokens = []
     for raw in text.split():
         token = re.sub(r"[^A-Za-z'\-]", "", raw).strip("'-")
@@ -191,7 +197,7 @@ def _normalize_name(value: str) -> Optional[str]:
             tokens.append(token)
     if not tokens or len(tokens) > 3:
         return None
-    if any(t.lower() in {"my", "our", "name", "is", "this", "meet"} for t in tokens):
+    if any(t.lower() in {"my", "our", "name", "is", "this", "meet", "hi", "hello", "hey"} for t in tokens):
         return None
     if len(tokens) == 1 and tokens[0].lower() in {"friend", "someone", "somebody"}:
         return None

@@ -104,11 +104,12 @@ def _detect_rects(rgb: np.ndarray) -> list:
     """Run the active detector and return a list of dlib rectangles."""
     global _use_hog, _slow_count
 
+    upsample = max(0, int(getattr(config, "FACE_DETECTOR_UPSAMPLE", 1) or 0))
     if _use_hog:
-        return list(_hog_detector(rgb, 1))
+        return list(_hog_detector(rgb, upsample))
 
     t0 = time.monotonic()
-    cnn_dets = _cnn_detector(rgb, 1)
+    cnn_dets = _cnn_detector(rgb, upsample)
     elapsed = time.monotonic() - t0
     rects = [d.rect for d in cnn_dets]
 
@@ -202,7 +203,12 @@ def enroll_face(person_id: int, frame: np.ndarray) -> bool:
     return False
 
 
-def enroll_unknown_face(person_id: int, frame: np.ndarray) -> bool:
+def enroll_unknown_face(
+    person_id: int,
+    frame: np.ndarray,
+    *,
+    allow_largest_fallback: bool = False,
+) -> bool:
     """
     Like enroll_face, but when multiple faces are present, pick the LARGEST face
     that does NOT already match an existing person in the DB. Used when Rex
@@ -221,7 +227,12 @@ def enroll_unknown_face(person_id: int, frame: np.ndarray) -> bool:
             unknown_faces.append(f)
 
     if not unknown_faces:
-        # Fallback: all faces are known; pick whichever is largest anyway.
+        if not allow_largest_fallback:
+            _log.warning(
+                "enroll_unknown_face: no unknown face found in frame; refusing largest-face fallback (person_id=%d)",
+                person_id,
+            )
+            return False
         _log.warning(
             "enroll_unknown_face: no unknown face found in frame, falling back to largest (person_id=%d)",
             person_id,

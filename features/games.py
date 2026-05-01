@@ -14,7 +14,8 @@ Public API:
     can_play(game_name)                  → (bool, str | None)  # repeat-limit gate
     start_game(game_name, person_id=None) → str    # opening line for Rex to speak
     start_trivia(person_id=None)         → str    # convenience wrapper for trivia
-    handle_input(text, person_id=None)   → str    # Rex's response to player input
+    handle_input(text, person_id=None, audio_array=None) → str
+                                            # Rex's response to player input
     stop_game(person_id=None)            → str    # graceful closing line
     is_active()                          → bool
     current_game()                       → str | None
@@ -789,6 +790,80 @@ def _jeopardy_person_name(person_id: Optional[int]) -> Optional[str]:
     return None
 
 
+_JEOPARDY_NICKNAME_CANDIDATES = {
+    "jen": ["Jennifer"],
+    "jenn": ["Jennifer"],
+    "dan": ["Daniel"],
+    "danny": ["Daniel"],
+    "will": ["William", "Will"],
+    "bill": ["William", "Bill"],
+    "bret": ["Bret", "Brett"],
+    "brett": ["Brett", "Bret"],
+}
+
+
+def _jeopardy_player_display_name(name: str) -> str:
+    cleaned = " ".join((name or "Player").split()) or "Player"
+    return cleaned.split()[0]
+
+
+def _jeopardy_find_or_create_player(name: str) -> tuple[Optional[int], str]:
+    try:
+        from memory import people as people_memory
+    except Exception as exc:
+        _log.debug("[jeopardy] people memory unavailable: %s", exc)
+        return None, _jeopardy_player_display_name(name)
+
+    candidates = [name]
+    candidates.extend(_JEOPARDY_NICKNAME_CANDIDATES.get((name or "").strip().lower(), []))
+    for candidate in candidates:
+        try:
+            existing = people_memory.find_person_by_name(candidate)
+        except Exception:
+            existing = None
+        if existing:
+            stored_name = str(existing.get("name") or candidate)
+            return int(existing["id"]), _jeopardy_player_display_name(stored_name)
+
+    try:
+        pid, _created = people_memory.find_or_create_person(name)
+        return (int(pid) if pid is not None else None), _jeopardy_player_display_name(name)
+    except Exception as exc:
+        _log.debug("[jeopardy] player row create failed for %r: %s", name, exc)
+        return None, _jeopardy_player_display_name(name)
+
+
+def _jeopardy_prepare_players(names: list[str]) -> tuple[list[dict], list[int]]:
+    players: list[dict] = []
+    needs_voice: list[int] = []
+    try:
+        from memory import people as people_memory
+    except Exception:
+        people_memory = None
+
+    for raw_name in names:
+        person_id, display_name = _jeopardy_find_or_create_player(raw_name)
+        player = {"name": display_name, "score": 0}
+        if person_id is not None:
+            player["person_id"] = person_id
+            try:
+                if people_memory is not None and not people_memory.has_voice_biometric(person_id):
+                    needs_voice.append(len(players))
+            except Exception:
+                pass
+        players.append(player)
+    return players, needs_voice
+
+
+def _jeopardy_voice_check_prompt(player: dict, *, prefix: str = "") -> str:
+    name = player.get("name") or "player"
+    return (
+        f"{prefix}I need a cleaner voice print for {name} before the board starts. "
+        f"{name}, say: \"Jeopardy voice check, {name} is ready.\" "
+        f"Or say \"skip {name}\" to play without it."
+    )
+
+
 def _jeopardy_current_player() -> dict:
     players = _game_state.get("players") or [{"name": "Player", "score": 0}]
     idx = int(_game_state.get("current_player_idx", 0)) % len(players)
@@ -1103,14 +1178,13 @@ def _jeopardy_start(person_id: Optional[int]) -> str:
     })
     return _rex_respond(
         "[GAME: Jeopardy — PLAYER SETUP] Rex is starting a verbal Jeopardy-style "
-        "game. Ask who is playing. Tell them they can say one, two, or three names "
+        "game. Ask who is playing. Tell them they can say one to four names "
         "in one reply. Make it feel like a game-show intro, but keep it brief.",
         person_id,
     )
 
 
-def _jeopardy_begin_board(names: list[str], person_id: Optional[int]) -> tuple[str, bool]:
-    players = [{"name": name, "score": 0} for name in names]
+def _jeopardy_begin_board_for_players(players: list[dict], person_id: Optional[int]) -> tuple[str, bool]:
     round_line = _jeopardy_load_round(1, players, current_player_idx=0)
     if not round_line:
         _game_state.clear()
@@ -1124,7 +1198,7 @@ def _jeopardy_begin_board(names: list[str], person_id: Optional[int]) -> tuple[s
             True,
         )
 
-    player_text = ", ".join(name for name in names)
+    player_text = ", ".join(str(p.get("name") or "Player") for p in players)
     quip = random.choice([
         "Try not to make the scoreboard file a complaint.",
         "May your answers be less questionable than my wiring.",
@@ -1135,6 +1209,18 @@ def _jeopardy_begin_board(names: list[str], person_id: Optional[int]) -> tuple[s
         f"{round_line}",
         False,
     )
+
+
+def _jeopardy_begin_board(names: list[str], person_id: Optional[int]) -> tuple[str, bool]:
+    players, needs_voice = _jeopardy_prepare_players(names)
+    if needs_voice:
+        _game_state.update({
+            "phase": "voice_enroll",
+            "players": players,
+            "voice_enroll_queue": needs_voice,
+        })
+        return (_jeopardy_voice_check_prompt(players[needs_voice[0]]), False)
+    return _jeopardy_begin_board_for_players(players, person_id)
 
 
 def _jeopardy_handle_player_setup(text: str, person_id: Optional[int]) -> tuple[str, bool]:
@@ -1152,7 +1238,7 @@ def _jeopardy_handle_player_setup(text: str, person_id: Optional[int]) -> tuple[
 
     if not names:
         return (
-            "I need actual player names, not mysterious cantina fog. Say something like 'Bret and Joy'.",
+            "I need actual player names, not mysterious cantina fog. Say something like 'Bret, Joy, Daniel, and Jen'.",
             False,
         )
 
@@ -1289,10 +1375,59 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
     )
 
 
-def _jeopardy_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
+def _jeopardy_handle_voice_enroll(
+    text: str,
+    person_id: Optional[int],
+    audio_array=None,
+) -> tuple[str, bool]:
+    players = _game_state.get("players") or []
+    queue = list(_game_state.get("voice_enroll_queue") or [])
+    if not players or not queue:
+        return _jeopardy_begin_board_for_players(players or [{"name": "Player", "score": 0}], person_id)
+
+    player_idx = int(queue.pop(0))
+    player = players[player_idx]
+    name = str(player.get("name") or "player")
+    normalized = " ".join((text or "").lower().split())
+    skipped = (
+        normalized in {"skip", "skip voice", "start anyway", "begin anyway", "play anyway"}
+        or normalized == f"skip {name.lower()}"
+    )
+
+    prefix = ""
+    if skipped:
+        prefix = f"Skipping {name}'s voice print. "
+    else:
+        pid = player.get("person_id")
+        if pid is None or audio_array is None:
+            queue.insert(0, player_idx)
+            _game_state["voice_enroll_queue"] = queue
+            return (_jeopardy_voice_check_prompt(player, prefix="I could not store that one. "), False)
+        try:
+            from audio import speaker_id
+            ok = speaker_id.enroll_voice(int(pid), audio_array)
+        except Exception as exc:
+            _log.debug("[jeopardy] voice enrollment failed for %s: %s", name, exc)
+            ok = False
+        if not ok:
+            queue.insert(0, player_idx)
+            _game_state["voice_enroll_queue"] = queue
+            return (_jeopardy_voice_check_prompt(player, prefix="That voice print was too fuzzy. "), False)
+        player["voice_enrolled"] = True
+        prefix = f"Voice print stored for {name}. "
+
+    _game_state["voice_enroll_queue"] = queue
+    if queue:
+        return (_jeopardy_voice_check_prompt(players[int(queue[0])], prefix=prefix), False)
+    return _jeopardy_begin_board_for_players(players, person_id)
+
+
+def _jeopardy_handle(text: str, person_id: Optional[int], audio_array=None) -> tuple[str, bool]:
     phase = _game_state.get("phase")
     if phase == "awaiting_players":
         return _jeopardy_handle_player_setup(text, person_id)
+    if phase == "voice_enroll":
+        return _jeopardy_handle_voice_enroll(text, person_id, audio_array)
     if phase == "selecting":
         return _jeopardy_handle_selection(text, person_id)
     if phase == "awaiting_answer":
@@ -1571,7 +1706,7 @@ def start_trivia(person_id: Optional[int] = None) -> str:
     return start_game("trivia", person_id)
 
 
-def handle_input(text: str, person_id: Optional[int] = None) -> str:
+def handle_input(text: str, person_id: Optional[int] = None, audio_array=None) -> str:
     """
     Process player input for the current game and return Rex's response.
     Automatically clears game state when a game ends naturally.
@@ -1589,7 +1724,10 @@ def handle_input(text: str, person_id: Optional[int] = None) -> str:
             person_id,
         )
 
-    response, done = _GAME_HANDLERS[game]["handle"](text, person_id)
+    if game == "jeopardy":
+        response, done = _jeopardy_handle(text, person_id, audio_array)
+    else:
+        response, done = _GAME_HANDLERS[game]["handle"](text, person_id)
 
     if done:
         with _lock:

@@ -168,6 +168,15 @@ FACE_DETECTOR_MODEL   = "assets/models/face/mmod_human_face_detector.dat"
 # FaceTime camera — HOG is sufficient for this use case. Set False to re-enable mmod.
 FACE_DETECTOR_FORCE_HOG = True
 
+# dlib upsample passes before face detection. Higher values see smaller faces at
+# the cost of CPU. FaceTime/HOG misses mid-distance faces at 1, so default to 2.
+FACE_DETECTOR_UPSAMPLE = 2
+
+# Keep the last face slots alive briefly when one detector tick misses. This
+# stabilizes the GUI and prevents small/partly occluded faces from instantly
+# losing identity lock.
+FACE_DETECTION_HOLD_SECS = 3.0
+
 MUSIC_DIR          = "assets/music"
 TTS_CACHE_DIR      = "assets/audio/tts_cache"
 AUDIO_CLIPS_DIR    = "assets/audio/clips"
@@ -285,6 +294,25 @@ WHISPER_SHORT_UTTERANCE_ALLOWLIST = [
     "yo",
     "jt",
     "j t",
+]
+
+# Exact normalized utterances that are speech-like but not meaningful commands,
+# answers, or names. This catches room/TV sounds and non-lexical vocalizations
+# that Whisper may render as words.
+WHISPER_FILLER_UTTERANCE_BLOCKLIST = [
+    "mmm",
+    "mm",
+    "hmm",
+    "hm",
+    "uh",
+    "uhh",
+    "um",
+    "umm",
+    "ah",
+    "ahh",
+    "er",
+    "err",
+    "huh",
 ]
 
 # Transcriptions that exactly match these phrases (case-insensitive after basic
@@ -1144,6 +1172,10 @@ RECENT_ENGAGEMENT_WINDOW_SECS = 60.0
 # in this window, the stored unknown audio is discarded and Rex moves on.
 OFFSCREEN_IDENTIFY_WINDOW_SECS = 30.0
 
+# Face detection can flicker off for a second while a newcomer is still present.
+# During this grace window, do not treat an unmatched voice as off-camera.
+UNKNOWN_FACE_RECENT_GRACE_SECS = 6.0
+
 # Minimum voice-match similarity score required before Rex will fire a
 # face-reveal confirmation question ("is this what you look like?"). Below this
 # threshold the voice match is too uncertain to risk even asking.
@@ -1603,7 +1635,7 @@ TRIVIA_ROUND_LENGTH = 5
 # theme bed so "time's up" lands as the clip ends instead of after dead air.
 JEOPARDY_FUZZY_THRESHOLD = 0.78
 JEOPARDY_SELECTION_FUZZY_THRESHOLD = 0.58
-JEOPARDY_MAX_PLAYERS = 3
+JEOPARDY_MAX_PLAYERS = 4
 JEOPARDY_ANSWER_TIMEOUT_SECS = 8.0
 JEOPARDY_AUDIO_OUTPUT_SAMPLE_RATE = 44100
 JEOPARDY_AUDIO_MUSIC_GAIN = 0.35

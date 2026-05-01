@@ -91,9 +91,10 @@ Useful setup checks:
 
 ```bash
 ls /dev/tty.usb*
+python3 -c "import sounddevice as sd; print(sd.query_devices())"
 ```
 
-The setup script can walk you through serial device detection for Maestro and Arduino hardware. For camera setup, update `CAMERA_INDEX` or `CAMERA_DEVICE_NAME` in `.env`.
+The setup script can walk you through serial device detection for Maestro and Arduino hardware. For microphone setup, prefer `AUDIO_DEVICE_NAME` in `.env` so CoreAudio index changes do not break listening after reboot or replug. For camera setup, update `CAMERA_INDEX` or `CAMERA_DEVICE_NAME` in `.env`.
 
 ## Servo Safety
 

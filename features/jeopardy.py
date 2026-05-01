@@ -294,8 +294,8 @@ def _display_name(fragment: str) -> str:
     return " ".join(cleaned).strip()
 
 
-def parse_player_names(text: str, speaker_name: Optional[str] = None, limit: int = 3) -> list[str]:
-    """Parse one to three player names from a spoken roster."""
+def parse_player_names(text: str, speaker_name: Optional[str] = None, limit: int = 4) -> list[str]:
+    """Parse one to four player names from a spoken roster."""
     raw = (text or "").strip()
     if not raw:
         return []

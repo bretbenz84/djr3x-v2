@@ -41,7 +41,7 @@ import config
 from memory import database as db
 from memory import people as people_mod
 from audio import speaker_id
-from utils.config_loader import AUDIO_DEVICE_INDEX
+from utils.config_loader import AUDIO_DEVICE_INDEX, AUDIO_SELECTION_DESCRIPTION
 
 
 def _record(seconds: float) -> np.ndarray:
@@ -190,10 +190,10 @@ def main() -> int:
         return 0
 
     if AUDIO_DEVICE_INDEX is None:
-        print("ERROR: AUDIO_DEVICE_INDEX not set in .env")
+        print("ERROR: AUDIO_DEVICE_NAME/AUDIO_DEVICE_INDEX not set or not found in .env")
         return 1
 
-    print(f"Audio device index: {AUDIO_DEVICE_INDEX}")
+    print(f"Audio device: {AUDIO_SELECTION_DESCRIPTION}")
     print(f"Sample rate: {config.AUDIO_SAMPLE_RATE} Hz\n")
 
     if args.enroll:

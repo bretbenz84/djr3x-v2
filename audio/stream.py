@@ -5,8 +5,8 @@ Opens the mic once and never closes it. Audio is written into a rolling circular
 buffer by a non-blocking sounddevice callback. Callers read from the buffer via
 get_audio_chunk() or get_full_buffer().
 
-If AUDIO_DEVICE_INDEX is not set in .env the module initialises as a no-op and
-all read functions return empty arrays.
+If AUDIO_DEVICE_NAME / AUDIO_DEVICE_INDEX is not set in .env the module
+initialises as a no-op and all read functions return empty arrays.
 """
 
 import logging
@@ -16,7 +16,7 @@ from collections import deque
 import numpy as np
 
 import config
-from utils.config_loader import AUDIO_DEVICE_INDEX
+from utils.config_loader import AUDIO_DEVICE_INDEX, AUDIO_SELECTION_DESCRIPTION
 
 _log = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def start() -> None:
 
     if AUDIO_DEVICE_INDEX is None:
         _log.warning(
-            "AUDIO_DEVICE_INDEX not set in .env — audio stream disabled. "
+            "AUDIO_DEVICE_NAME/AUDIO_DEVICE_INDEX not set or not resolved in .env — audio stream disabled. "
             "Wake word, VAD, transcription, and speaker ID will not function."
         )
         return
@@ -101,12 +101,12 @@ def start() -> None:
         _input_channels = ch
         if ch != requested:
             _log.warning(
-                "Audio device %d does not support %d channels; opened with %d-ch instead.",
-                AUDIO_DEVICE_INDEX, requested, ch,
+                "Audio device %s does not support %d channels; opened with %d-ch instead.",
+                AUDIO_SELECTION_DESCRIPTION, requested, ch,
             )
         _log.info(
-            "Audio stream started — device %d, %d Hz, %d-ch input → mono, %ds buffer.",
-            AUDIO_DEVICE_INDEX,
+            "Audio stream started — %s, %d Hz, %d-ch input → mono, %ds buffer.",
+            AUDIO_SELECTION_DESCRIPTION,
             config.AUDIO_SAMPLE_RATE,
             ch,
             config.AUDIO_BUFFER_SECONDS,

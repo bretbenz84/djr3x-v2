@@ -181,10 +181,12 @@ OpenAI and ElevenLabs API keys only. Never committed. Listed in `.gitignore`.
 A template `apikeys.example.py` with placeholder values is committed instead.
 
 ### `.env` — Host-Specific Hardware Config (excluded from git)
-Camera index, serial port paths, and build-specific servo min/max overrides.
+Microphone name, camera index/name, serial port paths, and build-specific servo min/max overrides.
 Different per machine and per physical droid build.
 A template `.env.example` with placeholder values is committed instead.
 When a device entry is missing or blank, that hardware feature is gracefully disabled.
+Microphone selection prefers `AUDIO_DEVICE_NAME` over `AUDIO_DEVICE_INDEX` so
+CoreAudio index changes do not break listening across launches or reboots.
 Audio output uses macOS system default device (3.5mm audio jack on the M1).
 
 ---
