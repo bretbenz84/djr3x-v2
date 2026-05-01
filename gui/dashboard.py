@@ -24,6 +24,7 @@ try:
         QPushButton,
         QSizePolicy,
         QSlider,
+        QStackedWidget,
         QVBoxLayout,
         QWidget,
     )
@@ -34,6 +35,7 @@ import numpy as np
 
 import config
 from gui.conversation_panel import ConversationPanel
+from gui.jeopardy_panel import JeopardyPanel
 from gui.rex_avatar import RexAvatar, normalize_servo, servo_to_angle, servo_to_offset
 from gui.state_bridge import GUIDashboardBridge, gui_bridge
 from gui.vision_panel import VisionPanel
@@ -72,6 +74,7 @@ class DashboardWindow(QMainWindow):
             lambda text: self._bridge.add_conversation_line("Human", text, "user")
         )
         self.footer = FooterBar()
+        self.jeopardy = JeopardyPanel()
         self.connection = QLabel("●  Connected")
         self.connection.setObjectName("connectionLabel")
 
@@ -124,7 +127,13 @@ class DashboardWindow(QMainWindow):
         columns.setColumnStretch(0, 11)
         columns.setColumnStretch(1, 10)
         columns.setColumnStretch(2, 17)
-        shell.addLayout(columns, 1)
+        dashboard_page = QWidget()
+        dashboard_page.setLayout(columns)
+
+        self._main_stack = QStackedWidget()
+        self._main_stack.addWidget(dashboard_page)
+        self._main_stack.addWidget(self.jeopardy)
+        shell.addWidget(self._main_stack, 1)
         shell.addWidget(self.footer)
 
         self.setCentralWidget(root)
@@ -161,6 +170,12 @@ class DashboardWindow(QMainWindow):
         self.avatar.set_snapshot(snapshot)
         self.servos.set_snapshot(snapshot)
         self.conversation.set_snapshot(snapshot)
+        self.jeopardy.set_snapshot(snapshot)
+        game_state = snapshot.get("game_state") or {}
+        if game_state.get("active_game") == "jeopardy":
+            self._main_stack.setCurrentWidget(self.jeopardy)
+        else:
+            self._main_stack.setCurrentIndex(0)
 
         self._frame_counter += 1
         now = time.monotonic()

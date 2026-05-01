@@ -79,6 +79,12 @@ Start DJ-R3X:
 python main.py
 ```
 
+Start directly in Jeopardy mode, skipping startup introductions:
+
+```bash
+python main.py -jeopardy
+```
+
 At startup, DJ-R3X preloads the local Ollama `qwen2.5:1.5b` model before accepting input and keeps it loaded for the run.
 
 You need to activate the virtual environment in every new terminal session before running project commands.

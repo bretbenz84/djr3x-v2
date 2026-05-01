@@ -22,6 +22,7 @@ Public API:
 """
 
 import json
+import copy
 import logging
 import random
 import sys
@@ -1050,6 +1051,7 @@ def _jeopardy_load_round(
         "phase": "selecting",
         "players": players,
         "board": board,
+        "board_values": _jeopardy_board_values(board),
         "last_category": None,
         "jeopardy_round": round_no,
     }
@@ -1072,6 +1074,15 @@ def _jeopardy_load_round(
         f"Categories are: {categories_text}. "
         f"{player['name']}, pick a category and dollar value."
     )
+
+
+def _jeopardy_board_values(board: dict) -> list[int]:
+    values = {
+        int(value)
+        for category in board.get("categories") or []
+        for value in (category.get("clues") or {}).keys()
+    }
+    return sorted(values)
 
 
 def _jeopardy_complete_round_or_finish(
@@ -1810,3 +1821,43 @@ def current_game() -> Optional[str]:
     """Return the normalized name of the current game, or None if no game is active."""
     with _lock:
         return _active_game
+
+
+def snapshot() -> dict:
+    """Return a GUI-safe copy of the active game state."""
+    with _lock:
+        game = _active_game
+        if game != "jeopardy":
+            return {"active_game": game}
+        state = {
+            key: copy.deepcopy(value)
+            for key, value in _game_state.items()
+            if key not in {"answer_timer"}
+        }
+
+    board = state.get("board") or {}
+    categories = []
+    for category in board.get("categories") or []:
+        clues = category.get("clues") or {}
+        categories.append({
+            "name": category.get("name") or "Category",
+            "remaining_values": sorted(int(v) for v in clues.keys()),
+        })
+    values = list(state.get("board_values") or [])
+    if not values:
+        values = sorted({v for cat in categories for v in cat["remaining_values"]})
+
+    current_clue = state.get("current_clue") or None
+    return {
+        "active_game": "jeopardy",
+        "phase": state.get("phase"),
+        "players": state.get("players") or [],
+        "current_player_idx": int(state.get("current_player_idx", 0) or 0),
+        "round": int(state.get("jeopardy_round", 1) or 1),
+        "categories": categories,
+        "values": values,
+        "remaining": int(board.get("remaining", 0) or 0),
+        "current_clue": current_clue,
+        "last_category": state.get("last_category"),
+        "voice_enroll_queue": list(state.get("voice_enroll_queue") or []),
+    }

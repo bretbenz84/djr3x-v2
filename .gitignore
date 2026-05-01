@@ -228,6 +228,8 @@ assets/music/
 assets/memory/people.db
 assets/memory/people.db-shm
 assets/memory/people.db-wal
+assets/memory/people.db.bak-*
+
 
 # Runtime logs
 logs/

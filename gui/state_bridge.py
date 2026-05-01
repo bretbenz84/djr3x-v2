@@ -23,6 +23,7 @@ class GUIDashboardBridge:
         self._lock = threading.Lock()
         self._frame = None
         self._world_state: dict[str, Any] = {}
+        self._game_state: dict[str, Any] = {}
         self._servo_positions: dict[str, int] = {}
         self._head_led_state: dict[str, Any] = {
             "mode": "off",
@@ -65,6 +66,11 @@ class GUIDashboardBridge:
             description = env.get("description")
             if description:
                 self._scene_description = str(description)
+            self._updated_at = time.time()
+
+    def update_game_state_snapshot(self, game_state_snapshot: dict[str, Any]) -> None:
+        with self._lock:
+            self._game_state = copy.deepcopy(game_state_snapshot or {})
             self._updated_at = time.time()
 
     def update_servo_position(self, name, value) -> None:
@@ -129,6 +135,7 @@ class GUIDashboardBridge:
             return {
                 "frame": frame,
                 "world_state": copy.deepcopy(self._world_state),
+                "game_state": copy.deepcopy(self._game_state),
                 "servo_positions": dict(self._servo_positions),
                 "head_led_state": copy.deepcopy(self._head_led_state),
                 "scene_description": self._scene_description,

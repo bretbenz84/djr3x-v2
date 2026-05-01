@@ -3,6 +3,7 @@
 
 import os
 import sys
+import argparse
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -197,7 +198,53 @@ _gui_bridge_stop = threading.Event()
 _gui_bridge_thread: threading.Thread | None = None
 
 
-def _run_controller_startup() -> None:
+def _apply_startup_mode_overrides(*, jeopardy: bool = False) -> None:
+    if not jeopardy:
+        return
+    logger.info("Startup mode: Jeopardy requested; suppressing startup introductions.")
+    setattr(config, "STARTUP_GROUP_GREETING_ENABLED", False)
+    setattr(config, "MOOD_AWARE_FIRST_SIGHT_ENABLED", False)
+    try:
+        state.set_state(State.ACTIVE)
+    except Exception as exc:
+        logger.debug("Could not pre-set ACTIVE state for Jeopardy startup: %s", exc)
+
+
+def _launch_startup_jeopardy() -> None:
+    logger.info("Launching Jeopardy startup mode.")
+    try:
+        from features import games as games_mod
+        from memory import conversations as conv_memory
+        from utils import conv_log
+
+        response = games_mod.start_game("jeopardy")
+        if not response:
+            logger.warning("Jeopardy startup returned no opening response.")
+            return
+
+        try:
+            conv_memory.add_to_transcript("Rex", response)
+        except Exception as exc:
+            logger.debug("Could not add Jeopardy startup line to transcript: %s", exc)
+        try:
+            conv_log.log_rex(response)
+        except Exception as exc:
+            logger.debug("Could not add Jeopardy startup line to GUI conversation log: %s", exc)
+        try:
+            consciousness.note_rex_utterance(
+                response,
+                wait_secs=float(getattr(config, "QUESTION_RESPONSE_WAIT_SECS", 20.0)),
+            )
+        except Exception as exc:
+            logger.debug("Could not register Jeopardy startup utterance: %s", exc)
+
+        speech_queue.enqueue(response, "excited", priority=1, tag="startup:jeopardy")
+    except Exception as exc:
+        logger.exception("Failed to launch Jeopardy startup mode: %s", exc)
+
+
+def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
+    _apply_startup_mode_overrides(jeopardy=startup_jeopardy)
     logger.info("Verifying local Whisper model...")
     _verify_local_whisper_model()
 
@@ -341,6 +388,9 @@ def _run_controller_startup() -> None:
     logger.info("Setting arm to idle position...")
     animations.arm_idle()
 
+    if startup_jeopardy:
+        _launch_startup_jeopardy()
+
     logger.info("=== DJ-R3X v2 is online ===")
 
 
@@ -357,8 +407,8 @@ def _wait_for_shutdown() -> None:
         state.set_state(State.SHUTDOWN)
 
 
-def _run_headless() -> None:
-    _run_controller_startup()
+def _run_headless(*, startup_jeopardy: bool = False) -> None:
+    _run_controller_startup(startup_jeopardy=startup_jeopardy)
     _wait_for_shutdown()
     _shutdown()
 
@@ -431,6 +481,11 @@ def _start_gui_bridge_sync() -> None:
                 gui_bridge.update_world_state_snapshot(snapshot)
             except Exception as exc:
                 logger.debug("GUI bridge world-state sync failed: %s", exc)
+            try:
+                from features import games as games_mod
+                gui_bridge.update_game_state_snapshot(games_mod.snapshot())
+            except Exception as exc:
+                logger.debug("GUI bridge game-state sync failed: %s", exc)
             _gui_bridge_stop.wait(interval)
 
     _gui_bridge_thread = threading.Thread(
@@ -447,8 +502,8 @@ def _stop_gui_bridge_sync() -> None:
         _gui_bridge_thread.join(timeout=2.0)
 
 
-def _run_gui_mode(run_dashboard) -> None:
-    _run_controller_startup()
+def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
+    _run_controller_startup(startup_jeopardy=startup_jeopardy)
     _start_gui_bridge_sync()
 
     shutdown_started = threading.Event()
@@ -486,17 +541,29 @@ def _run_gui_mode(run_dashboard) -> None:
         _stop_gui_bridge_sync()
 
 
-def main() -> None:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the DJ-R3X controller.")
+    parser.add_argument(
+        "-jeopardy",
+        "--jeopardy",
+        action="store_true",
+        help="skip startup introductions and go directly into the Jeopardy game",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _parse_args(argv)
     if not _gui_requested():
-        _run_headless()
+        _run_headless(startup_jeopardy=args.jeopardy)
         return
 
     run_dashboard = _load_dashboard_runner()
     if run_dashboard is None:
-        _run_headless()
+        _run_headless(startup_jeopardy=args.jeopardy)
         return
 
-    _run_gui_mode(run_dashboard)
+    _run_gui_mode(run_dashboard, startup_jeopardy=args.jeopardy)
 
 
 if __name__ == "__main__":
