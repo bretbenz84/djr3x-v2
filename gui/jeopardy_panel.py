@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from PySide6.QtCore import QRectF, Qt
@@ -15,12 +16,19 @@ class JeopardyPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._state: dict[str, Any] = {}
+        self._speech_state: dict[str, Any] = {}
+        self._category_reveal_key: tuple[str, ...] = ()
+        self._revealed_categories = 0
+        self._last_category_reveal_at = 0.0
+        self._current_clue_drawn = False
         self._avatar = RexAvatar(self, show_background=False, show_grid=False)
         self._avatar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setMinimumSize(980, 640)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         self._state = dict(snapshot.get("game_state") or {})
+        self._speech_state = dict(snapshot.get("speech_state") or {})
+        self._update_category_reveal()
         self._avatar.set_snapshot(snapshot)
         self.update()
 
@@ -29,11 +37,11 @@ class JeopardyPanel(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self._draw_background(painter)
 
-        bounds = QRectF(self.rect()).adjusted(14, 14, -14, -14)
+        bounds = QRectF(self.rect()).adjusted(8, 8, -8, -8)
         left_w = min(300.0, bounds.width() * 0.25)
         side_w = min(190.0, bounds.width() * 0.14)
-        players_h = min(250.0, max(190.0, bounds.height() * 0.29))
-        gap = 12.0
+        players_h = min(210.0, max(162.0, bounds.height() * 0.24))
+        gap = 8.0
 
         mascot = QRectF(bounds.left(), bounds.top(), left_w, bounds.height() - players_h - gap)
         board = QRectF(
@@ -46,11 +54,48 @@ class JeopardyPanel(QWidget):
         players = QRectF(bounds.left(), board.bottom() + gap, bounds.width(), players_h)
 
         self._draw_mascot(painter, mascot)
+        self._current_clue_drawn = False
         self._draw_board(painter, board)
         self._draw_side_controls(painter, side)
         self._draw_players(painter, players)
         self._draw_current_clue(painter, board)
         painter.end()
+
+    def _update_category_reveal(self) -> None:
+        categories = tuple(
+            str(category.get("name") or "")
+            for category in (self._state.get("categories") or [])
+        )
+        if categories != self._category_reveal_key:
+            self._category_reveal_key = categories
+            self._revealed_categories = 0
+            self._last_category_reveal_at = time.monotonic()
+
+        if not categories:
+            self._revealed_categories = 0
+            return
+
+        phase = self._state.get("phase")
+        if phase not in {"selecting", "awaiting_answer"}:
+            self._revealed_categories = 0
+            return
+
+        if phase == "awaiting_answer":
+            self._revealed_categories = len(categories)
+            return
+
+        now = time.monotonic()
+        speaking = bool(self._speech_state.get("speaking"))
+        if speaking:
+            if self._revealed_categories <= 0:
+                self._revealed_categories = 1
+                self._last_category_reveal_at = now
+                return
+            if self._revealed_categories < len(categories) and now - self._last_category_reveal_at >= 0.85:
+                self._revealed_categories += 1
+                self._last_category_reveal_at = now
+        elif self._revealed_categories > 0 and now - self._last_category_reveal_at > 1.6:
+            self._revealed_categories = len(categories)
 
     def _draw_background(self, painter: QPainter) -> None:
         grad = QLinearGradient(0, 0, self.width(), self.height())
@@ -126,10 +171,15 @@ class JeopardyPanel(QWidget):
     def _draw_board(self, painter: QPainter, rect: QRectF) -> None:
         self._metal_panel(painter, rect, radius=10)
         inner = rect.adjusted(18, 18, -18, -18)
+        if self._state.get("phase") == "awaiting_answer" and self._state.get("current_clue"):
+            self._draw_full_board_clue(painter, inner)
+            self._current_clue_drawn = True
+            return
+
         cats = list(self._state.get("categories") or [])
         values = list(self._state.get("values") or [200, 400, 600, 800, 1000])
         if not cats:
-            cats = [{"name": name, "remaining_values": values} for name in ["SCIENCE", "HISTORY", "LITERATURE", "POP CULTURE", "MATH"]]
+            cats = [{"name": "", "remaining_values": []} for _ in range(5)]
         cats = cats[:6]
         col_count = max(1, len(cats))
         row_count = max(1, len(values))
@@ -139,12 +189,14 @@ class JeopardyPanel(QWidget):
         row_h = (inner.height() - header_h - cell_gap * row_count) / row_count
 
         for col, category in enumerate(cats):
+            revealed = col < self._revealed_categories
+            category_name = str(category.get("name") or "")
             x = inner.left() + col * (col_w + cell_gap)
             header = QRectF(x, inner.top(), col_w, header_h)
-            self._blue_panel(painter, header)
-            painter.setPen(QColor("#f4f6ff"))
+            self._blue_panel(painter, header, dim=not revealed)
+            painter.setPen(QColor("#f4f6ff") if revealed else QColor("#1e3c6d"))
             font = QFont()
-            header_text = str(category.get("name") or "CATEGORY").upper()
+            header_text = category_name.upper() if revealed else ""
             longest = max((len(part) for part in header_text.split()), default=len(header_text))
             font.setPointSize(max(9, int(min(15, col_w / max(7.0, longest * 0.72)))))
             font.setBold(True)
@@ -155,7 +207,7 @@ class JeopardyPanel(QWidget):
                 header_text,
             )
 
-            remaining = {int(v) for v in category.get("remaining_values") or []}
+            remaining = {int(v) for v in category.get("remaining_values") or []} if revealed else set()
             for row, value in enumerate(values):
                 cell = QRectF(
                     x,
@@ -163,17 +215,84 @@ class JeopardyPanel(QWidget):
                     col_w,
                     row_h,
                 )
+                is_current = self._is_current_clue_cell(category_name, value)
                 available = int(value) in remaining
-                self._blue_panel(painter, cell, dim=not available)
+                if is_current:
+                    self._draw_active_clue_cell(painter, cell)
+                    self._current_clue_drawn = True
+                    continue
+                self._blue_panel(painter, cell, dim=not available or not revealed)
                 painter.setPen(QColor("#ffb21e") if available else QColor("#1e3c6d"))
                 font.setPointSize(max(14, int(min(23, row_h * 0.36, col_w / 5.4))))
                 font.setBold(True)
                 painter.setFont(font)
                 painter.drawText(cell.adjusted(4, 0, -4, 0), Qt.AlignmentFlag.AlignCenter, f"${int(value)}" if available else "")
 
+    def _is_current_clue_cell(self, category_name: str, value: int) -> bool:
+        clue = self._state.get("current_clue") or {}
+        if self._state.get("phase") != "awaiting_answer" or not clue:
+            return False
+        try:
+            clue_value = int(clue.get("value", 0) or 0)
+            cell_value = int(value)
+        except (TypeError, ValueError):
+            return False
+        return clue_value == cell_value and _norm_text(clue.get("category")) == _norm_text(category_name)
+
+    def _draw_active_clue_cell(self, painter: QPainter, rect: QRectF) -> None:
+        clue = self._state.get("current_clue") or {}
+        self._blue_panel(painter, rect)
+        painter.setPen(QPen(QColor("#ffb21e"), 3))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 5, 5)
+
+        font = QFont()
+        painter.setPen(QColor("#f7f8ff"))
+        text = str(clue.get("clue") or "")
+        font.setBold(True)
+        font.setPointSize(max(8, int(min(14, rect.height() * 0.18, rect.width() / 12.0))))
+        painter.setFont(font)
+        painter.drawText(
+            rect.adjusted(9, 7, -9, -7),
+            Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+            text,
+        )
+
+    def _draw_full_board_clue(self, painter: QPainter, rect: QRectF) -> None:
+        clue = self._state.get("current_clue") or {}
+        self._blue_panel(painter, rect)
+        painter.setPen(QPen(QColor("#ffb21e"), 4))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect.adjusted(4, 4, -4, -4), 7, 7)
+
+        category = str(clue.get("category") or "Category").upper()
+        value = int(clue.get("value", 0) or 0)
+        title = f"{category}  ${value}" if value else category
+
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(max(14, int(min(25, rect.height() * 0.075))))
+        painter.setFont(font)
+        painter.setPen(QColor("#ffb21e"))
+        painter.drawText(
+            rect.adjusted(26, 20, -26, -20),
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+            title,
+        )
+
+        text_rect = rect.adjusted(54, rect.height() * 0.20, -54, -42)
+        font.setPointSize(max(20, int(min(38, rect.height() * 0.12, rect.width() / 18.0))))
+        painter.setFont(font)
+        painter.setPen(QColor("#f7f8ff"))
+        painter.drawText(
+            text_rect,
+            Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+            str(clue.get("clue") or ""),
+        )
+
     def _draw_current_clue(self, painter: QPainter, board: QRectF) -> None:
         clue = self._state.get("current_clue") or {}
-        if not clue or self._state.get("phase") != "awaiting_answer":
+        if self._current_clue_drawn or not clue or self._state.get("phase") != "awaiting_answer":
             return
         card = QRectF(board.left() + board.width() * 0.10, board.top() + board.height() * 0.22, board.width() * 0.80, board.height() * 0.48)
         painter.setPen(QPen(QColor("#8291a2"), 3))
@@ -197,12 +316,12 @@ class JeopardyPanel(QWidget):
 
     def _draw_players(self, painter: QPainter, rect: QRectF) -> None:
         self._metal_panel(painter, rect, radius=0)
-        player_area = rect.adjusted(12, 12, -12, -12)
+        player_area = rect.adjusted(8, 8, -8, -8)
         players = list(self._state.get("players") or [])
         max_players = 4
         current = int(self._state.get("current_player_idx", 0) or 0)
         colors = ["#006fe8", "#d01818", "#32a326", "#8b24d2"]
-        gap = 14.0
+        gap = 10.0
         card_w = (player_area.width() - gap * (max_players - 1)) / max_players
         for idx in range(max_players):
             player = players[idx] if idx < len(players) else {"name": f"PLAYER {idx + 1}", "score": 0}
@@ -212,19 +331,19 @@ class JeopardyPanel(QWidget):
 
     def _draw_player_card(self, painter: QPainter, rect: QRectF, player: dict, color: str, *, active: bool, enrolled: bool) -> None:
         self._metal_panel(painter, rect, radius=6, active=active)
-        name_h = 42.0
-        label = QRectF(rect.left() + 20, rect.top() + 12, rect.width() - 40, name_h)
+        name_h = 32.0
+        label = QRectF(rect.left() + 14, rect.top() + 8, rect.width() - 28, name_h)
         painter.setPen(QPen(QColor("#14191f"), 2))
         painter.setBrush(QColor(color if enrolled else "#1c355a"))
         painter.drawRoundedRect(label, 6, 6)
         painter.setPen(QColor("#f8fbff"))
         font = QFont()
-        font.setPointSize(max(11, int(min(18, label.width() / 9))))
+        font.setPointSize(max(10, int(min(15, label.width() / 10))))
         font.setBold(True)
         painter.setFont(font)
         painter.drawText(label.adjusted(6, 0, -6, 0), Qt.AlignmentFlag.AlignCenter, str(player.get("name") or "PLAYER").upper())
 
-        portrait = QRectF(rect.left() + 18, label.bottom() + 12, rect.width() - 36, rect.height() - 108)
+        portrait = QRectF(rect.left() + 14, label.bottom() + 8, rect.width() - 28, rect.height() - 90)
         grad = QLinearGradient(portrait.topLeft(), portrait.bottomRight())
         grad.setColorAt(0, QColor(color).darker(260))
         grad.setColorAt(1, QColor(color).darker(120) if enrolled else QColor("#05101d"))
@@ -233,12 +352,12 @@ class JeopardyPanel(QWidget):
         painter.drawRoundedRect(portrait, 7, 7)
         self._draw_silhouette(painter, portrait, QColor(color if enrolled else "#2d587c"))
 
-        score = QRectF(rect.left() + 18, rect.bottom() - 70, rect.width() - 36, 54)
+        score = QRectF(rect.left() + 14, rect.bottom() - 58, rect.width() - 28, 46)
         painter.setPen(QPen(QColor("#222830"), 2))
         painter.setBrush(QColor("#020304"))
         painter.drawRoundedRect(score, 5, 5)
         painter.setPen(QColor("#f7f7f7"))
-        font.setPointSize(26)
+        font.setPointSize(22)
         font.setBold(True)
         painter.setFont(font)
         painter.drawText(score, Qt.AlignmentFlag.AlignCenter, f"${int(player.get('score', 0) or 0)}")
@@ -322,3 +441,7 @@ def _phase_prompt(state: dict[str, Any]) -> str:
     if phase == "awaiting_answer":
         return "ANSWER THE CLUE."
     return "CHOOSE A CATEGORY AND VALUE."
+
+
+def _norm_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().casefold().split())

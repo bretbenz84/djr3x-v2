@@ -80,12 +80,14 @@ class DashboardWindow(QMainWindow):
 
         root = QWidget()
         root.setObjectName("root")
-        shell = QVBoxLayout(root)
-        shell.setContentsMargins(14, 8, 14, 14)
-        shell.setSpacing(12)
+        self._shell = QVBoxLayout(root)
+        self._shell.setContentsMargins(14, 8, 14, 14)
+        self._shell.setSpacing(12)
 
+        self._top_bar = QWidget()
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
+        self._top_bar.setLayout(top)
         lights = QLabel("●  ●  ●")
         lights.setObjectName("trafficLights")
         top.addWidget(lights)
@@ -94,7 +96,7 @@ class DashboardWindow(QMainWindow):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         top.addWidget(title, 1)
         top.addWidget(self.connection)
-        shell.addLayout(top)
+        self._shell.addWidget(self._top_bar)
 
         columns = QGridLayout()
         columns.setContentsMargins(0, 0, 0, 0)
@@ -133,8 +135,8 @@ class DashboardWindow(QMainWindow):
         self._main_stack = QStackedWidget()
         self._main_stack.addWidget(dashboard_page)
         self._main_stack.addWidget(self.jeopardy)
-        shell.addWidget(self._main_stack, 1)
-        shell.addWidget(self.footer)
+        self._shell.addWidget(self._main_stack, 1)
+        self._shell.addWidget(self.footer)
 
         self.setCentralWidget(root)
         self.setStyleSheet(_STYLE)
@@ -172,10 +174,19 @@ class DashboardWindow(QMainWindow):
         self.conversation.set_snapshot(snapshot)
         self.jeopardy.set_snapshot(snapshot)
         game_state = snapshot.get("game_state") or {}
-        if game_state.get("active_game") == "jeopardy":
+        jeopardy_active = game_state.get("active_game") == "jeopardy"
+        if jeopardy_active:
             self._main_stack.setCurrentWidget(self.jeopardy)
         else:
             self._main_stack.setCurrentIndex(0)
+        self._top_bar.setVisible(not jeopardy_active)
+        self.footer.setVisible(not jeopardy_active)
+        if jeopardy_active:
+            self._shell.setContentsMargins(0, 0, 0, 0)
+            self._shell.setSpacing(0)
+        else:
+            self._shell.setContentsMargins(14, 8, 14, 14)
+            self._shell.setSpacing(12)
 
         self._frame_counter += 1
         now = time.monotonic()
