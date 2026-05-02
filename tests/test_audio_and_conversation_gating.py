@@ -369,6 +369,31 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertEqual([p["name"] for p in players], ["Will", "Jennifer", "Daniel", "Bret"])
         self.assertEqual(needs_voice, [1])
 
+    def test_jeopardy_negative_scores_are_spoken_explicitly(self):
+        from features import jeopardy
+
+        scores = jeopardy.format_scores([
+            {"name": "Bret", "score": -600},
+            {"name": "Jennifer", "score": 200},
+        ])
+
+        self.assertIn("Bret: negative $600", scores)
+        self.assertIn("Jennifer: $200", scores)
+        self.assertNotIn("$-600", scores)
+
+    def test_jeopardy_object_invention_response_uses_what(self):
+        from features import jeopardy
+
+        response = jeopardy.format_correct_response(
+            "Windshield Wipers",
+            clue="This invention let you drive in the rain",
+        )
+
+        self.assertEqual(response, "What are Windshield Wipers?")
+        self.assertTrue(
+            jeopardy.is_correct("What are windshield wipers?", "Windshield Wipers")
+        )
+
     def test_self_intro_relationship_to_engaged_collapses_sibling_gender(self):
         from intelligence import interaction
 

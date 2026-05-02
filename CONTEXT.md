@@ -115,7 +115,8 @@ djr3x-v2/
 │
 ├── features/
 │   ├── dj.py                  # DJ mode, music playback, radio streaming, requests
-│   ├── games.py               # I Spy, word games, trivia, game state
+│   ├── games.py               # I Spy, word games, trivia, Jeopardy orchestration, game state
+│   ├── jeopardy.py            # Jeopardy clue bank, board parsing, answer judging
 │   └── trivia.py              # Trivia question bank loader, category management
 │
 ├── awareness/
@@ -157,11 +158,13 @@ djr3x-v2/
     ├── audio/
     │   ├── clips/              # Idle and canned audio clips
     │   ├── startup/            # Startup and shutdown audio
+    │   ├── jeopardy/           # Jeopardy stingers, theme bed, intro/outro clips
     │   └── tts_cache/          # SHA-256 named ElevenLabs audio files
     │                           # e.g. a3f82bc1d....mp3
     │
     ├── music/                  # Local MP3 files for DJ mode
     ├── trivia/                 # Trivia question bank JSON files by category
+    ├── jeopardy/               # TSV Jeopardy clue bank
     │
     └── memory/
         └── people.db           # SQLite person database (see Memory System)
@@ -980,12 +983,15 @@ assets/music/
 
 # Person database — local runtime data, never commit
 assets/memory/people.db
+assets/memory/people.db.bak*
 ```
 
 ### What IS tracked in git
 - `assets/audio/clips/` — idle and canned audio clips (part of the project)
 - `assets/audio/startup/` — startup and shutdown audio (part of the project)
+- `assets/audio/jeopardy/` — Jeopardy intro, board, thinking theme, answer, timeout, and outro clips
 - `assets/trivia/` — trivia question bank JSON files
+- `assets/jeopardy/` — Jeopardy clue bank TSV
 - `config.py`, `apikeys.example.py`, `.env.example` — templates and settings
 - All Python source files
 - `requirements.txt`, `setup_assets.py`, `setup_macos.sh`
@@ -1187,6 +1193,9 @@ what Rex does or doesn't have available.
 
 Rex can play interactive games with one or more people. All games are interruptible at
 any time by wake word — Rex pauses gracefully in character and resumes or exits cleanly.
+While a game is active, proactive conversation behaviors are suppressed so a board prompt
+doesn't get hijacked by idle questions, relationship callbacks, trip follow-ups, or
+presence reactions.
 
 ### I Spy
 - Rex picks an object visible in the current camera frame (via GPT-4o scene analysis)
@@ -1209,6 +1218,25 @@ any time by wake word — Rex pauses gracefully in character and resumes or exit
 - Tracks score per person using face/voice identification if multiple players
 - Rex delivers results with full character — celebrates right answers, roasts wrong ones
 - Question difficulty can be set by voice ("make it harder", "easier ones please")
+
+### Jeopardy
+- Launchable as a normal game or startup mode; startup Jeopardy suppresses the usual
+  introduction chatter and goes straight into player setup
+- Uses `assets/jeopardy/clues.tsv` to build real six-category boards, with round one,
+  Double Jeopardy, dollar values, Daily Doubles, and local category/value parsing
+- Supports one to four named contestants taking turns. Known people are resolved through
+  the person database; players missing voice biometrics are prompted for a short voice
+  check or may be skipped to start anyway
+- Player setup, clue selection, answering, rebound attempts, scoring, and board completion
+  all live in the active game state so normal conversation flows cannot interrupt the game
+- The thinking theme is played as a low-volume answer bed and is interruptible by player
+  speech; VAD stops the music, clears the echo-cancel tail, and lets the answer through
+- Answer checking strips Jeopardy-style phrasing (`what is`, `who are`, etc.), then uses
+  exact, fuzzy, and partial matching so natural responses are accepted
+- Correct-response formatting uses clue/category context to choose `who`, `what`, or
+  `where`; object clues such as inventions/devices/tools answer with `what`, not `who`
+- Negative scores are spoken explicitly as `negative $600` rather than `$-600`, so TTS
+  does not flatten the sign
 
 ### Game State
 - Games run as a sub-state within ACTIVE

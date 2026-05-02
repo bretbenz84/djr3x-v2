@@ -50,6 +50,16 @@ _PLAYER_FILLER_RE = re.compile(
     re.IGNORECASE,
 )
 
+_NON_PLAYER_NAME_WORDS = {
+    "i",
+    "me",
+    "my",
+    "myself",
+    "you",
+    "we",
+    "us",
+}
+
 _QUESTION_PREFIX_RE = re.compile(
     r"^\s*(?:"
     r"what|who|where|when|why|how"
@@ -82,7 +92,10 @@ _PLACE_CONTEXT_RE = re.compile(
 _THING_CONTEXT_RE = re.compile(
     r"\b("
     r"school|college|university|company|corporation|brand|team|movie|film|"
-    r"book|novel|play|song|album|magazine|newspaper|vehicle|ship"
+    r"book|novel|play|song|album|magazine|newspaper|vehicle|ship|"
+    r"invention|device|tool|machine|gadget|appliance|equipment|instrument|"
+    r"object|item|thing|product|technology|material|substance|chemical|"
+    r"food|drink|dish|type|kind"
     r")\b",
     re.IGNORECASE,
 )
@@ -272,7 +285,17 @@ def format_categories(
 def format_scores(players: list[dict]) -> str:
     if not players:
         return "no players"
-    return ", ".join(f"{p['name']}: ${int(p.get('score', 0))}" for p in players)
+    return ", ".join(
+        f"{p['name']}: {_format_score_value(int(p.get('score', 0)))}"
+        for p in players
+    )
+
+
+def _format_score_value(score: int) -> str:
+    amount = abs(int(score))
+    if score < 0:
+        return f"negative ${amount}"
+    return f"${amount}"
 
 
 def _display_name(fragment: str) -> str:
@@ -300,7 +323,6 @@ def parse_player_names(text: str, speaker_name: Optional[str] = None, limit: int
     if not raw:
         return []
 
-    speaker = (speaker_name or "").strip()
     normalized = raw
     normalized = re.sub(r"\bmyself\b", "me", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"\bI\s+am\b", "me", normalized, flags=re.IGNORECASE)
@@ -320,12 +342,13 @@ def parse_player_names(text: str, speaker_name: Optional[str] = None, limit: int
     seen: set[str] = set()
     for part in parts:
         plain = _plain(part)
-        if plain in {"me", "i"}:
-            name = speaker or "You"
-        else:
-            reduced = _PLAYER_FILLER_RE.sub(" ", part)
-            name = _display_name(reduced)
+        if plain in _NON_PLAYER_NAME_WORDS:
+            continue
+        reduced = _PLAYER_FILLER_RE.sub(" ", part)
+        name = _display_name(reduced)
         if not name:
+            continue
+        if _plain(name) in _NON_PLAYER_NAME_WORDS:
             continue
         key = name.lower()
         if key in seen:

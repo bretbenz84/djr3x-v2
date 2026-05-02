@@ -860,7 +860,7 @@ def _jeopardy_voice_check_prompt(player: dict, *, prefix: str = "") -> str:
     name = player.get("name") or "player"
     return (
         f"{prefix}I need a cleaner voice print for {name} before the board starts. "
-        f"{name}, say: \"Jeopardy voice check, {name} is ready.\" "
+        f"{name}, say: \"My name is {name}, and I'm playing Jeopardy.\" "
         f"Or say \"skip {name}\" to play without it."
     )
 
