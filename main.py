@@ -427,8 +427,14 @@ def _run_headless(*, startup_jeopardy: bool = False) -> None:
     _shutdown()
 
 
-def _gui_requested() -> bool:
-    return bool(getattr(config, "GUI_ENABLED", False))
+def _gui_requested(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "gui", False))
+
+
+def _apply_cli_runtime_flags(args: argparse.Namespace) -> None:
+    # Keep GUI-aware hardware mirrors/simulators off unless this launch asked
+    # for the dashboard. config.py still owns the dashboard tuning knobs.
+    setattr(config, "GUI_ENABLED", _gui_requested(args))
 
 
 def _load_dashboard_runner():
@@ -570,12 +576,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="skip startup introductions and go directly into the Jeopardy game",
     )
+    parser.add_argument(
+        "-gui",
+        "--gui",
+        action="store_true",
+        help="open the optional PySide6 GUI dashboard for this run",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
-    if not _gui_requested():
+    _apply_cli_runtime_flags(args)
+    if not _gui_requested(args):
         _run_headless(startup_jeopardy=args.jeopardy)
         return
 

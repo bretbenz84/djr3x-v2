@@ -313,7 +313,7 @@ PY
     then
         ok "PySide6 GUI dependency installed from requirements.txt."
     else
-        warn "PySide6 did not import after pip install; the optional GUI will run headless until this is resolved."
+        warn "PySide6 did not import after pip install; the optional --gui dashboard will be unavailable until this is resolved."
         MANUAL_ATTENTION+=("Optional GUI dependency missing: $VENV_PIP install PySide6")
     fi
 else

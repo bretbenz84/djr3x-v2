@@ -73,9 +73,10 @@ CONVERSATION_LOG_DEBUG_MAX_LINES = 120
 # OPTIONAL MACOS GUI DASHBOARD
 # ─────────────────────────────────────────────────────────────────────────────
 
-# The dashboard is optional and off by default. If enabled but PySide6 or a
-# usable display is unavailable, main.py logs a warning and continues headless.
-GUI_ENABLED = True
+# The dashboard is optional and only enabled for a run by starting main.py with
+# --gui or -gui. If requested but PySide6 or a usable display is unavailable,
+# main.py logs a warning and continues headless.
+GUI_ENABLED = False
 GUI_BACKEND = "pyside6"
 GUI_WINDOW_TITLE = "DJ-R3X Control Dashboard"
 GUI_FPS = 20

@@ -178,6 +178,8 @@ djr3x-v2/
 All user-configurable options: AI model selections, wake word models and thresholds,
 personality settings, default servo ranges, ElevenLabs voice ID, vision settings, LED behavior,
 timing values, familiarity thresholds, and any other tunable parameters.
+The optional PySide6 dashboard is not launched from config alone; `main.py`
+only enables GUI runtime behavior when started with `--gui` or `-gui`.
 
 ### `apikeys.py` — API Credentials (excluded from git)
 OpenAI and ElevenLabs API keys only. Never committed. Listed in `.gitignore`.
