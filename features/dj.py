@@ -52,6 +52,15 @@ _SAMPLE_RATE = 44100
 _CHANNELS = 2
 _CHUNK_FRAMES = 2048  # ~46 ms per chunk at 44100 Hz
 
+
+def _body_beat(name: str) -> None:
+    """Trigger a short physical DJ flourish without blocking playback."""
+    try:
+        from sequences import animations
+        animations.play_body_beat(name)
+    except Exception as exc:
+        logger.debug("[dj] body beat %s skipped: %s", name, exc)
+
 # ── Music index ───────────────────────────────────────────────────────────────
 
 def scan() -> None:
@@ -221,7 +230,7 @@ def play(track_info: TrackInfo) -> None:
     """Start playback of track_info in a background thread. Stops any current playback."""
     global _thread, _current_track
 
-    stop()
+    stop(beat=False)
 
     _stop_event.clear()
     with _thread_lock:
@@ -233,15 +242,17 @@ def play(track_info: TrackInfo) -> None:
             name="dj-playback",
         )
         _thread.start()
+    _body_beat("proud_dj_pose")
     logger.info("[dj] Playing: %s (%s)", track_info.name, track_info.source)
 
 
-def stop() -> None:
+def stop(*, beat: bool = True) -> None:
     """Signal the playback thread to stop and wait for it to exit."""
     global _current_track
-    _stop_event.set()
     with _thread_lock:
         t = _thread
+    was_playing = bool(t and t.is_alive() and not _stop_event.is_set())
+    _stop_event.set()
     if t and t.is_alive():
         t.join(timeout=3.0)
     with _thread_lock:
@@ -251,6 +262,8 @@ def stop() -> None:
         leds_head.speak_stop()
     except Exception:
         pass
+    if beat and was_playing:
+        _body_beat("dramatic_visor_peek")
 
 
 def skip() -> None:

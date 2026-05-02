@@ -973,6 +973,124 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 self.assertIsNotNone(match)
                 self.assertEqual(match.command_key, command_key)
 
+    def test_forget_me_arms_exact_confirmation(self):
+        from intelligence import interaction
+
+        match = interaction.command_parser.CommandMatch("forget_me", "exact", {})
+        interaction._clear_pending_memory_wipe()
+        try:
+            with mock.patch.object(interaction, "_speak_blocking") as speak:
+                response = interaction._execute_command(match, 4, "Bret", "forget me")
+
+            self.assertIn("yes forget me", response)
+            self.assertEqual(interaction._pending_memory_wipe["scope"], "person")
+            self.assertEqual(interaction._pending_memory_wipe["person_id"], 4)
+            speak.assert_called_once()
+        finally:
+            interaction._clear_pending_memory_wipe()
+
+    def test_yes_forget_me_executes_delete_person(self):
+        from intelligence import interaction
+
+        interaction._pending_memory_wipe = {
+            "scope": "person",
+            "person_id": 4,
+            "person_name": "Bret Benziger",
+            "requester_id": 4,
+            "asked_at": 100.0,
+        }
+        interaction._session_person_ids.add(4)
+        try:
+            with (
+                mock.patch.object(interaction.time, "monotonic", return_value=105.0),
+                mock.patch.object(interaction.people_memory, "delete_person") as delete_person,
+                mock.patch.object(interaction.conv_memory, "clear_transcript") as clear_transcript,
+                mock.patch.object(interaction, "_scrub_world_state_after_memory_wipe") as scrub,
+                mock.patch.object(interaction.consciousness, "clear_engagement") as clear_engagement,
+                mock.patch.object(interaction, "_speak_blocking") as speak,
+            ):
+                response = interaction._handle_pending_memory_wipe_confirmation(
+                    "yes forget me",
+                    person_id=4,
+                )
+
+            self.assertIn("Confirmed", response)
+            delete_person.assert_called_once_with(4)
+            clear_transcript.assert_called_once()
+            scrub.assert_called_once_with(person_id=4)
+            clear_engagement.assert_called_once()
+            speak.assert_called_once()
+            self.assertIsNone(interaction._pending_memory_wipe)
+            self.assertNotIn(4, interaction._session_person_ids)
+        finally:
+            interaction._session_person_ids.discard(4)
+            interaction._clear_pending_memory_wipe()
+
+    def test_forget_me_confirmation_rejects_different_known_speaker(self):
+        from intelligence import interaction
+
+        interaction._pending_memory_wipe = {
+            "scope": "person",
+            "person_id": 4,
+            "person_name": "Bret",
+            "requester_id": 4,
+            "asked_at": 100.0,
+        }
+        try:
+            with (
+                mock.patch.object(interaction.time, "monotonic", return_value=105.0),
+                mock.patch.object(interaction.people_memory, "delete_person") as delete_person,
+                mock.patch.object(interaction, "_speak_blocking") as speak,
+            ):
+                response = interaction._handle_pending_memory_wipe_confirmation(
+                    "yes forget me",
+                    person_id=9,
+                )
+
+            self.assertIn("Confirmation rejected", response)
+            delete_person.assert_not_called()
+            speak.assert_called_once()
+            self.assertIsNone(interaction._pending_memory_wipe)
+        finally:
+            interaction._clear_pending_memory_wipe()
+
+    def test_confirm_full_wipe_executes_delete_all_people(self):
+        from intelligence import interaction
+
+        interaction._pending_memory_wipe = {
+            "scope": "all",
+            "person_id": None,
+            "person_name": None,
+            "requester_id": 4,
+            "asked_at": 100.0,
+        }
+        interaction._session_person_ids.update({4, 5})
+        try:
+            with (
+                mock.patch.object(interaction.time, "monotonic", return_value=105.0),
+                mock.patch.object(interaction.people_memory, "delete_all_people") as delete_all,
+                mock.patch.object(interaction.conv_memory, "clear_transcript") as clear_transcript,
+                mock.patch.object(interaction, "_scrub_world_state_after_memory_wipe") as scrub,
+                mock.patch.object(interaction.consciousness, "clear_engagement") as clear_engagement,
+                mock.patch.object(interaction, "_speak_blocking") as speak,
+            ):
+                response = interaction._handle_pending_memory_wipe_confirmation(
+                    "confirm full wipe",
+                    person_id=4,
+                )
+
+            self.assertIn("Every person record", response)
+            delete_all.assert_called_once_with()
+            clear_transcript.assert_called_once()
+            scrub.assert_called_once_with(all_people=True)
+            clear_engagement.assert_called_once()
+            speak.assert_called_once()
+            self.assertIsNone(interaction._pending_memory_wipe)
+            self.assertFalse(interaction._session_person_ids)
+        finally:
+            interaction._session_person_ids.clear()
+            interaction._clear_pending_memory_wipe()
+
     def test_memory_forget_named_person_requires_explicit_name_match(self):
         from intelligence import interaction
         from memory.forgetting import ForgetResult

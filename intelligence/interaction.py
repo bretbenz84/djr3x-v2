@@ -217,6 +217,10 @@ _pending_common_first_name_introduction: Optional[dict] = None
 _pending_existing_common_first_name: Optional[dict] = None
 _common_first_name_prompted_this_session: set[int] = set()
 
+# Memory wipe confirmations are destructive, so the confirmation phrase is
+# exact and short-lived rather than a fuzzy command-parser match.
+_pending_memory_wipe: Optional[dict] = None
+
 # Per-session set of (person_id) we've already attempted a face reveal for
 # but were declined ("no") — so Rex doesn't keep re-asking the same question.
 _face_reveal_declined: set[int] = set()
@@ -1791,6 +1795,256 @@ def _refresh_world_state_person_name(person_id: int, name: str) -> None:
             world_state.update("crowd", crowd)
     except Exception as exc:
         _log.debug("world_state name refresh failed: %s", exc)
+
+
+def _plain_confirmation_text(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9\s]", " ", (text or "").lower()).split())
+
+
+def _memory_wipe_confirm_ttl() -> float:
+    return float(getattr(config, "MEMORY_WIPE_CONFIRM_WINDOW_SECS", 30.0))
+
+
+def _clear_pending_memory_wipe() -> None:
+    global _pending_memory_wipe
+    _pending_memory_wipe = None
+
+
+def _pending_memory_wipe_expired(now: Optional[float] = None) -> bool:
+    if _pending_memory_wipe is None:
+        return True
+    now = time.monotonic() if now is None else now
+    asked_at = float(_pending_memory_wipe.get("asked_at") or 0.0)
+    if (now - asked_at) <= _memory_wipe_confirm_ttl():
+        return False
+    _log.info("[memory] pending wipe confirmation expired: %s", _pending_memory_wipe)
+    _clear_pending_memory_wipe()
+    return True
+
+
+def _memory_wipe_confirmation_phrase(scope: str) -> str:
+    return "confirm full wipe" if scope == "all" else "yes forget me"
+
+
+def _arm_memory_wipe_confirmation(
+    *,
+    scope: str,
+    person_id: Optional[int] = None,
+    person_name: Optional[str] = None,
+    requester_id: Optional[int] = None,
+) -> None:
+    global _pending_memory_wipe
+    _pending_memory_wipe = {
+        "scope": scope,
+        "person_id": int(person_id) if person_id is not None else None,
+        "person_name": person_name,
+        "requester_id": int(requester_id) if requester_id is not None else None,
+        "asked_at": time.monotonic(),
+    }
+
+
+def _resolve_forget_me_target(
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> tuple[Optional[int], Optional[str]]:
+    if person_id is not None:
+        return int(person_id), person_name
+    target_id, target_name = _single_visible_person_identity()
+    if target_id is not None:
+        return int(target_id), target_name
+    return None, None
+
+
+def _scrub_world_state_after_memory_wipe(
+    *,
+    person_id: Optional[int] = None,
+    all_people: bool = False,
+) -> None:
+    """Drop deleted DB identity labels from the live WorldState snapshot."""
+    try:
+        people = world_state.get("people") or []
+        changed = False
+        for person in people:
+            if all_people:
+                should_clear = True
+            else:
+                try:
+                    should_clear = int(person.get("person_db_id")) == int(person_id)
+                except (TypeError, ValueError):
+                    should_clear = False
+            if not should_clear:
+                continue
+            person["person_db_id"] = None
+            person["face_id"] = None
+            person["voice_id"] = None
+            changed = True
+        if changed:
+            world_state.update("people", people)
+
+        crowd = world_state.get("crowd") or {}
+        if all_people or crowd.get("dominant_speaker"):
+            crowd["dominant_speaker"] = None
+            world_state.update("crowd", crowd)
+
+        social = world_state.get("social") or {}
+        discussed = social.get("being_discussed")
+        if isinstance(discussed, dict) and (
+            all_people or discussed.get("speaker_id") == person_id
+        ):
+            discussed["speaker_id"] = None
+            discussed["speaker_name"] = None
+            discussed["addressee_id"] = None
+            social["being_discussed"] = discussed
+            world_state.update("social", social)
+    except Exception as exc:
+        _log.debug("world_state memory-wipe scrub failed: %s", exc)
+
+
+def _clear_deleted_person_session_state(person_id: int) -> None:
+    pid = int(person_id)
+    _session_person_ids.discard(pid)
+    _session_forget_terms.pop(pid, None)
+    _session_router_control_topics.pop(pid, None)
+    _grief_flow_state.pop(pid, None)
+    _voice_refreshed_this_session.discard(pid)
+    _face_reveal_declined.discard(pid)
+    _common_first_name_prompted_this_session.discard(pid)
+
+
+def _clear_memory_related_pending_state() -> None:
+    global _awaiting_followup_event, _pending_offscreen_identify
+    global _pending_face_reveal_confirm, _pending_introduction
+    global _pending_intro_followup, _pending_intro_voice_capture
+    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_existing_common_first_name, _identity_prompt_until
+
+    _awaiting_followup_event = None
+    _pending_post_greet_relationship[0] = None
+    _pending_offscreen_identify = None
+    _pending_face_reveal_confirm = None
+    _pending_introduction = None
+    _pending_intro_followup = None
+    _pending_intro_voice_capture = None
+    _pending_common_first_name_identity = None
+    _pending_common_first_name_introduction = None
+    _pending_existing_common_first_name = None
+    _identity_prompt_until = 0.0
+
+
+def _confirmation_speaker_mismatch(
+    pending: dict,
+    person_id: Optional[int],
+) -> bool:
+    requester_id = pending.get("requester_id")
+    target_id = pending.get("person_id")
+    if person_id is None:
+        return False
+    try:
+        current = int(person_id)
+    except (TypeError, ValueError):
+        return True
+    if requester_id is not None and current != int(requester_id):
+        return True
+    if pending.get("scope") == "person" and target_id is not None and current != int(target_id):
+        return True
+    return False
+
+
+def _handle_pending_memory_wipe_confirmation(
+    text: str,
+    person_id: Optional[int],
+) -> Optional[str]:
+    """Execute or cancel a pending destructive memory wipe confirmation."""
+    if _pending_memory_wipe is None or _pending_memory_wipe_expired():
+        return None
+
+    pending = dict(_pending_memory_wipe)
+    plain = _plain_confirmation_text(text)
+    scope = str(pending.get("scope") or "")
+    expected = _memory_wipe_confirmation_phrase(scope)
+    cancel_phrases = {
+        "no",
+        "nope",
+        "cancel",
+        "cancel that",
+        "never mind",
+        "nevermind",
+        "abort",
+        "stop",
+        "do not",
+        "dont",
+    }
+
+    if plain in cancel_phrases:
+        _clear_pending_memory_wipe()
+        resp = "Memory wipe canceled. My memory banks remain annoyingly intact."
+        _speak_blocking(resp, emotion="neutral")
+        return resp
+
+    if plain != expected:
+        _clear_pending_memory_wipe()
+        return None
+
+    if _confirmation_speaker_mismatch(pending, person_id):
+        _clear_pending_memory_wipe()
+        resp = (
+            "Confirmation rejected. That did not come from the same identity. "
+            "Destructive memory wipe canceled."
+        )
+        _speak_blocking(resp, emotion="neutral")
+        return resp
+
+    try:
+        if scope == "person":
+            target_id = pending.get("person_id")
+            if target_id is None:
+                raise RuntimeError("missing target person_id for memory wipe")
+            people_memory.delete_person(int(target_id))
+            _clear_deleted_person_session_state(int(target_id))
+            _clear_memory_related_pending_state()
+            _scrub_world_state_after_memory_wipe(person_id=int(target_id))
+            try:
+                consciousness.clear_engagement()
+            except Exception:
+                pass
+            conv_memory.clear_transcript()
+            name = str(pending.get("person_name") or "").split()[0]
+            address = f"{name}. " if name else ""
+            resp = (
+                f"{address}Confirmed. I deleted your name, face, voice print, "
+                "memories, and conversation records. Clean slate. Very dramatic."
+            )
+            _log.info("[memory] confirmed person wipe person_id=%s", target_id)
+        elif scope == "all":
+            people_memory.delete_all_people()
+            _session_person_ids.clear()
+            _session_forget_terms.clear()
+            _session_router_control_topics.clear()
+            _grief_flow_state.clear()
+            _voice_refreshed_this_session.clear()
+            _face_reveal_declined.clear()
+            _common_first_name_prompted_this_session.clear()
+            _clear_memory_related_pending_state()
+            _scrub_world_state_after_memory_wipe(all_people=True)
+            try:
+                consciousness.clear_engagement()
+            except Exception:
+                pass
+            conv_memory.clear_transcript()
+            resp = (
+                "Confirmed. Every person record, face, voice print, relationship, "
+                "and conversation memory is gone. My social life has been factory-reset."
+            )
+            _log.info("[memory] confirmed full people-memory wipe")
+        else:
+            raise RuntimeError(f"unknown memory wipe scope: {scope!r}")
+    except Exception as exc:
+        _log.error("[memory] memory wipe failed: %s", exc, exc_info=True)
+        resp = "Memory wipe failed. Annoying, but safer than a half-erased brain."
+
+    _clear_pending_memory_wipe()
+    _speak_blocking(resp, emotion="neutral")
+    return resp
 
 
 def _handle_name_update_request(
@@ -4161,22 +4415,37 @@ def _execute_command(
         return resp
 
     if key == "forget_me":
-        if person_id is None:
+        target_id, target_name = _resolve_forget_me_target(person_id, person_name)
+        if target_id is None:
             resp = "I don't have any record of you to forget."
             _speak_blocking(resp)
             return resp
-        return _say(
-            "Someone asked you to forget them. Ask for confirmation in one Rex-style line: "
-            "say you'll forget everything — name, face, all of it — and tell them to say "
-            "'yes forget me' to confirm."
+        _arm_memory_wipe_confirmation(
+            scope="person",
+            person_id=target_id,
+            person_name=target_name,
+            requester_id=target_id,
         )
+        resp = (
+            "Memory wipe armed. Are you sure? Say \"yes forget me\" to confirm "
+            "and I'll delete your name, face, voice print, and everything I "
+            "remember about you. Very dramatic. Very irreversible."
+        )
+        _speak_blocking(resp, emotion="neutral")
+        return resp
 
     if key == "forget_everyone":
-        return _say(
-            "Someone asked you to wipe your entire memory of all people. "
-            "Ask for explicit confirmation in one Rex-style line: say it deletes every person, "
-            "every face, every name, every conversation, and they must say 'confirm full wipe'."
+        _arm_memory_wipe_confirmation(
+            scope="all",
+            requester_id=person_id,
         )
+        resp = (
+            "Full memory wipe armed. Are you absolutely sure? Say \"confirm full "
+            "wipe\" to delete every person, face, voice print, relationship, and "
+            "conversation memory. This is the big red button, just with worse branding."
+        )
+        _speak_blocking(resp, emotion="neutral")
+        return resp
 
     if key == "whats_my_name":
         if person_name:
@@ -5180,6 +5449,7 @@ def _end_session() -> None:
         _pending_common_first_name_identity = None
         _pending_common_first_name_introduction = None
         _pending_existing_common_first_name = None
+        _clear_pending_memory_wipe()
         _common_first_name_prompted_this_session.clear()
         try:
             consciousness.clear_response_wait()
@@ -5396,6 +5666,7 @@ def _end_session() -> None:
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
+    _clear_pending_memory_wipe()
     _common_first_name_prompted_this_session.clear()
     _voice_refreshed_this_session.clear()
     _face_reveal_declined.clear()
@@ -8823,6 +9094,18 @@ def _handle_speech_segment(
             speaker_label, person_id, text,
         )
 
+        memory_wipe_response = _handle_pending_memory_wipe_confirmation(text, person_id)
+        if memory_wipe_response:
+            try:
+                consciousness.clear_response_wait()
+            except Exception:
+                pass
+            conv_memory.add_to_transcript("Rex", memory_wipe_response)
+            conv_log.log_rex(memory_wipe_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(memory_wipe_response)
+            return
+
         if _is_bare_wake_address(text):
             _log.info("[wake_word] transcribed wake address fast-ack text=%r", text)
             _wake_ack()
@@ -9632,6 +9915,11 @@ def _handle_speech_segment(
         if response_text is None and personality.is_obvious_insult(text):
             new_level = personality.increment_anger(person_id)
             pre_classified_insult = True
+            try:
+                from sequences import animations
+                animations.play_body_beat("offended_recoil")
+            except Exception as exc:
+                _log.debug("[interaction] insult body beat skipped: %s", exc)
             if person_id is not None:
                 people_memory.update_relationship_scores(person_id, antagonism=+0.03)
             _log.info(
@@ -10288,6 +10576,7 @@ def start() -> None:
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
+    _clear_pending_memory_wipe()
     _common_first_name_prompted_this_session.clear()
     topic_thread.clear()
     user_energy.clear()
@@ -10344,6 +10633,7 @@ def stop() -> None:
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
+    _clear_pending_memory_wipe()
     _common_first_name_prompted_this_session.clear()
     _recent_voice_turns.clear()
     topic_thread.clear()

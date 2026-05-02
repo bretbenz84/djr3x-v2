@@ -179,6 +179,15 @@ def _get_agreeability() -> int:
     return config.PERSONALITY_DEFAULTS.get("agreeability", 60)
 
 
+def _body_beat(name: str) -> None:
+    """Trigger a short embodied reaction without making game logic wait."""
+    try:
+        from sequences import animations
+        animations.play_body_beat(name)
+    except Exception as exc:
+        _log.debug("[games] body beat %s skipped: %s", name, exc)
+
+
 # ── I Spy game ────────────────────────────────────────────────────────────────
 
 _ISPY_MAX_GUESSES = 5
@@ -254,6 +263,7 @@ def _ispy_start(person_id: Optional[int]) -> str:
         "clue": target["clue"],
         "guess_count": 0,
     })
+    _body_beat("dramatic_visor_peek")
 
     return _rex_respond(
         f"[GAME: I Spy — START] Give Rex's opening line for I Spy. "
@@ -280,6 +290,7 @@ def _ispy_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
     )
 
     if is_correct:
+        _body_beat("tiny_victory_dance")
         _game_state.clear()
         return (
             _rex_respond(
@@ -292,6 +303,7 @@ def _ispy_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
         )
 
     if guess_count >= _ISPY_MAX_GUESSES:
+        _body_beat("suspicious_glance")
         _game_state.clear()
         return (
             _rex_respond(
@@ -304,6 +316,7 @@ def _ispy_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
         )
 
     give_hint = guess_count >= 2
+    _body_beat("suspicious_glance")
     return (
         _rex_respond(
             f"[GAME: I Spy — WRONG GUESS #{guess_count}/{_ISPY_MAX_GUESSES}] "
@@ -362,6 +375,7 @@ def _20q_start(person_id: Optional[int]) -> str:
         "question_count": 0,
         "questions_log": [],
     })
+    _body_beat("thinking_tilt")
 
     return _rex_respond(
         f"[GAME: 20 Questions — START] Rex is thinking of a {secret_data['category']}. "
@@ -393,6 +407,7 @@ def _20q_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
             fuzz.ratio(text_lower, secret.lower()) >= 70
             or secret.lower() in text_lower
         )
+        _body_beat("tiny_victory_dance" if correct else "suspicious_glance")
         _game_state.clear()
         if correct:
             return (
@@ -580,6 +595,7 @@ def _trivia_begin_round(
             True,
         )
 
+    _body_beat("thinking_tilt")
     return (_trivia_question_line(prefix="Locked in. "), False)
 
 
@@ -669,9 +685,10 @@ def _trivia_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
             True,
         )
 
+    passed = _trivia_is_pass(text)
     try:
         from features import trivia as trivia_bank
-        is_correct = False if _trivia_is_pass(text) else trivia_bank.check_answer(question, text)
+        is_correct = False if passed else trivia_bank.check_answer(question, text)
     except Exception as exc:
         _log.error("[games] trivia answer check failed: %s", exc)
         is_correct = False
@@ -684,6 +701,9 @@ def _trivia_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
     if is_correct:
         score += 1
         _game_state["score"] = score
+        _body_beat("tiny_victory_dance")
+    else:
+        _body_beat("suspicious_glance")
 
     history = list(_game_state.get("history") or [])
     history.append({
@@ -696,7 +716,7 @@ def _trivia_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
 
     if is_correct:
         feedback = f"{random.choice(_TRIVIA_CORRECT_LINES)} Score: {score} out of {q_num}. "
-    elif _trivia_is_pass(text):
+    elif passed:
         feedback = f"No answer. Correct answer was {answer}. Score: {score} out of {q_num}. "
     else:
         feedback = (
@@ -1150,6 +1170,7 @@ def _jeopardy_timeout_fired(token: str) -> None:
         from audio import speech_queue
         from intelligence import llm
         if queue_timesup:
+            _body_beat("dramatic_visor_peek")
             _jeopardy_queue_clip("timesup")
         done_event = speech_queue.enqueue(
             llm.clean_response_text(line),
@@ -1183,6 +1204,7 @@ def _jeopardy_arm_timeout() -> None:
 def _jeopardy_start(person_id: Optional[int]) -> str:
     speaker_name = _jeopardy_person_name(person_id)
     _jeopardy_queue_clip("intro")
+    _body_beat("proud_dj_pose")
     _game_state.update({
         "phase": "awaiting_players",
         "speaker_name": speaker_name,
@@ -1278,6 +1300,9 @@ def _jeopardy_handle_selection(text: str, person_id: Optional[int]) -> tuple[str
     if daily:
         effective_value *= 2
         _jeopardy_queue_clip("daily_double")
+        _body_beat("dramatic_visor_peek")
+    else:
+        _body_beat("thinking_tilt")
 
     clue["effective_value"] = effective_value
     _game_state.update({
@@ -1326,6 +1351,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
 
     done = int((_game_state.get("board") or {}).get("remaining", 0) or 0) <= 0
     if passed:
+        _body_beat("suspicious_glance")
         _jeopardy_queue_clip("timesup")
         next_player = _jeopardy_offer_rebound()
         if next_player:
@@ -1339,6 +1365,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
         )
 
     if correct:
+        _body_beat("tiny_victory_dance")
         player["score"] = int(player.get("score", 0)) + value
         _game_state.pop("current_clue", None)
         _game_state.pop("current_clue_attempts", None)
@@ -1360,6 +1387,7 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
             False,
         )
 
+    _body_beat("offended_recoil")
     player["score"] = int(player.get("score", 0)) - value
     _jeopardy_queue_clip("wrong")
     roast = random.choice([
@@ -1478,6 +1506,7 @@ def _wordassoc_start(person_id: Optional[int]) -> str:
         "chain": [first_word],
         "turn_count": 0,
     })
+    _body_beat("thinking_tilt")
 
     return _rex_respond(
         f"[GAME: Word Association — START] Rex is starting Word Association. "
@@ -1522,6 +1551,7 @@ def _wordassoc_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
 
     if not is_valid:
         chain_str = " → ".join(chain + [player_word])
+        _body_beat("suspicious_glance")
         _game_state.clear()
         return (
             _rex_respond(

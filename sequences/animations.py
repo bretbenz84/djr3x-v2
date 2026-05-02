@@ -20,6 +20,7 @@ Emotion → LED pattern reference (encoded in chest Arduino firmware):
 import random
 import threading
 import time
+import logging
 
 import config
 import state as _state_module
@@ -27,10 +28,13 @@ from state import State as _State
 from hardware import servos, leds_head, leds_chest
 from world_state import world_state
 
+_log = logging.getLogger(__name__)
+
 # Set while a TTS utterance is in progress — gates both speaking gestures and wander.
 _speaking = threading.Event()
 _motion_lock = threading.Lock()
 _arm_motion_lock = threading.Lock()
+_body_beat_lock = threading.Lock()
 _last_directed_look: str | None = None
 
 
@@ -94,6 +98,288 @@ POKERARM_IN      = 7500
 HEROARM_NEUTRAL = 6000
 HEROARM_FORWARD = 4800
 HEROARM_BACK    = 7200
+
+
+# ---------------------------------------------------------------------------
+# Body beats
+# ---------------------------------------------------------------------------
+
+_BODY_BEAT_HEAD_CHANNELS = (0, 1, 2, 3)
+_BODY_BEAT_ARM_CHANNELS = (4, 5, 6, 7)
+_BODY_BEAT_CHANNELS: dict[str, tuple[int, ...]] = {
+    "suspicious_glance": _BODY_BEAT_HEAD_CHANNELS,
+    "proud_dj_pose": _BODY_BEAT_HEAD_CHANNELS + _BODY_BEAT_ARM_CHANNELS,
+    "offended_recoil": _BODY_BEAT_HEAD_CHANNELS + (4, 5, 7),
+    "thinking_tilt": _BODY_BEAT_HEAD_CHANNELS,
+    "dramatic_visor_peek": _BODY_BEAT_HEAD_CHANNELS,
+    "tiny_victory_dance": _BODY_BEAT_HEAD_CHANNELS + _BODY_BEAT_ARM_CHANNELS,
+}
+_BODY_BEAT_ARM_NAMES = {
+    name
+    for name, channels in _BODY_BEAT_CHANNELS.items()
+    if any(channel in _BODY_BEAT_ARM_CHANNELS for channel in channels)
+}
+
+
+def _channel_name(channel: int) -> str | None:
+    for name, cfg in config.SERVO_CHANNELS.items():
+        if int(cfg["ch"]) == channel:
+            return name
+    return None
+
+
+def _channel_neutral(channel: int) -> int:
+    name = _channel_name(channel)
+    if not name:
+        return 6000
+    return int(config.SERVO_CHANNELS[name]["neutral"])
+
+
+def _current_body_pose(channels: tuple[int, ...]) -> dict[int, int]:
+    try:
+        positions = (world_state.get("self_state") or {}).get("servo_positions") or {}
+    except Exception:
+        positions = {}
+
+    pose: dict[int, int] = {}
+    for channel in channels:
+        name = _channel_name(channel)
+        default = _channel_neutral(channel)
+        try:
+            pose[channel] = int(positions.get(name, default)) if name else default
+        except (TypeError, ValueError):
+            pose[channel] = default
+    return pose
+
+
+def _body_beat_allowed() -> bool:
+    try:
+        return _state_module.get_state() not in (_State.SLEEP, _State.SHUTDOWN)
+    except Exception:
+        return True
+
+
+def _move_body(targets: dict[int, int], *, step_us: int = 70, step_delay: float = 0.01) -> None:
+    servos.move_to(targets, step_us=step_us, step_delay=step_delay)
+
+
+def _restore_body_pose(snapshot: dict[int, int], *, step_us: int = 55, step_delay: float = 0.012) -> None:
+    if snapshot:
+        servos.move_to(snapshot, step_us=step_us, step_delay=step_delay)
+
+
+def _beat_suspicious_glance(snapshot: dict[int, int]) -> None:
+    side = random.choice([-1, 1])
+    _move_body(
+        {
+            0: NECK_CENTER + side * 1250,
+            1: HEADLIFT_NEUTRAL + 220,
+            2: HEADTILT_SLIGHT_DOWN,
+            3: VISOR_NEUTRAL,
+        },
+        step_us=80,
+        step_delay=0.008,
+    )
+    time.sleep(0.16)
+    _move_body({0: NECK_CENTER - side * 420, 3: VISOR_HALF}, step_us=90, step_delay=0.007)
+    time.sleep(0.10)
+    _restore_body_pose(snapshot)
+
+
+def _beat_proud_dj_pose(snapshot: dict[int, int]) -> None:
+    _move_body(
+        {
+            1: HEADLIFT_HIGH,
+            2: HEADTILT_SLIGHT_UP,
+            3: VISOR_OPEN,
+            4: ELBOW_UP,
+            5: HAND_RIGHT,
+            6: POKERARM_OUT,
+            7: HEROARM_FORWARD,
+        },
+        step_us=85,
+        step_delay=0.008,
+    )
+    time.sleep(0.28)
+    _move_body({0: NECK_CENTER + 500, 5: HAND_LEFT}, step_us=105, step_delay=0.006)
+    time.sleep(0.11)
+    _move_body({0: NECK_CENTER - 500, 5: HAND_RIGHT}, step_us=105, step_delay=0.006)
+    time.sleep(0.11)
+    _restore_body_pose(snapshot)
+
+
+def _beat_offended_recoil(snapshot: dict[int, int]) -> None:
+    side = random.choice([-1, 1])
+    # Headtilt is inverted: lower values tilt Rex upward, so this is the
+    # chin-up "excuse me?" recoil.
+    _move_body(
+        {
+            0: NECK_CENTER + side * 520,
+            1: HEADLIFT_HIGH,
+            2: HEADTILT_UP,
+            3: VISOR_OPEN,
+            4: ELBOW_UP,
+            5: HAND_NEUTRAL,
+            7: HEROARM_BACK,
+        },
+        step_us=120,
+        step_delay=0.006,
+    )
+    time.sleep(0.18)
+    _move_body({0: NECK_CENTER - side * 900, 5: HAND_LEFT if side > 0 else HAND_RIGHT}, step_us=100, step_delay=0.006)
+    time.sleep(0.18)
+    _restore_body_pose(snapshot)
+
+
+def _beat_thinking_tilt(snapshot: dict[int, int]) -> None:
+    side = random.choice([-1, 1])
+    _move_body(
+        {
+            0: NECK_CENTER + side * 850,
+            1: HEADLIFT_NEUTRAL + 260,
+            2: HEADTILT_SLIGHT_UP,
+            3: VISOR_HALF,
+        },
+        step_us=55,
+        step_delay=0.014,
+    )
+    time.sleep(0.36)
+    _move_body({0: NECK_CENTER + side * 1150, 2: HEADTILT_NEUTRAL}, step_us=45, step_delay=0.014)
+    time.sleep(0.16)
+    _restore_body_pose(snapshot)
+
+
+def _beat_dramatic_visor_peek(snapshot: dict[int, int]) -> None:
+    side = random.choice([-1, 1])
+    _move_body({1: HEADLIFT_UP, 2: HEADTILT_SLIGHT_UP, 3: VISOR_CLOSED}, step_us=115, step_delay=0.006)
+    time.sleep(0.10)
+    _move_body({3: VISOR_OPEN, 0: NECK_CENTER + side * 700}, step_us=130, step_delay=0.005)
+    time.sleep(0.20)
+    _restore_body_pose(snapshot, step_us=65, step_delay=0.010)
+
+
+def _beat_tiny_victory_dance(snapshot: dict[int, int]) -> None:
+    _move_body(
+        {
+            1: HEADLIFT_UP,
+            2: HEADTILT_SLIGHT_UP,
+            3: VISOR_OPEN,
+            4: ELBOW_UP,
+            5: HAND_RIGHT,
+            6: POKERARM_OUT,
+            7: HEROARM_FORWARD,
+        },
+        step_us=90,
+        step_delay=0.006,
+    )
+    for side in (-1, 1, -1, 1):
+        _move_body(
+            {
+                0: NECK_CENTER + side * 520,
+                1: HEADLIFT_UP if side > 0 else HEADLIFT_NEUTRAL + 320,
+                5: HAND_RIGHT if side > 0 else HAND_LEFT,
+            },
+            step_us=120,
+            step_delay=0.004,
+        )
+        time.sleep(0.06)
+    _move_body({1: HEADLIFT_HIGH, 4: ELBOW_DOWN, 6: POKERARM_IN}, step_us=110, step_delay=0.005)
+    time.sleep(0.08)
+    _restore_body_pose(snapshot)
+
+
+_BODY_BEAT_RUNNERS = {
+    "suspicious_glance": _beat_suspicious_glance,
+    "proud_dj_pose": _beat_proud_dj_pose,
+    "offended_recoil": _beat_offended_recoil,
+    "thinking_tilt": _beat_thinking_tilt,
+    "dramatic_visor_peek": _beat_dramatic_visor_peek,
+    "tiny_victory_dance": _beat_tiny_victory_dance,
+}
+
+_BODY_BEAT_ALIASES = {
+    "suspicious": "suspicious_glance",
+    "side_eye": "suspicious_glance",
+    "wrong_answer": "suspicious_glance",
+    "game_wrong": "suspicious_glance",
+    "proud": "proud_dj_pose",
+    "dj_start": "proud_dj_pose",
+    "dj_pose": "proud_dj_pose",
+    "offended": "offended_recoil",
+    "insult": "offended_recoil",
+    "insult_recoil": "offended_recoil",
+    "thinking": "thinking_tilt",
+    "think": "thinking_tilt",
+    "daily_double": "dramatic_visor_peek",
+    "visor_peek": "dramatic_visor_peek",
+    "dj_stop": "dramatic_visor_peek",
+    "correct_answer": "tiny_victory_dance",
+    "game_correct": "tiny_victory_dance",
+    "victory": "tiny_victory_dance",
+}
+
+
+def _canonical_body_beat(name: str) -> str | None:
+    normalized = "_".join(str(name or "").strip().lower().replace("-", " ").split())
+    canonical = _BODY_BEAT_ALIASES.get(normalized, normalized)
+    return canonical if canonical in _BODY_BEAT_RUNNERS else None
+
+
+def body_beat_names() -> list[str]:
+    """Return the named physical beats callers can trigger semantically."""
+    return sorted(_BODY_BEAT_RUNNERS)
+
+
+def play_body_beat(name: str, *, async_: bool = True) -> bool:
+    """
+    Play a named physical punctuation beat.
+
+    The beat runs in a daemon thread by default so conversation/game/DJ logic can
+    keep moving while Rex performs a short embodied reaction.
+    """
+    canonical = _canonical_body_beat(name)
+    if not canonical:
+        _log.debug("[animations] unknown body beat: %r", name)
+        return False
+
+    if async_:
+        threading.Thread(
+            target=_run_body_beat,
+            args=(canonical,),
+            daemon=True,
+            name=f"body_beat_{canonical}",
+        ).start()
+        return True
+    return _run_body_beat(canonical)
+
+
+def _run_body_beat(name: str) -> bool:
+    if not _body_beat_allowed():
+        return False
+    if not _body_beat_lock.acquire(blocking=False):
+        return False
+
+    uses_arm = name in _BODY_BEAT_ARM_NAMES
+    arm_acquired = False
+    try:
+        if uses_arm:
+            servos.pause_arm_idle()
+            arm_acquired = _arm_motion_lock.acquire(blocking=False)
+            if not arm_acquired:
+                return False
+        snapshot = _current_body_pose(_BODY_BEAT_CHANNELS[name])
+        with _motion_lock:
+            _BODY_BEAT_RUNNERS[name](snapshot)
+        return True
+    except Exception as exc:
+        _log.debug("[animations] body beat %s failed: %s", name, exc)
+        return False
+    finally:
+        if arm_acquired:
+            _arm_motion_lock.release()
+        if uses_arm:
+            servos.resume_arm_idle()
+        _body_beat_lock.release()
 
 # ---------------------------------------------------------------------------
 # Startup / shutdown
