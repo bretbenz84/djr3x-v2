@@ -42,6 +42,45 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertEqual(len(queued), 1)
         self.assertEqual(queued[0].text, "Who is playing Jeopardy?")
 
+    def test_noaudio_speech_queue_logs_text_without_tts(self):
+        from audio import speech_queue
+
+        with (
+            mock.patch.object(speech_queue._SpeechQueue, "_worker", lambda self: None),
+            mock.patch("config.NO_AUDIO_MODE", True),
+            mock.patch("config.AUDIO_OUTPUT_SUPPRESSED", True),
+            mock.patch("utils.conv_log.log_rex") as log_rex,
+            mock.patch("audio.tts.speak") as tts_speak,
+        ):
+            queue = speech_queue._SpeechQueue()
+            done = queue.enqueue("Text-only response.", priority=1)
+
+        self.assertTrue(done.is_set())
+        self.assertEqual(queue._heap, [])
+        log_rex.assert_called_once_with("Text-only response.")
+        tts_speak.assert_not_called()
+
+    def test_noaudio_tts_speak_skips_elevenlabs_and_playback(self):
+        from audio import tts
+
+        started = []
+        with (
+            mock.patch("config.NO_AUDIO_MODE", True),
+            mock.patch("config.AUDIO_OUTPUT_SUPPRESSED", True),
+            mock.patch.object(tts, "_fetch_from_api") as fetch,
+            mock.patch.object(tts, "_play") as play,
+            mock.patch.object(tts.conv_log, "log_rex") as log_rex,
+        ):
+            tts.speak(
+                "Hello there.",
+                on_playback_start=lambda: started.append(True),
+            )
+
+        fetch.assert_not_called()
+        play.assert_not_called()
+        log_rex.assert_called_once_with("Hello there.")
+        self.assertEqual(started, [True])
+
     def test_begin_user_turn_keeps_game_prompts_queued(self):
         from intelligence import interaction
 
@@ -52,6 +91,30 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             interaction._begin_user_turn()
 
         clear.assert_not_called()
+
+    def test_submit_text_routes_gui_text_as_text_input_turn(self):
+        from intelligence import interaction
+        from state import State
+
+        with (
+            mock.patch.object(interaction.state_module, "get_state", return_value=State.IDLE),
+            mock.patch.object(interaction.state_module, "set_state") as set_state,
+            mock.patch.object(interaction, "_begin_user_turn") as begin_turn,
+            mock.patch.object(interaction, "_end_user_turn") as end_turn,
+            mock.patch.object(interaction, "_handle_speech_segment") as handle_segment,
+        ):
+            handled = interaction.submit_text("hello from the GUI")
+
+        self.assertTrue(handled)
+        set_state.assert_called_once_with(State.ACTIVE)
+        begin_turn.assert_called_once()
+        end_turn.assert_called_once()
+        handle_segment.assert_called_once()
+        self.assertEqual(
+            handle_segment.call_args.kwargs["transcribed_text"],
+            "hello from the GUI",
+        )
+        self.assertTrue(handle_segment.call_args.kwargs["text_input"])
 
     def test_conversation_log_dedupes_same_rex_line_briefly(self):
         from utils import conv_log
@@ -1684,6 +1747,42 @@ class ConversationGatingTest(unittest.TestCase):
 
         enqueue.assert_not_called()
         self.assertIsNone(trace.first_response_queued_at)
+
+    def test_slow_path_ack_in_noaudio_does_not_require_tts_cache(self):
+        from intelligence import interaction
+
+        trace = interaction._new_character_loop_trace(
+            "Tell me something.",
+            from_idle_activation=False,
+            turn_start=10.0,
+            raw_best_id=None,
+            raw_best_name=None,
+            speaker_score=0.0,
+        )
+        trace.transcript_ready_at = 10.25
+        token = interaction._current_character_loop_trace.set(trace)
+        previous_ack = interaction._last_slow_path_ack
+        try:
+            interaction._last_slow_path_ack = None
+            with (
+                mock.patch("config.NO_AUDIO_MODE", True),
+                mock.patch("config.AUDIO_OUTPUT_SUPPRESSED", True),
+                mock.patch("audio.tts.is_cached", return_value=False) as is_cached,
+                mock.patch.object(interaction.random, "choice", side_effect=lambda items: items[0]),
+                mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+                mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+                mock.patch.object(interaction.speech_queue, "enqueue") as enqueue,
+                mock.patch.object(interaction.time, "monotonic", return_value=10.5),
+                mock.patch.object(interaction._log, "info"),
+            ):
+                self.assertTrue(interaction._try_slow_path_ack("general"))
+        finally:
+            interaction._last_slow_path_ack = previous_ack
+            interaction._current_character_loop_trace.reset(token)
+
+        is_cached.assert_not_called()
+        enqueue.assert_called_once()
+        self.assertEqual(enqueue.call_args.args[:2], ("One sec.", "neutral"))
 
     def test_startup_solo_greeting_prompt_names_person_and_avoids_they_them(self):
         from intelligence import consciousness

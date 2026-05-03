@@ -28,6 +28,38 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 
+def _audio_output_suppressed() -> bool:
+    try:
+        import config
+        return bool(
+            getattr(config, "NO_AUDIO_MODE", False)
+            or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+        )
+    except Exception:
+        return False
+
+
+def _complete_text_without_audio(
+    text: Optional[str],
+    done: threading.Event,
+    on_start: Optional[Callable[[], None]],
+) -> threading.Event:
+    if on_start is not None:
+        try:
+            on_start()
+        except Exception:
+            pass
+    if text:
+        try:
+            from utils import conv_log
+            conv_log.log_rex(text)
+        except Exception:
+            pass
+        logger.info("[speech_queue] audio suppressed — emitted text only: %r", text)
+    done.set()
+    return done
+
+
 # ── Queue item ─────────────────────────────────────────────────────────────────
 
 class _Item:
@@ -193,6 +225,9 @@ class _SpeechQueue:
         on_start: Optional[Callable[[], None]] = None,
     ) -> threading.Event:
         done = threading.Event()
+        if _audio_output_suppressed():
+            return _complete_text_without_audio(text, done, on_start)
+
         should_preempt = False
 
         with self._not_empty:

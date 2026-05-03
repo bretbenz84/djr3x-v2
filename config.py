@@ -87,6 +87,13 @@ GUI_AVATAR_SMOOTHING = 0.25
 GUI_SHOW_SERVO_VALUES = True
 GUI_SHOW_FPS = False
 
+# Set at runtime by main.py --noaudio / -noaudio. In this mode the controller
+# skips microphone capture, wake-word listening, audio-scene analysis, audio
+# output prewarm, ElevenLabs TTS calls, and direct audio playback. Responses are
+# still written to the conversation log and GUI as text.
+NO_AUDIO_MODE = False
+AUDIO_OUTPUT_SUPPRESSED = False
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AI MODELS
 # ─────────────────────────────────────────────────────────────────────────────

@@ -85,6 +85,12 @@ def prewarm() -> None:
     before opening the output device — back-to-back sd.play() calls during
     device init can cause sd.wait() to return early on the first real TTS call.
     """
+    if bool(
+        getattr(config, "NO_AUDIO_MODE", False)
+        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+    ):
+        logger.info("[tts] audio output prewarm skipped — audio suppressed")
+        return
     with output_gate.hold("tts-prewarm") as acquired:
         if not acquired:
             return
@@ -119,6 +125,21 @@ def speak(
         return
     spoken_text = _normalize_for_speech(text)
     print(f"[TTS] {spoken_text}", flush=True)
+    if bool(
+        getattr(config, "NO_AUDIO_MODE", False)
+        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+    ):
+        try:
+            conv_log.log_rex(spoken_text)
+        except Exception as exc:
+            logger.debug("[tts] conversation log write failed: %s", exc)
+        if on_playback_start is not None:
+            try:
+                on_playback_start()
+            except Exception:
+                pass
+        logger.info("[tts] audio suppressed — emitted text only")
+        return
 
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID
@@ -317,6 +338,12 @@ def ensure_cached(
 ) -> bool:
     """Ensure text has a cached TTS file without playing it."""
     if not text or not text.strip():
+        return False
+    if bool(
+        getattr(config, "NO_AUDIO_MODE", False)
+        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+    ):
+        logger.info("[tts] cache prefill skipped — audio suppressed")
         return False
     spoken_text = _normalize_for_speech(text)
     voice_id = config.ELEVENLABS_VOICE_ID

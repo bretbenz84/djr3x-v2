@@ -102,6 +102,12 @@ def _play_audio_file(path: str) -> None:
     PaMacCore err=-50 glitches, which surface as choppy clip playback and
     duplicated/echoed TTS output.
     """
+    if bool(
+        getattr(config, "NO_AUDIO_MODE", False)
+        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+    ):
+        logger.info("Audio suppressed; skipping direct playback: %s", path)
+        return
     with output_gate.hold("startup_or_shutdown_clip") as acquired:
         if not acquired:
             return
@@ -114,6 +120,11 @@ def _play_audio_file(path: str) -> None:
 
 def _play_listening_chime_async(reason: str) -> None:
     """Queue the listening chime through speech_queue so AEC suppresses it."""
+    if bool(
+        getattr(config, "NO_AUDIO_MODE", False)
+        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+    ):
+        return
     if not bool(getattr(config, "PLAY_LISTENING_CHIME", True)):
         return
     path = Path(getattr(config, "LISTENING_CHIME_FILE", "") or "")
@@ -259,8 +270,12 @@ def _launch_startup_jeopardy() -> None:
 
 def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     _apply_startup_mode_overrides(jeopardy=startup_jeopardy)
-    logger.info("Verifying local Whisper model...")
-    _verify_local_whisper_model()
+    no_audio = bool(getattr(config, "NO_AUDIO_MODE", False))
+    if no_audio:
+        logger.info("Skipping local Whisper verification (--noaudio text-input mode).")
+    else:
+        logger.info("Verifying local Whisper model...")
+        _verify_local_whisper_model()
 
     # Step 4: Initialize hardware and log enabled/disabled status.
     logger.info("=== Initializing hardware ===")
@@ -308,8 +323,11 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     )
     logger.info(
         "Audio devices: %s",
-        f"enabled ({AUDIO_SELECTION_DESCRIPTION})"
-        if AUDIO_ENABLED else "disabled (AUDIO_DEVICE_NAME/AUDIO_DEVICE_INDEX not set or not found)",
+        "disabled (--noaudio text-input mode)"
+        if no_audio else (
+            f"enabled ({AUDIO_SELECTION_DESCRIPTION})"
+            if AUDIO_ENABLED else "disabled (AUDIO_DEVICE_NAME/AUDIO_DEVICE_INDEX not set or not found)"
+        ),
     )
 
     # Step 5: animations module is ready — functions operate directly on the hardware
@@ -317,7 +335,9 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
 
     # Steps 6 & 7: Fire startup audio first, then run servo animation simultaneously.
     # Audio plays in a background thread so the servo motion begins immediately after.
-    if config.PLAY_STARTUP_AUDIO:
+    if no_audio:
+        logger.info("Startup audio disabled by --noaudio")
+    elif config.PLAY_STARTUP_AUDIO:
         def _play_startup_audio() -> None:
             for audio_file in config.STARTUP_AUDIO_FILES:
                 logger.info("Playing startup audio: %s", audio_file)
@@ -335,13 +355,21 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     # Step 8: Start background services in order.
     logger.info("=== Starting background services ===")
 
-    logger.info("Starting audio.stream...")
-    stream.start()
+    if no_audio:
+        logger.info("Skipping audio.stream (--noaudio)")
+    else:
+        logger.info("Starting audio.stream...")
+        stream.start()
 
-    logger.info("Pre-warming audio output device...")
-    tts.prewarm()
+    if no_audio:
+        logger.info("Skipping audio output prewarm (--noaudio)")
+    else:
+        logger.info("Pre-warming audio output device...")
+        tts.prewarm()
 
-    if bool(getattr(config, "SPEAKER_ID_PRELOAD_ON_STARTUP", True)):
+    if no_audio:
+        logger.info("Skipping speaker ID preload (--noaudio)")
+    elif bool(getattr(config, "SPEAKER_ID_PRELOAD_ON_STARTUP", True)):
         logger.info("Pre-loading speaker ID encoder...")
         if not speaker_id.preload():
             logger.warning("Speaker ID encoder preload failed; continuing without voice ID.")
@@ -363,8 +391,11 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     # audio.wake_word is started internally by intelligence.interaction.start() —
     # starting it separately would create a duplicate daemon thread.
 
-    logger.info("Starting audio.scene...")
-    audio_scene.start()
+    if no_audio:
+        logger.info("Skipping audio.scene (--noaudio)")
+    else:
+        logger.info("Starting audio.scene...")
+        audio_scene.start()
 
     logger.info("Starting vision.camera...")
     camera.start()
@@ -381,8 +412,11 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     logger.info("Starting intelligence.consciousness...")
     consciousness.start()
 
-    logger.info("Starting intelligence.interaction (+ audio.wake_word)...")
-    interaction.start()
+    if no_audio:
+        logger.info("Starting intelligence.interaction (text-only; wake word disabled)...")
+    else:
+        logger.info("Starting intelligence.interaction (+ audio.wake_word)...")
+    interaction.start(text_only=no_audio)
 
     # Step 9: Breathing thread and arm idle.
     logger.info("Starting servo breathing thread...")
@@ -442,6 +476,14 @@ def _apply_cli_runtime_flags(args: argparse.Namespace) -> None:
     # Keep GUI-aware hardware mirrors/simulators off unless this launch asked
     # for the dashboard. config.py still owns the dashboard tuning knobs.
     setattr(config, "GUI_ENABLED", _gui_requested(args))
+    no_audio = bool(getattr(args, "noaudio", False))
+    setattr(config, "NO_AUDIO_MODE", no_audio)
+    setattr(config, "AUDIO_OUTPUT_SUPPRESSED", no_audio)
+    if no_audio:
+        setattr(config, "PLAY_STARTUP_AUDIO", False)
+        setattr(config, "PLAY_SHUTDOWN_AUDIO", False)
+        setattr(config, "PLAY_LISTENING_CHIME", False)
+        logger.info("--noaudio enabled: mic input, wake word, audio output, and ElevenLabs TTS are suppressed.")
 
 
 def _load_dashboard_runner():
@@ -536,6 +578,35 @@ def _stop_gui_bridge_sync() -> None:
         _gui_bridge_thread.join(timeout=2.0)
 
 
+def _make_gui_text_submit_callback():
+    def _submit(text: str) -> None:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return
+
+        def _worker() -> None:
+            try:
+                handled = interaction.submit_text(cleaned)
+                if not handled:
+                    from utils import conv_log
+                    conv_log.log_system("Text input was ignored because Rex is shutting down.")
+            except Exception as exc:
+                logger.exception("GUI text input failed: %s", exc)
+                try:
+                    from utils import conv_log
+                    conv_log.log_system(f"Text input failed: {exc}")
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=_worker,
+            daemon=True,
+            name="gui-text-input",
+        ).start()
+
+    return _submit
+
+
 def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
     _run_controller_startup(startup_jeopardy=startup_jeopardy)
     _start_gui_bridge_sync()
@@ -560,7 +631,10 @@ def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
 
     try:
         try:
-            run_dashboard(shutdown_callback=_request_shutdown)
+            run_dashboard(
+                shutdown_callback=_request_shutdown,
+                text_submit_callback=_make_gui_text_submit_callback(),
+            )
         except Exception as exc:
             logger.warning("GUI failed at runtime; continuing headless: %s", exc)
             _wait_for_shutdown()
@@ -588,6 +662,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--gui",
         action="store_true",
         help="open the optional PySide6 GUI dashboard for this run",
+    )
+    parser.add_argument(
+        "-noaudio",
+        "--noaudio",
+        "--no-audio",
+        dest="noaudio",
+        action="store_true",
+        help="disable microphone capture and audio output; use GUI text input/output instead",
     )
     return parser.parse_args(argv)
 

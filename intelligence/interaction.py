@@ -163,6 +163,8 @@ _current_character_loop_trace: contextvars.ContextVar[Optional[_CharacterLoopTra
     contextvars.ContextVar("current_character_loop_trace", default=None)
 )
 _ttfs_trace_lock = threading.Lock()
+_text_input_lock = threading.Lock()
+_text_only_mode: bool = False
 _stop_event = threading.Event()
 _thread: Optional[threading.Thread] = None
 
@@ -1627,6 +1629,11 @@ def _is_bare_wake_address(text: str) -> bool:
 
 def _prefill_wake_ack_cache() -> None:
     """Warm the tiny wake-ack TTS set so wake feedback is instant."""
+    if bool(
+        getattr(config, "NO_AUDIO_MODE", False)
+        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+    ):
+        return
     if not getattr(config, "WAKE_ACK_REQUIRE_CACHE", True):
         return
     pool = list(getattr(config, "WAKE_ACKNOWLEDGMENTS", []) or [])
@@ -1645,6 +1652,11 @@ def _prefill_wake_ack_cache() -> None:
 
 def _prefill_slow_path_ack_cache() -> None:
     """Warm slow-path acknowledgment TTS so live turns never fetch it."""
+    if bool(
+        getattr(config, "NO_AUDIO_MODE", False)
+        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+    ):
+        return
     if not bool(getattr(config, "SLOW_PATH_ACK_ENABLED", True)):
         return
     if not bool(getattr(config, "SLOW_PATH_ACK_REQUIRE_CACHE", True)):
@@ -1767,7 +1779,11 @@ def _try_slow_path_ack(kind: str) -> bool:
     candidates = [line for line in pool if line != _last_slow_path_ack] or pool
     chosen = random.choice(candidates)
 
-    if bool(getattr(config, "SLOW_PATH_ACK_REQUIRE_CACHE", True)):
+    audio_suppressed = bool(
+        getattr(config, "NO_AUDIO_MODE", False)
+        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+    )
+    if bool(getattr(config, "SLOW_PATH_ACK_REQUIRE_CACHE", True)) and not audio_suppressed:
         try:
             from audio import tts
             if not tts.is_cached(chosen):
@@ -9078,6 +9094,11 @@ def _handle_speech_segment(
     audio_array: np.ndarray,
     *,
     from_idle_activation: bool = False,
+    transcribed_text: Optional[str] = None,
+    raw_best_id_override: Optional[int] = None,
+    raw_best_name_override: Optional[str] = None,
+    speaker_score_override: float = 0.0,
+    text_input: bool = False,
 ) -> None:
     """Full processing pipeline for one detected speech segment in ACTIVE state."""
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
@@ -9120,11 +9141,20 @@ def _handle_speech_segment(
     # while playback suppression was active and encouraged premature filler.
     sequence_started = False
     try:
-        # Concurrent transcription + speaker identification
+        # Concurrent transcription + speaker identification, unless the GUI
+        # supplied text directly.
         process_started = time.monotonic()
-        text, raw_best_id, raw_best_name, speaker_score = _process_audio(audio_array)
-        transcript_ready_at = time.monotonic()
-        _latency_log(turn_start, "transcribe_and_speaker_id", process_started)
+        if transcribed_text is not None:
+            text = str(transcribed_text or "").strip()
+            raw_best_id = raw_best_id_override
+            raw_best_name = raw_best_name_override
+            speaker_score = float(speaker_score_override or 0.0)
+            transcript_ready_at = time.monotonic()
+            _latency_log(turn_start, "text_input", process_started)
+        else:
+            text, raw_best_id, raw_best_name, speaker_score = _process_audio(audio_array)
+            transcript_ready_at = time.monotonic()
+            _latency_log(turn_start, "transcribe_and_speaker_id", process_started)
 
         if not text:
             return
@@ -9269,6 +9299,35 @@ def _handle_speech_segment(
             }
         except Exception:
             visible_known_by_id = {}
+
+        if text_input and person_id is None:
+            recent_id = _safe_int((recent_engagement or {}).get("person_id"))
+            if (
+                recent_id is not None
+                and (not visible_known_by_id or recent_id in visible_known_by_id)
+            ):
+                vis = visible_known_by_id.get(recent_id, {})
+                person_id = recent_id
+                person_name = (
+                    (recent_engagement or {}).get("name")
+                    or vis.get("face_id")
+                    or vis.get("voice_id")
+                )
+                _log.info(
+                    "[interaction] person resolution: GUI text input recent engagement — "
+                    "person_id=%s name=%r",
+                    person_id,
+                    person_name,
+                )
+            elif len(visible_known_by_id) == 1:
+                person_id, vis = next(iter(visible_known_by_id.items()))
+                person_name = vis.get("face_id") or vis.get("voice_id")
+                _log.info(
+                    "[interaction] person resolution: GUI text input single visible person — "
+                    "person_id=%s name=%r",
+                    person_id,
+                    person_name,
+                )
 
         # Multi-person scenes need a gentler fallback than "unseen stranger."
         # If the top voice candidate is one of the visible known faces, accept
@@ -11913,6 +11972,44 @@ def _handle_speech_segment(
                 _current_character_loop_trace.reset(trace_context_token)
 
 
+def submit_text(
+    text: str,
+    *,
+    person_id: Optional[int] = None,
+    person_name: Optional[str] = None,
+) -> bool:
+    """Process GUI/CLI text input through the normal interaction pipeline."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+
+    with _text_input_lock:
+        current_state = state_module.get_state()
+        if current_state == State.SHUTDOWN:
+            return False
+        from_idle_activation = current_state != State.ACTIVE
+        if current_state in {State.IDLE, State.SLEEP}:
+            state_module.set_state(State.ACTIVE)
+
+        global _last_speech_at
+        _last_speech_at = time.monotonic()
+        _begin_user_turn()
+        try:
+            _handle_speech_segment(
+                np.zeros(1, dtype=np.float32),
+                from_idle_activation=from_idle_activation,
+                transcribed_text=cleaned,
+                raw_best_id_override=person_id,
+                raw_best_name_override=person_name,
+                speaker_score_override=1.0 if person_id is not None else 0.0,
+                text_input=True,
+            )
+            _last_speech_at = time.monotonic()
+            return True
+        finally:
+            _end_user_turn()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main loop
 # ─────────────────────────────────────────────────────────────────────────────
@@ -12189,16 +12286,18 @@ def _loop() -> None:
 # Lifecycle
 # ─────────────────────────────────────────────────────────────────────────────
 
-def start() -> None:
+def start(*, text_only: bool = False) -> None:
     """Start the wake word detector and the continuous interaction loop."""
     global _thread, _identity_prompt_until, _awaiting_followup_event
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name
+    global _text_only_mode
 
     if _thread and _thread.is_alive():
         _log.warning("[interaction] already running")
         return
 
+    _text_only_mode = bool(text_only)
     _stop_event.clear()
     _wake_word_fired.clear()
     _interrupted.clear()
@@ -12224,6 +12323,10 @@ def start() -> None:
         pass
 
     speech_queue.register_on_item_done(_arm_post_tts_window)
+    if _text_only_mode:
+        _log.info("[interaction] started in text-only mode; wake word and mic loop disabled")
+        return
+
     wake_word.start(_on_wake_word)
     threading.Thread(
         target=_prefill_wake_ack_cache,
@@ -12255,9 +12358,11 @@ def stop() -> None:
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name
+    global _text_only_mode
 
     _stop_event.set()
-    wake_word.stop()
+    if not _text_only_mode:
+        wake_word.stop()
 
     if _thread:
         _thread.join(timeout=3.0)
@@ -12287,4 +12392,5 @@ def stop() -> None:
     except Exception:
         pass
 
+    _text_only_mode = False
     _log.info("[interaction] stopped")

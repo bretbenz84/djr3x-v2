@@ -79,22 +79,30 @@ Start DJ-R3X:
 python main.py
 ```
 
-Start directly in Jeopardy mode, skipping startup introductions:
+Startup flags:
 
-```bash
-python main.py -jeopardy
-```
+| Flag | Purpose |
+| --- | --- |
+| `-gui`, `--gui` | Open the optional PySide6 GUI dashboard for this run. |
+| `-jeopardy`, `--jeopardy` | Start directly in Jeopardy mode and skip startup introductions. |
+| `-noaudio`, `--noaudio`, `--no-audio` | Disable microphone capture, wake word listening, audio output, and ElevenLabs TTS calls. Responses are written as text to the conversation log and GUI. |
 
-Open the optional GUI dashboard for this run:
+Open the optional GUI dashboard:
 
 ```bash
 python main.py --gui
 ```
 
+Run the GUI as a text-only input/output interface:
+
+```bash
+python main.py --gui --noaudio
+```
+
 Flags can be combined:
 
 ```bash
-python main.py --gui -jeopardy
+python main.py --gui --noaudio --jeopardy
 ```
 
 At startup, DJ-R3X preloads the local Ollama `qwen2.5:1.5b` model before accepting input and keeps it loaded for the run.

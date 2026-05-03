@@ -49,6 +49,7 @@ class DashboardWindow(QMainWindow):
         bridge: GUIDashboardBridge,
         *,
         shutdown_callback: Optional[Callable[[], None]] = None,
+        text_submit_callback: Optional[Callable[[str], None]] = None,
         demo: bool = False,
         parent=None,
     ) -> None:
@@ -70,9 +71,12 @@ class DashboardWindow(QMainWindow):
         self.avatar = RexAvatar()
         self.servos = ServoPositionsPanel()
         self.conversation = ConversationPanel()
-        self.conversation.set_submit_callback(
-            lambda text: self._bridge.add_conversation_line("Human", text, "user")
-        )
+        if text_submit_callback is not None:
+            self.conversation.set_submit_callback(text_submit_callback)
+        else:
+            self.conversation.set_submit_callback(
+                lambda text: self._bridge.add_conversation_line("Human", text, "user")
+            )
         self.footer = FooterBar()
         self.jeopardy = JeopardyPanel()
         self.connection = QLabel("●  Connected")
@@ -388,12 +392,14 @@ def run_dashboard(
     bridge: GUIDashboardBridge = gui_bridge,
     *,
     shutdown_callback: Optional[Callable[[], None]] = None,
+    text_submit_callback: Optional[Callable[[str], None]] = None,
     demo: bool = False,
 ) -> int:
     app = QApplication.instance() or QApplication(sys.argv[:1])
     window = DashboardWindow(
         bridge,
         shutdown_callback=shutdown_callback,
+        text_submit_callback=text_submit_callback,
         demo=demo,
     )
     window.show()
