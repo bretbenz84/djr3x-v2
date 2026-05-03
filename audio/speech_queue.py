@@ -23,7 +23,7 @@ import heapq
 import logging
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ class _Item:
     __slots__ = (
         "neg_priority", "seq", "text", "emotion", "audio_path",
         "done", "tag", "pre_beat_ms", "post_beat_ms", "voice_settings",
+        "on_start",
     )
 
     def __init__(
@@ -48,6 +49,7 @@ class _Item:
         pre_beat_ms: int = 0,
         post_beat_ms: int = 0,
         voice_settings: Optional[dict] = None,
+        on_start: Optional[Callable[[], None]] = None,
     ) -> None:
         self.neg_priority = -priority
         self.seq = seq
@@ -59,6 +61,7 @@ class _Item:
         self.pre_beat_ms = pre_beat_ms
         self.post_beat_ms = post_beat_ms
         self.voice_settings = voice_settings
+        self.on_start = on_start
 
     def __lt__(self, other: "_Item") -> bool:
         if self.neg_priority != other.neg_priority:
@@ -98,6 +101,7 @@ class _SpeechQueue:
         pre_beat_ms: int = 0,
         post_beat_ms: int = 0,
         voice_settings: Optional[dict] = None,
+        on_start: Optional[Callable[[], None]] = None,
     ) -> threading.Event:
         """Enqueue text for TTS. Returns an Event set when playback finishes.
 
@@ -113,7 +117,7 @@ class _SpeechQueue:
         """
         return self._add(
             text, emotion, None, priority, tag,
-            pre_beat_ms, post_beat_ms, voice_settings,
+            pre_beat_ms, post_beat_ms, voice_settings, on_start,
         )
 
     def enqueue_audio_file(
@@ -123,9 +127,12 @@ class _SpeechQueue:
         tag: Optional[str] = None,
         pre_beat_ms: int = 0,
         post_beat_ms: int = 0,
+        on_start: Optional[Callable[[], None]] = None,
     ) -> threading.Event:
         """Enqueue an audio file for direct playback. Returns an Event set when done."""
-        return self._add(None, "neutral", path, priority, tag, pre_beat_ms, post_beat_ms)
+        return self._add(
+            None, "neutral", path, priority, tag, pre_beat_ms, post_beat_ms, None, on_start
+        )
 
     def drop_by_tag(self, tag: str) -> int:
         """Drop all *waiting* items whose tag matches. Returns count dropped."""
@@ -183,6 +190,7 @@ class _SpeechQueue:
         pre_beat_ms: int = 0,
         post_beat_ms: int = 0,
         voice_settings: Optional[dict] = None,
+        on_start: Optional[Callable[[], None]] = None,
     ) -> threading.Event:
         done = threading.Event()
         should_preempt = False
@@ -212,7 +220,7 @@ class _SpeechQueue:
             heapq.heappush(
                 self._heap,
                 _Item(priority, seq, text, emotion, audio_path, done, tag,
-                      pre_beat_ms, post_beat_ms, voice_settings),
+                      pre_beat_ms, post_beat_ms, voice_settings, on_start),
             )
             self._not_empty.notify()
 
@@ -294,10 +302,15 @@ class _SpeechQueue:
                     _t.sleep(item.pre_beat_ms / 1000.0)
 
                 if item.audio_path:
-                    self._play_file(item.audio_path)
+                    self._play_file(item.audio_path, on_start=item.on_start)
                 elif item.text:
                     from audio import tts
-                    tts.speak(item.text, item.emotion, voice_settings=item.voice_settings)
+                    tts.speak(
+                        item.text,
+                        item.emotion,
+                        voice_settings=item.voice_settings,
+                        on_playback_start=item.on_start,
+                    )
 
                 if item.post_beat_ms > 0:
                     import time as _t
@@ -327,7 +340,12 @@ class _SpeechQueue:
                     self._current_audio_path = None
                 item.done.set()
 
-    def _play_file(self, path: str) -> None:
+    def _play_file(
+        self,
+        path: str,
+        *,
+        on_start: Optional[Callable[[], None]] = None,
+    ) -> None:
         try:
             import math
             import numpy as np
@@ -396,6 +414,11 @@ class _SpeechQueue:
                     return
                 try:
                     echo_cancel.set_playing(True)
+                    if on_start is not None:
+                        try:
+                            on_start()
+                        except Exception:
+                            pass
                     sd.play(audio, samplerate, blocksize=2048)
                     sd.wait()
                 finally:
@@ -433,10 +456,11 @@ def enqueue(
     pre_beat_ms: int = 0,
     post_beat_ms: int = 0,
     voice_settings: Optional[dict] = None,
+    on_start: Optional[Callable[[], None]] = None,
 ) -> threading.Event:
     """Enqueue text for TTS speech. Returns an Event set when playback finishes."""
     return _queue.enqueue(
-        text, emotion, priority, tag, pre_beat_ms, post_beat_ms, voice_settings,
+        text, emotion, priority, tag, pre_beat_ms, post_beat_ms, voice_settings, on_start,
     )
 
 
@@ -446,9 +470,10 @@ def enqueue_audio_file(
     tag: Optional[str] = None,
     pre_beat_ms: int = 0,
     post_beat_ms: int = 0,
+    on_start: Optional[Callable[[], None]] = None,
 ) -> threading.Event:
     """Enqueue an audio file for playback. Returns an Event set when done."""
-    return _queue.enqueue_audio_file(path, priority, tag, pre_beat_ms, post_beat_ms)
+    return _queue.enqueue_audio_file(path, priority, tag, pre_beat_ms, post_beat_ms, on_start)
 
 
 def reset_startup_chime_for_tests() -> None:

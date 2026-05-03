@@ -778,6 +778,111 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._pending_common_first_name_introduction = None
 
+    def test_relationship_only_introduction_opens_pending_slot(self):
+        from intelligence import interaction
+
+        parsed = interaction.introductions.IntroductionParse(
+            is_introduction=True,
+            name=None,
+            relationship="sister",
+            subject_kind="person",
+            needs_name=True,
+        )
+        interaction._pending_introduction = None
+        try:
+            with mock.patch.object(
+                interaction.llm,
+                "get_response",
+                return_value="What name am I filing for your sister?",
+            ) as llm_response:
+                response = interaction._handle_introduction_parse(
+                    parsed,
+                    introducer_id=1,
+                    introducer_name="Bret Benziger",
+                    visible_newcomer=False,
+                )
+
+            self.assertEqual(response, "What name am I filing for your sister?")
+            self.assertIsNotNone(interaction._pending_introduction)
+            self.assertEqual(interaction._pending_introduction["introducer_id"], 1)
+            self.assertEqual(interaction._pending_introduction["relationship"], "sister")
+            self.assertFalse(interaction._pending_introduction["visible_newcomer"])
+            prompt = llm_response.call_args.args[0]
+            self.assertIn("meet their sister", prompt)
+            self.assertNotIn("visible newcomer", prompt)
+        finally:
+            interaction._pending_introduction = None
+
+    def test_introduction_name_matches_existing_visible_person_before_enrolling(self):
+        from intelligence import interaction
+
+        parsed = interaction.introductions.IntroductionParse(
+            is_introduction=True,
+            name="Jennifer",
+            relationship="sister",
+            subject_kind="person",
+        )
+        interaction._pending_introduction = {
+            "introducer_id": 1,
+            "introducer_name": "Bret Benziger",
+            "relationship": "sister",
+            "visible_newcomer": False,
+            "asked_at": interaction.time.monotonic(),
+        }
+        try:
+            with (
+                mock.patch.object(
+                    interaction.people_memory,
+                    "find_person_by_name",
+                    return_value={"id": 4, "name": "Jennifer"},
+                ) as find_person,
+                mock.patch.object(
+                    interaction,
+                    "_known_person_visible_recently",
+                    return_value=True,
+                ) as visible_recent,
+                mock.patch.object(
+                    interaction,
+                    "_store_introduction_memories",
+                ) as store_intro,
+                mock.patch.object(
+                    interaction,
+                    "_intro_ack_and_followup",
+                    return_value="Jennifer, welcome aboard.",
+                ) as ack,
+                mock.patch.object(interaction, "_enroll_introduced_person") as enroll,
+            ):
+                response = interaction._handle_introduction_parse(
+                    parsed,
+                    introducer_id=1,
+                    introducer_name="Bret Benziger",
+                    visible_newcomer=False,
+                )
+
+            self.assertEqual(response, "Jennifer, welcome aboard.")
+            find_person.assert_called_once_with("Jennifer")
+            visible_recent.assert_called_once_with(4)
+            store_intro.assert_called_once_with(
+                1,
+                "Bret Benziger",
+                4,
+                "Jennifer",
+                "sister",
+            )
+            ack.assert_called_once_with(
+                1,
+                "Bret Benziger",
+                4,
+                "Jennifer",
+                "sister",
+                subject_kind="person",
+                visible_newcomer=True,
+            )
+            enroll.assert_not_called()
+            self.assertIsNone(interaction._pending_introduction)
+        finally:
+            interaction._pending_introduction = None
+
     def test_common_first_name_introduction_refusal_enrolls_first_name_only(self):
         from intelligence import interaction
 
@@ -1485,15 +1590,100 @@ class ConversationGatingTest(unittest.TestCase):
     def test_latency_fillers_are_in_character_not_human_disfluencies(self):
         import config
 
-        joined = " ".join(config.LATENCY_FILLER_LINES).lower()
+        slow_ack_lines = []
+        for value in config.SLOW_PATH_ACK_LINES.values():
+            slow_ack_lines.extend(value)
+        joined = " ".join(config.LATENCY_FILLER_LINES + slow_ack_lines).lower()
 
         self.assertNotRegex(joined, r"\b(?:um+|uh+|hmm+)\b")
         self.assertTrue(
             any(
                 phrase in joined
-                for phrase in ("one sec", "processing", "recalibrating", "memory banks")
+                for phrase in (
+                    "one sec",
+                    "processing",
+                    "recalibrating",
+                    "memory banks",
+                    "one second",
+                    "let me check",
+                )
             )
         )
+
+    def test_slow_path_ack_requires_cached_line_and_marks_ttfs(self):
+        from intelligence import interaction
+
+        class Done:
+            pass
+
+        trace = interaction._new_character_loop_trace(
+            "What do you see?",
+            from_idle_activation=False,
+            turn_start=10.0,
+            raw_best_id=None,
+            raw_best_name=None,
+            speaker_score=0.0,
+        )
+        trace.transcript_ready_at = 10.25
+
+        def fake_enqueue(*args, **kwargs):
+            callback = kwargs.get("on_start")
+            if callback is not None:
+                callback()
+            return Done()
+
+        token = interaction._current_character_loop_trace.set(trace)
+        previous_ack = interaction._last_slow_path_ack
+        try:
+            interaction._last_slow_path_ack = None
+            with (
+                mock.patch("audio.tts.is_cached", return_value=True),
+                mock.patch.object(interaction.random, "choice", side_effect=lambda items: items[0]),
+                mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+                mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+                mock.patch.object(interaction.speech_queue, "enqueue", side_effect=fake_enqueue) as enqueue,
+                mock.patch.object(interaction.time, "monotonic", side_effect=[10.5, 10.75]),
+                mock.patch.object(interaction._log, "info"),
+            ):
+                self.assertTrue(interaction._try_slow_path_ack("vision"))
+        finally:
+            interaction._last_slow_path_ack = previous_ack
+            interaction._current_character_loop_trace.reset(token)
+
+        enqueue.assert_called_once()
+        self.assertEqual(enqueue.call_args.args[:2], ("Let me check.", "neutral"))
+        self.assertEqual(enqueue.call_args.kwargs["priority"], 1)
+        self.assertEqual(enqueue.call_args.kwargs["tag"], "slow_path_ack")
+        self.assertEqual(trace.first_response_queued_at, 10.5)
+        self.assertEqual(trace.first_response_audio_started_at, 10.75)
+        self.assertEqual(trace.first_response_preview, "Let me check.")
+
+    def test_slow_path_ack_skips_uncached_line(self):
+        from intelligence import interaction
+
+        trace = interaction._new_character_loop_trace(
+            "What do you remember about me?",
+            from_idle_activation=False,
+            turn_start=10.0,
+            raw_best_id=None,
+            raw_best_name=None,
+            speaker_score=0.0,
+        )
+        trace.transcript_ready_at = 10.25
+        token = interaction._current_character_loop_trace.set(trace)
+        try:
+            with (
+                mock.patch("audio.tts.is_cached", return_value=False),
+                mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+                mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+                mock.patch.object(interaction.speech_queue, "enqueue") as enqueue,
+            ):
+                self.assertFalse(interaction._try_slow_path_ack("memory"))
+        finally:
+            interaction._current_character_loop_trace.reset(token)
+
+        enqueue.assert_not_called()
+        self.assertIsNone(trace.first_response_queued_at)
 
     def test_startup_solo_greeting_prompt_names_person_and_avoids_they_them(self):
         from intelligence import consciousness

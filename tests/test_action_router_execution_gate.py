@@ -265,6 +265,11 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
             mock.patch.object(interaction.time, "monotonic", return_value=11.234),
             mock.patch.object(interaction._log, "info") as info,
         ):
+            trace.transcript_ready_at = 10.4
+            trace.first_response_queued_at = 10.8
+            trace.first_response_audio_started_at = 11.0
+            trace.first_response_priority = 1
+            trace.first_response_preview = "One tiny joke."
             interaction._log_character_loop_trace(
                 trace,
                 router_audit=audit,
@@ -297,6 +302,58 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
         self.assertTrue(payload["execution"]["spoken_text_present"])
         self.assertFalse(payload["execution"]["assistant_asked_question"])
         self.assertTrue(payload["execution"]["suppress_memory_learning"])
+        self.assertEqual(payload["timing"]["transcript_ready_from_segment_start_ms"], 400)
+        self.assertEqual(payload["timing"]["response_queued_from_segment_start_ms"], 800)
+        self.assertEqual(payload["timing"]["response_queued_after_transcript_ms"], 400)
+        self.assertEqual(payload["timing"]["audio_started_from_segment_start_ms"], 1000)
+        self.assertEqual(payload["timing"]["audio_started_after_transcript_ms"], 599)
+        self.assertEqual(payload["timing"]["audio_started_after_queue_ms"], 199)
+        self.assertEqual(payload["timing"]["first_response_priority"], 1)
+        self.assertEqual(payload["timing"]["first_response_preview"], "One tiny joke.")
+
+    def test_speak_blocking_marks_exact_ttfs_queue_and_audio_start(self):
+        from intelligence import interaction
+
+        class Done:
+            def wait(self, timeout=None):
+                return True
+
+        trace = interaction._new_character_loop_trace(
+            "Tell me a joke",
+            from_idle_activation=False,
+            turn_start=10.0,
+            raw_best_id=None,
+            raw_best_name=None,
+            speaker_score=0.0,
+        )
+        trace.transcript_ready_at = 10.25
+
+        def fake_enqueue(*args, **kwargs):
+            on_start = kwargs.get("on_start")
+            if on_start is not None:
+                on_start()
+            return Done()
+
+        token = interaction._current_character_loop_trace.set(trace)
+        try:
+            with (
+                mock.patch.object(interaction, "_can_speak", return_value=True),
+                mock.patch.object(interaction.llm, "clean_response_text", side_effect=lambda text: text),
+                mock.patch.object(interaction, "_assistant_asked_question", return_value=False),
+                mock.patch.object(interaction, "_apply_post_tts_handoff"),
+                mock.patch.object(interaction.speech_queue, "enqueue", side_effect=fake_enqueue),
+                mock.patch.object(interaction.time, "monotonic", side_effect=[10.75, 11.125]),
+                mock.patch.object(interaction._log, "info"),
+            ):
+                completed = interaction._speak_blocking("One tiny joke.", priority=1)
+        finally:
+            interaction._current_character_loop_trace.reset(token)
+
+        self.assertTrue(completed)
+        self.assertEqual(trace.first_response_queued_at, 10.75)
+        self.assertEqual(trace.first_response_audio_started_at, 11.125)
+        self.assertEqual(trace.first_response_priority, 1)
+        self.assertEqual(trace.first_response_preview, "One tiny joke.")
 
     def test_router_audit_records_unallowlisted_router_action(self):
         import config

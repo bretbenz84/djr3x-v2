@@ -37,7 +37,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 
@@ -102,6 +102,7 @@ def speak(
     text: str,
     emotion: str = "neutral",
     voice_settings: Optional[dict] = None,
+    on_playback_start: Optional[Callable[[], None]] = None,
 ) -> None:
     """Convert text to speech and play it, blocking until playback finishes.
 
@@ -148,12 +149,18 @@ def speak(
     except Exception as exc:
         logger.debug("[tts] conversation log write failed: %s", exc)
 
-    _play(audio, samplerate, emotion)
+    _play(audio, samplerate, emotion, on_playback_start=on_playback_start)
 
 
 # ── Internal: playback ────────────────────────────────────────────────────────
 
-def _play(audio: np.ndarray, samplerate: int, emotion: str) -> None:
+def _play(
+    audio: np.ndarray,
+    samplerate: int,
+    emotion: str,
+    *,
+    on_playback_start: Optional[Callable[[], None]] = None,
+) -> None:
     global _speaking
 
     try:
@@ -196,6 +203,11 @@ def _play(audio: np.ndarray, samplerate: int, emotion: str) -> None:
             leds_chest.speak(emotion)
             echo_cancel.set_playing(True)
             led_thread.start()
+            if on_playback_start is not None:
+                try:
+                    on_playback_start()
+                except Exception:
+                    pass
             sd.play(audio, samplerate, blocksize=2048)
             sd.wait()
         except Exception as exc:

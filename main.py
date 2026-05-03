@@ -74,7 +74,7 @@ from utils.config_loader import (
     AUDIO_SELECTION_DESCRIPTION,
 )
 from sequences import animations
-from audio import stream, scene as audio_scene, output_gate, tts, speech_queue
+from audio import stream, scene as audio_scene, output_gate, tts, speech_queue, speaker_id
 from vision import camera, scene as vision_scene
 from awareness import chronoception, interoception
 from intelligence import consciousness, interaction, local_llm
@@ -340,6 +340,13 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
 
     logger.info("Pre-warming audio output device...")
     tts.prewarm()
+
+    if bool(getattr(config, "SPEAKER_ID_PRELOAD_ON_STARTUP", True)):
+        logger.info("Pre-loading speaker ID encoder...")
+        if not speaker_id.preload():
+            logger.warning("Speaker ID encoder preload failed; continuing without voice ID.")
+    else:
+        logger.info("Speaker ID encoder preload disabled by config.SPEAKER_ID_PRELOAD_ON_STARTUP")
 
     logger.info("Pre-loading local LLM...")
     local_llm_ok = local_llm.preload()

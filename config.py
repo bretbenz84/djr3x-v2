@@ -639,6 +639,10 @@ FACE_RECOGNITION_DISTANCE_THRESHOLD = 0.6
 # Resemblyzer cosine similarity — higher is a better match
 SPEAKER_ID_SIMILARITY_THRESHOLD = 0.75
 
+# Load the Resemblyzer encoder during startup so the first live spoken turn
+# does not pay the model load cost.
+SPEAKER_ID_PRELOAD_ON_STARTUP = True
+
 # VAD (Silero) — probability threshold above which speech is considered detected
 VAD_THRESHOLD = 0.5
 
@@ -1115,6 +1119,10 @@ ANONYMOUS_SPEAKER_SLOT_MAX = 8
 # debug runs.
 LATENCY_TELEMETRY_ENABLED = True
 
+# Log exact time-to-first-speech markers for each handled user turn:
+# transcript ready, first response queued, and first audible playback start.
+TTFS_TELEMETRY_ENABLED = True
+
 # When Rex turns a remembered music preference into a "want me to play it?"
 # offer, short yes/no replies in this window are consumed by that offer before
 # the general action router runs.
@@ -1543,6 +1551,34 @@ LATENCY_FILLER_LINES = [
 LATENCY_FILLER_ENABLED = True
 LATENCY_FILLER_DELAY_SECS = 0.9
 LATENCY_FILLER_REQUIRE_CACHE = True
+
+# Instant acknowledgments for paths we already expect to be slow. These should
+# be cached at startup and skipped if uncached, so they never add an ElevenLabs
+# round trip to the user's live turn.
+SLOW_PATH_ACK_ENABLED = True
+SLOW_PATH_ACK_REQUIRE_CACHE = True
+SLOW_PATH_ACK_MIN_EXPECTED_SECS = 1.5
+SLOW_PATH_ACK_EXPECTED_SECS = {
+    "vision": 2.5,
+    "memory": 2.0,
+    "general": 1.8,
+}
+SLOW_PATH_ACK_LINES = {
+    "vision": [
+        "Let me check.",
+        "looking.",
+    ],
+    "memory": [
+        "I've got that.",
+        "Checking the memory banks.",
+        "Let me remember.",
+    ],
+    "general": [
+        "One sec.",
+        "Hang on.",
+        "I'm thinking",
+    ],
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PRIVATE THOUGHTS — Idle Monologue Pool

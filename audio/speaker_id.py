@@ -1,4 +1,5 @@
 import logging
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -31,6 +32,22 @@ def _get_encoder():
         )
         _UNAVAILABLE = True
     return _encoder
+
+
+def preload() -> bool:
+    """Load the voice encoder before the first live speech turn."""
+    start = time.monotonic()
+    encoder = _get_encoder()
+    if encoder is None:
+        return False
+    try:
+        # Warm this import too; get_embedding() needs it on the first turn.
+        from resemblyzer import preprocess_wav  # noqa: F401
+    except Exception as exc:
+        logger.warning("[speaker_id] preload failed while warming preprocess_wav: %s", exc)
+        return False
+    logger.info("[speaker_id] preloaded encoder in %.3fs", time.monotonic() - start)
+    return True
 
 
 def get_embedding(audio_array: np.ndarray) -> Optional[np.ndarray]:

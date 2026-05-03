@@ -13,6 +13,7 @@ Public API:
 """
 
 import logging
+import contextvars
 import json
 import random
 import re
@@ -133,6 +134,11 @@ class _CharacterLoopTrace:
     spoken_text_present: Optional[bool] = None
     assistant_asked_question: Optional[bool] = None
     suppress_memory_learning: Optional[bool] = None
+    transcript_ready_at: Optional[float] = None
+    first_response_queued_at: Optional[float] = None
+    first_response_audio_started_at: Optional[float] = None
+    first_response_priority: Optional[int] = None
+    first_response_preview: Optional[str] = None
     emitted: bool = False
 
 
@@ -153,6 +159,10 @@ class _AnonymousSpeakerSlot:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _character_loop_turn_ids = count(1)
+_current_character_loop_trace: contextvars.ContextVar[Optional[_CharacterLoopTrace]] = (
+    contextvars.ContextVar("current_character_loop_trace", default=None)
+)
+_ttfs_trace_lock = threading.Lock()
 _stop_event = threading.Event()
 _thread: Optional[threading.Thread] = None
 
@@ -179,8 +189,9 @@ _pending_music_offer: Optional[dict] = None
 _no_response_recovery_token: int = 0
 _no_response_recovery_lock = threading.Lock()
 
-# Anti-repeat for latency filler lines
+# Anti-repeat for latency filler and slow-path acknowledgment lines
 _last_filler: Optional[str] = None
+_last_slow_path_ack: Optional[str] = None
 _last_wake_ack: Optional[str] = None
 _last_vad_barge_in_suppressed_log_at: float = 0.0
 
@@ -235,6 +246,102 @@ def _latency_log(turn_start: float, stage: str, stage_start: Optional[float] = N
             now - stage_start,
             now - turn_start,
         )
+
+
+def _elapsed_ms(start: Optional[float], end: Optional[float]) -> Optional[int]:
+    if start is None or end is None:
+        return None
+    return int(max(0.0, end - start) * 1000)
+
+
+def _preview_trace_text(text: str, *, limit: int = 80) -> str:
+    cleaned = " ".join(str(text or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return f"{cleaned[: max(0, limit - 1)]}..."
+
+
+def _ttfs_timing_payload(trace: _CharacterLoopTrace) -> dict:
+    queued_at = trace.first_response_queued_at
+    audio_started_at = trace.first_response_audio_started_at
+    return {
+        "transcript_ready_from_segment_start_ms": _elapsed_ms(
+            trace.turn_start,
+            trace.transcript_ready_at,
+        ),
+        "response_queued_from_segment_start_ms": _elapsed_ms(
+            trace.turn_start,
+            queued_at,
+        ),
+        "response_queued_after_transcript_ms": _elapsed_ms(
+            trace.transcript_ready_at,
+            queued_at,
+        ),
+        "audio_started_from_segment_start_ms": _elapsed_ms(
+            trace.turn_start,
+            audio_started_at,
+        ),
+        "audio_started_after_transcript_ms": _elapsed_ms(
+            trace.transcript_ready_at,
+            audio_started_at,
+        ),
+        "audio_started_after_queue_ms": _elapsed_ms(
+            queued_at,
+            audio_started_at,
+        ),
+        "first_response_priority": trace.first_response_priority,
+        "first_response_preview": trace.first_response_preview,
+    }
+
+
+def _log_ttfs_event(trace: Optional[_CharacterLoopTrace], event: str) -> None:
+    if trace is None:
+        return
+    if not bool(getattr(config, "TTFS_TELEMETRY_ENABLED", True)):
+        return
+    payload = {
+        "turn_id": trace.turn_id,
+        "utterance": trace.utterance,
+        "event": event,
+        **_ttfs_timing_payload(trace),
+    }
+    _log.info("[ttfs] %s", json.dumps(payload, sort_keys=True))
+
+
+def _mark_first_response_queued(
+    trace: Optional[_CharacterLoopTrace],
+    *,
+    text: str,
+    priority: int,
+    queued_at: Optional[float] = None,
+) -> bool:
+    if trace is None:
+        return False
+    with _ttfs_trace_lock:
+        if trace.first_response_queued_at is not None:
+            return False
+        trace.first_response_queued_at = queued_at if queued_at is not None else time.monotonic()
+        trace.first_response_priority = int(priority)
+        trace.first_response_preview = _preview_trace_text(text)
+    _log_ttfs_event(trace, "first_response_queued")
+    return True
+
+
+def _mark_first_response_audio_started(
+    trace: Optional[_CharacterLoopTrace],
+    *,
+    started_at: Optional[float] = None,
+) -> bool:
+    if trace is None:
+        return False
+    with _ttfs_trace_lock:
+        if trace.first_response_audio_started_at is not None:
+            return False
+        trace.first_response_audio_started_at = (
+            started_at if started_at is not None else time.monotonic()
+        )
+    _log_ttfs_event(trace, "first_response_audio_started")
+    return True
 
 
 def _end_user_turn() -> None:
@@ -996,6 +1103,7 @@ def _log_character_loop_trace(
             "assistant_asked_question": trace.assistant_asked_question,
             "suppress_memory_learning": trace.suppress_memory_learning,
         },
+        "timing": _ttfs_timing_payload(trace),
     }
     trace.emitted = True
     _log.info("[character_loop] %s", json.dumps(payload, sort_keys=True))
@@ -1090,10 +1198,17 @@ def _speak_blocking(
     if asked_question:
         post_beat_ms = 0
 
+    trace = _current_character_loop_trace.get()
+    _mark_first_response_queued(trace, text=text, priority=priority)
+
+    def _on_playback_start() -> None:
+        _mark_first_response_audio_started(trace)
+
     done = speech_queue.enqueue(
         text, emotion, priority=priority,
         pre_beat_ms=pre_beat_ms, post_beat_ms=post_beat_ms,
         voice_settings=voice_settings,
+        on_start=_on_playback_start if trace is not None else None,
     )
 
     while not done.wait(timeout=0.05):
@@ -1528,6 +1643,30 @@ def _prefill_wake_ack_cache() -> None:
         _log.debug("[wake_word] wake ack cache prefill unavailable: %s", exc)
 
 
+def _prefill_slow_path_ack_cache() -> None:
+    """Warm slow-path acknowledgment TTS so live turns never fetch it."""
+    if not bool(getattr(config, "SLOW_PATH_ACK_ENABLED", True)):
+        return
+    if not bool(getattr(config, "SLOW_PATH_ACK_REQUIRE_CACHE", True)):
+        return
+    pool = _all_slow_path_ack_lines()
+    if not pool:
+        return
+    try:
+        from audio import tts
+        for line in pool:
+            try:
+                tts.ensure_cached(line)
+            except Exception as exc:
+                _log.debug(
+                    "[slow_path_ack] cache prefill failed for %r: %s",
+                    line,
+                    exc,
+                )
+    except Exception as exc:
+        _log.debug("[slow_path_ack] cache prefill unavailable: %s", exc)
+
+
 def _interrupt_ack() -> None:
     _speak_blocking(random.choice(config.INTERRUPT_ACKNOWLEDGMENTS), priority=2)
 
@@ -1553,6 +1692,116 @@ def _speak_filler() -> None:
     speech_queue.enqueue(chosen, "neutral", priority=1, tag="latency_filler")
 
 
+def _configured_slow_path_ack_lines(kind: str) -> list[str]:
+    raw = getattr(config, "SLOW_PATH_ACK_LINES", {}) or {}
+    lines: list[str] = []
+    if isinstance(raw, dict):
+        value = raw.get(kind) or raw.get("default") or []
+        if isinstance(value, str):
+            lines = [value]
+        else:
+            lines = [str(line) for line in value if str(line).strip()]
+    elif isinstance(raw, str):
+        lines = [raw]
+    else:
+        lines = [str(line) for line in raw if str(line).strip()]
+    return [line.strip() for line in lines if line.strip()]
+
+
+def _all_slow_path_ack_lines() -> list[str]:
+    raw = getattr(config, "SLOW_PATH_ACK_LINES", {}) or {}
+    lines: list[str] = []
+    if isinstance(raw, dict):
+        for value in raw.values():
+            if isinstance(value, str):
+                lines.append(value)
+            else:
+                lines.extend(str(line) for line in value if str(line).strip())
+    elif isinstance(raw, str):
+        lines.append(raw)
+    else:
+        lines.extend(str(line) for line in raw if str(line).strip())
+    seen: set[str] = set()
+    result: list[str] = []
+    for line in lines:
+        cleaned = str(line).strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            result.append(cleaned)
+    return result
+
+
+def _slow_path_ack_expected_slow(kind: str) -> bool:
+    try:
+        minimum = float(getattr(config, "SLOW_PATH_ACK_MIN_EXPECTED_SECS", 1.5))
+    except (TypeError, ValueError):
+        minimum = 1.5
+    raw = getattr(config, "SLOW_PATH_ACK_EXPECTED_SECS", {}) or {}
+    expected = None
+    if isinstance(raw, dict):
+        expected = raw.get(kind, raw.get("default"))
+    else:
+        expected = raw
+    try:
+        return float(expected) >= minimum
+    except (TypeError, ValueError):
+        return True
+
+
+def _try_slow_path_ack(kind: str) -> bool:
+    """Queue a cached, non-blocking acknowledgment for a known slow path."""
+    global _last_slow_path_ack
+    if not bool(getattr(config, "SLOW_PATH_ACK_ENABLED", True)):
+        return False
+    if not _slow_path_ack_expected_slow(kind):
+        return False
+    trace = _current_character_loop_trace.get()
+    if trace is not None and trace.first_response_queued_at is not None:
+        return False
+    if speech_queue.is_speaking() or output_gate.is_busy() or _interrupted.is_set():
+        return False
+
+    pool = _configured_slow_path_ack_lines(kind)
+    if not pool:
+        return False
+    candidates = [line for line in pool if line != _last_slow_path_ack] or pool
+    chosen = random.choice(candidates)
+
+    if bool(getattr(config, "SLOW_PATH_ACK_REQUIRE_CACHE", True)):
+        try:
+            from audio import tts
+            if not tts.is_cached(chosen):
+                _log.debug(
+                    "[slow_path_ack] skipped kind=%s because TTS is not cached: %r",
+                    kind,
+                    chosen,
+                )
+                return False
+        except Exception as exc:
+            _log.debug("[slow_path_ack] cache check failed kind=%s: %s", kind, exc)
+            return False
+
+    queued = _mark_first_response_queued(trace, text=chosen, priority=1)
+
+    def _on_playback_start() -> None:
+        _mark_first_response_audio_started(trace)
+
+    try:
+        speech_queue.enqueue(
+            chosen,
+            "neutral",
+            priority=1,
+            tag="slow_path_ack",
+            on_start=_on_playback_start if trace is not None else None,
+        )
+        _last_slow_path_ack = chosen
+        _log.info("[slow_path_ack] queued kind=%s text=%r", kind, chosen)
+        return True
+    except Exception as exc:
+        _log.debug("[slow_path_ack] enqueue failed kind=%s: %s", kind, exc)
+        return queued
+
+
 def _start_latency_filler_timer() -> threading.Event:
     """Start a delayed filler timer and return an event that cancels it.
 
@@ -1571,8 +1820,12 @@ def _start_latency_filler_timer() -> threading.Event:
         stop.set()
         return stop
 
+    trace = _current_character_loop_trace.get()
+
     def _timer() -> None:
         if stop.wait(delay):
+            return
+        if trace is not None and trace.first_response_queued_at is not None:
             return
         if (
             state_module.get_state() == State.ACTIVE
@@ -3981,6 +4234,33 @@ def _handle_intro_followup_answer(text: str) -> Optional[str]:
     return "Noted. Another organic relationship filed under suspicious but charming."
 
 
+def _resolve_existing_visible_introduced_person(
+    name: Optional[str],
+    introducer_id: Optional[int],
+) -> Optional[tuple[int, str]]:
+    """Return a known visible/recent person matching an introduced name."""
+    candidate_name = _normalize_name(name or "")
+    if not candidate_name:
+        return None
+    try:
+        existing = people_memory.find_person_by_name(candidate_name)
+    except Exception as exc:
+        _log.debug("introduction existing-person lookup failed: %s", exc)
+        return None
+    if not existing:
+        return None
+    try:
+        existing_id = int(existing["id"])
+    except Exception:
+        return None
+    if introducer_id is not None and existing_id == int(introducer_id):
+        return None
+    if not _known_person_visible_recently(existing_id):
+        return None
+    existing_name = _normalize_name(str(existing.get("name") or "")) or candidate_name
+    return existing_id, existing_name
+
+
 def _handle_introduction_parse(
     parsed: introductions.IntroductionParse,
     *,
@@ -4020,8 +4300,14 @@ def _handle_introduction_parse(
         rel_hint = f" your {parsed.relationship}" if parsed.relationship else ""
         try:
             if parsed.relationship:
+                relationship_label = str(parsed.relationship).replace("_", " ")
+                intro_clause = (
+                    f"this visible newcomer is {introducer_name}'s {relationship_label}"
+                    if visible_newcomer
+                    else f"they want you to meet their {relationship_label}"
+                )
                 return llm.get_response(
-                    f"{introducer_name} said this visible newcomer is{rel_hint}, "
+                    f"{introducer_name} said {intro_clause}, "
                     f"but did not give the person's name yet. In ONE short "
                     f"in-character Rex line, ask {introducer_name} ONLY for the "
                     f"newcomer's name. Do NOT ask how they are related. Do NOT "
@@ -4038,6 +4324,38 @@ def _handle_introduction_parse(
             if parsed.relationship:
                 return f"Got the {parsed.relationship} part. What name am I filing for them?"
             return "Fine, I see the mystery organic. What name and relationship am I filing under?"
+
+    existing_intro = _resolve_existing_visible_introduced_person(
+        parsed.name,
+        introducer_id,
+    )
+    if existing_intro is not None:
+        existing_id, existing_name = existing_intro
+        _pending_introduction = None
+        _store_introduction_memories(
+            introducer_id,
+            introducer_name,
+            existing_id,
+            existing_name,
+            parsed.relationship,
+        )
+        _log.info(
+            "[introduction] matched existing visible/recent person %s "
+            "(person_id=%s) as %s of %s",
+            existing_name,
+            existing_id,
+            parsed.relationship or "acquaintance",
+            introducer_name,
+        )
+        return _intro_ack_and_followup(
+            introducer_id,
+            introducer_name,
+            existing_id,
+            existing_name,
+            parsed.relationship,
+            subject_kind=parsed.subject_kind,
+            visible_newcomer=True,
+        )
 
     if (
         parsed.subject_kind == "person"
@@ -8509,6 +8827,11 @@ def _handle_classified_intent(
         "or personal facts unless the user asked for them in this turn."
     )
 
+    if intent == "query_what_do_you_see":
+        _try_slow_path_ack("vision")
+    elif intent == "query_memory":
+        _try_slow_path_ack("memory")
+
     if intent == "query_time":
         resp = _format_current_time_response()
         _speak_blocking(resp)
@@ -8783,6 +9106,7 @@ def _handle_speech_segment(
     handled_active_game_turn = False
     used_agenda_llm = False
     used_classified_intent = False
+    trace_context_token: Optional[contextvars.Token] = None
 
     # Randomised pre-response pause — prevents Rex from feeling instant/robotic
     delay_started = time.monotonic()
@@ -8799,6 +9123,7 @@ def _handle_speech_segment(
         # Concurrent transcription + speaker identification
         process_started = time.monotonic()
         text, raw_best_id, raw_best_name, speaker_score = _process_audio(audio_array)
+        transcript_ready_at = time.monotonic()
         _latency_log(turn_start, "transcribe_and_speaker_id", process_started)
 
         if not text:
@@ -8812,6 +9137,8 @@ def _handle_speech_segment(
             raw_best_name=raw_best_name,
             speaker_score=speaker_score,
         )
+        character_trace.transcript_ready_at = transcript_ready_at
+        trace_context_token = _current_character_loop_trace.set(character_trace)
 
         heard_log_text = text
         if not _game_suppresses_conversation():
@@ -9519,6 +9846,7 @@ def _handle_speech_segment(
                 parsed_intro.subject_kind == "pet"
                 or has_unknown_for_intro
                 or bool(parsed_intro.name)
+                or bool(parsed_intro.relationship)
             ):
                 intro_response = _handle_introduction_parse(
                     parsed_intro,
@@ -9646,6 +9974,7 @@ def _handle_speech_segment(
                 parsed_intro.subject_kind == "pet"
                 or has_unknown_for_intro
                 or bool(parsed_intro.name)
+                or bool(parsed_intro.relationship)
             ):
                 intro_response = _handle_introduction_parse(
                     parsed_intro,
@@ -11420,6 +11749,7 @@ def _handle_speech_segment(
                                 )
                         except Exception as exc:
                             _log.debug("emotional event ack error: %s", exc)
+                    _try_slow_path_ack("general")
                     response_text = _stream_llm_response(
                         text,
                         person_id,
@@ -11565,18 +11895,22 @@ def _handle_speech_segment(
     finally:
         if sequence_started:
             echo_cancel.end_sequence()
-        _log_character_loop_trace(
-            character_trace,
-            router_audit=router_audit,
-            final_executed_path=final_executed_path,
-            completed=completed,
-            handler_error=handler_error,
-            spoken_text=response_text,
-            assistant_asked_question=assistant_asked_question,
-            suppress_memory_learning=suppress_memory_learning,
-            repair_move=repair_move,
-            intent=intent,
-        )
+        try:
+            _log_character_loop_trace(
+                character_trace,
+                router_audit=router_audit,
+                final_executed_path=final_executed_path,
+                completed=completed,
+                handler_error=handler_error,
+                spoken_text=response_text,
+                assistant_asked_question=assistant_asked_question,
+                suppress_memory_learning=suppress_memory_learning,
+                repair_move=repair_move,
+                intent=intent,
+            )
+        finally:
+            if trace_context_token is not None:
+                _current_character_loop_trace.reset(trace_context_token)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -11895,6 +12229,11 @@ def start() -> None:
         target=_prefill_wake_ack_cache,
         daemon=True,
         name="wake-ack-cache-prefill",
+    ).start()
+    threading.Thread(
+        target=_prefill_slow_path_ack_cache,
+        daemon=True,
+        name="slow-path-ack-cache-prefill",
     ).start()
     if not wake_word.is_ready():
         _log.warning(
