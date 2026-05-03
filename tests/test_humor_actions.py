@@ -155,6 +155,56 @@ class HumorActionExecutionTests(unittest.TestCase):
         self.assertIn("station-break", get_response.call_args.args[0])
         self.assertEqual(speak.call_args.kwargs["emotion"], "happy")
 
+    def test_router_body_beat_action_executes_without_llm_generation(self):
+        from intelligence import action_router, interaction
+
+        decision = action_router.ActionDecision(
+            action="performance.body_beat",
+            confidence=0.95,
+            args={"body_beat": "suspicious_glance"},
+            reason="explicit body beat performance request",
+        )
+
+        with (
+            mock.patch.object(interaction.llm, "get_response") as get_response,
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+            mock.patch("sequences.animations.play_body_beat") as beat,
+        ):
+            response = interaction._handle_router_takeover_action(
+                decision,
+                "look suspicious",
+                person_id=1,
+                person_name="Bret",
+                raw_best_id=1,
+                raw_best_name="Bret",
+                raw_best_score=0.99,
+            )
+
+        self.assertIn("Suspicious glance", response)
+        get_response.assert_not_called()
+        beat.assert_called_once_with("suspicious_glance")
+        self.assertEqual(speak.call_args.args[0], response)
+        self.assertEqual(speak.call_args.kwargs["emotion"], "curious")
+
+    def test_fast_local_takeover_handles_explicit_body_beat(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction.llm, "get_response") as get_response,
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+            mock.patch("sequences.animations.play_body_beat") as beat,
+        ):
+            response = interaction._handle_fast_local_takeover(
+                "do a victory dance",
+                person_id=None,
+                person_name=None,
+            )
+
+        self.assertIn("Tiny victory dance", response)
+        get_response.assert_not_called()
+        beat.assert_called_once_with("tiny_victory_dance")
+        self.assertEqual(speak.call_args.kwargs["emotion"], "happy")
+
 
 if __name__ == "__main__":
     unittest.main()

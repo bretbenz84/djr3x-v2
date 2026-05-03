@@ -24,7 +24,7 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertTrue(action_router.EXECUTABLE_ACTIONS.issubset(spec_keys))
         self.assertTrue(action_router.PERFORMANCE_ACTIONS.issubset(spec_keys))
 
-    def test_humor_and_dj_bit_are_executable_before_body_beat(self):
+    def test_humor_and_performance_actions_are_executable(self):
         from intelligence import action_router
 
         planned = {
@@ -32,14 +32,12 @@ class ActionRouterCatalogTests(unittest.TestCase):
             "humor.roast",
             "humor.free_bit",
             "performance.dj_bit",
+            "performance.body_beat",
         }
-        later_performance = {"performance.body_beat"}
 
         self.assertTrue(planned.issubset(action_router.ACTION_CATALOG))
         self.assertTrue(planned.issubset(action_router.PERFORMANCE_ACTIONS))
         self.assertTrue(planned.issubset(action_router.EXECUTABLE_ACTIONS))
-        self.assertTrue(later_performance.issubset(action_router.PERFORMANCE_ACTIONS))
-        self.assertTrue(later_performance.isdisjoint(action_router.EXECUTABLE_ACTIONS))
 
     def test_router_accepts_new_catalog_actions_from_llm(self):
         from intelligence import action_router
@@ -65,6 +63,8 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertIn("Use humor.roast only for explicit roast/tease requests", prompt)
         self.assertIn("Use performance.dj_bit", prompt)
         self.assertIn("Use performance.body_beat", prompt)
+        self.assertIn("args.body_beat", prompt)
+        self.assertIn("tiny_victory_dance", prompt)
 
     def test_explicit_humor_classifier_routes_obvious_requests(self):
         from intelligence import action_router
@@ -102,6 +102,45 @@ class ActionRouterCatalogTests(unittest.TestCase):
 
         self.assertIsNone(action_router.classify_explicit_performance("play some jazz"))
         self.assertIsNone(action_router.classify_explicit_performance("put on music"))
+        self.assertIsNone(action_router.classify_explicit_performance("look at the camera"))
+
+    def test_explicit_performance_classifier_routes_body_beat_requests(self):
+        from intelligence import action_router
+
+        examples = {
+            "do a victory dance": "tiny_victory_dance",
+            "look suspicious": "suspicious_glance",
+            "do the offended recoil": "offended_recoil",
+            "do a thinking tilt": "thinking_tilt",
+            "do a dramatic visor peek": "dramatic_visor_peek",
+            "strike a proud DJ pose": "proud_dj_pose",
+        }
+
+        for text, beat in examples.items():
+            with self.subTest(text=text):
+                decision = action_router.classify_explicit_performance(text)
+                self.assertEqual(decision.action, "performance.body_beat")
+                self.assertEqual(decision.args["body_beat"], beat)
+
+    def test_body_beat_llm_decision_requires_known_beat(self):
+        from intelligence import action_router
+
+        valid = action_router._coerce_decision({
+            "action": "performance.body_beat",
+            "confidence": 0.99,
+            "args": {"gesture": "victory dance"},
+            "reason": "explicit physical request",
+        })
+        invalid = action_router._coerce_decision({
+            "action": "performance.body_beat",
+            "confidence": 0.99,
+            "args": {"gesture": "spin the dangerous servo"},
+            "reason": "unknown physical request",
+        })
+
+        self.assertEqual(valid.args["body_beat"], "tiny_victory_dance")
+        self.assertEqual(valid.confidence, 0.99)
+        self.assertLess(invalid.confidence, 0.85)
 
     def test_decide_short_circuits_explicit_humor_without_llm_router_call(self):
         from intelligence import action_router
@@ -119,6 +158,16 @@ class ActionRouterCatalogTests(unittest.TestCase):
             decision = action_router.decide("do your DJ thing", {})
 
         self.assertEqual(decision.action, "performance.dj_bit")
+        create.assert_not_called()
+
+    def test_decide_short_circuits_explicit_body_beat_without_llm_router_call(self):
+        from intelligence import action_router
+
+        with mock.patch.object(action_router._client.chat.completions, "create") as create:
+            decision = action_router.decide("do a victory dance", {})
+
+        self.assertEqual(decision.action, "performance.body_beat")
+        self.assertEqual(decision.args["body_beat"], "tiny_victory_dance")
         create.assert_not_called()
 
 

@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Optional
 
+from intelligence import performance_plan
 from intelligence.performance_plan import PerformancePlan
 
 
@@ -91,3 +92,33 @@ def execute_plan(
         generation_failed=generation_failed,
         body_beat_failed=body_beat_failed,
     )
+
+
+def execute_body_beat_event(
+    event: str,
+    *,
+    play_body_beat: Optional[PlayBodyBeat],
+    action: str = "",
+    emotion: str = "",
+    outcome: str = "",
+    repair_kind: str = "",
+    body_beat: str = "",
+) -> Optional[str]:
+    """Play the deterministic body beat for a semantic event, if one exists."""
+    if play_body_beat is None:
+        return None
+    beat = performance_plan.body_beat_for_event(
+        event,
+        action=action,
+        emotion=emotion,
+        outcome=outcome,
+        repair_kind=repair_kind,
+        body_beat=body_beat,
+    )
+    if not beat:
+        return None
+    try:
+        play_body_beat(beat)
+    except Exception:
+        return None
+    return beat

@@ -19,6 +19,7 @@ from typing import Any
 
 import apikeys
 import config
+from intelligence import performance_plan
 from openai import OpenAI
 
 
@@ -120,6 +121,7 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "performance.body_beat",
         "performance",
         "User asks Rex to perform a physical gesture, pose, dance, look, tilt, peek, or other embodied beat.",
+        executable=True,
     ),
     ActionSpec(
         "game.start",
@@ -259,7 +261,10 @@ Rules:
 - Use performance.dj_bit for DJ patter, hype lines, cantina banter, or station
   breaks. Use music.play only when the user asks to actually play audio.
 - Use performance.body_beat for explicit physical pose/gesture/dance/look/tilt
-  requests. Do not use it for ordinary "look at this" vision requests.
+  requests. Put one of these exact names in args.body_beat:
+  suspicious_glance, proud_dj_pose, offended_recoil, thinking_tilt,
+  dramatic_visor_peek, tiny_victory_dance. Do not use it for ordinary
+  "look at this" vision requests.
 - If a game is active and the utterance asks to stop, quit, end, or stop playing, use game.stop.
 - If music is active and the utterance asks to stop, pause, or stop playing music, use music.stop.
 - If the utterance asks for the clock time, use time.query.
@@ -347,6 +352,61 @@ _DJ_BIT_RE = re.compile(
     r"\bmake\s+(?:an|a)\s+announcement\b|"
     r"\bgive\s+(?:me|us)\s+(?:some\s+)?cantina\s+patter\b",
     re.IGNORECASE,
+)
+_BODY_BEAT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"\b(?:do|perform|give|show|hit|drop)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:tiny\s+)?victory\s+dance\b|"
+            r"\b(?:celebrate|do\s+a\s+little\s+dance)\b",
+            re.IGNORECASE,
+        ),
+        "tiny_victory_dance",
+    ),
+    (
+        re.compile(
+            r"\b(?:look|act)\s+suspicious\b|"
+            r"\b(?:do|perform|give|shoot|show)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:suspicious\s+glance|side\s+eye)\b",
+            re.IGNORECASE,
+        ),
+        "suspicious_glance",
+    ),
+    (
+        re.compile(
+            r"\b(?:do|perform|give|show)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:offended\s+recoil|insult\s+recoil)\b|"
+            r"\b(?:look|act)\s+offended\b",
+            re.IGNORECASE,
+        ),
+        "offended_recoil",
+    ),
+    (
+        re.compile(
+            r"\b(?:do|perform|give|show)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:thinking\s+tilt|think\s+tilt)\b|"
+            r"\b(?:look|act)\s+(?:thoughtful|confused|like\s+you'?re\s+thinking)\b",
+            re.IGNORECASE,
+        ),
+        "thinking_tilt",
+    ),
+    (
+        re.compile(
+            r"\b(?:do|perform|give|show)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:dramatic\s+visor\s+peek|visor\s+peek)\b|"
+            r"\bpeek\s+(?:the\s+)?visor\b",
+            re.IGNORECASE,
+        ),
+        "dramatic_visor_peek",
+    ),
+    (
+        re.compile(
+            r"\b(?:do|perform|give|show|strike)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:proud\s+dj\s+pose|dj\s+pose|proud\s+pose)\b",
+            re.IGNORECASE,
+        ),
+        "proud_dj_pose",
+    ),
 )
 _ROAST_FOOD_TARGETS = {
     "beef",
@@ -465,6 +525,17 @@ def classify_explicit_performance(text: str) -> ActionDecision | None:
             reason="explicit DJ performance request",
         )
 
+    for pattern, beat in _BODY_BEAT_PATTERNS:
+        if pattern.search(cleaned):
+            canonical = performance_plan.canonical_body_beat(beat)
+            if canonical:
+                return ActionDecision(
+                    action="performance.body_beat",
+                    confidence=0.95,
+                    args={"body_beat": canonical},
+                    reason="explicit body beat performance request",
+                )
+
     return None
 
 
@@ -491,6 +562,20 @@ def _coerce_decision(payload: Any) -> ActionDecision:
         requires_confirmation = True
     if action == "memory.forget_specific" and not str(args.get("target") or "").strip():
         confidence = min(confidence, 0.45)
+    if action == "performance.body_beat":
+        raw_beat = str(
+            args.get("body_beat")
+            or args.get("beat")
+            or args.get("gesture")
+            or args.get("pose")
+            or ""
+        ).strip()
+        canonical = performance_plan.canonical_body_beat(raw_beat)
+        if canonical:
+            args = dict(args)
+            args["body_beat"] = canonical
+        else:
+            confidence = min(confidence, 0.45)
 
     reason = str(payload.get("reason") or "").strip()
     if len(reason) > 240:

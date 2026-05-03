@@ -1069,12 +1069,18 @@ ACTION_GOVERNOR_MIN_SCORE = 20
 # on the legacy path until each category has earned trust.
 ACTION_ROUTER_SHADOW_ENABLED = False
 ACTION_ROUTER_LOG_DECISIONS = True
+ACTION_ROUTER_AUDIT_LOG_ENABLED = True
 ACTION_ROUTER_EXECUTE_ENABLED = True
 ACTION_ROUTER_EXECUTE_ACTIONS = {
     "humor.tell_joke",
     "humor.roast",
     "humor.free_bit",
     "performance.dj_bit",
+    "performance.body_beat",
+    "music.options",
+    "music.stop",
+    "music.skip",
+    "vision.describe_scene",
     "time.query",
     "date.query",
     "weather.query",

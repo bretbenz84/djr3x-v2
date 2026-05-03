@@ -22,7 +22,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -81,6 +81,22 @@ class _PostTtsHandoffPolicy:
     asked_question: bool
     listen_delay_secs: float
     flush_buffer: bool
+
+
+@dataclass
+class _RouterDecisionAudit:
+    utterance: str
+    router_action: Optional[str] = None
+    router_confidence: Optional[float] = None
+    router_requires_confirmation: Optional[bool] = None
+    allowlist_result: str = "not_run"
+    legacy_command: Optional[str] = None
+    legacy_match_type: Optional[str] = None
+    final_executed_path: Optional[str] = None
+    completed: Optional[bool] = None
+    handler_error: Optional[str] = None
+    spoken_text_present: Optional[bool] = None
+    emitted: bool = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -493,6 +509,17 @@ def _router_execution_block_reason(
         return "requires_confirmation"
     if decision.action not in action_router.EXECUTABLE_ACTIONS:
         return "not_executable"
+    if decision.action == "performance.body_beat":
+        args = decision.args or {}
+        beat = (
+            args.get("body_beat")
+            or args.get("beat")
+            or args.get("gesture")
+            or args.get("pose")
+            or ""
+        )
+        if performance_plan.canonical_body_beat(str(beat)) is None:
+            return "unknown_body_beat"
     allowlist = _router_execute_allowlist()
     if allowlist is not None and decision.action not in allowlist:
         return "not_in_execute_allowlist"
@@ -500,6 +527,112 @@ def _router_execution_block_reason(
     if float(decision.confidence or 0.0) < threshold:
         return "below_confidence_threshold"
     return None
+
+
+def _new_router_audit(text: str, context: Optional[dict[str, Any]]) -> _RouterDecisionAudit:
+    legacy = ((context or {}).get("legacy") or {}).get("command_match") or {}
+    return _RouterDecisionAudit(
+        utterance=str(text or ""),
+        legacy_command=legacy.get("command_key"),
+        legacy_match_type=legacy.get("match_type"),
+    )
+
+
+def _router_audit_note_decision(
+    audit: Optional[_RouterDecisionAudit],
+    decision: Optional[action_router.ActionDecision],
+) -> None:
+    if audit is None:
+        return
+    audit.router_action = decision.action if decision is not None else None
+    audit.router_confidence = (
+        round(float(decision.confidence or 0.0), 3)
+        if decision is not None
+        else None
+    )
+    audit.router_requires_confirmation = (
+        bool(decision.requires_confirmation)
+        if decision is not None
+        else None
+    )
+    block_reason = _router_execution_block_reason(decision)
+    audit.allowlist_result = "allowed" if block_reason is None else block_reason
+
+
+def _router_audit_note_execute_disabled(audit: Optional[_RouterDecisionAudit]) -> None:
+    if audit is not None and audit.allowlist_result == "not_run":
+        audit.allowlist_result = "execute_disabled_shadow"
+
+
+def _router_audit_note_legacy_command(
+    audit: Optional[_RouterDecisionAudit],
+    match: Optional[command_parser.CommandMatch],
+) -> None:
+    if audit is None or match is None:
+        return
+    audit.legacy_command = match.command_key
+    audit.legacy_match_type = match.match_type
+
+
+def _router_audit_note_result(
+    audit: Optional[_RouterDecisionAudit],
+    *,
+    completed: Optional[bool] = None,
+    handler_error: Optional[str] = None,
+    spoken_text: Optional[str] = None,
+    spoken_text_present: Optional[bool] = None,
+) -> None:
+    if audit is None:
+        return
+    if completed is not None and audit.completed is None:
+        audit.completed = bool(completed)
+    if handler_error and audit.handler_error is None:
+        text = " ".join(str(handler_error).strip().split())
+        audit.handler_error = text[:240] if text else None
+    if spoken_text_present is not None and audit.spoken_text_present is None:
+        audit.spoken_text_present = bool(spoken_text_present)
+    elif spoken_text is not None and audit.spoken_text_present is None:
+        audit.spoken_text_present = bool(str(spoken_text).strip())
+    if audit.completed is None and audit.spoken_text_present is not None:
+        audit.completed = audit.spoken_text_present
+
+
+def _log_router_audit(
+    audit: Optional[_RouterDecisionAudit],
+    final_executed_path: str,
+    *,
+    completed: Optional[bool] = None,
+    handler_error: Optional[str] = None,
+    spoken_text: Optional[str] = None,
+    spoken_text_present: Optional[bool] = None,
+) -> None:
+    if audit is None or audit.emitted:
+        return
+    if not bool(getattr(config, "ACTION_ROUTER_AUDIT_LOG_ENABLED", True)):
+        return
+    _router_audit_note_result(
+        audit,
+        completed=completed,
+        handler_error=handler_error,
+        spoken_text=spoken_text,
+        spoken_text_present=spoken_text_present,
+    )
+    audit.final_executed_path = final_executed_path
+    audit.emitted = True
+    payload = {
+        "utterance": audit.utterance,
+        "router_action": audit.router_action,
+        "router_confidence": audit.router_confidence,
+        "router_requires_confirmation": audit.router_requires_confirmation,
+        "allowlist_result": audit.allowlist_result,
+        "legacy_command": audit.legacy_command,
+        "legacy_match_type": audit.legacy_match_type,
+        "final_executed_path": audit.final_executed_path,
+        "completed": audit.completed,
+        "handler_error": audit.handler_error,
+        "spoken_text_present": audit.spoken_text_present,
+    }
+    _log.info("[action_router_audit] %s", json.dumps(payload, sort_keys=True))
 
 
 def _chunk_for_vad(audio_chunk: np.ndarray) -> np.ndarray:
@@ -6104,11 +6237,23 @@ def _play_performance_body_beat(beat: str) -> None:
     animations.play_body_beat(beat)
 
 
+def _play_event_body_beat(event: str, **context) -> Optional[str]:
+    beat = performance_output.execute_body_beat_event(
+        event,
+        play_body_beat=_play_performance_body_beat,
+        **context,
+    )
+    if not beat:
+        _log.debug("[performance] no body beat played for event=%s context=%s", event, context)
+    return beat
+
+
 _PLAN_ROUTER_ACTIONS = {
     "humor.tell_joke",
     "humor.roast",
     "humor.free_bit",
     "performance.dj_bit",
+    "performance.body_beat",
 }
 
 
@@ -6116,8 +6261,13 @@ def _handle_router_performance_action(
     decision: action_router.ActionDecision,
     text: str,
     person_id: Optional[int],
+    router_audit: Optional[_RouterDecisionAudit] = None,
 ) -> Optional[str]:
     if decision.action not in _PLAN_ROUTER_ACTIONS:
+        _router_audit_note_result(
+            router_audit,
+            handler_error="unsupported_performance_action",
+        )
         return None
     plan = performance_plan.plan_for_action(
         decision.action,
@@ -6125,6 +6275,10 @@ def _handle_router_performance_action(
         args=decision.args,
     )
     if plan is None:
+        _router_audit_note_result(
+            router_audit,
+            handler_error="missing_performance_plan",
+        )
         return None
     output = performance_output.execute_plan(
         plan,
@@ -6137,6 +6291,17 @@ def _handle_router_performance_action(
         _log.debug("performance action generation failed; used fallback text")
     if output.body_beat_failed:
         _log.debug("performance action body beat failed; speech still delivered")
+    result_errors = []
+    if output.generation_failed:
+        result_errors.append("generation_failed")
+    if output.body_beat_failed:
+        result_errors.append("body_beat_failed")
+    _router_audit_note_result(
+        router_audit,
+        completed=output.completed,
+        handler_error=",".join(result_errors) if result_errors else None,
+        spoken_text=output.text,
+    )
     _log.info(
         "[action_router] executed %s person_id=%s delivery=%s memory_policy=%s text=%r",
         output.action,
@@ -6157,6 +6322,7 @@ def _handle_router_takeover_action(
     raw_best_id: Optional[int],
     raw_best_name: Optional[str],
     raw_best_score: float,
+    router_audit: Optional[_RouterDecisionAudit] = None,
 ) -> Optional[str]:
     """Execute router-owned actions that map to stable local handlers."""
     if not _router_decision_executable(decision):
@@ -6167,7 +6333,12 @@ def _handle_router_takeover_action(
         return None
 
     if action in _PLAN_ROUTER_ACTIONS:
-        return _handle_router_performance_action(decision, text, person_id)
+        return _handle_router_performance_action(
+            decision,
+            text,
+            person_id,
+            router_audit=router_audit,
+        )
 
     if action == "memory.forget_specific":
         target = _router_arg_text(decision, "target", "topic", "memory")
@@ -6264,6 +6435,10 @@ def _handle_router_takeover_action(
             return resp
         except Exception as exc:
             _log.debug("router game.answer failed: %s", exc)
+            _router_audit_note_result(
+                router_audit,
+                handler_error=f"game_answer_failed:{type(exc).__name__}",
+            )
             return None
 
     if action == "music.play":
@@ -6397,14 +6572,29 @@ def _handle_fast_local_takeover(
     *,
     person_id: Optional[int],
     person_name: Optional[str],
+    router_audit: Optional[_RouterDecisionAudit] = None,
 ) -> Optional[str]:
     """Handle obvious local control commands before the blocking router call."""
     humor_decision = action_router.classify_explicit_humor(text)
+    if humor_decision is not None:
+        _router_audit_note_decision(router_audit, humor_decision)
     if _router_decision_executable(humor_decision):
-        return _handle_router_performance_action(humor_decision, text, person_id)
+        return _handle_router_performance_action(
+            humor_decision,
+            text,
+            person_id,
+            router_audit=router_audit,
+        )
     performance_decision = action_router.classify_explicit_performance(text)
+    if performance_decision is not None:
+        _router_audit_note_decision(router_audit, performance_decision)
     if _router_decision_executable(performance_decision):
-        return _handle_router_performance_action(performance_decision, text, person_id)
+        return _handle_router_performance_action(
+            performance_decision,
+            text,
+            person_id,
+            router_audit=router_audit,
+        )
 
     try:
         match = command_parser.parse(text)
@@ -6413,6 +6603,7 @@ def _handle_fast_local_takeover(
         match = None
     if match is None:
         return None
+    _router_audit_note_legacy_command(router_audit, match)
 
     key = match.command_key
     if key == "forget_specific":
@@ -6774,6 +6965,7 @@ def _generate_repair_response(person_id: Optional[int], text: str, repair: dict)
         response = repair_moves.fallback_response(repair)
     if repair_moves.should_use_better_luck_line(repair):
         response = repair_moves.add_better_luck_line(response)
+    _play_event_body_beat("repair", repair_kind=str(repair.get("kind") or ""))
     _speak_blocking(
         response,
         emotion="neutral",
@@ -7907,6 +8099,8 @@ def _handle_speech_segment(
     event_cancellation_ack: Optional[str] = None
     repair_move: Optional[dict] = None
     router_decision: Optional[action_router.ActionDecision] = None
+    router_audit: Optional[_RouterDecisionAudit] = None
+    final_executed_path: Optional[str] = None
     suppress_memory_learning = False
     handled_active_game_turn = False
 
@@ -9368,12 +9562,19 @@ def _handle_speech_segment(
                 off_camera_unknown=off_camera_unknown,
                 identity_prompt_active=identity_prompt_active,
             )
+            router_audit = _new_router_audit(text, router_context)
             fast_takeover_response = _handle_fast_local_takeover(
                 text,
                 person_id=person_id,
                 person_name=person_name,
+                router_audit=router_audit,
             )
             if fast_takeover_response:
+                _log_router_audit(
+                    router_audit,
+                    f"fast_local_takeover.{router_audit.router_action or 'unknown'}",
+                    spoken_text=fast_takeover_response,
+                )
                 _dismiss_pending_consent_prompts(person_id, text)
                 try:
                     consciousness.clear_response_wait()
@@ -9389,7 +9590,9 @@ def _handle_speech_segment(
                 router_decision = action_router.decide(text, router_context)
                 _latency_log(turn_start, "action_router", router_started)
                 action_router.log_decision(router_decision, router_context, mode="execute")
+                _router_audit_note_decision(router_audit, router_decision)
             else:
+                _router_audit_note_execute_disabled(router_audit)
                 action_router.start_shadow_decision(text, router_context)
             router_block_reason = _router_execution_block_reason(router_decision)
             if router_block_reason is None:
@@ -9437,11 +9640,17 @@ def _handle_speech_segment(
                 consciousness.clear_response_wait()
             except Exception:
                 pass
-            _speak_blocking(
+            completed = _speak_blocking(
                 boundary_response,
                 emotion="neutral",
                 pre_beat_ms=200,
                 post_beat_ms_override=300,
+            )
+            _log_router_audit(
+                router_audit,
+                "legacy.emotional_checkin_boundary",
+                completed=completed,
+                spoken_text=boundary_response,
             )
             conv_memory.add_to_transcript("Rex", boundary_response)
             conv_log.log_rex(boundary_response)
@@ -9456,11 +9665,17 @@ def _handle_speech_segment(
                 consciousness.clear_response_wait()
             except Exception:
                 pass
-            _speak_blocking(
+            completed = _speak_blocking(
                 preference_response,
                 emotion="neutral",
                 pre_beat_ms=100,
                 post_beat_ms_override=200,
+            )
+            _log_router_audit(
+                router_audit,
+                "legacy.conversation_boundary",
+                completed=completed,
+                spoken_text=preference_response,
             )
             conv_memory.add_to_transcript("Rex", preference_response)
             conv_log.log_rex(preference_response)
@@ -9476,8 +9691,14 @@ def _handle_speech_segment(
             raw_best_id=raw_best_id,
             raw_best_name=raw_best_name,
             raw_best_score=speaker_score,
+            router_audit=router_audit,
         )
         if router_takeover_response:
+            _log_router_audit(
+                router_audit,
+                f"router_takeover.{router_decision.action if router_decision else 'unknown'}",
+                spoken_text=router_takeover_response,
+            )
             _dismiss_pending_consent_prompts(person_id, text)
             try:
                 consciousness.clear_response_wait()
@@ -9488,6 +9709,14 @@ def _handle_speech_segment(
             _session_exchange_count += 1
             _register_rex_utterance(router_takeover_response)
             return
+        if (
+            _router_decision_executable(router_decision)
+            and router_decision.action not in {"conversation.reply", "emotional.boundary"}
+        ):
+            _router_audit_note_result(
+                router_audit,
+                handler_error="router_takeover_no_response",
+            )
 
         if (
             _router_decision_executable(router_decision)
@@ -9514,11 +9743,17 @@ def _handle_speech_segment(
                     consciousness.clear_response_wait()
                 except Exception:
                     pass
-                _speak_blocking(
+                completed = _speak_blocking(
                     boundary_response,
                     emotion="neutral",
                     pre_beat_ms=200,
                     post_beat_ms_override=300,
+                )
+                _log_router_audit(
+                    router_audit,
+                    "router_takeover.emotional.boundary",
+                    completed=completed,
+                    spoken_text=boundary_response,
                 )
                 conv_memory.add_to_transcript("Rex", boundary_response)
                 conv_log.log_rex(boundary_response)
@@ -9990,9 +10225,15 @@ def _handle_speech_segment(
                             pass
                     event_cancellation_ack = _event_cancellation_ack(labels, cancel_person_id)
             if event_cancellation_ack:
-                _speak_blocking(event_cancellation_ack, emotion="neutral")
+                completed = _speak_blocking(event_cancellation_ack, emotion="neutral")
+                _router_audit_note_result(
+                    router_audit,
+                    completed=completed,
+                    spoken_text=event_cancellation_ack,
+                )
                 response_text = event_cancellation_ack
                 used_agenda_llm = True
+                final_executed_path = "router.event_cancel_ack"
 
         if repair_move is None:
             repair_move = repair_moves.detect(text)
@@ -10011,6 +10252,7 @@ def _handle_speech_segment(
         elif repair_move:
             response_text = _generate_repair_response(person_id, text, repair_move)
             used_agenda_llm = True
+            final_executed_path = f"repair.{repair_move.get('kind') or 'unknown'}"
 
         # Layer-1 insult pre-check: keyword match → bump anger BEFORE the LLM
         # call so this turn's system prompt reflects the new escalation level.
@@ -10021,8 +10263,7 @@ def _handle_speech_segment(
             new_level = personality.increment_anger(person_id)
             pre_classified_insult = True
             try:
-                from sequences import animations
-                animations.play_body_beat("offended_recoil")
+                _play_event_body_beat("insult.detected")
             except Exception as exc:
                 _log.debug("[interaction] insult body beat skipped: %s", exc)
             if person_id is not None:
@@ -10057,20 +10298,27 @@ def _handle_speech_segment(
                         grief_voice = ov.get("voice_settings")
                 except Exception as exc:
                     _log.debug("grief flow delivery override error: %s", exc)
-                _speak_blocking(
+                completed = _speak_blocking(
                     grief_response,
                     emotion=grief_emotion,
                     pre_beat_ms=grief_pre_ms,
                     post_beat_ms_override=grief_post_ms,
                     voice_settings=grief_voice,
                 )
+                _router_audit_note_result(
+                    router_audit,
+                    completed=completed,
+                    spoken_text=grief_response,
+                )
                 response_text = grief_response
+                final_executed_path = "grief_flow.active_turn"
 
         # Command parser → local dispatch or LLM fallback. Skip local routing
         # for active grief flow turns, including the open-ended description
         # reply where _continue_grief_flow returns None and hands off to LLM.
         if response_text is None and not active_grief_for_turn:
             match = command_parser.parse(text)
+            _router_audit_note_legacy_command(router_audit, match)
             try:
                 from features import games as games_mod
                 if games_mod.is_active():
@@ -10079,12 +10327,14 @@ def _handle_speech_segment(
                     if match is None and normalized_game_text in {"quit", "end", "end game", "quit game"}:
                         match = command_parser.CommandMatch("stop_game", "active_game_stop", {})
                         command_key = "stop_game"
+                        _router_audit_note_legacy_command(router_audit, match)
                     elif (
                         command_key == "dj_stop"
                         and normalized_game_text in {"stop", "quit", "end", "stop playing"}
                     ):
                         match = command_parser.CommandMatch("stop_game", "active_game_stop", {})
                         command_key = "stop_game"
+                        _router_audit_note_legacy_command(router_audit, match)
                     elif command_key == "dj_skip" and normalized_game_text == "skip":
                         command_key = None
 
@@ -10095,6 +10345,11 @@ def _handle_speech_segment(
                     if command_key not in game_escape_commands:
                         response_text = games_mod.handle_input(text, person_id, audio_array)
                         completed = _speak_blocking(response_text)
+                        _router_audit_note_result(
+                            router_audit,
+                            completed=completed,
+                            spoken_text=response_text,
+                        )
                         if completed:
                             games_mod.on_response_spoken()
                             after_audio = games_mod.consume_pending_audio_after_response()
@@ -10103,11 +10358,18 @@ def _handle_speech_segment(
                         used_agenda_llm = True
                         handled_active_game_turn = True
                         suppress_memory_learning = True
+                        final_executed_path = "game.active_turn"
                         match = None
             except Exception as exc:
                 _log.debug("active game routing failed: %s", exc)
+                _router_audit_note_result(
+                    router_audit,
+                    handler_error=f"active_game_routing_failed:{type(exc).__name__}",
+                )
         if match is not None:
+            _router_audit_note_legacy_command(router_audit, match)
             response_text = _execute_command(match, person_id, person_name, text)
+            final_executed_path = f"legacy_command.{match.command_key}"
             if match.command_key in {
                 "forget_specific",
                 "forget_me",
@@ -10149,6 +10411,8 @@ def _handle_speech_segment(
                         raw_best_score=speaker_score,
                         visible_known_name=_visible_name,
                     )
+                    if response_text is not None:
+                        final_executed_path = f"intent_classifier.{intent}"
             if response_text is None:
                 if _empathy_thread is not None:
                     _empathy_join_timeout = float(getattr(
@@ -10201,14 +10465,20 @@ def _handle_speech_segment(
                             grief_voice = ov.get("voice_settings")
                     except Exception as exc:
                         _log.debug("grief flow delivery override error: %s", exc)
-                    _speak_blocking(
+                    completed = _speak_blocking(
                         grief_response,
                         emotion=grief_emotion,
                         pre_beat_ms=grief_pre_ms,
                         post_beat_ms_override=grief_post_ms,
                         voice_settings=grief_voice,
                     )
+                    _router_audit_note_result(
+                        router_audit,
+                        completed=completed,
+                        spoken_text=grief_response,
+                    )
                     response_text = grief_response
+                    final_executed_path = "grief_flow.llm_intercept"
                 # If the grief flow handled this turn, do NOT also fire the
                 # LLM streaming path — that would speak a second response on
                 # top of the grief line. Fall through to LLM only when grief
@@ -10254,8 +10524,14 @@ def _handle_speech_segment(
                         turn_start=turn_start,
                     )
                     used_agenda_llm = True
+                    final_executed_path = "llm.stream"
 
         if response_text:
+            _log_router_audit(
+                router_audit,
+                final_executed_path or "response_text.unknown",
+                spoken_text=response_text,
+            )
             conv_memory.add_to_transcript("Rex", response_text)
             conv_log.log_rex(response_text)
             _session_exchange_count += 1

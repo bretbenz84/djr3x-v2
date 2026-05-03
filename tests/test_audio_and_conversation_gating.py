@@ -975,6 +975,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     "get_response",
                     return_value="Got it. I misunderstood the playlist request.",
                 ),
+                mock.patch.object(interaction, "_play_event_body_beat") as beat,
                 mock.patch.object(interaction, "_speak_blocking") as speak,
             ):
                 response = interaction._generate_repair_response(1, repair["user_text"], repair)
@@ -986,6 +987,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             "Got it. I misunderstood the playlist request. "
             "I'm sure we'll have better luck next time!",
         )
+        beat.assert_called_once_with("repair", repair_kind="misunderstood")
         speak.assert_called_once()
         self.assertEqual(speak.call_args.args[0], response)
 

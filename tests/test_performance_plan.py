@@ -59,6 +59,56 @@ class PerformancePlanTests(unittest.TestCase):
         self.assertEqual(beat.body_beat, "tiny_victory_dance")
         self.assertFalse(beat.requires_llm)
 
+    def test_body_beat_plan_uses_named_fallback_and_emotion(self):
+        from intelligence import performance_plan
+
+        victory = performance_plan.plan_for_action(
+            "performance.body_beat",
+            args={"body_beat": "victory dance"},
+        )
+        offended = performance_plan.plan_for_action(
+            "performance.body_beat",
+            args={"body_beat": "offended recoil"},
+        )
+
+        self.assertEqual(victory.body_beat, "tiny_victory_dance")
+        self.assertEqual(victory.emotion, "happy")
+        self.assertIn("Tiny victory dance", victory.fallback_text)
+        self.assertEqual(offended.body_beat, "offended_recoil")
+        self.assertEqual(offended.emotion, "angry")
+
+    def test_body_beat_for_event_maps_physical_stage_directions(self):
+        from intelligence import performance_plan
+
+        examples = {
+            "insult.detected": "offended_recoil",
+            "repair.misunderstood": "thinking_tilt",
+            "idle.empty_room": "thinking_tilt",
+            "game.correct": "tiny_victory_dance",
+            "game.wrong": "suspicious_glance",
+            "dj.bit": "proud_dj_pose",
+        }
+
+        for event, beat in examples.items():
+            with self.subTest(event=event):
+                self.assertEqual(performance_plan.body_beat_for_event(event), beat)
+
+    def test_body_beat_for_event_uses_action_outcome_and_aliases(self):
+        from intelligence import performance_plan
+
+        self.assertEqual(
+            performance_plan.body_beat_for_event("action", action="humor.roast"),
+            "suspicious_glance",
+        )
+        self.assertEqual(
+            performance_plan.body_beat_for_event("game", outcome="win"),
+            "tiny_victory_dance",
+        )
+        self.assertEqual(
+            performance_plan.body_beat_for_event("manual", body_beat="side eye"),
+            "suspicious_glance",
+        )
+
     def test_unknown_action_has_no_plan(self):
         from intelligence import performance_plan
 

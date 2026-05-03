@@ -16,6 +16,87 @@ from typing import Any, Optional
 MEMORY_NORMAL = "normal"
 MEMORY_DO_NOT_STORE = "do_not_store"
 
+BODY_BEAT_NAMES = frozenset({
+    "dramatic_visor_peek",
+    "offended_recoil",
+    "proud_dj_pose",
+    "suspicious_glance",
+    "thinking_tilt",
+    "tiny_victory_dance",
+})
+
+_BODY_BEAT_ALIASES = {
+    "correct": "tiny_victory_dance",
+    "correct_answer": "tiny_victory_dance",
+    "dj_pose": "proud_dj_pose",
+    "dj_start": "proud_dj_pose",
+    "game_correct": "tiny_victory_dance",
+    "game_wrong": "suspicious_glance",
+    "insult": "offended_recoil",
+    "insult_recoil": "offended_recoil",
+    "offended": "offended_recoil",
+    "proud": "proud_dj_pose",
+    "side_eye": "suspicious_glance",
+    "suspicious": "suspicious_glance",
+    "think": "thinking_tilt",
+    "thinking": "thinking_tilt",
+    "tiny_dance": "tiny_victory_dance",
+    "victory": "tiny_victory_dance",
+    "victory_dance": "tiny_victory_dance",
+    "visor_peek": "dramatic_visor_peek",
+    "wrong": "suspicious_glance",
+    "wrong_answer": "suspicious_glance",
+}
+
+_BODY_BEAT_FALLBACKS = {
+    "dramatic_visor_peek": "Dramatic visor peek. Very subtle. Nobody panic.",
+    "offended_recoil": "Offended recoil. Bold choice, organic.",
+    "proud_dj_pose": "Proud DJ pose. The booth respects me.",
+    "suspicious_glance": "Suspicious glance engaged. I distrust the room professionally.",
+    "thinking_tilt": "Thinking tilt. It makes the processors look busy.",
+    "tiny_victory_dance": "Tiny victory dance deployed. Try not to be intimidated.",
+}
+
+_BODY_BEAT_EMOTIONS = {
+    "dramatic_visor_peek": "curious",
+    "offended_recoil": "angry",
+    "proud_dj_pose": "happy",
+    "suspicious_glance": "curious",
+    "thinking_tilt": "curious",
+    "tiny_victory_dance": "happy",
+}
+
+_ACTION_BODY_BEATS = {
+    "humor.tell_joke": "dramatic_visor_peek",
+    "humor.roast": "suspicious_glance",
+    "humor.free_bit": "proud_dj_pose",
+    "performance.dj_bit": "proud_dj_pose",
+}
+
+_EVENT_BODY_BEATS = {
+    "action": None,
+    "correction.accepted": "thinking_tilt",
+    "dj.bit": "proud_dj_pose",
+    "empty.room.joke": "thinking_tilt",
+    "game.correct": "tiny_victory_dance",
+    "game.loss": "offended_recoil",
+    "game.start": "proud_dj_pose",
+    "game.thinking": "thinking_tilt",
+    "game.timeout": "dramatic_visor_peek",
+    "game.win": "tiny_victory_dance",
+    "game.wrong": "suspicious_glance",
+    "humor.free.bit": "proud_dj_pose",
+    "humor.joke": "dramatic_visor_peek",
+    "humor.roast": "suspicious_glance",
+    "idle.empty.room": "thinking_tilt",
+    "insult.detected": "offended_recoil",
+    "misunderstanding.correction": "thinking_tilt",
+    "repair.factual": "thinking_tilt",
+    "repair.misheard": "thinking_tilt",
+    "repair.misunderstood": "thinking_tilt",
+    "repair.pronoun": "thinking_tilt",
+}
+
 
 @dataclass(frozen=True)
 class PerformancePlan:
@@ -45,6 +126,77 @@ def _arg_text(args: dict[str, Any] | None, *keys: str) -> str:
     return ""
 
 
+def _body_key(value: str) -> str:
+    return "_".join(str(value or "").strip().lower().replace("-", "_").split())
+
+
+def _event_key(value: str) -> str:
+    text = str(value or "").strip().lower().replace("_", ".").replace("-", ".")
+    parts = [part for chunk in text.split(".") for part in chunk.split() if part]
+    return ".".join(parts)
+
+
+def canonical_body_beat(name: str) -> Optional[str]:
+    """Return a stable body-beat name for direct names and friendly aliases."""
+    key = _body_key(name)
+    if key in BODY_BEAT_NAMES:
+        return key
+    return _BODY_BEAT_ALIASES.get(key)
+
+
+def body_beat_for_event(
+    event: str,
+    *,
+    action: str = "",
+    emotion: str = "",
+    outcome: str = "",
+    repair_kind: str = "",
+    body_beat: str = "",
+) -> Optional[str]:
+    """
+    Map semantic moments to Rex's named body beats.
+
+    This keeps physical theatre deterministic: code can say "insult.detected"
+    or "game.correct" and the servo layer only receives known pose names.
+    """
+    explicit = canonical_body_beat(body_beat)
+    if explicit:
+        return explicit
+
+    action_beat = _ACTION_BODY_BEATS.get(str(action or "").strip())
+    if action_beat:
+        return action_beat
+
+    event_key = _event_key(event)
+    if event_key == "action":
+        return None
+
+    if event_key == "repair" and repair_kind:
+        repair_key = _event_key(f"repair.{repair_kind}")
+        beat = _EVENT_BODY_BEATS.get(repair_key)
+        if beat:
+            return beat
+
+    if event_key == "game" and outcome:
+        outcome_key = _event_key(f"game.{outcome}")
+        beat = _EVENT_BODY_BEATS.get(outcome_key)
+        if beat:
+            return beat
+
+    beat = _EVENT_BODY_BEATS.get(event_key)
+    if beat:
+        return beat
+
+    emotion_key = str(emotion or "").strip().lower()
+    if emotion_key in {"happy", "excited", "proud"}:
+        return "tiny_victory_dance"
+    if emotion_key in {"curious", "confused", "uncertain"}:
+        return "thinking_tilt"
+    if emotion_key in {"annoyed", "angry", "offended"}:
+        return "offended_recoil"
+    return None
+
+
 def plan_for_action(
     action: str,
     *,
@@ -70,7 +222,7 @@ def plan_for_action(
                 "The punchline filed an insurance claim."
             ),
             emotion="happy",
-            body_beat="dramatic_visor_peek",
+            body_beat=body_beat_for_event("action", action=action),
             delivery_style="quick_punchline",
             memory_policy=MEMORY_DO_NOT_STORE,
         )
@@ -95,7 +247,7 @@ def plan_for_action(
                 "fully cooked decision-making."
             ),
             emotion="curious",
-            body_beat="suspicious_glance",
+            body_beat=body_beat_for_event("action", action=action),
             delivery_style="consent_roast",
             memory_policy=MEMORY_DO_NOT_STORE,
         )
@@ -115,7 +267,7 @@ def plan_for_action(
                 "observing me fail upward."
             ),
             emotion="happy",
-            body_beat="proud_dj_pose",
+            body_beat=body_beat_for_event("action", action=action),
             delivery_style="quick_riff",
             memory_policy=MEMORY_DO_NOT_STORE,
         )
@@ -130,18 +282,22 @@ def plan_for_action(
             ),
             fallback_text="Systems nominal, vibes questionable, DJ superiority intact.",
             emotion="happy",
-            body_beat="proud_dj_pose",
+            body_beat=body_beat_for_event("action", action=action),
             delivery_style="dj_stinger",
             memory_policy=MEMORY_DO_NOT_STORE,
         )
 
     if action == "performance.body_beat":
         beat = _arg_text(args, "body_beat", "beat", "gesture", "pose") or "thinking_tilt"
+        canonical = canonical_body_beat(beat) or "thinking_tilt"
         return PerformancePlan(
             action=action,
-            fallback_text="Physical expression logged. Very advanced. Very unnecessary.",
-            emotion="curious",
-            body_beat=beat,
+            fallback_text=_BODY_BEAT_FALLBACKS.get(
+                canonical,
+                "Physical expression logged. Very advanced. Very unnecessary.",
+            ),
+            emotion=_BODY_BEAT_EMOTIONS.get(canonical, "curious"),
+            body_beat=canonical,
             delivery_style="physical_beat",
             memory_policy=MEMORY_DO_NOT_STORE,
             requires_llm=False,

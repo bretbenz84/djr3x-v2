@@ -2358,6 +2358,15 @@ def _do_empty_room_joke(snapshot: dict) -> None:
     line = random.choice(list(pool))
     try:
         if _proactive_purpose_current(token):
+            try:
+                from intelligence import performance_output
+                from sequences import animations
+                performance_output.execute_body_beat_event(
+                    "idle.empty_room",
+                    play_body_beat=animations.play_body_beat,
+                )
+            except Exception as exc:
+                _log.debug("empty-room body beat skipped: %s", exc)
             _speak_async(
                 line,
                 emotion="neutral",

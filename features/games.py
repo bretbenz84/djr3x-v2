@@ -179,11 +179,17 @@ def _get_agreeability() -> int:
     return config.PERSONALITY_DEFAULTS.get("agreeability", 60)
 
 
-def _body_beat(name: str) -> None:
-    """Trigger a short embodied reaction without making game logic wait."""
+def _body_beat(name: str, **context) -> None:
+    """Trigger a mapped embodied reaction without making game logic wait."""
     try:
+        from intelligence import performance_plan
         from sequences import animations
-        animations.play_body_beat(name)
+        beat = (
+            performance_plan.body_beat_for_event(name, **context)
+            or performance_plan.canonical_body_beat(name)
+            or name
+        )
+        animations.play_body_beat(beat)
     except Exception as exc:
         _log.debug("[games] body beat %s skipped: %s", name, exc)
 

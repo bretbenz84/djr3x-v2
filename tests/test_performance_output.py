@@ -106,6 +106,35 @@ class PerformanceOutputTests(unittest.TestCase):
         self.assertEqual(output.text, "Physical expression logged.")
         generate.assert_not_called()
 
+    def test_execute_body_beat_event_plays_mapped_event(self):
+        from intelligence import performance_output
+
+        play = mock.Mock()
+
+        beat = performance_output.execute_body_beat_event(
+            "insult.detected",
+            play_body_beat=play,
+        )
+
+        self.assertEqual(beat, "offended_recoil")
+        play.assert_called_once_with("offended_recoil")
+
+    def test_execute_body_beat_event_returns_none_for_unknown_or_failed_beat(self):
+        from intelligence import performance_output
+
+        self.assertIsNone(
+            performance_output.execute_body_beat_event(
+                "unknown.event",
+                play_body_beat=mock.Mock(),
+            )
+        )
+        self.assertIsNone(
+            performance_output.execute_body_beat_event(
+                "game.correct",
+                play_body_beat=mock.Mock(side_effect=RuntimeError("servo")),
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
