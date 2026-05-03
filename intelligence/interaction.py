@@ -21,6 +21,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import count
 from pathlib import Path
 from typing import Any, Optional
 
@@ -99,10 +100,59 @@ class _RouterDecisionAudit:
     emitted: bool = False
 
 
+@dataclass
+class _CharacterLoopTrace:
+    turn_id: int
+    utterance: str
+    heard_text: Optional[str]
+    from_idle_activation: bool
+    turn_start: float
+    raw_best_id: Optional[int] = None
+    raw_best_name: Optional[str] = None
+    speaker_score: Optional[float] = None
+    anonymous_speaker_label: Optional[str] = None
+    anonymous_speaker_match_score: Optional[float] = None
+    person_id: Optional[int] = None
+    person_name: Optional[str] = None
+    speaker_label: Optional[str] = None
+    identity_resolution: Optional[str] = None
+    off_camera_unknown: Optional[bool] = None
+    visible_known_count: Optional[int] = None
+    has_unknown_visible_or_recent: Optional[bool] = None
+    router_action: Optional[str] = None
+    router_confidence: Optional[float] = None
+    router_requires_confirmation: Optional[bool] = None
+    allowlist_result: Optional[str] = None
+    legacy_command: Optional[str] = None
+    legacy_match_type: Optional[str] = None
+    intent: Optional[str] = None
+    repair_kind: Optional[str] = None
+    final_executed_path: Optional[str] = None
+    completed: Optional[bool] = None
+    handler_error: Optional[str] = None
+    spoken_text_present: Optional[bool] = None
+    assistant_asked_question: Optional[bool] = None
+    suppress_memory_learning: Optional[bool] = None
+    emitted: bool = False
+
+
+@dataclass
+class _AnonymousSpeakerSlot:
+    label: str
+    embedding: np.ndarray
+    first_seen_at: float
+    last_seen_at: float
+    turns: int = 1
+    raw_best_id: Optional[int] = None
+    raw_best_name: Optional[str] = None
+    raw_best_score: Optional[float] = None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Module-level state
 # ─────────────────────────────────────────────────────────────────────────────
 
+_character_loop_turn_ids = count(1)
 _stop_event = threading.Event()
 _thread: Optional[threading.Thread] = None
 
@@ -137,6 +187,8 @@ _last_vad_barge_in_suppressed_log_at: float = 0.0
 # Rolling raw voice-turn history used to distinguish one unfamiliar interjection
 # from background group banter. Entries are (epoch_time, label, low_confidence).
 _recent_voice_turns = deque()
+_anonymous_speaker_slots: list[_AnonymousSpeakerSlot] = []
+_anonymous_speaker_next_id: int = 1
 
 # Monotonic deadline before which VAD speech-onset detections are discarded.
 # Set at the end of each TTS utterance; prevents Rex's own voice tail from
@@ -721,6 +773,234 @@ def _log_router_audit(
     _log.info("[action_router_audit] %s", json.dumps(payload, sort_keys=True))
 
 
+def _safe_round_score(value: Any) -> Optional[float]:
+    try:
+        return round(float(value), 3)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _clean_trace_error(error: Any) -> Optional[str]:
+    text = " ".join(str(error or "").strip().split())
+    return text[:240] if text else None
+
+
+def _new_character_loop_trace(
+    text: str,
+    *,
+    from_idle_activation: bool,
+    turn_start: float,
+    raw_best_id: Optional[int],
+    raw_best_name: Optional[str],
+    speaker_score: Optional[float],
+) -> Optional[_CharacterLoopTrace]:
+    if not bool(getattr(config, "CHARACTER_LOOP_TRACE_ENABLED", True)):
+        return None
+    return _CharacterLoopTrace(
+        turn_id=next(_character_loop_turn_ids),
+        utterance=str(text or ""),
+        heard_text=str(text or ""),
+        from_idle_activation=bool(from_idle_activation),
+        turn_start=turn_start,
+        raw_best_id=_safe_int(raw_best_id),
+        raw_best_name=raw_best_name,
+        speaker_score=_safe_round_score(speaker_score),
+    )
+
+
+def _infer_identity_resolution_strategy(
+    *,
+    person_id: Optional[int],
+    raw_best_id: Optional[int],
+    speaker_score: Optional[float],
+    hard_threshold: float,
+    soft_threshold: float,
+    sticky_accepted: bool,
+    ws_identified: Optional[list[Any]],
+    recent_engagement: Optional[dict],
+    off_camera_unknown: bool,
+) -> str:
+    if person_id is None:
+        return "off_camera_unknown" if off_camera_unknown else "unresolved"
+    if sticky_accepted:
+        return "voice_soft_session_sticky"
+
+    resolved_id = _safe_int(person_id)
+    raw_id = _safe_int(raw_best_id)
+    score = float(speaker_score or 0.0)
+    if raw_id is not None and resolved_id == raw_id:
+        if score >= hard_threshold:
+            return "voice_hard_match"
+        if score >= soft_threshold:
+            return "voice_soft_contextual_match"
+        return "voice_face_contextual_match"
+
+    try:
+        visible_ids = {
+            int(p.get("person_db_id"))
+            for p in (ws_identified or [])
+            if getattr(p, "get", None) and p.get("person_db_id") is not None
+        }
+    except Exception:
+        visible_ids = set()
+    if resolved_id in visible_ids:
+        return "visible_worldstate_context"
+
+    recent_id = _safe_int((recent_engagement or {}).get("person_id"))
+    if recent_id is not None and recent_id == resolved_id:
+        return "recent_engagement_context"
+    return "resolved"
+
+
+def _character_loop_note_speaker(
+    trace: Optional[_CharacterLoopTrace],
+    *,
+    person_id: Optional[int],
+    person_name: Optional[str],
+    speaker_label: Optional[str],
+    identity_resolution: str,
+    off_camera_unknown: bool,
+    visible_known_count: Optional[int],
+    has_unknown_visible_or_recent: Optional[bool],
+    anonymous_speaker_label: Optional[str] = None,
+    anonymous_speaker_match_score: Optional[float] = None,
+) -> None:
+    if trace is None:
+        return
+    trace.person_id = _safe_int(person_id)
+    trace.person_name = person_name
+    trace.speaker_label = speaker_label
+    trace.anonymous_speaker_label = anonymous_speaker_label
+    trace.anonymous_speaker_match_score = _safe_round_score(anonymous_speaker_match_score)
+    trace.identity_resolution = identity_resolution
+    trace.off_camera_unknown = bool(off_camera_unknown)
+    trace.visible_known_count = (
+        _safe_int(visible_known_count) if visible_known_count is not None else None
+    )
+    trace.has_unknown_visible_or_recent = (
+        bool(has_unknown_visible_or_recent)
+        if has_unknown_visible_or_recent is not None
+        else None
+    )
+
+
+def _character_loop_note_router_audit(
+    trace: Optional[_CharacterLoopTrace],
+    audit: Optional[_RouterDecisionAudit],
+) -> None:
+    if trace is None or audit is None:
+        return
+    trace.router_action = audit.router_action
+    trace.router_confidence = audit.router_confidence
+    trace.router_requires_confirmation = audit.router_requires_confirmation
+    trace.allowlist_result = audit.allowlist_result
+    trace.legacy_command = audit.legacy_command
+    trace.legacy_match_type = audit.legacy_match_type
+    if audit.final_executed_path:
+        trace.final_executed_path = audit.final_executed_path
+    if audit.completed is not None:
+        trace.completed = audit.completed
+    if audit.handler_error:
+        trace.handler_error = audit.handler_error
+    if audit.spoken_text_present is not None:
+        trace.spoken_text_present = audit.spoken_text_present
+
+
+def _log_character_loop_trace(
+    trace: Optional[_CharacterLoopTrace],
+    *,
+    router_audit: Optional[_RouterDecisionAudit] = None,
+    final_executed_path: Optional[str] = None,
+    completed: Optional[bool] = None,
+    handler_error: Optional[str] = None,
+    spoken_text: Optional[str] = None,
+    spoken_text_present: Optional[bool] = None,
+    assistant_asked_question: Optional[bool] = None,
+    suppress_memory_learning: Optional[bool] = None,
+    repair_move: Optional[dict] = None,
+    intent: Optional[str] = None,
+) -> None:
+    if trace is None or trace.emitted:
+        return
+    if not bool(getattr(config, "CHARACTER_LOOP_TRACE_ENABLED", True)):
+        return
+
+    _character_loop_note_router_audit(trace, router_audit)
+    if final_executed_path:
+        trace.final_executed_path = final_executed_path
+    if completed is not None:
+        trace.completed = bool(completed)
+    if handler_error:
+        trace.handler_error = _clean_trace_error(handler_error)
+    if spoken_text_present is not None:
+        trace.spoken_text_present = bool(spoken_text_present)
+    elif spoken_text is not None:
+        trace.spoken_text_present = bool(str(spoken_text).strip())
+    if assistant_asked_question is not None:
+        trace.assistant_asked_question = bool(assistant_asked_question)
+    if suppress_memory_learning is not None:
+        trace.suppress_memory_learning = bool(suppress_memory_learning)
+    if intent:
+        trace.intent = str(intent)
+    if repair_move:
+        trace.repair_kind = str(repair_move.get("kind") or "unknown")
+    if trace.completed is None and trace.spoken_text_present is not None:
+        trace.completed = trace.spoken_text_present
+
+    payload = {
+        "turn_id": trace.turn_id,
+        "utterance": trace.utterance,
+        "heard_text": trace.heard_text,
+        "duration_ms": int(max(0.0, time.monotonic() - trace.turn_start) * 1000),
+        "speaker": {
+            "person_id": trace.person_id,
+            "name": trace.person_name,
+            "label": trace.speaker_label,
+            "identity_resolution": trace.identity_resolution,
+            "from_idle_activation": trace.from_idle_activation,
+            "off_camera_unknown": trace.off_camera_unknown,
+            "visible_known_count": trace.visible_known_count,
+            "has_unknown_visible_or_recent": trace.has_unknown_visible_or_recent,
+            "raw_candidate": {
+                "person_id": trace.raw_best_id,
+                "name": trace.raw_best_name,
+                "score": trace.speaker_score,
+            },
+            "anonymous_speaker": {
+                "label": trace.anonymous_speaker_label,
+                "match_score": trace.anonymous_speaker_match_score,
+            },
+        },
+        "interpretation": {
+            "router_action": trace.router_action,
+            "router_confidence": trace.router_confidence,
+            "router_requires_confirmation": trace.router_requires_confirmation,
+            "allowlist_result": trace.allowlist_result,
+            "legacy_command": trace.legacy_command,
+            "legacy_match_type": trace.legacy_match_type,
+            "intent": trace.intent,
+            "repair_kind": trace.repair_kind,
+        },
+        "execution": {
+            "final_executed_path": trace.final_executed_path,
+            "completed": trace.completed,
+            "handler_error": trace.handler_error,
+            "spoken_text_present": trace.spoken_text_present,
+            "assistant_asked_question": trace.assistant_asked_question,
+            "suppress_memory_learning": trace.suppress_memory_learning,
+        },
+    }
+    trace.emitted = True
+    _log.info("[character_loop] %s", json.dumps(payload, sort_keys=True))
+
+
 def _router_audit_fast_local_final_path(audit: Optional[_RouterDecisionAudit]) -> str:
     if audit is None:
         return "fast_local_takeover.unknown"
@@ -995,6 +1275,140 @@ def _note_voice_turn_for_group_chatter(
         )
         return True
     return False
+
+
+def _normalize_voice_embedding(embedding: Any) -> Optional[np.ndarray]:
+    try:
+        arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
+    except Exception:
+        return None
+    if arr.size == 0:
+        return None
+    norm = float(np.linalg.norm(arr))
+    if norm <= 1e-10:
+        return None
+    return (arr / norm).astype(np.float32)
+
+
+def _clear_anonymous_speaker_slots() -> None:
+    global _anonymous_speaker_next_id
+    _anonymous_speaker_slots.clear()
+    _anonymous_speaker_next_id = 1
+
+
+def _retire_anonymous_speaker_slot(
+    label: Optional[str],
+    *,
+    person_id: Optional[int] = None,
+    person_name: Optional[str] = None,
+) -> None:
+    if not label:
+        return
+    before = len(_anonymous_speaker_slots)
+    _anonymous_speaker_slots[:] = [
+        slot for slot in _anonymous_speaker_slots if slot.label != label
+    ]
+    if len(_anonymous_speaker_slots) != before:
+        _log.info(
+            "[anonymous_speaker] retired label=%s person_id=%s name=%r",
+            label,
+            person_id,
+            person_name,
+        )
+
+
+def _resolve_anonymous_speaker_slot(
+    audio_array: np.ndarray,
+    *,
+    person_id: Optional[int],
+    raw_best_id: Optional[int],
+    raw_best_name: Optional[str],
+    raw_best_score: float,
+) -> tuple[Optional[str], Optional[float]]:
+    """Return a session-only label for an unresolved recurring voice."""
+    global _anonymous_speaker_next_id
+    if person_id is not None:
+        return None, None
+    if not bool(getattr(config, "ANONYMOUS_SPEAKER_SLOTS_ENABLED", True)):
+        return None, None
+
+    try:
+        embedding = _normalize_voice_embedding(speaker_id.get_embedding(audio_array))
+    except Exception as exc:
+        _log.debug("[anonymous_speaker] embedding failed: %s", exc)
+        return None, None
+    if embedding is None:
+        return None, None
+
+    now = time.time()
+    threshold = float(getattr(config, "ANONYMOUS_SPEAKER_SLOT_MATCH_THRESHOLD", 0.74))
+    best_slot: Optional[_AnonymousSpeakerSlot] = None
+    best_score: Optional[float] = None
+    for slot in _anonymous_speaker_slots:
+        if slot.embedding.shape != embedding.shape:
+            continue
+        score = float(np.dot(slot.embedding, embedding))
+        if best_score is None or score > best_score:
+            best_score = score
+            best_slot = slot
+
+    if best_slot is not None and best_score is not None and best_score >= threshold:
+        blend_weight = float(min(max(best_slot.turns, 1), 5))
+        blended = _normalize_voice_embedding(
+            (best_slot.embedding * blend_weight) + embedding
+        )
+        if blended is not None:
+            best_slot.embedding = blended
+        best_slot.turns += 1
+        best_slot.last_seen_at = now
+        best_slot.raw_best_id = _safe_int(raw_best_id)
+        best_slot.raw_best_name = raw_best_name
+        best_slot.raw_best_score = _safe_round_score(raw_best_score)
+        score_out = _safe_round_score(best_score)
+        _log.info(
+            "[anonymous_speaker] matched label=%s score=%.3f turns=%d raw_candidate=%s/%r raw_score=%.3f",
+            best_slot.label,
+            float(best_score),
+            best_slot.turns,
+            raw_best_id,
+            raw_best_name,
+            float(raw_best_score or 0.0),
+        )
+        return best_slot.label, score_out
+
+    max_slots = int(getattr(config, "ANONYMOUS_SPEAKER_SLOT_MAX", 8) or 0)
+    if max_slots <= 0 or len(_anonymous_speaker_slots) >= max_slots:
+        _log.info(
+            "[anonymous_speaker] no slot available max=%d best_score=%s raw_candidate=%s/%r",
+            max_slots,
+            f"{best_score:.3f}" if best_score is not None else None,
+            raw_best_id,
+            raw_best_name,
+        )
+        return None, _safe_round_score(best_score)
+
+    label = f"unknown_voice_{_anonymous_speaker_next_id}"
+    _anonymous_speaker_next_id += 1
+    _anonymous_speaker_slots.append(
+        _AnonymousSpeakerSlot(
+            label=label,
+            embedding=embedding,
+            first_seen_at=now,
+            last_seen_at=now,
+            raw_best_id=_safe_int(raw_best_id),
+            raw_best_name=raw_best_name,
+            raw_best_score=_safe_round_score(raw_best_score),
+        )
+    )
+    _log.info(
+        "[anonymous_speaker] created label=%s raw_candidate=%s/%r raw_score=%.3f best_existing=%s",
+        label,
+        raw_best_id,
+        raw_best_name,
+        float(raw_best_score or 0.0),
+        f"{best_score:.3f}" if best_score is not None else None,
+    )
+    return label, None
 
 
 def _format_current_time_response(now: Optional[datetime] = None) -> str:
@@ -2262,6 +2676,7 @@ def _handle_pending_memory_wipe_confirmation(
             people_memory.delete_person(int(target_id))
             _clear_deleted_person_session_state(int(target_id))
             _clear_memory_related_pending_state()
+            _clear_anonymous_speaker_slots()
             _scrub_world_state_after_memory_wipe(person_id=int(target_id))
             try:
                 consciousness.clear_engagement()
@@ -2280,6 +2695,7 @@ def _handle_pending_memory_wipe_confirmation(
             _session_person_ids.clear()
             _session_forget_terms.clear()
             _session_router_control_topics.clear()
+            _clear_anonymous_speaker_slots()
             _grief_flow_state.clear()
             _voice_refreshed_this_session.clear()
             _face_reveal_declined.clear()
@@ -2743,6 +3159,12 @@ def _handle_common_first_name_last_name_reply(
     _pending_common_first_name_identity = None
     if enrolled_id is None:
         return None, None, None
+
+    _retire_anonymous_speaker_slot(
+        ctx.get("anonymous_speaker_label"),
+        person_id=enrolled_id,
+        person_name=full_name,
+    )
 
     if prior_engagement and prior_engagement.get("person_id") != enrolled_id:
         _pending_post_greet_relationship[0] = {
@@ -5699,6 +6121,7 @@ def _end_session() -> None:
         _interest_idle_followups_spoken.clear()
         _low_memory_idle_questions_spoken.clear()
         _recent_memory_candidates.clear()
+        _clear_anonymous_speaker_slots()
         _idle_outro_spoken = False
         try:
             topic_thread.clear()
@@ -5914,6 +6337,7 @@ def _end_session() -> None:
     _interest_idle_followups_spoken.clear()
     _low_memory_idle_questions_spoken.clear()
     _recent_memory_candidates.clear()
+    _clear_anonymous_speaker_slots()
     _idle_outro_spoken = False
     try:
         topic_thread.clear()
@@ -8348,9 +8772,17 @@ def _handle_speech_segment(
     router_decision: Optional[action_router.ActionDecision] = None
     router_audit: Optional[_RouterDecisionAudit] = None
     router_block_reason: Optional[str] = None
+    character_trace: Optional[_CharacterLoopTrace] = None
+    match: Optional[command_parser.CommandMatch] = None
+    response_text: Optional[str] = None
+    intent: Optional[str] = None
+    completed: Optional[bool] = None
+    handler_error: Optional[str] = None
     final_executed_path: Optional[str] = None
     suppress_memory_learning = False
     handled_active_game_turn = False
+    used_agenda_llm = False
+    used_classified_intent = False
 
     # Randomised pre-response pause — prevents Rex from feeling instant/robotic
     delay_started = time.monotonic()
@@ -8371,6 +8803,15 @@ def _handle_speech_segment(
 
         if not text:
             return
+
+        character_trace = _new_character_loop_trace(
+            text,
+            from_idle_activation=from_idle_activation,
+            turn_start=turn_start,
+            raw_best_id=raw_best_id,
+            raw_best_name=raw_best_name,
+            speaker_score=speaker_score,
+        )
 
         heard_log_text = text
         if not _game_suppresses_conversation():
@@ -8410,12 +8851,21 @@ def _handle_speech_segment(
                         )
                     except Exception as exc:
                         _log.debug("turn completion response-wait failed: %s", exc)
+                    final_executed_path = "turn_completion.hold"
+                    completed = False
                     return
         else:
             try:
                 turn_completion.clear_stale_prompted()
             except Exception:
                 pass
+
+        if character_trace is not None:
+            character_trace.utterance = str(text or "")
+            character_trace.heard_text = str(heard_log_text or "")
+            character_trace.raw_best_id = _safe_int(raw_best_id)
+            character_trace.raw_best_name = raw_best_name
+            character_trace.speaker_score = _safe_round_score(speaker_score)
 
         specific_forget_target_for_turn = forgetting.extract_specific_forget_target(text)
 
@@ -8695,6 +9145,32 @@ def _handle_speech_segment(
         identity_prompt_active = time.monotonic() <= _identity_prompt_until
         has_unknown_visible_now = _has_unknown_visible_person()
         has_unknown_visible_or_recent = has_unknown_visible_now or _has_unknown_visible_or_recent()
+        anonymous_speaker_label: Optional[str] = None
+        anonymous_speaker_match_score: Optional[float] = None
+        speaker_label_for_turn = person_name or anonymous_speaker_label or "user"
+        identity_resolution_for_turn = _infer_identity_resolution_strategy(
+            person_id=person_id,
+            raw_best_id=raw_best_id,
+            speaker_score=speaker_score,
+            hard_threshold=hard_threshold,
+            soft_threshold=soft_threshold,
+            sticky_accepted=sticky_accepted,
+            ws_identified=ws_identified,
+            recent_engagement=recent_engagement,
+            off_camera_unknown=off_camera_unknown,
+        )
+        _character_loop_note_speaker(
+            character_trace,
+            person_id=person_id,
+            person_name=person_name,
+            speaker_label=speaker_label_for_turn,
+            identity_resolution=identity_resolution_for_turn,
+            off_camera_unknown=off_camera_unknown,
+            visible_known_count=len(visible_known_by_id),
+            has_unknown_visible_or_recent=has_unknown_visible_or_recent,
+            anonymous_speaker_label=anonymous_speaker_label,
+            anonymous_speaker_match_score=anonymous_speaker_match_score,
+        )
         game_conversation_lock = _game_suppresses_conversation()
         voice_group_chatter = _note_voice_turn_for_group_chatter(
             person_id=person_id,
@@ -8721,6 +9197,8 @@ def _handle_speech_segment(
                 state_module.set_state(State.IDLE)
             except Exception:
                 pass
+            final_executed_path = "ignored.idle_background_speech"
+            completed = False
             return
 
         if (
@@ -8737,7 +9215,31 @@ def _handle_speech_segment(
                 raw_best_id,
                 speaker_score,
             )
+            final_executed_path = "ignored.group_chatter"
+            completed = False
             return
+
+        anonymous_speaker_label, anonymous_speaker_match_score = _resolve_anonymous_speaker_slot(
+            audio_array,
+            person_id=person_id,
+            raw_best_id=raw_best_id,
+            raw_best_name=raw_best_name,
+            raw_best_score=speaker_score,
+        )
+        if anonymous_speaker_label:
+            speaker_label_for_turn = anonymous_speaker_label
+            _character_loop_note_speaker(
+                character_trace,
+                person_id=person_id,
+                person_name=person_name,
+                speaker_label=speaker_label_for_turn,
+                identity_resolution=identity_resolution_for_turn,
+                off_camera_unknown=off_camera_unknown,
+                visible_known_count=len(visible_known_by_id),
+                has_unknown_visible_or_recent=has_unknown_visible_or_recent,
+                anonymous_speaker_label=anonymous_speaker_label,
+                anonymous_speaker_match_score=anonymous_speaker_match_score,
+            )
 
         # Any non-empty user utterance means we should stop waiting for a reply.
         try:
@@ -8779,7 +9281,24 @@ def _handle_speech_segment(
                 person_id = common_name_person_id
                 person_name = common_name_full
                 _session_person_ids.add(common_name_person_id)
+                _retire_anonymous_speaker_slot(
+                    anonymous_speaker_label,
+                    person_id=person_id,
+                    person_name=person_name,
+                )
+                _character_loop_note_speaker(
+                    character_trace,
+                    person_id=person_id,
+                    person_name=person_name,
+                    speaker_label=person_name or "user",
+                    identity_resolution="common_first_name_disambiguation",
+                    off_camera_unknown=False,
+                    visible_known_count=len(visible_known_by_id),
+                    has_unknown_visible_or_recent=has_unknown_visible_or_recent,
+                )
             _identity_prompt_until = 0.0
+            response_text = common_name_response
+            final_executed_path = "identity.common_first_name_reply"
             _speak_blocking(
                 common_name_response,
                 emotion="happy",
@@ -8798,6 +9317,8 @@ def _handle_speech_segment(
             else None
         )
         if common_intro_response:
+            response_text = common_intro_response
+            final_executed_path = "identity.common_intro_reply"
             _speak_blocking(
                 common_intro_response,
                 emotion="happy",
@@ -8816,6 +9337,8 @@ def _handle_speech_segment(
             else None
         )
         if existing_common_name_response:
+            response_text = existing_common_name_response
+            final_executed_path = "identity.existing_common_first_name_reply"
             _speak_blocking(
                 existing_common_name_response,
                 emotion="happy",
@@ -8859,6 +9382,7 @@ def _handle_speech_segment(
                     "audio": audio_array.copy(),
                     "asked_at": time.monotonic(),
                     "prior_engagement": prior_engagement,
+                    "anonymous_speaker_label": anonymous_speaker_label,
                 }
                 _identity_prompt_until = max(
                     _identity_prompt_until,
@@ -8881,6 +9405,21 @@ def _handle_speech_segment(
             if enrolled_id is not None:
                 person_id = enrolled_id
                 person_name = self_identified_name
+                _retire_anonymous_speaker_slot(
+                    anonymous_speaker_label,
+                    person_id=person_id,
+                    person_name=person_name,
+                )
+                _character_loop_note_speaker(
+                    character_trace,
+                    person_id=person_id,
+                    person_name=person_name,
+                    speaker_label=person_name or "user",
+                    identity_resolution="self_identified_enrollment",
+                    off_camera_unknown=False,
+                    visible_known_count=len(visible_known_by_id),
+                    has_unknown_visible_or_recent=has_unknown_visible_or_recent,
+                )
                 _identity_prompt_until = 0.0
                 _pending_offscreen_identify = None
                 try:
@@ -9250,6 +9789,11 @@ def _handle_speech_segment(
                                         exc,
                                     )
                             _bind_world_state_identity(new_pid, intro_name)
+                            _retire_anonymous_speaker_slot(
+                                pending.get("anonymous_speaker_label"),
+                                person_id=new_pid,
+                                person_name=intro_name,
+                            )
 
                             if rel_label and prior_engaged_id:
                                 try:
@@ -9497,6 +10041,7 @@ def _handle_speech_segment(
                             "audio": audio_array.copy(),
                             "asked_at": time.monotonic(),
                             "prior_engagement": prior_engagement,
+                            "anonymous_speaker_label": anonymous_speaker_label,
                         }
                         _identity_prompt_until = max(
                             _identity_prompt_until,
@@ -9543,6 +10088,21 @@ def _handle_speech_segment(
                             )
                         person_id = enrolled_id
                         person_name = intro_name
+                        _retire_anonymous_speaker_slot(
+                            anonymous_speaker_label,
+                            person_id=person_id,
+                            person_name=person_name,
+                        )
+                        _character_loop_note_speaker(
+                            character_trace,
+                            person_id=person_id,
+                            person_name=person_name,
+                            speaker_label=person_name or "user",
+                            identity_resolution="prompted_identity_enrollment",
+                            off_camera_unknown=False,
+                            visible_known_count=len(visible_known_by_id),
+                            has_unknown_visible_or_recent=has_unknown_visible_or_recent,
+                        )
                         _identity_prompt_until = 0.0
 
                         # Chain into a relationship follow-up if we were just
@@ -9622,11 +10182,13 @@ def _handle_speech_segment(
             except Exception:
                 pass
         else:
-            print("[VOICE] Unknown voice detected", flush=True)
+            unknown_voice_label = anonymous_speaker_label or "unknown"
+            print(f"[VOICE] Unknown voice detected: {unknown_voice_label}", flush=True)
 
-        speaker_label = person_name or "user"
+        speaker_label = person_name or anonymous_speaker_label or "user"
+        heard_speaker_name = person_name or anonymous_speaker_label
         conv_memory.add_to_transcript(speaker_label, heard_log_text)
-        conv_log.log_heard(person_name, heard_log_text)
+        conv_log.log_heard(heard_speaker_name, heard_log_text)
         print(f"[HEARD] {speaker_label}: {heard_log_text}", flush=True)
         _log.info(
             "[interaction] speech segment — speaker=%r person_id=%s text=%r",
@@ -9635,6 +10197,8 @@ def _handle_speech_segment(
 
         memory_wipe_response = _handle_pending_memory_wipe_confirmation(text, person_id)
         if memory_wipe_response:
+            response_text = memory_wipe_response
+            final_executed_path = "memory.pending_wipe_confirmation"
             try:
                 consciousness.clear_response_wait()
             except Exception:
@@ -9648,6 +10212,9 @@ def _handle_speech_segment(
         if _is_bare_wake_address(text):
             _log.info("[wake_word] transcribed wake address fast-ack text=%r", text)
             _wake_ack()
+            final_executed_path = "wake_address.ack"
+            completed = True
+            response_text = "(wake acknowledgment)"
             try:
                 consciousness.clear_response_wait()
             except Exception:
@@ -9691,8 +10258,11 @@ def _handle_speech_segment(
                         "fast_local_takeover.identity.name_correction",
                         spoken_text=name_update_response,
                     )
+                    router_audit = name_update_audit
                 except Exception as exc:
                     _log.debug("pre-router identity correction audit failed: %s", exc)
+            response_text = name_update_response
+            final_executed_path = "fast_local_takeover.identity.name_correction"
             _dismiss_pending_consent_prompts(person_id, text)
             try:
                 consciousness.clear_response_wait()
@@ -9730,6 +10300,9 @@ def _handle_speech_segment(
                 if command_key not in game_escape_commands:
                     game_response = games_mod.handle_input(text, person_id, audio_array)
                     completed = _speak_blocking(game_response)
+                    response_text = game_response
+                    final_executed_path = "game.active_turn.early"
+                    suppress_memory_learning = True
                     if completed:
                         games_mod.on_response_spoken()
                         game_after_audio_path = games_mod.consume_pending_audio_after_response()
@@ -9766,6 +10339,8 @@ def _handle_speech_segment(
 
         music_offer_response = _handle_pending_music_offer_reply(person_id, text)
         if music_offer_response:
+            response_text = music_offer_response
+            final_executed_path = "music.pending_offer_reply"
             _dismiss_pending_consent_prompts(person_id, text)
             try:
                 consciousness.clear_response_wait()
@@ -9785,6 +10360,8 @@ def _handle_speech_segment(
             identity_prompt_active=identity_prompt_active,
         )
         if music_pref_response:
+            response_text = music_pref_response
+            final_executed_path = "music.pending_preference_answer"
             try:
                 if answered_question:
                     topic_thread.note_answered_question(answered_question)
@@ -9851,9 +10428,11 @@ def _handle_speech_segment(
                 router_audit=router_audit,
             )
             if fast_takeover_response:
+                response_text = fast_takeover_response
+                final_executed_path = _router_audit_fast_local_final_path(router_audit)
                 _log_router_audit(
                     router_audit,
-                    _router_audit_fast_local_final_path(router_audit),
+                    final_executed_path,
                     spoken_text=fast_takeover_response,
                 )
                 _dismiss_pending_consent_prompts(person_id, text)
@@ -9899,9 +10478,13 @@ def _handle_speech_segment(
         )
         if blocked_router_response:
             completed = _speak_blocking(blocked_router_response, emotion="neutral")
+            response_text = blocked_router_response
+            final_executed_path = (
+                f"router_confirmation.{router_decision.action if router_decision else 'unknown'}"
+            )
             _log_router_audit(
                 router_audit,
-                f"router_confirmation.{router_decision.action if router_decision else 'unknown'}",
+                final_executed_path,
                 completed=completed,
                 spoken_text=blocked_router_response,
             )
@@ -9955,9 +10538,11 @@ def _handle_speech_segment(
                 pre_beat_ms=200,
                 post_beat_ms_override=300,
             )
+            response_text = boundary_response
+            final_executed_path = "legacy.emotional_checkin_boundary"
             _log_router_audit(
                 router_audit,
-                "legacy.emotional_checkin_boundary",
+                final_executed_path,
                 completed=completed,
                 spoken_text=boundary_response,
             )
@@ -9980,9 +10565,11 @@ def _handle_speech_segment(
                 pre_beat_ms=100,
                 post_beat_ms_override=200,
             )
+            response_text = preference_response
+            final_executed_path = "legacy.conversation_boundary"
             _log_router_audit(
                 router_audit,
-                "legacy.conversation_boundary",
+                final_executed_path,
                 completed=completed,
                 spoken_text=preference_response,
             )
@@ -10003,9 +10590,13 @@ def _handle_speech_segment(
             router_audit=router_audit,
         )
         if router_takeover_response:
+            response_text = router_takeover_response
+            final_executed_path = (
+                f"router_takeover.{router_decision.action if router_decision else 'unknown'}"
+            )
             _log_router_audit(
                 router_audit,
-                f"router_takeover.{router_decision.action if router_decision else 'unknown'}",
+                final_executed_path,
                 spoken_text=router_takeover_response,
             )
             _dismiss_pending_consent_prompts(person_id, text)
@@ -10058,9 +10649,11 @@ def _handle_speech_segment(
                     pre_beat_ms=200,
                     post_beat_ms_override=300,
                 )
+                response_text = boundary_response
+                final_executed_path = "router_takeover.emotional.boundary"
                 _log_router_audit(
                     router_audit,
-                    "router_takeover.emotional.boundary",
+                    final_executed_path,
                     completed=completed,
                     spoken_text=boundary_response,
                 )
@@ -10251,11 +10844,12 @@ def _handle_speech_segment(
                 first_name_local = engaged_name_local.split()[0] if engaged_name_local else "friend"
                 _pending_offscreen_identify = {
                     "audio": audio_array.copy(),
-                    "asked_at": time.monotonic(),
-                    "prior_engaged_id": (recent_engagement or {}).get("person_id"),
-                    "prior_engaged_name": engaged_name_local,
-                    "overheard_text": text,
-                }
+	                    "asked_at": time.monotonic(),
+	                    "prior_engaged_id": (recent_engagement or {}).get("person_id"),
+	                    "prior_engaged_name": engaged_name_local,
+	                    "overheard_text": text,
+	                    "anonymous_speaker_label": anonymous_speaker_label,
+	                }
                 try:
                     q_text = llm.get_response(
                         f"You just heard an UNFAMILIAR voice but you cannot see who said it "
@@ -10964,9 +11558,25 @@ def _handle_speech_segment(
                 pre_classified_insult=pre_classified_insult,
                 suppress_memory_learning=suppress_memory_learning,
             )
+    except Exception as exc:
+        handler_error = f"unhandled:{type(exc).__name__}"
+        final_executed_path = final_executed_path or "exception.unhandled"
+        raise
     finally:
         if sequence_started:
             echo_cancel.end_sequence()
+        _log_character_loop_trace(
+            character_trace,
+            router_audit=router_audit,
+            final_executed_path=final_executed_path,
+            completed=completed,
+            handler_error=handler_error,
+            spoken_text=response_text,
+            assistant_asked_question=assistant_asked_question,
+            suppress_memory_learning=suppress_memory_learning,
+            repair_move=repair_move,
+            intent=intent,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -11260,6 +11870,7 @@ def start() -> None:
     _interrupted.clear()
     _session_person_ids.clear()
     _session_router_control_topics.clear()
+    _clear_anonymous_speaker_slots()
     _interest_idle_followups_spoken.clear()
     _identity_prompt_until = 0.0
     _awaiting_followup_event = None
@@ -11326,6 +11937,7 @@ def stop() -> None:
     _clear_pending_memory_wipe()
     _common_first_name_prompted_this_session.clear()
     _recent_voice_turns.clear()
+    _clear_anonymous_speaker_slots()
     topic_thread.clear()
     user_energy.clear()
     question_budget.clear()

@@ -232,6 +232,72 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
         self.assertIsNone(payload["handler_error"])
         self.assertTrue(payload["spoken_text_present"])
 
+    def test_character_loop_trace_logs_speaker_interpretation_execution_and_outcome(self):
+        from intelligence import action_router, interaction
+
+        trace = interaction._new_character_loop_trace(
+            "Tell me a joke",
+            from_idle_activation=True,
+            turn_start=10.0,
+            raw_best_id=1,
+            raw_best_name="Bret Benziger",
+            speaker_score=0.91234,
+        )
+        interaction._character_loop_note_speaker(
+            trace,
+            person_id=1,
+            person_name="Bret Benziger",
+            speaker_label="Bret Benziger",
+            identity_resolution="voice_hard_match",
+            off_camera_unknown=False,
+            visible_known_count=1,
+            has_unknown_visible_or_recent=False,
+        )
+        audit = interaction._new_router_audit("Tell me a joke", {})
+        decision = action_router.ActionDecision(
+            action="humor.tell_joke",
+            confidence=0.956,
+            reason="explicit joke",
+        )
+        interaction._router_audit_note_decision(audit, decision)
+
+        with (
+            mock.patch.object(interaction.time, "monotonic", return_value=11.234),
+            mock.patch.object(interaction._log, "info") as info,
+        ):
+            interaction._log_character_loop_trace(
+                trace,
+                router_audit=audit,
+                final_executed_path="fast_local_takeover.humor.tell_joke",
+                completed=True,
+                spoken_text="One tiny joke.",
+                assistant_asked_question=False,
+                suppress_memory_learning=True,
+                intent="general",
+            )
+
+        info.assert_called_once()
+        self.assertEqual(info.call_args.args[0], "[character_loop] %s")
+        payload = json.loads(info.call_args.args[1])
+        self.assertEqual(payload["utterance"], "Tell me a joke")
+        self.assertEqual(payload["duration_ms"], 1234)
+        self.assertEqual(payload["speaker"]["person_id"], 1)
+        self.assertEqual(payload["speaker"]["identity_resolution"], "voice_hard_match")
+        self.assertTrue(payload["speaker"]["from_idle_activation"])
+        self.assertEqual(payload["speaker"]["raw_candidate"]["score"], 0.912)
+        self.assertEqual(payload["interpretation"]["router_action"], "humor.tell_joke")
+        self.assertEqual(payload["interpretation"]["router_confidence"], 0.956)
+        self.assertEqual(payload["interpretation"]["allowlist_result"], "allowed")
+        self.assertEqual(payload["interpretation"]["intent"], "general")
+        self.assertEqual(
+            payload["execution"]["final_executed_path"],
+            "fast_local_takeover.humor.tell_joke",
+        )
+        self.assertTrue(payload["execution"]["completed"])
+        self.assertTrue(payload["execution"]["spoken_text_present"])
+        self.assertFalse(payload["execution"]["assistant_asked_question"])
+        self.assertTrue(payload["execution"]["suppress_memory_learning"])
+
     def test_router_audit_records_unallowlisted_router_action(self):
         import config
         from intelligence import action_router, command_parser, interaction

@@ -1099,6 +1099,17 @@ ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE = 0.85
 ACTION_ROUTER_MODEL = LLM_MODEL
 ACTION_ROUTER_MAX_CONTEXT_CHARS = 5000
 
+# Structured per-user-turn black-box trace. This is operational telemetry,
+# not person memory.
+CHARACTER_LOOP_TRACE_ENABLED = True
+
+# Session-only labels for unknown but recurring voices. These let transcript and
+# character-loop logs distinguish "unknown_voice_1" from "unknown_voice_2"
+# without creating person records.
+ANONYMOUS_SPEAKER_SLOTS_ENABLED = True
+ANONYMOUS_SPEAKER_SLOT_MATCH_THRESHOLD = 0.74
+ANONYMOUS_SPEAKER_SLOT_MAX = 8
+
 # Log coarse timings for the live speech-response path. These are intentionally
 # INFO-level because latency tuning is only useful when it is visible in normal
 # debug runs.

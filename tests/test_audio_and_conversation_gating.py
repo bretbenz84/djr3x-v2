@@ -4703,6 +4703,104 @@ class GroupChatterGatingTest(unittest.TestCase):
             audio_scene["group_chatter_reason"] = None
             interaction.world_state.update("audio_scene", audio_scene)
 
+    def test_anonymous_speaker_slot_reuses_matching_unknown_voice(self):
+        import numpy as np
+        from intelligence import interaction
+
+        audio = np.zeros(1600, dtype=np.float32)
+        first_embedding = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        second_embedding = np.array([0.99, 0.08, 0.0], dtype=np.float32)
+
+        interaction._clear_anonymous_speaker_slots()
+        try:
+            with mock.patch.object(
+                interaction.speaker_id,
+                "get_embedding",
+                side_effect=[first_embedding, second_embedding],
+            ):
+                first_label, first_score = interaction._resolve_anonymous_speaker_slot(
+                    audio,
+                    person_id=None,
+                    raw_best_id=None,
+                    raw_best_name=None,
+                    raw_best_score=0.0,
+                )
+                second_label, second_score = interaction._resolve_anonymous_speaker_slot(
+                    audio,
+                    person_id=None,
+                    raw_best_id=None,
+                    raw_best_name=None,
+                    raw_best_score=0.0,
+                )
+
+            self.assertEqual(first_label, "unknown_voice_1")
+            self.assertIsNone(first_score)
+            self.assertEqual(second_label, "unknown_voice_1")
+            self.assertIsNotNone(second_score)
+            self.assertGreaterEqual(second_score, 0.74)
+            self.assertEqual(len(interaction._anonymous_speaker_slots), 1)
+            self.assertEqual(interaction._anonymous_speaker_slots[0].turns, 2)
+        finally:
+            interaction._clear_anonymous_speaker_slots()
+
+    def test_anonymous_speaker_slot_creates_new_label_for_different_voice(self):
+        import numpy as np
+        from intelligence import interaction
+
+        audio = np.zeros(1600, dtype=np.float32)
+        first_embedding = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        different_embedding = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+
+        interaction._clear_anonymous_speaker_slots()
+        try:
+            with mock.patch.object(
+                interaction.speaker_id,
+                "get_embedding",
+                side_effect=[first_embedding, different_embedding],
+            ):
+                first_label, _ = interaction._resolve_anonymous_speaker_slot(
+                    audio,
+                    person_id=None,
+                    raw_best_id=None,
+                    raw_best_name=None,
+                    raw_best_score=0.0,
+                )
+                second_label, _ = interaction._resolve_anonymous_speaker_slot(
+                    audio,
+                    person_id=None,
+                    raw_best_id=None,
+                    raw_best_name=None,
+                    raw_best_score=0.0,
+                )
+
+            self.assertEqual(first_label, "unknown_voice_1")
+            self.assertEqual(second_label, "unknown_voice_2")
+            self.assertEqual(len(interaction._anonymous_speaker_slots), 2)
+        finally:
+            interaction._clear_anonymous_speaker_slots()
+
+    def test_known_speaker_does_not_create_anonymous_slot(self):
+        import numpy as np
+        from intelligence import interaction
+
+        interaction._clear_anonymous_speaker_slots()
+        try:
+            with mock.patch.object(interaction.speaker_id, "get_embedding") as get_embedding:
+                label, score = interaction._resolve_anonymous_speaker_slot(
+                    np.zeros(1600, dtype=np.float32),
+                    person_id=1,
+                    raw_best_id=1,
+                    raw_best_name="Bret",
+                    raw_best_score=0.91,
+                )
+
+            self.assertIsNone(label)
+            self.assertIsNone(score)
+            get_embedding.assert_not_called()
+            self.assertEqual(interaction._anonymous_speaker_slots, [])
+        finally:
+            interaction._clear_anonymous_speaker_slots()
+
 
 class PostResponseMemoryExtractionTest(unittest.TestCase):
     def test_memory_extractors_use_turn_transcript_snapshot(self):
