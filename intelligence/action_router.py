@@ -52,6 +52,7 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "conversation.repair",
         "conversation",
         "User corrects Rex, says he misunderstood, or asks him to try again. Use for repair, not ordinary disagreement.",
+        executable=True,
     ),
     ActionSpec(
         "memory.query",
@@ -63,6 +64,12 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "memory.forget_specific",
         "memory",
         "User asks Rex to forget/delete a specific remembered detail or topic.",
+        executable=True,
+    ),
+    ActionSpec(
+        "memory.recent_discard",
+        "memory",
+        "User asks Rex not to store or remember the immediately recent thing they said.",
         executable=True,
     ),
     ActionSpec(
@@ -86,6 +93,12 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "identity.who_is_speaking",
         "identity",
         "User asks who they are, who is speaking, or whether Rex recognizes them.",
+        executable=True,
+    ),
+    ActionSpec(
+        "identity.name_correction",
+        "identity",
+        "User corrects the current speaker identity/name, such as 'that's not Bret', 'I'm Daniel', or 'call me X'.",
         executable=True,
     ),
     ActionSpec(
@@ -121,6 +134,12 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "performance.body_beat",
         "performance",
         "User asks Rex to perform a physical gesture, pose, dance, look, tilt, peek, or other embodied beat.",
+        executable=True,
+    ),
+    ActionSpec(
+        "performance.mood_pose",
+        "performance",
+        "User asks Rex to physically act or look like an emotion, such as embarrassed, annoyed, proud, suspicious, or thinking.",
         executable=True,
     ),
     ActionSpec(
@@ -170,6 +189,11 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "vision",
         "User asks what Rex sees or asks Rex to look/inspect something.",
         executable=True,
+    ),
+    ActionSpec(
+        "vision.snapshot",
+        "vision",
+        "User asks Rex to remember, save, or keep in mind what he currently sees. Privacy-sensitive; do not execute without confirmation.",
     ),
     ActionSpec(
         "time.query",
@@ -242,6 +266,9 @@ Rules:
 - Only use memory.forget_specific when the utterance explicitly asks to forget,
   delete, remove, erase, wipe, or clear a remembered thing. Preference statements
   like "I like Disneyland" are conversation.reply and may be learned as interests.
+- Use memory.recent_discard for "forget I said that", "don't remember that",
+  "don't store that", or "don't save that" when the scope is the immediately
+  recent utterance rather than a named stored fact.
 - If the utterance asks what you remember or know about someone, use memory.query.
   If it asks what Rex generally knows about a topic, franchise, place, hobby,
   object, or field, use conversation.reply so the main LLM can answer.
@@ -252,6 +279,10 @@ Rules:
   is conversation.reply unless the user says not to discuss it.
 - Use conversation.repair when the user corrects Rex, says Rex misunderstood, or
   asks Rex to try that again. Do not use it for ordinary topic disagreement.
+- Use identity.name_correction when the user corrects who Rex thinks is speaking
+  or what to call the current speaker, e.g. "that's not Bret, I'm Daniel" or
+  "call me JT". Put the corrected name in args.name when present. Use
+  conversation.repair if the correction has no identity/name content.
 - Use humor.tell_joke only for explicit joke/pun/one-liner requests like
   "tell me a joke"; do not treat general mentions of jokes as a joke request.
 - Use humor.roast only for explicit roast/tease requests. Put the roast target in
@@ -265,6 +296,14 @@ Rules:
   suspicious_glance, proud_dj_pose, offended_recoil, thinking_tilt,
   dramatic_visor_peek, tiny_victory_dance. Do not use it for ordinary
   "look at this" vision requests.
+- Use performance.mood_pose for emotion-driven physical acting requests such as
+  "act embarrassed", "look annoyed", or "look proud". Put one of these exact
+  mood names in args.mood: embarrassed, annoyed, proud, suspicious, thinking,
+  happy, offended.
+- Use vision.snapshot for privacy-sensitive requests to remember or save what
+  Rex sees, such as "remember what you see" or "take a look and keep that in
+  mind". Set requires_confirmation=true. Do not use it for ordinary "what do
+  you see?" questions; those are vision.describe_scene.
 - If a game is active and the utterance asks to stop, quit, end, or stop playing, use game.stop.
 - If music is active and the utterance asks to stop, pause, or stop playing music, use music.stop.
 - If the utterance asks for the clock time, use time.query.
@@ -291,6 +330,15 @@ _FORGET_SPECIFIC_REQUEST_RE = re.compile(
     r")\b\s+.+",
     re.IGNORECASE,
 )
+_RECENT_DISCARD_REQUEST_RE = re.compile(
+    r"\b("
+    r"forget|don'?t\s+remember|do\s+not\s+remember|don'?t\s+store|"
+    r"do\s+not\s+store|don'?t\s+save|do\s+not\s+save|discard"
+    r")\b.{0,80}\b("
+    r"that|this|it|what\s+i\s+(?:just\s+)?said|i\s+(?:just\s+)?said\s+that"
+    r")\b",
+    re.IGNORECASE,
+)
 _BOUNDARY_REQUEST_RE = re.compile(
     r"\b("
     r"don'?t|do not|stop|quit|please don'?t|please do not"
@@ -300,6 +348,18 @@ _BOUNDARY_REQUEST_RE = re.compile(
     r"\b(rather not|don'?t want to|do not want to|can we not|"
     r"change the subject|talk about something else|drop it|leave it alone|"
     r"no more check-?ins?)\b",
+    re.IGNORECASE,
+)
+_NAME_CORRECTION_REQUEST_RE = re.compile(
+    r"\b(?:call\s+me|rename\s+me(?:\s+to)?|my\s+name\s+is|"
+    r"you\s+(?:got|have)\s+my\s+name\s+wrong|"
+    r"that['’]?s\s+not\s+(?:my\s+name|[A-Za-z][A-Za-z' -]{1,60}))\b",
+    re.IGNORECASE,
+)
+_NAME_FROM_TEXT_RE = re.compile(
+    r"\b(?:call\s+me|rename\s+me(?:\s+to)?|my\s+name\s+is|"
+    r"i\s+am|i['’]?m|im)\s+"
+    r"(?P<name>[A-Za-z][A-Za-z' -]{0,60})",
     re.IGNORECASE,
 )
 _TOPIC_KNOWLEDGE_QUERY_RE = re.compile(
@@ -408,6 +468,41 @@ _BODY_BEAT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         "proud_dj_pose",
     ),
 )
+_MOOD_POSE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"\b(?:act|look|be)\s+(?:a\s+little\s+)?(?:embarrassed|sheepish|bashful)\b", re.IGNORECASE),
+        "embarrassed",
+    ),
+    (
+        re.compile(r"\b(?:act|look|be)\s+(?:annoyed|irritated|fed\s+up)\b", re.IGNORECASE),
+        "annoyed",
+    ),
+    (
+        re.compile(r"\b(?:act|look|be)\s+(?:proud|smug)\b", re.IGNORECASE),
+        "proud",
+    ),
+    (
+        re.compile(r"\b(?:act|look|be)\s+(?:happy|excited|delighted)\b", re.IGNORECASE),
+        "happy",
+    ),
+    (
+        re.compile(r"\b(?:act|look|be)\s+(?:suspicious|skeptical)\b", re.IGNORECASE),
+        "suspicious",
+    ),
+    (
+        re.compile(r"\b(?:act|look|be)\s+(?:thoughtful|confused|like\s+you'?re\s+thinking)\b", re.IGNORECASE),
+        "thinking",
+    ),
+    (
+        re.compile(r"\b(?:act|look|be)\s+(?:offended|insulted)\b", re.IGNORECASE),
+        "offended",
+    ),
+)
+_VISION_SNAPSHOT_RE = re.compile(
+    r"\b(?:remember|save|store|keep)\b.{0,80}\b(?:what\s+you\s+see|the\s+scene|this\s+view|that\s+view)\b|"
+    r"\btake\s+a\s+look\b.{0,80}\b(?:keep|remember|save|store)\b.{0,60}\b(?:mind|memory|that|this)\b",
+    re.IGNORECASE,
+)
 _ROAST_FOOD_TARGETS = {
     "beef",
     "chicken",
@@ -468,6 +563,66 @@ def _clean_roast_target(raw: str) -> str:
     if lowered in {"yourself", "you"}:
         return "rex"
     return target
+
+
+def _clean_name_arg(raw: str) -> str:
+    text = " ".join(str(raw or "").strip(" .?!").split())
+    text = re.split(
+        r"\b(?:instead|from\s+now\s+on|please|thanks|thank\s+you)\b",
+        text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" .?!")
+    words = []
+    for raw_word in text.split():
+        word = re.sub(r"[^A-Za-z'-]", "", raw_word).strip("'-")
+        if word:
+            words.append(word)
+    if not words or len(words) > 3:
+        return ""
+    if any(word.lower() in {"i", "im", "i'm", "me", "my", "name"} for word in words):
+        return ""
+    if all(word.islower() for word in words):
+        words = [word.capitalize() for word in words]
+    return " ".join(words)
+
+
+def classify_explicit_control(text: str) -> ActionDecision | None:
+    """Classify obvious non-performance control requests without an LLM call."""
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return None
+
+    if _RECENT_DISCARD_REQUEST_RE.search(cleaned):
+        return ActionDecision(
+            action="memory.recent_discard",
+            confidence=0.97,
+            args={"scope": "recent"},
+            reason="explicit recent-memory discard request",
+        )
+
+    if _NAME_CORRECTION_REQUEST_RE.search(cleaned):
+        name = ""
+        match = _NAME_FROM_TEXT_RE.search(cleaned)
+        if match:
+            name = _clean_name_arg(match.group("name"))
+        return ActionDecision(
+            action="identity.name_correction",
+            confidence=0.95,
+            args={"name": name} if name else {},
+            reason="explicit speaker name correction",
+        )
+
+    if _VISION_SNAPSHOT_RE.search(cleaned):
+        return ActionDecision(
+            action="vision.snapshot",
+            confidence=0.94,
+            args={"scope": "current_view"},
+            requires_confirmation=True,
+            reason="privacy-sensitive request to remember current view",
+        )
+
+    return None
 
 
 def classify_explicit_humor(text: str) -> ActionDecision | None:
@@ -536,6 +691,17 @@ def classify_explicit_performance(text: str) -> ActionDecision | None:
                     reason="explicit body beat performance request",
                 )
 
+    for pattern, mood in _MOOD_POSE_PATTERNS:
+        if pattern.search(cleaned):
+            canonical = performance_plan.canonical_mood_pose(mood)
+            if canonical:
+                return ActionDecision(
+                    action="performance.mood_pose",
+                    confidence=0.94,
+                    args={"mood": canonical},
+                    reason="explicit emotion-driven physical pose request",
+                )
+
     return None
 
 
@@ -560,8 +726,21 @@ def _coerce_decision(payload: Any) -> ActionDecision:
     requires_confirmation = bool(payload.get("requires_confirmation", False))
     if action == "memory.forget_person":
         requires_confirmation = True
+    if action == "vision.snapshot":
+        requires_confirmation = True
     if action == "memory.forget_specific" and not str(args.get("target") or "").strip():
         confidence = min(confidence, 0.45)
+    if action == "identity.name_correction":
+        raw_name = str(
+            args.get("name")
+            or args.get("new_name")
+            or args.get("person_name")
+            or ""
+        ).strip()
+        cleaned_name = _clean_name_arg(raw_name)
+        if cleaned_name:
+            args = dict(args)
+            args["name"] = cleaned_name
     if action == "performance.body_beat":
         raw_beat = str(
             args.get("body_beat")
@@ -574,6 +753,19 @@ def _coerce_decision(payload: Any) -> ActionDecision:
         if canonical:
             args = dict(args)
             args["body_beat"] = canonical
+        else:
+            confidence = min(confidence, 0.45)
+    if action == "performance.mood_pose":
+        raw_mood = str(
+            args.get("mood")
+            or args.get("emotion")
+            or args.get("pose")
+            or ""
+        ).strip()
+        canonical = performance_plan.canonical_mood_pose(raw_mood)
+        if canonical:
+            args = dict(args)
+            args["mood"] = canonical
         else:
             confidence = min(confidence, 0.45)
 
@@ -614,6 +806,18 @@ def _apply_context_overrides(
             args={},
             requires_confirmation=False,
             reason="preference/topic mention is not an explicit forget request",
+        )
+
+    if (
+        decision.action == "memory.recent_discard"
+        and not _RECENT_DISCARD_REQUEST_RE.search(text or "")
+    ):
+        return ActionDecision(
+            action="conversation.reply",
+            confidence=min(float(decision.confidence or 0.0), 0.40),
+            args={},
+            requires_confirmation=False,
+            reason="recent discard requires an explicit do-not-store/forget-that request",
         )
 
     if (
@@ -670,6 +874,9 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
         return ActionDecision(reason="empty utterance")
 
     context = context or {}
+    explicit_control = classify_explicit_control(text)
+    if explicit_control is not None:
+        return _apply_context_overrides(explicit_control, text, context)
     explicit_humor = classify_explicit_humor(text)
     if explicit_humor is not None:
         return _apply_context_overrides(explicit_humor, text, context)

@@ -11,6 +11,10 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertEqual(len(keys), len(set(keys)))
         self.assertIn("conversation.reply", keys)
         self.assertIn("conversation.repair", keys)
+        self.assertIn("identity.name_correction", keys)
+        self.assertIn("memory.recent_discard", keys)
+        self.assertIn("performance.mood_pose", keys)
+        self.assertIn("vision.snapshot", keys)
         for key in keys:
             self.assertRegex(key, r"^[a-z]+(?:_[a-z]+)*\.[a-z]+(?:_[a-z]+)*$")
 
@@ -33,6 +37,7 @@ class ActionRouterCatalogTests(unittest.TestCase):
             "humor.free_bit",
             "performance.dj_bit",
             "performance.body_beat",
+            "performance.mood_pose",
         }
 
         self.assertTrue(planned.issubset(action_router.ACTION_CATALOG))
@@ -63,6 +68,10 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertIn("Use humor.roast only for explicit roast/tease requests", prompt)
         self.assertIn("Use performance.dj_bit", prompt)
         self.assertIn("Use performance.body_beat", prompt)
+        self.assertIn("Use performance.mood_pose", prompt)
+        self.assertIn("Use vision.snapshot", prompt)
+        self.assertIn("Use identity.name_correction", prompt)
+        self.assertIn("Use memory.recent_discard", prompt)
         self.assertIn("args.body_beat", prompt)
         self.assertIn("tiny_victory_dance", prompt)
 
@@ -122,6 +131,34 @@ class ActionRouterCatalogTests(unittest.TestCase):
                 self.assertEqual(decision.action, "performance.body_beat")
                 self.assertEqual(decision.args["body_beat"], beat)
 
+    def test_explicit_performance_classifier_routes_mood_pose_requests(self):
+        from intelligence import action_router
+
+        examples = {
+            "act embarrassed": "embarrassed",
+            "look annoyed": "annoyed",
+            "look proud": "proud",
+        }
+
+        for text, mood in examples.items():
+            with self.subTest(text=text):
+                decision = action_router.classify_explicit_performance(text)
+                self.assertEqual(decision.action, "performance.mood_pose")
+                self.assertEqual(decision.args["mood"], mood)
+
+    def test_explicit_control_classifier_routes_safe_controls(self):
+        from intelligence import action_router
+
+        discard = action_router.classify_explicit_control("forget I said that")
+        rename = action_router.classify_explicit_control("that's not Bret, I'm Daniel")
+        snapshot = action_router.classify_explicit_control("remember what you see")
+
+        self.assertEqual(discard.action, "memory.recent_discard")
+        self.assertEqual(rename.action, "identity.name_correction")
+        self.assertEqual(rename.args["name"], "Daniel")
+        self.assertEqual(snapshot.action, "vision.snapshot")
+        self.assertTrue(snapshot.requires_confirmation)
+
     def test_body_beat_llm_decision_requires_known_beat(self):
         from intelligence import action_router
 
@@ -141,6 +178,39 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertEqual(valid.args["body_beat"], "tiny_victory_dance")
         self.assertEqual(valid.confidence, 0.99)
         self.assertLess(invalid.confidence, 0.85)
+
+    def test_mood_pose_llm_decision_requires_known_mood(self):
+        from intelligence import action_router
+
+        valid = action_router._coerce_decision({
+            "action": "performance.mood_pose",
+            "confidence": 0.99,
+            "args": {"emotion": "bashful"},
+            "reason": "explicit mood pose",
+        })
+        invalid = action_router._coerce_decision({
+            "action": "performance.mood_pose",
+            "confidence": 0.99,
+            "args": {"emotion": "danger servo"},
+            "reason": "unknown mood pose",
+        })
+
+        self.assertEqual(valid.args["mood"], "embarrassed")
+        self.assertEqual(valid.confidence, 0.99)
+        self.assertLess(invalid.confidence, 0.85)
+
+    def test_vision_snapshot_requires_confirmation(self):
+        from intelligence import action_router
+
+        decision = action_router._coerce_decision({
+            "action": "vision.snapshot",
+            "confidence": 0.99,
+            "args": {"scope": "current_view"},
+            "requires_confirmation": False,
+            "reason": "remember current scene",
+        })
+
+        self.assertTrue(decision.requires_confirmation)
 
     def test_decide_short_circuits_explicit_humor_without_llm_router_call(self):
         from intelligence import action_router
@@ -168,6 +238,15 @@ class ActionRouterCatalogTests(unittest.TestCase):
 
         self.assertEqual(decision.action, "performance.body_beat")
         self.assertEqual(decision.args["body_beat"], "tiny_victory_dance")
+        create.assert_not_called()
+
+    def test_decide_short_circuits_explicit_control_without_llm_router_call(self):
+        from intelligence import action_router
+
+        with mock.patch.object(action_router._client.chat.completions, "create") as create:
+            decision = action_router.decide("forget I said that", {})
+
+        self.assertEqual(decision.action, "memory.recent_discard")
         create.assert_not_called()
 
 

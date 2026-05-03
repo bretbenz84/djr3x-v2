@@ -24,6 +24,15 @@ BODY_BEAT_NAMES = frozenset({
     "thinking_tilt",
     "tiny_victory_dance",
 })
+MOOD_POSE_NAMES = frozenset({
+    "annoyed",
+    "embarrassed",
+    "happy",
+    "offended",
+    "proud",
+    "suspicious",
+    "thinking",
+})
 
 _BODY_BEAT_ALIASES = {
     "correct": "tiny_victory_dance",
@@ -64,6 +73,46 @@ _BODY_BEAT_EMOTIONS = {
     "suspicious_glance": "curious",
     "thinking_tilt": "curious",
     "tiny_victory_dance": "happy",
+}
+_MOOD_POSE_ALIASES = {
+    "bashful": "embarrassed",
+    "confused": "thinking",
+    "delighted": "happy",
+    "excited": "happy",
+    "fed_up": "annoyed",
+    "insulted": "offended",
+    "irritated": "annoyed",
+    "sheepish": "embarrassed",
+    "skeptical": "suspicious",
+    "smug": "proud",
+    "thoughtful": "thinking",
+}
+_MOOD_POSE_BODY_BEATS = {
+    "annoyed": "offended_recoil",
+    "embarrassed": "dramatic_visor_peek",
+    "happy": "tiny_victory_dance",
+    "offended": "offended_recoil",
+    "proud": "proud_dj_pose",
+    "suspicious": "suspicious_glance",
+    "thinking": "thinking_tilt",
+}
+_MOOD_POSE_FALLBACKS = {
+    "annoyed": "Annoyed pose. I am mostly dignity and warranty concerns.",
+    "embarrassed": "Embarrassed pose. My confidence briefly went into maintenance mode.",
+    "happy": "Happy pose. Alarming, but apparently operational.",
+    "offended": "Offended pose. I have filed a complaint with myself.",
+    "proud": "Proud pose. Try not to applaud the machinery.",
+    "suspicious": "Suspicious pose. I trust absolutely everyone, which is to say no one.",
+    "thinking": "Thinking pose. Please admire the illusion of wisdom.",
+}
+_MOOD_POSE_EMOTIONS = {
+    "annoyed": "angry",
+    "embarrassed": "curious",
+    "happy": "happy",
+    "offended": "angry",
+    "proud": "happy",
+    "suspicious": "curious",
+    "thinking": "curious",
 }
 
 _ACTION_BODY_BEATS = {
@@ -142,6 +191,14 @@ def canonical_body_beat(name: str) -> Optional[str]:
     if key in BODY_BEAT_NAMES:
         return key
     return _BODY_BEAT_ALIASES.get(key)
+
+
+def canonical_mood_pose(name: str) -> Optional[str]:
+    """Return a stable mood-pose name for direct names and friendly aliases."""
+    key = _body_key(name)
+    if key in MOOD_POSE_NAMES:
+        return key
+    return _MOOD_POSE_ALIASES.get(key)
 
 
 def body_beat_for_event(
@@ -299,6 +356,23 @@ def plan_for_action(
             emotion=_BODY_BEAT_EMOTIONS.get(canonical, "curious"),
             body_beat=canonical,
             delivery_style="physical_beat",
+            memory_policy=MEMORY_DO_NOT_STORE,
+            requires_llm=False,
+        )
+
+    if action == "performance.mood_pose":
+        mood = _arg_text(args, "mood", "emotion", "pose") or "thinking"
+        canonical = canonical_mood_pose(mood) or "thinking"
+        beat = _MOOD_POSE_BODY_BEATS.get(canonical, "thinking_tilt")
+        return PerformancePlan(
+            action=action,
+            fallback_text=_MOOD_POSE_FALLBACKS.get(
+                canonical,
+                "Mood pose engaged. The acting academy remains silent.",
+            ),
+            emotion=_MOOD_POSE_EMOTIONS.get(canonical, "curious"),
+            body_beat=beat,
+            delivery_style="mood_pose",
             memory_policy=MEMORY_DO_NOT_STORE,
             requires_llm=False,
         )

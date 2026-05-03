@@ -1072,15 +1072,21 @@ ACTION_ROUTER_LOG_DECISIONS = True
 ACTION_ROUTER_AUDIT_LOG_ENABLED = True
 ACTION_ROUTER_EXECUTE_ENABLED = True
 ACTION_ROUTER_EXECUTE_ACTIONS = {
+    "conversation.repair",
     "humor.tell_joke",
     "humor.roast",
     "humor.free_bit",
     "performance.dj_bit",
     "performance.body_beat",
+    "performance.mood_pose",
+    "memory.query",
+    "memory.recent_discard",
     "identity.who_is_speaking",
+    "identity.name_correction",
     "music.options",
     "music.stop",
     "music.skip",
+    "game.answer",
     "game.stop",
     "vision.describe_scene",
     "time.query",

@@ -53,11 +53,18 @@ class PerformancePlanTests(unittest.TestCase):
             "performance.body_beat",
             args={"body_beat": "tiny_victory_dance"},
         )
+        mood = performance_plan.plan_for_action(
+            "performance.mood_pose",
+            args={"mood": "embarrassed"},
+        )
 
         self.assertEqual(dj.body_beat, "proud_dj_pose")
         self.assertEqual(dj.delivery_style, "dj_stinger")
         self.assertEqual(beat.body_beat, "tiny_victory_dance")
         self.assertFalse(beat.requires_llm)
+        self.assertEqual(mood.body_beat, "dramatic_visor_peek")
+        self.assertEqual(mood.delivery_style, "mood_pose")
+        self.assertFalse(mood.requires_llm)
 
     def test_body_beat_plan_uses_named_fallback_and_emotion(self):
         from intelligence import performance_plan
@@ -76,6 +83,24 @@ class PerformancePlanTests(unittest.TestCase):
         self.assertIn("Tiny victory dance", victory.fallback_text)
         self.assertEqual(offended.body_beat, "offended_recoil")
         self.assertEqual(offended.emotion, "angry")
+
+    def test_mood_pose_plan_maps_emotions_to_body_beats(self):
+        from intelligence import performance_plan
+
+        examples = {
+            "bashful": ("embarrassed", "dramatic_visor_peek"),
+            "annoyed": ("annoyed", "offended_recoil"),
+            "proud": ("proud", "proud_dj_pose"),
+        }
+
+        for mood, (_canonical, beat) in examples.items():
+            with self.subTest(mood=mood):
+                plan = performance_plan.plan_for_action(
+                    "performance.mood_pose",
+                    args={"mood": mood},
+                )
+                self.assertEqual(plan.body_beat, beat)
+                self.assertEqual(plan.memory_policy, performance_plan.MEMORY_DO_NOT_STORE)
 
     def test_body_beat_for_event_maps_physical_stage_directions(self):
         from intelligence import performance_plan

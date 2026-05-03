@@ -183,6 +183,24 @@ class ActionGovernorScopeTests(unittest.TestCase):
         self.assertIn("skipped=True", joined)
         self.assertIn("skip_reasons=lower_priority_than_selected:emotional_checkin", joined)
 
+    def test_weather_proactive_comment_is_named_candidate_type(self):
+        from intelligence.action_governor import ActionGovernor, CandidateMove
+
+        governor = ActionGovernor()
+        governor.start_cycle()
+        governor.observe(CandidateMove(
+            source="_step_proactive_reactions",
+            purpose="weather.proactive_comment",
+            label="weather changed",
+            suggested_text="Weather feed says rain.",
+        ))
+
+        decision = governor.finish_cycle()
+
+        self.assertEqual(decision.action, "speak")
+        self.assertEqual(decision.selected.candidate.purpose, "weather.proactive_comment")
+        self.assertGreaterEqual(decision.selected.score, 40)
+
 
 if __name__ == "__main__":
     unittest.main()

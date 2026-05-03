@@ -614,6 +614,10 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             interaction._extract_name_update("you got my name wrong, my name is Joe"),
             "Joe",
         )
+        self.assertEqual(
+            interaction._extract_name_update("that's not Bret, I'm Daniel"),
+            "Daniel",
+        )
         self.assertEqual(interaction._extract_name_update("rename me to JT"), "JT")
         self.assertIsNone(interaction._extract_name_update("call me both"))
         self.assertIsNone(interaction._extract_name_update("that's not my name"))
@@ -1011,6 +1015,9 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 self.assertIsNotNone(match)
                 self.assertEqual(match.command_key, command_key)
 
+        self.assertIsNone(command_parser.parse("What do you know about jazz?"))
+        self.assertIsNone(command_parser.parse("No, that's wrong."))
+
     def test_forget_me_arms_exact_confirmation(self):
         from intelligence import interaction
 
@@ -1227,6 +1234,20 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             speak.assert_called_once()
         finally:
             interaction._recent_memory_candidates.clear()
+
+    def test_forget_i_said_that_maps_to_recent_memory_discard(self):
+        from intelligence import command_parser
+
+        for text in [
+            "forget I said that",
+            "forget what I just said",
+            "forgot I say that",
+        ]:
+            with self.subTest(text=text):
+                match = command_parser.parse(text)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.command_key, "memory_boundary")
+                self.assertEqual(match.args, {"scope": "recent"})
 
     def test_session_consolidation_json_mode_parses_expected_buckets(self):
         from types import SimpleNamespace
@@ -4359,6 +4380,47 @@ class GroupChatterGatingTest(unittest.TestCase):
             audio_scene["group_chatter_until"] = None
             audio_scene["group_chatter_reason"] = None
             interaction.world_state.update("audio_scene", audio_scene)
+
+
+class PostResponseMemoryExtractionTest(unittest.TestCase):
+    def test_memory_extractors_use_turn_transcript_snapshot(self):
+        from intelligence import interaction
+
+        snapshot = [
+            {"speaker": "Bret", "text": "I like jazz"},
+            {"speaker": "Rex", "text": "Jazz. Brave choice."},
+        ]
+
+        class ImmediateThread:
+            def __init__(self, *args, **kwargs):
+                self._target = kwargs.get("target")
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+        with (
+            mock.patch.object(interaction, "_game_suppresses_conversation", return_value=False),
+            mock.patch.object(interaction.events_memory, "looks_like_cancellation", return_value=False),
+            mock.patch.object(interaction.consciousness, "get_pending_followup", return_value=[]),
+            mock.patch.object(interaction.interoception, "record_interaction"),
+            mock.patch.object(interaction.threading, "Thread", ImmediateThread),
+            mock.patch.object(interaction.llm, "analyze_sentiment", return_value={}),
+            mock.patch.object(interaction.friendship_patterns, "learn_from_turn"),
+            mock.patch.object(interaction.conv_memory, "get_session_transcript", return_value=snapshot) as transcript,
+            mock.patch.object(interaction, "_filter_forgotten_transcript", side_effect=lambda recent, _pid: list(recent)),
+            mock.patch.object(interaction.llm, "extract_facts", return_value=[]) as facts,
+            mock.patch.object(interaction.llm, "extract_preferences", return_value=[]) as preferences,
+            mock.patch.object(interaction.llm, "extract_interests", return_value=[]) as interests,
+            mock.patch.object(interaction.llm, "extract_events", return_value=[]) as events,
+        ):
+            interaction._post_response("I like jazz", 1, "Bret")
+
+        transcript.assert_called_once()
+        facts.assert_called_once_with(1, snapshot, person_name="Bret")
+        preferences.assert_called_once_with(1, snapshot, person_name="Bret")
+        interests.assert_called_once_with(1, snapshot, person_name="Bret")
+        events.assert_called_once_with(1, snapshot, person_name="Bret")
 
 
 if __name__ == "__main__":

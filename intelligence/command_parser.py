@@ -205,11 +205,32 @@ def _parse_memory_review(normalized: str, original: str) -> dict | None:
     )
     if original_m:
         target = original_m.group(1).strip()
+    if not _looks_like_memory_review_target(target):
+        return None
     return {
         "target": target,
         "self_ref": target.lower() in {"me", "myself", "i"},
         "include_sensitive": include_sensitive,
     }
+
+
+_MEMORY_REVIEW_TARGET_RE = re.compile(
+    r"\b("
+    r"me|myself|i|my|mine|my\s+|our\s+|person|people|friend|partner|"
+    r"wife|husband|mom|mother|dad|father|brother|sister|kid|child|son|"
+    r"daughter|bret|daniel|jeff|joy|jt"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_memory_review_target(target: str) -> bool:
+    clean = _plain(target)
+    if not clean:
+        return False
+    if _MEMORY_REVIEW_TARGET_RE.search(clean):
+        return True
+    return bool(re.match(r"^[A-Z][A-Za-z'_-]{1,30}$", (target or "").strip()))
 
 
 def _parse_memory_forget_fact(normalized: str, original: str) -> dict | None:
@@ -240,6 +261,14 @@ def _parse_memory_boundary(normalized: str, original: str) -> dict | None:
         "don't save that",
         "do not save that",
         "dont save that",
+        "forget that",
+        "forget i said that",
+        "forget i just said that",
+        "forget what i said",
+        "forget what i just said",
+        "forget that thing i said",
+        "forgot i said that",
+        "forgot i say that",
     }:
         return {"scope": "recent"}
     return None
@@ -259,7 +288,13 @@ def _parse_memory_correct_fact(normalized: str, original: str) -> dict | None:
         original_m = re.match(pattern, original.strip(), re.IGNORECASE)
         if original_m:
             correction = original_m.group(1).strip(" .!?")
-        if correction:
+        if correction and _plain(correction) not in {
+            "that is wrong",
+            "that's wrong",
+            "thats wrong",
+            "wrong",
+            "incorrect",
+        }:
             return {"correction": correction}
     return None
 

@@ -96,6 +96,65 @@ class WeatherAwarenessTest(unittest.TestCase):
         self.assertIn("rainy weather", rule)
         self.assertIn("Mood bias: rainy", rule)
 
+    def test_weather_change_uses_named_governor_purpose(self):
+        from intelligence import consciousness
+
+        old_snapshot = consciousness._last_snapshot
+        old_last = consciousness._last_weather_reaction_at
+        old_ack = set(consciousness._acknowledged_weather_signatures)
+        try:
+            consciousness._last_snapshot = {
+                "crowd": {"count": 0, "count_label": "alone"},
+                "people": [],
+                "animals": [],
+                "audio_scene": {},
+                "time": {},
+                "weather": {
+                    "available": True,
+                    "condition": "clear",
+                    "temp_f": 70,
+                    "description": "Clear",
+                    "location": "Sacramento, California",
+                },
+            }
+            consciousness._last_weather_reaction_at = 0.0
+            consciousness._acknowledged_weather_signatures.clear()
+            snapshot = {
+                "crowd": {"count": 0, "count_label": "alone"},
+                "people": [],
+                "animals": [],
+                "audio_scene": {},
+                "time": {},
+                "weather": {
+                    "available": True,
+                    "condition": "rain",
+                    "temp_f": 58,
+                    "description": "Light rain",
+                    "location": "Sacramento, California",
+                },
+            }
+
+            with (
+                mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+                mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
+                mock.patch.object(consciousness, "_generate_and_speak", return_value=True) as generate,
+            ):
+                profile = type("Profile", (), {"suppress_proactive": False, "rapid_exchange": False})()
+                consciousness._step_proactive_reactions(snapshot, profile)
+
+            generate.assert_called_once()
+            self.assertEqual(generate.call_args.kwargs["purpose"], "weather.proactive_comment")
+            self.assertEqual(generate.call_args.kwargs["label"], "weather proactive comment")
+            self.assertEqual(
+                generate.call_args.kwargs["metadata"]["weather_signature"],
+                "rain:mild",
+            )
+        finally:
+            consciousness._last_snapshot = old_snapshot
+            consciousness._last_weather_reaction_at = old_last
+            consciousness._acknowledged_weather_signatures.clear()
+            consciousness._acknowledged_weather_signatures.update(old_ack)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,13 +12,15 @@ class RouterReplayCase:
     expected_allowlist_result: str
     expected_final_path: str
     expected_legacy_command: Optional[str] = None
+    expected_router_action: Optional[str] = None
     confidence: float = 0.95
     args: dict = field(default_factory=dict)
     explicit_fast_path: bool = False
+    active_game: bool = False
 
 
 class ActionRouterReplayTests(unittest.TestCase):
-    def _legacy_context(self, utterance: str) -> dict:
+    def _legacy_context(self, utterance: str, *, active_game: bool = False) -> dict:
         from intelligence import command_parser
 
         match = command_parser.parse(utterance)
@@ -30,6 +32,7 @@ class ActionRouterReplayTests(unittest.TestCase):
                 "args": match.args,
             }
         return {
+            "active_game": active_game,
             "legacy": {
                 "command_key": legacy.get("command_key") if legacy else None,
                 "command_match": legacy,
@@ -55,7 +58,7 @@ class ActionRouterReplayTests(unittest.TestCase):
     def _run_case(self, case: RouterReplayCase) -> dict:
         from intelligence import command_parser, interaction
 
-        context = self._legacy_context(case.utterance)
+        context = self._legacy_context(case.utterance, active_game=case.active_game)
         audit = interaction._new_router_audit(case.utterance, context)
         legacy_match = command_parser.parse(case.utterance)
         response = None
@@ -65,6 +68,13 @@ class ActionRouterReplayTests(unittest.TestCase):
             mock.patch.object(interaction, "_execute_command", return_value="command response") as execute_command,
             mock.patch.object(interaction, "_speak_blocking", return_value=True),
             mock.patch("sequences.animations.play_body_beat"),
+            mock.patch("features.games.is_active", return_value=case.active_game),
+            mock.patch("features.games.handle_input", return_value="game response") as game_handle,
+            mock.patch("features.games.on_response_spoken") as game_spoken,
+            mock.patch("features.games.consume_pending_audio_after_response", return_value=None),
+            mock.patch.object(interaction, "_generate_repair_response", return_value="repair response") as repair_response,
+            mock.patch.object(interaction, "_handle_name_update_request", return_value="name response") as name_update,
+            mock.patch.object(interaction, "_execute_memory_boundary_command", return_value="recent discard response") as recent_discard,
         ):
             if case.explicit_fast_path:
                 response = interaction._handle_fast_local_takeover(
@@ -127,6 +137,19 @@ class ActionRouterReplayTests(unittest.TestCase):
         payload["_executed_command_keys"] = [
             call.args[0].command_key for call in execute_command.call_args_list
         ]
+        payload["_game_handle_calls"] = [
+            call.args[:2] for call in game_handle.call_args_list
+        ]
+        payload["_game_response_spoken_calls"] = game_spoken.call_count
+        payload["_repair_calls"] = [
+            call.args for call in repair_response.call_args_list
+        ]
+        payload["_name_update_calls"] = [
+            call.args for call in name_update.call_args_list
+        ]
+        payload["_recent_discard_calls"] = [
+            call.args for call in recent_discard.call_args_list
+        ]
         return payload
 
     def test_replay_core_router_outcomes_before_more_promotions(self):
@@ -160,11 +183,79 @@ class ActionRouterReplayTests(unittest.TestCase):
                 expected_final_path="router_takeover.identity.who_is_speaking",
             ),
             RouterReplayCase(
+                utterance="what do you remember about me?",
+                router_action="memory.query",
+                expected_allowlist_result="allowed",
+                expected_legacy_command="memory_review",
+                expected_final_path="router_takeover.memory.query",
+            ),
+            RouterReplayCase(
+                utterance="what do you know about jazz?",
+                router_action="memory.query",
+                expected_router_action="conversation.reply",
+                expected_allowlist_result="not_executable",
+                expected_legacy_command=None,
+                expected_final_path="llm.stream",
+            ),
+            RouterReplayCase(
+                utterance="No, that's wrong.",
+                router_action="conversation.repair",
+                expected_allowlist_result="allowed",
+                expected_legacy_command=None,
+                expected_final_path="router_takeover.conversation.repair",
+            ),
+            RouterReplayCase(
+                utterance="that's not Bret, I'm Daniel",
+                router_action="identity.name_correction",
+                expected_allowlist_result="allowed",
+                expected_legacy_command=None,
+                expected_final_path="router_takeover.identity.name_correction",
+                args={"name": "Daniel"},
+            ),
+            RouterReplayCase(
+                utterance="forget I said that",
+                router_action="memory.recent_discard",
+                expected_allowlist_result="allowed",
+                expected_legacy_command="memory_boundary",
+                expected_final_path="fast_local_takeover.memory.recent_discard",
+                explicit_fast_path=True,
+            ),
+            RouterReplayCase(
+                utterance="act embarrassed",
+                router_action="performance.mood_pose",
+                expected_allowlist_result="allowed",
+                expected_legacy_command=None,
+                expected_final_path="fast_local_takeover.performance.mood_pose",
+                explicit_fast_path=True,
+            ),
+            RouterReplayCase(
+                utterance="remember what you see",
+                router_action="vision.snapshot",
+                expected_allowlist_result="not_executable",
+                expected_legacy_command=None,
+                expected_final_path="llm.stream",
+            ),
+            RouterReplayCase(
                 utterance="stop the game",
                 router_action="game.stop",
                 expected_allowlist_result="allowed",
                 expected_legacy_command="stop_game",
                 expected_final_path="router_takeover.game.stop",
+            ),
+            RouterReplayCase(
+                utterance="Paris",
+                router_action="game.answer",
+                expected_allowlist_result="game_inactive",
+                expected_legacy_command=None,
+                expected_final_path="llm.stream",
+            ),
+            RouterReplayCase(
+                utterance="Paris",
+                router_action="game.answer",
+                expected_allowlist_result="allowed",
+                expected_legacy_command=None,
+                expected_final_path="router_takeover.game.answer",
+                active_game=True,
             ),
             RouterReplayCase(
                 utterance="play jazz",
@@ -204,7 +295,10 @@ class ActionRouterReplayTests(unittest.TestCase):
                 payload = self._run_case(case)
 
                 self.assertEqual(payload["utterance"], case.utterance)
-                self.assertEqual(payload["router_action"], case.router_action)
+                self.assertEqual(
+                    payload["router_action"],
+                    case.expected_router_action or case.router_action,
+                )
                 self.assertEqual(
                     payload["allowlist_result"],
                     case.expected_allowlist_result,
@@ -227,10 +321,27 @@ class ActionRouterReplayTests(unittest.TestCase):
                     self.assertEqual(payload["_classified_calls"], ["query_what_do_you_see"])
                 if case.expected_final_path == "router_takeover.identity.who_is_speaking":
                     self.assertEqual(payload["_classified_calls"], ["query_who_is_speaking"])
+                if case.expected_final_path == "router_takeover.memory.query":
+                    self.assertEqual(payload["_classified_calls"], ["query_memory"])
                 if case.expected_final_path == "router_takeover.music.skip":
                     self.assertEqual(payload["_executed_command_keys"], ["dj_skip"])
                 if case.expected_final_path == "router_takeover.game.stop":
                     self.assertEqual(payload["_executed_command_keys"], ["stop_game"])
+                if case.expected_final_path == "router_takeover.game.answer":
+                    self.assertEqual(payload["_game_handle_calls"], [("Paris", 1)])
+                    self.assertEqual(payload["_game_response_spoken_calls"], 1)
+                if case.expected_allowlist_result == "game_inactive":
+                    self.assertEqual(payload["_game_handle_calls"], [])
+                if case.expected_final_path == "router_takeover.conversation.repair":
+                    self.assertEqual(len(payload["_repair_calls"]), 1)
+                    self.assertEqual(payload["_repair_calls"][0][0], 1)
+                    self.assertEqual(payload["_repair_calls"][0][1], "No, that's wrong.")
+                    self.assertEqual(payload["_repair_calls"][0][2]["kind"], "misunderstood")
+                if case.expected_final_path == "router_takeover.identity.name_correction":
+                    self.assertEqual(len(payload["_name_update_calls"]), 1)
+                    self.assertEqual(payload["_name_update_calls"][0][0], "that's not Bret, I'm Daniel")
+                if case.expected_final_path == "fast_local_takeover.memory.recent_discard":
+                    self.assertEqual(payload["_recent_discard_calls"], [(1,)])
 
 
 if __name__ == "__main__":

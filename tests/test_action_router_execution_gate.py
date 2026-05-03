@@ -11,15 +11,21 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
 
         self.assertTrue(config.ACTION_ROUTER_EXECUTE_ENABLED)
         self.assertTrue({
+            "conversation.repair",
             "humor.tell_joke",
             "humor.roast",
             "humor.free_bit",
             "performance.dj_bit",
             "performance.body_beat",
+            "performance.mood_pose",
+            "memory.query",
+            "memory.recent_discard",
             "identity.who_is_speaking",
+            "identity.name_correction",
             "music.options",
             "music.stop",
             "music.skip",
+            "game.answer",
             "game.stop",
             "vision.describe_scene",
             "time.query",
@@ -33,8 +39,8 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
             "memory.forget_person",
             "event.cancel",
             "music.play",
-            "game.answer",
             "game.start",
+            "vision.snapshot",
             "system.sleep",
         }.isdisjoint(allowed))
 
@@ -55,12 +61,17 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
         from intelligence import action_router, interaction
 
         cases = {
+            "conversation.repair": {},
             "music.options": {},
             "music.stop": {},
             "music.skip": {},
             "game.stop": {},
             "performance.body_beat": {"body_beat": "tiny_victory_dance"},
+            "performance.mood_pose": {"mood": "embarrassed"},
+            "memory.query": {},
+            "memory.recent_discard": {},
             "identity.who_is_speaking": {},
+            "identity.name_correction": {"name": "Daniel"},
             "vision.describe_scene": {},
         }
 
@@ -74,6 +85,27 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
                 )
                 self.assertTrue(interaction._router_decision_executable(decision))
                 self.assertIsNone(interaction._router_execution_block_reason(decision))
+
+    def test_game_answer_requires_active_game_context(self):
+        from intelligence import action_router, interaction
+
+        decision = action_router.ActionDecision(
+            action="game.answer",
+            confidence=0.95,
+            args={},
+            reason="short active-game answer",
+        )
+
+        with mock.patch("features.games.is_active", return_value=False):
+            self.assertFalse(interaction._router_decision_executable(decision))
+            self.assertEqual(
+                interaction._router_execution_block_reason(decision),
+                "game_inactive",
+            )
+
+        with mock.patch("features.games.is_active", return_value=True):
+            self.assertTrue(interaction._router_decision_executable(decision))
+            self.assertIsNone(interaction._router_execution_block_reason(decision))
 
     def test_body_beat_action_requires_known_beat_to_execute(self):
         from intelligence import action_router, interaction
@@ -89,6 +121,22 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
         self.assertEqual(
             interaction._router_execution_block_reason(decision),
             "unknown_body_beat",
+        )
+
+    def test_mood_pose_action_requires_known_mood_to_execute(self):
+        from intelligence import action_router, interaction
+
+        decision = action_router.ActionDecision(
+            action="performance.mood_pose",
+            confidence=0.95,
+            args={"mood": "servo chaos"},
+            reason="unknown mood pose",
+        )
+
+        self.assertFalse(interaction._router_decision_executable(decision))
+        self.assertEqual(
+            interaction._router_execution_block_reason(decision),
+            "unknown_mood_pose",
         )
 
     def test_executable_but_unallowlisted_action_is_blocked(self):
@@ -219,6 +267,107 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
         self.assertFalse(payload["completed"])
         self.assertEqual(payload["handler_error"], "router blocked; legacy fallback not simulated")
         self.assertFalse(payload["spoken_text_present"])
+
+    def test_fast_local_stop_music_audit_uses_stable_action_path(self):
+        from intelligence import interaction
+
+        audit = interaction._new_router_audit("stop the music", {})
+
+        with (
+            mock.patch("features.dj.is_playing", return_value=False),
+            mock.patch("features.dj.stop") as stop,
+            mock.patch.object(interaction, "_speak_blocking", return_value=True),
+        ):
+            response = interaction._handle_fast_local_takeover(
+                "stop the music",
+                person_id=1,
+                person_name="Bret",
+                router_audit=audit,
+            )
+
+        self.assertEqual(response, "No music is playing.")
+        stop.assert_called_once()
+        self.assertEqual(audit.router_action, "music.stop")
+        self.assertEqual(audit.router_confidence, 1.0)
+        self.assertEqual(audit.allowlist_result, "allowed")
+        self.assertEqual(audit.legacy_command, "dj_stop")
+        self.assertEqual(
+            interaction._router_audit_fast_local_final_path(audit),
+            "fast_local_takeover.music.stop",
+        )
+
+    def test_fast_local_specific_memory_forget_audit_remains_legacy_path(self):
+        from intelligence import interaction
+
+        audit = interaction._new_router_audit("forget I like Star Wars", {})
+
+        with mock.patch.object(interaction, "_execute_command", return_value="Forgotten.") as execute:
+            response = interaction._handle_fast_local_takeover(
+                "forget I like Star Wars",
+                person_id=1,
+                person_name="Bret",
+                router_audit=audit,
+            )
+
+        self.assertEqual(response, "Forgotten.")
+        self.assertEqual(execute.call_args.args[0].command_key, "forget_specific")
+        self.assertEqual(audit.router_action, "memory.forget_specific")
+        self.assertEqual(audit.allowlist_result, "not_in_execute_allowlist")
+        self.assertEqual(audit.legacy_command, "forget_specific")
+        self.assertEqual(
+            interaction._router_audit_fast_local_final_path(audit),
+            "legacy_command.forget_specific",
+        )
+
+    def test_fast_local_recent_discard_uses_stable_action_path(self):
+        from intelligence import interaction
+
+        audit = interaction._new_router_audit("forget I said that", {})
+
+        with mock.patch.object(
+            interaction,
+            "_execute_memory_boundary_command",
+            return_value="Recent memory discarded.",
+        ) as discard:
+            response = interaction._handle_fast_local_takeover(
+                "forget I said that",
+                person_id=1,
+                person_name="Bret",
+                router_audit=audit,
+            )
+
+        self.assertEqual(response, "Recent memory discarded.")
+        discard.assert_called_once_with(1)
+        self.assertEqual(audit.router_action, "memory.recent_discard")
+        self.assertEqual(audit.allowlist_result, "allowed")
+        self.assertEqual(audit.legacy_command, "memory_boundary")
+        self.assertEqual(
+            interaction._router_audit_fast_local_final_path(audit),
+            "fast_local_takeover.memory.recent_discard",
+        )
+
+    def test_fast_local_name_correction_uses_stable_action_path(self):
+        from intelligence import interaction
+
+        audit = interaction._new_router_audit("call me Daniel", {})
+
+        with mock.patch.object(interaction, "_execute_command", return_value="Name corrected.") as execute:
+            response = interaction._handle_fast_local_takeover(
+                "call me Daniel",
+                person_id=1,
+                person_name="Bret",
+                router_audit=audit,
+            )
+
+        self.assertEqual(response, "Name corrected.")
+        self.assertEqual(execute.call_args.args[0].command_key, "rename_me")
+        self.assertEqual(audit.router_action, "identity.name_correction")
+        self.assertEqual(audit.allowlist_result, "allowed")
+        self.assertEqual(audit.legacy_command, "rename_me")
+        self.assertEqual(
+            interaction._router_audit_fast_local_final_path(audit),
+            "fast_local_takeover.identity.name_correction",
+        )
 
 
 if __name__ == "__main__":

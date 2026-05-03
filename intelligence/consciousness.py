@@ -990,6 +990,7 @@ def _generate_and_speak(
     purpose: Optional[str] = None,
     priority: Optional[int] = None,
     label: str = "",
+    metadata: Optional[dict] = None,
 ) -> bool:
     candidate_id = _observe_governor_candidate(
         purpose=purpose,
@@ -999,6 +1000,7 @@ def _generate_and_speak(
         wait_secs=wait_secs,
         priority=priority,
         requires_llm=True,
+        metadata=metadata,
     )
     token = None
     if purpose:
@@ -2078,7 +2080,23 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
         return
 
     try:
-        triggers: list[tuple[str, str]] = []  # (llm_prompt, emotion)
+        triggers: list[dict] = []
+
+        def _add_trigger(
+            prompt: str,
+            emotion: str,
+            *,
+            purpose: str = "world_reaction",
+            label: str = "",
+            metadata: Optional[dict] = None,
+        ) -> None:
+            triggers.append({
+                "prompt": prompt,
+                "emotion": emotion,
+                "purpose": purpose,
+                "label": label,
+                "metadata": metadata or {},
+            })
 
         # New person entered frame. During startup, known-person greetings own
         # the first line; crowd-count flicker should not steal the opening with
@@ -2093,11 +2111,12 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
             and not _startup_known_greeting_pending(snapshot)
             and not (known_now and not unknown_now)
         ):
-            triggers.append((
+            _add_trigger(
                 "Someone new just walked into your view. React in one short in-character line — "
                 "somewhere between a greeting and a roast, delivered as you clock them entering.",
                 "curious",
-            ))
+                label="new person entered view",
+            )
 
         # Animal detected. Animal IDs are positional and can be unstable across
         # scans, so dedupe by species + rough position with a cooldown.
@@ -2134,17 +2153,18 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                     "One short in-character reaction — genuinely surprised, unmistakably Rex. "
                     "One line only."
                 )
-            triggers.append((prompt, "excited"))
+            _add_trigger(prompt, "excited", label=f"animal spotted: {species}")
 
         # Crowd size label changed significantly
         prev_label = _last_snapshot.get("crowd", {}).get("count_label")
         curr_label = snapshot.get("crowd", {}).get("count_label")
         if curr_label and prev_label and curr_label != prev_label:
-            triggers.append((
+            _add_trigger(
                 f"The crowd around you just shifted from '{prev_label}' to '{curr_label}'. "
                 "One short in-character observation about this change.",
                 "neutral",
-            ))
+                label="crowd size changed",
+            )
 
         # Notable sound event
         prev_sound = _last_snapshot.get("audio_scene", {}).get("last_sound_event")
@@ -2154,21 +2174,23 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
             and curr_sound
             and curr_sound != prev_sound
         ):
-            triggers.append((
-                f"You just registered a notable sound event: '{curr_sound}'. "
-                "One punchy in-character line reacting to it.",
-                "curious",
-            ))
+                _add_trigger(
+                    f"You just registered a notable sound event: '{curr_sound}'. "
+                    "One punchy in-character line reacting to it.",
+                    "curious",
+                    label="sound event reaction",
+                )
 
         # Notable calendar date (once per session per date)
         notable_date = snapshot.get("time", {}).get("notable_date")
         if notable_date and notable_date not in _acknowledged_dates:
             _acknowledged_dates.add(notable_date)
-            triggers.append((
+            _add_trigger(
                 f"Today is {notable_date}. Make one spontaneous in-character remark about it "
                 "as if you just noticed the date. Deliver it Rex-style.",
                 "excited",
-            ))
+                label=f"notable date: {notable_date}",
+            )
 
         # Notable weather change. Weather comes from the network feed, not body
         # sensors, so prompts keep Rex honest about how he knows it.
@@ -2221,16 +2243,30 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                     location = curr_weather.get("location") or "the local area"
                     desc = curr_weather.get("description") or condition
                     temp_clause = f"{temp_int}°F" if temp_int is not None else "temperature unavailable"
-                    triggers.append((
+                    _add_trigger(
                         f"Your weather feed just updated for {location}: {temp_clause}, {desc}. "
                         "Make one short spontaneous Rex-style weather remark. You may imply "
                         "you saw it in your feed, but do not pretend you physically feel the weather.",
                         "curious",
-                    ))
+                        purpose="weather.proactive_comment",
+                        label="weather proactive comment",
+                        metadata={
+                            "topic_key": f"weather:{signature}",
+                            "weather_signature": signature,
+                            "weather_condition": condition,
+                            "weather_bucket": bucket,
+                        },
+                    )
 
         if triggers:
-            prompt, emotion = random.choice(triggers)
-            _generate_and_speak(prompt, emotion, purpose="world_reaction")
+            trigger = random.choice(triggers)
+            _generate_and_speak(
+                trigger["prompt"],
+                trigger["emotion"],
+                purpose=trigger.get("purpose") or "world_reaction",
+                label=trigger.get("label") or "",
+                metadata=trigger.get("metadata") or None,
+            )
 
     except Exception as exc:
         _log.debug("proactive reactions step error: %s", exc)

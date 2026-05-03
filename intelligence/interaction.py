@@ -296,7 +296,9 @@ _CALL_ME_NAME_RE = re.compile(
 )
 _NAME_CORRECTION_RE = re.compile(
     r"\b(?:you\s+(?:got|have)\s+my\s+name\s+wrong|"
-    r"that's\s+not\s+my\s+name|that\s+isn['’]?t\s+my\s+name|"
+    r"that['’]?s\s+not\s+my\s+name|that\s+isn['’]?t\s+my\s+name|"
+    r"that['’]?s\s+not\s+[A-Za-z][A-Za-z' -]{1,60}|"
+    r"that\s+isn['’]?t\s+[A-Za-z][A-Za-z' -]{1,60}|"
     r"you\s+called\s+me\s+the\s+wrong\s+name|"
     r"my\s+name\s+is|call\s+me|rename\s+me)\b",
     re.IGNORECASE,
@@ -380,6 +382,14 @@ def _game_suppresses_conversation() -> bool:
         from features import games as games_mod
         if hasattr(games_mod, "suppresses_conversation_interruptions"):
             return bool(games_mod.suppresses_conversation_interruptions())
+        return bool(games_mod.is_active())
+    except Exception:
+        return False
+
+
+def _game_active_for_router() -> bool:
+    try:
+        from features import games as games_mod
         return bool(games_mod.is_active())
     except Exception:
         return False
@@ -520,6 +530,18 @@ def _router_execution_block_reason(
         )
         if performance_plan.canonical_body_beat(str(beat)) is None:
             return "unknown_body_beat"
+    if decision.action == "performance.mood_pose":
+        args = decision.args or {}
+        mood = (
+            args.get("mood")
+            or args.get("emotion")
+            or args.get("pose")
+            or ""
+        )
+        if performance_plan.canonical_mood_pose(str(mood)) is None:
+            return "unknown_mood_pose"
+    if decision.action == "game.answer" and not _game_active_for_router():
+        return "game_inactive"
     allowlist = _router_execute_allowlist()
     if allowlist is not None and decision.action not in allowlist:
         return "not_in_execute_allowlist"
@@ -557,6 +579,26 @@ def _router_audit_note_decision(
     )
     block_reason = _router_execution_block_reason(decision)
     audit.allowlist_result = "allowed" if block_reason is None else block_reason
+
+
+def _router_audit_note_fast_local_action(
+    audit: Optional[_RouterDecisionAudit],
+    action: str,
+    *,
+    args: Optional[dict[str, Any]] = None,
+    reason: str = "deterministic fast local command",
+) -> None:
+    """Record the stable action represented by a deterministic fast lane."""
+    if audit is None:
+        return
+    decision = action_router.ActionDecision(
+        action=action,
+        confidence=1.0,
+        args=args or {},
+        requires_confirmation=False,
+        reason=reason,
+    )
+    _router_audit_note_decision(audit, decision)
 
 
 def _router_audit_note_execute_disabled(audit: Optional[_RouterDecisionAudit]) -> None:
@@ -633,6 +675,18 @@ def _log_router_audit(
         "spoken_text_present": audit.spoken_text_present,
     }
     _log.info("[action_router_audit] %s", json.dumps(payload, sort_keys=True))
+
+
+def _router_audit_fast_local_final_path(audit: Optional[_RouterDecisionAudit]) -> str:
+    if audit is None:
+        return "fast_local_takeover.unknown"
+    if audit.router_action and audit.allowlist_result == "allowed":
+        return f"fast_local_takeover.{audit.router_action}"
+    if audit.legacy_command:
+        return f"legacy_command.{audit.legacy_command}"
+    if audit.router_action:
+        return f"fast_local_takeover.{audit.router_action}"
+    return "fast_local_takeover.unknown"
 
 
 def _chunk_for_vad(audio_chunk: np.ndarray) -> np.ndarray:
@@ -4882,6 +4936,16 @@ def _post_response(
     except Exception as exc:
         _log.debug("post_response interoception error: %s", exc)
 
+    memory_recent_transcript = None
+    if person_id is not None and not suppress_memory_learning:
+        try:
+            transcript = conv_memory.get_session_transcript()
+            recent = transcript[-10:] if len(transcript) >= 10 else transcript
+            memory_recent_transcript = list(_filter_forgotten_transcript(recent, person_id))
+        except Exception as exc:
+            _log.debug("post_response memory transcript snapshot error: %s", exc)
+            memory_recent_transcript = []
+
     # ── Sentiment + facts (async — both are LLM calls) ────────────────────────
     def _background() -> None:
         # Sentiment analysis → anger / relationship updates
@@ -4914,13 +4978,9 @@ def _post_response(
                 _log.debug("friendship pattern learning error: %s", exc)
 
         # Fact extraction from recent transcript
-        if person_id is not None and not suppress_memory_learning:
+        if person_id is not None and memory_recent_transcript is not None:
             try:
-                transcript = conv_memory.get_session_transcript()
-                # Last 10 entries (~5 exchanges) — wider window than before so
-                # facts mentioned a few turns back are still in scope.
-                recent = transcript[-10:] if len(transcript) >= 10 else transcript
-                recent = _filter_forgotten_transcript(recent, person_id)
+                recent = list(memory_recent_transcript)
                 new_facts = llm.extract_facts(person_id, recent, person_name=person_name)
                 saved_count = 0
                 for fact in new_facts:
@@ -4957,9 +5017,7 @@ def _post_response(
 
             # Typed preference extraction — supplements generic facts.
             try:
-                transcript = conv_memory.get_session_transcript()
-                recent = transcript[-10:] if len(transcript) >= 10 else transcript
-                recent = _filter_forgotten_transcript(recent, person_id)
+                recent = list(memory_recent_transcript)
                 new_preferences = llm.extract_preferences(
                     person_id,
                     recent,
@@ -5010,9 +5068,7 @@ def _post_response(
             # Typed interest extraction — durable conversation hooks separate
             # from generic facts.
             try:
-                transcript = conv_memory.get_session_transcript()
-                recent = transcript[-10:] if len(transcript) >= 10 else transcript
-                recent = _filter_forgotten_transcript(recent, person_id)
+                recent = list(memory_recent_transcript)
                 new_interests = llm.extract_interests(
                     person_id,
                     recent,
@@ -5055,9 +5111,7 @@ def _post_response(
 
             # Event extraction → person_events table for follow-ups + small talk
             try:
-                transcript = conv_memory.get_session_transcript()
-                recent = transcript[-10:] if len(transcript) >= 10 else transcript
-                recent = _filter_forgotten_transcript(recent, person_id)
+                recent = list(memory_recent_transcript)
                 new_events = llm.extract_events(person_id, recent, person_name=person_name)
                 saved_events = 0
                 if new_events:
@@ -6254,6 +6308,7 @@ _PLAN_ROUTER_ACTIONS = {
     "humor.free_bit",
     "performance.dj_bit",
     "performance.body_beat",
+    "performance.mood_pose",
 }
 
 
@@ -6313,6 +6368,56 @@ def _handle_router_performance_action(
     return output.text
 
 
+def _router_repair_move(
+    text: str,
+    decision: action_router.ActionDecision,
+) -> dict:
+    repair = repair_moves.detect(text)
+    if repair is not None:
+        return repair
+    repair_kind = (
+        _router_arg_text(decision, "repair_kind", "kind", "type")
+        or "misunderstood"
+    )
+    correction = _router_arg_text(decision, "correction", "corrected_text", "clarification")
+    return {
+        "kind": repair_kind,
+        "severity": "medium",
+        "correction": correction,
+        "user_text": text,
+    }
+
+
+def _handle_router_identity_name_correction(
+    text: str,
+    decision: action_router.ActionDecision,
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> str:
+    """Execute a current-speaker name correction, or ask for the missing name."""
+    response = _handle_name_update_request(text, person_id, person_name)
+    if response:
+        return response
+
+    new_name = _normalize_name(
+        _router_arg_text(decision, "name", "new_name", "person_name")
+    )
+    if new_name:
+        response = _handle_name_update_request(
+            f"call me {new_name}",
+            person_id,
+            person_name,
+        )
+        if response:
+            return response
+
+    resp = repair_moves.add_better_luck_line(
+        "I caught the identity correction, but I need the right name."
+    )
+    _speak_blocking(resp, emotion="neutral")
+    return resp
+
+
 def _handle_router_takeover_action(
     decision: Optional[action_router.ActionDecision],
     text: str,
@@ -6331,6 +6436,29 @@ def _handle_router_takeover_action(
     action = decision.action
     if action == "conversation.reply":
         return None
+
+    if action == "conversation.repair":
+        repair = _router_repair_move(text, decision)
+        _log.info(
+            "[action_router] executing conversation.repair kind=%s person_id=%s text=%r",
+            repair.get("kind"),
+            person_id,
+            text,
+        )
+        return _generate_repair_response(person_id, text, repair)
+
+    if action == "identity.name_correction":
+        _log.info(
+            "[action_router] executing identity.name_correction person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _handle_router_identity_name_correction(
+            text,
+            decision,
+            person_id,
+            person_name,
+        )
 
     if action in _PLAN_ROUTER_ACTIONS:
         return _handle_router_performance_action(
@@ -6362,6 +6490,14 @@ def _handle_router_takeover_action(
             person_name,
             text,
         )
+
+    if action == "memory.recent_discard":
+        _log.info(
+            "[action_router] executing memory.recent_discard person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _execute_memory_boundary_command(person_id)
 
     if action == "identity.who_is_speaking":
         _log.info(
@@ -6610,6 +6746,12 @@ def _handle_fast_local_takeover(
         target = str((match.args or {}).get("target") or "").strip()
         if not target:
             return None
+        _router_audit_note_fast_local_action(
+            router_audit,
+            "memory.forget_specific",
+            args={"target": target},
+            reason="legacy fast local forget command",
+        )
         _log.info(
             "[action_router] fast_lane action=memory.forget_specific "
             "person_id=%s target=%r text=%r",
@@ -6619,7 +6761,42 @@ def _handle_fast_local_takeover(
         )
         return _execute_command(match, person_id, person_name, text)
 
+    if key == "memory_boundary":
+        _router_audit_note_fast_local_action(
+            router_audit,
+            "memory.recent_discard",
+            args={"scope": "recent"},
+            reason="legacy fast local recent-memory discard command",
+        )
+        _log.info(
+            "[action_router] fast_lane action=memory.recent_discard "
+            "person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _execute_memory_boundary_command(person_id)
+
+    if key == "rename_me":
+        _router_audit_note_fast_local_action(
+            router_audit,
+            "identity.name_correction",
+            args=match.args or {},
+            reason="legacy fast local current-speaker name correction",
+        )
+        _log.info(
+            "[action_router] fast_lane action=identity.name_correction "
+            "person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _execute_command(match, person_id, person_name, text)
+
     if key == "stop_game":
+        _router_audit_note_fast_local_action(
+            router_audit,
+            "game.stop",
+            reason="legacy fast local stop-game command",
+        )
         try:
             from features import games as games_mod
             resp = games_mod.stop_game_fast(person_id)
@@ -6635,6 +6812,11 @@ def _handle_fast_local_takeover(
         return resp
 
     if key == "dj_stop":
+        _router_audit_note_fast_local_action(
+            router_audit,
+            "music.stop",
+            reason="legacy fast local stop-music command",
+        )
         try:
             from features import dj as dj_mod
             was_playing = bool(dj_mod.is_playing())
@@ -6655,6 +6837,11 @@ def _handle_fast_local_takeover(
 
     if key in {"time_query", "date_query"}:
         action = "time.query" if key == "time_query" else "date.query"
+        _router_audit_note_fast_local_action(
+            router_audit,
+            action,
+            reason=f"legacy fast local {key} command",
+        )
         resp = (
             _format_current_time_response()
             if key == "time_query"
@@ -9572,7 +9759,7 @@ def _handle_speech_segment(
             if fast_takeover_response:
                 _log_router_audit(
                     router_audit,
-                    f"fast_local_takeover.{router_audit.router_action or 'unknown'}",
+                    _router_audit_fast_local_final_path(router_audit),
                     spoken_text=fast_takeover_response,
                 )
                 _dismiss_pending_consent_prompts(person_id, text)

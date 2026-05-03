@@ -130,6 +130,11 @@ _PROACTIVE_RULES: dict[str, tuple[int, str]] = {
         "react to the world-state change only. No follow-up question unless the "
         "prompt explicitly requires one.",
     ),
+    "weather.proactive_comment": (
+        42,
+        "react to the weather-feed change only. Keep it honest that Rex saw it "
+        "in a feed, not felt it directly. One short line, no follow-up question.",
+    ),
     "ambient_observation": (
         30,
         "make one ambient observation only. Do not ask a question.",
