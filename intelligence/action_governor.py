@@ -38,6 +38,7 @@ _PURPOSE_PRIORITIES: dict[str, int] = {
     "personal_space": 67,
     "memory_followup": 65,
     "celebration_checkin": 64,
+    "startup_empty_room": 60,
     "visual_curiosity": 55,
     "small_talk": 45,
     "weather.proactive_comment": 42,
@@ -52,6 +53,7 @@ _LOW_PRIORITY_RAPID_EXCHANGE_CUTOFF = 55
 _ACTIVE_CONVERSATION_LOW_PRIORITY = {
     "small_talk",
     "weather.proactive_comment",
+    "startup_empty_room",
     "ambient_observation",
     "appearance_riff",
     "idle_monologue",

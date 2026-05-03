@@ -606,6 +606,50 @@ def _router_audit_note_execute_disabled(audit: Optional[_RouterDecisionAudit]) -
         audit.allowlist_result = "execute_disabled_shadow"
 
 
+def _router_blocked_confirmation_response(
+    decision: Optional[action_router.ActionDecision],
+    block_reason: Optional[str],
+) -> Optional[str]:
+    """Return a short spoken response for blocked actions that need consent."""
+    if decision is None or block_reason != "requires_confirmation":
+        return None
+    if decision.action == "vision.snapshot":
+        return (
+            "I can take a look, but I won't store a scene memory without explicit "
+            "confirmation. Say yes, remember this scene if you want that."
+        )
+    return None
+
+
+_GENERAL_KNOWLEDGE_REPLY_RE = re.compile(
+    r"\b(?:what\s+do\s+you\s+know|tell\s+me|explain|teach\s+me)"
+    r"(?:\s+(?:about|regarding|on))?\s+(?P<topic>[^?.!]+)",
+    re.IGNORECASE,
+)
+_PERSONAL_MEMORY_TOPIC_RE = re.compile(
+    r"\b(?:me|my|mine|myself|you\s+remember|remember\s+about|"
+    r"know\s+about\s+me|know\s+about\s+my)\b",
+    re.IGNORECASE,
+)
+
+
+def _conversation_reply_should_skip_memory_learning(
+    text: str,
+    decision: Optional[action_router.ActionDecision],
+) -> bool:
+    """Avoid saving Rex's own general-knowledge answer as a personal fact."""
+    if decision is None or decision.action != "conversation.reply":
+        return False
+    text_clean = str(text or "").strip()
+    if not text_clean:
+        return False
+    match = _GENERAL_KNOWLEDGE_REPLY_RE.search(text_clean)
+    if not match:
+        return False
+    topic = str(match.group("topic") or "")
+    return not _PERSONAL_MEMORY_TOPIC_RE.search(topic)
+
+
 def _router_audit_note_legacy_command(
     audit: Optional[_RouterDecisionAudit],
     match: Optional[command_parser.CommandMatch],
@@ -2274,6 +2318,7 @@ def _handle_name_update_request(
         return None
 
     target_id, old_name = _resolve_name_update_target(person_id, person_name)
+    old_clean = (old_name or "").strip()
     try:
         existing = people_memory.find_person_by_name(new_name)
     except Exception:
@@ -2286,12 +2331,27 @@ def _handle_name_update_request(
         ):
             target_id = existing_id
             old_name = existing.get("name")
+            old_clean = (old_name or "").strip()
+        elif target_id is not None and existing_id != int(target_id):
+            response = repair_moves.add_better_luck_line(
+                f"Got it. {new_name} is already a separate person in my memory, "
+                f"so I won't rename {old_clean or 'this speaker'} into {new_name}."
+            )
+            _log.info(
+                "[identity] name correction matched existing person "
+                "target_id=%s existing_id=%s new=%r text=%r",
+                target_id,
+                existing_id,
+                new_name,
+                text,
+            )
+            _speak_blocking(response, emotion="neutral")
+            return response
 
     if target_id is None:
         _log.info("[identity] name update had no clear target text=%r", text)
         return None
 
-    old_clean = (old_name or "").strip()
     if old_clean.lower() == new_name.lower():
         response = f"Already got you as {new_name}."
         _speak_blocking(response)
@@ -8287,6 +8347,7 @@ def _handle_speech_segment(
     repair_move: Optional[dict] = None
     router_decision: Optional[action_router.ActionDecision] = None
     router_audit: Optional[_RouterDecisionAudit] = None
+    router_block_reason: Optional[str] = None
     final_executed_path: Optional[str] = None
     suppress_memory_learning = False
     handled_active_game_turn = False
@@ -9593,12 +9654,45 @@ def _handle_speech_segment(
                 pass
             return
 
+        name_update_decision = None
+        try:
+            explicit_name_decision = action_router.classify_explicit_control(text)
+            if (
+                explicit_name_decision is not None
+                and explicit_name_decision.action == "identity.name_correction"
+            ):
+                name_update_decision = explicit_name_decision
+        except Exception as exc:
+            _log.debug("pre-router identity correction classification failed: %s", exc)
+
         name_update_response = _handle_name_update_request(
             text,
             person_id,
             person_name,
         )
         if name_update_response:
+            if name_update_decision is not None:
+                try:
+                    name_update_context = _action_router_context(
+                        text,
+                        person_id=person_id,
+                        person_name=person_name,
+                        raw_best_id=raw_best_id,
+                        raw_best_name=raw_best_name,
+                        speaker_score=speaker_score,
+                        recent_engagement=recent_engagement,
+                        off_camera_unknown=off_camera_unknown,
+                        identity_prompt_active=identity_prompt_active,
+                    )
+                    name_update_audit = _new_router_audit(text, name_update_context)
+                    _router_audit_note_decision(name_update_audit, name_update_decision)
+                    _log_router_audit(
+                        name_update_audit,
+                        "fast_local_takeover.identity.name_correction",
+                        spoken_text=name_update_response,
+                    )
+                except Exception as exc:
+                    _log.debug("pre-router identity correction audit failed: %s", exc)
             _dismiss_pending_consent_prompts(person_id, text)
             try:
                 consciousness.clear_response_wait()
@@ -9784,6 +9878,12 @@ def _handle_speech_segment(
             router_block_reason = _router_execution_block_reason(router_decision)
             if router_block_reason is None:
                 suppress_memory_learning = True
+            elif _conversation_reply_should_skip_memory_learning(text, router_decision):
+                suppress_memory_learning = True
+                _log.info(
+                    "[memory] suppressing extraction for general-knowledge router reply text=%r",
+                    text,
+                )
             elif router_decision is not None and router_decision.action != "conversation.reply":
                 _log.info(
                     "[action_router] not executing action=%s confidence=%.2f reason=%s",
@@ -9793,6 +9893,28 @@ def _handle_speech_segment(
                 )
         except Exception as exc:
             _log.debug("action router shadow start failed: %s", exc)
+        blocked_router_response = _router_blocked_confirmation_response(
+            router_decision,
+            router_block_reason,
+        )
+        if blocked_router_response:
+            completed = _speak_blocking(blocked_router_response, emotion="neutral")
+            _log_router_audit(
+                router_audit,
+                f"router_confirmation.{router_decision.action if router_decision else 'unknown'}",
+                completed=completed,
+                spoken_text=blocked_router_response,
+            )
+            _dismiss_pending_consent_prompts(person_id, text)
+            try:
+                consciousness.clear_response_wait()
+            except Exception:
+                pass
+            conv_memory.add_to_transcript("Rex", blocked_router_response)
+            conv_log.log_rex(blocked_router_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(blocked_router_response)
+            return
         try:
             topic_thread.note_user_turn(text, person_id)
         except Exception as exc:

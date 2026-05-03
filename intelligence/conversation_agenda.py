@@ -116,6 +116,11 @@ _PROACTIVE_RULES: dict[str, tuple[int, str]] = {
         "briefly celebrate the remembered good news only. Keep it warm, optional, "
         "and do not stack another memory callback.",
     ),
+    "startup_empty_room": (
+        60,
+        "make one short startup empty-room joke only. Do not ask a question or "
+        "pretend someone is present.",
+    ),
     "visual_curiosity": (
         55,
         "ask one question based on the visible scene only. Do not also bring up "
@@ -166,6 +171,7 @@ _GRACE_SUPPRESSED_PROACTIVE_PURPOSES = {
     "visual_curiosity",
     "small_talk",
     "group_turn_invite",
+    "startup_empty_room",
     "ambient_observation",
     "appearance_riff",
     "people_roast",

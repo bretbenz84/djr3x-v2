@@ -151,6 +151,8 @@ _startup_group_signature: Optional[str] = None
 _startup_group_seen_at: float = 0.0
 _startup_group_greeted_signatures: set[str] = set()
 _startup_solo_seen_at: float = 0.0
+_startup_empty_room_seen_at: float = 0.0
+_startup_empty_room_fired: bool = False
 
 # Overheard chime-in tracking. Counts how many times Rex has chimed in on
 # being-discussed mentions this session and rate-limits how often the step
@@ -1079,6 +1081,39 @@ def _should_fire_presence(
     return True
 
 
+def _ensure_named_startup_greeting(text: str, first_name: Optional[str]) -> str:
+    """Make first-sight startup lines visibly begin as a named greeting."""
+    cleaned = str(text or "").strip()
+    name = str(first_name or "").strip()
+    if not cleaned or not name:
+        return cleaned
+
+    name_pat = re.escape(name)
+    greeting_with_name = re.compile(
+        rf"^(?:hey|hi|hello|good\s+(?:morning|afternoon|evening)|"
+        rf"there\s+you\s+are)\b[^\n.!?]{{0,70}}\b{name_pat}\b",
+        re.IGNORECASE,
+    )
+    if greeting_with_name.search(cleaned):
+        return cleaned
+
+    starts_with_name = re.compile(
+        rf"^\s*{name_pat}\b(?P<punct>[,!.?;:]?)\s*",
+        re.IGNORECASE,
+    )
+    match = starts_with_name.match(cleaned)
+    if match:
+        remainder = cleaned[match.end():].lstrip()
+        punct = match.group("punct") or ","
+        if punct in {";", ":"}:
+            punct = ","
+        if remainder:
+            return f"Hey {name}{punct} {remainder}"
+        return f"Hey {name}."
+
+    return f"Hey {name}. {cleaned}"
+
+
 def _generate_and_speak_presence(
     prompt: str,
     label: str,
@@ -1087,7 +1122,8 @@ def _generate_and_speak_presence(
     *,
     purpose: str = "presence_reaction",
     priority: Optional[int] = None,
-) -> None:
+    startup_greeting_name: Optional[str] = None,
+) -> bool:
     """
     Presence-reaction variant of _generate_and_speak.
 
@@ -1112,7 +1148,7 @@ def _generate_and_speak_presence(
             "dropped",
             "conversation_agenda_claim_rejected",
         )
-        return
+        return False
     _mark_governor_candidate(candidate_id, "accepted", "current_behavior_queued_llm")
     prompt = _apply_proactive_directive(prompt, purpose)
 
@@ -1130,6 +1166,8 @@ def _generate_and_speak_presence(
             text = get_response(prompt)
             if not text or not text.strip():
                 return
+            if startup_greeting_name:
+                text = _ensure_named_startup_greeting(text, startup_greeting_name)
             if not _proactive_purpose_current(token):
                 return
             if not _can_proactive_speak():
@@ -1168,6 +1206,7 @@ def _generate_and_speak_presence(
             _presence_reaction_lock.release()
 
     threading.Thread(target=_task, daemon=True).start()
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1520,6 +1559,7 @@ def _within_startup_group_window(now: Optional[float] = None) -> bool:
 def _step_startup_group_greeting(snapshot: dict, profile: SituationProfile) -> None:
     """Fire one relationship-aware group greeting during startup."""
     global _startup_group_signature, _startup_group_seen_at, _startup_solo_seen_at
+    global _startup_empty_room_seen_at, _startup_empty_room_fired
 
     now = time.monotonic()
     if not _within_startup_group_window(now):
@@ -1554,12 +1594,6 @@ def _step_startup_group_greeting(snapshot: dict, profile: SituationProfile) -> N
     if not _should_fire_presence(f"group:{signature}", None, profile):
         return
 
-    _startup_group_greeted_signatures.add(signature)
-    for person in scene.known:
-        _greeted_this_session.add(person.person_id)
-        _last_presence_reaction_at[person.person_id] = now
-        _first_sight_seen_at.pop(person.person_id, None)
-
     label = social_scene.visible_group_label(scene)
     prompt = None
     emotion = "curious"
@@ -1579,13 +1613,19 @@ def _step_startup_group_greeting(snapshot: dict, profile: SituationProfile) -> N
                 moods,
             )
     _log.info("consciousness: startup group greeting for %s", label)
-    _generate_and_speak_presence(
+    queued = _generate_and_speak_presence(
         prompt or social_scene.startup_group_prompt(scene),
         label=f"startup group greeting for {label}",
         tag_key=f"group:{signature}",
         emotion=emotion,
         purpose="presence_reaction",
     )
+    if queued:
+        _startup_group_greeted_signatures.add(signature)
+        for person in scene.known:
+            _greeted_this_session.add(person.person_id)
+            _last_presence_reaction_at[person.person_id] = now
+            _first_sight_seen_at.pop(person.person_id, None)
 
 
 def _hold_startup_individual_greeting(snapshot: dict, now: float) -> bool:
@@ -2367,6 +2407,66 @@ def _room_looks_empty(snapshot: dict) -> bool:
     except (TypeError, ValueError):
         crowd_count = len(people)
     return not people and crowd_count <= 0
+
+
+def _step_startup_empty_room_comment(snapshot: dict, profile: SituationProfile) -> None:
+    """Fire one startup-only joke when Rex wakes to a visibly empty room."""
+    global _startup_empty_room_seen_at, _startup_empty_room_fired
+
+    if _startup_empty_room_fired:
+        return
+    if not bool(getattr(config, "STARTUP_EMPTY_ROOM_COMMENT_ENABLED", True)):
+        return
+
+    now = time.monotonic()
+    if not _within_startup_group_window(now):
+        return
+    if _greeted_this_session or _startup_known_greeting_pending(snapshot, now=now):
+        return
+    if profile.user_mid_sentence or profile.interaction_busy:
+        return
+    if profile.suppress_proactive or profile.suppress_system_comments:
+        return
+
+    if not _room_looks_empty(snapshot):
+        _startup_empty_room_seen_at = 0.0
+        return
+
+    if _startup_empty_room_seen_at <= 0.0:
+        _startup_empty_room_seen_at = now
+        return
+
+    confirm = float(getattr(config, "STARTUP_EMPTY_ROOM_CONFIRM_SECS", 5.0))
+    if (now - _startup_empty_room_seen_at) < max(0.0, confirm):
+        return
+
+    pool = (
+        getattr(config, "STARTUP_EMPTY_ROOM_JOKES", None)
+        or getattr(config, "EMPTY_ROOM_JOKES", None)
+        or []
+    )
+    if not pool:
+        return
+
+    token = _claim_proactive_purpose(
+        "startup_empty_room",
+        label="startup empty-room joke",
+    )
+    if token is None:
+        return
+    try:
+        if not _proactive_purpose_current(token):
+            return
+        line = random.choice(list(pool))
+        if _speak_async(
+            line,
+            emotion="curious",
+            purpose="startup_empty_room",
+            label="startup empty-room joke",
+        ):
+            _startup_empty_room_fired = True
+    finally:
+        _release_proactive_purpose(token)
 
 
 def _idle_micro_behavior_choices(snapshot: dict) -> tuple[list[str], list[int]]:
@@ -3822,201 +3922,223 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 if (now - first_visible) < max(0.0, confirm_visible):
                     first_sight_pending_keys.add(key)
                     continue
-                _greeted_this_session.add(key)
-                if _should_fire_presence(key, person_db_id, profile):
-                    first_name = person_name.split()[0]
-                    context_sentence, situation_phrase = _first_sight_context(first_name)
-                    prompt: Optional[str] = None
-                    label = f"first-sight greeting for {person_name}"
-                    emotion = "excited"
+                if not _should_fire_presence(key, person_db_id, profile):
+                    first_sight_pending_keys.add(key)
+                    continue
+                first_name = person_name.split()[0]
+                context_sentence, situation_phrase = _first_sight_context(first_name)
+                prompt: Optional[str] = None
+                label = f"first-sight greeting for {person_name}"
+                emotion = "excited"
+                emotional_to_ack: Optional[dict] = None
+                celebration_to_ack: Optional[dict] = None
+                followup_to_remove: Optional[tuple[Optional[int], object]] = None
+                anticipated_to_mark: Optional[tuple[Optional[int], object]] = None
 
-                    # Priority 0 — recent sensitive emotional event.
-                    # This intentionally outranks temporal banter like
-                    # "back so soon"; care comes before the bit.
-                    emotional = None
-                    try:
-                        crowd_count = int((snapshot.get("crowd") or {}).get("count", 1) or 1)
-                    except Exception:
-                        crowd_count = 1
-                    suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
-                    if not (suppress_in_crowd and crowd_count > 1):
-                        emotional = _pick_due_emotional_checkin(person_db_id)
-                    if emotional is not None:
-                        prompt = _build_emotional_checkin_prompt(
-                            first_name, emotional, context_sentence,
+                # Priority 0 — recent sensitive emotional event.
+                # This intentionally outranks temporal banter like
+                # "back so soon"; care comes before the bit.
+                emotional = None
+                try:
+                    crowd_count = int((snapshot.get("crowd") or {}).get("count", 1) or 1)
+                except Exception:
+                    crowd_count = 1
+                suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
+                if not (suppress_in_crowd and crowd_count > 1):
+                    emotional = _pick_due_emotional_checkin(person_db_id)
+                if emotional is not None:
+                    prompt = _build_emotional_checkin_prompt(
+                        first_name, emotional, context_sentence,
+                    )
+                    label = f"first-sight emotional check-in for {person_name}"
+                    emotion = "sad" if float(emotional.get("valence", -0.5) or -0.5) < 0 else "happy"
+                    emotional_to_ack = emotional
+                    _log.info(
+                        "consciousness: first-sight emotional check-in for %s "
+                        "(category=%s, event_id=%s)",
+                        person_name, emotional.get("category"), emotional.get("id"),
+                    )
+
+                # Priority 1 — birthday within reminder window
+                if prompt is None:
+                    bday_days = _pick_birthday_window(person_db_id)
+                else:
+                    bday_days = None
+                if bday_days is not None:
+                    prompt = _build_birthday_prompt(first_name, bday_days)
+                    label = f"startup birthday (T-{bday_days}) for {person_name}"
+                    _log.info(
+                        "consciousness: startup birthday reminder for %s (T-%d days)",
+                        person_name, bday_days,
+                    )
+
+                # Priority 1.5 — positive news / milestone check-in
+                if prompt is None:
+                    celebration = _pick_due_celebration_checkin(person_db_id)
+                    if celebration is not None:
+                        prompt = _build_celebration_checkin_prompt(
+                            first_name, celebration, context_sentence,
                         )
-                        label = f"first-sight emotional check-in for {person_name}"
-                        emotion = "sad" if float(emotional.get("valence", -0.5) or -0.5) < 0 else "happy"
+                        label = f"first-sight celebration check-in for {person_name}"
+                        emotion = "happy"
+                        celebration_to_ack = celebration
+                        _log.info(
+                            "consciousness: first-sight celebration check-in for %s "
+                            "(category=%s, event_id=%s)",
+                            person_name,
+                            celebration.get("category"),
+                            celebration.get("id"),
+                        )
+
+                # Priority 2 — milestone visit
+                if prompt is None:
+                    milestone = _pick_milestone(person_db_id)
+                    if milestone is not None:
+                        prompt = _build_milestone_prompt(first_name, milestone)
+                        label = f"startup milestone (#{milestone}) for {person_name}"
+                        _log.info(
+                            "consciousness: startup milestone for %s (visit #%d)",
+                            person_name, milestone,
+                        )
+
+                # Priority 2.5 — pending follow-up (something they planned that has now passed)
+                if prompt is None:
+                    try:
+                        from memory import events as events_mod
+                        pending = events_mod.get_pending_followups(person_db_id) or []
+                    except Exception:
+                        pending = []
+                    if pending:
+                        ev = pending[0]
+                        ev_name = ev.get("event_name") or ""
+                        if ev_name:
+                            followup_to_remove = (person_db_id, ev.get("id"))
+                            prompt = (
+                                f"{context_sentence} "
+                                f"You remember they told you they had this on their schedule: "
+                                f"'{ev_name}' — and the date has now passed. Greet them and "
+                                f"ask specifically how '{ev_name}' went, in two short Rex-style "
+                                f"sentences. Address {first_name} by name. The second sentence "
+                                f"must end in a question mark."
+                            )
+                            label = f"startup followup ({ev_name}) for {person_name}"
+                            emotion = "curious"
+                            _log.info(
+                                "consciousness: startup follow-up for %s — %s",
+                                person_name, ev_name,
+                            )
+
+                # Priority 3 — anticipated upcoming event
+                if prompt is None:
+                    anticipated = _pick_anticipated_event(person_db_id)
+                    if anticipated is not None:
+                        anti_prompt = _build_anticipation_prompt(
+                            first_name, anticipated,
+                            situation_phrase,
+                        )
+                        if anti_prompt:
+                            anticipated_to_mark = (person_db_id, anticipated["id"])
+                            prompt = anti_prompt
+                            label = f"startup anticipation for {person_name}"
+                            _log.info(
+                                "consciousness: startup anticipation for %s (event=%s)",
+                                person_name, anticipated.get("event_name"),
+                            )
+
+                # Priority 4 — long absence or recent return
+                if prompt is None:
+                    absence = _pick_absence_phase(person_db_id)
+                    startup_recent_grace = float(
+                        getattr(config, "PRESENCE_STARTUP_RECENT_RETURN_GRACE_SECS", 45.0)
+                    )
+                    process_uptime = (
+                        now - _process_started_mono
+                        if _process_started_mono > 0.0
+                        else startup_recent_grace
+                    )
+                    if absence and absence[0] == "long_absence":
+                        prompt = _build_long_absence_prompt(first_name, absence[1])
+                        label = f"startup long-absence for {person_name}"
+                        emotion = "curious"
+                        _log.info(
+                            "consciousness: startup long-absence for %s (%.1f days)",
+                            person_name, absence[1],
+                        )
+                    elif (
+                        absence
+                        and absence[0] == "recent_return"
+                        and process_uptime >= startup_recent_grace
+                    ):
+                        prompt = _build_recent_return_prompt(first_name, absence[1])
+                        label = f"startup recent-return for {person_name}"
+                        emotion = "curious"
+                        _log.info(
+                            "consciousness: startup recent-return for %s (%.1f hrs)",
+                            person_name, absence[1],
+                        )
+
+                # Fallback — generic greeting
+                if prompt is None:
+                    mood_prompt = _build_first_sight_mood_prompt(
+                        first_name,
+                        context_sentence,
+                        _get_first_sight_mood(person_db_id),
+                    )
+                    if mood_prompt:
+                        prompt, emotion = mood_prompt
+                        label = f"first-sight mood greeting for {person_name}"
+                        _log.info(
+                            "consciousness: startup mood greeting for %s",
+                            person_name,
+                        )
+                    else:
+                        prompt = _build_startup_solo_greeting_prompt(
+                            first_name,
+                            context_sentence,
+                        )
+                        _log.info("consciousness: startup greeting for %s", person_name)
+
+                queued = _generate_and_speak_presence(
+                    prompt,
+                    label=label,
+                    tag_key=key,
+                    emotion=emotion,
+                    purpose=(
+                        "emotional_checkin"
+                        if "emotional check-in" in label
+                        else "celebration_checkin"
+                        if "celebration check-in" in label
+                        else "memory_followup"
+                        if "followup" in label or "anticipation" in label
+                        else "presence_reaction"
+                    ),
+                    startup_greeting_name=first_name,
+                )
+                if queued:
+                    if emotional_to_ack is not None:
                         _note_emotional_checkin_fired(person_db_id)
                         try:
                             from memory import emotional_events as emo_events
-                            emo_events.mark_acknowledged(int(emotional["id"]))
+                            emo_events.mark_acknowledged(int(emotional_to_ack["id"]))
                         except Exception:
                             pass
-                        _log.info(
-                            "consciousness: first-sight emotional check-in for %s "
-                            "(category=%s, event_id=%s)",
-                            person_name, emotional.get("category"), emotional.get("id"),
-                        )
-
-                    # Priority 1 — birthday within reminder window
-                    if prompt is None:
-                        bday_days = _pick_birthday_window(person_db_id)
-                    else:
-                        bday_days = None
-                    if bday_days is not None:
-                        prompt = _build_birthday_prompt(first_name, bday_days)
-                        label = f"startup birthday (T-{bday_days}) for {person_name}"
-                        _log.info(
-                            "consciousness: startup birthday reminder for %s (T-%d days)",
-                            person_name, bday_days,
-                        )
-
-                    # Priority 1.5 — positive news / milestone check-in
-                    if prompt is None:
-                        celebration = _pick_due_celebration_checkin(person_db_id)
-                        if celebration is not None:
-                            prompt = _build_celebration_checkin_prompt(
-                                first_name, celebration, context_sentence,
-                            )
-                            label = f"first-sight celebration check-in for {person_name}"
-                            emotion = "happy"
-                            try:
-                                from memory import emotional_events as emo_events
-                                emo_events.mark_acknowledged(int(celebration["id"]))
-                            except Exception:
-                                pass
-                            _log.info(
-                                "consciousness: first-sight celebration check-in for %s "
-                                "(category=%s, event_id=%s)",
-                                person_name,
-                                celebration.get("category"),
-                                celebration.get("id"),
-                            )
-
-                    # Priority 2 — milestone visit
-                    if prompt is None:
-                        milestone = _pick_milestone(person_db_id)
-                        if milestone is not None:
-                            prompt = _build_milestone_prompt(first_name, milestone)
-                            label = f"startup milestone (#{milestone}) for {person_name}"
-                            _log.info(
-                                "consciousness: startup milestone for %s (visit #%d)",
-                                person_name, milestone,
-                            )
-
-                    # Priority 2.5 — pending follow-up (something they planned that has now passed)
-                    if prompt is None:
+                    if celebration_to_ack is not None:
                         try:
-                            from memory import events as events_mod
-                            pending = events_mod.get_pending_followups(person_db_id) or []
+                            from memory import emotional_events as emo_events
+                            emo_events.mark_acknowledged(int(celebration_to_ack["id"]))
                         except Exception:
-                            pending = []
-                        if pending:
-                            ev = pending[0]
-                            ev_name = ev.get("event_name") or ""
-                            if ev_name:
-                                _pending_followups_lock_remove(person_db_id, ev.get("id"))
-                                prompt = (
-                                    f"{context_sentence} "
-                                    f"You remember they told you they had this on their schedule: "
-                                    f"'{ev_name}' — and the date has now passed. Greet them and "
-                                    f"ask specifically how '{ev_name}' went, in two short Rex-style "
-                                    f"sentences. Address {first_name} by name. The second sentence "
-                                    f"must end in a question mark."
-                                )
-                                label = f"startup followup ({ev_name}) for {person_name}"
-                                emotion = "curious"
-                                _log.info(
-                                    "consciousness: startup follow-up for %s — %s",
-                                    person_name, ev_name,
-                                )
-
-                    # Priority 3 — anticipated upcoming event
-                    if prompt is None:
-                        anticipated = _pick_anticipated_event(person_db_id)
-                        if anticipated is not None:
-                            anti_prompt = _build_anticipation_prompt(
-                                first_name, anticipated,
-                                situation_phrase,
-                            )
-                            if anti_prompt:
-                                _anticipated_events.add((person_db_id, anticipated["id"]))
-                                prompt = anti_prompt
-                                label = f"startup anticipation for {person_name}"
-                                _log.info(
-                                    "consciousness: startup anticipation for %s (event=%s)",
-                                    person_name, anticipated.get("event_name"),
-                                )
-
-                    # Priority 4 — long absence or recent return
-                    if prompt is None:
-                        absence = _pick_absence_phase(person_db_id)
-                        startup_recent_grace = float(
-                            getattr(config, "PRESENCE_STARTUP_RECENT_RETURN_GRACE_SECS", 45.0)
+                            pass
+                    if followup_to_remove is not None:
+                        _pending_followups_lock_remove(
+                            followup_to_remove[0],
+                            followup_to_remove[1],
                         )
-                        process_uptime = (
-                            now - _process_started_mono
-                            if _process_started_mono > 0.0
-                            else startup_recent_grace
-                        )
-                        if absence and absence[0] == "long_absence":
-                            prompt = _build_long_absence_prompt(first_name, absence[1])
-                            label = f"startup long-absence for {person_name}"
-                            emotion = "curious"
-                            _log.info(
-                                "consciousness: startup long-absence for %s (%.1f days)",
-                                person_name, absence[1],
-                            )
-                        elif (
-                            absence
-                            and absence[0] == "recent_return"
-                            and process_uptime >= startup_recent_grace
-                        ):
-                            prompt = _build_recent_return_prompt(first_name, absence[1])
-                            label = f"startup recent-return for {person_name}"
-                            emotion = "curious"
-                            _log.info(
-                                "consciousness: startup recent-return for %s (%.1f hrs)",
-                                person_name, absence[1],
-                            )
-
-                    # Fallback — generic greeting
-                    if prompt is None:
-                        mood_prompt = _build_first_sight_mood_prompt(
-                            first_name,
-                            context_sentence,
-                            _get_first_sight_mood(person_db_id),
-                        )
-                        if mood_prompt:
-                            prompt, emotion = mood_prompt
-                            label = f"first-sight mood greeting for {person_name}"
-                            _log.info(
-                                "consciousness: startup mood greeting for %s",
-                                person_name,
-                            )
-                        else:
-                            prompt = _build_startup_solo_greeting_prompt(
-                                first_name,
-                                context_sentence,
-                            )
-                            _log.info("consciousness: startup greeting for %s", person_name)
-
-                    _generate_and_speak_presence(
-                        prompt,
-                        label=label,
-                        tag_key=key,
-                        emotion=emotion,
-                        purpose=(
-                            "emotional_checkin"
-                            if "emotional check-in" in label
-                            else "celebration_checkin"
-                            if "celebration check-in" in label
-                            else "memory_followup"
-                            if "followup" in label or "anticipation" in label
-                            else "presence_reaction"
-                        ),
-                    )
+                    if anticipated_to_mark is not None:
+                        _anticipated_events.add(anticipated_to_mark)
+                    _greeted_this_session.add(key)
+                    _first_sight_seen_at.pop(key, None)
+                else:
+                    first_sight_pending_keys.add(key)
             continue
 
         absent_secs = now - _last_seen[key]
@@ -5217,6 +5339,10 @@ def _loop() -> None:
             # opening instead of stacked callbacks.
             _step_startup_group_greeting(snapshot, profile)
 
+            # 6a. If Rex boots into an empty room, acknowledge the awkwardness
+            # once after the camera has had a chance to settle.
+            _step_startup_empty_room_comment(snapshot, profile)
+
             # 6b. Follow-up check
             _step_followup_check(snapshot)
 
@@ -5332,6 +5458,8 @@ def start() -> None:
     _startup_group_signature = None
     _startup_group_seen_at = 0.0
     _startup_solo_seen_at = 0.0
+    _startup_empty_room_seen_at = 0.0
+    _startup_empty_room_fired = False
     _startup_group_greeted_signatures.clear()
     _last_rex_utterance_text = ""
     _last_memory_hint_text = ""
@@ -5374,6 +5502,7 @@ def stop() -> None:
     global _last_memory_hint_text, _last_memory_hint_at, _last_memory_hint_person_id
     global _recent_engaged_person_id, _recent_engaged_touch_at
     global _last_pose_analysis_at
+    global _startup_empty_room_seen_at, _startup_empty_room_fired
     _stop_event.set()
     _pending_identity_prompt.clear()
     _identity_prompt_in_flight.clear()
@@ -5390,6 +5519,8 @@ def stop() -> None:
     _previous_face_boxes.clear()
     _personal_space_reacted_at.clear()
     _last_pose_analysis_at = 0.0
+    _startup_empty_room_seen_at = 0.0
+    _startup_empty_room_fired = False
     _startup_group_greeted_signatures.clear()
     _last_rex_utterance_text = ""
     _last_memory_hint_text = ""

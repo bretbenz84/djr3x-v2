@@ -1328,6 +1328,11 @@ AMBIENT_OBSERVATION_PROBABILITY = 0.5
 EMPTY_ROOM_JOKE_PROBABILITY = 0.9
 PEOPLE_ROAST_RIFF_PROBABILITY = 0.75
 
+# Startup empty-room beat: after the camera has had a moment to settle, Rex can
+# acknowledge being activated with no visible audience.
+STARTUP_EMPTY_ROOM_COMMENT_ENABLED = True
+STARTUP_EMPTY_ROOM_CONFIRM_SECS = 5.0
+
 # Mood-aware small talk: when Rex initiates small talk and a known person is in
 # frame, occasionally do a GPT-4o mood read of their face and tailor the question
 # to what he sees (happy → "what's got you in a good mood?", sad → "you look
@@ -1552,6 +1557,13 @@ EMPTY_ROOM_JOKES = [
     "No one here but me and my questionable career trajectory.",
     "If anyone is listening, excellent hiding. Very committed.",
     "Another standing ovation from the chairs. They're shy, but supportive.",
+]
+
+STARTUP_EMPTY_ROOM_JOKES = [
+    "Oh look, someone activated me in an empty room. Excellent use of everyone's time.",
+    "Boot sequence complete. Audience count: furniture. Finally, my core demographic.",
+    "Fantastic. I have awakened to perform for absolutely no one.",
+    "Systems online. Social situation detected: aggressively vacant.",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────

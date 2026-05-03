@@ -960,6 +960,44 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         refresh.assert_called_once_with(1, "Bret")
         speak.assert_called_once()
 
+    def test_name_update_existing_person_does_not_rename_current_person(self):
+        from intelligence import interaction
+        from intelligence import repair_moves
+
+        repair_moves.clear()
+        try:
+            with (
+                mock.patch.object(
+                    interaction,
+                    "_resolve_name_update_target",
+                    return_value=(1, "Bret"),
+                ),
+                mock.patch.object(
+                    interaction.people_memory,
+                    "find_person_by_name",
+                    return_value={"id": 3, "name": "Daniel"},
+                ),
+                mock.patch.object(
+                    interaction,
+                    "_known_person_visible_recently",
+                    return_value=False,
+                ),
+                mock.patch.object(interaction.people_memory, "rename_person") as rename,
+                mock.patch.object(interaction, "_speak_blocking") as speak,
+            ):
+                response = interaction._handle_name_update_request(
+                    "That's not Bret, I'm Daniel",
+                    person_id=1,
+                    person_name="Bret",
+                )
+
+            self.assertIn("Daniel is already a separate person", response)
+            self.assertIn("I won't rename Bret into Daniel", response)
+            rename.assert_not_called()
+            speak.assert_called_once()
+        finally:
+            repair_moves.clear()
+
     def test_repair_response_adds_better_luck_line_for_misunderstanding(self):
         from intelligence import interaction
         from intelligence import repair_moves
@@ -1472,6 +1510,31 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertIn("do not reuse the same wording every run", prompt)
         self.assertIn("do NOT call this one visible person 'they' or 'them'", prompt)
 
+    def test_startup_named_greeting_prefixes_memory_callbacks(self):
+        from intelligence import consciousness
+
+        self.assertEqual(
+            consciousness._ensure_named_startup_greeting(
+                "Bret, I hear you built the interface.",
+                "Bret",
+            ),
+            "Hey Bret, I hear you built the interface.",
+        )
+        self.assertEqual(
+            consciousness._ensure_named_startup_greeting(
+                "Major achievement on that interface.",
+                "Bret",
+            ),
+            "Hey Bret. Major achievement on that interface.",
+        )
+        self.assertEqual(
+            consciousness._ensure_named_startup_greeting(
+                "Hey Bret, nice work on the interface.",
+                "Bret",
+            ),
+            "Hey Bret, nice work on the interface.",
+        )
+
     def test_startup_known_greeting_pending_suppresses_generic_world_reactions(self):
         from intelligence import consciousness
 
@@ -1534,6 +1597,122 @@ class ConversationGatingTest(unittest.TestCase):
             consciousness._greeted_this_session.update(old_greeted)
             consciousness._last_micro_behavior_at = old_micro
 
+    def test_first_sight_greeting_retries_when_presence_gate_busy(self):
+        from intelligence import consciousness
+
+        old_visible = set(consciousness._visible_people)
+        old_last_seen = dict(consciousness._last_seen)
+        old_first_seen = dict(consciousness._first_sight_seen_at)
+        old_greeted = set(consciousness._greeted_this_session)
+        try:
+            consciousness._visible_people.clear()
+            consciousness._last_seen.clear()
+            consciousness._first_sight_seen_at.clear()
+            consciousness._first_sight_seen_at[1] = 100.0
+            consciousness._greeted_this_session.clear()
+            snapshot = {
+                "people": [
+                    {"person_db_id": 1, "face_id": "Bret Benziger"},
+                ],
+                "crowd": {"count": 1},
+            }
+            profile = mock.Mock(
+                suppress_proactive=False,
+                interaction_busy=False,
+                user_mid_sentence=False,
+                likely_still_present=False,
+                apparent_departure=False,
+            )
+
+            with (
+                mock.patch.object(consciousness.time, "monotonic", return_value=105.0),
+                mock.patch.object(consciousness.config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 0.0),
+                mock.patch.object(consciousness, "_hold_startup_individual_greeting", return_value=False),
+                mock.patch.object(consciousness, "_should_fire_presence", return_value=False),
+                mock.patch.object(consciousness, "_generate_and_speak_presence") as generate,
+            ):
+                consciousness._step_presence_tracking(snapshot, profile)
+
+            self.assertNotIn(1, consciousness._greeted_this_session)
+            self.assertIn(1, consciousness._first_sight_seen_at)
+            self.assertNotIn(1, consciousness._visible_people)
+            generate.assert_not_called()
+        finally:
+            consciousness._visible_people.clear()
+            consciousness._visible_people.update(old_visible)
+            consciousness._last_seen.clear()
+            consciousness._last_seen.update(old_last_seen)
+            consciousness._first_sight_seen_at.clear()
+            consciousness._first_sight_seen_at.update(old_first_seen)
+            consciousness._greeted_this_session.clear()
+            consciousness._greeted_this_session.update(old_greeted)
+
+    def test_first_sight_greeting_marks_greeted_after_queue_accepts(self):
+        from intelligence import consciousness
+
+        old_visible = set(consciousness._visible_people)
+        old_last_seen = dict(consciousness._last_seen)
+        old_first_seen = dict(consciousness._first_sight_seen_at)
+        old_greeted = set(consciousness._greeted_this_session)
+        try:
+            consciousness._visible_people.clear()
+            consciousness._last_seen.clear()
+            consciousness._first_sight_seen_at.clear()
+            consciousness._first_sight_seen_at[1] = 100.0
+            consciousness._greeted_this_session.clear()
+            snapshot = {
+                "people": [
+                    {"person_db_id": 1, "face_id": "Bret Benziger"},
+                ],
+                "crowd": {"count": 1},
+            }
+            profile = mock.Mock(
+                suppress_proactive=False,
+                interaction_busy=False,
+                user_mid_sentence=False,
+                likely_still_present=False,
+                apparent_departure=False,
+            )
+
+            with (
+                mock.patch.object(consciousness.time, "monotonic", return_value=105.0),
+                mock.patch.object(consciousness.config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 0.0),
+                mock.patch.object(consciousness, "_hold_startup_individual_greeting", return_value=False),
+                mock.patch.object(consciousness, "_should_fire_presence", return_value=True),
+                mock.patch.object(consciousness, "_pick_due_emotional_checkin", return_value=None),
+                mock.patch.object(consciousness, "_pick_birthday_window", return_value=None),
+                mock.patch.object(consciousness, "_pick_due_celebration_checkin", return_value=None),
+                mock.patch.object(consciousness, "_pick_milestone", return_value=None),
+                mock.patch.object(consciousness, "_pick_anticipated_event", return_value=None),
+                mock.patch.object(consciousness, "_pick_absence_phase", return_value=None),
+                mock.patch.object(consciousness, "_build_first_sight_mood_prompt", return_value=None),
+                mock.patch.object(
+                    consciousness,
+                    "_build_startup_solo_greeting_prompt",
+                    return_value="startup prompt",
+                ),
+                mock.patch.object(
+                    consciousness,
+                    "_generate_and_speak_presence",
+                    return_value=True,
+                ) as generate,
+            ):
+                consciousness._step_presence_tracking(snapshot, profile)
+
+            self.assertIn(1, consciousness._greeted_this_session)
+            self.assertNotIn(1, consciousness._first_sight_seen_at)
+            self.assertIn(1, consciousness._visible_people)
+            self.assertEqual(generate.call_args.kwargs["startup_greeting_name"], "Bret")
+        finally:
+            consciousness._visible_people.clear()
+            consciousness._visible_people.update(old_visible)
+            consciousness._last_seen.clear()
+            consciousness._last_seen.update(old_last_seen)
+            consciousness._first_sight_seen_at.clear()
+            consciousness._first_sight_seen_at.update(old_first_seen)
+            consciousness._greeted_this_session.clear()
+            consciousness._greeted_this_session.update(old_greeted)
+
     def test_startup_window_suppresses_idle_micro_behavior_before_any_greeting(self):
         from intelligence import consciousness
         from state import State
@@ -1568,6 +1747,90 @@ class ConversationGatingTest(unittest.TestCase):
             consciousness._greeted_this_session.clear()
             consciousness._greeted_this_session.update(old_greeted)
             consciousness._last_micro_behavior_at = old_micro
+
+    def test_startup_empty_room_waits_for_camera_settle(self):
+        from intelligence import consciousness
+
+        old_started = consciousness._process_started_mono
+        old_seen = consciousness._startup_empty_room_seen_at
+        old_fired = consciousness._startup_empty_room_fired
+        old_greeted = set(consciousness._greeted_this_session)
+        try:
+            consciousness._process_started_mono = 100.0
+            consciousness._startup_empty_room_seen_at = 0.0
+            consciousness._startup_empty_room_fired = False
+            consciousness._greeted_this_session.clear()
+            snapshot = {"people": [], "crowd": {"count": 0}}
+            profile = mock.Mock(
+                suppress_proactive=False,
+                suppress_system_comments=False,
+                interaction_busy=False,
+                user_mid_sentence=False,
+            )
+
+            with (
+                mock.patch.object(consciousness.time, "monotonic", return_value=102.0),
+                mock.patch.object(consciousness.config, "STARTUP_EMPTY_ROOM_CONFIRM_SECS", 5.0),
+                mock.patch.object(consciousness, "_speak_async") as speak,
+            ):
+                consciousness._step_startup_empty_room_comment(snapshot, profile)
+
+            self.assertEqual(consciousness._startup_empty_room_seen_at, 102.0)
+            self.assertFalse(consciousness._startup_empty_room_fired)
+            speak.assert_not_called()
+        finally:
+            consciousness._process_started_mono = old_started
+            consciousness._startup_empty_room_seen_at = old_seen
+            consciousness._startup_empty_room_fired = old_fired
+            consciousness._greeted_this_session.clear()
+            consciousness._greeted_this_session.update(old_greeted)
+
+    def test_startup_empty_room_speaks_once_after_confirm(self):
+        from intelligence import consciousness
+
+        old_started = consciousness._process_started_mono
+        old_seen = consciousness._startup_empty_room_seen_at
+        old_fired = consciousness._startup_empty_room_fired
+        old_greeted = set(consciousness._greeted_this_session)
+        try:
+            consciousness._process_started_mono = 100.0
+            consciousness._startup_empty_room_seen_at = 101.0
+            consciousness._startup_empty_room_fired = False
+            consciousness._greeted_this_session.clear()
+            snapshot = {"people": [], "crowd": {"count": 0}}
+            profile = mock.Mock(
+                suppress_proactive=False,
+                suppress_system_comments=False,
+                interaction_busy=False,
+                user_mid_sentence=False,
+            )
+
+            with (
+                mock.patch.object(consciousness.time, "monotonic", return_value=107.0),
+                mock.patch.object(consciousness.random, "choice", return_value="Empty startup line."),
+                mock.patch.object(consciousness, "_claim_proactive_purpose", return_value="tok") as claim,
+                mock.patch.object(consciousness, "_proactive_purpose_current", return_value=True),
+                mock.patch.object(consciousness, "_release_proactive_purpose") as release,
+                mock.patch.object(consciousness, "_speak_async", return_value=True) as speak,
+            ):
+                consciousness._step_startup_empty_room_comment(snapshot, profile)
+
+            claim.assert_called_once_with(
+                "startup_empty_room",
+                label="startup empty-room joke",
+            )
+            speak.assert_called_once()
+            self.assertEqual(speak.call_args.args[0], "Empty startup line.")
+            self.assertEqual(speak.call_args.kwargs["purpose"], "startup_empty_room")
+            self.assertEqual(speak.call_args.kwargs["label"], "startup empty-room joke")
+            self.assertTrue(consciousness._startup_empty_room_fired)
+            release.assert_called_once_with("tok")
+        finally:
+            consciousness._process_started_mono = old_started
+            consciousness._startup_empty_room_seen_at = old_seen
+            consciousness._startup_empty_room_fired = old_fired
+            consciousness._greeted_this_session.clear()
+            consciousness._greeted_this_session.update(old_greeted)
 
     def test_idle_micro_behavior_choices_include_empty_room_jokes_when_alone(self):
         from intelligence import consciousness
@@ -3958,6 +4221,65 @@ class PendingMusicPreferenceTest(unittest.TestCase):
 
         self.assertEqual(routed.action, "conversation.reply")
         self.assertLess(routed.confidence, 0.85)
+
+    def test_conversation_reply_general_knowledge_skips_memory_learning(self):
+        from intelligence import action_router, interaction
+
+        decision = action_router.ActionDecision(
+            action="conversation.reply",
+            confidence=1.0,
+            args={},
+            reason="general knowledge",
+        )
+
+        self.assertTrue(
+            interaction._conversation_reply_should_skip_memory_learning(
+                "What do you know about jazz?",
+                decision,
+            )
+        )
+        self.assertTrue(
+            interaction._conversation_reply_should_skip_memory_learning(
+                "Tell me about Star Trek.",
+                decision,
+            )
+        )
+        self.assertFalse(
+            interaction._conversation_reply_should_skip_memory_learning(
+                "I like jazz",
+                decision,
+            )
+        )
+        self.assertFalse(
+            interaction._conversation_reply_should_skip_memory_learning(
+                "What do you remember about me?",
+                decision,
+            )
+        )
+
+    def test_vision_snapshot_blocked_response_requests_confirmation(self):
+        from intelligence import action_router, interaction
+
+        decision = action_router.ActionDecision(
+            action="vision.snapshot",
+            confidence=0.94,
+            args={"scope": "current_view"},
+            requires_confirmation=True,
+            reason="privacy-sensitive scene memory",
+        )
+
+        response = interaction._router_blocked_confirmation_response(
+            decision,
+            "requires_confirmation",
+        )
+
+        self.assertIn("won't store a scene memory", response)
+        self.assertIsNone(
+            interaction._router_blocked_confirmation_response(
+                decision,
+                "not_in_execute_allowlist",
+            )
+        )
 
     def test_router_keeps_person_memory_question_as_memory_query(self):
         from intelligence import action_router
