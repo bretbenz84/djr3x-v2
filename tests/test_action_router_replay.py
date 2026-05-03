@@ -153,6 +153,20 @@ class ActionRouterReplayTests(unittest.TestCase):
                 expected_final_path="router_takeover.vision.describe_scene",
             ),
             RouterReplayCase(
+                utterance="who is speaking?",
+                router_action="identity.who_is_speaking",
+                expected_allowlist_result="allowed",
+                expected_legacy_command=None,
+                expected_final_path="router_takeover.identity.who_is_speaking",
+            ),
+            RouterReplayCase(
+                utterance="stop the game",
+                router_action="game.stop",
+                expected_allowlist_result="allowed",
+                expected_legacy_command="stop_game",
+                expected_final_path="router_takeover.game.stop",
+            ),
+            RouterReplayCase(
                 utterance="play jazz",
                 router_action="music.play",
                 expected_allowlist_result="not_in_execute_allowlist",
@@ -211,8 +225,12 @@ class ActionRouterReplayTests(unittest.TestCase):
                     self.assertEqual(payload["_classified_calls"], ["query_music_options"])
                 if case.expected_final_path == "router_takeover.vision.describe_scene":
                     self.assertEqual(payload["_classified_calls"], ["query_what_do_you_see"])
+                if case.expected_final_path == "router_takeover.identity.who_is_speaking":
+                    self.assertEqual(payload["_classified_calls"], ["query_who_is_speaking"])
                 if case.expected_final_path == "router_takeover.music.skip":
                     self.assertEqual(payload["_executed_command_keys"], ["dj_skip"])
+                if case.expected_final_path == "router_takeover.game.stop":
+                    self.assertEqual(payload["_executed_command_keys"], ["stop_game"])
 
 
 if __name__ == "__main__":

@@ -16,9 +16,11 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
             "humor.free_bit",
             "performance.dj_bit",
             "performance.body_beat",
+            "identity.who_is_speaking",
             "music.options",
             "music.stop",
             "music.skip",
+            "game.stop",
             "vision.describe_scene",
             "time.query",
             "date.query",
@@ -56,7 +58,9 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
             "music.options": {},
             "music.stop": {},
             "music.skip": {},
+            "game.stop": {},
             "performance.body_beat": {"body_beat": "tiny_victory_dance"},
+            "identity.who_is_speaking": {},
             "vision.describe_scene": {},
         }
 

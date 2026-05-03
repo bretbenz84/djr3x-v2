@@ -92,6 +92,8 @@ class ScoredCandidate:
     score: int
     rejected: bool
     reasons: list[str]
+    selected: bool = False
+    skip_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -142,16 +144,9 @@ class ActionGovernor:
         if cycle is None:
             scored = self._score(candidate, profile=None)
             if self.log_candidates:
+                decision = self._decide([scored])
                 self._log_candidate(scored, cycle_id="standalone")
-                self._log_decision(
-                    Decision(
-                        action="speak" if not scored.rejected else "wait",
-                        selected=scored if not scored.rejected else None,
-                        scored=[scored],
-                        reason="standalone candidate" if not scored.rejected else "candidate rejected",
-                    ),
-                    cycle_id="standalone",
-                )
+                self._log_decision(decision, cycle_id="standalone")
             return candidate.candidate_id
         cycle["candidates"].append(candidate)
         return candidate.candidate_id
@@ -222,20 +217,52 @@ class ActionGovernor:
                 score -= 35
                 reasons.append("conversation_active_low_priority")
             if getattr(profile, "force_family_safe", False):
-                candidate.metadata.setdefault("family_safe", True)
+                if (
+                    candidate.metadata.get("family_safe") is False
+                    or candidate.metadata.get("adult_only")
+                    or candidate.metadata.get("unsafe_for_children")
+                ):
+                    reasons.append("child_present_family_safe_block")
+                else:
+                    candidate.metadata.setdefault("family_safe", True)
 
         if candidate.metadata.get("waiting_for_response"):
             reasons.append("waiting_for_human_response")
+        if candidate.metadata.get("proactive_speech_pending"):
+            reasons.append("proactive_speech_pending")
+        if candidate.metadata.get("game_interruptions_suppressed"):
+            reasons.append("game_active_suppresses_proactive")
+        if candidate.metadata.get("active_state_proactive_blocked"):
+            reasons.append("active_state_proactive_blocked")
+        if candidate.metadata.get("speech_queue_speaking"):
+            reasons.append("speech_queue_speaking")
+        if candidate.metadata.get("output_gate_busy"):
+            reasons.append("output_gate_busy")
+        if candidate.metadata.get("output_gate_status_error"):
+            reasons.append("output_gate_status_error")
         if candidate.metadata.get("can_proactive_speak") is False:
             reasons.append("can_proactive_speak_false")
         if candidate.metadata.get("can_speak") is False:
             reasons.append("can_speak_false")
+        if candidate.metadata.get("cooldown_active"):
+            cooldown_reason = str(candidate.metadata.get("cooldown_reason") or "cooldown_active")
+            remaining = candidate.metadata.get("cooldown_remaining_secs")
+            if isinstance(remaining, (int, float)) and remaining > 0:
+                reasons.append(f"{cooldown_reason}_{remaining:.1f}s")
+            else:
+                reasons.append(cooldown_reason)
 
         recent_rex_gap = candidate.metadata.get("seconds_since_rex_spoke")
         min_gap = float(getattr(config, "CONSCIOUSNESS_PROACTIVE_MIN_GAP_SECS", 0.0) or 0.0)
-        if isinstance(recent_rex_gap, (int, float)) and min_gap and recent_rex_gap < min_gap:
+        if (
+            isinstance(recent_rex_gap, (int, float))
+            and min_gap
+            and recent_rex_gap < min_gap
+            and not candidate.metadata.get("cooldown_active")
+        ):
             score -= 20
-            reasons.append(f"recent_rex_speech_{recent_rex_gap:.1f}s")
+            remaining = max(0.0, min_gap - recent_rex_gap)
+            reasons.append(f"proactive_cooldown_{remaining:.1f}s")
 
         rejected = bool(
             candidate.outcome == "dropped"
@@ -243,9 +270,17 @@ class ActionGovernor:
             or "user_mid_sentence" in reasons
             or "interaction_busy" in reasons
             or "situation_suppresses_proactive" in reasons
+            or "child_present_family_safe_block" in reasons
             or "waiting_for_human_response" in reasons
+            or "proactive_speech_pending" in reasons
+            or "game_active_suppresses_proactive" in reasons
+            or "active_state_proactive_blocked" in reasons
+            or "speech_queue_speaking" in reasons
+            or "output_gate_busy" in reasons
+            or "output_gate_status_error" in reasons
             or "can_proactive_speak_false" in reasons
             or "can_speak_false" in reasons
+            or candidate.metadata.get("cooldown_active")
         )
         min_score = int(getattr(config, "ACTION_GOVERNOR_MIN_SCORE", 20))
         if score < min_score:
@@ -257,22 +292,74 @@ class ActionGovernor:
         return ScoredCandidate(candidate=candidate, score=score, rejected=rejected, reasons=reasons)
 
     @staticmethod
-    def _decide(scored: list[ScoredCandidate]) -> Decision:
+    def _selection_key(item: ScoredCandidate) -> tuple[int, float]:
+        return (
+            item.score,
+            -item.candidate.created_at,
+        )
+
+    @staticmethod
+    def _candidate_topic_key(candidate: CandidateMove) -> str:
+        explicit = (
+            candidate.metadata.get("topic_key")
+            or candidate.metadata.get("dedupe_key")
+            or candidate.metadata.get("topic")
+        )
+        if explicit:
+            return str(explicit).strip().lower()
+        target = candidate.target_person_id
+        if target is None:
+            target = candidate.target_label.strip().lower()
+        label = (candidate.label or candidate.purpose or "").strip().lower()
+        return f"{candidate.purpose}:{target or ''}:{label}"
+
+    @classmethod
+    def _decide(cls, scored: list[ScoredCandidate]) -> Decision:
+        for item in scored:
+            item.selected = False
+            item.skip_reasons.clear()
+
+        eligible_by_rank = sorted(
+            [item for item in scored if not item.rejected],
+            key=cls._selection_key,
+            reverse=True,
+        )
+        seen_topics: dict[str, ScoredCandidate] = {}
+        for item in eligible_by_rank:
+            topic_key = cls._candidate_topic_key(item.candidate)
+            if topic_key in seen_topics:
+                item.rejected = True
+                item.reasons.append("duplicate_topic")
+                item.skip_reasons.append("duplicate_topic")
+                continue
+            seen_topics[topic_key] = item
+
         eligible = [item for item in scored if not item.rejected]
         if not eligible:
+            for item in scored:
+                if not item.skip_reasons:
+                    item.skip_reasons.extend(item.reasons)
             return Decision(
                 action="wait",
                 selected=None,
                 scored=scored,
                 reason="no eligible candidates",
             )
-        selected = max(
-            eligible,
-            key=lambda item: (
-                item.score,
-                -item.candidate.created_at,
-            ),
-        )
+        selected = max(eligible, key=cls._selection_key)
+        selected.selected = True
+        for item in scored:
+            if item is selected:
+                continue
+            if item.rejected:
+                if not item.skip_reasons:
+                    item.skip_reasons.extend(item.reasons)
+                continue
+            if selected.score > item.score:
+                reason = f"lower_priority_than_selected:{selected.candidate.purpose}"
+            else:
+                reason = f"tie_lost_to_selected:{selected.candidate.purpose}"
+            item.skip_reasons.append(reason)
+            item.reasons.append(reason)
         return Decision(
             action="speak",
             selected=selected,
@@ -290,10 +377,12 @@ class ActionGovernor:
     def _log_candidate(self, scored: ScoredCandidate, *, cycle_id: str) -> None:
         c = scored.candidate
         reasons = ",".join(scored.reasons)
+        skip_reasons = ",".join(scored.skip_reasons)
         payload = c.suggested_text or c.prompt
         _log.info(
             "[action_governor] %s candidate=%s kind=%s purpose=%s source=%s label=%r "
-            "score=%s rejected=%s outcome=%s reasons=%s llm=%s target=%s text=%r",
+            "score=%s selected=%s skipped=%s rejected=%s outcome=%s reasons=%s "
+            "skip_reasons=%s llm=%s target=%s text=%r",
             cycle_id,
             c.candidate_id,
             c.kind,
@@ -301,9 +390,12 @@ class ActionGovernor:
             c.source,
             c.label,
             scored.score,
+            scored.selected,
+            not scored.selected,
             scored.rejected,
             c.outcome,
             reasons,
+            skip_reasons,
             c.requires_llm,
             c.target_person_id or c.target_label or "",
             self._clip(payload),

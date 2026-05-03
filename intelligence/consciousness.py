@@ -868,13 +868,49 @@ def _governor_speech_metadata() -> dict:
         "can_speak": _can_speak(),
     }
     try:
-        metadata["can_proactive_speak"] = _can_proactive_speak()
+        current_state = state_module.get_state()
+        metadata["state"] = getattr(current_state, "name", str(current_state))
+        metadata["active_state_proactive_blocked"] = (
+            current_state == State.ACTIVE
+            and not getattr(config, "CONSCIOUSNESS_ALLOW_PROACTIVE_IN_ACTIVE", False)
+        )
     except Exception:
         pass
+    try:
+        from features import games as games_mod
+        if hasattr(games_mod, "suppresses_conversation_interruptions"):
+            metadata["game_interruptions_suppressed"] = bool(
+                games_mod.suppresses_conversation_interruptions()
+            )
+        elif hasattr(games_mod, "is_active"):
+            metadata["game_interruptions_suppressed"] = bool(games_mod.is_active())
+    except Exception:
+        pass
+    metadata["proactive_speech_pending"] = _proactive_speech_pending.is_set()
+    try:
+        metadata["interaction_busy"] = _situation_assessor.is_interaction_busy()
+    except Exception:
+        pass
+    try:
+        from audio import output_gate, speech_queue
+        metadata["speech_queue_speaking"] = speech_queue.is_speaking()
+        metadata["output_gate_busy"] = output_gate.is_busy()
+    except Exception:
+        metadata["output_gate_status_error"] = True
     with _turn_lock:
         last_spoken = _last_proactive_speech_at
     if last_spoken:
-        metadata["seconds_since_rex_spoke"] = time.monotonic() - last_spoken
+        recent_gap = time.monotonic() - last_spoken
+        metadata["seconds_since_rex_spoke"] = recent_gap
+        min_gap = max(0.0, float(getattr(config, "CONSCIOUSNESS_PROACTIVE_MIN_GAP_SECS", 0.0)))
+        if min_gap and recent_gap < min_gap:
+            metadata["cooldown_active"] = True
+            metadata["cooldown_reason"] = "proactive_speech_cooldown"
+            metadata["cooldown_remaining_secs"] = max(0.0, min_gap - recent_gap)
+    try:
+        metadata["can_proactive_speak"] = _can_proactive_speak()
+    except Exception:
+        pass
     return metadata
 
 
