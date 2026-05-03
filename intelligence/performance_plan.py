@@ -3,7 +3,8 @@ performance_plan.py - side-effect-free performance choreography for Rex.
 
 The action router decides what kind of moment this is. A PerformancePlan decides
 how Rex should perform that moment: prompt contract, emotion, body beat,
-delivery style, and memory policy. Execution still belongs to interaction.py.
+delivery style, and memory policy. performance_output.py executes the plan with
+I/O supplied by interaction.py.
 """
 
 from __future__ import annotations

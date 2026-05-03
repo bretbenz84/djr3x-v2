@@ -34,6 +34,7 @@ from audio import speech_queue, output_gate
 from audio import echo_cancel
 from audio import prosody
 from intelligence import action_router, command_parser, llm, personality
+from intelligence import performance_output
 from intelligence import performance_plan
 from intelligence import consciousness
 from intelligence import intent_classifier
@@ -6071,14 +6072,9 @@ def _router_system_command(text: str, decision: action_router.ActionDecision) ->
     return "sleep"
 
 
-def _play_performance_body_beat(plan: performance_plan.PerformancePlan) -> None:
-    if not plan.body_beat:
-        return
-    try:
-        from sequences import animations
-        animations.play_body_beat(plan.body_beat)
-    except Exception as exc:
-        _log.debug("performance body beat skipped: %s", exc)
+def _play_performance_body_beat(beat: str) -> None:
+    from sequences import animations
+    animations.play_body_beat(beat)
 
 
 def _handle_router_humor_action(
@@ -6095,28 +6091,26 @@ def _handle_router_humor_action(
     )
     if plan is None:
         return None
-    try:
-        resp = llm.get_response(plan.prompt_contract, person_id)
-    except Exception as exc:
-        _log.debug("humor action generation failed: %s", exc)
-        resp = ""
-    resp = llm.clean_response_text(resp or "").strip() or plan.fallback_text
+    output = performance_output.execute_plan(
+        plan,
+        generate_text=lambda prompt: llm.get_response(prompt, person_id),
+        speak_text=_speak_blocking,
+        play_body_beat=_play_performance_body_beat,
+        clean_text=llm.clean_response_text,
+    )
+    if output.generation_failed:
+        _log.debug("humor action generation failed; used fallback text")
+    if output.body_beat_failed:
+        _log.debug("humor action body beat failed; speech still delivered")
     _log.info(
-        "[action_router] executing %s person_id=%s delivery=%s memory_policy=%s text=%r",
-        decision.action,
+        "[action_router] executed %s person_id=%s delivery=%s memory_policy=%s text=%r",
+        output.action,
         person_id,
-        plan.delivery_style,
-        plan.memory_policy,
+        output.delivery_style,
+        output.memory_policy,
         text,
     )
-    _play_performance_body_beat(plan)
-    _speak_blocking(
-        resp,
-        emotion=plan.emotion,
-        pre_beat_ms=plan.pre_beat_ms,
-        post_beat_ms_override=plan.post_beat_ms,
-    )
-    return resp
+    return output.text
 
 
 def _handle_router_takeover_action(
