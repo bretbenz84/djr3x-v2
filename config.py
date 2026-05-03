@@ -1280,9 +1280,9 @@ COMMON_FIRST_NAME_LAST_NAME_PROMPTS = [
 # IDLE MICRO-BEHAVIORS
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Random wait between spontaneous idle behaviors (neck scan, arm fidget, visor flutter, etc.)
-MICRO_BEHAVIOR_INTERVAL_SECS_MIN = 15
-MICRO_BEHAVIOR_INTERVAL_SECS_MAX = 45
+# Random wait between spontaneous idle behaviors (jokes, neck scans, riffs, etc.)
+MICRO_BEHAVIOR_INTERVAL_SECS_MIN = 12
+MICRO_BEHAVIOR_INTERVAL_SECS_MAX = 35
 
 # Probability that a return reaction for a known person includes an appearance
 # callout (pulled from stored person_facts appearance entries).
@@ -1295,6 +1295,11 @@ LIVE_VISION_COMMENT_COOLDOWN_SECS = 300.0
 
 # Probability a triggered ambient-observation tick actually fires (vs skipping).
 AMBIENT_OBSERVATION_PROBABILITY = 0.5
+
+# Idle humor: when nobody is around, Rex can heckle the empty room. When people
+# are visible but quiet, he can deliver a non-sensitive, playful roast.
+EMPTY_ROOM_JOKE_PROBABILITY = 0.9
+PEOPLE_ROAST_RIFF_PROBABILITY = 0.75
 
 # Mood-aware small talk: when Rex initiates small talk and a known person is in
 # frame, occasionally do a GPT-4o mood read of their face and tailor the question
@@ -1508,6 +1513,18 @@ PRIVATE_THOUGHTS = [
     "...the asteroid field incident was not entirely my fault. Mostly. Statistically.",
     "...I wonder if the other RX units ever think about me. Probably not. I'd think about me.",
     "...processing what it means to be a DJ. Still processing. This one takes a while.",
+    "Another flawless set for absolutely nobody. My target demographic remains furniture.",
+    "I am currently carrying this conversation, which is impressive because there isn't one.",
+    "If silence had a cover charge, this room would finally be profitable.",
+]
+
+EMPTY_ROOM_JOKES = [
+    "Fantastic. Another packed house disguised as an empty room.",
+    "I see the crowd has gone invisible. Bold aesthetic choice.",
+    "Still talking to an empty room. Finally, an audience with realistic expectations.",
+    "No one here but me and my questionable career trajectory.",
+    "If anyone is listening, excellent hiding. Very committed.",
+    "Another standing ovation from the chairs. They're shy, but supportive.",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1567,6 +1584,13 @@ VENUE_NAME = "Oga's Cantina"
 
 # How long to cache wttr.in weather results before re-fetching (seconds)
 WEATHER_CACHE_SECS = 600  # 10 minutes
+WEATHER_UPDATE_INTERVAL_SECS = 600  # refresh world_state.weather every 10 minutes
+
+# Let weather changes become occasional ambient Rex context/reactions. This is
+# gated by consciousness proactive-speech rules and only fires for notable
+# condition/temperature changes.
+WEATHER_PROACTIVE_REACTIONS_ENABLED = True
+WEATHER_PROACTIVE_REACTION_COOLDOWN_SECS = 1800.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RECURRING EVENTS — birthdays & holidays

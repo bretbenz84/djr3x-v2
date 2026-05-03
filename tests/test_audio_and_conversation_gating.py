@@ -948,10 +948,46 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 person_name="Both",
             )
 
-        self.assertEqual(response, "Got it. I'll call you Bret.")
+        self.assertEqual(
+            response,
+            "Got it. I'll call you Bret. I'm sure we'll have better luck next time!",
+        )
         rename.assert_called_once_with(1, "Bret")
         refresh.assert_called_once_with(1, "Bret")
         speak.assert_called_once()
+
+    def test_repair_response_adds_better_luck_line_for_misunderstanding(self):
+        from intelligence import interaction
+        from intelligence import repair_moves
+
+        repair_moves.clear()
+        repair = {
+            "kind": "misunderstood",
+            "severity": "medium",
+            "correction": "I meant the other playlist",
+            "user_text": "No, you misunderstood me. I meant the other playlist.",
+        }
+
+        try:
+            with (
+                mock.patch.object(
+                    interaction.llm,
+                    "get_response",
+                    return_value="Got it. I misunderstood the playlist request.",
+                ),
+                mock.patch.object(interaction, "_speak_blocking") as speak,
+            ):
+                response = interaction._generate_repair_response(1, repair["user_text"], repair)
+        finally:
+            repair_moves.clear()
+
+        self.assertEqual(
+            response,
+            "Got it. I misunderstood the playlist request. "
+            "I'm sure we'll have better luck next time!",
+        )
+        speak.assert_called_once()
+        self.assertEqual(speak.call_args.args[0], response)
 
     def test_memory_control_examples_parse_locally(self):
         from intelligence import command_parser
@@ -1145,6 +1181,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             response = interaction._execute_command(match, 4, "Bret", "Actually, call me Bret Michael.")
 
         self.assertIn("Bret Michael", response)
+        self.assertIn("I'm sure we'll have better luck next time!", response)
         rename.assert_called_once_with(4, "Bret Michael")
         correct.assert_called_once()
         self.assertEqual(correct.call_args.args[:3], (4, "name", "Bret Michael"))
@@ -1508,6 +1545,69 @@ class ConversationGatingTest(unittest.TestCase):
             consciousness._greeted_this_session.clear()
             consciousness._greeted_this_session.update(old_greeted)
             consciousness._last_micro_behavior_at = old_micro
+
+    def test_idle_micro_behavior_choices_include_empty_room_jokes_when_alone(self):
+        from intelligence import consciousness
+
+        choices, weights = consciousness._idle_micro_behavior_choices({
+            "people": [],
+            "crowd": {"count": 0},
+        })
+
+        self.assertIn("empty_room_joke", choices)
+        self.assertNotIn("people_roast", choices)
+        self.assertGreater(weights[choices.index("empty_room_joke")], 1)
+
+    def test_empty_room_joke_speaks_local_self_deprecation(self):
+        from intelligence import consciousness
+
+        snapshot = {"people": [], "crowd": {"count": 0}}
+        with (
+            mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+            mock.patch.object(consciousness.random, "random", return_value=0.0),
+            mock.patch.object(consciousness.random, "choice", return_value="Empty room test line."),
+            mock.patch.object(consciousness, "_claim_proactive_purpose", return_value="tok"),
+            mock.patch.object(consciousness, "_proactive_purpose_current", return_value=True),
+            mock.patch.object(consciousness, "_release_proactive_purpose") as release,
+            mock.patch.object(consciousness, "_speak_async") as speak,
+        ):
+            consciousness._do_empty_room_joke(snapshot)
+
+        speak.assert_called_once()
+        self.assertEqual(speak.call_args.args[0], "Empty room test line.")
+        self.assertEqual(speak.call_args.kwargs["label"], "empty-room joke")
+        release.assert_called_once_with("tok")
+
+    def test_people_roast_prompt_stays_non_sensitive(self):
+        from intelligence import consciousness
+
+        snapshot = {
+            "people": [
+                {
+                    "person_db_id": 1,
+                    "face_id": "Bret Benziger",
+                    "pose": "standing",
+                    "gesture": "hands_on_hips",
+                    "engagement": "low",
+                }
+            ],
+            "crowd": {"count": 1},
+        }
+        with (
+            mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+            mock.patch.object(consciousness.random, "random", return_value=0.0),
+            mock.patch.object(consciousness.random, "choice", return_value=snapshot["people"][0]),
+            mock.patch.object(consciousness, "is_engaged_with", return_value=False),
+            mock.patch.object(consciousness, "_person_roast_allowed", return_value=True),
+            mock.patch.object(consciousness, "_generate_and_speak") as generate,
+        ):
+            consciousness._do_people_roast(snapshot)
+
+        generate.assert_called_once()
+        prompt = generate.call_args.args[0]
+        self.assertIn("Make one short playful Rex joke or light roast", prompt)
+        self.assertIn("Do NOT joke about body, age, gender", prompt)
+        self.assertEqual(generate.call_args.kwargs["purpose"], "people_roast")
 
     def test_proactive_speech_writes_conversation_log(self):
         from intelligence import consciousness

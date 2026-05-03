@@ -34,6 +34,7 @@ from audio import speech_queue, output_gate
 from audio import echo_cancel
 from audio import prosody
 from intelligence import action_router, command_parser, llm, personality
+from intelligence import performance_plan
 from intelligence import consciousness
 from intelligence import intent_classifier
 from intelligence import empathy
@@ -2094,7 +2095,7 @@ def _handle_name_update_request(
         new_name,
         text,
     )
-    response = f"Got it. I'll call you {new_name}."
+    response = repair_moves.add_better_luck_line(f"Got it. I'll call you {new_name}.")
     _speak_blocking(response, emotion="happy")
     return response
 
@@ -4134,7 +4135,9 @@ def _execute_memory_correct_fact_command(
         )
         _refresh_world_state_person_name(int(person_id), new_name)
         _log.info("[memory] corrected name person_id=%s new=%r", person_id, new_name)
-        resp = f"Corrected. Bret-level bureaucracy complete: I will call you {new_name}."
+        resp = repair_moves.add_better_luck_line(
+            f"Corrected. Bret-level bureaucracy complete: I will call you {new_name}."
+        )
         _speak_blocking(resp, emotion="happy")
         return resp
 
@@ -4159,7 +4162,10 @@ def _execute_memory_correct_fact_command(
             )
             _refresh_world_state_person_name(int(target_id), full_name)
             _log.info("[memory] corrected last name person_id=%s new=%r", target_id, full_name)
-            resp = f"Corrected. {first}'s last name is {surname}. Logged with actual confidence for once."
+            resp = repair_moves.add_better_luck_line(
+                f"Corrected. {first}'s last name is {surname}. "
+                "Logged with actual confidence for once."
+            )
         else:
             resp = f"I couldn't safely update that name to {full_name}."
         _speak_blocking(resp, emotion="neutral")
@@ -4183,7 +4189,9 @@ def _execute_memory_correct_fact_command(
             value,
             named,
         )
-        resp = f"Corrected. I now have {target_name or 'them'} as {generic.group(1)}: {value}."
+        resp = repair_moves.add_better_luck_line(
+            f"Corrected. I now have {target_name or 'them'} as {generic.group(1)}: {value}."
+        )
         _speak_blocking(resp, emotion="neutral")
         return resp
 
@@ -6063,6 +6071,54 @@ def _router_system_command(text: str, decision: action_router.ActionDecision) ->
     return "sleep"
 
 
+def _play_performance_body_beat(plan: performance_plan.PerformancePlan) -> None:
+    if not plan.body_beat:
+        return
+    try:
+        from sequences import animations
+        animations.play_body_beat(plan.body_beat)
+    except Exception as exc:
+        _log.debug("performance body beat skipped: %s", exc)
+
+
+def _handle_router_humor_action(
+    decision: action_router.ActionDecision,
+    text: str,
+    person_id: Optional[int],
+) -> Optional[str]:
+    if decision.action not in {"humor.tell_joke", "humor.roast", "humor.free_bit"}:
+        return None
+    plan = performance_plan.plan_for_action(
+        decision.action,
+        user_text=text,
+        args=decision.args,
+    )
+    if plan is None:
+        return None
+    try:
+        resp = llm.get_response(plan.prompt_contract, person_id)
+    except Exception as exc:
+        _log.debug("humor action generation failed: %s", exc)
+        resp = ""
+    resp = llm.clean_response_text(resp or "").strip() or plan.fallback_text
+    _log.info(
+        "[action_router] executing %s person_id=%s delivery=%s memory_policy=%s text=%r",
+        decision.action,
+        person_id,
+        plan.delivery_style,
+        plan.memory_policy,
+        text,
+    )
+    _play_performance_body_beat(plan)
+    _speak_blocking(
+        resp,
+        emotion=plan.emotion,
+        pre_beat_ms=plan.pre_beat_ms,
+        post_beat_ms_override=plan.post_beat_ms,
+    )
+    return resp
+
+
 def _handle_router_takeover_action(
     decision: Optional[action_router.ActionDecision],
     text: str,
@@ -6080,6 +6136,9 @@ def _handle_router_takeover_action(
     action = decision.action
     if action == "conversation.reply":
         return None
+
+    if action in {"humor.tell_joke", "humor.roast", "humor.free_bit"}:
+        return _handle_router_humor_action(decision, text, person_id)
 
     if action == "memory.forget_specific":
         target = _router_arg_text(decision, "target", "topic", "memory")
@@ -6311,6 +6370,10 @@ def _handle_fast_local_takeover(
     person_name: Optional[str],
 ) -> Optional[str]:
     """Handle obvious local control commands before the blocking router call."""
+    humor_decision = action_router.classify_explicit_humor(text)
+    if _router_decision_executable(humor_decision):
+        return _handle_router_humor_action(humor_decision, text, person_id)
+
     try:
         match = command_parser.parse(text)
     except Exception as exc:
@@ -6677,6 +6740,8 @@ def _generate_repair_response(person_id: Optional[int], text: str, repair: dict)
     response = (response or "").strip()
     if not response:
         response = repair_moves.fallback_response(repair)
+    if repair_moves.should_use_better_luck_line(repair):
+        response = repair_moves.add_better_luck_line(response)
     _speak_blocking(
         response,
         emotion="neutral",
@@ -7560,8 +7625,8 @@ def _handle_classified_intent(
         return resp
 
     if intent == "query_weather":
-        from awareness.chronoception import fetch_weather
-        w = fetch_weather()
+        from awareness.chronoception import refresh_weather
+        w = refresh_weather()
         temp = w.get("temp_f")
         desc = w.get("description") or w.get("condition") or "unknown"
         location = getattr(config, "WEATHER_LOCATION", "the local area")

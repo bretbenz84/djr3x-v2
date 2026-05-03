@@ -138,6 +138,11 @@ _PROACTIVE_RULES: dict[str, tuple[int, str]] = {
         28,
         "make one appearance or style observation only. Keep it non-sensitive.",
     ),
+    "people_roast": (
+        27,
+        "make one playful non-sensitive roast about the visible person's current "
+        "vibe only. No questions, no body/identity/protected-trait jokes.",
+    ),
     "idle_monologue": (
         15,
         "say one idle/private line only. Do not pull in another topic.",
@@ -158,6 +163,7 @@ _GRACE_SUPPRESSED_PROACTIVE_PURPOSES = {
     "group_turn_invite",
     "ambient_observation",
     "appearance_riff",
+    "people_roast",
     "idle_monologue",
 }
 

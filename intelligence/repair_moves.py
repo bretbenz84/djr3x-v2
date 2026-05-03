@@ -103,6 +103,16 @@ _last_assistant_at: float = 0.0
 _last_repair_at: float = 0.0
 _last_tone_repair_at: float = 0.0
 
+BETTER_LUCK_NEXT_TIME = "I'm sure we'll have better luck next time!"
+_BETTER_LUCK_REPAIR_KINDS = {
+    "misheard",
+    "misunderstood",
+    "wrong_person",
+    "pronoun",
+    "factual",
+    "bare_negation",
+}
+
 
 @dataclass
 class RepairMove:
@@ -312,7 +322,9 @@ def build_prompt(repair: dict) -> str:
         "do not punish the human for correcting you, and do not ask a question "
         "unless the repair cannot continue without a single clarification. If a "
         "correction was supplied, accept it. Do not begin with 'Rex:' or any "
-        "speaker label."
+        "speaker label. For misheard, misunderstood, wrong-person, pronoun, "
+        "factual, or bare-negation repairs, include this exact recovery line: "
+        f"{BETTER_LUCK_NEXT_TIME!r}"
     )
 
 
@@ -341,6 +353,22 @@ def fallback_response(repair: dict) -> str:
     if correction:
         return f"Got it. I heard that wrong: {correction}."
     return "Got it. I missed that one; let me reset."
+
+
+def should_use_better_luck_line(repair: dict) -> bool:
+    kind = repair.get("kind") or "repair"
+    return kind in _BETTER_LUCK_REPAIR_KINDS
+
+
+def add_better_luck_line(text: str) -> str:
+    response = (text or "").strip()
+    if not response:
+        return BETTER_LUCK_NEXT_TIME
+    if BETTER_LUCK_NEXT_TIME.lower() in response.lower():
+        return response
+    if response[-1] not in ".!?":
+        response += "."
+    return f"{response} {BETTER_LUCK_NEXT_TIME}"
 
 
 def _extract_correction(text: str) -> str:

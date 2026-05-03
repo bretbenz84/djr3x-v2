@@ -149,6 +149,22 @@ def _summarize_world_state(ws: dict) -> str:
         time_line += f" Notable date: {time_s['notable_date']}."
     parts.append(time_line)
 
+    weather = ws.get("weather", {}) or {}
+    if weather:
+        location = weather.get("location") or "local area"
+        desc = weather.get("description") or weather.get("condition") or "unknown"
+        temp = weather.get("temp_f")
+        feels_like = weather.get("feels_like_f")
+        if weather.get("available") and temp is not None:
+            weather_line = f"Weather in {location}: {temp}°F, {desc}"
+            if feels_like is not None and feels_like != temp:
+                weather_line += f" (feels like {feels_like}°F)"
+            if weather.get("mood_bias"):
+                weather_line += f". Weather mood: {weather['mood_bias']}"
+            parts.append(weather_line + ".")
+        elif weather.get("description"):
+            parts.append(f"Weather in {location}: {weather['description']}.")
+
     animals = ws.get("animals", [])
     if animals:
         parts.append("Animals present: " + ", ".join(a.get("species", "unknown") for a in animals) + ".")
@@ -169,6 +185,30 @@ _SEASONAL_TONE = {
     "autumn": "Seasonal tone: autumn — more reflective; references to change feel natural.",
     "winter": "Seasonal tone: winter — more contemplative; dry observations about the cold are fair game.",
 }
+
+
+def _weather_tone_rule(weather: dict) -> Optional[str]:
+    if not weather or not weather.get("available"):
+        return None
+    condition = (weather.get("condition") or "unknown").lower()
+    mood = (weather.get("mood_bias") or "").strip()
+    hint = (weather.get("tone_hint") or "").strip()
+    temp = weather.get("temp_f")
+
+    if hint:
+        base = f"Weather tone: {hint}"
+    elif condition in {"rain", "thunder", "snow", "fog"}:
+        base = f"Weather tone: current conditions are {condition}; subtle weather-aware banter is fair game."
+    elif isinstance(temp, int) and temp >= 95:
+        base = "Weather tone: it is very hot; heat-dramatic circuit complaints are fair game."
+    elif isinstance(temp, int) and temp <= 40:
+        base = "Weather tone: it is cold; dry observations about freezing circuits are fair game."
+    else:
+        return None
+
+    if mood:
+        base += f" Mood bias: {mood}."
+    return base + " Do not force weather into every reply; use it only when it fits."
 
 _TIER_ROAST_STYLE = {
     "stranger":     "Roast style: observational, surface-level, crowd-pleasing.",
@@ -571,6 +611,10 @@ def assemble_system_prompt(
     season = ws.get("time", {}).get("season")
     if season in _SEASONAL_TONE:
         rules.append(_SEASONAL_TONE[season])
+
+    weather_rule = _weather_tone_rule(ws.get("weather", {}) or {})
+    if weather_rule:
+        rules.append(weather_rule)
 
     try:
         from awareness.situation import assessor as _situation_assessor

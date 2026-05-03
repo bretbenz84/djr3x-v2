@@ -26,52 +26,200 @@ _log = logging.getLogger(__name__)
 _client = OpenAI(api_key=apikeys.OPENAI_API_KEY)
 
 
-ACTION_CATALOG: dict[str, str] = {
-    "conversation.reply": "Normal conversational response; no tool/feature should run.",
-    "memory.query": "User asks what Rex remembers or knows about a person, relationship, or themselves. Not for general topic knowledge.",
-    "memory.forget_specific": "User asks Rex to forget/delete a specific remembered detail or topic.",
-    "memory.forget_person": "User asks Rex to forget a whole person, themselves, or everyone.",
-    "event.cancel": "User says a remembered plan/event is canceled, stale, or no longer happening.",
-    "emotional.boundary": "User asks not to discuss a sensitive topic anymore or rejects an emotional check-in.",
-    "identity.who_is_speaking": "User asks who they are, who is speaking, or whether Rex recognizes them.",
-    "identity.introduce_person": "User introduces a person or relationship, such as 'this is my dad Jeff'. Not for professions, jobs, hobbies, or other personal facts.",
-    "game.start": "User asks to start/play a game.",
-    "game.stop": "User asks to stop/quit/end the current game.",
-    "game.answer": "User is answering or choosing inside an active game.",
-    "music.play": "User asks Rex to play music, a song, artist, genre, vibe, or station.",
-    "music.stop": "User asks Rex to stop/pause music.",
-    "music.skip": "User asks Rex to skip the current track.",
-    "music.options": "User asks what music, genres, stations, or songs Rex can play.",
-    "vision.describe_scene": "User asks what Rex sees or asks Rex to look/inspect something.",
-    "time.query": "User asks for the current clock time.",
-    "date.query": "User asks for today's date or day of week.",
-    "weather.query": "User asks for weather.",
-    "status.capabilities": "User asks what Rex can do.",
-    "status.uptime": "User asks how long Rex has been running/awake.",
-    "system.sleep": "User asks Rex to sleep, wake, quiet down, or shut down.",
-}
+@dataclass(frozen=True)
+class ActionSpec:
+    """Stable action-router catalog entry.
 
+    The router should classify recurring classes of intent, not every tiny
+    conversational edge case. New keys should stay broad enough to map onto a
+    durable handler or performance plan.
+    """
+
+    key: str
+    category: str
+    description: str
+    executable: bool = False
+
+
+ACTION_SPECS: tuple[ActionSpec, ...] = (
+    ActionSpec(
+        "conversation.reply",
+        "conversation",
+        "Normal conversational response; no tool, feature, or special performance action should run.",
+    ),
+    ActionSpec(
+        "conversation.repair",
+        "conversation",
+        "User corrects Rex, says he misunderstood, or asks him to try again. Use for repair, not ordinary disagreement.",
+    ),
+    ActionSpec(
+        "memory.query",
+        "memory",
+        "User asks what Rex remembers or knows about a person, relationship, or themselves. Not for general topic knowledge.",
+        executable=True,
+    ),
+    ActionSpec(
+        "memory.forget_specific",
+        "memory",
+        "User asks Rex to forget/delete a specific remembered detail or topic.",
+        executable=True,
+    ),
+    ActionSpec(
+        "memory.forget_person",
+        "memory",
+        "User asks Rex to forget a whole person, themselves, or everyone. Always requires confirmation.",
+    ),
+    ActionSpec(
+        "event.cancel",
+        "memory",
+        "User says a remembered plan/event is canceled, stale, or no longer happening.",
+        executable=True,
+    ),
+    ActionSpec(
+        "emotional.boundary",
+        "boundary",
+        "User asks not to discuss a sensitive topic anymore or rejects an emotional check-in.",
+        executable=True,
+    ),
+    ActionSpec(
+        "identity.who_is_speaking",
+        "identity",
+        "User asks who they are, who is speaking, or whether Rex recognizes them.",
+        executable=True,
+    ),
+    ActionSpec(
+        "identity.introduce_person",
+        "identity",
+        "User introduces a person or relationship, such as 'this is my dad Jeff'. Not for professions, jobs, hobbies, or other personal facts.",
+    ),
+    ActionSpec(
+        "humor.tell_joke",
+        "humor",
+        "User explicitly asks for a joke, pun, one-liner, or canned funny line.",
+        executable=True,
+    ),
+    ActionSpec(
+        "humor.roast",
+        "humor",
+        "User explicitly asks Rex to roast or tease someone, the speaker, the room, or a named target. Put the target in args.target.",
+        executable=True,
+    ),
+    ActionSpec(
+        "humor.free_bit",
+        "humor",
+        "User asks Rex to be funny, riff, do a bit, or make them laugh without a specific joke or roast target.",
+        executable=True,
+    ),
+    ActionSpec(
+        "performance.dj_bit",
+        "performance",
+        "User asks Rex for DJ/cantina patter, hype, an announcement, or a station-break line without requesting actual music playback.",
+    ),
+    ActionSpec(
+        "performance.body_beat",
+        "performance",
+        "User asks Rex to perform a physical gesture, pose, dance, look, tilt, peek, or other embodied beat.",
+    ),
+    ActionSpec(
+        "game.start",
+        "game",
+        "User asks to start/play a game.",
+        executable=True,
+    ),
+    ActionSpec(
+        "game.stop",
+        "game",
+        "User asks to stop/quit/end the current game.",
+        executable=True,
+    ),
+    ActionSpec(
+        "game.answer",
+        "game",
+        "User is answering or choosing inside an active game.",
+        executable=True,
+    ),
+    ActionSpec(
+        "music.play",
+        "music",
+        "User asks Rex to play music, a song, artist, genre, vibe, or station.",
+        executable=True,
+    ),
+    ActionSpec(
+        "music.stop",
+        "music",
+        "User asks Rex to stop/pause music.",
+        executable=True,
+    ),
+    ActionSpec(
+        "music.skip",
+        "music",
+        "User asks Rex to skip the current track.",
+        executable=True,
+    ),
+    ActionSpec(
+        "music.options",
+        "music",
+        "User asks what music, genres, stations, or songs Rex can play.",
+        executable=True,
+    ),
+    ActionSpec(
+        "vision.describe_scene",
+        "vision",
+        "User asks what Rex sees or asks Rex to look/inspect something.",
+        executable=True,
+    ),
+    ActionSpec(
+        "time.query",
+        "world",
+        "User asks for the current clock time.",
+        executable=True,
+    ),
+    ActionSpec(
+        "date.query",
+        "world",
+        "User asks for today's date or day of week.",
+        executable=True,
+    ),
+    ActionSpec(
+        "weather.query",
+        "world",
+        "User asks for weather.",
+        executable=True,
+    ),
+    ActionSpec(
+        "status.capabilities",
+        "status",
+        "User asks what Rex can do.",
+        executable=True,
+    ),
+    ActionSpec(
+        "status.uptime",
+        "status",
+        "User asks how long Rex has been running/awake.",
+        executable=True,
+    ),
+    ActionSpec(
+        "system.sleep",
+        "system",
+        "User asks Rex to sleep, wake, quiet down, mute, shut down, or power off.",
+        executable=True,
+    ),
+)
+
+ACTION_CATALOG: dict[str, str] = {
+    spec.key: spec.description for spec in ACTION_SPECS
+}
+ACTION_CATEGORIES: dict[str, str] = {
+    spec.key: spec.category for spec in ACTION_SPECS
+}
+PERFORMANCE_ACTIONS = {
+    spec.key
+    for spec in ACTION_SPECS
+    if spec.category in {"humor", "performance"}
+}
 _VALID_ACTIONS = set(ACTION_CATALOG)
 EXECUTABLE_ACTIONS = {
-    "memory.query",
-    "memory.forget_specific",
-    "event.cancel",
-    "emotional.boundary",
-    "identity.who_is_speaking",
-    "game.start",
-    "game.stop",
-    "game.answer",
-    "music.play",
-    "music.stop",
-    "music.skip",
-    "music.options",
-    "vision.describe_scene",
-    "time.query",
-    "date.query",
-    "weather.query",
-    "status.capabilities",
-    "status.uptime",
-    "system.sleep",
+    spec.key for spec in ACTION_SPECS if spec.executable
 }
 
 _SYSTEM_PROMPT = """You are DJ-R3X's action router.
@@ -80,6 +228,9 @@ Return JSON only. Do not write a conversational reply.
 
 Rules:
 - Prefer the user's actual intent over keyword matching.
+- Pick exactly one stable action key. Do not invent one-off actions for narrow
+  conversational snafus; use conversation.reply or conversation.repair unless a
+  catalog action clearly fits.
 - If context.pending.pending_question exists, treat short fragments as answers
   to Rex's pending question, not as new feature commands.
 - If the pending question key is favorite_music, a bare genre/artist/style like
@@ -96,6 +247,18 @@ Rules:
 - Only use emotional.boundary when the user explicitly asks not to talk about,
   ask about, mention, or bring up a topic. A bare health/sad topic like "back pain"
   is conversation.reply unless the user says not to discuss it.
+- Use conversation.repair when the user corrects Rex, says Rex misunderstood, or
+  asks Rex to try that again. Do not use it for ordinary topic disagreement.
+- Use humor.tell_joke only for explicit joke/pun/one-liner requests like
+  "tell me a joke"; do not treat general mentions of jokes as a joke request.
+- Use humor.roast only for explicit roast/tease requests. Put the roast target in
+  args.target, e.g. "speaker", "room", or a provided name.
+- Use humor.free_bit for broader requests like "say something funny", "do a bit",
+  or "make me laugh" when no specific joke format or roast target is requested.
+- Use performance.dj_bit for DJ patter, hype lines, cantina banter, or station
+  breaks. Use music.play only when the user asks to actually play audio.
+- Use performance.body_beat for explicit physical pose/gesture/dance/look/tilt
+  requests. Do not use it for ordinary "look at this" vision requests.
 - If a game is active and the utterance asks to stop, quit, end, or stop playing, use game.stop.
 - If music is active and the utterance asks to stop, pause, or stop playing music, use music.stop.
 - If the utterance asks for the clock time, use time.query.
@@ -147,6 +310,41 @@ _PERSON_MEMORY_QUERY_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_TELL_JOKE_RE = re.compile(
+    r"\b(?:tell|give|hit)\s+(?:me|us|the room)?\s*(?:with\s+)?"
+    r"(?:a|another|one)?\s*(?:joke|pun|one[- ]liner)\b|"
+    r"\bcrack\s+(?:me|us)?\s*(?:a|another)?\s*(?:joke|pun)\b|"
+    r"\bgot\s+(?:any|a)\s+(?:jokes?|puns?)\b",
+    re.IGNORECASE,
+)
+_ROAST_REQUEST_RE = re.compile(
+    r"\b(?:roast|tease|mock|trash\s*talk)\s+"
+    r"(?P<target>me|us|the room|this room|yourself|him|her|them|"
+    r"[a-z][a-z .'-]{0,40})\b|"
+    r"\bmake\s+fun\s+of\s+"
+    r"(?P<target2>me|us|the room|this room|yourself|him|her|them|"
+    r"[a-z][a-z .'-]{0,40})\b|"
+    r"\bgive\s+(?:me|us)\s+(?:a\s+)?roast\b|"
+    r"\bhit\s+(?:me|us)\s+with\s+(?:a\s+)?roast\b",
+    re.IGNORECASE,
+)
+_FREE_HUMOR_RE = re.compile(
+    r"\b(?:say\s+something\s+(?:funny|hilarious|amusing)|"
+    r"make\s+(?:me|us)\s+laugh|"
+    r"crack\s+(?:me|us)\s+up|"
+    r"do\s+(?:a\s+|your\s+)?(?:bit|riff)|"
+    r"riff\s+(?:for\s+)?(?:me|us)?|"
+    r"be\s+funny)\b",
+    re.IGNORECASE,
+)
+_ROAST_FOOD_TARGETS = {
+    "beef",
+    "chicken",
+    "coffee",
+    "pork",
+    "turkey",
+    "vegetables",
+}
 
 
 @dataclass
@@ -187,6 +385,59 @@ def _strip_code_fence(text: str) -> str:
             lines = lines[:-1]
         cleaned = "\n".join(lines).strip()
     return cleaned
+
+
+def _clean_roast_target(raw: str) -> str:
+    target = " ".join(str(raw or "").strip(" .?!").split())
+    lowered = target.lower()
+    if lowered in {"me", "myself"}:
+        return "speaker"
+    if lowered in {"us", "we", "the room", "this room"}:
+        return "room"
+    if lowered in {"yourself", "you"}:
+        return "rex"
+    return target
+
+
+def classify_explicit_humor(text: str) -> ActionDecision | None:
+    """Classify obvious humor-performance requests without an LLM call."""
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return None
+
+    roast = _ROAST_REQUEST_RE.search(cleaned)
+    if roast:
+        raw_target = (
+            roast.groupdict().get("target")
+            or roast.groupdict().get("target2")
+            or "speaker"
+        )
+        target = _clean_roast_target(raw_target)
+        if target.lower() not in _ROAST_FOOD_TARGETS:
+            return ActionDecision(
+                action="humor.roast",
+                confidence=0.96,
+                args={"target": target},
+                reason="explicit roast request",
+            )
+
+    if _TELL_JOKE_RE.search(cleaned):
+        return ActionDecision(
+            action="humor.tell_joke",
+            confidence=0.96,
+            args={},
+            reason="explicit joke request",
+        )
+
+    if _FREE_HUMOR_RE.search(cleaned):
+        return ActionDecision(
+            action="humor.free_bit",
+            confidence=0.94,
+            args={},
+            reason="explicit free humor request",
+        )
+
+    return None
 
 
 def _coerce_decision(payload: Any) -> ActionDecision:
@@ -306,6 +557,10 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
         return ActionDecision(reason="empty utterance")
 
     context = context or {}
+    explicit_humor = classify_explicit_humor(text)
+    if explicit_humor is not None:
+        return _apply_context_overrides(explicit_humor, text, context)
+
     max_context_chars = int(getattr(config, "ACTION_ROUTER_MAX_CONTEXT_CHARS", 5000))
     user_payload = {
         "utterance": text,

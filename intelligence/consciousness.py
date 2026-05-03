@@ -51,6 +51,8 @@ _last_snapshot: dict = {}
 
 # Notable dates acknowledged this session so we don't repeat them
 _acknowledged_dates: set[str] = set()
+_acknowledged_weather_signatures: set[str] = set()
+_last_weather_reaction_at: float = 0.0
 
 # Monotonic timestamp of the last idle micro-behavior
 _last_micro_behavior_at: float = 0.0
@@ -2030,7 +2032,7 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
     Compare current WorldState to _last_snapshot. For each notable change,
     generate and speak a short in-character reaction. Never fires in QUIET/SHUTDOWN.
     """
-    global _acknowledged_dates
+    global _acknowledged_dates, _last_weather_reaction_at
 
     if profile.suppress_proactive or profile.rapid_exchange:
         return
@@ -2132,6 +2134,64 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                 "excited",
             ))
 
+        # Notable weather change. Weather comes from the network feed, not body
+        # sensors, so prompts keep Rex honest about how he knows it.
+        if bool(getattr(config, "WEATHER_PROACTIVE_REACTIONS_ENABLED", True)):
+            curr_weather = snapshot.get("weather", {}) or {}
+            prev_weather = _last_snapshot.get("weather", {}) or {}
+            if curr_weather.get("available"):
+                condition = (curr_weather.get("condition") or "unknown").lower()
+                prev_condition = (prev_weather.get("condition") or "unknown").lower()
+                temp = curr_weather.get("temp_f")
+                prev_temp = prev_weather.get("temp_f")
+                try:
+                    temp_int = int(temp) if temp is not None else None
+                    prev_temp_int = int(prev_temp) if prev_temp is not None else None
+                except (TypeError, ValueError):
+                    temp_int = prev_temp_int = None
+
+                def _temp_bucket(value: Optional[int]) -> str:
+                    if value is None:
+                        return "unknown"
+                    if value >= 95:
+                        return "very_hot"
+                    if value >= 85:
+                        return "warm"
+                    if value <= 40:
+                        return "cold"
+                    if value <= 55:
+                        return "cool"
+                    return "mild"
+
+                notable_condition = condition in {"rain", "snow", "thunder", "fog"}
+                condition_changed = condition != prev_condition and notable_condition
+                bucket = _temp_bucket(temp_int)
+                prev_bucket = _temp_bucket(prev_temp_int)
+                temp_shifted = (
+                    temp_int is not None
+                    and prev_temp_int is not None
+                    and abs(temp_int - prev_temp_int) >= 10
+                )
+                bucket_changed = bucket != prev_bucket and bucket in {"very_hot", "cold"}
+                cooldown = float(getattr(config, "WEATHER_PROACTIVE_REACTION_COOLDOWN_SECS", 1800.0))
+                signature = f"{condition}:{bucket}"
+                if (
+                    (condition_changed or temp_shifted or bucket_changed)
+                    and signature not in _acknowledged_weather_signatures
+                    and (time.monotonic() - _last_weather_reaction_at) >= cooldown
+                ):
+                    _acknowledged_weather_signatures.add(signature)
+                    _last_weather_reaction_at = time.monotonic()
+                    location = curr_weather.get("location") or "the local area"
+                    desc = curr_weather.get("description") or condition
+                    temp_clause = f"{temp_int}°F" if temp_int is not None else "temperature unavailable"
+                    triggers.append((
+                        f"Your weather feed just updated for {location}: {temp_clause}, {desc}. "
+                        "Make one short spontaneous Rex-style weather remark. You may imply "
+                        "you saw it in your feed, but do not pretend you physically feel the weather.",
+                        "curious",
+                    ))
+
         if triggers:
             prompt, emotion = random.choice(triggers)
             _generate_and_speak(prompt, emotion, purpose="world_reaction")
@@ -2190,27 +2250,14 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
         return
 
     _last_micro_behavior_at = now
-    # Include ambient_observation and appearance_riff/live_vision so Rex talks
-    # about his surroundings and the people in them, not just himself.
-    behavior = random.choices(
-        [
-            "small_talk_question",
-            "ambient_scan",
-            "private_thought",
-            "aspiration",
-            "idle_clip",
-            "ambient_observation",
-            "appearance_riff",
-            "live_vision_comment",
-        ],
-        # Bias toward asking the user something when they've gone quiet — Rex
-        # should pull them into conversation, not just narrate his own opinions.
-        weights=[3, 1, 1, 1, 1, 1, 1, 1],
-        k=1,
-    )[0]
+    choices, weights = _idle_micro_behavior_choices(snapshot)
+    behavior = random.choices(choices, weights=weights, k=1)[0]
     _log.debug("consciousness: idle micro-behavior → %s", behavior)
 
-    if behavior == "small_talk_question":
+    if behavior == "empty_room_joke":
+        if not profile.suppress_proactive and not profile.suppress_system_comments:
+            _do_empty_room_joke(snapshot)
+    elif behavior == "small_talk_question":
         if not profile.suppress_proactive:
             _do_small_talk_question(snapshot)
     elif behavior == "ambient_scan":
@@ -2232,9 +2279,93 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
     elif behavior == "appearance_riff":
         if not profile.suppress_proactive:
             _do_appearance_riff(snapshot)
+    elif behavior == "people_roast":
+        if not profile.suppress_proactive:
+            _do_people_roast(snapshot)
     elif behavior == "live_vision_comment":
         if not profile.suppress_proactive:
             _do_live_vision_comment(snapshot)
+
+
+def _room_looks_empty(snapshot: dict) -> bool:
+    people = snapshot.get("people", []) or []
+    crowd = snapshot.get("crowd", {}) or {}
+    try:
+        crowd_count = int(crowd.get("count", len(people)) or 0)
+    except (TypeError, ValueError):
+        crowd_count = len(people)
+    return not people and crowd_count <= 0
+
+
+def _idle_micro_behavior_choices(snapshot: dict) -> tuple[list[str], list[int]]:
+    people = snapshot.get("people", []) or []
+    if _room_looks_empty(snapshot):
+        return (
+            [
+                "empty_room_joke",
+                "private_thought",
+                "aspiration",
+                "ambient_scan",
+                "idle_clip",
+                "ambient_observation",
+                "live_vision_comment",
+            ],
+            [6, 2, 1, 1, 1, 1, 1],
+        )
+    if people:
+        return (
+            [
+                "people_roast",
+                "appearance_riff",
+                "small_talk_question",
+                "ambient_observation",
+                "live_vision_comment",
+                "ambient_scan",
+                "private_thought",
+                "aspiration",
+                "idle_clip",
+            ],
+            [4, 3, 2, 1, 1, 1, 1, 1, 1],
+        )
+    return (
+        [
+            "small_talk_question",
+            "empty_room_joke",
+            "ambient_scan",
+            "private_thought",
+            "aspiration",
+            "idle_clip",
+            "ambient_observation",
+            "live_vision_comment",
+        ],
+        [2, 3, 1, 1, 1, 1, 1, 1],
+    )
+
+
+def _do_empty_room_joke(snapshot: dict) -> None:
+    if not _can_proactive_speak():
+        return
+    if not _room_looks_empty(snapshot):
+        return
+    if random.random() >= float(getattr(config, "EMPTY_ROOM_JOKE_PROBABILITY", 0.9)):
+        return
+    pool = getattr(config, "EMPTY_ROOM_JOKES", None) or getattr(config, "PRIVATE_THOUGHTS", [])
+    if not pool:
+        return
+    token = _claim_proactive_purpose("idle_monologue", label="empty-room joke")
+    if token is None:
+        return
+    line = random.choice(list(pool))
+    try:
+        if _proactive_purpose_current(token):
+            _speak_async(
+                line,
+                emotion="neutral",
+                purpose="idle_monologue",
+                label="empty-room joke",
+            )
+    finally:
+        _release_proactive_purpose(token)
 
 
 def _do_ambient_scan() -> None:
@@ -2736,10 +2867,90 @@ def _do_appearance_riff(snapshot: dict) -> None:
     _generate_and_speak(
         f"You're idly looking at '{first_name}'. You remember this about their "
         f"appearance: {hint}. Make one short in-character Rex remark about it — "
-        f"the kind of thing you'd say while looking them over. Warm, dry, observational. "
+        f"the kind of thing you'd say while looking them over. Warm, dry, observational, "
+        f"and lightly funny if the opening is there. "
         f"Address {first_name} by name. One line only.",
         emotion="neutral",
         purpose="appearance_riff",
+    )
+
+
+def _person_roast_allowed(person: dict) -> bool:
+    age = (person.get("age_estimate") or person.get("age_category") or "").lower()
+    if age in {"child", "teen", "minor"}:
+        return False
+    target_id = person.get("person_db_id")
+    if target_id is None:
+        return True
+    try:
+        from memory import boundaries as _boundaries
+        if (
+            _boundaries.is_blocked(target_id, "roast", "anything")
+            or _boundaries.is_blocked(target_id, "mention", "anything")
+            or _boundaries.is_blocked(target_id, "roast", "appearance")
+            or _boundaries.is_blocked(target_id, "roast", "body")
+            or _boundaries.is_blocked(target_id, "roast", "identity")
+        ):
+            return False
+    except Exception:
+        pass
+    return True
+
+
+def _person_roast_cues(person: dict) -> str:
+    cues = []
+    for key, label in (
+        ("distance_zone", "distance"),
+        ("approach_vector", "movement"),
+        ("pose", "pose"),
+        ("gesture", "gesture"),
+        ("engagement", "engagement"),
+        ("position", "position"),
+    ):
+        value = person.get(key)
+        if value and value != "neutral":
+            cues.append(f"{label}={value}")
+    return ", ".join(cues) or "quietly present, saying nothing"
+
+
+def _do_people_roast(snapshot: dict) -> None:
+    if not _can_proactive_speak():
+        return
+    if random.random() >= float(getattr(config, "PEOPLE_ROAST_RIFF_PROBABILITY", 0.75)):
+        return
+    people = snapshot.get("people", []) or []
+    candidates = [
+        person for person in people
+        if not is_engaged_with(person.get("person_db_id"))
+        and _person_roast_allowed(person)
+    ]
+    if not candidates:
+        return
+    target = random.choice(candidates)
+    first_name = (target.get("face_id") or "").split()[0]
+    label = first_name or "the unidentified organic in frame"
+    cues = _person_roast_cues(target)
+    family_clause = (
+        "Keep it extra gentle and family-safe because a younger person may be present. "
+        if any(
+            (p.get("age_estimate") or p.get("age_category") or "").lower() in {"child", "teen", "minor"}
+            for p in people
+        )
+        else ""
+    )
+    _generate_and_speak(
+        f"You're idle, nobody has spoken for a bit, and you're looking at {label}. "
+        f"Live non-sensitive cues: {cues}. {family_clause}"
+        "Make one short playful Rex joke or light roast about their current vibe, "
+        "silence, posture, indecision, or general organic energy. Keep it affectionate "
+        "and non-sensitive. Do NOT joke about body, age, gender, race, religion, "
+        "disability, health, money, identity, grief, private text, or anything intimate. "
+        "Do not ask a question. "
+        f"{'Address ' + first_name + ' by name. ' if first_name else ''}"
+        "One line only.",
+        emotion="curious",
+        purpose="people_roast",
+        label="idle people roast",
     )
 
 
@@ -5002,6 +5213,7 @@ def start() -> None:
     global _process_started_iso, _process_started_mono
     global _startup_group_signature, _startup_group_seen_at, _startup_solo_seen_at
     global _last_pose_analysis_at
+    global _last_weather_reaction_at
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
@@ -5023,6 +5235,8 @@ def start() -> None:
     _last_presence_reaction_at.clear()
     _animal_seen_signatures.clear()
     _animal_reacted_at.clear()
+    _acknowledged_weather_signatures.clear()
+    _last_weather_reaction_at = 0.0
     _emotional_checkin_fired.clear()
     _emotional_checkin_fired_at.clear()
     _negative_streak_started_at.clear()

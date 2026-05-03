@@ -61,6 +61,21 @@ _DEFAULTS = {
         "is_weekend": None,
         "notable_date": None,
     },
+    "weather": {
+        "location": None,
+        "condition": "unknown",
+        "temp_f": None,
+        "feels_like_f": None,
+        "humidity": None,
+        "wind_mph": None,
+        "description": "unknown",
+        "available": False,
+        "source": None,
+        "fetched_at": None,
+        "updated_at": None,
+        "mood_bias": "unknown",
+        "tone_hint": None,
+    },
     "social": {
         # Set when Rex hears a referential / instructional mention of himself
         # (someone talking ABOUT him, not TO him). Consciousness reads this to
