@@ -105,6 +105,56 @@ class HumorActionExecutionTests(unittest.TestCase):
         get_response.assert_not_called()
         speak.assert_not_called()
 
+    def test_router_dj_bit_action_uses_performance_plan(self):
+        from intelligence import action_router, interaction
+
+        decision = action_router.ActionDecision(
+            action="performance.dj_bit",
+            confidence=0.95,
+            args={},
+            reason="explicit DJ performance request",
+        )
+
+        with (
+            mock.patch.object(interaction.llm, "get_response", return_value="DJ line.") as get_response,
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+            mock.patch("sequences.animations.play_body_beat") as beat,
+        ):
+            response = interaction._handle_router_takeover_action(
+                decision,
+                "do your DJ thing",
+                person_id=1,
+                person_name="Bret",
+                raw_best_id=1,
+                raw_best_name="Bret",
+                raw_best_score=0.99,
+            )
+
+        self.assertEqual(response, "DJ line.")
+        prompt = get_response.call_args.args[0]
+        self.assertIn("DJ-R3X cantina patter", prompt)
+        self.assertIn("Do not start music", prompt)
+        self.assertEqual(speak.call_args.kwargs["emotion"], "happy")
+        beat.assert_called_once_with("proud_dj_pose")
+
+    def test_fast_local_takeover_handles_explicit_dj_bit(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction.llm, "get_response", return_value="Hype line.") as get_response,
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+            mock.patch("sequences.animations.play_body_beat"),
+        ):
+            response = interaction._handle_fast_local_takeover(
+                "hype the room",
+                person_id=None,
+                person_name=None,
+            )
+
+        self.assertEqual(response, "Hype line.")
+        self.assertIn("station-break", get_response.call_args.args[0])
+        self.assertEqual(speak.call_args.kwargs["emotion"], "happy")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -114,6 +114,7 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "performance.dj_bit",
         "performance",
         "User asks Rex for DJ/cantina patter, hype, an announcement, or a station-break line without requesting actual music playback.",
+        executable=True,
     ),
     ActionSpec(
         "performance.body_beat",
@@ -337,6 +338,16 @@ _FREE_HUMOR_RE = re.compile(
     r"be\s+funny)\b",
     re.IGNORECASE,
 )
+_DJ_BIT_RE = re.compile(
+    r"\b(?:do|give|hit|drop)\s+(?:me|us|the\s+room)?\s*(?:with\s+)?"
+    r"(?:your\s+)?(?:dj\s+thing|dj\s+bit|dj\s+riff|cantina\s+patter|"
+    r"station[- ]break|hype\s+line|announcement)\b|"
+    r"\bhype\s+(?:me|us|the\s+room)\s+up\b|"
+    r"\bhype\s+the\s+room\b|"
+    r"\bmake\s+(?:an|a)\s+announcement\b|"
+    r"\bgive\s+(?:me|us)\s+(?:some\s+)?cantina\s+patter\b",
+    re.IGNORECASE,
+)
 _ROAST_FOOD_TARGETS = {
     "beef",
     "chicken",
@@ -435,6 +446,23 @@ def classify_explicit_humor(text: str) -> ActionDecision | None:
             confidence=0.94,
             args={},
             reason="explicit free humor request",
+        )
+
+    return None
+
+
+def classify_explicit_performance(text: str) -> ActionDecision | None:
+    """Classify obvious non-music performance requests without an LLM call."""
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return None
+
+    if _DJ_BIT_RE.search(cleaned):
+        return ActionDecision(
+            action="performance.dj_bit",
+            confidence=0.95,
+            args={},
+            reason="explicit DJ performance request",
         )
 
     return None
@@ -560,6 +588,9 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
     explicit_humor = classify_explicit_humor(text)
     if explicit_humor is not None:
         return _apply_context_overrides(explicit_humor, text, context)
+    explicit_performance = classify_explicit_performance(text)
+    if explicit_performance is not None:
+        return _apply_context_overrides(explicit_performance, text, context)
 
     max_context_chars = int(getattr(config, "ACTION_ROUTER_MAX_CONTEXT_CHARS", 5000))
     user_payload = {

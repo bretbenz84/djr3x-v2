@@ -5,6 +5,9 @@ This is intentionally not another LLM planner. Consciousness can register the
 things it wants to say, and the governor scores those candidate moves with
 plain rules. In shadow mode the current behavior still runs, but logs show what
 the governor would have chosen.
+
+This module is deliberately proactive-only. User-turn routing belongs to
+action_router.py and planned output execution belongs to performance_output.py.
 """
 
 from __future__ import annotations
@@ -57,6 +60,7 @@ _ACTIVE_CONVERSATION_ALLOWED_SOURCES = {
     "_step_visual_curiosity",
     "_step_emotional_checkin",
 }
+PROACTIVE_CANDIDATE_KIND = "proactive"
 
 
 @dataclass
@@ -65,6 +69,7 @@ class CandidateMove:
 
     source: str
     purpose: str
+    kind: str = PROACTIVE_CANDIDATE_KIND
     label: str = ""
     prompt: str = ""
     suggested_text: str = ""
@@ -190,6 +195,9 @@ class ActionGovernor:
         score = int(priority)
         reasons: list[str] = []
 
+        if candidate.kind != PROACTIVE_CANDIDATE_KIND:
+            reasons.append("non_proactive_candidate")
+
         if candidate.outcome == "dropped":
             reasons.append(candidate.outcome_reason or "dropped_by_current_behavior")
 
@@ -231,6 +239,7 @@ class ActionGovernor:
 
         rejected = bool(
             candidate.outcome == "dropped"
+            or "non_proactive_candidate" in reasons
             or "user_mid_sentence" in reasons
             or "interaction_busy" in reasons
             or "situation_suppresses_proactive" in reasons
@@ -283,10 +292,11 @@ class ActionGovernor:
         reasons = ",".join(scored.reasons)
         payload = c.suggested_text or c.prompt
         _log.info(
-            "[action_governor] %s candidate=%s purpose=%s source=%s label=%r "
+            "[action_governor] %s candidate=%s kind=%s purpose=%s source=%s label=%r "
             "score=%s rejected=%s outcome=%s reasons=%s llm=%s target=%s text=%r",
             cycle_id,
             c.candidate_id,
+            c.kind,
             c.purpose,
             c.source,
             c.label,

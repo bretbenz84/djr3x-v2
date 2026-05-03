@@ -1063,11 +1063,24 @@ ACTION_GOVERNOR_MIN_SCORE = 20
 
 # Higher-level user-turn action router.
 #
-# Execution is limited by intelligence.action_router.EXECUTABLE_ACTIONS; all
-# other actions are still logged for comparison with the legacy path.
+# Execution is limited first by intelligence.action_router.EXECUTABLE_ACTIONS,
+# then by ACTION_ROUTER_EXECUTE_ACTIONS below. Keep this list conservative while
+# the router graduates from shadow mode; destructive/state-changing actions stay
+# on the legacy path until each category has earned trust.
 ACTION_ROUTER_SHADOW_ENABLED = False
 ACTION_ROUTER_LOG_DECISIONS = True
-ACTION_ROUTER_EXECUTE_ENABLED = False
+ACTION_ROUTER_EXECUTE_ENABLED = True
+ACTION_ROUTER_EXECUTE_ACTIONS = {
+    "humor.tell_joke",
+    "humor.roast",
+    "humor.free_bit",
+    "performance.dj_bit",
+    "time.query",
+    "date.query",
+    "weather.query",
+    "status.uptime",
+    "status.capabilities",
+}
 ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE = 0.85
 ACTION_ROUTER_MODEL = LLM_MODEL
 ACTION_ROUTER_MAX_CONTEXT_CHARS = 5000

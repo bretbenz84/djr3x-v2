@@ -24,21 +24,22 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertTrue(action_router.EXECUTABLE_ACTIONS.issubset(spec_keys))
         self.assertTrue(action_router.PERFORMANCE_ACTIONS.issubset(spec_keys))
 
-    def test_humor_actions_are_executable_before_broader_performance_actions(self):
+    def test_humor_and_dj_bit_are_executable_before_body_beat(self):
         from intelligence import action_router
 
-        humor = {
+        planned = {
             "humor.tell_joke",
             "humor.roast",
             "humor.free_bit",
+            "performance.dj_bit",
         }
-        broader_performance = {"performance.dj_bit", "performance.body_beat"}
+        later_performance = {"performance.body_beat"}
 
-        self.assertTrue(humor.issubset(action_router.ACTION_CATALOG))
-        self.assertTrue(humor.issubset(action_router.PERFORMANCE_ACTIONS))
-        self.assertTrue(humor.issubset(action_router.EXECUTABLE_ACTIONS))
-        self.assertTrue(broader_performance.issubset(action_router.PERFORMANCE_ACTIONS))
-        self.assertTrue(broader_performance.isdisjoint(action_router.EXECUTABLE_ACTIONS))
+        self.assertTrue(planned.issubset(action_router.ACTION_CATALOG))
+        self.assertTrue(planned.issubset(action_router.PERFORMANCE_ACTIONS))
+        self.assertTrue(planned.issubset(action_router.EXECUTABLE_ACTIONS))
+        self.assertTrue(later_performance.issubset(action_router.PERFORMANCE_ACTIONS))
+        self.assertTrue(later_performance.isdisjoint(action_router.EXECUTABLE_ACTIONS))
 
     def test_router_accepts_new_catalog_actions_from_llm(self):
         from intelligence import action_router
@@ -83,6 +84,25 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertIsNone(action_router.classify_explicit_humor("that joke was funny"))
         self.assertIsNone(action_router.classify_explicit_humor("I ate roast beef"))
 
+    def test_explicit_performance_classifier_routes_dj_bit_requests(self):
+        from intelligence import action_router
+
+        for text in (
+            "do your DJ thing",
+            "give me some cantina patter",
+            "hype the room",
+            "make an announcement",
+        ):
+            with self.subTest(text=text):
+                decision = action_router.classify_explicit_performance(text)
+                self.assertEqual(decision.action, "performance.dj_bit")
+
+    def test_explicit_performance_classifier_ignores_music_playback_requests(self):
+        from intelligence import action_router
+
+        self.assertIsNone(action_router.classify_explicit_performance("play some jazz"))
+        self.assertIsNone(action_router.classify_explicit_performance("put on music"))
+
     def test_decide_short_circuits_explicit_humor_without_llm_router_call(self):
         from intelligence import action_router
 
@@ -90,6 +110,15 @@ class ActionRouterCatalogTests(unittest.TestCase):
             decision = action_router.decide("tell me a joke", {})
 
         self.assertEqual(decision.action, "humor.tell_joke")
+        create.assert_not_called()
+
+    def test_decide_short_circuits_explicit_dj_bit_without_llm_router_call(self):
+        from intelligence import action_router
+
+        with mock.patch.object(action_router._client.chat.completions, "create") as create:
+            decision = action_router.decide("do your DJ thing", {})
+
+        self.assertEqual(decision.action, "performance.dj_bit")
         create.assert_not_called()
 
 

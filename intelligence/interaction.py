@@ -465,14 +465,41 @@ def _action_router_context(
 
 
 def _router_decision_executable(decision: Optional[action_router.ActionDecision]) -> bool:
+    return _router_execution_block_reason(decision) is None
+
+
+def _router_execute_allowlist() -> Optional[set[str]]:
+    configured = getattr(config, "ACTION_ROUTER_EXECUTE_ACTIONS", None)
+    if configured is None:
+        return None
+    if isinstance(configured, str):
+        return {
+            item.strip()
+            for item in configured.split(",")
+            if item.strip()
+        }
+    try:
+        return {str(item).strip() for item in configured if str(item).strip()}
+    except TypeError:
+        return set()
+
+
+def _router_execution_block_reason(
+    decision: Optional[action_router.ActionDecision],
+) -> Optional[str]:
     if decision is None:
-        return False
+        return "no_decision"
     if bool(decision.requires_confirmation):
-        return False
+        return "requires_confirmation"
     if decision.action not in action_router.EXECUTABLE_ACTIONS:
-        return False
+        return "not_executable"
+    allowlist = _router_execute_allowlist()
+    if allowlist is not None and decision.action not in allowlist:
+        return "not_in_execute_allowlist"
     threshold = float(getattr(config, "ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE", 0.85))
-    return float(decision.confidence or 0.0) >= threshold
+    if float(decision.confidence or 0.0) < threshold:
+        return "below_confidence_threshold"
+    return None
 
 
 def _chunk_for_vad(audio_chunk: np.ndarray) -> np.ndarray:
@@ -6077,12 +6104,20 @@ def _play_performance_body_beat(beat: str) -> None:
     animations.play_body_beat(beat)
 
 
-def _handle_router_humor_action(
+_PLAN_ROUTER_ACTIONS = {
+    "humor.tell_joke",
+    "humor.roast",
+    "humor.free_bit",
+    "performance.dj_bit",
+}
+
+
+def _handle_router_performance_action(
     decision: action_router.ActionDecision,
     text: str,
     person_id: Optional[int],
 ) -> Optional[str]:
-    if decision.action not in {"humor.tell_joke", "humor.roast", "humor.free_bit"}:
+    if decision.action not in _PLAN_ROUTER_ACTIONS:
         return None
     plan = performance_plan.plan_for_action(
         decision.action,
@@ -6099,9 +6134,9 @@ def _handle_router_humor_action(
         clean_text=llm.clean_response_text,
     )
     if output.generation_failed:
-        _log.debug("humor action generation failed; used fallback text")
+        _log.debug("performance action generation failed; used fallback text")
     if output.body_beat_failed:
-        _log.debug("humor action body beat failed; speech still delivered")
+        _log.debug("performance action body beat failed; speech still delivered")
     _log.info(
         "[action_router] executed %s person_id=%s delivery=%s memory_policy=%s text=%r",
         output.action,
@@ -6131,8 +6166,8 @@ def _handle_router_takeover_action(
     if action == "conversation.reply":
         return None
 
-    if action in {"humor.tell_joke", "humor.roast", "humor.free_bit"}:
-        return _handle_router_humor_action(decision, text, person_id)
+    if action in _PLAN_ROUTER_ACTIONS:
+        return _handle_router_performance_action(decision, text, person_id)
 
     if action == "memory.forget_specific":
         target = _router_arg_text(decision, "target", "topic", "memory")
@@ -6366,7 +6401,10 @@ def _handle_fast_local_takeover(
     """Handle obvious local control commands before the blocking router call."""
     humor_decision = action_router.classify_explicit_humor(text)
     if _router_decision_executable(humor_decision):
-        return _handle_router_humor_action(humor_decision, text, person_id)
+        return _handle_router_performance_action(humor_decision, text, person_id)
+    performance_decision = action_router.classify_explicit_performance(text)
+    if _router_decision_executable(performance_decision):
+        return _handle_router_performance_action(performance_decision, text, person_id)
 
     try:
         match = command_parser.parse(text)
@@ -9353,8 +9391,16 @@ def _handle_speech_segment(
                 action_router.log_decision(router_decision, router_context, mode="execute")
             else:
                 action_router.start_shadow_decision(text, router_context)
-            if _router_decision_executable(router_decision):
+            router_block_reason = _router_execution_block_reason(router_decision)
+            if router_block_reason is None:
                 suppress_memory_learning = True
+            elif router_decision is not None and router_decision.action != "conversation.reply":
+                _log.info(
+                    "[action_router] not executing action=%s confidence=%.2f reason=%s",
+                    router_decision.action,
+                    float(router_decision.confidence or 0.0),
+                    router_block_reason,
+                )
         except Exception as exc:
             _log.debug("action router shadow start failed: %s", exc)
         try:
