@@ -77,14 +77,18 @@ def _parse_directed_look(normalized: str, original: str) -> dict | None:
     m_at = re.match(r"look\s+at\s+(.+)$", clean)
     if m_at:
         target_hint = m_at.group(1).strip()
+    m_for = re.match(r"look\s+for\s+(.+)$", clean)
+    if m_for:
+        target_hint = m_for.group(1).strip()
 
     pointing_phrase = bool(re.search(
         r"\blook\s+(?:at\s+)?(?:this|that|here|there)\b|\blook\s+over\s+there\b",
         clean,
     ))
     broad_look_at = clean.startswith("look at ") and bool(target_hint)
+    search_phrase = clean.startswith("look for ") and bool(target_hint)
 
-    if direction is None and (pointing_phrase or broad_look_at):
+    if direction is None and (pointing_phrase or broad_look_at or search_phrase):
         direction = "current"
 
     if direction is None:
@@ -93,7 +97,7 @@ def _parse_directed_look(normalized: str, original: str) -> dict | None:
     return {
         "direction": direction,
         "target_hint": target_hint,
-        "search_target": _has_specific_visual_target(target_hint),
+        "search_target": search_phrase or _has_specific_visual_target(target_hint),
         "utterance": original.strip(),
     }
 

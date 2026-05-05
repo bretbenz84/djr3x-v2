@@ -78,6 +78,18 @@ _log = logging.getLogger(__name__)
 # 32 ms at 16 kHz — matches the sounddevice blocksize and Silero's preferred size.
 _CHUNK_SECS = 0.032
 
+_SILENT_COMMAND_PREFIX = "__silent_command__:"
+_directed_look_context: dict[str, Any] = {
+    "started_at": 0.0,
+    "last_at": 0.0,
+    "last_direction": None,
+    "bare_count": 0,
+    "asked_clarify": False,
+    "target_hint": "",
+    "target_kind": None,
+    "greeted_key": None,
+}
+
 
 @dataclass(frozen=True)
 class _PostTtsHandoffPolicy:
@@ -5058,6 +5070,421 @@ def _stream_llm_response(
 # Command execution
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _silent_command_response(label: str) -> str:
+    return f"{_SILENT_COMMAND_PREFIX}{label}"
+
+
+def _is_silent_command_response(text: Optional[str]) -> bool:
+    return isinstance(text, str) and text.startswith(_SILENT_COMMAND_PREFIX)
+
+
+def _plain_directed_text(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9'\s]", " ", (text or "").lower()).split())
+
+
+def _directed_context_fresh(now: Optional[float] = None) -> bool:
+    now = time.monotonic() if now is None else now
+    last_at = float(_directed_look_context.get("last_at") or 0.0)
+    ttl = float(getattr(config, "DIRECTED_LOOK_CONTEXT_WINDOW_SECS", 25.0))
+    return last_at > 0.0 and (now - last_at) <= ttl
+
+
+def _reset_directed_look_context() -> None:
+    _directed_look_context.update({
+        "started_at": 0.0,
+        "last_at": 0.0,
+        "last_direction": None,
+        "bare_count": 0,
+        "asked_clarify": False,
+        "target_hint": "",
+        "target_kind": None,
+        "greeted_key": None,
+    })
+
+
+def _note_directed_look_context(
+    *,
+    direction: str,
+    target_hint: str = "",
+    target_kind: Optional[str] = None,
+    found: bool = False,
+) -> None:
+    now = time.monotonic()
+    if found:
+        _reset_directed_look_context()
+        return
+    if not _directed_context_fresh(now):
+        _reset_directed_look_context()
+        _directed_look_context["started_at"] = now
+    elif not _directed_look_context.get("started_at"):
+        _directed_look_context["started_at"] = now
+    _directed_look_context["last_at"] = now
+    _directed_look_context["last_direction"] = direction
+    if target_hint:
+        _directed_look_context["target_hint"] = target_hint
+    if target_kind:
+        _directed_look_context["target_kind"] = target_kind
+
+
+def _directed_target_kind(target_hint: str) -> str:
+    clean = _plain_directed_text(target_hint)
+    if not clean:
+        return "scene"
+    if clean in {"this", "that", "here", "there", "this thing", "that thing"}:
+        return "scene"
+    if clean in {"me", "me silly", "me obviously", "my face", "myself"}:
+        return "person"
+    if re.match(r"^(?:the|a|an)\s+", clean):
+        return "object"
+    if re.match(
+        r"^(?:my|your)\s+(?:wife|husband|spouse|partner|girlfriend|boyfriend|"
+        r"mother|father|mom|dad|sister|brother|sibling|friend|kid|child|son|daughter)\b",
+        clean,
+    ):
+        return "person"
+    if clean in {"person", "face", "someone", "somebody", "human", "people"}:
+        return "person"
+    if re.match(r"^(?:my|your)\s+", clean):
+        return "object"
+    maybe_name = _normalize_name(target_hint)
+    if maybe_name is not None:
+        try:
+            if people_memory.find_person_by_name(maybe_name):
+                return "person"
+        except Exception as exc:
+            _log.debug("directed target person lookup failed: %s", exc)
+    if maybe_name is not None and _name_word_count(maybe_name) == 1:
+        return "person"
+    return "object"
+
+
+def _target_name_from_hint(target_hint: str, person_name: Optional[str]) -> Optional[str]:
+    clean = _plain_directed_text(target_hint)
+    if clean in {"me", "me silly", "me obviously", "my face", "myself"}:
+        return person_name
+    return _normalize_name(target_hint)
+
+
+def _directional_search_sequence(
+    start_direction: str,
+    *,
+    max_attempts: int,
+) -> list[str]:
+    start = (start_direction or "current").strip().lower()
+    if start == "other_way":
+        start = "current"
+    if start not in {"current", "left", "right", "up", "down", "center"}:
+        start = "current"
+
+    if start == "down":
+        base = ["down", "left", "right", "center"]
+    elif start == "up":
+        base = ["up", "left", "right", "center"]
+    elif start == "left":
+        base = ["left", "right", "down", "up", "center"]
+    elif start == "right":
+        base = ["right", "left", "down", "up", "center"]
+    elif start == "center":
+        base = ["center", "left", "right", "down", "up"]
+    else:
+        base = ["left", "right", "down", "up", "center"]
+
+    ordered: list[str] = []
+    for direction in base:
+        if direction not in ordered:
+            ordered.append(direction)
+    return ordered[:max(1, int(max_attempts))]
+
+
+def _move_and_capture_gaze(
+    direction: str,
+    *,
+    target_hint: str = "",
+):
+    from sequences import animations
+    from vision import camera as camera_mod
+
+    suspend_secs = (
+        float(getattr(config, "DIRECTED_LOOK_SETTLE_SECS", 0.22))
+        + 0.5
+    )
+    consciousness.suspend_face_tracking(suspend_secs)
+    actual_direction = animations.directed_look_pose(direction, target=target_hint)
+    frame = camera_mod.capture_current_gaze(settle_secs=0.06)
+    try:
+        consciousness.resume_face_tracking()
+    except Exception:
+        pass
+    return actual_direction, frame
+
+
+def _detect_faces_in_gaze(frame) -> list[dict]:
+    if frame is None:
+        return []
+    try:
+        from vision import face as face_mod
+        detections = face_mod.detect_faces(frame) or []
+    except Exception as exc:
+        _log.debug("directed face scan failed: %s", exc)
+        return []
+
+    results: list[dict] = []
+    for det in detections:
+        box = det.get("bounding_box")
+        area = 0
+        if isinstance(box, (list, tuple)) and len(box) >= 4:
+            try:
+                area = int(float(box[2]) * float(box[3]))
+            except Exception:
+                area = 0
+        person_record = None
+        try:
+            from vision import face as face_mod
+            person_record = face_mod.identify_face(det.get("encoding"))
+        except Exception as exc:
+            _log.debug("directed face identify failed: %s", exc)
+        results.append({
+            "box": box,
+            "area": area,
+            "person_id": (person_record or {}).get("id"),
+            "name": (person_record or {}).get("name"),
+            "known": person_record is not None,
+        })
+    results.sort(key=lambda item: item.get("area") or 0, reverse=True)
+    return results
+
+
+def _face_matches_target(face: dict, target_name: Optional[str]) -> bool:
+    if not target_name:
+        return True
+    face_name = str(face.get("name") or "").strip()
+    if not face_name:
+        return True
+    return _same_person_name(face_name, target_name)
+
+
+def _directed_face_greeting(face: dict, fallback_name: Optional[str]) -> str:
+    name = str(face.get("name") or fallback_name or "").strip()
+    first = name.split()[0] if name else ""
+    if first:
+        return f"Oh hi, {first}."
+    return "Oh hi. There you are."
+
+
+def _greet_directed_face_once(face: dict, fallback_name: Optional[str]) -> Optional[str]:
+    key = face.get("person_id") or face.get("name") or fallback_name or "unknown_face"
+    if key and _directed_look_context.get("greeted_key") == key:
+        return _silent_command_response("directed_look.face_already_found")
+    _directed_look_context["greeted_key"] = key
+    response = _directed_face_greeting(face, fallback_name)
+    _speak_blocking(response, emotion="happy", pre_beat_ms=60, post_beat_ms_override=150)
+    _reset_directed_look_context()
+    return response
+
+
+def _scan_for_person(
+    *,
+    target_name: Optional[str],
+    start_direction: str,
+    person_name: Optional[str],
+) -> str:
+    max_attempts = int(getattr(config, "DIRECTED_LOOK_FACE_SEARCH_MAX_ATTEMPTS", 5))
+    for direction in _directional_search_sequence(start_direction, max_attempts=max_attempts):
+        actual_direction, frame = _move_and_capture_gaze(direction, target_hint=target_name or "person")
+        for face in _detect_faces_in_gaze(frame):
+            if _face_matches_target(face, target_name):
+                _note_directed_look_context(
+                    direction=actual_direction,
+                    target_hint=target_name or "person",
+                    target_kind="person",
+                    found=True,
+                )
+                return _greet_directed_face_once(face, target_name or person_name) or ""
+        _log.info(
+            "[directed_look] person search miss direction=%s target=%r",
+            actual_direction,
+            target_name,
+        )
+    response = (
+        f"I am looking for {target_name}, but no face lock yet. "
+        "Try another direction before my dignity files a complaint."
+        if target_name
+        else "I am looking, but no face lock yet. Directional hints accepted, regrettably."
+    )
+    _speak_blocking(response, emotion="curious")
+    return response
+
+
+def _search_for_object(
+    *,
+    target_hint: str,
+    start_direction: str,
+    raw_text: str,
+    person_id: Optional[int],
+) -> str:
+    from vision import scene as vision_scene
+
+    max_attempts = int(getattr(config, "DIRECTED_LOOK_OBJECT_SEARCH_MAX_ATTEMPTS", 5))
+    final_analysis: dict = {}
+    final_direction = start_direction
+    for direction in _directional_search_sequence(start_direction, max_attempts=max_attempts):
+        actual_direction, frame = _move_and_capture_gaze(direction, target_hint=target_hint)
+        final_direction = actual_direction
+        if frame is None:
+            continue
+        analysis = vision_scene.analyze_directed_attention(
+            frame,
+            direction=actual_direction,
+            utterance=raw_text,
+            target_hint=target_hint,
+        )
+        final_analysis = analysis or final_analysis
+        if _analysis_found_target(analysis, target_hint):
+            prompt = (
+                f"The person asked you to look for {target_hint!r}. "
+                f"You found it while looking {_directed_look_label(actual_direction)}. "
+                f"Vision analysis:\n{json.dumps(analysis, ensure_ascii=False)}\n\n"
+                "Reply as Rex in one concise snarky observation based only on the visible details. "
+                "Max 28 words. Do not mention JSON, APIs, cameras, screenshots, or image analysis."
+            )
+            response = llm.get_response(prompt, person_id) or _fallback_directed_look_response(analysis)
+            _speak_blocking(response)
+            _reset_directed_look_context()
+            return llm.clean_response_text(response)
+        _log.info(
+            "[directed_look] object search miss target=%r direction=%s",
+            target_hint,
+            actual_direction,
+        )
+
+    if final_analysis:
+        _log.info(
+            "[directed_look] object search exhausted target=%r last_direction=%s analysis=%r",
+            target_hint,
+            final_direction,
+            final_analysis.get("target_summary"),
+        )
+    response = _not_found_visual_response(target_hint)
+    _speak_blocking(response)
+    return response
+
+
+def _analyze_directed_view_once(
+    *,
+    frame,
+    direction: str,
+    target_hint: str,
+    raw_text: str,
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> str:
+    if frame is None:
+        response = (
+            "I looked, but my photoreceptors came back empty. "
+            "Very dramatic. Terrible evidence."
+        )
+        _speak_blocking(response)
+        return response
+    from vision import scene as vision_scene
+
+    analysis = vision_scene.analyze_directed_attention(
+        frame,
+        direction=direction,
+        utterance=raw_text,
+        target_hint=target_hint,
+    )
+    if not analysis:
+        response = "I looked, but the visual intel is thin. Atmospheric, yes. Useful, no."
+        _speak_blocking(response)
+        return response
+
+    speaker = person_name or "the person"
+    prompt = (
+        f"{speaker} asked you to physically look {_directed_look_label(direction)}. "
+        f"The original request was: {raw_text!r}. "
+        "You moved your head/visor, took a fresh look, and got this vision analysis:\n"
+        f"{json.dumps(analysis, ensure_ascii=False)}\n\n"
+        "Reply as Rex with one concise roast-style observation or opinion based ONLY "
+        "on the analysis. Max 35 words. If the target is a person, child, pet, or "
+        "possible introduction, acknowledge them warmly with a harmless quip and, "
+        "only if useful, ask who they are. Do not mention JSON, APIs, cameras, "
+        "screenshots, or image analysis."
+    )
+    response = llm.get_response(prompt, person_id) or _fallback_directed_look_response(analysis)
+    _speak_blocking(response)
+    return llm.clean_response_text(response)
+
+
+def _clarify_directed_search() -> str:
+    _directed_look_context["asked_clarify"] = True
+    response = "What am I looking for?"
+    _speak_blocking(response, emotion="curious")
+    return response
+
+
+def _pending_directed_search_reply(
+    text: str,
+    *,
+    person_id: Optional[int],
+    person_name: Optional[str],
+) -> Optional[str]:
+    if not _directed_context_fresh():
+        return None
+    if not _directed_look_context.get("asked_clarify"):
+        return None
+
+    clean = _plain_directed_text(text)
+    if clean in {"me", "me silly", "me obviously", "me dummy", "me droid"}:
+        try:
+            recent = consciousness.get_recent_engagement() or {}
+        except Exception:
+            recent = {}
+        target_name = person_name or recent.get("name")
+        return _scan_for_person(
+            target_name=target_name,
+            start_direction=str(_directed_look_context.get("last_direction") or "current"),
+            person_name=person_name,
+        )
+
+    look_match = command_parser.parse(text)
+    if look_match is not None and look_match.command_key == "directed_look":
+        args = look_match.args or {}
+        target_hint = str(args.get("target_hint") or "").strip()
+        if target_hint:
+            kind = _directed_target_kind(target_hint)
+            if kind == "person":
+                return _scan_for_person(
+                    target_name=_target_name_from_hint(target_hint, person_name),
+                    start_direction=str(args.get("direction") or _directed_look_context.get("last_direction") or "current"),
+                    person_name=person_name,
+                )
+            return _search_for_object(
+                target_hint=target_hint,
+                start_direction=str(args.get("direction") or _directed_look_context.get("last_direction") or "current"),
+                raw_text=text,
+                person_id=person_id,
+            )
+        return None
+
+    kind = _directed_target_kind(text)
+    if kind == "object":
+        return _search_for_object(
+            target_hint=text.strip(),
+            start_direction=str(_directed_look_context.get("last_direction") or "current"),
+            raw_text=text,
+            person_id=person_id,
+        )
+    if kind == "person":
+        maybe_name = _extract_introduced_name(text, allow_bare_name=True)
+        return _scan_for_person(
+            target_name=maybe_name,
+            start_direction=str(_directed_look_context.get("last_direction") or "current"),
+            person_name=person_name,
+        )
+
+    return None
+
+
 def _directed_look_label(direction: str) -> str:
     return {
         "left": "to your left",
@@ -5140,78 +5567,73 @@ def _execute_directed_look_command(
     direction = (args.get("direction") or "current").strip().lower()
     target_hint = (args.get("target_hint") or "").strip()
     search_target = bool(args.get("search_target") and target_hint)
-    actual_direction = direction
-    analysis: dict = {}
+    target_kind = _directed_target_kind(target_hint) if target_hint else None
+    bare_directional = not target_hint and not search_target
+    search_start_direction = direction
+    if (
+        direction == "current"
+        and target_hint
+        and _directed_context_fresh()
+        and _directed_look_context.get("last_direction")
+    ):
+        search_start_direction = str(_directed_look_context.get("last_direction"))
 
     try:
-        from sequences import animations
-        from vision import camera as camera_mod
-        from vision import scene as vision_scene
-
-        suspend_base = (
-            float(getattr(config, "DIRECTED_LOOK_SETTLE_SECS", 0.65))
-            + float(getattr(config, "CAMERA_POSE_SETTLE_SECS", 0.5))
-            + 3.0
-        )
-        directions = _directed_search_directions(direction) if search_target else [direction]
-        for attempt_direction in directions:
-            consciousness.suspend_face_tracking(suspend_base)
-            actual_direction = animations.directed_look_pose(
-                attempt_direction,
-                target=target_hint,
-            )
-            frame = camera_mod.capture_current_gaze(settle_secs=0.12)
-            if frame is None:
-                resp = (
-                    "I looked, but my photoreceptors came back empty. "
-                    "Very dramatic. Terrible evidence."
+        if target_hint and (search_target or target_kind in {"person", "object"}):
+            if target_kind == "person":
+                return _scan_for_person(
+                    target_name=_target_name_from_hint(target_hint, person_name),
+                    start_direction=search_start_direction,
+                    person_name=person_name,
                 )
-                _speak_blocking(resp)
-                return resp
-
-            analysis = vision_scene.analyze_directed_attention(
-                frame,
-                direction=actual_direction,
-                utterance=raw_text,
+            return _search_for_object(
                 target_hint=target_hint,
+                start_direction=search_start_direction,
+                raw_text=raw_text,
+                person_id=person_id,
             )
-            if not search_target or _analysis_found_target(analysis, target_hint):
-                break
-            _log.info(
-                "[interaction] directed look search miss — target=%r direction=%s",
-                target_hint,
-                actual_direction,
+
+        actual_direction, frame = _move_and_capture_gaze(direction, target_hint=target_hint)
+        faces = _detect_faces_in_gaze(frame)
+        if faces:
+            return _greet_directed_face_once(faces[0], person_name) or _silent_command_response("directed_look.face_found")
+
+        if target_hint and target_kind == "scene":
+            return _analyze_directed_view_once(
+                frame=frame,
+                direction=actual_direction,
+                target_hint=target_hint,
+                raw_text=raw_text,
+                person_id=person_id,
+                person_name=person_name,
             )
+
+        _note_directed_look_context(
+            direction=actual_direction,
+            target_hint=target_hint,
+            target_kind=target_kind,
+        )
+
+        if bare_directional:
+            _directed_look_context["bare_count"] = int(
+                _directed_look_context.get("bare_count") or 0
+            ) + 1
+            clarify_after = int(getattr(config, "DIRECTED_LOOK_CLARIFY_AFTER_COMMANDS", 3))
+            if (
+                _directed_look_context["bare_count"] >= max(1, clarify_after)
+                and not _directed_look_context.get("asked_clarify")
+            ):
+                return _clarify_directed_search()
+            return _silent_command_response(f"directed_look.{actual_direction}")
     except Exception as exc:
         _log.debug("directed look command failed: %s", exc)
         resp = "I tried to look, but my neck servos and photoreceptors are staging a tiny rebellion."
         _speak_blocking(resp)
         return resp
 
-    if not analysis:
-        resp = "I looked, but the visual intel is thin. Atmospheric, yes. Useful, no."
-        _speak_blocking(resp)
-        return resp
-    if search_target and not _analysis_found_target(analysis, target_hint):
-        resp = _not_found_visual_response(target_hint)
-        _speak_blocking(resp)
-        return resp
-
-    speaker = person_name or "the person"
-    prompt = (
-        f"{speaker} asked you to physically look {_directed_look_label(actual_direction)}. "
-        f"The original request was: {raw_text!r}. "
-        "You moved your head/visor, took a fresh look, and got this vision analysis:\n"
-        f"{json.dumps(analysis, ensure_ascii=False)}\n\n"
-        "Reply as Rex with one concise roast-style observation or opinion based ONLY "
-        "on the analysis. Max 35 words. If the target is a person, child, pet, or "
-        "possible introduction, acknowledge them warmly with a harmless quip and, "
-        "only if useful, ask who they are. Do not mention JSON, APIs, cameras, "
-        "screenshots, or image analysis."
-    )
-    resp = llm.get_response(prompt, person_id) or _fallback_directed_look_response(analysis)
+    resp = "Moved. Give me a target if this is supposed to become detective work."
     _speak_blocking(resp)
-    return llm.clean_response_text(resp)
+    return resp
 
 
 def _execute_wave_command(
@@ -7959,6 +8381,19 @@ def _handle_fast_local_takeover(
             person_id,
             router_audit=router_audit,
         )
+
+    directed_followup = _pending_directed_search_reply(
+        text,
+        person_id=person_id,
+        person_name=person_name,
+    )
+    if directed_followup is not None:
+        _router_audit_note_fast_local_action(
+            router_audit,
+            "vision.directed_search",
+            reason="pending directed-look search follow-up",
+        )
+        return directed_followup
 
     try:
         match = command_parser.parse(text)
@@ -11156,23 +11591,32 @@ def _handle_speech_segment(
                 person_name=person_name,
                 router_audit=router_audit,
             )
-            if fast_takeover_response:
-                response_text = fast_takeover_response
+            if fast_takeover_response is not None:
+                silent_command = _is_silent_command_response(fast_takeover_response)
+                response_text = None if silent_command else fast_takeover_response
                 final_executed_path = _router_audit_fast_local_final_path(router_audit)
                 _log_router_audit(
                     router_audit,
                     final_executed_path,
-                    spoken_text=fast_takeover_response,
+                    completed=True,
+                    spoken_text=None if silent_command else fast_takeover_response,
+                    spoken_text_present=False if silent_command else None,
                 )
+                if final_executed_path and (
+                    "directed_look" in final_executed_path
+                    or "vision.directed_search" in final_executed_path
+                ):
+                    suppress_memory_learning = True
                 _dismiss_pending_consent_prompts(person_id, text)
                 try:
                     consciousness.clear_response_wait()
                 except Exception:
                     pass
-                conv_memory.add_to_transcript("Rex", fast_takeover_response)
-                conv_log.log_rex(fast_takeover_response)
-                _session_exchange_count += 1
-                _register_rex_utterance(fast_takeover_response)
+                if not silent_command:
+                    conv_memory.add_to_transcript("Rex", fast_takeover_response)
+                    conv_log.log_rex(fast_takeover_response)
+                    _session_exchange_count += 1
+                    _register_rex_utterance(fast_takeover_response)
                 return
             if bool(getattr(config, "ACTION_ROUTER_EXECUTE_ENABLED", False)):
                 router_started = time.monotonic()

@@ -619,11 +619,15 @@ CAMERA_POSE_SETTLE_SECS = 0.5
 # Directed look commands ("look left", "look at this", etc.) move the head before
 # capture. Explicit directions use the configured channel min/max limits; current
 # gaze preserves the existing pose instead of centering the neck.
-DIRECTED_LOOK_SETTLE_SECS = 0.65
-DIRECTED_LOOK_STEP_QUS = 30
-DIRECTED_LOOK_STEP_DELAY_SECS = 0.032
+DIRECTED_LOOK_SETTLE_SECS = 0.22
+DIRECTED_LOOK_STEP_QUS = 160
+DIRECTED_LOOK_STEP_DELAY_SECS = 0.008
 DIRECTED_LOOK_SEARCH_DIRECTIONS = ["current", "left", "right", "down", "up"]
 DIRECTED_LOOK_MAX_SEARCH_ATTEMPTS = 4
+DIRECTED_LOOK_CONTEXT_WINDOW_SECS = 25.0
+DIRECTED_LOOK_CLARIFY_AFTER_COMMANDS = 3
+DIRECTED_LOOK_OBJECT_SEARCH_MAX_ATTEMPTS = 5
+DIRECTED_LOOK_FACE_SEARCH_MAX_ATTEMPTS = 5
 
 # Wave gesture defaults for "wave to X".
 WAVE_COUNT = 3
@@ -662,7 +666,7 @@ BREATHING_PERIOD_SAD     = 6.0  # slower during sad emotion
 TRACKING_SMOOTHING_FACTOR = 0.2
 
 # Pixels from frame center in which no neck correction is applied
-TRACKING_DEAD_ZONE_PX = 40
+TRACKING_DEAD_ZONE_PX = 24
 
 # Keep an acquired face as the gaze target briefly through detector flicker.
 FACE_TRACKING_LOST_HOLD_SECS = _env_float(
@@ -676,7 +680,7 @@ FACE_TRACKING_LOST_HOLD_SECS = _env_float(
 # a single edge-of-frame lock drive closer to the configured servo limits.
 FACE_TRACKING_CENTERING_GAIN = _env_float(
     "FACE_TRACKING_CENTERING_GAIN",
-    1.15,
+    1.4,
     min_value=0.1,
     max_value=3.0,
 )
@@ -685,7 +689,7 @@ FACE_TRACKING_CENTERING_GAIN = _env_float(
 FACE_TRACKING_VERTICAL_ENABLED = _env_bool("FACE_TRACKING_VERTICAL_ENABLED", True)
 FACE_TRACKING_VERTICAL_GAIN = _env_float(
     "FACE_TRACKING_VERTICAL_GAIN",
-    0.55,
+    0.75,
     min_value=0.0,
     max_value=2.0,
 )

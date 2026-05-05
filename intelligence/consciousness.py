@@ -5414,6 +5414,12 @@ def suspend_face_tracking(seconds: float = 3.0) -> None:
     )
 
 
+def resume_face_tracking() -> None:
+    """Allow automatic face tracking immediately after a scripted move settles."""
+    global _face_tracking_suspended_until
+    _face_tracking_suspended_until = 0.0
+
+
 def _face_x_to_neck_target(x: int) -> float:
     """Map pixel x to neck servo position. Center → neutral; edges → extremes."""
     neck_cfg = config.SERVO_CHANNELS["neck"]
