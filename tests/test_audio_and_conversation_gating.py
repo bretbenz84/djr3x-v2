@@ -618,6 +618,21 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         self.assertEqual(line, "I don't know you well yet, Bret, So where are you from?")
 
+    def test_profile_fact_count_ignores_appearance_enrollment_facts(self):
+        from intelligence import interaction
+
+        facts = [
+            {"category": "appearance", "key": "build", "value": "average build"},
+            {"category": "appearance", "key": "hair_color", "value": "brown"},
+            {"category": "appearance", "key": "notable_features", "value": "glasses"},
+            {"category": "appearance", "key": "skin_color", "value": "light"},
+            {"category": "job", "key": "job_title", "value": "pilot"},
+        ]
+        with mock.patch.object(interaction.facts_memory, "get_facts", return_value=facts):
+            count = interaction._profile_fact_count(1)
+
+        self.assertEqual(count, 1)
+
     def test_low_memory_idle_question_skips_rich_profiles(self):
         from intelligence import interaction
 
@@ -2083,6 +2098,7 @@ class ConversationGatingTest(unittest.TestCase):
                 mock.patch.object(consciousness, "_pick_milestone", return_value=None),
                 mock.patch.object(consciousness, "_pick_anticipated_event", return_value=None),
                 mock.patch.object(consciousness, "_pick_absence_phase", return_value=None),
+                mock.patch.object(consciousness, "_pick_startup_profile_question", return_value=None),
                 mock.patch.object(consciousness, "_build_first_sight_mood_prompt", return_value=None),
                 mock.patch.object(
                     consciousness,
@@ -2101,6 +2117,77 @@ class ConversationGatingTest(unittest.TestCase):
             self.assertNotIn(1, consciousness._first_sight_seen_at)
             self.assertIn(1, consciousness._visible_people)
             self.assertEqual(generate.call_args.kwargs["startup_greeting_name"], "Bret")
+        finally:
+            consciousness._visible_people.clear()
+            consciousness._visible_people.update(old_visible)
+            consciousness._last_seen.clear()
+            consciousness._last_seen.update(old_last_seen)
+            consciousness._first_sight_seen_at.clear()
+            consciousness._first_sight_seen_at.update(old_first_seen)
+            consciousness._greeted_this_session.clear()
+            consciousness._greeted_this_session.update(old_greeted)
+
+    def test_first_sight_sparse_profile_uses_basic_profile_question(self):
+        from intelligence import consciousness
+
+        old_visible = set(consciousness._visible_people)
+        old_last_seen = dict(consciousness._last_seen)
+        old_first_seen = dict(consciousness._first_sight_seen_at)
+        old_greeted = set(consciousness._greeted_this_session)
+        try:
+            consciousness._visible_people.clear()
+            consciousness._last_seen.clear()
+            consciousness._first_sight_seen_at.clear()
+            consciousness._first_sight_seen_at[1] = 100.0
+            consciousness._greeted_this_session.clear()
+            snapshot = {
+                "people": [
+                    {"person_db_id": 1, "face_id": "Bret Benziger"},
+                ],
+                "crowd": {"count": 1},
+            }
+            profile = mock.Mock(
+                suppress_proactive=False,
+                interaction_busy=False,
+                user_mid_sentence=False,
+                likely_still_present=False,
+                apparent_departure=False,
+            )
+            question = {
+                "key": "hometown",
+                "text": "So where are you from?",
+                "depth": 1,
+            }
+
+            with (
+                mock.patch.object(consciousness.time, "monotonic", return_value=105.0),
+                mock.patch.object(consciousness.config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 0.0),
+                mock.patch.object(consciousness, "_hold_startup_individual_greeting", return_value=False),
+                mock.patch.object(consciousness, "_should_fire_presence", return_value=True),
+                mock.patch.object(consciousness, "_pick_due_emotional_checkin", return_value=None),
+                mock.patch.object(consciousness, "_pick_birthday_window", return_value=None),
+                mock.patch.object(consciousness, "_pick_due_celebration_checkin", return_value=None),
+                mock.patch.object(consciousness, "_pick_milestone", return_value=None),
+                mock.patch.object(consciousness, "_pick_anticipated_event", return_value=None),
+                mock.patch.object(consciousness, "_pick_absence_phase", return_value=None),
+                mock.patch.object(consciousness, "_pick_startup_profile_question", return_value=question),
+                mock.patch.object(
+                    consciousness,
+                    "_generate_and_speak_presence",
+                    return_value=True,
+                ) as generate,
+            ):
+                consciousness._step_presence_tracking(snapshot, profile)
+
+            prompt = generate.call_args.args[0]
+            self.assertIn("So where are you from?", prompt)
+            self.assertIn("early getting-to-know-you curiosity", prompt)
+            self.assertEqual(generate.call_args.kwargs["question_key"], "hometown")
+            self.assertEqual(generate.call_args.kwargs["question_depth"], 1)
+            self.assertEqual(
+                generate.call_args.kwargs["label"],
+                "first-sight profile question for Bret Benziger",
+            )
         finally:
             consciousness._visible_people.clear()
             consciousness._visible_people.update(old_visible)
@@ -3074,6 +3161,26 @@ class ConversationGatingTest(unittest.TestCase):
             1,
             "startup_conversation_steering",
             "Hey there, Bret! What corner of your organic life are we discussing first?",
+            1,
+        )
+
+    def test_presence_profile_question_is_saved_with_pool_key(self):
+        from intelligence import consciousness
+
+        with mock.patch("memory.relationships.save_question_asked") as save:
+            consciousness._record_proactive_question(
+                1,
+                "Hey Bret. So where are you from?",
+                label="first-sight profile question for Bret Benziger",
+                purpose="presence_reaction",
+                question_key="hometown",
+                question_depth=1,
+            )
+
+        save.assert_called_once_with(
+            1,
+            "hometown",
+            "Hey Bret. So where are you from?",
             1,
         )
 

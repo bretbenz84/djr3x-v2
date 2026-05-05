@@ -29,6 +29,7 @@ import state as state_module
 from state import State
 from world_state import world_state
 from awareness.situation import assessor as _situation_assessor, SituationProfile
+from intelligence import profile_questions
 from utils import conv_log
 
 _log = logging.getLogger(__name__)
@@ -645,23 +646,25 @@ def _record_proactive_question(
     *,
     label: str,
     purpose: str,
+    question_key: Optional[str] = None,
+    question_depth: int = 1,
 ) -> None:
     if person_id is None or "?" not in (text or ""):
         return
-    question_key = _question_key_for_presence_line(label, purpose)
-    if not question_key:
+    key = question_key or _question_key_for_presence_line(label, purpose)
+    if not key:
         return
     try:
         from memory import relationships as rel_memory
         rel_memory.save_question_asked(
             int(person_id),
-            question_key,
+            key,
             text.strip(),
-            1,
+            int(question_depth or 1),
         )
         _log.info(
             "consciousness: recorded proactive question key=%s person_id=%s label=%s",
-            question_key,
+            key,
             person_id,
             label,
         )
@@ -1134,6 +1137,8 @@ def _generate_and_speak_presence(
     purpose: str = "presence_reaction",
     priority: Optional[int] = None,
     startup_greeting_name: Optional[str] = None,
+    question_key: Optional[str] = None,
+    question_depth: int = 1,
 ) -> bool:
     """
     Presence-reaction variant of _generate_and_speak.
@@ -1210,6 +1215,8 @@ def _generate_and_speak_presence(
                 text,
                 label=label,
                 purpose=purpose,
+                question_key=question_key,
+                question_depth=question_depth,
             )
             if (
                 purpose in {"memory_followup", "celebration_checkin", "emotional_checkin"}
@@ -1971,6 +1978,42 @@ def _build_startup_solo_greeting_prompt(first_name: str, context_sentence: str) 
         f"This is a solo greeting: use '{first_name}' "
         f"or 'you'; do NOT call this one visible person 'they' or 'them'. "
         f"Two short sentences max — the second must end in a question mark."
+    )
+
+
+def _pick_startup_profile_question(person_id: Optional[int]) -> Optional[dict]:
+    """Pick a basic profile question for known people Rex barely knows."""
+    if not isinstance(person_id, int):
+        return None
+    if not bool(getattr(config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True)):
+        return None
+    max_facts = int(getattr(config, "LOW_MEMORY_PROFILE_MAX_FACTS", 4) or 4)
+    if profile_questions.profile_fact_count(person_id) > max_facts:
+        return None
+    try:
+        from intelligence import question_budget
+        if not question_budget.can_ask("startup_profile_question"):
+            return None
+    except Exception:
+        pass
+    return profile_questions.next_profile_question(person_id)
+
+
+def _build_startup_profile_question_prompt(
+    first_name: str,
+    context_sentence: str,
+    question_text: str,
+) -> str:
+    return (
+        f"{context_sentence} "
+        f"Greet {first_name} in-character by name, then ask this exact basic "
+        f"profile question: {question_text!r}. "
+        "This is early getting-to-know-you curiosity, so keep it light and "
+        "non-intimate. Do not ask about fears, regrets, grief, values, or life "
+        "meaning. Use two short sentences max. The final sentence must preserve "
+        "the question wording and end in a question mark. "
+        f"This is a solo greeting: use '{first_name}' or 'you'; do not call this "
+        "one visible person 'they' or 'them'."
     )
 
 
@@ -4014,6 +4057,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 celebration_to_ack: Optional[dict] = None
                 followup_to_remove: Optional[tuple[Optional[int], object]] = None
                 anticipated_to_mark: Optional[tuple[Optional[int], object]] = None
+                profile_question_to_record: Optional[dict] = None
 
                 # Priority 0 — recent sensitive emotional event.
                 # This intentionally outranks temporal banter like
@@ -4157,26 +4201,47 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                             person_name, absence[1],
                         )
 
-                # Fallback — generic greeting
+                # Fallback — profile-building greeting for sparse known people,
+                # then generic greeting.
                 if prompt is None:
-                    mood_prompt = _build_first_sight_mood_prompt(
-                        first_name,
-                        context_sentence,
-                        _get_first_sight_mood(person_db_id),
-                    )
-                    if mood_prompt:
-                        prompt, emotion = mood_prompt
-                        label = f"first-sight mood greeting for {person_name}"
-                        _log.info(
-                            "consciousness: startup mood greeting for %s",
-                            person_name,
-                        )
+                    profile_question = _pick_startup_profile_question(person_db_id)
+                    if profile_question:
+                        question_text = str(profile_question.get("text") or "").strip()
                     else:
-                        prompt = _build_startup_solo_greeting_prompt(
+                        question_text = ""
+                    if question_text:
+                        profile_question_to_record = profile_question
+                        prompt = _build_startup_profile_question_prompt(
                             first_name,
                             context_sentence,
+                            question_text,
                         )
-                        _log.info("consciousness: startup greeting for %s", person_name)
+                        label = f"first-sight profile question for {person_name}"
+                        emotion = "curious"
+                        _log.info(
+                            "consciousness: startup profile question for %s key=%s",
+                            person_name,
+                            profile_question.get("key"),
+                        )
+                    else:
+                        mood_prompt = _build_first_sight_mood_prompt(
+                            first_name,
+                            context_sentence,
+                            _get_first_sight_mood(person_db_id),
+                        )
+                        if mood_prompt:
+                            prompt, emotion = mood_prompt
+                            label = f"first-sight mood greeting for {person_name}"
+                            _log.info(
+                                "consciousness: startup mood greeting for %s",
+                                person_name,
+                            )
+                        else:
+                            prompt = _build_startup_solo_greeting_prompt(
+                                first_name,
+                                context_sentence,
+                            )
+                            _log.info("consciousness: startup greeting for %s", person_name)
 
                 queued = _generate_and_speak_presence(
                     prompt,
@@ -4193,6 +4258,17 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         else "presence_reaction"
                     ),
                     startup_greeting_name=first_name,
+                    question_key=(
+                        str(profile_question_to_record.get("key"))
+                        if profile_question_to_record
+                        and profile_question_to_record.get("key")
+                        else None
+                    ),
+                    question_depth=(
+                        int(profile_question_to_record.get("depth", 1))
+                        if profile_question_to_record
+                        else 1
+                    ),
                 )
                 if queued:
                     if emotional_to_ack is not None:

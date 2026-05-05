@@ -53,6 +53,7 @@ from intelligence import social_frame
 from intelligence import turn_completion
 from intelligence import friendship_patterns
 from intelligence import conversation_steering
+from intelligence import profile_questions
 from memory import facts as facts_memory
 from memory import preferences as preferences_memory
 from memory import interests as interests_memory
@@ -2059,44 +2060,11 @@ def _primary_session_person_id() -> Optional[int]:
 
 
 def _profile_fact_count(person_id: int) -> int:
-    try:
-        return len(
-            [
-                fact
-                for fact in facts_memory.get_facts(person_id)
-                if fact.get("key") and fact.get("key") != "skin_color"
-            ]
-        )
-    except Exception as exc:
-        _log.debug("profile fact count failed for person_id=%s: %s", person_id, exc)
-        return 0
+    return profile_questions.profile_fact_count(person_id)
 
 
 def _next_profile_question(person_id: int) -> Optional[dict]:
-    try:
-        person = people_memory.get_person(person_id)
-        tier = (person.get("friendship_tier", "stranger") if person else "stranger")
-        max_depth = config.TIER_MAX_DEPTH.get(tier, 1)
-        asked = rel_memory.get_asked_question_keys(person_id)
-        known_fact_keys: set[str] = set()
-        known_fact_categories: set[str] = set()
-        for fact in facts_memory.get_facts(person_id):
-            if fact.get("key"):
-                known_fact_keys.add(fact["key"])
-            if fact.get("category"):
-                known_fact_categories.add(fact["category"])
-        for candidate in config.QUESTION_POOL:
-            q_key = candidate.get("key")
-            if candidate.get("depth", 1) > max_depth:
-                continue
-            if q_key in asked or q_key in known_fact_keys or q_key in known_fact_categories:
-                continue
-            if _question_blocked_by_boundary(person_id, candidate):
-                continue
-            return candidate
-    except Exception as exc:
-        _log.debug("next profile question failed for person_id=%s: %s", person_id, exc)
-    return None
+    return profile_questions.next_profile_question(person_id)
 
 
 def _format_low_memory_question(person_id: int, question_text: str) -> str:
@@ -7244,45 +7212,8 @@ _POOL_TOPIC_PATTERNS: dict[str, list[re.Pattern]] = {
     "good_life": [re.compile(r"\blife\s+worth\s+living\b", re.I)],
 }
 
-
-_QUESTION_BOUNDARY_TOPICS = {
-    "hometown": "hometown",
-    "job": "work",
-    "favorite_movie": "movies",
-    "favorite_music": "music",
-    "how_found_rex": "rex",
-    "hobbies": "hobbies",
-    "travel": "travel",
-    "proudest_moment": "personal history",
-    "biggest_challenge": "personal history",
-    "obsession": "interests",
-    "relationships": "relationships",
-    "values": "values",
-    "fears": "fears",
-    "life_changing": "personal history",
-    "regret": "regret",
-    "meaning_of_life": "philosophy",
-    "free_will": "philosophy",
-    "consciousness": "philosophy",
-    "good_life": "philosophy",
-}
-
-
 def _question_blocked_by_boundary(person_id: Optional[int], question: dict) -> bool:
-    if person_id is None or not question:
-        return False
-    topic = _QUESTION_BOUNDARY_TOPICS.get(question.get("key") or "")
-    if not topic:
-        return False
-    try:
-        return (
-            boundary_memory.is_blocked(person_id, "ask", topic)
-            or boundary_memory.is_blocked(person_id, "mention", topic)
-            or boundary_memory.is_blocked(person_id, "ask", "questions")
-        )
-    except Exception as exc:
-        _log.debug("question boundary check failed: %s", exc)
-        return False
+    return profile_questions.question_blocked_by_boundary(person_id, question)
 
 
 def _record_pool_topics_in_response(response_text: str, person_id: int) -> None:
