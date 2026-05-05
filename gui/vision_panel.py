@@ -10,6 +10,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
+from gui.live_face_tracker import LiveFaceBoxTracker
+
 
 class VisionPanel(QWidget):
     def __init__(self, parent=None) -> None:
@@ -18,12 +20,14 @@ class VisionPanel(QWidget):
         self._people: list[dict[str, Any]] = []
         self._scene_description = ""
         self._last_frame_at = 0.0
+        self._face_tracker = LiveFaceBoxTracker()
         self.setMinimumSize(360, 360)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         self._frame = snapshot.get("frame")
         ws = snapshot.get("world_state") or {}
-        self._people = list(ws.get("people") or [])
+        people = list(ws.get("people") or [])
+        self._people = self._face_tracker.update(self._frame, people)
         env = ws.get("environment") or {}
         self._scene_description = (
             snapshot.get("scene_description")

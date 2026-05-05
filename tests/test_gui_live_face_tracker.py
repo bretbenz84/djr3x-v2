@@ -1,0 +1,63 @@
+import unittest
+
+import numpy as np
+
+try:
+    import cv2  # noqa: F401
+except Exception:  # pragma: no cover
+    cv2 = None
+
+
+@unittest.skipIf(cv2 is None, "OpenCV unavailable")
+class LiveFaceBoxTrackerTests(unittest.TestCase):
+    def _frame_with_patch(self, x: int, y: int) -> np.ndarray:
+        rng = np.random.default_rng(1234)
+        patch = rng.integers(0, 255, size=(36, 36), dtype=np.uint8)
+        frame = np.zeros((120, 160, 3), dtype=np.uint8)
+        frame[y:y + 36, x:x + 36] = np.repeat(patch[:, :, None], 3, axis=2)
+        return frame
+
+    def test_live_box_tracks_between_stale_world_state_boxes(self):
+        from gui.live_face_tracker import LiveFaceBoxTracker
+
+        tracker = LiveFaceBoxTracker()
+        people = [{
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": True,
+            "face_box": (20, 30, 36, 36),
+        }]
+
+        first = tracker.update(self._frame_with_patch(20, 30), people, now=1.0)
+        second = tracker.update(self._frame_with_patch(32, 37), people, now=1.05)
+
+        self.assertEqual(first[0]["face_box"], (20.0, 30.0, 36.0, 36.0))
+        self.assertGreater(second[0]["face_box"][0], 28.0)
+        self.assertGreater(second[0]["face_box"][1], 34.0)
+        self.assertTrue(second[0]["gui_live_tracked"])
+
+    def test_new_recognition_box_reseeds_tracker(self):
+        from gui.live_face_tracker import LiveFaceBoxTracker
+
+        tracker = LiveFaceBoxTracker()
+        original = [{
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": True,
+            "face_box": (20, 30, 36, 36),
+        }]
+        updated = [{
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": True,
+            "face_box": (70, 42, 36, 36),
+        }]
+
+        tracker.update(self._frame_with_patch(20, 30), original, now=1.0)
+        result = tracker.update(self._frame_with_patch(70, 42), updated, now=1.05)
+
+        self.assertEqual(result[0]["face_box"], (70.0, 42.0, 36.0, 36.0))
+
+
+if __name__ == "__main__":
+    unittest.main()
