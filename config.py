@@ -55,6 +55,28 @@ _ENV_FILE_VALUES = _read_env_file_values(_ENV_PATH)
 _SERVO_ENV_US_MIN = 300.0
 _SERVO_ENV_US_MAX = 3000.0
 
+
+def _env_int(name: str, default: int, *, min_value: int, max_value: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(min_value, min(max_value, value))
+
+
+def _env_float(name: str, default: float, *, min_value: float, max_value: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(min_value, min(max_value, value))
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DEBUG
 # ─────────────────────────────────────────────────────────────────────────────
@@ -177,13 +199,24 @@ FACE_DETECTOR_MODEL   = "assets/models/face/mmod_human_face_detector.dat"
 FACE_DETECTOR_FORCE_HOG = True
 
 # dlib upsample passes before face detection. Higher values see smaller faces at
-# the cost of CPU. FaceTime/HOG misses mid-distance faces at 1, so default to 2.
-FACE_DETECTOR_UPSAMPLE = 2
+# the cost of CPU. Wide-angle robot cameras make faces small at conversational
+# distance, so default to 3; set FACE_DETECTOR_UPSAMPLE=2 in .env if CPU is tight.
+FACE_DETECTOR_UPSAMPLE = _env_int(
+    "FACE_DETECTOR_UPSAMPLE",
+    3,
+    min_value=0,
+    max_value=4,
+)
 
 # Keep the last face slots alive briefly when one detector tick misses. This
 # stabilizes the GUI and prevents small/partly occluded faces from instantly
 # losing identity lock.
-FACE_DETECTION_HOLD_SECS = 3.0
+FACE_DETECTION_HOLD_SECS = _env_float(
+    "FACE_DETECTION_HOLD_SECS",
+    6.0,
+    min_value=0.0,
+    max_value=30.0,
+)
 
 MUSIC_DIR          = "assets/music"
 TTS_CACHE_DIR      = "assets/audio/tts_cache"
