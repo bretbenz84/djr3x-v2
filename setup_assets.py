@@ -45,18 +45,20 @@ REQUIRED_DIRS = [
 ]
 
 # ── dlib model sources (official dlib.net, bz2-compressed) ───────────────────
+# Use HTTPS directly. urllib has been observed to fail on the HTTP -> HTTPS
+# redirect path for these files on macOS even when the HTTPS URLs succeed.
 DLIB_MODELS = [
     {
         "name": "shape_predictor_68_face_landmarks.dat",
-        "url": "http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2",
+        "url": "https://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2",
     },
     {
         "name": "dlib_face_recognition_resnet_model_v1.dat",
-        "url": "http://dlib.net/files/dlib_face_recognition_resnet_model_v1.dat.bz2",
+        "url": "https://dlib.net/files/dlib_face_recognition_resnet_model_v1.dat.bz2",
     },
     {
         "name": "mmod_human_face_detector.dat",
-        "url": "http://dlib.net/files/mmod_human_face_detector.dat.bz2",
+        "url": "https://dlib.net/files/mmod_human_face_detector.dat.bz2",
     },
 ]
 
