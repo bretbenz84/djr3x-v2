@@ -749,6 +749,15 @@ def _world_self_state() -> dict:
 
 
 def _face_tracking_holding_gaze() -> bool:
+    try:
+        for person in world_state.get("people") or []:
+            if person.get("face_visible") is False or person.get("face_missing"):
+                continue
+            if person.get("face_box") or person.get("bounding_box") or person.get("bbox"):
+                return True
+    except Exception:
+        pass
+
     tracking = _world_self_state().get("face_tracking") or {}
     if not isinstance(tracking, dict):
         return False

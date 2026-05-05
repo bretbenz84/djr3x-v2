@@ -16,6 +16,7 @@ class FaceTrackingTests(unittest.TestCase):
         self.old_last_seen = consciousness._last_face_seen_at
         self.old_lock = dict(consciousness._face_tracking_lock)
         self.old_suspend_until = consciousness._face_tracking_suspended_until
+        self.old_tracking_log_at = consciousness._last_face_tracking_log_at
         self.frame = np.zeros((720, 1280, 3), dtype=np.uint8)
 
     def tearDown(self):
@@ -25,6 +26,7 @@ class FaceTrackingTests(unittest.TestCase):
         c._last_face_seen_at = self.old_last_seen
         c._face_tracking_lock = self.old_lock
         c._face_tracking_suspended_until = self.old_suspend_until
+        c._last_face_tracking_log_at = self.old_tracking_log_at
 
     def _set_servo_positions(self):
         c = self.consciousness
@@ -86,6 +88,7 @@ class FaceTrackingTests(unittest.TestCase):
             mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
             mock.patch.object(c.time, "monotonic", return_value=200.0),
             mock.patch("hardware.servos.set_servos") as set_servos,
+            mock.patch("hardware.servos.set_motion_profile") as set_profile,
             mock.patch("hardware.servos.set_face_tracking_baseline") as set_baseline,
             mock.patch.object(c.config, "FACE_TRACKING_VERTICAL_ENABLED", True),
         ):
@@ -98,6 +101,8 @@ class FaceTrackingTests(unittest.TestCase):
         self.assertLess(updates[neck_ch], c.config.SERVO_CHANNELS["neck"]["neutral"])
         self.assertGreater(updates[lift_ch], c.config.SERVO_CHANNELS["headlift"]["neutral"])
         self.assertLess(updates[tilt_ch], c.config.SERVO_CHANNELS["headtilt"]["neutral"])
+        set_profile.assert_called_once()
+        self.assertIn(neck_ch, set_profile.call_args.args[0])
         set_baseline.assert_called_once_with(
             neck=updates[neck_ch],
             lift=updates[lift_ch],
@@ -131,6 +136,32 @@ class FaceTrackingTests(unittest.TestCase):
         tracking = c.world_state.get("self_state").get("face_tracking") or {}
         self.assertEqual(tracking.get("lock_key"), "db:1")
         self.assertTrue(tracking.get("holding_lost_lock"))
+
+    def test_recent_face_tracking_lock_suppresses_departure(self):
+        c = self.consciousness
+        c._face_tracking_lock = {"key": "db:1", "person_id": 1, "last_seen_at": 100.0}
+
+        with (
+            mock.patch.object(c.config, "FACE_TRACKING_LOST_HOLD_SECS", 8.0),
+            mock.patch.object(c.config, "PRESENCE_ENGAGED_DEPARTURE_CONFIRM_SECS", 12.0),
+        ):
+            self.assertTrue(c._face_tracking_recently_held_person(1, 111.0))
+            self.assertFalse(c._face_tracking_recently_held_person(1, 113.0))
+
+    def test_wander_stands_down_when_visible_face_box_exists(self):
+        from sequences import animations
+
+        with mock.patch.object(
+            animations.world_state,
+            "get",
+            return_value=[{
+                "person_db_id": 1,
+                "face_visible": True,
+                "face_missing": False,
+                "face_box": (40, 120, 100, 140),
+            }],
+        ):
+            self.assertTrue(animations._face_tracking_holding_gaze())
 
 
 if __name__ == "__main__":

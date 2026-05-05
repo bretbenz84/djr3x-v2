@@ -663,7 +663,7 @@ BREATHING_PERIOD_SAD     = 6.0  # slower during sad emotion
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 0.0 = servo snaps instantly to face position; 1.0 = servo never moves
-TRACKING_SMOOTHING_FACTOR = 0.2
+TRACKING_SMOOTHING_FACTOR = 0.1
 
 # Pixels from frame center in which no neck correction is applied
 TRACKING_DEAD_ZONE_PX = 24
@@ -671,7 +671,7 @@ TRACKING_DEAD_ZONE_PX = 24
 # Keep an acquired face as the gaze target briefly through detector flicker.
 FACE_TRACKING_LOST_HOLD_SECS = _env_float(
     "FACE_TRACKING_LOST_HOLD_SECS",
-    4.0,
+    8.0,
     min_value=0.0,
     max_value=30.0,
 )
@@ -680,9 +680,30 @@ FACE_TRACKING_LOST_HOLD_SECS = _env_float(
 # a single edge-of-frame lock drive closer to the configured servo limits.
 FACE_TRACKING_CENTERING_GAIN = _env_float(
     "FACE_TRACKING_CENTERING_GAIN",
-    1.4,
+    1.8,
     min_value=0.1,
     max_value=3.0,
+)
+
+# Face tracking is a live gaze correction, not a slow idle animation. Use a
+# faster Maestro profile for the head channels before sending tracking targets.
+FACE_TRACKING_SERVO_SPEED = _env_int(
+    "FACE_TRACKING_SERVO_SPEED",
+    140,
+    min_value=0,
+    max_value=255,
+)
+FACE_TRACKING_SERVO_ACCELERATION = _env_int(
+    "FACE_TRACKING_SERVO_ACCELERATION",
+    16,
+    min_value=0,
+    max_value=255,
+)
+FACE_TRACKING_LOG_INTERVAL_SECS = _env_float(
+    "FACE_TRACKING_LOG_INTERVAL_SECS",
+    2.0,
+    min_value=0.0,
+    max_value=60.0,
 )
 
 # Horizontal tracking uses the neck; vertical tracking combines lift and tilt.
@@ -1277,7 +1298,7 @@ PRESENCE_DEPARTURE_CONFIRM_SECS = 20.0
 # frame much faster than a passive bystander. Still paired with VAD/audio
 # silence checks in consciousness.py so speech or likely off-camera presence
 # suppresses the line.
-PRESENCE_ENGAGED_DEPARTURE_CONFIRM_SECS = 3.0
+PRESENCE_ENGAGED_DEPARTURE_CONFIRM_SECS = 12.0
 
 # Seconds to pause after current TTS finishes before firing a presence reaction.
 PRESENCE_REACTION_DELAY_SECS = 2.0

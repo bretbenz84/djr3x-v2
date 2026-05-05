@@ -47,6 +47,7 @@ _process_started_mono: float = 0.0
 _neck_smooth: float = float(config.SERVO_CHANNELS["neck"]["neutral"])
 _face_tracking_suspended_until: float = 0.0
 _face_tracking_lock: dict = {}
+_last_face_tracking_log_at: float = 0.0
 
 # WorldState snapshot from the previous loop iteration (for change detection)
 _last_snapshot: dict = {}
@@ -3791,6 +3792,24 @@ def _departure_confirm_secs_for(
     return max(0.0, min(confirm, engaged_confirm))
 
 
+def _face_tracking_recently_held_person(person_db_id: Optional[int], now: float) -> bool:
+    if person_db_id is None:
+        return False
+    try:
+        if int(_face_tracking_lock.get("person_id")) != int(person_db_id):
+            return False
+    except Exception:
+        return False
+    last_seen = float(_face_tracking_lock.get("last_seen_at") or 0.0)
+    if last_seen <= 0:
+        return False
+    grace = max(
+        float(getattr(config, "FACE_TRACKING_LOST_HOLD_SECS", 8.0) or 0.0),
+        float(getattr(config, "PRESENCE_ENGAGED_DEPARTURE_CONFIRM_SECS", 12.0) or 0.0),
+    )
+    return (now - last_seen) <= grace
+
+
 def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> None:
     """
     When Rex is engaged with a known person and an UNKNOWN face has been
@@ -4008,6 +4027,8 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
 
         # Face gone but user still talking → likely just stepped off-camera; suppress
         if profile.likely_still_present:
+            continue
+        if _face_tracking_recently_held_person(person_db_id, now):
             continue
 
         # Fire only when face-gone + VAD has been silent ≥ departure_audio_silence.
@@ -5499,6 +5520,48 @@ def _clamp_servo(name: str, value: float) -> int:
     return max(int(cfg["min"]), min(int(cfg["max"]), int(round(value))))
 
 
+def _maybe_log_face_tracking_move(
+    *,
+    now: float,
+    candidate: dict,
+    frame_w: int,
+    frame_h: int,
+    current: dict[str, int],
+    updates: dict[int, int],
+    error_x: float,
+    error_y: float,
+) -> None:
+    global _last_face_tracking_log_at
+
+    interval = float(getattr(config, "FACE_TRACKING_LOG_INTERVAL_SECS", 2.0) or 0.0)
+    if interval > 0 and (now - _last_face_tracking_log_at) < interval:
+        return
+    _last_face_tracking_log_at = now
+
+    neck_ch = int(config.SERVO_CHANNELS["neck"]["ch"])
+    lift_ch = int(config.SERVO_CHANNELS["headlift"]["ch"])
+    tilt_ch = int(config.SERVO_CHANNELS["headtilt"]["ch"])
+    _log.info(
+        "face_tracking: lock=%s person_id=%s center=(%.1f,%.1f) frame=%dx%d "
+        "error=(%.1f,%.1f) current=(neck=%d,lift=%d,tilt=%d) "
+        "target=(neck=%s,lift=%s,tilt=%s)",
+        candidate.get("key"),
+        candidate.get("person_id"),
+        candidate.get("center", (0.0, 0.0))[0],
+        candidate.get("center", (0.0, 0.0))[1],
+        frame_w,
+        frame_h,
+        error_x,
+        error_y,
+        current["neck"],
+        current["headlift"],
+        current["headtilt"],
+        updates.get(neck_ch, "-"),
+        updates.get(lift_ch, "-"),
+        updates.get(tilt_ch, "-"),
+    )
+
+
 def _record_face_tracking_state(
     *,
     locked: bool,
@@ -5608,9 +5671,15 @@ def _step_face_tracking(frame) -> None:
         current_neck = _current_servo_position("neck")
         current_lift = _current_servo_position("headlift")
         current_tilt = _current_servo_position("headtilt")
+        current_positions = {
+            "neck": current_neck,
+            "headlift": current_lift,
+            "headtilt": current_tilt,
+        }
         updates: dict[int, int] = {}
 
         error_x = cx - frame_cx
+        error_y = cy - frame_cy
         if abs(error_x) > dead_zone and frame_cx > 0:
             neck_span = (int(neck_cfg["max"]) - int(neck_cfg["min"])) / 2.0
             target_neck = _clamp_servo(
@@ -5625,7 +5694,6 @@ def _step_face_tracking(frame) -> None:
             _neck_smooth = float(current_neck)
 
         if bool(getattr(config, "FACE_TRACKING_VERTICAL_ENABLED", True)):
-            error_y = cy - frame_cy
             if abs(error_y) > dead_zone and frame_cy > 0:
                 lift_span = (int(lift_cfg["max"]) - int(lift_cfg["min"])) / 2.0
                 tilt_span = (int(tilt_cfg["max"]) - int(tilt_cfg["min"])) / 2.0
@@ -5653,7 +5721,27 @@ def _step_face_tracking(frame) -> None:
         baseline_neck = updates.get(neck_ch, current_neck)
         baseline_lift = updates.get(lift_ch, current_lift)
         baseline_tilt = updates.get(tilt_ch, current_tilt)
+        if updates or abs(error_x) > dead_zone or abs(error_y) > dead_zone:
+            _maybe_log_face_tracking_move(
+                now=now,
+                candidate=candidate,
+                frame_w=frame_w,
+                frame_h=frame_h,
+                current=current_positions,
+                updates=updates,
+                error_x=error_x,
+                error_y=error_y,
+            )
         if updates:
+            try:
+                channels = [neck_ch, lift_ch, tilt_ch]
+                servo_mod.set_motion_profile(
+                    channels,
+                    speed=int(getattr(config, "FACE_TRACKING_SERVO_SPEED", 140)),
+                    acceleration=int(getattr(config, "FACE_TRACKING_SERVO_ACCELERATION", 16)),
+                )
+            except Exception as exc:
+                _log.debug("face tracking motion profile update failed: %s", exc)
             servo_mod.set_servos(updates)
         servo_mod.set_face_tracking_baseline(
             neck=baseline_neck,
