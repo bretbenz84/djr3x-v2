@@ -606,10 +606,8 @@ ARM_CHANNELS  = [4, 5, 6, 7]
 CAMERA_POSE_SETTLE_SECS = 0.5
 
 # Directed look commands ("look left", "look at this", etc.) move the head before
-# capturing from the current gaze instead of centering the neck.
-DIRECTED_LOOK_NECK_OFFSET_QUS = 2200
-DIRECTED_LOOK_HEADLIFT_OFFSET_QUS = 900
-DIRECTED_LOOK_HEADTILT_OFFSET_QUS = 450
+# capture. Explicit directions use the configured channel min/max limits; current
+# gaze preserves the existing pose instead of centering the neck.
 DIRECTED_LOOK_SETTLE_SECS = 0.65
 DIRECTED_LOOK_STEP_QUS = 30
 DIRECTED_LOOK_STEP_DELAY_SECS = 0.032

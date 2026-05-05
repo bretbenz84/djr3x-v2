@@ -806,27 +806,37 @@ def directed_look_pose(direction: str = "current", target: str = "") -> str:
     elif norm not in {"left", "right", "up", "down", "center", "current"}:
         norm = "current"
 
-    neck_offset = int(getattr(config, "DIRECTED_LOOK_NECK_OFFSET_QUS", 2200))
-    lift_offset = int(getattr(config, "DIRECTED_LOOK_HEADLIFT_OFFSET_QUS", 900))
-    tilt_offset = int(getattr(config, "DIRECTED_LOOK_HEADTILT_OFFSET_QUS", 450))
     settle = float(getattr(config, "DIRECTED_LOOK_SETTLE_SECS", 0.65))
     step_us = int(getattr(config, "DIRECTED_LOOK_STEP_QUS", 30))
     step_delay = float(getattr(config, "DIRECTED_LOOK_STEP_DELAY_SECS", 0.032))
 
-    targets = {3: VISOR_OPEN}
+    neck_cfg = config.SERVO_CHANNELS["neck"]
+    lift_cfg = config.SERVO_CHANNELS["headlift"]
+    tilt_cfg = config.SERVO_CHANNELS["headtilt"]
+    visor_cfg = config.SERVO_CHANNELS["visor"]
+    neck_ch = int(neck_cfg["ch"])
+    lift_ch = int(lift_cfg["ch"])
+    tilt_ch = int(tilt_cfg["ch"])
+    visor_ch = int(visor_cfg["ch"])
+
+    targets = {visor_ch: int(visor_cfg["max"])}
     if norm == "left":
-        targets[0] = max(1984, NECK_CENTER - neck_offset)
+        targets[neck_ch] = int(neck_cfg["min"])
     elif norm == "right":
-        targets[0] = min(9984, NECK_CENTER + neck_offset)
+        targets[neck_ch] = int(neck_cfg["max"])
     elif norm == "up":
-        targets[1] = min(7744, HEADLIFT_NEUTRAL + lift_offset)
+        targets[lift_ch] = int(lift_cfg["max"])
         # Headtilt is inverted: lower values tilt the head/camera upward.
-        targets[2] = max(3904, HEADTILT_NEUTRAL - tilt_offset)
+        targets[tilt_ch] = int(tilt_cfg["min"])
     elif norm == "down":
-        targets[1] = max(1984, HEADLIFT_NEUTRAL - lift_offset)
-        targets[2] = min(5504, HEADTILT_NEUTRAL + tilt_offset)
+        targets[lift_ch] = int(lift_cfg["min"])
+        targets[tilt_ch] = int(tilt_cfg["max"])
     elif norm == "center":
-        targets.update({0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL})
+        targets.update({
+            neck_ch: int(neck_cfg["neutral"]),
+            lift_ch: int(lift_cfg["neutral"]),
+            tilt_ch: int(tilt_cfg["neutral"]),
+        })
 
     with _motion_lock:
         servos.move_to(targets, step_us=step_us, step_delay=step_delay)

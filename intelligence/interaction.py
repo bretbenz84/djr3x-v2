@@ -7970,6 +7970,15 @@ def _handle_fast_local_takeover(
     _router_audit_note_legacy_command(router_audit, match)
 
     key = match.command_key
+    if key == "directed_look":
+        _log.info(
+            "[action_router] fast_lane legacy_command=directed_look "
+            "person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _execute_command(match, person_id, person_name, text)
+
     if key == "forget_specific":
         target = str((match.args or {}).get("target") or "").strip()
         if not target:

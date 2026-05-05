@@ -8,7 +8,7 @@ from unittest import mock
 @dataclass(frozen=True)
 class RouterReplayCase:
     utterance: str
-    router_action: str
+    router_action: Optional[str]
     expected_allowlist_result: str
     expected_final_path: str
     expected_legacy_command: Optional[str] = None
@@ -83,9 +83,8 @@ class ActionRouterReplayTests(unittest.TestCase):
                     person_name="Bret",
                     router_audit=audit,
                 )
-                decision_action = audit.router_action
                 final_path = (
-                    f"fast_local_takeover.{decision_action}"
+                    interaction._router_audit_fast_local_final_path(audit)
                     if response
                     else "response_text.unknown"
                 )
@@ -287,6 +286,14 @@ class ActionRouterReplayTests(unittest.TestCase):
                 expected_allowlist_result="not_executable",
                 expected_legacy_command="directed_look",
                 expected_final_path="legacy_command.directed_look",
+            ),
+            RouterReplayCase(
+                utterance="look to your left",
+                router_action=None,
+                expected_allowlist_result="not_run",
+                expected_legacy_command="directed_look",
+                expected_final_path="legacy_command.directed_look",
+                explicit_fast_path=True,
             ),
         ]
 
