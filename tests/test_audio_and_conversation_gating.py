@@ -1122,6 +1122,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 "_resolve_name_update_target",
                 return_value=(1, "Both"),
             ),
+            mock.patch.object(interaction.people_memory, "find_person_by_name", return_value=None),
             mock.patch.object(interaction.people_memory, "rename_person", return_value=True) as rename,
             mock.patch.object(interaction, "_refresh_world_state_person_name") as refresh,
             mock.patch.object(interaction, "_speak_blocking") as speak,
@@ -4334,6 +4335,50 @@ class ConversationGatingTest(unittest.TestCase):
         finally:
             consciousness._last_presence_reaction_at.pop(1, None)
 
+    def test_engaged_departure_stages_before_default_departure_window(self):
+        from intelligence import consciousness
+
+        old_visible = set(consciousness._visible_people)
+        old_first_missing = dict(consciousness._first_missing_at)
+        old_pending_departures = dict(consciousness._pending_departure_keys)
+        old_confirmed_absent = dict(consciousness._confirmed_absent_at)
+        old_last_snapshot = dict(consciousness._last_snapshot)
+        try:
+            consciousness._visible_people.clear()
+            consciousness._first_missing_at.clear()
+            consciousness._pending_departure_keys.clear()
+            consciousness._confirmed_absent_at.clear()
+            consciousness._first_missing_at[1] = 100.0
+            consciousness._last_snapshot = {"people": []}
+            profile = mock.Mock(
+                likely_still_present=False,
+                user_mid_sentence=False,
+                apparent_departure=True,
+            )
+
+            with (
+                mock.patch.object(consciousness.time, "monotonic", return_value=104.0),
+                mock.patch.object(consciousness.config, "PRESENCE_DEPARTURE_CONFIRM_SECS", 20.0),
+                mock.patch.object(consciousness.config, "PRESENCE_ENGAGED_DEPARTURE_CONFIRM_SECS", 3.0),
+                mock.patch.object(consciousness, "is_engaged_with", return_value=True),
+                mock.patch("memory.people.get_person", return_value={"name": "Bret Benziger"}),
+                mock.patch.object(consciousness, "_should_fire_presence", return_value=False),
+            ):
+                consciousness._step_presence_tracking({"people": []}, profile)
+
+            self.assertIn(1, consciousness._pending_departure_keys)
+            self.assertEqual(consciousness._pending_departure_keys[1][1], "Bret Benziger")
+        finally:
+            consciousness._visible_people.clear()
+            consciousness._visible_people.update(old_visible)
+            consciousness._first_missing_at.clear()
+            consciousness._first_missing_at.update(old_first_missing)
+            consciousness._pending_departure_keys.clear()
+            consciousness._pending_departure_keys.update(old_pending_departures)
+            consciousness._confirmed_absent_at.clear()
+            consciousness._confirmed_absent_at.update(old_confirmed_absent)
+            consciousness._last_snapshot = old_last_snapshot
+
     def test_presence_reactions_are_suppressed_during_active_game(self):
         from awareness.situation import SituationProfile
         from intelligence import consciousness
@@ -5495,6 +5540,79 @@ class GroupChatterGatingTest(unittest.TestCase):
             audio_scene["group_chatter_until"] = None
             audio_scene["group_chatter_reason"] = None
             interaction.world_state.update("audio_scene", audio_scene)
+
+    def test_offscreen_identity_prompt_accepts_unknown_bare_initials_reply(self):
+        import numpy as np
+        from intelligence import interaction
+
+        old_pending = interaction._pending_offscreen_identify
+        old_exchange_count = interaction._session_exchange_count
+        pending_audio = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+        reply_audio = np.array([2.0, 2.0], dtype=np.float32)
+        interaction._pending_offscreen_identify = {
+            "audio": pending_audio,
+            "asked_at": interaction.time.monotonic(),
+            "prior_engaged_id": 1,
+            "prior_engaged_name": "Bret Benziger",
+            "overheard_text": "I can't ask on the computer if it's looking at me",
+            "anonymous_speaker_label": "unknown_voice_1",
+        }
+        try:
+            with (
+                mock.patch.object(
+                    interaction.llm,
+                    "extract_relationship_introduction",
+                    return_value={"name": None, "relationship": None},
+                ),
+                mock.patch.object(
+                    interaction.people_memory,
+                    "find_or_create_person",
+                    return_value=(77, True),
+                ) as find_or_create,
+                mock.patch.object(interaction.speaker_id, "enroll_voice") as enroll_voice,
+                mock.patch.object(interaction.people_memory, "update_familiarity") as update_familiarity,
+                mock.patch.object(interaction, "_has_unknown_visible_person", return_value=False),
+                mock.patch.object(interaction, "_bind_world_state_identity") as bind_identity,
+                mock.patch.object(interaction, "_retire_anonymous_speaker_slot") as retire_slot,
+                mock.patch.object(
+                    interaction.llm,
+                    "get_response",
+                    return_value="JT, welcome aboard.",
+                ),
+                mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+                mock.patch.object(interaction.conv_memory, "add_to_transcript") as add_transcript,
+                mock.patch.object(interaction.conv_log, "log_rex") as log_rex,
+                mock.patch.object(interaction, "_register_rex_utterance") as register,
+            ):
+                consumed, response = interaction._handle_pending_offscreen_identify_reply(
+                    "JT",
+                    person_id=None,
+                    person_name=None,
+                    audio_array=reply_audio,
+                    anonymous_speaker_label="unknown_voice_2",
+                )
+
+            self.assertTrue(consumed)
+            self.assertEqual(response, "JT, welcome aboard.")
+            self.assertIsNone(interaction._pending_offscreen_identify)
+            find_or_create.assert_called_once_with("JT")
+            enroll_voice.assert_called_once()
+            self.assertEqual(enroll_voice.call_args.args[0], 77)
+            np.testing.assert_array_equal(
+                enroll_voice.call_args.args[1],
+                np.array([1.0, 1.0, 1.0, 2.0, 2.0], dtype=np.float32),
+            )
+            update_familiarity.assert_called_once()
+            bind_identity.assert_called_once_with(77, "JT")
+            retired = {call.args[0] for call in retire_slot.call_args_list}
+            self.assertEqual(retired, {"unknown_voice_1", "unknown_voice_2"})
+            speak.assert_called_once_with("JT, welcome aboard.")
+            add_transcript.assert_called_once_with("Rex", "JT, welcome aboard.")
+            log_rex.assert_called_once_with("JT, welcome aboard.")
+            register.assert_called_once_with("JT, welcome aboard.")
+        finally:
+            interaction._pending_offscreen_identify = old_pending
+            interaction._session_exchange_count = old_exchange_count
 
     def test_anonymous_speaker_slot_reuses_matching_unknown_voice(self):
         import numpy as np

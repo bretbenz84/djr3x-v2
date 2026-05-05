@@ -1201,6 +1201,12 @@ PRESENCE_PER_PERSON_COOLDOWN_SECS = 120
 # for several seconds and then reappear.
 PRESENCE_DEPARTURE_CONFIRM_SECS = 20.0
 
+# When Rex is actively engaged with someone, acknowledge that person leaving
+# frame much faster than a passive bystander. Still paired with VAD/audio
+# silence checks in consciousness.py so speech or likely off-camera presence
+# suppresses the line.
+PRESENCE_ENGAGED_DEPARTURE_CONFIRM_SECS = 3.0
+
 # Seconds to pause after current TTS finishes before firing a presence reaction.
 PRESENCE_REACTION_DELAY_SECS = 2.0
 

@@ -55,11 +55,16 @@ def servo_to_offset(name, value) -> float:
     norm = normalize_servo(name, value)
     if name == "headlift":
         return (0.5 - norm) * 58.0
-    if name == "neck":
-        return (norm - 0.5) * 42.0
     if name == "visor":
         return norm * 22.0
     return (norm - 0.5) * 30.0
+
+
+def servo_to_yaw(name, value) -> float:
+    """Map neck servo value to -1.0..1.0 yaw for front-view perspective."""
+    if _servo_name(name) != "neck":
+        return 0.0
+    return max(-1.0, min(1.0, (normalize_servo("neck", value) - 0.5) * 2.0))
 
 
 class RexAvatar(QWidget):
@@ -136,8 +141,8 @@ class RexAvatar(QWidget):
 
         w = self.width()
         h = self.height()
-        cx = w * 0.48 + servo_to_offset("neck", self._value("neck")) * 0.35
-        base_y = h * 0.50 + servo_to_offset("headlift", self._value("headlift")) * 0.55
+        cx = w * 0.48
+        base_y = h * 0.50
 
         self._draw_base(painter, cx, base_y)
         self._draw_body(painter, cx, base_y)
@@ -164,13 +169,14 @@ class RexAvatar(QWidget):
         body_top_ratio = 0.06 if embedded else 0.14
         body_rect = QRectF(cx - body_w / 2.0, h * body_top_ratio + speech_bob, body_w, body_h)
 
-        neck_norm = self._current.get("neck", 0.5)
         lift = servo_to_offset("headlift", self._value("headlift")) * 0.78
         pitch = servo_to_angle("headtilt", self._value("headtilt")) / 18.0
-        neck_x = (neck_norm - 0.5) * w * 0.13
+        yaw = servo_to_yaw("neck", self._value("neck"))
         head_y_shift = lift + pitch * 22.0 + speech_bob * 1.6
         head_squash = 1.0 - abs(pitch) * 0.12
         head_shear = pitch * 0.05
+        head_yaw_scale = 1.0 - abs(yaw) * 0.22
+        head_yaw_shear = yaw * 0.10
 
         if poker_arm is not None:
             self._draw_pivoted_sprite(
@@ -193,7 +199,7 @@ class RexAvatar(QWidget):
 
         painter.drawPixmap(body_rect, body, QRectF(body.rect()))
 
-        neck_top = QPointF(cx + neck_x, body_rect.top() + body_rect.height() * 0.15 + lift * 0.35)
+        neck_top = QPointF(cx, body_rect.top() + body_rect.height() * 0.15 + lift * 0.70)
         neck_bottom = QPointF(cx, body_rect.top() + body_rect.height() * 0.28)
         painter.setPen(QPen(QColor("#15181b"), 13, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawLine(neck_bottom, neck_top)
@@ -202,9 +208,8 @@ class RexAvatar(QWidget):
 
         head_w = body_rect.width() * 0.72
         head_h = head_w * head.height() / max(1, head.width()) * head_squash
-        head_cx = cx + neck_x + servo_to_offset("neck", self._value("neck")) * 0.45
         head_rect = QRectF(
-            head_cx - head_w / 2.0,
+            cx - head_w / 2.0,
             body_rect.top() - head_h * 0.30 + head_y_shift,
             head_w,
             head_h,
@@ -212,15 +217,16 @@ class RexAvatar(QWidget):
 
         painter.save()
         painter.translate(head_rect.center())
-        painter.shear(head_shear, 0.0)
+        painter.scale(head_yaw_scale, 1.0)
+        painter.shear(head_yaw_shear + head_shear, 0.0)
         painter.drawPixmap(
             QRectF(-head_rect.width() / 2.0, -head_rect.height() / 2.0, head_rect.width(), head_rect.height()),
             head,
             QRectF(head.rect()),
         )
-        self._draw_visor_overlay(painter, head_rect.size().width(), head_rect.size().height())
-        self._draw_eye_overlay(painter, head_rect.size().width(), head_rect.size().height())
-        self._draw_mouth_overlay(painter, head_rect.size().width(), head_rect.size().height())
+        self._draw_visor_overlay(painter, head_rect.size().width(), head_rect.size().height(), yaw)
+        self._draw_eye_overlay(painter, head_rect.size().width(), head_rect.size().height(), yaw)
+        self._draw_mouth_overlay(painter, head_rect.size().width(), head_rect.size().height(), yaw)
         painter.restore()
 
     def _draw_pivoted_sprite(
@@ -240,11 +246,12 @@ class RexAvatar(QWidget):
         painter.drawPixmap(QPointF(-source_pivot.x(), -source_pivot.y()), sprite)
         painter.restore()
 
-    def _draw_visor_overlay(self, painter: QPainter, head_w: float, head_h: float) -> None:
+    def _draw_visor_overlay(self, painter: QPainter, head_w: float, head_h: float, yaw: float = 0.0) -> None:
         visor_open = normalize_servo("visor", self._value("visor"))
         closed = 1.0 - visor_open
         visor_y = -head_h * 0.39 + closed * head_h * 0.18
-        visor_rect = QRectF(-head_w * 0.30, visor_y, head_w * 0.60, head_h * 0.20)
+        face_shift = yaw * head_w * 0.035
+        visor_rect = QRectF(-head_w * 0.30 + face_shift, visor_y, head_w * 0.60, head_h * 0.20)
 
         painter.setPen(QPen(QColor("#8b4216"), 2))
         painter.setBrush(QColor(218, 122, 31, 235))
@@ -252,22 +259,23 @@ class RexAvatar(QWidget):
 
         painter.setPen(QPen(QColor(255, 226, 197, 185), 2))
         for offset in (-0.18, -0.09, 0.0, 0.09, 0.18):
-            x = offset * head_w
+            x = offset * head_w + face_shift
             painter.drawLine(
                 QPointF(x, visor_y + head_h * 0.02),
                 QPointF(x - head_w * 0.025, visor_y + head_h * 0.16),
             )
 
-    def _draw_eye_overlay(self, painter: QPainter, head_w: float, head_h: float) -> None:
+    def _draw_eye_overlay(self, painter: QPainter, head_w: float, head_h: float, yaw: float = 0.0) -> None:
         color = _eye_color(self._eye_state)
         active = bool(self._eye_state.get("eyes_active")) and any(color)
         openness = 1.0 if active and self._blink_state != "closed" else 0.0
         brightness = self._eye_brightness() if active else 0.0
         radius_x = head_w * 0.043
         radius_y = head_h * 0.056
+        face_shift = yaw * head_w * 0.040
         centers = (
-            QPointF(-head_w * 0.113, -head_h * 0.095),
-            QPointF(head_w * 0.113, -head_h * 0.095),
+            QPointF(-head_w * 0.113 + face_shift, -head_h * 0.095),
+            QPointF(head_w * 0.113 + face_shift, -head_h * 0.095),
         )
         painter.setPen(QPen(QColor("#08101c"), 2))
         for center in centers:
@@ -289,12 +297,13 @@ class RexAvatar(QWidget):
                 painter.drawEllipse(center, radius_x * shrink, radius_y * shrink)
             painter.setPen(QPen(QColor("#08101c"), 2))
 
-    def _draw_mouth_overlay(self, painter: QPainter, head_w: float, head_h: float) -> None:
+    def _draw_mouth_overlay(self, painter: QPainter, head_w: float, head_h: float, yaw: float = 0.0) -> None:
         speaking = self._is_speaking()
         strength = 0.25
         if speaking:
             strength = 0.62 + 0.30 * (0.5 + 0.5 * math.sin(self._mouth_phase * 1.25))
-        mouth = QRectF(-head_w * 0.105, head_h * 0.118, head_w * 0.210, head_h * 0.255)
+        face_shift = yaw * head_w * 0.038
+        mouth = QRectF(-head_w * 0.105 + face_shift, head_h * 0.118, head_w * 0.210, head_h * 0.255)
         painter.setPen(QPen(QColor(3, 9, 14, 190), max(1.0, head_w * 0.006)))
         painter.setBrush(QColor(5, 12, 18, 145 if speaking else 95))
         painter.drawRoundedRect(mouth, head_w * 0.014, head_w * 0.014)
@@ -416,6 +425,7 @@ class RexAvatar(QWidget):
 
     def _draw_body(self, painter: QPainter, cx: float, base_y: float) -> None:
         body = QRectF(cx - 60, base_y - 10, 120, 110)
+        lift = servo_to_offset("headlift", self._value("headlift")) * 0.55
         painter.setPen(QPen(QColor("#1b2025"), 2))
         painter.setBrush(QColor("#c46b1f"))
         painter.drawRoundedRect(body, 18, 18)
@@ -430,17 +440,23 @@ class RexAvatar(QWidget):
         painter.setPen(QPen(QColor("#3e9bff"), 2))
         painter.drawText(QRectF(cx - 30, base_y + 1, 60, 19), Qt.AlignmentFlag.AlignCenter, "7A11")
         painter.setPen(QPen(QColor("#6e7b8f"), 8))
-        painter.drawLine(QPointF(cx, base_y - 8), QPointF(cx, base_y - 42))
+        painter.drawLine(QPointF(cx, base_y - 8), QPointF(cx, base_y - 42 + lift))
 
     def _draw_head(self, painter: QPainter, cx: float, base_y: float) -> None:
-        neck_angle = servo_to_angle("neck", self._value("neck"))
+        yaw = servo_to_yaw("neck", self._value("neck"))
         tilt_angle = servo_to_angle("headtilt", self._value("headtilt"))
-        head_x = cx + math.sin(math.radians(neck_angle)) * 28.0
-        head_y = base_y - 94
+        lift = servo_to_offset("headlift", self._value("headlift")) * 0.55
+        head_x = cx
+        head_y = base_y - 94 + lift
+        yaw_scale = 1.0 - abs(yaw) * 0.20
+        yaw_shear = yaw * 0.12
+        face_shift = yaw * 7.0
 
         painter.save()
         painter.translate(head_x, head_y)
         painter.rotate(tilt_angle)
+        painter.scale(yaw_scale, 1.0)
+        painter.shear(yaw_shear, 0.0)
 
         head = QRectF(-78, -52, 156, 94)
         painter.setPen(QPen(QColor("#222930"), 2))
@@ -461,23 +477,23 @@ class RexAvatar(QWidget):
         painter.drawRoundedRect(QRectF(-52, shutter_y, 104, 18), 6, 6)
         painter.setPen(QPen(QColor("#17365a"), 3))
         painter.setBrush(QColor("#1a63e6"))
-        painter.drawEllipse(QPointF(-28, -7), 14, 14)
-        painter.drawEllipse(QPointF(28, -7), 14, 14)
+        painter.drawEllipse(QPointF(-28 + face_shift, -7), 14, 14)
+        painter.drawEllipse(QPointF(28 + face_shift, -7), 14, 14)
         painter.setPen(QPen(QColor("#7dbdff"), 1))
         for r in (5, 9):
-            painter.drawEllipse(QPointF(-28, -7), r, r)
-            painter.drawEllipse(QPointF(28, -7), r, r)
+            painter.drawEllipse(QPointF(-28 + face_shift, -7), r, r)
+            painter.drawEllipse(QPointF(28 + face_shift, -7), r, r)
 
         painter.setPen(QPen(QColor("#7c8796"), 4))
-        painter.drawLine(QPointF(-42, 30), QPointF(42, 30))
+        painter.drawLine(QPointF(-42 + face_shift, 30), QPointF(42 + face_shift, 30))
         painter.setPen(QPen(QColor("#5e6978"), 2))
         for x in range(-35, 41, 14):
-            painter.drawLine(QPointF(x, 24), QPointF(x, 36))
+            painter.drawLine(QPointF(x + face_shift, 24), QPointF(x + face_shift, 36))
         if self._is_speaking():
             painter.setPen(QPen(QColor("#48a9ff"), 3))
             for idx, y in enumerate((22, 28, 34)):
                 width = 28 + 18 * (0.5 + 0.5 * math.sin(self._mouth_phase + idx))
-                painter.drawLine(QPointF(-width, y), QPointF(width, y))
+                painter.drawLine(QPointF(-width + face_shift, y), QPointF(width + face_shift, y))
 
         painter.restore()
 

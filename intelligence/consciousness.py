@@ -3655,6 +3655,29 @@ def _presence_tracking_map(snapshot: dict, now: float) -> dict:
     return current_tracked
 
 
+def _departure_confirm_secs_for(
+    key,
+    person_db_id: Optional[int],
+    default_confirm: float,
+) -> float:
+    """Use a shorter departure confirmation window for the active conversation partner."""
+    confirm = max(0.0, float(default_confirm or 0.0))
+    candidate_id = person_db_id
+    if candidate_id is None and isinstance(key, int):
+        candidate_id = key
+    if candidate_id is None:
+        return confirm
+    try:
+        if not is_engaged_with(int(candidate_id)):
+            return confirm
+    except Exception:
+        return confirm
+    engaged_confirm = float(
+        getattr(config, "PRESENCE_ENGAGED_DEPARTURE_CONFIRM_SECS", confirm)
+    )
+    return max(0.0, min(confirm, engaged_confirm))
+
+
 def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> None:
     """
     When Rex is engaged with a known person and an UNKNOWN face has been
@@ -3781,6 +3804,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
     Hysteresis model:
       - A person must be continuously missing for PRESENCE_DEPARTURE_CONFIRM_SECS
         before we even consider them "gone." Single-frame detection flicker is ignored.
+        The active conversation partner can use a shorter engaged-person window.
       - Once confirmed gone, we stage a departure in _pending_departure_keys and wait
         for apparent_departure (face-gone + VAD-silent) before speaking.
       - _should_fire_presence() is the single gate for every presence reaction —
@@ -3820,11 +3844,9 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
     for key, first_missing in list(_first_missing_at.items()):
         if key in _pending_departure_keys:
             continue
-        if (now - first_missing) < confirm_absent:
-            continue
         # Capture person info from last snapshot.
         person_name = None
-        person_db_id = None
+        person_db_id = key if isinstance(key, int) else None
         for p in _last_snapshot.get("people", []):
             if _tracking_key(p) == key:
                 person_name = p.get("face_id")
@@ -3842,11 +3864,19 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     person_db_id = key
             except Exception:
                 pass
+        confirm_for_key = _departure_confirm_secs_for(
+            key,
+            person_db_id,
+            confirm_absent,
+        )
+        if (now - first_missing) < confirm_for_key:
+            continue
         _pending_departure_keys[key] = (first_missing, person_name, person_db_id)
         _confirmed_absent_at[key] = first_missing
         _log.debug(
-            "consciousness: staged departure for key=%s name=%r after %.1fs absent",
-            key, person_name, now - first_missing,
+            "consciousness: staged departure for key=%s name=%r after %.1fs absent "
+            "(confirm=%.1fs)",
+            key, person_name, now - first_missing, confirm_for_key,
         )
 
     # ── Resolve pending departures ─────────────────────────────────────────────
