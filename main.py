@@ -611,23 +611,8 @@ def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
     _run_controller_startup(startup_jeopardy=startup_jeopardy)
     _start_gui_bridge_sync()
 
-    shutdown_started = threading.Event()
-
     def _request_shutdown() -> None:
         state.set_state(State.SHUTDOWN)
-
-    def _shutdown_watcher() -> None:
-        _wait_for_shutdown()
-        if not shutdown_started.is_set():
-            shutdown_started.set()
-            _shutdown()
-
-    watcher = threading.Thread(
-        target=_shutdown_watcher,
-        daemon=False,
-        name="shutdown-watcher",
-    )
-    watcher.start()
 
     try:
         try:
@@ -643,10 +628,8 @@ def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
         state.set_state(State.SHUTDOWN)
     finally:
         state.set_state(State.SHUTDOWN)
-        watcher.join(timeout=60.0)
-        if watcher.is_alive():
-            logger.warning("Shutdown watcher did not finish within timeout")
         _stop_gui_bridge_sync()
+        _shutdown()
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

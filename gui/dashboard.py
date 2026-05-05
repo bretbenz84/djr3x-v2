@@ -58,6 +58,7 @@ class DashboardWindow(QMainWindow):
         self._shutdown_callback = shutdown_callback
         self._demo = demo
         self._closing_from_shutdown = False
+        self._shutdown_requested = False
         self._last_frame_time = time.monotonic()
         self._frame_counter = 0
         self._fps = 0.0
@@ -160,17 +161,46 @@ class DashboardWindow(QMainWindow):
 
     def close_from_shutdown(self) -> None:
         self._closing_from_shutdown = True
+        self._stop_timers()
         self.close()
 
+    def request_shutdown(self) -> None:
+        if self._shutdown_requested:
+            self.close_from_shutdown()
+            return
+        self._shutdown_requested = True
+        if self._shutdown_callback is not None:
+            try:
+                self._shutdown_callback()
+            except Exception as exc:
+                _log.warning("GUI shutdown callback failed: %s", exc)
+        self.close_from_shutdown()
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
-        if not self._closing_from_shutdown and self._shutdown_callback is not None:
+        self._stop_timers()
+        if (
+            not self._closing_from_shutdown
+            and not self._shutdown_requested
+            and self._shutdown_callback is not None
+        ):
+            self._shutdown_requested = True
             try:
                 self._shutdown_callback()
             except Exception as exc:
                 _log.warning("GUI shutdown callback failed: %s", exc)
         super().closeEvent(event)
 
+    def _stop_timers(self) -> None:
+        if self._timer.isActive():
+            self._timer.stop()
+        if self._demo_timer is not None and self._demo_timer.isActive():
+            self._demo_timer.stop()
+
     def _tick(self) -> None:
+        if not self._demo and self._runtime_shutdown_requested():
+            self.close_from_shutdown()
+            return
+
         snapshot = self._bridge.get_snapshot()
         self.vision.set_snapshot(snapshot)
         self.scene.set_snapshot(snapshot)
@@ -205,15 +235,14 @@ class DashboardWindow(QMainWindow):
         connected = "●  Connected" if snapshot.get("updated_at") else "●  Waiting"
         self.connection.setText(connected)
 
-        if not self._demo:
-            try:
-                import state as state_module
-                from state import State
+    def _runtime_shutdown_requested(self) -> bool:
+        try:
+            import state as state_module
+            from state import State
 
-                if state_module.is_state(State.SHUTDOWN):
-                    self.close_from_shutdown()
-            except Exception:
-                pass
+            return bool(state_module.is_state(State.SHUTDOWN))
+        except Exception:
+            return False
 
 
 class ChromePanel(QFrame):
@@ -470,9 +499,7 @@ def run_dashboard(
     window.show()
 
     def _sigint(_signum, _frame) -> None:
-        if shutdown_callback is not None:
-            shutdown_callback()
-        window.close_from_shutdown()
+        QTimer.singleShot(0, window.request_shutdown)
 
     old_handler = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGINT, _sigint)
