@@ -4980,6 +4980,16 @@ def _arm_visible_unknown_identity_followup(
 # Speech accumulation
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _speech_preroll_secs() -> float:
+    preroll = float(getattr(config, "SPEECH_PREROLL_SECS", 0.45) or 0.0)
+    if _response_wait_active():
+        preroll = max(
+            preroll,
+            float(getattr(config, "POST_QUESTION_SPEECH_PREROLL_SECS", preroll) or 0.0),
+        )
+    return max(0.0, preroll)
+
+
 def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
     """
     Poll VAD until config.SILENCE_TIMEOUT_SECS of sustained silence, then
@@ -5016,9 +5026,9 @@ def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
     if _stop_event.is_set():
         return None
 
-    # Grab the full segment from the rolling buffer.
-    # Add 0.3 s pre-buffer so we capture the very start of the utterance.
-    duration = time.monotonic() - speech_start_mono + 0.3
+    # Grab the full segment from the rolling buffer. Add pre-roll so soft starts
+    # before the first VAD-positive chunk are not clipped.
+    duration = time.monotonic() - speech_start_mono + _speech_preroll_secs()
     capture_secs = min(duration, config.AUDIO_BUFFER_SECONDS)
     return stream.get_audio_chunk(capture_secs)
 

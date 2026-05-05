@@ -690,6 +690,26 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             interaction._interrupted.clear()
             interaction._wake_word_fired.clear()
 
+    def test_question_response_uses_longer_speech_preroll(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction.config, "SPEECH_PREROLL_SECS", 0.45),
+            mock.patch.object(interaction.config, "POST_QUESTION_SPEECH_PREROLL_SECS", 2.0),
+            mock.patch.object(interaction, "_response_wait_active", return_value=True),
+        ):
+            self.assertEqual(interaction._speech_preroll_secs(), 2.0)
+
+    def test_non_question_speech_uses_default_preroll(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction.config, "SPEECH_PREROLL_SECS", 0.45),
+            mock.patch.object(interaction.config, "POST_QUESTION_SPEECH_PREROLL_SECS", 2.0),
+            mock.patch.object(interaction, "_response_wait_active", return_value=False),
+        ):
+            self.assertEqual(interaction._speech_preroll_secs(), 0.45)
+
     def test_bare_wake_address_detection(self):
         from intelligence import interaction
 

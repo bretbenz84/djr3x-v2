@@ -663,7 +663,7 @@ BREATHING_PERIOD_SAD     = 6.0  # slower during sad emotion
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 0.0 = servo snaps instantly to face position; 1.0 = servo never moves
-TRACKING_SMOOTHING_FACTOR = 0.1
+TRACKING_SMOOTHING_FACTOR = 0.35
 
 # Pixels from frame center in which no neck correction is applied
 TRACKING_DEAD_ZONE_PX = 24
@@ -680,22 +680,43 @@ FACE_TRACKING_LOST_HOLD_SECS = _env_float(
 # a single edge-of-frame lock drive closer to the configured servo limits.
 FACE_TRACKING_CENTERING_GAIN = _env_float(
     "FACE_TRACKING_CENTERING_GAIN",
-    1.8,
+    1.05,
     min_value=0.1,
     max_value=3.0,
+)
+
+# Maximum quarter-microsecond correction per face-tracking tick. These prevent
+# one edge-of-frame detection from slamming the head to a hard stop.
+FACE_TRACKING_NECK_MAX_STEP_QUS = _env_int(
+    "FACE_TRACKING_NECK_MAX_STEP_QUS",
+    420,
+    min_value=1,
+    max_value=4000,
+)
+FACE_TRACKING_LIFT_MAX_STEP_QUS = _env_int(
+    "FACE_TRACKING_LIFT_MAX_STEP_QUS",
+    300,
+    min_value=1,
+    max_value=4000,
+)
+FACE_TRACKING_TILT_MAX_STEP_QUS = _env_int(
+    "FACE_TRACKING_TILT_MAX_STEP_QUS",
+    130,
+    min_value=1,
+    max_value=2000,
 )
 
 # Face tracking is a live gaze correction, not a slow idle animation. Use a
 # faster Maestro profile for the head channels before sending tracking targets.
 FACE_TRACKING_SERVO_SPEED = _env_int(
     "FACE_TRACKING_SERVO_SPEED",
-    140,
+    80,
     min_value=0,
     max_value=255,
 )
 FACE_TRACKING_SERVO_ACCELERATION = _env_int(
     "FACE_TRACKING_SERVO_ACCELERATION",
-    16,
+    8,
     min_value=0,
     max_value=255,
 )
@@ -710,7 +731,7 @@ FACE_TRACKING_LOG_INTERVAL_SECS = _env_float(
 FACE_TRACKING_VERTICAL_ENABLED = _env_bool("FACE_TRACKING_VERTICAL_ENABLED", True)
 FACE_TRACKING_VERTICAL_GAIN = _env_float(
     "FACE_TRACKING_VERTICAL_GAIN",
-    0.75,
+    0.5,
     min_value=0.0,
     max_value=2.0,
 )
@@ -1077,6 +1098,12 @@ SILENCE_TIMEOUT_SECS = 0.9
 # Minimum seconds of accumulated audio before silence can end a recording.
 # Prevents single-word transcriptions when the person is still talking.
 MIN_SPEECH_DURATION_SECS = 0.45
+
+# Include audio before the first VAD-positive chunk so soft starts are not
+# clipped. Question answers get more pre-roll because people often begin while
+# Rex's last syllable or room echo is still fading.
+SPEECH_PREROLL_SECS = 0.45
+POST_QUESTION_SPEECH_PREROLL_SECS = 2.0
 
 # If a transcribed utterance ends like an unfinished sentence ("I'm going to",
 # "the thing is", "because..."), hold it briefly before responding. A second

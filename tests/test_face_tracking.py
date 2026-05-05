@@ -101,6 +101,10 @@ class FaceTrackingTests(unittest.TestCase):
         self.assertLess(updates[neck_ch], c.config.SERVO_CHANNELS["neck"]["neutral"])
         self.assertGreater(updates[lift_ch], c.config.SERVO_CHANNELS["headlift"]["neutral"])
         self.assertLess(updates[tilt_ch], c.config.SERVO_CHANNELS["headtilt"]["neutral"])
+        self.assertLessEqual(
+            abs(updates[neck_ch] - c.config.SERVO_CHANNELS["neck"]["neutral"]),
+            c.config.FACE_TRACKING_NECK_MAX_STEP_QUS,
+        )
         set_profile.assert_called_once()
         self.assertIn(neck_ch, set_profile.call_args.args[0])
         set_baseline.assert_called_once_with(

@@ -5520,6 +5520,14 @@ def _clamp_servo(name: str, value: float) -> int:
     return max(int(cfg["min"]), min(int(cfg["max"]), int(round(value))))
 
 
+def _limited_tracking_step(name: str, current: int, target: int, max_step: int) -> int:
+    max_step = max(1, int(max_step or 1))
+    delta = int(target) - int(current)
+    if abs(delta) <= max_step:
+        return _clamp_servo(name, target)
+    return _clamp_servo(name, int(current) + (max_step if delta > 0 else -max_step))
+
+
 def _maybe_log_face_tracking_move(
     *,
     now: float,
@@ -5664,6 +5672,9 @@ def _step_face_tracking(frame) -> None:
         gain = float(getattr(config, "FACE_TRACKING_CENTERING_GAIN", 1.15))
         vertical_gain = float(getattr(config, "FACE_TRACKING_VERTICAL_GAIN", 0.55))
         dead_zone = float(getattr(config, "TRACKING_DEAD_ZONE_PX", 40))
+        neck_max_step = int(getattr(config, "FACE_TRACKING_NECK_MAX_STEP_QUS", 420))
+        lift_max_step = int(getattr(config, "FACE_TRACKING_LIFT_MAX_STEP_QUS", 300))
+        tilt_max_step = int(getattr(config, "FACE_TRACKING_TILT_MAX_STEP_QUS", 130))
         cx, cy = candidate["center"]
         frame_cx = frame_w / 2.0
         frame_cy = frame_h / 2.0
@@ -5687,6 +5698,12 @@ def _step_face_tracking(frame) -> None:
                 current_neck + (error_x / frame_cx) * neck_span * gain,
             )
             next_neck = _clamp_servo("neck", current_neck + alpha * (target_neck - current_neck))
+            next_neck = _limited_tracking_step(
+                "neck",
+                current_neck,
+                next_neck,
+                neck_max_step,
+            )
             if abs(next_neck - current_neck) >= 2:
                 updates[neck_ch] = next_neck
                 _neck_smooth = float(next_neck)
@@ -5712,6 +5729,18 @@ def _step_face_tracking(frame) -> None:
                 next_tilt = _clamp_servo(
                     "headtilt",
                     current_tilt + alpha * (target_tilt - current_tilt),
+                )
+                next_lift = _limited_tracking_step(
+                    "headlift",
+                    current_lift,
+                    next_lift,
+                    lift_max_step,
+                )
+                next_tilt = _limited_tracking_step(
+                    "headtilt",
+                    current_tilt,
+                    next_tilt,
+                    tilt_max_step,
                 )
                 if abs(next_lift - current_lift) >= 2:
                     updates[lift_ch] = next_lift
