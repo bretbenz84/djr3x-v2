@@ -109,6 +109,8 @@ def speak(
     emotion: str = "neutral",
     voice_settings: Optional[dict] = None,
     on_playback_start: Optional[Callable[[], None]] = None,
+    post_playback_tail_secs: Optional[float] = None,
+    flush_on_playback_stop: Optional[bool] = None,
 ) -> None:
     """Convert text to speech and play it, blocking until playback finishes.
 
@@ -170,7 +172,14 @@ def speak(
     except Exception as exc:
         logger.debug("[tts] conversation log write failed: %s", exc)
 
-    _play(audio, samplerate, emotion, on_playback_start=on_playback_start)
+    _play(
+        audio,
+        samplerate,
+        emotion,
+        on_playback_start=on_playback_start,
+        post_playback_tail_secs=post_playback_tail_secs,
+        flush_on_playback_stop=flush_on_playback_stop,
+    )
 
 
 # ── Internal: playback ────────────────────────────────────────────────────────
@@ -181,6 +190,8 @@ def _play(
     emotion: str,
     *,
     on_playback_start: Optional[Callable[[], None]] = None,
+    post_playback_tail_secs: Optional[float] = None,
+    flush_on_playback_stop: Optional[bool] = None,
 ) -> None:
     global _speaking
 
@@ -256,7 +267,11 @@ def _play(
                 animations.speech_activity_stop()
             except Exception as exc:
                 logger.debug("[tts] speech activity clear failed: %s", exc)
-            echo_cancel.set_playing(False)
+            echo_cancel.set_playing(
+                False,
+                tail_secs=post_playback_tail_secs,
+                flush=flush_on_playback_stop,
+            )
             with _speaking_lock:
                 _speaking = False
 

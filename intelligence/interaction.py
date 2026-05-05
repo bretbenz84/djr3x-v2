@@ -4041,6 +4041,7 @@ def _enroll_new_person(
     name: str,
     audio_array: np.ndarray,
     enroll_unknown_face: bool = False,
+    defer_face_enrollment: bool = False,
 ) -> Optional[int]:
     """
     Enroll a brand-new person and attach available voice/face biometrics.
@@ -4065,26 +4066,36 @@ def _enroll_new_person(
     except Exception as exc:
         _log.warning("voice enrollment failed for person_id=%s: %s", person_id, exc)
 
-    try:
-        from vision import camera as camera_mod
-        from vision import face as face_mod
+    def _enroll_face_biometric() -> None:
+        try:
+            from vision import camera as camera_mod
+            from vision import face as face_mod
 
-        frame = camera_mod.capture_still()
-        if frame is not None:
-            if enroll_unknown_face:
-                face_enrolled = face_mod.enroll_unknown_face(person_id, frame)
-            else:
-                face_enrolled = face_mod.enroll_face(person_id, frame)
-            if face_enrolled:
-                # Appearance extraction is useful but non-blocking.
-                threading.Thread(
-                    target=face_mod.update_appearance,
-                    args=(person_id, frame.copy()),
-                    daemon=True,
-                    name=f"appearance-enroll-{person_id}",
-                ).start()
-    except Exception as exc:
-        _log.warning("face enrollment failed for person_id=%s: %s", person_id, exc)
+            frame = camera_mod.capture_still()
+            if frame is not None:
+                if enroll_unknown_face:
+                    face_enrolled = face_mod.enroll_unknown_face(person_id, frame)
+                else:
+                    face_enrolled = face_mod.enroll_face(person_id, frame)
+                if face_enrolled:
+                    # Appearance extraction is useful but non-blocking.
+                    threading.Thread(
+                        target=face_mod.update_appearance,
+                        args=(person_id, frame.copy()),
+                        daemon=True,
+                        name=f"appearance-enroll-{person_id}",
+                    ).start()
+        except Exception as exc:
+            _log.warning("face enrollment failed for person_id=%s: %s", person_id, exc)
+
+    if defer_face_enrollment:
+        threading.Thread(
+            target=_enroll_face_biometric,
+            daemon=True,
+            name=f"face-enroll-{person_id}",
+        ).start()
+    else:
+        _enroll_face_biometric()
 
     _bind_world_state_identity(person_id, name)
     _log.info("[interaction] enrolled new person: %s (person_id=%s)", name, person_id)
@@ -10652,6 +10663,7 @@ def _handle_speech_segment(
             )
 
         relationship_prompt_consumed = False
+        prompted_identity_ack_text: Optional[str] = None
 
         common_name_response, common_name_person_id, common_name_full = (None, None, None)
         if not game_conversation_lock:
@@ -11366,6 +11378,7 @@ def _handle_speech_segment(
                         intro_name,
                         audio_array,
                         enroll_unknown_face=bool(prior_engagement),
+                        defer_face_enrollment=identity_prompt_active,
                     )
                     if enrolled_id is not None:
                         if person_id is not None and person_id != enrolled_id:
@@ -11392,6 +11405,9 @@ def _handle_speech_segment(
                             has_unknown_visible_or_recent=has_unknown_visible_or_recent,
                         )
                         _identity_prompt_until = 0.0
+                        prompted_identity_ack_text = (
+                            f"Got it, {intro_name}. Nice to meet you."
+                        )
 
                         # Chain into a relationship follow-up if we were just
                         # engaged with someone else — set a flag for the post-
@@ -11482,6 +11498,27 @@ def _handle_speech_segment(
             "[interaction] speech segment — speaker=%r person_id=%s text=%r",
             speaker_label, person_id, text,
         )
+
+        if prompted_identity_ack_text:
+            completed = _speak_blocking(
+                prompted_identity_ack_text,
+                emotion="happy",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            response_text = prompted_identity_ack_text
+            final_executed_path = "identity.prompted_enrollment_ack"
+            suppress_memory_learning = True
+            _dismiss_pending_consent_prompts(person_id, text)
+            try:
+                consciousness.clear_response_wait()
+            except Exception:
+                pass
+            conv_memory.add_to_transcript("Rex", prompted_identity_ack_text)
+            conv_log.log_rex(prompted_identity_ack_text)
+            _session_exchange_count += 1
+            _register_rex_utterance(prompted_identity_ack_text)
+            return
 
         memory_wipe_response = _handle_pending_memory_wipe_confirmation(text, person_id)
         if memory_wipe_response:

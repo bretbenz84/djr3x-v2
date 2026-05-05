@@ -67,7 +67,12 @@ def end_sequence(flush: bool = True, tail_secs: Optional[float] = None) -> None:
     )
 
 
-def set_playing(is_playing: bool) -> None:
+def set_playing(
+    is_playing: bool,
+    *,
+    tail_secs: Optional[float] = None,
+    flush: Optional[bool] = None,
+) -> None:
     """Called by TTS and playback modules when audio output starts or stops."""
     global _playing, _suppress_until, _playback_canceled
     with _lock:
@@ -77,10 +82,16 @@ def set_playing(is_playing: bool) -> None:
         changed = _playing != is_playing
         _playing = is_playing
         if not is_playing:
+            tail = (
+                config.POST_PLAYBACK_SUPPRESSION_SECS
+                if tail_secs is None
+                else max(0.0, float(tail_secs))
+            )
+            should_flush = True if flush is None else bool(flush)
             # Keep suppression active for a short tail so any of Rex's voice
             # that has already bled into the mic buffer is still attenuated.
-            _suppress_until = time.monotonic() + config.POST_PLAYBACK_SUPPRESSION_SECS
-            if not _playback_canceled:
+            _suppress_until = time.monotonic() + tail
+            if should_flush and not _playback_canceled:
                 # Drop accumulated mic audio so Whisper never sees Rex's own voice.
                 from audio import stream as _stream
                 _stream.flush()
@@ -96,7 +107,11 @@ def set_playing(is_playing: bool) -> None:
         else:
             logger.info(
                 "[aec] suppression stopped — playback ended, %.1fs tail active",
-                config.POST_PLAYBACK_SUPPRESSION_SECS,
+                (
+                    config.POST_PLAYBACK_SUPPRESSION_SECS
+                    if tail_secs is None
+                    else max(0.0, float(tail_secs))
+                ),
             )
 
 

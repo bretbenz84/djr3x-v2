@@ -60,6 +60,27 @@ def _complete_text_without_audio(
     return done
 
 
+def _playback_handoff_options(text: Optional[str]) -> dict:
+    """Return AEC stop options for queued text playback."""
+    if not text or "?" not in str(text):
+        return {}
+    try:
+        import config
+        return {
+            "post_playback_tail_secs": float(
+                getattr(config, "POST_QUESTION_PLAYBACK_SUPPRESSION_SECS", 0.05)
+            ),
+            "flush_on_playback_stop": bool(
+                getattr(config, "POST_QUESTION_FLUSH_AUDIO_BUFFER", False)
+            ),
+        }
+    except Exception:
+        return {
+            "post_playback_tail_secs": 0.05,
+            "flush_on_playback_stop": False,
+        }
+
+
 # ── Queue item ─────────────────────────────────────────────────────────────────
 
 class _Item:
@@ -345,6 +366,7 @@ class _SpeechQueue:
                         item.emotion,
                         voice_settings=item.voice_settings,
                         on_playback_start=item.on_start,
+                        **_playback_handoff_options(item.text),
                     )
 
                 if item.post_beat_ms > 0:
