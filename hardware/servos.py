@@ -537,6 +537,18 @@ def set_face_tracking_baseline(
             _speech_baseline.update(updates)
 
 
+def get_face_tracking_baseline() -> dict[int, int]:
+    """Return the head pose that speech/breathing should orbit around."""
+    with _lock:
+        return dict(_face_tracking_baseline)
+
+
+def reset_face_tracking_baseline() -> None:
+    """Reset gaze baseline to the configured neutral head pose."""
+    with _lock:
+        _face_tracking_baseline.update(_default_head_pose())
+
+
 def begin_speech_motion(emotion: str = "neutral") -> None:
     """Capture the current gaze/pose and prepare speech-reactive servo motion."""
     global _last_speech_move_at, _speech_hand_counter
@@ -708,6 +720,7 @@ def neutral(step_us: int = 40, step_delay: float = 0.02) -> None:
             }
             with _lock:
                 _remember_positions(targets)
+                _face_tracking_baseline.update(_default_head_pose())
             _record_servo_positions(targets)
         return
 
@@ -748,6 +761,7 @@ def neutral(step_us: int = 40, step_delay: float = 0.02) -> None:
         cfg["ch"]: _clamp(cfg["ch"], cfg["neutral"])
         for cfg in config.SERVO_CHANNELS.values()
     })
+    reset_face_tracking_baseline()
 
 
 def set_breathing_emotion(emotion: str) -> None:
@@ -770,7 +784,6 @@ def breathing_thread() -> None:
     _log.info("Breathing thread started")
     headlift_cfg = config.SERVO_CHANNELS["headlift"]
     channel      = headlift_cfg["ch"]
-    neutral_pos  = headlift_cfg["neutral"]
     amplitude    = config.BREATHING_AMPLITUDE_QUS
 
     tick = 0.05  # seconds between position updates
@@ -790,8 +803,11 @@ def breathing_thread() -> None:
         else:
             period = config.BREATHING_PERIOD_SECS
 
+        with _lock:
+            baseline_pos = _face_tracking_baseline.get(channel, headlift_cfg["neutral"])
+
         t   = time.monotonic()
-        pos = int(neutral_pos + amplitude * math.sin(2 * math.pi * t / period))
+        pos = int(baseline_pos + amplitude * math.sin(2 * math.pi * t / period))
         pos = _clamp(channel, pos)
 
         if SERVOS_ENABLED:

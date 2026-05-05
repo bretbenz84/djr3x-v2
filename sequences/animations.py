@@ -505,6 +505,8 @@ def wander_thread() -> None:
             continue
         if _speaking.is_set():
             continue
+        if _face_tracking_holding_gaze():
+            continue
 
         # Wider sweeps when alone — head turns farther and tilts more.
         neck_scan_range = (700, 1800) if alone else (300, 700)
@@ -660,7 +662,13 @@ def speech_stop() -> None:
     leds_head.speak_stop()
     leds_chest.idle()
     servos.set_breathing_emotion("neutral")
-    servos.set_servos({0: NECK_CENTER, 3: VISOR_HALF, 1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL})
+    baseline = servos.get_face_tracking_baseline()
+    servos.set_servos({
+        0: baseline.get(0, NECK_CENTER),
+        3: VISOR_HALF,
+        1: baseline.get(1, HEADLIFT_NEUTRAL),
+        2: baseline.get(2, HEADTILT_NEUTRAL),
+    })
 
 
 def speech_level(amplitude: int) -> None:
@@ -738,6 +746,19 @@ def _world_self_state() -> dict:
         return world_state.get("self_state")
     except Exception:
         return {}
+
+
+def _face_tracking_holding_gaze() -> bool:
+    tracking = _world_self_state().get("face_tracking") or {}
+    if not isinstance(tracking, dict):
+        return False
+    return bool(
+        tracking.get("locked")
+        and (
+            tracking.get("visible") is True
+            or tracking.get("holding_lost_lock") is True
+        )
+    )
 
 
 def _current_lateral_direction() -> str | None:
@@ -840,6 +861,11 @@ def directed_look_pose(direction: str = "current", target: str = "") -> str:
 
     with _motion_lock:
         servos.move_to(targets, step_us=step_us, step_delay=step_delay)
+        servos.set_face_tracking_baseline(
+            neck=targets.get(neck_ch),
+            lift=targets.get(lift_ch),
+            tilt=targets.get(tilt_ch),
+        )
         time.sleep(settle)
     _record_directed_look(norm, target)
     return norm

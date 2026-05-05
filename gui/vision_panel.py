@@ -86,6 +86,8 @@ class VisionPanel(QWidget):
         sx = image_rect.width() / float(frame_w)
         sy = image_rect.height() / float(frame_h)
         for idx, person in enumerate(self._people):
+            if person.get("face_visible") is False or person.get("face_missing"):
+                continue
             label = _person_label(person)
             expression = _person_expression(person)
             color = QColor("#75ef63")

@@ -77,6 +77,17 @@ def _env_float(name: str, default: float, *, min_value: float, max_value: float)
         return default
     return max(min_value, min(max_value, value))
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DEBUG
 # ─────────────────────────────────────────────────────────────────────────────
@@ -652,6 +663,32 @@ TRACKING_SMOOTHING_FACTOR = 0.2
 
 # Pixels from frame center in which no neck correction is applied
 TRACKING_DEAD_ZONE_PX = 40
+
+# Keep an acquired face as the gaze target briefly through detector flicker.
+FACE_TRACKING_LOST_HOLD_SECS = _env_float(
+    "FACE_TRACKING_LOST_HOLD_SECS",
+    4.0,
+    min_value=0.0,
+    max_value=30.0,
+)
+
+# Multiplier for image-center error -> servo correction. Values above 1.0 make
+# a single edge-of-frame lock drive closer to the configured servo limits.
+FACE_TRACKING_CENTERING_GAIN = _env_float(
+    "FACE_TRACKING_CENTERING_GAIN",
+    1.15,
+    min_value=0.1,
+    max_value=3.0,
+)
+
+# Horizontal tracking uses the neck; vertical tracking combines lift and tilt.
+FACE_TRACKING_VERTICAL_ENABLED = _env_bool("FACE_TRACKING_VERTICAL_ENABLED", True)
+FACE_TRACKING_VERTICAL_GAIN = _env_float(
+    "FACE_TRACKING_VERTICAL_GAIN",
+    0.55,
+    min_value=0.0,
+    max_value=2.0,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PROXEMICS — Distance Zone Thresholds

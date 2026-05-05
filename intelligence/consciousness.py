@@ -46,6 +46,7 @@ _process_started_mono: float = 0.0
 # Smoothed neck servo position in quarter-microseconds
 _neck_smooth: float = float(config.SERVO_CHANNELS["neck"]["neutral"])
 _face_tracking_suspended_until: float = 0.0
+_face_tracking_lock: dict = {}
 
 # WorldState snapshot from the previous loop iteration (for change detection)
 _last_snapshot: dict = {}
@@ -1291,6 +1292,27 @@ def _step_chronoception() -> None:
 # Step 5 — Person recognition
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _mark_people_faces_missing(people: list[dict], *, now_mono: float) -> list[dict]:
+    """Keep identity slots alive while explicitly removing stale face geometry."""
+    held: list[dict] = []
+    lost_age = max(0.0, now_mono - _last_face_seen_at) if _last_face_seen_at else None
+    for person in people:
+        slot = dict(person or {})
+        slot["face_visible"] = False
+        slot["face_missing"] = True
+        slot["face_box"] = None
+        slot["bounding_box"] = None
+        slot["bbox"] = None
+        slot["box"] = None
+        slot["position"] = None
+        slot["face_box_fraction"] = None
+        slot["approach_vector"] = "lost"
+        if lost_age is not None:
+            slot["face_last_seen_age_secs"] = round(lost_age, 2)
+        held.append(slot)
+    return held
+
+
 def _step_person_recognition(frame) -> None:
     """
     Detect visible faces, resolve known identities via DB lookup, and update
@@ -1312,11 +1334,16 @@ def _step_person_recognition(frame) -> None:
         detected = face_mod.detect_faces(frame)
         if not detected:
             # No visible faces this tick. Hold the last slots briefly so a
-            # small/partly occluded face does not flicker off the GUI or lose
-            # conversation identity on a single detector miss.
+            # small/partly occluded face does not lose conversation identity on
+            # a single detector miss. Geometry is cleared immediately so the
+            # GUI never draws a stale box at an old camera coordinate.
             hold_secs = float(getattr(config, "FACE_DETECTION_HOLD_SECS", 3.0) or 0.0)
             people_now = world_state.get("people")
-            if people_now and hold_secs > 0 and (time.monotonic() - _last_face_seen_at) <= hold_secs:
+            now_mono = time.monotonic()
+            if people_now and hold_secs > 0 and (now_mono - _last_face_seen_at) <= hold_secs:
+                held_people = _mark_people_faces_missing(people_now, now_mono=now_mono)
+                world_state.update("people", held_people)
+                _previous_face_boxes.clear()
                 return
             if people_now:
                 world_state.update("people", [])
@@ -1357,6 +1384,10 @@ def _step_person_recognition(frame) -> None:
                     "age_estimate": base.get("age_estimate"),
                     "position": base.get("position"),
                     "face_box": base.get("face_box"),
+                    "face_visible": base.get("face_visible"),
+                    "face_missing": base.get("face_missing"),
+                    "face_last_seen_at": base.get("face_last_seen_at"),
+                    "face_last_seen_age_secs": base.get("face_last_seen_age_secs"),
                 })
             people = resized
             changed = True
@@ -1394,6 +1425,12 @@ def _step_person_recognition(frame) -> None:
 
             if target_slot is None:
                 continue
+
+            target_slot["face_visible"] = True
+            target_slot["face_missing"] = False
+            target_slot["face_last_seen_at"] = time.time()
+            target_slot["face_last_seen_age_secs"] = 0.0
+            changed = True
 
             box = det.get("bounding_box")
             if box:
@@ -5384,13 +5421,124 @@ def _face_x_to_neck_target(x: int) -> float:
     return float(neck_cfg["min"] + frac * (neck_cfg["max"] - neck_cfg["min"]))
 
 
+def _frame_size(frame) -> tuple[int, int]:
+    try:
+        shape = getattr(frame, "shape", None)
+        if shape is not None and len(shape) >= 2:
+            return int(shape[1]), int(shape[0])
+    except Exception:
+        pass
+    return int(getattr(config, "CAMERA_WIDTH", 1280)), int(getattr(config, "CAMERA_HEIGHT", 720))
+
+
+def _face_tracking_key(person: dict, idx: int) -> str:
+    if person.get("person_db_id") is not None:
+        return f"db:{person.get('person_db_id')}"
+    if person.get("face_id"):
+        return f"face:{person.get('face_id')}"
+    return f"slot:{person.get('id') or idx}"
+
+
+def _person_tracking_box(person: dict) -> tuple[float, float, float, float] | None:
+    box = person.get("face_box") or person.get("bounding_box") or person.get("bbox")
+    if isinstance(box, dict):
+        box = (
+            box.get("x"),
+            box.get("y"),
+            box.get("w") or box.get("width"),
+            box.get("h") or box.get("height"),
+        )
+    if not isinstance(box, (list, tuple)) or len(box) < 4:
+        return None
+    try:
+        x, y, w, h = [float(v) for v in box[:4]]
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return (x, y, w, h)
+
+
+def _visible_face_tracking_candidates() -> list[dict]:
+    candidates: list[dict] = []
+    for idx, person in enumerate(world_state.get("people") or []):
+        if person.get("face_visible") is False or person.get("face_missing"):
+            continue
+        box = _person_tracking_box(person)
+        if box is None:
+            continue
+        x, y, w, h = box
+        candidates.append({
+            "key": _face_tracking_key(person, idx),
+            "person_id": person.get("person_db_id"),
+            "box": box,
+            "center": (x + w / 2.0, y + h / 2.0),
+            "area": w * h,
+        })
+    return candidates
+
+
+def _current_servo_position(name: str) -> int:
+    cfg = config.SERVO_CHANNELS[name]
+    default = int(cfg["neutral"])
+    try:
+        positions = (world_state.get("self_state") or {}).get("servo_positions") or {}
+        return int(positions.get(name, default))
+    except Exception:
+        return default
+
+
+def _clamp_servo(name: str, value: float) -> int:
+    cfg = config.SERVO_CHANNELS[name]
+    return max(int(cfg["min"]), min(int(cfg["max"]), int(round(value))))
+
+
+def _record_face_tracking_state(
+    *,
+    locked: bool,
+    visible: bool,
+    holding_lost_lock: bool = False,
+    candidate: dict | None = None,
+    lost_age_secs: float | None = None,
+) -> None:
+    try:
+        self_state = world_state.get("self_state")
+        tracking = dict(self_state.get("face_tracking") or {})
+        tracking.update({
+            "locked": bool(locked),
+            "visible": bool(visible),
+            "holding_lost_lock": bool(holding_lost_lock),
+            "lock_key": _face_tracking_lock.get("key") if locked else None,
+            "person_id": (
+                candidate.get("person_id")
+                if candidate is not None
+                else _face_tracking_lock.get("person_id") if locked else None
+            ),
+            "lost_age_secs": round(lost_age_secs, 2) if lost_age_secs is not None else None,
+        })
+        if candidate is not None:
+            tracking["box"] = candidate.get("box")
+            tracking["center"] = candidate.get("center")
+            tracking["last_seen_at"] = time.time()
+        elif not locked:
+            tracking["box"] = None
+            tracking["center"] = None
+            tracking["last_seen_at"] = None
+        self_state["face_tracking"] = tracking
+        world_state.update("self_state", self_state)
+    except Exception as exc:
+        _log.debug("face tracking state update failed: %s", exc)
+
+
 def _step_face_tracking(frame) -> None:
     """
-    Get the largest face position from the current frame, smooth toward the neck
-    servo target, and issue a set_servo command when change exceeds the dead zone.
-    Suspended during SLEEP state.
+    Center the current face lock in Rex's camera frame.
+
+    Person recognition owns face detection for the tick; this step consumes its
+    visible boxes, keeps a sticky lock through brief misses, and moves the neck
+    plus vertical head pose toward image center.
     """
-    global _neck_smooth
+    global _neck_smooth, _face_tracking_lock
 
     if state_module.get_state() == State.SLEEP:
         return
@@ -5398,42 +5546,115 @@ def _step_face_tracking(frame) -> None:
         return
 
     try:
-        from vision import face as face_mod
         from hardware import servos as servo_mod
 
+        now = time.monotonic()
+        candidates = _visible_face_tracking_candidates()
+        lock_key = _face_tracking_lock.get("key")
+        last_seen = float(_face_tracking_lock.get("last_seen_at") or 0.0)
+        lost_hold_secs = float(getattr(config, "FACE_TRACKING_LOST_HOLD_SECS", 4.0) or 0.0)
+
+        candidate = None
+        if lock_key:
+            candidate = next((item for item in candidates if item["key"] == lock_key), None)
+            if candidate is None and last_seen and (now - last_seen) <= lost_hold_secs:
+                _record_face_tracking_state(
+                    locked=True,
+                    visible=False,
+                    holding_lost_lock=True,
+                    lost_age_secs=now - last_seen,
+                )
+                return
+
+        if candidate is None and candidates:
+            candidate = candidates[0] if len(candidates) == 1 else max(
+                candidates,
+                key=lambda item: item["area"],
+            )
+
+        if candidate is None:
+            _face_tracking_lock = {}
+            _record_face_tracking_state(locked=False, visible=False)
+            return
+
+        _face_tracking_lock = {
+            "key": candidate["key"],
+            "person_id": candidate.get("person_id"),
+            "last_seen_at": now,
+        }
+
+        frame_w, frame_h = _frame_size(frame)
         neck_cfg = config.SERVO_CHANNELS["neck"]
-        neck_ch  = neck_cfg["ch"]
-        neutral  = float(neck_cfg["neutral"])
-        alpha    = 1.0 - config.TRACKING_SMOOTHING_FACTOR  # fraction to close per tick
+        lift_cfg = config.SERVO_CHANNELS["headlift"]
+        tilt_cfg = config.SERVO_CHANNELS["headtilt"]
+        neck_ch = int(neck_cfg["ch"])
+        lift_ch = int(lift_cfg["ch"])
+        tilt_ch = int(tilt_cfg["ch"])
 
-        face_pos = face_mod.get_face_position(frame) if frame is not None else None
+        alpha = max(0.0, min(1.0, 1.0 - float(getattr(config, "TRACKING_SMOOTHING_FACTOR", 0.2))))
+        gain = float(getattr(config, "FACE_TRACKING_CENTERING_GAIN", 1.15))
+        vertical_gain = float(getattr(config, "FACE_TRACKING_VERTICAL_GAIN", 0.55))
+        dead_zone = float(getattr(config, "TRACKING_DEAD_ZONE_PX", 40))
+        cx, cy = candidate["center"]
+        frame_cx = frame_w / 2.0
+        frame_cy = frame_h / 2.0
 
-        if face_pos is None:
-            # No face detected: drift back toward neutral
-            _neck_smooth += alpha * (neutral - _neck_smooth)
-            return
+        current_neck = _current_servo_position("neck")
+        current_lift = _current_servo_position("headlift")
+        current_tilt = _current_servo_position("headtilt")
+        updates: dict[int, int] = {}
 
-        x, _y = face_pos
-        frame_cx = config.CAMERA_WIDTH / 2.0
+        error_x = cx - frame_cx
+        if abs(error_x) > dead_zone and frame_cx > 0:
+            neck_span = (int(neck_cfg["max"]) - int(neck_cfg["min"])) / 2.0
+            target_neck = _clamp_servo(
+                "neck",
+                current_neck + (error_x / frame_cx) * neck_span * gain,
+            )
+            next_neck = _clamp_servo("neck", current_neck + alpha * (target_neck - current_neck))
+            if abs(next_neck - current_neck) >= 2:
+                updates[neck_ch] = next_neck
+                _neck_smooth = float(next_neck)
+        else:
+            _neck_smooth = float(current_neck)
 
-        # Pixel dead zone: if face is close enough to center, do nothing
-        if abs(x - frame_cx) <= config.TRACKING_DEAD_ZONE_PX:
-            return
+        if bool(getattr(config, "FACE_TRACKING_VERTICAL_ENABLED", True)):
+            error_y = cy - frame_cy
+            if abs(error_y) > dead_zone and frame_cy > 0:
+                lift_span = (int(lift_cfg["max"]) - int(lift_cfg["min"])) / 2.0
+                tilt_span = (int(tilt_cfg["max"]) - int(tilt_cfg["min"])) / 2.0
+                target_lift = _clamp_servo(
+                    "headlift",
+                    current_lift - (error_y / frame_cy) * lift_span * vertical_gain,
+                )
+                target_tilt = _clamp_servo(
+                    "headtilt",
+                    current_tilt + (error_y / frame_cy) * tilt_span * vertical_gain,
+                )
+                next_lift = _clamp_servo(
+                    "headlift",
+                    current_lift + alpha * (target_lift - current_lift),
+                )
+                next_tilt = _clamp_servo(
+                    "headtilt",
+                    current_tilt + alpha * (target_tilt - current_tilt),
+                )
+                if abs(next_lift - current_lift) >= 2:
+                    updates[lift_ch] = next_lift
+                if abs(next_tilt - current_tilt) >= 2:
+                    updates[tilt_ch] = next_tilt
 
-        target = _face_x_to_neck_target(x)
-        new_smooth = _neck_smooth + alpha * (target - _neck_smooth)
-
-        # Only send servo command if smoothed position moved beyond dead zone in servo space
-        dead_zone_qus = (
-            config.TRACKING_DEAD_ZONE_PX
-            / config.CAMERA_WIDTH
-            * (neck_cfg["max"] - neck_cfg["min"])
+        baseline_neck = updates.get(neck_ch, current_neck)
+        baseline_lift = updates.get(lift_ch, current_lift)
+        baseline_tilt = updates.get(tilt_ch, current_tilt)
+        if updates:
+            servo_mod.set_servos(updates)
+        servo_mod.set_face_tracking_baseline(
+            neck=baseline_neck,
+            lift=baseline_lift,
+            tilt=baseline_tilt,
         )
-        if abs(new_smooth - _neck_smooth) >= dead_zone_qus:
-            _neck_smooth = new_smooth
-            clamped = max(neck_cfg["min"], min(neck_cfg["max"], int(_neck_smooth)))
-            servo_mod.set_servo(neck_ch, clamped)
-            servo_mod.set_face_tracking_baseline(neck=clamped)
+        _record_face_tracking_state(locked=True, visible=True, candidate=candidate)
 
     except Exception as exc:
         _log.debug("face tracking step error: %s", exc)
@@ -5621,6 +5842,8 @@ def start() -> None:
     _group_turn_invited_this_session.clear()
     _group_lull_fired_at.clear()
     _previous_face_boxes.clear()
+    _face_tracking_lock.clear()
+    _record_face_tracking_state(locked=False, visible=False)
     _personal_space_reacted_at.clear()
     _last_pose_analysis_at = 0.0
     _startup_group_signature = None
@@ -5685,6 +5908,8 @@ def stop() -> None:
     _group_turn_invited_this_session.clear()
     _group_lull_fired_at.clear()
     _previous_face_boxes.clear()
+    _face_tracking_lock.clear()
+    _record_face_tracking_state(locked=False, visible=False)
     _personal_space_reacted_at.clear()
     _last_pose_analysis_at = 0.0
     _startup_empty_room_seen_at = 0.0
