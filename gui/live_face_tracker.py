@@ -1,4 +1,4 @@
-"""Lightweight GUI-only face-box tracking between recognition updates."""
+"""Lightweight live face-box tracking between recognition updates."""
 
 from __future__ import annotations
 
@@ -26,11 +26,11 @@ class _Track:
 
 class LiveFaceBoxTracker:
     """
-    Track recognized face boxes on live GUI frames without re-running dlib.
+    Track recognized face boxes on live camera frames without re-running dlib.
 
     The runtime's true identity/face detection still comes from world_state.
-    This class only keeps the dashboard overlay visually current between those
-    slower recognition updates.
+    This class only keeps visual overlays and gaze-control inputs current
+    between those slower recognition updates.
     """
 
     def __init__(self, *, stale_secs: float = 0.75) -> None:
@@ -84,6 +84,7 @@ class LiveFaceBoxTracker:
                 item["face_visible"] = True
                 item["face_missing"] = False
                 item["gui_live_tracked"] = True
+                item["live_tracked"] = True
             output.append(item)
 
         for key, track in list(self._tracks.items()):

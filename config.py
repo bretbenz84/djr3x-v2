@@ -662,11 +662,22 @@ BREATHING_PERIOD_SAD     = 6.0  # slower during sad emotion
 # FACE TRACKING & GAZE
 # ─────────────────────────────────────────────────────────────────────────────
 
-# 0.0 = servo snaps instantly to face position; 1.0 = servo never moves
-TRACKING_SMOOTHING_FACTOR = 0.35
+# 0.0 = servo snaps instantly to face position; 1.0 = servo never moves.
+# This needs to feel like turning toward a person, not a sleepy idle drift.
+TRACKING_SMOOTHING_FACTOR = 0.15
 
 # Pixels from frame center in which no neck correction is applied
-TRACKING_DEAD_ZONE_PX = 24
+TRACKING_DEAD_ZONE_PX = 18
+
+# Servo gaze tracking runs faster than the conversational consciousness loop so
+# head pose can follow live camera motion between heavier recognition ticks.
+FACE_TRACKING_LOOP_INTERVAL_SECS = _env_float(
+    "FACE_TRACKING_LOOP_INTERVAL_SECS",
+    0.08,
+    min_value=0.02,
+    max_value=1.0,
+)
+FACE_TRACKING_OPTICAL_FLOW_ENABLED = _env_bool("FACE_TRACKING_OPTICAL_FLOW_ENABLED", True)
 
 # Keep an acquired face as the gaze target briefly through detector flicker.
 FACE_TRACKING_LOST_HOLD_SECS = _env_float(
@@ -680,7 +691,7 @@ FACE_TRACKING_LOST_HOLD_SECS = _env_float(
 # a single edge-of-frame lock drive closer to the configured servo limits.
 FACE_TRACKING_CENTERING_GAIN = _env_float(
     "FACE_TRACKING_CENTERING_GAIN",
-    1.05,
+    1.25,
     min_value=0.1,
     max_value=3.0,
 )
@@ -689,19 +700,19 @@ FACE_TRACKING_CENTERING_GAIN = _env_float(
 # one edge-of-frame detection from slamming the head to a hard stop.
 FACE_TRACKING_NECK_MAX_STEP_QUS = _env_int(
     "FACE_TRACKING_NECK_MAX_STEP_QUS",
-    420,
+    900,
     min_value=1,
     max_value=4000,
 )
 FACE_TRACKING_LIFT_MAX_STEP_QUS = _env_int(
     "FACE_TRACKING_LIFT_MAX_STEP_QUS",
-    300,
+    620,
     min_value=1,
     max_value=4000,
 )
 FACE_TRACKING_TILT_MAX_STEP_QUS = _env_int(
     "FACE_TRACKING_TILT_MAX_STEP_QUS",
-    130,
+    260,
     min_value=1,
     max_value=2000,
 )
@@ -710,13 +721,13 @@ FACE_TRACKING_TILT_MAX_STEP_QUS = _env_int(
 # faster Maestro profile for the head channels before sending tracking targets.
 FACE_TRACKING_SERVO_SPEED = _env_int(
     "FACE_TRACKING_SERVO_SPEED",
-    80,
+    160,
     min_value=0,
     max_value=255,
 )
 FACE_TRACKING_SERVO_ACCELERATION = _env_int(
     "FACE_TRACKING_SERVO_ACCELERATION",
-    8,
+    24,
     min_value=0,
     max_value=255,
 )
@@ -731,7 +742,7 @@ FACE_TRACKING_LOG_INTERVAL_SECS = _env_float(
 FACE_TRACKING_VERTICAL_ENABLED = _env_bool("FACE_TRACKING_VERTICAL_ENABLED", True)
 FACE_TRACKING_VERTICAL_GAIN = _env_float(
     "FACE_TRACKING_VERTICAL_GAIN",
-    0.5,
+    0.85,
     min_value=0.0,
     max_value=2.0,
 )

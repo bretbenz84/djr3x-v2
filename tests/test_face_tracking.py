@@ -5,6 +5,11 @@ import numpy as np
 
 from state import State
 
+try:
+    import cv2  # noqa: F401
+except Exception:  # pragma: no cover
+    cv2 = None
+
 
 class FaceTrackingTests(unittest.TestCase):
     def setUp(self):
@@ -15,6 +20,7 @@ class FaceTrackingTests(unittest.TestCase):
         self.old_self_state = consciousness.world_state.get("self_state")
         self.old_last_seen = consciousness._last_face_seen_at
         self.old_lock = dict(consciousness._face_tracking_lock)
+        self.old_live_tracker = consciousness._face_tracking_tracker
         self.old_suspend_until = consciousness._face_tracking_suspended_until
         self.old_tracking_log_at = consciousness._last_face_tracking_log_at
         self.frame = np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -25,8 +31,16 @@ class FaceTrackingTests(unittest.TestCase):
         c.world_state.update("self_state", self.old_self_state)
         c._last_face_seen_at = self.old_last_seen
         c._face_tracking_lock = self.old_lock
+        c._face_tracking_tracker = self.old_live_tracker
         c._face_tracking_suspended_until = self.old_suspend_until
         c._last_face_tracking_log_at = self.old_tracking_log_at
+
+    def _frame_with_patch(self, x: int, y: int) -> np.ndarray:
+        rng = np.random.default_rng(1234)
+        patch = rng.integers(0, 255, size=(36, 36), dtype=np.uint8)
+        frame = np.zeros((120, 160, 3), dtype=np.uint8)
+        frame[y:y + 36, x:x + 36] = np.repeat(patch[:, :, None], 3, axis=2)
+        return frame
 
     def _set_servo_positions(self):
         c = self.consciousness
@@ -112,6 +126,35 @@ class FaceTrackingTests(unittest.TestCase):
             lift=updates[lift_ch],
             tilt=updates[tilt_ch],
         )
+
+    @unittest.skipIf(cv2 is None, "OpenCV unavailable")
+    def test_live_tracking_people_advances_box_between_recognition_ticks(self):
+        c = self.consciousness
+        c._face_tracking_tracker = None
+        c.world_state.update("people", [{
+            "id": "person_1",
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": True,
+            "face_box": (20, 30, 36, 36),
+        }])
+
+        c._live_face_tracking_people(self._frame_with_patch(20, 30))
+        c.world_state.update("people", [{
+            "id": "person_1",
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": False,
+            "face_missing": True,
+            "face_box": None,
+        }])
+        tracked = c._live_face_tracking_people(self._frame_with_patch(34, 39))
+
+        self.assertTrue(tracked[0]["live_tracked"])
+        self.assertTrue(tracked[0]["face_visible"])
+        self.assertFalse(tracked[0]["face_missing"])
+        self.assertGreater(tracked[0]["face_box"][0], 30.0)
+        self.assertGreater(tracked[0]["face_box"][1], 36.0)
 
     def test_existing_face_lock_does_not_immediately_switch_to_other_face(self):
         c = self.consciousness

@@ -40,6 +40,8 @@ _log = logging.getLogger(__name__)
 
 _stop_event = threading.Event()
 _thread: Optional[threading.Thread] = None
+_face_tracking_thread: Optional[threading.Thread] = None
+_face_tracking_tracker = None
 _process_started_iso: Optional[str] = None
 _process_started_mono: float = 0.0
 
@@ -5486,9 +5488,10 @@ def _person_tracking_box(person: dict) -> tuple[float, float, float, float] | No
     return (x, y, w, h)
 
 
-def _visible_face_tracking_candidates() -> list[dict]:
+def _visible_face_tracking_candidates(people: Optional[list[dict]] = None) -> list[dict]:
     candidates: list[dict] = []
-    for idx, person in enumerate(world_state.get("people") or []):
+    source_people = world_state.get("people") if people is None else people
+    for idx, person in enumerate(source_people or []):
         if person.get("face_visible") is False or person.get("face_missing"):
             continue
         box = _person_tracking_box(person)
@@ -5501,6 +5504,7 @@ def _visible_face_tracking_candidates() -> list[dict]:
             "box": box,
             "center": (x + w / 2.0, y + h / 2.0),
             "area": w * h,
+            "live_tracked": bool(person.get("gui_live_tracked") or person.get("live_tracked")),
         })
     return candidates
 
@@ -5607,7 +5611,7 @@ def _record_face_tracking_state(
         _log.debug("face tracking state update failed: %s", exc)
 
 
-def _step_face_tracking(frame) -> None:
+def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
     """
     Center the current face lock in Rex's camera frame.
 
@@ -5621,12 +5625,14 @@ def _step_face_tracking(frame) -> None:
         return
     if time.monotonic() < _face_tracking_suspended_until:
         return
+    if frame is None:
+        return
 
     try:
         from hardware import servos as servo_mod
 
         now = time.monotonic()
-        candidates = _visible_face_tracking_candidates()
+        candidates = _visible_face_tracking_candidates(people)
         lock_key = _face_tracking_lock.get("key")
         last_seen = float(_face_tracking_lock.get("last_seen_at") or 0.0)
         lost_hold_secs = float(getattr(config, "FACE_TRACKING_LOST_HOLD_SECS", 4.0) or 0.0)
@@ -5783,6 +5789,47 @@ def _step_face_tracking(frame) -> None:
         _log.debug("face tracking step error: %s", exc)
 
 
+def _live_face_tracking_people(frame) -> list[dict]:
+    """Use optical flow to keep face boxes fresh between recognition ticks."""
+    global _face_tracking_tracker
+
+    people = world_state.get("people") or []
+    if not bool(getattr(config, "FACE_TRACKING_OPTICAL_FLOW_ENABLED", True)):
+        return people
+    if frame is None:
+        return people
+
+    try:
+        if _face_tracking_tracker is None:
+            from gui.live_face_tracker import LiveFaceBoxTracker
+
+            _face_tracking_tracker = LiveFaceBoxTracker(
+                stale_secs=max(
+                    0.25,
+                    min(2.0, float(getattr(config, "FACE_TRACKING_LOST_HOLD_SECS", 8.0) or 0.0)),
+                )
+            )
+        return _face_tracking_tracker.update(frame, people)
+    except Exception as exc:
+        _log.debug("live face-box tracking failed: %s", exc)
+        return people
+
+
+def _face_tracking_loop() -> None:
+    """High-rate head-pose loop, separate from slower cognition/social ticks."""
+    interval = max(0.02, float(getattr(config, "FACE_TRACKING_LOOP_INTERVAL_SECS", 0.08) or 0.08))
+    while not _stop_event.is_set():
+        try:
+            from vision.camera import get_frame
+
+            frame = get_frame()
+            people = _live_face_tracking_people(frame)
+            _step_face_tracking(frame, people)
+        except Exception as exc:
+            _log.debug("fast face tracking loop error: %s", exc)
+        _stop_event.wait(interval)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main loop
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5902,8 +5949,8 @@ def _loop() -> None:
             # 10e. Overheard chime-in — react when someone talks ABOUT Rex
             _step_overheard_chime_in(snapshot, profile)
 
-            # 11. Face tracking
-            _step_face_tracking(frame)
+            # 11. Face tracking runs in a dedicated high-rate loop so gaze
+            # correction is not gated by this slower social/cognition tick.
 
             _finish_governor_cycle()
 
@@ -5926,6 +5973,7 @@ def _loop() -> None:
 def start() -> None:
     """Start the consciousness daemon thread. No-op if already running."""
     global _thread, _response_wait_until, _last_proactive_speech_at, _pending_departure_keys
+    global _face_tracking_thread, _face_tracking_tracker
     global _last_rex_utterance_text, _last_memory_hint_text, _last_memory_hint_at
     global _last_memory_hint_person_id
     global _recent_engaged_person_id, _recent_engaged_touch_at
@@ -5966,6 +6014,7 @@ def start() -> None:
     _group_lull_fired_at.clear()
     _previous_face_boxes.clear()
     _face_tracking_lock.clear()
+    _face_tracking_tracker = None
     _record_face_tracking_state(locked=False, visible=False)
     _personal_space_reacted_at.clear()
     _last_pose_analysis_at = 0.0
@@ -6004,15 +6053,23 @@ def start() -> None:
         _last_proactive_speech_at = 0.0
     _thread = threading.Thread(target=_loop, daemon=True, name="consciousness")
     _thread.start()
+    _face_tracking_thread = threading.Thread(
+        target=_face_tracking_loop,
+        daemon=True,
+        name="face-tracking",
+    )
+    _face_tracking_thread.start()
     _log.info(
-        "consciousness started (interval=%.1fs)",
+        "consciousness started (interval=%.1fs, face_tracking=%.2fs)",
         getattr(config, "CONSCIOUSNESS_LOOP_INTERVAL_SECS", 1.0),
+        getattr(config, "FACE_TRACKING_LOOP_INTERVAL_SECS", 0.08),
     )
 
 
 def stop() -> None:
     """Stop the consciousness daemon thread and wait for it to exit."""
     global _thread, _response_wait_until, _last_rex_utterance_text
+    global _face_tracking_thread, _face_tracking_tracker
     global _last_memory_hint_text, _last_memory_hint_at, _last_memory_hint_person_id
     global _recent_engaged_person_id, _recent_engaged_touch_at
     global _last_pose_analysis_at
@@ -6032,6 +6089,7 @@ def stop() -> None:
     _group_lull_fired_at.clear()
     _previous_face_boxes.clear()
     _face_tracking_lock.clear()
+    _face_tracking_tracker = None
     _record_face_tracking_state(locked=False, visible=False)
     _personal_space_reacted_at.clear()
     _last_pose_analysis_at = 0.0
@@ -6059,4 +6117,7 @@ def stop() -> None:
     if _thread:
         _thread.join(timeout=5)
         _thread = None
+    if _face_tracking_thread:
+        _face_tracking_thread.join(timeout=2)
+        _face_tracking_thread = None
     _log.info("consciousness stopped")
