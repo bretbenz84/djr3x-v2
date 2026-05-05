@@ -169,6 +169,16 @@ def _run_migrations() -> None:
                 "INTEGER DEFAULT 1",
             )
             for column, definition in (
+                ("lifetime_greeting_count", "INTEGER DEFAULT 0"),
+                ("last_greeted_at", "DATETIME"),
+            ):
+                _ensure_column(
+                    conn,
+                    "people",
+                    column,
+                    definition,
+                )
+            for column, definition in (
                 ("importance", "REAL DEFAULT 0.5"),
                 ("decay_rate", "TEXT DEFAULT 'normal'"),
                 ("last_used_at", "DATETIME"),

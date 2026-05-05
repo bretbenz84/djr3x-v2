@@ -121,7 +121,8 @@ class DashboardWindow(QMainWindow):
         right.setSpacing(12)
         avatar_panel = ChromePanel("3", "R3X AVATAR", self.avatar)
         servo_panel = ChromePanel("", "SERVO POSITIONS", self.servos)
-        servo_panel.setMaximumHeight(270)
+        servo_panel.setMinimumHeight(350)
+        servo_panel.setMaximumHeight(380)
         right.addWidget(avatar_panel, 1)
         right.addWidget(servo_panel, 0)
         right_box = QWidget()
@@ -297,13 +298,25 @@ class ServoPositionsPanel(QWidget):
         self._sliders: dict[str, QSlider] = {}
         self._value_labels: dict[str, QLabel] = {}
         self._state_labels: dict[str, QLabel] = {}
+        self._manual_override = False
+        self._updating_snapshot = False
 
         layout = QGridLayout(self)
-        layout.setContentsMargins(18, 16, 18, 18)
+        layout.setContentsMargins(18, 18, 18, 18)
         layout.setHorizontalSpacing(12)
-        layout.setVerticalSpacing(9)
+        layout.setVerticalSpacing(11)
 
         visual_row = 0
+        self._override_button = QPushButton("Manual Servo Override")
+        self._override_button.setObjectName("servoOverrideButton")
+        self._override_button.setCheckable(True)
+        self._override_button.setToolTip(
+            "Freeze program-driven servo motion and drive servos directly with the sliders."
+        )
+        self._override_button.toggled.connect(self._set_manual_override)
+        layout.addWidget(self._override_button, visual_row, 0, 1, 4)
+        visual_row += 1
+
         for row, name in enumerate(self._ORDER):
             if row == 4:
                 line = QFrame()
@@ -318,8 +331,12 @@ class ServoPositionsPanel(QWidget):
 
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setEnabled(False)
-            slider.setRange(0, 1000)
+            cfg = config.SERVO_CHANNELS[name]
+            slider.setRange(int(cfg["min"]), int(cfg["max"]))
             slider.setObjectName("servoSlider")
+            slider.valueChanged.connect(
+                lambda value, servo_name=name: self._manual_slider_changed(servo_name, value)
+            )
             layout.addWidget(slider, visual_row, 1)
             self._sliders[name] = slider
 
@@ -337,21 +354,69 @@ class ServoPositionsPanel(QWidget):
             visual_row += 1
 
         layout.setColumnStretch(1, 1)
-        self.setMinimumHeight(190)
+        self.setMinimumHeight(285)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         ws = snapshot.get("world_state") or {}
         self_state = ws.get("self_state") or ws.get("self") or {}
         positions = dict(snapshot.get("servo_positions") or {})
         positions.update(self_state.get("servo_positions") or {})
+        manual_override = bool(
+            snapshot.get(
+                "manual_servo_override",
+                self_state.get("manual_servo_override", self._manual_override),
+            )
+        )
+        self._apply_manual_override_ui(manual_override)
 
+        self._updating_snapshot = True
         for name in self._ORDER:
             cfg = config.SERVO_CHANNELS[name]
             raw = int(positions.get(name, cfg["neutral"]))
-            norm = normalize_servo(name, raw)
-            self._sliders[name].setValue(int(norm * 1000))
+            self._sliders[name].blockSignals(True)
+            self._sliders[name].setValue(max(int(cfg["min"]), min(int(cfg["max"]), raw)))
+            self._sliders[name].blockSignals(False)
             self._value_labels[name].setText(str(raw))
             self._state_labels[name].setText(_servo_state(name, raw))
+        self._updating_snapshot = False
+
+    def _apply_manual_override_ui(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        self._manual_override = enabled
+        if self._override_button.isChecked() != enabled:
+            self._override_button.blockSignals(True)
+            self._override_button.setChecked(enabled)
+            self._override_button.blockSignals(False)
+        self._override_button.setProperty("active", enabled)
+        self._override_button.style().unpolish(self._override_button)
+        self._override_button.style().polish(self._override_button)
+        for slider in self._sliders.values():
+            slider.setEnabled(enabled)
+
+    def _set_manual_override(self, enabled: bool) -> None:
+        try:
+            from hardware import servos
+
+            servos.set_manual_override_enabled(bool(enabled))
+            enabled = servos.manual_override_enabled()
+        except Exception as exc:
+            _log.warning("Manual servo override toggle failed: %s", exc)
+            enabled = False
+        self._apply_manual_override_ui(enabled)
+
+    def _manual_slider_changed(self, name: str, value: int) -> None:
+        if self._updating_snapshot or not self._manual_override:
+            return
+        cfg = config.SERVO_CHANNELS[name]
+        raw = max(int(cfg["min"]), min(int(cfg["max"]), int(value)))
+        self._value_labels[name].setText(str(raw))
+        self._state_labels[name].setText(_servo_state(name, raw))
+        try:
+            from hardware import servos
+
+            servos.set_manual_servo(int(cfg["ch"]), raw)
+        except Exception as exc:
+            _log.warning("Manual servo slider update failed for %s: %s", name, exc)
 
 
 class FooterBar(QFrame):
@@ -631,6 +696,20 @@ QPushButton#settingsButton {
     border-radius: 5px;
     font-weight: 700;
 }
+QPushButton#servoOverrideButton {
+    min-height: 34px;
+    padding: 0 12px;
+    background: #111b27;
+    color: #dbe7f3;
+    border: 1px solid #2b4562;
+    border-radius: 5px;
+    font-weight: 800;
+}
+QPushButton#servoOverrideButton[active="true"] {
+    background: #244f89;
+    color: #ffffff;
+    border: 1px solid #65a2ff;
+}
 QLabel#footerText, QLabel#servoName, QLabel#servoValue, QLabel#servoState {
     color: #d6e0ea;
     font-size: 13px;
@@ -642,20 +721,27 @@ QLabel#servoValue, QLabel#servoState {
     color: #b8c3d0;
 }
 QSlider#servoSlider::groove:horizontal {
-    height: 4px;
-    background: #25303b;
-    border-radius: 2px;
+    height: 2px;
+    background: #203040;
+    border: none;
+    border-radius: 1px;
 }
 QSlider#servoSlider::sub-page:horizontal {
-    background: #4d8dea;
-    border-radius: 2px;
+    background: transparent;
+    border: none;
 }
 QSlider#servoSlider::handle:horizontal {
-    width: 14px;
-    height: 14px;
-    margin: -5px 0;
-    border-radius: 7px;
-    background: #3f7fd8;
+    width: 13px;
+    height: 13px;
+    margin: -6px 0;
+    border-radius: 6px;
+    background: #4d8dea;
+}
+QSlider#servoSlider:disabled::groove:horizontal {
+    background: #182637;
+}
+QSlider#servoSlider:disabled::handle:horizontal {
+    background: #526171;
 }
 QScrollBar:vertical {
     background: #07111a;

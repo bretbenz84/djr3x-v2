@@ -42,6 +42,7 @@ _DEFAULTS = {
             "pokerarm": 6000,
             "heroarm": 6000,
         },
+        "manual_servo_override": False,
         "body_state": "neutral",
         "last_directed_look": None,
         "last_directed_look_at": None,

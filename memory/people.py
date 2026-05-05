@@ -288,6 +288,23 @@ def update_visit(person_id: int) -> None:
     update_familiarity(person_id, config.FAMILIARITY_INCREMENTS["return_visit"])
 
 
+def record_greeting(person_id: int) -> None:
+    """Track durable Rex-initiated greetings for future self-memory answers."""
+    try:
+        pid = int(person_id)
+    except (TypeError, ValueError):
+        return
+    db.execute(
+        """
+        UPDATE people
+           SET lifetime_greeting_count = COALESCE(lifetime_greeting_count, 0) + 1,
+               last_greeted_at = ?
+         WHERE id = ?
+        """,
+        (_now(), pid),
+    )
+
+
 def update_familiarity(person_id: int, increment: float) -> None:
     """Add increment to familiarity_score (clamped to 1.0) and recalculate friendship_tier."""
     row = db.fetchone(

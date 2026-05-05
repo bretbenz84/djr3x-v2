@@ -238,6 +238,18 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         )
         self.assertTrue(policy.flush_buffer)
 
+    def test_assistant_question_detector_ignores_quoted_questions_and_tiny_openers(self):
+        from intelligence import interaction
+
+        self.assertFalse(
+            interaction._assistant_asked_question(
+                'Seven more hours. You must be collecting "Are we there yet?" queries.'
+            )
+        )
+        self.assertFalse(interaction._assistant_asked_question("Seven more hours?"))
+        self.assertTrue(interaction._assistant_asked_question("Do they cause chaos?"))
+        self.assertTrue(interaction._assistant_asked_question("You good?"))
+
     def test_apply_question_handoff_does_not_flush_stream(self):
         from intelligence import interaction
 
@@ -1748,7 +1760,7 @@ class ConversationGatingTest(unittest.TestCase):
         enqueue.assert_not_called()
         self.assertIsNone(trace.first_response_queued_at)
 
-    def test_slow_path_ack_in_noaudio_does_not_require_tts_cache(self):
+    def test_slow_path_ack_skips_noaudio_text_mode_by_default(self):
         from intelligence import interaction
 
         trace = interaction._new_character_loop_trace(
@@ -1767,6 +1779,43 @@ class ConversationGatingTest(unittest.TestCase):
             with (
                 mock.patch("config.NO_AUDIO_MODE", True),
                 mock.patch("config.AUDIO_OUTPUT_SUPPRESSED", True),
+                mock.patch("config.SLOW_PATH_ACK_IN_TEXT_ONLY", False),
+                mock.patch("audio.tts.is_cached", return_value=False) as is_cached,
+                mock.patch.object(interaction.random, "choice", side_effect=lambda items: items[0]),
+                mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+                mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+                mock.patch.object(interaction.speech_queue, "enqueue") as enqueue,
+                mock.patch.object(interaction.time, "monotonic", return_value=10.5),
+                mock.patch.object(interaction._log, "info"),
+            ):
+                self.assertFalse(interaction._try_slow_path_ack("general"))
+        finally:
+            interaction._last_slow_path_ack = previous_ack
+            interaction._current_character_loop_trace.reset(token)
+
+        is_cached.assert_not_called()
+        enqueue.assert_not_called()
+
+    def test_slow_path_ack_can_be_enabled_in_noaudio_without_tts_cache(self):
+        from intelligence import interaction
+
+        trace = interaction._new_character_loop_trace(
+            "Tell me something.",
+            from_idle_activation=False,
+            turn_start=10.0,
+            raw_best_id=None,
+            raw_best_name=None,
+            speaker_score=0.0,
+        )
+        trace.transcript_ready_at = 10.25
+        token = interaction._current_character_loop_trace.set(trace)
+        previous_ack = interaction._last_slow_path_ack
+        try:
+            interaction._last_slow_path_ack = None
+            with (
+                mock.patch("config.NO_AUDIO_MODE", True),
+                mock.patch("config.AUDIO_OUTPUT_SUPPRESSED", True),
+                mock.patch("config.SLOW_PATH_ACK_IN_TEXT_ONLY", True),
                 mock.patch("audio.tts.is_cached", return_value=False) as is_cached,
                 mock.patch.object(interaction.random, "choice", side_effect=lambda items: items[0]),
                 mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
@@ -2724,6 +2773,46 @@ class ConversationGatingTest(unittest.TestCase):
             "Ah, JT! Welcome to this wild ride of banter.",
         )
         self.assertIn("removed_question", governed.notes)
+
+    def test_social_frame_preserves_space_before_open_quote(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="neutral",
+            max_words=60,
+            max_sentences=3,
+            allow_question=True,
+            allow_roast="normal",
+            allow_visual_comment=False,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            'Right? The tales you will tell about your drive. "And there I was, sipping soda!"',
+            frame,
+        )
+
+        self.assertIn('drive. "And there I was', governed.text)
+        self.assertNotIn('drive."And', governed.text)
+
+    def test_social_frame_does_not_count_quoted_question_as_followup(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="neutral",
+            max_words=60,
+            max_sentences=3,
+            allow_question=False,
+            allow_roast="normal",
+            allow_visual_comment=False,
+            reason="test",
+        )
+        text = "You must be collecting “Are we there yet?” queries. Classic road-trip scholarship."
+        governed = social_frame.govern_response(text, frame)
+
+        self.assertEqual(governed.text, text)
+        self.assertNotIn("removed_question", governed.notes)
 
     def test_social_frame_drops_disallowed_question_without_fragment_salvage(self):
         from intelligence import social_frame
@@ -4138,6 +4227,72 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertNotIn("Probably not me", governed.text)
         self.assertNotIn("Fun for who", governed.text)
 
+    def test_social_frame_closure_removes_escape_plan_snark(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="closure",
+            max_words=12,
+            max_sentences=1,
+            allow_question=False,
+            allow_roast="none",
+            allow_visual_comment=False,
+            reason="test",
+        )
+
+        governed = social_frame.govern_response(
+            'Nice chatting. That’s one way to say, “I need to escape this conversation.” Good luck with your escape plan, Indiana Jones!',
+            frame,
+        )
+
+        self.assertNotIn("escape", governed.text.lower())
+        self.assertNotIn("Indiana Jones", governed.text)
+
+    def test_social_frame_closure_enforces_micro_shape(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="closure",
+            max_words=12,
+            max_sentences=1,
+            allow_question=False,
+            allow_roast="none",
+            allow_visual_comment=False,
+            reason="test",
+        )
+
+        governed = social_frame.govern_response(
+            "Always a pleasure to reboot this conversation with you. Stay out of trouble!",
+            frame,
+        )
+
+        self.assertEqual(governed.text, "Always a pleasure to reboot this conversation with you.")
+        self.assertNotIn("Stay out", governed.text)
+
+    def test_social_frame_repairs_space_before_closing_quote(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="answer",
+            max_words=40,
+            max_sentences=2,
+            allow_question=False,
+            allow_roast="light",
+            allow_visual_comment=False,
+            reason="test",
+        )
+
+        governed = social_frame.govern_response(
+            'Your friendship score. A solid "room for improvement. " Think of it as a droid compliment.',
+            frame,
+        )
+
+        self.assertIn('"room for improvement."', governed.text)
+        self.assertNotIn('. "', governed.text)
+
     def test_return_presence_can_acknowledge_engaged_person_after_cooldown(self):
         import time
         from awareness.situation import SituationProfile
@@ -4211,6 +4366,24 @@ class ConversationGatingTest(unittest.TestCase):
                     bypass_cooldown=True,
                 )
             )
+
+    def test_holiday_plans_skip_minor_holidays_by_default(self):
+        from intelligence import consciousness
+
+        holiday = {
+            "name": "Truman Day",
+            "date": "2026-05-08",
+            "days_until": 5,
+            "window": "minor",
+        }
+
+        with mock.patch("config.HOLIDAY_PLANS_INCLUDE_MINOR", False):
+            self.assertFalse(consciousness._holiday_plans_allowed(holiday))
+        with mock.patch("config.HOLIDAY_PLANS_INCLUDE_MINOR", True):
+            self.assertTrue(consciousness._holiday_plans_allowed(holiday))
+        self.assertTrue(
+            consciousness._holiday_plans_allowed({**holiday, "window": "major"})
+        )
 
 
 class PendingMusicPreferenceTest(unittest.TestCase):
@@ -4588,6 +4761,171 @@ class PendingMusicPreferenceTest(unittest.TestCase):
 
         self.assertEqual(routed.action, "memory.query")
 
+    def test_router_downgrades_named_day_as_date_query(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="date.query",
+            confidence=0.90,
+            args={},
+            reason="misread holiday explanation as current date",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "What's Truman Day?",
+            {},
+        )
+
+        self.assertEqual(routed.action, "conversation.reply")
+        self.assertLess(routed.confidence, 0.85)
+
+    def test_router_downgrades_ongoing_status_from_event_cancel(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="event.cancel",
+            confidence=0.90,
+            args={"event_hint": "driving home"},
+            reason="misread ongoing trip as cancellation",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "We're still driving home",
+            {},
+        )
+
+        self.assertEqual(routed.action, "conversation.reply")
+        self.assertLess(routed.confidence, 0.85)
+
+    def test_router_allows_explicit_event_cancel_with_continuation_words(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="event.cancel",
+            confidence=0.90,
+            args={"event_hint": "driving home"},
+            reason="explicit cancellation",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "We're not driving home anymore",
+            {},
+        )
+
+        self.assertEqual(routed.action, "event.cancel")
+
+    def test_router_downgrades_pronoun_only_intro_fragment(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="identity.introduce_person",
+            confidence=0.90,
+            args={"name": "you"},
+            reason="misread score clarification as introduction",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "Me and you",
+            {},
+        )
+
+        self.assertEqual(routed.action, "conversation.reply")
+        self.assertLess(routed.confidence, 0.85)
+
+    def test_router_downgrades_named_person_fact_from_introduction(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="identity.introduce_person",
+            confidence=0.90,
+            args={"name": "Jeff"},
+            reason="misread fact as introduction",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "Jeff is a newspaper editor.",
+            {},
+        )
+
+        self.assertEqual(routed.action, "conversation.reply")
+        self.assertLess(routed.confidence, 0.85)
+
+    def test_nonexecuted_introduce_person_keeps_memory_learning_available(self):
+        from intelligence import action_router, interaction
+
+        intro_decision = action_router.ActionDecision(
+            action="identity.introduce_person",
+            confidence=0.90,
+            args={"person_name": "Jeff Benziger"},
+        )
+        memory_decision = action_router.ActionDecision(
+            action="memory.query",
+            confidence=0.90,
+            args={},
+        )
+
+        self.assertFalse(
+            interaction._router_nonexecuted_should_suppress_memory_learning(intro_decision)
+        )
+        self.assertTrue(
+            interaction._router_nonexecuted_should_suppress_memory_learning(memory_decision)
+        )
+
+    def test_direct_memory_learning_saves_relationship_and_named_person_fact(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction.people_memory, "find_or_create_person", return_value=(2, True)),
+            mock.patch.object(interaction.people_memory, "find_person_by_name", return_value={"id": 2, "name": "Jeff Benziger"}),
+            mock.patch.object(interaction.social_memory, "save_relationship") as save_relationship,
+            mock.patch.object(interaction.facts_memory, "add_fact") as add_fact,
+            mock.patch.object(interaction, "_record_recent_memory_candidate"),
+        ):
+            interaction._learn_direct_memory_from_user_text(
+                "My dad is named Jeff Benziger",
+                1,
+            )
+            interaction._learn_direct_memory_from_user_text(
+                "Jeff Benziger is a newspaper editor.",
+                1,
+            )
+
+        save_relationship.assert_called_once()
+        rel_kwargs = save_relationship.call_args.kwargs
+        self.assertEqual(rel_kwargs["from_person_id"], 1)
+        self.assertEqual(rel_kwargs["to_person_id"], 2)
+        self.assertEqual(rel_kwargs["relationship"], "father")
+        self.assertTrue(
+            any(
+                call.args[:4] == (2, "job", "job_title", "newspaper editor")
+                for call in add_fact.call_args_list
+            )
+        )
+
+    def test_router_routes_score_query_outside_game_to_memory(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="game.answer",
+            confidence=1.0,
+            args={},
+            reason="misread score question as game answer",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "And our score is?",
+            {"active_game": False},
+        )
+
+        self.assertEqual(routed.action, "memory.query")
+        self.assertGreaterEqual(routed.confidence, 0.85)
+
     def test_intent_classifier_short_circuits_topic_knowledge_questions(self):
         from intelligence import intent_classifier
 
@@ -4621,6 +4959,31 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             "general",
         )
 
+    def test_intent_classifier_keeps_named_day_questions_general(self):
+        from intelligence import intent_classifier
+
+        named_day_questions = [
+            "What's Truman Day?",
+            "What is the holiday called Truman Day. I haven't heard of that before.",
+            "What is Memorial Day?",
+        ]
+        for text in named_day_questions:
+            with (
+                self.subTest(text=text),
+                mock.patch.object(
+                    intent_classifier,
+                    "_classify_with_llm",
+                    return_value="query_date",
+                ),
+            ):
+                self.assertEqual(intent_classifier.classify(text), "general")
+
+        self.assertEqual(intent_classifier.classify("what day is it?"), "query_date")
+        self.assertEqual(
+            intent_classifier.classify("what's today's date?"),
+            "query_date",
+        )
+
     def test_intent_classifier_routes_capability_variants_deterministically(self):
         from intelligence import intent_classifier
 
@@ -4644,6 +5007,120 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             intent_classifier.classify("What are my plans for Thursday?"),
             "query_memory",
         )
+        self.assertEqual(
+            intent_classifier.classify("How many times have you greeted me?"),
+            "query_memory",
+        )
+        self.assertEqual(
+            intent_classifier.classify("What's my friendship score?"),
+            "query_memory",
+        )
+        self.assertEqual(intent_classifier.classify("Me and you"), "general")
+
+    def test_memory_query_resolves_score_and_greeting_queries_to_current_speaker(self):
+        from intelligence import memory_query
+
+        person = {
+            "id": 1,
+            "name": "Bret Benziger",
+            "friendship_tier": "friend",
+            "familiarity_score": 0.42,
+            "net_relationship_score": 0.31,
+            "warmth_score": 0.55,
+            "trust_score": 0.61,
+            "playfulness_score": 0.33,
+            "curiosity_score": 0.44,
+            "antagonism_score": 0.02,
+            "visit_count": 7,
+            "lifetime_greeting_count": 3,
+            "last_greeted_at": "2026-05-03T16:39:10+00:00",
+        }
+        with (
+            mock.patch.object(memory_query.people_memory, "get_person", return_value=person),
+            mock.patch.object(memory_query.social_memory, "summarize_for_prompt", return_value=""),
+            mock.patch.object(memory_query.facts_memory, "get_prompt_facts", return_value=[]),
+            mock.patch.object(memory_query.events_memory, "get_open_events", return_value=[]),
+            mock.patch.object(memory_query.conv_memory, "get_conversation_history", return_value=[]),
+            mock.patch.object(memory_query.emotional_events, "get_active_events", return_value=[]),
+        ):
+            score_target = memory_query.resolve_target("What's my friendship score?", 1)
+            greeting_target = memory_query.resolve_target(
+                "How many times have you greeted me?",
+                1,
+            )
+            context = memory_query.build_context(score_target, 1)
+            prompt = memory_query.build_response_prompt(
+                "How many times have you greeted me?",
+                context,
+            )
+
+        self.assertEqual(score_target.person_id, 1)
+        self.assertEqual(greeting_target.person_id, 1)
+        joined = context.as_prompt_text()
+        self.assertIn("familiarity_score=0.42", joined)
+        self.assertIn("net_relationship_score=0.31", joined)
+        self.assertIn("lifetime_greeting_count=3", joined)
+        self.assertIn("use lifetime_greeting_count", prompt)
+        self.assertIn("Do not tease, insult", memory_query.build_response_prompt("What's my friendship score?", context))
+
+    def test_memory_query_relationship_prompt_discourages_family_roasts(self):
+        from intelligence import memory_query
+
+        target = memory_query.MemoryTarget(
+            person_id=11,
+            name="Jeff Benziger",
+            mode="relationship",
+            relation_label="dad",
+        )
+        context = memory_query.MemoryContext(
+            target=target,
+            sections=[
+                "Target person: Jeff Benziger (person_id=11, tier=unknown)",
+                "Relationship to current speaker:\n- Bret Benziger -> Jeff Benziger: father",
+            ],
+            has_memory=True,
+        )
+
+        prompt = memory_query.build_response_prompt("Who is my dad?", context)
+
+        self.assertIn("answer the relationship directly", prompt)
+        self.assertIn("genetics or inheritance jokes", prompt)
+        self.assertIn("rivalry speculation", prompt)
+
+    def test_memory_query_resolves_work_and_pet_topics_to_current_speaker(self):
+        from intelligence import memory_query
+
+        person = {"id": 1, "name": "Bret Benziger", "friendship_tier": "friend"}
+        facts = [
+            {"category": "pet", "key": "dogs", "value": "Toby and Maxx"},
+            {"category": "job", "key": "job_title", "value": "IT Systems Administrator"},
+        ]
+        with (
+            mock.patch.object(memory_query.people_memory, "get_person", return_value=person),
+            mock.patch.object(memory_query.social_memory, "summarize_for_prompt", return_value=""),
+            mock.patch.object(memory_query.facts_memory, "get_prompt_facts", return_value=facts),
+            mock.patch.object(
+                memory_query.facts_memory,
+                "format_fact_for_prompt",
+                side_effect=lambda fact: f"{fact['category']}:{fact['key']}={fact['value']}",
+            ),
+            mock.patch.object(memory_query.events_memory, "get_open_events", return_value=[]),
+            mock.patch.object(memory_query.conv_memory, "get_conversation_history", return_value=[]),
+            mock.patch.object(memory_query.emotional_events, "get_active_events", return_value=[]),
+        ):
+            dog_target = memory_query.resolve_target("Can you tell me about my dogs?", 1)
+            work_target = memory_query.resolve_target("Do you remember what I do for work?", 1)
+            job_target = memory_query.resolve_target("Did I ever tell you about my job?", 1)
+            context = memory_query.build_context(dog_target, 1)
+            dog_prompt = memory_query.build_response_prompt("Can you tell me about my dogs?", context)
+            work_prompt = memory_query.build_response_prompt("Do you remember what I do for work?", context)
+
+        self.assertEqual(dog_target.person_id, 1)
+        self.assertEqual(work_target.person_id, 1)
+        self.assertEqual(job_target.person_id, 1)
+        self.assertIn("the user's pets", dog_prompt)
+        self.assertIn("pet:dogs=Toby and Maxx", dog_prompt)
+        self.assertIn("the user's work or job", work_prompt)
 
     def test_intent_classifier_blocks_false_game_routes_for_star_trek_chat(self):
         from intelligence import intent_classifier
@@ -4657,6 +5134,22 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             "general",
         )
 
+    def test_intent_classifier_handles_memory_observations_and_self_topics(self):
+        from intelligence import intent_classifier
+
+        self.assertEqual(
+            intent_classifier.classify("Thats right, I wiped your memory at some point."),
+            "general",
+        )
+        self.assertEqual(
+            intent_classifier.classify("Can you tell me about my dogs?"),
+            "query_memory",
+        )
+        self.assertEqual(
+            intent_classifier.classify("Do you remember what I do for work?"),
+            "query_memory",
+        )
+
     def test_thanks_for_asking_is_not_closure(self):
         from intelligence import end_thread, response_length
 
@@ -4666,6 +5159,17 @@ class PendingMusicPreferenceTest(unittest.TestCase):
 
         self.assertIsNone(closure)
         self.assertNotEqual(plan.target, "micro")
+        end_thread.clear()
+
+    def test_nice_chatting_and_going_to_go_are_closure(self):
+        from intelligence import end_thread, response_length
+
+        end_thread.clear()
+        closure = end_thread.note_user_turn("I'm going to go now, nice chatting.", 1)
+        plan = response_length.classify("I'm going to go now, nice chatting.")
+
+        self.assertIsNotNone(closure)
+        self.assertEqual(plan.target, "micro")
         end_thread.clear()
 
     def test_social_frame_sentence_split_preserves_abbreviations(self):

@@ -56,6 +56,8 @@ class _FFmpegCapture:
             "warning",
             "-f",
             "avfoundation",
+            "-pixel_format",
+            str(getattr(config, "CAMERA_AVFOUNDATION_PIXEL_FORMAT", "uyvy422") or "uyvy422"),
             "-framerate",
             str(config.CAMERA_FPS),
             "-video_size",

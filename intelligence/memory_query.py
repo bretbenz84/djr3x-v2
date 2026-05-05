@@ -28,7 +28,41 @@ _SELF_RE = re.compile(
     r"remember\s+about\s+me|remember\s+about\s+myself|tell\s+me\s+about\s+me|"
     r"tell\s+me\s+about\s+myself|my\s+memory|what\s+do\s+you\s+remember|"
     r"what\s+are\s+my\s+plans|what(?:'s|\s+is)\s+my\s+plan|"
-    r"what\s+do\s+i\s+have\s+planned|what\s+am\s+i\s+doing"
+    r"what\s+do\s+i\s+have\s+planned|what\s+am\s+i\s+doing|"
+    r"how\s+many\s+times\s+have\s+you\s+greeted\s+me|"
+    r"how\s+often\s+have\s+you\s+greeted\s+me|greeted\s+me|"
+    r"what(?:'s|\s+is)\s+my\s+friendship\s+score|friendship\s+score|"
+    r"what(?:'s|\s+is)\s+my\s+relationship\s+score|relationship\s+score|"
+    r"our\s+score|score\s+between\s+me\s+and\s+you|"
+    r"score\s+between\s+you\s+and\s+me|"
+    r"(?:me\s+and\s+you|you\s+and\s+me).{0,40}\bscore"
+    r")\b",
+    re.IGNORECASE,
+)
+_GREETING_COUNT_QUERY_RE = re.compile(
+    r"\b(?:how\s+many\s+times|how\s+often).{0,40}\bgreet(?:ed|s|ing)?\s+me\b|"
+    r"\bgreet(?:ed|s|ing)?\s+me\b",
+    re.IGNORECASE,
+)
+_RELATIONSHIP_SCORE_QUERY_RE = re.compile(
+    r"\b("
+    r"friendship\s+score|relationship\s+score|our\s+score|"
+    r"score\s+between\s+(?:me\s+and\s+you|you\s+and\s+me)|"
+    r"(?:me\s+and\s+you|you\s+and\s+me).{0,40}\bscore"
+    r")\b",
+    re.IGNORECASE,
+)
+_SELF_TOPIC_RE = re.compile(
+    r"\b("
+    r"do\s+you\s+remember\s+what\s+i\s+do(?:\s+for\s+work)?|"
+    r"what\s+do\s+i\s+do\s+for\s+work|"
+    r"what\s+i\s+do\s+for\s+work|"
+    r"did\s+i\s+ever\s+tell\s+you\s+about\s+my\s+(?:job|work)|"
+    r"(?:can\s+you\s+)?tell\s+me\s+about\s+my\s+"
+    r"(?:dogs?|cats?|pets?|job|work|career|occupation)|"
+    r"what\s+do\s+you\s+(?:know|remember)\s+about\s+my\s+"
+    r"(?:dogs?|cats?|pets?|job|work|career|occupation)|"
+    r"my\s+(?:dogs?|cats?|pets?|job|work|career|occupation)"
     r")\b",
     re.IGNORECASE,
 )
@@ -58,7 +92,8 @@ _NAMED_PATTERNS = (
 _BAD_TARGETS = {
     "me", "myself", "you", "yourself", "my partner", "my friend", "my spouse",
     "my wife", "my husband", "my girlfriend", "my boyfriend", "my dad",
-    "my father", "my mom", "my mother", "memory", "memories",
+    "my father", "my mom", "my mother", "my dog", "my dogs", "my pet",
+    "my pets", "my cat", "my cats", "my job", "my work", "memory", "memories",
 }
 
 _FACT_CATEGORY_EXCLUDES = {"appearance", "relationship"}
@@ -208,6 +243,16 @@ def _resolve_person_name(name: str) -> MemoryTarget:
     )
 
 
+def _current_speaker_target(current_person_id: int, *, detail: str = "current speaker") -> MemoryTarget:
+    person = people_memory.get_person(int(current_person_id)) or {}
+    return MemoryTarget(
+        person_id=int(current_person_id),
+        name=person.get("name") or "you",
+        mode="self",
+        detail=detail,
+    )
+
+
 def _resolve_relationship(current_person_id: int, relation_phrase: str) -> MemoryTarget:
     requested = _normalize_label(relation_phrase)
     labels = _RELATION_ALIASES.get(requested, {requested})
@@ -270,6 +315,12 @@ def resolve_target(text: str, current_person_id: Optional[int]) -> MemoryTarget:
             )
         return _resolve_relationship(int(current_person_id), rel_match.group(1))
 
+    if current_person_id is not None and _SELF_TOPIC_RE.search(raw):
+        return _current_speaker_target(
+            int(current_person_id),
+            detail="current speaker personal topic",
+        )
+
     named = _extract_named_target(raw)
     if named:
         return _resolve_person_name(named)
@@ -278,13 +329,7 @@ def resolve_target(text: str, current_person_id: Optional[int]) -> MemoryTarget:
         _SELF_RE.search(raw)
         or re.search(r"\bwhat\s+do\s+you\s+(?:know|remember)\b", raw, re.IGNORECASE)
     ):
-        person = people_memory.get_person(int(current_person_id)) or {}
-        return MemoryTarget(
-            person_id=int(current_person_id),
-            name=person.get("name") or "you",
-            mode="self",
-            detail="current speaker",
-        )
+        return _current_speaker_target(int(current_person_id))
 
     return MemoryTarget(mode="self", detail="self_query_without_current_person")
 
@@ -341,6 +386,69 @@ def _format_emotional_events(person_id: int, *, limit: int = 3) -> list[str]:
     return out
 
 
+def _format_person_metrics(person: dict) -> list[str]:
+    """Expose stored relationship counters so metric questions stay grounded."""
+    if not person:
+        return []
+
+    def _score(name: str) -> Optional[str]:
+        raw = person.get(name)
+        try:
+            return f"{float(raw):.2f}"
+        except (TypeError, ValueError):
+            return None
+
+    lines: list[str] = []
+    tier = str(person.get("friendship_tier") or "").strip()
+    familiarity = _score("familiarity_score")
+    net = _score("net_relationship_score")
+    if tier or familiarity or net:
+        parts = []
+        if tier:
+            parts.append(f"friendship_tier={tier}")
+        if familiarity is not None:
+            parts.append(f"familiarity_score={familiarity}")
+        if net is not None:
+            parts.append(f"net_relationship_score={net}")
+        lines.append(", ".join(parts))
+
+    dimensional = []
+    for field in (
+        "warmth_score",
+        "trust_score",
+        "playfulness_score",
+        "curiosity_score",
+        "antagonism_score",
+    ):
+        value = _score(field)
+        if value is not None:
+            dimensional.append(f"{field}={value}")
+    if dimensional:
+        lines.append(", ".join(dimensional))
+
+    visit_count = person.get("visit_count")
+    seen_bits = []
+    try:
+        seen_bits.append(f"visit_count={int(visit_count or 0)}")
+    except (TypeError, ValueError):
+        pass
+    try:
+        seen_bits.append(
+            f"lifetime_greeting_count={int(person.get('lifetime_greeting_count') or 0)}"
+        )
+    except (TypeError, ValueError):
+        pass
+    if person.get("first_seen"):
+        seen_bits.append(f"first_seen={person.get('first_seen')}")
+    if person.get("last_seen"):
+        seen_bits.append(f"last_seen={person.get('last_seen')}")
+    if person.get("last_greeted_at"):
+        seen_bits.append(f"last_greeted_at={person.get('last_greeted_at')}")
+    if seen_bits:
+        lines.append(", ".join(seen_bits))
+    return lines
+
+
 def build_context(target: MemoryTarget, requester_person_id: Optional[int]) -> MemoryContext:
     if target.person_id is None:
         return MemoryContext(target=target, sections=[], has_memory=False)
@@ -351,6 +459,10 @@ def build_context(target: MemoryTarget, requester_person_id: Optional[int]) -> M
     sections = [
         f"Target person: {name} (person_id={person_id}, tier={person.get('friendship_tier') or 'unknown'})"
     ]
+
+    metrics = _format_person_metrics(person)
+    if metrics:
+        sections.append("Stored person/relationship metrics:\n- " + "\n- ".join(metrics))
 
     if requester_person_id is not None and int(requester_person_id) != person_id:
         between = social_memory.get_between(int(requester_person_id), person_id)
@@ -392,10 +504,39 @@ def build_response_prompt(raw_text: str, context: MemoryContext) -> str:
     target_name = target.name or "that person"
     relation_note = ""
     if target.mode == "relationship" and target.relation_label:
-        relation_note = f"The user referred to this person as their {target.relation_label}. "
+        relation_note = (
+            f"The user referred to this person as their {target.relation_label}. "
+            "For relationship identity questions, answer the relationship directly. "
+            "Avoid family/relationship teasing, genetics or inheritance jokes, and "
+            "rivalry speculation unless retrieved memory explicitly supports it. "
+        )
+    focus = _query_focus(raw_text)
+    focus_note = ""
+    if focus:
+        focus_note = (
+            f"The user is asking specifically about {focus}. Use only retrieved "
+            "memory lines that answer that focus. If the retrieved memory does "
+            "not contain that detail, say you do not have that specific detail "
+            "stored yet. "
+        )
+    metric_note = ""
+    if _GREETING_COUNT_QUERY_RE.search(raw_text or ""):
+        metric_note += (
+            "For greeting-count questions, use lifetime_greeting_count if it "
+            "appears in retrieved metrics. If it is missing, say exact greetings "
+            "were not tracked before this memory field existed. "
+        )
+    if _RELATIONSHIP_SCORE_QUERY_RE.search(raw_text or ""):
+        metric_note += (
+            "If the user asks for a friendship or relationship score, use the "
+            "stored relationship metrics/tier directly as internal memory "
+            "signals. Do not invent a separate scoreboard. Do not tease, insult, "
+            "or frame a low score as personal rejection; explain that low values "
+            "mostly mean limited stored history. "
+        )
     return (
         f"The user asked a memory question: {raw_text!r}.\n"
-        f"Resolved target: {target_name}. {relation_note}\n"
+        f"Resolved target: {target_name}. {relation_note}{focus_note}{metric_note}\n"
         "Use ONLY the retrieved memory below. Do not invent facts, relationships, "
         "or history. If memory is thin, say that clearly instead of padding.\n\n"
         f"Retrieved memory:\n{context.as_prompt_text()}\n\n"
@@ -403,3 +544,16 @@ def build_response_prompt(raw_text: str, context: MemoryContext) -> str:
         "speak to the user directly as 'you'. For named/relationship targets, name "
         "the person. Be helpful, not evasive."
     )
+
+
+def _query_focus(raw_text: str) -> Optional[str]:
+    text = raw_text or ""
+    if _RELATIONSHIP_SCORE_QUERY_RE.search(text):
+        return "the stored relationship/friendship metrics"
+    if _GREETING_COUNT_QUERY_RE.search(text):
+        return "the greeting count"
+    if re.search(r"\b(dogs?|cats?|pets?)\b", text, re.IGNORECASE):
+        return "the user's pets"
+    if re.search(r"\b(job|work|career|occupation)\b", text, re.IGNORECASE):
+        return "the user's work or job"
+    return None

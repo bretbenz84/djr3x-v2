@@ -201,7 +201,7 @@ Recent latency architecture:
 - `config.SLOW_PATH_ACK_EXPECTED_SECS` controls when a path is expected to be slow enough to acknowledge.
 - Slow-path acks are different from `LATENCY_FILLER_LINES`: acks are immediate receipts; latency fillers are delayed in-character thinking lines.
 - In audio mode, slow-path acks should already be cached so they never trigger an ElevenLabs round trip.
-- In no-audio mode, cache checks are skipped because the output is text only.
+- In no-audio mode, slow-path acknowledgments are disabled by default via `SLOW_PATH_ACK_IN_TEXT_ONLY = False`; if enabled, cache checks are skipped because the output is text only.
 
 When assessing responsiveness, prefer TTFS/audio-start timings over total turn duration. Total duration includes how long Rex speaks.
 
@@ -237,6 +237,7 @@ Memory is stored in SQLite under `assets/memory/people.db`.
 Main concepts:
 
 - People records with names, biometrics, familiarity, and relationship metadata.
+- People records include `lifetime_greeting_count` and `last_greeted_at` for grounded answers to greeting-count questions going forward.
 - Face and voice biometric rows for identity matching.
 - Person facts, preferences, interests, and events.
 - Emotional events for celebrations, grief, wins, worries, and follow-ups.
@@ -255,6 +256,7 @@ Important proactive cases:
 - Startup greeting: if a known person is in front of the camera, Rex should greet them by name.
 - Empty-room startup: if nobody is visible, Rex can make a short snarky empty-room remark.
 - First-sight celebration/event check-ins can happen when a remembered relevant event exists.
+- Holiday-plan proactivity is major-holiday-only by default; minor public holidays require `HOLIDAY_PLANS_INCLUDE_MINOR = True`.
 - The action governor arbitrates proactive candidates so Rex does not stack too many remarks.
 
 If startup greetings feel wrong, inspect face detection timing, world-state updates, and action-governor candidate selection.
@@ -335,6 +337,10 @@ venv/bin/python main.py
 - Exact TTFS logging.
 - `[character_loop]` per-turn telemetry.
 - Slow-path acknowledgments for general, memory, and vision paths.
+- Text-only/no-audio mode suppresses slow-path acknowledgment filler by default.
+- Action-router guardrails downgrade common false positives: ongoing status updates are not event cancellations, pronoun-only fragments are not introductions, named holiday explanations are not date queries, and relationship-score questions outside games route to memory.
+- Memory-query grounding for self relationship metrics and greeting counts.
+- Minor public holiday proactive questions are gated behind `HOLIDAY_PLANS_INCLUDE_MINOR`.
 - Introduction handling that links known visible/recent people instead of renaming the current speaker.
 - README startup flag documentation.
 

@@ -95,7 +95,7 @@ class RexAvatar(QWidget):
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             self.setAutoFillBackground(False)
         if self._show_background:
-            self.setMinimumSize(430, 470)
+            self.setMinimumSize(430, 400)
         else:
             self.setMinimumSize(1, 1)
 

@@ -25,6 +25,7 @@ class GUIDashboardBridge:
         self._world_state: dict[str, Any] = {}
         self._game_state: dict[str, Any] = {}
         self._servo_positions: dict[str, int] = {}
+        self._manual_servo_override = False
         self._head_led_state: dict[str, Any] = {
             "mode": "off",
             "eye_color": (0, 0, 0),
@@ -59,9 +60,11 @@ class GUIDashboardBridge:
         env = snapshot.get("environment") or {}
         self_state = snapshot.get("self_state") or snapshot.get("self") or {}
         servo_positions = self_state.get("servo_positions") or {}
+        manual_servo_override = bool(self_state.get("manual_servo_override", self._manual_servo_override))
 
         with self._lock:
             self._world_state = snapshot
+            self._manual_servo_override = manual_servo_override
             if servo_positions:
                 self._servo_positions.update({
                     str(name): int(value)
@@ -85,6 +88,11 @@ class GUIDashboardBridge:
             return
         with self._lock:
             self._servo_positions[servo_name] = int(value)
+            self._updated_at = time.time()
+
+    def update_servo_override(self, enabled: bool) -> None:
+        with self._lock:
+            self._manual_servo_override = bool(enabled)
             self._updated_at = time.time()
 
     def update_head_led_state(
@@ -150,6 +158,7 @@ class GUIDashboardBridge:
                 "world_state": copy.deepcopy(self._world_state),
                 "game_state": copy.deepcopy(self._game_state),
                 "servo_positions": dict(self._servo_positions),
+                "manual_servo_override": self._manual_servo_override,
                 "head_led_state": copy.deepcopy(self._head_led_state),
                 "speech_state": copy.deepcopy(self._speech_state),
                 "scene_description": self._scene_description,

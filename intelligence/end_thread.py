@@ -28,7 +28,8 @@ _CLOSURE_PAT = re.compile(
     r"thanks|thank you|appreciate it|sounds good|fair enough|got it|"
     r"makes sense|okay,? cool|ok,? cool|bye|goodbye|good-bye|"
     r"see you|see ya|later|talk to you later|talk later|nice speaking|"
-    r"nice talking)\b",
+    r"nice talking|nice chatting|i'?m\s+going\s+to\s+go|"
+    r"i\s+am\s+going\s+to\s+go|i\s+have\s+to\s+go|gotta\s+go)\b",
     re.IGNORECASE,
 )
 _SHORT_ACK_PAT = re.compile(

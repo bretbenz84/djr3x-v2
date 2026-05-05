@@ -134,6 +134,13 @@ _DATE_QUERY_RE = re.compile(
     r"\bwhat day\b.{0,35}\b(dealing with|today|is it|are we|we are)\b",
     re.IGNORECASE,
 )
+_NAMED_DAY_EXPLANATION_RE = re.compile(
+    r"\b(?:what(?:'s| is)?|tell me about|explain|describe)\s+"
+    r"(?:the\s+)?(?:holiday\s+(?:called|named)\s+)?"
+    r"(?!(?:today|today's|todays|date|the\s+date|day|weekday|day\s+of\s+week)\b)"
+    r"(?:[a-z0-9][a-z0-9'’.-]*\s+){0,6}day\b",
+    re.IGNORECASE,
+)
 _WEATHER_QUERY_RE = re.compile(
     r"\b(weather|temperature|forecast|rain|raining|hot|cold|outside)\b",
     re.IGNORECASE,
@@ -170,7 +177,9 @@ _WHO_QUERY_RE = re.compile(
 _CLOSURE_RE = re.compile(
     r"\b("
     r"bye|goodbye|good-bye|see you|see ya|talk to you later|talk later|"
-    r"catch you later|later|nice speaking|nice talking|that'?s all|"
+    r"catch you later|later|nice speaking|nice talking|nice chatting|"
+    r"i'?m\s+going\s+to\s+go|i\s+am\s+going\s+to\s+go|i\s+have\s+to\s+go|"
+    r"gotta\s+go|that'?s all|"
     r"that is all|never ?mind|forget it|we can stop|let'?s stop"
     r")\b",
     re.IGNORECASE,
@@ -185,7 +194,26 @@ _MEMORY_SELF_QUERY_RE = re.compile(
     r"what do you remember about me|what do you remember about myself|"
     r"tell me what you know about me|tell me what you remember about me|"
     r"what are my plans|what(?:'s| is) my plan|what do i have planned|"
-    r"what am i doing"
+    r"what am i doing|do you remember what i do(?: for work)?|"
+    r"what do i do for work|what i do for work|"
+    r"did i ever tell you about my (?:job|work)|"
+    r"(?:can you )?tell me about my "
+    r"(?:dogs?|cats?|pets?|job|work|career|occupation)|"
+    r"what do you (?:know|remember) about my "
+    r"(?:dogs?|cats?|pets?|job|work|career|occupation)|"
+    r"how many times have you greeted me|"
+    r"how often have you greeted me|greeted me|"
+    r"what(?:'s| is) my friendship score|friendship score|"
+    r"what(?:'s| is) my relationship score|relationship score|"
+    r"our score|score between me and you|score between you and me|"
+    r"(?:me and you|you and me).{0,40}\bscore"
+    r")\b",
+    re.IGNORECASE,
+)
+_MEMORY_QUERY_OPENER_RE = re.compile(
+    r"\b("
+    r"what|who|tell\s+me|can\s+you\s+tell|do\s+you\s+remember|"
+    r"did\s+i\s+ever\s+tell|what\s+have\s+i\s+told|how\s+many|how\s+often"
     r")\b",
     re.IGNORECASE,
 )
@@ -257,9 +285,11 @@ def _deterministic_label(text: str) -> str:
     cleaned = " ".join(text.strip().split())
     if _CLOSURE_RE.search(cleaned):
         return "general"
+    if _NAMED_DAY_EXPLANATION_RE.search(cleaned):
+        return "general"
     if _CONTEXTUAL_FOLLOWUP_RE.match(cleaned):
         return "general"
-    if _MEMORY_SELF_QUERY_RE.search(cleaned):
+    if _memory_query_allowed(cleaned):
         return "query_memory"
     if _WHO_QUERY_RE.search(cleaned):
         return "query_who_is_speaking"
@@ -303,14 +333,17 @@ _PROMPT_TEMPLATE = (
     'query_capabilities, query_uptime, query_what_do_you_see, '
     'query_who_is_speaking, query_memory, play_music, query_music_options, general. '
     'Note: query_time covers clock-time questions like "what time is it?" '
-    'or "tell me the time". query_date covers date/day questions like '
+    'or "tell me the time". query_date covers current date/day questions like '
     '"what day is it?", "what is today?", "tell me today\'s date". '
+    'Do NOT use query_date for named holiday or named-day explanation questions '
+    'like "what is Truman Day?" or "what is Memorial Day?"; those are general. '
     'Note: query_who_is_speaking covers "who\'s speaking?", "who am I?", '
     '"do you know who I am?", "you know who that is?", "can you tell who I am?". '
     'Note: query_memory covers requests to recall stored memory about a person '
     'or relationship, e.g. "tell me what you know about me", "what do you '
     'remember about myself?", "tell me about my partner", "what do you know '
-    'about Jeff?", "what have I told you about Exudica?". Do NOT use '
+    'about Jeff?", "what have I told you about Exudica?", "what is my '
+    'friendship score?", "how many times have you greeted me?". Do NOT use '
     'query_memory for immediate identity recognition like "who am I?" or '
     '"do you know who is speaking?" — those are query_who_is_speaking. '
     'Note: play_music covers any request to play music, a song, a track, an '
@@ -344,6 +377,9 @@ def classify(text: str) -> str:
         return "general"
 
     cleaned = " ".join(text.strip().split())
+    if _NAMED_DAY_EXPLANATION_RE.search(cleaned):
+        return "general"
+
     label = _deterministic_label(cleaned)
     if label != "general":
         return label
@@ -418,6 +454,8 @@ def _llm_label_blocked(text: str, label: str) -> bool:
         return True
     if _CONTEXTUAL_FOLLOWUP_RE.match(text):
         return True
+    if label == "query_date" and _NAMED_DAY_EXPLANATION_RE.search(text):
+        return True
     if label == "query_date" and not _DATE_QUERY_RE.search(text):
         return True
     if label == "query_time" and not _TIME_QUERY_RE.search(text):
@@ -432,7 +470,24 @@ def _llm_label_blocked(text: str, label: str) -> bool:
         return True
     if label == "query_who_is_speaking" and not _WHO_QUERY_RE.search(text):
         return True
+    if label == "query_memory" and not _memory_query_allowed(text):
+        return True
     return False
+
+
+def _memory_query_allowed(text: str) -> bool:
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return False
+    if _MEMORY_SELF_QUERY_RE.search(cleaned):
+        return True
+    if not _MEMORY_QUERY_OPENER_RE.search(cleaned):
+        return False
+    if _PERSON_MEMORY_QUERY_RE.search(cleaned):
+        return True
+    topic_match = _TOPIC_KNOWLEDGE_QUERY_RE.search(cleaned)
+    topic = (topic_match.group("topic") if topic_match else "").strip()
+    return bool(topic and _PERSON_MEMORY_QUERY_RE.search(topic))
 
 
 def _classify_with_llm(text: str) -> str:

@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS people (
     net_relationship_score  REAL DEFAULT 0.0,
     lifetime_insult_count   INTEGER DEFAULT 0,
     lifetime_apology_count  INTEGER DEFAULT 0,
+    lifetime_greeting_count INTEGER DEFAULT 0,
+    last_greeted_at         DATETIME,
     height                  TEXT,
     build                   TEXT,
     hair_color              TEXT,

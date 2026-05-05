@@ -112,6 +112,11 @@ _DEATH_FALSE_ALARMS_PAT = re.compile(
     r"\b(?:dead tired|dead battery|dead serious|dead end|deadlift|dead line)\b",
     re.IGNORECASE,
 )
+_LIGHT_SARCASM_PAT = re.compile(
+    r"^\s*(?:oh\s+)?(?:yeah|right|sure|totally|thrilling)[,.\s]+"
+    r".{0,80}\bnot[!.]?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _result_valence(result: dict) -> float:
@@ -462,6 +467,13 @@ def classify_affect(
     else:
         event = None
 
+    if _looks_like_light_sarcasm(text) and affect == "angry" and sensitivity in {"none", "mild"}:
+        affect = "neutral"
+        needs = "none"
+        sensitivity = "none"
+        event = None
+        confidence = min(confidence, 0.65)
+
     mood_mismatch = _detect_mood_mismatch(
         text, affect, sensitivity, confidence, prosody_features, face_mood,
     )
@@ -485,6 +497,22 @@ def classify_affect(
             if prosody_features else None
         ),
     }
+
+
+def _looks_like_light_sarcasm(text: str) -> bool:
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return False
+    if not _LIGHT_SARCASM_PAT.match(cleaned):
+        return False
+    return not bool(
+        re.search(
+            r"\b(hate|furious|angry|mad|upset|miserable|awful|terrible|"
+            r"crying|sick|hurt|pain|died|dead|lost|fired|laid off)\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -272,7 +272,9 @@ Rules:
 - If the utterance asks what you remember or know about someone, use memory.query.
   If it asks what Rex generally knows about a topic, franchise, place, hobby,
   object, or field, use conversation.reply so the main LLM can answer.
-- If the utterance says a remembered plan is no longer happening, use event.cancel.
+- If the utterance explicitly says a remembered plan is canceled, stale, over,
+  or no longer happening, use event.cancel. Status updates like "we're still
+  driving home" are normal conversation.reply.
 - For event.cancel, put the plan/topic being canceled in args.event_hint when possible.
 - Only use emotional.boundary when the user explicitly asks not to talk about,
   ask about, mention, or bring up a topic. A bare health/sad topic like "back pain"
@@ -308,8 +310,11 @@ Rules:
 - If music is active and the utterance asks to stop, pause, or stop playing music, use music.stop.
 - If the utterance asks for the clock time, use time.query.
 - If the utterance asks for today's date or day of week, use date.query.
-- If a game is active and the utterance is a short fragment that is not clearly a stop/control command, prefer game.answer over identity or general actions.
+- If a game is active and the utterance is a short fragment that is not clearly a stop/control command, prefer game.answer over identity or general actions. If no game is active, do not use game.answer.
 - Do not use identity.introduce_person for first-person facts like "I'm an IT systems administrator"; those are normal conversation.reply turns so memory extraction can learn them.
+- Do not use identity.introduce_person for pronoun-only fragments like "me and
+  you", "you and me", "us", or "me"; treat them as answers to the current
+  conversation unless a real introduced name is present.
 - If the utterance is normal chat, use conversation.reply.
 - Use requires_confirmation=true when an action is broad/destructive or ambiguous. A specific forget request with a clear target does not require confirmation.
 - Confidence is 0.0 to 1.0.
@@ -367,12 +372,64 @@ _TOPIC_KNOWLEDGE_QUERY_RE = re.compile(
     r"tell\s+me|explain)\s+(?:about\s+)?(?P<topic>[^?.,!;]{3,100})",
     re.IGNORECASE,
 )
+_NAMED_DAY_EXPLANATION_RE = re.compile(
+    r"\b(?:what(?:'s| is)?|tell me about|explain|describe)\s+"
+    r"(?:the\s+)?(?:holiday\s+(?:called|named)\s+)?"
+    r"(?!(?:today|today's|todays|date|the\s+date|day|weekday|day\s+of\s+week)\b)"
+    r"(?:[a-z0-9][a-z0-9'’.-]*\s+){0,6}day\b",
+    re.IGNORECASE,
+)
 _PERSON_MEMORY_QUERY_RE = re.compile(
     r"\b("
     r"me|myself|me\?|my\s+|mine|i\s+told\s+you|i'?ve\s+told\s+you|"
     r"remember|memory|memories|person|people|friend|partner|wife|husband|"
     r"mom|mother|dad|father|brother|sister|kid|child|son|daughter|"
     r"jeff|joy|jt|bret"
+    r")\b",
+    re.IGNORECASE,
+)
+_EVENT_CANCEL_OR_STALE_RE = re.compile(
+    r"\b("
+    r"cancel(?:ed|led|s|ing)?|called?\s+off|not\s+happening|"
+    r"no\s+longer\s+happening|won['’]?t\s+happen|will\s+not\s+happen|"
+    r"can['’]?t\s+make\s+it|cannot\s+make\s+it|not\s+going|"
+    r"no\s+longer|not\b.{0,40}\banymore|instead\s+of|"
+    r"scrap(?:ped|ping)?|ditch(?:ed|ing)?|postpon(?:e|ed|ing)|"
+    r"reschedul(?:e|ed|ing)|already\s+happened|already\s+passed|"
+    r"is\s+over|it['’]?s\s+over|was\s+over|ended|finished|wrapped\s+up"
+    r")\b",
+    re.IGNORECASE,
+)
+_EVENT_CONTINUATION_STATUS_RE = re.compile(
+    r"\b("
+    r"still|currently|right\s+now|on\s+(?:my|our|the)\s+way|"
+    r"heading|headed|driving|riding|walking|flying|going"
+    r")\b",
+    re.IGNORECASE,
+)
+_PRONOUN_ONLY_INTRO_RE = re.compile(
+    r"^\s*(?:me|you|us|me\s+and\s+you|you\s+and\s+me|me\s*&\s*you|"
+    r"you\s*&\s*me|between\s+me\s+and\s+you|between\s+you\s+and\s+me)\s*[?.!]*\s*$",
+    re.IGNORECASE,
+)
+_NAMED_PERSON_FACT_STATEMENT_RE = re.compile(
+    r"^\s*[A-Z][A-Za-z'-]*(?:\s+[A-Z][A-Za-z'-]*){0,3}\s+"
+    r"(?:is|has|works|likes|loves|hates|prefers|plays|collects)\b",
+)
+_NAMED_RELATION_INTRO_RE = re.compile(
+    r"\bis\s+my\s+(?:"
+    r"best\s+friend|partner|spouse|wife|husband|girlfriend|boyfriend|"
+    r"fianc[eé]e?|father|dad|mother|mom|parent|son|daughter|child|"
+    r"brother|sister|sibling|friend|boss|manager|supervisor|employee|"
+    r"coworker|co[-\s]?worker|colleague|roommate|neighbor|neighbour"
+    r")\b",
+    re.IGNORECASE,
+)
+_RELATIONSHIP_SCORE_QUERY_RE = re.compile(
+    r"\b("
+    r"friendship\s+score|relationship\s+score|our\s+score|"
+    r"score\s+between\s+(?:me\s+and\s+you|you\s+and\s+me)|"
+    r"(?:me\s+and\s+you|you\s+and\s+me).{0,40}\bscore"
     r")\b",
     re.IGNORECASE,
 )
@@ -842,6 +899,74 @@ def _apply_context_overrides(
                 args={},
                 requires_confirmation=False,
                 reason="general topic knowledge question should use LLM conversation",
+            )
+
+    if (
+        decision.action == "date.query"
+        and _NAMED_DAY_EXPLANATION_RE.search(text or "")
+    ):
+        return ActionDecision(
+            action="conversation.reply",
+            confidence=min(float(decision.confidence or 0.0), 0.40),
+            args={},
+            requires_confirmation=False,
+            reason="named holiday explanation is not a current date query",
+        )
+
+    if (
+        decision.action == "event.cancel"
+        and _EVENT_CONTINUATION_STATUS_RE.search(text or "")
+        and not _EVENT_CANCEL_OR_STALE_RE.search(text or "")
+    ):
+        return ActionDecision(
+            action="conversation.reply",
+            confidence=min(float(decision.confidence or 0.0), 0.40),
+            args={},
+            requires_confirmation=False,
+            reason="ongoing status update is not an event cancellation",
+        )
+
+    if decision.action == "identity.introduce_person":
+        introduced_names = {
+            " ".join(str(decision.args.get(key) or "").strip().lower().split())
+            for key in ("name", "person_name", "new_person_name")
+            if str(decision.args.get(key) or "").strip()
+        }
+        if _PRONOUN_ONLY_INTRO_RE.match(text or "") or bool(introduced_names & {
+            "me",
+            "you",
+            "us",
+            "me and you",
+            "you and me",
+        }):
+            return ActionDecision(
+                action="conversation.reply",
+                confidence=min(float(decision.confidence or 0.0), 0.40),
+                args={},
+                requires_confirmation=False,
+                reason="pronoun-only fragment is not a person introduction",
+            )
+        if (
+            _NAMED_PERSON_FACT_STATEMENT_RE.match(text or "")
+            and not _NAMED_RELATION_INTRO_RE.search(text or "")
+        ):
+            return ActionDecision(
+                action="conversation.reply",
+                confidence=min(float(decision.confidence or 0.0), 0.40),
+                args={},
+                requires_confirmation=False,
+                reason="named third-person fact should be learned as conversation",
+            )
+
+    active_game = bool((context or {}).get("active_game"))
+    if decision.action == "game.answer" and not active_game:
+        if _RELATIONSHIP_SCORE_QUERY_RE.search(text or ""):
+            return ActionDecision(
+                action="memory.query",
+                confidence=min(max(float(decision.confidence or 0.0), 0.85), 0.95),
+                args={},
+                requires_confirmation=False,
+                reason="score question outside an active game is a relationship memory query",
             )
 
     pending_question = _pending_question_context(context)

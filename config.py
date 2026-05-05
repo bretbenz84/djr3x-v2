@@ -598,6 +598,11 @@ CAMERA_WIDTH  = 1280
 CAMERA_HEIGHT = 720
 CAMERA_FPS    = 30
 
+# macOS AVFoundation defaults to yuv420p, which many FaceTime/Continuity
+# devices reject before ffmpeg falls back noisily. Request a widely-supported
+# input format up front, then convert to bgr24 for OpenCV-style consumers.
+CAMERA_AVFOUNDATION_PIXEL_FORMAT = "uyvy422"
+
 # Seconds between reconnection attempts when the camera disconnects
 CAMERA_RECONNECT_INTERVAL_SECS = 5.0
 
@@ -1564,6 +1569,10 @@ LATENCY_FILLER_REQUIRE_CACHE = True
 # round trip to the user's live turn.
 SLOW_PATH_ACK_ENABLED = True
 SLOW_PATH_ACK_REQUIRE_CACHE = True
+# In text-only/noaudio mode, filler lines become visible chat clutter instead of
+# useful spoken latency cover. Leave this off unless you explicitly want GUI
+# filler messages.
+SLOW_PATH_ACK_IN_TEXT_ONLY = False
 SLOW_PATH_ACK_MIN_EXPECTED_SECS = 1.5
 SLOW_PATH_ACK_EXPECTED_SECS = {
     "vision": 2.5,
@@ -1698,8 +1707,13 @@ HOLIDAY_COUNTRY_CODE = "US"
 HOLIDAY_MAJOR_WINDOW_DAYS = 30
 
 # Days before a minor public holiday (Labor Day, MLK Day, etc.) Rex starts
-# asking about 3-day-weekend plans.
+# asking about plans if HOLIDAY_PLANS_INCLUDE_MINOR is enabled.
 HOLIDAY_MINOR_WINDOW_DAYS = 7
+
+# By default Rex only proactively asks about major holidays. Public-holiday
+# feeds include many regional or observance dates that people may not recognize;
+# those are better answered when the user asks than brought up as small talk.
+HOLIDAY_PLANS_INCLUDE_MINOR = False
 
 # Days around an upcoming birthday Rex will mention it preemptively in the
 # greeting (matches the anticipation pipeline). 0 = day-of only; 7 = up to a

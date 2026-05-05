@@ -27,7 +27,8 @@ _CLOSURE_PAT = re.compile(
     r"\b(that'?s all|that is all|that'?s it|that is it|all good|i'?m good|"
     r"thanks|thank you|got it|sounds good|fair enough|never ?mind|bye|"
     r"goodbye|good-bye|see you|see ya|later|talk to you later|talk later|"
-    r"nice speaking|nice talking)\b",
+    r"nice speaking|nice talking|nice chatting|i'?m\s+going\s+to\s+go|"
+    r"i\s+am\s+going\s+to\s+go|i\s+have\s+to\s+go|gotta\s+go)\b",
     re.IGNORECASE,
 )
 _THANKS_FOR_ASKING_PAT = re.compile(r"\bthanks?(?:\s+you)?\s+for\s+asking\b", re.IGNORECASE)

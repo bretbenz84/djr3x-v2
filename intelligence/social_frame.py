@@ -43,6 +43,9 @@ _QUESTION_CLAUSE_START_PAT = re.compile(
 )
 _SENTENCE_SPLIT = re.compile(r"[^.!?]+[.!?]*")
 _WORD_PAT = re.compile(r"[A-Za-z0-9']+")
+_QUOTED_QUESTION_RE = re.compile(
+    r"(?:“[^”]*\?[^”]*”|\"[^\"]*\?[^\"]*\")"
+)
 _ABBREVIATION_PAT = re.compile(
     r"\b(?:[A-Z]\.){2,}(?:[A-Z]\.)?|"
     r"\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|e\.g|i\.e)\.",
@@ -103,7 +106,8 @@ _HARSH_ROAST_PAT = re.compile(
 )
 _BAD_CLOSURE_PAT = re.compile(
     r"\b(fun for who|probably not me|not me|can'?t say i enjoyed|"
-    r"finally over|good riddance)\b",
+    r"finally over|good riddance|escape this conversation|"
+    r"escape plan|finally escaped|need to escape)\b",
     re.IGNORECASE,
 )
 _DANGLING_WORDS = {
@@ -332,7 +336,7 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
     if not frame.allow_question:
         kept = []
         for sentence in sentences:
-            if "?" not in sentence:
+            if not _has_unquoted_question(sentence):
                 kept.append(sentence)
                 continue
         if len(kept) != len(sentences):
@@ -361,6 +365,8 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
             notes.append("removed_sharp_roast")
 
     enforce_length = bool(getattr(config, "SOCIAL_FRAME_ENFORCE_LENGTH_LIMITS", False))
+    if frame.purpose == "closure":
+        enforce_length = True
 
     if not sentences:
         current = _fallback(frame)
@@ -558,7 +564,9 @@ def _addressee(
 
 
 def _normalize_text(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").strip())
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    cleaned = re.sub(r"([.!?])\s+([\"”])(?=\s|$|[,;:])", r"\1\2", cleaned)
+    return cleaned
 
 
 def _sentences(text: str) -> list[str]:
@@ -595,7 +603,7 @@ def _trim_sentences(sentences: list[str], frame: SocialFrame) -> list[str]:
     # of letting an opener like "Ah, Star Trek!" consume the whole budget.
     if frame.allow_question and limit >= 1:
         question_index = next(
-            (idx for idx, sentence in enumerate(sentences) if "?" in sentence),
+            (idx for idx, sentence in enumerate(sentences) if _has_unquoted_question(sentence)),
             None,
         )
         if question_index is not None and limit == 1:
@@ -604,7 +612,7 @@ def _trim_sentences(sentences: list[str], frame: SocialFrame) -> list[str]:
             prefix = [
                 sentence
                 for idx, sentence in enumerate(sentences)
-                if idx != question_index and "?" not in sentence
+                if idx != question_index and not _has_unquoted_question(sentence)
             ][: limit - 1]
             return [*prefix, sentences[question_index]]
 
@@ -625,7 +633,7 @@ def _keep_one_question(sentences: list[str]) -> tuple[list[str], bool]:
     saw_question = False
     removed = False
     for sentence in sentences:
-        if "?" not in sentence:
+        if not _has_unquoted_question(sentence):
             kept.append(sentence)
             continue
         if _is_tiny_question_opener(sentence):
@@ -640,9 +648,30 @@ def _keep_one_question(sentences: list[str]) -> tuple[list[str], bool]:
     return kept, removed
 
 
+def _strip_quoted_questions(text: str) -> str:
+    return _QUOTED_QUESTION_RE.sub(
+        lambda match: match.group(0).replace("?", ""),
+        text or "",
+    )
+
+
+def _has_unquoted_question(text: str) -> bool:
+    stripped = _strip_quoted_questions(text)
+    for idx, char in enumerate(stripped):
+        if char != "?":
+            continue
+        before = stripped[:idx]
+        if before.count('"') % 2 == 1:
+            continue
+        if before.count("“") > before.count("”"):
+            continue
+        return True
+    return False
+
+
 def _is_tiny_question_opener(sentence: str) -> bool:
     text = (sentence or "").strip()
-    if not text or "?" not in text:
+    if not text or not _has_unquoted_question(text):
         return False
     words = _WORD_PAT.findall(text)
     if len(words) > 4:
@@ -689,7 +718,7 @@ def _salvage_non_question_lead(sentence: str) -> Optional[str]:
 
 def _is_tiny_opener(sentence: str) -> bool:
     text = (sentence or "").strip()
-    if not text or "?" in text:
+    if not text or _has_unquoted_question(text):
         return False
     words = _WORD_PAT.findall(text)
     if len(words) > 4:

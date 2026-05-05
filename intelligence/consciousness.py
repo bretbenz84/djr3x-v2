@@ -628,6 +628,17 @@ def _question_key_for_presence_line(label: str, purpose: str) -> Optional[str]:
     return None
 
 
+def _presence_line_counts_as_greeting(label: str, purpose: str) -> bool:
+    del purpose
+    label_l = (label or "").lower()
+    return (
+        "first-sight" in label_l
+        or "startup" in label_l
+        or label_l.startswith("return ")
+        or " return " in label_l
+    )
+
+
 def _record_proactive_question(
     person_id: Optional[int],
     text: str,
@@ -1187,6 +1198,12 @@ def _generate_and_speak_presence(
             _log.info("consciousness: firing presence reaction — %s: %r", label, text[:120])
             _last_presence_reaction_at[tag_key] = time.monotonic()
             speech_queue.enqueue(text, emotion, priority=1, tag=tag)
+            if isinstance(tag_key, int) and _presence_line_counts_as_greeting(label, purpose):
+                try:
+                    from memory import people as people_mod
+                    people_mod.record_greeting(tag_key)
+                except Exception as exc:
+                    _log.debug("record greeting failed for person_id=%s: %s", tag_key, exc)
             note_rex_utterance(text)
             _record_proactive_question(
                 tag_key if isinstance(tag_key, int) else None,
@@ -4747,6 +4764,16 @@ def _step_overheard_chime_in(snapshot: dict, profile: SituationProfile) -> None:
 # Step 10d — Holiday plans curiosity
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _holiday_plans_allowed(holiday: dict) -> bool:
+    """Return whether Rex should proactively ask about this holiday."""
+    window = str((holiday or {}).get("window") or "").strip().lower()
+    if window == "major":
+        return True
+    if window == "minor":
+        return bool(getattr(config, "HOLIDAY_PLANS_INCLUDE_MINOR", False))
+    return False
+
+
 def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
     """
     During an active conversation with a known person, if any public holiday
@@ -4788,6 +4815,8 @@ def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
         # Find the soonest holiday Rex hasn't asked this person about yet.
         target = None
         for h in holidays:
+            if not _holiday_plans_allowed(h):
+                continue
             if (engaged_id, h["date"]) not in _holiday_plans_asked:
                 target = h
                 break
@@ -4817,8 +4846,8 @@ def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
             )
         else:
             framing = (
-                f"{target['name']} is {when_clause} — a long weekend in their tradition. "
-                f"Ask {first_name} if they have any 3-day-weekend plans, dryly observant. "
+                f"{target['name']} is {when_clause}. "
+                f"Ask {first_name} if that date means anything to them, dryly observant. "
             )
 
         prompt = (

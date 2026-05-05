@@ -792,6 +792,15 @@ _PERSONAL_MEMORY_TOPIC_RE = re.compile(
     r"know\s+about\s+me|know\s+about\s+my)\b",
     re.IGNORECASE,
 )
+_MEMORY_LEARNING_CLOSURE_RE = re.compile(
+    r"\b("
+    r"bye|goodbye|good-bye|see you|see ya|talk to you later|talk later|"
+    r"catch you later|later|nice speaking|nice talking|nice chatting|"
+    r"i'?m\s+going\s+to\s+go|i\s+am\s+going\s+to\s+go|i\s+have\s+to\s+go|"
+    r"gotta\s+go"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _conversation_reply_should_skip_memory_learning(
@@ -804,11 +813,24 @@ def _conversation_reply_should_skip_memory_learning(
     text_clean = str(text or "").strip()
     if not text_clean:
         return False
+    if _MEMORY_LEARNING_CLOSURE_RE.search(text_clean):
+        return True
     match = _GENERAL_KNOWLEDGE_REPLY_RE.search(text_clean)
     if not match:
         return False
     topic = str(match.group("topic") or "")
     return not _PERSONAL_MEMORY_TOPIC_RE.search(topic)
+
+
+def _router_nonexecuted_should_suppress_memory_learning(
+    decision: Optional[action_router.ActionDecision],
+) -> bool:
+    """Control/tool routes should not be learned when they fail open to chat."""
+    if decision is None or decision.action == "conversation.reply":
+        return False
+    if decision.action == "identity.introduce_person":
+        return False
+    return True
 
 
 def _router_audit_note_legacy_command(
@@ -1783,6 +1805,8 @@ def _try_slow_path_ack(kind: str) -> bool:
         getattr(config, "NO_AUDIO_MODE", False)
         or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
     )
+    if audio_suppressed and not bool(getattr(config, "SLOW_PATH_ACK_IN_TEXT_ONLY", False)):
+        return False
     if bool(getattr(config, "SLOW_PATH_ACK_REQUIRE_CACHE", True)) and not audio_suppressed:
         try:
             from audio import tts
@@ -1855,25 +1879,51 @@ def _start_latency_filler_timer() -> threading.Event:
     return stop
 
 
+_QUOTED_QUESTION_RE = re.compile(
+    r"(?:“[^”]*\?[^”]*”|\"[^\"]*\?[^\"]*\")"
+)
+_RESPONSE_QUESTION_START_RE = re.compile(
+    r"^\s*(who|what|when|where|why|how|can|could|would|will|do|does|did|"
+    r"is|are|am|should|want|wanna|need|got|any|care\s+to)\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_quoted_questions(text: str) -> str:
+    return _QUOTED_QUESTION_RE.sub(
+        lambda match: match.group(0).replace("?", ""),
+        text or "",
+    )
+
+
 def _assistant_asked_question(text: str) -> bool:
-    cleaned = (text or "").strip()
-    return bool(cleaned) and ("?" in cleaned)
+    return _question_expects_response(text)
 
 
 def _question_expects_response(text: str) -> bool:
-    cleaned = (text or "").strip()
-    if not _assistant_asked_question(cleaned):
+    cleaned = _strip_quoted_questions(text).strip()
+    if not cleaned or "?" not in cleaned:
         return False
-    last_question = ""
     for part in re.split(r"(?<=[.!?])\s+", cleaned):
-        if "?" in part:
-            last_question = part.strip()
-    if not last_question:
+        if "?" in part and _question_sentence_expects_response(part):
+            return True
+    return False
+
+
+def _question_sentence_expects_response(sentence: str) -> bool:
+    lowered = (sentence or "").strip().lower()
+    if not lowered or "?" not in lowered:
         return False
-    lowered = last_question.lower()
     if re.search(r"\b(right|okay|ok|huh|yeah)\?\s*$", lowered):
         return False
     if re.search(r"\bwhy\s+(?:risk|bother|would|not)\b.+\bwhen\b", lowered):
+        return False
+    words = re.findall(r"[a-z0-9']+", lowered)
+    if (
+        len(words) <= 4
+        and not _RESPONSE_QUESTION_START_RE.search(lowered)
+        and not any(word in {"you", "your", "we", "they", "it", "this", "that"} for word in words)
+    ):
         return False
     return True
 
@@ -4948,12 +4998,159 @@ def _execute_wave_command(
 
 
 _MEMORY_SELF_REFS = {"i", "me", "my", "myself"}
-_MEMORY_NAME_RE = re.compile(r"^[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,2}$")
+_MEMORY_NAME_RE = re.compile(r"^[A-Z][A-Za-z'-]*(?:\s+[A-Z][A-Za-z'-]*){0,3}$")
+_MEMORY_PERSON_NAME_CHUNK = r"[A-Z][A-Za-z'-]*(?:\s+[A-Z][A-Za-z'-]*){0,3}"
+_MEMORY_RELATION_WORDS = (
+    r"best\s+friend|partner|spouse|wife|husband|girlfriend|boyfriend|"
+    r"fianc[eé]e?|father|dad|mother|mom|parent|son|daughter|child|"
+    r"brother|sister|sibling|friend|boss|manager|supervisor|employee|"
+    r"coworker|co[-\s]?worker|colleague|roommate|neighbor|neighbour"
+)
+_DIRECT_RELATIONSHIP_PATTERNS = (
+    re.compile(
+        rf"\bmy\s+(?P<rel>{_MEMORY_RELATION_WORDS})\s+"
+        rf"(?:is\s+)?(?:named|called)\s+(?P<name>{_MEMORY_PERSON_NAME_CHUNK})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\bmy\s+(?P<rel>{_MEMORY_RELATION_WORDS})'?s\s+name\s+is\s+"
+        rf"(?P<name>{_MEMORY_PERSON_NAME_CHUNK})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"^\s*(?P<name>{_MEMORY_PERSON_NAME_CHUNK})\s+is\s+my\s+"
+        rf"(?P<rel>{_MEMORY_RELATION_WORDS})\b",
+        re.IGNORECASE,
+    ),
+)
+_NAMED_PERSON_FACT_STATEMENT_RE = re.compile(
+    rf"^\s*(?P<name>{_MEMORY_PERSON_NAME_CHUNK})\s+"
+    r"(?P<verb>is|has|works(?:\s+as|\s+in|\s+for)?)\s+"
+    r"(?P<detail>[^.?!]{2,160})",
+)
+_JOB_DETAIL_RE = re.compile(
+    r"\b("
+    r"administrator|admin|analyst|architect|assistant|developer|director|"
+    r"doctor|editor|engineer|manager|nurse|programmer|teacher|technician|"
+    r"writer|works?\s+(?:as|in|for)"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _memory_key(value: str) -> str:
     cleaned = re.sub(r"[^a-z0-9]+", "_", (value or "").strip().lower())
     return re.sub(r"_+", "_", cleaned).strip("_") or "detail"
+
+
+def _clean_memory_person_name(value: str) -> str:
+    name = " ".join(str(value or "").strip(" .?!,;:").split())
+    name = re.split(
+        r"\b(?:and|but|who|that|which|please|thanks|thank\s+you)\b",
+        name,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" .?!,;:")
+    return name if _MEMORY_NAME_RE.match(name) else ""
+
+
+def _learn_direct_memory_from_user_text(
+    text: str,
+    person_id: Optional[int],
+) -> None:
+    """Store obvious relationship/person facts immediately, without an LLM pass."""
+    if person_id is None:
+        return
+    _learn_direct_relationship_statement(text, int(person_id))
+    _learn_named_person_fact_statement(text, int(person_id))
+
+
+def _learn_direct_relationship_statement(text: str, person_id: int) -> None:
+    for pattern in _DIRECT_RELATIONSHIP_PATTERNS:
+        match = pattern.search(text or "")
+        if not match:
+            continue
+        rel = _normalize_relationship_word(match.group("rel")) or ""
+        name = _clean_memory_person_name(match.group("name"))
+        if not rel or not name:
+            return
+        other_id, _created = people_memory.find_or_create_person(name)
+        if other_id is None or int(other_id) == int(person_id):
+            return
+        social_memory.save_relationship(
+            from_person_id=int(person_id),
+            to_person_id=int(other_id),
+            relationship=rel,
+            described_by=int(person_id),
+        )
+        facts_memory.add_fact(
+            int(person_id),
+            "family",
+            f"{rel}_name",
+            name,
+            source="explicit",
+            confidence=0.98,
+            importance=0.9,
+            decay_rate="permanent",
+        )
+        _record_recent_memory_candidate(
+            person_id,
+            kind="relationship",
+            target=f"{rel} {name}",
+            label=f"{rel.replace('_', ' ')} {name}",
+        )
+        _log.info(
+            "[memory] learned direct relationship person_id=%s rel=%s name=%r other_id=%s",
+            person_id,
+            rel,
+            name,
+            other_id,
+        )
+        return
+
+
+def _learn_named_person_fact_statement(text: str, person_id: int) -> None:
+    match = _NAMED_PERSON_FACT_STATEMENT_RE.match(text or "")
+    if not match:
+        return
+    name = _clean_memory_person_name(match.group("name"))
+    if not name:
+        return
+    row = people_memory.find_person_by_name(name)
+    if not row:
+        return
+    target_id = int(row["id"])
+    if target_id == int(person_id):
+        return
+    verb = " ".join(str(match.group("verb") or "").lower().split())
+    detail = " ".join(str(match.group("detail") or "").strip(" .?!").split())
+    if not detail or detail.lower().startswith(("my ", "your ")):
+        return
+    value = re.sub(r"^(?:a|an|the)\s+", "", detail, flags=re.IGNORECASE).strip()
+    category = "job" if verb.startswith("work") or _JOB_DETAIL_RE.search(detail) else "other"
+    key = "job_title" if category == "job" else _memory_key(verb)
+    facts_memory.add_fact(
+        target_id,
+        category,
+        key,
+        value,
+        source="explicit",
+        confidence=0.95,
+        importance=0.8 if category == "job" else 0.55,
+    )
+    _record_recent_memory_candidate(
+        target_id,
+        kind="fact",
+        target=f"{category} {key} {value}",
+        label=f"{name}: {value}",
+    )
+    _log.info(
+        "[memory] learned named-person fact target_id=%s name=%r key=%s value=%r",
+        target_id,
+        name,
+        key,
+        value,
+    )
 
 
 def _record_recent_memory_candidate(
@@ -5754,6 +5951,10 @@ def _post_response(
 
     memory_recent_transcript = None
     if person_id is not None and not suppress_memory_learning:
+        try:
+            _learn_direct_memory_from_user_text(user_text, person_id)
+        except Exception as exc:
+            _log.debug("direct memory learning error: %s", exc)
         try:
             transcript = conv_memory.get_session_transcript()
             recent = transcript[-10:] if len(transcript) >= 10 else transcript
@@ -10851,7 +11052,8 @@ def _handle_speech_segment(
                     "[memory] suppressing extraction for general-knowledge router reply text=%r",
                     text,
                 )
-            elif router_decision is not None and router_decision.action != "conversation.reply":
+            elif _router_nonexecuted_should_suppress_memory_learning(router_decision):
+                suppress_memory_learning = True
                 _log.info(
                     "[action_router] not executing action=%s confidence=%.2f reason=%s",
                     router_decision.action,

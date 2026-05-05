@@ -37,6 +37,7 @@ _commanded_positions: dict[int, int] = {
     for cfg in config.SERVO_CHANNELS.values()
 }
 _last_reconnect_attempt_at = 0.0
+_manual_override = threading.Event()
 
 # breathing_thread stop event — set by shutdown()
 _stop_breathing = threading.Event()
@@ -151,13 +152,77 @@ def _record_servo_positions(channel_dict: "dict[int, int]") -> None:
         world_state.update("self_state", self_state)
     except Exception as exc:
         _log.debug("servo proprioception update failed: %s", exc)
-    if bool(getattr(config, "GUI_ENABLED", False)):
-        try:
-            from gui.state_bridge import gui_bridge
-            for name, value in updates.items():
-                gui_bridge.update_servo_position(name, value)
-        except Exception:
-            pass
+    try:
+        from gui.state_bridge import gui_bridge
+        for name, value in updates.items():
+            gui_bridge.update_servo_position(name, value)
+    except Exception:
+        pass
+
+
+def _record_manual_override_state(enabled: bool) -> None:
+    try:
+        from world_state import world_state
+
+        self_state = world_state.get("self_state")
+        self_state["manual_servo_override"] = bool(enabled)
+        world_state.update("self_state", self_state)
+    except Exception as exc:
+        _log.debug("manual servo override world_state update failed: %s", exc)
+    try:
+        from gui.state_bridge import gui_bridge
+
+        gui_bridge.update_servo_override(bool(enabled))
+    except Exception:
+        pass
+
+
+def _program_servo_updates_blocked() -> bool:
+    return _manual_override.is_set()
+
+
+def manual_override_enabled() -> bool:
+    """Return True when GUI manual servo override owns servo targets."""
+    return _manual_override.is_set()
+
+
+def set_manual_override_enabled(enabled: bool) -> None:
+    """Freeze programmatic servo target updates so GUI sliders can drive servos."""
+    enabled = bool(enabled)
+    was_enabled = _manual_override.is_set()
+    if enabled:
+        _manual_override.set()
+    else:
+        _manual_override.clear()
+    if was_enabled != enabled:
+        _record_manual_override_state(enabled)
+        _log.info("Manual servo override %s", "enabled" if enabled else "disabled")
+
+
+def set_manual_servo(channel: int, position: int) -> bool:
+    """
+    Direct GUI-owned servo control.
+
+    Programmatic setters no-op while manual override is enabled, but this path
+    intentionally bypasses that gate and mirrors the resulting pose to the GUI
+    avatar / world state immediately.
+    """
+    if not _manual_override.is_set():
+        return False
+    channel = int(channel)
+    position = _clamp(channel, int(position))
+    with _lock:
+        if SERVOS_ENABLED:
+            _send_set_target(channel, position)
+        _remember_positions({channel: position})
+        if channel in {
+            _channel("neck"),
+            _channel("headlift"),
+            _channel("headtilt"),
+        }:
+            _face_tracking_baseline[channel] = position
+    _record_servo_positions({channel: position})
+    return True
 
 
 # ── Serial connection ──────────────────────────────────────────────────────────
@@ -305,6 +370,8 @@ def _remember_positions(channel_dict: "dict[int, int]") -> None:
 
 def set_servo(channel: int, position: int) -> None:
     """Move channel to position (quarter-microseconds), clamped to channel limits."""
+    if _program_servo_updates_blocked():
+        return
     position = _clamp(channel, position)
     if not SERVOS_ENABLED:
         _log.debug("set_servo no-op: SERVOS_ENABLED=False (ch=%d pos=%d)", channel, position)
@@ -321,6 +388,8 @@ def set_servo(channel: int, position: int) -> None:
 
 def set_speed(channel: int, speed: int) -> None:
     """Set the Maestro move speed for one channel."""
+    if _program_servo_updates_blocked():
+        return
     if not SERVOS_ENABLED:
         _log.debug("set_speed no-op: SERVOS_ENABLED=False (ch=%d speed=%d)", channel, speed)
         return
@@ -330,6 +399,8 @@ def set_speed(channel: int, speed: int) -> None:
 
 def set_acceleration(channel: int, acceleration: int) -> None:
     """Set the Maestro acceleration for one channel."""
+    if _program_servo_updates_blocked():
+        return
     if not SERVOS_ENABLED:
         _log.debug(
             "set_acceleration no-op: SERVOS_ENABLED=False (ch=%d accel=%d)",
@@ -347,6 +418,8 @@ def set_motion_profile(
     acceleration: int | None = None,
 ) -> None:
     """Set speed and/or acceleration for multiple channels."""
+    if _program_servo_updates_blocked():
+        return
     if not SERVOS_ENABLED:
         _log.debug("set_motion_profile no-op: SERVOS_ENABLED=False")
         return
@@ -386,6 +459,8 @@ def get_servo(channel: int) -> "int | None":
 
 def set_servos(channel_dict: "dict[int, int]") -> None:
     """Set multiple channels in one pass. channel_dict maps channel int → position."""
+    if _program_servo_updates_blocked():
+        return
     channel_dict = {ch: _clamp(ch, int(pos)) for ch, pos in channel_dict.items()}
     if not SERVOS_ENABLED:
         _log.debug("set_servos no-op: SERVOS_ENABLED=False")
@@ -442,6 +517,8 @@ def set_face_tracking_baseline(
     Store the last face-tracking head pose so speech gestures wobble around it
     instead of recentering away from the person Rex is addressing.
     """
+    if _program_servo_updates_blocked():
+        return
     updates: dict[int, int] = {}
     mapping = {
         _channel("neck"): neck,
@@ -464,6 +541,9 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
     """Capture the current gaze/pose and prepare speech-reactive servo motion."""
     global _last_speech_move_at, _speech_hand_counter
     global _speech_elbow_target, _speech_elbow_direction, _next_speech_elbow_at
+
+    if _program_servo_updates_blocked():
+        return
 
     pause_arm_idle()
     with _lock:
@@ -527,6 +607,8 @@ def speech_reactive_move(intensity: float) -> None:
     global _last_speech_move_at, _speech_hand_counter
     global _speech_elbow_target, _speech_elbow_direction, _next_speech_elbow_at
 
+    if _program_servo_updates_blocked():
+        return
     if not _speech_active.is_set():
         return
     if not SERVOS_ENABLED and not _gui_servo_sim_enabled():
@@ -615,6 +697,8 @@ def neutral(step_us: int = 40, step_delay: float = 0.02) -> None:
     Move all channels smoothly to their neutral positions.
     Reads current positions first, then interpolates to neutral.
     """
+    if _program_servo_updates_blocked():
+        return
     if not SERVOS_ENABLED:
         _log.debug("neutral() no-op: SERVOS_ENABLED=False")
         if _gui_servo_sim_enabled():
@@ -692,6 +776,10 @@ def breathing_thread() -> None:
     tick = 0.05  # seconds between position updates
 
     while not _stop_breathing.is_set():
+        if _program_servo_updates_blocked():
+            _stop_breathing.wait(tick)
+            continue
+
         with _breathing_lock:
             emotion = _breathing_emotion
 
@@ -724,6 +812,8 @@ def idle_animation() -> None:
     One cycle of random small movements on neck and headlift channels.
     Intended to be called periodically from the consciousness loop during IDLE.
     """
+    if _program_servo_updates_blocked():
+        return
     if not SERVOS_ENABLED:
         _log.debug("idle_animation no-op: SERVOS_ENABLED=False")
         if not _gui_servo_sim_enabled():
@@ -746,6 +836,8 @@ def idle_animation() -> None:
 
 def move_to(targets: "dict[int, int]", step_us: int = 40, step_delay: float = 0.02) -> None:
     """Smoothly interpolate specific channels to target positions (quarter-microseconds)."""
+    if _program_servo_updates_blocked():
+        return
     targets = {ch: _clamp(ch, int(tgt)) for ch, tgt in targets.items()}
     if not SERVOS_ENABLED:
         _log.debug("move_to no-op: SERVOS_ENABLED=False")
