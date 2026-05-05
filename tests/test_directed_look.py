@@ -132,7 +132,8 @@ class DirectedLookTests(unittest.TestCase):
             interaction._reset_directed_look_context()
             with (
                 mock.patch.object(interaction, "_move_and_capture_gaze", return_value=("left", frame)) as move,
-                mock.patch.object(interaction, "_detect_faces_in_gaze", return_value=[]),
+                mock.patch.object(interaction, "_detect_faces_in_gaze", return_value=[]) as detect_faces,
+                mock.patch.object(interaction, "_visible_known_face_candidate", return_value=None),
                 mock.patch("vision.scene.analyze_directed_attention") as analyze,
                 mock.patch.object(interaction, "_speak_blocking") as speak,
             ):
@@ -144,6 +145,7 @@ class DirectedLookTests(unittest.TestCase):
                 )
 
             move.assert_called_once()
+            detect_faces.assert_not_called()
             analyze.assert_not_called()
             speak.assert_not_called()
             self.assertTrue(interaction._is_silent_command_response(response))
@@ -160,7 +162,8 @@ class DirectedLookTests(unittest.TestCase):
             interaction._reset_directed_look_context()
             with (
                 mock.patch.object(interaction, "_move_and_capture_gaze", return_value=("left", frame)),
-                mock.patch.object(interaction, "_detect_faces_in_gaze", return_value=[]),
+                mock.patch.object(interaction, "_detect_faces_in_gaze") as detect_faces,
+                mock.patch.object(interaction, "_visible_known_face_candidate", return_value=None),
                 mock.patch.object(interaction, "_speak_blocking") as speak,
                 mock.patch.object(interaction.config, "DIRECTED_LOOK_CLARIFY_AFTER_COMMANDS", 3),
             ):
@@ -181,6 +184,7 @@ class DirectedLookTests(unittest.TestCase):
                 )
 
             self.assertEqual(response, "What am I looking for?")
+            detect_faces.assert_not_called()
             speak.assert_called_once_with("What am I looking for?", emotion="curious")
         finally:
             interaction._directed_look_context.update(old_context)

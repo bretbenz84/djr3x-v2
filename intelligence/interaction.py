@@ -1657,6 +1657,11 @@ _BARE_WAKE_ADDRESS_PAT = re.compile(
     re.IGNORECASE,
 )
 
+_PLAIN_IDLE_GREETING_PAT = re.compile(
+    r"^\s*(?:hello|hi|hey|yo|you there)\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
 
 def _is_bare_wake_address(text: str) -> bool:
     return bool(_BARE_WAKE_ADDRESS_PAT.match(text or ""))
@@ -2113,6 +2118,8 @@ def _maybe_interest_idle_followup(
     global _session_exchange_count
     if _game_suppresses_conversation():
         return False
+    if _directed_context_fresh():
+        return False
     if not bool(getattr(config, "INTEREST_IDLE_FOLLOWUP_ENABLED", True)):
         return False
     threshold = float(getattr(config, "INTEREST_IDLE_FOLLOWUP_SECS", 12.0) or 0.0)
@@ -2227,6 +2234,8 @@ def _maybe_low_memory_idle_question(
 ) -> bool:
     """Ask one profile-building question during a lull for known sparse profiles."""
     if _game_suppresses_conversation():
+        return False
+    if _directed_context_fresh():
         return False
     if not bool(getattr(config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True)):
         return False
@@ -3096,16 +3105,90 @@ def _should_ignore_idle_background_speech(
     person_id: Optional[int],
     has_unknown_visible: bool,
     identity_prompt_active: bool,
+    text_input: bool = False,
     text: str,
 ) -> bool:
     """Ignore no-wake IDLE activations that sound like off-camera background speech."""
     if not from_idle_activation:
         return False
+    if text_input:
+        return False
     if person_id is not None:
         return False
     if has_unknown_visible or identity_prompt_active:
         return False
-    return bool((text or "").strip())
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if command_parser.parse(cleaned) is not None:
+        return False
+    if _is_bare_wake_address(cleaned):
+        return False
+    try:
+        wake_ready = bool(wake_word.is_ready())
+    except Exception:
+        wake_ready = True
+    if not wake_ready and _PLAIN_IDLE_GREETING_PAT.match(cleaned):
+        return False
+    return True
+
+
+def _pending_question_recent_attribution(
+    *,
+    person_id: Optional[int],
+    person_name: Optional[str],
+    recent_engagement: Optional[dict],
+    raw_best_id: Optional[int],
+    speaker_score: float,
+    text: str,
+) -> tuple[Optional[int], Optional[str], bool]:
+    """
+    Attribute the next answer to the recently engaged person Rex just questioned.
+
+    This prevents a panned-away camera or weak voice score from derailing a direct
+    answer into the off-camera-unknown identity flow.
+    """
+    if person_id is not None:
+        return person_id, person_name, False
+    if not recent_engagement:
+        return person_id, person_name, False
+    if command_parser.parse(text) is not None:
+        return person_id, person_name, False
+    try:
+        if _has_unknown_visible_or_recent():
+            return person_id, person_name, False
+    except Exception:
+        return person_id, person_name, False
+
+    recent_id = _safe_int(recent_engagement.get("person_id"))
+    if recent_id is None:
+        return person_id, person_name, False
+    pending = _latest_pending_question(recent_id)
+    if not pending:
+        return person_id, person_name, False
+
+    floor = float(getattr(config, "SPEAKER_ID_PENDING_QA_RECENT_FLOOR", 0.35))
+    raw_id = _safe_int(raw_best_id)
+    raw_matches_recent = raw_id == recent_id
+    no_voice_candidate = raw_id is None
+    if not no_voice_candidate and not (raw_matches_recent and speaker_score >= floor):
+        return person_id, person_name, False
+
+    resolved_name = str(
+        recent_engagement.get("name")
+        or recent_engagement.get("face_id")
+        or recent_engagement.get("voice_id")
+        or ""
+    ).strip() or person_name
+    _log.info(
+        "[interaction] person resolution: pending-question continuity — "
+        "person_id=%s name=%r voice_score=%.3f raw_best=%s",
+        recent_id,
+        resolved_name,
+        speaker_score,
+        raw_best_id,
+    )
+    return recent_id, resolved_name, True
 
 
 def _extract_offscreen_identify_reply(
@@ -5218,6 +5301,36 @@ def _move_and_capture_gaze(
     return actual_direction, frame
 
 
+def _visible_known_face_candidate(target_name: Optional[str] = None) -> Optional[dict]:
+    try:
+        people = world_state.get("people") or []
+    except Exception:
+        return None
+    candidates: list[dict] = []
+    for person in people:
+        pid = person.get("person_db_id")
+        if pid is None:
+            continue
+        if person.get("face_visible") is False or person.get("face_missing"):
+            continue
+        name = str(
+            person.get("face_id")
+            or person.get("voice_id")
+            or person.get("name")
+            or ""
+        ).strip()
+        if target_name and name and not _same_person_name(name, target_name):
+            continue
+        candidates.append({
+            "person_id": pid,
+            "name": name,
+            "known": True,
+        })
+    if not candidates:
+        return None
+    return candidates[0]
+
+
 def _detect_faces_in_gaze(frame) -> list[dict]:
     if frame is None:
         return []
@@ -5594,9 +5707,14 @@ def _execute_directed_look_command(
             )
 
         actual_direction, frame = _move_and_capture_gaze(direction, target_hint=target_hint)
-        faces = _detect_faces_in_gaze(frame)
-        if faces:
-            return _greet_directed_face_once(faces[0], person_name) or _silent_command_response("directed_look.face_found")
+
+        if bare_directional:
+            visible_face = _visible_known_face_candidate(person_name)
+            if visible_face:
+                return (
+                    _greet_directed_face_once(visible_face, person_name)
+                    or _silent_command_response("directed_look.face_found")
+                )
 
         if target_hint and target_kind == "scene":
             return _analyze_directed_view_once(
@@ -10183,6 +10301,19 @@ def _handle_speech_segment(
                     person_name,
                 )
 
+        pending_qa_recent_attribution = False
+        if person_id is None and not text_input:
+            person_id, person_name, pending_qa_recent_attribution = (
+                _pending_question_recent_attribution(
+                    person_id=person_id,
+                    person_name=person_name,
+                    recent_engagement=recent_engagement,
+                    raw_best_id=raw_best_id,
+                    speaker_score=speaker_score,
+                    text=text,
+                )
+            )
+
         # Multi-person scenes need a gentler fallback than "unseen stranger."
         # If the top voice candidate is one of the visible known faces, accept
         # it at a weaker floor. If not, keep conversational continuity with the
@@ -10423,6 +10554,7 @@ def _handle_speech_segment(
             person_id=person_id,
             has_unknown_visible=has_unknown_visible_now,
             identity_prompt_active=identity_prompt_active,
+            text_input=text_input,
             text=text,
         ) and not game_conversation_lock:
             _log.info(

@@ -650,6 +650,28 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertFalse(asked)
         next_q.assert_not_called()
 
+    def test_low_memory_idle_question_skips_fresh_directed_look_context(self):
+        from intelligence import interaction
+
+        old_context = dict(interaction._directed_look_context)
+        try:
+            interaction._reset_directed_look_context()
+            interaction._note_directed_look_context(direction="left")
+            with (
+                mock.patch.object(interaction.config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True),
+                mock.patch.object(interaction, "_primary_session_person_id", return_value=1),
+                mock.patch.object(interaction, "_next_profile_question") as next_q,
+            ):
+                asked = interaction._maybe_low_memory_idle_question(
+                    idle_for=20.0,
+                    effective_idle_timeout=30.0,
+                )
+
+            self.assertFalse(asked)
+            next_q.assert_not_called()
+        finally:
+            interaction._directed_look_context.update(old_context)
+
     def test_wake_word_does_not_interrupt_current_question(self):
         from intelligence import interaction
 
@@ -1727,6 +1749,59 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 text="Bret",
             )
         )
+        self.assertFalse(
+            interaction._should_ignore_idle_background_speech(
+                from_idle_activation=True,
+                person_id=None,
+                has_unknown_visible=False,
+                identity_prompt_active=False,
+                text_input=True,
+                text="hello?",
+            )
+        )
+        self.assertFalse(
+            interaction._should_ignore_idle_background_speech(
+                from_idle_activation=True,
+                person_id=None,
+                has_unknown_visible=False,
+                identity_prompt_active=False,
+                text="look left",
+            )
+        )
+        with mock.patch.object(interaction.wake_word, "is_ready", return_value=False):
+            self.assertFalse(
+                interaction._should_ignore_idle_background_speech(
+                    from_idle_activation=True,
+                    person_id=None,
+                    has_unknown_visible=False,
+                    identity_prompt_active=False,
+                    text="hello?",
+                )
+            )
+
+    def test_pending_question_recent_attribution_survives_panned_away_face(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction, "_has_unknown_visible_or_recent", return_value=False),
+            mock.patch.object(
+                interaction,
+                "_latest_pending_question",
+                return_value={"question_key": "job"},
+            ),
+        ):
+            person_id, person_name, accepted = interaction._pending_question_recent_attribution(
+                person_id=None,
+                person_name=None,
+                recent_engagement={"person_id": 1, "name": "Bret Penziger"},
+                raw_best_id=1,
+                speaker_score=0.548,
+                text="I'm an IT Systems Administrator",
+            )
+
+        self.assertTrue(accepted)
+        self.assertEqual(person_id, 1)
+        self.assertEqual(person_name, "Bret Penziger")
 
     def test_vad_barge_in_is_disabled_by_default(self):
         import config

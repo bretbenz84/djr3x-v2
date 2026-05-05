@@ -1344,6 +1344,12 @@ SPEAKER_ID_ENGAGED_VISIBLE_FLOOR = 0.50
 # candidate was someone else. Face tracking plus conversation continuity win.
 SPEAKER_ID_SINGLE_VISIBLE_CONTINUITY_FLOOR = 0.45
 
+# Pending-question continuity floor: when Rex has just asked a known person a
+# direct profile/curiosity question, their next answer may arrive while the face
+# is temporarily off-camera because the head is panned away. A weak top voice
+# candidate matching the asked person should still be treated as their answer.
+SPEAKER_ID_PENDING_QA_RECENT_FLOOR = 0.35
+
 # Multi-person visible attribution floors. When two known people are in frame,
 # a weak voice score should not automatically become "some unseen stranger."
 # These values let face presence + conversational continuity keep the turn with
