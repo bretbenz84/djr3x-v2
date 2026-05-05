@@ -662,6 +662,65 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertFalse(interaction._is_bare_wake_address("Hey Rex what time is it"))
         self.assertFalse(interaction._is_bare_wake_address("Rex play jazz"))
 
+    def test_bare_wake_from_visible_unknown_should_prompt_for_identity(self):
+        from intelligence import interaction
+
+        self.assertTrue(
+            interaction._bare_wake_should_ask_visible_unknown_identity(
+                person_id=None,
+                identity_prompt_active=False,
+                has_unknown_visible_or_recent=True,
+                game_conversation_lock=False,
+            )
+        )
+        self.assertFalse(
+            interaction._bare_wake_should_ask_visible_unknown_identity(
+                person_id=1,
+                identity_prompt_active=False,
+                has_unknown_visible_or_recent=True,
+                game_conversation_lock=False,
+            )
+        )
+
+    def test_visible_unknown_identity_question_opens_reply_window(self):
+        from intelligence import interaction
+
+        old_until = interaction._identity_prompt_until
+        old_exchange_count = interaction._session_exchange_count
+        try:
+            with (
+                mock.patch.object(
+                    interaction.llm,
+                    "get_response",
+                    return_value="Hey mystery passenger, what name am I saving?",
+                ) as get_response,
+                mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+                mock.patch.object(interaction.conv_memory, "add_to_transcript") as transcript,
+                mock.patch.object(interaction.conv_log, "log_rex") as log_rex,
+                mock.patch.object(interaction, "_register_rex_utterance") as register,
+                mock.patch.object(interaction.time, "monotonic", return_value=100.0),
+            ):
+                response = interaction._ask_visible_unknown_identity_question(
+                    "Hey Rex",
+                    recent_engagement=None,
+                    group_chatter_active=False,
+                    source="test",
+                )
+
+            self.assertEqual(response, "Hey mystery passenger, what name am I saving?")
+            self.assertGreater(interaction._identity_prompt_until, 100.0)
+            get_response.assert_called_once()
+            speak.assert_called_once_with("Hey mystery passenger, what name am I saving?")
+            transcript.assert_called_once_with(
+                "Rex",
+                "Hey mystery passenger, what name am I saving?",
+            )
+            log_rex.assert_called_once_with("Hey mystery passenger, what name am I saving?")
+            register.assert_called_once_with("Hey mystery passenger, what name am I saving?")
+        finally:
+            interaction._identity_prompt_until = old_until
+            interaction._session_exchange_count = old_exchange_count
+
     def test_bare_identity_name_rejects_filler_words(self):
         from intelligence import interaction
 
@@ -4334,6 +4393,44 @@ class ConversationGatingTest(unittest.TestCase):
                 )
         finally:
             consciousness._last_presence_reaction_at.pop(1, None)
+
+    def test_unknown_face_identity_prompt_runs_in_active_wake_fallback(self):
+        import numpy as np
+        from intelligence import consciousness
+        from state import State
+
+        old_people = consciousness.world_state.get("people")
+        old_signature = consciousness._last_face_feedback_signature
+        old_last_identity = consciousness._last_identity_prompt_at
+        try:
+            consciousness.world_state.update("people", [])
+            consciousness._last_face_feedback_signature = None
+            consciousness._last_identity_prompt_at = 0.0
+            consciousness._pending_identity_prompt.clear()
+            consciousness._identity_prompt_in_flight.clear()
+            frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+            with (
+                mock.patch("vision.face.detect_faces", return_value=[{"encoding": object()}]),
+                mock.patch("vision.face.identify_face", return_value=None),
+                mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+                mock.patch.object(consciousness.state_module, "get_state", return_value=State.ACTIVE),
+                mock.patch.object(consciousness.time, "monotonic", return_value=100.0),
+                mock.patch.object(consciousness, "_speak_async", return_value=True) as speak,
+            ):
+                consciousness._step_person_recognition(frame)
+
+            speak.assert_called_once()
+            self.assertEqual(speak.call_args.kwargs.get("purpose"), "identity_prompt")
+            self.assertEqual(speak.call_args.kwargs.get("label"), "identity_prompt")
+            self.assertTrue(consciousness._identity_prompt_in_flight.is_set())
+            self.assertEqual(consciousness._last_identity_prompt_at, 100.0)
+        finally:
+            consciousness.world_state.update("people", old_people)
+            consciousness._last_face_feedback_signature = old_signature
+            consciousness._last_identity_prompt_at = old_last_identity
+            consciousness._pending_identity_prompt.clear()
+            consciousness._identity_prompt_in_flight.clear()
 
     def test_engaged_departure_stages_before_default_departure_window(self):
         from intelligence import consciousness

@@ -3356,6 +3356,83 @@ def _handle_pending_offscreen_identify_reply(
     return True, ack_text
 
 
+def _ask_visible_unknown_identity_question(
+    text: str,
+    *,
+    recent_engagement: Optional[dict],
+    group_chatter_active: bool,
+    source: str,
+) -> Optional[str]:
+    """Ask a visible unknown speaker for their name and open enrollment window."""
+    global _identity_prompt_until, _session_exchange_count
+
+    if group_chatter_active:
+        _log.info(
+            "[interaction] suppressing visible-unknown identity ask during "
+            "group chatter source=%s text=%r",
+            source,
+            text,
+        )
+        return None
+
+    prior_first = ""
+    if recent_engagement and recent_engagement.get("name"):
+        prior_first = recent_engagement["name"].split()[0]
+    if prior_first:
+        ask_prompt = (
+            f"A new face just appeared on camera and an unfamiliar voice "
+            f"said: '{text}'. You don't recognize them. You were just "
+            f"talking with '{prior_first}'. In ONE short in-character Rex "
+            f"line, greet the newcomer, ask their name, AND ask how they "
+            f"know {prior_first}. Warm, curious. One line ending in a "
+            f"question mark."
+        )
+    else:
+        ask_prompt = (
+            f"A new face just appeared on camera and an unfamiliar voice "
+            f"said: '{text}'. You don't recognize them. In ONE short "
+            f"in-character Rex line, greet them and ask who they are / "
+            f"what name to call them. One line ending in a question mark."
+        )
+    try:
+        q_text = llm.get_response(ask_prompt)
+    except Exception as exc:
+        _log.debug("visible-unknown identity ask error source=%s: %s", source, exc)
+        return None
+    if not q_text:
+        return None
+
+    _speak_blocking(q_text)
+    conv_memory.add_to_transcript("Rex", q_text)
+    conv_log.log_rex(q_text)
+    _session_exchange_count += 1
+    _register_rex_utterance(q_text)
+    _identity_prompt_until = time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS
+    _log.info(
+        "[interaction] visible-unknown identity ask source=%s prior=%r: %r",
+        source,
+        prior_first or None,
+        q_text,
+    )
+    return q_text
+
+
+def _bare_wake_should_ask_visible_unknown_identity(
+    *,
+    person_id: Optional[int],
+    identity_prompt_active: bool,
+    has_unknown_visible_or_recent: bool,
+    game_conversation_lock: bool,
+) -> bool:
+    return (
+        person_id is None
+        and not identity_prompt_active
+        and has_unknown_visible_or_recent
+        and not game_conversation_lock
+        and _pending_face_reveal_confirm is None
+    )
+
+
 def _has_unknown_visible_person() -> bool:
     """True if WorldState currently includes at least one person without a face match."""
     try:
@@ -10904,6 +10981,24 @@ def _handle_speech_segment(
             return
 
         if _is_bare_wake_address(text):
+            if _bare_wake_should_ask_visible_unknown_identity(
+                person_id=person_id,
+                identity_prompt_active=(time.monotonic() <= _identity_prompt_until),
+                has_unknown_visible_or_recent=has_unknown_visible_or_recent,
+                game_conversation_lock=game_conversation_lock,
+            ):
+                identity_question = _ask_visible_unknown_identity_question(
+                    text,
+                    recent_engagement=recent_engagement,
+                    group_chatter_active=group_chatter_active,
+                    source="bare_wake_address",
+                )
+                if identity_question:
+                    final_executed_path = "identity_prompt.visible_unknown_wake"
+                    completed = True
+                    response_text = identity_question
+                    return
+
             _log.info("[wake_word] transcribed wake address fast-ack text=%r", text)
             _wake_ack()
             final_executed_path = "wake_address.ack"
@@ -11592,48 +11687,16 @@ def _handle_speech_segment(
             and _pending_face_reveal_confirm is None
             and command_parser.parse(text) is None
         ):
+            q_text = _ask_visible_unknown_identity_question(
+                text,
+                recent_engagement=recent_engagement,
+                group_chatter_active=group_chatter_active,
+                source="newcomer_on_camera",
+            )
             if group_chatter_active:
-                _log.info(
-                    "[interaction] suppressing newcomer identity ask during "
-                    "group chatter; treating utterance as background text=%r",
-                    text,
-                )
                 return
-            prior_first = ""
-            if recent_engagement and recent_engagement.get("name"):
-                prior_first = recent_engagement["name"].split()[0]
-            if prior_first:
-                ask_prompt = (
-                    f"A new face just appeared on camera and an unfamiliar voice "
-                    f"said: '{text}'. You don't recognize them. You were just "
-                    f"talking with '{prior_first}'. In ONE short in-character Rex "
-                    f"line, greet the newcomer, ask their name, AND ask how they "
-                    f"know {prior_first}. Warm, curious. One line ending in a "
-                    f"question mark."
-                )
-            else:
-                ask_prompt = (
-                    f"A new face just appeared on camera and an unfamiliar voice "
-                    f"said: '{text}'. You don't recognize them. In ONE short "
-                    f"in-character Rex line, greet them and ask who they are / "
-                    f"what name to call them. One line ending in a question mark."
-                )
-            try:
-                q_text = llm.get_response(ask_prompt)
-                if q_text:
-                    _speak_blocking(q_text)
-                    conv_memory.add_to_transcript("Rex", q_text)
-                    conv_log.log_rex(q_text)
-                    _register_rex_utterance(q_text)
-                    _identity_prompt_until = time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS
-                    _log.info(
-                        "[interaction] newcomer-on-camera — Rex asked name "
-                        "(prior=%r): %r",
-                        prior_first or None, q_text,
-                    )
-                    return
-            except Exception as exc:
-                _log.debug("newcomer-on-camera ask error: %s", exc)
+            if q_text:
+                return
 
         # Empathy classification — kicked off in parallel so the affect/mode
         # directive is ready by the time the LLM-fallback path assembles its

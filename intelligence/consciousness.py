@@ -1456,33 +1456,12 @@ def _step_person_recognition(frame) -> None:
                 noun = "face" if unknown_count == 1 else "faces"
                 print(f"[FACE] Unknown {noun} detected ({unknown_count})", flush=True)
                 _log.info("consciousness: unknown %s detected (%d)", noun, unknown_count)
-
-                # If someone unknown appears while idle, ask who they are so
-                # interaction can enroll them in the person database.
-                now = time.monotonic()
-                if (
-                    _can_proactive_speak()
-                    and state_module.get_state() == State.IDLE
-                    and (now - _last_identity_prompt_at) >= _IDENTITY_PROMPT_COOLDOWN_SECS
-                ):
-                    _last_identity_prompt_at = now
-                    _log.info("consciousness: prompting unknown person for identity")
-                    _identity_prompt_in_flight.set()
-
-                    def _identity_prompt_done() -> None:
-                        _pending_identity_prompt.set()
-                        _identity_prompt_in_flight.clear()
-
-                    if not _speak_async(
-                        "Hold up, I don't know you yet. What name should I save for you?",
-                        emotion="curious",
-                        wait_secs=getattr(config, "IDENTITY_RESPONSE_WAIT_SECS", 20.0),
-                        purpose="identity_prompt",
-                        label="identity_prompt",
-                        on_done=_identity_prompt_done,
-                    ):
-                        _identity_prompt_in_flight.clear()
             _last_face_feedback_signature = signature
+
+        _maybe_prompt_unknown_identity(
+            unknown_count=unknown_count,
+            known_unique=known_unique,
+        )
 
         if changed:
             world_state.update("people", people)
@@ -1503,6 +1482,60 @@ def _step_person_recognition(frame) -> None:
             _last_solo_identity = None
     except Exception as exc:
         _log.debug("person recognition step error: %s", exc)
+
+
+def _maybe_prompt_unknown_identity(
+    *,
+    unknown_count: int,
+    known_unique: list[str],
+) -> None:
+    """
+    Ask a solo unknown visible person for their name.
+
+    The physical droid can run in ACTIVE fallback when wake-word models are
+    unavailable, so this must not be limited to IDLE. Relationship inquiry owns
+    mixed known+unknown scenes; this prompt is for fresh databases / solo
+    unknown visitors.
+    """
+    global _last_identity_prompt_at
+
+    if unknown_count <= 0 or known_unique:
+        return
+    if _pending_identity_prompt.is_set() or _identity_prompt_in_flight.is_set():
+        return
+
+    current_state = state_module.get_state()
+    if current_state not in (State.IDLE, State.ACTIVE):
+        return
+    if not _can_proactive_speak():
+        return
+
+    now = time.monotonic()
+    if (now - _last_identity_prompt_at) < _IDENTITY_PROMPT_COOLDOWN_SECS:
+        return
+
+    _log.info(
+        "consciousness: prompting unknown person for identity (state=%s)",
+        getattr(current_state, "name", current_state),
+    )
+    _identity_prompt_in_flight.set()
+
+    def _identity_prompt_done() -> None:
+        _pending_identity_prompt.set()
+        _identity_prompt_in_flight.clear()
+
+    queued = _speak_async(
+        "Hold up, I don't know you yet. What name should I save for you?",
+        emotion="curious",
+        wait_secs=getattr(config, "IDENTITY_RESPONSE_WAIT_SECS", 20.0),
+        purpose="identity_prompt",
+        label="identity_prompt",
+        on_done=_identity_prompt_done,
+    )
+    if queued:
+        _last_identity_prompt_at = now
+    else:
+        _identity_prompt_in_flight.clear()
 
 
 def _step_body_social_analysis(frame) -> None:
