@@ -13,6 +13,8 @@ import re
 import time
 from typing import Optional
 
+from memory.name_validation import normalize_person_name
+
 
 INTRO_CONTEXT_TTL_SECS = 45.0
 INTRO_FOLLOWUP_TTL_SECS = 90.0
@@ -180,30 +182,7 @@ def _subject_kind(relationship: Optional[str]) -> str:
 
 
 def _normalize_name(value: str) -> Optional[str]:
-    text = (value or "").strip()
-    if not text:
-        return None
-    text = re.split(r"[,.!?;:]", text, maxsplit=1)[0].strip()
-    text = re.sub(
-        r"\b(?:hi|hello|hey|wait|hold on|actually|please|thanks|thank you)\b.*$",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    ).strip()
-    tokens = []
-    for raw in text.split():
-        token = re.sub(r"[^A-Za-z'\-]", "", raw).strip("'-")
-        if token:
-            tokens.append(token)
-    if not tokens or len(tokens) > 3:
-        return None
-    if any(t.lower() in {"my", "our", "name", "is", "this", "meet", "hi", "hello", "hey"} for t in tokens):
-        return None
-    if len(tokens) == 1 and tokens[0].lower() in {"friend", "someone", "somebody"}:
-        return None
-    if all(t.islower() for t in tokens):
-        tokens = [t.capitalize() for t in tokens]
-    return " ".join(tokens)
+    return normalize_person_name(value, allow_single=True)
 
 
 def context_fresh(ctx: Optional[dict], *, now: Optional[float] = None) -> bool:

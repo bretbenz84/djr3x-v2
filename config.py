@@ -52,6 +52,11 @@ if load_dotenv is not None:
 _load_env_fallback(_ENV_PATH)
 _ENV_FILE_VALUES = _read_env_file_values(_ENV_PATH)
 
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 _SERVO_ENV_US_MIN = 300.0
 _SERVO_ENV_US_MAX = 3000.0
 
@@ -124,8 +129,8 @@ GUI_SHOW_FPS = False
 # skips microphone capture, wake-word listening, audio-scene analysis, audio
 # output prewarm, ElevenLabs TTS calls, and direct audio playback. Responses are
 # still written to the conversation log and GUI as text.
-NO_AUDIO_MODE = False
-AUDIO_OUTPUT_SUPPRESSED = False
+NO_AUDIO_MODE = _env_flag("DJR3X_NO_AUDIO_MODE")
+AUDIO_OUTPUT_SUPPRESSED = NO_AUDIO_MODE
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AI MODELS

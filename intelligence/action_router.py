@@ -19,6 +19,7 @@ from typing import Any
 
 import apikeys
 import config
+from intelligence.person_memory_targets import references_person_memory_target
 from intelligence import performance_plan
 from openai import OpenAI
 
@@ -377,15 +378,6 @@ _NAMED_DAY_EXPLANATION_RE = re.compile(
     r"(?:the\s+)?(?:holiday\s+(?:called|named)\s+)?"
     r"(?!(?:today|today's|todays|date|the\s+date|day|weekday|day\s+of\s+week)\b)"
     r"(?:[a-z0-9][a-z0-9'’.-]*\s+){0,6}day\b",
-    re.IGNORECASE,
-)
-_PERSON_MEMORY_QUERY_RE = re.compile(
-    r"\b("
-    r"me|myself|me\?|my\s+|mine|i\s+told\s+you|i'?ve\s+told\s+you|"
-    r"remember|memory|memories|person|people|friend|partner|wife|husband|"
-    r"mom|mother|dad|father|brother|sister|kid|child|son|daughter|"
-    r"jeff|joy|jt|bret"
-    r")\b",
     re.IGNORECASE,
 )
 _EVENT_CANCEL_OR_STALE_RE = re.compile(
@@ -892,7 +884,7 @@ def _apply_context_overrides(
     if decision.action == "memory.query":
         topic_match = _TOPIC_KNOWLEDGE_QUERY_RE.search(text or "")
         topic = (topic_match.group("topic") if topic_match else "").strip()
-        if topic and not _PERSON_MEMORY_QUERY_RE.search(topic):
+        if topic and not references_person_memory_target(topic):
             return ActionDecision(
                 action="conversation.reply",
                 confidence=min(float(decision.confidence or 0.0), 0.40),

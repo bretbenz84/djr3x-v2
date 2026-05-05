@@ -1152,7 +1152,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._pending_common_first_name_identity = None
 
-    def test_common_first_name_introduction_defers_until_last_name(self):
+    def test_common_first_name_introduction_enrolls_single_name_for_later_prompt(self):
         from intelligence import interaction
 
         parsed = interaction.introductions.IntroductionParse(
@@ -1163,19 +1163,12 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         )
         interaction._pending_common_first_name_introduction = None
         try:
-            with mock.patch.object(interaction, "_enroll_introduced_person") as enroll:
-                response = interaction._handle_introduction_parse(
-                    parsed,
-                    introducer_id=1,
-                    introducer_name="Bret Benziger",
-                    visible_newcomer=True,
-                )
-
-            self.assertIn("Daniel", response)
-            self.assertIsNotNone(interaction._pending_common_first_name_introduction)
-            enroll.assert_not_called()
-
             with (
+                mock.patch.object(
+                    interaction,
+                    "_resolve_existing_visible_introduced_person",
+                    return_value=None,
+                ),
                 mock.patch.object(
                     interaction,
                     "_enroll_introduced_person",
@@ -1184,22 +1177,38 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 mock.patch.object(
                     interaction,
                     "_intro_ack_and_followup",
-                    return_value="Ack Daniel Smith.",
+                    return_value="Ack Daniel.",
                 ) as ack,
+                mock.patch.object(
+                    interaction,
+                    "_mark_single_name_for_later_last_name",
+                ) as mark_later,
             ):
-                completed = interaction._handle_common_first_name_intro_last_name_reply(
-                    "Smith"
+                response = interaction._handle_introduction_parse(
+                    parsed,
+                    introducer_id=1,
+                    introducer_name="Bret Benziger",
+                    visible_newcomer=True,
                 )
 
-            self.assertEqual(completed, "Ack Daniel Smith.")
+            self.assertEqual(response, "Ack Daniel.")
             enroll.assert_called_once_with(
-                "Daniel Smith",
+                "Daniel",
                 1,
                 "Bret Benziger",
                 "acquaintance",
                 enroll_visible_face=True,
             )
-            ack.assert_called_once()
+            ack.assert_called_once_with(
+                1,
+                "Bret Benziger",
+                3,
+                "Daniel",
+                "acquaintance",
+                subject_kind="person",
+                visible_newcomer=True,
+            )
+            mark_later.assert_called_once_with(3, "Daniel")
             self.assertIsNone(interaction._pending_common_first_name_introduction)
         finally:
             interaction._pending_common_first_name_introduction = None
@@ -1387,6 +1396,148 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._pending_existing_common_first_name = None
             interaction._common_first_name_prompted_this_session.clear()
+
+    def test_returning_single_non_common_name_is_prompted_for_last_name(self):
+        from intelligence import interaction
+
+        interaction._pending_existing_common_first_name = None
+        interaction._common_first_name_prompted_this_session.clear()
+        try:
+            with mock.patch.object(
+                interaction,
+                "_has_declined_last_name",
+                return_value=False,
+            ):
+                response = interaction._maybe_prompt_existing_common_first_name(
+                    7,
+                    "Bret",
+                )
+
+            self.assertIn("Bret", response)
+            self.assertEqual(
+                interaction._pending_existing_common_first_name["person_id"],
+                7,
+            )
+        finally:
+            interaction._pending_existing_common_first_name = None
+            interaction._common_first_name_prompted_this_session.clear()
+
+    def test_first_name_match_asks_before_aliasing_existing_person(self):
+        from intelligence import interaction
+        import numpy as np
+
+        old_pending = interaction._pending_identity_match_confirmation
+        old_exchange_count = interaction._session_exchange_count
+        interaction._pending_identity_match_confirmation = None
+        try:
+            with (
+                mock.patch.object(
+                    interaction.people_memory,
+                    "find_potential_person_match",
+                    return_value={
+                        "match_type": "first_name",
+                        "person": {"id": 1, "name": "Bret Benziger"},
+                        "candidate_name": "Bret",
+                    },
+                ),
+                mock.patch.object(interaction, "_speak_blocking") as speak,
+                mock.patch.object(interaction.conv_memory, "add_to_transcript"),
+                mock.patch.object(interaction.conv_log, "log_rex"),
+                mock.patch.object(interaction, "_register_rex_utterance"),
+            ):
+                asked = interaction._maybe_ask_identity_match_confirmation(
+                    "Bret",
+                    np.ones(16, dtype=np.float32),
+                    anonymous_speaker_label="unknown_voice_1",
+                )
+
+            self.assertTrue(asked)
+            prompt = speak.call_args.args[0]
+            self.assertIn("Are you Bret Benziger?", prompt)
+            self.assertEqual(
+                interaction._pending_identity_match_confirmation["existing_person_id"],
+                1,
+            )
+            self.assertEqual(
+                interaction._pending_identity_match_confirmation["candidate_name"],
+                "Bret",
+            )
+        finally:
+            interaction._pending_identity_match_confirmation = old_pending
+            interaction._session_exchange_count = old_exchange_count
+
+    def test_identity_match_confirmation_yes_adds_alias_to_existing_person(self):
+        from intelligence import interaction
+        import numpy as np
+
+        interaction._pending_identity_match_confirmation = {
+            "candidate_name": "Bret",
+            "existing_person_id": 1,
+            "existing_name": "Bret Benziger",
+            "match_type": "first_name",
+            "audio": np.ones(16, dtype=np.float32),
+            "anonymous_speaker_label": "unknown_voice_1",
+            "asked_at": interaction.time.monotonic(),
+        }
+        try:
+            with (
+                mock.patch.object(interaction.people_memory, "add_alias", return_value=True) as add_alias,
+                mock.patch.object(interaction, "_attach_identity_sample_to_person") as attach,
+                mock.patch.object(interaction, "_retire_anonymous_speaker_slot") as retire,
+            ):
+                response, person_id, person_name = (
+                    interaction._handle_pending_identity_match_confirmation(
+                        "yes",
+                        np.ones(16, dtype=np.float32),
+                    )
+                )
+
+            self.assertEqual(person_id, 1)
+            self.assertEqual(person_name, "Bret Benziger")
+            self.assertIn("Bret Benziger", response)
+            add_alias.assert_called_once_with(1, "Bret", source="confirmed_first_name")
+            attach.assert_called_once()
+            retire.assert_called_once_with(
+                "unknown_voice_1",
+                person_id=1,
+                person_name="Bret Benziger",
+            )
+            self.assertIsNone(interaction._pending_identity_match_confirmation)
+        finally:
+            interaction._pending_identity_match_confirmation = None
+
+    def test_identity_match_confirmation_no_single_name_asks_for_last_name(self):
+        from intelligence import interaction
+        import numpy as np
+
+        interaction._pending_identity_match_confirmation = {
+            "candidate_name": "Bret",
+            "existing_person_id": 1,
+            "existing_name": "Bret Benziger",
+            "match_type": "first_name",
+            "audio": np.ones(16, dtype=np.float32),
+            "asked_at": interaction.time.monotonic(),
+        }
+        interaction._pending_common_first_name_identity = None
+        try:
+            response, person_id, person_name = (
+                interaction._handle_pending_identity_match_confirmation(
+                    "no",
+                    np.ones(16, dtype=np.float32),
+                )
+            )
+
+            self.assertIsNone(person_id)
+            self.assertIsNone(person_name)
+            self.assertIn("last name", response)
+            self.assertEqual(
+                interaction._pending_common_first_name_identity["first_name"],
+                "Bret",
+            )
+            self.assertIsNone(interaction._pending_identity_match_confirmation)
+        finally:
+            interaction._pending_identity_match_confirmation = None
+            interaction._pending_common_first_name_identity = None
 
     def test_returning_common_first_name_reply_renames_person(self):
         from intelligence import interaction

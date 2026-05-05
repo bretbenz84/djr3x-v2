@@ -16,6 +16,7 @@ import re
 import config
 import apikeys
 from intelligence import local_llm
+from intelligence.person_memory_targets import references_person_memory_target
 from openai import OpenAI
 
 _log = logging.getLogger(__name__)
@@ -108,15 +109,6 @@ _MUSIC_VIBE_FALLBACKS = {
 _TOPIC_KNOWLEDGE_QUERY_RE = re.compile(
     r"\b(?:what\s+do\s+you\s+know|do\s+you\s+know\s+anything|"
     r"tell\s+me|explain)\s+(?:about\s+)?(?P<topic>[^?.,!;]{3,100})",
-    re.IGNORECASE,
-)
-_PERSON_MEMORY_QUERY_RE = re.compile(
-    r"\b("
-    r"me|myself|my\s+|mine|i\s+told\s+you|i'?ve\s+told\s+you|"
-    r"remember|memory|memories|person|people|friend|partner|wife|husband|"
-    r"mom|mother|dad|father|brother|sister|kid|child|son|daughter|"
-    r"jeff|joy|jt|bret"
-    r")\b",
     re.IGNORECASE,
 )
 _BARE_TOPIC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 '&:-]{2,60}$")
@@ -386,7 +378,7 @@ def classify(text: str) -> str:
 
     topic_match = _TOPIC_KNOWLEDGE_QUERY_RE.search(cleaned)
     topic = (topic_match.group("topic") if topic_match else "").strip()
-    if topic and not _PERSON_MEMORY_QUERY_RE.search(topic):
+    if topic and not references_person_memory_target(topic):
         return "general"
 
     if (
@@ -483,11 +475,11 @@ def _memory_query_allowed(text: str) -> bool:
         return True
     if not _MEMORY_QUERY_OPENER_RE.search(cleaned):
         return False
-    if _PERSON_MEMORY_QUERY_RE.search(cleaned):
+    if references_person_memory_target(cleaned):
         return True
     topic_match = _TOPIC_KNOWLEDGE_QUERY_RE.search(cleaned)
     topic = (topic_match.group("topic") if topic_match else "").strip()
-    return bool(topic and _PERSON_MEMORY_QUERY_RE.search(topic))
+    return bool(topic and references_person_memory_target(topic))
 
 
 def _classify_with_llm(text: str) -> str:

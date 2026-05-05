@@ -47,15 +47,20 @@ def _is_placeholder(value: str) -> bool:
     )
 
 
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 OPENAI_API_KEY: str = getattr(_apikeys, "OPENAI_API_KEY", "")
 ELEVENLABS_API_KEY: str = getattr(_apikeys, "ELEVENLABS_API_KEY", "")
 
+_required_keys = [("OPENAI_API_KEY", OPENAI_API_KEY)]
+if not _env_flag("DJR3X_NO_AUDIO_MODE"):
+    _required_keys.append(("ELEVENLABS_API_KEY", ELEVENLABS_API_KEY))
+
 _bad = [
     name
-    for name, val in (
-        ("OPENAI_API_KEY", OPENAI_API_KEY),
-        ("ELEVENLABS_API_KEY", ELEVENLABS_API_KEY),
-    )
+    for name, val in _required_keys
     if _is_placeholder(val)
 ]
 if _bad:

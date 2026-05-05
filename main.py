@@ -8,6 +8,14 @@ from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 _PROJECT_VENV = (_PROJECT_ROOT / "venv").resolve()
+_NO_AUDIO_ARGS = frozenset({"-noaudio", "--noaudio", "--no-audio"})
+
+
+def _seed_startup_runtime_flags(argv: list[str] | None = None) -> None:
+    """Expose startup flags needed before config.py/config_loader imports."""
+    args = sys.argv[1:] if argv is None else argv
+    if any(arg in _NO_AUDIO_ARGS for arg in args):
+        os.environ["DJR3X_NO_AUDIO_MODE"] = "1"
 
 
 def _verify_project_virtualenv() -> None:
@@ -28,6 +36,7 @@ def _verify_project_virtualenv() -> None:
 
 
 _verify_project_virtualenv()
+_seed_startup_runtime_flags()
 
 # Step 1: Logging must be configured before any other module logs.
 from utils.logging import setup_logging, get_logger

@@ -11,6 +11,7 @@ initialises as a no-op and all read functions return empty arrays.
 
 import logging
 import math
+import threading
 from collections import deque
 
 import numpy as np
@@ -28,6 +29,7 @@ _BLOCKSIZE = 512
 _MAXLEN: int = math.ceil(config.AUDIO_SAMPLE_RATE * config.AUDIO_BUFFER_SECONDS / _BLOCKSIZE)
 
 _buf: deque = deque(maxlen=_MAXLEN)
+_buf_lock = threading.Lock()
 _stream = None  # sounddevice.InputStream, or None when disabled
 _input_channels: int = 1  # actual device channels; set during start()
 
@@ -37,13 +39,13 @@ _input_channels: int = 1  # actual device channels; set during start()
 def _callback(indata, frames, time_info, status):  # noqa: ANN001
     if status:
         _log.warning("sounddevice status: %s", status)
-    # Non-blocking: only append, never block or acquire locks.
-    # CPython's GIL makes deque.append thread-safe for this single-writer pattern.
     # Mix stereo → mono by averaging channels so both capsules contribute.
     if _input_channels > 1:
-        _buf.append(indata.mean(axis=1).copy())
+        chunk = indata.mean(axis=1).copy()
     else:
-        _buf.append(indata[:, 0].copy())
+        chunk = indata[:, 0].copy()
+    with _buf_lock:
+        _buf.append(chunk)
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -137,7 +139,8 @@ def stop() -> None:
 
 def get_full_buffer() -> np.ndarray:
     """Return a copy of all audio currently in the rolling buffer as a 1-D float32 array."""
-    chunks = list(_buf)
+    with _buf_lock:
+        chunks = list(_buf)
     if not chunks:
         return np.zeros(0, dtype=np.float32)
     return np.concatenate(chunks)
@@ -162,4 +165,5 @@ def flush() -> None:
     Called after TTS playback to prevent Rex's own voice tail from being
     picked up as speech onset on the next listening pass.
     """
-    _buf.clear()
+    with _buf_lock:
+        _buf.clear()

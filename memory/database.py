@@ -24,6 +24,7 @@ _DB_FILE: Path = _PROJECT_ROOT / DB_PATH
 
 _EXPECTED_TABLES = frozenset({
     "people",
+    "person_aliases",
     "biometrics",
     "person_facts",
     "person_qa",
@@ -129,6 +130,18 @@ _MIGRATIONS = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_interest_person ON person_interests(person_id)",
     "CREATE INDEX IF NOT EXISTS idx_interest_lookup ON person_interests(person_id, name)",
+    """
+    CREATE TABLE IF NOT EXISTS person_aliases (
+        id          INTEGER PRIMARY KEY,
+        person_id   INTEGER REFERENCES people(id),
+        alias       TEXT NOT NULL,
+        alias_norm  TEXT NOT NULL UNIQUE,
+        source      TEXT,
+        created_at  DATETIME,
+        updated_at  DATETIME
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_alias_person ON person_aliases(person_id)",
 ]
 
 

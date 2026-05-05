@@ -100,6 +100,18 @@ CREATE TABLE IF NOT EXISTS biometrics (
     created_at  DATETIME
 );
 
+CREATE TABLE IF NOT EXISTS person_aliases (
+    id          INTEGER PRIMARY KEY,
+    person_id   INTEGER REFERENCES people(id),
+    alias       TEXT NOT NULL,
+    alias_norm  TEXT NOT NULL UNIQUE,
+    source      TEXT,
+    created_at  DATETIME,
+    updated_at  DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_alias_person ON person_aliases(person_id);
+
 CREATE TABLE IF NOT EXISTS person_facts (
     id          INTEGER PRIMARY KEY,
     person_id   INTEGER REFERENCES people(id),
@@ -520,6 +532,20 @@ def _ensure_column(
 def _run_schema_updates(conn: sqlite3.Connection) -> list[str]:
     """Apply idempotent schema additions for DBs created by older setup runs."""
     applied = []
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS person_aliases (
+            id          INTEGER PRIMARY KEY,
+            person_id   INTEGER REFERENCES people(id),
+            alias       TEXT NOT NULL,
+            alias_norm  TEXT NOT NULL UNIQUE,
+            source      TEXT,
+            created_at  DATETIME,
+            updated_at  DATETIME
+        );
+        CREATE INDEX IF NOT EXISTS idx_alias_person ON person_aliases(person_id);
+        """
+    )
     if _ensure_column(conn, "person_emotional_events", "checkins_muted_at", "DATETIME"):
         applied.append("person_emotional_events.checkins_muted_at")
     if _ensure_column(conn, "person_emotional_events", "checkins_muted_reason", "TEXT"):
