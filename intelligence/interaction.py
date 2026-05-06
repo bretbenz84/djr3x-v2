@@ -1500,6 +1500,9 @@ def _resolve_anonymous_speaker_slot(
 
     now = time.time()
     threshold = float(getattr(config, "ANONYMOUS_SPEAKER_SLOT_MATCH_THRESHOLD", 0.74))
+    sticky_threshold = float(
+        getattr(config, "ANONYMOUS_SPEAKER_SLOT_STICKY_THRESHOLD", 0.70)
+    )
     best_slot: Optional[_AnonymousSpeakerSlot] = None
     best_score: Optional[float] = None
     for slot in _anonymous_speaker_slots:
@@ -1510,7 +1513,20 @@ def _resolve_anonymous_speaker_slot(
             best_score = score
             best_slot = slot
 
-    if best_slot is not None and best_score is not None and best_score >= threshold:
+    raw_id = _safe_int(raw_best_id)
+    raw_candidate_sticky = (
+        best_slot is not None
+        and best_score is not None
+        and raw_id is not None
+        and best_slot.raw_best_id is not None
+        and raw_id == best_slot.raw_best_id
+        and best_score >= sticky_threshold
+    )
+    if (
+        best_slot is not None
+        and best_score is not None
+        and (best_score >= threshold or raw_candidate_sticky)
+    ):
         blend_weight = float(min(max(best_slot.turns, 1), 5))
         blended = _normalize_voice_embedding(
             (best_slot.embedding * blend_weight) + embedding
@@ -1524,13 +1540,14 @@ def _resolve_anonymous_speaker_slot(
         best_slot.raw_best_score = _safe_round_score(raw_best_score)
         score_out = _safe_round_score(best_score)
         _log.info(
-            "[anonymous_speaker] matched label=%s score=%.3f turns=%d raw_candidate=%s/%r raw_score=%.3f",
+            "[anonymous_speaker] matched label=%s score=%.3f turns=%d raw_candidate=%s/%r raw_score=%.3f reason=%s",
             best_slot.label,
             float(best_score),
             best_slot.turns,
             raw_best_id,
             raw_best_name,
             float(raw_best_score or 0.0),
+            "raw_candidate_sticky" if raw_candidate_sticky else "threshold",
         )
         return best_slot.label, score_out
 
@@ -2604,6 +2621,26 @@ def _common_first_name_context_fresh(ctx: Optional[dict]) -> bool:
         return False
     ttl = float(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_WINDOW_SECS", 30.0))
     return (time.monotonic() - float(ctx.get("asked_at", 0.0))) <= max(1.0, ttl)
+
+
+def _pending_existing_common_first_name_reply_target(
+    text: str,
+) -> Optional[tuple[int, str]]:
+    """Return the pending known person when a short reply answers their prompt."""
+    ctx = _pending_existing_common_first_name
+    if not _common_first_name_context_fresh(ctx):
+        return None
+
+    first_name = str((ctx or {}).get("first_name") or "").strip()
+    person_id = _safe_int((ctx or {}).get("person_id"))
+    if person_id is None or not first_name:
+        return None
+
+    if _is_last_name_refusal(text, first_name):
+        return person_id, first_name
+    if _extract_last_name_reply(text, first_name):
+        return person_id, first_name
+    return None
 
 
 _LAST_NAME_DECLINED_FACT_KEY = "last_name_declined"
@@ -10453,6 +10490,7 @@ def _handle_speech_segment(
         person_id: Optional[int] = None
         person_name: Optional[str] = None
         sticky_accepted = False
+        identity_resolution_override: Optional[str] = None
         if raw_best_id is not None and speaker_score >= hard_threshold:
             person_id = raw_best_id
             person_name = raw_best_name
@@ -10748,22 +10786,45 @@ def _handle_speech_segment(
                 )
             # Else: falls through to normal enrollment logic below
 
+        pending_last_name_target = _pending_existing_common_first_name_reply_target(text)
+        if pending_last_name_target is not None:
+            pending_person_id, pending_first_name = pending_last_name_target
+            if person_id != pending_person_id:
+                _log.info(
+                    "[interaction] person resolution: pending last-name reply attributed "
+                    "to person_id=%s name=%r despite voice candidate=%s/%r score=%.3f "
+                    "prior_person_id=%s",
+                    pending_person_id,
+                    pending_first_name,
+                    raw_best_id,
+                    raw_best_name,
+                    speaker_score,
+                    person_id,
+                )
+            person_id = pending_person_id
+            person_name = pending_first_name
+            off_camera_unknown = False
+            identity_resolution_override = "pending_last_name_reply"
+
         identity_prompt_active = time.monotonic() <= _identity_prompt_until
         has_unknown_visible_now = _has_unknown_visible_person()
         has_unknown_visible_or_recent = has_unknown_visible_now or _has_unknown_visible_or_recent()
         anonymous_speaker_label: Optional[str] = None
         anonymous_speaker_match_score: Optional[float] = None
         speaker_label_for_turn = person_name or anonymous_speaker_label or "user"
-        identity_resolution_for_turn = _infer_identity_resolution_strategy(
-            person_id=person_id,
-            raw_best_id=raw_best_id,
-            speaker_score=speaker_score,
-            hard_threshold=hard_threshold,
-            soft_threshold=soft_threshold,
-            sticky_accepted=sticky_accepted,
-            ws_identified=ws_identified,
-            recent_engagement=recent_engagement,
-            off_camera_unknown=off_camera_unknown,
+        identity_resolution_for_turn = (
+            identity_resolution_override
+            or _infer_identity_resolution_strategy(
+                person_id=person_id,
+                raw_best_id=raw_best_id,
+                speaker_score=speaker_score,
+                hard_threshold=hard_threshold,
+                soft_threshold=soft_threshold,
+                sticky_accepted=sticky_accepted,
+                ws_identified=ws_identified,
+                recent_engagement=recent_engagement,
+                off_camera_unknown=off_camera_unknown,
+            )
         )
         _character_loop_note_speaker(
             character_trace,

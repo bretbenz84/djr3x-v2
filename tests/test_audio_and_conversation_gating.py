@@ -1604,6 +1604,33 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             interaction._pending_existing_common_first_name = None
             interaction._common_first_name_prompted_this_session.clear()
 
+    def test_pending_existing_common_first_name_reply_target_sticks_to_person(self):
+        from intelligence import interaction
+
+        interaction._pending_existing_common_first_name = {
+            "person_id": 3,
+            "first_name": "Gloria",
+            "asked_at": interaction.time.monotonic(),
+        }
+        try:
+            self.assertEqual(
+                interaction._pending_existing_common_first_name_reply_target("Carter"),
+                (3, "Gloria"),
+            )
+            self.assertEqual(
+                interaction._pending_existing_common_first_name_reply_target(
+                    "my last name is Carter"
+                ),
+                (3, "Gloria"),
+            )
+            self.assertIsNone(
+                interaction._pending_existing_common_first_name_reply_target(
+                    "What time is it?"
+                )
+            )
+        finally:
+            interaction._pending_existing_common_first_name = None
+
     def test_returning_common_first_name_refusal_is_remembered(self):
         from intelligence import interaction
 
@@ -6390,6 +6417,84 @@ class GroupChatterGatingTest(unittest.TestCase):
             self.assertGreaterEqual(second_score, 0.74)
             self.assertEqual(len(interaction._anonymous_speaker_slots), 1)
             self.assertEqual(interaction._anonymous_speaker_slots[0].turns, 2)
+        finally:
+            interaction._clear_anonymous_speaker_slots()
+
+    def test_anonymous_speaker_slot_reuses_near_match_for_same_raw_candidate(self):
+        import numpy as np
+        from intelligence import interaction
+
+        audio = np.zeros(1600, dtype=np.float32)
+        first_embedding = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        near_embedding = np.array([0.72, 0.694, 0.0], dtype=np.float32)
+
+        interaction._clear_anonymous_speaker_slots()
+        try:
+            with mock.patch.object(
+                interaction.speaker_id,
+                "get_embedding",
+                side_effect=[first_embedding, near_embedding],
+            ):
+                first_label, first_score = interaction._resolve_anonymous_speaker_slot(
+                    audio,
+                    person_id=None,
+                    raw_best_id=1,
+                    raw_best_name="Bret",
+                    raw_best_score=0.52,
+                )
+                second_label, second_score = interaction._resolve_anonymous_speaker_slot(
+                    audio,
+                    person_id=None,
+                    raw_best_id=1,
+                    raw_best_name="Bret",
+                    raw_best_score=0.53,
+                )
+
+            self.assertEqual(first_label, "unknown_voice_1")
+            self.assertIsNone(first_score)
+            self.assertEqual(second_label, "unknown_voice_1")
+            self.assertIsNotNone(second_score)
+            self.assertGreaterEqual(second_score, 0.70)
+            self.assertLess(second_score, 0.74)
+            self.assertEqual(len(interaction._anonymous_speaker_slots), 1)
+            self.assertEqual(interaction._anonymous_speaker_slots[0].turns, 2)
+        finally:
+            interaction._clear_anonymous_speaker_slots()
+
+    def test_anonymous_speaker_slot_does_not_sticky_match_different_raw_candidate(self):
+        import numpy as np
+        from intelligence import interaction
+
+        audio = np.zeros(1600, dtype=np.float32)
+        first_embedding = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        near_embedding = np.array([0.72, 0.694, 0.0], dtype=np.float32)
+
+        interaction._clear_anonymous_speaker_slots()
+        try:
+            with mock.patch.object(
+                interaction.speaker_id,
+                "get_embedding",
+                side_effect=[first_embedding, near_embedding],
+            ):
+                first_label, _ = interaction._resolve_anonymous_speaker_slot(
+                    audio,
+                    person_id=None,
+                    raw_best_id=1,
+                    raw_best_name="Bret",
+                    raw_best_score=0.52,
+                )
+                second_label, second_score = interaction._resolve_anonymous_speaker_slot(
+                    audio,
+                    person_id=None,
+                    raw_best_id=2,
+                    raw_best_name="JT",
+                    raw_best_score=0.53,
+                )
+
+            self.assertEqual(first_label, "unknown_voice_1")
+            self.assertEqual(second_label, "unknown_voice_2")
+            self.assertIsNone(second_score)
+            self.assertEqual(len(interaction._anonymous_speaker_slots), 2)
         finally:
             interaction._clear_anonymous_speaker_slots()
 

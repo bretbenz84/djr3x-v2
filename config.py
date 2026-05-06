@@ -1260,6 +1260,7 @@ CHARACTER_LOOP_TRACE_ENABLED = True
 # without creating person records.
 ANONYMOUS_SPEAKER_SLOTS_ENABLED = True
 ANONYMOUS_SPEAKER_SLOT_MATCH_THRESHOLD = 0.74
+ANONYMOUS_SPEAKER_SLOT_STICKY_THRESHOLD = 0.70
 ANONYMOUS_SPEAKER_SLOT_MAX = 8
 
 # Log coarse timings for the live speech-response path. These are intentionally
