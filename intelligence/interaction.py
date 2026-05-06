@@ -1339,6 +1339,10 @@ def _apply_post_tts_handoff(
         _post_tts_flush_needed = True
     else:
         _post_tts_flush_needed = False
+    try:
+        vad.reset_state()
+    except Exception as exc:
+        _log.debug("[aec] VAD reset after post-TTS handoff failed: %s", exc)
     _log.debug(
         "[aec] post-tts handoff source=%s asked_question=%s delay=%.3fs flush=%s",
         source,
@@ -13357,6 +13361,10 @@ def _loop() -> None:
             except Exception:
                 pass
 
+            if time.monotonic() < _listen_resume_at:
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+
             chunk = stream.get_audio_chunk(_CHUNK_SECS)
             if len(chunk) == 0:
                 _stop_event.wait(_CHUNK_SECS)
@@ -13364,10 +13372,6 @@ def _loop() -> None:
             _idle_speech = vad.is_speech(_chunk_for_vad(chunk))
             _situation_assessor.set_vad_active(_idle_speech)
             if not _idle_speech:
-                _stop_event.wait(_CHUNK_SECS)
-                continue
-
-            if time.monotonic() < _listen_resume_at:
                 _stop_event.wait(_CHUNK_SECS)
                 continue
 
@@ -13432,6 +13436,26 @@ def _loop() -> None:
         ):
             continue
 
+        if time.monotonic() < _listen_resume_at:
+            _situation_assessor.set_vad_active(False)
+            _stop_event.wait(_CHUNK_SECS)
+            continue
+
+        direct_audio_path = None
+        try:
+            direct_audio_path = speech_queue.current_audio_path()
+        except Exception:
+            direct_audio_path = None
+        if speech_queue.is_speaking() or output_gate.is_busy():
+            interruptible_audio = (
+                direct_audio_path is not None
+                and _is_interruptible_game_audio_path(direct_audio_path)
+            )
+            if not interruptible_audio and not _vad_barge_in_enabled():
+                _situation_assessor.set_vad_active(False)
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+
         if idle_for >= effective_idle_timeout:
             _log.info("[interaction] conversation idle timeout — returning to IDLE")
             _maybe_idle_outro()
@@ -13450,12 +13474,6 @@ def _loop() -> None:
         if not _active_speech:
             if _maybe_prompt_incomplete_turn():
                 _last_speech_at = time.monotonic()
-            _stop_event.wait(_CHUNK_SECS)
-            continue
-
-        # Discard speech onset during the post-TTS deaf window so Rex's own
-        # voice tail (or the first 0.8 s of reverb decay) cannot self-trigger.
-        if time.monotonic() < _listen_resume_at:
             _stop_event.wait(_CHUNK_SECS)
             continue
 
@@ -13480,11 +13498,6 @@ def _loop() -> None:
         # Rex's voice tail, then WAIT for a fresh VAD rising edge before
         # accumulating. Without this, the rolling buffer still holds ~seconds of
         # Rex's own voice which Whisper concatenates onto the user's utterance.
-        direct_audio_path = None
-        try:
-            direct_audio_path = speech_queue.current_audio_path()
-        except Exception:
-            direct_audio_path = None
         if speech_queue.is_speaking() or output_gate.is_busy():
             if _is_interruptible_game_audio_path(direct_audio_path):
                 _interrupted.set()

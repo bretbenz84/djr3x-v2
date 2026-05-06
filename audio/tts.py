@@ -166,6 +166,7 @@ def speak(
     if audio is None or len(audio) == 0:
         logger.error("[tts] audio decode produced empty array — skipping playback")
         return
+    audio = _trim_trailing_silence(audio, samplerate)
 
     try:
         conv_log.log_rex(spoken_text)
@@ -180,6 +181,62 @@ def speak(
         post_playback_tail_secs=post_playback_tail_secs,
         flush_on_playback_stop=flush_on_playback_stop,
     )
+
+
+def _trim_trailing_silence(audio: np.ndarray, samplerate: int) -> np.ndarray:
+    """Remove TTS tail padding that keeps AEC active after Rex sounds done."""
+    if not bool(getattr(config, "TTS_TRIM_TRAILING_SILENCE_ENABLED", True)):
+        return audio
+    if audio is None or audio.size == 0 or samplerate <= 0:
+        return audio
+
+    threshold = max(
+        0.0,
+        float(getattr(config, "TTS_TRIM_TRAILING_SILENCE_THRESHOLD", 0.003) or 0.0),
+    )
+    if threshold <= 0.0:
+        return audio
+
+    window_ms = max(
+        1.0,
+        float(getattr(config, "TTS_TRIM_TRAILING_SILENCE_WINDOW_MS", 20) or 20),
+    )
+    padding_ms = max(
+        0.0,
+        float(getattr(config, "TTS_TRIM_TRAILING_SILENCE_PADDING_MS", 40) or 0),
+    )
+    window = max(1, int(samplerate * window_ms / 1000.0))
+    padding = max(0, int(samplerate * padding_ms / 1000.0))
+
+    mono = audio
+    if mono.ndim > 1:
+        mono = mono.mean(axis=1)
+    mono = np.nan_to_num(mono, nan=0.0, posinf=0.0, neginf=0.0)
+
+    last_voice_sample = -1
+    for end in range(mono.size, 0, -window):
+        start = max(0, end - window)
+        chunk = mono[start:end]
+        if chunk.size == 0:
+            continue
+        rms = float(np.sqrt(np.mean(chunk * chunk)))
+        peak = float(np.max(np.abs(chunk)))
+        if rms >= threshold or peak >= threshold * 2.0:
+            last_voice_sample = end
+            break
+
+    if last_voice_sample < 0:
+        return audio
+
+    trim_at = min(audio.shape[0], last_voice_sample + padding)
+    # Keep tiny trims alone; they are not worth perturbing playback timing.
+    if audio.shape[0] - trim_at < int(samplerate * 0.08):
+        return audio
+
+    trimmed = audio[:trim_at].copy()
+    removed_ms = (audio.shape[0] - trim_at) * 1000.0 / float(samplerate)
+    logger.info("[tts] trimmed %.0fms trailing silence", removed_ms)
+    return trimmed
 
 
 # ── Internal: playback ────────────────────────────────────────────────────────

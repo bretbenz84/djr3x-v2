@@ -59,6 +59,16 @@ def is_speech(audio_chunk: np.ndarray) -> bool:
         return False
 
 
+def reset_state() -> None:
+    """Reset the streaming VAD context before a fresh listening window."""
+    if not _loaded:
+        return
+    try:
+        _model.reset_states()
+    except Exception as exc:
+        _log.debug("VAD reset_state error: %s", exc)
+
+
 def get_speech_segments(audio_array: np.ndarray) -> list[tuple[float, float]]:
     """Return (start_sec, end_sec) pairs for every speech region in `audio_array`.
 

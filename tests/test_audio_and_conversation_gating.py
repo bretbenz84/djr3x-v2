@@ -51,6 +51,40 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 echo_cancel._sequence_active = old_sequence_active
                 echo_cancel._playback_canceled = old_canceled
 
+    def test_tts_trims_trailing_padding_so_question_handoff_is_not_late(self):
+        import numpy as np
+        from audio import tts
+
+        samplerate = 16000
+        voice = np.ones(int(0.5 * samplerate), dtype=np.float32) * 0.05
+        tail = np.zeros(int(0.6 * samplerate), dtype=np.float32)
+        audio = np.concatenate([voice, tail])
+
+        with (
+            mock.patch.object(tts.config, "TTS_TRIM_TRAILING_SILENCE_ENABLED", True),
+            mock.patch.object(tts.config, "TTS_TRIM_TRAILING_SILENCE_THRESHOLD", 0.003),
+            mock.patch.object(tts.config, "TTS_TRIM_TRAILING_SILENCE_WINDOW_MS", 20),
+            mock.patch.object(tts.config, "TTS_TRIM_TRAILING_SILENCE_PADDING_MS", 40),
+        ):
+            trimmed = tts._trim_trailing_silence(audio, samplerate)
+
+        self.assertLess(len(trimmed), len(audio) - int(0.45 * samplerate))
+        self.assertGreaterEqual(len(trimmed), len(voice))
+
+    def test_tts_trailing_trim_leaves_short_tails_alone(self):
+        import numpy as np
+        from audio import tts
+
+        samplerate = 16000
+        voice = np.ones(int(0.5 * samplerate), dtype=np.float32) * 0.05
+        tail = np.zeros(int(0.04 * samplerate), dtype=np.float32)
+        audio = np.concatenate([voice, tail])
+
+        with mock.patch.object(tts.config, "TTS_TRIM_TRAILING_SILENCE_ENABLED", True):
+            trimmed = tts._trim_trailing_silence(audio, samplerate)
+
+        self.assertEqual(len(trimmed), len(audio))
+
     def test_first_text_enqueue_inserts_startup_chime_once(self):
         from audio import speech_queue
 
@@ -299,13 +333,17 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
     def test_apply_question_handoff_does_not_flush_stream(self):
         from intelligence import interaction
 
-        with mock.patch.object(interaction.stream, "flush") as flush:
+        with (
+            mock.patch.object(interaction.stream, "flush") as flush,
+            mock.patch.object(interaction.vad, "reset_state") as reset_vad,
+        ):
             interaction._apply_post_tts_handoff(
                 "What do you do for work?",
                 source="test",
             )
 
         flush.assert_not_called()
+        reset_vad.assert_called_once()
 
     def test_post_tts_handoff_refreshes_idle_timer(self):
         from intelligence import interaction

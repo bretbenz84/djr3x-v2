@@ -936,6 +936,15 @@ POST_QUESTION_PLAYBACK_SUPPRESSION_SECS = 0.05
 # while Rex was finishing the question. Non-question speech still flushes.
 POST_QUESTION_FLUSH_AUDIO_BUFFER = False
 
+# ElevenLabs clips can contain trailing near-silence. Humans naturally answer
+# when Rex sounds done, but the audio device may still be playing that padding,
+# keeping mic suppression active. Trim only the tail, leaving a tiny cushion so
+# words do not click or feel clipped.
+TTS_TRIM_TRAILING_SILENCE_ENABLED = True
+TTS_TRIM_TRAILING_SILENCE_THRESHOLD = 0.003
+TTS_TRIM_TRAILING_SILENCE_WINDOW_MS = 20
+TTS_TRIM_TRAILING_SILENCE_PADDING_MS = 40
+
 # If Rex asks a question and the human does not answer, wait this long before
 # letting him recover with one joke/quip and move on.
 CONVERSATION_NO_RESPONSE_QUIP_SECS = 7.0
