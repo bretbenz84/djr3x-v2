@@ -769,6 +769,59 @@ FACE_TRACKING_VERTICAL_GAIN = _env_float(
     min_value=0.0,
     max_value=2.0,
 )
+FACE_TRACKING_ADAPTIVE_REST_ENABLED = _env_bool("FACE_TRACKING_ADAPTIVE_REST_ENABLED", True)
+FACE_TRACKING_REST_ADAPT_ALPHA = _env_float(
+    "FACE_TRACKING_REST_ADAPT_ALPHA",
+    0.08,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACE_TRACKING_REST_MIN_FACE_AREA_FRACTION = _env_float(
+    "FACE_TRACKING_REST_MIN_FACE_AREA_FRACTION",
+    0.003,
+    min_value=0.0,
+    max_value=0.25,
+)
+FACE_TRACKING_REST_LEARN_FROM_LIVE_BOXES = _env_bool(
+    "FACE_TRACKING_REST_LEARN_FROM_LIVE_BOXES",
+    False,
+)
+FACE_TRACKING_REST_MAX_LIFT_OFFSET_QUS = _env_int(
+    "FACE_TRACKING_REST_MAX_LIFT_OFFSET_QUS",
+    1100,
+    min_value=0,
+    max_value=4000,
+)
+FACE_TRACKING_REST_MAX_TILT_OFFSET_QUS = _env_int(
+    "FACE_TRACKING_REST_MAX_TILT_OFFSET_QUS",
+    900,
+    min_value=0,
+    max_value=2000,
+)
+FACE_TRACKING_REST_RETURN_AFTER_LOST_SECS = _env_float(
+    "FACE_TRACKING_REST_RETURN_AFTER_LOST_SECS",
+    0.8,
+    min_value=0.0,
+    max_value=30.0,
+)
+FACE_TRACKING_REST_RETURN_MAX_STEP_QUS = _env_int(
+    "FACE_TRACKING_REST_RETURN_MAX_STEP_QUS",
+    55,
+    min_value=1,
+    max_value=2000,
+)
+FACE_TRACKING_REST_SERVO_SPEED = _env_int(
+    "FACE_TRACKING_REST_SERVO_SPEED",
+    35,
+    min_value=0,
+    max_value=255,
+)
+FACE_TRACKING_REST_SERVO_ACCELERATION = _env_int(
+    "FACE_TRACKING_REST_SERVO_ACCELERATION",
+    6,
+    min_value=0,
+    max_value=255,
+)
 
 # Speaker-gaze intent makes head tracking social: when someone talks, prefer
 # that person's face if visible; if no face is visible, run a short down-biased

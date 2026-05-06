@@ -28,6 +28,7 @@ class FaceTrackingTests(unittest.TestCase):
         self.old_tracking_error_x = consciousness._face_tracking_last_error_x
         self.old_tracking_error_y = consciousness._face_tracking_last_error_y
         self.old_tracking_error_at = consciousness._face_tracking_last_error_at
+        self.old_adaptive_head_rest = dict(consciousness._adaptive_head_rest)
         with consciousness._speaker_gaze_lock:
             self.old_speaker_gaze_intent = dict(consciousness._speaker_gaze_intent)
             consciousness._speaker_gaze_intent.clear()
@@ -47,6 +48,8 @@ class FaceTrackingTests(unittest.TestCase):
         c._face_tracking_last_error_x = self.old_tracking_error_x
         c._face_tracking_last_error_y = self.old_tracking_error_y
         c._face_tracking_last_error_at = self.old_tracking_error_at
+        c._adaptive_head_rest.clear()
+        c._adaptive_head_rest.update(self.old_adaptive_head_rest)
         with c._speaker_gaze_lock:
             c._speaker_gaze_intent.clear()
             c._speaker_gaze_intent.update(self.old_speaker_gaze_intent)
@@ -186,6 +189,137 @@ class FaceTrackingTests(unittest.TestCase):
             lift=updates[lift_ch],
             tilt=updates[tilt_ch],
         )
+
+    def test_adaptive_rest_learns_downward_pose_from_low_face(self):
+        c = self.consciousness
+        self._set_servo_positions()
+        lift_neutral = c.config.SERVO_CHANNELS["headlift"]["neutral"]
+        tilt_neutral = c.config.SERVO_CHANNELS["headtilt"]["neutral"]
+        c._adaptive_head_rest.clear()
+        c._adaptive_head_rest.update({
+            "lift": lift_neutral,
+            "tilt": tilt_neutral,
+            "samples": 0,
+            "updated_at": 0.0,
+        })
+        c.world_state.update("people", [{
+            "id": "person_1",
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": True,
+            "face_box": (560, 560, 160, 140),
+        }])
+        c._face_tracking_lock = {}
+        c._face_tracking_suspended_until = 0.0
+
+        with (
+            mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+            mock.patch.object(c.time, "monotonic", return_value=225.0),
+            mock.patch("hardware.servos.set_servos"),
+            mock.patch("hardware.servos.set_motion_profile"),
+            mock.patch("hardware.servos.set_face_tracking_baseline"),
+            mock.patch.object(c.config, "FACE_TRACKING_VERTICAL_ENABLED", True),
+            mock.patch.object(c.config, "FACE_TRACKING_ADAPTIVE_REST_ENABLED", True),
+            mock.patch.object(c.config, "FACE_TRACKING_REST_ADAPT_ALPHA", 1.0),
+            mock.patch.object(c.config, "FACE_TRACKING_REST_MIN_FACE_AREA_FRACTION", 0.0),
+        ):
+            c._step_face_tracking(self.frame)
+
+        self.assertLess(c._adaptive_head_rest["lift"], lift_neutral)
+        self.assertGreater(c._adaptive_head_rest["tilt"], tilt_neutral)
+
+    def test_adaptive_rest_learns_upward_pose_from_high_face(self):
+        c = self.consciousness
+        self._set_servo_positions()
+        lift_neutral = c.config.SERVO_CHANNELS["headlift"]["neutral"]
+        tilt_neutral = c.config.SERVO_CHANNELS["headtilt"]["neutral"]
+        c._adaptive_head_rest.clear()
+        c._adaptive_head_rest.update({
+            "lift": lift_neutral,
+            "tilt": tilt_neutral,
+            "samples": 0,
+            "updated_at": 0.0,
+        })
+        c.world_state.update("people", [{
+            "id": "person_1",
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": True,
+            "face_box": (560, 80, 160, 140),
+        }])
+        c._face_tracking_lock = {}
+        c._face_tracking_suspended_until = 0.0
+
+        with (
+            mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+            mock.patch.object(c.time, "monotonic", return_value=226.0),
+            mock.patch("hardware.servos.set_servos"),
+            mock.patch("hardware.servos.set_motion_profile"),
+            mock.patch("hardware.servos.set_face_tracking_baseline"),
+            mock.patch.object(c.config, "FACE_TRACKING_VERTICAL_ENABLED", True),
+            mock.patch.object(c.config, "FACE_TRACKING_ADAPTIVE_REST_ENABLED", True),
+            mock.patch.object(c.config, "FACE_TRACKING_REST_ADAPT_ALPHA", 1.0),
+            mock.patch.object(c.config, "FACE_TRACKING_REST_MIN_FACE_AREA_FRACTION", 0.0),
+        ):
+            c._step_face_tracking(self.frame)
+
+        self.assertGreater(c._adaptive_head_rest["lift"], lift_neutral)
+        self.assertLess(c._adaptive_head_rest["tilt"], tilt_neutral)
+
+    def test_speaker_gaze_center_search_uses_adaptive_vertical_rest(self):
+        c = self.consciousness
+        lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
+        tilt_ch = c.config.SERVO_CHANNELS["headtilt"]["ch"]
+        c._adaptive_head_rest.clear()
+        c._adaptive_head_rest.update({
+            "lift": 5480,
+            "tilt": 5010,
+            "samples": 4,
+            "updated_at": 100.0,
+        })
+
+        with (
+            mock.patch.object(c.config, "FACE_TRACKING_ADAPTIVE_REST_ENABLED", True),
+            mock.patch.object(c.config, "FACE_TRACKING_VERTICAL_ENABLED", True),
+        ):
+            targets = c._speaker_gaze_search_targets("center")
+
+        self.assertEqual(targets[lift_ch], 5480)
+        self.assertEqual(targets[tilt_ch], 5010)
+
+    def test_face_loss_eases_vertical_pose_toward_adaptive_rest(self):
+        c = self.consciousness
+        self._set_servo_positions()
+        c.world_state.update("people", [])
+        c._face_tracking_lock = {}
+        c._face_tracking_suspended_until = 0.0
+        c._adaptive_head_rest.clear()
+        c._adaptive_head_rest.update({
+            "lift": 5500,
+            "tilt": 4800,
+            "samples": 3,
+            "updated_at": 100.0,
+        })
+
+        with (
+            mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+            mock.patch.object(c.time, "monotonic", return_value=260.0),
+            mock.patch("hardware.servos.set_servos") as set_servos,
+            mock.patch("hardware.servos.set_motion_profile") as set_profile,
+            mock.patch("hardware.servos.set_face_tracking_baseline") as set_baseline,
+            mock.patch.object(c.config, "FACE_TRACKING_ADAPTIVE_REST_ENABLED", True),
+            mock.patch.object(c.config, "FACE_TRACKING_REST_RETURN_AFTER_LOST_SECS", 0.0),
+            mock.patch.object(c.config, "FACE_TRACKING_REST_RETURN_MAX_STEP_QUS", 55),
+        ):
+            c._step_face_tracking(self.frame, [])
+
+        lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
+        tilt_ch = c.config.SERVO_CHANNELS["headtilt"]["ch"]
+        updates = set_servos.call_args.args[0]
+        self.assertEqual(updates[lift_ch], 5945)
+        self.assertEqual(updates[tilt_ch], 4375)
+        set_profile.assert_called_once()
+        set_baseline.assert_called_once_with(neck=6000, lift=5945, tilt=4375)
 
     def test_recent_speaker_face_beats_larger_bystander(self):
         c = self.consciousness

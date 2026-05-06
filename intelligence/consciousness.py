@@ -257,6 +257,15 @@ _recent_engaged_touch_at: float = 0.0
 _speaker_gaze_lock = threading.Lock()
 _speaker_gaze_intent: dict = {}
 
+# Learned vertical rest gaze. Active face tracking still owns the exact gaze
+# baseline; this only changes where Rex settles/searches after a face disappears.
+_adaptive_head_rest: dict = {
+    "lift": int(config.SERVO_CHANNELS["headlift"]["neutral"]),
+    "tilt": int(config.SERVO_CHANNELS["headtilt"]["neutral"]),
+    "samples": 0,
+    "updated_at": 0.0,
+}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Engagement API — called by interaction.py
@@ -5863,6 +5872,149 @@ def _limited_tracking_step(name: str, current: int, target: int, max_step: int) 
     return _clamp_servo(name, int(current) + (max_step if delta > 0 else -max_step))
 
 
+def _adaptive_head_rest_enabled() -> bool:
+    return bool(getattr(config, "FACE_TRACKING_ADAPTIVE_REST_ENABLED", True)) and bool(
+        getattr(config, "FACE_TRACKING_VERTICAL_ENABLED", True)
+    )
+
+
+def _adaptive_head_rest_limit(name: str, value: float) -> int:
+    cfg = config.SERVO_CHANNELS[name]
+    neutral = int(cfg["neutral"])
+    attr = (
+        "FACE_TRACKING_REST_MAX_LIFT_OFFSET_QUS"
+        if name == "headlift"
+        else "FACE_TRACKING_REST_MAX_TILT_OFFSET_QUS"
+    )
+    max_offset = int(getattr(config, attr, 0) or 0)
+    if max_offset <= 0:
+        return neutral
+    low = max(int(cfg["min"]), neutral - max_offset)
+    high = min(int(cfg["max"]), neutral + max_offset)
+    return max(low, min(high, int(round(value))))
+
+
+def _adaptive_head_rest_target() -> tuple[int, int]:
+    if not _adaptive_head_rest_enabled() or int(_adaptive_head_rest.get("samples") or 0) <= 0:
+        return (
+            int(config.SERVO_CHANNELS["headlift"]["neutral"]),
+            int(config.SERVO_CHANNELS["headtilt"]["neutral"]),
+        )
+    return (
+        _adaptive_head_rest_limit("headlift", float(_adaptive_head_rest.get("lift") or 0.0)),
+        _adaptive_head_rest_limit("headtilt", float(_adaptive_head_rest.get("tilt") or 0.0)),
+    )
+
+
+def _face_area_fraction(candidate: dict, frame_w: int, frame_h: int) -> float:
+    frame_area = max(1.0, float(frame_w) * float(frame_h))
+    try:
+        area = float(candidate.get("area") or 0.0)
+    except (TypeError, ValueError):
+        area = 0.0
+    if area <= 0.0:
+        box = candidate.get("box")
+        if isinstance(box, (list, tuple)) and len(box) >= 4:
+            try:
+                area = max(0.0, float(box[2]) * float(box[3]))
+            except (TypeError, ValueError):
+                area = 0.0
+    return max(0.0, area / frame_area)
+
+
+def _note_adaptive_head_rest(
+    *,
+    candidate: dict,
+    frame_w: int,
+    frame_h: int,
+    lift: int,
+    tilt: int,
+    now: float,
+) -> None:
+    if not _adaptive_head_rest_enabled():
+        return
+    if candidate.get("live_tracked") and not bool(
+        getattr(config, "FACE_TRACKING_REST_LEARN_FROM_LIVE_BOXES", False)
+    ):
+        return
+    min_fraction = float(getattr(config, "FACE_TRACKING_REST_MIN_FACE_AREA_FRACTION", 0.003) or 0.0)
+    if _face_area_fraction(candidate, frame_w, frame_h) < max(0.0, min_fraction):
+        return
+
+    alpha = float(getattr(config, "FACE_TRACKING_REST_ADAPT_ALPHA", 0.08) or 0.0)
+    alpha = max(0.0, min(1.0, alpha))
+    if alpha <= 0.0:
+        return
+    old_lift, old_tilt = _adaptive_head_rest_target()
+    samples = int(_adaptive_head_rest.get("samples") or 0)
+    if samples <= 0:
+        alpha = max(alpha, 0.35)
+    new_lift = _adaptive_head_rest_limit("headlift", old_lift + alpha * (int(lift) - old_lift))
+    new_tilt = _adaptive_head_rest_limit("headtilt", old_tilt + alpha * (int(tilt) - old_tilt))
+    _adaptive_head_rest.update({
+        "lift": new_lift,
+        "tilt": new_tilt,
+        "samples": samples + 1,
+        "updated_at": now,
+    })
+
+
+def _step_adaptive_head_rest_return(
+    servo_mod,
+    now: float,
+    *,
+    lost_age_secs: float | None = None,
+) -> bool:
+    if not _adaptive_head_rest_enabled() or int(_adaptive_head_rest.get("samples") or 0) <= 0:
+        return False
+    delay = float(getattr(config, "FACE_TRACKING_REST_RETURN_AFTER_LOST_SECS", 0.8) or 0.0)
+    if lost_age_secs is not None and lost_age_secs < max(0.0, delay):
+        return False
+    try:
+        if getattr(servo_mod, "manual_override_enabled", lambda: False)():
+            return False
+        if getattr(servo_mod, "speech_motion_active", lambda: False)():
+            return False
+    except Exception:
+        return False
+
+    target_lift, target_tilt = _adaptive_head_rest_target()
+    current_neck = _current_servo_position("neck")
+    current_lift = _current_servo_position("headlift")
+    current_tilt = _current_servo_position("headtilt")
+    max_step = int(getattr(config, "FACE_TRACKING_REST_RETURN_MAX_STEP_QUS", 55) or 55)
+    next_lift = _limited_tracking_step("headlift", current_lift, target_lift, max_step)
+    next_tilt = _limited_tracking_step("headtilt", current_tilt, target_tilt, max_step)
+
+    lift_ch = int(config.SERVO_CHANNELS["headlift"]["ch"])
+    tilt_ch = int(config.SERVO_CHANNELS["headtilt"]["ch"])
+    updates: dict[int, int] = {}
+    if abs(next_lift - current_lift) >= 2:
+        updates[lift_ch] = next_lift
+    if abs(next_tilt - current_tilt) >= 2:
+        updates[tilt_ch] = next_tilt
+    if not updates:
+        return False
+    try:
+        servo_mod.set_motion_profile(
+            list(updates.keys()),
+            speed=int(getattr(config, "FACE_TRACKING_REST_SERVO_SPEED", 35)),
+            acceleration=int(getattr(config, "FACE_TRACKING_REST_SERVO_ACCELERATION", 6)),
+        )
+    except Exception as exc:
+        _log.debug("adaptive rest motion profile failed: %s", exc)
+    servo_mod.set_servos(updates)
+    try:
+        servo_mod.set_face_tracking_baseline(
+            neck=current_neck,
+            lift=updates.get(lift_ch, current_lift),
+            tilt=updates.get(tilt_ch, current_tilt),
+        )
+    except Exception as exc:
+        _log.debug("adaptive rest baseline update failed: %s", exc)
+    return True
+
+
 def _tracking_error_reversed(
     *,
     key: str,
@@ -6003,7 +6155,7 @@ def _speaker_gaze_search_targets(pose: str) -> dict[int, int]:
     visor_ch = int(visor_cfg["ch"])
 
     current_neck = _current_servo_position("neck")
-    current_lift = _current_servo_position("headlift")
+    rest_lift, rest_tilt = _adaptive_head_rest_target()
 
     neck_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_NECK_FRACTION", 0.42))
     down_tilt_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION", 0.72))
@@ -6026,6 +6178,9 @@ def _speaker_gaze_search_targets(pose: str) -> dict[int, int]:
         "headlift",
         int(lift_cfg["neutral"]) - (int(lift_cfg["neutral"]) - int(lift_cfg["min"])) * down_lift_fraction,
     )
+    # Tilt is inverted: larger PWM points lower. Lift points lower with smaller PWM.
+    down_tilt = max(down_tilt, rest_tilt)
+    down_lift = min(down_lift, rest_lift)
 
     targets: dict[int, int] = {
         visor_ch: int(visor_cfg["max"]),
@@ -6040,16 +6195,16 @@ def _speaker_gaze_search_targets(pose: str) -> dict[int, int]:
         targets[neck_ch] = right_neck
     elif pose == "left":
         targets[neck_ch] = left_neck
-        targets[lift_ch] = current_lift
-        targets[tilt_ch] = int(tilt_cfg["neutral"])
+        targets[lift_ch] = rest_lift
+        targets[tilt_ch] = rest_tilt
     elif pose == "right":
         targets[neck_ch] = right_neck
-        targets[lift_ch] = current_lift
-        targets[tilt_ch] = int(tilt_cfg["neutral"])
+        targets[lift_ch] = rest_lift
+        targets[tilt_ch] = rest_tilt
     elif pose == "center":
         targets[neck_ch] = int(neck_cfg["neutral"])
-        targets[lift_ch] = int(lift_cfg["neutral"])
-        targets[tilt_ch] = int(tilt_cfg["neutral"])
+        targets[lift_ch] = rest_lift
+        targets[tilt_ch] = rest_tilt
     return {
         channel: _clamp_servo(_CHANNEL_TO_SERVO_NAME[channel], value)
         if channel in _CHANNEL_TO_SERVO_NAME else int(value)
@@ -6131,6 +6286,7 @@ def _record_face_tracking_state(
     try:
         self_state = world_state.get("self_state")
         tracking = dict(self_state.get("face_tracking") or {})
+        rest_lift, rest_tilt = _adaptive_head_rest_target()
         tracking.update({
             "locked": bool(locked),
             "visible": bool(visible),
@@ -6145,6 +6301,11 @@ def _record_face_tracking_state(
                 else _face_tracking_lock.get("person_id") if locked else None
             ),
             "lost_age_secs": round(lost_age_secs, 2) if lost_age_secs is not None else None,
+            "adaptive_rest": {
+                "lift": rest_lift,
+                "tilt": rest_tilt,
+                "samples": int(_adaptive_head_rest.get("samples") or 0),
+            },
         })
         if candidate is not None:
             tracking["box"] = candidate.get("box")
@@ -6271,7 +6432,13 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
                     search_pose=search_pose,
                 )
                 return
+            lost_age = (now - last_seen) if last_seen else None
             _face_tracking_lock = {}
+            _step_adaptive_head_rest_return(
+                servo_mod,
+                now,
+                lost_age_secs=lost_age,
+            )
             _record_face_tracking_state(locked=False, visible=False)
             return
 
@@ -6416,6 +6583,14 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         baseline_neck = updates.get(neck_ch, current_neck)
         baseline_lift = updates.get(lift_ch, current_lift)
         baseline_tilt = updates.get(tilt_ch, current_tilt)
+        _note_adaptive_head_rest(
+            candidate=candidate,
+            frame_w=frame_w,
+            frame_h=frame_h,
+            lift=baseline_lift,
+            tilt=baseline_tilt,
+            now=now,
+        )
         if updates or abs(error_x) > dead_zone or abs(error_y) > dead_zone:
             _maybe_log_face_tracking_move(
                 now=now,
