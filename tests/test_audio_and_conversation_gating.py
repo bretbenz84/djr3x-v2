@@ -1108,6 +1108,218 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             interaction._pending_face_reveal_confirm = old_pending_face_reveal
             interaction._pending_post_greet_relationship[0] = old_pending_relationship
 
+    def test_pending_identity_prompt_reply_from_idle_enrolls_before_background_filter(self):
+        from contextlib import ExitStack
+        import numpy as np
+        from intelligence import interaction
+
+        old_people = interaction.world_state.get("people")
+        old_until = interaction._identity_prompt_until
+        old_exchange_count = interaction._session_exchange_count
+        old_pending_offscreen = interaction._pending_offscreen_identify
+        old_pending_face_reveal = interaction._pending_face_reveal_confirm
+        old_pending_relationship = interaction._pending_post_greet_relationship[0]
+        try:
+            # Mirrors the live failure: Rex asked "who are you?", the local
+            # interaction window was not armed yet, and the face tracker had no
+            # current unknown box when the user answered from IDLE.
+            interaction.world_state.update("people", [])
+            interaction._identity_prompt_until = 0.0
+            interaction._pending_offscreen_identify = None
+            interaction._pending_face_reveal_confirm = None
+            interaction._pending_post_greet_relationship[0] = None
+
+            with ExitStack() as stack:
+                stack.enter_context(
+                    mock.patch.object(interaction.random, "randint", return_value=0)
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_process_audio",
+                        return_value=("Bret Benziger", None, None, 0.0),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_game_suppresses_conversation",
+                        return_value=False,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.turn_completion,
+                        "consume_continuation",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.turn_completion,
+                        "classify",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(mock.patch.object(interaction.echo_cancel, "start_sequence"))
+                stack.enter_context(mock.patch.object(interaction.echo_cancel, "end_sequence"))
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.consciousness,
+                        "get_recent_engagement",
+                        return_value=None,
+                    )
+                )
+                consume_prompt = stack.enter_context(
+                    mock.patch.object(
+                        interaction.consciousness,
+                        "consume_identity_prompt_request",
+                        return_value=True,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.consciousness,
+                        "consume_relationship_prompt_request",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(mock.patch.object(interaction.consciousness, "mark_engagement"))
+                stack.enter_context(mock.patch.object(interaction.consciousness, "note_person_spoke"))
+                stack.enter_context(mock.patch.object(interaction.consciousness, "clear_response_wait"))
+                stack.enter_context(mock.patch.object(interaction.speech_queue, "drop_by_tag"))
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_note_voice_turn_for_group_chatter",
+                        return_value=False,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_audio_group_chatter_active",
+                        return_value=False,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_has_unknown_visible_or_recent",
+                        return_value=False,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_resolve_anonymous_speaker_slot",
+                        return_value=("unknown_voice_1", None),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_handle_pending_identity_match_confirmation",
+                        return_value=(None, None, None),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_handle_common_first_name_last_name_reply",
+                        return_value=(None, None, None),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_handle_common_first_name_intro_last_name_reply",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_handle_existing_common_first_name_last_name_reply",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_maybe_ask_identity_match_confirmation",
+                        return_value=False,
+                    )
+                )
+                enroll = stack.enter_context(
+                    mock.patch.object(interaction, "_enroll_new_person", return_value=2)
+                )
+                retire_slot = stack.enter_context(
+                    mock.patch.object(interaction, "_retire_anonymous_speaker_slot")
+                )
+                stack.enter_context(
+                    mock.patch.object(interaction, "_dismiss_pending_consent_prompts")
+                )
+                speak = stack.enter_context(
+                    mock.patch.object(interaction, "_speak_blocking", return_value=True)
+                )
+                add_transcript = stack.enter_context(
+                    mock.patch.object(interaction.conv_memory, "add_to_transcript")
+                )
+                log_heard = stack.enter_context(
+                    mock.patch.object(interaction.conv_log, "log_heard")
+                )
+                log_rex = stack.enter_context(
+                    mock.patch.object(interaction.conv_log, "log_rex")
+                )
+                register = stack.enter_context(
+                    mock.patch.object(interaction, "_register_rex_utterance")
+                )
+                name_update = stack.enter_context(
+                    mock.patch.object(interaction, "_handle_name_update_request")
+                )
+                decide = stack.enter_context(
+                    mock.patch.object(interaction.action_router, "decide")
+                )
+
+                interaction._handle_speech_segment(
+                    np.ones(16, dtype=np.float32),
+                    from_idle_activation=True,
+                )
+
+            consume_prompt.assert_called()
+            enroll.assert_called_once()
+            self.assertEqual(enroll.call_args.args[0], "Bret Benziger")
+            self.assertTrue(enroll.call_args.kwargs.get("defer_face_enrollment"))
+            retire_slot.assert_called_once_with(
+                "unknown_voice_1",
+                person_id=2,
+                person_name="Bret Benziger",
+            )
+            speak.assert_called_once_with(
+                "Got it, Bret Benziger. Nice to meet you.",
+                emotion="happy",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            add_transcript.assert_any_call("Bret Benziger", "Bret Benziger")
+            add_transcript.assert_any_call(
+                "Rex",
+                "Got it, Bret Benziger. Nice to meet you.",
+            )
+            log_heard.assert_called_once_with("Bret Benziger", "Bret Benziger")
+            log_rex.assert_called_once_with("Got it, Bret Benziger. Nice to meet you.")
+            register.assert_called_once_with("Got it, Bret Benziger. Nice to meet you.")
+            name_update.assert_not_called()
+            decide.assert_not_called()
+        finally:
+            interaction.world_state.update("people", old_people)
+            interaction._identity_prompt_until = old_until
+            interaction._session_exchange_count = old_exchange_count
+            interaction._pending_offscreen_identify = old_pending_offscreen
+            interaction._pending_face_reveal_confirm = old_pending_face_reveal
+            interaction._pending_post_greet_relationship[0] = old_pending_relationship
+
     def test_name_update_extracts_common_corrections(self):
         from intelligence import interaction
 

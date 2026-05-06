@@ -10889,7 +10889,21 @@ def _handle_speech_segment(
             off_camera_unknown = False
             identity_resolution_override = "pending_last_name_reply"
 
-        identity_prompt_active = time.monotonic() <= _identity_prompt_until
+        game_conversation_lock = _game_suppresses_conversation()
+        identity_prompt_consumed = False
+        if not game_conversation_lock:
+            try:
+                identity_prompt_consumed = bool(consciousness.consume_identity_prompt_request())
+            except Exception as exc:
+                _log.debug("identity prompt request consume failed: %s", exc)
+        if identity_prompt_consumed:
+            _identity_prompt_until = max(
+                _identity_prompt_until,
+                time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS,
+            )
+        identity_prompt_active = bool(
+            identity_prompt_consumed or time.monotonic() <= _identity_prompt_until
+        )
         has_unknown_visible_now = _has_unknown_visible_person()
         has_unknown_visible_or_recent = has_unknown_visible_now or _has_unknown_visible_or_recent()
         anonymous_speaker_label: Optional[str] = None
@@ -10921,7 +10935,6 @@ def _handle_speech_segment(
             anonymous_speaker_label=anonymous_speaker_label,
             anonymous_speaker_match_score=anonymous_speaker_match_score,
         )
-        game_conversation_lock = _game_suppresses_conversation()
         voice_group_chatter = _note_voice_turn_for_group_chatter(
             person_id=person_id,
             raw_best_id=raw_best_id,
@@ -11022,13 +11035,9 @@ def _handle_speech_segment(
         except Exception:
             pass
 
-        # Consciousness asked an unknown person for their name. Open a short window
-        # where single/short name replies are treated as enrollment input.
-        if not game_conversation_lock and consciousness.consume_identity_prompt_request():
-            _identity_prompt_until = max(
-                _identity_prompt_until,
-                time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS,
-            )
+        # Consciousness asked an unknown person for their name. Its reply request
+        # is consumed before the no-wake IDLE filter above so immediate name
+        # replies are not mistaken for background speech.
 
         relationship_prompt_consumed = False
         prompted_identity_ack_text: Optional[str] = None
