@@ -1795,8 +1795,8 @@ ASPIRATIONS = [
 # Controls pre-recorded startup/shutdown clip playback only.
 # Set either to True to enable clip playback for that phase.
 # These toggles do not affect live TTS, wake-word listening, or DJ playback.
-PLAY_STARTUP_AUDIO = False
-PLAY_SHUTDOWN_AUDIO = False
+PLAY_STARTUP_AUDIO = True
+PLAY_SHUTDOWN_AUDIO = True
 
 # Short readiness cue played immediately before Rex's first spoken line in a
 # run. This is intentionally separate from PLAY_STARTUP_AUDIO so it still fires
