@@ -669,10 +669,10 @@ BREATHING_PERIOD_SAD     = 6.0  # slower during sad emotion
 
 # 0.0 = servo snaps instantly to face position; 1.0 = servo never moves.
 # This needs to feel like turning toward a person, not a sleepy idle drift.
-TRACKING_SMOOTHING_FACTOR = 0.15
+TRACKING_SMOOTHING_FACTOR = 0.55
 
 # Pixels from frame center in which no neck correction is applied
-TRACKING_DEAD_ZONE_PX = 18
+TRACKING_DEAD_ZONE_PX = 32
 
 # Servo gaze tracking runs faster than the conversational consciousness loop so
 # head pose can follow live camera motion between heavier recognition ticks.
@@ -696,7 +696,7 @@ FACE_TRACKING_LOST_HOLD_SECS = _env_float(
 # a single edge-of-frame lock drive closer to the configured servo limits.
 FACE_TRACKING_CENTERING_GAIN = _env_float(
     "FACE_TRACKING_CENTERING_GAIN",
-    1.25,
+    0.65,
     min_value=0.1,
     max_value=3.0,
 )
@@ -705,19 +705,19 @@ FACE_TRACKING_CENTERING_GAIN = _env_float(
 # one edge-of-frame detection from slamming the head to a hard stop.
 FACE_TRACKING_NECK_MAX_STEP_QUS = _env_int(
     "FACE_TRACKING_NECK_MAX_STEP_QUS",
-    900,
+    120,
     min_value=1,
     max_value=4000,
 )
 FACE_TRACKING_LIFT_MAX_STEP_QUS = _env_int(
     "FACE_TRACKING_LIFT_MAX_STEP_QUS",
-    620,
+    80,
     min_value=1,
     max_value=4000,
 )
 FACE_TRACKING_TILT_MAX_STEP_QUS = _env_int(
     "FACE_TRACKING_TILT_MAX_STEP_QUS",
-    260,
+    40,
     min_value=1,
     max_value=2000,
 )
@@ -726,13 +726,13 @@ FACE_TRACKING_TILT_MAX_STEP_QUS = _env_int(
 # faster Maestro profile for the head channels before sending tracking targets.
 FACE_TRACKING_SERVO_SPEED = _env_int(
     "FACE_TRACKING_SERVO_SPEED",
-    160,
+    70,
     min_value=0,
     max_value=255,
 )
 FACE_TRACKING_SERVO_ACCELERATION = _env_int(
     "FACE_TRACKING_SERVO_ACCELERATION",
-    24,
+    10,
     min_value=0,
     max_value=255,
 )
@@ -741,6 +741,18 @@ FACE_TRACKING_LOG_INTERVAL_SECS = _env_float(
     2.0,
     min_value=0.0,
     max_value=60.0,
+)
+FACE_TRACKING_LIVE_BOX_DAMPING = _env_float(
+    "FACE_TRACKING_LIVE_BOX_DAMPING",
+    0.45,
+    min_value=0.05,
+    max_value=1.0,
+)
+FACE_TRACKING_REVERSAL_DAMPING = _env_float(
+    "FACE_TRACKING_REVERSAL_DAMPING",
+    0.35,
+    min_value=0.05,
+    max_value=1.0,
 )
 
 # Horizontal tracking uses the neck; vertical tracking combines lift and tilt.
@@ -770,7 +782,7 @@ SPEAKER_GAZE_SEARCH_WINDOW_SECS = _env_float(
 )
 SPEAKER_GAZE_SEARCH_INTERVAL_SECS = _env_float(
     "SPEAKER_GAZE_SEARCH_INTERVAL_SECS",
-    0.70,
+    1.15,
     min_value=0.1,
     max_value=5.0,
 )
@@ -782,67 +794,67 @@ SPEAKER_GAZE_LOST_SEARCH_AFTER_SECS = _env_float(
 )
 SPEAKER_GAZE_ACTIVE_DEAD_ZONE_PX = _env_float(
     "SPEAKER_GAZE_ACTIVE_DEAD_ZONE_PX",
-    10.0,
+    24.0,
     min_value=0.0,
     max_value=200.0,
 )
 SPEAKER_GAZE_ACTIVE_CENTERING_GAIN = _env_float(
     "SPEAKER_GAZE_ACTIVE_CENTERING_GAIN",
-    1.65,
+    0.85,
     min_value=0.1,
     max_value=4.0,
 )
 SPEAKER_GAZE_ACTIVE_VERTICAL_GAIN = _env_float(
     "SPEAKER_GAZE_ACTIVE_VERTICAL_GAIN",
-    1.10,
+    0.65,
     min_value=0.0,
     max_value=3.0,
 )
 SPEAKER_GAZE_NECK_MAX_STEP_QUS = _env_int(
     "SPEAKER_GAZE_NECK_MAX_STEP_QUS",
-    1100,
+    160,
     min_value=1,
     max_value=4000,
 )
 SPEAKER_GAZE_LIFT_MAX_STEP_QUS = _env_int(
     "SPEAKER_GAZE_LIFT_MAX_STEP_QUS",
-    720,
+    100,
     min_value=1,
     max_value=4000,
 )
 SPEAKER_GAZE_TILT_MAX_STEP_QUS = _env_int(
     "SPEAKER_GAZE_TILT_MAX_STEP_QUS",
-    340,
+    50,
     min_value=1,
     max_value=2000,
 )
 SPEAKER_GAZE_SEARCH_SERVO_SPEED = _env_int(
     "SPEAKER_GAZE_SEARCH_SERVO_SPEED",
-    130,
+    55,
     min_value=0,
     max_value=255,
 )
 SPEAKER_GAZE_SEARCH_SERVO_ACCELERATION = _env_int(
     "SPEAKER_GAZE_SEARCH_SERVO_ACCELERATION",
-    20,
+    8,
     min_value=0,
     max_value=255,
 )
 SPEAKER_GAZE_SEARCH_NECK_FRACTION = _env_float(
     "SPEAKER_GAZE_SEARCH_NECK_FRACTION",
-    0.42,
+    0.26,
     min_value=0.0,
     max_value=1.0,
 )
 SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION = _env_float(
     "SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION",
-    0.72,
+    0.46,
     min_value=0.0,
     max_value=1.0,
 )
 SPEAKER_GAZE_SEARCH_DOWN_LIFT_FRACTION = _env_float(
     "SPEAKER_GAZE_SEARCH_DOWN_LIFT_FRACTION",
-    0.18,
+    0.10,
     min_value=0.0,
     max_value=1.0,
 )

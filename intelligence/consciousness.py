@@ -50,6 +50,10 @@ _neck_smooth: float = float(config.SERVO_CHANNELS["neck"]["neutral"])
 _face_tracking_suspended_until: float = 0.0
 _face_tracking_lock: dict = {}
 _last_face_tracking_log_at: float = 0.0
+_face_tracking_last_error_key: Optional[str] = None
+_face_tracking_last_error_x: Optional[float] = None
+_face_tracking_last_error_y: Optional[float] = None
+_face_tracking_last_error_at: float = 0.0
 
 # WorldState snapshot from the previous loop iteration (for change detection)
 _last_snapshot: dict = {}
@@ -5674,6 +5678,25 @@ def _limited_tracking_step(name: str, current: int, target: int, max_step: int) 
     return _clamp_servo(name, int(current) + (max_step if delta > 0 else -max_step))
 
 
+def _tracking_error_reversed(
+    *,
+    key: str,
+    previous_key: Optional[str],
+    previous_error: Optional[float],
+    current_error: float,
+    dead_zone: float,
+    now: float,
+    previous_at: float,
+) -> bool:
+    if previous_key != key or previous_error is None:
+        return False
+    if (now - previous_at) > 1.0:
+        return False
+    if abs(previous_error) <= dead_zone or abs(current_error) <= dead_zone:
+        return False
+    return (previous_error < 0 < current_error) or (previous_error > 0 > current_error)
+
+
 def _maybe_log_face_tracking_move(
     *,
     now: float,
@@ -5961,6 +5984,8 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
     plus vertical head pose toward image center.
     """
     global _neck_smooth, _face_tracking_lock
+    global _face_tracking_last_error_key, _face_tracking_last_error_x
+    global _face_tracking_last_error_y, _face_tracking_last_error_at
 
     if state_module.get_state() == State.SLEEP:
         return
@@ -6113,6 +6138,40 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
 
         error_x = cx - frame_cx
         error_y = cy - frame_cy
+        candidate_key = str(candidate.get("key") or "")
+        reversal_damping = float(getattr(config, "FACE_TRACKING_REVERSAL_DAMPING", 0.35))
+        reversal_damping = max(0.05, min(1.0, reversal_damping))
+        live_damping = float(getattr(config, "FACE_TRACKING_LIVE_BOX_DAMPING", 0.45))
+        live_damping = max(0.05, min(1.0, live_damping))
+        if candidate.get("live_tracked"):
+            gain *= live_damping
+            vertical_gain *= live_damping
+            neck_max_step = max(1, int(neck_max_step * live_damping))
+            lift_max_step = max(1, int(lift_max_step * live_damping))
+            tilt_max_step = max(1, int(tilt_max_step * live_damping))
+        if _tracking_error_reversed(
+            key=candidate_key,
+            previous_key=_face_tracking_last_error_key,
+            previous_error=_face_tracking_last_error_x,
+            current_error=error_x,
+            dead_zone=dead_zone,
+            now=now,
+            previous_at=_face_tracking_last_error_at,
+        ):
+            gain *= reversal_damping
+            neck_max_step = max(1, int(neck_max_step * reversal_damping))
+        if _tracking_error_reversed(
+            key=candidate_key,
+            previous_key=_face_tracking_last_error_key,
+            previous_error=_face_tracking_last_error_y,
+            current_error=error_y,
+            dead_zone=dead_zone,
+            now=now,
+            previous_at=_face_tracking_last_error_at,
+        ):
+            vertical_gain *= reversal_damping
+            lift_max_step = max(1, int(lift_max_step * reversal_damping))
+            tilt_max_step = max(1, int(tilt_max_step * reversal_damping))
         if abs(error_x) > dead_zone and frame_cx > 0:
             neck_span = (int(neck_cfg["max"]) - int(neck_cfg["min"])) / 2.0
             target_neck = _clamp_servo(
@@ -6199,6 +6258,10 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
             lift=baseline_lift,
             tilt=baseline_tilt,
         )
+        _face_tracking_last_error_key = candidate_key
+        _face_tracking_last_error_x = float(error_x)
+        _face_tracking_last_error_y = float(error_y)
+        _face_tracking_last_error_at = now
         _record_face_tracking_state(locked=True, visible=True, candidate=candidate)
 
     except Exception as exc:
@@ -6397,6 +6460,8 @@ def start() -> None:
     global _startup_group_signature, _startup_group_seen_at, _startup_solo_seen_at
     global _last_pose_analysis_at
     global _last_weather_reaction_at
+    global _face_tracking_last_error_key, _face_tracking_last_error_x
+    global _face_tracking_last_error_y, _face_tracking_last_error_at
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
@@ -6431,6 +6496,10 @@ def start() -> None:
     _previous_face_boxes.clear()
     _face_tracking_lock.clear()
     _face_tracking_tracker = None
+    _face_tracking_last_error_key = None
+    _face_tracking_last_error_x = None
+    _face_tracking_last_error_y = None
+    _face_tracking_last_error_at = 0.0
     with _speaker_gaze_lock:
         _speaker_gaze_intent.clear()
     _record_face_tracking_state(locked=False, visible=False)
@@ -6494,6 +6563,8 @@ def stop() -> None:
     global _recent_engaged_person_id, _recent_engaged_touch_at
     global _last_pose_analysis_at
     global _startup_empty_room_seen_at, _startup_empty_room_fired
+    global _face_tracking_last_error_key, _face_tracking_last_error_x
+    global _face_tracking_last_error_y, _face_tracking_last_error_at
     _stop_event.set()
     _pending_identity_prompt.clear()
     _identity_prompt_in_flight.clear()
@@ -6510,6 +6581,10 @@ def stop() -> None:
     _previous_face_boxes.clear()
     _face_tracking_lock.clear()
     _face_tracking_tracker = None
+    _face_tracking_last_error_key = None
+    _face_tracking_last_error_x = None
+    _face_tracking_last_error_y = None
+    _face_tracking_last_error_at = 0.0
     with _speaker_gaze_lock:
         _speaker_gaze_intent.clear()
     _record_face_tracking_state(locked=False, visible=False)

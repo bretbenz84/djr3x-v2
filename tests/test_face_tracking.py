@@ -23,6 +23,10 @@ class FaceTrackingTests(unittest.TestCase):
         self.old_live_tracker = consciousness._face_tracking_tracker
         self.old_suspend_until = consciousness._face_tracking_suspended_until
         self.old_tracking_log_at = consciousness._last_face_tracking_log_at
+        self.old_tracking_error_key = consciousness._face_tracking_last_error_key
+        self.old_tracking_error_x = consciousness._face_tracking_last_error_x
+        self.old_tracking_error_y = consciousness._face_tracking_last_error_y
+        self.old_tracking_error_at = consciousness._face_tracking_last_error_at
         with consciousness._speaker_gaze_lock:
             self.old_speaker_gaze_intent = dict(consciousness._speaker_gaze_intent)
             consciousness._speaker_gaze_intent.clear()
@@ -37,6 +41,10 @@ class FaceTrackingTests(unittest.TestCase):
         c._face_tracking_tracker = self.old_live_tracker
         c._face_tracking_suspended_until = self.old_suspend_until
         c._last_face_tracking_log_at = self.old_tracking_log_at
+        c._face_tracking_last_error_key = self.old_tracking_error_key
+        c._face_tracking_last_error_x = self.old_tracking_error_x
+        c._face_tracking_last_error_y = self.old_tracking_error_y
+        c._face_tracking_last_error_at = self.old_tracking_error_at
         with c._speaker_gaze_lock:
             c._speaker_gaze_intent.clear()
             c._speaker_gaze_intent.update(self.old_speaker_gaze_intent)
@@ -231,6 +239,40 @@ class FaceTrackingTests(unittest.TestCase):
         self.assertEqual(c._face_tracking_lock.get("key"), "db:1")
         tracking = c.world_state.get("self_state").get("face_tracking") or {}
         self.assertFalse(tracking.get("searching"))
+
+    def test_face_tracking_damps_direction_reversal(self):
+        c = self.consciousness
+        self._set_servo_positions()
+        c.world_state.update("people", [{
+            "id": "person_1",
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": True,
+            "face_box": (1060, 180, 120, 120),
+        }])
+        c._face_tracking_lock = {"key": "db:1", "person_id": 1, "last_seen_at": 499.9}
+        c._face_tracking_suspended_until = 0.0
+        c._face_tracking_last_error_key = "db:1"
+        c._face_tracking_last_error_x = -500.0
+        c._face_tracking_last_error_y = 0.0
+        c._face_tracking_last_error_at = 499.9
+
+        with (
+            mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+            mock.patch.object(c.time, "monotonic", return_value=500.0),
+            mock.patch("hardware.servos.set_servos") as set_servos,
+            mock.patch("hardware.servos.set_motion_profile"),
+            mock.patch("hardware.servos.set_face_tracking_baseline"),
+        ):
+            c._step_face_tracking(self.frame)
+
+        updates = set_servos.call_args.args[0]
+        neck_ch = c.config.SERVO_CHANNELS["neck"]["ch"]
+        damped_step = int(c.config.FACE_TRACKING_NECK_MAX_STEP_QUS * c.config.FACE_TRACKING_REVERSAL_DAMPING)
+        self.assertLessEqual(
+            abs(updates[neck_ch] - c.config.SERVO_CHANNELS["neck"]["neutral"]),
+            damped_step,
+        )
 
     @unittest.skipIf(cv2 is None, "OpenCV unavailable")
     def test_live_tracking_people_advances_box_between_recognition_ticks(self):
