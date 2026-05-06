@@ -21,6 +21,7 @@ class FaceTrackingTests(unittest.TestCase):
         self.old_last_seen = consciousness._last_face_seen_at
         self.old_lock = dict(consciousness._face_tracking_lock)
         self.old_live_tracker = consciousness._face_tracking_tracker
+        self.old_last_solo_identity = consciousness._last_solo_identity
         self.old_suspend_until = consciousness._face_tracking_suspended_until
         self.old_tracking_log_at = consciousness._last_face_tracking_log_at
         self.old_tracking_error_key = consciousness._face_tracking_last_error_key
@@ -39,6 +40,7 @@ class FaceTrackingTests(unittest.TestCase):
         c._last_face_seen_at = self.old_last_seen
         c._face_tracking_lock = self.old_lock
         c._face_tracking_tracker = self.old_live_tracker
+        c._last_solo_identity = self.old_last_solo_identity
         c._face_tracking_suspended_until = self.old_suspend_until
         c._last_face_tracking_log_at = self.old_tracking_log_at
         c._face_tracking_last_error_key = self.old_tracking_error_key
@@ -98,6 +100,50 @@ class FaceTrackingTests(unittest.TestCase):
         self.assertTrue(people[0]["face_missing"])
         self.assertIsNone(people[0]["face_box"])
         self.assertIsNone(people[0]["position"])
+
+    def test_solo_identity_sticky_rejects_far_false_positive_box(self):
+        c = self.consciousness
+        c.world_state.update("people", [{"id": "person_1"}])
+        c._last_solo_identity = (1, "Bret", 100.0, (100, 300, 80, 80))
+        fake_detection = {
+            "bounding_box": (900, 120, 90, 90),
+            "encoding": np.zeros(128, dtype=np.float32),
+            "landmarks": np.zeros((68, 2), dtype=np.int32),
+        }
+
+        with (
+            mock.patch("vision.face.detect_faces", return_value=[fake_detection]),
+            mock.patch("vision.face.identify_face", return_value=None),
+            mock.patch.object(c.time, "monotonic", return_value=101.0),
+            mock.patch.object(c, "_maybe_prompt_unknown_identity"),
+        ):
+            c._step_person_recognition(self.frame)
+
+        people = c.world_state.get("people")
+        self.assertIsNone(people[0].get("person_db_id"))
+        self.assertIsNone(people[0].get("face_id"))
+
+    def test_solo_identity_sticky_accepts_nearby_unmatched_box(self):
+        c = self.consciousness
+        c.world_state.update("people", [{"id": "person_1"}])
+        c._last_solo_identity = (1, "Bret", 100.0, (100, 300, 80, 80))
+        fake_detection = {
+            "bounding_box": (118, 292, 82, 82),
+            "encoding": np.zeros(128, dtype=np.float32),
+            "landmarks": np.zeros((68, 2), dtype=np.int32),
+        }
+
+        with (
+            mock.patch("vision.face.detect_faces", return_value=[fake_detection]),
+            mock.patch("vision.face.identify_face", return_value=None),
+            mock.patch.object(c.time, "monotonic", return_value=101.0),
+            mock.patch.object(c, "_maybe_prompt_unknown_identity"),
+        ):
+            c._step_person_recognition(self.frame)
+
+        people = c.world_state.get("people")
+        self.assertEqual(people[0].get("person_db_id"), 1)
+        self.assertEqual(people[0].get("face_id"), "Bret")
 
     def test_single_visible_face_recenters_neck_lift_and_tilt(self):
         c = self.consciousness

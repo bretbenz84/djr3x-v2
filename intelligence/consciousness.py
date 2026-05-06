@@ -203,7 +203,7 @@ _last_seen: dict = {}
 # Identity stickiness: when exactly one face is visible and recognition momentarily
 # returns Unknown for what is almost certainly the same physical person we had
 # identified a second ago, carry the last identity forward for this many seconds.
-_last_solo_identity: Optional[tuple[int, str, float]] = None  # (db_id, name, monotonic)
+_last_solo_identity: Optional[tuple[int, str, float, tuple[float, float, float, float] | None]] = None
 _SOLO_IDENTITY_STICKY_SECS = 5.0
 
 # Per-person monotonic timestamp of the last departure/return reaction fired.
@@ -1462,6 +1462,35 @@ def _mark_people_faces_missing(people: list[dict], *, now_mono: float) -> list[d
     return held
 
 
+def _face_boxes_sticky_compatible(
+    current: tuple | list | None,
+    previous: tuple[float, float, float, float] | None,
+    *,
+    frame_w: int,
+    frame_h: int,
+) -> bool:
+    if current is None or previous is None:
+        return False
+    try:
+        cx, cy, cw, ch = [float(v) for v in current[:4]]
+        px, py, pw, ph = [float(v) for v in previous[:4]]
+    except Exception:
+        return False
+    if cw <= 0 or ch <= 0 or pw <= 0 or ph <= 0:
+        return False
+
+    center_dx = (cx + cw / 2.0) - (px + pw / 2.0)
+    center_dy = (cy + ch / 2.0) - (py + ph / 2.0)
+    center_dist = (center_dx * center_dx + center_dy * center_dy) ** 0.5
+    frame_diag = max(1.0, (float(frame_w) ** 2 + float(frame_h) ** 2) ** 0.5)
+    max_jump = min(frame_diag * 0.18, max(cw, ch, pw, ph) * 2.2 + 80.0)
+    if center_dist > max_jump:
+        return False
+
+    size_ratio = max(cw * ch, pw * ph) / max(1.0, min(cw * ch, pw * ph))
+    return size_ratio <= 4.0
+
+
 def _step_person_recognition(frame) -> None:
     """
     Detect visible faces, resolve known identities via DB lookup, and update
@@ -1505,11 +1534,15 @@ def _step_person_recognition(frame) -> None:
         # Identity stickiness: HOG face recognition flickers unknown↔known within
         # 1–2 frames. When there's one face and we identified it moments ago,
         # carry that identity forward if this frame can't match.
-        apply_sticky = (
+        frame_width = int(getattr(frame, "shape", [0, 0])[1] or 0)
+        frame_height = int(getattr(frame, "shape", [0, 0, 0])[0] or 0)
+        sticky_identity = None
+        if (
             len(detected) == 1
             and _last_solo_identity is not None
             and (time.monotonic() - _last_solo_identity[2]) <= _SOLO_IDENTITY_STICKY_SECS
-        )
+        ):
+            sticky_identity = _last_solo_identity
 
         people = world_state.get("people")
         changed = False
@@ -1544,13 +1577,21 @@ def _step_person_recognition(frame) -> None:
         recognized_names: list[str] = []
         unknown_count = 0
         any_identified_this_tick = False
-        frame_width = int(getattr(frame, "shape", [0, 0])[1] or 0)
         active_box_keys: set[str] = set()
         for idx, det in enumerate(detected):
             person_record = face_mod.identify_face(det["encoding"])
-            if person_record is None and apply_sticky:
+            if (
+                person_record is None
+                and sticky_identity is not None
+                and _face_boxes_sticky_compatible(
+                    det.get("bounding_box"),
+                    sticky_identity[3] if len(sticky_identity) >= 4 else None,
+                    frame_w=frame_width,
+                    frame_h=frame_height,
+                )
+            ):
                 # Carry forward last solo identity through a single-face miss.
-                sticky_id, sticky_name, _ = _last_solo_identity
+                sticky_id, sticky_name, _, _ = sticky_identity
                 person_record = {"id": sticky_id, "name": sticky_name}
             target_slot = people[idx] if idx < len(people) else None
             if person_record is not None:
@@ -1668,6 +1709,7 @@ def _step_person_recognition(frame) -> None:
                         ws_person["person_db_id"],
                         ws_person["face_id"],
                         time.monotonic(),
+                        tuple(ws_person.get("face_box") or ()) if ws_person.get("face_box") else None,
                     )
                     break
         elif len(detected) != 1:
@@ -6284,8 +6326,8 @@ def _live_face_tracking_people(frame) -> list[dict]:
 
             _face_tracking_tracker = LiveFaceBoxTracker(
                 stale_secs=max(
-                    0.25,
-                    min(2.0, float(getattr(config, "FACE_TRACKING_LOST_HOLD_SECS", 8.0) or 0.0)),
+                    0.0,
+                    float(getattr(config, "FACE_TRACKING_LIVE_BOX_MAX_EXTRAPOLATION_SECS", 0.65) or 0.0),
                 )
             )
         return _face_tracking_tracker.update(frame, people)

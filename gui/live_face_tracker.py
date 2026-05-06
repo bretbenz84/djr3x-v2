@@ -21,6 +21,7 @@ class _Track:
     source_box: tuple[float, float, float, float]
     prev_gray: np.ndarray
     points: Optional[np.ndarray]
+    last_source_at: float
     last_update_at: float
 
 
@@ -68,14 +69,26 @@ class LiveFaceBoxTracker:
             )
 
             track = self._tracks.get(key)
+            used_live_tracking = False
             if visible_source and (
                 track is None or _box_changed(source_box, track.source_box)
             ):
                 track = self._seed_track(key, gray, source_box, now_mono)
-            elif track is not None:
+            elif visible_source and track is not None:
+                track.last_source_at = now_mono
                 track = self._advance_track(track, gray, frame_w, frame_h, now_mono)
+                used_live_tracking = track is not None and _box_changed(track.box, source_box)
+            elif track is not None:
+                if (now_mono - track.last_source_at) <= self._stale_secs:
+                    track = self._advance_track(track, gray, frame_w, frame_h, now_mono)
+                    used_live_tracking = track is not None
+                else:
+                    self._tracks.pop(key, None)
+                    track = None
 
-            if track is not None and (now_mono - track.last_update_at) <= self._stale_secs:
+            if track is not None and (
+                visible_source or (now_mono - track.last_source_at) <= self._stale_secs
+            ):
                 item["face_box"] = track.box
                 item["position"] = (
                     int(track.box[0] + track.box[2] / 2.0),
@@ -83,12 +96,16 @@ class LiveFaceBoxTracker:
                 )
                 item["face_visible"] = True
                 item["face_missing"] = False
-                item["gui_live_tracked"] = True
-                item["live_tracked"] = True
+                if used_live_tracking:
+                    item["gui_live_tracked"] = True
+                    item["live_tracked"] = True
+                else:
+                    item.pop("gui_live_tracked", None)
+                    item.pop("live_tracked", None)
             output.append(item)
 
         for key, track in list(self._tracks.items()):
-            if key not in seen_keys and (now_mono - track.last_update_at) > self._stale_secs:
+            if key not in seen_keys and (now_mono - track.last_source_at) > self._stale_secs:
                 self._tracks.pop(key, None)
 
         return output
@@ -108,6 +125,7 @@ class LiveFaceBoxTracker:
             source_box=clamped,
             prev_gray=gray.copy(),
             points=points,
+            last_source_at=now_mono,
             last_update_at=now_mono,
         )
         self._tracks[key] = track

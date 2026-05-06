@@ -58,6 +58,35 @@ class LiveFaceBoxTrackerTests(unittest.TestCase):
 
         self.assertEqual(result[0]["face_box"], (70.0, 42.0, 36.0, 36.0))
 
+    def test_live_box_expires_without_fresh_source(self):
+        from gui.live_face_tracker import LiveFaceBoxTracker
+
+        tracker = LiveFaceBoxTracker(stale_secs=0.10)
+        visible = [{
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": True,
+            "face_box": (20, 30, 36, 36),
+        }]
+        missing = [{
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": False,
+            "face_missing": True,
+            "face_box": None,
+        }]
+
+        tracker.update(self._frame_with_patch(20, 30), visible, now=1.0)
+        bridged = tracker.update(self._frame_with_patch(32, 37), missing, now=1.05)
+        expired = tracker.update(self._frame_with_patch(44, 44), missing, now=1.25)
+
+        self.assertTrue(bridged[0]["gui_live_tracked"])
+        self.assertTrue(bridged[0]["face_visible"])
+        self.assertFalse(expired[0].get("gui_live_tracked"))
+        self.assertFalse(expired[0]["face_visible"])
+        self.assertTrue(expired[0]["face_missing"])
+        self.assertIsNone(expired[0]["face_box"])
+
 
 if __name__ == "__main__":
     unittest.main()

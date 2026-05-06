@@ -748,6 +748,12 @@ FACE_TRACKING_LIVE_BOX_DAMPING = _env_float(
     min_value=0.05,
     max_value=1.0,
 )
+FACE_TRACKING_LIVE_BOX_MAX_EXTRAPOLATION_SECS = _env_float(
+    "FACE_TRACKING_LIVE_BOX_MAX_EXTRAPOLATION_SECS",
+    0.65,
+    min_value=0.0,
+    max_value=5.0,
+)
 FACE_TRACKING_REVERSAL_DAMPING = _env_float(
     "FACE_TRACKING_REVERSAL_DAMPING",
     0.35,
@@ -848,13 +854,13 @@ SPEAKER_GAZE_SEARCH_NECK_FRACTION = _env_float(
 )
 SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION = _env_float(
     "SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION",
-    0.46,
+    0.65,
     min_value=0.0,
     max_value=1.0,
 )
 SPEAKER_GAZE_SEARCH_DOWN_LIFT_FRACTION = _env_float(
     "SPEAKER_GAZE_SEARCH_DOWN_LIFT_FRACTION",
-    0.10,
+    0.18,
     min_value=0.0,
     max_value=1.0,
 )
