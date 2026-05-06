@@ -1009,6 +1009,37 @@ def _infer_identity_resolution_strategy(
     return "resolved"
 
 
+def _single_visible_face_voice_override(
+    *,
+    resolved_person_id: Optional[int],
+    ws_person: Optional[dict],
+    visible_known_by_id: dict,
+    has_unknown_visible_or_recent: bool,
+) -> Optional[tuple[int, Optional[str]]]:
+    """
+    Resolve voice/face disagreement in favor of the only visible known face.
+
+    Speaker ID is useful, but short commands can false-match. When the camera has
+    exactly one known face and no other visible/recent unknown, that face is the
+    most reliable identity signal for the current turn.
+    """
+    resolved_id = _safe_int(resolved_person_id)
+    if resolved_id is None:
+        return None
+    if not isinstance(ws_person, dict):
+        return None
+    ws_pid = _safe_int(ws_person.get("person_db_id"))
+    if ws_pid is None or resolved_id == ws_pid:
+        return None
+    if len(visible_known_by_id or {}) != 1:
+        return None
+    if ws_pid not in (visible_known_by_id or {}):
+        return None
+    if bool(has_unknown_visible_or_recent):
+        return None
+    return ws_pid, (ws_person.get("face_id") or ws_person.get("voice_id"))
+
+
 def _character_loop_note_speaker(
     trace: Optional[_CharacterLoopTrace],
     *,
@@ -10753,11 +10784,34 @@ def _handle_speech_segment(
                 except Exception as exc:
                     _log.debug("auto voice-refresh skip: %s", exc)
             else:
-                _log.info(
-                    "[interaction] person resolution: speaker_id match (score=%.3f) vs worldstate "
-                    "(ws_pid=%s) — keeping speaker_id result person_id=%s name=%r",
-                    speaker_score, ws_pid, person_id, person_name,
+                face_override = _single_visible_face_voice_override(
+                    resolved_person_id=person_id,
+                    ws_person=ws_person,
+                    visible_known_by_id=visible_known_by_id,
+                    has_unknown_visible_or_recent=_has_unknown_visible_or_recent(),
                 )
+                if face_override is not None:
+                    prior_person_id = person_id
+                    prior_person_name = person_name
+                    person_id, person_name = face_override
+                    sticky_accepted = False
+                    identity_resolution_override = "visible_face_over_voice_conflict"
+                    _log.info(
+                        "[interaction] person resolution: single visible face overrides "
+                        "conflicting voice-ID — person_id=%s name=%r raw_voice=%s/%r "
+                        "score=%.3f",
+                        person_id,
+                        person_name,
+                        prior_person_id,
+                        prior_person_name,
+                        speaker_score,
+                    )
+                else:
+                    _log.info(
+                        "[interaction] person resolution: speaker_id match (score=%.3f) vs worldstate "
+                        "(ws_pid=%s) — keeping speaker_id result person_id=%s name=%r",
+                        speaker_score, ws_pid, person_id, person_name,
+                    )
         elif person_id is not None:
             _log.info(
                 "[interaction] person resolution: speaker_id match — person_id=%s name=%r score=%.3f",
