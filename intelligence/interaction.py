@@ -10887,6 +10887,16 @@ def _handle_speech_segment(
             completed = False
             return
 
+        if not text_input:
+            try:
+                consciousness.note_speaker_gaze_intent(
+                    person_id,
+                    unknown_voice=(person_id is None or off_camera_unknown),
+                    reason="off_camera_unknown" if off_camera_unknown else "speech",
+                )
+            except Exception as exc:
+                _log.debug("speaker gaze intent note failed: %s", exc)
+
         anonymous_speaker_label, anonymous_speaker_match_score = _resolve_anonymous_speaker_slot(
             audio_array,
             person_id=person_id,

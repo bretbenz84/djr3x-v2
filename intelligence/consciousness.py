@@ -245,6 +245,10 @@ _engaged_last_touch_at: float = 0.0
 _recent_engaged_person_id: Optional[int] = None
 _recent_engaged_touch_at: float = 0.0
 
+# Speaker-gaze intent: recent speech asks the head to find/center the speaker.
+_speaker_gaze_lock = threading.Lock()
+_speaker_gaze_intent: dict = {}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Engagement API — called by interaction.py
@@ -327,6 +331,144 @@ def get_recent_engagement(window_secs: Optional[float] = None) -> Optional[dict]
     except Exception:
         pass
     return {"person_id": pid, "name": None}
+
+
+def _person_has_visible_face(person_id: Optional[int]) -> bool:
+    if person_id is None:
+        return False
+    try:
+        target = int(person_id)
+    except Exception:
+        return False
+    try:
+        for person in world_state.get("people") or []:
+            if person.get("person_db_id") != target:
+                continue
+            if person.get("face_visible") is False or person.get("face_missing"):
+                continue
+            return bool(person.get("face_box") or person.get("bounding_box") or person.get("bbox"))
+    except Exception:
+        return False
+    return False
+
+
+def _any_visible_face() -> bool:
+    try:
+        for person in world_state.get("people") or []:
+            if person.get("face_visible") is False or person.get("face_missing"):
+                continue
+            if person.get("face_box") or person.get("bounding_box") or person.get("bbox"):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _any_visible_unknown_face() -> bool:
+    try:
+        for person in world_state.get("people") or []:
+            if person.get("person_db_id") is not None:
+                continue
+            if person.get("face_visible") is False or person.get("face_missing"):
+                continue
+            if person.get("face_box") or person.get("bounding_box") or person.get("bbox"):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def note_speaker_gaze_intent(
+    person_id: Optional[int],
+    *,
+    unknown_voice: bool = False,
+    reason: str = "speech",
+    force_search: Optional[bool] = None,
+) -> None:
+    """Tell the gaze loop that recent speech should guide head target choice."""
+    if not bool(getattr(config, "SPEAKER_GAZE_ENABLED", True)):
+        return
+
+    now = time.monotonic()
+    try:
+        pid = int(person_id) if person_id is not None else None
+    except Exception:
+        pid = None
+    if pid is not None:
+        visible = _person_has_visible_face(pid)
+    elif unknown_voice:
+        visible = _any_visible_unknown_face()
+    else:
+        visible = _any_visible_face()
+    search_requested = (not visible) if force_search is None else bool(force_search)
+
+    with _speaker_gaze_lock:
+        _speaker_gaze_intent.clear()
+        _speaker_gaze_intent.update({
+            "person_id": pid,
+            "unknown_voice": bool(unknown_voice),
+            "reason": str(reason or "speech"),
+            "requested_at": now,
+            "search_requested": search_requested,
+            "search_started_at": now if search_requested else 0.0,
+            "last_search_at": 0.0,
+            "search_index": 0,
+            "acquired_at": 0.0,
+        })
+    _log.info(
+        "[speaker_gaze] intent reason=%s person_id=%s unknown=%s visible=%s search=%s",
+        reason,
+        pid,
+        bool(unknown_voice),
+        visible,
+        search_requested,
+    )
+
+
+def request_face_acquisition_scan(reason: str = "startup") -> None:
+    """Request a short exploratory scan for faces, biased toward seated people."""
+    note_speaker_gaze_intent(
+        None,
+        unknown_voice=False,
+        reason=reason,
+        force_search=True,
+    )
+
+
+def _speaker_gaze_current_intent(now: Optional[float] = None) -> Optional[dict]:
+    if not bool(getattr(config, "SPEAKER_GAZE_ENABLED", True)):
+        return None
+    now = time.monotonic() if now is None else now
+    intent_window = float(getattr(config, "SPEAKER_GAZE_INTENT_WINDOW_SECS", 14.0) or 0.0)
+    search_window = float(getattr(config, "SPEAKER_GAZE_SEARCH_WINDOW_SECS", 8.0) or 0.0)
+    with _speaker_gaze_lock:
+        intent = dict(_speaker_gaze_intent)
+    if not intent:
+        return None
+    requested_at = float(intent.get("requested_at") or 0.0)
+    if requested_at <= 0.0:
+        return None
+    age = now - requested_at
+    if bool(intent.get("search_requested")):
+        if age <= max(0.0, search_window):
+            return intent
+        with _speaker_gaze_lock:
+            _speaker_gaze_intent["search_requested"] = False
+        intent["search_requested"] = False
+    if age <= max(0.0, intent_window):
+        return intent
+    return None
+
+
+def _speaker_gaze_note_acquired(candidate: dict) -> None:
+    now = time.monotonic()
+    with _speaker_gaze_lock:
+        if not _speaker_gaze_intent:
+            return
+        _speaker_gaze_intent["search_requested"] = False
+        _speaker_gaze_intent["search_index"] = 0
+        _speaker_gaze_intent["last_search_at"] = 0.0
+        _speaker_gaze_intent["acquired_at"] = now
 
 
 def unknown_visible_recently(window_secs: Optional[float] = None) -> bool:
@@ -5574,6 +5716,199 @@ def _maybe_log_face_tracking_move(
     )
 
 
+def _candidate_matches_speaker_gaze(candidate: dict, intent: Optional[dict]) -> bool:
+    if not intent:
+        return False
+    person_id = intent.get("person_id")
+    if person_id is not None:
+        try:
+            return int(candidate.get("person_id")) == int(person_id)
+        except Exception:
+            return False
+    return bool(intent.get("unknown_voice") and candidate.get("person_id") is None)
+
+
+def _speaker_gaze_intent_needs_specific_target(intent: Optional[dict]) -> bool:
+    return bool(intent and (intent.get("person_id") is not None or intent.get("unknown_voice")))
+
+
+def _speaker_gaze_lock_matches_intent(intent: Optional[dict]) -> bool:
+    if not intent:
+        return False
+    person_id = intent.get("person_id")
+    if person_id is not None:
+        try:
+            return int(_face_tracking_lock.get("person_id")) == int(person_id)
+        except Exception:
+            return False
+    return bool(intent.get("unknown_voice") and _face_tracking_lock.get("person_id") is None)
+
+
+def _speaker_gaze_request_search(now: float) -> Optional[dict]:
+    with _speaker_gaze_lock:
+        if not _speaker_gaze_intent:
+            return None
+        _speaker_gaze_intent["search_requested"] = True
+        if not _speaker_gaze_intent.get("search_started_at"):
+            _speaker_gaze_intent["search_started_at"] = now
+        return dict(_speaker_gaze_intent)
+
+
+def _speaker_gaze_candidate(candidates: list[dict], intent: Optional[dict]) -> Optional[dict]:
+    if not intent or not candidates:
+        return None
+    person_id = intent.get("person_id")
+    if person_id is not None:
+        matches = []
+        for item in candidates:
+            item_person_id = item.get("person_id")
+            if item_person_id is None:
+                continue
+            try:
+                if int(item_person_id) == int(person_id):
+                    matches.append(item)
+            except Exception:
+                continue
+        if matches:
+            return max(matches, key=lambda item: item["area"])
+        return None
+    if intent.get("unknown_voice"):
+        unknowns = [item for item in candidates if item.get("person_id") is None]
+        if unknowns:
+            return max(unknowns, key=lambda item: item["area"])
+    return None
+
+
+def _speaker_gaze_search_sequence() -> list[str]:
+    return ["down", "down_left", "down_right", "left", "right", "center"]
+
+
+def _speaker_gaze_search_targets(pose: str) -> dict[int, int]:
+    neck_cfg = config.SERVO_CHANNELS["neck"]
+    lift_cfg = config.SERVO_CHANNELS["headlift"]
+    tilt_cfg = config.SERVO_CHANNELS["headtilt"]
+    visor_cfg = config.SERVO_CHANNELS["visor"]
+
+    neck_ch = int(neck_cfg["ch"])
+    lift_ch = int(lift_cfg["ch"])
+    tilt_ch = int(tilt_cfg["ch"])
+    visor_ch = int(visor_cfg["ch"])
+
+    current_neck = _current_servo_position("neck")
+    current_lift = _current_servo_position("headlift")
+
+    neck_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_NECK_FRACTION", 0.42))
+    down_tilt_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION", 0.72))
+    down_lift_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_DOWN_LIFT_FRACTION", 0.18))
+
+    neutral_neck = int(neck_cfg["neutral"])
+    left_neck = _clamp_servo(
+        "neck",
+        neutral_neck - (neutral_neck - int(neck_cfg["min"])) * neck_fraction,
+    )
+    right_neck = _clamp_servo(
+        "neck",
+        neutral_neck + (int(neck_cfg["max"]) - neutral_neck) * neck_fraction,
+    )
+    down_tilt = _clamp_servo(
+        "headtilt",
+        int(tilt_cfg["neutral"]) + (int(tilt_cfg["max"]) - int(tilt_cfg["neutral"])) * down_tilt_fraction,
+    )
+    down_lift = _clamp_servo(
+        "headlift",
+        int(lift_cfg["neutral"]) - (int(lift_cfg["neutral"]) - int(lift_cfg["min"])) * down_lift_fraction,
+    )
+
+    targets: dict[int, int] = {
+        visor_ch: int(visor_cfg["max"]),
+        lift_ch: down_lift,
+        tilt_ch: down_tilt,
+    }
+    if pose == "down":
+        targets[neck_ch] = current_neck
+    elif pose == "down_left":
+        targets[neck_ch] = left_neck
+    elif pose == "down_right":
+        targets[neck_ch] = right_neck
+    elif pose == "left":
+        targets[neck_ch] = left_neck
+        targets[lift_ch] = current_lift
+        targets[tilt_ch] = int(tilt_cfg["neutral"])
+    elif pose == "right":
+        targets[neck_ch] = right_neck
+        targets[lift_ch] = current_lift
+        targets[tilt_ch] = int(tilt_cfg["neutral"])
+    elif pose == "center":
+        targets[neck_ch] = int(neck_cfg["neutral"])
+        targets[lift_ch] = int(lift_cfg["neutral"])
+        targets[tilt_ch] = int(tilt_cfg["neutral"])
+    return {
+        channel: _clamp_servo(_CHANNEL_TO_SERVO_NAME[channel], value)
+        if channel in _CHANNEL_TO_SERVO_NAME else int(value)
+        for channel, value in targets.items()
+    }
+
+
+_CHANNEL_TO_SERVO_NAME = {
+    int(cfg["ch"]): name
+    for name, cfg in config.SERVO_CHANNELS.items()
+}
+
+
+def _step_speaker_gaze_search(servo_mod, intent: Optional[dict], now: float) -> Optional[str]:
+    if not intent or not bool(intent.get("search_requested")):
+        return None
+    if not bool(getattr(config, "SPEAKER_GAZE_ENABLED", True)):
+        return None
+    try:
+        if getattr(servo_mod, "manual_override_enabled", lambda: False)():
+            return None
+    except Exception:
+        pass
+
+    interval = float(getattr(config, "SPEAKER_GAZE_SEARCH_INTERVAL_SECS", 0.70) or 0.70)
+    sequence = _speaker_gaze_search_sequence()
+    with _speaker_gaze_lock:
+        if not _speaker_gaze_intent:
+            return None
+        last_search_at = float(_speaker_gaze_intent.get("last_search_at") or 0.0)
+        if last_search_at > 0.0 and (now - last_search_at) < max(0.1, interval):
+            return None
+        idx = int(_speaker_gaze_intent.get("search_index") or 0)
+        pose = sequence[idx % len(sequence)]
+        _speaker_gaze_intent["search_index"] = idx + 1
+        _speaker_gaze_intent["last_search_at"] = now
+        if not _speaker_gaze_intent.get("search_started_at"):
+            _speaker_gaze_intent["search_started_at"] = now
+
+    targets = _speaker_gaze_search_targets(pose)
+    try:
+        servo_mod.set_motion_profile(
+            list(targets.keys()),
+            speed=int(getattr(config, "SPEAKER_GAZE_SEARCH_SERVO_SPEED", 130)),
+            acceleration=int(getattr(config, "SPEAKER_GAZE_SEARCH_SERVO_ACCELERATION", 20)),
+        )
+    except Exception as exc:
+        _log.debug("speaker gaze search motion profile failed: %s", exc)
+    servo_mod.set_servos(targets)
+    try:
+        servo_mod.set_face_tracking_baseline(
+            neck=targets.get(int(config.SERVO_CHANNELS["neck"]["ch"])),
+            lift=targets.get(int(config.SERVO_CHANNELS["headlift"]["ch"])),
+            tilt=targets.get(int(config.SERVO_CHANNELS["headtilt"]["ch"])),
+        )
+    except Exception as exc:
+        _log.debug("speaker gaze search baseline update failed: %s", exc)
+    _log.info(
+        "[speaker_gaze] search pose=%s reason=%s person_id=%s unknown=%s",
+        pose,
+        intent.get("reason"),
+        intent.get("person_id"),
+        bool(intent.get("unknown_voice")),
+    )
+    return pose
+
+
 def _record_face_tracking_state(
     *,
     locked: bool,
@@ -5581,6 +5916,9 @@ def _record_face_tracking_state(
     holding_lost_lock: bool = False,
     candidate: dict | None = None,
     lost_age_secs: float | None = None,
+    searching: bool = False,
+    search_reason: str | None = None,
+    search_pose: str | None = None,
 ) -> None:
     try:
         self_state = world_state.get("self_state")
@@ -5589,6 +5927,9 @@ def _record_face_tracking_state(
             "locked": bool(locked),
             "visible": bool(visible),
             "holding_lost_lock": bool(holding_lost_lock),
+            "searching": bool(searching),
+            "search_reason": search_reason if searching else None,
+            "search_pose": search_pose if searching else None,
             "lock_key": _face_tracking_lock.get("key") if locked else None,
             "person_id": (
                 candidate.get("person_id")
@@ -5633,32 +5974,100 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
 
         now = time.monotonic()
         candidates = _visible_face_tracking_candidates(people)
+        speaker_intent = _speaker_gaze_current_intent(now)
         lock_key = _face_tracking_lock.get("key")
         last_seen = float(_face_tracking_lock.get("last_seen_at") or 0.0)
         lost_hold_secs = float(getattr(config, "FACE_TRACKING_LOST_HOLD_SECS", 4.0) or 0.0)
+        lost_search_after = float(getattr(config, "SPEAKER_GAZE_LOST_SEARCH_AFTER_SECS", 0.45) or 0.0)
 
-        candidate = None
-        if lock_key:
+        candidate = _speaker_gaze_candidate(candidates, speaker_intent)
+        speaker_target_missing = (
+            candidate is None
+            and _speaker_gaze_intent_needs_specific_target(speaker_intent)
+        )
+        if speaker_target_missing and not bool(speaker_intent.get("search_requested")):
+            lock_matches_speaker = _speaker_gaze_lock_matches_intent(speaker_intent)
+            lost_age = (now - last_seen) if last_seen else None
+            still_in_lost_grace = bool(
+                lock_key
+                and lock_matches_speaker
+                and lost_age is not None
+                and lost_age < max(0.0, lost_search_after)
+            )
+            if not still_in_lost_grace:
+                speaker_intent = _speaker_gaze_request_search(now) or speaker_intent
+        if candidate is None and lock_key:
+            if (
+                speaker_target_missing
+                and speaker_intent
+                and bool(speaker_intent.get("search_requested"))
+            ):
+                search_pose = _step_speaker_gaze_search(servo_mod, speaker_intent, now)
+                _record_face_tracking_state(
+                    locked=False,
+                    visible=False,
+                    searching=True,
+                    search_reason=speaker_intent.get("reason"),
+                    search_pose=search_pose,
+                )
+                return
             candidate = next((item for item in candidates if item["key"] == lock_key), None)
             if candidate is None and last_seen and (now - last_seen) <= lost_hold_secs:
+                lost_age = now - last_seen
+                search_pose = None
+                if (
+                    speaker_intent
+                    and bool(speaker_intent.get("search_requested"))
+                    and lost_age >= max(0.0, lost_search_after)
+                ):
+                    search_pose = _step_speaker_gaze_search(servo_mod, speaker_intent, now)
                 _record_face_tracking_state(
                     locked=True,
                     visible=False,
                     holding_lost_lock=True,
-                    lost_age_secs=now - last_seen,
+                    lost_age_secs=lost_age,
+                    searching=bool(speaker_intent and speaker_intent.get("search_requested")),
+                    search_reason=(speaker_intent or {}).get("reason"),
+                    search_pose=search_pose,
                 )
                 return
 
         if candidate is None and candidates:
-            candidate = candidates[0] if len(candidates) == 1 else max(
-                candidates,
-                key=lambda item: item["area"],
-            )
+            if (
+                speaker_intent
+                and bool(speaker_intent.get("search_requested"))
+                and _speaker_gaze_intent_needs_specific_target(speaker_intent)
+            ):
+                search_pose = _step_speaker_gaze_search(servo_mod, speaker_intent, now)
+                _record_face_tracking_state(
+                    locked=False,
+                    visible=False,
+                    searching=True,
+                    search_reason=speaker_intent.get("reason"),
+                    search_pose=search_pose,
+                )
+                return
+            candidate = candidates[0] if len(candidates) == 1 else max(candidates, key=lambda item: item["area"])
 
         if candidate is None:
+            if speaker_intent and bool(speaker_intent.get("search_requested")):
+                search_pose = _step_speaker_gaze_search(servo_mod, speaker_intent, now)
+                _face_tracking_lock = {}
+                _record_face_tracking_state(
+                    locked=False,
+                    visible=False,
+                    searching=True,
+                    search_reason=speaker_intent.get("reason"),
+                    search_pose=search_pose,
+                )
+                return
             _face_tracking_lock = {}
             _record_face_tracking_state(locked=False, visible=False)
             return
+
+        speaker_target = _candidate_matches_speaker_gaze(candidate, speaker_intent)
+        if speaker_target:
+            _speaker_gaze_note_acquired(candidate)
 
         _face_tracking_lock = {
             "key": candidate["key"],
@@ -5681,6 +6090,13 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         neck_max_step = int(getattr(config, "FACE_TRACKING_NECK_MAX_STEP_QUS", 420))
         lift_max_step = int(getattr(config, "FACE_TRACKING_LIFT_MAX_STEP_QUS", 300))
         tilt_max_step = int(getattr(config, "FACE_TRACKING_TILT_MAX_STEP_QUS", 130))
+        if speaker_target:
+            gain = float(getattr(config, "SPEAKER_GAZE_ACTIVE_CENTERING_GAIN", gain))
+            vertical_gain = float(getattr(config, "SPEAKER_GAZE_ACTIVE_VERTICAL_GAIN", vertical_gain))
+            dead_zone = float(getattr(config, "SPEAKER_GAZE_ACTIVE_DEAD_ZONE_PX", dead_zone))
+            neck_max_step = int(getattr(config, "SPEAKER_GAZE_NECK_MAX_STEP_QUS", neck_max_step))
+            lift_max_step = int(getattr(config, "SPEAKER_GAZE_LIFT_MAX_STEP_QUS", lift_max_step))
+            tilt_max_step = int(getattr(config, "SPEAKER_GAZE_TILT_MAX_STEP_QUS", tilt_max_step))
         cx, cy = candidate["center"]
         frame_cx = frame_w / 2.0
         frame_cy = frame_h / 2.0
@@ -6015,6 +6431,8 @@ def start() -> None:
     _previous_face_boxes.clear()
     _face_tracking_lock.clear()
     _face_tracking_tracker = None
+    with _speaker_gaze_lock:
+        _speaker_gaze_intent.clear()
     _record_face_tracking_state(locked=False, visible=False)
     _personal_space_reacted_at.clear()
     _last_pose_analysis_at = 0.0
@@ -6051,6 +6469,8 @@ def start() -> None:
     with _turn_lock:
         _response_wait_until = 0.0
         _last_proactive_speech_at = 0.0
+    if bool(getattr(config, "SPEAKER_GAZE_STARTUP_SCAN_ENABLED", True)):
+        request_face_acquisition_scan(reason="startup")
     _thread = threading.Thread(target=_loop, daemon=True, name="consciousness")
     _thread.start()
     _face_tracking_thread = threading.Thread(
@@ -6090,6 +6510,8 @@ def stop() -> None:
     _previous_face_boxes.clear()
     _face_tracking_lock.clear()
     _face_tracking_tracker = None
+    with _speaker_gaze_lock:
+        _speaker_gaze_intent.clear()
     _record_face_tracking_state(locked=False, visible=False)
     _personal_space_reacted_at.clear()
     _last_pose_analysis_at = 0.0

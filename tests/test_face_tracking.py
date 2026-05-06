@@ -23,6 +23,9 @@ class FaceTrackingTests(unittest.TestCase):
         self.old_live_tracker = consciousness._face_tracking_tracker
         self.old_suspend_until = consciousness._face_tracking_suspended_until
         self.old_tracking_log_at = consciousness._last_face_tracking_log_at
+        with consciousness._speaker_gaze_lock:
+            self.old_speaker_gaze_intent = dict(consciousness._speaker_gaze_intent)
+            consciousness._speaker_gaze_intent.clear()
         self.frame = np.zeros((720, 1280, 3), dtype=np.uint8)
 
     def tearDown(self):
@@ -34,6 +37,9 @@ class FaceTrackingTests(unittest.TestCase):
         c._face_tracking_tracker = self.old_live_tracker
         c._face_tracking_suspended_until = self.old_suspend_until
         c._last_face_tracking_log_at = self.old_tracking_log_at
+        with c._speaker_gaze_lock:
+            c._speaker_gaze_intent.clear()
+            c._speaker_gaze_intent.update(self.old_speaker_gaze_intent)
 
     def _frame_with_patch(self, x: int, y: int) -> np.ndarray:
         rng = np.random.default_rng(1234)
@@ -126,6 +132,105 @@ class FaceTrackingTests(unittest.TestCase):
             lift=updates[lift_ch],
             tilt=updates[tilt_ch],
         )
+
+    def test_recent_speaker_face_beats_larger_bystander(self):
+        c = self.consciousness
+        self._set_servo_positions()
+        c.world_state.update("people", [
+            {
+                "id": "person_1",
+                "person_db_id": 1,
+                "face_id": "Bret",
+                "face_visible": True,
+                "face_box": (100, 180, 80, 100),
+            },
+            {
+                "id": "person_2",
+                "person_db_id": 2,
+                "face_id": "Other",
+                "face_visible": True,
+                "face_box": (900, 160, 240, 240),
+            },
+        ])
+        c._face_tracking_lock = {}
+        c._face_tracking_suspended_until = 0.0
+
+        with (
+            mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+            mock.patch.object(c.time, "monotonic", return_value=200.0),
+            mock.patch("hardware.servos.set_servos") as set_servos,
+            mock.patch("hardware.servos.set_motion_profile"),
+            mock.patch("hardware.servos.set_face_tracking_baseline"),
+            mock.patch.object(c.config, "FACE_TRACKING_VERTICAL_ENABLED", True),
+        ):
+            c.note_speaker_gaze_intent(1, reason="speech", force_search=False)
+            c._step_face_tracking(self.frame)
+
+        updates = set_servos.call_args.args[0]
+        neck_ch = c.config.SERVO_CHANNELS["neck"]["ch"]
+        self.assertEqual(c._face_tracking_lock.get("key"), "db:1")
+        self.assertLess(updates[neck_ch], c.config.SERVO_CHANNELS["neck"]["neutral"])
+
+    def test_unknown_speech_without_face_searches_down_first(self):
+        c = self.consciousness
+        self._set_servo_positions()
+        c.world_state.update("people", [])
+        c._face_tracking_lock = {}
+        c._face_tracking_suspended_until = 0.0
+
+        with (
+            mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+            mock.patch.object(c.time, "monotonic", return_value=300.0),
+            mock.patch("hardware.servos.set_servos") as set_servos,
+            mock.patch("hardware.servos.set_motion_profile"),
+            mock.patch("hardware.servos.set_face_tracking_baseline"),
+        ):
+            c.note_speaker_gaze_intent(
+                None,
+                unknown_voice=True,
+                reason="speech",
+                force_search=True,
+            )
+            c._step_face_tracking(self.frame)
+
+        updates = set_servos.call_args.args[0]
+        lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
+        tilt_ch = c.config.SERVO_CHANNELS["headtilt"]["ch"]
+        visor_ch = c.config.SERVO_CHANNELS["visor"]["ch"]
+        self.assertLess(updates[lift_ch], c.config.SERVO_CHANNELS["headlift"]["neutral"])
+        self.assertGreater(updates[tilt_ch], c.config.SERVO_CHANNELS["headtilt"]["neutral"])
+        self.assertEqual(updates[visor_ch], c.config.SERVO_CHANNELS["visor"]["max"])
+        tracking = c.world_state.get("self_state").get("face_tracking") or {}
+        self.assertTrue(tracking.get("searching"))
+        self.assertEqual(tracking.get("search_pose"), "down")
+
+    def test_startup_scan_accepts_visible_face_instead_of_searching(self):
+        c = self.consciousness
+        self._set_servo_positions()
+        c.world_state.update("people", [{
+            "id": "person_1",
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": True,
+            "face_box": (100, 180, 120, 120),
+        }])
+        c._face_tracking_lock = {}
+        c._face_tracking_suspended_until = 0.0
+
+        with (
+            mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+            mock.patch.object(c.time, "monotonic", return_value=400.0),
+            mock.patch("hardware.servos.set_servos") as set_servos,
+            mock.patch("hardware.servos.set_motion_profile"),
+            mock.patch("hardware.servos.set_face_tracking_baseline"),
+        ):
+            c.request_face_acquisition_scan(reason="startup")
+            c._step_face_tracking(self.frame)
+
+        set_servos.assert_called_once()
+        self.assertEqual(c._face_tracking_lock.get("key"), "db:1")
+        tracking = c.world_state.get("self_state").get("face_tracking") or {}
+        self.assertFalse(tracking.get("searching"))
 
     @unittest.skipIf(cv2 is None, "OpenCV unavailable")
     def test_live_tracking_people_advances_box_between_recognition_ticks(self):

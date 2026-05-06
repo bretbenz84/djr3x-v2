@@ -752,6 +752,102 @@ FACE_TRACKING_VERTICAL_GAIN = _env_float(
     max_value=2.0,
 )
 
+# Speaker-gaze intent makes head tracking social: when someone talks, prefer
+# that person's face if visible; if no face is visible, run a short down-biased
+# search so seated people are discoverable.
+SPEAKER_GAZE_ENABLED = _env_bool("SPEAKER_GAZE_ENABLED", True)
+SPEAKER_GAZE_INTENT_WINDOW_SECS = _env_float(
+    "SPEAKER_GAZE_INTENT_WINDOW_SECS",
+    14.0,
+    min_value=0.0,
+    max_value=60.0,
+)
+SPEAKER_GAZE_SEARCH_WINDOW_SECS = _env_float(
+    "SPEAKER_GAZE_SEARCH_WINDOW_SECS",
+    8.0,
+    min_value=0.0,
+    max_value=30.0,
+)
+SPEAKER_GAZE_SEARCH_INTERVAL_SECS = _env_float(
+    "SPEAKER_GAZE_SEARCH_INTERVAL_SECS",
+    0.70,
+    min_value=0.1,
+    max_value=5.0,
+)
+SPEAKER_GAZE_LOST_SEARCH_AFTER_SECS = _env_float(
+    "SPEAKER_GAZE_LOST_SEARCH_AFTER_SECS",
+    0.45,
+    min_value=0.0,
+    max_value=10.0,
+)
+SPEAKER_GAZE_ACTIVE_DEAD_ZONE_PX = _env_float(
+    "SPEAKER_GAZE_ACTIVE_DEAD_ZONE_PX",
+    10.0,
+    min_value=0.0,
+    max_value=200.0,
+)
+SPEAKER_GAZE_ACTIVE_CENTERING_GAIN = _env_float(
+    "SPEAKER_GAZE_ACTIVE_CENTERING_GAIN",
+    1.65,
+    min_value=0.1,
+    max_value=4.0,
+)
+SPEAKER_GAZE_ACTIVE_VERTICAL_GAIN = _env_float(
+    "SPEAKER_GAZE_ACTIVE_VERTICAL_GAIN",
+    1.10,
+    min_value=0.0,
+    max_value=3.0,
+)
+SPEAKER_GAZE_NECK_MAX_STEP_QUS = _env_int(
+    "SPEAKER_GAZE_NECK_MAX_STEP_QUS",
+    1100,
+    min_value=1,
+    max_value=4000,
+)
+SPEAKER_GAZE_LIFT_MAX_STEP_QUS = _env_int(
+    "SPEAKER_GAZE_LIFT_MAX_STEP_QUS",
+    720,
+    min_value=1,
+    max_value=4000,
+)
+SPEAKER_GAZE_TILT_MAX_STEP_QUS = _env_int(
+    "SPEAKER_GAZE_TILT_MAX_STEP_QUS",
+    340,
+    min_value=1,
+    max_value=2000,
+)
+SPEAKER_GAZE_SEARCH_SERVO_SPEED = _env_int(
+    "SPEAKER_GAZE_SEARCH_SERVO_SPEED",
+    130,
+    min_value=0,
+    max_value=255,
+)
+SPEAKER_GAZE_SEARCH_SERVO_ACCELERATION = _env_int(
+    "SPEAKER_GAZE_SEARCH_SERVO_ACCELERATION",
+    20,
+    min_value=0,
+    max_value=255,
+)
+SPEAKER_GAZE_SEARCH_NECK_FRACTION = _env_float(
+    "SPEAKER_GAZE_SEARCH_NECK_FRACTION",
+    0.42,
+    min_value=0.0,
+    max_value=1.0,
+)
+SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION = _env_float(
+    "SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION",
+    0.72,
+    min_value=0.0,
+    max_value=1.0,
+)
+SPEAKER_GAZE_SEARCH_DOWN_LIFT_FRACTION = _env_float(
+    "SPEAKER_GAZE_SEARCH_DOWN_LIFT_FRACTION",
+    0.18,
+    min_value=0.0,
+    max_value=1.0,
+)
+SPEAKER_GAZE_STARTUP_SCAN_ENABLED = _env_bool("SPEAKER_GAZE_STARTUP_SCAN_ENABLED", True)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PROXEMICS — Distance Zone Thresholds
 # Face bounding box width as a fraction of total frame width (larger = closer)
