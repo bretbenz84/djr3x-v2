@@ -333,30 +333,42 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
     def test_apply_question_handoff_does_not_flush_stream(self):
         from intelligence import interaction
 
-        with (
-            mock.patch.object(interaction.stream, "flush") as flush,
-            mock.patch.object(interaction.vad, "reset_state") as reset_vad,
-        ):
-            interaction._apply_post_tts_handoff(
-                "What do you do for work?",
-                source="test",
-            )
+        old_floor = interaction._listen_capture_floor_at
+        try:
+            with (
+                mock.patch.object(interaction.time, "monotonic", return_value=100.0),
+                mock.patch.object(interaction.config, "POST_TTS_CAPTURE_PREROLL_GRACE_SECS", 0.0),
+                mock.patch.object(interaction.stream, "flush") as flush,
+                mock.patch.object(interaction.vad, "reset_state") as reset_vad,
+            ):
+                interaction._apply_post_tts_handoff(
+                    "What do you do for work?",
+                    source="test",
+                )
+        finally:
+            floor = interaction._listen_capture_floor_at
+            interaction._listen_capture_floor_at = old_floor
 
         flush.assert_not_called()
         reset_vad.assert_called_once()
+        self.assertAlmostEqual(floor, 100.0)
 
     def test_post_tts_handoff_refreshes_idle_timer(self):
         from intelligence import interaction
 
-        interaction._last_speech_at = 10.0
-        with (
-            mock.patch.object(interaction.time, "monotonic", return_value=50.0),
-            mock.patch.object(interaction.stream, "flush"),
-        ):
-            interaction._apply_post_tts_handoff(
-                "Long Star Trek answer complete.",
-                source="test",
-            )
+        old_floor = interaction._listen_capture_floor_at
+        try:
+            interaction._last_speech_at = 10.0
+            with (
+                mock.patch.object(interaction.time, "monotonic", return_value=50.0),
+                mock.patch.object(interaction.stream, "flush"),
+            ):
+                interaction._apply_post_tts_handoff(
+                    "Long Star Trek answer complete.",
+                    source="test",
+                )
+        finally:
+            interaction._listen_capture_floor_at = old_floor
 
         self.assertEqual(interaction._last_speech_at, 50.0)
 
@@ -794,6 +806,27 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             mock.patch.object(interaction, "_response_wait_active", return_value=True),
         ):
             self.assertEqual(interaction._speech_preroll_secs(), 2.0)
+
+    def test_question_response_preroll_clamps_to_post_tts_capture_floor(self):
+        from intelligence import interaction
+
+        old_floor = interaction._listen_capture_floor_at
+        try:
+            interaction._listen_capture_floor_at = 100.0
+            with (
+                mock.patch.object(interaction.config, "SPEECH_PREROLL_SECS", 0.45),
+                mock.patch.object(interaction.config, "POST_QUESTION_SPEECH_PREROLL_SECS", 2.0),
+                mock.patch.object(interaction.config, "AUDIO_BUFFER_SECONDS", 30),
+                mock.patch.object(interaction, "_response_wait_active", return_value=True),
+            ):
+                capture = interaction._speech_capture_secs(
+                    speech_start_mono=100.5,
+                    finished_mono=102.0,
+                )
+        finally:
+            interaction._listen_capture_floor_at = old_floor
+
+        self.assertAlmostEqual(capture, 2.0)
 
     def test_non_question_speech_uses_default_preroll(self):
         from intelligence import interaction

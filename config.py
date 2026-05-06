@@ -1244,6 +1244,10 @@ MIN_SPEECH_DURATION_SECS = 0.45
 SPEECH_PREROLL_SECS = 0.45
 POST_QUESTION_SPEECH_PREROLL_SECS = 2.0
 
+# Never let question-answer pre-roll reach back into Rex's just-finished prompt.
+# Set above zero only if the first syllable after TTS is consistently clipped.
+POST_TTS_CAPTURE_PREROLL_GRACE_SECS = 0.0
+
 # If a transcribed utterance ends like an unfinished sentence ("I'm going to",
 # "the thing is", "because..."), hold it briefly before responding. A second
 # utterance inside the hold window is merged into one turn.

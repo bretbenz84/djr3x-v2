@@ -226,6 +226,10 @@ _anonymous_speaker_next_id: int = 1
 # immediately triggering a new speech segment.
 _listen_resume_at: float = 0.0
 
+# Earliest monotonic time the next speech capture may include. This prevents
+# answer pre-roll from pulling Rex's just-finished prompt into Whisper.
+_listen_capture_floor_at: float = 0.0
+
 # When True, a post-TTS cleanup flush already happened and the next detected
 # speech onset should simply clear this marker. Question handoffs usually leave
 # this False so a fast human answer is not deleted.
@@ -1329,11 +1333,16 @@ def _apply_post_tts_handoff(
     *,
     source: str = "speech_queue",
 ) -> _PostTtsHandoffPolicy:
-    global _listen_resume_at, _post_tts_flush_needed, _last_speech_at
+    global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed, _last_speech_at
     policy = _post_tts_handoff_policy(text)
     now = time.monotonic()
     _last_speech_at = now
     _listen_resume_at = now + policy.listen_delay_secs
+    grace = max(
+        0.0,
+        float(getattr(config, "POST_TTS_CAPTURE_PREROLL_GRACE_SECS", 0.0) or 0.0),
+    )
+    _listen_capture_floor_at = max(0.0, now - grace)
     if policy.flush_buffer:
         stream.flush()
         _post_tts_flush_needed = True
@@ -5282,6 +5291,22 @@ def _speech_preroll_secs() -> float:
     return max(0.0, preroll)
 
 
+def _speech_capture_secs(speech_start_mono: float, finished_mono: Optional[float] = None) -> float:
+    """
+    Return how much rolling audio to send to Whisper for this speech segment.
+
+    Question answers get extra pre-roll, but never from before the latest
+    post-TTS handoff floor. Otherwise Rex's own question can be captured along
+    with the human's answer.
+    """
+    finished = time.monotonic() if finished_mono is None else float(finished_mono)
+    start_at = float(speech_start_mono) - _speech_preroll_secs()
+    if _listen_capture_floor_at > 0.0:
+        start_at = max(start_at, _listen_capture_floor_at)
+    duration = max(0.0, finished - start_at)
+    return min(duration, float(config.AUDIO_BUFFER_SECONDS))
+
+
 def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
     """
     Poll VAD until config.SILENCE_TIMEOUT_SECS of sustained silence, then
@@ -5319,9 +5344,9 @@ def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
         return None
 
     # Grab the full segment from the rolling buffer. Add pre-roll so soft starts
-    # before the first VAD-positive chunk are not clipped.
-    duration = time.monotonic() - speech_start_mono + _speech_preroll_secs()
-    capture_secs = min(duration, config.AUDIO_BUFFER_SECONDS)
+    # before the first VAD-positive chunk are not clipped, clamped to the latest
+    # post-TTS handoff so Rex's own question is not transcribed as user speech.
+    capture_secs = _speech_capture_secs(speech_start_mono)
     return stream.get_audio_chunk(capture_secs)
 
 
@@ -13576,6 +13601,7 @@ def _loop() -> None:
 def start(*, text_only: bool = False) -> None:
     """Start the wake word detector and the continuous interaction loop."""
     global _thread, _identity_prompt_until, _awaiting_followup_event
+    global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _text_only_mode
@@ -13593,6 +13619,9 @@ def start(*, text_only: bool = False) -> None:
     _clear_anonymous_speaker_slots()
     _interest_idle_followups_spoken.clear()
     _identity_prompt_until = 0.0
+    _listen_resume_at = 0.0
+    _listen_capture_floor_at = 0.0
+    _post_tts_flush_needed = False
     _awaiting_followup_event = None
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
@@ -13643,6 +13672,7 @@ def start(*, text_only: bool = False) -> None:
 def stop() -> None:
     """Stop the interaction loop and wake word detector, waiting for clean exit."""
     global _thread, _awaiting_followup_event, _identity_prompt_until
+    global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
@@ -13660,6 +13690,9 @@ def stop() -> None:
 
     _awaiting_followup_event = None
     _identity_prompt_until = 0.0
+    _listen_resume_at = 0.0
+    _listen_capture_floor_at = 0.0
+    _post_tts_flush_needed = False
     _pending_introduction = None
     _pending_intro_followup = None
     _pending_intro_voice_capture = None
