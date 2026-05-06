@@ -1342,6 +1342,40 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertIsNone(interaction._extract_name_update("call me both"))
         self.assertIsNone(interaction._extract_name_update("that's not my name"))
 
+    def test_prompted_identity_reply_preserves_comma_split_name(self):
+        from intelligence import interaction
+
+        self.assertEqual(
+            interaction._extract_introduced_name(
+                "Shrek, Benziger",
+                allow_bare_name=True,
+            ),
+            "Shrek Benziger",
+        )
+        self.assertTrue(
+            interaction._prompted_name_reply_needs_confirmation(
+                "Shrek, Benziger",
+                "Shrek Benziger",
+            )
+        )
+        self.assertFalse(
+            interaction._prompted_name_reply_needs_confirmation(
+                "Bret Benziger",
+                "Bret Benziger",
+            )
+        )
+
+    def test_prompted_identity_reply_strips_prompt_echo(self):
+        from intelligence import interaction
+
+        self.assertEqual(
+            interaction._extract_introduced_name(
+                "What name should I save for you? Bret Penziker",
+                allow_bare_name=True,
+            ),
+            "Bret Penziker",
+        )
+
     def test_common_first_name_only_requires_last_name(self):
         from intelligence import interaction
 
@@ -3065,11 +3099,17 @@ class ConversationGatingTest(unittest.TestCase):
         old_started = consciousness._process_started_mono
         old_seen = consciousness._startup_empty_room_seen_at
         old_fired = consciousness._startup_empty_room_fired
+        old_camera = consciousness._startup_camera_first_frame_at
+        old_evidence = consciousness._startup_presence_evidence_at
+        old_evidence_reason = consciousness._startup_presence_evidence_reason
         old_greeted = set(consciousness._greeted_this_session)
         try:
             consciousness._process_started_mono = 100.0
             consciousness._startup_empty_room_seen_at = 0.0
             consciousness._startup_empty_room_fired = False
+            consciousness._startup_camera_first_frame_at = 100.0
+            consciousness._startup_presence_evidence_at = 0.0
+            consciousness._startup_presence_evidence_reason = ""
             consciousness._greeted_this_session.clear()
             snapshot = {"people": [], "crowd": {"count": 0}}
             profile = mock.Mock(
@@ -3082,6 +3122,7 @@ class ConversationGatingTest(unittest.TestCase):
             with (
                 mock.patch.object(consciousness.time, "monotonic", return_value=102.0),
                 mock.patch.object(consciousness.config, "STARTUP_EMPTY_ROOM_CONFIRM_SECS", 5.0),
+                mock.patch.object(consciousness.config, "STARTUP_EMPTY_ROOM_REQUIRE_SCAN_COMPLETE", False),
                 mock.patch.object(consciousness, "_speak_async") as speak,
             ):
                 consciousness._step_startup_empty_room_comment(snapshot, profile)
@@ -3093,6 +3134,9 @@ class ConversationGatingTest(unittest.TestCase):
             consciousness._process_started_mono = old_started
             consciousness._startup_empty_room_seen_at = old_seen
             consciousness._startup_empty_room_fired = old_fired
+            consciousness._startup_camera_first_frame_at = old_camera
+            consciousness._startup_presence_evidence_at = old_evidence
+            consciousness._startup_presence_evidence_reason = old_evidence_reason
             consciousness._greeted_this_session.clear()
             consciousness._greeted_this_session.update(old_greeted)
 
@@ -3102,11 +3146,17 @@ class ConversationGatingTest(unittest.TestCase):
         old_started = consciousness._process_started_mono
         old_seen = consciousness._startup_empty_room_seen_at
         old_fired = consciousness._startup_empty_room_fired
+        old_camera = consciousness._startup_camera_first_frame_at
+        old_evidence = consciousness._startup_presence_evidence_at
+        old_evidence_reason = consciousness._startup_presence_evidence_reason
         old_greeted = set(consciousness._greeted_this_session)
         try:
             consciousness._process_started_mono = 100.0
             consciousness._startup_empty_room_seen_at = 101.0
             consciousness._startup_empty_room_fired = False
+            consciousness._startup_camera_first_frame_at = 100.5
+            consciousness._startup_presence_evidence_at = 0.0
+            consciousness._startup_presence_evidence_reason = ""
             consciousness._greeted_this_session.clear()
             snapshot = {"people": [], "crowd": {"count": 0}}
             profile = mock.Mock(
@@ -3118,6 +3168,7 @@ class ConversationGatingTest(unittest.TestCase):
 
             with (
                 mock.patch.object(consciousness.time, "monotonic", return_value=107.0),
+                mock.patch.object(consciousness.config, "STARTUP_EMPTY_ROOM_REQUIRE_SCAN_COMPLETE", False),
                 mock.patch.object(consciousness.random, "choice", return_value="Empty startup line."),
                 mock.patch.object(consciousness, "_claim_proactive_purpose", return_value="tok") as claim,
                 mock.patch.object(consciousness, "_proactive_purpose_current", return_value=True),
@@ -3140,6 +3191,55 @@ class ConversationGatingTest(unittest.TestCase):
             consciousness._process_started_mono = old_started
             consciousness._startup_empty_room_seen_at = old_seen
             consciousness._startup_empty_room_fired = old_fired
+            consciousness._startup_camera_first_frame_at = old_camera
+            consciousness._startup_presence_evidence_at = old_evidence
+            consciousness._startup_presence_evidence_reason = old_evidence_reason
+            consciousness._greeted_this_session.clear()
+            consciousness._greeted_this_session.update(old_greeted)
+
+    def test_startup_empty_room_waits_for_presence_scan_gate(self):
+        from intelligence import consciousness
+
+        old_started = consciousness._process_started_mono
+        old_seen = consciousness._startup_empty_room_seen_at
+        old_fired = consciousness._startup_empty_room_fired
+        old_camera = consciousness._startup_camera_first_frame_at
+        old_evidence = consciousness._startup_presence_evidence_at
+        old_evidence_reason = consciousness._startup_presence_evidence_reason
+        old_greeted = set(consciousness._greeted_this_session)
+        try:
+            consciousness._process_started_mono = 100.0
+            consciousness._startup_empty_room_seen_at = 101.0
+            consciousness._startup_empty_room_fired = False
+            consciousness._startup_camera_first_frame_at = 100.5
+            consciousness._startup_presence_evidence_at = 0.0
+            consciousness._startup_presence_evidence_reason = ""
+            consciousness._greeted_this_session.clear()
+            snapshot = {"people": [], "crowd": {"count": 0}}
+            profile = mock.Mock(
+                suppress_proactive=False,
+                suppress_system_comments=False,
+                interaction_busy=False,
+                user_mid_sentence=False,
+            )
+
+            with (
+                mock.patch.object(consciousness.time, "monotonic", return_value=107.0),
+                mock.patch.object(consciousness.config, "STARTUP_EMPTY_ROOM_REQUIRE_SCAN_COMPLETE", True),
+                mock.patch.object(consciousness.config, "STARTUP_EMPTY_ROOM_MIN_SCAN_SECS", 12.0),
+                mock.patch.object(consciousness, "_speak_async") as speak,
+            ):
+                consciousness._step_startup_empty_room_comment(snapshot, profile)
+
+            speak.assert_not_called()
+            self.assertEqual(consciousness._startup_empty_room_seen_at, 0.0)
+        finally:
+            consciousness._process_started_mono = old_started
+            consciousness._startup_empty_room_seen_at = old_seen
+            consciousness._startup_empty_room_fired = old_fired
+            consciousness._startup_camera_first_frame_at = old_camera
+            consciousness._startup_presence_evidence_at = old_evidence
+            consciousness._startup_presence_evidence_reason = old_evidence_reason
             consciousness._greeted_this_session.clear()
             consciousness._greeted_this_session.update(old_greeted)
 

@@ -163,6 +163,9 @@ _startup_group_greeted_signatures: set[str] = set()
 _startup_solo_seen_at: float = 0.0
 _startup_empty_room_seen_at: float = 0.0
 _startup_empty_room_fired: bool = False
+_startup_camera_first_frame_at: float = 0.0
+_startup_presence_evidence_at: float = 0.0
+_startup_presence_evidence_reason: str = ""
 
 # Overheard chime-in tracking. Counts how many times Rex has chimed in on
 # being-discussed mentions this session and rate-limits how often the step
@@ -383,6 +386,68 @@ def _any_visible_unknown_face() -> bool:
     return False
 
 
+def _note_startup_camera_frame(frame) -> None:
+    """Record when startup first had an actual camera frame to reason from."""
+    global _startup_camera_first_frame_at
+    if frame is None or _startup_camera_first_frame_at > 0.0:
+        return
+    if not _within_startup_group_window():
+        return
+    _startup_camera_first_frame_at = time.monotonic()
+
+
+def _note_startup_presence_evidence(reason: str) -> None:
+    """Any face or speech during startup means Rex must not claim absence."""
+    global _startup_presence_evidence_at, _startup_presence_evidence_reason
+    if not _within_startup_group_window():
+        return
+    _startup_presence_evidence_at = time.monotonic()
+    _startup_presence_evidence_reason = str(reason or "presence")
+
+
+def _startup_presence_gate_ready(now: float) -> bool:
+    """
+    True only after startup has had a fair chance to look before making any
+    room-empty-style comment. This is intentionally conservative: wide-angle
+    face detection can prove presence, but it cannot prove absence.
+    """
+    if _process_started_mono <= 0.0:
+        return False
+
+    camera_ready_secs = float(
+        getattr(config, "STARTUP_EMPTY_ROOM_CAMERA_READY_SECS", 2.0) or 0.0
+    )
+    if _startup_camera_first_frame_at <= 0.0:
+        return False
+    if (now - _startup_camera_first_frame_at) < max(0.0, camera_ready_secs):
+        return False
+
+    if bool(getattr(config, "STARTUP_EMPTY_ROOM_REQUIRE_SCAN_COMPLETE", True)):
+        min_scan = float(getattr(config, "STARTUP_EMPTY_ROOM_MIN_SCAN_SECS", 9.5) or 0.0)
+        if bool(getattr(config, "SPEAKER_GAZE_STARTUP_SCAN_ENABLED", True)):
+            search_window = float(
+                getattr(config, "SPEAKER_GAZE_SEARCH_WINDOW_SECS", 8.0) or 0.0
+            )
+            min_scan = max(min_scan, search_window + 0.5)
+        if (now - _process_started_mono) < max(0.0, min_scan):
+            return False
+
+    evidence_window = float(
+        getattr(config, "STARTUP_EMPTY_ROOM_RECENT_PRESENCE_EVIDENCE_SECS", 20.0)
+        or 0.0
+    )
+    if (
+        _startup_presence_evidence_at > 0.0
+        and (now - _startup_presence_evidence_at) <= max(0.0, evidence_window)
+    ):
+        return False
+    if _last_face_seen_at > 0.0 and (now - _last_face_seen_at) <= max(0.0, evidence_window):
+        return False
+    if is_identity_prompt_waiting_for_reply() or is_identity_prompt_in_flight():
+        return False
+    return True
+
+
 def note_speaker_gaze_intent(
     person_id: Optional[int],
     *,
@@ -395,6 +460,8 @@ def note_speaker_gaze_intent(
         return
 
     now = time.monotonic()
+    if str(reason or "").lower() not in {"startup", "scan"}:
+        _note_startup_presence_evidence(f"speaker_gaze:{reason or 'speech'}")
     try:
         pid = int(person_id) if person_id is not None else None
     except Exception:
@@ -753,7 +820,12 @@ _MEMORY_HINT_PAT = re.compile(
 )
 
 
-def note_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
+def note_rex_utterance(
+    text: str,
+    wait_secs: Optional[float] = None,
+    *,
+    open_response_wait: bool = True,
+) -> None:
     """
     Track when Rex last spoke and, if it was a question, open a reply window.
     """
@@ -784,7 +856,9 @@ def note_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
     with _turn_lock:
         _last_proactive_speech_at = now
 
-        should_wait = wait_secs is not None or _utterance_expects_reply(text)
+        should_wait = open_response_wait and (
+            wait_secs is not None or _utterance_expects_reply(text)
+        )
         if not should_wait:
             return
 
@@ -976,12 +1050,17 @@ def _speak_async(
         _proactive_speech_pending.set()
         done = speech_queue.enqueue(text, emotion, priority=0)
         _mark_governor_candidate(candidate_id, "accepted", "current_behavior_enqueued_speech")
+        should_open_wait_on_done = (
+            on_done is None and (wait_secs is not None or _utterance_expects_reply(text))
+        )
 
         def _on_done() -> None:
             done.wait()
             try:
                 if on_done is not None:
                     on_done()
+                elif should_open_wait_on_done:
+                    begin_response_wait(wait_secs)
             finally:
                 _proactive_speech_pending.clear()
 
@@ -990,7 +1069,7 @@ def _speak_async(
             conv_log.log_rex(text)
         except Exception as exc:
             _log.debug("conversation log write failed for proactive speech: %s", exc)
-        note_rex_utterance(text, wait_secs=wait_secs)
+        note_rex_utterance(text, wait_secs=wait_secs, open_response_wait=False)
         return True
     except Exception as exc:
         _mark_governor_candidate(candidate_id, "dropped", "speak_async_error")
@@ -1378,14 +1457,25 @@ def _generate_and_speak_presence(
             tag = f"presence:{tag_key}"
             _log.info("consciousness: firing presence reaction — %s: %r", label, text[:120])
             _last_presence_reaction_at[tag_key] = time.monotonic()
-            speech_queue.enqueue(text, emotion, priority=1, tag=tag)
+            done = speech_queue.enqueue(text, emotion, priority=1, tag=tag)
             if isinstance(tag_key, int) and _presence_line_counts_as_greeting(label, purpose):
                 try:
                     from memory import people as people_mod
                     people_mod.record_greeting(tag_key)
                 except Exception as exc:
                     _log.debug("record greeting failed for person_id=%s: %s", tag_key, exc)
-            note_rex_utterance(text)
+            expects_reply = _utterance_expects_reply(text)
+            note_rex_utterance(text, open_response_wait=False)
+            if expects_reply:
+                def _open_wait_after_presence_done() -> None:
+                    done.wait()
+                    begin_response_wait()
+
+                threading.Thread(
+                    target=_open_wait_after_presence_done,
+                    daemon=True,
+                    name="presence-response-wait",
+                ).start()
             _record_proactive_question(
                 tag_key if isinstance(tag_key, int) else None,
                 text,
@@ -1556,6 +1646,7 @@ def _step_person_recognition(frame) -> None:
             return
 
         _last_face_seen_at = time.monotonic()
+        _note_startup_presence_evidence("face")
 
         # Identity stickiness: HOG face recognition flickers unknown↔known within
         # 1–2 frames. When there's one face and we identified it moments ago,
@@ -2763,8 +2854,17 @@ def _room_looks_empty(snapshot: dict) -> bool:
     return not people and crowd_count <= 0
 
 
+def _empty_room_commentary_allowed(snapshot: dict, now: Optional[float] = None) -> bool:
+    if not _room_looks_empty(snapshot):
+        return False
+    now = time.monotonic() if now is None else now
+    if _within_startup_group_window(now) and not _startup_presence_gate_ready(now):
+        return False
+    return True
+
+
 def _step_startup_empty_room_comment(snapshot: dict, profile: SituationProfile) -> None:
-    """Fire one startup-only joke when Rex wakes to a visibly empty room."""
+    """Fire one startup-only no-confirmed-presence line after a fair scan."""
     global _startup_empty_room_seen_at, _startup_empty_room_fired
 
     if _startup_empty_room_fired:
@@ -2782,7 +2882,7 @@ def _step_startup_empty_room_comment(snapshot: dict, profile: SituationProfile) 
     if profile.suppress_proactive or profile.suppress_system_comments:
         return
 
-    if not _room_looks_empty(snapshot):
+    if not _empty_room_commentary_allowed(snapshot, now):
         _startup_empty_room_seen_at = 0.0
         return
 
@@ -2826,6 +2926,16 @@ def _step_startup_empty_room_comment(snapshot: dict, profile: SituationProfile) 
 def _idle_micro_behavior_choices(snapshot: dict) -> tuple[list[str], list[int]]:
     people = snapshot.get("people", []) or []
     if _room_looks_empty(snapshot):
+        if not _empty_room_commentary_allowed(snapshot):
+            return (
+                [
+                    "ambient_scan",
+                    "private_thought",
+                    "aspiration",
+                    "idle_clip",
+                ],
+                [3, 1, 1, 1],
+            )
         return (
             [
                 "empty_room_joke",
@@ -2871,7 +2981,7 @@ def _idle_micro_behavior_choices(snapshot: dict) -> tuple[list[str], list[int]]:
 def _do_empty_room_joke(snapshot: dict) -> None:
     if not _can_proactive_speak():
         return
-    if not _room_looks_empty(snapshot):
+    if not _empty_room_commentary_allowed(snapshot):
         return
     if random.random() >= float(getattr(config, "EMPTY_ROOM_JOKE_PROBABILITY", 0.9)):
         return
@@ -6424,6 +6534,7 @@ def _loop() -> None:
                 frame = get_frame()
             except Exception:
                 frame = None
+            _note_startup_camera_frame(frame)
 
             # 3. Interoception
             _step_interoception()
@@ -6452,10 +6563,6 @@ def _loop() -> None:
             # opening instead of stacked callbacks.
             _step_startup_group_greeting(snapshot, profile)
 
-            # 6a. If Rex boots into an empty room, acknowledge the awkwardness
-            # once after the camera has had a chance to settle.
-            _step_startup_empty_room_comment(snapshot, profile)
-
             # 6b. Follow-up check
             _step_followup_check(snapshot)
 
@@ -6473,6 +6580,10 @@ def _loop() -> None:
 
             # 10. Presence tracking (departure / return reactions)
             _step_presence_tracking(snapshot, profile)
+
+            # 10a. If startup found no confirmed person after the scan, Rex may
+            # acknowledge uncertainty once. Presence/identity gets first claim.
+            _step_startup_empty_room_comment(snapshot, profile)
 
             # 10b. Social inquiry — ask engaged person about unknown newcomer
             _step_relationship_inquiry(snapshot, profile)
@@ -6534,10 +6645,13 @@ def start() -> None:
     global _recent_engaged_person_id, _recent_engaged_touch_at
     global _process_started_iso, _process_started_mono
     global _startup_group_signature, _startup_group_seen_at, _startup_solo_seen_at
+    global _startup_camera_first_frame_at, _startup_presence_evidence_at
+    global _startup_presence_evidence_reason
     global _last_pose_analysis_at
     global _last_weather_reaction_at
     global _face_tracking_last_error_key, _face_tracking_last_error_x
     global _face_tracking_last_error_y, _face_tracking_last_error_at
+    global _last_face_seen_at
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
@@ -6571,6 +6685,7 @@ def start() -> None:
     _group_turn_invited_this_session.clear()
     _group_lull_fired_at.clear()
     _previous_face_boxes.clear()
+    _last_face_seen_at = 0.0
     _face_tracking_lock.clear()
     _face_tracking_tracker = None
     _face_tracking_last_error_key = None
@@ -6587,6 +6702,9 @@ def start() -> None:
     _startup_solo_seen_at = 0.0
     _startup_empty_room_seen_at = 0.0
     _startup_empty_room_fired = False
+    _startup_camera_first_frame_at = 0.0
+    _startup_presence_evidence_at = 0.0
+    _startup_presence_evidence_reason = ""
     _startup_group_greeted_signatures.clear()
     _last_rex_utterance_text = ""
     _last_memory_hint_text = ""
@@ -6641,8 +6759,11 @@ def stop() -> None:
     global _recent_engaged_person_id, _recent_engaged_touch_at
     global _last_pose_analysis_at
     global _startup_empty_room_seen_at, _startup_empty_room_fired
+    global _startup_camera_first_frame_at, _startup_presence_evidence_at
+    global _startup_presence_evidence_reason
     global _face_tracking_last_error_key, _face_tracking_last_error_x
     global _face_tracking_last_error_y, _face_tracking_last_error_at
+    global _last_face_seen_at
     _stop_event.set()
     _pending_identity_prompt.clear()
     _identity_prompt_in_flight.clear()
@@ -6658,6 +6779,7 @@ def stop() -> None:
     _group_turn_invited_this_session.clear()
     _group_lull_fired_at.clear()
     _previous_face_boxes.clear()
+    _last_face_seen_at = 0.0
     _face_tracking_lock.clear()
     _face_tracking_tracker = None
     _face_tracking_last_error_key = None
@@ -6671,6 +6793,9 @@ def stop() -> None:
     _last_pose_analysis_at = 0.0
     _startup_empty_room_seen_at = 0.0
     _startup_empty_room_fired = False
+    _startup_camera_first_frame_at = 0.0
+    _startup_presence_evidence_at = 0.0
+    _startup_presence_evidence_reason = ""
     _startup_group_greeted_signatures.clear()
     _last_rex_utterance_text = ""
     _last_memory_hint_text = ""

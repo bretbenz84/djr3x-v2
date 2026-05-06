@@ -417,6 +417,7 @@ _pending_common_first_name_identity: Optional[dict] = None
 _pending_common_first_name_introduction: Optional[dict] = None
 _pending_existing_common_first_name: Optional[dict] = None
 _pending_identity_match_confirmation: Optional[dict] = None
+_pending_prompted_name_confirmation: Optional[dict] = None
 _common_first_name_prompted_this_session: set[int] = set()
 
 # Memory wipe confirmations are destructive, so the confirmation phrase is
@@ -666,6 +667,7 @@ def _action_router_context(
             "offscreen_identify": _pending_offscreen_identify is not None,
             "introduction": _pending_introduction is not None,
             "intro_followup": _pending_intro_followup is not None,
+            "prompted_name_confirmation": _pending_prompted_name_confirmation is not None,
         },
         "legacy": {
             "command_key": (legacy_command or {}).get("command_key"),
@@ -2497,6 +2499,35 @@ def _extract_self_identified_name(text: str) -> Optional[str]:
     return None
 
 
+_IDENTITY_PROMPT_ECHO_RE = re.compile(
+    r"\bwhat\s+name\s+should\s+i\s+(?:save|say|use|call|file)\s+for\s+you\b",
+    re.IGNORECASE,
+)
+
+
+def _prompted_bare_name_text(text: str) -> str:
+    """
+    Clean a bare reply to Rex's identity prompt.
+
+    Whisper can capture the tail of Rex's own question before the user's answer.
+    It also sometimes inserts commas inside a two-token name. In the prompted
+    identity path, preserving both name-like chunks is safer than truncating at
+    the first punctuation mark.
+    """
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return ""
+    if _IDENTITY_PROMPT_ECHO_RE.search(cleaned) and "?" in cleaned:
+        tail = cleaned.rsplit("?", 1)[-1].strip()
+        if tail:
+            cleaned = tail
+    if "," in cleaned:
+        parts = [part.strip() for part in cleaned.split(",") if part.strip()]
+        if 1 < len(parts) <= 3 and all(re.fullmatch(r"[A-Za-z][A-Za-z'\-]*", p) for p in parts):
+            cleaned = " ".join(parts)
+    return cleaned
+
+
 _RELATIONSHIP_WORD_NORMALIZE = {
     "best friend": "best_friend",
     "co-worker": "coworker",
@@ -2568,9 +2599,23 @@ def _extract_introduced_name(text: str, allow_bare_name: bool = False) -> Option
 
     # After Rex explicitly asks "who are you?", many people reply with only a name.
     if allow_bare_name:
-        return _normalize_name(normalized)
+        return _normalize_name(_prompted_bare_name_text(normalized))
 
     return None
+
+
+def _prompted_name_reply_needs_confirmation(raw_text: str, name: str) -> bool:
+    """Only suspicious prompted-name replies get a yes/no save confirmation."""
+    if not name:
+        return False
+    text = (raw_text or "").strip()
+    if not text:
+        return False
+    if "," in text:
+        return True
+    if "?" in text and _IDENTITY_PROMPT_ECHO_RE.search(text):
+        return True
+    return False
 
 
 def _name_word_count(name: str) -> int:
@@ -2936,6 +2981,7 @@ def _clear_memory_related_pending_state() -> None:
     global _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_prompted_name_confirmation
     global _identity_prompt_until
 
     _awaiting_followup_event = None
@@ -2949,6 +2995,7 @@ def _clear_memory_related_pending_state() -> None:
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
     _pending_identity_match_confirmation = None
+    _pending_prompted_name_confirmation = None
     _identity_prompt_until = 0.0
 
 
@@ -4179,7 +4226,15 @@ def _attach_identity_sample_to_person(
             from vision import camera as camera_mod
             from vision import face as face_mod
 
-            frame = camera_mod.capture_still()
+            if defer_face_enrollment or enroll_unknown_face:
+                frame = camera_mod.capture_current_gaze(
+                    settle_secs=float(
+                        getattr(config, "IDENTITY_FACE_ENROLL_CURRENT_GAZE_SETTLE_SECS", 0.25)
+                        or 0.0
+                    )
+                )
+            else:
+                frame = camera_mod.capture_still()
             if frame is None:
                 return
             if enroll_unknown_face:
@@ -4300,6 +4355,142 @@ def _handle_pending_identity_match_confirmation(
     return None, None, None
 
 
+def _prompted_name_confirmation_fresh(ctx: Optional[dict]) -> bool:
+    if not ctx:
+        return False
+    ttl = float(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_WINDOW_SECS", 30.0))
+    return (time.monotonic() - float(ctx.get("asked_at", 0.0))) <= max(1.0, ttl)
+
+
+def _maybe_ask_prompted_name_confirmation(
+    candidate_name: str,
+    audio_array: np.ndarray,
+    *,
+    raw_text: str,
+    prior_engagement: Optional[dict] = None,
+    anonymous_speaker_label: Optional[str] = None,
+    enroll_unknown_face: bool = False,
+    defer_face_enrollment: bool = False,
+) -> bool:
+    """Ask before saving a prompted name when the transcript looks contaminated."""
+    global _pending_prompted_name_confirmation, _identity_prompt_until, _session_exchange_count
+
+    if not _prompted_name_reply_needs_confirmation(raw_text, candidate_name):
+        return False
+
+    _pending_prompted_name_confirmation = {
+        "candidate_name": candidate_name,
+        "raw_text": raw_text,
+        "audio": audio_array.copy() if isinstance(audio_array, np.ndarray) else np.zeros(1, dtype=np.float32),
+        "prior_engagement": prior_engagement,
+        "anonymous_speaker_label": anonymous_speaker_label,
+        "enroll_unknown_face": bool(enroll_unknown_face),
+        "defer_face_enrollment": bool(defer_face_enrollment),
+        "asked_at": time.monotonic(),
+    }
+    _identity_prompt_until = max(
+        _identity_prompt_until,
+        time.monotonic() + float(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_WINDOW_SECS", 30.0)),
+    )
+    prompt = (
+        f"I heard {candidate_name}. Do I save that, or did the microphone embarrass itself?"
+    )
+    _log.info(
+        "[identity] asking prompted-name confirmation candidate=%r raw=%r",
+        candidate_name,
+        raw_text,
+    )
+    _speak_blocking(prompt, emotion="curious", pre_beat_ms=100, post_beat_ms_override=200)
+    conv_memory.add_to_transcript("Rex", prompt)
+    conv_log.log_rex(prompt)
+    _session_exchange_count += 1
+    _register_rex_utterance(prompt)
+    return True
+
+
+def _handle_pending_prompted_name_confirmation(
+    text: str,
+    audio_array: np.ndarray,
+) -> tuple[Optional[str], Optional[int], Optional[str]]:
+    """Consume yes/no after confirming a noisy prompted identity transcript."""
+    global _pending_prompted_name_confirmation, _identity_prompt_until
+
+    ctx = _pending_prompted_name_confirmation
+    if not _prompted_name_confirmation_fresh(ctx):
+        _pending_prompted_name_confirmation = None
+        return None, None, None
+
+    candidate = str(ctx.get("candidate_name") or "").strip()
+    if not candidate:
+        _pending_prompted_name_confirmation = None
+        return None, None, None
+
+    if _identity_confirmation_affirms(text):
+        stored_audio = ctx.get("audio")
+        if (
+            isinstance(stored_audio, np.ndarray)
+            and len(stored_audio) > 0
+            and isinstance(audio_array, np.ndarray)
+            and len(audio_array) > 0
+        ):
+            enroll_audio = np.concatenate([stored_audio, audio_array])
+        elif isinstance(stored_audio, np.ndarray) and len(stored_audio) > 0:
+            enroll_audio = stored_audio
+        elif isinstance(audio_array, np.ndarray) and len(audio_array) > 0:
+            enroll_audio = audio_array
+        else:
+            enroll_audio = np.zeros(1, dtype=np.float32)
+
+        person_id = _enroll_new_person(
+            candidate,
+            enroll_audio,
+            enroll_unknown_face=bool(ctx.get("enroll_unknown_face")),
+            defer_face_enrollment=bool(ctx.get("defer_face_enrollment")),
+        )
+        _pending_prompted_name_confirmation = None
+        _identity_prompt_until = 0.0
+        if person_id is None:
+            return None, None, None
+        _retire_anonymous_speaker_slot(
+            ctx.get("anonymous_speaker_label"),
+            person_id=person_id,
+            person_name=candidate,
+        )
+        _mark_single_name_for_later_last_name(person_id, candidate)
+        return f"Got it, {candidate}. Nice to meet you.", person_id, candidate
+
+    if _identity_confirmation_declines(text):
+        _pending_prompted_name_confirmation = None
+        _identity_prompt_until = time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS
+        return (
+            "Good. Then give me the name again, cleanly. Apparently the microphone wanted a solo.",
+            None,
+            None,
+        )
+
+    replacement = _extract_introduced_name(text, allow_bare_name=True)
+    if replacement and not _prompted_name_reply_needs_confirmation(text, replacement):
+        _pending_prompted_name_confirmation = None
+        _identity_prompt_until = 0.0
+        person_id = _enroll_new_person(
+            replacement,
+            audio_array,
+            enroll_unknown_face=bool(ctx.get("enroll_unknown_face")),
+            defer_face_enrollment=bool(ctx.get("defer_face_enrollment")),
+        )
+        if person_id is None:
+            return None, None, None
+        _retire_anonymous_speaker_slot(
+            ctx.get("anonymous_speaker_label"),
+            person_id=person_id,
+            person_name=replacement,
+        )
+        _mark_single_name_for_later_last_name(person_id, replacement)
+        return f"Got it, {replacement}. Nice to meet you.", person_id, replacement
+
+    return None, None, None
+
+
 def _maybe_auto_refresh_voice(
     person_id: int,
     voice_score: float,
@@ -4381,7 +4572,15 @@ def _enroll_new_person(
             from vision import camera as camera_mod
             from vision import face as face_mod
 
-            frame = camera_mod.capture_still()
+            if defer_face_enrollment or enroll_unknown_face:
+                frame = camera_mod.capture_current_gaze(
+                    settle_secs=float(
+                        getattr(config, "IDENTITY_FACE_ENROLL_CURRENT_GAZE_SETTLE_SECS", 0.25)
+                        or 0.0
+                    )
+                )
+            else:
+                frame = camera_mod.capture_still()
             if frame is not None:
                 if enroll_unknown_face:
                     face_enrolled = face_mod.enroll_unknown_face(person_id, frame)
@@ -7759,6 +7958,7 @@ def _end_session() -> None:
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_prompted_name_confirmation
 
     transcript = conv_memory.get_session_transcript()
     if not transcript:
@@ -7804,6 +8004,7 @@ def _end_session() -> None:
         _pending_common_first_name_introduction = None
         _pending_existing_common_first_name = None
         _pending_identity_match_confirmation = None
+        _pending_prompted_name_confirmation = None
         _clear_pending_memory_wipe()
         _common_first_name_prompted_this_session.clear()
         try:
@@ -8023,6 +8224,7 @@ def _end_session() -> None:
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
     _pending_identity_match_confirmation = None
+    _pending_prompted_name_confirmation = None
     _clear_pending_memory_wipe()
     _common_first_name_prompted_this_session.clear()
     _voice_refreshed_this_session.clear()
@@ -9190,6 +9392,7 @@ def _boundary_fallback_topic() -> Optional[str]:
         or _pending_common_first_name_introduction is not None
         or _pending_existing_common_first_name is not None
         or _pending_identity_match_confirmation is not None
+        or _pending_prompted_name_confirmation is not None
     ):
         return "introductions"
     try:
@@ -9213,6 +9416,7 @@ def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> N
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_prompted_name_confirmation
 
     if person_id is not None:
         try:
@@ -9257,6 +9461,8 @@ def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> N
             _pending_existing_common_first_name = None
     if _pending_identity_match_confirmation is not None:
         _pending_identity_match_confirmation = None
+    if _pending_prompted_name_confirmation is not None:
+        _pending_prompted_name_confirmation = None
 
 
 def _generate_repair_response(person_id: Optional[int], text: str, repair: dict) -> str:
@@ -11082,6 +11288,40 @@ def _handle_speech_segment(
             _register_rex_utterance(identity_match_response)
             return
 
+        prompted_name_confirm_response, prompted_name_confirm_id, prompted_name_confirm_name = (None, None, None)
+        if not game_conversation_lock:
+            prompted_name_confirm_response, prompted_name_confirm_id, prompted_name_confirm_name = (
+                _handle_pending_prompted_name_confirmation(text, audio_array)
+            )
+        if prompted_name_confirm_response:
+            if prompted_name_confirm_id is not None:
+                person_id = prompted_name_confirm_id
+                person_name = prompted_name_confirm_name
+                _session_person_ids.add(prompted_name_confirm_id)
+                _character_loop_note_speaker(
+                    character_trace,
+                    person_id=person_id,
+                    person_name=person_name,
+                    speaker_label=person_name or "user",
+                    identity_resolution="prompted_identity_confirmation",
+                    off_camera_unknown=False,
+                    visible_known_count=len(visible_known_by_id),
+                    has_unknown_visible_or_recent=has_unknown_visible_or_recent,
+                )
+            response_text = prompted_name_confirm_response
+            final_executed_path = "identity.prompted_name_confirmation"
+            _speak_blocking(
+                prompted_name_confirm_response,
+                emotion="happy" if prompted_name_confirm_id is not None else "curious",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            conv_memory.add_to_transcript("Rex", prompted_name_confirm_response)
+            conv_log.log_rex(prompted_name_confirm_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(prompted_name_confirm_response)
+            return
+
         common_name_response, common_name_person_id, common_name_full = (None, None, None)
         if not game_conversation_lock:
             common_name_response, common_name_person_id, common_name_full = (
@@ -11740,6 +11980,17 @@ def _handle_speech_segment(
                         )
                         _identity_prompt_until = 0.0
                 else:
+                    if _maybe_ask_prompted_name_confirmation(
+                        intro_name,
+                        audio_array,
+                        raw_text=text,
+                        prior_engagement=prior_engagement,
+                        anonymous_speaker_label=anonymous_speaker_label,
+                        enroll_unknown_face=bool(prior_engagement),
+                        defer_face_enrollment=identity_prompt_active,
+                    ):
+                        return
+
                     if _maybe_ask_identity_match_confirmation(
                         intro_name,
                         audio_array,
@@ -13613,6 +13864,7 @@ def start(*, text_only: bool = False) -> None:
     global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_prompted_name_confirmation
     global _text_only_mode
 
     if _thread and _thread.is_alive():
@@ -13636,6 +13888,7 @@ def start(*, text_only: bool = False) -> None:
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
     _pending_identity_match_confirmation = None
+    _pending_prompted_name_confirmation = None
     _clear_pending_memory_wipe()
     _common_first_name_prompted_this_session.clear()
     topic_thread.clear()
@@ -13685,6 +13938,7 @@ def stop() -> None:
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_prompted_name_confirmation
     global _text_only_mode
 
     _stop_event.set()
@@ -13709,6 +13963,7 @@ def stop() -> None:
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
     _pending_identity_match_confirmation = None
+    _pending_prompted_name_confirmation = None
     _clear_pending_memory_wipe()
     _common_first_name_prompted_this_session.clear()
     _recent_voice_turns.clear()

@@ -1639,6 +1639,34 @@ PEOPLE_ROAST_RIFF_PROBABILITY = 0.75
 # acknowledge being activated with no visible audience.
 STARTUP_EMPTY_ROOM_COMMENT_ENABLED = True
 STARTUP_EMPTY_ROOM_CONFIRM_SECS = 5.0
+STARTUP_EMPTY_ROOM_REQUIRE_SCAN_COMPLETE = _env_bool(
+    "STARTUP_EMPTY_ROOM_REQUIRE_SCAN_COMPLETE",
+    True,
+)
+STARTUP_EMPTY_ROOM_MIN_SCAN_SECS = _env_float(
+    "STARTUP_EMPTY_ROOM_MIN_SCAN_SECS",
+    9.5,
+    min_value=0.0,
+    max_value=60.0,
+)
+STARTUP_EMPTY_ROOM_CAMERA_READY_SECS = _env_float(
+    "STARTUP_EMPTY_ROOM_CAMERA_READY_SECS",
+    2.0,
+    min_value=0.0,
+    max_value=30.0,
+)
+STARTUP_EMPTY_ROOM_RECENT_PRESENCE_EVIDENCE_SECS = _env_float(
+    "STARTUP_EMPTY_ROOM_RECENT_PRESENCE_EVIDENCE_SECS",
+    20.0,
+    min_value=0.0,
+    max_value=120.0,
+)
+IDENTITY_FACE_ENROLL_CURRENT_GAZE_SETTLE_SECS = _env_float(
+    "IDENTITY_FACE_ENROLL_CURRENT_GAZE_SETTLE_SECS",
+    0.25,
+    min_value=0.0,
+    max_value=5.0,
+)
 
 # Mood-aware small talk: when Rex initiates small talk and a known person is in
 # frame, occasionally do a GPT-4o mood read of their face and tailor the question
@@ -1899,10 +1927,11 @@ EMPTY_ROOM_JOKES = [
 ]
 
 STARTUP_EMPTY_ROOM_JOKES = [
-    "Oh look, someone activated me in an empty room. Excellent use of everyone's time.",
-    "Boot sequence complete. Audience count: furniture. Finally, my core demographic.",
-    "Fantastic. I have awakened to perform for absolutely no one.",
-    "Systems online. Social situation detected: aggressively vacant.",
+    "I am not seeing anyone yet, which experience tells me proves absolutely nothing.",
+    "No confirmed passenger in view. Either I am alone, or someone has weaponized sitting down.",
+    "Visual scan inconclusive. A glamorous start for all involved.",
+    "I see furniture, shadows, and several opportunities for sensor humiliation.",
+    "No one confirmed yet. I will avoid declaring victory over an empty room like an amateur.",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
