@@ -5052,6 +5052,7 @@ class ConversationGatingTest(unittest.TestCase):
         old_people = consciousness.world_state.get("people")
         old_signature = consciousness._last_face_feedback_signature
         old_last_identity = consciousness._last_identity_prompt_at
+        old_reply_until = consciousness._identity_prompt_reply_until
         try:
             consciousness.world_state.update("people", [])
             consciousness._last_face_feedback_signature = None
@@ -5081,6 +5082,41 @@ class ConversationGatingTest(unittest.TestCase):
             consciousness._last_identity_prompt_at = old_last_identity
             consciousness._pending_identity_prompt.clear()
             consciousness._identity_prompt_in_flight.clear()
+            consciousness._identity_prompt_reply_until = old_reply_until
+
+    def test_identity_prompt_reply_window_consumes_or_expires(self):
+        from intelligence import consciousness
+
+        old_until = consciousness._identity_prompt_reply_until
+        old_pending = consciousness._pending_identity_prompt.is_set()
+        old_in_flight = consciousness._identity_prompt_in_flight.is_set()
+        try:
+            consciousness._identity_prompt_in_flight.clear()
+            consciousness._pending_identity_prompt.set()
+            consciousness._identity_prompt_reply_until = 120.0
+
+            with mock.patch.object(consciousness.time, "monotonic", return_value=110.0):
+                self.assertTrue(consciousness.is_identity_prompt_waiting_for_reply())
+                self.assertTrue(consciousness.consume_identity_prompt_request())
+
+            self.assertFalse(consciousness._pending_identity_prompt.is_set())
+            self.assertEqual(consciousness._identity_prompt_reply_until, 0.0)
+
+            consciousness._pending_identity_prompt.set()
+            consciousness._identity_prompt_reply_until = 120.0
+            with mock.patch.object(consciousness.time, "monotonic", return_value=121.0):
+                self.assertFalse(consciousness.is_identity_prompt_waiting_for_reply())
+
+            self.assertFalse(consciousness._pending_identity_prompt.is_set())
+            self.assertEqual(consciousness._identity_prompt_reply_until, 0.0)
+        finally:
+            consciousness._pending_identity_prompt.clear()
+            consciousness._identity_prompt_in_flight.clear()
+            if old_pending:
+                consciousness._pending_identity_prompt.set()
+            if old_in_flight:
+                consciousness._identity_prompt_in_flight.set()
+            consciousness._identity_prompt_reply_until = old_until
 
     def test_engaged_departure_stages_before_default_departure_window(self):
         from intelligence import consciousness
@@ -6182,6 +6218,67 @@ class PendingMusicPreferenceTest(unittest.TestCase):
                 consciousness._step_proactive_reactions(curr, profile)
         finally:
             consciousness._last_snapshot = old_snapshot
+
+        speak.assert_not_called()
+
+    def test_identity_prompt_wait_suppresses_generic_world_reactions(self):
+        from awareness.situation import SituationProfile
+        from intelligence import consciousness
+
+        old_snapshot = consciousness._last_snapshot
+        old_until = consciousness._identity_prompt_reply_until
+        old_pending = consciousness._pending_identity_prompt.is_set()
+        old_in_flight = consciousness._identity_prompt_in_flight.is_set()
+        profile = SituationProfile(
+            conversation_active=True,
+            user_mid_sentence=False,
+            rapid_exchange=False,
+            child_present=False,
+            apparent_departure=False,
+            likely_still_present=False,
+            social_mode="one_on_one",
+            suppress_proactive=False,
+            suppress_system_comments=False,
+            force_family_safe=False,
+            being_discussed=False,
+            discussion_sentiment="neutral",
+            interaction_busy=False,
+        )
+        prev = {
+            "crowd": {"count": 0, "count_label": "empty"},
+            "people": [],
+            "animals": [],
+            "audio_scene": {},
+            "time": {},
+        }
+        curr = {
+            "crowd": {"count": 1, "count_label": "alone"},
+            "people": [{"id": "slot:person_1", "person_db_id": None}],
+            "animals": [],
+            "audio_scene": {},
+            "time": {},
+        }
+        try:
+            consciousness._last_snapshot = prev
+            consciousness._identity_prompt_in_flight.clear()
+            consciousness._pending_identity_prompt.set()
+            consciousness._identity_prompt_reply_until = 120.0
+            with (
+                mock.patch.object(consciousness.time, "monotonic", return_value=110.0),
+                mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+                mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
+                mock.patch.object(consciousness, "_generate_and_speak") as speak,
+            ):
+                consciousness._step_proactive_reactions(curr, profile)
+        finally:
+            consciousness._last_snapshot = old_snapshot
+            consciousness._identity_prompt_in_flight.clear()
+            consciousness._pending_identity_prompt.clear()
+            if old_pending:
+                consciousness._pending_identity_prompt.set()
+            if old_in_flight:
+                consciousness._identity_prompt_in_flight.set()
+            consciousness._identity_prompt_reply_until = old_until
 
         speak.assert_not_called()
 

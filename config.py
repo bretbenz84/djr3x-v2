@@ -1292,7 +1292,7 @@ QUESTION_BUDGET_ENGAGED_GRACE_SECS = 45.0
 QUESTION_BUDGET_ENGAGED_EXTRA = 3
 
 # Longer wait window for unknown-person onboarding prompts ("who are you?").
-IDENTITY_RESPONSE_WAIT_SECS = 10.0
+IDENTITY_RESPONSE_WAIT_SECS = 20.0
 
 # Short acknowledgment lines Rex speaks when a wake word transitions him from
 # IDLE or SLEEP to ACTIVE. Distinct from INTERRUPT_ACKNOWLEDGMENTS (mid-speech).

@@ -88,6 +88,7 @@ _followup_lock = threading.Lock()
 _pending_identity_prompt = threading.Event()
 _identity_prompt_in_flight = threading.Event()
 _last_identity_prompt_at: float = 0.0
+_identity_prompt_reply_until: float = 0.0
 _IDENTITY_PROMPT_COOLDOWN_SECS = 45.0
 
 # Pending RELATIONSHIP prompt: Rex asked the engaged person who the stranger is.
@@ -624,8 +625,17 @@ def consume_identity_prompt_request() -> bool:
     Return True once when an unknown-person identity prompt was recently spoken.
     Interaction uses this to temporarily accept short bare-name replies.
     """
+    global _identity_prompt_reply_until
     if _pending_identity_prompt.is_set():
+        now = time.monotonic()
+        if _identity_prompt_reply_until > 0.0 and now > _identity_prompt_reply_until:
+            _pending_identity_prompt.clear()
+            _identity_prompt_reply_until = 0.0
+            _log.info("[identity_prompt] reply window expired before user speech")
+            return False
         _pending_identity_prompt.clear()
+        _identity_prompt_reply_until = 0.0
+        _log.info("[identity_prompt] reply window consumed by user speech")
         return True
     return False
 
@@ -633,6 +643,22 @@ def consume_identity_prompt_request() -> bool:
 def is_identity_prompt_in_flight() -> bool:
     """True while an unknown-person identity prompt is being queued/spoken."""
     return _identity_prompt_in_flight.is_set()
+
+
+def is_identity_prompt_waiting_for_reply() -> bool:
+    """True while Rex should wait for a name reply after asking who someone is."""
+    global _identity_prompt_reply_until
+    if _identity_prompt_in_flight.is_set():
+        return True
+    if not _pending_identity_prompt.is_set():
+        return False
+    now = time.monotonic()
+    if _identity_prompt_reply_until <= 0.0 or now <= _identity_prompt_reply_until:
+        return True
+    _pending_identity_prompt.clear()
+    _identity_prompt_reply_until = 0.0
+    _log.info("[identity_prompt] reply window expired")
+    return False
 
 
 def consume_relationship_prompt_request() -> Optional[dict]:
@@ -1732,7 +1758,7 @@ def _maybe_prompt_unknown_identity(
     mixed known+unknown scenes; this prompt is for fresh databases / solo
     unknown visitors.
     """
-    global _last_identity_prompt_at
+    global _last_identity_prompt_at, _identity_prompt_reply_until
 
     if unknown_count <= 0 or known_unique:
         return
@@ -1756,7 +1782,12 @@ def _maybe_prompt_unknown_identity(
     _identity_prompt_in_flight.set()
 
     def _identity_prompt_done() -> None:
+        global _identity_prompt_reply_until
+        wait_secs = float(getattr(config, "IDENTITY_RESPONSE_WAIT_SECS", 20.0) or 0.0)
         _pending_identity_prompt.set()
+        _identity_prompt_reply_until = time.monotonic() + max(0.0, wait_secs)
+        begin_response_wait(wait_secs)
+        _log.info("[identity_prompt] reply window open for %.1fs", wait_secs)
         _identity_prompt_in_flight.clear()
 
     queued = _speak_async(
@@ -2438,6 +2469,8 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
     if not _last_snapshot or not _can_proactive_speak():
         return
     if _startup_known_greeting_pending(snapshot):
+        return
+    if is_identity_prompt_waiting_for_reply():
         return
 
     try:
@@ -6495,6 +6528,7 @@ def start() -> None:
     """Start the consciousness daemon thread. No-op if already running."""
     global _thread, _response_wait_until, _last_proactive_speech_at, _pending_departure_keys
     global _face_tracking_thread, _face_tracking_tracker
+    global _identity_prompt_reply_until
     global _last_rex_utterance_text, _last_memory_hint_text, _last_memory_hint_at
     global _last_memory_hint_person_id
     global _recent_engaged_person_id, _recent_engaged_touch_at
@@ -6512,6 +6546,7 @@ def start() -> None:
     _stop_event.clear()
     _pending_identity_prompt.clear()
     _identity_prompt_in_flight.clear()
+    _identity_prompt_reply_until = 0.0
     _pending_relationship_prompt.clear()
     _pending_relationship_context.clear()
     _asked_relationship_slots.clear()
@@ -6601,6 +6636,7 @@ def stop() -> None:
     """Stop the consciousness daemon thread and wait for it to exit."""
     global _thread, _response_wait_until, _last_rex_utterance_text
     global _face_tracking_thread, _face_tracking_tracker
+    global _identity_prompt_reply_until
     global _last_memory_hint_text, _last_memory_hint_at, _last_memory_hint_person_id
     global _recent_engaged_person_id, _recent_engaged_touch_at
     global _last_pose_analysis_at
@@ -6610,6 +6646,7 @@ def stop() -> None:
     _stop_event.set()
     _pending_identity_prompt.clear()
     _identity_prompt_in_flight.clear()
+    _identity_prompt_reply_until = 0.0
     _proactive_speech_pending.clear()
     _confirmed_absent_at.clear()
     _first_sight_seen_at.clear()
