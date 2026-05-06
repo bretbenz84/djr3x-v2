@@ -39,6 +39,19 @@ _GENERIC_VISUAL_TARGET_WORDS = {
     "a", "an", "the", "this", "that", "these", "those", "my", "your",
     "thing", "things", "stuff", "one", "here", "there",
 }
+_BARE_LOOK_DIRECTIONS = {
+    "left": "left",
+    "right": "right",
+    "up": "up",
+    "down": "down",
+    "center": "center",
+    "centre": "center",
+}
+_EMBEDDED_LOOK_DIRECTION_RE = re.compile(
+    r"(?:^|[,.!?;]\s*)look\s+(?:to\s+)?(?:your\s+)?"
+    r"(?P<direction>left|right|up|down)\b",
+    re.IGNORECASE,
+)
 
 
 def _has_specific_visual_target(text: str) -> bool:
@@ -54,8 +67,26 @@ def _parse_directed_look(normalized: str, original: str) -> dict | None:
     for cases where the user is directing Rex's head/camera toward a target.
     """
     clean = _plain(normalized)
+    if clean.startswith("please "):
+        clean = clean[len("please "):].strip()
+    if clean in _BARE_LOOK_DIRECTIONS:
+        return {
+            "direction": _BARE_LOOK_DIRECTIONS[clean],
+            "target_hint": "",
+            "search_target": False,
+            "utterance": original.strip(),
+        }
     if not clean.startswith("look "):
-        return None
+        embedded = _EMBEDDED_LOOK_DIRECTION_RE.search(original or "")
+        if embedded is None:
+            return None
+        direction = embedded.group("direction").lower()
+        return {
+            "direction": _BARE_LOOK_DIRECTIONS.get(direction, direction),
+            "target_hint": "",
+            "search_target": False,
+            "utterance": original.strip(),
+        }
     if clean in {"look around", "look alive"}:
         return None
 

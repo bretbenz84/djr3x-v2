@@ -21,6 +21,7 @@ import apikeys
 import config
 from intelligence.person_memory_targets import references_person_memory_target
 from intelligence import performance_plan
+from memory.name_validation import normalize_person_name
 from openai import OpenAI
 
 
@@ -425,6 +426,10 @@ _RELATIONSHIP_SCORE_QUERY_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_THATS_NOT_NAME_RE = re.compile(
+    r"\bthat['’]?s\s+not\s+(?!my\s+name\b)(?P<name>[A-Za-z][A-Za-z' -]{0,60})",
+    re.IGNORECASE,
+)
 _TELL_JOKE_RE = re.compile(
     r"\b(?:tell|give|hit)\s+(?:me|us|the room)?\s*(?:with\s+)?"
     r"(?:a|another|one)?\s*(?:joke|pun|one[- ]liner)\b|"
@@ -655,6 +660,13 @@ def classify_explicit_control(text: str) -> ActionDecision | None:
         match = _NAME_FROM_TEXT_RE.search(cleaned)
         if match:
             name = _clean_name_arg(match.group("name"))
+        if not name:
+            wrong_name = _THATS_NOT_NAME_RE.search(cleaned)
+            if wrong_name is not None and not normalize_person_name(
+                wrong_name.group("name"),
+                allow_single=True,
+            ):
+                return None
         return ActionDecision(
             action="identity.name_correction",
             confidence=0.95,
@@ -960,6 +972,13 @@ def _apply_context_overrides(
                 requires_confirmation=False,
                 reason="score question outside an active game is a relationship memory query",
             )
+        return ActionDecision(
+            action="conversation.reply",
+            confidence=min(float(decision.confidence or 0.0), 0.40),
+            args={},
+            requires_confirmation=False,
+            reason="game answer requires an active game",
+        )
 
     pending_question = _pending_question_context(context)
     if not pending_question:

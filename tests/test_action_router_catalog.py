@@ -159,6 +159,15 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertEqual(snapshot.action, "vision.snapshot")
         self.assertTrue(snapshot.requires_confirmation)
 
+    def test_explicit_control_classifier_ignores_non_name_thats_not_phrase(self):
+        from intelligence import action_router
+
+        self.assertIsNone(
+            action_router.classify_explicit_control(
+                "That's not no good Oh, because you said kisses"
+            )
+        )
+
     def test_body_beat_llm_decision_requires_known_beat(self):
         from intelligence import action_router
 

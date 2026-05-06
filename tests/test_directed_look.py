@@ -21,6 +21,27 @@ class DirectedLookTests(unittest.TestCase):
                 self.assertEqual(match.command_key, "directed_look")
                 self.assertEqual(match.args["direction"], direction)
 
+    def test_parser_accepts_bare_direction(self):
+        from intelligence import command_parser
+
+        match = command_parser.parse("down")
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.command_key, "directed_look")
+        self.assertEqual(match.args["direction"], "down")
+        self.assertFalse(match.args["search_target"])
+
+    def test_parser_extracts_embedded_imperative_look_direction(self):
+        from intelligence import command_parser
+
+        match = command_parser.parse(
+            "Guess what? Stop playing with me. Look down. Like he said, look down."
+        )
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match.command_key, "directed_look")
+        self.assertEqual(match.args["direction"], "down")
+
     def test_parser_accepts_look_for_target_search(self):
         from intelligence import command_parser
 

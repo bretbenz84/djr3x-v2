@@ -244,7 +244,8 @@ class ActionRouterReplayTests(unittest.TestCase):
             RouterReplayCase(
                 utterance="Paris",
                 router_action="game.answer",
-                expected_allowlist_result="game_inactive",
+                expected_router_action="conversation.reply",
+                expected_allowlist_result="not_executable",
                 expected_legacy_command=None,
                 expected_final_path="llm.stream",
             ),

@@ -3919,14 +3919,41 @@ def _handle_existing_common_first_name_last_name_reply(text: str) -> Optional[st
     return f"Updated: {full_name}. The memory banks have unclenched."
 
 
+def _should_defer_existing_common_first_name_prompt(text: str) -> bool:
+    """Do not hijack a clear command just to ask a known person's last name."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    try:
+        match = command_parser.parse(cleaned)
+    except Exception:
+        match = None
+    if match is not None:
+        return True
+    try:
+        intent = intent_classifier._deterministic_label(cleaned)
+    except Exception:
+        intent = "general"
+    return intent != "general"
+
+
 def _maybe_prompt_existing_common_first_name(
     person_id: Optional[int],
     person_name: Optional[str],
+    current_text: str = "",
 ) -> Optional[str]:
     """Ask returning single-name-only people for a last name once per session."""
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
 
     if not _known_person_needs_last_name(person_id, person_name):
+        return None
+    if _should_defer_existing_common_first_name_prompt(current_text):
+        _log.info(
+            "[identity] deferred last-name prompt for person_id=%s name=%r due to command text=%r",
+            person_id,
+            person_name,
+            current_text,
+        )
         return None
 
     first_name = _normalize_name(person_name or "") or (person_name or "").strip()
@@ -11282,6 +11309,7 @@ def _handle_speech_segment(
         existing_common_name_prompt = _maybe_prompt_existing_common_first_name(
             person_id,
             person_name,
+            current_text=text,
         )
         if existing_common_name_prompt:
             _speak_blocking(

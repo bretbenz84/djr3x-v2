@@ -215,8 +215,15 @@ __marimo__/
 # API credentials
 apikeys.py
 
-# All AI models — downloaded by setup_assets.py, too large for git
-assets/models/
+# AI models — most are downloaded by setup_assets.py and too large for git.
+# Keep wake-word ONNX assets tracked so fresh installs can interrupt/listen.
+assets/models/*
+!assets/models/wake_word/
+assets/models/wake_word/*
+!assets/models/wake_word/*.onnx
+!assets/models/wake_word/_openwakeword_resources/
+assets/models/wake_word/_openwakeword_resources/*
+!assets/models/wake_word/_openwakeword_resources/*.onnx
 
 # TTS audio cache — rebuilt automatically from ElevenLabs
 assets/audio/tts_cache/

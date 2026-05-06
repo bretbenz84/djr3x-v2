@@ -462,6 +462,17 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertEqual(parsed.name, "Jennifer")
         self.assertEqual(parsed.relationship, "sister")
 
+    def test_intro_detection_rejects_slangy_this_is_statements(self):
+        from intelligence import introductions
+
+        for text in (
+            "This is fire, you know, um",
+            "This is unbelievable, I'm just here talking to a whole little video",
+        ):
+            with self.subTest(text=text):
+                parsed = introductions.detect(text, has_unknown_face=False)
+                self.assertFalse(parsed.is_introduction)
+
     def test_jeopardy_roster_allows_four_players_and_jen_alias(self):
         from features import jeopardy
         from features import games
@@ -1393,6 +1404,30 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     "Daniel",
                 )
             self.assertIsNone(second)
+        finally:
+            interaction._pending_existing_common_first_name = None
+            interaction._common_first_name_prompted_this_session.clear()
+
+    def test_returning_common_first_name_prompt_defers_for_commands(self):
+        from intelligence import interaction
+
+        interaction._pending_existing_common_first_name = None
+        interaction._common_first_name_prompted_this_session.clear()
+        try:
+            with mock.patch.object(
+                interaction,
+                "_has_declined_last_name",
+                return_value=False,
+            ):
+                response = interaction._maybe_prompt_existing_common_first_name(
+                    3,
+                    "Gloria",
+                    current_text="What time is it?",
+                )
+
+            self.assertIsNone(response)
+            self.assertIsNone(interaction._pending_existing_common_first_name)
+            self.assertNotIn(3, interaction._common_first_name_prompted_this_session)
         finally:
             interaction._pending_existing_common_first_name = None
             interaction._common_first_name_prompted_this_session.clear()
@@ -5655,6 +5690,25 @@ class PendingMusicPreferenceTest(unittest.TestCase):
 
         self.assertEqual(routed.action, "memory.query")
         self.assertGreaterEqual(routed.confidence, 0.85)
+
+    def test_router_downgrades_game_answer_when_no_game_is_active(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="game.answer",
+            confidence=1.0,
+            args={},
+            reason="misread bare direction as game answer",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "down",
+            {"active_game": False},
+        )
+
+        self.assertEqual(routed.action, "conversation.reply")
+        self.assertLessEqual(routed.confidence, 0.40)
 
     def test_intent_classifier_short_circuits_topic_knowledge_questions(self):
         from intelligence import intent_classifier
