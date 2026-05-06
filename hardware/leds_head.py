@@ -18,6 +18,7 @@ import config
 from utils.config_loader import ARDUINO_HEAD_PORT, HEAD_LEDS_ENABLED
 
 _log = logging.getLogger(__name__)
+_SERIAL_ERRORS = (serial.SerialException, serial.SerialTimeoutException, OSError)
 
 _ser: "serial.Serial | None" = None
 _lock = threading.Lock()
@@ -118,12 +119,17 @@ def connect() -> bool:
         _log.debug("HEAD_LEDS_ENABLED=False — skipping connect")
         return False
     try:
-        _ser = serial.Serial(ARDUINO_HEAD_PORT, config.HEAD_ARDUINO_BAUD, timeout=1)
+        _ser = serial.Serial(
+            ARDUINO_HEAD_PORT,
+            config.HEAD_ARDUINO_BAUD,
+            timeout=1,
+            write_timeout=float(getattr(config, "HEAD_ARDUINO_WRITE_TIMEOUT_SECS", 0.20)),
+        )
         _log.info("Head Arduino connected on %s at %d baud", ARDUINO_HEAD_PORT, config.HEAD_ARDUINO_BAUD)
         _flush_drop_summary("reconnected")
         _speech_drop_notified = False
         return True
-    except serial.SerialException as exc:
+    except _SERIAL_ERRORS as exc:
         _log.error("Failed to open head Arduino port %s: %s", ARDUINO_HEAD_PORT, exc)
         _ser = None
         return False
@@ -138,17 +144,26 @@ def disconnect() -> None:
         _speech_drop_notified = False
 
 
+def _serial_online_locked() -> bool:
+    return bool(_ser is not None and _ser.is_open)
+
+
+def _serial_online() -> bool:
+    with _lock:
+        return _serial_online_locked()
+
+
 # ── Transport ──────────────────────────────────────────────────────────────────
 
 def send_command(cmd: str) -> None:
     """Send a newline-terminated command string to the head Arduino."""
-    global _speech_drop_notified
+    global _ser, _speech_drop_notified
     if not HEAD_LEDS_ENABLED:
         _log.debug("send_command no-op: HEAD_LEDS_ENABLED=False (cmd=%r)", cmd)
         return
     family = _cmd_family(cmd)
     with _lock:
-        if _ser is None or not _ser.is_open:
+        if not _serial_online_locked():
             if _is_speech_led_command(family):
                 if not _speech_drop_notified:
                     _log.warning(
@@ -163,7 +178,20 @@ def send_command(cmd: str) -> None:
         if family == "SPEAK_STOP":
             _speech_drop_notified = False
         _flush_drop_summary("is online")
-        _ser.write((cmd + "\n").encode())
+        try:
+            _ser.write((cmd + "\n").encode())
+        except _SERIAL_ERRORS as exc:
+            _log.warning("Head Arduino write failed for %s command: %s", family, exc)
+            try:
+                if _ser and _ser.is_open:
+                    _ser.close()
+            except Exception:
+                pass
+            _ser = None
+            if _is_speech_led_command(family):
+                _speech_drop_notified = False
+            else:
+                _record_drop(cmd)
 
 
 # ── Command API ────────────────────────────────────────────────────────────────
@@ -185,7 +213,19 @@ def speak_stop() -> None:
     _led_mode = "speak_stop"
     _eyes_active = False
     _mirror_gui_head_led_state(mode=_led_mode, eyes_active=False)
-    send_command("SPEAK_STOP")
+    if not _serial_online():
+        send_command("SPEAK_STOP")
+        return
+    repeats = int(getattr(config, "HEAD_LED_SPEAK_STOP_REPEATS", 3) or 1)
+    repeats = max(1, min(10, repeats))
+    delay = float(getattr(config, "HEAD_LED_SPEAK_STOP_REPEAT_DELAY_SECS", 0.025) or 0.0)
+    delay = max(0.0, min(1.0, delay))
+    for idx in range(repeats):
+        send_command("SPEAK_STOP")
+        if not _serial_online():
+            break
+        if idx < repeats - 1 and delay > 0.0:
+            time.sleep(delay)
 
 
 def idle() -> None:

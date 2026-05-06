@@ -1061,6 +1061,24 @@ GROUP_CHATTER_VOICE_CANDIDATE_FLOOR = 0.30
 # ─────────────────────────────────────────────────────────────────────────────
 
 HEAD_ARDUINO_BAUD = 115200
+HEAD_ARDUINO_WRITE_TIMEOUT_SECS = _env_float(
+    "HEAD_ARDUINO_WRITE_TIMEOUT_SECS",
+    0.20,
+    min_value=0.01,
+    max_value=5.0,
+)
+HEAD_LED_SPEAK_STOP_REPEATS = _env_int(
+    "HEAD_LED_SPEAK_STOP_REPEATS",
+    3,
+    min_value=1,
+    max_value=10,
+)
+HEAD_LED_SPEAK_STOP_REPEAT_DELAY_SECS = _env_float(
+    "HEAD_LED_SPEAK_STOP_REPEAT_DELAY_SECS",
+    0.025,
+    min_value=0.0,
+    max_value=1.0,
+)
 
 # RGB values for each eye emotion state. Mouth colors are managed in Arduino firmware.
 EYE_COLORS = {

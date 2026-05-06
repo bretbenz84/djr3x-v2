@@ -314,8 +314,14 @@ def _play(
             stop_event.set()
             if led_thread.is_alive():
                 led_thread.join(timeout=1.0)
-            leds_head.speak_stop()
-            leds_chest.active()
+            try:
+                leds_head.speak_stop()
+            except Exception as exc:
+                logger.warning("[tts] mouth LED stop failed: %s", exc)
+            try:
+                leds_chest.active()
+            except Exception as exc:
+                logger.debug("[tts] chest LED restore failed: %s", exc)
             try:
                 servos.end_speech_motion()
             except Exception as exc:
