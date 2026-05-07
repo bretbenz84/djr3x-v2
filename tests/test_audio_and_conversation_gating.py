@@ -1,10 +1,149 @@
 import unittest
+from contextlib import ExitStack
 from unittest import mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 
 class PostTtsHandoffPolicyTest(unittest.TestCase):
+    def test_direct_startup_clip_arms_aec_and_limits_level(self):
+        import numpy as np
+        import main
+
+        source_audio = np.array([0.0, 1.0, -1.0, 0.5], dtype=np.float32)
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(main.config, "NO_AUDIO_MODE", False))
+            stack.enter_context(mock.patch.object(main.config, "AUDIO_OUTPUT_SUPPRESSED", False))
+            stack.enter_context(
+                mock.patch.object(
+                    main.config,
+                    "SPEECH_ANIMATED_AUDIO_FILES",
+                    ["Roger Control.mp3"],
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    main.config,
+                    "SPEECH_ANIMATED_AUDIO_TRANSCRIPTS",
+                    {"Roger Control.mp3": "Roger control, all systems go!"},
+                )
+            )
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_SHUTDOWN_AUDIO_GAIN", 1.0))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_SHUTDOWN_AUDIO_PEAK_LIMIT", 0.5))
+            stack.enter_context(mock.patch.object(main.sf, "read", return_value=(source_audio, 16000)))
+            play = stack.enter_context(mock.patch.object(main.sd, "play"))
+            wait = stack.enter_context(mock.patch.object(main.sd, "wait"))
+            set_playing = stack.enter_context(mock.patch.object(main.echo_cancel, "set_playing"))
+            add_reference = stack.enter_context(mock.patch.object(main.echo_cancel, "add_reference"))
+            speech_activity_start = stack.enter_context(
+                mock.patch.object(main.animations, "speech_activity_start")
+            )
+            speech_activity_stop = stack.enter_context(
+                mock.patch.object(main.animations, "speech_activity_stop")
+            )
+            begin_speech_motion = stack.enter_context(
+                mock.patch.object(main.servos, "begin_speech_motion")
+            )
+            end_speech_motion = stack.enter_context(
+                mock.patch.object(main.servos, "end_speech_motion")
+            )
+            stack.enter_context(mock.patch.object(main.servos, "speech_reactive_move"))
+            head_speak = stack.enter_context(mock.patch.object(main.leds_head, "speak"))
+            head_speak_stop = stack.enter_context(mock.patch.object(main.leds_head, "speak_stop"))
+            stack.enter_context(mock.patch.object(main.leds_head, "speak_level"))
+            chest_speak = stack.enter_context(mock.patch.object(main.leds_chest, "speak"))
+            chest_active = stack.enter_context(mock.patch.object(main.leds_chest, "active"))
+            set_rex_speaking = stack.enter_context(
+                mock.patch("awareness.situation.assessor.set_rex_speaking")
+            )
+            log_rex = stack.enter_context(mock.patch("utils.conv_log.log_rex"))
+            main._play_audio_file("assets/audio/startup/Roger Control.mp3")
+
+        set_playing.assert_has_calls([mock.call(True), mock.call(False)])
+        add_reference.assert_called_once()
+        play.assert_called_once()
+        wait.assert_called_once()
+        played_audio = play.call_args.args[0]
+        self.assertLessEqual(float(np.max(np.abs(played_audio))), 0.5)
+        speech_activity_start.assert_called_once()
+        speech_activity_stop.assert_called_once()
+        begin_speech_motion.assert_called_once_with("neutral")
+        end_speech_motion.assert_called_once()
+        head_speak.assert_called_once_with("neutral")
+        head_speak_stop.assert_called_once()
+        chest_speak.assert_called_once_with("neutral")
+        chest_active.assert_called_once()
+        set_rex_speaking.assert_has_calls([mock.call(True), mock.call(False)])
+        log_rex.assert_called_once_with("Roger control, all systems go!")
+
+    def test_direct_sound_effect_skips_speech_animation(self):
+        import numpy as np
+        import main
+
+        source_audio = np.array([0.0, 0.25, -0.25, 0.1], dtype=np.float32)
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(main.config, "NO_AUDIO_MODE", False))
+            stack.enter_context(mock.patch.object(main.config, "AUDIO_OUTPUT_SUPPRESSED", False))
+            stack.enter_context(
+                mock.patch.object(
+                    main.config,
+                    "SPEECH_ANIMATED_AUDIO_FILES",
+                    ["Roger Control.mp3"],
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    main.config,
+                    "SPEECH_ANIMATED_AUDIO_TRANSCRIPTS",
+                    {"Roger Control.mp3": "Roger control, all systems go!"},
+                )
+            )
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_SHUTDOWN_AUDIO_GAIN", 1.0))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_SHUTDOWN_AUDIO_PEAK_LIMIT", 0.8))
+            stack.enter_context(mock.patch.object(main.sf, "read", return_value=(source_audio, 16000)))
+            stack.enter_context(mock.patch.object(main.sd, "play"))
+            stack.enter_context(mock.patch.object(main.sd, "wait"))
+            stack.enter_context(mock.patch.object(main.echo_cancel, "set_playing"))
+            stack.enter_context(mock.patch.object(main.echo_cancel, "add_reference"))
+            speech_activity_start = stack.enter_context(
+                mock.patch.object(main.animations, "speech_activity_start")
+            )
+            speech_activity_stop = stack.enter_context(
+                mock.patch.object(main.animations, "speech_activity_stop")
+            )
+            begin_speech_motion = stack.enter_context(
+                mock.patch.object(main.servos, "begin_speech_motion")
+            )
+            end_speech_motion = stack.enter_context(
+                mock.patch.object(main.servos, "end_speech_motion")
+            )
+            speech_reactive_move = stack.enter_context(
+                mock.patch.object(main.servos, "speech_reactive_move")
+            )
+            head_speak = stack.enter_context(mock.patch.object(main.leds_head, "speak"))
+            head_speak_stop = stack.enter_context(mock.patch.object(main.leds_head, "speak_stop"))
+            head_speak_level = stack.enter_context(mock.patch.object(main.leds_head, "speak_level"))
+            chest_speak = stack.enter_context(mock.patch.object(main.leds_chest, "speak"))
+            chest_active = stack.enter_context(mock.patch.object(main.leds_chest, "active"))
+            set_rex_speaking = stack.enter_context(
+                mock.patch("awareness.situation.assessor.set_rex_speaking")
+            )
+            log_rex = stack.enter_context(mock.patch("utils.conv_log.log_rex"))
+            main._play_audio_file("assets/audio/startup/light_speed.mp3")
+
+        speech_activity_start.assert_not_called()
+        speech_activity_stop.assert_not_called()
+        begin_speech_motion.assert_not_called()
+        end_speech_motion.assert_not_called()
+        speech_reactive_move.assert_not_called()
+        head_speak.assert_not_called()
+        head_speak_stop.assert_not_called()
+        head_speak_level.assert_not_called()
+        chest_speak.assert_not_called()
+        chest_active.assert_not_called()
+        set_rex_speaking.assert_not_called()
+        log_rex.assert_not_called()
+
     def test_question_queue_item_uses_fast_no_flush_playback_handoff(self):
         from audio import speech_queue
 

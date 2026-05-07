@@ -2040,6 +2040,21 @@ ASPIRATIONS = [
 PLAY_STARTUP_AUDIO = True
 PLAY_SHUTDOWN_AUDIO = True
 
+# Pre-recorded startup/shutdown clips are mastered louder than TTS on some
+# setups. Keep headroom so small speakers and nearby mics do not feed back.
+STARTUP_SHUTDOWN_AUDIO_GAIN = _env_float(
+    "STARTUP_SHUTDOWN_AUDIO_GAIN",
+    0.65,
+    min_value=0.0,
+    max_value=1.0,
+)
+STARTUP_SHUTDOWN_AUDIO_PEAK_LIMIT = _env_float(
+    "STARTUP_SHUTDOWN_AUDIO_PEAK_LIMIT",
+    0.80,
+    min_value=0.05,
+    max_value=1.0,
+)
+
 # Short readiness cue played immediately before Rex's first spoken line in a
 # run. This is intentionally separate from PLAY_STARTUP_AUDIO so it still fires
 # when the theatrical startup clips are disabled.
@@ -2056,6 +2071,15 @@ STARTUP_AUDIO_FILES = [
     "assets/audio/startup/light_speed.mp3",
     "assets/audio/startup/Roger Control.mp3",
 ]
+
+# Pre-recorded audio clips that are Rex speaking, not sound effects. These get
+# the same mouth LED and speech-motion treatment as TTS.
+SPEECH_ANIMATED_AUDIO_FILES = [
+    "Roger Control.mp3",
+]
+SPEECH_ANIMATED_AUDIO_TRANSCRIPTS = {
+    "Roger Control.mp3": "Roger control, all systems go!",
+}
 
 SHUTDOWN_AUDIO_FILE = "assets/audio/startup/hyperdrive_down.mp3"
 

@@ -5,6 +5,7 @@ import os
 import sys
 import argparse
 from pathlib import Path
+from typing import Optional
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 _PROJECT_VENV = (_PROJECT_ROOT / "venv").resolve()
@@ -83,7 +84,15 @@ from utils.config_loader import (
     AUDIO_SELECTION_DESCRIPTION,
 )
 from sequences import animations
-from audio import stream, scene as audio_scene, output_gate, tts, speech_queue, speaker_id
+from audio import (
+    stream,
+    scene as audio_scene,
+    output_gate,
+    echo_cancel,
+    tts,
+    speech_queue,
+    speaker_id,
+)
 from vision import camera, scene as vision_scene
 from awareness import chronoception, interoception
 from intelligence import consciousness, interaction, local_llm
@@ -103,7 +112,75 @@ def _verify_local_whisper_model() -> None:
         sys.exit(1)
 
 
-def _play_audio_file(path: str) -> None:
+def _audio_file_match_keys(path: str) -> set[str]:
+    path_obj = Path(path)
+    return {
+        path_obj.name.lower(),
+        str(path_obj).lower(),
+        str(path_obj.as_posix()).lower(),
+    }
+
+
+def _is_speech_animated_audio_file(path: str) -> bool:
+    candidates = _audio_file_match_keys(path)
+    configured = {
+        str(item).strip().lower()
+        for item in getattr(config, "SPEECH_ANIMATED_AUDIO_FILES", [])
+        if str(item).strip()
+    }
+    return any(item in candidates for item in configured)
+
+
+def _conversation_line_for_audio_file(path: str) -> Optional[str]:
+    candidates = _audio_file_match_keys(path)
+    configured = getattr(config, "SPEECH_ANIMATED_AUDIO_TRANSCRIPTS", {}) or {}
+    if not isinstance(configured, dict):
+        return None
+    for key, text in configured.items():
+        if str(key).strip().lower() not in candidates:
+            continue
+        line = str(text or "").strip()
+        return line or None
+    return None
+
+
+def _log_conversation_line_for_audio_file(path: str) -> None:
+    line = _conversation_line_for_audio_file(path)
+    if not line:
+        return
+    try:
+        from utils import conv_log
+        conv_log.log_rex(line)
+    except Exception as exc:
+        logger.debug("direct clip conversation log failed for %s: %s", path, exc)
+
+
+def _drive_speech_clip_outputs(
+    audio: np.ndarray,
+    samplerate: int,
+    stop_event: threading.Event,
+) -> None:
+    interval = float(getattr(config, "TTS_LED_UPDATE_INTERVAL_SECS", 0.04) or 0.04)
+    chunk_len = max(1, int(int(samplerate) * interval))
+    for i in range(0, len(audio), chunk_len):
+        if stop_event.is_set():
+            break
+        chunk = audio[i:i + chunk_len]
+        if chunk.size == 0:
+            continue
+        rms = float(np.sqrt(np.mean(chunk * chunk)))
+        brightness = min(255, int(rms * config.TTS_LED_BRIGHTNESS_SCALE))
+        leds_head.speak_level(brightness)
+        servos.speech_reactive_move(brightness / 255.0)
+        stop_event.wait(timeout=interval)
+
+
+def _play_audio_file(
+    path: str,
+    *,
+    speech_animation: Optional[bool] = None,
+    emotion: str = "neutral",
+) -> None:
     """Play a pre-recorded audio file synchronously via sounddevice.
 
     Using sounddevice (PortAudio) here — not pygame.mixer (SDL) — keeps all
@@ -120,11 +197,99 @@ def _play_audio_file(path: str) -> None:
     with output_gate.hold("startup_or_shutdown_clip") as acquired:
         if not acquired:
             return
+        animate_speech = (
+            _is_speech_animated_audio_file(path)
+            if speech_animation is None
+            else bool(speech_animation)
+        )
         audio, samplerate = sf.read(path, dtype="float32", always_2d=False)
         if audio.ndim > 1:
             audio = audio.mean(axis=1).astype(np.float32)
-        sd.play(audio, samplerate, blocksize=2048)
-        sd.wait()
+        audio = np.asarray(audio, dtype=np.float32)
+
+        gain = float(getattr(config, "STARTUP_SHUTDOWN_AUDIO_GAIN", 0.65) or 0.0)
+        if gain != 1.0:
+            audio = audio * max(0.0, gain)
+
+        fade_samples = min(int(0.015 * int(samplerate)), max(0, audio.size // 2))
+        if fade_samples > 1:
+            fade = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+            audio[:fade_samples] *= fade
+            audio[-fade_samples:] *= fade[::-1]
+
+        peak_limit = float(getattr(config, "STARTUP_SHUTDOWN_AUDIO_PEAK_LIMIT", 0.80) or 0.80)
+        peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        if peak > peak_limit > 0.0:
+            audio = audio * (peak_limit / peak)
+
+        stop_event = threading.Event()
+        led_thread = None
+        expected_duration = len(audio) / float(samplerate) if samplerate else 0.0
+        play_started_at = time.monotonic()
+        try:
+            if animate_speech:
+                try:
+                    animations.speech_activity_start()
+                    servos.begin_speech_motion(emotion)
+                except Exception as exc:
+                    logger.debug("direct clip speech servo start failed: %s", exc)
+                try:
+                    from awareness.situation import assessor as _sit
+                    _sit.set_rex_speaking(True)
+                except Exception:
+                    pass
+                leds_head.speak(emotion)
+                leds_chest.speak(emotion)
+                led_thread = threading.Thread(
+                    target=_drive_speech_clip_outputs,
+                    args=(audio, int(samplerate), stop_event),
+                    daemon=True,
+                    name="direct-clip-leds",
+                )
+            echo_cancel.set_playing(True)
+            echo_cancel.add_reference(audio)
+            if led_thread is not None:
+                led_thread.start()
+            sd.play(audio, samplerate, blocksize=2048)
+            _log_conversation_line_for_audio_file(path)
+            sd.wait()
+        finally:
+            elapsed = time.monotonic() - play_started_at
+            remaining = expected_duration - elapsed
+            if remaining > 0.05 and not echo_cancel.was_canceled():
+                logger.warning(
+                    "direct clip sd.wait() returned %.2fs early — "
+                    "holding speech/AEC outputs for remaining %.2fs",
+                    remaining,
+                    remaining,
+                )
+                time.sleep(remaining)
+            stop_event.set()
+            if led_thread is not None and led_thread.is_alive():
+                led_thread.join(timeout=1.0)
+            if animate_speech:
+                try:
+                    leds_head.speak_stop()
+                except Exception as exc:
+                    logger.warning("direct clip mouth LED stop failed: %s", exc)
+                try:
+                    leds_chest.active()
+                except Exception as exc:
+                    logger.debug("direct clip chest LED restore failed: %s", exc)
+                try:
+                    servos.end_speech_motion()
+                except Exception as exc:
+                    logger.debug("direct clip speech servo stop failed: %s", exc)
+                try:
+                    animations.speech_activity_stop()
+                except Exception as exc:
+                    logger.debug("direct clip speech activity clear failed: %s", exc)
+                try:
+                    from awareness.situation import assessor as _sit
+                    _sit.set_rex_speaking(False)
+                except Exception:
+                    pass
+            echo_cancel.set_playing(False)
 
 
 def _play_listening_chime_async(reason: str) -> None:
@@ -344,6 +509,7 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
 
     # Steps 6 & 7: Fire startup audio first, then run servo animation simultaneously.
     # Audio plays in a background thread so the servo motion begins immediately after.
+    startup_audio_thread: threading.Thread | None = None
     if no_audio:
         logger.info("Startup audio disabled by --noaudio")
     elif config.PLAY_STARTUP_AUDIO:
@@ -354,12 +520,20 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
                     _play_audio_file(audio_file)
                 except Exception as e:
                     logger.warning("Could not play %s: %s", audio_file, e)
-        threading.Thread(target=_play_startup_audio, daemon=True, name="startup_audio").start()
+        startup_audio_thread = threading.Thread(
+            target=_play_startup_audio,
+            daemon=True,
+            name="startup_audio",
+        )
+        startup_audio_thread.start()
     else:
         logger.info("Startup audio disabled by config.PLAY_STARTUP_AUDIO")
 
     logger.info("Playing startup animation...")
     animations.startup()
+    if startup_audio_thread is not None and startup_audio_thread.is_alive():
+        logger.info("Waiting for startup audio to finish before starting microphone services...")
+        startup_audio_thread.join()
 
     # Step 8: Start background services in order.
     logger.info("=== Starting background services ===")
