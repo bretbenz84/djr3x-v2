@@ -8,6 +8,24 @@ except Exception:  # pragma: no cover
     cv2 = None
 
 
+class VisionPanelMoodLabelTests(unittest.TestCase):
+    def test_face_mood_wins_over_generic_expression(self):
+        from gui.vision_panel import _person_expression
+
+        self.assertEqual(
+            _person_expression({
+                "expression": "neutral",
+                "face_mood": {"mood": "happy", "confidence": 0.86},
+            }),
+            "happy",
+        )
+
+    def test_missing_mood_does_not_invent_neutral(self):
+        from gui.vision_panel import _person_expression
+
+        self.assertEqual(_person_expression({"face_id": "Bret"}), "")
+
+
 @unittest.skipIf(cv2 is None, "OpenCV unavailable")
 class LiveFaceBoxTrackerTests(unittest.TestCase):
     def _frame_with_patch(self, x: int, y: int) -> np.ndarray:

@@ -213,13 +213,13 @@ def _person_details(person: dict[str, Any]) -> str:
 
 def _person_expression(person: dict[str, Any]) -> str:
     for key in (
+        "face_mood",
+        "face_expression",
+        "facial_expression",
         "expression",
         "mood",
         "emotion",
         "affect",
-        "face_expression",
-        "face_mood",
-        "facial_expression",
     ):
         value = person.get(key)
         if isinstance(value, dict):
@@ -227,7 +227,7 @@ def _person_expression(person: dict[str, Any]) -> str:
         if value:
             text = str(value).strip().lower().replace("_", " ")
             return text
-    return "neutral"
+    return ""
 
 
 def _person_box(person: dict[str, Any]) -> tuple[float, float, float, float] | None:

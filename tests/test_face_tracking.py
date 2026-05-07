@@ -104,6 +104,24 @@ class FaceTrackingTests(unittest.TestCase):
         self.assertIsNone(people[0]["face_box"])
         self.assertIsNone(people[0]["position"])
 
+    def test_face_mood_write_replaces_stale_neutral_expression(self):
+        c = self.consciousness
+        c.world_state.update("people", [{
+            "id": "person_1",
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "expression": "neutral",
+        }])
+
+        c._write_face_mood_to_world_state(
+            1,
+            {"mood": "happy", "confidence": 0.91, "notes": "smiling"},
+        )
+
+        person = c.world_state.get("people")[0]
+        self.assertEqual(person["expression"], "happy")
+        self.assertEqual(person["face_mood"]["mood"], "happy")
+
     def test_solo_identity_sticky_rejects_far_false_positive_box(self):
         c = self.consciousness
         c.world_state.update("people", [{"id": "person_1"}])

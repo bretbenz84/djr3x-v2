@@ -1747,6 +1747,20 @@ MOOD_AWARE_SMALLTALK_ENABLED = True
 MOOD_ANALYSIS_PROBABILITY = 0.7
 MOOD_ANALYSIS_PER_PERSON_COOLDOWN_SECS = 180.0
 
+# GUI mood telemetry: keeps the face-box mood label fresh for a single visible
+# known person. This still uses OpenAI vision, so it runs slowly and only from
+# the controller/consciousness side, not from Qt.
+MOOD_ANALYSIS_GUI_TELEMETRY_ENABLED = _env_bool(
+    "MOOD_ANALYSIS_GUI_TELEMETRY_ENABLED",
+    True,
+)
+MOOD_ANALYSIS_GUI_REFRESH_SECS = _env_float(
+    "MOOD_ANALYSIS_GUI_REFRESH_SECS",
+    20.0,
+    min_value=8.0,
+    max_value=600.0,
+)
+
 # Mood-aware first-sight greetings: when Rex first sees one known person, or a
 # two-person known group, he may use OpenAI vision to read apparent facial mood
 # and tailor the greeting. Kept confidence-gated because facial affect is a

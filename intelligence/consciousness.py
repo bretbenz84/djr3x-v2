@@ -200,6 +200,7 @@ _last_emotional_checkin_check_at: float = 0.0
 # Mood vision calls are expensive, so we re-use a recent reading within
 # config.MOOD_ANALYSIS_PER_PERSON_COOLDOWN_SECS instead of re-asking GPT-4o.
 _mood_cache: dict[int, tuple[dict, float]] = {}
+_gui_mood_refresh_in_flight: bool = False
 
 # Per-person monotonic timestamp of when they were last seen in frame.
 _last_seen: dict = {}
@@ -3087,6 +3088,93 @@ def get_cached_mood(person_id: Optional[int], max_age_secs: Optional[float] = No
     except Exception as exc:
         _log.debug("cached mood lookup error: %s", exc)
     return None
+
+
+def _step_gui_mood_telemetry(snapshot: dict, frame) -> None:
+    """Refresh cached face mood for the GUI without making Qt own vision calls."""
+    global _gui_mood_refresh_in_flight
+
+    if not bool(getattr(config, "MOOD_ANALYSIS_GUI_TELEMETRY_ENABLED", True)):
+        return
+    if frame is None or _gui_mood_refresh_in_flight:
+        return
+
+    people = [
+        p
+        for p in (snapshot.get("people") or [])
+        if isinstance(p, dict)
+        and p.get("person_db_id") is not None
+        and p.get("face_visible") is not False
+        and not p.get("face_missing")
+        and (p.get("face_box") or p.get("bounding_box") or p.get("bbox") or p.get("box"))
+    ]
+    # detect_mood reads the most prominent face in the whole frame, so only use
+    # it as telemetry when there is one unambiguous visible known face.
+    if len(people) != 1:
+        return
+
+    try:
+        person_id = int(people[0].get("person_db_id"))
+    except (TypeError, ValueError):
+        return
+
+    refresh_secs = float(getattr(config, "MOOD_ANALYSIS_GUI_REFRESH_SECS", 20.0) or 20.0)
+    now = time.monotonic()
+    cached = _mood_cache.get(person_id)
+    if cached and (now - cached[1]) < refresh_secs:
+        return
+
+    frame_copy = frame.copy() if hasattr(frame, "copy") else frame
+    _gui_mood_refresh_in_flight = True
+
+    def _task() -> None:
+        global _gui_mood_refresh_in_flight
+        try:
+            from vision import face as face_mod
+
+            mood = face_mod.detect_mood(frame_copy)
+            if not mood:
+                return
+            _mood_cache[person_id] = (dict(mood), time.monotonic())
+            _write_face_mood_to_world_state(person_id, mood)
+            _log.info(
+                "consciousness: GUI face mood refreshed for person_id=%s mood=%s confidence=%.2f",
+                person_id,
+                mood.get("mood"),
+                float(mood.get("confidence") or 0.0),
+            )
+        except Exception as exc:
+            _log.debug("GUI mood telemetry error: %s", exc)
+        finally:
+            _gui_mood_refresh_in_flight = False
+
+    threading.Thread(target=_task, daemon=True, name="gui-mood-telemetry").start()
+
+
+def _write_face_mood_to_world_state(person_id: int, mood: dict) -> None:
+    try:
+        people = world_state.get("people")
+        changed = False
+        for idx, person in enumerate(people):
+            if not isinstance(person, dict):
+                continue
+            try:
+                current_id = int(person.get("person_db_id"))
+            except (TypeError, ValueError):
+                continue
+            if current_id != int(person_id):
+                continue
+            updated = dict(person)
+            updated["face_mood"] = dict(mood)
+            expression = str(updated.get("expression") or "").strip().lower()
+            if expression in {"", "neutral", "unknown", "none"}:
+                updated["expression"] = mood.get("mood") or "neutral"
+            people[idx] = updated
+            changed = True
+        if changed:
+            world_state.update("people", people)
+    except Exception as exc:
+        _log.debug("face mood world_state update failed: %s", exc)
 
 
 def _mood_clause_for(mood: Optional[dict]) -> tuple[str, str]:
@@ -6788,6 +6876,10 @@ def _loop() -> None:
 
             # 10e. Overheard chime-in — react when someone talks ABOUT Rex
             _step_overheard_chime_in(snapshot, profile)
+
+            # 10f. GUI face-mood telemetry — keep the dashboard's face-box label
+            # aligned with the current visible expression when the scene is unambiguous.
+            _step_gui_mood_telemetry(snapshot, frame)
 
             # 11. Face tracking runs in a dedicated high-rate loop so gaze
             # correction is not gated by this slower social/cognition tick.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import logging
 import math
 import random
@@ -25,6 +26,7 @@ try:
         QSizePolicy,
         QSlider,
         QStackedWidget,
+        QTextBrowser,
         QVBoxLayout,
         QWidget,
     )
@@ -59,9 +61,6 @@ class DashboardWindow(QMainWindow):
         self._demo = demo
         self._closing_from_shutdown = False
         self._shutdown_requested = False
-        self._last_frame_time = time.monotonic()
-        self._frame_counter = 0
-        self._fps = 0.0
 
         self.setWindowTitle(getattr(config, "GUI_WINDOW_TITLE", "DJ-R3X Controller"))
         self.resize(1280, 840)
@@ -78,7 +77,6 @@ class DashboardWindow(QMainWindow):
             self.conversation.set_submit_callback(
                 lambda text: self._bridge.add_conversation_line("Human", text, "user")
             )
-        self.footer = FooterBar()
         self.jeopardy = JeopardyPanel()
         self.connection = QLabel("●  Connected")
         self.connection.setObjectName("connectionLabel")
@@ -93,9 +91,6 @@ class DashboardWindow(QMainWindow):
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         self._top_bar.setLayout(top)
-        lights = QLabel("●  ●  ●")
-        lights.setObjectName("trafficLights")
-        top.addWidget(lights)
         title = QLabel("DJ-R3X Controller")
         title.setObjectName("windowTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -112,7 +107,7 @@ class DashboardWindow(QMainWindow):
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(12)
         left.addWidget(ChromePanel("1", "VISION", self.vision), 7)
-        left.addWidget(ChromePanel("", "OPENAI VISION DESCRIPTION", self.scene), 5)
+        left.addWidget(ChromePanel("", "OPENAI VISION + DLIB STATE", self.scene), 5)
         left_box = QWidget()
         left_box.setLayout(left)
 
@@ -142,7 +137,6 @@ class DashboardWindow(QMainWindow):
         self._main_stack.addWidget(dashboard_page)
         self._main_stack.addWidget(self.jeopardy)
         self._shell.addWidget(self._main_stack, 1)
-        self._shell.addWidget(self.footer)
 
         self.setCentralWidget(root)
         self.setStyleSheet(_STYLE)
@@ -215,7 +209,6 @@ class DashboardWindow(QMainWindow):
         else:
             self._main_stack.setCurrentIndex(0)
         self._top_bar.setVisible(not jeopardy_active)
-        self.footer.setVisible(not jeopardy_active)
         if jeopardy_active:
             self._shell.setContentsMargins(0, 0, 0, 0)
             self._shell.setSpacing(0)
@@ -223,15 +216,6 @@ class DashboardWindow(QMainWindow):
             self._shell.setContentsMargins(14, 8, 14, 14)
             self._shell.setSpacing(12)
 
-        self._frame_counter += 1
-        now = time.monotonic()
-        if now - self._last_frame_time >= 1.0:
-            self._fps = self._frame_counter / (now - self._last_frame_time)
-            self._frame_counter = 0
-            self._last_frame_time = now
-
-        ws = snapshot.get("world_state") or {}
-        self.footer.set_snapshot(snapshot, self._fps)
         connected = "●  Connected" if snapshot.get("updated_at") else "●  Waiting"
         self.connection.setText(connected)
 
@@ -279,44 +263,393 @@ class ChromePanel(QFrame):
 class VisionDescriptionPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._description = ""
+        self._last_html = ""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 14, 18, 18)
+        layout.setSpacing(0)
+        self._body = QTextBrowser()
+        self._body.setObjectName("visionDescription")
+        self._body.setFrameShape(QFrame.Shape.NoFrame)
+        self._body.setOpenExternalLinks(False)
+        self._body.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        layout.addWidget(self._body, 1)
         self.setMinimumHeight(220)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
-        ws = snapshot.get("world_state") or {}
-        env = ws.get("environment") or {}
-        self._description = (
-            snapshot.get("scene_description")
-            or env.get("description")
-            or "Vision description will appear after Rex has a scene read."
+        rendered = _vision_state_html(snapshot)
+        if rendered != self._last_html:
+            self._last_html = rendered
+            self._body.setHtml(rendered)
+
+
+def _vision_state_html(snapshot: dict[str, Any]) -> str:
+    ws = snapshot.get("world_state") or {}
+    env = ws.get("environment") or {}
+    description = (
+        snapshot.get("scene_description")
+        or env.get("description")
+        or "Vision description will appear after Rex has a scene read."
+    )
+    people = [
+        dict(person)
+        for person in (ws.get("people") or [])
+        if isinstance(person, dict)
+    ]
+    self_state = ws.get("self_state") or ws.get("self") or {}
+    face_tracking = self_state.get("face_tracking") or {}
+
+    visible_count = sum(1 for person in people if _face_visible(person))
+    known_count = sum(
+        1
+        for person in people
+        if _face_visible(person) and _person_known(person)
+    )
+    unknown_count = max(0, visible_count - known_count)
+    summary = " / ".join(
+        [
+            _count_label(len(people), "slot"),
+            _count_label(visible_count, "visible face"),
+            f"{known_count} known",
+            f"{unknown_count} unknown",
+        ]
+    )
+
+    tracking_html = _tracking_html(face_tracking)
+    if people:
+        people_html = "".join(
+            _person_dlib_html(idx, person)
+            for idx, person in enumerate(people, start=1)
         )
-        self.update()
+    else:
+        people_html = '<p class="empty">No dlib face slots yet.</p>'
 
-    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor("#07111a"))
+    return f"""
+<html>
+<head>
+<style>
+body {{
+  margin: 0;
+  background: #07111a;
+  color: #d9e3ee;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
+}}
+.section {{
+  margin: 0 0 14px 0;
+}}
+.eyebrow {{
+  color: #4e94ff;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}}
+.description {{
+  margin-top: 5px;
+  color: #d8e2ee;
+  font-size: 12px;
+  line-height: 1.35;
+}}
+.summary {{
+  margin: 5px 0 8px 0;
+  color: #aebccc;
+  font-weight: 700;
+}}
+.face {{
+  margin: 8px 0 0 0;
+  padding: 8px 0 0 0;
+  border-top: 1px solid #233b55;
+}}
+.face-title {{
+  color: #e7f0fa;
+  font-size: 12px;
+  font-weight: 900;
+}}
+.status-visible {{
+  color: #75ef63;
+}}
+.status-held {{
+  color: #f0c45a;
+}}
+.status-missing {{
+  color: #ff8a72;
+}}
+table.kv {{
+  margin-top: 4px;
+  border-collapse: collapse;
+}}
+td.key {{
+  padding: 1px 14px 1px 0;
+  color: #6fa0dc;
+  font-weight: 800;
+  white-space: nowrap;
+}}
+td.value {{
+  padding: 1px 0;
+  color: #ccd8e5;
+}}
+.empty {{
+  margin: 6px 0 0 0;
+  color: #91a4b8;
+}}
+</style>
+</head>
+<body>
+  <div class="section">
+    <div class="eyebrow">OpenAI Vision</div>
+    <div class="description">{_html(description)}</div>
+  </div>
+  <div class="section">
+    <div class="eyebrow">dlib Face State</div>
+    <div class="summary">{_html(summary)}</div>
+    {tracking_html}
+    {people_html}
+  </div>
+</body>
+</html>
+"""
 
-        x = 18
-        y = 28
-        painter.setPen(QColor("#dbe7f3"))
-        font = QFont()
-        font.setPointSize(13)
-        font.setBold(True)
-        painter.setFont(font)
-        painter.drawText(x, y, "R3X sees:")
 
-        font.setBold(False)
-        font.setPointSize(12)
-        painter.setFont(font)
-        painter.setPen(QColor("#d8e2ee"))
-        text_rect = self.rect().adjusted(18, 52, -18, -18)
-        painter.drawText(
-            text_rect,
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
-            self._description,
+def _tracking_html(face_tracking: dict[str, Any]) -> str:
+    if not isinstance(face_tracking, dict) or not face_tracking:
+        return '<p class="empty">Face tracker idle.</p>'
+
+    if face_tracking.get("locked"):
+        status = "locked"
+    elif face_tracking.get("holding_lost_lock"):
+        status = "holding lost lock"
+    elif face_tracking.get("searching"):
+        status = "searching"
+    elif face_tracking.get("visible"):
+        status = "visible"
+    else:
+        status = "idle"
+
+    lost_age = _coerce_float(face_tracking.get("lost_age_secs"))
+    rows = [
+        ("tracking", status),
+        ("target", face_tracking.get("lock_key")),
+        ("person id", face_tracking.get("person_id")),
+        (
+            "visible",
+            _yes_no(face_tracking.get("visible"))
+            if face_tracking.get("visible") is not None
+            else None,
+        ),
+        ("lost age", _format_age(lost_age) if lost_age is not None else None),
+        ("search", face_tracking.get("search_reason")),
+        ("search pose", face_tracking.get("search_pose")),
+    ]
+    return '<div class="face">' + _kv_table(rows) + "</div>"
+
+
+def _person_dlib_html(idx: int, person: dict[str, Any]) -> str:
+    label = _person_display_name(person, idx)
+    status, status_class = _person_face_status(person)
+    rows = [
+        ("status", status),
+        ("db id", person.get("person_db_id")),
+        ("face id", person.get("face_id")),
+        ("voice id", person.get("voice_id")),
+        ("box", _format_box(person)),
+        ("center", _format_position(person.get("position"))),
+        ("face width", _format_face_fraction(person.get("face_box_fraction"))),
+        ("distance", _clean_text(person.get("distance_zone"))),
+        ("approach", _clean_text(person.get("approach_vector"))),
+        ("pose", _clean_text(person.get("pose"))),
+        ("gesture", _clean_text(person.get("gesture"))),
+        ("engagement", _clean_text(person.get("engagement"))),
+        ("mood", _format_mood(person)),
+        ("last seen", _last_seen_label(person)),
+    ]
+    return (
+        '<div class="face">'
+        f'<div class="face-title">{_html(label)} '
+        f'<span class="{status_class}">[{_html(status)}]</span></div>'
+        f"{_kv_table(rows)}"
+        "</div>"
+    )
+
+
+def _kv_table(rows: list[tuple[str, Any]]) -> str:
+    rendered = []
+    for key, value in rows:
+        text = _clean_text(value)
+        if not text:
+            continue
+        rendered.append(
+            "<tr>"
+            f'<td class="key">{_html(key)}</td>'
+            f'<td class="value">{_html(text)}</td>'
+            "</tr>"
         )
-        painter.end()
+    if not rendered:
+        return '<p class="empty">No live face details yet.</p>'
+    return '<table class="kv">' + "".join(rendered) + "</table>"
+
+
+def _person_display_name(person: dict[str, Any], idx: int) -> str:
+    for key in ("name", "face_id", "voice_id", "id"):
+        value = _clean_text(person.get(key))
+        if value:
+            return value
+    return f"person {idx}"
+
+
+def _person_face_status(person: dict[str, Any]) -> tuple[str, str]:
+    if person.get("face_missing"):
+        return ("missing", "status-missing")
+    if person.get("face_visible") is True:
+        return ("visible", "status-visible")
+    if person.get("face_visible") is False:
+        return ("held", "status-held")
+    if (
+        person.get("face_box")
+        or person.get("bounding_box")
+        or person.get("bbox")
+        or person.get("box")
+    ):
+        return ("visible", "status-visible")
+    return ("tracked", "status-held")
+
+
+def _face_visible(person: dict[str, Any]) -> bool:
+    status, _ = _person_face_status(person)
+    return status == "visible"
+
+
+def _person_known(person: dict[str, Any]) -> bool:
+    return bool(person.get("person_db_id") or _clean_text(person.get("face_id")))
+
+
+def _format_box(person: dict[str, Any]) -> str:
+    box = (
+        person.get("face_box")
+        or person.get("bounding_box")
+        or person.get("bbox")
+        or person.get("box")
+    )
+    if isinstance(box, dict):
+        box = (
+            box.get("x"),
+            box.get("y"),
+            box.get("w") or box.get("width"),
+            box.get("h") or box.get("height"),
+        )
+    if not isinstance(box, (list, tuple)) or len(box) < 4:
+        return ""
+    nums = [_coerce_float(value) for value in box[:4]]
+    if any(value is None for value in nums):
+        return ""
+    x, y, w, h = [float(value) for value in nums]
+    return f"{x:.0f},{y:.0f} {w:.0f}x{h:.0f}px"
+
+
+def _format_position(position: Any) -> str:
+    if not isinstance(position, (list, tuple)) or len(position) < 2:
+        return ""
+    x = _coerce_float(position[0])
+    y = _coerce_float(position[1])
+    if x is None or y is None:
+        return ""
+    if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
+        return f"{x * 100.0:.0f}%, {y * 100.0:.0f}%"
+    return f"{x:.0f}, {y:.0f}px"
+
+
+def _format_face_fraction(value: Any) -> str:
+    fraction = _coerce_float(value)
+    if fraction is None:
+        return ""
+    return f"{max(0.0, fraction) * 100.0:.1f}% of frame"
+
+
+def _format_mood(person: dict[str, Any]) -> str:
+    for key in (
+        "face_mood",
+        "face_expression",
+        "facial_expression",
+        "expression",
+        "mood",
+        "emotion",
+        "affect",
+    ):
+        value = person.get(key)
+        if isinstance(value, dict):
+            mood = _clean_text(
+                value.get("mood") or value.get("expression") or value.get("affect")
+            )
+            confidence = _coerce_float(value.get("confidence"))
+            notes = _clean_text(value.get("notes"))
+            parts = [mood]
+            if confidence is not None:
+                parts.append(f"{confidence * 100.0:.0f}%")
+            if notes:
+                parts.append(notes)
+            return " / ".join(part for part in parts if part)
+        text = _clean_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _last_seen_label(person: dict[str, Any]) -> str:
+    age = _coerce_float(person.get("face_last_seen_age_secs"))
+    if age is None:
+        timestamp = _coerce_float(person.get("face_last_seen_at"))
+        if timestamp is not None and timestamp > 1_000_000_000:
+            age = max(0.0, time.time() - timestamp)
+    if age is None:
+        return ""
+    return _format_age(age)
+
+
+def _format_age(seconds: float | None) -> str:
+    if seconds is None:
+        return ""
+    seconds = max(0.0, float(seconds))
+    if seconds < 0.75:
+        return "now"
+    if seconds < 10.0:
+        return f"{seconds:.1f}s ago"
+    if seconds < 60.0:
+        return f"{seconds:.0f}s ago"
+    if seconds < 3600.0:
+        return f"{seconds / 60.0:.0f}m ago"
+    return f"{seconds / 3600.0:.1f}h ago"
+
+
+def _count_label(count: int, noun: str) -> str:
+    suffix = "" if count == 1 or noun.endswith("s") else "s"
+    return f"{count} {noun}{suffix}"
+
+
+def _yes_no(value: Any) -> str:
+    return "yes" if bool(value) else "no"
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:.3g}"
+    text = str(value).strip()
+    if not text or text.lower() == "none":
+        return ""
+    return text.replace("_", " ")
+
+
+def _html(value: Any) -> str:
+    return html.escape(_clean_text(value))
 
 
 class ServoPositionsPanel(QWidget):
@@ -448,40 +781,6 @@ class ServoPositionsPanel(QWidget):
             _log.warning("Manual servo slider update failed for %s: %s", name, exc)
 
 
-class FooterBar(QFrame):
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setObjectName("footerBar")
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 10, 12, 10)
-        layout.setSpacing(18)
-        self.status = QLabel()
-        self.battery = QLabel()
-        self.system = QLabel()
-        self.settings = QPushButton("⚙  Settings")
-        self.settings.setObjectName("settingsButton")
-        for widget in (self.status, self.battery, self.system):
-            widget.setObjectName("footerText")
-        layout.addWidget(self.status)
-        layout.addStretch(1)
-        layout.addWidget(self.battery)
-        layout.addStretch(1)
-        layout.addWidget(self.system)
-        layout.addStretch(1)
-        layout.addWidget(self.settings)
-
-    def set_snapshot(self, snapshot: dict[str, Any], fps: float) -> None:
-        ws = snapshot.get("world_state") or {}
-        state = str(ws.get("state") or "IDLE").upper()
-        self_state = ws.get("self_state") or ws.get("self") or {}
-        battery = self_state.get("battery_voltage") or ws.get("battery_voltage") or "12.4V"
-        health = self_state.get("body_state") or ws.get("system") or "Nominal"
-        suffix = f"  GUI {fps:.0f} FPS" if bool(getattr(config, "GUI_SHOW_FPS", False)) else ""
-        self.status.setText(f'R3X Status: <span style="color:#4dde67;font-weight:800;">{state}</span>{suffix}')
-        self.battery.setText(f'Battery: {battery}  <span style="color:#4dde67;font-weight:800;">▰ 75%</span>')
-        self.system.setText(f'System: <span style="color:#4dde67;font-weight:800;">{health}</span>')
-
-
 def run_dashboard(
     bridge: GUIDashboardBridge = gui_bridge,
     *,
@@ -518,8 +817,18 @@ def _advance_demo(bridge: GUIDashboardBridge) -> None:
             "face_id": "person 0.94",
             "face_box": (78, 112, 235, 285),
             "expression": _demo_expression(now, 0),
+            "face_mood": {
+                "mood": _demo_expression(now, 0),
+                "confidence": 0.86,
+                "notes": "demo",
+            },
             "engagement": "tracking",
             "distance_zone": "social",
+            "approach_vector": "stationary",
+            "face_box_fraction": 235 / 820,
+            "face_visible": True,
+            "face_missing": False,
+            "face_last_seen_at": time.time(),
             "pose": "standing",
         },
         {
@@ -527,8 +836,18 @@ def _advance_demo(bridge: GUIDashboardBridge) -> None:
             "face_id": "person 0.91",
             "face_box": (606, 132, 205, 268),
             "expression": _demo_expression(now, 1),
+            "face_mood": {
+                "mood": _demo_expression(now, 1),
+                "confidence": 0.72,
+                "notes": "demo",
+            },
             "engagement": "tracking",
             "distance_zone": "social",
+            "approach_vector": "departing",
+            "face_box_fraction": 205 / 820,
+            "face_visible": True,
+            "face_missing": False,
+            "face_last_seen_at": time.time(),
             "pose": "walking away",
         },
     ]
@@ -565,6 +884,15 @@ def _advance_demo(bridge: GUIDashboardBridge) -> None:
             "servo_positions": servo_positions,
             "body_state": "Nominal",
             "battery_voltage": "12.4V",
+            "face_tracking": {
+                "locked": True,
+                "visible": True,
+                "holding_lost_lock": False,
+                "searching": False,
+                "lock_key": "person_1",
+                "person_id": None,
+                "lost_age_secs": 0.0,
+            },
         },
     })
     if getattr(_advance_demo, "_led_seeded", False) is False:
@@ -653,11 +981,6 @@ QWidget#root {
     color: #d9e3ee;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
-QLabel#trafficLights {
-    color: #ff6159;
-    font-size: 15px;
-    font-weight: 800;
-}
 QLabel#windowTitle {
     color: #aab5c1;
     font-size: 15px;
@@ -667,7 +990,7 @@ QLabel#connectionLabel {
     color: #45d85e;
     font-size: 13px;
 }
-QFrame#chromePanel, QFrame#footerBar {
+QFrame#chromePanel {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0b1824, stop:1 #08111a);
     border: 1px solid #255484;
     border-radius: 7px;
@@ -697,6 +1020,11 @@ QTextBrowser#conversationLog {
     color: #d9e3ee;
     border: none;
 }
+QTextBrowser#visionDescription {
+    background: #07111a;
+    color: #d9e3ee;
+    border: none;
+}
 QLineEdit#messageEntry {
     min-height: 40px;
     padding: 0 14px;
@@ -715,14 +1043,6 @@ QPushButton#primaryButton {
     border-radius: 5px;
     font-weight: 800;
 }
-QPushButton#settingsButton {
-    padding: 7px 12px;
-    background: #111b27;
-    color: #e0e8f0;
-    border: 1px solid #2b4562;
-    border-radius: 5px;
-    font-weight: 700;
-}
 QPushButton#servoOverrideButton {
     min-height: 34px;
     padding: 0 12px;
@@ -737,7 +1057,7 @@ QPushButton#servoOverrideButton[active="true"] {
     color: #ffffff;
     border: 1px solid #65a2ff;
 }
-QLabel#footerText, QLabel#servoName, QLabel#servoValue, QLabel#servoState {
+QLabel#servoName, QLabel#servoValue, QLabel#servoState {
     color: #d6e0ea;
     font-size: 13px;
 }

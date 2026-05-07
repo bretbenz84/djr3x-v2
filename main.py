@@ -543,17 +543,18 @@ def _start_gui_bridge_sync() -> None:
                     for person in people:
                         person = dict(person)
                         person_id = person.get("person_db_id")
-                        if person_id is not None and not any(
-                            person.get(key)
-                            for key in ("expression", "mood", "emotion", "affect", "face_mood")
-                        ):
+                        if person_id is not None:
                             try:
                                 mood = consciousness.get_cached_mood(int(person_id))
                             except Exception:
                                 mood = None
                             if mood:
                                 person["face_mood"] = mood
-                                person["expression"] = mood.get("mood") or "neutral"
+                                expression = (
+                                    str(person.get("expression") or "").strip().lower()
+                                )
+                                if expression in {"", "neutral", "unknown", "none"}:
+                                    person["expression"] = mood.get("mood") or "neutral"
                         enriched_people.append(person)
                     snapshot["people"] = enriched_people
                 gui_bridge.update_world_state_snapshot(snapshot)
