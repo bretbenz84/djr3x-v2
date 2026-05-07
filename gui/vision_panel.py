@@ -21,7 +21,7 @@ class VisionPanel(QWidget):
         self._scene_description = ""
         self._last_frame_at = 0.0
         self._face_tracker = LiveFaceBoxTracker()
-        self.setMinimumSize(360, 360)
+        self.setMinimumSize(360, 260)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         self._frame = snapshot.get("frame")

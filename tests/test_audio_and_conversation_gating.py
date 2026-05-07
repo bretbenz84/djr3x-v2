@@ -5603,14 +5603,14 @@ class PendingMusicPreferenceTest(unittest.TestCase):
 
         interaction._pending_music_offer = None
 
-    def test_bare_music_preference_answer_is_not_played_immediately(self):
+    def test_bare_music_preference_answer_is_normalized_and_not_played_immediately(self):
         from intelligence import interaction
 
         pending = {
             "question_key": "favorite_music",
             "question_text": "What kind of music are you into?",
         }
-        answered = {"question_key": "favorite_music", "answer": "classical music"}
+        answered = {"question_key": "favorite_music", "answer": "classical"}
 
         with (
             mock.patch.object(
@@ -5623,25 +5623,37 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         ):
             response, captured = interaction._handle_pending_music_preference_answer(
                 1,
-                "classical music",
+                "I like classical music",
                 pending_question=pending,
             )
 
         self.assertEqual(captured, answered)
-        self.assertIn("Want me to play some classical music", response)
-        answer.assert_called_once_with(1, "classical music")
+        self.assertIn("Want me to play some classical", response)
+        answer.assert_called_once_with(1, "classical")
         add_fact.assert_called_once_with(
             1,
             "preference",
             "favorite_music",
-            "classical music",
+            "classical",
             "pending_qa:favorite_music",
             confidence=0.95,
         )
         speak.assert_called_once()
         self.assertEqual(
             interaction._pending_music_offer["music_query"],
-            "classical music",
+            "classical",
+        )
+
+    def test_music_preference_answer_strips_trailing_music_word(self):
+        from intelligence import interaction
+
+        self.assertEqual(
+            interaction._normalize_music_preference_answer("classical music"),
+            "classical",
+        )
+        self.assertEqual(
+            interaction._normalize_music_preference_answer("I'm into classic rock"),
+            "classic rock",
         )
 
     def test_pending_music_offer_yes_starts_playback(self):

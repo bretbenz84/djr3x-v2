@@ -106,8 +106,8 @@ class DashboardWindow(QMainWindow):
         left = QVBoxLayout()
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(12)
-        left.addWidget(ChromePanel("1", "VISION", self.vision), 7)
-        left.addWidget(ChromePanel("", "OPENAI VISION + DLIB STATE", self.scene), 5)
+        left.addWidget(ChromePanel("1", "VISION", self.vision), 4)
+        left.addWidget(ChromePanel("", "OPENAI VISION + DLIB STATE", self.scene), 8)
         left_box = QWidget()
         left_box.setLayout(left)
 
@@ -273,7 +273,7 @@ class VisionDescriptionPanel(QWidget):
         self._body.setOpenExternalLinks(False)
         self._body.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self._body, 1)
-        self.setMinimumHeight(220)
+        self.setMinimumHeight(300)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         rendered = _vision_state_html(snapshot)

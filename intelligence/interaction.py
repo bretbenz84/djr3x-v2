@@ -10202,6 +10202,53 @@ def _store_music_preference_fact(person_id: Optional[int], preference: str) -> N
         _log.debug("favorite_music fact save failed: %s", exc)
 
 
+_MUSIC_PREFERENCE_LEADING_PATTERNS = (
+    re.compile(
+        r"^\s*i\s+(?:really\s+|kind\s+of\s+|sort\s+of\s+)?"
+        r"(?:like|love|enjoy|prefer|am\s+into|am\s+interested\s+in|listen\s+to)\s+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*i['’]?m\s+(?:really\s+|kind\s+of\s+|sort\s+of\s+)?"
+        r"(?:into|a\s+fan\s+of)\s+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*my\s+(?:favorite|favourite)\s+"
+        r"(?:kind|type|style|genre)?\s*(?:of\s+)?music\s+(?:is|would\s+be|has\s+to\s+be)\s+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*(?:probably|mostly|usually|mainly|generally)?\s*"
+        r"(?:i\s+)?(?:would\s+say|guess|think)\s+",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _normalize_music_preference_answer(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = cleaned.strip(" \t\r\n\"'“”‘’")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"[.!?]+$", "", cleaned).strip()
+
+    changed = True
+    while changed:
+        changed = False
+        for pattern in _MUSIC_PREFERENCE_LEADING_PATTERNS:
+            updated = pattern.sub("", cleaned, count=1).strip()
+            if updated != cleaned:
+                cleaned = updated
+                changed = True
+
+    cleaned = re.sub(r"^(?:some|the|a|an)\s+", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\s+(?:music|stuff|songs|tracks|artists|bands)$", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;:-")
+    return cleaned or (text or "").strip().rstrip(".!?")
+
+
 def _music_offer_reply(preference: str) -> str:
     cleaned = (preference or "").strip().rstrip(".!?")
     if not cleaned:
@@ -10294,26 +10341,29 @@ def _handle_pending_music_preference_answer(
     cleaned = (text or "").strip()
     if not cleaned or "?" in cleaned:
         return None, None
+    preference = _normalize_music_preference_answer(cleaned)
+    if not preference:
+        return None, None
 
     answered = _maybe_capture_pending_qa(
         person_id,
-        cleaned,
+        preference,
         identity_prompt_active=identity_prompt_active,
     )
     if not answered:
         return None, None
 
-    _store_music_preference_fact(person_id, cleaned)
+    _store_music_preference_fact(person_id, preference)
 
     if _MUSIC_PLAY_REQUEST_PAT.search(cleaned):
         return None, answered
 
     _pending_music_offer = {
         "person_id": person_id,
-        "music_query": cleaned,
+        "music_query": preference,
         "asked_at": time.monotonic(),
     }
-    resp = _music_offer_reply(cleaned)
+    resp = _music_offer_reply(preference)
     _speak_blocking(resp, emotion="neutral")
     return resp, answered
 
