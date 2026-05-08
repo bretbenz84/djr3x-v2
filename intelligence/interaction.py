@@ -1382,10 +1382,23 @@ def _apply_post_tts_handoff(
     now = time.monotonic()
     _last_speech_at = now
     _listen_resume_at = now + policy.listen_delay_secs
-    grace = max(
-        0.0,
-        float(getattr(config, "POST_TTS_CAPTURE_PREROLL_GRACE_SECS", 0.0) or 0.0),
-    )
+    if policy.asked_question:
+        grace = max(
+            0.0,
+            float(
+                getattr(
+                    config,
+                    "POST_QUESTION_CAPTURE_PREROLL_GRACE_SECS",
+                    getattr(config, "POST_TTS_CAPTURE_PREROLL_GRACE_SECS", 0.0),
+                )
+                or 0.0
+            ),
+        )
+    else:
+        grace = max(
+            0.0,
+            float(getattr(config, "POST_TTS_CAPTURE_PREROLL_GRACE_SECS", 0.0) or 0.0),
+        )
     _listen_capture_floor_at = max(0.0, now - grace)
     if policy.flush_buffer:
         stream.flush()
@@ -2016,6 +2029,16 @@ _RESPONSE_QUESTION_START_RE = re.compile(
     r"is|are|am|should|want|wanna|need|got|any|care\s+to)\b",
     re.IGNORECASE,
 )
+_SHORT_SLOT_QUESTION_RE = re.compile(
+    r"\b(?:last\s+name|surname)\b",
+    re.IGNORECASE,
+)
+_IMPERATIVE_RESPONSE_PROMPT_RE = re.compile(
+    r"\b(?:give|tell|toss|send|share)\s+(?:me\s+)?(?:your\s+|a\s+)?"
+    r"(?:last\s+name|surname)\b|"
+    r"\b(?:last\s+name|surname)\s+(?:too|please)\b",
+    re.IGNORECASE,
+)
 
 
 def _strip_quoted_questions(text: str) -> str:
@@ -2031,8 +2054,10 @@ def _assistant_asked_question(text: str) -> bool:
 
 def _question_expects_response(text: str) -> bool:
     cleaned = _strip_quoted_questions(text).strip()
-    if not cleaned or "?" not in cleaned:
+    if not cleaned:
         return False
+    if "?" not in cleaned:
+        return bool(_IMPERATIVE_RESPONSE_PROMPT_RE.search(cleaned))
     for part in re.split(r"(?<=[.!?])\s+", cleaned):
         if "?" in part and _question_sentence_expects_response(part):
             return True
@@ -2047,6 +2072,8 @@ def _question_sentence_expects_response(sentence: str) -> bool:
         return False
     if re.search(r"\bwhy\s+(?:risk|bother|would|not)\b.+\bwhen\b", lowered):
         return False
+    if _SHORT_SLOT_QUESTION_RE.search(lowered):
+        return True
     words = re.findall(r"[a-z0-9']+", lowered)
     if (
         len(words) <= 4

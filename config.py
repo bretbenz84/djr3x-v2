@@ -1544,6 +1544,11 @@ POST_QUESTION_SPEECH_PREROLL_SECS = 2.0
 # Set above zero only if the first syllable after TTS is consistently clipped.
 POST_TTS_CAPTURE_PREROLL_GRACE_SECS = 0.0
 
+# ElevenLabs output often has a short silent tail that still keeps playback/AEC
+# marked active. For direct questions, allow the answer capture to reach back
+# into that tail so natural immediate replies are not clipped or missed.
+POST_QUESTION_CAPTURE_PREROLL_GRACE_SECS = 0.25
+
 # If a transcribed utterance ends like an unfinished sentence ("I'm going to",
 # "the thing is", "because..."), hold it briefly before responding. A second
 # utterance inside the hold window is merged into one turn.

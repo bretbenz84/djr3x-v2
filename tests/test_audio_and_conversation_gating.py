@@ -294,6 +294,22 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         )
         self.assertEqual(speech_queue._playback_handoff_options("Nice to meet you."), {})
 
+    def test_last_name_prompt_without_question_mark_uses_fast_handoff(self):
+        from audio import speech_queue
+
+        opts = speech_queue._playback_handoff_options(
+            "Bret, how original. Give me a last name too so the memory banks don't get confused."
+        )
+
+        self.assertEqual(
+            opts["post_playback_tail_secs"],
+            float(__import__("config").POST_QUESTION_PLAYBACK_SUPPRESSION_SECS),
+        )
+        self.assertEqual(
+            opts["flush_on_playback_stop"],
+            bool(__import__("config").POST_QUESTION_FLUSH_AUDIO_BUFFER),
+        )
+
     def test_question_playback_stop_can_skip_flush_and_short_tail(self):
         from audio import echo_cancel
 
@@ -601,6 +617,12 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertFalse(interaction._assistant_asked_question("Seven more hours?"))
         self.assertTrue(interaction._assistant_asked_question("Do they cause chaos?"))
         self.assertTrue(interaction._assistant_asked_question("You good?"))
+        self.assertTrue(interaction._assistant_asked_question("Last name?"))
+        self.assertTrue(
+            interaction._assistant_asked_question(
+                "Bret, how original. Give me a last name too so the memory banks don't get confused."
+            )
+        )
 
     def test_apply_question_handoff_does_not_flush_stream(self):
         from intelligence import interaction
@@ -610,6 +632,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             with (
                 mock.patch.object(interaction.time, "monotonic", return_value=100.0),
                 mock.patch.object(interaction.config, "POST_TTS_CAPTURE_PREROLL_GRACE_SECS", 0.0),
+                mock.patch.object(interaction.config, "POST_QUESTION_CAPTURE_PREROLL_GRACE_SECS", 0.0),
                 mock.patch.object(interaction.stream, "flush") as flush,
                 mock.patch.object(interaction.vad, "reset_state") as reset_vad,
             ):
@@ -624,6 +647,28 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         flush.assert_not_called()
         reset_vad.assert_called_once()
         self.assertAlmostEqual(floor, 100.0)
+
+    def test_question_handoff_allows_silent_tts_tail_preroll(self):
+        from intelligence import interaction
+
+        old_floor = interaction._listen_capture_floor_at
+        try:
+            with (
+                mock.patch.object(interaction.time, "monotonic", return_value=100.0),
+                mock.patch.object(interaction.config, "POST_QUESTION_CAPTURE_PREROLL_GRACE_SECS", 0.25),
+                mock.patch.object(interaction.stream, "flush") as flush,
+                mock.patch.object(interaction.vad, "reset_state"),
+            ):
+                interaction._apply_post_tts_handoff(
+                    "Last name?",
+                    source="test",
+                )
+        finally:
+            floor = interaction._listen_capture_floor_at
+            interaction._listen_capture_floor_at = old_floor
+
+        flush.assert_not_called()
+        self.assertAlmostEqual(floor, 99.75)
 
     def test_post_tts_handoff_refreshes_idle_timer(self):
         from intelligence import interaction
