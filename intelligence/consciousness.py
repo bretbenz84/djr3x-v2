@@ -207,6 +207,11 @@ _gui_mood_refresh_in_flight: bool = False
 _smile_reaction_lock = threading.Lock()
 _smile_reaction_watch: Optional[dict] = None
 _last_smile_reaction_at: float = 0.0
+_facial_expression_observed: dict[str, dict] = {}
+_facial_expression_reacted_at: dict[tuple[str, str], float] = {}
+_last_facial_expression_reaction_at: float = 0.0
+_last_expression_reaction_line_by_kind: dict[str, str] = {}
+_disposition_sampled_at: dict[int, float] = {}
 
 # Per-person monotonic timestamp of when they were last seen in frame.
 _last_seen: dict = {}
@@ -1158,6 +1163,71 @@ _SMILE_REACTION_SERIOUS_MARKERS = (
     "anxious",
     "trauma",
 )
+_FACIAL_EXPRESSION_REACTION_LINES = {
+    "surprise": (
+        "That was a full photoreceptor-wide shock face. What did the galaxy do now?",
+        "You just looked like the hyperdrive coughed up a receipt. What happened?",
+        "Wide eyes detected. Was it my charm, or did reality file another complaint?",
+        "That expression says someone moved your starship. Care to brief the droid?",
+        "Shock face logged. Did I say something brilliant, or did the universe get rude?",
+    ),
+    "frown": (
+        "That frown has its own gravity well. Want to vent before it starts charging rent?",
+        "You look displeased. If it helps, I also disapprove of most things.",
+        "Downturned mouth detected. Organic morale appears to be under warranty review.",
+        "That expression is doing sad trombone without the trombone. What's up?",
+        "Your face just filed a complaint. Need a soundtrack, or a target?",
+    ),
+    "brow_furrow": (
+        "Brow furrow detected. Deep thought, or are you trying to crush something telepathically?",
+        "That is a weapons-grade squint. Who offended the management layer?",
+        "Your eyebrows just formed a committee. I assume they are angry and underfunded.",
+        "I see the processing grimace. Want to debug the lifeform problem?",
+        "That look could curdle blue milk. Impressive. Mildly concerning.",
+    ),
+}
+_FACIAL_EXPRESSION_REACTION_LABELS = {
+    "surprise": {"surprise", "surprised", "wide_eyes", "wide_eyed", "shocked"},
+    "frown": {"frown", "sad", "downturned_mouth", "unhappy"},
+    "brow_furrow": {"brow_furrow", "angry", "furrowed_brow", "irritated"},
+}
+_DISPOSITION_FIRST_SIGHT_LINES = {
+    "smiley": (
+        "Oh look, {first_name}, the perpetually smiling life-form has graced us with the pearly whites again.",
+        "{first_name}, there you are. Still smiling like optimism owes you credits.",
+        "Careful, {first_name}. Keep smiling like that and this room may accidentally improve.",
+        "Ah, {first_name}. The resident morale leak returns, grinning all over the equipment.",
+        "{first_name}, your smile stats remain suspiciously high. I have alerted absolutely no authorities.",
+    ),
+    "grumpy": (
+        "Ah, {first_name}. The resident storm cloud returns. Try not to lower the barometric pressure.",
+        "{first_name}, there you are, calibrating the room to mildly displeased.",
+        "Look who it is: {first_name}, bringing the traditional frown garnish.",
+        "{first_name}, that face says the galaxy failed inspection again. Relatable.",
+        "Welcome back, {first_name}. I see your expression has entered classic complaint mode.",
+    ),
+    "deadpan": (
+        "Ah, {first_name}. The neutral-expression champion returns. Thrilling emotional weather as always.",
+        "{first_name}, your face remains statistically unreadable. Honestly, impressive brand consistency.",
+        "Welcome back, {first_name}. Another flawless deployment of the default organic expression.",
+        "{first_name}, I see the emotional readout is set to beige again.",
+        "There you are, {first_name}. Stoic as a cargo manifest and twice as mysterious.",
+    ),
+    "intense": (
+        "There is {first_name}, arriving with the eyebrows already in attack formation.",
+        "{first_name}, that concentrated look could make a circuit board confess.",
+        "Ah, {first_name}. The tactical squint has entered the building.",
+        "{first_name}, your eyebrows appear to be holding a disciplinary hearing.",
+        "Welcome back, {first_name}. I see the forehead committee is already in session.",
+    ),
+    "startled": (
+        "Ah, {first_name}, champion of looking like the plot just turned.",
+        "{first_name}, you do bring a reliable sense of startled cinema to the room.",
+        "There you are, {first_name}. Already prepared for a surprise inspection by reality.",
+        "{first_name}, your expression history says the galaxy keeps jump-scaring you. Bold lifestyle.",
+        "Welcome back, {first_name}. I will try not to startle the professional startled person.",
+    ),
+}
 
 
 def _norm_expression_label(value) -> str:
@@ -1234,6 +1304,7 @@ def _expression_reading(person: dict) -> dict:
                 "confidence": _safe_confidence(value.get("confidence")),
                 "blendshapes": dict(value.get("blendshapes") or {}),
                 "source": str(value.get("source") or ""),
+                "updated_at": value.get("updated_at"),
             }
     mood = person.get("face_mood")
     if isinstance(mood, dict):
@@ -1243,6 +1314,7 @@ def _expression_reading(person: dict) -> dict:
             "confidence": _safe_confidence(mood.get("confidence")),
             "blendshapes": {},
             "source": str(mood.get("source") or ""),
+            "updated_at": mood.get("updated_at"),
         }
     expression = str(person.get("expression") or "")
     if expression:
@@ -1252,6 +1324,7 @@ def _expression_reading(person: dict) -> dict:
             "confidence": 1.0,
             "blendshapes": {},
             "source": "person.expression",
+            "updated_at": None,
         }
     return {
         "expression": "",
@@ -1259,12 +1332,17 @@ def _expression_reading(person: dict) -> dict:
         "confidence": 0.0,
         "blendshapes": {},
         "source": "",
+        "updated_at": None,
     }
 
 
 def _smile_blendshape_score(blendshapes: dict) -> float:
+    return _mean_blendshape_score(blendshapes, "mouthSmileLeft", "mouthSmileRight")
+
+
+def _mean_blendshape_score(blendshapes: dict, *keys: str) -> float:
     scores = []
-    for key in ("mouthSmileLeft", "mouthSmileRight"):
+    for key in keys:
         if key in blendshapes:
             scores.append(_safe_confidence(blendshapes.get(key)))
     if not scores:
@@ -1293,6 +1371,107 @@ def _person_is_smiling(person: dict) -> bool:
     return blend_score >= min_conf
 
 
+def _expression_kind_blend_score(kind: str, blendshapes: dict) -> float:
+    if kind == "surprise":
+        eye_wide = _mean_blendshape_score(blendshapes, "eyeWideLeft", "eyeWideRight")
+        jaw_open = _safe_confidence(blendshapes.get("jawOpen"))
+        brow_inner = _safe_confidence(blendshapes.get("browInnerUp"))
+        scores = [score for score in (eye_wide, jaw_open, brow_inner) if score > 0.0]
+        return sum(scores) / float(len(scores)) if scores else 0.0
+    if kind == "frown":
+        return _mean_blendshape_score(blendshapes, "mouthFrownLeft", "mouthFrownRight")
+    if kind == "brow_furrow":
+        return _mean_blendshape_score(blendshapes, "browDownLeft", "browDownRight")
+    return 0.0
+
+
+def _person_reactable_expression(person: dict) -> tuple[Optional[str], float]:
+    reading = _expression_reading(person)
+    expression = _norm_expression_label(reading.get("expression"))
+    mood = _norm_expression_label(reading.get("mood"))
+    confidence = _safe_confidence(reading.get("confidence"))
+    blendshapes = reading.get("blendshapes") or {}
+    min_conf = _safe_confidence(
+        getattr(config, "FACIAL_EXPRESSION_REACTION_MIN_CONFIDENCE", 0.55)
+    )
+    best_kind: Optional[str] = None
+    best_score = 0.0
+    for kind, labels in _FACIAL_EXPRESSION_REACTION_LABELS.items():
+        blend_score = _expression_kind_blend_score(kind, blendshapes)
+        if expression in labels or mood in labels:
+            score = max(confidence, blend_score)
+        else:
+            score = blend_score
+        if score > best_score:
+            best_kind = kind
+            best_score = score
+    if best_kind is None or best_score < min_conf:
+        return None, best_score
+    return best_kind, best_score
+
+
+def _reading_timestamp_seconds(value) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def _face_expression_reading_is_recent(reading: dict) -> bool:
+    updated_at = _reading_timestamp_seconds(reading.get("updated_at"))
+    if updated_at is None:
+        return True
+    max_age = max(
+        0.5,
+        float(getattr(config, "FACIAL_DISPOSITION_MAX_READING_AGE_SECS", 3.0) or 3.0),
+    )
+    return (time.time() - updated_at) <= max_age
+
+
+def _step_disposition_memory(snapshot: dict) -> None:
+    if not bool(getattr(config, "FACIAL_DISPOSITION_MEMORY_ENABLED", True)):
+        return
+    interval = max(
+        0.5,
+        float(getattr(config, "FACIAL_DISPOSITION_SAMPLE_INTERVAL_SECS", 2.0) or 2.0),
+    )
+    min_conf = _safe_confidence(getattr(config, "FACIAL_DISPOSITION_MIN_CONFIDENCE", 0.45))
+    now = time.monotonic()
+    for person in _visible_face_people(snapshot):
+        person_id = _person_db_id(person)
+        if person_id is None:
+            continue
+        last_at = _disposition_sampled_at.get(person_id, 0.0)
+        if last_at and (now - last_at) < interval:
+            continue
+        reading = _expression_reading(person)
+        if reading.get("source") != "mediapipe_face_landmarker":
+            continue
+        if not _face_expression_reading_is_recent(reading):
+            continue
+        confidence = _safe_confidence(reading.get("confidence"))
+        if confidence < min_conf:
+            continue
+        try:
+            from memory import disposition as disposition_memory
+            disposition_memory.record_expression_sample(
+                person_id,
+                expression=reading.get("expression"),
+                mood=reading.get("mood"),
+                confidence=confidence,
+            )
+            _disposition_sampled_at[person_id] = now
+        except Exception as exc:
+            _log.debug("facial disposition sample failed person_id=%s: %s", person_id, exc)
+
+
 def _smile_reaction_line_text(text: str) -> bool:
     normalized = re.sub(r"\s+", " ", (text or "").strip()).lower()
     if not normalized:
@@ -1315,16 +1494,18 @@ def _rex_line_can_trigger_smile_reaction(text: str) -> bool:
     return len(words) <= 22 and bool(re.search(r"[.!]", cleaned))
 
 
-def _smile_reaction_target(snapshot: Optional[dict] = None) -> Optional[dict]:
+def _visible_reaction_target(
+    snapshot: Optional[dict] = None,
+    *,
+    recent_window_secs: Optional[float] = None,
+) -> Optional[dict]:
     snapshot = snapshot if isinstance(snapshot, dict) else world_state.snapshot()
     visible = _visible_face_people(snapshot)
     if not visible:
         return None
 
     try:
-        recent = get_recent_engagement(
-            window_secs=float(getattr(config, "SMILE_REACTION_RECENT_ENGAGEMENT_SECS", 20.0))
-        )
+        recent = get_recent_engagement(window_secs=recent_window_secs)
     except Exception:
         recent = None
     if recent and recent.get("person_id") is not None:
@@ -1343,10 +1524,40 @@ def _smile_reaction_target(snapshot: Optional[dict] = None) -> Optional[dict]:
     return known[0] if len(known) == 1 else None
 
 
+def _smile_reaction_target(snapshot: Optional[dict] = None) -> Optional[dict]:
+    return _visible_reaction_target(
+        snapshot,
+        recent_window_secs=float(
+            getattr(config, "SMILE_REACTION_RECENT_ENGAGEMENT_SECS", 20.0)
+        ),
+    )
+
+
+def _facial_expression_reaction_target(snapshot: Optional[dict] = None) -> Optional[dict]:
+    return _visible_reaction_target(
+        snapshot,
+        recent_window_secs=float(
+            getattr(config, "FACIAL_EXPRESSION_REACTION_RECENT_ENGAGEMENT_SECS", 30.0)
+        ),
+    )
+
+
 def _smile_reaction_cooldown_active(now: Optional[float] = None) -> bool:
     now = time.monotonic() if now is None else now
     cooldown = max(0.0, float(getattr(config, "SMILE_REACTION_COOLDOWN_SECS", 75.0) or 0.0))
     return bool(cooldown and (now - _last_smile_reaction_at) < cooldown)
+
+
+def _choose_expression_reaction_line(kind: str, lines) -> str:
+    choices = list(lines or ())
+    if not choices:
+        return ""
+    previous = _last_expression_reaction_line_by_kind.get(kind)
+    if previous and len(choices) > 1:
+        choices = [line for line in choices if line != previous] or choices
+    line = random.choice(choices)
+    _last_expression_reaction_line_by_kind[kind] = line
+    return line
 
 
 def _arm_smile_reaction_watch(item, *, phase: str) -> bool:
@@ -1544,13 +1755,145 @@ def _step_smile_reaction(snapshot: dict, profile: SituationProfile) -> None:
 
     if _smile_reaction_cooldown_active(now):
         return
-    line = random.choice(_SMILE_REACTION_LINES)
+    line = _choose_expression_reaction_line("smile", _SMILE_REACTION_LINES)
     if _speak_smile_reaction(line):
         _log.info(
             "consciousness: smile reaction fired person=%s baseline=%s current=%s",
             watch.get("person_key"),
             watch.get("baseline_expression"),
             _person_expression_label(person),
+        )
+
+
+def _facial_expression_reaction_sustain_secs(kind: str) -> float:
+    if kind == "surprise":
+        return max(
+            0.0,
+            float(
+                getattr(
+                    config,
+                    "FACIAL_EXPRESSION_REACTION_SURPRISE_SUSTAIN_SECS",
+                    0.5,
+                )
+                or 0.0
+            ),
+        )
+    return max(
+        0.0,
+        float(getattr(config, "FACIAL_EXPRESSION_REACTION_SUSTAIN_SECS", 1.25) or 0.0),
+    )
+
+
+def _update_facial_expression_observation(
+    person_key: str,
+    kind: Optional[str],
+    score: float,
+    now: float,
+) -> Optional[dict]:
+    if not person_key:
+        return None
+    if not kind:
+        _facial_expression_observed[person_key] = {
+            "kind": None,
+            "score": score,
+            "started_at": now,
+            "last_seen_at": now,
+        }
+        return None
+
+    state = _facial_expression_observed.get(person_key)
+    if not state or state.get("kind") != kind:
+        state = {
+            "kind": kind,
+            "score": score,
+            "started_at": now,
+            "last_seen_at": now,
+        }
+        _facial_expression_observed[person_key] = state
+        if _facial_expression_reaction_sustain_secs(kind) > 0.0:
+            return None
+        return state
+
+    state["score"] = max(float(state.get("score") or 0.0), score)
+    state["last_seen_at"] = now
+    if (now - float(state.get("started_at") or now)) < _facial_expression_reaction_sustain_secs(kind):
+        return None
+    return state
+
+
+def _facial_expression_reaction_on_cooldown(
+    person_key: str,
+    kind: str,
+    now: float,
+) -> bool:
+    global_gap = max(
+        0.0,
+        float(
+            getattr(config, "FACIAL_EXPRESSION_REACTION_GLOBAL_COOLDOWN_SECS", 30.0)
+            or 0.0
+        ),
+    )
+    if global_gap and (now - _last_facial_expression_reaction_at) < global_gap:
+        return True
+    per_expression_gap = max(
+        0.0,
+        float(getattr(config, "FACIAL_EXPRESSION_REACTION_COOLDOWN_SECS", 120.0) or 0.0),
+    )
+    last_at = _facial_expression_reacted_at.get((person_key, kind), 0.0)
+    return bool(per_expression_gap and (now - last_at) < per_expression_gap)
+
+
+def _speak_facial_expression_reaction(kind: str, text: str) -> bool:
+    emotion = {
+        "surprise": "curious",
+        "frown": "curious",
+        "brow_furrow": "curious",
+    }.get(kind, "neutral")
+    return _speak_async(
+        text,
+        emotion,
+        wait_secs=None,
+        purpose=f"social.facial_expression.{kind}",
+        label=f"facial expression reaction: {kind}",
+    )
+
+
+def _step_facial_expression_reactions(snapshot: dict, profile: SituationProfile) -> None:
+    del profile
+    global _last_facial_expression_reaction_at
+    if not bool(getattr(config, "FACIAL_EXPRESSION_REACTIONS_ENABLED", True)):
+        return
+    with _smile_reaction_lock:
+        if _smile_reaction_watch:
+            return
+
+    person = _facial_expression_reaction_target(snapshot)
+    if person is None:
+        return
+    person_key = _smile_reaction_person_key(person)
+    if not person_key:
+        return
+
+    kind, score = _person_reactable_expression(person)
+    now = time.monotonic()
+    state = _update_facial_expression_observation(person_key, kind, score, now)
+    if not kind or not state:
+        return
+    if _facial_expression_reaction_on_cooldown(person_key, kind, now):
+        return
+
+    lines = _FACIAL_EXPRESSION_REACTION_LINES.get(kind) or ()
+    line = _choose_expression_reaction_line(kind, lines)
+    if not line:
+        return
+    if _speak_facial_expression_reaction(kind, line):
+        _last_facial_expression_reaction_at = time.monotonic()
+        _facial_expression_reacted_at[(person_key, kind)] = _last_facial_expression_reaction_at
+        _log.info(
+            "consciousness: facial expression reaction fired person=%s kind=%s score=%.2f",
+            person_key,
+            kind,
+            float(score),
         )
 
 
@@ -1870,6 +2213,7 @@ def _generate_and_speak_presence(
     startup_greeting_name: Optional[str] = None,
     question_key: Optional[str] = None,
     question_depth: int = 1,
+    direct_text: Optional[str] = None,
 ) -> bool:
     """
     Presence-reaction variant of _generate_and_speak.
@@ -1878,15 +2222,17 @@ def _generate_and_speak_presence(
     The tag_key is used to coalesce duplicate queued reactions for the same
     person (newer replaces older).
     """
+    speech_text = str(direct_text or "").strip()
     candidate_id = _observe_governor_candidate(
         purpose=purpose,
         label=label,
         prompt=prompt,
+        suggested_text=speech_text,
         emotion=emotion,
         priority=priority,
         target_person_id=tag_key if isinstance(tag_key, int) else None,
         target_label=str(tag_key) if not isinstance(tag_key, int) else "",
-        requires_llm=True,
+        requires_llm=not bool(speech_text),
     )
     token = _claim_proactive_purpose(purpose, priority=priority, label=label)
     if token is None:
@@ -1896,8 +2242,13 @@ def _generate_and_speak_presence(
             "conversation_agenda_claim_rejected",
         )
         return False
-    _mark_governor_candidate(candidate_id, "accepted", "current_behavior_queued_llm")
-    prompt = _apply_proactive_directive(prompt, purpose)
+    _mark_governor_candidate(
+        candidate_id,
+        "accepted",
+        "current_behavior_queued_direct_speech" if speech_text else "current_behavior_queued_llm",
+    )
+    if not speech_text:
+        prompt = _apply_proactive_directive(prompt, purpose)
 
     def _task():
         if not _presence_reaction_lock.acquire(blocking=False):
@@ -1909,11 +2260,14 @@ def _generate_and_speak_presence(
                 return
             if not _can_proactive_speak():
                 return
-            from intelligence.llm import get_response
-            text = get_response(prompt)
+            if speech_text:
+                text = speech_text
+            else:
+                from intelligence.llm import get_response
+                text = get_response(prompt)
             if not text or not text.strip():
                 return
-            if startup_greeting_name:
+            if startup_greeting_name and not speech_text:
                 text = _ensure_named_startup_greeting(text, startup_greeting_name)
             if not _proactive_purpose_current(token):
                 return
@@ -2805,6 +3159,78 @@ def _build_startup_solo_greeting_prompt(first_name: str, context_sentence: str) 
         f"or 'you'; do NOT call this one visible person 'they' or 'them'. "
         f"Two short sentences max — the second must end in a question mark."
     )
+
+
+def _age_days_since_iso(value) -> Optional[float]:
+    ts = _reading_timestamp_seconds(value)
+    if ts is None:
+        return None
+    return max(0.0, (time.time() - ts) / 86400.0)
+
+
+def _pick_first_sight_disposition_greeting(
+    person_id: Optional[int],
+    first_name: str,
+) -> Optional[tuple[str, str]]:
+    if not isinstance(person_id, int):
+        return None
+    if not bool(getattr(config, "FACIAL_DISPOSITION_FIRST_SIGHT_ENABLED", True)):
+        return None
+    try:
+        from memory import disposition as disposition_memory
+        stats = disposition_memory.get_stats(person_id)
+    except Exception as exc:
+        _log.debug("disposition stats lookup failed person_id=%s: %s", person_id, exc)
+        return None
+    if not stats:
+        return None
+
+    try:
+        total = int(stats.get("total_samples") or 0)
+    except (TypeError, ValueError):
+        total = 0
+    min_samples = int(
+        getattr(config, "FACIAL_DISPOSITION_FIRST_SIGHT_MIN_SAMPLES", 20) or 20
+    )
+    if total < max(1, min_samples):
+        return None
+
+    label = str(stats.get("disposition_label") or "").strip().lower()
+    if label not in _DISPOSITION_FIRST_SIGHT_LINES:
+        return None
+    confidence = _safe_confidence(stats.get("confidence"))
+    min_conf = _safe_confidence(
+        getattr(config, "FACIAL_DISPOSITION_FIRST_SIGHT_MIN_CONFIDENCE", 0.50)
+    )
+    if confidence < min_conf:
+        return None
+
+    cooldown_days = max(
+        0.0,
+        float(getattr(config, "FACIAL_DISPOSITION_FIRST_SIGHT_COOLDOWN_DAYS", 2.0) or 0.0),
+    )
+    last_mentioned_age = _age_days_since_iso(stats.get("last_mentioned_at"))
+    if (
+        cooldown_days
+        and last_mentioned_age is not None
+        and last_mentioned_age < cooldown_days
+    ):
+        return None
+
+    probability = _safe_confidence(
+        getattr(config, "FACIAL_DISPOSITION_FIRST_SIGHT_PROBABILITY", 0.28)
+    )
+    if probability <= 0.0 or random.random() > probability:
+        return None
+
+    template = _choose_expression_reaction_line(
+        f"disposition:{label}",
+        _DISPOSITION_FIRST_SIGHT_LINES[label],
+    )
+    if not template:
+        return None
+    line = template.format(first_name=first_name)
+    return label, line
 
 
 def _pick_startup_profile_question(person_id: Optional[int]) -> Optional[dict]:
@@ -5007,6 +5433,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 first_name = person_name.split()[0]
                 context_sentence, situation_phrase = _first_sight_context(first_name)
                 prompt: Optional[str] = None
+                direct_text: Optional[str] = None
                 label = f"first-sight greeting for {person_name}"
                 emotion = "excited"
                 emotional_to_ack: Optional[dict] = None
@@ -5014,6 +5441,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 followup_to_remove: Optional[tuple[Optional[int], object]] = None
                 anticipated_to_mark: Optional[tuple[Optional[int], object]] = None
                 profile_question_to_record: Optional[dict] = None
+                disposition_to_mark: Optional[int] = None
 
                 # Priority 0 — recent sensitive emotional event.
                 # This intentionally outranks temporal banter like
@@ -5160,6 +5588,24 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 # Fallback — profile-building greeting for sparse known people,
                 # then generic greeting.
                 if prompt is None:
+                    disposition_greeting = _pick_first_sight_disposition_greeting(
+                        person_db_id,
+                        first_name,
+                    )
+                    if disposition_greeting:
+                        disposition_label, line = disposition_greeting
+                        prompt = line
+                        direct_text = line
+                        label = f"first-sight disposition greeting ({disposition_label}) for {person_name}"
+                        emotion = "happy" if disposition_label == "smiley" else "curious"
+                        disposition_to_mark = person_db_id
+                        _log.info(
+                            "consciousness: startup disposition greeting for %s label=%s",
+                            person_name,
+                            disposition_label,
+                        )
+
+                if prompt is None:
                     profile_question = _pick_startup_profile_question(person_db_id)
                     if profile_question:
                         question_text = str(profile_question.get("text") or "").strip()
@@ -5225,6 +5671,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         if profile_question_to_record
                         else 1
                     ),
+                    direct_text=direct_text,
                 )
                 if queued:
                     if emotional_to_ack is not None:
@@ -5247,6 +5694,16 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         )
                     if anticipated_to_mark is not None:
                         _anticipated_events.add(anticipated_to_mark)
+                    if disposition_to_mark is not None:
+                        try:
+                            from memory import disposition as disposition_memory
+                            disposition_memory.mark_mentioned(disposition_to_mark)
+                        except Exception as exc:
+                            _log.debug(
+                                "disposition mention mark failed person_id=%s: %s",
+                                disposition_to_mark,
+                                exc,
+                            )
                     _greeted_this_session.add(key)
                     _first_sight_seen_at.pop(key, None)
                 else:
@@ -7349,9 +7806,17 @@ def _loop() -> None:
             # aligned with the current visible expression when the scene is unambiguous.
             _step_gui_mood_telemetry(snapshot, frame)
 
+            # 10f2. Long-term expression disposition memory — sample the local
+            # MediaPipe expression stream at a low rate for known people.
+            _step_disposition_memory(snapshot)
+
             # 10g. Smile reaction — after Rex lands a joke/snarky aside, notice
             # if the target visibly cracks a smile and answer it once.
             _step_smile_reaction(snapshot, profile)
+
+            # 10h. Facial expression reactions — gently notice clear surprise,
+            # frowns, and brow furrows from the local MediaPipe telemetry.
+            _step_facial_expression_reactions(snapshot, profile)
 
             # 11. Face tracking runs in a dedicated high-rate loop so gaze
             # correction is not gated by this slower social/cognition tick.
@@ -7392,6 +7857,7 @@ def start() -> None:
     global _face_tracking_last_error_y, _face_tracking_last_error_at
     global _last_face_seen_at
     global _smile_reaction_watch, _last_smile_reaction_at
+    global _last_facial_expression_reaction_at
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
@@ -7455,6 +7921,11 @@ def start() -> None:
     with _smile_reaction_lock:
         _smile_reaction_watch = None
     _last_smile_reaction_at = 0.0
+    _facial_expression_observed.clear()
+    _facial_expression_reacted_at.clear()
+    _last_facial_expression_reaction_at = 0.0
+    _last_expression_reaction_line_by_kind.clear()
+    _disposition_sampled_at.clear()
     try:
         from intelligence import question_budget
         question_budget.clear()
@@ -7555,6 +8026,11 @@ def stop() -> None:
     _recent_engaged_touch_at = 0.0
     with _smile_reaction_lock:
         _smile_reaction_watch = None
+    _facial_expression_observed.clear()
+    _facial_expression_reacted_at.clear()
+    _last_facial_expression_reaction_at = 0.0
+    _last_expression_reaction_line_by_kind.clear()
+    _disposition_sampled_at.clear()
     try:
         from intelligence import question_budget
         question_budget.clear()

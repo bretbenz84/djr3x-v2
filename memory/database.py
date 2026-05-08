@@ -36,6 +36,7 @@ _EXPECTED_TABLES = frozenset({
     "person_conversation_boundaries",
     "person_preferences",
     "person_interests",
+    "person_disposition_stats",
 })
 
 # Inline migrations for schema additions introduced after initial deploy.
@@ -130,6 +131,30 @@ _MIGRATIONS = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_interest_person ON person_interests(person_id)",
     "CREATE INDEX IF NOT EXISTS idx_interest_lookup ON person_interests(person_id, name)",
+    """
+    CREATE TABLE IF NOT EXISTS person_disposition_stats (
+        person_id               INTEGER PRIMARY KEY REFERENCES people(id),
+        total_samples           INTEGER DEFAULT 0,
+        smile_samples           INTEGER DEFAULT 0,
+        frown_samples           INTEGER DEFAULT 0,
+        neutral_samples         INTEGER DEFAULT 0,
+        surprise_samples        INTEGER DEFAULT 0,
+        brow_furrow_samples     INTEGER DEFAULT 0,
+        other_samples           INTEGER DEFAULT 0,
+        smile_score             REAL DEFAULT 0.0,
+        frown_score             REAL DEFAULT 0.0,
+        neutral_score           REAL DEFAULT 0.0,
+        surprise_score          REAL DEFAULT 0.0,
+        brow_furrow_score       REAL DEFAULT 0.0,
+        dominant_expression     TEXT,
+        disposition_label       TEXT,
+        confidence              REAL DEFAULT 0.0,
+        first_observed_at       DATETIME,
+        last_observed_at        DATETIME,
+        last_mentioned_at       DATETIME
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_disposition_label ON person_disposition_stats(disposition_label)",
     """
     CREATE TABLE IF NOT EXISTS person_aliases (
         id          INTEGER PRIMARY KEY,

@@ -273,6 +273,31 @@ CREATE TABLE IF NOT EXISTS person_interests (
 
 CREATE INDEX IF NOT EXISTS idx_interest_person ON person_interests(person_id);
 CREATE INDEX IF NOT EXISTS idx_interest_lookup ON person_interests(person_id, name);
+
+CREATE TABLE IF NOT EXISTS person_disposition_stats (
+    person_id               INTEGER PRIMARY KEY REFERENCES people(id),
+    total_samples           INTEGER DEFAULT 0,
+    smile_samples           INTEGER DEFAULT 0,
+    frown_samples           INTEGER DEFAULT 0,
+    neutral_samples         INTEGER DEFAULT 0,
+    surprise_samples        INTEGER DEFAULT 0,
+    brow_furrow_samples     INTEGER DEFAULT 0,
+    other_samples           INTEGER DEFAULT 0,
+    smile_score             REAL DEFAULT 0.0,
+    frown_score             REAL DEFAULT 0.0,
+    neutral_score           REAL DEFAULT 0.0,
+    surprise_score          REAL DEFAULT 0.0,
+    brow_furrow_score       REAL DEFAULT 0.0,
+    dominant_expression     TEXT,
+    disposition_label       TEXT,
+    confidence              REAL DEFAULT 0.0,
+    first_observed_at       DATETIME,
+    last_observed_at        DATETIME,
+    last_mentioned_at       DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_disposition_label
+    ON person_disposition_stats(disposition_label);
 """
 
 
@@ -571,6 +596,10 @@ def _ensure_column(
 def _run_schema_updates(conn: sqlite3.Connection) -> list[str]:
     """Apply idempotent schema additions for DBs created by older setup runs."""
     applied = []
+    disposition_existed = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='person_disposition_stats'"
+    ).fetchone() is not None
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS person_aliases (
@@ -583,8 +612,34 @@ def _run_schema_updates(conn: sqlite3.Connection) -> list[str]:
             updated_at  DATETIME
         );
         CREATE INDEX IF NOT EXISTS idx_alias_person ON person_aliases(person_id);
+
+        CREATE TABLE IF NOT EXISTS person_disposition_stats (
+            person_id               INTEGER PRIMARY KEY REFERENCES people(id),
+            total_samples           INTEGER DEFAULT 0,
+            smile_samples           INTEGER DEFAULT 0,
+            frown_samples           INTEGER DEFAULT 0,
+            neutral_samples         INTEGER DEFAULT 0,
+            surprise_samples        INTEGER DEFAULT 0,
+            brow_furrow_samples     INTEGER DEFAULT 0,
+            other_samples           INTEGER DEFAULT 0,
+            smile_score             REAL DEFAULT 0.0,
+            frown_score             REAL DEFAULT 0.0,
+            neutral_score           REAL DEFAULT 0.0,
+            surprise_score          REAL DEFAULT 0.0,
+            brow_furrow_score       REAL DEFAULT 0.0,
+            dominant_expression     TEXT,
+            disposition_label       TEXT,
+            confidence              REAL DEFAULT 0.0,
+            first_observed_at       DATETIME,
+            last_observed_at        DATETIME,
+            last_mentioned_at       DATETIME
+        );
+        CREATE INDEX IF NOT EXISTS idx_disposition_label
+            ON person_disposition_stats(disposition_label);
         """
     )
+    if not disposition_existed:
+        applied.append("person_disposition_stats")
     if _ensure_column(conn, "person_emotional_events", "checkins_muted_at", "DATETIME"):
         applied.append("person_emotional_events.checkins_muted_at")
     if _ensure_column(conn, "person_emotional_events", "checkins_muted_reason", "TEXT"):

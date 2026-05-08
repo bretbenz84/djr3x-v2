@@ -23,6 +23,7 @@ from memory import people as people_db
 from memory import facts as facts_db
 from memory import preferences as preferences_db
 from memory import interests as interests_db
+from memory import disposition as disposition_db
 from memory import conversations as conv_db
 from memory import relationships as rel_db
 from memory import boundaries as boundaries_db
@@ -345,6 +346,13 @@ def _build_person_context(person_id: int) -> str:
     insult_count = person.get("lifetime_insult_count", 0)
     if insult_count:
         lines.append(f"Lifetime insults from this person: {insult_count}.")
+
+    try:
+        disposition_summary = disposition_db.summarize_for_prompt(person_id)
+        if disposition_summary:
+            lines.append(disposition_summary)
+    except Exception as exc:
+        _log.debug("facial disposition prompt injection skipped: %s", exc)
 
     # skin_color is stored for recognition only — never inject into LLM context
     facts = facts_db.get_prompt_worthy_facts(person_id, limit=12)

@@ -328,6 +328,109 @@ SMILE_REACTION_RECENT_ENGAGEMENT_SECS = _env_float(
     max_value=180.0,
 )
 
+# General facial-expression reactions. Neutral is intentionally ignored; these
+# are for clear shifts like surprise, frowns, and brow furrows.
+FACIAL_EXPRESSION_REACTIONS_ENABLED = _env_bool(
+    "FACIAL_EXPRESSION_REACTIONS_ENABLED",
+    True,
+)
+FACIAL_EXPRESSION_REACTION_MIN_CONFIDENCE = _env_float(
+    "FACIAL_EXPRESSION_REACTION_MIN_CONFIDENCE",
+    0.55,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACIAL_EXPRESSION_REACTION_SURPRISE_SUSTAIN_SECS = _env_float(
+    "FACIAL_EXPRESSION_REACTION_SURPRISE_SUSTAIN_SECS",
+    0.50,
+    min_value=0.0,
+    max_value=10.0,
+)
+FACIAL_EXPRESSION_REACTION_SUSTAIN_SECS = _env_float(
+    "FACIAL_EXPRESSION_REACTION_SUSTAIN_SECS",
+    1.25,
+    min_value=0.0,
+    max_value=10.0,
+)
+FACIAL_EXPRESSION_REACTION_GLOBAL_COOLDOWN_SECS = _env_float(
+    "FACIAL_EXPRESSION_REACTION_GLOBAL_COOLDOWN_SECS",
+    30.0,
+    min_value=0.0,
+    max_value=900.0,
+)
+FACIAL_EXPRESSION_REACTION_COOLDOWN_SECS = _env_float(
+    "FACIAL_EXPRESSION_REACTION_COOLDOWN_SECS",
+    120.0,
+    min_value=0.0,
+    max_value=1800.0,
+)
+FACIAL_EXPRESSION_REACTION_RECENT_ENGAGEMENT_SECS = _env_float(
+    "FACIAL_EXPRESSION_REACTION_RECENT_ENGAGEMENT_SECS",
+    30.0,
+    min_value=0.0,
+    max_value=180.0,
+)
+
+# Long-term facial disposition memory. This samples local MediaPipe
+# face_expression reads at a lower rate than the detector and stores per-person
+# trends such as usually smiling, frowning, neutral, surprised, or brow-furrowed.
+FACIAL_DISPOSITION_MEMORY_ENABLED = _env_bool(
+    "FACIAL_DISPOSITION_MEMORY_ENABLED",
+    True,
+)
+FACIAL_DISPOSITION_SAMPLE_INTERVAL_SECS = _env_float(
+    "FACIAL_DISPOSITION_SAMPLE_INTERVAL_SECS",
+    2.0,
+    min_value=0.5,
+    max_value=60.0,
+)
+FACIAL_DISPOSITION_MIN_CONFIDENCE = _env_float(
+    "FACIAL_DISPOSITION_MIN_CONFIDENCE",
+    0.45,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACIAL_DISPOSITION_MAX_READING_AGE_SECS = _env_float(
+    "FACIAL_DISPOSITION_MAX_READING_AGE_SECS",
+    3.0,
+    min_value=0.5,
+    max_value=30.0,
+)
+FACIAL_DISPOSITION_ROLLING_ALPHA = _env_float(
+    "FACIAL_DISPOSITION_ROLLING_ALPHA",
+    0.06,
+    min_value=0.01,
+    max_value=0.50,
+)
+FACIAL_DISPOSITION_FIRST_SIGHT_ENABLED = _env_bool(
+    "FACIAL_DISPOSITION_FIRST_SIGHT_ENABLED",
+    True,
+)
+FACIAL_DISPOSITION_FIRST_SIGHT_PROBABILITY = _env_float(
+    "FACIAL_DISPOSITION_FIRST_SIGHT_PROBABILITY",
+    0.28,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACIAL_DISPOSITION_FIRST_SIGHT_MIN_SAMPLES = _env_int(
+    "FACIAL_DISPOSITION_FIRST_SIGHT_MIN_SAMPLES",
+    20,
+    min_value=1,
+    max_value=10000,
+)
+FACIAL_DISPOSITION_FIRST_SIGHT_MIN_CONFIDENCE = _env_float(
+    "FACIAL_DISPOSITION_FIRST_SIGHT_MIN_CONFIDENCE",
+    0.50,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACIAL_DISPOSITION_FIRST_SIGHT_COOLDOWN_DAYS = _env_float(
+    "FACIAL_DISPOSITION_FIRST_SIGHT_COOLDOWN_DAYS",
+    2.0,
+    min_value=0.0,
+    max_value=365.0,
+)
+
 MUSIC_DIR          = "assets/music"
 TTS_CACHE_DIR      = "assets/audio/tts_cache"
 AUDIO_CLIPS_DIR    = "assets/audio/clips"
