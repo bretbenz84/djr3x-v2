@@ -400,7 +400,7 @@ td.value {{
     <div class="description">{_html(description)}</div>
   </div>
   <div class="section">
-    <div class="eyebrow">dlib Face State</div>
+    <div class="eyebrow">dlib + Expression State</div>
     <div class="summary">{_html(summary)}</div>
     {tracking_html}
     {people_html}
@@ -459,6 +459,7 @@ def _person_dlib_html(idx: int, person: dict[str, Any]) -> str:
         ("pose", _clean_text(person.get("pose"))),
         ("gesture", _clean_text(person.get("gesture"))),
         ("engagement", _clean_text(person.get("engagement"))),
+        ("expression", _format_expression(person)),
         ("mood", _format_mood(person)),
         ("last seen", _last_seen_label(person)),
     ]
@@ -565,15 +566,7 @@ def _format_face_fraction(value: Any) -> str:
 
 
 def _format_mood(person: dict[str, Any]) -> str:
-    for key in (
-        "face_mood",
-        "face_expression",
-        "facial_expression",
-        "expression",
-        "mood",
-        "emotion",
-        "affect",
-    ):
+    for key in ("face_mood", "mood", "emotion", "affect"):
         value = person.get(key)
         if isinstance(value, dict):
             mood = _clean_text(
@@ -581,15 +574,48 @@ def _format_mood(person: dict[str, Any]) -> str:
             )
             confidence = _coerce_float(value.get("confidence"))
             notes = _clean_text(value.get("notes"))
+            source = _clean_text(value.get("source"))
             parts = [mood]
             if confidence is not None:
                 parts.append(f"{confidence * 100.0:.0f}%")
             if notes:
                 parts.append(notes)
+            if source:
+                parts.append(source.replace("_", " "))
             return " / ".join(part for part in parts if part)
         text = _clean_text(value)
         if text:
             return text
+    return ""
+
+
+def _format_expression(person: dict[str, Any]) -> str:
+    for key in ("face_expression", "facial_expression"):
+        value = person.get(key)
+        if not isinstance(value, dict):
+            continue
+        expression = _clean_text(value.get("expression") or value.get("affect"))
+        mood = _clean_text(value.get("mood"))
+        confidence = _coerce_float(value.get("confidence"))
+        notes = _clean_text(value.get("notes"))
+        source = _clean_text(value.get("source"))
+        parts = []
+        if expression:
+            parts.append(expression)
+        if mood and mood != expression:
+            parts.append(mood)
+        if confidence is not None:
+            parts.append(f"{confidence * 100.0:.0f}%")
+        if notes:
+            parts.append(notes)
+        if source:
+            parts.append(source.replace("_", " "))
+        if parts:
+            return " / ".join(parts)
+
+    text = _clean_text(person.get("expression"))
+    if text:
+        return text
     return ""
 
 

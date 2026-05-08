@@ -346,6 +346,29 @@ class _SpeechQueue:
                 self._current_priority = item.priority
                 self._current_audio_path = item.audio_path
 
+            start_callbacks_fired = False
+
+            def _fire_item_start() -> None:
+                nonlocal start_callbacks_fired
+                if start_callbacks_fired:
+                    return
+                start_callbacks_fired = True
+                for _cb in _on_item_start_callbacks:
+                    try:
+                        _cb(item)
+                    except TypeError:
+                        try:
+                            _cb()
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                if item.on_start is not None:
+                    try:
+                        item.on_start()
+                    except Exception:
+                        pass
+
             try:
                 try:
                     from awareness.situation import assessor as _sit
@@ -358,14 +381,14 @@ class _SpeechQueue:
                     _t.sleep(item.pre_beat_ms / 1000.0)
 
                 if item.audio_path:
-                    self._play_file(item.audio_path, on_start=item.on_start)
+                    self._play_file(item.audio_path, on_start=_fire_item_start)
                 elif item.text:
                     from audio import tts
                     tts.speak(
                         item.text,
                         item.emotion,
                         voice_settings=item.voice_settings,
-                        on_playback_start=item.on_start,
+                        on_playback_start=_fire_item_start,
                         **_playback_handoff_options(item.text),
                     )
 
@@ -484,9 +507,16 @@ class _SpeechQueue:
             logger.error("speech_queue: failed to play file %s: %s", path, exc)
 
 
-# ── Post-item-done hooks ───────────────────────────────────────────────────────
+# ── Playback lifecycle hooks ───────────────────────────────────────────────────
 
+_on_item_start_callbacks: list = []
 _on_item_done_callbacks: list = []
+
+
+def register_on_item_start(fn) -> None:
+    """Register a callback invoked when a queue item starts playback."""
+    if fn not in _on_item_start_callbacks:
+        _on_item_start_callbacks.append(fn)
 
 
 def register_on_item_done(fn) -> None:

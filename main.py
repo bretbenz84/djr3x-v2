@@ -93,7 +93,7 @@ from audio import (
     speech_queue,
     speaker_id,
 )
-from vision import camera, scene as vision_scene
+from vision import camera, scene as vision_scene, face_expression
 from awareness import chronoception, interoception
 from intelligence import consciousness, interaction, local_llm
 
@@ -340,6 +340,9 @@ def _shutdown() -> None:
     logger.info("Stopping vision.scene...")
     vision_scene.stop()
 
+    logger.info("Stopping vision.face_expression...")
+    face_expression.stop()
+
     logger.info("Stopping vision.camera...")
     camera.stop()
 
@@ -583,6 +586,9 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     logger.info("Starting vision.camera...")
     camera.start()
 
+    logger.info("Starting vision.face_expression (MediaPipe local telemetry)...")
+    face_expression.start()
+
     logger.info("Starting vision.scene (periodic scan)...")
     vision_scene.start_periodic_scan(config.ENVIRONMENT_SCAN_INTERVAL_SECS)
 
@@ -717,12 +723,21 @@ def _start_gui_bridge_sync() -> None:
                     for person in people:
                         person = dict(person)
                         person_id = person.get("person_db_id")
+                        local_expression = person.get("face_expression")
+                        local_mood = person.get("face_mood")
+                        has_local_expression = (
+                            isinstance(local_expression, dict)
+                            and local_expression.get("source") == "mediapipe_face_landmarker"
+                        ) or (
+                            isinstance(local_mood, dict)
+                            and local_mood.get("source") == "mediapipe_face_landmarker"
+                        )
                         if person_id is not None:
                             try:
                                 mood = consciousness.get_cached_mood(int(person_id))
                             except Exception:
                                 mood = None
-                            if mood:
+                            if mood and not has_local_expression:
                                 person["face_mood"] = mood
                                 expression = (
                                     str(person.get("expression") or "").strip().lower()

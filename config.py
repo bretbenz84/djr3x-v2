@@ -209,6 +209,7 @@ RESEMBLYZER_MODEL_DIR = "assets/models/resemblyzer"
 FACE_LANDMARK_MODEL   = "assets/models/face/shape_predictor_68_face_landmarks.dat"
 FACE_RECOGNITION_MODEL = "assets/models/face/dlib_face_recognition_resnet_model_v1.dat"
 FACE_DETECTOR_MODEL   = "assets/models/face/mmod_human_face_detector.dat"
+MEDIAPIPE_FACE_LANDMARKER_MODEL = "assets/models/face/face_landmarker.task"
 
 # Skip mmod entirely and use HOG from the start. mmod averages >400ms/frame on
 # FaceTime camera — HOG is sufficient for this use case. Set False to re-enable mmod.
@@ -232,6 +233,99 @@ FACE_DETECTION_HOLD_SECS = _env_float(
     6.0,
     min_value=0.0,
     max_value=30.0,
+)
+
+# Local expression telemetry via MediaPipe Face Landmarker. This does not own
+# identity; it only annotates current dlib/world_state face slots with apparent
+# expressions such as smile, frown, surprise, or brow furrow.
+FACE_EXPRESSION_LOCAL_ENABLED = _env_bool("FACE_EXPRESSION_LOCAL_ENABLED", True)
+FACE_EXPRESSION_ANALYSIS_INTERVAL_SECS = _env_float(
+    "FACE_EXPRESSION_ANALYSIS_INTERVAL_SECS",
+    0.25,
+    min_value=0.10,
+    max_value=5.0,
+)
+FACE_EXPRESSION_MAX_FACES = _env_int(
+    "FACE_EXPRESSION_MAX_FACES",
+    2,
+    min_value=1,
+    max_value=4,
+)
+FACE_EXPRESSION_MIN_DETECTION_CONFIDENCE = _env_float(
+    "FACE_EXPRESSION_MIN_DETECTION_CONFIDENCE",
+    0.50,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACE_EXPRESSION_MIN_PRESENCE_CONFIDENCE = _env_float(
+    "FACE_EXPRESSION_MIN_PRESENCE_CONFIDENCE",
+    0.50,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACE_EXPRESSION_MIN_TRACKING_CONFIDENCE = _env_float(
+    "FACE_EXPRESSION_MIN_TRACKING_CONFIDENCE",
+    0.50,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACE_EXPRESSION_SMILE_THRESHOLD = _env_float(
+    "FACE_EXPRESSION_SMILE_THRESHOLD",
+    0.35,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACE_EXPRESSION_FROWN_THRESHOLD = _env_float(
+    "FACE_EXPRESSION_FROWN_THRESHOLD",
+    0.35,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACE_EXPRESSION_SURPRISE_THRESHOLD = _env_float(
+    "FACE_EXPRESSION_SURPRISE_THRESHOLD",
+    0.40,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACE_EXPRESSION_BROW_FURROW_THRESHOLD = _env_float(
+    "FACE_EXPRESSION_BROW_FURROW_THRESHOLD",
+    0.45,
+    min_value=0.0,
+    max_value=1.0,
+)
+
+# Smile reaction: after Rex delivers a short joke/snarky line, consciousness can
+# watch for a visible person's expression shifting into a smile and answer it.
+SMILE_REACTION_ENABLED = _env_bool("SMILE_REACTION_ENABLED", True)
+SMILE_REACTION_WINDOW_SECS = _env_float(
+    "SMILE_REACTION_WINDOW_SECS",
+    5.0,
+    min_value=1.0,
+    max_value=20.0,
+)
+SMILE_REACTION_MIN_DELAY_SECS = _env_float(
+    "SMILE_REACTION_MIN_DELAY_SECS",
+    0.35,
+    min_value=0.0,
+    max_value=3.0,
+)
+SMILE_REACTION_COOLDOWN_SECS = _env_float(
+    "SMILE_REACTION_COOLDOWN_SECS",
+    75.0,
+    min_value=0.0,
+    max_value=900.0,
+)
+SMILE_REACTION_MIN_CONFIDENCE = _env_float(
+    "SMILE_REACTION_MIN_CONFIDENCE",
+    0.45,
+    min_value=0.0,
+    max_value=1.0,
+)
+SMILE_REACTION_RECENT_ENGAGEMENT_SECS = _env_float(
+    "SMILE_REACTION_RECENT_ENGAGEMENT_SECS",
+    20.0,
+    min_value=0.0,
+    max_value=180.0,
 )
 
 MUSIC_DIR          = "assets/music"

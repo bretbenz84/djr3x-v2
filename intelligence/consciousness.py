@@ -202,6 +202,12 @@ _last_emotional_checkin_check_at: float = 0.0
 _mood_cache: dict[int, tuple[dict, float]] = {}
 _gui_mood_refresh_in_flight: bool = False
 
+# After Rex delivers a short joke/snark, watch the visible person's expression
+# for a neutral/frown-to-smile shift and allow one tiny victory lap.
+_smile_reaction_lock = threading.Lock()
+_smile_reaction_watch: Optional[dict] = None
+_last_smile_reaction_at: float = 0.0
+
 # Per-person monotonic timestamp of when they were last seen in frame.
 _last_seen: dict = {}
 
@@ -1086,6 +1092,466 @@ def _speak_async(
         _proactive_speech_pending.clear()
         _log.debug("_speak_async error: %s", exc)
         return False
+
+
+_SMILE_REACTION_LINES = (
+    "Oh look, I made the lifeform smile. Guess my purpose in life has succeeded.",
+    "There it is. A smile. My work here is alarmingly complete.",
+    "Aha. Smile detected. I will notify the committee that my joke achieved lift.",
+    "Look at that, facial amusement. I am basically a public service.",
+    "Was that a smile? Incredible. I will try not to let this tiny victory ruin me.",
+)
+_SMILE_LABELS = {
+    "smile",
+    "smiling",
+    "happy",
+    "joy",
+    "joyful",
+    "amused",
+    "laugh",
+    "laughing",
+}
+_SMILE_REACTION_EXCLUDE_MARKERS = (
+    "made the lifeform smile",
+    "smile detected",
+    "facial amusement",
+    "my work here is alarmingly complete",
+    "tiny victory ruin me",
+)
+_SMILE_REACTION_SNARK_MARKERS = (
+    "alarmingly",
+    "behold",
+    "bold choice",
+    "carbon",
+    "committee",
+    "congratulations",
+    "droid",
+    "flawless",
+    "great, another",
+    "hilarious",
+    "incredible",
+    "joke",
+    "lifeform",
+    "meat",
+    "organic",
+    "organics",
+    "photoreceptors",
+    "processing",
+    "recalibrating",
+    "roast",
+    "snark",
+    "spectacular",
+    "tragic",
+)
+_SMILE_REACTION_SERIOUS_MARKERS = (
+    "sorry",
+    "condolence",
+    "grief",
+    "hurt",
+    "sick",
+    "hospital",
+    "emergency",
+    "panic",
+    "terrified",
+    "afraid",
+    "depressed",
+    "anxious",
+    "trauma",
+)
+
+
+def _norm_expression_label(value) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _safe_confidence(value, default: float = 0.0) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _visible_face_people(snapshot: dict) -> list[dict]:
+    people = snapshot.get("people") if isinstance(snapshot, dict) else []
+    if not isinstance(people, list):
+        return []
+    visible: list[dict] = []
+    for person in people:
+        if not isinstance(person, dict):
+            continue
+        if person.get("face_visible") is False or person.get("face_missing"):
+            continue
+        has_face = bool(
+            person.get("face_box")
+            or person.get("bounding_box")
+            or person.get("bbox")
+            or person.get("box")
+            or person.get("face_expression")
+            or person.get("facial_expression")
+        )
+        if has_face:
+            visible.append(person)
+    return visible
+
+
+def _person_db_id(person: dict) -> Optional[int]:
+    try:
+        value = person.get("person_db_id")
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _smile_reaction_person_key(person: dict) -> Optional[str]:
+    person_id = _person_db_id(person)
+    if person_id is not None:
+        return f"db:{person_id}"
+    slot_id = str(person.get("id") or "").strip()
+    if slot_id:
+        return f"slot:{slot_id}"
+    face_id = str(person.get("face_id") or "").strip()
+    if face_id:
+        return f"face:{face_id}"
+    return None
+
+
+def _find_person_by_smile_key(snapshot: dict, key: Optional[str]) -> Optional[dict]:
+    if not key:
+        return None
+    for person in _visible_face_people(snapshot):
+        if _smile_reaction_person_key(person) == key:
+            return person
+    return None
+
+
+def _expression_reading(person: dict) -> dict:
+    for field in ("face_expression", "facial_expression"):
+        value = person.get(field)
+        if isinstance(value, dict):
+            return {
+                "expression": str(value.get("expression") or value.get("mood") or ""),
+                "mood": str(value.get("mood") or ""),
+                "confidence": _safe_confidence(value.get("confidence")),
+                "blendshapes": dict(value.get("blendshapes") or {}),
+                "source": str(value.get("source") or ""),
+            }
+    mood = person.get("face_mood")
+    if isinstance(mood, dict):
+        return {
+            "expression": str(mood.get("expression") or mood.get("mood") or ""),
+            "mood": str(mood.get("mood") or ""),
+            "confidence": _safe_confidence(mood.get("confidence")),
+            "blendshapes": {},
+            "source": str(mood.get("source") or ""),
+        }
+    expression = str(person.get("expression") or "")
+    if expression:
+        return {
+            "expression": expression,
+            "mood": expression,
+            "confidence": 1.0,
+            "blendshapes": {},
+            "source": "person.expression",
+        }
+    return {
+        "expression": "",
+        "mood": "",
+        "confidence": 0.0,
+        "blendshapes": {},
+        "source": "",
+    }
+
+
+def _smile_blendshape_score(blendshapes: dict) -> float:
+    scores = []
+    for key in ("mouthSmileLeft", "mouthSmileRight"):
+        if key in blendshapes:
+            scores.append(_safe_confidence(blendshapes.get(key)))
+    if not scores:
+        return 0.0
+    return sum(scores) / float(len(scores))
+
+
+def _person_expression_label(person: dict) -> str:
+    reading = _expression_reading(person)
+    return (
+        _norm_expression_label(reading.get("expression"))
+        or _norm_expression_label(reading.get("mood"))
+        or "unknown"
+    )
+
+
+def _person_is_smiling(person: dict) -> bool:
+    reading = _expression_reading(person)
+    expression = _norm_expression_label(reading.get("expression"))
+    mood = _norm_expression_label(reading.get("mood"))
+    confidence = _safe_confidence(reading.get("confidence"))
+    blend_score = _smile_blendshape_score(reading.get("blendshapes") or {})
+    min_conf = _safe_confidence(getattr(config, "SMILE_REACTION_MIN_CONFIDENCE", 0.45))
+    if expression in _SMILE_LABELS or mood in _SMILE_LABELS:
+        return max(confidence, blend_score) >= min_conf
+    return blend_score >= min_conf
+
+
+def _smile_reaction_line_text(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (text or "").strip()).lower()
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in _SMILE_REACTION_EXCLUDE_MARKERS)
+
+
+def _rex_line_can_trigger_smile_reaction(text: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if not cleaned or len(cleaned) > 240 or "?" in cleaned:
+        return False
+    lower = cleaned.lower()
+    if _smile_reaction_line_text(cleaned):
+        return False
+    if any(marker in lower for marker in _SMILE_REACTION_SERIOUS_MARKERS):
+        return False
+    if any(marker in lower for marker in _SMILE_REACTION_SNARK_MARKERS):
+        return True
+    words = cleaned.split()
+    return len(words) <= 22 and bool(re.search(r"[.!]", cleaned))
+
+
+def _smile_reaction_target(snapshot: Optional[dict] = None) -> Optional[dict]:
+    snapshot = snapshot if isinstance(snapshot, dict) else world_state.snapshot()
+    visible = _visible_face_people(snapshot)
+    if not visible:
+        return None
+
+    try:
+        recent = get_recent_engagement(
+            window_secs=float(getattr(config, "SMILE_REACTION_RECENT_ENGAGEMENT_SECS", 20.0))
+        )
+    except Exception:
+        recent = None
+    if recent and recent.get("person_id") is not None:
+        try:
+            recent_id = int(recent.get("person_id"))
+        except (TypeError, ValueError):
+            recent_id = None
+        if recent_id is not None:
+            for person in visible:
+                if _person_db_id(person) == recent_id:
+                    return person
+
+    if len(visible) == 1:
+        return visible[0]
+    known = [person for person in visible if _person_db_id(person) is not None]
+    return known[0] if len(known) == 1 else None
+
+
+def _smile_reaction_cooldown_active(now: Optional[float] = None) -> bool:
+    now = time.monotonic() if now is None else now
+    cooldown = max(0.0, float(getattr(config, "SMILE_REACTION_COOLDOWN_SECS", 75.0) or 0.0))
+    return bool(cooldown and (now - _last_smile_reaction_at) < cooldown)
+
+
+def _arm_smile_reaction_watch(item, *, phase: str) -> bool:
+    global _smile_reaction_watch
+    if not bool(getattr(config, "SMILE_REACTION_ENABLED", True)):
+        return False
+    if getattr(item, "audio_path", None):
+        return False
+    tag = str(getattr(item, "tag", "") or "")
+    if tag == "social:smile_reaction":
+        return False
+    text = str(getattr(item, "text", "") or "").strip()
+    if not _rex_line_can_trigger_smile_reaction(text):
+        return False
+
+    now = time.monotonic()
+    if _smile_reaction_cooldown_active(now):
+        return False
+
+    target = _smile_reaction_target()
+    if target is None or _person_is_smiling(target):
+        return False
+    person_key = _smile_reaction_person_key(target)
+    if not person_key:
+        return False
+
+    window = max(1.0, float(getattr(config, "SMILE_REACTION_WINDOW_SECS", 5.0) or 5.0))
+    watch = {
+        "trigger_seq": getattr(item, "seq", None),
+        "trigger_text": text,
+        "person_key": person_key,
+        "baseline_expression": _person_expression_label(target),
+        "armed_at": now,
+        "speech_started_at": now if phase == "start" else None,
+        "speech_done_at": now if phase == "done" else None,
+        "expires_at": now + window,
+    }
+    with _smile_reaction_lock:
+        if _smile_reaction_cooldown_active(now):
+            return False
+        _smile_reaction_watch = watch
+    _log.debug(
+        "consciousness: armed smile reaction watch person=%s baseline=%s phase=%s",
+        person_key,
+        watch["baseline_expression"],
+        phase,
+    )
+    return True
+
+
+def _note_rex_speech_item_started(item) -> None:
+    _arm_smile_reaction_watch(item, phase="start")
+
+
+def _note_rex_speech_item_done(item) -> None:
+    global _smile_reaction_watch
+    if not bool(getattr(config, "SMILE_REACTION_ENABLED", True)):
+        return
+    now = time.monotonic()
+    window = max(1.0, float(getattr(config, "SMILE_REACTION_WINDOW_SECS", 5.0) or 5.0))
+    seq = getattr(item, "seq", None)
+    with _smile_reaction_lock:
+        watch = _smile_reaction_watch
+        if watch and seq is not None and watch.get("trigger_seq") == seq:
+            watch["speech_done_at"] = now
+            watch["expires_at"] = max(float(watch.get("expires_at") or 0.0), now + window)
+            return
+    if _arm_smile_reaction_watch(item, phase="done"):
+        with _smile_reaction_lock:
+            if _smile_reaction_watch and _smile_reaction_watch.get("trigger_seq") == seq:
+                _smile_reaction_watch["speech_done_at"] = now
+                _smile_reaction_watch["expires_at"] = max(
+                    float(_smile_reaction_watch.get("expires_at") or 0.0),
+                    now + window,
+                )
+
+
+def _can_smile_reaction_speak() -> bool:
+    if not _can_speak():
+        return False
+
+    try:
+        from features import games as games_mod
+        if hasattr(games_mod, "suppresses_conversation_interruptions"):
+            if games_mod.suppresses_conversation_interruptions():
+                return False
+        elif games_mod.is_active():
+            return False
+    except Exception:
+        pass
+
+    current_state = state_module.get_state()
+    if (
+        current_state == State.ACTIVE
+        and not getattr(config, "CONSCIOUSNESS_ALLOW_PROACTIVE_IN_ACTIVE", False)
+    ):
+        return False
+
+    if is_waiting_for_response() or _proactive_speech_pending.is_set():
+        return False
+    try:
+        if _situation_assessor.is_interaction_busy():
+            return False
+    except Exception:
+        pass
+    try:
+        from audio import output_gate, speech_queue
+        if speech_queue.is_speaking() or output_gate.is_busy():
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _speak_smile_reaction(text: str) -> bool:
+    global _last_smile_reaction_at
+    if not text or not text.strip():
+        return False
+    if not _can_smile_reaction_speak():
+        return False
+    try:
+        from audio import speech_queue
+        _proactive_speech_pending.set()
+        done = speech_queue.enqueue(
+            text.strip(),
+            "happy",
+            priority=1,
+            tag="social:smile_reaction",
+        )
+
+        def _on_done() -> None:
+            try:
+                done.wait()
+            finally:
+                _proactive_speech_pending.clear()
+
+        threading.Thread(
+            target=_on_done,
+            daemon=True,
+            name="smile-reaction-pending-clear",
+        ).start()
+        try:
+            conv_log.log_rex(text.strip())
+        except Exception as exc:
+            _log.debug("conversation log write failed for smile reaction: %s", exc)
+        note_rex_utterance(text.strip(), open_response_wait=False)
+        _last_smile_reaction_at = time.monotonic()
+        return True
+    except Exception as exc:
+        _proactive_speech_pending.clear()
+        _log.debug("smile reaction speech failed: %s", exc)
+        return False
+
+
+def _step_smile_reaction(snapshot: dict, profile: SituationProfile) -> None:
+    del profile
+    global _smile_reaction_watch
+    if not bool(getattr(config, "SMILE_REACTION_ENABLED", True)):
+        return
+    now = time.monotonic()
+    with _smile_reaction_lock:
+        watch = dict(_smile_reaction_watch or {})
+    if not watch:
+        return
+    if now > float(watch.get("expires_at") or 0.0):
+        with _smile_reaction_lock:
+            if _smile_reaction_watch and _smile_reaction_watch.get("armed_at") == watch.get("armed_at"):
+                _smile_reaction_watch = None
+        return
+
+    speech_done_at = watch.get("speech_done_at")
+    if speech_done_at is None:
+        return
+    min_delay = max(
+        0.0,
+        float(getattr(config, "SMILE_REACTION_MIN_DELAY_SECS", 0.35) or 0.0),
+    )
+    if now - float(speech_done_at) < min_delay:
+        return
+
+    person = _find_person_by_smile_key(snapshot, watch.get("person_key"))
+    if person is None:
+        return
+    if not _person_is_smiling(person):
+        return
+
+    with _smile_reaction_lock:
+        if (
+            _smile_reaction_watch
+            and _smile_reaction_watch.get("armed_at") == watch.get("armed_at")
+        ):
+            _smile_reaction_watch = None
+        else:
+            return
+
+    if _smile_reaction_cooldown_active(now):
+        return
+    line = random.choice(_SMILE_REACTION_LINES)
+    if _speak_smile_reaction(line):
+        _log.info(
+            "consciousness: smile reaction fired person=%s baseline=%s current=%s",
+            watch.get("person_key"),
+            watch.get("baseline_expression"),
+            _person_expression_label(person),
+        )
 
 
 def _claim_proactive_purpose(
@@ -3095,6 +3561,8 @@ def _step_gui_mood_telemetry(snapshot: dict, frame) -> None:
     global _gui_mood_refresh_in_flight
 
     if not bool(getattr(config, "MOOD_ANALYSIS_GUI_TELEMETRY_ENABLED", True)):
+        return
+    if bool(getattr(config, "FACE_EXPRESSION_LOCAL_ENABLED", True)):
         return
     if frame is None or _gui_mood_refresh_in_flight:
         return
@@ -6881,6 +7349,10 @@ def _loop() -> None:
             # aligned with the current visible expression when the scene is unambiguous.
             _step_gui_mood_telemetry(snapshot, frame)
 
+            # 10g. Smile reaction — after Rex lands a joke/snarky aside, notice
+            # if the target visibly cracks a smile and answer it once.
+            _step_smile_reaction(snapshot, profile)
+
             # 11. Face tracking runs in a dedicated high-rate loop so gaze
             # correction is not gated by this slower social/cognition tick.
 
@@ -6919,6 +7391,7 @@ def start() -> None:
     global _face_tracking_last_error_key, _face_tracking_last_error_x
     global _face_tracking_last_error_y, _face_tracking_last_error_at
     global _last_face_seen_at
+    global _smile_reaction_watch, _last_smile_reaction_at
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
@@ -6979,6 +7452,9 @@ def start() -> None:
     _last_memory_hint_person_id = None
     _recent_engaged_person_id = None
     _recent_engaged_touch_at = 0.0
+    with _smile_reaction_lock:
+        _smile_reaction_watch = None
+    _last_smile_reaction_at = 0.0
     try:
         from intelligence import question_budget
         question_budget.clear()
@@ -7000,6 +7476,12 @@ def start() -> None:
     with _turn_lock:
         _response_wait_until = 0.0
         _last_proactive_speech_at = 0.0
+    try:
+        from audio import speech_queue
+        speech_queue.register_on_item_start(_note_rex_speech_item_started)
+        speech_queue.register_on_item_done(_note_rex_speech_item_done)
+    except Exception as exc:
+        _log.debug("smile reaction speech hooks unavailable: %s", exc)
     if bool(getattr(config, "SPEAKER_GAZE_STARTUP_SCAN_ENABLED", True)):
         request_face_acquisition_scan(reason="startup")
     _thread = threading.Thread(target=_loop, daemon=True, name="consciousness")
@@ -7031,6 +7513,7 @@ def stop() -> None:
     global _face_tracking_last_error_key, _face_tracking_last_error_x
     global _face_tracking_last_error_y, _face_tracking_last_error_at
     global _last_face_seen_at
+    global _smile_reaction_watch
     _stop_event.set()
     _pending_identity_prompt.clear()
     _identity_prompt_in_flight.clear()
@@ -7070,6 +7553,8 @@ def stop() -> None:
     _last_memory_hint_person_id = None
     _recent_engaged_person_id = None
     _recent_engaged_touch_at = 0.0
+    with _smile_reaction_lock:
+        _smile_reaction_watch = None
     try:
         from intelligence import question_budget
         question_budget.clear()

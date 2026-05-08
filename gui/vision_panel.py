@@ -212,15 +212,14 @@ def _person_details(person: dict[str, Any]) -> str:
 
 
 def _person_expression(person: dict[str, Any]) -> str:
-    for key in (
-        "face_mood",
-        "face_expression",
-        "facial_expression",
-        "expression",
-        "mood",
-        "emotion",
-        "affect",
-    ):
+    for key in ("face_expression", "facial_expression"):
+        value = person.get(key)
+        if isinstance(value, dict):
+            value = value.get("expression") or value.get("mood") or value.get("affect")
+        if value:
+            text = str(value).strip().lower().replace("_", " ")
+            return text
+    for key in ("face_mood", "expression", "mood", "emotion", "affect"):
         value = person.get(key)
         if isinstance(value, dict):
             value = value.get("mood") or value.get("expression") or value.get("affect")

@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     DB_PATH,
     FACE_MODELS_DIR,
+    MEDIAPIPE_FACE_LANDMARKER_MODEL,
     LOCAL_LLM_ENABLED,
     LOCAL_LLM_PROVIDER,
     OLLAMA_BASE_URL,
@@ -61,6 +62,15 @@ DLIB_MODELS = [
         "url": "https://dlib.net/files/mmod_human_face_detector.dat.bz2",
     },
 ]
+
+MEDIAPIPE_FACE_LANDMARKER = {
+    "name": Path(MEDIAPIPE_FACE_LANDMARKER_MODEL).name,
+    "path": MEDIAPIPE_FACE_LANDMARKER_MODEL,
+    "url": (
+        "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+        "face_landmarker/float16/latest/face_landmarker.task"
+    ),
+}
 
 # ── Full database schema (mirrors Memory System section of CONTEXT.md) ────────
 DB_SCHEMA = """
@@ -324,7 +334,34 @@ def download_dlib_models(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 3 — mlx-whisper large-v3-turbo model
+# Step 3 — MediaPipe Face Landmarker model
+# ─────────────────────────────────────────────────────────────────────────────
+def download_mediapipe_face_landmarker(
+    root: Path,
+) -> tuple[list[str], list[str], list[str]]:
+    dest = root / MEDIAPIPE_FACE_LANDMARKER["path"]
+    label = f"face/{MEDIAPIPE_FACE_LANDMARKER['name']}"
+
+    if dest.exists():
+        return [], [label], []
+
+    tmp = dest.with_suffix(".tmp")
+    try:
+        print(f"    Downloading {MEDIAPIPE_FACE_LANDMARKER['name']} ...")
+        urllib.request.urlretrieve(MEDIAPIPE_FACE_LANDMARKER["url"], tmp, _progress)
+        print()
+        tmp.rename(dest)
+        return [label], [], []
+    except Exception as exc:
+        if tmp.exists():
+            tmp.unlink()
+        if dest.exists():
+            dest.unlink()
+        return [], [], [f"{label}: {exc}"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 4 — mlx-whisper large-v3-turbo model
 # ─────────────────────────────────────────────────────────────────────────────
 def download_whisper_model(
     root: Path,
@@ -358,7 +395,7 @@ def download_whisper_model(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 4 — Resemblyzer pretrained model
+# Step 5 — Resemblyzer pretrained model
 # ─────────────────────────────────────────────────────────────────────────────
 def download_resemblyzer_model(
     root: Path,
@@ -398,7 +435,7 @@ def download_resemblyzer_model(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 5 — Ollama local sidecar model
+# Step 6 — Ollama local sidecar model
 # ─────────────────────────────────────────────────────────────────────────────
 def _ollama_url(path: str) -> str:
     return str(OLLAMA_BASE_URL).rstrip("/") + path
@@ -502,7 +539,7 @@ def install_ollama_model() -> tuple[list[str], list[str], list[str]]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 6 — Database schema and personality_settings seed
+# Step 7 — Database schema and personality_settings seed
 # ─────────────────────────────────────────────────────────────────────────────
 def _tables_exist(conn: sqlite3.Connection) -> bool:
     row = conn.execute(
@@ -633,7 +670,7 @@ def initialize_database(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 6 — Summary
+# Step 8 — Summary
 # ─────────────────────────────────────────────────────────────────────────────
 def print_summary(
     dir_created: list[str],
@@ -686,7 +723,7 @@ def main() -> None:
     print("DJ-R3X v2 — setup_assets.py")
     print()
 
-    print("[1/6] Creating project directories ...")
+    print("[1/7] Creating project directories ...")
     dir_created = create_directories(root)
     count = len(dir_created)
     print(f"      {count} created." if count else "      All already exist.")
@@ -695,27 +732,32 @@ def main() -> None:
     all_skipped: list[str] = []
     all_failed:  list[str] = []
 
-    print("[2/6] dlib face recognition models ...")
+    print("[2/7] dlib face recognition models ...")
     c, s, f = download_dlib_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[3/6] mlx-whisper large-v3-turbo model ...")
+    print("[3/7] MediaPipe Face Landmarker model ...")
+    c, s, f = download_mediapipe_face_landmarker(root)
+    all_created += c; all_skipped += s; all_failed += f
+    _report(c, s, f)
+
+    print("[4/7] mlx-whisper large-v3-turbo model ...")
     c, s, f = download_whisper_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[4/6] Resemblyzer speaker-ID model ...")
+    print("[5/7] Resemblyzer speaker-ID model ...")
     c, s, f = download_resemblyzer_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[5/6] Ollama local sidecar model ...")
+    print("[6/7] Ollama local sidecar model ...")
     c, s, f = install_ollama_model()
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[6/6] Database schema and personality defaults ...")
+    print("[7/7] Database schema and personality defaults ...")
     c, s, f = initialize_database(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)

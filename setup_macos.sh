@@ -316,6 +316,16 @@ PY
         warn "PySide6 did not import after pip install; the optional --gui dashboard will be unavailable until this is resolved."
         MANUAL_ATTENTION+=("Optional GUI dependency missing: $VENV_PIP install PySide6")
     fi
+    if "$VENV_PYTHON" - <<'PY' >/dev/null 2>&1
+import mediapipe as mp
+assert hasattr(mp, "tasks")
+PY
+    then
+        ok "MediaPipe Tasks dependency installed for pose and local face-expression telemetry."
+    else
+        warn "MediaPipe Tasks did not import after pip install; pose and local face-expression telemetry will be unavailable until this is resolved."
+        MANUAL_ATTENTION+=("MediaPipe dependency missing: $VENV_PIP install mediapipe")
+    fi
 else
     warn "requirements.txt not found — skipping pip install."
     MANUAL_ATTENTION+=("requirements.txt missing — run: $VENV_PIP install -r requirements.txt")

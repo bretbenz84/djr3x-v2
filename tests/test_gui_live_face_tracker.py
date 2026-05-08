@@ -20,10 +20,42 @@ class VisionPanelMoodLabelTests(unittest.TestCase):
             "happy",
         )
 
+    def test_face_expression_wins_over_mood_for_live_box_label(self):
+        from gui.vision_panel import _person_expression
+
+        self.assertEqual(
+            _person_expression({
+                "expression": "neutral",
+                "face_mood": {"mood": "happy", "confidence": 0.86},
+                "face_expression": {
+                    "expression": "smile",
+                    "mood": "happy",
+                    "confidence": 0.81,
+                },
+            }),
+            "smile",
+        )
+
     def test_missing_mood_does_not_invent_neutral(self):
         from gui.vision_panel import _person_expression
 
         self.assertEqual(_person_expression({"face_id": "Bret"}), "")
+
+    def test_dlib_panel_formats_local_face_expression(self):
+        from gui.dashboard import _format_expression
+
+        self.assertEqual(
+            _format_expression({
+                "face_expression": {
+                    "expression": "smile",
+                    "mood": "happy",
+                    "confidence": 0.82,
+                    "notes": "smiling",
+                    "source": "mediapipe_face_landmarker",
+                },
+            }),
+            "smile / happy / 82% / smiling / mediapipe face landmarker",
+        )
 
 
 @unittest.skipIf(cv2 is None, "OpenCV unavailable")

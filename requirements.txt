@@ -36,7 +36,7 @@ torchaudio>=2.3.0
 dlib>=19.24.6
 Pillow>=10.0.0
 
-# ── Vision — pose estimation ──────────────────────────────────────────────────
+# ── Vision — pose estimation + local face expression telemetry ────────────────
 # mediapipe installs opencv-contrib-python, which already provides cv2
 mediapipe>=0.10.14
 
