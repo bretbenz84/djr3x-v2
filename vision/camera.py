@@ -35,6 +35,7 @@ _log = logging.getLogger(__name__)
 
 _cap = None          # cv2.VideoCapture — module-level singleton
 _frame: Optional[np.ndarray] = None
+_last_frame_at: Optional[float] = None
 _frame_lock = threading.Lock()
 _stop_event = threading.Event()
 _capture_thread: Optional[threading.Thread] = None
@@ -149,10 +150,13 @@ class _FFmpegCapture:
 
 def start() -> None:
     """Open the camera and start the background capture thread."""
-    global _capture_thread
+    global _capture_thread, _frame, _last_frame_at
     if not CAMERA_ENABLED:
         _log.debug("CAMERA_ENABLED=False — camera start is a no-op")
         return
+    with _frame_lock:
+        _frame = None
+        _last_frame_at = None
     _stop_event.clear()
     _capture_thread = threading.Thread(
         target=_capture_loop,
@@ -179,6 +183,31 @@ def get_frame() -> Optional[np.ndarray]:
         if _frame is None:
             return None
         return _frame.copy()
+
+
+def has_recent_frame(max_age_secs: float = 2.0) -> bool:
+    """Return True when a camera frame has arrived recently."""
+    if not CAMERA_ENABLED:
+        return False
+    max_age = max(0.0, float(max_age_secs))
+    with _frame_lock:
+        if _frame is None or _last_frame_at is None:
+            return False
+        return (time.monotonic() - _last_frame_at) <= max_age
+
+
+def wait_for_frame(timeout_secs: float = 2.0) -> bool:
+    """Wait briefly for the first live camera frame after startup."""
+    if not CAMERA_ENABLED:
+        return False
+    deadline = time.monotonic() + max(0.0, float(timeout_secs))
+    while not _stop_event.is_set():
+        if has_recent_frame(max_age_secs=max(1.0, float(timeout_secs) + 0.5)):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return False
 
 
 def capture_still() -> Optional[np.ndarray]:
@@ -314,7 +343,7 @@ def _close_camera() -> None:
 
 def _capture_loop() -> None:
     """Daemon thread: reads frames continuously and stores the latest in the shared buffer."""
-    global _frame
+    global _frame, _last_frame_at
 
     if not _open_camera():
         _log.warning(
@@ -346,6 +375,7 @@ def _capture_loop() -> None:
 
         with _frame_lock:
             _frame = frame
+            _last_frame_at = time.monotonic()
 
     _close_camera()
     _log.info("Camera capture thread stopped")

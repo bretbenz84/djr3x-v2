@@ -119,6 +119,14 @@ def start() -> None:
     _stream = None
 
 
+def is_active() -> bool:
+    """Return True when the configured microphone stream is open and running."""
+    try:
+        return bool(_stream is not None and _stream.active)
+    except Exception:
+        return False
+
+
 def stop() -> None:
     """Stop and close the microphone stream."""
     global _stream

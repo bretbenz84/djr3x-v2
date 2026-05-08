@@ -65,6 +65,7 @@ except RuntimeError as e:
 # All remaining imports after config is confirmed valid.
 import time
 import threading
+import random
 
 import numpy as np
 import sounddevice as sd
@@ -316,6 +317,84 @@ def _play_listening_chime_async(reason: str) -> None:
         )
     except Exception as exc:
         logger.warning("Could not queue listening chime (%s): %s", reason, exc)
+
+
+def _configured_sensor_warning_lines(kind: str, fallback: list[str]) -> list[str]:
+    configured = getattr(config, "STARTUP_SENSOR_WARNING_LINES", {}) or {}
+    raw_lines = None
+    if isinstance(configured, dict):
+        raw_lines = configured.get(kind)
+    if isinstance(raw_lines, str):
+        raw_lines = [raw_lines]
+    if not raw_lines:
+        raw_lines = fallback
+    lines = [str(line).strip() for line in raw_lines if str(line).strip()]
+    return lines or fallback
+
+
+def _startup_device_warning_line(
+    *,
+    camera_available: bool,
+    audio_available: bool,
+) -> Optional[str]:
+    """Pick a startup warning when camera and/or microphone input is unavailable."""
+    if camera_available and audio_available:
+        return None
+
+    if not camera_available and not audio_available:
+        lines = _configured_sensor_warning_lines(
+            "both",
+            [
+                "Optical sensors and audio receptors are both offline. Great. No scans, no comms, and somehow I am still expected to look professional.",
+            ],
+        )
+    elif not camera_available:
+        lines = _configured_sensor_warning_lines(
+            "camera",
+            [
+                "Optical sensors are offline. Wonderful. I will navigate by vibes and whatever the navicomputer calls plausible.",
+            ],
+        )
+    else:
+        lines = _configured_sensor_warning_lines(
+            "audio",
+            [
+                "Audio receptors are offline. Terrific. Please submit all brilliant organic commentary by datapad, preferably spell-checked.",
+            ],
+        )
+    return random.choice(lines)
+
+
+def _queue_startup_device_warning(
+    *,
+    camera_available: bool,
+    audio_available: bool,
+) -> Optional[str]:
+    """Queue the in-character startup self-diagnostic warning, if needed."""
+    if not bool(getattr(config, "STARTUP_SENSOR_WARNING_ENABLED", True)):
+        return None
+    if bool(
+        getattr(config, "NO_AUDIO_MODE", False)
+        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+    ):
+        return None
+
+    line = _startup_device_warning_line(
+        camera_available=camera_available,
+        audio_available=audio_available,
+    )
+    if not line:
+        return None
+
+    logger.warning("Startup sensor warning queued: %s", line)
+    emotion = str(getattr(config, "STARTUP_SENSOR_WARNING_EMOTION", "curious") or "curious")
+    speech_queue.enqueue(
+        line,
+        emotion,
+        priority=1,
+        tag="startup:sensor_warning",
+    )
+    return line
 
 
 def _shutdown() -> None:
@@ -591,6 +670,19 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
 
     logger.info("Starting vision.scene (periodic scan)...")
     vision_scene.start_periodic_scan(config.ENVIRONMENT_SCAN_INTERVAL_SECS)
+
+    if not bool(
+        getattr(config, "NO_AUDIO_MODE", False)
+        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+    ):
+        camera_available = bool(CAMERA_ENABLED) and camera.wait_for_frame(
+            float(getattr(config, "STARTUP_SENSOR_WARNING_CAMERA_WAIT_SECS", 2.5) or 0.0)
+        )
+        audio_available = bool(AUDIO_ENABLED) and stream.is_active()
+        _queue_startup_device_warning(
+            camera_available=camera_available,
+            audio_available=audio_available,
+        )
 
     logger.info("Starting awareness.chronoception...")
     chronoception.start_periodic_update()

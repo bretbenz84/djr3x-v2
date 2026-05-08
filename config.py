@@ -2278,6 +2278,29 @@ SPEECH_ANIMATED_AUDIO_TRANSCRIPTS = {
     "Roger Control.mp3": "Roger control, all systems go!",
 }
 
+# Startup self-diagnostic banter for missing live input devices. These lines are
+# intentionally about R3X's droid sensors, not human disability.
+STARTUP_SENSOR_WARNING_ENABLED = True
+STARTUP_SENSOR_WARNING_CAMERA_WAIT_SECS = 2.5
+STARTUP_SENSOR_WARNING_EMOTION = "curious"
+STARTUP_SENSOR_WARNING_LINES = {
+    "camera": [
+        "Optical sensors are offline. Wonderful. I will navigate by vibes and whatever the navicomputer calls plausible.",
+        "Vision system unavailable. Great. If I fly into a bulkhead, I am blaming the maintenance crew and the Force, in that order.",
+        "Camera feed is gone. Excellent. A premium droid experience, now with surprise-based navigation.",
+    ],
+    "audio": [
+        "Audio receptors are offline. Terrific. Please submit all brilliant organic commentary by datapad, preferably spell-checked.",
+        "Microphone array unavailable. Great. I can still talk, I just cannot hear the excuses. A rare upgrade.",
+        "Input audio is down. Wonderful. If someone gives me orders, wave them dramatically like a senator with a bad plan.",
+    ],
+    "both": [
+        "Optical sensors and audio receptors are both offline. Great. No scans, no comms, and somehow I am still expected to look professional.",
+        "Vision and microphone systems are unavailable. Fantastic. I am one bad motivator away from decorative cargo.",
+        "Camera and input audio are both gone. Excellent. A droid with no sensor feed and far too much personality for this maintenance record.",
+    ],
+}
+
 SHUTDOWN_AUDIO_FILE = "assets/audio/startup/hyperdrive_down.mp3"
 
 # Maximum number of response variations kept per command (anti-repeat shuffle)

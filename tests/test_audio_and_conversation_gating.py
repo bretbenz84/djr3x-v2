@@ -144,6 +144,84 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         set_rex_speaking.assert_not_called()
         log_rex.assert_not_called()
 
+    def test_startup_device_warning_prefers_combined_line(self):
+        import main
+
+        lines = {
+            "camera": ["camera offline"],
+            "audio": ["audio offline"],
+            "both": ["both offline"],
+        }
+        with mock.patch.object(main.config, "STARTUP_SENSOR_WARNING_LINES", lines):
+            self.assertEqual(
+                main._startup_device_warning_line(
+                    camera_available=False,
+                    audio_available=False,
+                ),
+                "both offline",
+            )
+            self.assertEqual(
+                main._startup_device_warning_line(
+                    camera_available=False,
+                    audio_available=True,
+                ),
+                "camera offline",
+            )
+            self.assertEqual(
+                main._startup_device_warning_line(
+                    camera_available=True,
+                    audio_available=False,
+                ),
+                "audio offline",
+            )
+            self.assertIsNone(
+                main._startup_device_warning_line(
+                    camera_available=True,
+                    audio_available=True,
+                )
+            )
+
+    def test_startup_device_warning_queues_tts(self):
+        import main
+
+        lines = {"camera": ["camera offline"]}
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(main.config, "NO_AUDIO_MODE", False))
+            stack.enter_context(mock.patch.object(main.config, "AUDIO_OUTPUT_SUPPRESSED", False))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_SENSOR_WARNING_ENABLED", True))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_SENSOR_WARNING_EMOTION", "curious"))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_SENSOR_WARNING_LINES", lines))
+            enqueue = stack.enter_context(mock.patch.object(main.speech_queue, "enqueue"))
+
+            chosen = main._queue_startup_device_warning(
+                camera_available=False,
+                audio_available=True,
+            )
+
+        self.assertEqual(chosen, "camera offline")
+        enqueue.assert_called_once_with(
+            "camera offline",
+            "curious",
+            priority=1,
+            tag="startup:sensor_warning",
+        )
+
+    def test_startup_device_warning_skips_when_audio_suppressed(self):
+        import main
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(main.config, "NO_AUDIO_MODE", True))
+            stack.enter_context(mock.patch.object(main.config, "AUDIO_OUTPUT_SUPPRESSED", True))
+            enqueue = stack.enter_context(mock.patch.object(main.speech_queue, "enqueue"))
+
+            chosen = main._queue_startup_device_warning(
+                camera_available=False,
+                audio_available=False,
+            )
+
+        self.assertIsNone(chosen)
+        enqueue.assert_not_called()
+
     def test_question_queue_item_uses_fast_no_flush_playback_handoff(self):
         from audio import speech_queue
 
