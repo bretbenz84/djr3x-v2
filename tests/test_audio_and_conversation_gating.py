@@ -2949,6 +2949,74 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertEqual(person_id, 1)
         self.assertEqual(person_name, "Bret Penziger")
 
+    def test_pending_question_recent_attribution_wins_over_brief_unknown_flicker(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction, "_has_unknown_visible_or_recent", return_value=True),
+            mock.patch.object(
+                interaction,
+                "_latest_pending_question",
+                return_value={"question_key": "hometown"},
+            ),
+        ):
+            person_id, person_name, accepted = interaction._pending_question_recent_attribution(
+                person_id=None,
+                person_name=None,
+                recent_engagement={"person_id": 1, "name": "Bret Benziger"},
+                raw_best_id=1,
+                speaker_score=0.367,
+                text="I live in Sacramento, California",
+            )
+
+        self.assertTrue(accepted)
+        self.assertEqual(person_id, 1)
+        self.assertEqual(person_name, "Bret Benziger")
+
+    def test_pending_question_recent_attribution_still_blocks_actual_unknown_voice(self):
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction, "_has_unknown_visible_or_recent", return_value=True),
+            mock.patch.object(
+                interaction,
+                "_latest_pending_question",
+                return_value={"question_key": "hometown"},
+            ),
+        ):
+            person_id, person_name, accepted = interaction._pending_question_recent_attribution(
+                person_id=None,
+                person_name=None,
+                recent_engagement={"person_id": 1, "name": "Bret Benziger"},
+                raw_best_id=None,
+                speaker_score=0.0,
+                text="I live in Sacramento, California",
+            )
+
+        self.assertFalse(accepted)
+        self.assertIsNone(person_id)
+        self.assertIsNone(person_name)
+
+    def test_missing_unknown_slot_does_not_count_as_visible_unknown(self):
+        from intelligence import interaction
+
+        old_people = interaction.world_state.get("people")
+        try:
+            interaction.world_state.update("people", [
+                {
+                    "id": "person_2",
+                    "person_db_id": None,
+                    "face_id": None,
+                    "face_visible": False,
+                    "face_missing": True,
+                    "face_box": None,
+                }
+            ])
+
+            self.assertFalse(interaction._has_unknown_visible_person())
+        finally:
+            interaction.world_state.update("people", old_people)
+
     def test_vad_barge_in_is_disabled_by_default(self):
         import config
         from intelligence import interaction

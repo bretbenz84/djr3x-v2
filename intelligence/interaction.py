@@ -3309,11 +3309,6 @@ def _pending_question_recent_attribution(
         return person_id, person_name, False
     if command_parser.parse(text) is not None:
         return person_id, person_name, False
-    try:
-        if _has_unknown_visible_or_recent():
-            return person_id, person_name, False
-    except Exception:
-        return person_id, person_name, False
 
     recent_id = _safe_int(recent_engagement.get("person_id"))
     if recent_id is None:
@@ -3326,6 +3321,18 @@ def _pending_question_recent_attribution(
     raw_id = _safe_int(raw_best_id)
     raw_matches_recent = raw_id == recent_id
     no_voice_candidate = raw_id is None
+    # A brief false-positive unknown face should not steal the answer to a
+    # question Rex just asked the engaged person. If the voice model's top
+    # candidate is the asked person above the low pending-QA floor, direct
+    # question continuity wins. Without matching voice evidence, unknown faces
+    # still block attribution so real newcomers can answer for themselves.
+    try:
+        unknown_present = _has_unknown_visible_or_recent()
+    except Exception:
+        unknown_present = True
+    if unknown_present and not (raw_matches_recent and speaker_score >= floor):
+        return person_id, person_name, False
+
     if not no_voice_candidate and not (raw_matches_recent and speaker_score >= floor):
         return person_id, person_name, False
 
@@ -3657,7 +3664,14 @@ def _has_unknown_visible_person() -> bool:
         people = world_state.get("people")
     except Exception:
         return False
-    return any(p.get("face_id") is None for p in people)
+    for person in people:
+        if person.get("person_db_id") is not None:
+            continue
+        if person.get("face_visible") is False or person.get("face_missing"):
+            continue
+        if person.get("face_box") or person.get("bounding_box") or person.get("bbox"):
+            return True
+    return False
 
 
 def _has_unknown_visible_or_recent() -> bool:
@@ -12995,7 +13009,7 @@ def _handle_speech_segment(
         if (
             person_id is None
             and not identity_prompt_active
-            and _has_unknown_visible_or_recent()
+            and _has_unknown_visible_person()
             and _pending_face_reveal_confirm is None
             and command_parser.parse(text) is None
         ):

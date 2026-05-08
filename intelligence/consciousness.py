@@ -576,8 +576,13 @@ def unknown_visible_recently(window_secs: Optional[float] = None) -> bool:
     now = time.monotonic()
     try:
         people = world_state.get("people") or []
-        if any(p.get("person_db_id") is None for p in people):
-            return True
+        for person in people:
+            if person.get("person_db_id") is not None:
+                continue
+            if person.get("face_visible") is False or person.get("face_missing"):
+                continue
+            if person.get("face_box") or person.get("bounding_box") or person.get("bbox"):
+                return True
     except Exception:
         pass
     try:
