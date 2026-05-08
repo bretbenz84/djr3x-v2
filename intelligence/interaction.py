@@ -99,6 +99,7 @@ _directed_look_context: dict[str, Any] = {
 @dataclass(frozen=True)
 class _PostTtsHandoffPolicy:
     asked_question: bool
+    fast_response_expected: bool
     listen_delay_secs: float
     flush_buffer: bool
 
@@ -1347,18 +1348,18 @@ def _speak_blocking(
             done.wait(timeout=0.5)
             return False
 
-    # Normal completion — arm the post-TTS handoff. Questions get a shorter
-    # listen delay and preserve the rolling mic buffer so fast answers are not
-    # deleted by a cleanup flush.
+    # Normal completion — arm the post-TTS handoff. Any spoken Rex line may
+    # receive an immediate human reply, so preserve the rolling mic buffer.
     _apply_post_tts_handoff(text, source="blocking")
     return True
 
 
 def _post_tts_handoff_policy(text: Optional[str]) -> _PostTtsHandoffPolicy:
     asked_question = _assistant_asked_question(text or "")
+    fast_response_expected = _fast_response_handoff_expected(text)
     delay_secs = float(getattr(config, "POST_SPEECH_LISTEN_DELAY_SECS", 0.35))
     flush_buffer = True
-    if asked_question:
+    if fast_response_expected:
         delay_secs = float(
             getattr(config, "POST_QUESTION_LISTEN_DELAY_SECS", delay_secs)
         )
@@ -1367,6 +1368,7 @@ def _post_tts_handoff_policy(text: Optional[str]) -> _PostTtsHandoffPolicy:
         )
     return _PostTtsHandoffPolicy(
         asked_question=asked_question,
+        fast_response_expected=fast_response_expected,
         listen_delay_secs=max(0.0, delay_secs),
         flush_buffer=flush_buffer,
     )
@@ -1382,7 +1384,7 @@ def _apply_post_tts_handoff(
     now = time.monotonic()
     _last_speech_at = now
     _listen_resume_at = now + policy.listen_delay_secs
-    if policy.asked_question:
+    if policy.fast_response_expected:
         grace = max(
             0.0,
             float(
@@ -1410,13 +1412,24 @@ def _apply_post_tts_handoff(
     except Exception as exc:
         _log.debug("[aec] VAD reset after post-TTS handoff failed: %s", exc)
     _log.debug(
-        "[aec] post-tts handoff source=%s asked_question=%s delay=%.3fs flush=%s",
+        "[aec] post-tts handoff source=%s asked_question=%s fast_response=%s delay=%.3fs flush=%s",
         source,
         policy.asked_question,
+        policy.fast_response_expected,
         policy.listen_delay_secs,
         policy.flush_buffer,
     )
     return policy
+
+
+def _end_response_sequence_for_text(text: Optional[str]) -> None:
+    policy = _post_tts_handoff_policy(text)
+    tail_secs = None
+    if policy.fast_response_expected:
+        tail_secs = float(
+            getattr(config, "POST_QUESTION_PLAYBACK_SUPPRESSION_SECS", 0.05)
+        )
+    echo_cancel.end_sequence(flush=policy.flush_buffer, tail_secs=tail_secs)
 
 
 def _arm_post_tts_window(item=None) -> None:
@@ -2039,8 +2052,6 @@ _IMPERATIVE_RESPONSE_PROMPT_RE = re.compile(
     r"\b(?:last\s+name|surname)\s+(?:too|please)\b",
     re.IGNORECASE,
 )
-
-
 def _strip_quoted_questions(text: str) -> str:
     return _QUOTED_QUESTION_RE.sub(
         lambda match: match.group(0).replace("?", ""),
@@ -2050,6 +2061,13 @@ def _strip_quoted_questions(text: str) -> str:
 
 def _assistant_asked_question(text: str) -> bool:
     return _question_expects_response(text)
+
+
+def _fast_response_handoff_expected(text: Optional[str]) -> bool:
+    cleaned = _strip_quoted_questions(str(text or "")).strip()
+    if not cleaned:
+        return False
+    return True
 
 
 def _question_expects_response(text: str) -> bool:
@@ -11380,6 +11398,22 @@ def _handle_speech_segment(
 
         relationship_prompt_consumed = False
         prompted_identity_ack_text: Optional[str] = None
+        heard_turn_recorded = False
+
+        def _record_heard_turn_once() -> None:
+            nonlocal heard_turn_recorded
+            if heard_turn_recorded:
+                return
+            heard_turn_recorded = True
+            speaker_label = person_name or anonymous_speaker_label or "user"
+            heard_speaker_name = person_name or anonymous_speaker_label
+            conv_memory.add_to_transcript(speaker_label, heard_log_text)
+            conv_log.log_heard(heard_speaker_name, heard_log_text)
+            print(f"[HEARD] {speaker_label}: {heard_log_text}", flush=True)
+            _log.info(
+                "[interaction] speech segment — speaker=%r person_id=%s text=%r",
+                speaker_label, person_id, text,
+            )
 
         identity_match_response, identity_match_person_id, identity_match_name = (None, None, None)
         if not game_conversation_lock:
@@ -11407,6 +11441,7 @@ def _handle_speech_segment(
                     has_unknown_visible_or_recent=has_unknown_visible_or_recent,
                 )
             _identity_prompt_until = 0.0
+            _record_heard_turn_once()
             response_text = identity_match_response
             final_executed_path = "identity.match_confirmation"
             _speak_blocking(
@@ -11441,6 +11476,7 @@ def _handle_speech_segment(
                     visible_known_count=len(visible_known_by_id),
                     has_unknown_visible_or_recent=has_unknown_visible_or_recent,
                 )
+            _record_heard_turn_once()
             response_text = prompted_name_confirm_response
             final_executed_path = "identity.prompted_name_confirmation"
             _speak_blocking(
@@ -11481,6 +11517,7 @@ def _handle_speech_segment(
                     has_unknown_visible_or_recent=has_unknown_visible_or_recent,
                 )
             _identity_prompt_until = 0.0
+            _record_heard_turn_once()
             response_text = common_name_response
             final_executed_path = "identity.common_first_name_reply"
             _speak_blocking(
@@ -11501,6 +11538,7 @@ def _handle_speech_segment(
             else None
         )
         if common_intro_response:
+            _record_heard_turn_once()
             response_text = common_intro_response
             final_executed_path = "identity.common_intro_reply"
             _speak_blocking(
@@ -11521,6 +11559,7 @@ def _handle_speech_segment(
             else None
         )
         if existing_common_name_response:
+            _record_heard_turn_once()
             response_text = existing_common_name_response
             final_executed_path = "identity.existing_common_first_name_reply"
             _speak_blocking(
@@ -11709,6 +11748,7 @@ def _handle_speech_segment(
                         str(rel_ctx_for_intro.get("slot_id") or "")
                     )
                 if intro_response:
+                    _record_heard_turn_once()
                     _speak_blocking(
                         intro_response,
                         emotion="happy",
@@ -11735,6 +11775,7 @@ def _handle_speech_segment(
                 rel_ctx, text, person_id, person_name
             )
             if relationship_response:
+                _record_heard_turn_once()
                 _speak_blocking(
                     relationship_response,
                     emotion="happy",
@@ -11755,6 +11796,7 @@ def _handle_speech_segment(
             speaker_score,
         )
         if intro_voice_response:
+            _record_heard_turn_once()
             _speak_blocking(
                 intro_voice_response,
                 emotion="happy",
@@ -11769,6 +11811,7 @@ def _handle_speech_segment(
 
         intro_followup_response = _handle_intro_followup_answer(text)
         if intro_followup_response:
+            _record_heard_turn_once()
             _speak_blocking(
                 intro_followup_response,
                 emotion="happy",
@@ -11797,6 +11840,7 @@ def _handle_speech_segment(
                             visible_newcomer=bool(_pending_introduction.get("visible_newcomer", True)),
                         )
                         if intro_response:
+                            _record_heard_turn_once()
                             _speak_blocking(
                                 intro_response,
                                 emotion="happy",
@@ -11830,6 +11874,7 @@ def _handle_speech_segment(
                     visible_newcomer=has_unknown_for_intro,
                 )
                 if intro_response:
+                    _record_heard_turn_once()
                     _speak_blocking(
                         intro_response,
                         emotion="happy",
@@ -11848,6 +11893,7 @@ def _handle_speech_segment(
             current_text=text,
         )
         if existing_common_name_prompt:
+            _record_heard_turn_once()
             _speak_blocking(
                 existing_common_name_prompt,
                 emotion="curious",
@@ -12252,15 +12298,7 @@ def _handle_speech_segment(
             unknown_voice_label = anonymous_speaker_label or "unknown"
             print(f"[VOICE] Unknown voice detected: {unknown_voice_label}", flush=True)
 
-        speaker_label = person_name or anonymous_speaker_label or "user"
-        heard_speaker_name = person_name or anonymous_speaker_label
-        conv_memory.add_to_transcript(speaker_label, heard_log_text)
-        conv_log.log_heard(heard_speaker_name, heard_log_text)
-        print(f"[HEARD] {speaker_label}: {heard_log_text}", flush=True)
-        _log.info(
-            "[interaction] speech segment — speaker=%r person_id=%s text=%r",
-            speaker_label, person_id, text,
-        )
+        _record_heard_turn_once()
 
         if prompted_identity_ack_text:
             completed = _speak_blocking(
@@ -13649,7 +13687,7 @@ def _handle_speech_segment(
         raise
     finally:
         if sequence_started:
-            echo_cancel.end_sequence()
+            _end_response_sequence_for_text(response_text)
         try:
             _log_character_loop_trace(
                 character_trace,

@@ -21,20 +21,11 @@ items from the queue, e.g. when an interrupt is being processed.
 
 import heapq
 import logging
-import re
 import threading
 from pathlib import Path
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
-
-_FAST_RESPONSE_PROMPT_RE = re.compile(
-    r"\b(?:give|tell|toss|send|share)\s+(?:me\s+)?(?:your\s+|a\s+)?"
-    r"(?:last\s+name|surname)\b|"
-    r"\b(?:last\s+name|surname)\s+(?:too|please)\b|"
-    r"\b(?:last\s+name|surname)\?\s*$",
-    re.IGNORECASE,
-)
 
 
 def _audio_output_suppressed() -> bool:
@@ -72,7 +63,7 @@ def _complete_text_without_audio(
 def _playback_handoff_options(text: Optional[str]) -> dict:
     """Return AEC stop options for queued text playback."""
     text_value = str(text or "")
-    if not text_value or ("?" not in text_value and not _FAST_RESPONSE_PROMPT_RE.search(text_value)):
+    if not text_value.strip():
         return {}
     try:
         import config

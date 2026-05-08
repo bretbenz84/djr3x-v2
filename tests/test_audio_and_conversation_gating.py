@@ -292,7 +292,22 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             opts["flush_on_playback_stop"],
             bool(__import__("config").POST_QUESTION_FLUSH_AUDIO_BUFFER),
         )
-        self.assertEqual(speech_queue._playback_handoff_options("Nice to meet you."), {})
+
+    def test_social_queue_item_uses_fast_no_flush_playback_handoff(self):
+        from audio import speech_queue
+
+        opts = speech_queue._playback_handoff_options(
+            "Got it, Bret. Nice to meet you."
+        )
+
+        self.assertEqual(
+            opts["post_playback_tail_secs"],
+            float(__import__("config").POST_QUESTION_PLAYBACK_SUPPRESSION_SECS),
+        )
+        self.assertEqual(
+            opts["flush_on_playback_stop"],
+            bool(__import__("config").POST_QUESTION_FLUSH_AUDIO_BUFFER),
+        )
 
     def test_last_name_prompt_without_question_mark_uses_fast_handoff(self):
         from audio import speech_queue
@@ -300,6 +315,20 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         opts = speech_queue._playback_handoff_options(
             "Bret, how original. Give me a last name too so the memory banks don't get confused."
         )
+
+        self.assertEqual(
+            opts["post_playback_tail_secs"],
+            float(__import__("config").POST_QUESTION_PLAYBACK_SUPPRESSION_SECS),
+        )
+        self.assertEqual(
+            opts["flush_on_playback_stop"],
+            bool(__import__("config").POST_QUESTION_FLUSH_AUDIO_BUFFER),
+        )
+
+    def test_statement_queue_item_uses_fast_no_flush_playback_handoff(self):
+        from audio import speech_queue
+
+        opts = speech_queue._playback_handoff_options("Classic choice.")
 
         self.assertEqual(
             opts["post_playback_tail_secs"],
@@ -587,24 +616,40 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         policy = interaction._post_tts_handoff_policy("What's your favorite movie?")
 
         self.assertTrue(policy.asked_question)
+        self.assertTrue(policy.fast_response_expected)
         self.assertEqual(
             policy.listen_delay_secs,
             float(config.POST_QUESTION_LISTEN_DELAY_SECS),
         )
         self.assertFalse(policy.flush_buffer)
 
-    def test_statement_handoff_flushes_buffer_and_uses_general_delay(self):
+    def test_social_handoff_preserves_buffer_for_immediate_reply(self):
+        from intelligence import interaction
+        import config
+
+        policy = interaction._post_tts_handoff_policy("Got it, Bret. Nice to meet you.")
+
+        self.assertFalse(policy.asked_question)
+        self.assertTrue(policy.fast_response_expected)
+        self.assertEqual(
+            policy.listen_delay_secs,
+            float(config.POST_QUESTION_LISTEN_DELAY_SECS),
+        )
+        self.assertFalse(policy.flush_buffer)
+
+    def test_statement_handoff_preserves_buffer_and_uses_short_delay(self):
         from intelligence import interaction
         import config
 
         policy = interaction._post_tts_handoff_policy("Classic choice.")
 
         self.assertFalse(policy.asked_question)
+        self.assertTrue(policy.fast_response_expected)
         self.assertEqual(
             policy.listen_delay_secs,
-            float(config.POST_SPEECH_LISTEN_DELAY_SECS),
+            float(config.POST_QUESTION_LISTEN_DELAY_SECS),
         )
-        self.assertTrue(policy.flush_buffer)
+        self.assertFalse(policy.flush_buffer)
 
     def test_assistant_question_detector_ignores_quoted_questions_and_tiny_openers(self):
         from intelligence import interaction
@@ -669,6 +714,39 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         flush.assert_not_called()
         self.assertAlmostEqual(floor, 99.75)
+
+    def test_social_handoff_allows_silent_tts_tail_preroll(self):
+        from intelligence import interaction
+
+        old_floor = interaction._listen_capture_floor_at
+        try:
+            with (
+                mock.patch.object(interaction.time, "monotonic", return_value=100.0),
+                mock.patch.object(interaction.config, "POST_QUESTION_CAPTURE_PREROLL_GRACE_SECS", 0.25),
+                mock.patch.object(interaction.stream, "flush") as flush,
+                mock.patch.object(interaction.vad, "reset_state"),
+            ):
+                interaction._apply_post_tts_handoff(
+                    "Got it, Bret. Nice to meet you.",
+                    source="test",
+                )
+        finally:
+            floor = interaction._listen_capture_floor_at
+            interaction._listen_capture_floor_at = old_floor
+
+        flush.assert_not_called()
+        self.assertAlmostEqual(floor, 99.75)
+
+    def test_social_sequence_end_does_not_flush_fast_reply_buffer(self):
+        from intelligence import interaction
+
+        with mock.patch.object(interaction.echo_cancel, "end_sequence") as end_sequence:
+            interaction._end_response_sequence_for_text("Got it, Bret. Nice to meet you.")
+
+        end_sequence.assert_called_once_with(
+            flush=False,
+            tail_secs=float(interaction.config.POST_QUESTION_PLAYBACK_SUPPRESSION_SECS),
+        )
 
     def test_post_tts_handoff_refreshes_idle_timer(self):
         from intelligence import interaction
@@ -1676,6 +1754,187 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction.world_state.update("people", old_people)
             interaction._identity_prompt_until = old_until
+            interaction._session_exchange_count = old_exchange_count
+            interaction._pending_offscreen_identify = old_pending_offscreen
+            interaction._pending_face_reveal_confirm = old_pending_face_reveal
+            interaction._pending_post_greet_relationship[0] = old_pending_relationship
+
+    def test_existing_common_name_prompt_logs_human_turn_before_returning(self):
+        from contextlib import ExitStack
+        import numpy as np
+        from intelligence import interaction
+
+        old_people = interaction.world_state.get("people")
+        old_exchange_count = interaction._session_exchange_count
+        old_pending_offscreen = interaction._pending_offscreen_identify
+        old_pending_face_reveal = interaction._pending_face_reveal_confirm
+        old_pending_relationship = interaction._pending_post_greet_relationship[0]
+        try:
+            interaction.world_state.update("people", [
+                {"person_db_id": 1, "face_id": "Bret"},
+            ])
+            interaction._pending_offscreen_identify = None
+            interaction._pending_face_reveal_confirm = None
+            interaction._pending_post_greet_relationship[0] = None
+
+            with ExitStack() as stack:
+                stack.enter_context(
+                    mock.patch.object(interaction.random, "randint", return_value=0)
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_process_audio",
+                        return_value=("Nice to meet you too", 1, "Bret", 0.502),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_game_suppresses_conversation",
+                        return_value=False,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.turn_completion,
+                        "consume_continuation",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.turn_completion,
+                        "classify",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(mock.patch.object(interaction.echo_cancel, "start_sequence"))
+                stack.enter_context(mock.patch.object(interaction.echo_cancel, "end_sequence"))
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.consciousness,
+                        "get_recent_engagement",
+                        return_value={"person_id": 1, "name": "Bret"},
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.consciousness,
+                        "consume_identity_prompt_request",
+                        return_value=False,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.consciousness,
+                        "consume_relationship_prompt_request",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(mock.patch.object(interaction.consciousness, "mark_engagement"))
+                stack.enter_context(mock.patch.object(interaction.consciousness, "note_person_spoke"))
+                stack.enter_context(mock.patch.object(interaction.consciousness, "clear_response_wait"))
+                stack.enter_context(mock.patch.object(interaction.speech_queue, "drop_by_tag"))
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_note_voice_turn_for_group_chatter",
+                        return_value=False,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_audio_group_chatter_active",
+                        return_value=False,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_has_unknown_visible_or_recent",
+                        return_value=False,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_resolve_anonymous_speaker_slot",
+                        return_value=(None, None),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_handle_pending_identity_match_confirmation",
+                        return_value=(None, None, None),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_handle_pending_prompted_name_confirmation",
+                        return_value=(None, None, None),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_handle_common_first_name_last_name_reply",
+                        return_value=(None, None, None),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_handle_common_first_name_intro_last_name_reply",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_handle_existing_common_first_name_last_name_reply",
+                        return_value=None,
+                    )
+                )
+                prompt = stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_maybe_prompt_existing_common_first_name",
+                        return_value="Bret. Last name, before the directory panics?",
+                    )
+                )
+                speak = stack.enter_context(
+                    mock.patch.object(interaction, "_speak_blocking", return_value=True)
+                )
+                add_transcript = stack.enter_context(
+                    mock.patch.object(interaction.conv_memory, "add_to_transcript")
+                )
+                log_heard = stack.enter_context(
+                    mock.patch.object(interaction.conv_log, "log_heard")
+                )
+                log_rex = stack.enter_context(
+                    mock.patch.object(interaction.conv_log, "log_rex")
+                )
+
+                interaction._handle_speech_segment(np.ones(16, dtype=np.float32))
+
+            prompt.assert_called_once()
+            log_heard.assert_called_once_with("Bret", "Nice to meet you too")
+            add_transcript.assert_any_call("Bret", "Nice to meet you too")
+            speak.assert_called_once_with(
+                "Bret. Last name, before the directory panics?",
+                emotion="curious",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            log_rex.assert_called_once_with(
+                "Bret. Last name, before the directory panics?"
+            )
+        finally:
+            interaction.world_state.update("people", old_people)
             interaction._session_exchange_count = old_exchange_count
             interaction._pending_offscreen_identify = old_pending_offscreen
             interaction._pending_face_reveal_confirm = old_pending_face_reveal
