@@ -222,6 +222,61 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertIsNone(chosen)
         enqueue.assert_not_called()
 
+    def test_camera_reconnect_line_queues_tts(self):
+        import main
+
+        old_last = main._last_camera_reconnect_line
+        main._last_camera_reconnect_line = None
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.object(main.config, "CAMERA_RECONNECT_TTS_ENABLED", True))
+                stack.enter_context(mock.patch.object(main.config, "CAMERA_RECONNECT_TTS_MIN_DOWNTIME_SECS", 1.0))
+                stack.enter_context(mock.patch.object(main.config, "CAMERA_RECONNECT_TTS_EMOTION", "happy"))
+                stack.enter_context(mock.patch.object(main.config, "CAMERA_RECONNECT_TTS_LINES", ["optics restored"]))
+                stack.enter_context(mock.patch.object(main.config, "NO_AUDIO_MODE", False))
+                stack.enter_context(mock.patch.object(main.config, "AUDIO_OUTPUT_SUPPRESSED", False))
+                stack.enter_context(mock.patch.object(main.state, "get_state", return_value=main.State.ACTIVE))
+                enqueue = stack.enter_context(mock.patch.object(main.speech_queue, "enqueue"))
+
+                chosen = main._queue_camera_reconnect_line(5.0)
+        finally:
+            main._last_camera_reconnect_line = old_last
+
+        self.assertEqual(chosen, "optics restored")
+        enqueue.assert_called_once_with(
+            "optics restored",
+            "happy",
+            priority=0,
+            tag="camera:reconnected",
+        )
+
+    def test_camera_reconnect_line_respects_quiet_and_downtime(self):
+        import main
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(main.config, "CAMERA_RECONNECT_TTS_ENABLED", True))
+            stack.enter_context(mock.patch.object(main.config, "CAMERA_RECONNECT_TTS_MIN_DOWNTIME_SECS", 3.0))
+            stack.enter_context(mock.patch.object(main.config, "CAMERA_RECONNECT_TTS_LINES", ["optics restored"]))
+            stack.enter_context(mock.patch.object(main.config, "NO_AUDIO_MODE", False))
+            stack.enter_context(mock.patch.object(main.config, "AUDIO_OUTPUT_SUPPRESSED", False))
+            stack.enter_context(mock.patch.object(main.state, "get_state", return_value=main.State.ACTIVE))
+            enqueue = stack.enter_context(mock.patch.object(main.speech_queue, "enqueue"))
+
+            self.assertIsNone(main._queue_camera_reconnect_line(1.0))
+            enqueue.assert_not_called()
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(main.config, "CAMERA_RECONNECT_TTS_ENABLED", True))
+            stack.enter_context(mock.patch.object(main.config, "CAMERA_RECONNECT_TTS_MIN_DOWNTIME_SECS", 0.0))
+            stack.enter_context(mock.patch.object(main.config, "CAMERA_RECONNECT_TTS_LINES", ["optics restored"]))
+            stack.enter_context(mock.patch.object(main.config, "NO_AUDIO_MODE", False))
+            stack.enter_context(mock.patch.object(main.config, "AUDIO_OUTPUT_SUPPRESSED", False))
+            stack.enter_context(mock.patch.object(main.state, "get_state", return_value=main.State.QUIET))
+            enqueue = stack.enter_context(mock.patch.object(main.speech_queue, "enqueue"))
+
+            self.assertIsNone(main._queue_camera_reconnect_line(5.0))
+            enqueue.assert_not_called()
+
     def test_question_queue_item_uses_fast_no_flush_playback_handoff(self):
         from audio import speech_queue
 
@@ -1003,6 +1058,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         interaction._wake_word_fired.clear()
         try:
             with (
+                mock.patch.object(interaction, "_wake_word_recognition_gesture"),
                 mock.patch.object(interaction.speech_queue, "is_speaking", return_value=True),
                 mock.patch.object(interaction.consciousness, "is_waiting_for_response", return_value=True),
             ):
@@ -1013,6 +1069,49 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._interrupted.clear()
             interaction._wake_word_fired.clear()
+
+    def test_wake_word_callback_triggers_recognition_gesture(self):
+        from intelligence import interaction
+
+        interaction._wake_word_fired.clear()
+        try:
+            with (
+                mock.patch.object(interaction, "_wake_word_recognition_gesture") as gesture,
+                mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            ):
+                interaction._on_wake_word("Hey_rex")
+
+            gesture.assert_called_once_with("Hey_rex")
+            self.assertTrue(interaction._wake_word_fired.is_set())
+        finally:
+            interaction._wake_word_fired.clear()
+
+    def test_wake_word_recognition_gesture_filters_and_cools_down(self):
+        from intelligence import interaction
+        from sequences import animations
+
+        old_last = interaction._last_wake_word_gesture_at
+        interaction._last_wake_word_gesture_at = 0.0
+        try:
+            with (
+                mock.patch.object(interaction.config, "WAKE_WORD_RECOGNITION_GESTURE_ENABLED", True),
+                mock.patch.object(
+                    interaction.config,
+                    "WAKE_WORD_RECOGNITION_GESTURE_MODELS",
+                    ["Hey_rex"],
+                ),
+                mock.patch.object(interaction.config, "WAKE_WORD_RECOGNITION_GESTURE_COOLDOWN_SECS", 1.25),
+                mock.patch.object(interaction.state_module, "get_state", return_value=interaction.State.ACTIVE),
+                mock.patch.object(interaction.time, "monotonic", side_effect=[10.0, 10.5, 12.0]),
+                mock.patch.object(animations, "wake_word_ack_wave", return_value=True) as wave,
+            ):
+                self.assertTrue(interaction._wake_word_recognition_gesture("Hey_rex"))
+                self.assertFalse(interaction._wake_word_recognition_gesture("Hey_rex"))
+                self.assertTrue(interaction._wake_word_recognition_gesture("Hey_rex"))
+                self.assertFalse(interaction._wake_word_recognition_gesture("wakeuprex"))
+                self.assertEqual(wave.call_count, 2)
+        finally:
+            interaction._last_wake_word_gesture_at = old_last
 
     def test_question_response_uses_longer_speech_preroll(self):
         from intelligence import interaction

@@ -53,6 +53,45 @@ class BodyBeatAnimationTest(unittest.TestCase):
             },
         )
 
+    def test_wake_word_ack_wave_moves_hand_and_elbow_together(self):
+        from sequences import animations
+
+        moves = []
+        snapshot = {
+            4: animations.ELBOW_NEUTRAL,
+            5: animations.HAND_NEUTRAL,
+            7: animations.HEROARM_NEUTRAL,
+        }
+
+        def record_move(targets, **_kwargs):
+            moves.append(dict(targets))
+
+        with (
+            mock.patch.object(animations._state_module, "get_state", return_value=animations._State.ACTIVE),
+            mock.patch.object(animations, "_current_body_pose", return_value=snapshot),
+            mock.patch.object(animations.time, "sleep", return_value=None),
+            mock.patch.object(animations.servos, "move_to", side_effect=record_move),
+            mock.patch.object(animations.servos, "pause_arm_idle") as pause,
+            mock.patch.object(animations.servos, "resume_arm_idle") as resume,
+        ):
+            self.assertTrue(animations.wake_word_ack_wave(count=2, async_=False))
+
+        pause.assert_called_once()
+        resume.assert_called_once()
+        self.assertEqual(
+            moves[0],
+            {
+                7: animations.HEROARM_FORWARD,
+                4: animations.ELBOW_NEUTRAL,
+                5: animations.HAND_NEUTRAL,
+            },
+        )
+        self.assertEqual(moves[1], {4: animations.ELBOW_UP, 5: animations.HAND_RIGHT})
+        self.assertEqual(moves[2], {4: animations.ELBOW_DOWN, 5: animations.HAND_LEFT})
+        self.assertEqual(moves[3], {4: animations.ELBOW_UP, 5: animations.HAND_RIGHT})
+        self.assertEqual(moves[4], {4: animations.ELBOW_DOWN, 5: animations.HAND_LEFT})
+        self.assertEqual(moves[-1], snapshot)
+
 
 if __name__ == "__main__":
     unittest.main()

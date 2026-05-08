@@ -397,6 +397,51 @@ def _queue_startup_device_warning(
     return line
 
 
+def _queue_camera_reconnect_line(downtime_secs: float = 0.0) -> Optional[str]:
+    """Queue a short in-character line when camera frames recover after outage."""
+    if not bool(getattr(config, "CAMERA_RECONNECT_TTS_ENABLED", True)):
+        return None
+    if bool(
+        getattr(config, "NO_AUDIO_MODE", False)
+        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+    ):
+        return None
+    try:
+        if state.get_state() in (State.QUIET, State.SHUTDOWN):
+            return None
+    except Exception:
+        return None
+
+    min_downtime = max(
+        0.0,
+        float(getattr(config, "CAMERA_RECONNECT_TTS_MIN_DOWNTIME_SECS", 1.0) or 0.0),
+    )
+    if float(downtime_secs or 0.0) < min_downtime:
+        return None
+
+    lines = [
+        str(line).strip()
+        for line in getattr(config, "CAMERA_RECONNECT_TTS_LINES", [])
+        if str(line).strip()
+    ]
+    if not lines:
+        return None
+
+    global _last_camera_reconnect_line
+    candidates = [line for line in lines if line != _last_camera_reconnect_line] or lines
+    line = random.choice(candidates)
+    _last_camera_reconnect_line = line
+    emotion = str(getattr(config, "CAMERA_RECONNECT_TTS_EMOTION", "happy") or "happy")
+    logger.info("Camera reconnect TTS queued after %.1fs offline: %s", downtime_secs, line)
+    speech_queue.enqueue(
+        line,
+        emotion,
+        priority=0,
+        tag="camera:reconnected",
+    )
+    return line
+
+
 def _shutdown() -> None:
     logger.info("=== Shutdown sequence begin ===")
 
@@ -463,6 +508,7 @@ def _shutdown() -> None:
 
 _gui_bridge_stop = threading.Event()
 _gui_bridge_thread: threading.Thread | None = None
+_last_camera_reconnect_line: Optional[str] = None
 
 
 def _apply_startup_mode_overrides(*, jeopardy: bool = False) -> None:
@@ -661,6 +707,8 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     else:
         logger.info("Starting audio.scene...")
         audio_scene.start()
+
+    camera.register_on_reconnect(_queue_camera_reconnect_line)
 
     logger.info("Starting vision.camera...")
     camera.start()

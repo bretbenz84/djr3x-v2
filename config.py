@@ -485,6 +485,22 @@ WAKE_WORD_THRESHOLDS = {
     "wakeuprex":   0.5,
 }
 
+# Immediate physical acknowledgment when a general wake word is detected.
+# This is separate from spoken wake acknowledgments so Rex visibly reacts even
+# before VAD/transcription has finished deciding what the human said next.
+WAKE_WORD_RECOGNITION_GESTURE_ENABLED = True
+WAKE_WORD_RECOGNITION_GESTURE_MODELS = [
+    "Dee-Jay_Rex",
+    "Hey_DJ_Rex",
+    "Hey_rex",
+    "Yo_robot",
+]
+WAKE_WORD_RECOGNITION_GESTURE_COOLDOWN_SECS = 1.25
+WAKE_WORD_RECOGNITION_WAVE_COUNT = 3
+WAKE_WORD_RECOGNITION_WAVE_STEP_QUS = 320
+WAKE_WORD_RECOGNITION_WAVE_STEP_DELAY_SECS = 0.010
+WAKE_WORD_RECOGNITION_WAVE_HOLD_SECS = 0.045
+
 # Short in-character lines Rex delivers after a wake word fires mid-speech
 INTERRUPT_ACKNOWLEDGMENTS = [
     "yeah?",
@@ -853,6 +869,18 @@ CAMERA_AVFOUNDATION_PIXEL_FORMAT = "uyvy422"
 
 # Seconds between reconnection attempts when the camera disconnects
 CAMERA_RECONNECT_INTERVAL_SECS = 5.0
+
+# In-character optical-sensor recovery line after the camera has been offline
+# and a fresh frame arrives again.
+CAMERA_RECONNECT_TTS_ENABLED = True
+CAMERA_RECONNECT_TTS_MIN_DOWNTIME_SECS = 1.0
+CAMERA_RECONNECT_TTS_EMOTION = "happy"
+CAMERA_RECONNECT_TTS_LINES = [
+    "Optical sensors restored. I can see again. This is very exciting for the navigation department, which is me.",
+    "Camera feed is back. Wonderful. Shapes, colors, questionable life choices. I've missed the whole visual buffet.",
+    "Vision system restored. I can see again, and somehow the room survived without my expert optical supervision.",
+    "Optics are back online. Try to contain your excitement; I certainly won't.",
+]
 
 # Breathing rhythm — slow headlift oscillation that runs continuously in the background
 BREATHING_AMPLITUDE_QUS  = 180  # quarter-microseconds above/below neutral

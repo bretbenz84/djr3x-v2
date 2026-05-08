@@ -190,6 +190,8 @@ _thread: Optional[threading.Thread] = None
 _wake_word_fired = threading.Event()
 _last_wake_word: Optional[str] = None
 _wake_lock = threading.Lock()
+_last_wake_word_gesture_at: float = 0.0
+_wake_word_gesture_lock = threading.Lock()
 
 # Interruption signal: set when wake word fires while Rex is speaking.
 # The _speak_blocking() watchdog calls sd.stop() when it sees this set.
@@ -535,6 +537,8 @@ def _on_wake_word(model_name: str) -> None:
     with _wake_lock:
         _last_wake_word = model_name
 
+    _wake_word_recognition_gesture(model_name)
+
     if speech_queue.is_speaking():
         if _response_wait_active():
             _log.info(
@@ -544,6 +548,44 @@ def _on_wake_word(model_name: str) -> None:
             _interrupted.set()
 
     _wake_word_fired.set()
+
+
+def _wake_word_recognition_gesture(model_name: str) -> bool:
+    """Trigger a short physical wake-word recognition wave when appropriate."""
+    if not bool(getattr(config, "WAKE_WORD_RECOGNITION_GESTURE_ENABLED", True)):
+        return False
+
+    allowed = {
+        str(item).strip()
+        for item in getattr(config, "WAKE_WORD_RECOGNITION_GESTURE_MODELS", [])
+        if str(item).strip()
+    }
+    if allowed and str(model_name).strip() not in allowed:
+        return False
+
+    try:
+        if state_module.get_state() in (State.QUIET, State.SHUTDOWN):
+            return False
+    except Exception:
+        return False
+
+    global _last_wake_word_gesture_at
+    cooldown = max(
+        0.0,
+        float(getattr(config, "WAKE_WORD_RECOGNITION_GESTURE_COOLDOWN_SECS", 1.25) or 0.0),
+    )
+    now = time.monotonic()
+    with _wake_word_gesture_lock:
+        if cooldown > 0.0 and now - _last_wake_word_gesture_at < cooldown:
+            return False
+        _last_wake_word_gesture_at = now
+
+    try:
+        from sequences import animations
+        return bool(animations.wake_word_ack_wave())
+    except Exception as exc:
+        _log.debug("[wake_word] recognition gesture failed: %s", exc)
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

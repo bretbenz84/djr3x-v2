@@ -947,6 +947,70 @@ def arm_wave(count: int | None = None) -> None:
         servos.resume_arm_idle()
 
 
+def wake_word_ack_wave(count: int | None = None, *, async_: bool = True) -> bool:
+    """
+    Brief wake-word recognition gesture.
+
+    The hand rocks left/right while the elbow moves up/down in the same move_to
+    calls, producing a compact "I heard that" wave without blocking listening.
+    """
+    if count is None:
+        count = int(getattr(config, "WAKE_WORD_RECOGNITION_WAVE_COUNT", 3))
+    count = max(1, min(6, int(count)))
+
+    if async_:
+        threading.Thread(
+            target=_run_wake_word_ack_wave,
+            args=(count,),
+            daemon=True,
+            name="wake_word_ack_wave",
+        ).start()
+        return True
+    return _run_wake_word_ack_wave(count)
+
+
+def _run_wake_word_ack_wave(count: int) -> bool:
+    if not _body_beat_allowed():
+        return False
+    if not _arm_motion_lock.acquire(blocking=False):
+        return False
+
+    step_us = int(getattr(config, "WAKE_WORD_RECOGNITION_WAVE_STEP_QUS", 320))
+    step_delay = float(getattr(config, "WAKE_WORD_RECOGNITION_WAVE_STEP_DELAY_SECS", 0.010))
+    hold = float(getattr(config, "WAKE_WORD_RECOGNITION_WAVE_HOLD_SECS", 0.045))
+    snapshot = _current_body_pose((4, 5, 7))
+
+    servos.pause_arm_idle()
+    try:
+        with _motion_lock:
+            servos.move_to(
+                {7: HEROARM_FORWARD, 4: ELBOW_NEUTRAL, 5: HAND_NEUTRAL},
+                step_us=step_us,
+                step_delay=step_delay,
+            )
+            for _ in range(count):
+                servos.move_to(
+                    {4: ELBOW_UP, 5: HAND_RIGHT},
+                    step_us=step_us,
+                    step_delay=step_delay,
+                )
+                time.sleep(hold)
+                servos.move_to(
+                    {4: ELBOW_DOWN, 5: HAND_LEFT},
+                    step_us=step_us,
+                    step_delay=step_delay,
+                )
+                time.sleep(hold)
+            servos.move_to(snapshot, step_us=step_us, step_delay=step_delay)
+        return True
+    except Exception as exc:
+        _log.debug("[animations] wake-word ack wave failed: %s", exc)
+        return False
+    finally:
+        servos.resume_arm_idle()
+        _arm_motion_lock.release()
+
+
 # ---------------------------------------------------------------------------
 # Composite reactions
 # ---------------------------------------------------------------------------

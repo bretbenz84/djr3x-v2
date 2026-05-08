@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -39,6 +39,9 @@ _last_frame_at: Optional[float] = None
 _frame_lock = threading.Lock()
 _stop_event = threading.Event()
 _capture_thread: Optional[threading.Thread] = None
+_reconnect_callbacks: list[Callable[[float], None]] = []
+_reconnect_lock = threading.Lock()
+_offline_since: Optional[float] = None
 
 
 class _FFmpegCapture:
@@ -150,13 +153,15 @@ class _FFmpegCapture:
 
 def start() -> None:
     """Open the camera and start the background capture thread."""
-    global _capture_thread, _frame, _last_frame_at
+    global _capture_thread, _frame, _last_frame_at, _offline_since
     if not CAMERA_ENABLED:
         _log.debug("CAMERA_ENABLED=False — camera start is a no-op")
         return
     with _frame_lock:
         _frame = None
         _last_frame_at = None
+    with _reconnect_lock:
+        _offline_since = None
     _stop_event.clear()
     _capture_thread = threading.Thread(
         target=_capture_loop,
@@ -175,6 +180,22 @@ def stop() -> None:
     if _capture_thread is not None:
         _capture_thread.join(timeout=5.0)
     _close_camera()
+
+
+def register_on_reconnect(callback: Callable[[float], None]) -> None:
+    """Register a callback fired once a fresh frame arrives after an outage."""
+    with _reconnect_lock:
+        if callback not in _reconnect_callbacks:
+            _reconnect_callbacks.append(callback)
+
+
+def unregister_on_reconnect(callback: Callable[[float], None]) -> None:
+    """Remove a previously registered reconnect callback."""
+    with _reconnect_lock:
+        try:
+            _reconnect_callbacks.remove(callback)
+        except ValueError:
+            pass
 
 
 def get_frame() -> Optional[np.ndarray]:
@@ -341,11 +362,37 @@ def _close_camera() -> None:
         _log.info("Camera closed")
 
 
+def _mark_camera_offline() -> None:
+    global _offline_since
+    with _reconnect_lock:
+        if _offline_since is None:
+            _offline_since = time.monotonic()
+
+
+def _notify_camera_reconnected_if_needed() -> None:
+    global _offline_since
+    with _reconnect_lock:
+        offline_since = _offline_since
+        if offline_since is None:
+            return
+        _offline_since = None
+        callbacks = list(_reconnect_callbacks)
+
+    downtime = max(0.0, time.monotonic() - offline_since)
+    _log.info("Camera frame restored after %.1fs offline", downtime)
+    for callback in callbacks:
+        try:
+            callback(downtime)
+        except Exception as exc:
+            _log.debug("Camera reconnect callback failed: %s", exc)
+
+
 def _capture_loop() -> None:
     """Daemon thread: reads frames continuously and stores the latest in the shared buffer."""
     global _frame, _last_frame_at
 
     if not _open_camera():
+        _mark_camera_offline()
         _log.warning(
             "Initial camera open failed — will retry every %.1fs",
             config.CAMERA_RECONNECT_INTERVAL_SECS,
@@ -361,7 +408,8 @@ def _capture_loop() -> None:
             )
             _close_camera()
             _stop_event.wait(config.CAMERA_RECONNECT_INTERVAL_SECS)
-            _open_camera()
+            if not _open_camera():
+                _mark_camera_offline()
             continue
 
         ret, frame = _cap.read()
@@ -370,12 +418,14 @@ def _capture_loop() -> None:
                 "Camera read failed — treating as disconnect (%s)",
                 CAMERA_SELECTION_DESCRIPTION,
             )
+            _mark_camera_offline()
             _close_camera()
             continue
 
         with _frame_lock:
             _frame = frame
             _last_frame_at = time.monotonic()
+        _notify_camera_reconnected_if_needed()
 
     _close_camera()
     _log.info("Camera capture thread stopped")
