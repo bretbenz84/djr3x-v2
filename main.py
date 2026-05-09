@@ -93,6 +93,7 @@ from audio import (
     tts,
     speech_queue,
     speaker_id,
+    transcription,
 )
 from vision import camera, scene as vision_scene, face_expression
 from awareness import chronoception, interoception
@@ -677,6 +678,15 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     else:
         logger.info("Pre-warming audio output device...")
         tts.prewarm()
+
+    if no_audio:
+        logger.info("Skipping local Whisper preload (--noaudio)")
+    elif bool(getattr(config, "WHISPER_PRELOAD_ON_STARTUP", True)):
+        logger.info("Pre-loading local Whisper...")
+        if not transcription.preload():
+            logger.warning("Local Whisper preload failed; first transcription may be slower.")
+    else:
+        logger.info("Local Whisper preload disabled by config.WHISPER_PRELOAD_ON_STARTUP")
 
     if no_audio:
         logger.info("Skipping speaker ID preload (--noaudio)")

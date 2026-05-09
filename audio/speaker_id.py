@@ -42,10 +42,15 @@ def preload() -> bool:
         return False
     try:
         # Warm this import too; get_embedding() needs it on the first turn.
-        from resemblyzer import preprocess_wav  # noqa: F401
+        from resemblyzer import preprocess_wav
+        sample_rate = int(getattr(config, "AUDIO_SAMPLE_RATE", 16000) or 16000)
+        samples = max(1, int(sample_rate * 0.75))
+        t = np.arange(samples, dtype=np.float32) / float(sample_rate)
+        dummy = (0.001 * np.sin(2.0 * np.pi * 220.0 * t)).astype(np.float32)
+        wav = preprocess_wav(dummy, source_sr=sample_rate)
+        encoder.embed_utterance(wav)
     except Exception as exc:
-        logger.warning("[speaker_id] preload failed while warming preprocess_wav: %s", exc)
-        return False
+        logger.warning("[speaker_id] preload failed while warming embedding path: %s", exc)
     logger.info("[speaker_id] preloaded encoder in %.3fs", time.monotonic() - start)
     return True
 

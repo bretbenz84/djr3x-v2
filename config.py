@@ -139,6 +139,9 @@ AUDIO_OUTPUT_SUPPRESSED = NO_AUDIO_MODE
 WHISPER_LOCAL_MODEL   = "mlx-community/whisper-large-v3-turbo"
 WHISPER_FALLBACK_MODEL = "whisper-1"   # OpenAI Whisper API — used if local unavailable
 WHISPER_LANGUAGE      = "en"           # Force English to suppress non-Latin hallucinations
+WHISPER_PRELOAD_ON_STARTUP = True      # Warm MLX Whisper before the first live utterance
+WHISPER_TEMPERATURE = 0.0              # Deterministic decode avoids slow retry ladders
+WHISPER_CONDITION_ON_PREVIOUS_TEXT = False
 LLM_MODEL             = "gpt-4o-mini"  # Streaming chat completions
 VISION_MODEL          = "gpt-4o-mini"  # All image and scene analysis queries
 

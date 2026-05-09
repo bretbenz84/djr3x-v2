@@ -1,6 +1,7 @@
 import io
 import logging
 import re
+import time
 import wave
 from collections import Counter
 from pathlib import Path
@@ -18,6 +19,42 @@ try:
     _MLX_AVAILABLE = True
 except ImportError:
     _MLX_AVAILABLE = False
+
+
+def _local_model_ready() -> bool:
+    return (_WHISPER_LOCAL_DIR / "config.json").exists()
+
+
+def _mlx_decode_options() -> dict:
+    return {
+        "initial_prompt": config.WHISPER_INITIAL_PROMPT,
+        "language": config.WHISPER_LANGUAGE,
+        "temperature": getattr(config, "WHISPER_TEMPERATURE", 0.0),
+        "condition_on_previous_text": bool(
+            getattr(config, "WHISPER_CONDITION_ON_PREVIOUS_TEXT", False)
+        ),
+    }
+
+
+def preload() -> bool:
+    """Warm local MLX Whisper so the first live utterance does not pay setup cost."""
+    if not _MLX_AVAILABLE:
+        return False
+    if not _local_model_ready():
+        return False
+    try:
+        start = time.monotonic()
+        dummy = np.zeros(int(config.AUDIO_SAMPLE_RATE * 0.25), dtype=np.float32)
+        mlx_whisper.transcribe(
+            dummy,
+            path_or_hf_repo=str(_WHISPER_LOCAL_DIR),
+            **_mlx_decode_options(),
+        )
+        logger.info("[transcription] preloaded local Whisper in %.3fs", time.monotonic() - start)
+        return True
+    except Exception as exc:
+        logger.warning("[transcription] local Whisper preload failed: %s", exc)
+        return False
 
 
 def _float32_to_wav_bytes(audio: np.ndarray, sample_rate: int = 16000) -> bytes:
@@ -112,7 +149,7 @@ def transcribe(audio_array: np.ndarray) -> str:
     """
     raw = ""
     backend = "none"
-    local_model_ready = (_WHISPER_LOCAL_DIR / "config.json").exists()
+    local_model_ready = _local_model_ready()
 
     if _MLX_AVAILABLE:
         if local_model_ready:
@@ -120,8 +157,7 @@ def transcribe(audio_array: np.ndarray) -> str:
                 result = mlx_whisper.transcribe(
                     audio_array,
                     path_or_hf_repo=str(_WHISPER_LOCAL_DIR),
-                    initial_prompt=config.WHISPER_INITIAL_PROMPT,
-                    language=config.WHISPER_LANGUAGE,
+                    **_mlx_decode_options(),
                 )
                 raw = result.get("text", "").strip()
                 backend = "mlx_whisper"
