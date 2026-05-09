@@ -25,6 +25,8 @@ _DEFAULTS = {
         "music_tempo": None,
         "laughter_detected": False,
         "applause_detected": False,
+        "scream_detected": False,
+        "sudden_loud_sound_detected": False,
         "group_chatter_detected": False,
         "group_chatter_until": None,
         "group_chatter_reason": None,

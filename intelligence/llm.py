@@ -577,6 +577,15 @@ def assemble_system_prompt(
     emotion = ws.get("self_state", {}).get("emotion", "neutral")
     emotion_block = [f"Rex's own emotion state: {emotion}."]
     try:
+        from intelligence import emotion_orchestrator as _emotion_orchestrator
+        emotion_block.append(
+            _emotion_orchestrator.prompt_directive(
+                _emotion_orchestrator.current_frame(emotion)
+            )
+        )
+    except Exception as exc:
+        _log.debug("emotion frame directive injection skipped: %s", exc)
+    try:
         from intelligence import empathy as _empathy
         directive = _empathy.get_directive(person_id)
         if directive:

@@ -20,7 +20,7 @@ from typing import Any
 import apikeys
 import config
 from intelligence.person_memory_targets import references_person_memory_target
-from intelligence import performance_plan
+from intelligence import performance_plan, rex_preferences
 from memory.name_validation import normalize_person_name
 from openai import OpenAI
 
@@ -142,6 +142,12 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         "performance.mood_pose",
         "performance",
         "User asks Rex to physically act or look like an emotion, such as embarrassed, annoyed, proud, suspicious, or thinking.",
+        executable=True,
+    ),
+    ActionSpec(
+        "character.preference_query",
+        "character",
+        "User asks Rex about Rex's own likes, dislikes, favorites, beliefs, taste, or preference between options.",
         executable=True,
     ),
     ActionSpec(
@@ -297,13 +303,22 @@ Rules:
   breaks. Use music.play only when the user asks to actually play audio.
 - Use performance.body_beat for explicit physical pose/gesture/dance/look/tilt
   requests. Put one of these exact names in args.body_beat:
+  agreement_nod, anger_flash, disagreement_shake, disbelief_stare,
+  disgust_recoil, giddy_wiggle, happy_bounce, sad_droop, surprise_pop,
   suspicious_glance, proud_dj_pose, offended_recoil, thinking_tilt,
   dramatic_visor_peek, tiny_victory_dance. Do not use it for ordinary
   "look at this" vision requests.
 - Use performance.mood_pose for emotion-driven physical acting requests such as
   "act embarrassed", "look annoyed", or "look proud". Put one of these exact
-  mood names in args.mood: embarrassed, annoyed, proud, suspicious, thinking,
-  happy, offended.
+  mood names in args.mood: agreement, disagreement, disbelief, disgusted,
+  embarrassed, annoyed, angry, proud, suspicious, thinking, happy, giddy,
+  sad, surprised, offended.
+- Use character.preference_query when the user asks Rex about Rex's own taste,
+  favorites, beliefs, or preferences: "do you like X?", "do you hate X?",
+  "how do you feel about X?", "what's your favorite X?", "do you prefer X or Y?".
+  Put args.topic when there is one, args.verb for like/hate/dislike/prefer
+  questions, args.mode="favorite" for favorites, and args.options for X-or-Y
+  comparisons. Do not use it when the human states their own preference.
 - Use vision.snapshot for privacy-sensitive requests to remember or save what
   Rex sees, such as "remember what you see" or "take a look and keep that in
   mind". Set requires_confirmation=true. Do not use it for ordinary "what do
@@ -470,6 +485,78 @@ _DJ_BIT_RE = re.compile(
 _BODY_BEAT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
+            r"\b(?:nod|agree|say\s+yes)\b|"
+            r"\b(?:do|perform|give|show)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:agreement\s+nod|yes\s+nod)\b",
+            re.IGNORECASE,
+        ),
+        "agreement_nod",
+    ),
+    (
+        re.compile(
+            r"\b(?:shake\s+(?:your\s+)?head|disagree|say\s+no)\b|"
+            r"\b(?:do|perform|give|show)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:disagreement\s+shake|head\s+shake|no\s+shake)\b",
+            re.IGNORECASE,
+        ),
+        "disagreement_shake",
+    ),
+    (
+        re.compile(
+            r"\b(?:look|act)\s+(?:surprised|shocked|startled)\b|"
+            r"\b(?:do|perform|give|show)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:surprise\s+pop|surprised\s+pop|shock\s+reaction)\b",
+            re.IGNORECASE,
+        ),
+        "surprise_pop",
+    ),
+    (
+        re.compile(
+            r"\b(?:look|act)\s+(?:disgusted|grossed\s+out)\b|"
+            r"\b(?:do|perform|give|show)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:disgust\s+recoil|grossed\s+out\s+recoil)\b",
+            re.IGNORECASE,
+        ),
+        "disgust_recoil",
+    ),
+    (
+        re.compile(
+            r"\b(?:look|act)\s+(?:angry|mad|furious)\b|"
+            r"\b(?:do|perform|give|show)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:anger\s+flash|angry\s+flash)\b",
+            re.IGNORECASE,
+        ),
+        "anger_flash",
+    ),
+    (
+        re.compile(
+            r"\b(?:look|act|be)\s+(?:giddy|joyful)\b|"
+            r"\b(?:do|perform|give|show)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:giddy\s+wiggle|giddy\s+joy)\b",
+            re.IGNORECASE,
+        ),
+        "giddy_wiggle",
+    ),
+    (
+        re.compile(
+            r"\b(?:look|act)\s+(?:sad|dejected)\b|"
+            r"\b(?:do|perform|give|show)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:sad\s+droop|sadness\s+droop)\b",
+            re.IGNORECASE,
+        ),
+        "sad_droop",
+    ),
+    (
+        re.compile(
+            r"\b(?:look|act)\s+(?:in\s+)?disbelief\b|"
+            r"\b(?:do|perform|give|show)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
+            r"(?:disbelief\s+stare|incredulous\s+stare)\b",
+            re.IGNORECASE,
+        ),
+        "disbelief_stare",
+    ),
+    (
+        re.compile(
             r"\b(?:do|perform|give|show|hit|drop)\s+(?:me|us)?\s*(?:a|an|the|your)?\s*"
             r"(?:tiny\s+)?victory\s+dance\b|"
             r"\b(?:celebrate|do\s+a\s+little\s+dance)\b",
@@ -523,6 +610,30 @@ _BODY_BEAT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
 )
 _MOOD_POSE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"\b(?:act|look|be)\s+(?:surprised|shocked|startled)\b", re.IGNORECASE),
+        "surprised",
+    ),
+    (
+        re.compile(r"\b(?:act|look|be)\s+(?:angry|mad|furious)\b", re.IGNORECASE),
+        "angry",
+    ),
+    (
+        re.compile(r"\b(?:act|look|be)\s+(?:disgusted|grossed\s+out)\b", re.IGNORECASE),
+        "disgusted",
+    ),
+    (
+        re.compile(r"\b(?:act|look|be)\s+(?:giddy|joyful)\b", re.IGNORECASE),
+        "giddy",
+    ),
+    (
+        re.compile(r"\b(?:act|look|be)\s+(?:sad|dejected)\b", re.IGNORECASE),
+        "sad",
+    ),
+    (
+        re.compile(r"\b(?:act|look|be)\s+(?:in\s+)?disbelief\b", re.IGNORECASE),
+        "disbelief",
+    ),
     (
         re.compile(r"\b(?:act|look|be)\s+(?:a\s+little\s+)?(?:embarrassed|sheepish|bashful)\b", re.IGNORECASE),
         "embarrassed",
@@ -766,6 +877,22 @@ def classify_explicit_performance(text: str) -> ActionDecision | None:
     return None
 
 
+def classify_explicit_character_preference(text: str) -> ActionDecision | None:
+    """Classify obvious questions about Rex's own preferences without an LLM call."""
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return None
+    parsed = rex_preferences.extract_preference_query(cleaned)
+    if not parsed:
+        return None
+    return ActionDecision(
+        action="character.preference_query",
+        confidence=0.95,
+        args=parsed,
+        reason="explicit Rex preference/opinion question",
+    )
+
+
 def _coerce_decision(payload: Any) -> ActionDecision:
     if not isinstance(payload, dict):
         return ActionDecision(reason="router returned non-object JSON")
@@ -828,6 +955,18 @@ def _coerce_decision(payload: Any) -> ActionDecision:
             args = dict(args)
             args["mood"] = canonical
         else:
+            confidence = min(confidence, 0.45)
+    if action == "character.preference_query":
+        parsed = rex_preferences.extract_preference_query(
+            str(args.get("text") or args.get("utterance") or "")
+        )
+        if parsed:
+            merged = dict(parsed)
+            merged.update(args)
+            args = merged
+        topic = str(args.get("topic") or args.get("domain") or "").strip()
+        options = args.get("options") or []
+        if not topic and not options:
             confidence = min(confidence, 0.45)
 
     reason = str(payload.get("reason") or "").strip()
@@ -1019,6 +1158,9 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
     explicit_performance = classify_explicit_performance(text)
     if explicit_performance is not None:
         return _apply_context_overrides(explicit_performance, text, context)
+    explicit_character_preference = classify_explicit_character_preference(text)
+    if explicit_character_preference is not None:
+        return _apply_context_overrides(explicit_character_preference, text, context)
 
     max_context_chars = int(getattr(config, "ACTION_ROUTER_MAX_CONTEXT_CHARS", 5000))
     user_payload = {

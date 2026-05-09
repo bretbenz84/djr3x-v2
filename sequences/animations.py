@@ -26,6 +26,7 @@ import config
 import state as _state_module
 from state import State as _State
 from hardware import servos, leds_head, leds_chest
+from intelligence import emotion_orchestrator
 from world_state import world_state
 
 _log = logging.getLogger(__name__)
@@ -107,9 +108,18 @@ HEROARM_BACK    = 7200
 _BODY_BEAT_HEAD_CHANNELS = (0, 1, 2, 3)
 _BODY_BEAT_ARM_CHANNELS = (4, 5, 6, 7)
 _BODY_BEAT_CHANNELS: dict[str, tuple[int, ...]] = {
+    "agreement_nod": _BODY_BEAT_HEAD_CHANNELS,
+    "anger_flash": _BODY_BEAT_HEAD_CHANNELS + (4, 5, 7),
+    "disagreement_shake": _BODY_BEAT_HEAD_CHANNELS,
+    "disbelief_stare": _BODY_BEAT_HEAD_CHANNELS,
+    "disgust_recoil": _BODY_BEAT_HEAD_CHANNELS + (5, 7),
     "suspicious_glance": _BODY_BEAT_HEAD_CHANNELS,
+    "giddy_wiggle": _BODY_BEAT_HEAD_CHANNELS + _BODY_BEAT_ARM_CHANNELS,
+    "happy_bounce": _BODY_BEAT_HEAD_CHANNELS + (4, 7),
     "proud_dj_pose": _BODY_BEAT_HEAD_CHANNELS + _BODY_BEAT_ARM_CHANNELS,
     "offended_recoil": _BODY_BEAT_HEAD_CHANNELS + (4, 5, 7),
+    "sad_droop": _BODY_BEAT_HEAD_CHANNELS,
+    "surprise_pop": _BODY_BEAT_HEAD_CHANNELS,
     "thinking_tilt": _BODY_BEAT_HEAD_CHANNELS,
     "dramatic_visor_peek": _BODY_BEAT_HEAD_CHANNELS,
     "tiny_victory_dance": _BODY_BEAT_HEAD_CHANNELS + _BODY_BEAT_ARM_CHANNELS,
@@ -288,16 +298,226 @@ def _beat_tiny_victory_dance(snapshot: dict[int, int]) -> None:
     _restore_body_pose(snapshot)
 
 
+def _beat_surprise_pop(snapshot: dict[int, int]) -> None:
+    # Eyebrow equivalent: visor snaps fully open while the head pops up.
+    _move_body(
+        {
+            0: NECK_CENTER,
+            1: HEADLIFT_HIGH,
+            2: HEADTILT_UP,
+            3: VISOR_OPEN,
+        },
+        step_us=150,
+        step_delay=0.004,
+    )
+    time.sleep(0.20)
+    _move_body({1: HEADLIFT_UP, 2: HEADTILT_NEUTRAL}, step_us=90, step_delay=0.006)
+    time.sleep(0.08)
+    _restore_body_pose(snapshot)
+
+
+def _beat_anger_flash(snapshot: dict[int, int]) -> None:
+    side = random.choice([-1, 1])
+    _move_body(
+        {
+            0: NECK_CENTER + side * 320,
+            1: HEADLIFT_UP,
+            2: HEADTILT_DOWN,
+            3: VISOR_NEUTRAL,
+            4: ELBOW_UP,
+            5: HAND_RIGHT if side > 0 else HAND_LEFT,
+            7: HEROARM_FORWARD,
+        },
+        step_us=130,
+        step_delay=0.005,
+    )
+    time.sleep(0.10)
+    for turn in (-side, side, -side):
+        _move_body({0: NECK_CENTER + turn * 480}, step_us=150, step_delay=0.004)
+        time.sleep(0.045)
+    _move_body({3: VISOR_HALF, 2: HEADTILT_SLIGHT_DOWN}, step_us=85, step_delay=0.006)
+    time.sleep(0.08)
+    _restore_body_pose(snapshot)
+
+
+def _beat_disgust_recoil(snapshot: dict[int, int]) -> None:
+    side = random.choice([-1, 1])
+    away_hand = HAND_LEFT if side > 0 else HAND_RIGHT
+    _move_body(
+        {
+            0: NECK_CENTER + side * 900,
+            1: HEADLIFT_UP,
+            2: HEADTILT_DOWN,
+            3: VISOR_NEUTRAL,
+            5: away_hand,
+            7: HEROARM_BACK,
+        },
+        step_us=115,
+        step_delay=0.006,
+    )
+    time.sleep(0.18)
+    _move_body({0: NECK_CENTER + side * 1350, 3: VISOR_HALF}, step_us=100, step_delay=0.006)
+    time.sleep(0.12)
+    _restore_body_pose(snapshot)
+
+
+def _beat_happy_bounce(snapshot: dict[int, int]) -> None:
+    _move_body(
+        {
+            0: NECK_CENTER,
+            1: HEADLIFT_UP,
+            2: HEADTILT_SLIGHT_UP,
+            3: VISOR_OPEN,
+            4: ELBOW_UP,
+            7: HEROARM_FORWARD,
+        },
+        step_us=95,
+        step_delay=0.006,
+    )
+    for lift in (HEADLIFT_HIGH, HEADLIFT_NEUTRAL + 250, HEADLIFT_UP):
+        _move_body({1: lift}, step_us=120, step_delay=0.004)
+        time.sleep(0.055)
+    _restore_body_pose(snapshot)
+
+
+def _beat_giddy_wiggle(snapshot: dict[int, int]) -> None:
+    _move_body(
+        {
+            1: HEADLIFT_UP,
+            2: HEADTILT_SLIGHT_UP,
+            3: VISOR_OPEN,
+            4: ELBOW_UP,
+            5: HAND_RIGHT,
+            6: POKERARM_OUT,
+            7: HEROARM_FORWARD,
+        },
+        step_us=115,
+        step_delay=0.004,
+    )
+    for side in (-1, 1, -1, 1, -1):
+        _move_body(
+            {
+                0: NECK_CENTER + side * 460,
+                1: HEADLIFT_HIGH if side > 0 else HEADLIFT_UP,
+                5: HAND_RIGHT if side > 0 else HAND_LEFT,
+                6: POKERARM_OUT if side > 0 else POKERARM_IN,
+            },
+            step_us=145,
+            step_delay=0.0035,
+        )
+        time.sleep(0.045)
+    _restore_body_pose(snapshot)
+
+
+def _beat_disbelief_stare(snapshot: dict[int, int]) -> None:
+    side = random.choice([-1, 1])
+    _move_body(
+        {
+            0: NECK_CENTER + side * 240,
+            1: HEADLIFT_NEUTRAL + 220,
+            2: HEADTILT_DOWN,
+            3: VISOR_OPEN,
+        },
+        step_us=70,
+        step_delay=0.010,
+    )
+    time.sleep(0.28)
+    _move_body({0: NECK_CENTER - side * 240}, step_us=95, step_delay=0.006)
+    time.sleep(0.08)
+    _move_body({0: NECK_CENTER + side * 140}, step_us=95, step_delay=0.006)
+    time.sleep(0.10)
+    _restore_body_pose(snapshot)
+
+
+def _beat_agreement_nod(snapshot: dict[int, int]) -> None:
+    _move_body({3: VISOR_OPEN, 1: HEADLIFT_UP, 2: HEADTILT_SLIGHT_UP}, step_us=95, step_delay=0.005)
+    time.sleep(0.05)
+    for _ in range(2):
+        _move_body({1: HEADLIFT_NEUTRAL + 160, 2: HEADTILT_SLIGHT_DOWN}, step_us=120, step_delay=0.004)
+        time.sleep(0.055)
+        _move_body({1: HEADLIFT_UP, 2: HEADTILT_SLIGHT_UP}, step_us=120, step_delay=0.004)
+        time.sleep(0.055)
+    _restore_body_pose(snapshot)
+
+
+def _beat_disagreement_shake(snapshot: dict[int, int]) -> None:
+    _move_body({1: HEADLIFT_NEUTRAL + 140, 2: HEADTILT_SLIGHT_DOWN, 3: VISOR_HALF}, step_us=85, step_delay=0.006)
+    for side in (-1, 1, -1, 1):
+        _move_body({0: NECK_CENTER + side * 1150}, step_us=145, step_delay=0.0035)
+        time.sleep(0.050)
+    _move_body({0: NECK_CENTER}, step_us=120, step_delay=0.004)
+    time.sleep(0.04)
+    _restore_body_pose(snapshot)
+
+
+def _beat_sad_droop(snapshot: dict[int, int]) -> None:
+    _move_body(
+        {
+            0: NECK_CENTER,
+            1: HEADLIFT_DOWN,
+            2: HEADTILT_SLIGHT_DOWN,
+            3: VISOR_HALF,
+        },
+        step_us=45,
+        step_delay=0.018,
+    )
+    time.sleep(0.38)
+    _restore_body_pose(snapshot, step_us=45, step_delay=0.016)
+
+
 _BODY_BEAT_RUNNERS = {
+    "agreement_nod": _beat_agreement_nod,
+    "anger_flash": _beat_anger_flash,
+    "disagreement_shake": _beat_disagreement_shake,
+    "disbelief_stare": _beat_disbelief_stare,
+    "disgust_recoil": _beat_disgust_recoil,
+    "giddy_wiggle": _beat_giddy_wiggle,
+    "happy_bounce": _beat_happy_bounce,
     "suspicious_glance": _beat_suspicious_glance,
     "proud_dj_pose": _beat_proud_dj_pose,
     "offended_recoil": _beat_offended_recoil,
+    "sad_droop": _beat_sad_droop,
+    "surprise_pop": _beat_surprise_pop,
     "thinking_tilt": _beat_thinking_tilt,
     "dramatic_visor_peek": _beat_dramatic_visor_peek,
     "tiny_victory_dance": _beat_tiny_victory_dance,
 }
 
 _BODY_BEAT_ALIASES = {
+    "agree": "agreement_nod",
+    "agreement": "agreement_nod",
+    "yes": "agreement_nod",
+    "yes_nod": "agreement_nod",
+    "nod": "agreement_nod",
+    "angry": "anger_flash",
+    "anger": "anger_flash",
+    "mad": "anger_flash",
+    "furious": "anger_flash",
+    "disagree": "disagreement_shake",
+    "disagreement": "disagreement_shake",
+    "no": "disagreement_shake",
+    "nope": "disagreement_shake",
+    "headshake": "disagreement_shake",
+    "head_shake": "disagreement_shake",
+    "disbelief": "disbelief_stare",
+    "incredulous": "disbelief_stare",
+    "skeptical_stare": "disbelief_stare",
+    "disgust": "disgust_recoil",
+    "disgusted": "disgust_recoil",
+    "grossed_out": "disgust_recoil",
+    "giddy": "giddy_wiggle",
+    "giddy_joy": "giddy_wiggle",
+    "joy": "giddy_wiggle",
+    "glee": "giddy_wiggle",
+    "happy": "happy_bounce",
+    "happy_bounce": "happy_bounce",
+    "sad": "sad_droop",
+    "sadness": "sad_droop",
+    "dejected": "sad_droop",
+    "surprise": "surprise_pop",
+    "surprised": "surprise_pop",
+    "shocked": "surprise_pop",
+    "startled": "surprise_pop",
     "suspicious": "suspicious_glance",
     "side_eye": "suspicious_glance",
     "wrong_answer": "suspicious_glance",
@@ -652,18 +872,26 @@ def speech_start(emotion: str = "neutral") -> None:
     _speaking.set()
     threading.Thread(target=_speaking_loop, daemon=True, name="speech_gestures").start()
 
-    leds_chest.speak(emotion)
-    leds_head.speak(emotion)
-    leds_head.set_eye_emotion(emotion)
-    servos.set_breathing_emotion(emotion)
+    frame = emotion_orchestrator.frame_for_speech(emotion)
+    led_emotion = frame.led_style
+    emotion_orchestrator.publish_frame(frame)
 
-    if emotion == "excited":
+    leds_chest.speak(led_emotion)
+    leds_head.speak(led_emotion)
+    leds_head.set_eye_emotion(led_emotion)
+    servos.set_breathing_emotion(led_emotion)
+
+    if frame.affect in {"excited", "giddy"}:
         servos.set_servos({3: VISOR_OPEN, 1: HEADLIFT_UP, 2: HEADTILT_SLIGHT_UP})
-    elif emotion == "sad":
+    elif frame.affect == "surprised":
+        servos.set_servos({3: VISOR_OPEN, 1: HEADLIFT_HIGH, 2: HEADTILT_UP})
+    elif frame.affect in {"sad", "sleepy"}:
         servos.set_servos({3: VISOR_HALF, 1: HEADLIFT_DOWN, 2: HEADTILT_SLIGHT_DOWN})
-    elif emotion == "angry":
+    elif frame.affect == "angry":
         servos.set_servos({3: VISOR_HALF, 1: HEADLIFT_NEUTRAL})
-    elif emotion == "happy":
+    elif frame.affect == "disgusted":
+        servos.set_servos({3: VISOR_HALF, 1: HEADLIFT_UP, 2: HEADTILT_SLIGHT_DOWN})
+    elif frame.affect == "happy":
         servos.set_servos({3: VISOR_OPEN, 1: HEADLIFT_UP})
     else:
         servos.set_servos({3: VISOR_HALF, 1: HEADLIFT_NEUTRAL})

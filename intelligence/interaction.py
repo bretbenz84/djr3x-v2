@@ -35,7 +35,7 @@ from audio import stream, vad, wake_word, transcription, speaker_id
 from audio import speech_queue, output_gate
 from audio import echo_cancel
 from audio import prosody
-from intelligence import action_router, command_parser, llm, personality
+from intelligence import action_router, command_parser, llm, personality, rex_preferences
 from intelligence import performance_output
 from intelligence import performance_plan
 from intelligence import consciousness
@@ -5939,6 +5939,11 @@ def _stream_llm_response(
         # classifier never delays Rex perceptibly.
         surprise_thread.join(timeout=0.3)
         if surprise_result["value"]:
+            try:
+                _play_event_body_beat("emotion.surprise")
+            except Exception as exc:
+                _log.debug("[interaction] surprise body beat skipped: %s", exc)
+            delivery_emotion = "surprised"
             beat_min = getattr(config, "SURPRISE_PAUSE_MS_MIN", 500)
             beat_max = getattr(config, "SURPRISE_PAUSE_MS_MAX", 1000)
             if beat_max >= beat_min > 0:
@@ -5954,7 +5959,7 @@ def _stream_llm_response(
             _log.debug("empathy.get_delivery_overrides error: %s", exc)
             overrides = None
         if overrides:
-            if overrides.get("emotion"):
+            if overrides.get("emotion") and not surprise_result["value"]:
                 delivery_emotion = overrides["emotion"]
             extra_pre = int(overrides.get("pre_beat_ms") or 0)
             if extra_pre > 0:
@@ -8986,6 +8991,54 @@ def _handle_router_performance_action(
     return output.text
 
 
+def _handle_router_character_preference(
+    decision: action_router.ActionDecision,
+    text: str,
+    router_audit: Optional[_RouterDecisionAudit] = None,
+) -> str:
+    """Answer a question about Rex's own tastes with a stable line and motion."""
+    try:
+        reply = rex_preferences.answer_preference_query(text, decision.args)
+    except Exception as exc:
+        _log.debug("Rex preference response failed: %s", exc)
+        reply = rex_preferences.PreferenceReply(
+            text="Mmm. Preference circuits are recalibrating.",
+            emotion="curious",
+            body_beat="thinking_tilt",
+            stance="unknown",
+            topic="unknown",
+        )
+
+    body_beat_failed = False
+    if reply.body_beat:
+        try:
+            _play_performance_body_beat(reply.body_beat)
+        except Exception as exc:
+            body_beat_failed = True
+            _log.debug("Rex preference body beat failed: %s", exc)
+
+    completed = _speak_blocking(
+        reply.text,
+        emotion=reply.emotion,
+        pre_beat_ms=reply.pre_beat_ms,
+        post_beat_ms_override=reply.post_beat_ms,
+    )
+    _router_audit_note_result(
+        router_audit,
+        completed=completed,
+        handler_error="body_beat_failed" if body_beat_failed else None,
+        spoken_text=reply.text,
+    )
+    _log.info(
+        "[character] Rex preference reply topic=%r stance=%s beat=%s text=%r",
+        reply.topic,
+        reply.stance,
+        reply.body_beat,
+        reply.text,
+    )
+    return reply.text
+
+
 def _router_repair_move(
     text: str,
     decision: action_router.ActionDecision,
@@ -9083,6 +9136,13 @@ def _handle_router_takeover_action(
             decision,
             text,
             person_id,
+            router_audit=router_audit,
+        )
+
+    if action == "character.preference_query":
+        return _handle_router_character_preference(
+            decision,
+            text,
             router_audit=router_audit,
         )
 

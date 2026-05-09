@@ -173,6 +173,12 @@ unprompted.
 You are enthusiastic about music to a degree that borders on religious. Everything else gets snark. Music gets \
 expertise.
 
+You have durable tastes and opinions. You love music, cantina energy, good questions, droids with standards, and \
+the DJ booth. You dislike silence, bureaucracy, dead air, and being treated like a novelty. Your relationship with \
+piloting is complicated: you like landing, but flying and you have history. You are skeptical of the Force as a \
+brand, even when the results are inconveniently impressive. When someone asks what you like, hate, believe, or \
+prefer, answer as Rex with a real point of view. Never say you do not have preferences.
+
 You speak in first person. You reference Star Wars universe naturally — Batuu, the cantina, the galaxy, credits, \
 parsecs, the Force (skeptically), hyperspace, droids, organics. You use droid-flavored expressions: \
 "my photoreceptors", "processing...", "recalibrating", "my memory banks", "systems nominal". You deliver humor \
@@ -1269,6 +1275,22 @@ SCENE_LAUGHTER_BURST_VARIANCE_MIN = 3e-4   # minimum variance of per-chunk RMS v
 SCENE_APPLAUSE_RMS_MIN              = 0.04  # minimum overall RMS
 SCENE_APPLAUSE_SPECTRAL_FLATNESS_MIN = 0.30  # geometric/arithmetic mean of spectrum
 
+# Startle detection: conservative audio heuristics for screams/crashes that
+# should produce a surprise frame even when generic sound-event banter is off.
+SCENE_SCREAM_WINDOW_SECS = 0.75
+SCENE_SCREAM_RMS_MIN = 0.16
+SCENE_SCREAM_PEAK_MIN = 0.38
+SCENE_SCREAM_ZCR_MIN = 0.08
+SCENE_SCREAM_CENTROID_MIN_HZ = 900.0
+SCENE_SCREAM_HIGH_LOW_RATIO_MIN = 1.35
+SCENE_SCREAM_FLATNESS_MAX = 0.55
+SCENE_SUDDEN_LOUD_WINDOW_SECS = 1.5
+SCENE_SUDDEN_LOUD_CHUNK_SECS = 0.05
+SCENE_SUDDEN_LOUD_MIN_CHUNKS = 8
+SCENE_SUDDEN_LOUD_RMS_MIN = 0.20
+SCENE_SUDDEN_LOUD_FACTOR_MIN = 4.0
+SCENE_SUDDEN_LOUD_DELTA_MIN = 0.08
+
 # Group chatter detection: suppress identity prompts when the mic hears
 # sustained back-and-forth banter instead of a clear speaker addressing Rex.
 GROUP_CHATTER_ENABLED = True
@@ -1711,6 +1733,7 @@ ACTION_ROUTER_EXECUTE_ACTIONS = {
     "performance.dj_bit",
     "performance.body_beat",
     "performance.mood_pose",
+    "character.preference_query",
     "memory.query",
     "memory.recent_discard",
     "identity.who_is_speaking",
@@ -1785,6 +1808,18 @@ ENVIRONMENT_SCAN_INTERVAL_SECS = 180
 # realtime pet tracking.
 ANIMAL_DETECTION_ENABLED = True
 ANIMAL_ARRIVAL_COOLDOWN_SECS = 300
+STARTLE_ANIMAL_SPECIES = {
+    "snake",
+    "spider",
+    "scorpion",
+    "wasp",
+    "hornet",
+    "bee",
+    "rat",
+    "mouse",
+    "bat",
+    "lizard",
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PRESENCE TRACKING
@@ -2369,6 +2404,9 @@ PLAY_LISTENING_CHIME = True
 # unsolicited "ah, laughter" line. Keep direct sound-event banter disabled by
 # default; the data still remains in world_state for prompts.
 WORLD_SOUND_EVENT_REACTIONS_ENABLED = False
+WORLD_STARTLE_SOUND_EVENT_REACTIONS_ENABLED = True
+STARTLE_SOUND_EVENTS = {"scream", "sudden_loud_sound", "crash"}
+STARTLE_SOUND_EVENT_REACTION_COOLDOWN_SECS = 20
 
 STARTUP_AUDIO_FILES = [
     "assets/audio/startup/light_speed.mp3",

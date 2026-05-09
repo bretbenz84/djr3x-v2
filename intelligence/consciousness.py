@@ -29,6 +29,7 @@ import state as state_module
 from state import State
 from world_state import world_state
 from awareness.situation import assessor as _situation_assessor, SituationProfile
+from intelligence import emotion_orchestrator
 from intelligence import profile_questions
 from utils import conv_log
 
@@ -256,6 +257,7 @@ _first_sight_seen_at: dict = {}
 # animal_1/animal_2 IDs returned by the vision prompt.
 _animal_seen_signatures: set[str] = set()
 _animal_reacted_at: dict[str, float] = {}
+_last_startle_sound_reaction_at: float = 0.0
 
 # Engagement tracking: the person_db_id Rex is currently talking with, if any.
 # Presence reactions for this person are suppressed while the engagement is open.
@@ -3460,7 +3462,7 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
     Compare current WorldState to _last_snapshot. For each notable change,
     generate and speak a short in-character reaction. Never fires in QUIET/SHUTDOWN.
     """
-    global _acknowledged_dates, _last_weather_reaction_at
+    global _acknowledged_dates, _last_weather_reaction_at, _last_startle_sound_reaction_at
 
     if profile.suppress_proactive or profile.rapid_exchange:
         return
@@ -3489,6 +3491,41 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                 "label": label,
                 "metadata": metadata or {},
             })
+
+        def _frame_metadata(frame) -> dict:
+            return {"emotion_frame": frame.as_dict()}
+
+        def _add_emotion_trigger(
+            prompt: str,
+            frame,
+            *,
+            purpose: str = "world_reaction",
+            label: str = "",
+            metadata: Optional[dict] = None,
+        ) -> None:
+            merged = _frame_metadata(frame)
+            if metadata:
+                merged.update(metadata)
+            _add_trigger(
+                prompt,
+                frame.affect,
+                purpose=purpose,
+                label=label,
+                metadata=merged,
+            )
+
+        def _prime_emotion_trigger(metadata: dict) -> None:
+            data = (metadata or {}).get("emotion_frame")
+            if not isinstance(data, dict):
+                return
+            frame = emotion_orchestrator.frame_for_speech(data)
+            emotion_orchestrator.publish_frame(frame)
+            if frame.body_beat:
+                try:
+                    from sequences import animations
+                    animations.play_body_beat(frame.body_beat)
+                except Exception as exc:
+                    _log.debug("emotion body beat skipped: %s", exc)
 
         # New person entered frame. During startup, known-person greetings own
         # the first line; crowd-count flicker should not steal the opening with
@@ -3533,7 +3570,14 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                 continue
             _animal_seen_signatures.add(signature)
             _animal_reacted_at[signature] = time.monotonic()
-            if species == "dog":
+            frame = emotion_orchestrator.frame_for_event("animal_detected", species=species)
+            if emotion_orchestrator.is_startling_animal(species):
+                prompt = (
+                    f"You just spotted a {species} in your immediate environment at {position}. "
+                    "React like a startled living thing first: a tiny yelp, squeal, or clipped "
+                    "one-line Rex reaction. Do not ask a question. One line only."
+                )
+            elif species == "dog":
                 prompt = (
                     f"You just spotted a dog in your immediate environment at {position}. "
                     "One short in-character Rex reaction — delighted but dry. Do not ask "
@@ -3542,10 +3586,10 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
             else:
                 prompt = (
                     f"You just spotted a {species} in your immediate environment at {position}. "
-                    "One short in-character reaction — genuinely surprised, unmistakably Rex. "
+                    "One short in-character reaction — curious, unmistakably Rex. "
                     "One line only."
                 )
-            _add_trigger(prompt, "excited", label=f"animal spotted: {species}")
+            _add_emotion_trigger(frame=frame, prompt=prompt, label=f"animal spotted: {species}")
 
         # Crowd size label changed significantly
         prev_label = _last_snapshot.get("crowd", {}).get("count_label")
@@ -3561,11 +3605,29 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
         # Notable sound event
         prev_sound = _last_snapshot.get("audio_scene", {}).get("last_sound_event")
         curr_sound = snapshot.get("audio_scene", {}).get("last_sound_event")
-        if (
-            bool(getattr(config, "WORLD_SOUND_EVENT_REACTIONS_ENABLED", False))
-            and curr_sound
-            and curr_sound != prev_sound
-        ):
+        if curr_sound and curr_sound != prev_sound:
+            startle_events = set(getattr(config, "STARTLE_SOUND_EVENTS", {"scream", "sudden_loud_sound", "crash"}))
+            is_startle = curr_sound in startle_events
+            startle_allowed = bool(
+                getattr(config, "WORLD_STARTLE_SOUND_EVENT_REACTIONS_ENABLED", True)
+            )
+            generic_allowed = bool(getattr(config, "WORLD_SOUND_EVENT_REACTIONS_ENABLED", False))
+            cooldown = float(getattr(config, "STARTLE_SOUND_EVENT_REACTION_COOLDOWN_SECS", 20.0))
+            if (
+                is_startle
+                and startle_allowed
+                and (time.monotonic() - _last_startle_sound_reaction_at) >= cooldown
+            ):
+                frame = emotion_orchestrator.frame_for_event(curr_sound)
+                _add_emotion_trigger(
+                    f"You just registered a sudden startle sound event: '{curr_sound}'. "
+                    "React like something genuinely startled you: a tiny yelp, squeal, "
+                    "or very short Rex line. Do not ask a question. One line only.",
+                    frame,
+                    label=f"startle sound: {curr_sound}",
+                    metadata={"startle_sound_event": curr_sound},
+                )
+            elif generic_allowed:
                 _add_trigger(
                     f"You just registered a notable sound event: '{curr_sound}'. "
                     "One punchy in-character line reacting to it.",
@@ -3651,13 +3713,22 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                     )
 
         if triggers:
-            trigger = random.choice(triggers)
+            surprise_triggers = [
+                t for t in triggers
+                if isinstance((t.get("metadata") or {}).get("emotion_frame"), dict)
+                and (t.get("metadata") or {}).get("emotion_frame", {}).get("affect") == "surprised"
+            ]
+            trigger = random.choice(surprise_triggers or triggers)
+            metadata = trigger.get("metadata") or {}
+            if metadata.get("startle_sound_event"):
+                _last_startle_sound_reaction_at = time.monotonic()
+            _prime_emotion_trigger(metadata)
             _generate_and_speak(
                 trigger["prompt"],
                 trigger["emotion"],
                 purpose=trigger.get("purpose") or "world_reaction",
                 label=trigger.get("label") or "",
-                metadata=trigger.get("metadata") or None,
+                metadata=metadata or None,
             )
 
     except Exception as exc:
@@ -7863,6 +7934,7 @@ def start() -> None:
     global _last_face_seen_at
     global _smile_reaction_watch, _last_smile_reaction_at
     global _last_facial_expression_reaction_at
+    global _last_startle_sound_reaction_at
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
@@ -7885,6 +7957,7 @@ def start() -> None:
     _last_presence_reaction_at.clear()
     _animal_seen_signatures.clear()
     _animal_reacted_at.clear()
+    _last_startle_sound_reaction_at = 0.0
     _acknowledged_weather_signatures.clear()
     _last_weather_reaction_at = 0.0
     _emotional_checkin_fired.clear()
@@ -7990,6 +8063,7 @@ def stop() -> None:
     global _face_tracking_last_error_y, _face_tracking_last_error_at
     global _last_face_seen_at
     global _smile_reaction_watch
+    global _last_startle_sound_reaction_at
     _stop_event.set()
     _pending_identity_prompt.clear()
     _identity_prompt_in_flight.clear()
@@ -7999,6 +8073,7 @@ def stop() -> None:
     _first_sight_seen_at.clear()
     _animal_seen_signatures.clear()
     _animal_reacted_at.clear()
+    _last_startle_sound_reaction_at = 0.0
     _group_turn_speaker_times.clear()
     _group_turn_visible_since.clear()
     _group_turn_invited_at.clear()

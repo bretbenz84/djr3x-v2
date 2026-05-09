@@ -56,6 +56,7 @@ _speech_hand_counter = 0
 _speech_elbow_target: int | None = None
 _speech_elbow_direction = 1
 _next_speech_elbow_at = 0.0
+_speech_emotion_frame: dict = {}
 
 # ── Channel index lookups ──────────────────────────────────────────────────────
 
@@ -88,6 +89,42 @@ def _get_config_int(name: str, default: int) -> int:
 
 def _get_config_float(name: str, default: float) -> float:
     return float(getattr(config, name, default))
+
+
+def _motion_float(motion: dict, key: str, default: float) -> float:
+    try:
+        return float((motion or {}).get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _resolve_speech_emotion_frame(emotion) -> dict:
+    if isinstance(emotion, dict):
+        return dict(emotion)
+    try:
+        as_dict = getattr(emotion, "as_dict", None)
+        if callable(as_dict):
+            return dict(as_dict())
+    except Exception:
+        pass
+    try:
+        from intelligence import emotion_orchestrator
+        return emotion_orchestrator.frame_for_speech(str(emotion or "neutral")).as_dict()
+    except Exception:
+        return {
+            "affect": str(emotion or "neutral"),
+            "led_style": str(emotion or "neutral"),
+            "motion_style": "neutral",
+            "speech_motion": {},
+        }
+
+
+def _scaled_profile_value(base: int, mult: float) -> int:
+    try:
+        value = int(round(float(base) * float(mult)))
+    except (TypeError, ValueError):
+        value = base
+    return max(1, min(255, value))
 
 
 def _gui_servo_sim_enabled() -> bool:
@@ -562,37 +599,57 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
     """Capture the current gaze/pose and prepare speech-reactive servo motion."""
     global _last_speech_move_at, _speech_hand_counter
     global _speech_elbow_target, _speech_elbow_direction, _next_speech_elbow_at
+    global _speech_emotion_frame
 
     if _program_servo_updates_blocked():
         return
 
+    frame = _resolve_speech_emotion_frame(emotion)
+    motion = frame.get("speech_motion") or {}
+
     pause_arm_idle()
     with _lock:
+        _speech_emotion_frame = frame
         _speech_baseline.clear()
         for channel in (_channel("neck"), _channel("headlift"), _channel("headtilt")):
-            _speech_baseline[channel] = _baseline_position(channel)
+            baseline = _baseline_position(channel)
+            if channel == _channel("headlift"):
+                baseline += int(_motion_float(motion, "lift_bias_qus", 0.0))
+            elif channel == _channel("headtilt"):
+                baseline += int(_motion_float(motion, "tilt_bias_qus", 0.0))
+            _speech_baseline[channel] = _clamp(channel, baseline)
         _last_speech_move_at = 0.0
         _speech_hand_counter = 0
         _speech_elbow_target = None
         _speech_elbow_direction = 1
         _next_speech_elbow_at = 0.0
     _speech_active.set()
+    set_breathing_emotion(str(frame.get("led_style") or frame.get("affect") or "neutral"))
 
     if SERVOS_ENABLED:
+        head_speed = _scaled_profile_value(
+            _get_config_int("SERVO_SPEECH_HEAD_SPEED", 45),
+            _motion_float(motion, "head_speed_mult", 1.0),
+        )
+        arm_speed = _scaled_profile_value(
+            _get_config_int("SERVO_SPEECH_ARM_SPEED", 35),
+            _motion_float(motion, "arm_speed_mult", 1.0),
+        )
         set_motion_profile(
             config.HEAD_CHANNELS,
-            speed=_get_config_int("SERVO_SPEECH_HEAD_SPEED", 45),
+            speed=head_speed,
             acceleration=_get_config_int("SERVO_SPEECH_ACCELERATION", 8),
         )
         set_motion_profile(
             config.ARM_CHANNELS,
-            speed=_get_config_int("SERVO_SPEECH_ARM_SPEED", 35),
+            speed=arm_speed,
             acceleration=_get_config_int("SERVO_SPEECH_ACCELERATION", 8),
         )
 
 
 def end_speech_motion() -> None:
     """Return speech-owned channels toward their baseline and release arms."""
+    global _speech_emotion_frame
     _speech_active.clear()
     try:
         if SERVOS_ENABLED:
@@ -615,6 +672,8 @@ def end_speech_motion() -> None:
             baseline[_channel("heroarm")] = config.SERVO_CHANNELS["heroarm"]["neutral"]
             set_servos(baseline)
     finally:
+        _speech_emotion_frame = {}
+        set_breathing_emotion("neutral")
         resume_arm_idle()
 
 
@@ -636,13 +695,28 @@ def speech_reactive_move(intensity: float) -> None:
         return
 
     now = time.monotonic()
-    interval = max(0.04, _get_config_float("SERVO_SPEECH_UPDATE_INTERVAL_SECS", 0.12))
+    with _lock:
+        frame = dict(_speech_emotion_frame)
+    motion = frame.get("speech_motion") if isinstance(frame.get("speech_motion"), dict) else {}
+    interval = max(
+        0.035,
+        _get_config_float("SERVO_SPEECH_UPDATE_INTERVAL_SECS", 0.12)
+        * _motion_float(motion, "interval_scale", 1.0),
+    )
     if now - _last_speech_move_at < interval:
         return
     _last_speech_move_at = now
 
     intensity = max(0.0, min(1.0, float(intensity)))
-    arm_intensity = min(1.0, intensity * _get_config_float("SERVO_SPEECH_ARM_INTENSITY_MULT", 1.8))
+    frame_intensity = _motion_float(frame, "intensity", 0.35)
+    expression_gain = 0.70 + 0.45 * max(0.0, min(1.0, frame_intensity))
+    expressive_intensity = min(1.0, intensity * expression_gain)
+    arm_intensity = min(
+        1.0,
+        intensity
+        * _get_config_float("SERVO_SPEECH_ARM_INTENSITY_MULT", 1.8)
+        * _motion_float(motion, "arm_intensity_mult", 1.0),
+    )
 
     neck_ch = _channel("neck")
     lift_ch = _channel("headlift")
@@ -657,9 +731,21 @@ def speech_reactive_move(intensity: float) -> None:
         base_lift = _clamp(lift_ch, _speech_baseline.get(lift_ch, _baseline_position(lift_ch)))
         base_tilt = _clamp(tilt_ch, _speech_baseline.get(tilt_ch, _baseline_position(tilt_ch)))
 
-    neck_wobble = int(_get_config_int("SERVO_SPEECH_NECK_WOBBLE_QUS", 260) * (0.35 + intensity))
-    lift_wobble = int(_get_config_int("SERVO_SPEECH_LIFT_WOBBLE_QUS", 160) * (0.35 + intensity))
-    tilt_wobble = int(_get_config_int("SERVO_SPEECH_TILT_WOBBLE_QUS", 120) * (0.35 + intensity))
+    neck_wobble = int(
+        _get_config_int("SERVO_SPEECH_NECK_WOBBLE_QUS", 260)
+        * _motion_float(motion, "head_wobble_mult", 1.0)
+        * (0.35 + expressive_intensity)
+    )
+    lift_wobble = int(
+        _get_config_int("SERVO_SPEECH_LIFT_WOBBLE_QUS", 160)
+        * _motion_float(motion, "lift_wobble_mult", 1.0)
+        * (0.35 + expressive_intensity)
+    )
+    tilt_wobble = int(
+        _get_config_int("SERVO_SPEECH_TILT_WOBBLE_QUS", 120)
+        * _motion_float(motion, "tilt_wobble_mult", 1.0)
+        * (0.35 + expressive_intensity)
+    )
 
     targets: dict[int, int] = {
         neck_ch: _clamp(neck_ch, base_neck + random.randint(-neck_wobble, neck_wobble)),
@@ -668,9 +754,17 @@ def speech_reactive_move(intensity: float) -> None:
     }
 
     visor_cfg = config.SERVO_CHANNELS["visor"]
-    visor_open_floor = max(visor_cfg["neutral"], int(visor_cfg["min"] + (visor_cfg["max"] - visor_cfg["min"]) * 0.55))
+    visor_floor_frac = max(0.0, min(1.0, _motion_float(motion, "visor_open_floor_frac", 0.55)))
+    visor_open_floor = max(
+        visor_cfg["neutral"],
+        int(visor_cfg["min"] + (visor_cfg["max"] - visor_cfg["min"]) * visor_floor_frac),
+    )
     visor_wave = 0.5 + 0.5 * math.sin(now * 8.0)
-    visor_swing = int((visor_cfg["max"] - visor_open_floor) * (0.35 + 0.40 * intensity))
+    visor_swing = int(
+        (visor_cfg["max"] - visor_open_floor)
+        * (0.35 + 0.40 * expressive_intensity)
+        * _motion_float(motion, "visor_swing_mult", 1.0)
+    )
     targets[visor_ch] = _clamp(
         visor_ch,
         int(visor_open_floor + visor_wave * visor_swing) + random.randint(-45, 45),
@@ -680,7 +774,11 @@ def speech_reactive_move(intensity: float) -> None:
     if _speech_elbow_target is None or now >= _next_speech_elbow_at:
         span = elbow_hi - elbow_lo
         center = int(elbow_lo + span * 0.55)
-        amplitude = int(span * (0.10 + 0.12 * arm_intensity))
+        amplitude = int(
+            span
+            * (0.10 + 0.12 * arm_intensity)
+            * _motion_float(motion, "elbow_amp_mult", 1.0)
+        )
         _speech_elbow_target = _clamp(
             elbow_ch,
             center + _speech_elbow_direction * amplitude + random.randint(-25, 25),
@@ -697,12 +795,20 @@ def speech_reactive_move(intensity: float) -> None:
     if _speech_hand_counter % hand_divisor == 0:
         hand_cfg = config.SERVO_CHANNELS["hand"]
         center = hand_cfg["neutral"]
-        amplitude = int((hand_cfg["max"] - hand_cfg["min"]) * (0.08 + 0.12 * arm_intensity))
+        amplitude = int(
+            (hand_cfg["max"] - hand_cfg["min"])
+            * (0.08 + 0.12 * arm_intensity)
+            * _motion_float(motion, "hand_amp_mult", 1.0)
+        )
         direction = -1 if (_speech_hand_counter // hand_divisor) % 2 == 0 else 1
         targets[hand_ch] = _clamp(hand_ch, center + direction * amplitude)
 
     hero_cfg = config.SERVO_CHANNELS["heroarm"]
-    hero_swing = int((hero_cfg["max"] - hero_cfg["min"]) * (0.10 + 0.18 * arm_intensity))
+    hero_swing = int(
+        (hero_cfg["max"] - hero_cfg["min"])
+        * (0.10 + 0.18 * arm_intensity)
+        * _motion_float(motion, "hero_swing_mult", 1.0)
+    )
     targets[hero_ch] = _clamp(
         hero_ch,
         hero_cfg["neutral"] + random.randint(-hero_swing, hero_swing),

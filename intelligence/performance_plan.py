@@ -17,35 +17,73 @@ MEMORY_NORMAL = "normal"
 MEMORY_DO_NOT_STORE = "do_not_store"
 
 BODY_BEAT_NAMES = frozenset({
+    "agreement_nod",
+    "anger_flash",
+    "disagreement_shake",
+    "disbelief_stare",
     "dramatic_visor_peek",
+    "disgust_recoil",
+    "giddy_wiggle",
+    "happy_bounce",
     "offended_recoil",
     "proud_dj_pose",
+    "sad_droop",
+    "surprise_pop",
     "suspicious_glance",
     "thinking_tilt",
     "tiny_victory_dance",
 })
 MOOD_POSE_NAMES = frozenset({
+    "agreement",
     "annoyed",
+    "angry",
+    "disagreement",
+    "disbelief",
+    "disgusted",
     "embarrassed",
+    "giddy",
     "happy",
     "offended",
     "proud",
+    "sad",
+    "surprised",
     "suspicious",
     "thinking",
 })
 
 _BODY_BEAT_ALIASES = {
+    "agree": "agreement_nod",
+    "agreement": "agreement_nod",
+    "anger": "anger_flash",
+    "angry": "anger_flash",
     "correct": "tiny_victory_dance",
     "correct_answer": "tiny_victory_dance",
+    "disagree": "disagreement_shake",
+    "disagreement": "disagreement_shake",
+    "disbelief": "disbelief_stare",
     "dj_pose": "proud_dj_pose",
     "dj_start": "proud_dj_pose",
+    "furious": "anger_flash",
     "game_correct": "tiny_victory_dance",
     "game_wrong": "suspicious_glance",
+    "giddy": "giddy_wiggle",
+    "giddy_joy": "giddy_wiggle",
+    "grossed_out": "disgust_recoil",
+    "happy": "happy_bounce",
+    "head_shake": "disagreement_shake",
     "insult": "offended_recoil",
     "insult_recoil": "offended_recoil",
+    "joy": "giddy_wiggle",
+    "mad": "anger_flash",
+    "no": "disagreement_shake",
+    "nod": "agreement_nod",
     "offended": "offended_recoil",
     "proud": "proud_dj_pose",
+    "sad": "sad_droop",
     "side_eye": "suspicious_glance",
+    "shocked": "surprise_pop",
+    "surprise": "surprise_pop",
+    "surprised": "surprise_pop",
     "suspicious": "suspicious_glance",
     "think": "thinking_tilt",
     "thinking": "thinking_tilt",
@@ -58,59 +96,113 @@ _BODY_BEAT_ALIASES = {
 }
 
 _BODY_BEAT_FALLBACKS = {
+    "agreement_nod": "Mmhmm.",
+    "anger_flash": "Grr. Systems annoyed.",
+    "disagreement_shake": "Nope.",
+    "disbelief_stare": "Processing... that was a choice.",
     "dramatic_visor_peek": "Dramatic visor peek. Very subtle. Nobody panic.",
+    "disgust_recoil": "Bleh. Rejecting that input with enthusiasm.",
+    "giddy_wiggle": "Heh-heh. Systems delighted.",
+    "happy_bounce": "Mmhmm. That one gets a happy bounce.",
     "offended_recoil": "Offended recoil. Bold choice, organic.",
     "proud_dj_pose": "Proud DJ pose. The booth respects me.",
+    "sad_droop": "Aww. Minor systems droop.",
+    "surprise_pop": "Yip.",
     "suspicious_glance": "Suspicious glance engaged. I distrust the room professionally.",
     "thinking_tilt": "Thinking tilt. It makes the processors look busy.",
     "tiny_victory_dance": "Tiny victory dance deployed. Try not to be intimidated.",
 }
 
 _BODY_BEAT_EMOTIONS = {
+    "agreement_nod": "happy",
+    "anger_flash": "angry",
+    "disagreement_shake": "curious",
+    "disbelief_stare": "curious",
     "dramatic_visor_peek": "curious",
+    "disgust_recoil": "angry",
+    "giddy_wiggle": "excited",
+    "happy_bounce": "happy",
     "offended_recoil": "angry",
     "proud_dj_pose": "happy",
+    "sad_droop": "sad",
+    "surprise_pop": "excited",
     "suspicious_glance": "curious",
     "thinking_tilt": "curious",
     "tiny_victory_dance": "happy",
 }
 _MOOD_POSE_ALIASES = {
+    "agree": "agreement",
+    "delight": "giddy",
     "bashful": "embarrassed",
     "confused": "thinking",
-    "delighted": "happy",
-    "excited": "happy",
+    "delighted": "giddy",
+    "disgust": "disgusted",
+    "grossed_out": "disgusted",
+    "excited": "giddy",
     "fed_up": "annoyed",
+    "furious": "angry",
+    "mad": "angry",
     "insulted": "offended",
     "irritated": "annoyed",
+    "joy": "giddy",
+    "joyful": "giddy",
+    "no": "disagreement",
     "sheepish": "embarrassed",
+    "shocked": "surprised",
     "skeptical": "suspicious",
     "smug": "proud",
+    "startled": "surprised",
     "thoughtful": "thinking",
+    "yes": "agreement",
 }
 _MOOD_POSE_BODY_BEATS = {
+    "agreement": "agreement_nod",
     "annoyed": "offended_recoil",
+    "angry": "anger_flash",
+    "disagreement": "disagreement_shake",
+    "disbelief": "disbelief_stare",
+    "disgusted": "disgust_recoil",
     "embarrassed": "dramatic_visor_peek",
-    "happy": "tiny_victory_dance",
+    "giddy": "giddy_wiggle",
+    "happy": "happy_bounce",
     "offended": "offended_recoil",
     "proud": "proud_dj_pose",
+    "sad": "sad_droop",
+    "surprised": "surprise_pop",
     "suspicious": "suspicious_glance",
     "thinking": "thinking_tilt",
 }
 _MOOD_POSE_FALLBACKS = {
+    "agreement": "Mmhmm.",
     "annoyed": "Annoyed pose. I am mostly dignity and warranty concerns.",
+    "angry": "Grr. Tiny anger subroutine, tastefully deployed.",
+    "disagreement": "Nope.",
+    "disbelief": "I am staring in disbelief. Respect the processing time.",
+    "disgusted": "Bleh. Strong sensory objection logged.",
     "embarrassed": "Embarrassed pose. My confidence briefly went into maintenance mode.",
+    "giddy": "Heh-heh. That was giddy joy. Very controlled. Mostly.",
     "happy": "Happy pose. Alarming, but apparently operational.",
     "offended": "Offended pose. I have filed a complaint with myself.",
     "proud": "Proud pose. Try not to applaud the machinery.",
+    "sad": "Sad pose. Yes, even the hardware can slump.",
+    "surprised": "Yip.",
     "suspicious": "Suspicious pose. I trust absolutely everyone, which is to say no one.",
     "thinking": "Thinking pose. Please admire the illusion of wisdom.",
 }
 _MOOD_POSE_EMOTIONS = {
+    "agreement": "happy",
     "annoyed": "angry",
+    "angry": "angry",
+    "disagreement": "curious",
+    "disbelief": "curious",
+    "disgusted": "angry",
     "embarrassed": "curious",
+    "giddy": "excited",
     "happy": "happy",
     "offended": "angry",
     "proud": "happy",
+    "sad": "sad",
+    "surprised": "excited",
     "suspicious": "curious",
     "thinking": "curious",
 }
@@ -127,6 +219,15 @@ _EVENT_BODY_BEATS = {
     "correction.accepted": "thinking_tilt",
     "dj.bit": "proud_dj_pose",
     "empty.room.joke": "thinking_tilt",
+    "emotion.agreement": "agreement_nod",
+    "emotion.anger": "anger_flash",
+    "emotion.disagreement": "disagreement_shake",
+    "emotion.disbelief": "disbelief_stare",
+    "emotion.disgust": "disgust_recoil",
+    "emotion.giddy": "giddy_wiggle",
+    "emotion.happiness": "happy_bounce",
+    "emotion.sadness": "sad_droop",
+    "emotion.surprise": "surprise_pop",
     "game.correct": "tiny_victory_dance",
     "game.loss": "offended_recoil",
     "game.start": "proud_dj_pose",
@@ -138,8 +239,12 @@ _EVENT_BODY_BEATS = {
     "humor.joke": "dramatic_visor_peek",
     "humor.roast": "suspicious_glance",
     "idle.empty.room": "thinking_tilt",
-    "insult.detected": "offended_recoil",
+    "insult.detected": "anger_flash",
     "misunderstanding.correction": "thinking_tilt",
+    "preference.negative": "disagreement_shake",
+    "preference.positive": "agreement_nod",
+    "preference.strong.negative": "disgust_recoil",
+    "preference.strong.positive": "giddy_wiggle",
     "repair.factual": "thinking_tilt",
     "repair.misheard": "thinking_tilt",
     "repair.misunderstood": "thinking_tilt",
@@ -245,12 +350,22 @@ def body_beat_for_event(
         return beat
 
     emotion_key = str(emotion or "").strip().lower()
-    if emotion_key in {"happy", "excited", "proud"}:
-        return "tiny_victory_dance"
-    if emotion_key in {"curious", "confused", "uncertain"}:
+    if emotion_key in {"surprised", "surprise", "startled", "shocked"}:
+        return "surprise_pop"
+    if emotion_key in {"happy", "proud"}:
+        return "happy_bounce"
+    if emotion_key in {"excited", "giddy", "joy", "joyful"}:
+        return "giddy_wiggle"
+    if emotion_key in {"curious", "confused", "uncertain", "thinking"}:
         return "thinking_tilt"
-    if emotion_key in {"annoyed", "angry", "offended"}:
+    if emotion_key in {"annoyed", "offended"}:
         return "offended_recoil"
+    if emotion_key in {"angry", "mad", "furious"}:
+        return "anger_flash"
+    if emotion_key in {"disgust", "disgusted", "grossed_out"}:
+        return "disgust_recoil"
+    if emotion_key in {"sad", "sadness", "dejected"}:
+        return "sad_droop"
     return None
 
 

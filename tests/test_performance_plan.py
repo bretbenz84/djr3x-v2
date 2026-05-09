@@ -91,6 +91,10 @@ class PerformancePlanTests(unittest.TestCase):
             "bashful": ("embarrassed", "dramatic_visor_peek"),
             "annoyed": ("annoyed", "offended_recoil"),
             "proud": ("proud", "proud_dj_pose"),
+            "surprised": ("surprised", "surprise_pop"),
+            "disgusted": ("disgusted", "disgust_recoil"),
+            "giddy": ("giddy", "giddy_wiggle"),
+            "disbelief": ("disbelief", "disbelief_stare"),
         }
 
         for mood, (_canonical, beat) in examples.items():
@@ -106,7 +110,11 @@ class PerformancePlanTests(unittest.TestCase):
         from intelligence import performance_plan
 
         examples = {
-            "insult.detected": "offended_recoil",
+            "insult.detected": "anger_flash",
+            "emotion.surprise": "surprise_pop",
+            "emotion.disgust": "disgust_recoil",
+            "preference.positive": "agreement_nod",
+            "preference.strong_negative": "disgust_recoil",
             "repair.misunderstood": "thinking_tilt",
             "idle.empty_room": "thinking_tilt",
             "game.correct": "tiny_victory_dance",

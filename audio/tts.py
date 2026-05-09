@@ -45,6 +45,7 @@ import config
 from audio import echo_cancel
 from audio import output_gate
 from hardware import leds_head, leds_chest, servos
+from intelligence import emotion_orchestrator
 from sequences import animations
 from utils import conv_log
 
@@ -281,15 +282,21 @@ def _play(
         # an interrupt-ack ("what?") mid-sentence.
         expected_duration = len(audio) / float(samplerate)
         play_started_at = time.monotonic()
+        emotion_frame = emotion_orchestrator.frame_for_speech(emotion)
+        led_emotion = emotion_frame.led_style
+        emotion_orchestrator.publish_frame(
+            emotion_frame,
+            ttl_secs=max(2.0, expected_duration + 2.0),
+        )
 
         try:
             try:
                 animations.speech_activity_start()
-                servos.begin_speech_motion(emotion)
+                servos.begin_speech_motion(emotion_frame)
             except Exception as exc:
                 logger.debug("[tts] speech servo start failed: %s", exc)
-            leds_head.speak(emotion)
-            leds_chest.speak(emotion)
+            leds_head.speak(led_emotion)
+            leds_chest.speak(led_emotion)
             echo_cancel.set_playing(True)
             led_thread.start()
             if on_playback_start is not None:

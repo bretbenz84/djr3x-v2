@@ -1,5 +1,5 @@
 """
-Auditory scene analysis — ambient level, music, laughter, and applause detection.
+Auditory scene analysis — ambient level, music, laughter, applause, and startle detection.
 
 Runs as a background daemon thread. Reads from the shared audio stream buffer,
 classifies each analysis window using energy and spectral heuristics, and writes
@@ -14,6 +14,8 @@ Detection approach:
                    of laughter, combined with a minimum mean energy gate.
   Applause       — sustained broadband noise: high spectral flatness (geometric
                    mean / arithmetic mean of spectrum) plus minimum RMS.
+  Scream/startle — conservative high-energy, high-frequency heuristics used to
+                   mark sudden events that should drive surprise motion.
 
 All detectors degrade gracefully on short or empty audio arrays.
 """
@@ -87,6 +89,8 @@ def _analyze_cycle(audio: np.ndarray) -> None:
     music     = _detect_music(audio)
     laughter  = _detect_laughter(audio)
     applause  = _detect_applause(audio)
+    scream    = _detect_scream(audio)
+    sudden    = _detect_sudden_loud_sound(audio)
     chatter   = _detect_group_chatter(audio, music=music, laughter=laughter, applause=applause)
     now_ts    = time.time()
 
@@ -95,6 +99,8 @@ def _analyze_cycle(audio: np.ndarray) -> None:
     scene["music_detected"]     = music
     scene["laughter_detected"]  = laughter
     scene["applause_detected"]  = applause
+    scene["scream_detected"]    = scream
+    scene["sudden_loud_sound_detected"] = sudden
     scene["group_chatter_detected"] = chatter
     if chatter:
         hold = float(getattr(config, "GROUP_CHATTER_HOLD_SECS", 6.0))
@@ -105,7 +111,11 @@ def _analyze_cycle(audio: np.ndarray) -> None:
         scene["group_chatter_reason"] = None
     scene["last_updated"]       = datetime.now(timezone.utc).isoformat()
 
-    if laughter:
+    if scream:
+        scene["last_sound_event"] = "scream"
+    elif sudden:
+        scene["last_sound_event"] = "sudden_loud_sound"
+    elif laughter:
         scene["last_sound_event"] = "laughter"
     elif applause:
         scene["last_sound_event"] = "applause"
@@ -196,6 +206,77 @@ def _detect_applause(audio: np.ndarray) -> bool:
     spectrum = np.abs(np.fft.rfft(window)) + 1e-10
     flatness = float(np.exp(np.mean(np.log(spectrum))) / np.mean(spectrum))
     return flatness >= config.SCENE_APPLAUSE_SPECTRAL_FLATNESS_MIN
+
+
+def _detect_scream(audio: np.ndarray) -> bool:
+    """
+    True when the recent window looks like a loud, high-frequency vocal burst.
+
+    This is intentionally conservative; false negatives are preferable to Rex
+    yelping at ordinary speech, music, or applause.
+    """
+    sr = config.AUDIO_SAMPLE_RATE
+    if len(audio) < sr // 4:
+        return False
+
+    window = audio[-int(sr * float(getattr(config, "SCENE_SCREAM_WINDOW_SECS", 0.75))):].astype(np.float32)
+    if len(window) < sr // 4:
+        return False
+    rms = float(np.sqrt(np.mean(window ** 2)))
+    peak = float(np.max(np.abs(window)))
+    if rms < float(getattr(config, "SCENE_SCREAM_RMS_MIN", 0.16)):
+        return False
+    if peak < float(getattr(config, "SCENE_SCREAM_PEAK_MIN", 0.38)):
+        return False
+
+    signs = np.signbit(window)
+    zcr = float(np.mean(signs[1:] != signs[:-1])) if len(signs) > 1 else 0.0
+    if zcr < float(getattr(config, "SCENE_SCREAM_ZCR_MIN", 0.08)):
+        return False
+
+    spectrum = np.abs(np.fft.rfft(window)) + 1e-10
+    freqs = np.fft.rfftfreq(len(window), d=1.0 / sr)
+    centroid = float(np.sum(freqs * spectrum) / np.sum(spectrum))
+    if centroid < float(getattr(config, "SCENE_SCREAM_CENTROID_MIN_HZ", 900.0)):
+        return False
+
+    low_mask = (freqs >= 80.0) & (freqs < 700.0)
+    high_mask = (freqs >= 700.0) & (freqs < 5000.0)
+    low_energy = float(np.mean(spectrum[low_mask] ** 2)) if low_mask.any() else 0.0
+    high_energy = float(np.mean(spectrum[high_mask] ** 2)) if high_mask.any() else 0.0
+    if high_energy < low_energy * float(getattr(config, "SCENE_SCREAM_HIGH_LOW_RATIO_MIN", 1.35)):
+        return False
+
+    flatness = float(np.exp(np.mean(np.log(spectrum))) / np.mean(spectrum))
+    return flatness <= float(getattr(config, "SCENE_SCREAM_FLATNESS_MAX", 0.55))
+
+
+def _detect_sudden_loud_sound(audio: np.ndarray) -> bool:
+    """True for abrupt, high-energy transients such as a crash or sharp shout."""
+    sr = config.AUDIO_SAMPLE_RATE
+    chunk_len = max(1, int(sr * float(getattr(config, "SCENE_SUDDEN_LOUD_CHUNK_SECS", 0.05))))
+    min_chunks = int(getattr(config, "SCENE_SUDDEN_LOUD_MIN_CHUNKS", 8))
+    if len(audio) < chunk_len * min_chunks:
+        return False
+
+    window = audio[-int(sr * float(getattr(config, "SCENE_SUDDEN_LOUD_WINDOW_SECS", 1.5))):].astype(np.float32)
+    n_chunks = len(window) // chunk_len
+    if n_chunks < min_chunks:
+        return False
+    rms_values = np.array([
+        np.sqrt(np.mean(window[i * chunk_len:(i + 1) * chunk_len] ** 2))
+        for i in range(n_chunks)
+    ])
+    baseline = float(np.median(rms_values[: max(1, n_chunks // 2)]))
+    spike = float(np.max(rms_values))
+    spike_idx = int(np.argmax(rms_values))
+    if spike_idx < max(1, n_chunks // 3):
+        return False
+    if spike < float(getattr(config, "SCENE_SUDDEN_LOUD_RMS_MIN", 0.20)):
+        return False
+    factor = float(getattr(config, "SCENE_SUDDEN_LOUD_FACTOR_MIN", 4.0))
+    delta = float(getattr(config, "SCENE_SUDDEN_LOUD_DELTA_MIN", 0.08))
+    return spike >= max(baseline * factor, baseline + delta)
 
 
 def _detect_group_chatter(

@@ -116,8 +116,8 @@ class PerformanceOutputTests(unittest.TestCase):
             play_body_beat=play,
         )
 
-        self.assertEqual(beat, "offended_recoil")
-        play.assert_called_once_with("offended_recoil")
+        self.assertEqual(beat, "anger_flash")
+        play.assert_called_once_with("anger_flash")
 
     def test_execute_body_beat_event_returns_none_for_unknown_or_failed_beat(self):
         from intelligence import performance_output

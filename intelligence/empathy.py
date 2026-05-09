@@ -1000,8 +1000,8 @@ def get_delivery_overrides(person_id: Optional[int]) -> Optional[dict]:
     """Return delivery-shape overrides for the active mode, or None.
 
     Output: {emotion, pre_beat_ms, post_beat_ms}. emotion is a string like
-    "sad" / "happy" / "excited" / "neutral" suitable for the existing LED and
-    body-emotion plumbing, or None if no override should be applied. The
+    "sad" / "happy" / "excited" / "curious" suitable for the shared emotion
+    orchestrator, or None if no override should be applied. The
     pre/post beats are randomized within the mode's range so successive lines
     don't feel mechanically identical.
     """
@@ -1015,6 +1015,14 @@ def get_delivery_overrides(person_id: Optional[int]) -> Optional[dict]:
     if not spec:
         return None
     emotion, pre_min, pre_max, post_min, post_max = spec
+    frame = None
+    if emotion is not None:
+        try:
+            from intelligence import emotion_orchestrator
+            frame = emotion_orchestrator.frame_for_empathy_mode(mode)
+            emotion = frame.affect
+        except Exception:
+            frame = None
     import random as _random
     pre_ms = _random.randint(pre_min, pre_max) if pre_max > 0 else 0
     post_ms = _random.randint(post_min, post_max) if post_max > 0 else 0
@@ -1027,6 +1035,7 @@ def get_delivery_overrides(person_id: Optional[int]) -> Optional[dict]:
         "pre_beat_ms": pre_ms,
         "post_beat_ms": post_ms,
         "voice_settings": voice_settings,
+        "emotion_frame": frame.as_dict() if frame is not None else None,
     }
 
 

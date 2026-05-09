@@ -14,6 +14,7 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertIn("identity.name_correction", keys)
         self.assertIn("memory.recent_discard", keys)
         self.assertIn("performance.mood_pose", keys)
+        self.assertIn("character.preference_query", keys)
         self.assertIn("vision.snapshot", keys)
         for key in keys:
             self.assertRegex(key, r"^[a-z]+(?:_[a-z]+)*\.[a-z]+(?:_[a-z]+)*$")
@@ -69,6 +70,7 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertIn("Use performance.dj_bit", prompt)
         self.assertIn("Use performance.body_beat", prompt)
         self.assertIn("Use performance.mood_pose", prompt)
+        self.assertIn("Use character.preference_query", prompt)
         self.assertIn("Use vision.snapshot", prompt)
         self.assertIn("Use identity.name_correction", prompt)
         self.assertIn("Use memory.recent_discard", prompt)
@@ -123,6 +125,10 @@ class ActionRouterCatalogTests(unittest.TestCase):
             "do a thinking tilt": "thinking_tilt",
             "do a dramatic visor peek": "dramatic_visor_peek",
             "strike a proud DJ pose": "proud_dj_pose",
+            "look surprised": "surprise_pop",
+            "look disgusted": "disgust_recoil",
+            "shake your head": "disagreement_shake",
+            "nod yes": "agreement_nod",
         }
 
         for text, beat in examples.items():
@@ -138,6 +144,8 @@ class ActionRouterCatalogTests(unittest.TestCase):
             "act embarrassed": "embarrassed",
             "look annoyed": "annoyed",
             "look proud": "proud",
+            "be sad": "sad",
+            "be angry": "angry",
         }
 
         for text, mood in examples.items():
@@ -167,6 +175,26 @@ class ActionRouterCatalogTests(unittest.TestCase):
                 "That's not no good Oh, because you said kisses"
             )
         )
+
+    def test_explicit_character_preference_classifier_routes_rex_opinions(self):
+        from intelligence import action_router
+
+        like = action_router.classify_explicit_character_preference("do you like music")
+        favorite = action_router.classify_explicit_character_preference("what's your favorite color?")
+        compare = action_router.classify_explicit_character_preference("do you prefer jazz or silence?")
+
+        self.assertEqual(like.action, "character.preference_query")
+        self.assertEqual(like.args["topic"], "music")
+        self.assertEqual(like.args["verb"], "like")
+        self.assertEqual(favorite.args["mode"], "favorite")
+        self.assertEqual(compare.args["mode"], "compare")
+        self.assertEqual(compare.args["options"], ["jazz", "silence"])
+
+    def test_explicit_character_preference_classifier_ignores_human_preferences(self):
+        from intelligence import action_router
+
+        self.assertIsNone(action_router.classify_explicit_character_preference("I like music"))
+        self.assertIsNone(action_router.classify_explicit_character_preference("Bret likes music"))
 
     def test_body_beat_llm_decision_requires_known_beat(self):
         from intelligence import action_router
@@ -205,6 +233,26 @@ class ActionRouterCatalogTests(unittest.TestCase):
         })
 
         self.assertEqual(valid.args["mood"], "embarrassed")
+        self.assertEqual(valid.confidence, 0.99)
+        self.assertLess(invalid.confidence, 0.85)
+
+    def test_character_preference_llm_decision_requires_topic_or_options(self):
+        from intelligence import action_router
+
+        valid = action_router._coerce_decision({
+            "action": "character.preference_query",
+            "confidence": 0.99,
+            "args": {"topic": "music", "verb": "like"},
+            "reason": "asks Rex preference",
+        })
+        invalid = action_router._coerce_decision({
+            "action": "character.preference_query",
+            "confidence": 0.99,
+            "args": {},
+            "reason": "missing topic",
+        })
+
+        self.assertEqual(valid.action, "character.preference_query")
         self.assertEqual(valid.confidence, 0.99)
         self.assertLess(invalid.confidence, 0.85)
 
@@ -256,6 +304,16 @@ class ActionRouterCatalogTests(unittest.TestCase):
             decision = action_router.decide("forget I said that", {})
 
         self.assertEqual(decision.action, "memory.recent_discard")
+        create.assert_not_called()
+
+    def test_decide_short_circuits_rex_preference_without_llm_router_call(self):
+        from intelligence import action_router
+
+        with mock.patch.object(action_router._client.chat.completions, "create") as create:
+            decision = action_router.decide("do you like music?", {})
+
+        self.assertEqual(decision.action, "character.preference_query")
+        self.assertEqual(decision.args["topic"], "music")
         create.assert_not_called()
 
 

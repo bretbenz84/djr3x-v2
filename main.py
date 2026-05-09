@@ -97,7 +97,7 @@ from audio import (
 )
 from vision import camera, scene as vision_scene, face_expression
 from awareness import chronoception, interoception
-from intelligence import consciousness, interaction, local_llm
+from intelligence import consciousness, emotion_orchestrator, interaction, local_llm
 
 
 def _verify_local_whisper_model() -> None:
@@ -228,11 +228,17 @@ def _play_audio_file(
         led_thread = None
         expected_duration = len(audio) / float(samplerate) if samplerate else 0.0
         play_started_at = time.monotonic()
+        emotion_frame = emotion_orchestrator.frame_for_speech(emotion)
+        led_emotion = emotion_frame.led_style
         try:
             if animate_speech:
+                emotion_orchestrator.publish_frame(
+                    emotion_frame,
+                    ttl_secs=max(2.0, expected_duration + 2.0),
+                )
                 try:
                     animations.speech_activity_start()
-                    servos.begin_speech_motion(emotion)
+                    servos.begin_speech_motion(emotion_frame)
                 except Exception as exc:
                     logger.debug("direct clip speech servo start failed: %s", exc)
                 try:
@@ -240,8 +246,8 @@ def _play_audio_file(
                     _sit.set_rex_speaking(True)
                 except Exception:
                     pass
-                leds_head.speak(emotion)
-                leds_chest.speak(emotion)
+                leds_head.speak(led_emotion)
+                leds_chest.speak(led_emotion)
                 led_thread = threading.Thread(
                     target=_drive_speech_clip_outputs,
                     args=(audio, int(samplerate), stop_event),

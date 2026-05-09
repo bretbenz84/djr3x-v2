@@ -44,14 +44,51 @@ class BodyBeatAnimationTest(unittest.TestCase):
         self.assertEqual(
             set(animations.body_beat_names()),
             {
+                "agreement_nod",
+                "anger_flash",
+                "disagreement_shake",
+                "disbelief_stare",
                 "dramatic_visor_peek",
+                "disgust_recoil",
+                "giddy_wiggle",
+                "happy_bounce",
                 "offended_recoil",
                 "proud_dj_pose",
+                "sad_droop",
+                "surprise_pop",
                 "suspicious_glance",
                 "thinking_tilt",
                 "tiny_victory_dance",
             },
         )
+
+    def test_surprise_pop_opens_visor_like_raised_eyebrows(self):
+        from sequences import animations
+
+        moves = []
+
+        def record_move(targets, **_kwargs):
+            moves.append(dict(targets))
+
+        snapshot = {
+            0: animations.NECK_CENTER,
+            1: animations.HEADLIFT_NEUTRAL,
+            2: animations.HEADTILT_NEUTRAL,
+            3: animations.VISOR_HALF,
+        }
+
+        with (
+            mock.patch.object(animations._state_module, "get_state", return_value=animations._State.ACTIVE),
+            mock.patch.object(animations, "_current_body_pose", return_value=snapshot),
+            mock.patch.object(animations.time, "sleep", return_value=None),
+            mock.patch.object(animations.servos, "move_to", side_effect=record_move),
+        ):
+            self.assertTrue(animations.play_body_beat("surprise", async_=False))
+
+        first_move = moves[0]
+        self.assertEqual(first_move[1], animations.HEADLIFT_HIGH)
+        self.assertEqual(first_move[2], animations.HEADTILT_UP)
+        self.assertEqual(first_move[3], animations.VISOR_OPEN)
 
     def test_wake_word_ack_wave_moves_hand_and_elbow_together(self):
         from sequences import animations

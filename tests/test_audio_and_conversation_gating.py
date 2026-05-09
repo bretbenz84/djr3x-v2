@@ -9,8 +9,10 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
     def test_direct_startup_clip_arms_aec_and_limits_level(self):
         import numpy as np
         import main
+        from world_state import world_state
 
         source_audio = np.array([0.0, 1.0, -1.0, 0.5], dtype=np.float32)
+        old_self_state = world_state.get("self_state")
         with ExitStack() as stack:
             stack.enter_context(mock.patch.object(main.config, "NO_AUDIO_MODE", False))
             stack.enter_context(mock.patch.object(main.config, "AUDIO_OUTPUT_SUPPRESSED", False))
@@ -57,7 +59,10 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 mock.patch("awareness.situation.assessor.set_rex_speaking")
             )
             log_rex = stack.enter_context(mock.patch("utils.conv_log.log_rex"))
-            main._play_audio_file("assets/audio/startup/Roger Control.mp3")
+            try:
+                main._play_audio_file("assets/audio/startup/Roger Control.mp3")
+            finally:
+                world_state.update("self_state", old_self_state)
 
         set_playing.assert_has_calls([mock.call(True), mock.call(False)])
         add_reference.assert_called_once()
@@ -67,7 +72,9 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertLessEqual(float(np.max(np.abs(played_audio))), 0.5)
         speech_activity_start.assert_called_once()
         speech_activity_stop.assert_called_once()
-        begin_speech_motion.assert_called_once_with("neutral")
+        begin_speech_motion.assert_called_once()
+        speech_frame = begin_speech_motion.call_args.args[0]
+        self.assertEqual(speech_frame.affect, "neutral")
         end_speech_motion.assert_called_once()
         head_speak.assert_called_once_with("neutral")
         head_speak_stop.assert_called_once()
@@ -7522,6 +7529,64 @@ class PendingMusicPreferenceTest(unittest.TestCase):
 
         speak.assert_not_called()
 
+    def test_scream_sound_event_uses_surprise_frame_even_when_generic_sound_reactions_disabled(self):
+        from awareness.situation import SituationProfile
+        from intelligence import consciousness
+        from world_state import world_state
+
+        old_snapshot = consciousness._last_snapshot
+        old_startle_at = consciousness._last_startle_sound_reaction_at
+        old_self_state = world_state.get("self_state")
+        profile = SituationProfile(
+            conversation_active=False,
+            user_mid_sentence=False,
+            rapid_exchange=False,
+            child_present=False,
+            apparent_departure=False,
+            likely_still_present=False,
+            social_mode="one_on_one",
+            suppress_proactive=False,
+            suppress_system_comments=False,
+            force_family_safe=False,
+            being_discussed=False,
+            discussion_sentiment="neutral",
+            interaction_busy=False,
+        )
+        prev = {
+            "crowd": {"count": 1, "count_label": "alone"},
+            "audio_scene": {},
+            "animals": [],
+            "time": {},
+        }
+        curr = {
+            "crowd": {"count": 1, "count_label": "alone"},
+            "audio_scene": {"last_sound_event": "scream"},
+            "animals": [],
+            "time": {},
+        }
+        try:
+            consciousness._last_snapshot = prev
+            consciousness._last_startle_sound_reaction_at = 0.0
+            with (
+                mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+                mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
+                mock.patch.object(consciousness, "_generate_and_speak", return_value=True) as speak,
+                mock.patch("sequences.animations.play_body_beat") as body_beat,
+                mock.patch("config.WORLD_SOUND_EVENT_REACTIONS_ENABLED", False),
+                mock.patch("config.WORLD_STARTLE_SOUND_EVENT_REACTIONS_ENABLED", True),
+                mock.patch("config.STARTLE_SOUND_EVENT_REACTION_COOLDOWN_SECS", 0.0),
+            ):
+                consciousness._step_proactive_reactions(curr, profile)
+        finally:
+            consciousness._last_snapshot = old_snapshot
+            consciousness._last_startle_sound_reaction_at = old_startle_at
+            world_state.update("self_state", old_self_state)
+
+        speak.assert_called_once()
+        self.assertEqual(speak.call_args.args[1], "surprised")
+        self.assertIn("startle sound", speak.call_args.kwargs["label"])
+        body_beat.assert_called_once_with("surprise_pop")
+
     def test_identity_prompt_wait_suppresses_generic_world_reactions(self):
         from awareness.situation import SituationProfile
         from intelligence import consciousness
@@ -7653,6 +7718,17 @@ class SocialVisionIntegrationTest(unittest.TestCase):
 
 
 class GroupChatterGatingTest(unittest.TestCase):
+    def test_audio_scene_detects_scream_like_startle(self):
+        import numpy as np
+        from audio import scene
+        import config
+
+        sr = config.AUDIO_SAMPLE_RATE
+        t = np.arange(int(sr * 0.75), dtype=np.float32) / float(sr)
+        audio = (0.46 * np.sin(2 * np.pi * 1500.0 * t)).astype(np.float32)
+
+        self.assertTrue(scene._detect_scream(audio))
+
     def test_audio_scene_detects_sustained_banter_pattern(self):
         import numpy as np
         from audio import scene

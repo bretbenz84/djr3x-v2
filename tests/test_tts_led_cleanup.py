@@ -15,12 +15,14 @@ def _acquired_output_gate(_name):
 class TtsLedCleanupTests(unittest.TestCase):
     def test_mouth_stop_failure_does_not_skip_tts_cleanup(self):
         from audio import tts
+        from world_state import world_state
 
         fake_sd = types.SimpleNamespace(
             play=mock.Mock(),
             wait=mock.Mock(),
         )
         old_sd = sys.modules.get("sounddevice")
+        old_self_state = world_state.get("self_state")
         sys.modules["sounddevice"] = fake_sd
         try:
             with (
@@ -44,11 +46,53 @@ class TtsLedCleanupTests(unittest.TestCase):
                 sys.modules.pop("sounddevice", None)
             else:
                 sys.modules["sounddevice"] = old_sd
+            world_state.update("self_state", old_self_state)
 
         chest_active.assert_called_once()
         servo_stop.assert_called_once()
         activity_stop.assert_called_once()
         self.assertTrue(any(call.args and call.args[0] is False for call in set_playing.call_args_list))
+
+    def test_play_maps_semantic_emotion_into_shared_frame(self):
+        from audio import tts
+        from world_state import world_state
+
+        fake_sd = types.SimpleNamespace(
+            play=mock.Mock(),
+            wait=mock.Mock(),
+        )
+        old_sd = sys.modules.get("sounddevice")
+        old_self_state = world_state.get("self_state")
+        sys.modules["sounddevice"] = fake_sd
+        try:
+            with (
+                mock.patch.object(tts.output_gate, "hold", side_effect=_acquired_output_gate),
+                mock.patch.object(tts.animations, "speech_activity_start"),
+                mock.patch.object(tts.animations, "speech_activity_stop"),
+                mock.patch.object(tts.servos, "begin_speech_motion") as begin_motion,
+                mock.patch.object(tts.servos, "end_speech_motion"),
+                mock.patch.object(tts.servos, "speech_reactive_move"),
+                mock.patch.object(tts.leds_head, "speak") as head_speak,
+                mock.patch.object(tts.leds_head, "speak_level"),
+                mock.patch.object(tts.leds_head, "speak_stop"),
+                mock.patch.object(tts.leds_chest, "speak") as chest_speak,
+                mock.patch.object(tts.leds_chest, "active"),
+                mock.patch.object(tts.echo_cancel, "set_playing"),
+                mock.patch.object(tts.echo_cancel, "was_canceled", return_value=False),
+            ):
+                tts._play(np.zeros(1, dtype=np.float32), 100, "surprised")
+        finally:
+            if old_sd is None:
+                sys.modules.pop("sounddevice", None)
+            else:
+                sys.modules["sounddevice"] = old_sd
+            world_state.update("self_state", old_self_state)
+
+        frame = begin_motion.call_args.args[0]
+        self.assertEqual(frame.affect, "surprised")
+        self.assertEqual(frame.body_beat, "surprise_pop")
+        head_speak.assert_called_once_with("excited")
+        chest_speak.assert_called_once_with("excited")
 
 
 if __name__ == "__main__":
