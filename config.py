@@ -1728,6 +1728,13 @@ ACTION_ROUTER_EXECUTE_MIN_CONFIDENCE = 0.85
 ACTION_ROUTER_MODEL = LLM_MODEL
 ACTION_ROUTER_MAX_CONTEXT_CHARS = 5000
 
+# Full people-memory wipes require an access code in the spoken confirmation.
+# Override in .env with DJR3X_FULL_MEMORY_WIPE_ACCESS_CODE for a private build.
+FULL_MEMORY_WIPE_ACCESS_CODE = os.getenv(
+    "DJR3X_FULL_MEMORY_WIPE_ACCESS_CODE",
+    "Picard alpha 47 tango",
+).strip()
+
 # Structured per-user-turn black-box trace. This is operational telemetry,
 # not person memory.
 CHARACTER_LOOP_TRACE_ENABLED = True

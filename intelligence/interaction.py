@@ -1858,6 +1858,12 @@ def _wake_from_sleep() -> str:
     return resp
 
 
+def _wake_from_quiet() -> None:
+    """Exit quiet mode when an explicit wake word gets Rex's attention."""
+    state_module.set_state(State.ACTIVE)
+    _wake_ack()
+
+
 def _vad_barge_in_enabled() -> bool:
     return bool(getattr(config, "VAD_BARGE_IN_ENABLED", False))
 
@@ -3089,6 +3095,22 @@ def _pending_memory_wipe_expired(now: Optional[float] = None) -> bool:
 
 
 def _memory_wipe_confirmation_phrase(scope: str) -> str:
+    if scope != "all":
+        return "yes forget me"
+    code = str(getattr(config, "FULL_MEMORY_WIPE_ACCESS_CODE", "") or "").strip()
+    return f"confirm full wipe {code}" if code else "confirm full wipe"
+
+
+def _memory_wipe_confirmation_hint(scope: str) -> str:
+    if scope != "all":
+        return '"yes forget me"'
+    code = str(getattr(config, "FULL_MEMORY_WIPE_ACCESS_CODE", "") or "").strip()
+    if code:
+        return '"confirm full wipe" followed by the full-wipe access code'
+    return '"confirm full wipe"'
+
+
+def _memory_wipe_confirmation_prefix(scope: str) -> str:
     return "confirm full wipe" if scope == "all" else "yes forget me"
 
 
@@ -3231,7 +3253,7 @@ def _handle_pending_memory_wipe_confirmation(
     pending = dict(_pending_memory_wipe)
     plain = _plain_confirmation_text(text)
     scope = str(pending.get("scope") or "")
-    expected = _memory_wipe_confirmation_phrase(scope)
+    expected = _plain_confirmation_text(_memory_wipe_confirmation_phrase(scope))
     cancel_phrases = {
         "no",
         "nope",
@@ -3253,6 +3275,10 @@ def _handle_pending_memory_wipe_confirmation(
 
     if plain != expected:
         _clear_pending_memory_wipe()
+        if scope == "all" and plain.startswith(_memory_wipe_confirmation_prefix(scope)):
+            resp = "Full memory wipe rejected. Access code missing or incorrect."
+            _speak_blocking(resp, emotion="neutral")
+            return resp
         return None
 
     if _confirmation_speaker_mismatch(pending, person_id):
@@ -7185,6 +7211,12 @@ def _execute_command(
     if key == "wake_up":
         if state_module.get_state() == State.SLEEP:
             return _wake_from_sleep()
+        if state_module.get_state() == State.QUIET:
+            state_module.set_state(State.ACTIVE)
+            return _say(
+                "You just exited quiet mode after being told to resume. "
+                "One short in-character line."
+            )
         state_module.set_state(State.ACTIVE)
         return _say("You just woke up. One short in-character wake-up line.")
 
@@ -7272,9 +7304,10 @@ def _execute_command(
             requester_id=person_id,
         )
         resp = (
-            "Full memory wipe armed. Are you absolutely sure? Say \"confirm full "
-            "wipe\" to delete every person, face, voice print, relationship, and "
-            "conversation memory. This is the big red button, just with worse branding."
+            "Full memory wipe armed. Are you absolutely sure? Say "
+            f"{_memory_wipe_confirmation_hint('all')} to delete every person, "
+            "face, voice print, relationship, and conversation memory. This is "
+            "the big red button, just with worse branding."
         )
         _speak_blocking(resp, emotion="neutral")
         return resp
@@ -14002,9 +14035,12 @@ def _loop() -> None:
         if current_state == State.SHUTDOWN:
             break
 
-        # ── QUIET — discard everything including wake word events ──────────────
+        # ── QUIET — stay silent until an explicit wake word exits quiet mode ───
         if current_state == State.QUIET:
-            _wake_word_fired.clear()
+            if _wake_word_fired.is_set():
+                _wake_word_fired.clear()
+                _last_speech_at = time.monotonic()
+                _wake_from_quiet()
             _stop_event.wait(0.1)
             continue
 

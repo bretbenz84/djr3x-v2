@@ -2788,6 +2788,22 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIsNone(command_parser.parse(text))
 
+    def test_resume_phrases_map_to_wake_up(self):
+        from intelligence import command_parser
+
+        for text in [
+            "resume",
+            "resume talking",
+            "talk again",
+            "speak again",
+            "stop being quiet",
+            "exit quiet mode",
+        ]:
+            with self.subTest(text=text):
+                match = command_parser.parse(text)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.command_key, "wake_up")
+
     def test_router_sleep_candidate_must_be_standalone(self):
         from intelligence import action_router, interaction
 
@@ -2872,6 +2888,20 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 post_beat_ms_override=150,
             )
             self.assertEqual(interaction.state_module.get_state(), interaction.State.ACTIVE)
+        finally:
+            interaction.state_module.set_state(old_state)
+
+    def test_wake_word_path_exits_quiet_mode(self):
+        from intelligence import interaction
+
+        old_state = interaction.state_module.get_state()
+        interaction.state_module.set_state(interaction.State.QUIET)
+        try:
+            with mock.patch.object(interaction, "_wake_ack") as wake_ack:
+                interaction._wake_from_quiet()
+
+            self.assertEqual(interaction.state_module.get_state(), interaction.State.ACTIVE)
+            wake_ack.assert_called_once()
         finally:
             interaction.state_module.set_state(old_state)
 
@@ -2974,10 +3004,15 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 mock.patch.object(interaction.conv_memory, "clear_transcript") as clear_transcript,
                 mock.patch.object(interaction, "_scrub_world_state_after_memory_wipe") as scrub,
                 mock.patch.object(interaction.consciousness, "clear_engagement") as clear_engagement,
+                mock.patch.object(
+                    interaction.config,
+                    "FULL_MEMORY_WIPE_ACCESS_CODE",
+                    "Picard alpha 47 tango",
+                ),
                 mock.patch.object(interaction, "_speak_blocking") as speak,
             ):
                 response = interaction._handle_pending_memory_wipe_confirmation(
-                    "confirm full wipe",
+                    "confirm full wipe Picard alpha 47 tango",
                     person_id=4,
                 )
 
@@ -2991,6 +3026,39 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             self.assertFalse(interaction._session_person_ids)
         finally:
             interaction._session_person_ids.clear()
+            interaction._clear_pending_memory_wipe()
+
+    def test_confirm_full_wipe_rejects_missing_access_code(self):
+        from intelligence import interaction
+
+        interaction._pending_memory_wipe = {
+            "scope": "all",
+            "person_id": None,
+            "person_name": None,
+            "requester_id": 4,
+            "asked_at": 100.0,
+        }
+        try:
+            with (
+                mock.patch.object(interaction.time, "monotonic", return_value=105.0),
+                mock.patch.object(interaction.people_memory, "delete_all_people") as delete_all,
+                mock.patch.object(
+                    interaction.config,
+                    "FULL_MEMORY_WIPE_ACCESS_CODE",
+                    "Picard alpha 47 tango",
+                ),
+                mock.patch.object(interaction, "_speak_blocking") as speak,
+            ):
+                response = interaction._handle_pending_memory_wipe_confirmation(
+                    "confirm full wipe",
+                    person_id=4,
+                )
+
+            self.assertIn("Access code", response)
+            delete_all.assert_not_called()
+            speak.assert_called_once()
+            self.assertIsNone(interaction._pending_memory_wipe)
+        finally:
             interaction._clear_pending_memory_wipe()
 
     def test_memory_forget_named_person_requires_explicit_name_match(self):
