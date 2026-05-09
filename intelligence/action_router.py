@@ -292,7 +292,9 @@ Rules:
 - Use identity.name_correction when the user corrects who Rex thinks is speaking
   or what to call the current speaker, e.g. "that's not Bret, I'm Daniel" or
   "call me JT". Put the corrected name in args.name when present. Use
-  conversation.repair if the correction has no identity/name content.
+  conversation.repair if the correction has no identity/name content. Do not use
+  identity.name_correction for plan/status retractions like "that's not
+  happening anymore".
 - Use humor.tell_joke only for explicit joke/pun/one-liner requests like
   "tell me a joke"; do not treat general mentions of jokes as a joke request.
 - Use humor.roast only for explicit roast/tease requests. Put the roast target in
@@ -447,6 +449,28 @@ _THATS_NOT_NAME_RE = re.compile(
     r"\bthat['’]?s\s+not\s+(?!my\s+name\b)(?P<name>[A-Za-z][A-Za-z' -]{0,60})",
     re.IGNORECASE,
 )
+_NON_NAME_THATS_NOT_TOKENS = {
+    "any",
+    "anymore",
+    "bad",
+    "case",
+    "correct",
+    "doing",
+    "fine",
+    "going",
+    "good",
+    "happen",
+    "happening",
+    "it",
+    "more",
+    "point",
+    "right",
+    "that",
+    "thing",
+    "this",
+    "true",
+    "what",
+}
 _TELL_JOKE_RE = re.compile(
     r"\b(?:tell|give|hit)\s+(?:me|us|the room)?\s*(?:with\s+)?"
     r"(?:a|another|one)?\s*(?:joke|pun|one[- ]liner)\b|"
@@ -775,6 +799,67 @@ def _clean_name_arg(raw: str) -> str:
     return " ".join(words)
 
 
+def _plausible_name_arg(raw: str) -> bool:
+    """Return True when a candidate looks like a person name."""
+    name = normalize_person_name(raw, allow_single=True)
+    if not name:
+        return False
+    tokens = [
+        token.lower()
+        for token in re.findall(r"[A-Za-z][A-Za-z'\-]*", name)
+    ]
+    if not tokens:
+        return False
+    if any(token in _NON_NAME_THATS_NOT_TOKENS for token in tokens):
+        return False
+    return True
+
+
+def _plausible_thats_not_name_candidate(raw: str) -> bool:
+    """Return True when a "that's not X" tail looks like a person name."""
+    return _plausible_name_arg(raw)
+
+
+def _text_has_identity_name_correction_content(
+    text: str,
+    decision: ActionDecision | None = None,
+) -> bool:
+    """Separate real name corrections from generic "that's not ..." replies."""
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return False
+
+    raw_name = ""
+    if decision is not None:
+        raw_name = str(
+            decision.args.get("name")
+            or decision.args.get("new_name")
+            or decision.args.get("person_name")
+            or ""
+        ).strip()
+    if raw_name and _plausible_name_arg(raw_name):
+        return True
+
+    named_match = _NAME_FROM_TEXT_RE.search(cleaned)
+    if named_match and _plausible_name_arg(named_match.group("name")):
+        return True
+
+    if re.search(
+        r"\b(?:you\s+(?:got|have)\s+my\s+name\s+wrong|"
+        r"that['’]?s\s+not\s+my\s+name|that\s+isn['’]?t\s+my\s+name|"
+        r"you\s+called\s+me\s+the\s+wrong\s+name)\b",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        return True
+
+    wrong_name = _THATS_NOT_NAME_RE.search(cleaned)
+    if wrong_name is not None:
+        return _plausible_thats_not_name_candidate(wrong_name.group("name"))
+
+    return False
+
+
 def classify_explicit_control(text: str) -> ActionDecision | None:
     """Classify obvious non-performance control requests without an LLM call."""
     cleaned = " ".join((text or "").strip().split())
@@ -796,9 +881,8 @@ def classify_explicit_control(text: str) -> ActionDecision | None:
             name = _clean_name_arg(match.group("name"))
         if not name:
             wrong_name = _THATS_NOT_NAME_RE.search(cleaned)
-            if wrong_name is not None and not normalize_person_name(
-                wrong_name.group("name"),
-                allow_single=True,
+            if wrong_name is not None and not _plausible_thats_not_name_candidate(
+                wrong_name.group("name")
             ):
                 return None
         return ActionDecision(
@@ -1089,6 +1173,19 @@ def _apply_context_overrides(
             args={},
             requires_confirmation=False,
             reason="named holiday explanation is not a current date query",
+        )
+
+    if (
+        decision.action == "identity.name_correction"
+        and _EVENT_CANCEL_OR_STALE_RE.search(text or "")
+        and not _text_has_identity_name_correction_content(text or "", decision)
+    ):
+        return ActionDecision(
+            action="event.cancel",
+            confidence=min(max(float(decision.confidence or 0.0), 0.80), 0.92),
+            args={},
+            requires_confirmation=False,
+            reason="plan/status retraction is not an identity name correction",
         )
 
     if (

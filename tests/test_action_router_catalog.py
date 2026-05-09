@@ -172,11 +172,70 @@ class ActionRouterCatalogTests(unittest.TestCase):
     def test_explicit_control_classifier_ignores_non_name_thats_not_phrase(self):
         from intelligence import action_router
 
-        self.assertIsNone(
-            action_router.classify_explicit_control(
-                "That's not no good Oh, because you said kisses"
-            )
+        cases = [
+            "That's not no good Oh, because you said kisses",
+            "Yeah that's not happening anymore.",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertIsNone(action_router.classify_explicit_control(text))
+
+    def test_router_reroutes_status_retraction_from_identity_correction(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="identity.name_correction",
+            confidence=0.95,
+            args={},
+            reason="misread status retraction as speaker name correction",
         )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "Yeah that's not happening anymore.",
+            {},
+        )
+
+        self.assertEqual(routed.action, "event.cancel")
+        self.assertEqual(
+            routed.reason,
+            "plan/status retraction is not an identity name correction",
+        )
+
+        decision_with_bad_name = action_router.ActionDecision(
+            action="identity.name_correction",
+            confidence=0.95,
+            args={"name": "Happening Anymore"},
+            reason="misread status retraction as speaker name correction",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision_with_bad_name,
+            "Yeah that's not happening anymore.",
+            {},
+        )
+
+        self.assertEqual(routed.action, "event.cancel")
+
+    def test_router_keeps_real_identity_correction_with_thats_not_phrase(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="identity.name_correction",
+            confidence=0.95,
+            args={"name": "Daniel"},
+            reason="speaker name correction",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "That's not Bret, I'm Daniel.",
+            {},
+        )
+
+        self.assertEqual(routed.action, "identity.name_correction")
+        self.assertEqual(routed.args["name"], "Daniel")
 
     def test_explicit_character_preference_classifier_routes_rex_opinions(self):
         from intelligence import action_router
