@@ -1,3 +1,5 @@
+import json
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -268,6 +270,74 @@ class ActionRouterCatalogTests(unittest.TestCase):
         })
 
         self.assertTrue(decision.requires_confirmation)
+
+    def test_vision_snapshot_downgrades_human_photo_plan(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="vision.snapshot",
+            confidence=0.90,
+            args={"scope": "current_view"},
+            requires_confirmation=True,
+            reason="privacy-sensitive current view request",
+        )
+
+        downgraded = action_router._apply_context_overrides(
+            decision,
+            "I wanna take a picture of the Leo triplet",
+            {},
+        )
+
+        self.assertEqual(downgraded.action, "conversation.reply")
+        self.assertFalse(downgraded.requires_confirmation)
+        self.assertLess(downgraded.confidence, 0.85)
+
+    def test_vision_snapshot_keeps_direct_rex_memory_request(self):
+        from intelligence import action_router
+
+        decision = action_router.classify_explicit_control(
+            "I want you to remember what you see"
+        )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.action, "vision.snapshot")
+        self.assertTrue(decision.requires_confirmation)
+
+        self.assertIsNone(
+            action_router.classify_explicit_control("I'm going to save this view")
+        )
+
+    def test_decide_downgrades_llm_snapshot_for_human_photo_plan(self):
+        from intelligence import action_router
+
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps({
+                            "action": "vision.snapshot",
+                            "confidence": 0.9,
+                            "args": {"scope": "current_view"},
+                            "requires_confirmation": True,
+                            "reason": "mentions taking a picture",
+                        })
+                    )
+                )
+            ]
+        )
+
+        with mock.patch.object(
+            action_router._client.chat.completions,
+            "create",
+            return_value=response,
+        ):
+            decision = action_router.decide(
+                "I wanna take a picture of the Leo triplet",
+                {},
+            )
+
+        self.assertEqual(decision.action, "conversation.reply")
+        self.assertFalse(decision.requires_confirmation)
 
     def test_decide_short_circuits_explicit_humor_without_llm_router_call(self):
         from intelligence import action_router

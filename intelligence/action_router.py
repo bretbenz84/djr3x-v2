@@ -319,10 +319,12 @@ Rules:
   Put args.topic when there is one, args.verb for like/hate/dislike/prefer
   questions, args.mode="favorite" for favorites, and args.options for X-or-Y
   comparisons. Do not use it when the human states their own preference.
-- Use vision.snapshot for privacy-sensitive requests to remember or save what
-  Rex sees, such as "remember what you see" or "take a look and keep that in
-  mind". Set requires_confirmation=true. Do not use it for ordinary "what do
-  you see?" questions; those are vision.describe_scene.
+- Use vision.snapshot only when the user asks Rex/you to remember, save, store,
+  or keep in mind what Rex currently sees, such as "remember what you see" or
+  "take a look and keep that in mind". Set requires_confirmation=true. Do not
+  use it for the user's own first-person plans like "I want to take a picture"
+  or "I'm going to save this view"; those are conversation.reply. Do not use it
+  for ordinary "what do you see?" questions; those are vision.describe_scene.
 - If a game is active and the utterance asks to stop, quit, end, or stop playing, use game.stop.
 - If music is active and the utterance asks to stop, pause, or stop playing music, use music.stop.
 - If the utterance asks for the clock time, use time.query.
@@ -668,6 +670,27 @@ _VISION_SNAPSHOT_RE = re.compile(
     r"\btake\s+a\s+look\b.{0,80}\b(?:keep|remember|save|store)\b.{0,60}\b(?:mind|memory|that|this)\b",
     re.IGNORECASE,
 )
+_HUMAN_VISUAL_PLAN_RE = re.compile(
+    r"\b(?:i|we)\s+(?:really\s+)?"
+    r"(?:wanna|want\s+to|need\s+to|plan\s+to|hope\s+to|would\s+like\s+to|should)\s+"
+    r"(?:take|shoot|snap|capture|photograph|get)\s+"
+    r"(?:a\s+|some\s+|the\s+)?"
+    r"(?:pictures?|photos?|photographs?|images?|shots?|snapshots?)\b|"
+    r"\b(?:i['’]?m|im|i\s+am|we['’]?re|we\s+are)\s+(?:really\s+)?"
+    r"(?:going\s+to|gonna|about\s+to)\s+"
+    r"(?:take|shoot|snap|capture|photograph|get)\s+"
+    r"(?:a\s+|some\s+|the\s+)?"
+    r"(?:pictures?|photos?|photographs?|images?|shots?|snapshots?)\b|"
+    r"\b(?:i|we)\s+(?:really\s+)?"
+    r"(?:wanna|want\s+to|need\s+to|plan\s+to|hope\s+to|would\s+like\s+to|should)\s+"
+    r"(?:remember|save|store|keep)\s+(?:this|that|the|my|our)\s+"
+    r"(?:scene|view|moment|picture|photo|image|shot|snapshot)\b|"
+    r"\b(?:i['’]?m|im|i\s+am|we['’]?re|we\s+are)\s+(?:really\s+)?"
+    r"(?:going\s+to|gonna|about\s+to)\s+"
+    r"(?:remember|save|store|keep)\s+(?:this|that|the|my|our)\s+"
+    r"(?:scene|view|moment|picture|photo|image|shot|snapshot)\b",
+    re.IGNORECASE,
+)
 _ROAST_FOOD_TARGETS = {
     "beef",
     "chicken",
@@ -785,7 +808,7 @@ def classify_explicit_control(text: str) -> ActionDecision | None:
             reason="explicit speaker name correction",
         )
 
-    if _VISION_SNAPSHOT_RE.search(cleaned):
+    if _VISION_SNAPSHOT_RE.search(cleaned) and not _HUMAN_VISUAL_PLAN_RE.search(cleaned):
         return ActionDecision(
             action="vision.snapshot",
             confidence=0.94,
@@ -1018,6 +1041,18 @@ def _apply_context_overrides(
             args={},
             requires_confirmation=False,
             reason="recent discard requires an explicit do-not-store/forget-that request",
+        )
+
+    if (
+        decision.action == "vision.snapshot"
+        and _HUMAN_VISUAL_PLAN_RE.search(text or "")
+    ):
+        return ActionDecision(
+            action="conversation.reply",
+            confidence=min(float(decision.confidence or 0.0), 0.40),
+            args={},
+            requires_confirmation=False,
+            reason="first-person photo/visual-memory plan is not a command to Rex",
         )
 
     if (
