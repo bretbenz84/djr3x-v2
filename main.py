@@ -407,7 +407,7 @@ def _queue_camera_reconnect_line(downtime_secs: float = 0.0) -> Optional[str]:
     ):
         return None
     try:
-        if state.get_state() in (State.QUIET, State.SHUTDOWN):
+        if state.get_state() in (State.QUIET, State.SLEEP, State.SHUTDOWN):
             return None
     except Exception:
         return None
@@ -928,7 +928,7 @@ def _make_gui_text_submit_callback():
                 handled = interaction.submit_text(cleaned)
                 if not handled:
                     from utils import conv_log
-                    conv_log.log_system("Text input was ignored because Rex is shutting down.")
+                    conv_log.log_system("Text input was ignored because Rex is asleep or shutting down.")
             except Exception as exc:
                 logger.exception("GUI text input failed: %s", exc)
                 try:

@@ -39,6 +39,15 @@ def _audio_output_suppressed() -> bool:
         return False
 
 
+def _state_suppresses_output() -> bool:
+    try:
+        import state as state_module
+        from state import State
+        return state_module.get_state() == State.SLEEP
+    except Exception:
+        return False
+
+
 def _complete_text_without_audio(
     text: Optional[str],
     done: threading.Event,
@@ -247,6 +256,10 @@ class _SpeechQueue:
         on_start: Optional[Callable[[], None]] = None,
     ) -> threading.Event:
         done = threading.Event()
+        if _state_suppresses_output():
+            logger.info("speech_queue: output suppressed while Rex is asleep")
+            done.set()
+            return done
         if _audio_output_suppressed():
             return _complete_text_without_audio(text, done, on_start)
 

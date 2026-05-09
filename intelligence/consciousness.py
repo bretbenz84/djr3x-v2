@@ -996,7 +996,7 @@ def _end_thread_grace_active() -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _can_speak() -> bool:
-    return state_module.get_state() not in (State.QUIET, State.SHUTDOWN)
+    return state_module.get_state() not in (State.QUIET, State.SLEEP, State.SHUTDOWN)
 
 
 def _can_proactive_speak() -> bool:

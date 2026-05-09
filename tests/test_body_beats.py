@@ -92,6 +92,66 @@ class BodyBeatAnimationTest(unittest.TestCase):
         self.assertEqual(moves[4], {4: animations.ELBOW_DOWN, 5: animations.HAND_LEFT})
         self.assertEqual(moves[-1], snapshot)
 
+    def test_sleep_animation_uses_shutdown_rest_pose(self):
+        from sequences import animations
+
+        moves = []
+
+        def record_move(targets, **_kwargs):
+            moves.append(dict(targets))
+
+        with (
+            mock.patch.object(animations.leds_chest, "sleep") as chest_sleep,
+            mock.patch.object(animations.leds_head, "sleep") as head_sleep,
+            mock.patch.object(animations.servos, "pause_arm_idle") as pause_arm,
+            mock.patch.object(animations.servos, "move_to", side_effect=record_move),
+            mock.patch.object(animations.time, "sleep", return_value=None),
+        ):
+            animations.sleep()
+
+        chest_sleep.assert_called_once()
+        head_sleep.assert_called_once()
+        pause_arm.assert_called_once()
+        self.assertEqual(moves[0], {3: animations.VISOR_CLOSED})
+        self.assertEqual(
+            moves[1],
+            {
+                0: animations.NECK_CENTER,
+                1: animations.HEADLIFT_FLOOR,
+                2: animations.HEADTILT_DOWN,
+                4: animations.ELBOW_NEUTRAL,
+                5: animations.HAND_NEUTRAL,
+                6: animations.POKERARM_NEUTRAL,
+                7: animations.HEROARM_NEUTRAL,
+            },
+        )
+
+    def test_wake_animation_restores_active_pose_and_arm_idle(self):
+        from sequences import animations
+
+        with (
+            mock.patch.object(animations.leds_chest, "active") as chest_active,
+            mock.patch.object(animations.leds_head, "active") as head_active,
+            mock.patch.object(animations.leds_head, "set_eye_color") as eye_color,
+            mock.patch.object(animations.servos, "move_to") as move_to,
+            mock.patch.object(animations.servos, "resume_arm_idle") as resume_arm,
+        ):
+            animations.wake()
+
+        chest_active.assert_called_once()
+        move_to.assert_called_once_with(
+            {
+                1: animations.HEADLIFT_NEUTRAL,
+                2: animations.HEADTILT_NEUTRAL,
+                3: animations.VISOR_HALF,
+            },
+            step_us=35,
+            step_delay=0.02,
+        )
+        head_active.assert_called_once()
+        eye_color.assert_called_once_with(255, 200, 0)
+        resume_arm.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

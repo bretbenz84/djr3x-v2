@@ -97,6 +97,15 @@ def _gui_servo_sim_enabled() -> bool:
     )
 
 
+def _automatic_motion_allowed() -> bool:
+    try:
+        import state as state_module
+        from state import State
+        return state_module.get_state() not in (State.SLEEP, State.SHUTDOWN)
+    except Exception:
+        return True
+
+
 def _default_head_pose() -> dict[int, int]:
     return {
         _channel("neck"): config.SERVO_CHANNELS["neck"]["neutral"],
@@ -789,7 +798,7 @@ def breathing_thread() -> None:
     tick = 0.05  # seconds between position updates
 
     while not _stop_breathing.is_set():
-        if _program_servo_updates_blocked():
+        if _program_servo_updates_blocked() or not _automatic_motion_allowed():
             _stop_breathing.wait(tick)
             continue
 

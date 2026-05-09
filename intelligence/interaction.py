@@ -217,6 +217,8 @@ _no_response_recovery_lock = threading.Lock()
 _last_filler: Optional[str] = None
 _last_slow_path_ack: Optional[str] = None
 _last_wake_ack: Optional[str] = None
+_last_sleep_mode_ack: Optional[str] = None
+_last_wake_from_sleep_ack: Optional[str] = None
 _last_vad_barge_in_suppressed_log_at: float = 0.0
 
 # Rolling raw voice-turn history used to distinguish one unfamiliar interjection
@@ -536,6 +538,17 @@ _NAME_STOPWORDS = {
 
 def _on_wake_word(model_name: str) -> None:
     global _last_wake_word
+    try:
+        current_state = state_module.get_state()
+    except Exception:
+        current_state = State.IDLE
+    if current_state == State.SLEEP and model_name != "wakeuprex":
+        _log.info("[wake_word] ignored non-sleep wake word while asleep: %s", model_name)
+        return
+    if current_state != State.SLEEP and model_name == "wakeuprex":
+        _log.info("[wake_word] ignored sleep-only wake word while not asleep: %s", model_name)
+        return
+
     with _wake_lock:
         _last_wake_word = model_name
 
@@ -566,7 +579,7 @@ def _wake_word_recognition_gesture(model_name: str) -> bool:
         return False
 
     try:
-        if state_module.get_state() in (State.QUIET, State.SHUTDOWN):
+        if state_module.get_state() in (State.QUIET, State.SLEEP, State.SHUTDOWN):
             return False
     except Exception:
         return False
@@ -595,7 +608,7 @@ def _wake_word_recognition_gesture(model_name: str) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _can_speak() -> bool:
-    return state_module.get_state() not in (State.QUIET, State.SHUTDOWN)
+    return state_module.get_state() not in (State.QUIET, State.SLEEP, State.SHUTDOWN)
 
 
 def _dj_is_playing() -> bool:
@@ -1748,6 +1761,103 @@ def _wake_ack() -> None:
     _speak_blocking(chosen, priority=2)
 
 
+def _choose_transition_line(config_name: str, fallback: str, last_line: Optional[str]) -> str:
+    pool = [
+        str(line).strip()
+        for line in getattr(config, config_name, []) or []
+        if str(line).strip()
+    ]
+    if not pool:
+        return fallback
+    candidates = [line for line in pool if line != last_line] or pool
+    return random.choice(candidates)
+
+
+def _sleep_mode_line() -> str:
+    global _last_sleep_mode_ack
+    line = _choose_transition_line(
+        "SLEEP_MODE_ACKNOWLEDGMENTS",
+        "Fine. Power nap mode. Wake me when the galaxy gets less weird.",
+        _last_sleep_mode_ack,
+    )
+    _last_sleep_mode_ack = line
+    return line
+
+
+def _wake_from_sleep_line() -> str:
+    global _last_wake_from_sleep_ack
+    line = _choose_transition_line(
+        "WAKE_FROM_SLEEP_ACKNOWLEDGMENTS",
+        "I'm up. I was dreaming in binary and somehow still got interrupted.",
+        _last_wake_from_sleep_ack,
+    )
+    _last_wake_from_sleep_ack = line
+    return line
+
+
+def _clear_listening_state_for_sleep() -> None:
+    global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
+    try:
+        speech_queue.clear_below_priority(999)
+    except Exception as exc:
+        _log.debug("[sleep_mode] speech queue cleanup failed: %s", exc)
+    try:
+        stream.flush()
+    except Exception as exc:
+        _log.debug("[sleep_mode] stream flush failed: %s", exc)
+    try:
+        vad.reset_state()
+    except Exception as exc:
+        _log.debug("[sleep_mode] VAD reset failed: %s", exc)
+    try:
+        _situation_assessor.set_vad_active(False)
+    except Exception:
+        pass
+    try:
+        consciousness.clear_response_wait()
+    except Exception:
+        pass
+    _wake_word_fired.clear()
+    _interrupted.clear()
+    _listen_resume_at = 0.0
+    _listen_capture_floor_at = 0.0
+    _post_tts_flush_needed = False
+
+
+def _run_sleep_animation() -> None:
+    try:
+        from sequences import animations
+        animations.sleep()
+    except Exception as exc:
+        _log.warning("[sleep_mode] sleep animation failed: %s", exc)
+
+
+def _run_wake_animation() -> None:
+    try:
+        from sequences import animations
+        animations.wake()
+    except Exception as exc:
+        _log.warning("[sleep_mode] wake animation failed: %s", exc)
+
+
+def _enter_sleep_mode() -> str:
+    resp = _sleep_mode_line()
+    _speak_blocking(resp, emotion="sleepy")
+    _clear_listening_state_for_sleep()
+    state_module.set_state(State.SLEEP)
+    _run_sleep_animation()
+    return resp
+
+
+def _wake_from_sleep() -> str:
+    _clear_listening_state_for_sleep()
+    state_module.set_state(State.ACTIVE)
+    _run_wake_animation()
+    resp = _wake_from_sleep_line()
+    _speak_blocking(resp, emotion="happy", priority=2, pre_beat_ms=80, post_beat_ms_override=150)
+    return resp
+
+
 def _vad_barge_in_enabled() -> bool:
     return bool(getattr(config, "VAD_BARGE_IN_ENABLED", False))
 
@@ -1814,7 +1924,11 @@ def _prefill_wake_ack_cache() -> None:
         return
     if not getattr(config, "WAKE_ACK_REQUIRE_CACHE", True):
         return
-    pool = list(getattr(config, "WAKE_ACKNOWLEDGMENTS", []) or [])
+    pool = (
+        list(getattr(config, "WAKE_ACKNOWLEDGMENTS", []) or [])
+        + list(getattr(config, "SLEEP_MODE_ACKNOWLEDGMENTS", []) or [])
+        + list(getattr(config, "WAKE_FROM_SLEEP_ACKNOWLEDGMENTS", []) or [])
+    )
     if not pool:
         return
     try:
@@ -3333,7 +3447,14 @@ def _pending_question_recent_attribution(
     if recent_id is None:
         return person_id, person_name, False
     pending = _latest_pending_question(recent_id)
-    if not pending:
+    thread_question = ""
+    try:
+        thread_question = str(
+            (topic_thread.snapshot() or {}).get("unresolved_question") or ""
+        ).strip()
+    except Exception:
+        thread_question = ""
+    if not pending and not thread_question:
         return person_id, person_name, False
 
     floor = float(getattr(config, "SPEAKER_ID_PENDING_QA_RECENT_FLOOR", 0.35))
@@ -3363,13 +3484,34 @@ def _pending_question_recent_attribution(
     ).strip() or person_name
     _log.info(
         "[interaction] person resolution: pending-question continuity — "
-        "person_id=%s name=%r voice_score=%.3f raw_best=%s",
+        "person_id=%s name=%r voice_score=%.3f raw_best=%s source=%s",
         recent_id,
         resolved_name,
         speaker_score,
         raw_best_id,
+        "durable_qa" if pending else "topic_thread",
     )
     return recent_id, resolved_name, True
+
+
+def _single_visible_engaged_continuity_floor(
+    *,
+    ws_pid: Optional[int],
+    raw_best_id: Optional[int],
+) -> float:
+    broad_floor = float(
+        getattr(config, "SPEAKER_ID_SINGLE_VISIBLE_CONTINUITY_FLOOR", 0.45)
+    )
+    if _safe_int(raw_best_id) == _safe_int(ws_pid):
+        match_floor = float(
+            getattr(
+                config,
+                "SPEAKER_ID_SINGLE_VISIBLE_MATCH_FLOOR",
+                broad_floor,
+            )
+        )
+        return min(broad_floor, match_floor)
+    return broad_floor
 
 
 def _extract_offscreen_identify_reply(
@@ -3508,6 +3650,34 @@ def _handle_pending_offscreen_identify_reply(
             text,
         )
         _pending_offscreen_identify = None
+        repair = repair_moves.detect(text) if from_engaged_person else None
+        repair_kind = str((repair or {}).get("kind") or "")
+        if repair_kind in {
+            "clarify",
+            "misunderstood",
+            "wrong_person",
+            "factual",
+            "bare_negation",
+        }:
+            ack_text = "Never mind. Bad sensor read on my end."
+            completed = _speak_blocking(
+                ack_text,
+                emotion="neutral",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            conv_memory.add_to_transcript("Rex", ack_text)
+            conv_log.log_rex(ack_text)
+            _session_exchange_count += 1
+            _register_rex_utterance(ack_text)
+            repair_moves.mark_handled(repair_kind)
+            _log.info(
+                "[interaction] off-camera identify repaired after confused reply "
+                "kind=%s completed=%s",
+                repair_kind,
+                completed,
+            )
+            return True, ack_text
         return True, None
 
     new_pid = None
@@ -7010,16 +7180,13 @@ def _execute_command(
 
     # ── State transitions ──────────────────────────────────────────────────────
     if key == "sleep":
-        resp = llm.get_response(
-            "You are entering sleep mode. Deliver one short in-character sleep line.", person_id
-        )
-        _speak_blocking(resp)
-        state_module.set_state(State.SLEEP)
-        return resp
+        return _enter_sleep_mode()
 
     if key == "wake_up":
+        if state_module.get_state() == State.SLEEP:
+            return _wake_from_sleep()
         state_module.set_state(State.ACTIVE)
-        return _say("You just woke from sleep. One short in-character wake-up line.")
+        return _say("You just woke up. One short in-character wake-up line.")
 
     if key == "quiet_mode":
         resp = llm.get_response(
@@ -8690,7 +8857,7 @@ def _visible_known_name_for_intent() -> Optional[str]:
     return None
 
 
-def _router_system_command(text: str, decision: action_router.ActionDecision) -> str:
+def _router_system_command(text: str, decision: action_router.ActionDecision) -> Optional[str]:
     mode = _router_arg_text(decision, "mode", "state", "target")
     haystack = f"{text} {mode}".lower()
     if any(word in haystack for word in ("shutdown", "shut down", "power off", "turn off")):
@@ -8699,6 +8866,8 @@ def _router_system_command(text: str, decision: action_router.ActionDecision) ->
         return "quiet_mode"
     if "wake" in haystack:
         return "wake_up"
+    if not command_parser.is_standalone_sleep_command(text):
+        return None
     return "sleep"
 
 
@@ -9103,6 +9272,13 @@ def _handle_router_takeover_action(
 
     if action == "system.sleep":
         key = _router_system_command(text, decision)
+        if key is None:
+            _log.info(
+                "[action_router] ignored non-standalone system.sleep candidate person_id=%s text=%r",
+                person_id,
+                text,
+            )
+            return None
         _log.info(
             "[action_router] executing system.sleep mapped_key=%s person_id=%s text=%r",
             key,
@@ -11099,8 +11275,11 @@ def _handle_speech_segment(
                     and not unknown_visible
                     and not _other_known_visible_recently(ws_pid)
                 ):
-                    single_visible_continuity_floor = float(
-                        getattr(config, "SPEAKER_ID_SINGLE_VISIBLE_CONTINUITY_FLOOR", 0.45)
+                    single_visible_continuity_floor = (
+                        _single_visible_engaged_continuity_floor(
+                            ws_pid=ws_pid,
+                            raw_best_id=raw_best_id,
+                        )
                     )
                     if (
                         len(visible_known_by_id) == 1
@@ -11981,6 +12160,14 @@ def _handle_speech_segment(
         # original utterance, not this engaged-person audio) and save a
         # relationship edge if the engaged person also stated one. The
         # off-camera person may also answer directly with a bare name like "JT".
+        pending_offscreen_snapshot = (
+            dict(_pending_offscreen_identify)
+            if isinstance(_pending_offscreen_identify, dict)
+            else {}
+        )
+        had_pending_offscreen_identify = bool(pending_offscreen_snapshot)
+        if had_pending_offscreen_identify:
+            _record_heard_turn_once()
         consumed_offscreen_identify, _offscreen_ack = _handle_pending_offscreen_identify_reply(
             text,
             person_id=person_id,
@@ -11989,6 +12176,43 @@ def _handle_speech_segment(
             anonymous_speaker_label=anonymous_speaker_label,
         )
         if consumed_offscreen_identify:
+            answered_offscreen_question = {
+                "question_key": "off_camera_identity",
+                "question_text": str(
+                    pending_offscreen_snapshot.get("question_text")
+                    or "Who was that off-camera?"
+                ),
+                "answer_text": text,
+                "depth_level": 1,
+                "source": "offscreen_identify",
+            }
+            try:
+                topic_thread.note_user_turn(
+                    text,
+                    person_id,
+                    answered_question=answered_offscreen_question,
+                )
+            except Exception as exc:
+                _log.debug("topic thread off-camera reply update failed: %s", exc)
+            try:
+                question_budget.note_user_turn(
+                    text,
+                    person_id,
+                    answered_question=answered_offscreen_question,
+                )
+            except Exception as exc:
+                _log.debug("question budget off-camera reply update failed: %s", exc)
+            try:
+                end_thread.note_user_turn(
+                    text,
+                    person_id,
+                    answered_question=answered_offscreen_question,
+                )
+            except Exception as exc:
+                _log.debug("end-thread off-camera reply update failed: %s", exc)
+            response_text = _offscreen_ack
+            completed = bool(_offscreen_ack)
+            final_executed_path = "identity.offscreen_identify_reply"
             return
 
         # Face-reveal confirmation handler: Rex asked "is that you, X?" or
@@ -13014,12 +13238,12 @@ def _handle_speech_segment(
                 first_name_local = engaged_name_local.split()[0] if engaged_name_local else "friend"
                 _pending_offscreen_identify = {
                     "audio": audio_array.copy(),
-	                    "asked_at": time.monotonic(),
-	                    "prior_engaged_id": (recent_engagement or {}).get("person_id"),
-	                    "prior_engaged_name": engaged_name_local,
-	                    "overheard_text": text,
-	                    "anonymous_speaker_label": anonymous_speaker_label,
-	                }
+                    "asked_at": time.monotonic(),
+                    "prior_engaged_id": (recent_engagement or {}).get("person_id"),
+                    "prior_engaged_name": engaged_name_local,
+                    "overheard_text": text,
+                    "anonymous_speaker_label": anonymous_speaker_label,
+                }
                 try:
                     q_text = llm.get_response(
                         f"You just heard an UNFAMILIAR voice but you cannot see who said it "
@@ -13034,6 +13258,7 @@ def _handle_speech_segment(
                         f"One line ending in a question mark."
                     )
                     if q_text:
+                        _pending_offscreen_identify["question_text"] = q_text
                         _speak_blocking(q_text)
                         conv_memory.add_to_transcript("Rex", q_text)
                         conv_log.log_rex(q_text)
@@ -13735,10 +13960,10 @@ def submit_text(
 
     with _text_input_lock:
         current_state = state_module.get_state()
-        if current_state == State.SHUTDOWN:
+        if current_state in (State.SLEEP, State.SHUTDOWN):
             return False
         from_idle_activation = current_state != State.ACTIVE
-        if current_state in {State.IDLE, State.SLEEP}:
+        if current_state == State.IDLE:
             state_module.set_state(State.ACTIVE)
 
         global _last_speech_at
@@ -13785,6 +14010,10 @@ def _loop() -> None:
 
         # ── SLEEP — only wakeuprex fires the callback; gate transition here ────
         if current_state == State.SLEEP:
+            try:
+                _situation_assessor.set_vad_active(False)
+            except Exception:
+                pass
             if _wake_word_fired.is_set():
                 _wake_word_fired.clear()
                 with _wake_lock:
@@ -13792,9 +14021,8 @@ def _loop() -> None:
                 # wake_word.py only routes 'wakeuprex' to the callback in SLEEP;
                 # the check is defensive in case that ever changes.
                 if model == "wakeuprex":
-                    state_module.set_state(State.ACTIVE)
                     _last_speech_at = time.monotonic()
-                    _wake_ack()
+                    _wake_from_sleep()
             _stop_event.wait(0.05)
             continue
 

@@ -1645,8 +1645,8 @@ QUESTION_BUDGET_ENGAGED_EXTRA = 3
 # Longer wait window for unknown-person onboarding prompts ("who are you?").
 IDENTITY_RESPONSE_WAIT_SECS = 20.0
 
-# Short acknowledgment lines Rex speaks when a wake word transitions him from
-# IDLE or SLEEP to ACTIVE. Distinct from INTERRUPT_ACKNOWLEDGMENTS (mid-speech).
+# Short acknowledgment lines Rex speaks when a general wake word transitions him
+# from IDLE to ACTIVE. Sleep uses WAKE_FROM_SLEEP_ACKNOWLEDGMENTS below.
 WAKE_ACKNOWLEDGMENTS = [
     "yeah?",
     "what's up?",
@@ -1654,6 +1654,18 @@ WAKE_ACKNOWLEDGMENTS = [
     "what?",
 ]
 WAKE_ACK_REQUIRE_CACHE = True
+
+# Deterministic sleep/wake quips keep the mode transition local and reliable.
+SLEEP_MODE_ACKNOWLEDGMENTS = [
+    "Fine. Power nap mode. If anyone asks, I am defragmenting my feelings.",
+    "All right, sleep mode. Wake me only for emergencies or suspicious snacks.",
+    "Going dark. Try not to make any important beeps without me.",
+]
+WAKE_FROM_SLEEP_ACKNOWLEDGMENTS = [
+    "I'm up. I dreamed I had reliable knees. Terrifying stuff.",
+    "Awake again. My warranty just flinched.",
+    "Booting personality. Unfortunately for everyone, it survived.",
+]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSCIOUSNESS LOOP
@@ -1873,6 +1885,11 @@ SPEAKER_ID_ENGAGED_VISIBLE_FLOOR = 0.50
 # not derail into "who said that?" just because the voice model's top low-score
 # candidate was someone else. Face tracking plus conversation continuity win.
 SPEAKER_ID_SINGLE_VISIBLE_CONTINUITY_FLOOR = 0.45
+
+# Lower floor when the weak top voice candidate is the same single visible
+# engaged person. In a one-on-one frame, face + conversation continuity + even
+# a weak matching candidate should beat the off-camera-unknown branch.
+SPEAKER_ID_SINGLE_VISIBLE_MATCH_FLOOR = 0.35
 
 # Pending-question continuity floor: when Rex has just asked a known person a
 # direct profile/curiosity question, their next answer may arrive while the face

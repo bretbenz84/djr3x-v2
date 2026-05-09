@@ -1211,6 +1211,27 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._wake_word_fired.clear()
 
+    def test_sleep_state_only_accepts_sleep_wake_word(self):
+        from intelligence import interaction
+
+        old_state = interaction.state_module.get_state()
+        interaction._wake_word_fired.clear()
+        interaction.state_module.set_state(interaction.State.SLEEP)
+        try:
+            with (
+                mock.patch.object(interaction, "_wake_word_recognition_gesture") as gesture,
+                mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            ):
+                interaction._on_wake_word("Hey_rex")
+                self.assertFalse(interaction._wake_word_fired.is_set())
+                gesture.assert_not_called()
+
+                interaction._on_wake_word("wakeuprex")
+                self.assertTrue(interaction._wake_word_fired.is_set())
+        finally:
+            interaction._wake_word_fired.clear()
+            interaction.state_module.set_state(old_state)
+
     def test_wake_word_recognition_gesture_filters_and_cools_down(self):
         from intelligence import interaction
         from sequences import animations
@@ -2740,6 +2761,120 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertIsNone(command_parser.parse("What do you know about jazz?"))
         self.assertIsNone(command_parser.parse("No, that's wrong."))
 
+    def test_sleep_command_must_be_standalone(self):
+        from intelligence import command_parser
+
+        accepted = [
+            "go to sleep",
+            "go to sleep.",
+            "please go to sleep",
+            "Rex go to sleep please",
+            "sleep",
+        ]
+        rejected = [
+            "I told the kids to go to sleep",
+            "I should go to sleep",
+            "are you going to sleep",
+            "sleep is important",
+        ]
+
+        for text in accepted:
+            with self.subTest(text=text):
+                match = command_parser.parse(text)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.command_key, "sleep")
+
+        for text in rejected:
+            with self.subTest(text=text):
+                self.assertIsNone(command_parser.parse(text))
+
+    def test_router_sleep_candidate_must_be_standalone(self):
+        from intelligence import action_router, interaction
+
+        decision = action_router.ActionDecision(
+            action="system.sleep",
+            confidence=0.94,
+            args={},
+            reason="system state request",
+        )
+
+        self.assertEqual(interaction._router_system_command("go to sleep", decision), "sleep")
+        self.assertIsNone(
+            interaction._router_system_command("I told the kids to go to sleep", decision)
+        )
+
+    def test_sleep_command_speaks_then_enters_sleep_animation(self):
+        from intelligence import interaction
+        from sequences import animations
+
+        old_state = interaction.state_module.get_state()
+        interaction.state_module.set_state(interaction.State.ACTIVE)
+        match = interaction.command_parser.CommandMatch("sleep", "exact", {})
+        try:
+            with (
+                mock.patch.object(
+                    interaction.config,
+                    "SLEEP_MODE_ACKNOWLEDGMENTS",
+                    ["Fine. Power nap mode."],
+                ),
+                mock.patch.object(interaction.random, "choice", return_value="Fine. Power nap mode."),
+                mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+                mock.patch.object(interaction.speech_queue, "clear_below_priority") as clear_queue,
+                mock.patch.object(interaction.stream, "flush") as flush,
+                mock.patch.object(interaction.vad, "reset_state") as reset_vad,
+                mock.patch.object(animations, "sleep") as sleep_animation,
+            ):
+                response = interaction._execute_command(match, 1, "Bret", "go to sleep")
+
+            self.assertEqual(response, "Fine. Power nap mode.")
+            speak.assert_called_once_with("Fine. Power nap mode.", emotion="sleepy")
+            clear_queue.assert_called_once_with(999)
+            flush.assert_called_once()
+            reset_vad.assert_called_once()
+            sleep_animation.assert_called_once()
+            self.assertEqual(interaction.state_module.get_state(), interaction.State.SLEEP)
+        finally:
+            interaction.state_module.set_state(old_state)
+
+    def test_wake_from_sleep_animates_and_uses_sleep_wake_joke(self):
+        from intelligence import interaction
+        from sequences import animations
+
+        old_state = interaction.state_module.get_state()
+        interaction.state_module.set_state(interaction.State.SLEEP)
+        try:
+            with (
+                mock.patch.object(
+                    interaction.config,
+                    "WAKE_FROM_SLEEP_ACKNOWLEDGMENTS",
+                    ["Awake again. My warranty just flinched."],
+                ),
+                mock.patch.object(
+                    interaction.random,
+                    "choice",
+                    return_value="Awake again. My warranty just flinched.",
+                ),
+                mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+                mock.patch.object(interaction.speech_queue, "clear_below_priority"),
+                mock.patch.object(interaction.stream, "flush"),
+                mock.patch.object(interaction.vad, "reset_state"),
+                mock.patch.object(animations, "wake") as wake_animation,
+            ):
+                response = interaction._wake_from_sleep()
+
+            self.assertEqual(response, "Awake again. My warranty just flinched.")
+            wake_animation.assert_called_once()
+            speak.assert_called_once_with(
+                "Awake again. My warranty just flinched.",
+                emotion="happy",
+                priority=2,
+                pre_beat_ms=80,
+                post_beat_ms_override=150,
+            )
+            self.assertEqual(interaction.state_module.get_state(), interaction.State.ACTIVE)
+        finally:
+            interaction.state_module.set_state(old_state)
+
     def test_forget_me_arms_exact_confirmation(self):
         from intelligence import interaction
 
@@ -3185,6 +3320,19 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     text="hello?",
                 )
             )
+
+    def test_submit_text_is_ignored_while_asleep(self):
+        from intelligence import interaction
+
+        old_state = interaction.state_module.get_state()
+        interaction.state_module.set_state(interaction.State.SLEEP)
+        try:
+            with mock.patch.object(interaction, "_handle_speech_segment") as handle:
+                self.assertFalse(interaction.submit_text("hello?"))
+            handle.assert_not_called()
+            self.assertEqual(interaction.state_module.get_state(), interaction.State.SLEEP)
+        finally:
+            interaction.state_module.set_state(old_state)
 
     def test_pending_question_recent_attribution_survives_panned_away_face(self):
         from intelligence import interaction
@@ -7561,6 +7709,65 @@ class GroupChatterGatingTest(unittest.TestCase):
         finally:
             interaction._pending_offscreen_identify = old_pending
             interaction._session_exchange_count = old_exchange_count
+
+    def test_offscreen_identity_confusion_reply_repairs_and_clears(self):
+        import numpy as np
+        from intelligence import interaction, repair_moves
+
+        old_pending = interaction._pending_offscreen_identify
+        old_exchange_count = interaction._session_exchange_count
+        repair_moves.clear()
+        interaction._pending_offscreen_identify = {
+            "audio": np.array([1.0, 1.0, 1.0], dtype=np.float32),
+            "asked_at": interaction.time.monotonic(),
+            "prior_engaged_id": 1,
+            "prior_engaged_name": "Bret Benziger",
+            "overheard_text": "I only got 4 hours of sleep",
+            "anonymous_speaker_label": "unknown_voice_1",
+            "question_text": "Who's that off-screen, Bret?",
+        }
+        repair_moves.note_assistant_turn("Who's that off-screen, Bret?")
+        try:
+            with (
+                mock.patch.object(
+                    interaction.llm,
+                    "extract_relationship_introduction",
+                    return_value={"name": None, "relationship": None},
+                ),
+                mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+                mock.patch.object(interaction.conv_memory, "add_to_transcript") as add_transcript,
+                mock.patch.object(interaction.conv_log, "log_rex") as log_rex,
+                mock.patch.object(interaction, "_register_rex_utterance") as register,
+                mock.patch.object(interaction.people_memory, "find_or_create_person") as find_or_create,
+            ):
+                consumed, response = interaction._handle_pending_offscreen_identify_reply(
+                    "what are you talking about?",
+                    person_id=1,
+                    person_name="Bret Benziger",
+                    audio_array=np.array([2.0], dtype=np.float32),
+                    anonymous_speaker_label=None,
+                )
+
+            self.assertTrue(consumed)
+            self.assertEqual(response, "Never mind. Bad sensor read on my end.")
+            self.assertIsNone(interaction._pending_offscreen_identify)
+            find_or_create.assert_not_called()
+            speak.assert_called_once_with(
+                "Never mind. Bad sensor read on my end.",
+                emotion="neutral",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            add_transcript.assert_called_once_with(
+                "Rex",
+                "Never mind. Bad sensor read on my end.",
+            )
+            log_rex.assert_called_once_with("Never mind. Bad sensor read on my end.")
+            register.assert_called_once_with("Never mind. Bad sensor read on my end.")
+        finally:
+            interaction._pending_offscreen_identify = old_pending
+            interaction._session_exchange_count = old_exchange_count
+            repair_moves.clear()
 
     def test_anonymous_speaker_slot_reuses_matching_unknown_voice(self):
         import numpy as np

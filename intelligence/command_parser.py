@@ -35,6 +35,41 @@ def _plain(text: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9'\s]", " ", text.lower()).split())
 
 
+_SLEEP_COMMAND_CORES = {
+    "go to sleep",
+    "sleep",
+}
+_SLEEP_COMMAND_PREFIXES = (
+    "please ",
+    "rex ",
+    "hey rex ",
+)
+_SLEEP_COMMAND_SUFFIXES = (
+    " please",
+)
+
+
+def is_standalone_sleep_command(text: str) -> bool:
+    """True only for short, direct sleep commands, not embedded narration."""
+    clean = _plain(text)
+    if not clean:
+        return False
+
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _SLEEP_COMMAND_PREFIXES:
+            if clean.startswith(prefix):
+                clean = clean[len(prefix):].strip()
+                changed = True
+        for suffix in _SLEEP_COMMAND_SUFFIXES:
+            if clean.endswith(suffix):
+                clean = clean[: -len(suffix)].strip()
+                changed = True
+
+    return clean in _SLEEP_COMMAND_CORES
+
+
 _GENERIC_VISUAL_TARGET_WORDS = {
     "a", "an", "the", "this", "that", "these", "those", "my", "your",
     "thing", "things", "stuff", "one", "here", "there",
@@ -563,6 +598,9 @@ def parse(text: str) -> CommandMatch | None:
     normalized = _normalize(text)
     original = text.strip()
 
+    if is_standalone_sleep_command(original):
+        return CommandMatch("sleep", "exact", {})
+
     # 1. Exact match
     if normalized in EXACT_COMMANDS:
         return CommandMatch(EXACT_COMMANDS[normalized], "exact", {})
@@ -645,6 +683,8 @@ def parse(text: str) -> CommandMatch | None:
 
     if best_score >= config.COMMAND_FUZZY_THRESHOLD:
         best_key, best_arg = _FUZZY_POOL[best_candidate]
+        if best_key == "sleep" and not is_standalone_sleep_command(original):
+            return None
 
         # 4. Semantic exclusion veto
         for fragment, blocked_key in SEMANTIC_EXCLUSIONS:

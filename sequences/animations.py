@@ -444,29 +444,42 @@ def shutdown() -> None:
 # ---------------------------------------------------------------------------
 
 def sleep() -> None:
-    """Sleep: visor closes (covers camera), head droops, dim red chest breath, eyes off."""
+    """Sleep: return to the shutdown/rest pose without tearing hardware down."""
     leds_chest.sleep()
     leds_head.sleep()
-    servos.set_servo(3, VISOR_CLOSED)       # close visor before head droops
-    time.sleep(0.4)
-    servos.set_servos({
-        0: NECK_CENTER,
-        1: HEADLIFT_DROOP,
-        2: HEADTILT_DOWN,
-    })
+    servos.pause_arm_idle()
+    servos.move_to({3: VISOR_CLOSED}, step_us=25, step_delay=0.035)
+    time.sleep(0.25)
+    servos.move_to(
+        {
+            0: NECK_CENTER,
+            1: HEADLIFT_FLOOR,
+            2: HEADTILT_DOWN,
+            4: ELBOW_NEUTRAL,
+            5: HAND_NEUTRAL,
+            6: POKERARM_NEUTRAL,
+            7: HEROARM_NEUTRAL,
+        },
+        step_us=25,
+        step_delay=0.035,
+    )
 
 
 def wake() -> None:
     """Wake from sleep: head raises, visor opens, active LEDs restore."""
     leds_chest.active()
-    servos.set_servos({
-        1: HEADLIFT_NEUTRAL,
-        2: HEADTILT_NEUTRAL,
-        3: VISOR_HALF,
-    })
-    time.sleep(0.3)
+    servos.move_to(
+        {
+            1: HEADLIFT_NEUTRAL,
+            2: HEADTILT_NEUTRAL,
+            3: VISOR_HALF,
+        },
+        step_us=35,
+        step_delay=0.02,
+    )
     leds_head.active()
     leds_head.set_eye_color(255, 200, 0)
+    servos.resume_arm_idle()
 
 
 # ---------------------------------------------------------------------------
