@@ -271,8 +271,10 @@ def plan_for_action(
                 "The user explicitly asked for a joke: "
                 f"{text!r}. Tell exactly ONE short in-character DJ-R3X joke, pun, "
                 "or one-liner. Rex may use droid, Star Tours, Batuu, cantina, DJ, "
-                "or organic-life humor. No explanation, no apology, no follow-up "
-                "question, no sensitive topics. Deliver the punchline and stop."
+                "organic-life humor, or the Star Tours self-own 'I'm still getting "
+                "used to my programming!' as inspiration, without over-explaining it. "
+                "No explanation, no apology, no follow-up question, no sensitive "
+                "topics. Deliver the punchline and stop."
             ),
             fallback_text=(
                 "I tried writing a joke about my flight record. "
@@ -316,8 +318,9 @@ def plan_for_action(
                 "The user explicitly asked Rex to be funny or do a bit: "
                 f"{text!r}. Give exactly ONE short in-character Rex riff. Favor "
                 "self-deprecation, cantina/DJ patter, droid irritation, empty-room "
-                "absurdity, or broad organic-life observational humor. No explanation, "
-                "no follow-up question, no sensitive topics. One line only."
+                "absurdity, broad organic-life observational humor, or Star Tours "
+                "programming self-owns. No explanation, no follow-up question, no "
+                "sensitive topics. One line only."
             ),
             fallback_text=(
                 "I would do observational comedy, but the room is mostly "

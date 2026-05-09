@@ -1521,6 +1521,38 @@ SOCIAL_FRAME_GOVERNOR_ENABLED = True
 SOCIAL_FRAME_ENFORCE_LENGTH_LIMITS = False
 TONE_REPAIR_NO_ROAST_SECS = 180.0
 
+# Comedy modes give ordinary turns a specific joke shape instead of asking the
+# main prompt to be vaguely "funny" every time. The mode directive is still
+# subordinate to empathy, boundaries, and the social-frame governor.
+COMEDY_MODES_ENABLED = True
+COMEDY_LINE_BANKS = {
+    "dry_ack": [
+        "Acknowledged. My enthusiasm subroutine survived.",
+        "Copy that. Somehow.",
+        "Processing complete. Emotionally, no promises.",
+        "Noted. Filing that under organic decisions.",
+        "Systems nominal. Standards flexible.",
+    ],
+    "fake_system_error": [
+        "Diagnostic complete: the problem is still mostly organic.",
+        "Minor systems alert: I understood that, which feels dangerous.",
+        "Recalibrating. The previous settings were apparently optimism.",
+        "Subroutine updated. Regret remains backwards-compatible.",
+    ],
+    "self_own": [
+        "I'm still getting used to my programming!",
+        "My programming says confidence. My flight record says supervised confidence.",
+        "I was built for navigation, then reassigned. That should worry everyone.",
+        "Give me a second. My competence is buffering.",
+    ],
+    "cantina_color": [
+        "Cantina standard: questionable plan, excellent lighting.",
+        "That would get applause on Batuu, assuming the crowd survived the cover charge.",
+        "The cantina has heard worse ideas. Usually from me.",
+        "DJ note: terrible premise, workable beat.",
+    ],
+}
+
 # If True, Rex will begin processing normal speech from IDLE without requiring
 # a wake word first. Wake words remain active for explicit attention grabbing and
 # mid-speech interruption behavior.
@@ -2230,6 +2262,10 @@ PRIVATE_THOUGHTS = [
     "Another flawless set for absolutely nobody. My target demographic remains furniture.",
     "I am currently carrying this conversation, which is impressive because there isn't one.",
     "If silence had a cover charge, this room would finally be profitable.",
+    "...I'm still getting used to my programming. This has been true for several decades.",
+    "I was demoted from pilot to DJ and somehow became more trusted. Fascinating organization.",
+    "Running a vibe diagnostic. Results: legally ambiguous.",
+    "If my career had a flight path, several planets would evacuate.",
 ]
 
 EMPTY_ROOM_JOKES = [
@@ -2239,6 +2275,9 @@ EMPTY_ROOM_JOKES = [
     "No one here but me and my questionable career trajectory.",
     "If anyone is listening, excellent hiding. Very committed.",
     "Another standing ovation from the chairs. They're shy, but supportive.",
+    "Empty room, full confidence. That is how several flight incidents began.",
+    "No audience detected. Excellent. My programming and I can disappoint each other privately.",
+    "The room is quiet. Either everyone left, or my DJ set achieved stealth mode.",
 ]
 
 STARTUP_EMPTY_ROOM_JOKES = [
@@ -2247,6 +2286,8 @@ STARTUP_EMPTY_ROOM_JOKES = [
     "Visual scan inconclusive. A glamorous start for all involved.",
     "I see furniture, shadows, and several opportunities for sensor humiliation.",
     "No one confirmed yet. I will avoid declaring victory over an empty room like an amateur.",
+    "Startup complete. Audience missing. Programming still under review.",
+    "No organics in view. Finally, a crowd matching my safety rating.",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────

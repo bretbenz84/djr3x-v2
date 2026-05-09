@@ -487,12 +487,18 @@ _TRIVIA_CORRECT_LINES = [
     "Correct. Apparently the organic processor still boots.",
     "Correct. I am recording that as suspicious competence.",
     "Correct. Tiny parade, very tiny budget.",
+    "Correct. I will notify my programming that hope was briefly justified.",
+    "Correct. The scoreboard and I are both handling it professionally.",
+    "Correct. Disturbing, but technically legal.",
 ]
 
 _TRIVIA_WRONG_LINES = [
     "Nope. A brave answer, if bravery means ignoring facts.",
     "Incorrect. The answer wandered off and you chased a chair.",
     "No. The trivia board remains unimpressed.",
+    "Incorrect. Strong confidence, poor landing. I relate.",
+    "No. My sensors detected certainty, not accuracy.",
+    "Incorrect. The facts filed a complaint.",
 ]
 
 

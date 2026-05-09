@@ -50,6 +50,7 @@ from intelligence import end_thread
 from intelligence import introductions
 from intelligence import memory_query
 from intelligence import social_frame
+from intelligence import comedy_modes
 from intelligence import turn_completion
 from intelligence import friendship_patterns
 from intelligence import conversation_steering
@@ -5695,9 +5696,16 @@ def _stream_llm_response(
             answered_question=answered_question,
             agenda_directive=agenda_directive,
         )
+        comedy_mode = comedy_modes.select_mode(
+            text,
+            person_id,
+            frame=frame,
+            agenda_directive=agenda_directive,
+        )
         agenda_directive = "\n".join([
             agenda_directive,
             social_frame.build_directive(frame),
+            comedy_modes.build_directive(comedy_mode),
         ])
         _log.info("[agenda] %s", agenda_directive.replace("\n", " | "))
         llm_started = time.monotonic()
@@ -5721,6 +5729,14 @@ def _stream_llm_response(
             full_text = governed.text
         except Exception as exc:
             _log.debug("social frame governor failed: %s", exc)
+        try:
+            full_text = comedy_modes.polish_response(
+                full_text,
+                comedy_mode,
+                allow_roast=frame.allow_roast,
+            )
+        except Exception as exc:
+            _log.debug("comedy polish failed: %s", exc)
 
         # Brief join — classifier usually finishes before or alongside the
         # main response since its prompt is tiny. Cap the wait so a slow
