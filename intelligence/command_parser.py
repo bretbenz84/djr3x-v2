@@ -35,6 +35,38 @@ def _plain(text: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9'\s]", " ", text.lower()).split())
 
 
+_DIRECT_COMMAND_LEADERS = (
+    "hey dj r3x ",
+    "hey djr3x ",
+    "hey r3x ",
+    "hey rex ",
+    "okay rex ",
+    "ok rex ",
+    "dj r3x ",
+    "djr3x ",
+    "r3x ",
+    "rex ",
+    "please ",
+    "okay ",
+    "ok ",
+    "alright ",
+)
+
+
+def _strip_direct_command_leaders(clean: str) -> str:
+    """Remove short polite/vocative leaders from a direct command."""
+    value = clean.strip()
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _DIRECT_COMMAND_LEADERS:
+            if value.startswith(prefix):
+                value = value[len(prefix):].strip()
+                changed = True
+                break
+    return value
+
+
 _SLEEP_COMMAND_CORES = {
     "go to sleep",
     "sleep",
@@ -83,8 +115,13 @@ _BARE_LOOK_DIRECTIONS = {
     "centre": "center",
 }
 _EMBEDDED_LOOK_DIRECTION_RE = re.compile(
-    r"(?:^|[,.!?;]\s*)look\s+(?:to\s+)?(?:your\s+)?"
+    r"(?:^|[.!?]\s+)(?:please\s+)?look\s+(?:to\s+)?(?:your\s+)?"
     r"(?P<direction>left|right|up|down)\b",
+    re.IGNORECASE,
+)
+_LOOK_DIRECTION_META_RE = re.compile(
+    r"^look\s+(?:to\s+)?(?:your\s+)?(?:left|right|up|down)\s+"
+    r"(?:is|was|means|meant|sounds|refers|phrase|word)\b",
     re.IGNORECASE,
 )
 
@@ -101,9 +138,7 @@ def _parse_directed_look(normalized: str, original: str) -> dict | None:
     "look around" remains the normal scene-description command; this helper is
     for cases where the user is directing Rex's head/camera toward a target.
     """
-    clean = _plain(normalized)
-    if clean.startswith("please "):
-        clean = clean[len("please "):].strip()
+    clean = _strip_direct_command_leaders(_plain(normalized))
     if clean in _BARE_LOOK_DIRECTIONS:
         return {
             "direction": _BARE_LOOK_DIRECTIONS[clean],
@@ -122,6 +157,8 @@ def _parse_directed_look(normalized: str, original: str) -> dict | None:
             "search_target": False,
             "utterance": original.strip(),
         }
+    if _LOOK_DIRECTION_META_RE.search(clean):
+        return None
     if clean in {"look around", "look alive"}:
         return None
 
@@ -375,6 +412,8 @@ def _parse_memory_remember_fact(normalized: str, original: str) -> dict | None:
     if not m:
         return None
     statement = m.group(1).strip()
+    if _looks_like_remembered_anecdote(statement):
+        return None
     original_m = re.match(
         r"^remember\s+that\s+(.+?)[?.!]*$",
         original.strip(),
@@ -383,6 +422,16 @@ def _parse_memory_remember_fact(normalized: str, original: str) -> dict | None:
     if original_m:
         statement = original_m.group(1).strip()
     return {"statement": statement}
+
+
+def _looks_like_remembered_anecdote(statement: str) -> bool:
+    """Reject reminiscence prompts like "remember that time..." as memory writes."""
+    clean = _plain(statement)
+    return bool(re.match(
+        r"^(?:one\s+)?(?:time|day|night|morning|afternoon|evening|week|"
+        r"weekend|summer|winter|year)\b",
+        clean,
+    ))
 
 
 # ─── Exact-match commands ─────────────────────────────────────────────────────
@@ -521,6 +570,38 @@ PREFIX_COMMANDS: list[tuple[str, str, str]] = sorted(
 )
 
 
+_RENAME_ARG_BLOCK_RE = re.compile(
+    r"^(?:when|if|because|after|before|while|until|at|on|in|for|about|"
+    r"later|maybe|both|back|again|someone|somebody|everyone|everybody|"
+    r"me|you|your)\b",
+    re.IGNORECASE,
+)
+_DEFERRED_OR_META_ARG_RE = re.compile(
+    r"\b(?:later|sometime|some\s+time|tomorrow|tonight|this\s+weekend|"
+    r"next\s+week|next\s+time|after|before|when|if|because)\b|"
+    r"^(?:is|was|means|meant|sounds|phrase|word)\b",
+    re.IGNORECASE,
+)
+_GAME_ARG_BLOCK_RE = re.compile(
+    r"^(?:with|outside|inside|around|by\s+ear|it\s+by\s+ear)\b",
+    re.IGNORECASE,
+)
+
+
+def _valid_prefix_arg(command_key: str, arg_value: str) -> bool:
+    clean = _plain(arg_value)
+    if not clean:
+        return False
+    if command_key == "rename_me":
+        return not _RENAME_ARG_BLOCK_RE.search(clean)
+    if command_key in {"start_game", "dj_play_vibe"}:
+        if _DEFERRED_OR_META_ARG_RE.search(clean):
+            return False
+        if command_key == "start_game" and _GAME_ARG_BLOCK_RE.search(clean):
+            return False
+    return True
+
+
 # ─── Personality parameter patterns ──────────────────────────────────────────
 
 _PARAMS = list(config.PERSONALITY_DEFAULTS.keys())
@@ -532,15 +613,26 @@ _LEVELS = list(config.PERSONALITY_NAMED_LEVELS.keys())
 def _param_alt(p: str) -> str:
     return "[_ ]".join(re.escape(part) for part in p.split("_"))
 
+_DIRECT_REQUEST_PREFIX = (
+    r"(?:(?:please|kindly)\s+|"
+    r"(?:(?:can|could|would)\s+you\s+(?:please\s+)?)?)"
+)
+_DIRECT_REQUEST_SUFFIX = r"(?:\s+please)?\s*$"
+
 _RE_SET_PARAM = re.compile(
+    r"^" + _DIRECT_REQUEST_PREFIX +
     r"(?:set|turn)\s+(" + "|".join(_param_alt(p) for p in _PARAMS) + r")"
     r"\s+(?:to|down\s+to|up\s+to)\s+"
-    r"(\d+(?:\s*percent)?|" + "|".join(re.escape(l) for l in _LEVELS) + r")",
+    r"(\d+(?:\s*percent)?|" + "|".join(re.escape(l) for l in _LEVELS) + r")"
+    + _DIRECT_REQUEST_SUFFIX,
     re.IGNORECASE,
 )
 
 _RE_QUERY_PARAM = re.compile(
-    r"what(?:'s| is) your (" + "|".join(_param_alt(p) for p in _PARAMS) + r")(?:\s+level)?",
+    r"^" + _DIRECT_REQUEST_PREFIX +
+    r"(?:tell\s+me\s+)?what(?:'s| is)\s+your\s+"
+    r"(" + "|".join(_param_alt(p) for p in _PARAMS) + r")(?:\s+level)?"
+    + _DIRECT_REQUEST_SUFFIX,
     re.IGNORECASE,
 )
 
@@ -662,10 +754,13 @@ def parse(text: str) -> CommandMatch | None:
             # proper capitalization on extracted args (e.g. names from Whisper).
             pm = re.match(re.escape(prefix), original, re.IGNORECASE)
             arg_val = (original[pm.end():] if pm else normalized[len(prefix):]).strip()
+            if not _valid_prefix_arg(key, arg_val):
+                return None
             return CommandMatch(key, "prefix", {arg_name: arg_val})
 
     # 2b. Personality set: "set humor to 90 percent" / "turn darkness to maximum"
-    m = _RE_SET_PARAM.search(normalized)
+    plain = _plain(normalized)
+    m = _RE_SET_PARAM.match(plain)
     if m:
         return CommandMatch(
             "set_personality",
@@ -674,7 +769,7 @@ def parse(text: str) -> CommandMatch | None:
         )
 
     # 2c. Personality query: "what's your sarcasm level"
-    m = _RE_QUERY_PARAM.search(normalized)
+    m = _RE_QUERY_PARAM.match(plain)
     if m:
         return CommandMatch("query_personality", "prefix", {"param": _canonical_param(m.group(1))})
 
@@ -705,9 +800,11 @@ def parse(text: str) -> CommandMatch | None:
                     rep = prefix.rstrip()
                     if normalized.startswith(rep):
                         tail = normalized[len(rep):].lstrip()
-                        if tail:
+                        if tail and _valid_prefix_arg(best_key, tail):
                             args = {arg_name: tail}
                     break
+            if not args:
+                return None
 
         return CommandMatch(best_key, "fuzzy", args)
 
