@@ -2,6 +2,7 @@ import io
 import logging
 import re
 import wave
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -63,6 +64,26 @@ def _is_hallucination(text: str) -> bool:
     stripped = re.sub(r"[^a-z0-9]", "", normalized)
     if len(stripped) < config.WHISPER_MIN_CHARS:
         return True
+
+    # Character-loop artifacts can arrive as one very long token rather than a
+    # repeated word, e.g. "Zzzzzzzzzzzzzzzzzzz" on near-silence.
+    repeated_char_min = max(
+        1,
+        int(getattr(config, "WHISPER_REPEATED_CHAR_MIN_RUN", 16) or 16),
+    )
+    repeated_char_dominance = float(
+        getattr(config, "WHISPER_REPEATED_CHAR_DOMINANCE", 0.90) or 0.90
+    )
+    if not 0 < repeated_char_dominance <= 1:
+        repeated_char_dominance = 0.90
+    if len(stripped) >= repeated_char_min:
+        dominant_count = max(Counter(stripped).values())
+        if (
+            dominant_count >= repeated_char_min
+            and dominant_count / len(stripped) >= repeated_char_dominance
+        ):
+            return True
+
     # Minimum meaningful word count — words longer than 2 characters are considered
     # substantive; short tokens like "uh", "um", "ah" do not count.
     meaningful = [w for w in re.findall(r"[a-zA-Z0-9']+", normalized) if len(w) > 2]
@@ -72,7 +93,6 @@ def _is_hallucination(text: str) -> bool:
     # Repetition pattern: any single word appearing more than threshold times is a loop artifact.
     words = [w.lower() for w in re.findall(r"[a-zA-Z0-9']+", normalized)]
     if words:
-        from collections import Counter
         if max(Counter(words).values()) > config.WHISPER_REPETITION_THRESHOLD:
             return True
     # Non-Latin alphabetic characters (e.g. Japanese, Chinese, Arabic) indicate

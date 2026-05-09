@@ -537,6 +537,11 @@ WHISPER_CORRECTIONS = {
 # Repetition filter: any single word appearing more than this many times is a loop artifact.
 WHISPER_REPETITION_THRESHOLD = 4
 
+# Character-loop filter: long transcripts dominated by one repeated character
+# are usually Whisper artifacts on near-silence, e.g. "Zzzzzzzzzzzzzzzzzzz".
+WHISPER_REPEATED_CHAR_MIN_RUN = 16
+WHISPER_REPEATED_CHAR_DOMINANCE = 0.90
+
 # Minimum meaningful characters (after stripping punctuation and whitespace) required
 # to pass the hallucination filter. Catches single-char junk like "!" or ".".
 WHISPER_MIN_CHARS = 3

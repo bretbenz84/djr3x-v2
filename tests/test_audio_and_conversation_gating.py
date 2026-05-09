@@ -897,6 +897,8 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertIsNone(interaction._extract_introduced_name("mmm wait", allow_bare_name=True))
         self.assertIsNone(interaction._extract_introduced_name("have you?", allow_bare_name=True))
         self.assertTrue(transcription._is_hallucination("mmm"))
+        self.assertTrue(transcription._is_hallucination("Z" * 160))
+        self.assertFalse(transcription._is_hallucination("Soooo yes"))
 
     def test_intro_name_trims_trailing_greeting(self):
         from intelligence import introductions
