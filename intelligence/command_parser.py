@@ -402,6 +402,12 @@ def _parse_memory_correct_fact(normalized: str, original: str) -> dict | None:
             "wrong",
             "incorrect",
         }:
+            correction_plain = _plain(correction)
+            if (
+                not correction_plain.startswith("call me ")
+                and re.match(r"^(?:i|i'm|im|me|my|we|we're|were|our)\b", correction_plain)
+            ):
+                return None
             return {"correction": correction}
     return None
 

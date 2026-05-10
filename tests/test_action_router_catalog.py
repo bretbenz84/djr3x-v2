@@ -237,6 +237,30 @@ class ActionRouterCatalogTests(unittest.TestCase):
         self.assertEqual(routed.action, "identity.name_correction")
         self.assertEqual(routed.args["name"], "Daniel")
 
+    def test_dialogue_act_context_blocks_reply_misroute(self):
+        from intelligence import action_router
+
+        decision = action_router.ActionDecision(
+            action="identity.name_correction",
+            confidence=0.95,
+            args={},
+            reason="misread contextual reply",
+        )
+
+        routed = action_router._apply_context_overrides(
+            decision,
+            "Yeah that's not happening anymore.",
+            {
+                "dialogue_act": {
+                    "label": "answer_to_rex",
+                    "blocked_actions": ["identity.name_correction"],
+                },
+            },
+        )
+
+        self.assertEqual(routed.action, "conversation.reply")
+        self.assertEqual(routed.reason, "dialogue act says utterance is a reply to Rex")
+
     def test_explicit_character_preference_classifier_routes_rex_opinions(self):
         from intelligence import action_router
 

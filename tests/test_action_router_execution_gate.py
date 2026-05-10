@@ -190,6 +190,92 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
             "requires_confirmation",
         )
 
+    def test_runtime_execution_requires_action_shaped_evidence(self):
+        from intelligence import action_router, interaction
+
+        decision = action_router.ActionDecision(
+            action="humor.tell_joke",
+            confidence=0.99,
+            args={},
+            reason="misread mention of joke as request",
+        )
+
+        self.assertFalse(
+            interaction._router_decision_executable(
+                decision,
+                text="That was a joke.",
+                context={},
+            )
+        )
+        self.assertEqual(
+            interaction._router_execution_block_reason(
+                decision,
+                text="That was a joke.",
+                context={},
+            ),
+            "missing_joke_request_evidence",
+        )
+
+    def test_dialogue_act_can_block_otherwise_executable_action(self):
+        from intelligence import action_router, dialogue_act, interaction
+
+        decision = action_router.ActionDecision(
+            action="identity.name_correction",
+            confidence=0.99,
+            args={"name": "Daniel"},
+            reason="identity correction",
+        )
+        act = dialogue_act.DialogueActDecision(
+            "answer_to_rex",
+            0.90,
+            "reply to last Rex turn",
+            blocked_actions=["identity.name_correction"],
+            skip_action_router=True,
+        )
+
+        self.assertFalse(
+            interaction._router_decision_executable(
+                decision,
+                text="I'm Daniel.",
+                context={},
+                dialogue_decision=act,
+            )
+        )
+        self.assertEqual(
+            interaction._router_execution_block_reason(
+                decision,
+                text="I'm Daniel.",
+                context={},
+                dialogue_decision=act,
+            ),
+            "blocked_by_dialogue_act",
+        )
+
+    def test_dialogue_act_blocks_legacy_command_fallback(self):
+        from intelligence import command_parser, dialogue_act, interaction
+
+        match = command_parser.CommandMatch(
+            "memory_correct_fact",
+            "pattern",
+            {"correction": "my partner is in the hospital"},
+        )
+        act = dialogue_act.DialogueActDecision(
+            "answer_to_rex",
+            0.90,
+            "reply to last Rex turn",
+            skip_action_router=True,
+        )
+
+        self.assertTrue(interaction._legacy_command_blocked_by_dialogue(match, act))
+
+    def test_event_cancellation_ack_is_deterministic(self):
+        from intelligence import interaction
+
+        self.assertEqual(
+            interaction._event_cancellation_ack(["astrophotography"], 1),
+            "Got it - astrophotography is no longer on the flight plan.",
+        )
+
     def test_router_audit_logs_decision_allowlist_legacy_and_final_path(self):
         from intelligence import action_router, interaction
 

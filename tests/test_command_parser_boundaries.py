@@ -18,6 +18,8 @@ class CommandParserBoundaryTests(unittest.TestCase):
             "can we play trivia later",
             "let's play it by ear",
             "play something later",
+            "Nope, my partner is in the hospital.",
+            "Actually, my partner is in the hospital.",
         ]
 
         for text in cases:

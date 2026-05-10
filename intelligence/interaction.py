@@ -43,6 +43,7 @@ from intelligence import intent_classifier
 from intelligence import empathy
 from intelligence import conversation_agenda
 from intelligence import topic_thread
+from intelligence import dialogue_act
 from intelligence import user_energy
 from intelligence import question_budget
 from intelligence import repair_moves
@@ -730,11 +731,23 @@ def _action_router_context(
             "command_key": (legacy_command or {}).get("command_key"),
             "command_match": legacy_command,
         },
+        "last_rex_frame": dialogue_act.active_frame_context(person_id),
     }
 
 
-def _router_decision_executable(decision: Optional[action_router.ActionDecision]) -> bool:
-    return _router_execution_block_reason(decision) is None
+def _router_decision_executable(
+    decision: Optional[action_router.ActionDecision],
+    *,
+    text: Optional[str] = None,
+    context: Optional[dict[str, Any]] = None,
+    dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None,
+) -> bool:
+    return _router_execution_block_reason(
+        decision,
+        text=text,
+        context=context,
+        dialogue_decision=dialogue_decision,
+    ) is None
 
 
 def _router_execute_allowlist() -> Optional[set[str]]:
@@ -755,6 +768,10 @@ def _router_execute_allowlist() -> Optional[set[str]]:
 
 def _router_execution_block_reason(
     decision: Optional[action_router.ActionDecision],
+    *,
+    text: Optional[str] = None,
+    context: Optional[dict[str, Any]] = None,
+    dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None,
 ) -> Optional[str]:
     if decision is None:
         return "no_decision"
@@ -785,6 +802,19 @@ def _router_execution_block_reason(
             return "unknown_mood_pose"
     if decision.action == "game.answer" and not _game_active_for_router():
         return "game_inactive"
+    if (
+        dialogue_decision is not None
+        and dialogue_act.action_blocked_by_dialogue(decision.action, dialogue_decision)
+    ):
+        return "blocked_by_dialogue_act"
+    if text is not None:
+        evidence_reason = action_router.missing_required_evidence_reason(
+            text,
+            decision,
+            context=context,
+        )
+        if evidence_reason:
+            return evidence_reason
     allowlist = _router_execute_allowlist()
     if allowlist is not None and decision.action not in allowlist:
         return "not_in_execute_allowlist"
@@ -806,6 +836,10 @@ def _new_router_audit(text: str, context: Optional[dict[str, Any]]) -> _RouterDe
 def _router_audit_note_decision(
     audit: Optional[_RouterDecisionAudit],
     decision: Optional[action_router.ActionDecision],
+    *,
+    text: Optional[str] = None,
+    context: Optional[dict[str, Any]] = None,
+    dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None,
 ) -> None:
     if audit is None:
         return
@@ -820,7 +854,12 @@ def _router_audit_note_decision(
         if decision is not None
         else None
     )
-    block_reason = _router_execution_block_reason(decision)
+    block_reason = _router_execution_block_reason(
+        decision,
+        text=text,
+        context=context,
+        dialogue_decision=dialogue_decision,
+    )
     audit.allowlist_result = "allowed" if block_reason is None else block_reason
 
 
@@ -923,6 +962,23 @@ def _router_audit_note_legacy_command(
         return
     audit.legacy_command = match.command_key
     audit.legacy_match_type = match.match_type
+
+
+def _router_audit_clear_legacy_command(audit: Optional[_RouterDecisionAudit]) -> None:
+    if audit is None:
+        return
+    audit.legacy_command = None
+    audit.legacy_match_type = None
+
+
+def _legacy_command_blocked_by_dialogue(
+    match: Optional[command_parser.CommandMatch],
+    dialogue_decision: Optional[dialogue_act.DialogueActDecision],
+) -> bool:
+    """Keep contextual replies from falling through to older command parsers."""
+    if match is None or dialogue_decision is None:
+        return False
+    return dialogue_decision.label == "answer_to_rex"
 
 
 def _router_audit_note_result(
@@ -2314,7 +2370,17 @@ def _arm_no_response_recovery(
     ).start()
 
 
-def _register_rex_utterance(text: str, wait_secs: Optional[float] = None) -> None:
+def _register_rex_utterance(
+    text: str,
+    wait_secs: Optional[float] = None,
+    *,
+    source: Optional[str] = None,
+    topic: Optional[str] = None,
+    target_person_id: Optional[int] = None,
+    target_name: Optional[str] = None,
+    expected_reply_types: Optional[list[str]] = None,
+    blocked_actions: Optional[list[str]] = None,
+) -> None:
     if not text or not text.strip():
         return
     try:
@@ -2330,7 +2396,16 @@ def _register_rex_utterance(text: str, wait_secs: Optional[float] = None) -> Non
     except Exception:
         pass
     try:
-        consciousness.note_rex_utterance(text, wait_secs=wait_secs)
+        consciousness.note_rex_utterance(
+            text,
+            wait_secs=wait_secs,
+            source=source,
+            topic=topic,
+            target_person_id=target_person_id,
+            target_name=target_name,
+            expected_reply_types=expected_reply_types,
+            blocked_actions=blocked_actions,
+        )
     except Exception:
         pass
 
@@ -7557,7 +7632,22 @@ def _post_response(
                         conv_log.log_rex(resp)
                         completed = _speak_blocking(resp)
                         if completed:
-                            _register_rex_utterance(resp)
+                            _register_rex_utterance(
+                                resp,
+                                source="memory_followup",
+                                topic=event_name,
+                                target_person_id=person_id,
+                                target_name=person_name,
+                                expected_reply_types=[
+                                    "status_update",
+                                    "cancel_event",
+                                    "dismissal",
+                                ],
+                                blocked_actions=[
+                                    "identity.name_correction",
+                                    "identity.introduce_person",
+                                ],
+                            )
                             _awaiting_followup_event = None
                             event_id = event.get("id")
                             if event_id is not None:
@@ -8298,6 +8388,10 @@ def _end_session() -> None:
         except Exception:
             pass
         try:
+            dialogue_act.clear()
+        except Exception:
+            pass
+        try:
             user_energy.clear()
         except Exception:
             pass
@@ -8513,6 +8607,10 @@ def _end_session() -> None:
     _idle_outro_spoken = False
     try:
         topic_thread.clear()
+    except Exception:
+        pass
+    try:
+        dialogue_act.clear()
     except Exception:
         pass
     try:
@@ -9098,10 +9196,17 @@ def _handle_router_takeover_action(
     raw_best_id: Optional[int],
     raw_best_name: Optional[str],
     raw_best_score: float,
+    router_context: Optional[dict[str, Any]] = None,
+    dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None,
     router_audit: Optional[_RouterDecisionAudit] = None,
 ) -> Optional[str]:
     """Execute router-owned actions that map to stable local handlers."""
-    if not _router_decision_executable(decision):
+    if not _router_decision_executable(
+        decision,
+        text=text,
+        context=router_context,
+        dialogue_decision=dialogue_decision,
+    ):
         return None
 
     action = decision.action
@@ -9693,25 +9798,9 @@ def _cancel_stale_event_memory(
 
 
 def _event_cancellation_ack(labels: list[str], person_id: Optional[int]) -> str:
+    del person_id
     label = labels[0] if labels else "that plan"
-    prompt = (
-        f"The person just corrected a stale plan/memory: '{label}' is no longer "
-        f"happening. In ONE short in-character Rex line, acknowledge the update "
-        f"and say you won't keep treating it like an upcoming or completed plan. "
-        f"No question."
-    )
-    try:
-        resp = llm.get_response(prompt, person_id)
-    except Exception as exc:
-        _log.debug("event cancellation ack generation failed: %s", exc)
-        resp = ""
-    resp = re.sub(
-        r"^\s*processing\s*(?:[.。…:;-]+\s*)?",
-        "",
-        resp or "",
-        flags=re.IGNORECASE,
-    ).strip()
-    return (resp or f"Got it - {label} is scrubbed from the flight plan.").strip()
+    return f"Got it - {label} is no longer on the flight plan."
 
 
 def _handle_conversation_boundary(
@@ -11062,6 +11151,7 @@ def _handle_speech_segment(
     router_decision: Optional[action_router.ActionDecision] = None
     router_audit: Optional[_RouterDecisionAudit] = None
     router_block_reason: Optional[str] = None
+    dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None
     character_trace: Optional[_CharacterLoopTrace] = None
     match: Optional[command_parser.CommandMatch] = None
     response_text: Optional[str] = None
@@ -12898,12 +12988,31 @@ def _handle_speech_segment(
                 identity_prompt_active=identity_prompt_active,
             )
             router_audit = _new_router_audit(text, router_context)
-            fast_takeover_response = _handle_fast_local_takeover(
+            dialogue_decision = dialogue_act.classify(
                 text,
+                router_context,
                 person_id=person_id,
-                person_name=person_name,
-                router_audit=router_audit,
             )
+            router_context["dialogue_act"] = dialogue_decision.as_context()
+            _log.info(
+                "[dialogue_act] label=%s conf=%.2f reason=%s frame_source=%s "
+                "frame_topic=%r skip_router=%s",
+                dialogue_decision.label,
+                float(dialogue_decision.confidence or 0.0),
+                dialogue_decision.reason,
+                dialogue_decision.frame.source if dialogue_decision.frame else None,
+                dialogue_decision.frame.topic if dialogue_decision.frame else "",
+                dialogue_decision.skip_action_router,
+            )
+
+            fast_takeover_response = None
+            if not dialogue_decision.skip_action_router:
+                fast_takeover_response = _handle_fast_local_takeover(
+                    text,
+                    person_id=person_id,
+                    person_name=person_name,
+                    router_audit=router_audit,
+                )
             if fast_takeover_response is not None:
                 silent_command = _is_silent_command_response(fast_takeover_response)
                 response_text = None if silent_command else fast_takeover_response
@@ -12931,16 +13040,46 @@ def _handle_speech_segment(
                     _session_exchange_count += 1
                     _register_rex_utterance(fast_takeover_response)
                 return
-            if bool(getattr(config, "ACTION_ROUTER_EXECUTE_ENABLED", False)):
+            if dialogue_decision.skip_action_router:
+                router_decision = action_router.ActionDecision(
+                    action="conversation.reply",
+                    confidence=dialogue_decision.confidence,
+                    args={"dialogue_act": dialogue_decision.label},
+                    reason=f"{dialogue_decision.reason}; conversation owns ambiguity",
+                )
+                _router_audit_note_decision(
+                    router_audit,
+                    router_decision,
+                    text=text,
+                    context=router_context,
+                    dialogue_decision=dialogue_decision,
+                )
+                _log.info(
+                    "[action_router] skipped blocking router — dialogue_act=%s reason=%s",
+                    dialogue_decision.label,
+                    dialogue_decision.reason,
+                )
+            elif bool(getattr(config, "ACTION_ROUTER_EXECUTE_ENABLED", False)):
                 router_started = time.monotonic()
                 router_decision = action_router.decide(text, router_context)
                 _latency_log(turn_start, "action_router", router_started)
                 action_router.log_decision(router_decision, router_context, mode="execute")
-                _router_audit_note_decision(router_audit, router_decision)
+                _router_audit_note_decision(
+                    router_audit,
+                    router_decision,
+                    text=text,
+                    context=router_context,
+                    dialogue_decision=dialogue_decision,
+                )
             else:
                 _router_audit_note_execute_disabled(router_audit)
                 action_router.start_shadow_decision(text, router_context)
-            router_block_reason = _router_execution_block_reason(router_decision)
+            router_block_reason = _router_execution_block_reason(
+                router_decision,
+                text=text,
+                context=router_context,
+                dialogue_decision=dialogue_decision,
+            )
             if router_block_reason is None:
                 suppress_memory_learning = True
             elif _conversation_reply_should_skip_memory_learning(text, router_decision):
@@ -13074,6 +13213,8 @@ def _handle_speech_segment(
             raw_best_id=raw_best_id,
             raw_best_name=raw_best_name,
             raw_best_score=speaker_score,
+            router_context=router_context,
+            dialogue_decision=dialogue_decision,
             router_audit=router_audit,
         )
         if router_takeover_response:
@@ -13097,7 +13238,12 @@ def _handle_speech_segment(
             _register_rex_utterance(router_takeover_response)
             return
         if (
-            _router_decision_executable(router_decision)
+            _router_decision_executable(
+                router_decision,
+                text=text,
+                context=router_context,
+                dialogue_decision=dialogue_decision,
+            )
             and router_decision.action not in {"conversation.reply", "emotional.boundary"}
         ):
             _router_audit_note_result(
@@ -13106,7 +13252,12 @@ def _handle_speech_segment(
             )
 
         if (
-            _router_decision_executable(router_decision)
+            _router_decision_executable(
+                router_decision,
+                text=text,
+                context=router_context,
+                dialogue_decision=dialogue_decision,
+            )
             and router_decision.action == "emotional.boundary"
         ):
             router_boundary_person_id = boundary_person_id or person_id
@@ -13552,7 +13703,12 @@ def _handle_speech_segment(
                 labels = _cancel_stale_event_memory(cancel_person_id, text)
                 if (
                     not labels
-                    and _router_decision_executable(router_decision)
+                    and _router_decision_executable(
+                        router_decision,
+                        text=text,
+                        context=router_context,
+                        dialogue_decision=dialogue_decision,
+                    )
                     and router_decision.action == "event.cancel"
                 ):
                     event_hint = (
@@ -13584,6 +13740,7 @@ def _handle_speech_segment(
                             pass
                     event_cancellation_ack = _event_cancellation_ack(labels, cancel_person_id)
             if event_cancellation_ack:
+                suppress_memory_learning = True
                 completed = _speak_blocking(event_cancellation_ack, emotion="neutral")
                 _router_audit_note_result(
                     router_audit,
@@ -13677,7 +13834,16 @@ def _handle_speech_segment(
         # reply where _continue_grief_flow returns None and hands off to LLM.
         if response_text is None and not active_grief_for_turn:
             match = command_parser.parse(text)
-            _router_audit_note_legacy_command(router_audit, match)
+            if _legacy_command_blocked_by_dialogue(match, dialogue_decision):
+                _log.info(
+                    "[dialogue_act] blocked legacy command=%s for contextual reply text=%r",
+                    match.command_key,
+                    text,
+                )
+                _router_audit_clear_legacy_command(router_audit)
+                match = None
+            else:
+                _router_audit_note_legacy_command(router_audit, match)
             try:
                 from features import games as games_mod
                 if games_mod.is_active():
@@ -14403,6 +14569,7 @@ def start(*, text_only: bool = False) -> None:
     _clear_pending_memory_wipe()
     _common_first_name_prompted_this_session.clear()
     topic_thread.clear()
+    dialogue_act.clear()
     user_energy.clear()
     question_budget.clear()
     repair_moves.clear()

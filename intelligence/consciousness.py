@@ -853,6 +853,12 @@ def note_rex_utterance(
     wait_secs: Optional[float] = None,
     *,
     open_response_wait: bool = True,
+    source: Optional[str] = None,
+    topic: Optional[str] = None,
+    target_person_id: Optional[int] = None,
+    target_name: Optional[str] = None,
+    expected_reply_types: Optional[list[str]] = None,
+    blocked_actions: Optional[list[str]] = None,
 ) -> None:
     """
     Track when Rex last spoke and, if it was a question, open a reply window.
@@ -878,6 +884,19 @@ def note_rex_utterance(
     try:
         from intelligence import topic_thread
         topic_thread.note_assistant_turn(text)
+    except Exception:
+        pass
+    try:
+        from intelligence import dialogue_act
+        dialogue_act.note_rex_turn(
+            text,
+            source=source,
+            topic=topic,
+            target_person_id=target_person_id,
+            target_name=target_name,
+            expected_reply_types=expected_reply_types,
+            blocked_actions=blocked_actions,
+        )
     except Exception:
         pass
 
@@ -1097,7 +1116,12 @@ def _speak_async(
             conv_log.log_rex(text)
         except Exception as exc:
             _log.debug("conversation log write failed for proactive speech: %s", exc)
-        note_rex_utterance(text, wait_secs=wait_secs, open_response_wait=False)
+        note_rex_utterance(
+            text,
+            wait_secs=wait_secs,
+            open_response_wait=False,
+            source=purpose,
+        )
         return True
     except Exception as exc:
         _mark_governor_candidate(candidate_id, "dropped", "speak_async_error")
@@ -2302,7 +2326,13 @@ def _generate_and_speak_presence(
                 except Exception as exc:
                     _log.debug("record greeting failed for person_id=%s: %s", tag_key, exc)
             expects_reply = _utterance_expects_reply(text)
-            note_rex_utterance(text, open_response_wait=False)
+            note_rex_utterance(
+                text,
+                open_response_wait=False,
+                source=purpose,
+                topic=label,
+                target_person_id=tag_key if isinstance(tag_key, int) else None,
+            )
             if expects_reply:
                 def _open_wait_after_presence_done() -> None:
                     done.wait()

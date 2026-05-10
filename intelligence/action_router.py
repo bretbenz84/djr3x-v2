@@ -345,6 +345,56 @@ _MUSIC_PLAY_REQUEST_RE = re.compile(
     r"\b(play|start\s+playing|put\s+on|throw\s+on|spin|queue|cue|turn\s+on)\b",
     re.IGNORECASE,
 )
+_MUSIC_STOP_REQUEST_RE = re.compile(
+    r"\b(?:stop|pause|turn\s+off)\b.{0,30}\b(?:music|song|track|playlist|audio|playing)\b|"
+    r"^\s*(?:stop|pause)\s+(?:the\s+)?(?:music|song|track|playlist)\b",
+    re.IGNORECASE,
+)
+_MUSIC_SKIP_REQUEST_RE = re.compile(
+    r"\b(?:skip|next)\b.{0,20}\b(?:this|that|song|track|music|one)\b|^\s*skip\s*$",
+    re.IGNORECASE,
+)
+_MUSIC_OPTIONS_REQUEST_RE = re.compile(
+    r"\b(?:what|which)\b.{0,40}\b(?:music|songs|tracks|playlists|stations)\b|"
+    r"\b(?:music|songs|tracks|playlists|stations)\b.{0,40}\b(?:available|options|have)\b",
+    re.IGNORECASE,
+)
+_TIME_QUERY_RE = re.compile(
+    r"\b(?:what(?:'s| is)?|tell me|give me|do you know)\b.{0,30}\b(?:time|clock)\b|"
+    r"\b(?:time|clock)\b.{0,20}\b(?:now|is it)\b",
+    re.IGNORECASE,
+)
+_DATE_QUERY_RE = re.compile(
+    r"\b(?:what(?:'s| is)?|tell me|give me|do you know)\b.{0,35}\b"
+    r"(?:date|day|today|weekday)\b|\bwhat day is it\b",
+    re.IGNORECASE,
+)
+_WEATHER_QUERY_RE = re.compile(
+    r"\b(?:what(?:'s| is)|tell me|give me|do you know)\b.{0,35}\b"
+    r"(?:weather|temperature|forecast|raining|hot|cold|outside)\b|"
+    r"\b(?:weather|temperature)\s+(?:forecast|outside)\b|"
+    r"\bis\s+it\s+(?:raining|hot|cold)\b",
+    re.IGNORECASE,
+)
+_CAPABILITIES_QUERY_RE = re.compile(
+    r"\b(?:what can you do|what are you capable of|capabilities|"
+    r"what do you do|what can i ask you|what should i ask you|commands)\b",
+    re.IGNORECASE,
+)
+_UPTIME_QUERY_RE = re.compile(
+    r"\b(?:how long have you been|uptime|been running|been awake|when did you start)\b",
+    re.IGNORECASE,
+)
+_VISION_DESCRIBE_RE = re.compile(
+    r"\b(?:what do you see|what can you see|look around|describe (?:the )?"
+    r"(?:room|scene)|what am i holding|what's in front of you)\b",
+    re.IGNORECASE,
+)
+_WHO_SPEAKING_RE = re.compile(
+    r"\b(?:who am i|who is speaking|who'?s speaking|do you recognize me|"
+    r"do you know who i am|can you see me|who do you think i am)\b",
+    re.IGNORECASE,
+)
 _FORGET_SPECIFIC_REQUEST_RE = re.compile(
     r"\b("
     r"forget|delete|remove|erase|wipe|clear"
@@ -1000,6 +1050,78 @@ def classify_explicit_character_preference(text: str) -> ActionDecision | None:
     )
 
 
+def missing_required_evidence_reason(
+    text: str,
+    decision: ActionDecision | None,
+    *,
+    context: dict[str, Any] | None = None,
+) -> str | None:
+    """Return a block reason when an executable action lacks direct evidence.
+
+    The action router may use an LLM, but execution should still require an
+    action-shaped utterance. Ambiguous conversational replies fall through to
+    normal conversation unless they contain this deterministic evidence.
+    """
+    del context  # reserved for action-specific context checks
+    if decision is None:
+        return None
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned or decision.action == "conversation.reply":
+        return None
+
+    action = decision.action
+
+    if action == "identity.name_correction":
+        return (
+            None
+            if _text_has_identity_name_correction_content(cleaned, decision)
+            else "missing_identity_name_evidence"
+        )
+    if action == "memory.recent_discard":
+        return None if _RECENT_DISCARD_REQUEST_RE.search(cleaned) else "missing_recent_discard_evidence"
+    if action == "memory.forget_specific":
+        return None if _FORGET_SPECIFIC_REQUEST_RE.search(cleaned) else "missing_forget_evidence"
+    if action == "humor.tell_joke":
+        return None if _TELL_JOKE_RE.search(cleaned) else "missing_joke_request_evidence"
+    if action == "humor.roast":
+        explicit = classify_explicit_humor(cleaned)
+        return None if explicit and explicit.action == action else "missing_roast_request_evidence"
+    if action == "humor.free_bit":
+        explicit = classify_explicit_humor(cleaned)
+        return None if explicit and explicit.action == action else "missing_free_bit_request_evidence"
+    if action in {"performance.dj_bit", "performance.body_beat", "performance.mood_pose"}:
+        explicit = classify_explicit_performance(cleaned)
+        return None if explicit and explicit.action == action else "missing_performance_request_evidence"
+    if action == "character.preference_query":
+        return (
+            None
+            if classify_explicit_character_preference(cleaned)
+            else "missing_rex_preference_query_evidence"
+        )
+    if action == "identity.who_is_speaking":
+        return None if _WHO_SPEAKING_RE.search(cleaned) else "missing_identity_query_evidence"
+    if action == "music.stop":
+        return None if _MUSIC_STOP_REQUEST_RE.search(cleaned) else "missing_music_stop_evidence"
+    if action == "music.skip":
+        return None if _MUSIC_SKIP_REQUEST_RE.search(cleaned) else "missing_music_skip_evidence"
+    if action == "music.options":
+        return None if _MUSIC_OPTIONS_REQUEST_RE.search(cleaned) else "missing_music_options_evidence"
+    if action == "time.query":
+        return None if _TIME_QUERY_RE.search(cleaned) else "missing_time_query_evidence"
+    if action == "date.query":
+        return None if _DATE_QUERY_RE.search(cleaned) else "missing_date_query_evidence"
+    if action == "weather.query":
+        return None if _WEATHER_QUERY_RE.search(cleaned) else "missing_weather_query_evidence"
+    if action == "status.capabilities":
+        return None if _CAPABILITIES_QUERY_RE.search(cleaned) else "missing_capabilities_query_evidence"
+    if action == "status.uptime":
+        return None if _UPTIME_QUERY_RE.search(cleaned) else "missing_uptime_query_evidence"
+    if action == "vision.describe_scene":
+        return None if _VISION_DESCRIBE_RE.search(cleaned) else "missing_vision_query_evidence"
+
+    return None
+
+
 def _coerce_decision(payload: Any) -> ActionDecision:
     if not isinstance(payload, dict):
         return ActionDecision(reason="router returned non-object JSON")
@@ -1103,6 +1225,22 @@ def _apply_context_overrides(
     context: dict[str, Any],
 ) -> ActionDecision:
     """Deterministic safety rails for contexts the LLM router often misses."""
+    dialogue = (context or {}).get("dialogue_act") or {}
+    if isinstance(dialogue, dict) and dialogue.get("label") == "answer_to_rex":
+        blocked = {
+            str(item)
+            for item in (dialogue.get("blocked_actions") or [])
+            if str(item).strip()
+        }
+        if decision.action in blocked:
+            return ActionDecision(
+                action="conversation.reply",
+                confidence=min(float(decision.confidence or 0.0), 0.40),
+                args={},
+                requires_confirmation=False,
+                reason="dialogue act says utterance is a reply to Rex",
+            )
+
     if (
         decision.action == "memory.forget_specific"
         and not _FORGET_SPECIFIC_REQUEST_RE.search(text or "")

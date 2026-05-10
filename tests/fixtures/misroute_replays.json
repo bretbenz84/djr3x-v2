@@ -1,0 +1,107 @@
+[
+  {
+    "name": "event follow-up status retraction stays contextual",
+    "frame": {
+      "text": "Hey, Bret, counting down to your astrophotography on May 9th?",
+      "source": "memory_followup",
+      "topic": "astrophotography",
+      "target_person_id": 1
+    },
+    "person_id": 1,
+    "utterance": "Yeah that's not happening anymore.",
+    "expected_label": "answer_to_rex",
+    "expected_skip_action_router": true,
+    "blocked_actions": ["identity.name_correction"]
+  },
+  {
+    "name": "targeted follow-up does not bind a different known speaker",
+    "frame": {
+      "text": "Bret, how did astrophotography go?",
+      "source": "memory_followup",
+      "topic": "astrophotography",
+      "target_person_id": 1
+    },
+    "person_id": 2,
+    "utterance": "Yeah that's not happening anymore.",
+    "expected_label": "general_chat",
+    "expected_skip_action_router": false
+  },
+  {
+    "name": "group question accepts terse response from any visible person",
+    "frame": {
+      "text": "Anyone want music?",
+      "source": "question",
+      "topic": "music",
+      "target_person_id": null
+    },
+    "person_id": 2,
+    "utterance": "No, not really.",
+    "expected_label": "answer_to_rex",
+    "expected_skip_action_router": true
+  },
+  {
+    "name": "real identity correction still wins under active frame",
+    "frame": {
+      "text": "Bret, how did astrophotography go?",
+      "source": "memory_followup",
+      "topic": "astrophotography",
+      "target_person_id": 1
+    },
+    "person_id": 1,
+    "utterance": "That's not Bret, I'm Daniel.",
+    "expected_label": "identity_control",
+    "expected_skip_action_router": false
+  },
+  {
+    "name": "explicit time question starts a new command",
+    "frame": {
+      "text": "Bret, how did astrophotography go?",
+      "source": "memory_followup",
+      "topic": "astrophotography",
+      "target_person_id": 1
+    },
+    "person_id": 1,
+    "utterance": "What time is it?",
+    "expected_label": "new_command",
+    "expected_skip_action_router": false
+  },
+  {
+    "name": "explicit joke request starts a new command",
+    "frame": {
+      "text": "What should we do next?",
+      "source": "question",
+      "topic": "current exchange",
+      "target_person_id": null
+    },
+    "person_id": 1,
+    "utterance": "Tell me a joke.",
+    "expected_label": "new_command",
+    "expected_skip_action_router": false
+  },
+  {
+    "name": "weather mention can be an answer not a weather command",
+    "frame": {
+      "text": "How did the trip go?",
+      "source": "question",
+      "topic": "trip",
+      "target_person_id": 1
+    },
+    "person_id": 1,
+    "utterance": "The weather was awful.",
+    "expected_label": "answer_to_rex",
+    "expected_skip_action_router": true
+  },
+  {
+    "name": "hospital update after stale plan stays a conversation reply",
+    "frame": {
+      "text": "No more shooting for the stars, huh?",
+      "source": "question",
+      "topic": "astrophotography",
+      "target_person_id": 1
+    },
+    "person_id": 1,
+    "utterance": "Nope, my partner is in the hospital.",
+    "expected_label": "answer_to_rex",
+    "expected_skip_action_router": true
+  }
+]
