@@ -440,6 +440,11 @@ def classify(text: str) -> str:
     return "general"
 
 
+def classify_deterministic(text: str) -> str:
+    """Return only the cheap rule-based label; never call an LLM backend."""
+    return _deterministic_label(text)
+
+
 def _llm_label_blocked(text: str, label: str) -> bool:
     """Reject feature intents the fallback LLM often invents for ordinary chat."""
     if _CLOSURE_RE.search(text):

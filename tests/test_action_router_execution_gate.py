@@ -267,6 +267,76 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
         )
 
         self.assertTrue(interaction._legacy_command_blocked_by_dialogue(match, act))
+        self.assertEqual(
+            interaction._legacy_command_execution_block_reason(
+                match,
+                text="Nope, my partner is in the hospital.",
+                context={},
+                dialogue_decision=act,
+            ),
+            "blocked_by_dialogue_act",
+        )
+
+    def test_legacy_command_gate_requires_strong_evidence(self):
+        from intelligence import command_parser, interaction
+
+        fuzzy_time = command_parser.CommandMatch("time_query", "fuzzy", {})
+        self.assertEqual(
+            interaction._legacy_command_execution_block_reason(
+                fuzzy_time,
+                text="prime rib",
+                context={},
+            ),
+            "legacy_fuzzy_disabled",
+        )
+
+        bare_stop = command_parser.CommandMatch("dj_stop", "exact", {})
+        self.assertEqual(
+            interaction._legacy_command_execution_block_reason(
+                bare_stop,
+                text="stop",
+                context={"active_music": False},
+            ),
+            "missing_music_stop_evidence",
+        )
+        self.assertIsNone(
+            interaction._legacy_command_execution_block_reason(
+                bare_stop,
+                text="stop",
+                context={"active_music": True},
+            )
+        )
+
+    def test_intent_gate_blocks_statement_promoted_to_weather_query(self):
+        from intelligence import interaction, intent_classifier
+
+        text = "The weather was awful."
+        self.assertEqual(intent_classifier.classify_deterministic(text), "query_weather")
+        self.assertEqual(
+            interaction._intent_execution_block_reason(
+                "query_weather",
+                text=text,
+                context={},
+            ),
+            "missing_weather_query_evidence",
+        )
+        self.assertIsNone(
+            interaction._intent_execution_block_reason(
+                "query_weather",
+                text="What's the weather outside?",
+                context={},
+            )
+        )
+
+    def test_deterministic_intent_classifier_never_calls_llm_fallback(self):
+        from intelligence import intent_classifier
+
+        with mock.patch.object(intent_classifier, "_classify_with_llm") as fallback:
+            self.assertEqual(
+                intent_classifier.classify_deterministic("The weather was awful."),
+                "query_weather",
+            )
+        fallback.assert_not_called()
 
     def test_event_cancellation_ack_is_deterministic(self):
         from intelligence import interaction

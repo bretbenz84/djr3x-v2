@@ -99,6 +99,7 @@ audio/
 intelligence/
   interaction.py         Main turn pipeline for speech and GUI text input.
   consciousness.py       Proactive loop, greetings, presence, empty-room behavior.
+  dialogue_act.py        Cheap conversational-frame gate before executable actions.
   action_router.py       LLM action routing.
   command_parser.py      Fast/local command recognition.
   intent_classifier.py   Intent fallback and deterministic guards.
@@ -161,7 +162,7 @@ Spoken turn:
 2. Transcribe audio.
 3. Run speaker ID.
 4. Fuse voice with visible/recent world state.
-5. Run command parser/action router/intent classifier.
+5. Run dialogue-act/contextual binding before executable routing.
 6. Execute local handler or call LLM.
 7. Queue speech/text output.
 8. Extract memories after the turn unless suppressed.
@@ -175,6 +176,33 @@ GUI text turn:
 4. In `--noaudio`, responses are logged as text and no ElevenLabs call is made.
 
 Use `interaction.submit_text(...)` for programmatic text injection. Do not invent a parallel text-only pipeline.
+
+### Turn Routing Policy
+
+The desired routing hierarchy is now:
+
+1. Dialogue act: decide whether the utterance is answering Rex's last turn.
+2. Contextual binding: bind answers to the correct person/frame, including multi-person cases.
+3. Executable action gate: only run actions with strong, action-shaped evidence.
+4. Conversation fallback: ambiguous turns stay conversational and can be handled by the main LLM.
+
+`intelligence/dialogue_act.py` owns the cheap session-local frame check. Rex turns are recorded as `RexTurnFrame` objects with source, topic, target person, expected reply types, and blocked actions. This prevents normal replies such as "Yeah, that's not happening anymore" from being promoted into identity, memory, weather, game, or music commands.
+
+`interaction.py` now has a central turn-policy gate for old fallback layers:
+
+- Legacy `command_parser` claims go through `_legacy_command_execution_block_reason(...)`.
+- Deterministic intent claims go through `_intent_execution_block_reason(...)`.
+- Both gates consult the dialogue decision and `action_router.missing_required_evidence_reason(...)`.
+- Legacy fuzzy command execution is disabled by default via `LEGACY_COMMAND_FUZZY_EXECUTE_ENABLED` being absent/false.
+- The live interaction path uses `intent_classifier.classify_deterministic(...)`, so the intent-classifier LLM fallback is not called during normal turns.
+
+When investigating false positives, search logs for:
+
+- `[dialogue_act]`: whether a turn was bound to Rex's last frame.
+- `[turn_policy] blocked ...`: an old command/intent claim was rejected before execution.
+- `[action_router_audit]`: final routed action, legacy claim, allowlist/block reason, and executed path.
+
+The failure mode to avoid: a normal contextual response gets a second chance in a later legacy layer and becomes a durable action. Do not add new command/intent bypasses after the dialogue gate unless they pass the same central evidence policy.
 
 ### Output
 
@@ -263,11 +291,12 @@ If startup greetings feel wrong, inspect face detection timing, world-state upda
 
 ## Social Conversation Layers
 
-The project has several layers that shape final speech:
+The project still has several layers that shape final speech, but executable turn ownership should remain centralized:
 
-- Command parser for known local commands.
-- Action router for executable intents.
-- Intent classifier fallback.
+- Dialogue-act frame gate for contextual replies.
+- Action router for executable intents and evidence policy.
+- Command parser for legacy exact/pattern commands after turn-policy gating.
+- Deterministic intent classifier for local data/tool answers after turn-policy gating.
 - Conversation agenda/social frame to keep responses short, relevant, and socially targeted.
 - Empathy classifier for emotional mode and event capture.
 - Memory injection for known people.
@@ -339,6 +368,11 @@ venv/bin/python main.py
 - Slow-path acknowledgments for general, memory, and vision paths.
 - Text-only/no-audio mode suppresses slow-path acknowledgment filler by default.
 - Action-router guardrails downgrade common false positives: ongoing status updates are not event cancellations, pronoun-only fragments are not introductions, named holiday explanations are not date queries, and relationship-score questions outside games route to memory.
+- Dialogue-act frame gate (`intelligence/dialogue_act.py`) protects normal replies to Rex's last turn before routers can claim them.
+- Central turn-policy gates in `interaction.py` now require legacy command-parser and deterministic intent claims to pass dialogue context plus action-shaped evidence.
+- Intent classifier live path is deterministic only; no extra LLM classifier call is added on normal turns.
+- Stale event-cancellation acknowledgments are deterministic to avoid weird generated lines and extra LLM latency.
+- Regression corpus for misroutes lives under `tests/fixtures/misroute_replays.json`; add false-positive examples there when they appear in live logs.
 - Memory-query grounding for self relationship metrics and greeting counts.
 - Minor public holiday proactive questions are gated behind `HOLIDAY_PLANS_INCLUDE_MINOR`.
 - Introduction handling that links known visible/recent people instead of renaming the current speaker.

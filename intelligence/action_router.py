@@ -342,7 +342,9 @@ Rules:
 """
 
 _MUSIC_PLAY_REQUEST_RE = re.compile(
-    r"\b(play|start\s+playing|put\s+on|throw\s+on|spin|queue|cue|turn\s+on)\b",
+    r"^\s*(?:please\s+)?(?:play|start\s+playing|put\s+on|throw\s+on|spin|queue|cue|turn\s+on)\b|"
+    r"\b(?:can|could|would)\s+you\s+(?:please\s+)?(?:play|put\s+on|queue|cue)\b|"
+    r"\b(?:play|put\s+on|throw\s+on|spin|queue|cue)\s+(?:me|us)\b",
     re.IGNORECASE,
 )
 _MUSIC_STOP_REQUEST_RE = re.compile(
@@ -357,6 +359,20 @@ _MUSIC_SKIP_REQUEST_RE = re.compile(
 _MUSIC_OPTIONS_REQUEST_RE = re.compile(
     r"\b(?:what|which)\b.{0,40}\b(?:music|songs|tracks|playlists|stations)\b|"
     r"\b(?:music|songs|tracks|playlists|stations)\b.{0,40}\b(?:available|options|have)\b",
+    re.IGNORECASE,
+)
+_GAME_START_REQUEST_RE = re.compile(
+    r"\b(?:play|start|run|do)\b.{0,40}\b(?:game|trivia|jeopardy|i\s+spy|"
+    r"20\s+questions|twenty\s+questions|word\s+association)\b|"
+    r"\b(?:let'?s|lets|can\s+we|could\s+we|i\s+want\s+to)\s+"
+    r"(?:play|start|do)\b.{0,40}\b(?:game|trivia|jeopardy|i\s+spy|"
+    r"20\s+questions|twenty\s+questions|word\s+association)\b",
+    re.IGNORECASE,
+)
+_GAME_STOP_REQUEST_RE = re.compile(
+    r"^\s*(?:stop|quit|end)(?:\s+(?:the\s+)?game)?\s*$|"
+    r"\b(?:stop|quit|end)\b.{0,30}\b(?:game|trivia|jeopardy|i\s+spy|"
+    r"20\s+questions|twenty\s+questions|word\s+association)\b",
     re.IGNORECASE,
 )
 _TIME_QUERY_RE = re.compile(
@@ -392,7 +408,8 @@ _VISION_DESCRIBE_RE = re.compile(
 )
 _WHO_SPEAKING_RE = re.compile(
     r"\b(?:who am i|who is speaking|who'?s speaking|do you recognize me|"
-    r"do you know who i am|can you see me|who do you think i am)\b",
+    r"do you know who i am|what(?:'s| is) my name|do you know my name|"
+    r"can you see me|who do you think i am)\b",
     re.IGNORECASE,
 )
 _FORGET_SPECIFIC_REQUEST_RE = re.compile(
@@ -424,6 +441,15 @@ _BOUNDARY_REQUEST_RE = re.compile(
     r"\b(rather not|don'?t want to|do not want to|can we not|"
     r"change the subject|talk about something else|drop it|leave it alone|"
     r"no more check-?ins?)\b",
+    re.IGNORECASE,
+)
+_REPAIR_REQUEST_RE = re.compile(
+    r"\b(?:you\s+(?:misheard|misunderstood|got\s+that\s+wrong|got\s+it\s+wrong)|"
+    r"that'?s\s+(?:wrong|incorrect|not\s+what\s+i\s+said)|"
+    r"no\s*,?\s+that'?s\s+wrong|"
+    r"no\s*,?\s+i\s+(?:said|meant)|"
+    r"actually\s*,?\s+i\s+(?:said|meant)|"
+    r"try\s+again)\b",
     re.IGNORECASE,
 )
 _NAME_CORRECTION_REQUEST_RE = re.compile(
@@ -1062,7 +1088,7 @@ def missing_required_evidence_reason(
     action-shaped utterance. Ambiguous conversational replies fall through to
     normal conversation unless they contain this deterministic evidence.
     """
-    del context  # reserved for action-specific context checks
+    context = context or {}
     if decision is None:
         return None
     cleaned = " ".join((text or "").strip().split())
@@ -1077,6 +1103,8 @@ def missing_required_evidence_reason(
             if _text_has_identity_name_correction_content(cleaned, decision)
             else "missing_identity_name_evidence"
         )
+    if action == "conversation.repair":
+        return None if _REPAIR_REQUEST_RE.search(cleaned) else "missing_repair_evidence"
     if action == "memory.recent_discard":
         return None if _RECENT_DISCARD_REQUEST_RE.search(cleaned) else "missing_recent_discard_evidence"
     if action == "memory.forget_specific":
@@ -1100,12 +1128,30 @@ def missing_required_evidence_reason(
         )
     if action == "identity.who_is_speaking":
         return None if _WHO_SPEAKING_RE.search(cleaned) else "missing_identity_query_evidence"
+    if action == "music.play":
+        return None if _MUSIC_PLAY_REQUEST_RE.search(cleaned) else "missing_music_play_evidence"
     if action == "music.stop":
-        return None if _MUSIC_STOP_REQUEST_RE.search(cleaned) else "missing_music_stop_evidence"
+        active_music = bool(context.get("active_music"))
+        bare_stop = bool(re.match(r"^\s*(?:stop|pause)\s*$", cleaned, re.IGNORECASE))
+        return (
+            None
+            if _MUSIC_STOP_REQUEST_RE.search(cleaned) or (active_music and bare_stop)
+            else "missing_music_stop_evidence"
+        )
     if action == "music.skip":
         return None if _MUSIC_SKIP_REQUEST_RE.search(cleaned) else "missing_music_skip_evidence"
     if action == "music.options":
         return None if _MUSIC_OPTIONS_REQUEST_RE.search(cleaned) else "missing_music_options_evidence"
+    if action == "game.start":
+        return None if _GAME_START_REQUEST_RE.search(cleaned) else "missing_game_start_evidence"
+    if action == "game.stop":
+        active_game = bool(context.get("active_game"))
+        bare_stop = bool(re.match(r"^\s*(?:stop|quit|end)\s*$", cleaned, re.IGNORECASE))
+        return (
+            None
+            if _GAME_STOP_REQUEST_RE.search(cleaned) or (active_game and bare_stop)
+            else "missing_game_stop_evidence"
+        )
     if action == "time.query":
         return None if _TIME_QUERY_RE.search(cleaned) else "missing_time_query_evidence"
     if action == "date.query":
@@ -1118,6 +1164,19 @@ def missing_required_evidence_reason(
         return None if _UPTIME_QUERY_RE.search(cleaned) else "missing_uptime_query_evidence"
     if action == "vision.describe_scene":
         return None if _VISION_DESCRIBE_RE.search(cleaned) else "missing_vision_query_evidence"
+    if action == "system.sleep":
+        return (
+            None
+            if re.match(
+                r"^\s*(?:go\s+to\s+sleep|sleep|wake\s+up|resume(?:\s+talking)?|"
+                r"talk\s+again|speak\s+again|stop\s+being\s+quiet|"
+                r"exit\s+quiet\s+mode|be\s+quiet|quiet\s+mode|go\s+quiet|"
+                r"shut\s*down|shutdown|power\s+off|turn\s+off)\s*$",
+                cleaned,
+                re.IGNORECASE,
+            )
+            else "missing_system_mode_evidence"
+        )
 
     return None
 

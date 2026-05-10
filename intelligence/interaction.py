@@ -981,6 +981,146 @@ def _legacy_command_blocked_by_dialogue(
     return dialogue_decision.label == "answer_to_rex"
 
 
+_LEGACY_COMMAND_ACTION_MAP: dict[str, str] = {
+    "time_query": "time.query",
+    "date_query": "date.query",
+    "status_uptime": "status.uptime",
+    "vision_describe": "vision.describe_scene",
+    "vision_who_am_i": "identity.who_is_speaking",
+    "whats_my_name": "identity.who_is_speaking",
+    "rename_me": "identity.name_correction",
+    "memory_review": "memory.query",
+    "memory_forget_fact": "memory.forget_specific",
+    "memory_boundary": "memory.recent_discard",
+    "forget_specific": "memory.forget_specific",
+    "query_play_options": "music.options",
+    "dj_stop": "music.stop",
+    "dj_skip": "music.skip",
+    "dj_play_vibe": "music.play",
+    "start_trivia": "game.start",
+    "start_i_spy": "game.start",
+    "start_20_questions": "game.start",
+    "start_jeopardy": "game.start",
+    "start_word_association": "game.start",
+    "start_game": "game.start",
+    "stop_game": "game.stop",
+    "sleep": "system.sleep",
+    "wake_up": "system.sleep",
+    "quiet_mode": "system.sleep",
+    "shutdown": "system.sleep",
+}
+
+
+_INTENT_ACTION_MAP: dict[str, str] = {
+    "query_time": "time.query",
+    "query_date": "date.query",
+    "query_weather": "weather.query",
+    "query_capabilities": "status.capabilities",
+    "query_uptime": "status.uptime",
+    "query_what_do_you_see": "vision.describe_scene",
+    "query_who_is_speaking": "identity.who_is_speaking",
+    "query_memory": "memory.query",
+    "play_music": "music.play",
+    "query_music_options": "music.options",
+}
+
+
+def _legacy_command_confidence(match: command_parser.CommandMatch) -> float:
+    if match.match_type == "exact":
+        return 0.99
+    if match.match_type in {"prefix", "pattern", "action_router", "active_game_stop"}:
+        return 0.96
+    if match.match_type == "fuzzy":
+        return 0.74
+    return 0.90
+
+
+def _legacy_command_action_decision(
+    match: Optional[command_parser.CommandMatch],
+) -> Optional[action_router.ActionDecision]:
+    if match is None:
+        return None
+    action = _LEGACY_COMMAND_ACTION_MAP.get(match.command_key)
+    if not action:
+        return None
+    args = dict(match.args or {})
+    if match.command_key == "dj_play_vibe":
+        args = {"music_query": args.get("vibe") or ""}
+    elif match.command_key == "start_game":
+        args = {"game": args.get("game") or ""}
+    elif match.command_key.startswith("start_"):
+        args = {"game": match.command_key.removeprefix("start_")}
+    elif match.command_key == "memory_forget_fact":
+        args = {"target": args.get("statement") or ""}
+    return action_router.ActionDecision(
+        action=action,
+        confidence=_legacy_command_confidence(match),
+        args=args,
+        reason=f"legacy command parser claim: {match.command_key}",
+    )
+
+
+def _legacy_command_execution_block_reason(
+    match: Optional[command_parser.CommandMatch],
+    *,
+    text: str,
+    context: Optional[dict[str, Any]] = None,
+    dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None,
+) -> Optional[str]:
+    """Central turn-policy gate for legacy command parser claims."""
+    if match is None:
+        return None
+    if _legacy_command_blocked_by_dialogue(match, dialogue_decision):
+        return "blocked_by_dialogue_act"
+    if (
+        match.match_type == "fuzzy"
+        and not bool(getattr(config, "LEGACY_COMMAND_FUZZY_EXECUTE_ENABLED", False))
+    ):
+        return "legacy_fuzzy_disabled"
+    decision = _legacy_command_action_decision(match)
+    if decision is None:
+        return None
+    return action_router.missing_required_evidence_reason(
+        text,
+        decision,
+        context=context,
+    )
+
+
+def _intent_action_decision(intent: str) -> Optional[action_router.ActionDecision]:
+    action = _INTENT_ACTION_MAP.get(intent)
+    if not action:
+        return None
+    return action_router.ActionDecision(
+        action=action,
+        confidence=0.94,
+        args={},
+        reason=f"deterministic intent claim: {intent}",
+    )
+
+
+def _intent_execution_block_reason(
+    intent: str,
+    *,
+    text: str,
+    context: Optional[dict[str, Any]] = None,
+    dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None,
+) -> Optional[str]:
+    """Central turn-policy gate for deterministic intent-classifier claims."""
+    if not intent or intent == "general":
+        return None
+    if dialogue_decision is not None and dialogue_decision.label == "answer_to_rex":
+        return "blocked_by_dialogue_act"
+    decision = _intent_action_decision(intent)
+    if decision is None:
+        return None
+    return action_router.missing_required_evidence_reason(
+        text,
+        decision,
+        context=context,
+    )
+
+
 def _router_audit_note_result(
     audit: Optional[_RouterDecisionAudit],
     *,
@@ -9498,6 +9638,8 @@ def _handle_fast_local_takeover(
     *,
     person_id: Optional[int],
     person_name: Optional[str],
+    router_context: Optional[dict[str, Any]] = None,
+    dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None,
     router_audit: Optional[_RouterDecisionAudit] = None,
 ) -> Optional[str]:
     """Handle obvious local control commands before the blocking router call."""
@@ -9543,6 +9685,21 @@ def _handle_fast_local_takeover(
     if match is None:
         return None
     _router_audit_note_legacy_command(router_audit, match)
+    legacy_block_reason = _legacy_command_execution_block_reason(
+        match,
+        text=text,
+        context=router_context,
+        dialogue_decision=dialogue_decision,
+    )
+    if legacy_block_reason:
+        _log.info(
+            "[turn_policy] blocked fast legacy command=%s reason=%s text=%r",
+            match.command_key,
+            legacy_block_reason,
+            text,
+        )
+        _router_audit_clear_legacy_command(router_audit)
+        return None
 
     key = match.command_key
     if key == "directed_look":
@@ -13011,6 +13168,8 @@ def _handle_speech_segment(
                     text,
                     person_id=person_id,
                     person_name=person_name,
+                    router_context=router_context,
+                    dialogue_decision=dialogue_decision,
                     router_audit=router_audit,
                 )
             if fast_takeover_response is not None:
@@ -13834,32 +13993,23 @@ def _handle_speech_segment(
         # reply where _continue_grief_flow returns None and hands off to LLM.
         if response_text is None and not active_grief_for_turn:
             match = command_parser.parse(text)
-            if _legacy_command_blocked_by_dialogue(match, dialogue_decision):
-                _log.info(
-                    "[dialogue_act] blocked legacy command=%s for contextual reply text=%r",
-                    match.command_key,
-                    text,
-                )
-                _router_audit_clear_legacy_command(router_audit)
-                match = None
-            else:
-                _router_audit_note_legacy_command(router_audit, match)
             try:
                 from features import games as games_mod
                 if games_mod.is_active():
                     command_key = match.command_key if match is not None else None
                     normalized_game_text = " ".join(text.lower().strip().split())
-                    if match is None and normalized_game_text in {"quit", "end", "end game", "quit game"}:
+                    if match is None and normalized_game_text in {
+                        "stop", "quit", "end", "stop game", "end game", "quit game",
+                        "stop the game",
+                    }:
                         match = command_parser.CommandMatch("stop_game", "active_game_stop", {})
                         command_key = "stop_game"
-                        _router_audit_note_legacy_command(router_audit, match)
                     elif (
                         command_key == "dj_stop"
                         and normalized_game_text in {"stop", "quit", "end", "stop playing"}
                     ):
                         match = command_parser.CommandMatch("stop_game", "active_game_stop", {})
                         command_key = "stop_game"
-                        _router_audit_note_legacy_command(router_audit, match)
                     elif command_key == "dj_skip" and normalized_game_text == "skip":
                         command_key = None
 
@@ -13891,6 +14041,23 @@ def _handle_speech_segment(
                     router_audit,
                     handler_error=f"active_game_routing_failed:{type(exc).__name__}",
                 )
+            legacy_block_reason = _legacy_command_execution_block_reason(
+                match,
+                text=text,
+                context=router_context,
+                dialogue_decision=dialogue_decision,
+            )
+            if legacy_block_reason:
+                _log.info(
+                    "[turn_policy] blocked legacy command=%s reason=%s text=%r",
+                    match.command_key,
+                    legacy_block_reason,
+                    text,
+                )
+                _router_audit_clear_legacy_command(router_audit)
+                match = None
+            else:
+                _router_audit_note_legacy_command(router_audit, match)
         if match is not None:
             _router_audit_note_legacy_command(router_audit, match)
             response_text = _execute_command(match, person_id, person_name, text)
@@ -13910,10 +14077,24 @@ def _handle_speech_segment(
             if getattr(config, "INTENT_CLASSIFIER_ENABLED", False) and not active_grief_for_turn:
                 try:
                     intent_started = time.monotonic()
-                    intent = intent_classifier.classify(text)
+                    intent = intent_classifier.classify_deterministic(text)
                     _latency_log(turn_start, "intent_classifier", intent_started)
                 except Exception as exc:
                     _log.debug("intent classification error: %s", exc)
+                    intent = "general"
+                intent_block_reason = _intent_execution_block_reason(
+                    intent,
+                    text=text,
+                    context=router_context,
+                    dialogue_decision=dialogue_decision,
+                )
+                if intent_block_reason:
+                    _log.info(
+                        "[turn_policy] blocked intent=%s reason=%s text=%r",
+                        intent,
+                        intent_block_reason,
+                        text,
+                    )
                     intent = "general"
                 _log.info("[interaction] intent classifier: %s", intent)
                 if intent != "general":
