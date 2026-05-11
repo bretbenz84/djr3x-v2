@@ -95,7 +95,7 @@ from audio import (
     speaker_id,
     transcription,
 )
-from vision import camera, scene as vision_scene, face_expression
+from vision import camera, scene as vision_scene, face_expression, animal_detector
 from awareness import chronoception, interoception
 from intelligence import consciousness, emotion_orchestrator, interaction, local_llm
 
@@ -799,6 +799,17 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         sys.exit(1)
     if not local_llm_ok:
         logger.warning("Local LLM preload failed; continuing without local sidecar model.")
+
+    if bool(getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True)) and bool(
+        getattr(config, "LOCAL_ANIMAL_DETECTION_PRELOAD_ON_STARTUP", True)
+    ):
+        logger.info("Pre-loading local animal detector...")
+        if not animal_detector.preload():
+            logger.warning(
+                "Local animal detector preload failed; pet detection will retry during vision.scene."
+            )
+    else:
+        logger.info("Local animal detector preload disabled by config.")
 
     if startup_boot_tts_thread is not None and startup_boot_tts_thread.is_alive():
         logger.info("Waiting for startup boot TTS to finish before continuing startup...")

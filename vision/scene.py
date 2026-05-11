@@ -1,18 +1,19 @@
 """
-vision/scene.py — GPT-4o environment analysis, animal detection, and crowd counting.
+vision/scene.py — scene analysis, local animal detection, and crowd counting.
 
-All three analysis functions encode the frame as JPEG, send it to GPT-4o vision
-with a structured JSON prompt, and return the parsed result. Each prompt ends with
-an explicit instruction to return only the JSON object — no markdown, no preamble.
-_parse_json() handles the cases where GPT-4o wraps the response in code fences anyway.
+OpenAI-backed scene helpers encode the frame as JPEG, send it to GPT-4o vision
+with a structured JSON prompt, and return the parsed result. The live animal
+monitor is separate: it uses a local MediaPipe object detector against the same
+camera frame buffer and spends no OpenAI credits.
 
 Environment analysis is cached: the cached result is returned when the crowd count
 is stable (within _CROWD_CHANGE_DELTA people) AND less than
 config.ENVIRONMENT_SCAN_INTERVAL_SECS has elapsed since the last real query.
 
-start_periodic_scan() runs analyze_environment in a background thread. The thread
-fires immediately on start, then re-fires every interval_secs OR whenever
-world_state.crowd.count changes by _CROWD_CHANGE_DELTA or more.
+start_periodic_scan() runs local animal detection frequently and full environment
+analysis in a background thread. Full scene analysis fires immediately on start,
+then re-fires every interval_secs OR whenever world_state.crowd.count changes by
+_CROWD_CHANGE_DELTA or more.
 """
 
 import json
@@ -22,6 +23,7 @@ import time
 from typing import Optional
 
 import config
+from vision import animal_detector as local_animal_detector
 from vision.image_utils import encode_jpeg_base64
 from world_state import world_state
 
@@ -374,6 +376,33 @@ def detect_animals(frame) -> list[dict]:
             len(animals),
             [a["species"] for a in animals],
         )
+    return animals
+
+
+def detect_animals_local(frame) -> list[dict]:
+    """
+    Detect animals in frame using the local MediaPipe object detector.
+
+    This is the live, no-OpenAI-credits path. It updates world_state.animals
+    when the detector is available. If the local model is missing/unavailable,
+    the existing animal state is preserved and returned.
+    """
+    if frame is None:
+        return world_state.get("animals") or []
+
+    animals = local_animal_detector.detect_animals(frame)
+    if animals is None:
+        return world_state.get("animals") or []
+
+    world_state.update("animals", animals)
+    if animals:
+        _log.info(
+            "detect_animals_local: %d detected — %s",
+            len(animals),
+            [a["species"] for a in animals],
+        )
+    else:
+        _log.debug("detect_animals_local: no animals detected")
     return animals
 
 
@@ -743,13 +772,15 @@ def start_periodic_scan(interval_secs: float) -> None:
         name="scene-scan",
     )
     _scan_thread.start()
-    monitor_interval = float(
-        getattr(config, "SCENE_CHANGE_MONITOR_INTERVAL_SECS", 20.0) or 20.0
+    monitor_interval = float(getattr(config, "SCENE_CHANGE_MONITOR_INTERVAL_SECS", 20.0) or 20.0)
+    local_animal_interval = float(
+        getattr(config, "LOCAL_ANIMAL_DETECTION_INTERVAL_SECS", 2.0) or 2.0
     )
     _log.info(
-        "Periodic scene scan started (interval=%.0fs, change_monitor=%.0fs)",
+        "Periodic scene scan started (interval=%.0fs, change_monitor=%.0fs, local_animals=%.1fs)",
         interval_secs,
         monitor_interval if getattr(config, "SCENE_CHANGE_MONITOR_ENABLED", True) else 0.0,
+        local_animal_interval if getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True) else 0.0,
     )
 
 
@@ -773,6 +804,7 @@ def _scan_loop(interval_secs: float) -> None:
 
     last_scan_time   = 0.0   # 0.0 ensures the first iteration fires immediately
     last_monitor_time = 0.0
+    last_local_animal_time = 0.0
     last_crowd_count = -1    # -1 sentinel means "never observed"
 
     while not _stop_event.is_set():
@@ -782,11 +814,28 @@ def _scan_loop(interval_secs: float) -> None:
             5.0,
             float(getattr(config, "SCENE_CHANGE_MONITOR_INTERVAL_SECS", 20.0) or 20.0),
         )
+        local_animal_interval = max(
+            0.5,
+            float(getattr(config, "LOCAL_ANIMAL_DETECTION_INTERVAL_SECS", 2.0) or 2.0),
+        )
 
         time_elapsed = (now - last_scan_time) >= interval_secs
         monitor_elapsed = (now - last_monitor_time) >= monitor_interval
+        local_animal_elapsed = (now - last_local_animal_time) >= local_animal_interval
         crowd_jumped = (last_crowd_count >= 0 and
                         abs(current_crowd - last_crowd_count) >= _CROWD_CHANGE_DELTA)
+
+        if (
+            getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True)
+            and getattr(config, "ANIMAL_DETECTION_ENABLED", True)
+            and local_animal_elapsed
+        ):
+            frame = camera.get_frame()
+            if frame is not None:
+                detect_animals_local(frame)
+                last_local_animal_time = now
+            else:
+                _log.debug("_scan_loop: no frame available — skipping local animal detector")
 
         if time_elapsed or crowd_jumped:
             if crowd_jumped:
@@ -797,7 +846,10 @@ def _scan_loop(interval_secs: float) -> None:
             frame = camera.get_frame()
             if frame is not None:
                 analyze_environment(frame)
-                if getattr(config, "ANIMAL_DETECTION_ENABLED", True):
+                if (
+                    getattr(config, "ANIMAL_DETECTION_ENABLED", True)
+                    and not getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True)
+                ):
                     detect_lifeforms(frame)
                     last_monitor_time = now
             else:
@@ -808,6 +860,7 @@ def _scan_loop(interval_secs: float) -> None:
         elif (
             getattr(config, "SCENE_CHANGE_MONITOR_ENABLED", True)
             and getattr(config, "ANIMAL_DETECTION_ENABLED", True)
+            and not getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True)
             and monitor_elapsed
             and (
                 not bool(getattr(config, "SCENE_CHANGE_MONITOR_ONLY_WITH_PEOPLE", True))

@@ -321,9 +321,9 @@ import mediapipe as mp
 assert hasattr(mp, "tasks")
 PY
     then
-        ok "MediaPipe Tasks dependency installed for pose and local face-expression telemetry."
+        ok "MediaPipe Tasks dependency installed for pose, local face-expression telemetry, and local animal detection."
     else
-        warn "MediaPipe Tasks did not import after pip install; pose and local face-expression telemetry will be unavailable until this is resolved."
+        warn "MediaPipe Tasks did not import after pip install; pose, local face-expression telemetry, and local animal detection will be unavailable until this is resolved."
         MANUAL_ATTENTION+=("MediaPipe dependency missing: $VENV_PIP install mediapipe")
     fi
 else

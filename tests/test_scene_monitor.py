@@ -51,6 +51,44 @@ class SceneMonitorTests(unittest.TestCase):
         self.assertEqual(result["animals"], [])
         self.assertEqual(world_state.get("animals"), [])
 
+    def test_local_animal_detection_updates_world_state_without_openai(self):
+        from vision import scene
+        from world_state import world_state
+
+        local_animals = [{
+            "id": "animal_1",
+            "species": "dog",
+            "position": "foreground right",
+            "last_seen": 123.0,
+            "confidence": 0.88,
+            "furred": True,
+            "source": "mediapipe_object_detector",
+        }]
+
+        with mock.patch.object(scene.local_animal_detector, "detect_animals", return_value=local_animals):
+            animals = scene.detect_animals_local(object())
+
+        self.assertEqual(animals, local_animals)
+        self.assertEqual(world_state.get("animals"), local_animals)
+
+    def test_local_animal_detection_preserves_state_when_model_unavailable(self):
+        from vision import scene
+        from world_state import world_state
+
+        existing = [{
+            "id": "animal_1",
+            "species": "cat",
+            "position": "center",
+            "last_seen": 123.0,
+        }]
+        world_state.update("animals", existing)
+
+        with mock.patch.object(scene.local_animal_detector, "detect_animals", return_value=None):
+            animals = scene.detect_animals_local(object())
+
+        self.assertEqual(animals, existing)
+        self.assertEqual(world_state.get("animals"), existing)
+
 
 if __name__ == "__main__":
     unittest.main()

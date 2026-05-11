@@ -214,11 +214,15 @@ WHISPER_MODEL_DIR     = "assets/models/whisper"
 FACE_MODELS_DIR       = "assets/models/face"
 WAKE_WORD_MODELS_DIR  = "assets/models/wake_word"
 RESEMBLYZER_MODEL_DIR = "assets/models/resemblyzer"
+OBJECT_DETECTION_MODELS_DIR = "assets/models/object_detection"
 
 FACE_LANDMARK_MODEL   = "assets/models/face/shape_predictor_68_face_landmarks.dat"
 FACE_RECOGNITION_MODEL = "assets/models/face/dlib_face_recognition_resnet_model_v1.dat"
 FACE_DETECTOR_MODEL   = "assets/models/face/mmod_human_face_detector.dat"
 MEDIAPIPE_FACE_LANDMARKER_MODEL = "assets/models/face/face_landmarker.task"
+MEDIAPIPE_OBJECT_DETECTOR_MODEL = (
+    "assets/models/object_detection/efficientdet_lite0.tflite"
+)
 
 # Skip mmod entirely and use HOG from the start. mmod averages >400ms/frame on
 # FaceTime camera — HOG is sufficient for this use case. Set False to re-enable mmod.
@@ -1827,10 +1831,10 @@ VISUAL_CURIOSITY_MAX_CROWD_COUNT = 2
 # How often GPT-4o runs a full environment/scene analysis (seconds)
 ENVIRONMENT_SCAN_INTERVAL_SECS = 180
 
-# Lightweight low-detail scan for changes that matter socially: new people and
-# animals entering while a person is already in view. The full environment scan
-# remains slow; this one uses the low-detail animal prompt and a tiny JSON shape.
-SCENE_CHANGE_MONITOR_ENABLED = _env_bool("SCENE_CHANGE_MONITOR_ENABLED", True)
+# Lightweight OpenAI low-detail scan for changes that matter socially. This is
+# off by default now that live pet detection is local; enable it if you want
+# periodic GPT-4o people/animal scene checks in addition to the local detector.
+SCENE_CHANGE_MONITOR_ENABLED = _env_bool("SCENE_CHANGE_MONITOR_ENABLED", False)
 SCENE_CHANGE_MONITOR_INTERVAL_SECS = _env_float(
     "SCENE_CHANGE_MONITOR_INTERVAL_SECS",
     20.0,
@@ -1848,9 +1852,50 @@ SCENE_CHANGE_MONITOR_MAX_TOKENS = _env_int(
     max_value=800,
 )
 
-# Animal detection runs alongside periodic scene scans. It is intentionally not
-# frame-by-frame; this is for social arrivals like "a dog wandered in," not
-# realtime pet tracking.
+# Local animal detection uses MediaPipe Object Detector on the shared camera
+# buffer. It spends no OpenAI credits and is frequent enough for pet arrivals.
+LOCAL_ANIMAL_DETECTION_ENABLED = _env_bool("LOCAL_ANIMAL_DETECTION_ENABLED", True)
+LOCAL_ANIMAL_DETECTION_PRELOAD_ON_STARTUP = _env_bool(
+    "LOCAL_ANIMAL_DETECTION_PRELOAD_ON_STARTUP",
+    True,
+)
+LOCAL_ANIMAL_DETECTION_MODEL = os.getenv(
+    "LOCAL_ANIMAL_DETECTION_MODEL",
+    MEDIAPIPE_OBJECT_DETECTOR_MODEL,
+)
+LOCAL_ANIMAL_DETECTION_INTERVAL_SECS = _env_float(
+    "LOCAL_ANIMAL_DETECTION_INTERVAL_SECS",
+    2.0,
+    min_value=0.5,
+    max_value=30.0,
+)
+LOCAL_ANIMAL_DETECTION_SCORE_THRESHOLD = _env_float(
+    "LOCAL_ANIMAL_DETECTION_SCORE_THRESHOLD",
+    0.45,
+    min_value=0.05,
+    max_value=0.95,
+)
+LOCAL_ANIMAL_DETECTION_MAX_RESULTS = _env_int(
+    "LOCAL_ANIMAL_DETECTION_MAX_RESULTS",
+    8,
+    min_value=1,
+    max_value=25,
+)
+LOCAL_ANIMAL_DETECTION_SPECIES = {
+    "bird",
+    "cat",
+    "dog",
+    "horse",
+    "sheep",
+    "cow",
+    "elephant",
+    "bear",
+    "zebra",
+    "giraffe",
+}
+
+# Animal detection runs alongside periodic scene scans. OpenAI animal detection
+# remains available for explicit scene queries and as an optional fallback.
 ANIMAL_DETECTION_ENABLED = True
 ANIMAL_ARRIVAL_COOLDOWN_SECS = 300
 FURRY_COMPANION_ANIMAL_SPECIES = {

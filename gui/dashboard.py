@@ -295,6 +295,11 @@ def _vision_state_html(snapshot: dict[str, Any]) -> str:
         for person in (ws.get("people") or [])
         if isinstance(person, dict)
     ]
+    animals = [
+        dict(animal)
+        for animal in (ws.get("animals") or [])
+        if isinstance(animal, dict)
+    ]
     self_state = ws.get("self_state") or ws.get("self") or {}
     face_tracking = self_state.get("face_tracking") or {}
 
@@ -311,6 +316,7 @@ def _vision_state_html(snapshot: dict[str, Any]) -> str:
             _count_label(visible_count, "visible face"),
             f"{known_count} known",
             f"{unknown_count} unknown",
+            _count_label(len(animals), "animal"),
         ]
     )
 
@@ -322,6 +328,7 @@ def _vision_state_html(snapshot: dict[str, Any]) -> str:
         )
     else:
         people_html = '<p class="empty">No dlib face slots yet.</p>'
+    animals_html = _animals_html(animals)
 
     return f"""
 <html>
@@ -396,7 +403,7 @@ td.value {{
 </head>
 <body>
   <div class="section">
-    <div class="eyebrow">OpenAI Vision</div>
+    <div class="eyebrow">Vision Summary</div>
     <div class="description">{_html(description)}</div>
   </div>
   <div class="section">
@@ -404,6 +411,10 @@ td.value {{
     <div class="summary">{_html(summary)}</div>
     {tracking_html}
     {people_html}
+  </div>
+  <div class="section">
+    <div class="eyebrow">Local Object State</div>
+    {animals_html}
   </div>
 </body>
 </html>
@@ -467,6 +478,35 @@ def _person_dlib_html(idx: int, person: dict[str, Any]) -> str:
         '<div class="face">'
         f'<div class="face-title">{_html(label)} '
         f'<span class="{status_class}">[{_html(status)}]</span></div>'
+        f"{_kv_table(rows)}"
+        "</div>"
+    )
+
+
+def _animals_html(animals: list[dict[str, Any]]) -> str:
+    if not animals:
+        return '<p class="empty">No local animals detected.</p>'
+    return "".join(
+        _animal_html(idx, animal)
+        for idx, animal in enumerate(animals, start=1)
+    )
+
+
+def _animal_html(idx: int, animal: dict[str, Any]) -> str:
+    species = _clean_text(animal.get("species")) or f"animal {idx}"
+    rows = [
+        ("species", species),
+        ("position", _clean_text(animal.get("position"))),
+        ("box", _format_box(animal)),
+        ("confidence", _format_confidence(animal.get("confidence"))),
+        ("furred", _yes_no(animal.get("furred")) if animal.get("furred") is not None else None),
+        ("source", _clean_text(animal.get("source"))),
+        ("last seen", _animal_last_seen_label(animal)),
+    ]
+    return (
+        '<div class="face">'
+        f'<div class="face-title">{_html(species.title())} '
+        '<span class="status-visible">[animal]</span></div>'
         f"{_kv_table(rows)}"
         "</div>"
     )
@@ -628,6 +668,22 @@ def _last_seen_label(person: dict[str, Any]) -> str:
     if age is None:
         return ""
     return _format_age(age)
+
+
+def _animal_last_seen_label(animal: dict[str, Any]) -> str:
+    timestamp = _coerce_float(animal.get("last_seen"))
+    if timestamp is None or timestamp <= 1_000_000_000:
+        return ""
+    return _format_age(time.time() - timestamp)
+
+
+def _format_confidence(value: Any) -> str:
+    score = _coerce_float(value)
+    if score is None:
+        return _clean_text(value)
+    if 0.0 <= score <= 1.0:
+        return f"{score * 100.0:.0f}%"
+    return f"{score:.3g}"
 
 
 def _format_age(seconds: float | None) -> str:

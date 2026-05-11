@@ -18,6 +18,7 @@ class VisionPanel(QWidget):
         super().__init__(parent)
         self._frame = None
         self._people: list[dict[str, Any]] = []
+        self._animals: list[dict[str, Any]] = []
         self._scene_description = ""
         self._last_frame_at = 0.0
         self._face_tracker = LiveFaceBoxTracker()
@@ -28,6 +29,11 @@ class VisionPanel(QWidget):
         ws = snapshot.get("world_state") or {}
         people = list(ws.get("people") or [])
         self._people = self._face_tracker.update(self._frame, people)
+        self._animals = [
+            dict(animal)
+            for animal in (ws.get("animals") or [])
+            if isinstance(animal, dict)
+        ]
         env = ws.get("environment") or {}
         self._scene_description = (
             snapshot.get("scene_description")
@@ -56,6 +62,7 @@ class VisionPanel(QWidget):
             else:
                 image_rect = _scaled_rect(image.width(), image.height(), frame_rect)
                 painter.drawImage(image_rect, image)
+                self._draw_animals(painter, image_rect, image.width(), image.height())
                 self._draw_people(painter, image_rect, image.width(), image.height())
 
         self._draw_timestamp(painter, frame_rect)
@@ -121,6 +128,47 @@ class VisionPanel(QWidget):
                 text_anchor = QPointF(px + 8, py - 8)
 
             _draw_label(painter, text_anchor, label, expression, color)
+
+    def _draw_animals(
+        self,
+        painter: QPainter,
+        image_rect: QRectF,
+        frame_w: int,
+        frame_h: int,
+    ) -> None:
+        if not self._animals or frame_w <= 0 or frame_h <= 0:
+            return
+
+        sx = image_rect.width() / float(frame_w)
+        sy = image_rect.height() / float(frame_h)
+        color = QColor("#f0c45a")
+        painter.setPen(QPen(color, 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        for idx, animal in enumerate(self._animals):
+            label = _animal_label(animal, idx)
+            details = _animal_details(animal)
+            box = _animal_box(animal)
+            if box is not None:
+                x, y, w, h = box
+                rect = QRectF(
+                    image_rect.left() + x * sx,
+                    image_rect.top() + y * sy,
+                    w * sx,
+                    h * sy,
+                )
+                painter.drawRect(rect)
+                text_anchor = rect.topLeft() + QPointF(0, -6)
+            else:
+                point = _animal_point(animal, frame_w, frame_h)
+                px = image_rect.left() + point[0] * sx
+                py = image_rect.top() + point[1] * sy
+                painter.setBrush(color)
+                painter.drawEllipse(QPointF(px, py), 6, 6)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                text_anchor = QPointF(px + 8, py - 8)
+
+            _draw_label(painter, text_anchor, label, details, color)
 
     def _draw_timestamp(self, painter: QPainter, frame_rect: QRectF) -> None:
         if self._last_frame_at <= 0:
@@ -272,6 +320,88 @@ def _person_point(
     return (x, y)
 
 
+def _animal_label(animal: dict[str, Any], idx: int) -> str:
+    species = str(animal.get("species") or "").strip()
+    return species.title() if species else f"Animal {idx + 1}"
+
+
+def _animal_details(animal: dict[str, Any]) -> str:
+    parts = []
+    confidence = animal.get("confidence")
+    try:
+        if confidence is not None and confidence != "":
+            score = float(confidence)
+            if 0.0 <= score <= 1.0:
+                parts.append(f"{score * 100.0:.0f}%")
+            else:
+                parts.append(str(confidence))
+    except (TypeError, ValueError):
+        if confidence:
+            parts.append(str(confidence).replace("_", " "))
+    source = str(animal.get("source") or "").strip()
+    if source:
+        parts.append(source.replace("_", " "))
+    return " / ".join(parts)
+
+
+def _animal_box(animal: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    box = (
+        animal.get("box")
+        or animal.get("animal_box")
+        or animal.get("bounding_box")
+        or animal.get("bbox")
+    )
+    if isinstance(box, dict):
+        box = (
+            box.get("x") or box.get("origin_x"),
+            box.get("y") or box.get("origin_y"),
+            box.get("w") or box.get("width"),
+            box.get("h") or box.get("height"),
+        )
+    if not isinstance(box, (list, tuple)) or len(box) < 4:
+        return None
+    try:
+        x, y, w, h = [float(v) for v in box[:4]]
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return (x, y, w, h)
+
+
+def _animal_point(
+    animal: dict[str, Any],
+    frame_w: int,
+    frame_h: int,
+) -> tuple[float, float]:
+    position = animal.get("position")
+    if isinstance(position, (list, tuple)) and len(position) >= 2:
+        try:
+            x = float(position[0])
+            y = float(position[1])
+            if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
+                return (x * frame_w, y * frame_h)
+            return (x, y)
+        except (TypeError, ValueError):
+            pass
+
+    text = str(position or "").strip().lower()
+    if "left" in text:
+        x = frame_w * 0.25
+    elif "right" in text:
+        x = frame_w * 0.75
+    else:
+        x = frame_w * 0.5
+
+    if "upper" in text or "top" in text:
+        y = frame_h * 0.25
+    elif "lower" in text or "bottom" in text or "foreground" in text:
+        y = frame_h * 0.75
+    else:
+        y = frame_h * 0.5
+    return (x, y)
+
+
 def _draw_label(
     painter: QPainter,
     anchor: QPointF,
@@ -291,7 +421,9 @@ def _draw_label(
     y = max(8.0, anchor.y())
     rect = QRectF(x, y, width, height)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(52, 136, 49, 210))
+    brush = QColor(color)
+    brush.setAlpha(210)
+    painter.setBrush(brush)
     painter.drawRoundedRect(rect, 2, 2)
     painter.setPen(QColor("#e9ffe6"))
     painter.drawText(
