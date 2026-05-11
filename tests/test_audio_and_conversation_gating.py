@@ -6,6 +6,17 @@ from tempfile import TemporaryDirectory
 
 
 class PostTtsHandoffPolicyTest(unittest.TestCase):
+    def test_startup_chime_is_ordered_before_roger_control(self):
+        import config
+
+        files = [Path(path).name for path in config.STARTUP_AUDIO_FILES]
+        self.assertIn("startup_chime.mp3", files)
+        self.assertIn("Roger Control.mp3", files)
+        self.assertLess(
+            files.index("startup_chime.mp3"),
+            files.index("Roger Control.mp3"),
+        )
+
     def test_direct_startup_clip_arms_aec_and_limits_level(self):
         import numpy as np
         import main
@@ -150,6 +161,42 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         chest_active.assert_not_called()
         set_rex_speaking.assert_not_called()
         log_rex.assert_not_called()
+
+    def test_startup_boot_tts_thread_speaks_after_configured_delay(self):
+        import main
+
+        line = "Hang on folks while I'm booting up."
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(main.config, "NO_AUDIO_MODE", False))
+            stack.enter_context(mock.patch.object(main.config, "AUDIO_OUTPUT_SUPPRESSED", False))
+            stack.enter_context(mock.patch.object(main.config, "PLAY_STARTUP_BOOT_TTS", True))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_BOOT_TTS_LINE", line))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_BOOT_TTS_DELAY_SECS", 1.25))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_BOOT_TTS_EMOTION", "curious"))
+            sleep = stack.enter_context(mock.patch.object(main.time, "sleep"))
+            speak = stack.enter_context(mock.patch.object(main.tts, "speak"))
+
+            thread = main._start_startup_boot_tts_thread()
+            self.assertIsNotNone(thread)
+            thread.join(timeout=1.0)
+            self.assertFalse(thread.is_alive())
+
+        sleep.assert_called_once_with(1.25)
+        speak.assert_called_once_with(line, "curious")
+
+    def test_startup_boot_tts_skips_noaudio(self):
+        import main
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(main.config, "NO_AUDIO_MODE", True))
+            stack.enter_context(mock.patch.object(main.config, "AUDIO_OUTPUT_SUPPRESSED", False))
+            stack.enter_context(mock.patch.object(main.config, "PLAY_STARTUP_BOOT_TTS", True))
+            speak = stack.enter_context(mock.patch.object(main.tts, "speak"))
+
+            thread = main._start_startup_boot_tts_thread()
+
+        self.assertIsNone(thread)
+        speak.assert_not_called()
 
     def test_direct_shutdown_clip_leaves_leds_off(self):
         import numpy as np
@@ -484,6 +531,26 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertEqual(queued[0].audio_path, str(chime))
         self.assertEqual(queued[1].text, "Hello there.")
         self.assertEqual(queued[2].text, "Second line.")
+
+    def test_mark_startup_chime_played_skips_first_text_chime(self):
+        from audio import speech_queue
+
+        with TemporaryDirectory() as tmp:
+            chime = Path(tmp) / "startup_chime.mp3"
+            chime.write_bytes(b"fake")
+            with (
+                mock.patch.object(speech_queue._SpeechQueue, "_worker", lambda self: None),
+                mock.patch("config.PLAY_LISTENING_CHIME", True),
+                mock.patch("config.LISTENING_CHIME_FILE", str(chime)),
+            ):
+                queue = speech_queue._SpeechQueue()
+                queue.mark_startup_chime_played()
+                queue.enqueue("Hello there.", priority=1)
+
+            queued = sorted(queue._heap, key=lambda item: item.seq)
+
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(queued[0].text, "Hello there.")
 
     def test_first_text_enqueue_skips_startup_chime_during_active_game(self):
         from audio import speech_queue

@@ -2378,6 +2378,20 @@ ASPIRATIONS = [
 PLAY_STARTUP_AUDIO = True
 PLAY_SHUTDOWN_AUDIO = True
 
+# Spoken after the theatrical startup clip, while heavier model preloads are
+# happening, so startup feels alive instead of silently stalled.
+PLAY_STARTUP_BOOT_TTS = True
+STARTUP_BOOT_TTS_LINE = (
+    "Hang on folks while I'm booting up. I'm still getting used to my programming!"
+)
+STARTUP_BOOT_TTS_EMOTION = "curious"
+STARTUP_BOOT_TTS_DELAY_SECS = _env_float(
+    "STARTUP_BOOT_TTS_DELAY_SECS",
+    1.5,
+    min_value=0.0,
+    max_value=5.0,
+)
+
 # Pre-recorded startup/shutdown clips are mastered louder than TTS on some
 # setups. Keep headroom so small speakers and nearby mics do not feed back.
 STARTUP_SHUTDOWN_AUDIO_GAIN = _env_float(
@@ -2393,9 +2407,8 @@ STARTUP_SHUTDOWN_AUDIO_PEAK_LIMIT = _env_float(
     max_value=1.0,
 )
 
-# Short readiness cue played immediately before Rex's first spoken line in a
-# run. This is intentionally separate from PLAY_STARTUP_AUDIO so it still fires
-# when the theatrical startup clips are disabled.
+# Short readiness cue reused by startup audio and by the first queued spoken
+# line when theatrical startup clips are disabled.
 LISTENING_CHIME_FILE = "assets/audio/startup/startup_chime.mp3"
 PLAY_LISTENING_CHIME = True
 
@@ -2410,6 +2423,7 @@ STARTLE_SOUND_EVENT_REACTION_COOLDOWN_SECS = 20
 
 STARTUP_AUDIO_FILES = [
     "assets/audio/startup/light_speed.mp3",
+    LISTENING_CHIME_FILE,
     "assets/audio/startup/Roger Control.mp3",
 ]
 

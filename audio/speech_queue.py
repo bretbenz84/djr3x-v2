@@ -348,6 +348,11 @@ class _SpeechQueue:
         with self._lock:
             self._startup_chime_queued = False
 
+    def mark_startup_chime_played(self) -> None:
+        """Prevent the automatic first-speech chime after it played elsewhere."""
+        with self._lock:
+            self._startup_chime_queued = True
+
     def _worker(self) -> None:
         while True:
             with self._not_empty:
@@ -579,6 +584,10 @@ def enqueue_audio_file(
 
 def reset_startup_chime_for_tests() -> None:
     _queue.reset_startup_chime_for_tests()
+
+
+def mark_startup_chime_played() -> None:
+    _queue.mark_startup_chime_played()
 
 
 def clear_below_priority(n: int) -> None:

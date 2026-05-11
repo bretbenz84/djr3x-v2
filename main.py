@@ -133,6 +133,12 @@ def _is_speech_animated_audio_file(path: str) -> bool:
     return any(item in candidates for item in configured)
 
 
+def _is_listening_chime_audio_file(path: str) -> bool:
+    candidates = _audio_file_match_keys(path)
+    configured = str(getattr(config, "LISTENING_CHIME_FILE", "") or "").strip().lower()
+    return bool(configured and configured in candidates)
+
+
 def _conversation_line_for_audio_file(path: str) -> Optional[str]:
     candidates = _audio_file_match_keys(path)
     configured = getattr(config, "SPEECH_ANIMATED_AUDIO_TRANSCRIPTS", {}) or {}
@@ -546,6 +552,53 @@ _gui_bridge_thread: threading.Thread | None = None
 _last_camera_reconnect_line: Optional[str] = None
 
 
+def _audio_output_suppressed() -> bool:
+    return bool(
+        getattr(config, "NO_AUDIO_MODE", False)
+        or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+    )
+
+
+def _start_startup_boot_tts_thread() -> threading.Thread | None:
+    if _audio_output_suppressed():
+        logger.info("Startup boot TTS disabled by --noaudio")
+        return None
+    if not bool(getattr(config, "PLAY_STARTUP_BOOT_TTS", True)):
+        logger.info("Startup boot TTS disabled by config.PLAY_STARTUP_BOOT_TTS")
+        return None
+
+    line = str(getattr(config, "STARTUP_BOOT_TTS_LINE", "") or "").strip()
+    if not line:
+        logger.info("Startup boot TTS skipped because STARTUP_BOOT_TTS_LINE is empty")
+        return None
+
+    try:
+        delay_secs = float(getattr(config, "STARTUP_BOOT_TTS_DELAY_SECS", 1.5) or 0.0)
+    except (TypeError, ValueError):
+        delay_secs = 1.5
+    delay_secs = max(0.0, delay_secs)
+    emotion = str(getattr(config, "STARTUP_BOOT_TTS_EMOTION", "curious") or "curious")
+
+    def _speak_startup_boot_line() -> None:
+        try:
+            if delay_secs > 0.0:
+                time.sleep(delay_secs)
+            if _audio_output_suppressed():
+                return
+            logger.info("Playing startup boot TTS after %.1fs delay: %s", delay_secs, line)
+            tts.speak(line, emotion)
+        except Exception as exc:
+            logger.warning("Could not play startup boot TTS: %s", exc)
+
+    thread = threading.Thread(
+        target=_speak_startup_boot_line,
+        daemon=True,
+        name="startup_boot_tts",
+    )
+    thread.start()
+    return thread
+
+
 def _apply_startup_mode_overrides(*, jeopardy: bool = False) -> None:
     if not jeopardy:
         return
@@ -681,6 +734,8 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
                 logger.info("Playing startup audio: %s", audio_file)
                 try:
                     _play_audio_file(audio_file)
+                    if _is_listening_chime_audio_file(audio_file):
+                        speech_queue.mark_startup_chime_played()
                 except Exception as e:
                     logger.warning("Could not play %s: %s", audio_file, e)
         startup_audio_thread = threading.Thread(
@@ -697,6 +752,8 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     if startup_audio_thread is not None and startup_audio_thread.is_alive():
         logger.info("Waiting for startup audio to finish before starting microphone services...")
         startup_audio_thread.join()
+
+    startup_boot_tts_thread = _start_startup_boot_tts_thread()
 
     # Step 8: Start background services in order.
     logger.info("=== Starting background services ===")
@@ -742,6 +799,10 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         sys.exit(1)
     if not local_llm_ok:
         logger.warning("Local LLM preload failed; continuing without local sidecar model.")
+
+    if startup_boot_tts_thread is not None and startup_boot_tts_thread.is_alive():
+        logger.info("Waiting for startup boot TTS to finish before continuing startup...")
+        startup_boot_tts_thread.join()
 
     # audio.wake_word is started internally by intelligence.interaction.start() —
     # starting it separately would create a duplicate daemon thread.
