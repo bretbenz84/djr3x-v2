@@ -2594,7 +2594,7 @@ def _format_low_memory_question(person_id: int, question_text: str) -> str:
     except Exception:
         person = {}
     full_name = str(person.get("name") or "").strip()
-    first_name = full_name.split()[0] if full_name else "there"
+    first_name = _first_name_or(full_name, "there")
     template = str(
         getattr(
             config,
@@ -2912,6 +2912,11 @@ def _normalize_name(candidate: str) -> Optional[str]:
     return normalize_person_name(candidate, allow_single=True)
 
 
+def _first_name_or(value: Optional[str], fallback: str = "") -> str:
+    parts = str(value or "").strip().split()
+    return parts[0] if parts else fallback
+
+
 def _same_person_name(left: Optional[str], right: Optional[str]) -> bool:
     left_norm = _normalize_name(left or "")
     right_norm = _normalize_name(right or "")
@@ -2995,8 +3000,10 @@ def _extract_self_relationship_to_engaged(
     """
     if not text or not engaged_name:
         return None
-    engaged_first = (engaged_name or "").split()[0].lower()
-    engaged_full = (engaged_name or "").lower()
+    engaged_first = _first_name_or(engaged_name).lower()
+    if not engaged_first:
+        return None
+    engaged_full = str(engaged_name or "").strip().lower()
     rel_words = (
         "best friend|friend|father|dad|mother|mom|parent|coworker|co-worker|"
         "colleague|boss|supervisor|manager|aunt|uncle|partner|girlfriend|"
@@ -3015,7 +3022,7 @@ def _extract_self_relationship_to_engaged(
         candidate_lower = (candidate or "").lower()
         if not candidate_lower:
             continue
-        if candidate_lower == engaged_full or candidate_lower.split()[0] == engaged_first:
+        if candidate_lower == engaged_full or _first_name_or(candidate_lower) == engaged_first:
             return _normalize_relationship_word(match.group("rel"))
     return None
 
@@ -3532,7 +3539,7 @@ def _handle_pending_memory_wipe_confirmation(
             except Exception:
                 pass
             conv_memory.clear_transcript()
-            name = str(pending.get("person_name") or "").split()[0]
+            name = _first_name_or(pending.get("person_name"))
             address = f"{name}. " if name else ""
             resp = (
                 f"{address}Confirmed. I deleted your name, face, voice print, "
@@ -4004,7 +4011,7 @@ def _handle_pending_offscreen_identify_reply(
 
     ack_text = f"Got it: {intro_name}. Welcome to the frequency."
     try:
-        introducer_name = (person_name or prior_engaged_name or "friend").split()[0]
+        introducer_name = _first_name_or(person_name or prior_engaged_name, "friend")
         ack_text = llm.get_response(
             f"You just learned the nearby/off-camera person's "
             f"name is {intro_name}. {introducer_name} introduced "
@@ -4044,7 +4051,7 @@ def _ask_visible_unknown_identity_question(
 
     prior_first = ""
     if recent_engagement and recent_engagement.get("name"):
-        prior_first = recent_engagement["name"].split()[0]
+        prior_first = _first_name_or(recent_engagement.get("name"))
     if prior_first:
         ask_prompt = (
             f"A new face just appeared on camera and an unfamiliar voice "
@@ -4286,7 +4293,7 @@ def _handle_relationship_reply(
             }
             consciousness.note_relationship_slot_handled(slot_id)
             try:
-                first = (engaged_name or "friend").split()[0]
+                first = _first_name_or(engaged_name, "friend")
                 return llm.get_response(
                     f"{first} said the visible newcomer is their {relationship}, "
                     f"but did not give the person's name yet. In ONE short "
@@ -4361,7 +4368,7 @@ def _handle_relationship_reply(
         )
         introducer_for_ack = engaged_id or speaker_person_id
         if introducer_for_ack is None:
-            return f"{name.split()[0]}, welcome. Identity filed under 'better than mystery organic.'"
+            return f"{_first_name_or(name, 'there')}, welcome. Identity filed under 'better than mystery organic.'"
         return _intro_ack_and_followup(
             int(introducer_for_ack),
             engaged_name,
@@ -4663,7 +4670,7 @@ def _identity_confirmation_declines(text: str) -> bool:
 
 
 def _identity_match_prompt(candidate_name: str, existing_name: str, match_type: str) -> str:
-    candidate_first = (candidate_name or "that").split()[0]
+    candidate_first = _first_name_or(candidate_name, "that")
     if match_type == "first_name":
         return (
             f"Are you {existing_name}? I'll update my records so I don't create "
@@ -4851,7 +4858,7 @@ def _handle_pending_identity_match_confirmation(
 
     if _identity_confirmation_declines(text):
         _pending_identity_match_confirmation = None
-        first_name = (_normalize_name(candidate) or candidate).split()[0]
+        first_name = _first_name_or(_normalize_name(candidate) or candidate)
         if _name_word_count(candidate) >= 2:
             person_id = _enroll_new_person(
                 candidate,
@@ -5343,8 +5350,8 @@ def _intro_ack_and_followup(
 ) -> str:
     global _pending_intro_followup, _pending_intro_voice_capture
 
-    introducer_first = (introducer_name or "there").split()[0]
-    introduced_first = (introduced_name or "there").split()[0]
+    introducer_first = _first_name_or(introducer_name, "there")
+    introduced_first = _first_name_or(introduced_name, "there")
     rel_clause = f"{relationship}" if relationship else "guest"
     self_explanatory_relationship = _intro_relationship_self_explanatory(relationship)
     followup_kind = (
@@ -5440,7 +5447,7 @@ def _intro_voice_text_sounds_like_newcomer(text: str, name: str) -> bool:
         return False
     if re.search(r"\b(no|nope|not now|not here|later|wait|hold on|can't|cannot)\b", cleaned):
         return False
-    first = (name or "").split()[0].lower()
+    first = _first_name_or(name).lower()
     if first and re.search(rf"\b(this is|that is|that's)\s+{re.escape(first)}\b", cleaned):
         return False
     if re.search(r"\b(he|she|they)\s+(is|isn't|was|wasn't|can't|cannot|will|won't)\b", cleaned):
@@ -5525,7 +5532,7 @@ def _handle_intro_voice_capture(
     ok = speaker_id.enroll_voice(introduced_id, audio_array)
     if not ok:
         ctx["asked_at"] = time.monotonic()
-        first = introduced_name.split()[0]
+        first = _first_name_or(introduced_name)
         return (
             f"{first}, my voice scanner got a mouthful of static. Give me one "
             f"more sentence so I can stop calling you theoretical."
@@ -5570,8 +5577,8 @@ def _handle_intro_voice_capture(
     except Exception as exc:
         _log.debug("intro voice capture turn tracking failed: %s", exc)
 
-    intro_first = (introducer_name or "there").split()[0]
-    introduced_first = (introduced_name or "there").split()[0]
+    intro_first = _first_name_or(introducer_name, "there")
+    introduced_first = _first_name_or(introduced_name, "there")
     try:
         if self_explanatory_relationship:
             question_instruction = _intro_relationship_question_instruction(
@@ -6449,7 +6456,7 @@ def _face_matches_target(face: dict, target_name: Optional[str]) -> bool:
 
 def _directed_face_greeting(face: dict, fallback_name: Optional[str]) -> str:
     name = str(face.get("name") or fallback_name or "").strip()
-    first = name.split()[0] if name else ""
+    first = _first_name_or(name)
     if first:
         return f"Oh hi, {first}."
     return "Oh hi. There you are."
@@ -7234,7 +7241,7 @@ def _execute_memory_correct_fact_command(
     last_name = re.match(r"(?i)^last\s+name\s+is\s+([A-Za-z][A-Za-z' -]+)$", detail)
     if last_name and target_id is not None:
         surname = last_name.group(1).strip()
-        first = (target_name or correction).split()[0]
+        first = _first_name_or(target_name or correction)
         full_name = f"{first} {surname}".strip()
         if people_memory.rename_person(int(target_id), full_name):
             facts_memory.apply_fact_correction(
@@ -12231,8 +12238,8 @@ def _handle_speech_segment(
                     relationship,
                 )
 
-                first = self_identified_name.split()[0]
-                prior_first = ((prior_engagement or {}).get("name") or "").split()[0]
+                first = _first_name_or(self_identified_name, self_identified_name)
+                prior_first = _first_name_or((prior_engagement or {}).get("name"))
                 if relationship and prior_first:
                     rel_words = relationship.replace("_", " ")
                     ack_text = (
@@ -12621,7 +12628,7 @@ def _handle_speech_segment(
                         # the normal response path: skip normal response for
                         # this turn and speak a custom reveal line instead.
                         reveal_name = pending_fr["name"] or "you"
-                        first_reveal = reveal_name.split()[0]
+                        first_reveal = _first_name_or(reveal_name, "you")
                         try:
                             reveal_text = llm.get_response(
                                 f"You just confirmed the face of someone you previously only "
@@ -13568,7 +13575,7 @@ def _handle_speech_segment(
 
                 if len(unknown_candidates) == 1:
                     mode = "binary"
-                    name_for_prompt = (person_name or "").split()[0] or "you"
+                    name_for_prompt = _first_name_or(person_name, "you")
                     ask_prompt = (
                         f"You recognize this speaker's VOICE as '{name_for_prompt}' — but "
                         f"you've never seen their face before. Now there's one unfamiliar "
@@ -13579,7 +13586,7 @@ def _handle_speech_segment(
                     )
                 elif len(unknown_candidates) == 2:
                     mode = "lateral"
-                    name_for_prompt = (person_name or "").split()[0] or "you"
+                    name_for_prompt = _first_name_or(person_name, "you")
                     ask_prompt = (
                         f"You recognize this speaker's VOICE as '{name_for_prompt}' but "
                         f"two unfamiliar faces are in view and you can't tell which is "
@@ -13655,7 +13662,7 @@ def _handle_speech_segment(
                 engaged_name_local = (
                     recent_engagement.get("name") if recent_engagement else None
                 ) or ""
-                first_name_local = engaged_name_local.split()[0] if engaged_name_local else "friend"
+                first_name_local = _first_name_or(engaged_name_local, "friend")
                 _pending_offscreen_identify = {
                     "audio": audio_array.copy(),
                     "asked_at": time.monotonic(),
@@ -14279,8 +14286,8 @@ def _handle_speech_segment(
             _pending_post_greet_relationship[0] = None
             prior_name = pending_rel.get("prior_engaged_name") or "the other person"
             newcomer_name = pending_rel.get("newcomer_name") or "you"
-            prior_first = prior_name.split()[0] if prior_name else "them"
-            newcomer_first = newcomer_name.split()[0] if newcomer_name else "there"
+            prior_first = _first_name_or(prior_name, "them")
+            newcomer_first = _first_name_or(newcomer_name, "there")
             try:
                 q_text = llm.get_response(
                     f"You just learned a new person named '{newcomer_first}' is here. "

@@ -1508,6 +1508,13 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             "Bret",
         )
 
+    def test_first_name_helper_handles_missing_or_blank_names(self):
+        from intelligence import interaction
+
+        self.assertEqual(interaction._first_name_or(None, "friend"), "friend")
+        self.assertEqual(interaction._first_name_or("   ", "friend"), "friend")
+        self.assertEqual(interaction._first_name_or("Bret Benziger", "friend"), "Bret")
+
     def test_identity_prompt_name_reply_acknowledges_without_router_correction(self):
         from contextlib import ExitStack
         import numpy as np
@@ -6577,6 +6584,115 @@ class ConversationGatingTest(unittest.TestCase):
             consciousness._confirmed_absent_at.clear()
             consciousness._confirmed_absent_at.update(old_confirmed_absent)
             consciousness._last_snapshot = old_last_snapshot
+
+    def test_identity_bound_slot_does_not_depart_as_unknown(self):
+        from intelligence import consciousness
+
+        old_visible = set(consciousness._visible_people)
+        old_last_seen = dict(consciousness._last_seen)
+        old_first_missing = dict(consciousness._first_missing_at)
+        old_pending_departures = dict(consciousness._pending_departure_keys)
+        old_confirmed_absent = dict(consciousness._confirmed_absent_at)
+        old_first_sight = dict(consciousness._first_sight_seen_at)
+        old_greeted = set(consciousness._greeted_this_session)
+        try:
+            consciousness._visible_people.clear()
+            consciousness._visible_people.add("person_1")
+            consciousness._last_seen.clear()
+            consciousness._last_seen["person_1"] = 100.0
+            consciousness._first_missing_at.clear()
+            consciousness._first_missing_at["person_1"] = 101.0
+            consciousness._pending_departure_keys.clear()
+            consciousness._pending_departure_keys["person_1"] = (101.0, None, None)
+            consciousness._confirmed_absent_at.clear()
+            consciousness._confirmed_absent_at["person_1"] = 101.0
+            consciousness._first_sight_seen_at.clear()
+            consciousness._greeted_this_session.add(1)
+
+            snapshot = {
+                "people": [
+                    {
+                        "id": "person_1",
+                        "person_db_id": 1,
+                        "face_id": "Bret Benziger",
+                    },
+                ],
+                "crowd": {"count": 1},
+            }
+            profile = mock.Mock(
+                likely_still_present=False,
+                user_mid_sentence=False,
+                apparent_departure=False,
+            )
+
+            with mock.patch.object(consciousness.time, "monotonic", return_value=105.0):
+                consciousness._step_presence_tracking(snapshot, profile)
+
+            self.assertNotIn("person_1", consciousness._visible_people)
+            self.assertNotIn("person_1", consciousness._last_seen)
+            self.assertNotIn("person_1", consciousness._first_missing_at)
+            self.assertNotIn("person_1", consciousness._pending_departure_keys)
+            self.assertNotIn("person_1", consciousness._confirmed_absent_at)
+            self.assertIn(1, consciousness._visible_people)
+        finally:
+            consciousness._visible_people.clear()
+            consciousness._visible_people.update(old_visible)
+            consciousness._last_seen.clear()
+            consciousness._last_seen.update(old_last_seen)
+            consciousness._first_missing_at.clear()
+            consciousness._first_missing_at.update(old_first_missing)
+            consciousness._pending_departure_keys.clear()
+            consciousness._pending_departure_keys.update(old_pending_departures)
+            consciousness._confirmed_absent_at.clear()
+            consciousness._confirmed_absent_at.update(old_confirmed_absent)
+            consciousness._first_sight_seen_at.clear()
+            consciousness._first_sight_seen_at.update(old_first_sight)
+            consciousness._greeted_this_session.clear()
+            consciousness._greeted_this_session.update(old_greeted)
+
+    def test_weekly_recap_prompt_uses_actual_monday_part_of_day(self):
+        from intelligence import consciousness
+
+        old_weekly = set(consciousness._weekly_smalltalk_asked)
+        old_check_at = consciousness._last_weekly_smalltalk_check_at
+        with consciousness._engaged_lock:
+            old_engaged_id = consciousness._engaged_person_id
+            old_engaged_touch = consciousness._engaged_last_touch_at
+        try:
+            consciousness._weekly_smalltalk_asked.clear()
+            consciousness._last_weekly_smalltalk_check_at = 0.0
+            with consciousness._engaged_lock:
+                consciousness._engaged_person_id = 1
+                consciousness._engaged_last_touch_at = 90.0
+            snapshot = {
+                "time": {"day_of_week": "Monday", "time_of_day": "afternoon"},
+                "people": [{"person_db_id": 1, "face_id": "Bret Benziger"}],
+            }
+            profile = mock.Mock(suppress_proactive=False, rapid_exchange=False)
+
+            with (
+                mock.patch.object(consciousness.time, "monotonic", return_value=100.0),
+                mock.patch.object(consciousness.config, "WEEKLY_SMALLTALK_CHECK_INTERVAL_SECS", 0.0),
+                mock.patch.object(consciousness.config, "WEEKLY_SMALLTALK_MIN_SILENCE_SECS", 0.0),
+                mock.patch.object(consciousness.config, "WEEKLY_SMALLTALK_PROBABILITY", 1.0),
+                mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+                mock.patch.object(consciousness.random, "random", return_value=0.0),
+                mock.patch("memory.people.get_person", return_value={"name": "Bret Benziger"}),
+                mock.patch("memory.events.get_pending_followups", return_value=[]),
+                mock.patch.object(consciousness, "_generate_and_speak", return_value=True) as speak,
+            ):
+                consciousness._step_weekly_smalltalk(snapshot, profile)
+
+            prompt = speak.call_args.args[0]
+            self.assertIn("Monday afternoon", prompt)
+            self.assertNotIn("Monday morning", prompt)
+        finally:
+            consciousness._weekly_smalltalk_asked.clear()
+            consciousness._weekly_smalltalk_asked.update(old_weekly)
+            consciousness._last_weekly_smalltalk_check_at = old_check_at
+            with consciousness._engaged_lock:
+                consciousness._engaged_person_id = old_engaged_id
+                consciousness._engaged_last_touch_at = old_engaged_touch
 
     def test_presence_reactions_are_suppressed_during_active_game(self):
         from awareness.situation import SituationProfile

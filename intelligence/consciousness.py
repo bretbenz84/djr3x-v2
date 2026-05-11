@@ -4495,7 +4495,7 @@ def _do_small_talk_question(snapshot: dict) -> None:
         if is_engaged_with(target.get("person_db_id")):
             # Mid-conversation — let interaction handle turn-taking.
             return
-        target_name = (target.get("face_id") or "").split()[0] or None
+        target_name = _first_name(target.get("face_id"), "")
         target_db_id = target.get("person_db_id")
 
     time_of_day = (snapshot.get("time", {}) or {}).get("time_of_day") or ""
@@ -4728,7 +4728,7 @@ def _do_appearance_riff(snapshot: dict) -> None:
     # Don't riff on the engaged person — it'd feel interruptive mid-conversation.
     if is_engaged_with(target.get("person_db_id")):
         return
-    first_name = (target.get("face_id") or "").split()[0] or "there"
+    first_name = _first_name(target.get("face_id"), "there")
     _generate_and_speak(
         f"You're idly looking at '{first_name}'. You remember this about their "
         f"appearance: {hint}. Make one short in-character Rex remark about it — "
@@ -4792,7 +4792,7 @@ def _do_people_roast(snapshot: dict) -> None:
     if not candidates:
         return
     target = random.choice(candidates)
-    first_name = (target.get("face_id") or "").split()[0]
+    first_name = _first_name(target.get("face_id"), "there")
     label = first_name or "the unidentified organic in frame"
     cues = _person_roast_cues(target)
     family_clause = (
@@ -5074,7 +5074,7 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
             from intelligence.llm import get_response
 
             person = people_mod.get_person(engaged_id) or {}
-            first_name = (person.get("name") or "").split()[0] or "there"
+            first_name = _first_name(person.get("name"), "there")
 
             frame = _cam.get_frame()
             if frame is None:
@@ -5454,7 +5454,7 @@ def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> Non
     if not _can_proactive_speak():
         return
 
-    first_name = (engaged_name or "").split()[0] or "friend"
+    first_name = _first_name(engaged_name, "friend")
     _last_identity_prompt_at = now
     _pending_relationship_context.clear()
     _pending_relationship_context.update({
@@ -5510,6 +5510,27 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
     current_tracked = _presence_tracking_map(snapshot, now)
 
     current_keys = set(current_tracked.keys())
+    known_slot_aliases = {
+        str(person.get("id")).strip()
+        for person in (snapshot.get("people", []) or [])
+        if _person_db_id(person) is not None and str(person.get("id") or "").strip()
+    }
+    for slot_key in known_slot_aliases:
+        if slot_key not in _visible_people:
+            continue
+        _visible_people.discard(slot_key)
+        _first_missing_at.pop(slot_key, None)
+        _pending_departure_keys.pop(slot_key, None)
+        _confirmed_absent_at.pop(slot_key, None)
+        _first_sight_seen_at.pop(slot_key, None)
+        _last_seen.pop(slot_key, None)
+        _last_presence_reaction_at.pop(slot_key, None)
+        _last_departure_reaction_at.pop(slot_key, None)
+        _last_return_reaction_at.pop(slot_key, None)
+        _log.debug(
+            "consciousness: retired unknown presence slot %s after identity bind",
+            slot_key,
+        )
 
     # ── Hysteresis: track "first-missing-at" and clear when visible ───────────
     for key in _first_missing_at.keys() - current_keys:
@@ -5609,7 +5630,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         is_known = isinstance(key, int) and person_name
 
         if is_known:
-            first_name = person_name.split()[0]
+            first_name = _first_name(person_name, "there")
             _log.info("consciousness: departure reaction firing for %s", person_name)
             _generate_and_speak_presence(
                 f"The person named '{first_name}' just slipped out of your camera view. "
@@ -5659,7 +5680,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 if not _should_fire_presence(key, person_db_id, profile):
                     first_sight_pending_keys.add(key)
                     continue
-                first_name = person_name.split()[0]
+                first_name = _first_name(person_name, "there")
                 context_sentence, situation_phrase = _first_sight_context(first_name)
                 prompt: Optional[str] = None
                 direct_text: Optional[str] = None
@@ -5963,7 +5984,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         is_known = isinstance(key, int) and person_name
 
         if is_known:
-            first_name = person_name.split()[0]
+            first_name = _first_name(person_name, "there")
             _log.info("consciousness: return detected — queuing reaction for %s (absent %.1fs)", person_name, absent_secs)
             allow_return_memory = (
                 absent_secs
@@ -6111,7 +6132,7 @@ def _step_third_party_awareness(snapshot: dict, profile: SituationProfile) -> No
 
             face_id = person.get("face_id")
             if face_id and isinstance(face_id, str):
-                first_name = face_id.split()[0]
+                first_name = _first_name(face_id, "there")
                 descriptor = f"the person named '{first_name}' standing nearby"
                 address_hint = f"refer to them as '{first_name}'"
             else:
@@ -6485,7 +6506,7 @@ def _step_overheard_chime_in(snapshot: dict, profile: SituationProfile) -> None:
 
     snippet = bd.get("last_snippet") or ""
     label = bd.get("label") or "referential"
-    speaker_first = (speaker_name or "someone").split()[0]
+    speaker_first = _first_name(speaker_name, "someone")
 
     if label == "instructional":
         prompt = (
@@ -6613,7 +6634,7 @@ def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
         person = people_mod.get_person(engaged_id)
         if not person:
             return
-        first_name = (person.get("name") or "").split()[0] or "you"
+        first_name = _first_name(person.get("name"), "you")
 
         days_until = target["days_until"]
         if days_until == 0:
@@ -6726,7 +6747,7 @@ def _step_weekly_smalltalk(snapshot: dict, profile: SituationProfile) -> None:
         person = people_mod.get_person(engaged_id)
         if not person:
             return
-        first_name = (person.get("name") or "").split()[0] or "you"
+        first_name = _first_name(person.get("name"), "you")
 
         if slot == "weekend_plans":
             upcoming = events_mod.get_upcoming_events(engaged_id) or []
@@ -6767,6 +6788,8 @@ def _step_weekly_smalltalk(snapshot: dict, profile: SituationProfile) -> None:
             )
             emotion = "curious"
         else:  # weekend_recap
+            monday_part = ((snapshot.get("time", {}) or {}).get("time_of_day") or "").lower()
+            monday_part_label = monday_part if monday_part in {"morning", "afternoon"} else "morning"
             pending = events_mod.get_pending_followups(engaged_id) or []
             # Prefer asking specifically about things they told Rex they'd do.
             ref = next((e for e in pending if e.get("event_name")), None)
@@ -6783,7 +6806,7 @@ def _step_weekly_smalltalk(snapshot: dict, profile: SituationProfile) -> None:
                 )
             else:
                 prompt = (
-                    f"You're mid-conversation with '{first_name}'. It's Monday morning. "
+                    f"You're mid-conversation with '{first_name}'. It's Monday {monday_part_label}. "
                     f"Ask {first_name} how their weekend was, in one short Rex-style "
                     f"line ending with a question. Warm but dry."
                 )
@@ -6854,7 +6877,7 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
         person = people_mod.get_person(engaged_id)
         if not person:
             return
-        first_name = (person.get("name") or "").split()[0] or "you"
+        first_name = _first_name(person.get("name"), "you")
         tier = person.get("friendship_tier", "stranger")
 
         # ── Trigger A: unacknowledged active event ─────────────────────────

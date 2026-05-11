@@ -69,6 +69,8 @@ class _FFmpegCapture:
             "-i",
             f"{self._resolved_name}:none",
             "-an",
+            "-fps_mode",
+            "passthrough",
             "-pix_fmt",
             "bgr24",
             "-vcodec",
