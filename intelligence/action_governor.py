@@ -41,6 +41,7 @@ _PURPOSE_PRIORITIES: dict[str, int] = {
     "startup_empty_room": 60,
     "visual_curiosity": 55,
     "small_talk": 45,
+    "world.animal_arrival": 85,
     "weather.proactive_comment": 42,
     "world_reaction": 40,
     "ambient_observation": 30,

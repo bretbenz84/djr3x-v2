@@ -1247,9 +1247,9 @@ AEC_SUPPRESSION_FACTOR = 0.05
 # voice tail that has already bled into the mic buffer from passing the VAD.
 POST_PLAYBACK_SUPPRESSION_SECS = 0.5
 
-# Direct questions need a faster handoff so quick answers like player names
-# are not swallowed by the general-purpose echo tail.
-POST_QUESTION_PLAYBACK_SUPPRESSION_SECS = 0.05
+# Direct questions need a responsive handoff. Keep only a short post-playback
+# attenuation tail; the capture floor below handles Rex's final-word bleed.
+POST_QUESTION_PLAYBACK_SUPPRESSION_SECS = 0.12
 
 # After Rex asks a direct question, preserve the rolling mic buffer at handoff.
 # Flushing here can delete the first syllables of a fast human answer that began
@@ -1634,10 +1634,9 @@ POST_QUESTION_SPEECH_PREROLL_SECS = 2.0
 # Set above zero only if the first syllable after TTS is consistently clipped.
 POST_TTS_CAPTURE_PREROLL_GRACE_SECS = 0.0
 
-# ElevenLabs output often has a short silent tail that still keeps playback/AEC
-# marked active. For direct questions, allow the answer capture to reach back
-# into that tail so natural immediate replies are not clipped or missed.
-POST_QUESTION_CAPTURE_PREROLL_GRACE_SECS = 0.25
+# Let question-answer capture reach slightly before the handoff, but only into
+# the typical silent pad at the end of TTS. 250ms can include Rex's final word.
+POST_QUESTION_CAPTURE_PREROLL_GRACE_SECS = 0.12
 
 # If a transcribed utterance ends like an unfinished sentence ("I'm going to",
 # "the thing is", "because..."), hold it briefly before responding. A second
@@ -1650,9 +1649,9 @@ INCOMPLETE_TURN_PROMPT_REPLY_WINDOW_SECS = 10.0
 # buffer is flushed when playback ends; this guard just lets room echo decay.
 POST_SPEECH_LISTEN_DELAY_SECS = 0.35
 
-# When Rex just asked a direct question, humans often answer immediately. Use a
-# shorter guard window so quick replies do not lose their first syllables.
-POST_QUESTION_LISTEN_DELAY_SECS = 0.05
+# When Rex just asked a direct question, resume quickly while giving the local
+# output/mic path a small moment to settle.
+POST_QUESTION_LISTEN_DELAY_SECS = 0.12
 
 # Seconds of no detected speech in ACTIVE state before returning to IDLE
 CONVERSATION_IDLE_TIMEOUT_SECS = 30.0
@@ -1898,6 +1897,7 @@ LOCAL_ANIMAL_DETECTION_SPECIES = {
 # remains available for explicit scene queries and as an optional fallback.
 ANIMAL_DETECTION_ENABLED = True
 ANIMAL_ARRIVAL_COOLDOWN_SECS = 300
+ANIMAL_PENDING_REACTION_TTL_SECS = 90
 FURRY_COMPANION_ANIMAL_SPECIES = {
     "dog",
     "puppy",

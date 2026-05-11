@@ -105,6 +105,16 @@ HEROARM_NEUTRAL = 6000
 HEROARM_FORWARD = 4800
 HEROARM_BACK    = 7200
 
+# Idle arm wander should read as intentional arm motion, not servo creep. The
+# hero arm gets the broadest swing; pokerarm stays a quieter secondary accent.
+_IDLE_ARM_WAIT_RANGE_SECS = (4.0, 9.0)
+_IDLE_ARM_STEP_QUS = 70
+_IDLE_ARM_STEP_DELAY_SECS = 0.045
+_IDLE_HEROARM_SWING_RANGE_QUS = (1300, 2000)
+_IDLE_HEROARM_MIN_TRAVEL_QUS = 900
+_IDLE_POKERARM_SWING_RANGE_QUS = (800, 1500)
+_IDLE_POKERARM_MIN_TRAVEL_QUS = 550
+
 
 # ---------------------------------------------------------------------------
 # Body beats
@@ -150,6 +160,14 @@ def _channel_neutral(channel: int) -> int:
     return int(config.SERVO_CHANNELS[name]["neutral"])
 
 
+def _clamp_channel_position(channel: int, position: int) -> int:
+    name = _channel_name(channel)
+    if not name:
+        return int(position)
+    cfg = config.SERVO_CHANNELS[name]
+    return max(int(cfg["min"]), min(int(cfg["max"]), int(position)))
+
+
 def _current_body_pose(channels: tuple[int, ...]) -> dict[int, int]:
     try:
         positions = (world_state.get("self_state") or {}).get("servo_positions") or {}
@@ -165,6 +183,50 @@ def _current_body_pose(channels: tuple[int, ...]) -> dict[int, int]:
         except (TypeError, ValueError):
             pose[channel] = default
     return pose
+
+
+def _idle_arm_target(
+    channel: int,
+    neutral: int,
+    current: int,
+    swing_range_qus: tuple[int, int],
+    min_travel_qus: int,
+) -> int:
+    """
+    Pick a visible idle arm target.
+
+    When the arm is already offset from neutral, bias the next move across the
+    body so idle poses do not linger in tiny same-side corrections.
+    """
+    if current >= neutral + min_travel_qus:
+        direction = -1
+    elif current <= neutral - min_travel_qus:
+        direction = 1
+    else:
+        direction = random.choice([-1, 1])
+
+    magnitude = random.randint(*swing_range_qus)
+    return _clamp_channel_position(channel, neutral + direction * magnitude)
+
+
+def _idle_arm_wander_targets() -> dict[int, int]:
+    current = _current_body_pose((7, 6))
+    return {
+        7: _idle_arm_target(
+            7,
+            HEROARM_NEUTRAL,
+            current.get(7, HEROARM_NEUTRAL),
+            _IDLE_HEROARM_SWING_RANGE_QUS,
+            _IDLE_HEROARM_MIN_TRAVEL_QUS,
+        ),
+        6: _idle_arm_target(
+            6,
+            POKERARM_NEUTRAL,
+            current.get(6, POKERARM_NEUTRAL),
+            _IDLE_POKERARM_SWING_RANGE_QUS,
+            _IDLE_POKERARM_MIN_TRAVEL_QUS,
+        ),
+    }
 
 
 def _body_beat_allowed() -> bool:
@@ -802,17 +864,13 @@ def wander_thread() -> None:
 
 def arm_wander_thread() -> None:
     """
-    Background thread: heroarm and pokerarm pick a random target at either 50%
-    or 100% of their range from neutral, in a random direction, during
+    Background thread: heroarm and pokerarm pick visible offset poses during
     IDLE/ACTIVE. Independent from the head wander so arm and head motion don't
     synchronise. Suppressed while speaking or in SLEEP/SHUTDOWN. Call as a
     daemon thread from main.py.
     """
-    # Both arms have ~2000 qus of travel on each side of their 6000 neutral.
-    ARM_HALF_RANGE = 2000
-
     while True:
-        time.sleep(random.uniform(6.0, 15.0))
+        time.sleep(random.uniform(*_IDLE_ARM_WAIT_RANGE_SECS))
 
         cur = _state_module.get_state()
         if cur not in (_State.IDLE, _State.ACTIVE):
@@ -820,19 +878,15 @@ def arm_wander_thread() -> None:
         if _speaking.is_set() or servos.arm_idle_paused():
             continue
 
-        targets: dict[int, int] = {}
-        for ch, neutral in ((7, HEROARM_NEUTRAL), (6, POKERARM_NEUTRAL)):
-            magnitude = random.choice([0.5, 1.0]) * ARM_HALF_RANGE
-            direction = random.choice([-1, 1])
-            targets[ch] = neutral + int(direction * magnitude)
-
-        # Slow, smooth interpolation. step_delay=0.20 → ~100 qus/sec, so a 50%
-        # sweep takes ~10 s and a full sweep ~20 s — visible but unhurried.
         if not _arm_motion_lock.acquire(blocking=False):
             continue
         try:
             if not _speaking.is_set() and not servos.arm_idle_paused():
-                servos.move_to(targets, step_us=20, step_delay=0.20)
+                servos.move_to(
+                    _idle_arm_wander_targets(),
+                    step_us=_IDLE_ARM_STEP_QUS,
+                    step_delay=_IDLE_ARM_STEP_DELAY_SECS,
+                )
         finally:
             _arm_motion_lock.release()
 

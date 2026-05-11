@@ -21,11 +21,24 @@ items from the queue, e.g. when an interrupt is being processed.
 
 import heapq
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+_IMPERATIVE_RESPONSE_PROMPT_RE = re.compile(
+    r"\b(?:give|tell|toss|send|share)\s+(?:me\s+)?(?:your\s+|a\s+)?"
+    r"(?:last\s+name|surname)\b|"
+    r"\b(?:last\s+name|surname)\s+(?:too|please)\b",
+    re.IGNORECASE,
+)
+
+
+def _text_expects_reply(text: str) -> bool:
+    stripped = str(text or "").strip()
+    return bool(stripped and ("?" in stripped or _IMPERATIVE_RESPONSE_PROMPT_RE.search(stripped)))
 
 
 def _audio_output_suppressed() -> bool:
@@ -76,18 +89,25 @@ def _playback_handoff_options(text: Optional[str]) -> dict:
         return {}
     try:
         import config
+        if _text_expects_reply(text_value):
+            return {
+                "post_playback_tail_secs": float(
+                    getattr(config, "POST_QUESTION_PLAYBACK_SUPPRESSION_SECS", 0.12)
+                ),
+                "flush_on_playback_stop": bool(
+                    getattr(config, "POST_QUESTION_FLUSH_AUDIO_BUFFER", False)
+                ),
+            }
         return {
             "post_playback_tail_secs": float(
-                getattr(config, "POST_QUESTION_PLAYBACK_SUPPRESSION_SECS", 0.05)
+                getattr(config, "POST_PLAYBACK_SUPPRESSION_SECS", 0.5)
             ),
-            "flush_on_playback_stop": bool(
-                getattr(config, "POST_QUESTION_FLUSH_AUDIO_BUFFER", False)
-            ),
+            "flush_on_playback_stop": True,
         }
     except Exception:
         return {
-            "post_playback_tail_secs": 0.05,
-            "flush_on_playback_stop": False,
+            "post_playback_tail_secs": 0.5,
+            "flush_on_playback_stop": True,
         }
 
 

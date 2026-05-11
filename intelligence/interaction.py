@@ -2393,7 +2393,7 @@ def _fast_response_handoff_expected(text: Optional[str]) -> bool:
     cleaned = _strip_quoted_questions(str(text or "")).strip()
     if not cleaned:
         return False
-    return True
+    return _question_expects_response(cleaned)
 
 
 def _question_expects_response(text: str) -> bool:

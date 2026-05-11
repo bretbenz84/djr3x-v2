@@ -400,7 +400,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             bool(__import__("config").POST_QUESTION_FLUSH_AUDIO_BUFFER),
         )
 
-    def test_social_queue_item_uses_fast_no_flush_playback_handoff(self):
+    def test_social_queue_item_uses_normal_flush_playback_handoff(self):
         from audio import speech_queue
 
         opts = speech_queue._playback_handoff_options(
@@ -409,12 +409,9 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         self.assertEqual(
             opts["post_playback_tail_secs"],
-            float(__import__("config").POST_QUESTION_PLAYBACK_SUPPRESSION_SECS),
+            float(__import__("config").POST_PLAYBACK_SUPPRESSION_SECS),
         )
-        self.assertEqual(
-            opts["flush_on_playback_stop"],
-            bool(__import__("config").POST_QUESTION_FLUSH_AUDIO_BUFFER),
-        )
+        self.assertTrue(opts["flush_on_playback_stop"])
 
     def test_last_name_prompt_without_question_mark_uses_fast_handoff(self):
         from audio import speech_queue
@@ -432,19 +429,16 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             bool(__import__("config").POST_QUESTION_FLUSH_AUDIO_BUFFER),
         )
 
-    def test_statement_queue_item_uses_fast_no_flush_playback_handoff(self):
+    def test_statement_queue_item_uses_normal_flush_playback_handoff(self):
         from audio import speech_queue
 
         opts = speech_queue._playback_handoff_options("Classic choice.")
 
         self.assertEqual(
             opts["post_playback_tail_secs"],
-            float(__import__("config").POST_QUESTION_PLAYBACK_SUPPRESSION_SECS),
+            float(__import__("config").POST_PLAYBACK_SUPPRESSION_SECS),
         )
-        self.assertEqual(
-            opts["flush_on_playback_stop"],
-            bool(__import__("config").POST_QUESTION_FLUSH_AUDIO_BUFFER),
-        )
+        self.assertTrue(opts["flush_on_playback_stop"])
 
     def test_question_playback_stop_can_skip_flush_and_short_tail(self):
         from audio import echo_cancel
@@ -750,33 +744,33 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         )
         self.assertFalse(policy.flush_buffer)
 
-    def test_social_handoff_preserves_buffer_for_immediate_reply(self):
+    def test_social_handoff_flushes_buffer_and_uses_normal_delay(self):
         from intelligence import interaction
         import config
 
         policy = interaction._post_tts_handoff_policy("Got it, Bret. Nice to meet you.")
 
         self.assertFalse(policy.asked_question)
-        self.assertTrue(policy.fast_response_expected)
+        self.assertFalse(policy.fast_response_expected)
         self.assertEqual(
             policy.listen_delay_secs,
-            float(config.POST_QUESTION_LISTEN_DELAY_SECS),
+            float(config.POST_SPEECH_LISTEN_DELAY_SECS),
         )
-        self.assertFalse(policy.flush_buffer)
+        self.assertTrue(policy.flush_buffer)
 
-    def test_statement_handoff_preserves_buffer_and_uses_short_delay(self):
+    def test_statement_handoff_flushes_buffer_and_uses_normal_delay(self):
         from intelligence import interaction
         import config
 
         policy = interaction._post_tts_handoff_policy("Classic choice.")
 
         self.assertFalse(policy.asked_question)
-        self.assertTrue(policy.fast_response_expected)
+        self.assertFalse(policy.fast_response_expected)
         self.assertEqual(
             policy.listen_delay_secs,
-            float(config.POST_QUESTION_LISTEN_DELAY_SECS),
+            float(config.POST_SPEECH_LISTEN_DELAY_SECS),
         )
-        self.assertFalse(policy.flush_buffer)
+        self.assertTrue(policy.flush_buffer)
 
     def test_assistant_question_detector_ignores_quoted_questions_and_tiny_openers(self):
         from intelligence import interaction
@@ -820,14 +814,14 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         reset_vad.assert_called_once()
         self.assertAlmostEqual(floor, 100.0)
 
-    def test_question_handoff_allows_silent_tts_tail_preroll(self):
+    def test_question_handoff_allows_120ms_silent_tts_tail_preroll(self):
         from intelligence import interaction
 
         old_floor = interaction._listen_capture_floor_at
         try:
             with (
                 mock.patch.object(interaction.time, "monotonic", return_value=100.0),
-                mock.patch.object(interaction.config, "POST_QUESTION_CAPTURE_PREROLL_GRACE_SECS", 0.25),
+                mock.patch.object(interaction.config, "POST_QUESTION_CAPTURE_PREROLL_GRACE_SECS", 0.12),
                 mock.patch.object(interaction.stream, "flush") as flush,
                 mock.patch.object(interaction.vad, "reset_state"),
             ):
@@ -840,16 +834,16 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             interaction._listen_capture_floor_at = old_floor
 
         flush.assert_not_called()
-        self.assertAlmostEqual(floor, 99.75)
+        self.assertAlmostEqual(floor, 99.88)
 
-    def test_social_handoff_allows_silent_tts_tail_preroll(self):
+    def test_social_handoff_flushes_and_uses_no_tail_preroll(self):
         from intelligence import interaction
 
         old_floor = interaction._listen_capture_floor_at
         try:
             with (
                 mock.patch.object(interaction.time, "monotonic", return_value=100.0),
-                mock.patch.object(interaction.config, "POST_QUESTION_CAPTURE_PREROLL_GRACE_SECS", 0.25),
+                mock.patch.object(interaction.config, "POST_QUESTION_CAPTURE_PREROLL_GRACE_SECS", 0.12),
                 mock.patch.object(interaction.stream, "flush") as flush,
                 mock.patch.object(interaction.vad, "reset_state"),
             ):
@@ -861,18 +855,18 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             floor = interaction._listen_capture_floor_at
             interaction._listen_capture_floor_at = old_floor
 
-        flush.assert_not_called()
-        self.assertAlmostEqual(floor, 99.75)
+        flush.assert_called_once()
+        self.assertAlmostEqual(floor, 100.0)
 
-    def test_social_sequence_end_does_not_flush_fast_reply_buffer(self):
+    def test_social_sequence_end_uses_normal_flush_handoff(self):
         from intelligence import interaction
 
         with mock.patch.object(interaction.echo_cancel, "end_sequence") as end_sequence:
             interaction._end_response_sequence_for_text("Got it, Bret. Nice to meet you.")
 
         end_sequence.assert_called_once_with(
-            flush=False,
-            tail_secs=float(interaction.config.POST_QUESTION_PLAYBACK_SUPPRESSION_SECS),
+            flush=True,
+            tail_secs=None,
         )
 
     def test_post_tts_handoff_refreshes_idle_timer(self):
@@ -7721,6 +7715,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         old_snapshot = consciousness._last_snapshot
         old_animals = set(consciousness._animal_seen_signatures)
         old_reacted = dict(consciousness._animal_reacted_at)
+        old_pending_animals = dict(consciousness._pending_animal_arrivals)
         old_self_state = world_state.get("self_state")
         profile = SituationProfile(
             conversation_active=False,
@@ -7760,7 +7755,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             with (
                 mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
                 mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
-                mock.patch.object(consciousness, "_generate_and_speak", return_value=True) as speak,
+                mock.patch.object(consciousness, "_speak_async", return_value=True) as speak,
                 mock.patch("sequences.animations.play_body_beat") as body_beat,
             ):
                 consciousness._step_proactive_reactions(curr, profile)
@@ -7770,11 +7765,90 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             consciousness._animal_seen_signatures.update(old_animals)
             consciousness._animal_reacted_at.clear()
             consciousness._animal_reacted_at.update(old_reacted)
+            consciousness._pending_animal_arrivals.clear()
+            consciousness._pending_animal_arrivals.update(old_pending_animals)
             world_state.update("self_state", old_self_state)
 
         speak.assert_called_once()
-        self.assertIn("small furry lifeform", speak.call_args.args[0])
+        self.assertIn("small furry lifeform", speak.call_args.args[0].lower())
         self.assertEqual(speak.call_args.args[1], "surprised")
+        body_beat.assert_called_once_with("surprise_pop")
+
+    def test_new_furry_animal_stays_pending_during_startup_greeting(self):
+        from awareness.situation import SituationProfile
+        from intelligence import consciousness
+        from world_state import world_state
+
+        old_snapshot = consciousness._last_snapshot
+        old_animals = set(consciousness._animal_seen_signatures)
+        old_reacted = dict(consciousness._animal_reacted_at)
+        old_pending_animals = dict(consciousness._pending_animal_arrivals)
+        old_self_state = world_state.get("self_state")
+        profile = SituationProfile(
+            conversation_active=False,
+            user_mid_sentence=False,
+            rapid_exchange=False,
+            child_present=False,
+            apparent_departure=False,
+            likely_still_present=False,
+            social_mode="one_on_one",
+            suppress_proactive=False,
+            suppress_system_comments=False,
+            force_family_safe=False,
+            being_discussed=False,
+            discussion_sentiment="neutral",
+            interaction_busy=False,
+        )
+        prev = {
+            "crowd": {"count": 1, "count_label": "alone"},
+            "audio_scene": {},
+            "animals": [],
+            "time": {},
+        }
+        curr = {
+            "crowd": {"count": 1, "count_label": "alone"},
+            "audio_scene": {},
+            "animals": [{
+                "species": "dog",
+                "position": "lower right",
+                "furred": True,
+            }],
+            "time": {},
+        }
+        try:
+            consciousness._last_snapshot = prev
+            consciousness._animal_seen_signatures.clear()
+            consciousness._animal_reacted_at.clear()
+            consciousness._pending_animal_arrivals.clear()
+            with (
+                mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+                mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=True),
+                mock.patch.object(consciousness, "_speak_async", return_value=True) as speak,
+            ):
+                consciousness._step_proactive_reactions(curr, profile)
+
+            speak.assert_not_called()
+            self.assertIn("dog:lower right", consciousness._pending_animal_arrivals)
+
+            with (
+                mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+                mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
+                mock.patch.object(consciousness, "_speak_async", return_value=True) as speak,
+                mock.patch("sequences.animations.play_body_beat") as body_beat,
+            ):
+                consciousness._step_proactive_reactions(curr, profile)
+        finally:
+            consciousness._last_snapshot = old_snapshot
+            consciousness._animal_seen_signatures.clear()
+            consciousness._animal_seen_signatures.update(old_animals)
+            consciousness._animal_reacted_at.clear()
+            consciousness._animal_reacted_at.update(old_reacted)
+            consciousness._pending_animal_arrivals.clear()
+            consciousness._pending_animal_arrivals.update(old_pending_animals)
+            world_state.update("self_state", old_self_state)
+
+        speak.assert_called_once()
+        self.assertIn("small furry lifeform", speak.call_args.args[0].lower())
         body_beat.assert_called_once_with("surprise_pop")
 
     def test_identity_prompt_wait_suppresses_generic_world_reactions(self):

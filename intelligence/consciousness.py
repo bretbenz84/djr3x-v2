@@ -257,6 +257,7 @@ _first_sight_seen_at: dict = {}
 # animal_1/animal_2 IDs returned by the vision prompt.
 _animal_seen_signatures: set[str] = set()
 _animal_reacted_at: dict[str, float] = {}
+_pending_animal_arrivals: dict[str, dict] = {}
 _last_startle_sound_reaction_at: float = 0.0
 
 # Engagement tracking: the person_db_id Rex is currently talking with, if any.
@@ -1287,6 +1288,118 @@ def _animal_is_furry_companion(species: str, animal: Optional[dict] = None) -> b
         return True
     configured = getattr(config, "FURRY_COMPANION_ANIMAL_SPECIES", set()) or set()
     return any(str(token).strip().lower() in species_key for token in configured)
+
+
+def _prime_emotion_frame(frame) -> None:
+    emotion_orchestrator.publish_frame(frame)
+    if frame.body_beat:
+        try:
+            from sequences import animations
+            animations.play_body_beat(frame.body_beat)
+        except Exception as exc:
+            _log.debug("emotion body beat skipped: %s", exc)
+
+
+def _animal_signature(animal: dict) -> str:
+    species = (animal.get("species") or "creature").strip().lower()
+    position = (animal.get("position") or "unknown").strip().lower()
+    return f"{species}:{position}"
+
+
+def _stage_animal_arrivals(snapshot: dict) -> None:
+    """Remember animal arrivals even when startup greetings temporarily own speech."""
+    if not _last_snapshot:
+        return
+    animal_cooldown = float(getattr(config, "ANIMAL_ARRIVAL_COOLDOWN_SECS", 300.0))
+    prev_animal_signatures = {
+        _animal_signature(a)
+        for a in _last_snapshot.get("animals", [])
+        if isinstance(a, dict) and a.get("species")
+    }
+    now = time.monotonic()
+    for animal in snapshot.get("animals", []) or []:
+        if not isinstance(animal, dict) or not animal.get("species"):
+            continue
+        signature = _animal_signature(animal)
+        _animal_seen_signatures.add(signature)
+        if signature in _pending_animal_arrivals:
+            _pending_animal_arrivals[signature]["last_seen_at"] = now
+            continue
+        if signature in prev_animal_signatures:
+            continue
+        if (now - _animal_reacted_at.get(signature, 0.0)) < animal_cooldown:
+            continue
+        pending = dict(animal)
+        pending["signature"] = signature
+        pending["first_seen_at"] = now
+        pending["last_seen_at"] = now
+        _pending_animal_arrivals[signature] = pending
+        _log.info("consciousness: staged animal arrival signature=%s", signature)
+
+
+_FURRY_ANIMAL_REACTION_LINES = (
+    "Whoa. Small furry lifeform in the operational zone.",
+    "Hold everything. A small furry lifeform has breached containment.",
+    "Oh good. A small furry lifeform has entered the system.",
+    "Well, hello, small furry lifeform. Try not to unionize.",
+)
+
+_STARTLING_ANIMAL_REACTION_LINES = (
+    "Yah! New lifeform. I was emotionally prepared for none of that.",
+    "Tiny startle event registered. Very dignified. Moving on.",
+    "Nope. Surprise creature detected. Systems pretending to be calm.",
+)
+
+_GENERIC_ANIMAL_REACTION_LINES = (
+    "New lifeform detected. The room just got more interesting.",
+    "Ah, an unscheduled creature cameo. Naturally.",
+    "Organic inventory update: additional lifeform present.",
+)
+
+
+def _animal_reaction_frame_and_line(animal: dict):
+    species = (animal.get("species") or "creature").strip().lower()
+    if emotion_orchestrator.is_startling_animal(species):
+        frame = emotion_orchestrator.frame_for_event("animal_detected", species=species)
+        return frame, random.choice(_STARTLING_ANIMAL_REACTION_LINES)
+    if _animal_is_furry_companion(species, animal):
+        frame = emotion_orchestrator.frame_for_emotion(
+            "surprised",
+            intensity=0.86,
+            source="event",
+            trigger=f"animal_arrival:{species}",
+        )
+        return frame, random.choice(_FURRY_ANIMAL_REACTION_LINES)
+    frame = emotion_orchestrator.frame_for_event("animal_detected", species=species)
+    return frame, random.choice(_GENERIC_ANIMAL_REACTION_LINES)
+
+
+def _fire_pending_animal_arrival_reaction() -> bool:
+    if not _pending_animal_arrivals:
+        return False
+    now = time.monotonic()
+    stale_after = float(getattr(config, "ANIMAL_PENDING_REACTION_TTL_SECS", 90.0))
+    for signature, animal in list(_pending_animal_arrivals.items()):
+        if now - float(animal.get("last_seen_at") or now) > stale_after:
+            _pending_animal_arrivals.pop(signature, None)
+            continue
+        frame, line = _animal_reaction_frame_and_line(animal)
+        if _speak_async(
+            line,
+            frame.affect,
+            purpose="world.animal_arrival",
+            label=f"animal arrival: {(animal.get('species') or 'creature').strip().lower()}",
+        ):
+            _prime_emotion_frame(frame)
+            _animal_reacted_at[signature] = now
+            _pending_animal_arrivals.pop(signature, None)
+            _log.info(
+                "consciousness: animal arrival reaction fired signature=%s text=%r",
+                signature,
+                line,
+            )
+            return True
+    return False
 
 
 def _visible_face_people(snapshot: dict) -> list[dict]:
@@ -3549,6 +3662,9 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
     """
     global _acknowledged_dates, _last_weather_reaction_at, _last_startle_sound_reaction_at
 
+    if _last_snapshot:
+        _stage_animal_arrivals(snapshot)
+
     if profile.suppress_proactive or profile.rapid_exchange:
         return
     if not _last_snapshot or not _can_proactive_speak():
@@ -3556,6 +3672,8 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
     if _startup_known_greeting_pending(snapshot):
         return
     if is_identity_prompt_waiting_for_reply():
+        return
+    if _fire_pending_animal_arrival_reaction():
         return
 
     try:
@@ -3604,13 +3722,7 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
             if not isinstance(data, dict):
                 return
             frame = emotion_orchestrator.frame_for_speech(data)
-            emotion_orchestrator.publish_frame(frame)
-            if frame.body_beat:
-                try:
-                    from sequences import animations
-                    animations.play_body_beat(frame.body_beat)
-                except Exception as exc:
-                    _log.debug("emotion body beat skipped: %s", exc)
+            _prime_emotion_frame(frame)
 
         # New person entered frame. During startup, known-person greetings own
         # the first line; crowd-count flicker should not steal the opening with
@@ -3631,58 +3743,6 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                 "curious",
                 label="new person entered view",
             )
-
-        # Animal detected. Animal IDs are positional and can be unstable across
-        # scans, so dedupe by species + rough position with a cooldown.
-        animal_cooldown = float(getattr(config, "ANIMAL_ARRIVAL_COOLDOWN_SECS", 300.0))
-        prev_animal_signatures = {
-            f"{(a.get('species') or 'creature').strip().lower()}:"
-            f"{(a.get('position') or 'unknown').strip().lower()}"
-            for a in _last_snapshot.get("animals", [])
-            if a.get("species")
-        }
-        for animal in snapshot.get("animals", []):
-            species = (animal.get("species") or "creature").strip().lower()
-            position = (animal.get("position") or "unknown").strip().lower()
-            if not species:
-                continue
-            signature = f"{species}:{position}"
-            last_reacted = _animal_reacted_at.get(signature, 0.0)
-            if signature in prev_animal_signatures:
-                _animal_seen_signatures.add(signature)
-                continue
-            if (time.monotonic() - last_reacted) < animal_cooldown:
-                continue
-            _animal_seen_signatures.add(signature)
-            _animal_reacted_at[signature] = time.monotonic()
-            frame = emotion_orchestrator.frame_for_event("animal_detected", species=species)
-            if emotion_orchestrator.is_startling_animal(species):
-                prompt = (
-                    f"You just spotted a {species} in your immediate environment at {position}. "
-                    "React like a startled living thing first: a tiny yelp, squeal, or clipped "
-                    "one-line Rex reaction. Do not ask a question. One line only."
-                )
-            elif _animal_is_furry_companion(species, animal):
-                frame = emotion_orchestrator.frame_for_emotion(
-                    "surprised",
-                    intensity=0.82,
-                    source="event",
-                    trigger=f"animal_arrival:{species}",
-                )
-                prompt = (
-                    f"You just spotted a small furry lifeform, probably a {species}, "
-                    f"enter your immediate environment at {position}. React with a "
-                    "short surprised Rex line that sounds delighted but dry. You may "
-                    "say 'small furry lifeform'. Do not ask who it is unless a human "
-                    "has introduced it. One line only."
-                )
-            else:
-                prompt = (
-                    f"You just spotted a {species} in your immediate environment at {position}. "
-                    "One short in-character reaction — curious, unmistakably Rex. "
-                    "One line only."
-                )
-            _add_emotion_trigger(frame=frame, prompt=prompt, label=f"animal spotted: {species}")
 
         # Crowd size label changed significantly
         prev_label = _last_snapshot.get("crowd", {}).get("count_label")
@@ -8053,6 +8113,7 @@ def start() -> None:
     _last_presence_reaction_at.clear()
     _animal_seen_signatures.clear()
     _animal_reacted_at.clear()
+    _pending_animal_arrivals.clear()
     _last_startle_sound_reaction_at = 0.0
     _acknowledged_weather_signatures.clear()
     _last_weather_reaction_at = 0.0
@@ -8169,6 +8230,7 @@ def stop() -> None:
     _first_sight_seen_at.clear()
     _animal_seen_signatures.clear()
     _animal_reacted_at.clear()
+    _pending_animal_arrivals.clear()
     _last_startle_sound_reaction_at = 0.0
     _group_turn_speaker_times.clear()
     _group_turn_visible_since.clear()
