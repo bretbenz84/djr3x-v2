@@ -52,8 +52,13 @@ def speech_activity_stop() -> None:
 # Servo position constants (Pololu quarter-microseconds)
 # ---------------------------------------------------------------------------
 
-# Ch 0 — Neck: 1984–9984, neutral 6000, right = higher
-NECK_CENTER   = 6000
+# Ch 0 — Neck: configured range midpoint, right = higher
+def _channel_midpoint(name: str) -> int:
+    cfg = config.SERVO_CHANNELS[name]
+    return (int(cfg["min"]) + int(cfg["max"])) // 2
+
+
+NECK_CENTER   = _channel_midpoint("neck")
 NECK_LEFT     = 4000
 NECK_RIGHT    = 8000
 NECK_FAR_LEFT = 2500

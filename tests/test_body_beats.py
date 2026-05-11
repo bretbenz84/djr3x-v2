@@ -3,6 +3,14 @@ from unittest import mock
 
 
 class BodyBeatAnimationTest(unittest.TestCase):
+    def test_neck_center_uses_configured_range_midpoint(self):
+        from sequences import animations
+
+        neck_cfg = animations.config.SERVO_CHANNELS["neck"]
+        expected_midpoint = (int(neck_cfg["min"]) + int(neck_cfg["max"])) // 2
+
+        self.assertEqual(animations.NECK_CENTER, expected_midpoint)
+
     def test_offended_recoil_uses_inverted_upward_headtilt(self):
         from sequences import animations
 
@@ -162,6 +170,33 @@ class BodyBeatAnimationTest(unittest.TestCase):
                 7: animations.HEROARM_NEUTRAL,
             },
         )
+
+    def test_shutdown_animation_centers_neck_at_configured_midpoint(self):
+        from sequences import animations
+
+        moves = []
+        neck_cfg = animations.config.SERVO_CHANNELS["neck"]
+        expected_midpoint = (int(neck_cfg["min"]) + int(neck_cfg["max"])) // 2
+
+        def record_move(targets, **_kwargs):
+            moves.append(dict(targets))
+
+        with (
+            mock.patch.object(animations.servos, "stop_breathing") as stop_breathing,
+            mock.patch.object(animations.servos, "move_to", side_effect=record_move),
+            mock.patch.object(animations.leds_head, "off") as head_off,
+            mock.patch.object(animations.leds_chest, "off") as chest_off,
+            mock.patch.object(animations.time, "sleep", return_value=None),
+        ):
+            animations.shutdown()
+
+        stop_breathing.assert_called_once()
+        self.assertEqual(moves[0], {3: animations.VISOR_CLOSED})
+        self.assertEqual(moves[1][0], expected_midpoint)
+        self.assertEqual(moves[1][1], animations.HEADLIFT_FLOOR)
+        self.assertEqual(moves[1][2], animations.HEADTILT_DOWN)
+        head_off.assert_called_once()
+        chest_off.assert_called_once()
 
     def test_wake_animation_restores_active_pose_and_arm_idle(self):
         from sequences import animations
