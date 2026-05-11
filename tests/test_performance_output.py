@@ -40,6 +40,54 @@ class PerformanceOutputTests(unittest.TestCase):
             post_beat_ms_override=20,
         )
 
+    def test_quick_punchline_splits_setup_and_punchline_with_pause(self):
+        from intelligence import performance_output, performance_plan
+
+        plan = performance_plan.PerformancePlan(
+            action="humor.tell_joke",
+            prompt_contract="Tell one joke.",
+            fallback_text="Fallback joke.",
+            emotion="happy",
+            delivery_style="quick_punchline",
+            post_beat_ms=20,
+        )
+        speak = mock.Mock(return_value=True)
+
+        with mock.patch.object(
+            performance_output.config,
+            "JOKE_SETUP_PUNCHLINE_PAUSE_MS",
+            650,
+        ):
+            output = performance_output.execute_plan(
+                plan,
+                generate_text=mock.Mock(
+                    return_value="Why did the droid bring a ladder? Because the drinks were on the house."
+                ),
+                speak_text=speak,
+                clean_text=lambda text: text.strip(),
+            )
+
+        self.assertTrue(output.completed)
+        self.assertEqual(
+            output.text,
+            "Why did the droid bring a ladder? Because the drinks were on the house.",
+        )
+        self.assertEqual(speak.call_count, 2)
+        speak.assert_has_calls([
+            mock.call(
+                "Why did the droid bring a ladder?",
+                emotion="happy",
+                pre_beat_ms=0,
+                post_beat_ms_override=0,
+            ),
+            mock.call(
+                "Because the drinks were on the house.",
+                emotion="happy",
+                pre_beat_ms=650,
+                post_beat_ms_override=20,
+            ),
+        ])
+
     def test_execute_plan_uses_fallback_when_generation_fails(self):
         from intelligence import performance_output, performance_plan
 

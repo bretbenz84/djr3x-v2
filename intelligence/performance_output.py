@@ -10,8 +10,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import re
 from typing import Optional
 
+import config
 from intelligence import performance_plan
 from intelligence.performance_plan import PerformancePlan
 
@@ -40,6 +42,21 @@ def _clean(text: str, clean_text: Optional[CleanText]) -> str:
     if clean_text is None:
         return " ".join(str(text or "").strip().split())
     return str(clean_text(text or "") or "").strip()
+
+
+def _split_setup_question_and_punchline(text: str) -> Optional[tuple[str, str]]:
+    """Return setup/punchline when text has a clear question-then-answer shape."""
+    cleaned = " ".join(str(text or "").strip().split())
+    if not cleaned:
+        return None
+    match = re.search(r"\?\s+", cleaned)
+    if not match:
+        return None
+    setup = cleaned[: match.start() + 1].strip()
+    punchline = cleaned[match.end():].strip()
+    if not setup or not punchline:
+        return None
+    return setup, punchline
 
 
 def execute_plan(
@@ -73,14 +90,50 @@ def execute_plan(
         except Exception:
             body_beat_failed = True
 
-    completed = bool(
-        speak_text(
-            text,
-            emotion=plan.emotion,
-            pre_beat_ms=plan.pre_beat_ms,
-            post_beat_ms_override=plan.post_beat_ms,
+    completed = False
+    if plan.delivery_style == "quick_punchline":
+        split = _split_setup_question_and_punchline(text)
+        if split is not None:
+            setup, punchline = split
+            completed = bool(
+                speak_text(
+                    setup,
+                    emotion=plan.emotion,
+                    pre_beat_ms=plan.pre_beat_ms,
+                    post_beat_ms_override=0,
+                )
+            )
+            if completed:
+                pause_ms = max(
+                    0,
+                    int(getattr(config, "JOKE_SETUP_PUNCHLINE_PAUSE_MS", 700) or 0),
+                )
+                completed = bool(
+                    speak_text(
+                        punchline,
+                        emotion=plan.emotion,
+                        pre_beat_ms=pause_ms,
+                        post_beat_ms_override=plan.post_beat_ms,
+                    )
+                )
+        else:
+            completed = bool(
+                speak_text(
+                    text,
+                    emotion=plan.emotion,
+                    pre_beat_ms=plan.pre_beat_ms,
+                    post_beat_ms_override=plan.post_beat_ms,
+                )
+            )
+    else:
+        completed = bool(
+            speak_text(
+                text,
+                emotion=plan.emotion,
+                pre_beat_ms=plan.pre_beat_ms,
+                post_beat_ms_override=plan.post_beat_ms,
+            )
         )
-    )
     return PerformanceOutput(
         text=text,
         completed=completed,

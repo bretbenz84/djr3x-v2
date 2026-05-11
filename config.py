@@ -1540,6 +1540,10 @@ REACTION_DELAY_MS_MAX = 80
 POST_PUNCHLINE_BEAT_MS_MIN = 800
 POST_PUNCHLINE_BEAT_MS_MAX = 1500
 
+# Silence between a joke setup question and its punchline. This is internal to
+# the joke delivery; the post-punchline beat above happens after the line lands.
+JOKE_SETUP_PUNCHLINE_PAUSE_MS = 700
+
 # Pause after genuine surprise event before Rex responds (milliseconds)
 SURPRISE_PAUSE_MS_MIN = 200
 SURPRISE_PAUSE_MS_MAX = 500
