@@ -8,6 +8,7 @@ but uses MediaPipe Object Detector instead of Face Landmarker.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import threading
 import time
@@ -93,6 +94,38 @@ def _load_model() -> bool:
 def preload() -> bool:
     """Warm the local object detector and keep it open for the process lifetime."""
     return _load_model()
+
+
+def close() -> None:
+    """Close the MediaPipe object detector before interpreter teardown."""
+    global _detector, _mp, _load_attempted, _load_ok
+
+    with _model_lock:
+        detector = _detector
+        _detector = None
+        _mp = None
+        _load_attempted = False
+        _load_ok = False
+
+    if detector is None:
+        return
+
+    try:
+        detector.close()
+    except Exception as exc:
+        _log.debug("MediaPipe Object Detector close failed during shutdown: %s", exc)
+        # MediaPipe's ObjectDetector.__del__ calls close() again. If close()
+        # failed mid-shutdown, clear the native handle so a late destructor does
+        # not print an ignored exception while Python is tearing modules down.
+        try:
+            setattr(detector, "_handle", None)
+        except Exception:
+            pass
+
+
+def stop() -> None:
+    """Alias used by main.py service shutdown."""
+    close()
 
 
 def _animal_species() -> set[str]:
@@ -232,3 +265,6 @@ def detect_animals(frame) -> Optional[list[dict]]:
         getattr(result, "detections", []) or [],
         frame.shape,
     )
+
+
+atexit.register(close)

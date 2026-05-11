@@ -503,6 +503,9 @@ def _shutdown() -> None:
     logger.info("Stopping vision.scene...")
     vision_scene.stop()
 
+    logger.info("Stopping vision.animal_detector...")
+    animal_detector.stop()
+
     logger.info("Stopping vision.face_expression...")
     face_expression.stop()
 

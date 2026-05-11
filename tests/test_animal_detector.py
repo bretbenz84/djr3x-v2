@@ -23,6 +23,34 @@ class _FakeDetection:
 
 
 class LocalAnimalDetectorTests(unittest.TestCase):
+    def test_close_releases_detector_and_resets_load_state(self):
+        from vision import animal_detector
+
+        fake_detector = mock.Mock()
+        old_detector = animal_detector._detector
+        old_mp = animal_detector._mp
+        old_attempted = animal_detector._load_attempted
+        old_ok = animal_detector._load_ok
+
+        try:
+            animal_detector._detector = fake_detector
+            animal_detector._mp = object()
+            animal_detector._load_attempted = True
+            animal_detector._load_ok = True
+
+            animal_detector.close()
+
+            fake_detector.close.assert_called_once()
+            self.assertIsNone(animal_detector._detector)
+            self.assertIsNone(animal_detector._mp)
+            self.assertFalse(animal_detector._load_attempted)
+            self.assertFalse(animal_detector._load_ok)
+        finally:
+            animal_detector._detector = old_detector
+            animal_detector._mp = old_mp
+            animal_detector._load_attempted = old_attempted
+            animal_detector._load_ok = old_ok
+
     def test_records_from_detections_keeps_configured_animals(self):
         from vision import animal_detector
 
