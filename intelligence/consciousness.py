@@ -1195,6 +1195,12 @@ _SMILE_REACTION_SERIOUS_MARKERS = (
     "trauma",
 )
 _FACIAL_EXPRESSION_REACTION_LINES = {
+    "smile": (
+        "There it is. A smile. I knew the diagnostics would eventually find joy.",
+        "Smile detected. Careful, optimism is how droids get assigned extra duties.",
+        "Ah, the lifeform is smiling. Marking this under rare but encouraging anomalies.",
+        "Look at that, actual visible morale. I will pretend I had nothing to do with it.",
+    ),
     "surprise": (
         "That was a full photoreceptor-wide shock face. What did the galaxy do now?",
         "You just looked like the hyperdrive coughed up a receipt. What happened?",
@@ -1210,17 +1216,18 @@ _FACIAL_EXPRESSION_REACTION_LINES = {
         "Your face just filed a complaint. Need a soundtrack, or a target?",
     ),
     "brow_furrow": (
-        "Brow furrow detected. Deep thought, or are you trying to crush something telepathically?",
-        "That is a weapons-grade squint. Who offended the management layer?",
-        "Your eyebrows just formed a committee. I assume they are angry and underfunded.",
-        "I see the processing grimace. Want to debug the lifeform problem?",
-        "That look could curdle blue milk. Impressive. Mildly concerning.",
+        "That is a serious thinking face. Either a breakthrough, or math has betrayed you.",
+        "Eyebrow committee detected. They appear focused and underfunded.",
+        "I see the concentration squint. Want a droid to blame, or are we staying productive?",
+        "That forehead is running extra diagnostics. Need a sounding board?",
+        "Deep thought detected. I will lower the alarm level from doom to paperwork.",
     ),
 }
 _FACIAL_EXPRESSION_REACTION_LABELS = {
+    "smile": {"smile", "smiling", "happy", "grin", "grinning"},
     "surprise": {"surprise", "surprised", "wide_eyes", "wide_eyed", "shocked"},
     "frown": {"frown", "sad", "downturned_mouth", "unhappy"},
-    "brow_furrow": {"brow_furrow", "angry", "furrowed_brow", "irritated"},
+    "brow_furrow": {"brow_furrow", "focused", "angry", "furrowed_brow", "irritated"},
 }
 _DISPOSITION_FIRST_SIGHT_LINES = {
     "smiley": (
@@ -1270,6 +1277,16 @@ def _safe_confidence(value, default: float = 0.0) -> float:
         return max(0.0, min(1.0, float(value)))
     except (TypeError, ValueError):
         return default
+
+
+def _animal_is_furry_companion(species: str, animal: Optional[dict] = None) -> bool:
+    species_key = str(species or "").strip().lower()
+    if not species_key:
+        return False
+    if isinstance(animal, dict) and animal.get("furred") is True:
+        return True
+    configured = getattr(config, "FURRY_COMPANION_ANIMAL_SPECIES", set()) or set()
+    return any(str(token).strip().lower() in species_key for token in configured)
 
 
 def _visible_face_people(snapshot: dict) -> list[dict]:
@@ -1403,6 +1420,8 @@ def _person_is_smiling(person: dict) -> bool:
 
 
 def _expression_kind_blend_score(kind: str, blendshapes: dict) -> float:
+    if kind == "smile":
+        return _mean_blendshape_score(blendshapes, "mouthSmileLeft", "mouthSmileRight")
     if kind == "surprise":
         eye_wide = _mean_blendshape_score(blendshapes, "eyeWideLeft", "eyeWideRight")
         jaw_open = _safe_confidence(blendshapes.get("jawOpen"))
@@ -1416,15 +1435,26 @@ def _expression_kind_blend_score(kind: str, blendshapes: dict) -> float:
     return 0.0
 
 
+def _facial_expression_reaction_min_confidence(kind: str) -> float:
+    if kind == "smile":
+        return _safe_confidence(
+            getattr(config, "FACIAL_EXPRESSION_REACTION_SMILE_MIN_CONFIDENCE", 0.70)
+        )
+    if kind == "brow_furrow":
+        return _safe_confidence(
+            getattr(config, "FACIAL_EXPRESSION_REACTION_BROW_FURROW_MIN_CONFIDENCE", 0.78)
+        )
+    return _safe_confidence(
+        getattr(config, "FACIAL_EXPRESSION_REACTION_MIN_CONFIDENCE", 0.55)
+    )
+
+
 def _person_reactable_expression(person: dict) -> tuple[Optional[str], float]:
     reading = _expression_reading(person)
     expression = _norm_expression_label(reading.get("expression"))
     mood = _norm_expression_label(reading.get("mood"))
     confidence = _safe_confidence(reading.get("confidence"))
     blendshapes = reading.get("blendshapes") or {}
-    min_conf = _safe_confidence(
-        getattr(config, "FACIAL_EXPRESSION_REACTION_MIN_CONFIDENCE", 0.55)
-    )
     best_kind: Optional[str] = None
     best_score = 0.0
     for kind, labels in _FACIAL_EXPRESSION_REACTION_LABELS.items():
@@ -1436,7 +1466,7 @@ def _person_reactable_expression(person: dict) -> tuple[Optional[str], float]:
         if score > best_score:
             best_kind = kind
             best_score = score
-    if best_kind is None or best_score < min_conf:
+    if best_kind is None or best_score < _facial_expression_reaction_min_confidence(best_kind):
         return None, best_score
     return best_kind, best_score
 
@@ -1797,6 +1827,18 @@ def _step_smile_reaction(snapshot: dict, profile: SituationProfile) -> None:
 
 
 def _facial_expression_reaction_sustain_secs(kind: str) -> float:
+    if kind == "smile":
+        return max(
+            0.0,
+            float(
+                getattr(
+                    config,
+                    "FACIAL_EXPRESSION_REACTION_SMILE_SUSTAIN_SECS",
+                    1.0,
+                )
+                or 0.0
+            ),
+        )
     if kind == "surprise":
         return max(
             0.0,
@@ -1805,6 +1847,18 @@ def _facial_expression_reaction_sustain_secs(kind: str) -> float:
                     config,
                     "FACIAL_EXPRESSION_REACTION_SURPRISE_SUSTAIN_SECS",
                     0.5,
+                )
+                or 0.0
+            ),
+        )
+    if kind == "brow_furrow":
+        return max(
+            0.0,
+            float(
+                getattr(
+                    config,
+                    "FACIAL_EXPRESSION_REACTION_BROW_FURROW_SUSTAIN_SECS",
+                    3.0,
                 )
                 or 0.0
             ),
@@ -1876,6 +1930,7 @@ def _facial_expression_reaction_on_cooldown(
 
 def _speak_facial_expression_reaction(kind: str, text: str) -> bool:
     emotion = {
+        "smile": "happy",
         "surprise": "curious",
         "frown": "curious",
         "brow_furrow": "curious",
@@ -3607,11 +3662,19 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                     "React like a startled living thing first: a tiny yelp, squeal, or clipped "
                     "one-line Rex reaction. Do not ask a question. One line only."
                 )
-            elif species == "dog":
+            elif _animal_is_furry_companion(species, animal):
+                frame = emotion_orchestrator.frame_for_emotion(
+                    "surprised",
+                    intensity=0.82,
+                    source="event",
+                    trigger=f"animal_arrival:{species}",
+                )
                 prompt = (
-                    f"You just spotted a dog in your immediate environment at {position}. "
-                    "One short in-character Rex reaction — delighted but dry. Do not ask "
-                    "who the dog is unless a human has introduced it. One line only."
+                    f"You just spotted a small furry lifeform, probably a {species}, "
+                    f"enter your immediate environment at {position}. React with a "
+                    "short surprised Rex line that sounds delighted but dry. You may "
+                    "say 'small furry lifeform'. Do not ask who it is unless a human "
+                    "has introduced it. One line only."
                 )
             else:
                 prompt = (
@@ -5814,6 +5877,9 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     _first_sight_seen_at.pop(key, None)
                 else:
                     first_sight_pending_keys.add(key)
+            # Already greeted/enrolled people and anonymous slots should become
+            # tracked quietly on their first presence tick. Otherwise a fresh
+            # enrollment can be misread as "back so soon" once the camera settles.
             continue
 
         absent_secs = now - _last_seen[key]

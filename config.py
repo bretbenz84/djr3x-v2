@@ -349,6 +349,30 @@ FACIAL_EXPRESSION_REACTION_MIN_CONFIDENCE = _env_float(
     min_value=0.0,
     max_value=1.0,
 )
+FACIAL_EXPRESSION_REACTION_SMILE_MIN_CONFIDENCE = _env_float(
+    "FACIAL_EXPRESSION_REACTION_SMILE_MIN_CONFIDENCE",
+    0.70,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACIAL_EXPRESSION_REACTION_BROW_FURROW_MIN_CONFIDENCE = _env_float(
+    "FACIAL_EXPRESSION_REACTION_BROW_FURROW_MIN_CONFIDENCE",
+    0.78,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACIAL_EXPRESSION_REACTION_SMILE_SUSTAIN_SECS = _env_float(
+    "FACIAL_EXPRESSION_REACTION_SMILE_SUSTAIN_SECS",
+    1.0,
+    min_value=0.0,
+    max_value=10.0,
+)
+FACIAL_EXPRESSION_REACTION_BROW_FURROW_SUSTAIN_SECS = _env_float(
+    "FACIAL_EXPRESSION_REACTION_BROW_FURROW_SUSTAIN_SECS",
+    3.0,
+    min_value=0.0,
+    max_value=15.0,
+)
 FACIAL_EXPRESSION_REACTION_SURPRISE_SUSTAIN_SECS = _env_float(
     "FACIAL_EXPRESSION_REACTION_SURPRISE_SUSTAIN_SECS",
     0.50,
@@ -1803,11 +1827,42 @@ VISUAL_CURIOSITY_MAX_CROWD_COUNT = 2
 # How often GPT-4o runs a full environment/scene analysis (seconds)
 ENVIRONMENT_SCAN_INTERVAL_SECS = 180
 
+# Lightweight low-detail scan for changes that matter socially: new people and
+# animals entering while a person is already in view. The full environment scan
+# remains slow; this one uses the low-detail animal prompt and a tiny JSON shape.
+SCENE_CHANGE_MONITOR_ENABLED = _env_bool("SCENE_CHANGE_MONITOR_ENABLED", True)
+SCENE_CHANGE_MONITOR_INTERVAL_SECS = _env_float(
+    "SCENE_CHANGE_MONITOR_INTERVAL_SECS",
+    20.0,
+    min_value=5.0,
+    max_value=300.0,
+)
+SCENE_CHANGE_MONITOR_ONLY_WITH_PEOPLE = _env_bool(
+    "SCENE_CHANGE_MONITOR_ONLY_WITH_PEOPLE",
+    True,
+)
+SCENE_CHANGE_MONITOR_MAX_TOKENS = _env_int(
+    "SCENE_CHANGE_MONITOR_MAX_TOKENS",
+    260,
+    min_value=80,
+    max_value=800,
+)
+
 # Animal detection runs alongside periodic scene scans. It is intentionally not
 # frame-by-frame; this is for social arrivals like "a dog wandered in," not
 # realtime pet tracking.
 ANIMAL_DETECTION_ENABLED = True
 ANIMAL_ARRIVAL_COOLDOWN_SECS = 300
+FURRY_COMPANION_ANIMAL_SPECIES = {
+    "dog",
+    "puppy",
+    "cat",
+    "kitten",
+    "rabbit",
+    "guinea pig",
+    "hamster",
+    "ferret",
+}
 STARTLE_ANIMAL_SPECIES = {
     "snake",
     "spider",

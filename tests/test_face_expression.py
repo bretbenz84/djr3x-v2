@@ -34,6 +34,18 @@ class FaceExpressionTelemetryTests(unittest.TestCase):
         self.assertEqual(result["expression"], "frown")
         self.assertIn("mouth", result["notes"])
 
+    def test_brow_furrow_classifies_as_focused_not_angry(self):
+        from vision import face_expression
+
+        with mock.patch.object(face_expression.config, "FACE_EXPRESSION_BROW_FURROW_THRESHOLD", 0.45):
+            result = face_expression._classify_expression({
+                "browDownLeft": 0.74,
+                "browDownRight": 0.70,
+            })
+
+        self.assertEqual(result["mood"], "focused")
+        self.assertEqual(result["expression"], "brow_furrow")
+
     def test_low_expression_scores_classify_as_neutral(self):
         from vision import face_expression
 

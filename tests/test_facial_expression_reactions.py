@@ -103,6 +103,48 @@ class FacialExpressionReactionTests(unittest.TestCase):
 
         speak.assert_not_called()
 
+    def test_sustained_smile_can_trigger_general_reaction(self):
+        c = self.c
+        c.world_state.update("people", [
+            self._person(
+                "smile",
+                "happy",
+                0.78,
+                {"mouthSmileLeft": 0.78, "mouthSmileRight": 0.76},
+            )
+        ])
+
+        with (
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_SMILE_SUSTAIN_SECS", 0.0),
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_GLOBAL_COOLDOWN_SECS", 0.0),
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_COOLDOWN_SECS", 0.0),
+            mock.patch.object(c, "_speak_facial_expression_reaction", return_value=True) as speak,
+        ):
+            c._step_facial_expression_reactions(c.world_state.snapshot(), mock.Mock())
+
+        speak.assert_called_once()
+        self.assertEqual(speak.call_args.args[0], "smile")
+
+    def test_moderate_brow_furrow_is_ignored_as_pensive(self):
+        c = self.c
+        c.world_state.update("people", [
+            self._person(
+                "brow_furrow",
+                "focused",
+                0.72,
+                {"browDownLeft": 0.72, "browDownRight": 0.70},
+            )
+        ])
+
+        with (
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_BROW_FURROW_SUSTAIN_SECS", 0.0),
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_GLOBAL_COOLDOWN_SECS", 0.0),
+            mock.patch.object(c, "_speak_facial_expression_reaction", return_value=True) as speak,
+        ):
+            c._step_facial_expression_reactions(c.world_state.snapshot(), mock.Mock())
+
+        speak.assert_not_called()
+
     def test_brow_furrow_reaction_respects_per_expression_cooldown(self):
         c = self.c
         c.world_state.update("people", [

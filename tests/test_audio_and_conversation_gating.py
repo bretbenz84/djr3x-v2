@@ -1016,6 +1016,12 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             "Jennifer Woodard",
         )
 
+    def test_hometown_answer_is_not_self_intro_name(self):
+        from intelligence import interaction
+
+        self.assertIsNone(interaction._extract_self_identified_name("I'm from Sacramento"))
+        self.assertIsNone(interaction._extract_self_identified_name("I am in Waterford"))
+
     def test_filler_is_not_a_valid_name_or_transcript(self):
         from audio import transcription
         from intelligence import interaction
@@ -7705,6 +7711,70 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         speak.assert_called_once()
         self.assertEqual(speak.call_args.args[1], "surprised")
         self.assertIn("startle sound", speak.call_args.kwargs["label"])
+        body_beat.assert_called_once_with("surprise_pop")
+
+    def test_new_furry_animal_uses_surprise_frame_and_lifeform_prompt(self):
+        from awareness.situation import SituationProfile
+        from intelligence import consciousness
+        from world_state import world_state
+
+        old_snapshot = consciousness._last_snapshot
+        old_animals = set(consciousness._animal_seen_signatures)
+        old_reacted = dict(consciousness._animal_reacted_at)
+        old_self_state = world_state.get("self_state")
+        profile = SituationProfile(
+            conversation_active=False,
+            user_mid_sentence=False,
+            rapid_exchange=False,
+            child_present=False,
+            apparent_departure=False,
+            likely_still_present=False,
+            social_mode="one_on_one",
+            suppress_proactive=False,
+            suppress_system_comments=False,
+            force_family_safe=False,
+            being_discussed=False,
+            discussion_sentiment="neutral",
+            interaction_busy=False,
+        )
+        prev = {
+            "crowd": {"count": 1, "count_label": "alone"},
+            "audio_scene": {},
+            "animals": [],
+            "time": {},
+        }
+        curr = {
+            "crowd": {"count": 1, "count_label": "alone"},
+            "audio_scene": {},
+            "animals": [{
+                "species": "dog",
+                "position": "lower right",
+                "furred": True,
+            }],
+            "time": {},
+        }
+        try:
+            consciousness._last_snapshot = prev
+            consciousness._animal_seen_signatures.clear()
+            consciousness._animal_reacted_at.clear()
+            with (
+                mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+                mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
+                mock.patch.object(consciousness, "_generate_and_speak", return_value=True) as speak,
+                mock.patch("sequences.animations.play_body_beat") as body_beat,
+            ):
+                consciousness._step_proactive_reactions(curr, profile)
+        finally:
+            consciousness._last_snapshot = old_snapshot
+            consciousness._animal_seen_signatures.clear()
+            consciousness._animal_seen_signatures.update(old_animals)
+            consciousness._animal_reacted_at.clear()
+            consciousness._animal_reacted_at.update(old_reacted)
+            world_state.update("self_state", old_self_state)
+
+        speak.assert_called_once()
+        self.assertIn("small furry lifeform", speak.call_args.args[0])
+        self.assertEqual(speak.call_args.args[1], "surprised")
         body_beat.assert_called_once_with("surprise_pop")
 
     def test_identity_prompt_wait_suppresses_generic_world_reactions(self):

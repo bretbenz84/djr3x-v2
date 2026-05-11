@@ -482,6 +482,15 @@ _NAME_PATTERNS = [
     re.compile(r"\brename me(?:\s+to)?\s+(.+)$", re.IGNORECASE),
 ]
 _SELF_NAME_PATTERNS = _NAME_PATTERNS[:4]
+_SELF_INTRO_NON_NAME_RE = re.compile(
+    r"^\s*(?:"
+    r"from|in|at|on|near|around|inside|outside|with|for|to|into|"
+    r"going\b|doing\b|feeling\b|still\b|just\b|not\b|so\b|very\b|"
+    r"fine\b|okay\b|ok\b|good\b|great\b|happy\b|sad\b|tired\b|busy\b|"
+    r"hungry\b|thirsty\b|sorry\b|ready\b|here\b|home\b|back\b"
+    r")\b",
+    re.IGNORECASE,
+)
 _CALL_ME_NAME_RE = re.compile(
     r"\b(?:you can\s+)?call me\s+(.+)$",
     re.IGNORECASE,
@@ -2918,7 +2927,10 @@ def _extract_self_identified_name(text: str) -> Optional[str]:
     for pattern in _SELF_NAME_PATTERNS:
         match = pattern.search(normalized)
         if match:
-            return _normalize_name(match.group(1))
+            candidate = (match.group(1) or "").strip()
+            if _SELF_INTRO_NON_NAME_RE.search(candidate):
+                return None
+            return _normalize_name(candidate)
     return None
 
 
@@ -12203,6 +12215,7 @@ def _handle_speech_segment(
                 try:
                     consciousness.mark_engagement(enrolled_id)
                     consciousness.note_person_spoke(enrolled_id)
+                    consciousness.note_person_greeted_this_session(enrolled_id)
                 except Exception:
                     pass
 
@@ -12881,6 +12894,10 @@ def _handle_speech_segment(
         _record_heard_turn_once()
 
         if prompted_identity_ack_text:
+            try:
+                consciousness.note_person_greeted_this_session(person_id)
+            except Exception:
+                pass
             completed = _speak_blocking(
                 prompted_identity_ack_text,
                 emotion="happy",

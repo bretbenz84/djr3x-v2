@@ -171,6 +171,82 @@ def _count_label(count: int) -> str:
     return "crowd"   # 5 means "5 or more" — the integer cap
 
 
+def _confidence_allows(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, (int, float)):
+        return float(value) >= 0.55
+    text = str(value or "").strip().lower()
+    if not text:
+        return True
+    try:
+        return float(text) >= 0.55
+    except ValueError:
+        pass
+    return text not in {"low", "uncertain", "maybe", "unknown", "none"}
+
+
+def _animal_records_from_response(data, *, now: Optional[float] = None) -> list[dict]:
+    if not isinstance(data, list):
+        return []
+    seen: set[tuple[str, str]] = set()
+    animals = []
+    timestamp = time.time() if now is None else now
+    for i, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            continue
+        species = str(entry.get("species") or "").strip()
+        if not species:
+            continue
+        if not _confidence_allows(entry.get("confidence")):
+            continue
+        position = str(entry.get("position") or "unknown").strip() or "unknown"
+        key = (species.lower(), position.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        animal = {
+            "id": f"animal_{len(animals) + 1}",
+            "species": species,
+            "position": position,
+            "last_seen": timestamp,
+        }
+        if "furred" in entry:
+            animal["furred"] = bool(entry.get("furred"))
+        if entry.get("confidence") is not None:
+            animal["confidence"] = entry.get("confidence")
+        animals.append(animal)
+    return animals
+
+
+def _update_crowd_count(count: int) -> dict:
+    count = min(max(int(count), 0), 5)
+    existing = world_state.get("crowd")
+    result = {
+        "count": count,
+        "count_label": _count_label(count),
+        "dominant_speaker": existing.get("dominant_speaker"),
+        "last_updated": time.time(),
+    }
+    world_state.update("crowd", result)
+    return result
+
+
+def _world_state_has_visible_people() -> bool:
+    try:
+        people = world_state.get("people") or []
+        if any(
+            isinstance(person, dict)
+            and person.get("face_visible") is not False
+            and not person.get("face_missing")
+            for person in people
+        ):
+            return True
+        return int((world_state.get("crowd") or {}).get("count", 0) or 0) > 0
+    except Exception:
+        return False
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def analyze_environment(frame, force: bool = False) -> dict:
@@ -289,19 +365,7 @@ def detect_animals(frame) -> list[dict]:
         _log.error("detect_animals: expected list, got: %.120s", raw)
         return []
 
-    animals = []
-    for i, entry in enumerate(data):
-        if not isinstance(entry, dict):
-            continue
-        species = entry.get("species")
-        if not species:
-            continue
-        animals.append({
-            "id":        f"animal_{i + 1}",
-            "species":   species,
-            "position":  entry.get("position", "unknown"),
-            "last_seen": time.time(),
-        })
+    animals = _animal_records_from_response(data)
 
     world_state.update("animals", animals)
     if animals:
@@ -311,6 +375,71 @@ def detect_animals(frame) -> list[dict]:
             [a["species"] for a in animals],
         )
     return animals
+
+
+def detect_lifeforms(frame) -> dict:
+    """
+    Low-token visual change scan for people count and animal arrivals.
+
+    This is cheaper and more frequent than analyze_environment(). It updates
+    world_state.crowd and world_state.animals, then returns the normalized result.
+    """
+    fallback = {
+        "people_count": int((world_state.get("crowd") or {}).get("count", 0) or 0),
+        "animals": world_state.get("animals") or [],
+    }
+    if frame is None:
+        return fallback
+
+    prompt = (
+        "Do a low-cost visual change scan for a social robot. "
+        "Return a JSON object with exactly these keys:\n"
+        '  "people_count": integer number of clearly visible people, capped at 5,\n'
+        '  "animals": array of visible real animals, not toys/logos/screens. '
+        "Each animal object must have exactly: "
+        '"species" (common name), "position" (brief location), '
+        '"furred" (true if it appears furry/hairy), and '
+        '"confidence" ("low", "medium", or "high").\n'
+        "Only include animals you can actually see; if no animal is visible use []. "
+        "Return ONLY the JSON object — no preamble, no explanation, no markdown fences."
+    )
+
+    raw = _call_gpt4o(
+        frame,
+        prompt,
+        "animal_detection",
+        max_tokens=int(getattr(config, "SCENE_CHANGE_MONITOR_MAX_TOKENS", 260) or 260),
+    )
+    if raw is None:
+        return fallback
+
+    data = _parse_json(raw)
+    if not isinstance(data, dict):
+        _log.error("detect_lifeforms: expected dict, got: %.120s", raw)
+        return fallback
+
+    try:
+        people_count = min(max(int(data.get("people_count", 0)), 0), 5)
+    except (TypeError, ValueError):
+        people_count = fallback["people_count"]
+    crowd = _update_crowd_count(people_count)
+
+    animals = _animal_records_from_response(data.get("animals") or [])
+    world_state.update("animals", animals)
+
+    if animals:
+        _log.info(
+            "detect_lifeforms: people=%d animals=%s",
+            people_count,
+            [a["species"] for a in animals],
+        )
+    else:
+        _log.debug("detect_lifeforms: people=%d animals=0", people_count)
+    return {
+        "people_count": people_count,
+        "count_label": crowd.get("count_label"),
+        "animals": animals,
+    }
 
 
 def count_crowd(frame) -> dict:
@@ -614,7 +743,14 @@ def start_periodic_scan(interval_secs: float) -> None:
         name="scene-scan",
     )
     _scan_thread.start()
-    _log.info("Periodic scene scan started (interval=%.0fs)", interval_secs)
+    monitor_interval = float(
+        getattr(config, "SCENE_CHANGE_MONITOR_INTERVAL_SECS", 20.0) or 20.0
+    )
+    _log.info(
+        "Periodic scene scan started (interval=%.0fs, change_monitor=%.0fs)",
+        interval_secs,
+        monitor_interval if getattr(config, "SCENE_CHANGE_MONITOR_ENABLED", True) else 0.0,
+    )
 
 
 def stop() -> None:
@@ -636,13 +772,19 @@ def _scan_loop(interval_secs: float) -> None:
     from vision import camera
 
     last_scan_time   = 0.0   # 0.0 ensures the first iteration fires immediately
+    last_monitor_time = 0.0
     last_crowd_count = -1    # -1 sentinel means "never observed"
 
     while not _stop_event.is_set():
         now           = time.monotonic()
         current_crowd = world_state.get("crowd").get("count", 0)
+        monitor_interval = max(
+            5.0,
+            float(getattr(config, "SCENE_CHANGE_MONITOR_INTERVAL_SECS", 20.0) or 20.0),
+        )
 
         time_elapsed = (now - last_scan_time) >= interval_secs
+        monitor_elapsed = (now - last_monitor_time) >= monitor_interval
         crowd_jumped = (last_crowd_count >= 0 and
                         abs(current_crowd - last_crowd_count) >= _CROWD_CHANGE_DELTA)
 
@@ -656,12 +798,29 @@ def _scan_loop(interval_secs: float) -> None:
             if frame is not None:
                 analyze_environment(frame)
                 if getattr(config, "ANIMAL_DETECTION_ENABLED", True):
-                    detect_animals(frame)
+                    detect_lifeforms(frame)
+                    last_monitor_time = now
             else:
                 _log.debug("_scan_loop: no frame available — skipping scan")
 
             last_scan_time   = now
-            last_crowd_count = current_crowd
+            last_crowd_count = world_state.get("crowd").get("count", current_crowd)
+        elif (
+            getattr(config, "SCENE_CHANGE_MONITOR_ENABLED", True)
+            and getattr(config, "ANIMAL_DETECTION_ENABLED", True)
+            and monitor_elapsed
+            and (
+                not bool(getattr(config, "SCENE_CHANGE_MONITOR_ONLY_WITH_PEOPLE", True))
+                or _world_state_has_visible_people()
+            )
+        ):
+            frame = camera.get_frame()
+            if frame is not None:
+                detect_lifeforms(frame)
+                last_monitor_time = now
+                last_crowd_count = world_state.get("crowd").get("count", current_crowd)
+            else:
+                _log.debug("_scan_loop: no frame available — skipping change monitor")
 
         _stop_event.wait(1.0)
 

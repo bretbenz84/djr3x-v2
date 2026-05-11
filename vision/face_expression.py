@@ -159,7 +159,7 @@ def _classify_expression(scores: dict[str, float]) -> dict:
             float(getattr(config, "FACE_EXPRESSION_FROWN_THRESHOLD", 0.35)),
         ),
         (
-            "angry",
+            "focused",
             "brow_furrow",
             "furrowed brow",
             brow_down,
