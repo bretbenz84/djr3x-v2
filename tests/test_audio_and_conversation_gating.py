@@ -151,6 +151,59 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         set_rex_speaking.assert_not_called()
         log_rex.assert_not_called()
 
+    def test_direct_shutdown_clip_leaves_leds_off(self):
+        import numpy as np
+        import main
+
+        source_audio = np.array([0.0, 0.5, -0.5, 0.0], dtype=np.float32)
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(main.config, "NO_AUDIO_MODE", False))
+            stack.enter_context(mock.patch.object(main.config, "AUDIO_OUTPUT_SUPPRESSED", False))
+            stack.enter_context(
+                mock.patch.object(
+                    main.config,
+                    "SPEECH_ANIMATED_AUDIO_FILES",
+                    ["shutdown.mp3"],
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    main.config,
+                    "SPEECH_ANIMATED_AUDIO_TRANSCRIPTS",
+                    {"shutdown.mp3": "Powering down."},
+                )
+            )
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_SHUTDOWN_AUDIO_GAIN", 1.0))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_SHUTDOWN_AUDIO_PEAK_LIMIT", 0.8))
+            stack.enter_context(mock.patch.object(main.sf, "read", return_value=(source_audio, 16000)))
+            stack.enter_context(mock.patch.object(main.sd, "play"))
+            stack.enter_context(mock.patch.object(main.sd, "wait"))
+            stack.enter_context(mock.patch.object(main.echo_cancel, "set_playing"))
+            stack.enter_context(mock.patch.object(main.echo_cancel, "add_reference"))
+            stack.enter_context(mock.patch.object(main.echo_cancel, "was_canceled", return_value=False))
+            stack.enter_context(mock.patch.object(main.animations, "speech_activity_start"))
+            stack.enter_context(mock.patch.object(main.animations, "speech_activity_stop"))
+            stack.enter_context(mock.patch.object(main.servos, "begin_speech_motion"))
+            stack.enter_context(mock.patch.object(main.servos, "end_speech_motion"))
+            stack.enter_context(mock.patch.object(main.servos, "speech_reactive_move"))
+            stack.enter_context(mock.patch.object(main.leds_head, "speak"))
+            stack.enter_context(mock.patch.object(main.leds_head, "speak_level"))
+            head_speak_stop = stack.enter_context(mock.patch.object(main.leds_head, "speak_stop"))
+            head_off = stack.enter_context(mock.patch.object(main.leds_head, "off"))
+            stack.enter_context(mock.patch.object(main.leds_chest, "speak"))
+            chest_active = stack.enter_context(mock.patch.object(main.leds_chest, "active"))
+            chest_off = stack.enter_context(mock.patch.object(main.leds_chest, "off"))
+            stack.enter_context(mock.patch.object(main, "_is_shutdown_state", return_value=True))
+            stack.enter_context(mock.patch("awareness.situation.assessor.set_rex_speaking"))
+            stack.enter_context(mock.patch("utils.conv_log.log_rex"))
+
+            main._play_audio_file("assets/audio/shutdown/shutdown.mp3")
+
+        head_off.assert_called_once()
+        chest_off.assert_called_once()
+        head_speak_stop.assert_not_called()
+        chest_active.assert_not_called()
+
     def test_startup_device_warning_prefers_combined_line(self):
         import main
 

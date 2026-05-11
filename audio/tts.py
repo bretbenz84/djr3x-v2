@@ -42,11 +42,13 @@ from typing import Callable, Optional, Tuple
 import numpy as np
 
 import config
+import state as state_module
 from audio import echo_cancel
 from audio import output_gate
 from hardware import leds_head, leds_chest, servos
 from intelligence import emotion_orchestrator
 from sequences import animations
+from state import State
 from utils import conv_log
 
 logger = logging.getLogger(__name__)
@@ -77,6 +79,13 @@ def is_speaking() -> bool:
     """Return True while audio is actively playing."""
     with _speaking_lock:
         return _speaking
+
+
+def _is_shutdown_state() -> bool:
+    try:
+        return state_module.is_state(State.SHUTDOWN)
+    except Exception:
+        return False
 
 
 def prewarm() -> None:
@@ -321,14 +330,21 @@ def _play(
             stop_event.set()
             if led_thread.is_alive():
                 led_thread.join(timeout=1.0)
+            shutdown_now = _is_shutdown_state()
             try:
-                leds_head.speak_stop()
+                if shutdown_now:
+                    leds_head.off()
+                else:
+                    leds_head.speak_stop()
             except Exception as exc:
-                logger.warning("[tts] mouth LED stop failed: %s", exc)
+                logger.warning("[tts] head LED cleanup failed: %s", exc)
             try:
-                leds_chest.active()
+                if shutdown_now:
+                    leds_chest.off()
+                else:
+                    leds_chest.active()
             except Exception as exc:
-                logger.debug("[tts] chest LED restore failed: %s", exc)
+                logger.debug("[tts] chest LED cleanup failed: %s", exc)
             try:
                 servos.end_speech_motion()
             except Exception as exc:

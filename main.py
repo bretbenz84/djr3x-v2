@@ -276,14 +276,21 @@ def _play_audio_file(
             if led_thread is not None and led_thread.is_alive():
                 led_thread.join(timeout=1.0)
             if animate_speech:
+                shutdown_now = _is_shutdown_state()
                 try:
-                    leds_head.speak_stop()
+                    if shutdown_now:
+                        leds_head.off()
+                    else:
+                        leds_head.speak_stop()
                 except Exception as exc:
-                    logger.warning("direct clip mouth LED stop failed: %s", exc)
+                    logger.warning("direct clip head LED cleanup failed: %s", exc)
                 try:
-                    leds_chest.active()
+                    if shutdown_now:
+                        leds_chest.off()
+                    else:
+                        leds_chest.active()
                 except Exception as exc:
-                    logger.debug("direct clip chest LED restore failed: %s", exc)
+                    logger.debug("direct clip chest LED cleanup failed: %s", exc)
                 try:
                     servos.end_speech_motion()
                 except Exception as exc:
@@ -370,6 +377,25 @@ def _startup_device_warning_line(
             ],
         )
     return random.choice(lines)
+
+
+def _is_shutdown_state() -> bool:
+    try:
+        return state.is_state(State.SHUTDOWN)
+    except Exception:
+        return False
+
+
+def _turn_leds_off_for_shutdown() -> None:
+    """Best-effort final LED darkening before serial ports are closed."""
+    try:
+        leds_head.off()
+    except Exception as exc:
+        logger.warning("Could not turn head LEDs off during shutdown: %s", exc)
+    try:
+        leds_chest.off()
+    except Exception as exc:
+        logger.warning("Could not turn chest LEDs off during shutdown: %s", exc)
 
 
 def _queue_startup_device_warning(
@@ -504,6 +530,8 @@ def _shutdown() -> None:
     if _audio_thread is not None:
         _audio_thread.join()
 
+    _turn_leds_off_for_shutdown()
+
     # Close hardware.
     logger.info("Closing hardware...")
     servos.shutdown()
@@ -623,7 +651,7 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         elif new == State.SLEEP:
             leds_chest.sleep()
         elif new == State.SHUTDOWN:
-            leds_chest.off()
+            _turn_leds_off_for_shutdown()
     state.add_state_change_callback(_chest_state_callback)
 
     logger.info(
@@ -808,9 +836,15 @@ def _wait_for_shutdown() -> None:
 
 
 def _run_headless(*, startup_jeopardy: bool = False) -> None:
-    _run_controller_startup(startup_jeopardy=startup_jeopardy)
-    _wait_for_shutdown()
-    _shutdown()
+    try:
+        _run_controller_startup(startup_jeopardy=startup_jeopardy)
+        _wait_for_shutdown()
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received during startup — initiating clean shutdown.")
+        state.set_state(State.SHUTDOWN)
+    finally:
+        if state.is_state(State.SHUTDOWN):
+            _shutdown()
 
 
 def _gui_requested(args: argparse.Namespace) -> bool:
@@ -963,13 +997,13 @@ def _make_gui_text_submit_callback():
 
 
 def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
-    _run_controller_startup(startup_jeopardy=startup_jeopardy)
-    _start_gui_bridge_sync()
-
-    def _request_shutdown() -> None:
-        state.set_state(State.SHUTDOWN)
-
     try:
+        _run_controller_startup(startup_jeopardy=startup_jeopardy)
+        _start_gui_bridge_sync()
+
+        def _request_shutdown() -> None:
+            state.set_state(State.SHUTDOWN)
+
         try:
             run_dashboard(
                 shutdown_callback=_request_shutdown,

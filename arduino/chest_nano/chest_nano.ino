@@ -89,7 +89,7 @@ uint8_t serialPos = 0;
 // Chest mode
 // ---------------------------------------------------------------------------
 enum ChestMode : uint8_t {
-    CM_STARTUP,       // power-on: ShortCircuit once, then auto-switch to IDLE
+    CM_STARTUP,       // host-requested: ShortCircuit once, then auto-switch to IDLE
     CM_IDLE,          // default: RandomBlocks2 at normal brightness
     CM_ACTIVE,        // Rex awake: RandomBlocks2 brighter
     CM_SPEAK_NEUTRAL, // speaking neutral: RandomBlocks2
@@ -101,7 +101,7 @@ enum ChestMode : uint8_t {
     CM_OFF,           // all off
     CM_MANUAL,        // NEXT command: cycle gPatterns[] manually
 };
-ChestMode chestMode = CM_STARTUP;
+ChestMode chestMode = CM_OFF;
 
 // setup() function -- runs once at startup --------------------------------
 
@@ -120,6 +120,8 @@ void setup() {
 
 	// set master brightness control
 	FastLED.setBrightness(BRIGHTNESS);
+	FastLED.clear();
+	FastLED.show();
 
 	randomSeed(analogRead(0));
 	// Seed the Array
@@ -132,13 +134,12 @@ void setup() {
 	// Initialise serial command buffer.
 	serialPos = 0;
 
-	// Begin power-on startup animation (ShortCircuit → IDLE).
-	// gCurrentPatternNumber initialises to 1 (non-zero), which is what we need
-	// to detect ShortCircuit completion (it sets gCurrentPatternNumber = 0).
+	// Stay dark until the host explicitly sends STARTUP. This keeps the panels
+	// off after a serial disconnect/reset during program shutdown.
 	DecayTime = 80;
 	FadeInterval = 0;
 	FadeMillis = millis();
-	chestMode = CM_STARTUP;
+	chestMode = CM_OFF;
 }
 
 // List of patterns to cycle through.  Each is defined as a separate function below.
@@ -354,6 +355,8 @@ void handleCommand(char *cmd) {
 	} else if (strcmp(cmd, "OFF") == 0) {
 		FastLED.setBrightness(BRIGHTNESS);
 		chestMode = CM_OFF;
+		FastLED.clear();
+		FastLED.show();
 
 	} else if (strcmp(cmd, "NEXT") == 0) {
 		nextPattern();
@@ -759,10 +762,8 @@ void ShortCircuit() {
 }
 
 void LEDsOff() {
-	//  Turn LEDs Off
-	fadeToBlackBy(DJLEDs, NUM_LEDS, 5);
-
-
+	// Turn LEDs off and keep them off until another mode command arrives.
+	FastLED.clear();
 }
 
 // ---------------------------------------------------------------------------
