@@ -629,6 +629,29 @@ def _dj_is_playing() -> bool:
         return False
 
 
+def _dj_suppresses_conversation() -> bool:
+    return (
+        bool(getattr(config, "DJ_SUPPRESS_CONVERSATION_DURING_PLAYBACK", True))
+        and _dj_is_playing()
+    )
+
+
+def _start_dj_after_response(track) -> None:
+    """Start DJ playback just after the current spoken response sequence closes."""
+    def _play() -> None:
+        try:
+            from features import dj as dj_mod
+            dj_mod.play(track)
+        except Exception as exc:
+            _log.debug("deferred DJ playback failed: %s", exc)
+
+    delay = max(
+        0.05,
+        float(getattr(config, "DJ_START_AFTER_TTS_DELAY_SECS", 0.25) or 0.0),
+    )
+    threading.Timer(delay, _play).start()
+
+
 def _game_suppresses_conversation() -> bool:
     try:
         from features import games as games_mod
@@ -7613,10 +7636,13 @@ def _execute_command(
                 return _say("Turning the volume down. One short in-character line.")
             if key == "dj_play_vibe":
                 vibe = args.get("vibe", "")
-                dj_mod.play_by_vibe(vibe)
-                return _say(
+                track = dj_mod.handle_request(vibe)
+                response = _say(
                     f"Playing something with vibe '{vibe}'. Announce it in one in-character line."
                 )
+                if track is not None:
+                    _start_dj_after_response(track)
+                return response
         except Exception as exc:
             _log.debug("DJ command error: %s", exc)
 
@@ -10954,16 +10980,9 @@ def _handle_pending_music_offer_reply(
         _speak_blocking(resp, emotion="neutral")
         return resp
 
-    try:
-        dj_mod.play(track)
-    except Exception as exc:
-        _log.debug("pending music offer play failed: %s", exc)
-        resp = "I tried to play it, but the DJ deck coughed up a bolt."
-        _speak_blocking(resp, emotion="neutral")
-        return resp
-
     resp = _music_offer_play_response(track, preference)
     _speak_blocking(resp, emotion="happy")
+    _start_dj_after_response(track)
     return resp
 
 
@@ -11229,18 +11248,12 @@ def _handle_classified_intent(
                 f"track or station was found. Tell them you couldn't find anything "
                 f"matching that in one in-character Rex line."
             )
-        try:
-            dj_mod.play(track)
-        except Exception as exc:
-            _log.debug("play_music intent play error: %s", exc)
-            return _say(
-                "You tried to play music but the playback system errored. Tell the "
-                "user briefly in one Rex line."
-            )
-        return _say(
-            f"You're now playing '{track.name}' ({track.description}) in response "
+        response = _say(
+            f"You're about to play '{track.name}' ({track.description}) in response "
             f"to: '{raw_text}'. Announce it in one short in-character Rex line."
         )
+        _start_dj_after_response(track)
+        return response
 
     if intent == "query_who_is_speaking":
         # Build a confidence-aware prompt. Priority order:
@@ -14497,6 +14510,10 @@ def _loop() -> None:
         if current_state == State.IDLE:
             if _wake_word_fired.is_set():
                 _wake_word_fired.clear()
+                if _dj_suppresses_conversation():
+                    _last_speech_at = time.monotonic()
+                    _log.info("[wake_word] idle wake ack suppressed during DJ playback")
+                    continue
                 state_module.set_state(State.ACTIVE)
                 _last_speech_at = time.monotonic()
                 _wake_ack()
@@ -14508,6 +14525,14 @@ def _loop() -> None:
                 bool(getattr(config, "IDLE_LISTEN_DURING_DJ_PLAYBACK", True))
                 and _dj_is_playing()
             )
+            if _dj_suppresses_conversation() and not listen_during_dj:
+                try:
+                    _situation_assessor.set_vad_active(False)
+                except Exception:
+                    pass
+                _last_speech_at = time.monotonic()
+                _stop_event.wait(0.1)
+                continue
             if (
                 speech_queue.is_speaking()
                 or output_gate.is_busy()
@@ -14572,12 +14597,24 @@ def _loop() -> None:
         if _wake_word_fired.is_set():
             _wake_word_fired.clear()
             _last_speech_at = time.monotonic()
+            if _dj_suppresses_conversation():
+                _log.info("[wake_word] active wake ack suppressed during DJ playback")
+                continue
             if _should_play_active_wake_ack():
                 _wake_ack()
             else:
                 _log.info(
                     "[wake_word] active wake ack suppressed — busy or waiting for response"
                 )
+            continue
+
+        if _dj_suppresses_conversation():
+            try:
+                _situation_assessor.set_vad_active(False)
+            except Exception:
+                pass
+            _last_speech_at = time.monotonic()
+            _stop_event.wait(0.1)
             continue
 
         # Idle timeout → end session and return to IDLE

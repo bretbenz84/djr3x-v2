@@ -1026,6 +1026,16 @@ def _can_proactive_speak() -> bool:
         return False
 
     try:
+        from features import dj as dj_mod
+        if (
+            bool(getattr(config, "DJ_SUPPRESS_CONVERSATION_DURING_PLAYBACK", True))
+            and dj_mod.is_playing()
+        ):
+            return False
+    except Exception:
+        pass
+
+    try:
         from features import games as games_mod
         if hasattr(games_mod, "suppresses_conversation_interruptions"):
             if games_mod.suppresses_conversation_interruptions():

@@ -1683,9 +1683,13 @@ LOW_MEMORY_IDLE_QUESTION_SECS = 10.0
 LOW_MEMORY_PROFILE_MAX_FACTS = 4
 LOW_MEMORY_IDLE_QUESTION_PREFIX = "I don't know you well yet, {name}, {question}"
 
-IDLE_LISTEN_DURING_DJ_PLAYBACK = True
+# While DJ/radio playback is active, do not treat the station audio as human
+# speech and do not let proactive conversation prompts speak over the music.
+DJ_SUPPRESS_CONVERSATION_DURING_PLAYBACK = True
+IDLE_LISTEN_DURING_DJ_PLAYBACK = False
 DJ_DUCK_DURING_SPEECH = True
 DJ_LISTEN_DUCK_VOLUME = 0.18
+DJ_START_AFTER_TTS_DELAY_SECS = 0.25
 
 # After Rex asks a direct question, suppress autonomous/proactive speech for a
 # short window so humans get a clean chance to answer.
