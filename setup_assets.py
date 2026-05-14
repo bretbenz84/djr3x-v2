@@ -442,7 +442,7 @@ def download_whisper_model(
     except ImportError:
         return [], [], [
             f"{label}: huggingface_hub not installed — "
-            "run: pip install huggingface_hub"
+            f"run: {sys.executable} -m pip install huggingface_hub"
         ]
 
     try:
@@ -804,7 +804,7 @@ def print_summary(
         sys.exit(1)
 
     print()
-    print("  All assets ready.  Run:  python3 main.py")
+    print("  All assets ready. Activate the venv, then run:  python main.py")
     print("=" * 62)
 
 

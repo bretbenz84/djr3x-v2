@@ -1609,7 +1609,7 @@ SETUP_ASSETS="$PROJECT_DIR/setup_assets.py"
 if [[ "$RUN_ENV_SETUP" -eq 0 ]]; then
     log "Skipping setup_assets.py because dependency setup was skipped."
 elif [[ -f "$SETUP_ASSETS" ]]; then
-    log "Running setup_assets.py (model downloads + database init)..."
+    log "Running setup_assets.py with the project venv Python (model downloads + database init)..."
     "$VENV_PYTHON" "$SETUP_ASSETS"
     ok "setup_assets.py completed."
 else

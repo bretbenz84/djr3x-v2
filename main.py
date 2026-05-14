@@ -756,8 +756,6 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         logger.info("Waiting for startup audio to finish before starting microphone services...")
         startup_audio_thread.join()
 
-    startup_boot_tts_thread = _start_startup_boot_tts_thread()
-
     # Step 8: Start background services in order.
     logger.info("=== Starting background services ===")
 
@@ -814,8 +812,9 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     else:
         logger.info("Local animal detector preload disabled by config.")
 
+    startup_boot_tts_thread = _start_startup_boot_tts_thread()
     if startup_boot_tts_thread is not None and startup_boot_tts_thread.is_alive():
-        logger.info("Waiting for startup boot TTS to finish before continuing startup...")
+        logger.info("Waiting for startup boot TTS to finish before starting sensor services...")
         startup_boot_tts_thread.join()
 
     # audio.wake_word is started internally by intelligence.interaction.start() —

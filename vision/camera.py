@@ -44,6 +44,22 @@ _reconnect_lock = threading.Lock()
 _offline_since: Optional[float] = None
 
 
+def _ffmpeg_executable() -> Optional[str]:
+    """Return an ffmpeg executable path, including common Homebrew locations."""
+    resolved = shutil.which("ffmpeg")
+    if resolved:
+        return resolved
+
+    for candidate in (
+        "/opt/homebrew/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+    ):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    return None
+
+
 class _FFmpegCapture:
     """Minimal VideoCapture-like wrapper for ffmpeg AVFoundation capture."""
 
@@ -52,9 +68,10 @@ class _FFmpegCapture:
         self._height = config.CAMERA_HEIGHT
         self._frame_bytes = self._width * self._height * 3
         self._resolved_name = _resolve_avfoundation_device_name(device_name)
+        ffmpeg = _ffmpeg_executable() or "ffmpeg"
 
         cmd = [
-            "ffmpeg",
+            ffmpeg,
             "-hide_banner",
             "-loglevel",
             "warning",
@@ -314,9 +331,9 @@ def _open_camera() -> bool:
                 CAMERA_DEVICE_NAME,
             )
             return False
-        if shutil.which("ffmpeg") is None:
+        if _ffmpeg_executable() is None:
             _log.warning(
-                "CAMERA_DEVICE_NAME=%r requires ffmpeg in PATH — camera open failed",
+                "CAMERA_DEVICE_NAME=%r requires ffmpeg — camera open failed",
                 CAMERA_DEVICE_NAME,
             )
             return False
@@ -469,12 +486,13 @@ def _resolve_avfoundation_device_name(name_hint: str) -> str:
 
 def _list_avfoundation_video_devices() -> list[str]:
     """Return macOS video device names reported by ffmpeg, or an empty list on failure."""
-    if shutil.which("ffmpeg") is None:
+    ffmpeg = _ffmpeg_executable()
+    if ffmpeg is None:
         return []
 
     try:
         result = subprocess.run(
-            ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+            [ffmpeg, "-f", "avfoundation", "-list_devices", "true", "-i", ""],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
