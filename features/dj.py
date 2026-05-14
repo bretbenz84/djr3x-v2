@@ -14,6 +14,7 @@ import logging
 import os
 import random
 import re
+import shutil
 import subprocess
 import threading
 from collections import namedtuple
@@ -51,6 +52,17 @@ _VOLUME_STEP = 0.1
 _SAMPLE_RATE = 44100
 _CHANNELS = 2
 _CHUNK_FRAMES = 2048  # ~46 ms per chunk at 44100 Hz
+
+
+def _ffmpeg_executable() -> str:
+    """Return ffmpeg from PATH or common Homebrew locations."""
+    resolved = shutil.which("ffmpeg")
+    if resolved:
+        return resolved
+    for candidate in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return "ffmpeg"
 
 
 def _body_beat(name: str) -> None:
@@ -358,7 +370,7 @@ def _playback_loop(track_info: TrackInfo) -> None:
         audio_url = track_info.url_or_path
 
     cmd = [
-        "ffmpeg",
+        _ffmpeg_executable(),
         "-hide_banner", "-loglevel", "error",
         "-i", audio_url,
         "-f", "f32le",

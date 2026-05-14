@@ -1769,6 +1769,7 @@ ACTION_ROUTER_EXECUTE_ACTIONS = {
     "memory.recent_discard",
     "identity.who_is_speaking",
     "identity.name_correction",
+    "music.play",
     "music.options",
     "music.stop",
     "music.skip",
@@ -2678,11 +2679,17 @@ GAME_REPEAT_WINDOW_SECS = 1800  # 30 minutes
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DJ MODE — Radio Stations
-# All SomaFM — free, no API key required. PLS URLs are permanent.
-# Add more from somafm.com using the pattern: https://somafm.com/{channelname}.pls
+# Mostly SomaFM, plus public internet radio streams. PLS URLs are permanent.
+# Add more SomaFM stations using the pattern: https://somafm.com/{channelname}.pls
 # ─────────────────────────────────────────────────────────────────────────────
 
 RADIO_STATIONS = [
+    # Classical
+    {
+        "name": "Classical KDFC",
+        "url":  "https://playerservices.streamtheworld.com/pls/KDFCFMAAC96.pls",
+        "vibes": ["classical", "orchestral", "symphony", "piano", "strings", "calm"],
+    },
     # Ambient / Chill
     {
         "name": "Groove Salad",
