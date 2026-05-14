@@ -32,7 +32,7 @@ torch>=2.3.0
 torchaudio>=2.3.0
 
 # ── Vision — face detection & recognition ────────────────────────────────────
-# dlib compiles from source; cmake and boost must be installed via Homebrew first
+# setup_macos.sh installs dlib separately with Apple Silicon libpng build flags
 dlib>=19.24.6
 Pillow>=10.0.0
 

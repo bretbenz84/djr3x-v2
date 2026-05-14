@@ -153,7 +153,7 @@ else
 fi
 
 # ── 2. Homebrew packages ──────────────────────────────────────────────────────
-BREW_PACKAGES=(cmake portaudio ffmpeg libsndfile boost openblas arduino-cli)
+BREW_PACKAGES=(cmake portaudio ffmpeg libsndfile boost openblas libpng arduino-cli)
 
 log "Checking Homebrew packages: ${BREW_PACKAGES[*]}"
 for pkg in "${BREW_PACKAGES[@]}"; do
@@ -304,7 +304,22 @@ log "Installing pip packages from requirements.txt..."
 if [[ -f "$REQUIREMENTS" ]]; then
     log "Upgrading pip..."
     "$VENV_PIP" install --upgrade pip --quiet
-    "$VENV_PIP" install -r "$REQUIREMENTS"
+    DLIB_REQUIREMENT="$(
+        awk 'BEGIN{IGNORECASE=1} /^[[:space:]]*dlib([[:space:]<=>!~#]|$)/ {print; exit}' "$REQUIREMENTS"
+    )"
+    DLIB_REQUIREMENT="${DLIB_REQUIREMENT:-dlib>=19.24.6}"
+    REQUIREMENTS_WITHOUT_DLIB="$(mktemp "${TMPDIR:-/tmp}/djr3x-requirements-without-dlib.XXXXXX")"
+    awk 'BEGIN{IGNORECASE=1} /^[[:space:]]*dlib([[:space:]<=>!~#]|$)/ {next} {print}' "$REQUIREMENTS" > "$REQUIREMENTS_WITHOUT_DLIB"
+
+    log "Installing Python packages except dlib..."
+    "$VENV_PIP" install -r "$REQUIREMENTS_WITHOUT_DLIB"
+    rm -f "$REQUIREMENTS_WITHOUT_DLIB"
+
+    log "Installing dlib with macOS Apple Silicon libpng compatibility flags..."
+    CPPFLAGS="${CPPFLAGS:-} -DPNG_ARM_NEON_OPT=0" \
+    CFLAGS="${CFLAGS:-} -DPNG_ARM_NEON_OPT=0" \
+    CXXFLAGS="${CXXFLAGS:-} -DPNG_ARM_NEON_OPT=0" \
+        "$VENV_PIP" install "$DLIB_REQUIREMENT"
     INSTALLED_ITEMS+=("pip packages from requirements.txt")
     ok "pip packages installed."
     if "$VENV_PYTHON" - <<'PY' >/dev/null 2>&1
