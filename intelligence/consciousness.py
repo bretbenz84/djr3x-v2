@@ -230,6 +230,9 @@ _last_return_reaction_at: dict = {}
 # Ensures only one presence reaction fires at a time; acquire non-blocking to skip if busy.
 _presence_reaction_lock = threading.Lock()
 
+# Special-case celebrity greeting for Jeff Benziger from History Hunters.
+_jeff_celebrity_greeted_this_session: set[int] = set()
+
 # Persons who have left frame but whose departure reaction hasn't fired yet.
 # Maps tracking_key → (departure_monotonic, person_name_or_None).
 # Departure reactions are delayed until situation.apparent_departure is True so that
@@ -1298,6 +1301,105 @@ def _animal_is_furry_companion(species: str, animal: Optional[dict] = None) -> b
         return True
     configured = getattr(config, "FURRY_COMPANION_ANIMAL_SPECIES", set()) or set()
     return any(str(token).strip().lower() in species_key for token in configured)
+
+
+_JEFF_BENZIGER_CANONICAL = "jeff benziger"
+_JEFF_HISTORY_HUNTERS_LINES = (
+    "Alert: Jeff from History Hunters detected. Somebody secure the historical markers.",
+    "Oh no. Jeff Benziger is here. Now I'm going to end up in an episode called The Forgotten Droid of Batuu.",
+    "History Hunters confirmed. Probability of hearing 'this used to be a thriving town' has risen to critical levels.",
+    "Attention guests: Jeff from History Hunters has entered the sector. All forgotten cemeteries are advised to remain calm.",
+    "Fantastic. Jeff Benziger is here. Everybody act natural or you'll end up on YouTube by Thursday.",
+    "History Hunters detected. Quick, hide the old maps before he turns this cantina into a forty-seven minute documentary.",
+)
+_JEFF_HISTORY_HUNTERS_RETURN_LINES = (
+    "Jeff from History Hunters is back. Everybody look casually archival.",
+    "History Hunters has returned. I give it ten minutes before there's drone footage.",
+)
+
+
+def _normalize_person_name_for_specials(name: object) -> str:
+    return " ".join(str(name or "").strip().lower().split())
+
+
+def _is_jeff_benziger(name: object) -> bool:
+    return _normalize_person_name_for_specials(name) == _JEFF_BENZIGER_CANONICAL
+
+
+def _jeff_history_hunters_line(*, returning: bool = False) -> str:
+    lines = _JEFF_HISTORY_HUNTERS_RETURN_LINES if returning else _JEFF_HISTORY_HUNTERS_LINES
+    return random.choice(lines)
+
+
+def _try_fire_jeff_history_hunters_greeting(
+    *,
+    key,
+    person_name: Optional[str],
+    person_db_id: Optional[int],
+    profile: SituationProfile,
+    returning: bool = False,
+) -> bool:
+    if not isinstance(key, int) or not _is_jeff_benziger(person_name):
+        return False
+    if not returning and key in _jeff_celebrity_greeted_this_session:
+        return False
+    if not _should_fire_presence(
+        key,
+        person_db_id,
+        profile,
+        allow_engaged=True,
+        bypass_cooldown=not returning,
+    ):
+        return False
+    label = (
+        "return celebrity greeting for Jeff Benziger"
+        if returning
+        else "first-sight celebrity greeting for Jeff Benziger"
+    )
+    queued = _generate_and_speak_presence(
+        "Jeff Benziger from History Hunters is visible. "
+        "This special-case direct greeting should outrank ordinary startup "
+        "questions, memory callbacks, and small talk.",
+        label=label,
+        tag_key=key,
+        emotion="starstruck",
+        purpose="presence_reaction",
+        direct_text=_jeff_history_hunters_line(returning=returning),
+    )
+    if queued:
+        _jeff_celebrity_greeted_this_session.add(key)
+        _greeted_this_session.add(key)
+        _first_sight_seen_at.pop(key, None)
+    return queued
+
+
+def _step_jeff_history_hunters_detection(snapshot: dict, profile: SituationProfile) -> bool:
+    """
+    Jeff's recognition bit gets the first conversational claim once his known
+    face is visible, even if he was enrolled earlier in the same run.
+    """
+    now = time.monotonic()
+    confirm_visible = float(getattr(config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 3.0))
+    for person in snapshot.get("people", []) or []:
+        person_name = person.get("face_id") or person.get("voice_id") or ""
+        if not _is_jeff_benziger(person_name):
+            continue
+        try:
+            key = int(person.get("person_db_id"))
+        except (TypeError, ValueError):
+            continue
+        if key in _jeff_celebrity_greeted_this_session:
+            continue
+        first_visible = _first_sight_seen_at.setdefault(key, now)
+        if (now - first_visible) < max(0.0, confirm_visible):
+            return True
+        return _try_fire_jeff_history_hunters_greeting(
+            key=key,
+            person_name=person_name,
+            person_db_id=key,
+            profile=profile,
+        )
+    return False
 
 
 def _prime_emotion_frame(frame) -> None:
@@ -3024,6 +3126,9 @@ def _step_startup_group_greeting(snapshot: dict, profile: SituationProfile) -> N
         scene = social_scene.from_snapshot(snapshot)
     except Exception as exc:
         _log.debug("startup group scene build failed: %s", exc)
+        return
+
+    if any(_is_jeff_benziger(person.name) for person in scene.known):
         return
 
     if len(scene.known) < 2:
@@ -5675,6 +5780,23 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
     for key in current_keys - _visible_people:
         person_name, person_db_id = current_tracked[key]
 
+        if _is_jeff_benziger(person_name):
+            first_visible = _first_sight_seen_at.setdefault(key, now)
+            confirm_visible = float(getattr(config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 3.0))
+            if (now - first_visible) < max(0.0, confirm_visible):
+                first_sight_pending_keys.add(key)
+                continue
+            if _try_fire_jeff_history_hunters_greeting(
+                key=key,
+                person_name=person_name,
+                person_db_id=person_db_id,
+                profile=profile,
+            ):
+                continue
+            if key not in _jeff_celebrity_greeted_this_session:
+                first_sight_pending_keys.add(key)
+                continue
+
         # First time ever seen this session.
         if key not in _last_seen:
             if isinstance(key, int) and person_name and key not in _greeted_this_session:
@@ -5996,6 +6118,14 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         if is_known:
             first_name = _first_name(person_name, "there")
             _log.info("consciousness: return detected — queuing reaction for %s (absent %.1fs)", person_name, absent_secs)
+            if _try_fire_jeff_history_hunters_greeting(
+                key=key,
+                person_name=person_name,
+                person_db_id=person_db_id,
+                profile=profile,
+                returning=True,
+            ):
+                continue
             allow_return_memory = (
                 absent_secs
                 >= float(getattr(config, "PRESENCE_RETURN_MEMORY_FOLLOWUP_MIN_ABSENT_SECS", 120.0))
@@ -8011,6 +8141,15 @@ def _loop() -> None:
             # Snapshot after recognition/social analysis so steps 6–11 see identified persons
             snapshot = world_state.snapshot()
 
+            # 5c. Jeff Benziger / History Hunters override. This owns the first
+            # conversational beat before ordinary greetings or ambient remarks.
+            if _step_jeff_history_hunters_detection(snapshot, profile):
+                _finish_governor_cycle()
+                _last_snapshot = snapshot
+                sleep_for = max(0.0, interval - (time.monotonic() - tick_start))
+                _stop_event.wait(sleep_for)
+                continue
+
             # 6. Startup group greeting. This runs before individual follow-up
             # memory checks so a room with two known people gets one social
             # opening instead of stacked callbacks.
@@ -8139,6 +8278,7 @@ def start() -> None:
     _unknown_first_seen_at.clear()
     _proactive_speech_pending.clear()
     _greeted_this_session.clear()
+    _jeff_celebrity_greeted_this_session.clear()
     _pending_departure_keys.clear()
     _first_missing_at.clear()
     _confirmed_absent_at.clear()
@@ -8259,6 +8399,7 @@ def stop() -> None:
     _identity_prompt_in_flight.clear()
     _identity_prompt_reply_until = 0.0
     _proactive_speech_pending.clear()
+    _jeff_celebrity_greeted_this_session.clear()
     _confirmed_absent_at.clear()
     _first_sight_seen_at.clear()
     _animal_seen_signatures.clear()

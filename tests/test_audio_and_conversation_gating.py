@@ -5150,6 +5150,58 @@ class ConversationGatingTest(unittest.TestCase):
             1,
         )
 
+    def test_jeff_benziger_special_uses_starstruck_direct_greeting(self):
+        from intelligence import consciousness
+
+        consciousness._jeff_celebrity_greeted_this_session.clear()
+        consciousness._first_sight_seen_at.clear()
+        with (
+            mock.patch.object(consciousness, "_should_fire_presence", return_value=True),
+            mock.patch.object(consciousness, "_generate_and_speak_presence", return_value=True) as speak,
+        ):
+            fired = consciousness._try_fire_jeff_history_hunters_greeting(
+                key=11,
+                person_name="Jeff Benziger",
+                person_db_id=11,
+                profile=mock.Mock(),
+            )
+
+        self.assertTrue(fired)
+        kwargs = speak.call_args.kwargs
+        self.assertEqual(kwargs["emotion"], "starstruck")
+        self.assertIn(kwargs["direct_text"], consciousness._JEFF_HISTORY_HUNTERS_LINES)
+        self.assertIn("Jeff Benziger", kwargs["label"])
+        self.assertIn(11, consciousness._jeff_celebrity_greeted_this_session)
+
+    def test_jeff_benziger_detection_waits_and_blocks_lower_priority_steps(self):
+        from intelligence import consciousness
+
+        consciousness._jeff_celebrity_greeted_this_session.clear()
+        consciousness._first_sight_seen_at.clear()
+        snapshot = {
+            "people": [
+                {"person_db_id": 11, "face_id": "Jeff Benziger"},
+            ],
+        }
+        with mock.patch.object(consciousness.time, "monotonic", return_value=100.0):
+            handled = consciousness._step_jeff_history_hunters_detection(snapshot, mock.Mock())
+
+        self.assertTrue(handled)
+        self.assertNotIn(11, consciousness._jeff_celebrity_greeted_this_session)
+
+    def test_starstruck_emotion_is_more_dramatic_than_excited(self):
+        from intelligence import emotion_orchestrator
+
+        excited = emotion_orchestrator.frame_for_speech("excited")
+        starstruck = emotion_orchestrator.frame_for_speech("starstruck")
+
+        self.assertEqual(starstruck.led_style, "excited")
+        self.assertGreater(starstruck.intensity, excited.intensity)
+        self.assertGreater(
+            starstruck.speech_motion["arm_intensity_mult"],
+            excited.speech_motion["arm_intensity_mult"],
+        )
+
     def test_proactive_speech_is_suppressed_during_active_game(self):
         from intelligence import consciousness
 
