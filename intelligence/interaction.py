@@ -838,6 +838,11 @@ def _router_execution_block_reason(
     if (
         dialogue_decision is not None
         and dialogue_act.action_blocked_by_dialogue(decision.action, dialogue_decision)
+        and not _dialogue_allows_action_breakout(
+            decision.action,
+            text or "",
+            dialogue_decision,
+        )
     ):
         return "blocked_by_dialogue_act"
     if text is not None:
@@ -1007,11 +1012,21 @@ def _router_audit_clear_legacy_command(audit: Optional[_RouterDecisionAudit]) ->
 def _legacy_command_blocked_by_dialogue(
     match: Optional[command_parser.CommandMatch],
     dialogue_decision: Optional[dialogue_act.DialogueActDecision],
+    text: str = "",
 ) -> bool:
     """Keep contextual replies from falling through to older command parsers."""
     if match is None or dialogue_decision is None:
         return False
-    return dialogue_decision.label == "answer_to_rex"
+    if dialogue_decision.label != "answer_to_rex":
+        return False
+    decision = _legacy_command_action_decision(match)
+    if decision is not None and _dialogue_allows_action_breakout(
+        decision.action,
+        text,
+        dialogue_decision,
+    ):
+        return False
+    return True
 
 
 _LEGACY_COMMAND_ACTION_MAP: dict[str, str] = {
@@ -1093,6 +1108,28 @@ def _legacy_command_action_decision(
     )
 
 
+def _dialogue_allows_action_breakout(
+    action: Optional[str],
+    text: str,
+    dialogue_decision: Optional[dialogue_act.DialogueActDecision],
+) -> bool:
+    """Let clear commands win over a stale conversational reply frame."""
+    if not action or dialogue_decision is None:
+        return False
+    if dialogue_decision.label != "answer_to_rex":
+        return False
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if action == "system.sleep":
+        return command_parser.is_standalone_sleep_command(cleaned)
+    if action == "music.play":
+        return bool(_IDLE_DIRECT_MUSIC_RE.search(cleaned))
+    if action in {"music.stop", "music.skip"}:
+        return bool(re.search(r"^\s*(?:stop|pause|skip)\b", cleaned, re.IGNORECASE))
+    return False
+
+
 def _legacy_command_execution_block_reason(
     match: Optional[command_parser.CommandMatch],
     *,
@@ -1103,7 +1140,7 @@ def _legacy_command_execution_block_reason(
     """Central turn-policy gate for legacy command parser claims."""
     if match is None:
         return None
-    if _legacy_command_blocked_by_dialogue(match, dialogue_decision):
+    if _legacy_command_blocked_by_dialogue(match, dialogue_decision, text):
         return "blocked_by_dialogue_act"
     if (
         match.match_type == "fuzzy"
@@ -1142,16 +1179,27 @@ def _intent_execution_block_reason(
     """Central turn-policy gate for deterministic intent-classifier claims."""
     if not intent or intent == "general":
         return None
-    if dialogue_decision is not None and dialogue_decision.label == "answer_to_rex":
-        return "blocked_by_dialogue_act"
     decision = _intent_action_decision(intent)
     if decision is None:
         return None
-    return action_router.missing_required_evidence_reason(
+    evidence_reason = action_router.missing_required_evidence_reason(
         text,
         decision,
         context=context,
     )
+    if evidence_reason:
+        return evidence_reason
+    if (
+        dialogue_decision is not None
+        and dialogue_decision.label == "answer_to_rex"
+        and not _dialogue_allows_action_breakout(
+            decision.action,
+            text,
+            dialogue_decision,
+        )
+    ):
+        return "blocked_by_dialogue_act"
+    return None
 
 
 def _router_audit_note_result(
@@ -1307,6 +1355,8 @@ def _single_visible_face_voice_override(
     ws_person: Optional[dict],
     visible_known_by_id: dict,
     has_unknown_visible_or_recent: bool,
+    speaker_score: float = 0.0,
+    hard_threshold: Optional[float] = None,
 ) -> Optional[tuple[int, Optional[str]]]:
     """
     Resolve voice/face disagreement in favor of the only visible known face.
@@ -1328,6 +1378,13 @@ def _single_visible_face_voice_override(
     if ws_pid not in (visible_known_by_id or {}):
         return None
     if bool(has_unknown_visible_or_recent):
+        return None
+    threshold = float(
+        hard_threshold
+        if hard_threshold is not None
+        else getattr(config, "SPEAKER_ID_SIMILARITY_THRESHOLD", 0.75)
+    )
+    if float(speaker_score or 0.0) >= threshold:
         return None
     return ws_pid, (ws_person.get("face_id") or ws_person.get("voice_id"))
 
@@ -3766,6 +3823,71 @@ def _handle_name_update_request(
     return response
 
 
+_IDLE_DIRECT_MUSIC_RE = re.compile(
+    r"\b(?:play|start\s+playing|put\s+on|throw\s+on|spin|queue|cue)\b"
+    r".{0,60}\b(?:music|song|track|station|playlist|jazz|country|rock|pop|"
+    r"classical|lo-fi|lofi|hip\s*hop)\b",
+    re.IGNORECASE,
+)
+_BACKGROUND_CROSSTALK_RE = re.compile(
+    r"\b(?:"
+    r"came\s+out|powered\s+off|channels?|camera|the\s+other\s+one|"
+    r"when\s+you(?:'re|\s+are)\s+talking\s+to\s+it|"
+    r"he\s+(?:is|was|has|had|knows)|she\s+(?:is|was|has|had|knows)|"
+    r"they\s+(?:are|were|have|had|know)|"
+    r"it\s+(?:is|was|has|had|knows)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _speech_is_directed_to_rex(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if _is_bare_wake_address(cleaned):
+        return True
+    try:
+        if address_mode.contains_rex_keyword(cleaned):
+            return True
+    except Exception:
+        pass
+    if command_parser.parse(cleaned) is not None:
+        return True
+    if _IDLE_DIRECT_MUSIC_RE.search(cleaned):
+        return True
+    if _MUSIC_PLAY_REQUEST_PAT.search(cleaned) and re.search(
+        r"\b(?:music|song|track|station|playlist)\b",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
+def _looks_like_background_crosstalk(text: str) -> bool:
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return False
+    if _speech_is_directed_to_rex(cleaned):
+        return False
+    if _extract_self_identified_name(cleaned):
+        return False
+    if _extract_introduced_name(cleaned, allow_bare_name=False):
+        return False
+    if "?" in cleaned:
+        # Questions can be addressed to Rex without a wake word in an active
+        # exchange. Keep them in the conversation path unless they are strongly
+        # third-person/meta chatter about the system.
+        return bool(_BACKGROUND_CROSSTALK_RE.search(cleaned))
+    words = re.findall(r"[A-Za-z0-9']+", cleaned)
+    if len(words) >= 5 and _BACKGROUND_CROSSTALK_RE.search(cleaned):
+        return True
+    if len(words) >= 10 and not re.search(r"\b(?:i|me|my|you|your|rex|r3x)\b", cleaned, re.I):
+        return True
+    return False
+
+
 def _should_ignore_idle_background_speech(
     *,
     from_idle_activation: bool,
@@ -3780,17 +3902,20 @@ def _should_ignore_idle_background_speech(
         return False
     if text_input:
         return False
-    if person_id is not None:
-        return False
     if has_unknown_visible or identity_prompt_active:
         return False
     cleaned = (text or "").strip()
     if not cleaned:
         return False
-    if command_parser.parse(cleaned) is not None:
+    if _speech_is_directed_to_rex(cleaned):
         return False
-    if _is_bare_wake_address(cleaned):
-        return False
+    if person_id is not None:
+        if _known_person_visible_recently(person_id):
+            return False
+        if _looks_like_background_crosstalk(cleaned):
+            return True
+        words = re.findall(r"[A-Za-z0-9']+", cleaned)
+        return len(words) >= 5
     try:
         wake_ready = bool(wake_word.is_ready())
     except Exception:
@@ -3920,6 +4045,14 @@ def _extract_offscreen_identify_reply(
     return intro_name, rel_label
 
 
+_THIRD_PERSON_PRESENCE_ANNOUNCEMENT_RE = re.compile(
+    r"^\s*[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){0,2}\s*,?\s+"
+    r"(?:(?:is|are|was|were)\s+(?:here|there|around|with\b|talking\b)|"
+    r"(?:'s|’s)\s+(?:here|there|around|with\b|talking\b))",
+    re.IGNORECASE,
+)
+
+
 def _looks_like_direct_offscreen_identity_answer(
     text: str,
     intro_name: Optional[str],
@@ -3936,6 +4069,8 @@ def _looks_like_direct_offscreen_identity_answer(
         return False
     cleaned = (text or "").strip()
     if not cleaned or "?" in cleaned:
+        return False
+    if _THIRD_PERSON_PRESENCE_ANNOUNCEMENT_RE.match(cleaned):
         return False
     if _extract_introduced_name(cleaned, allow_bare_name=False):
         return True
@@ -11893,6 +12028,8 @@ def _handle_speech_segment(
                     ws_person=ws_person,
                     visible_known_by_id=visible_known_by_id,
                     has_unknown_visible_or_recent=_has_unknown_visible_or_recent(),
+                    speaker_score=speaker_score,
+                    hard_threshold=hard_threshold,
                 )
                 if face_override is not None:
                     prior_person_id = person_id
@@ -13810,6 +13947,17 @@ def _handle_speech_segment(
             and _pending_offscreen_identify is None
             and command_parser.parse(text) is None
         ):
+            if _looks_like_background_crosstalk(text):
+                _log.info(
+                    "[interaction] ignoring off-camera background chatter "
+                    "text=%r raw_best=%s score=%.3f",
+                    text,
+                    raw_best_id,
+                    speaker_score,
+                )
+                final_executed_path = "ignored.off_camera_background_chatter"
+                completed = False
+                return
             if group_chatter_active:
                 _log.info(
                     "[interaction] suppressing off-camera identity ask during "
@@ -13890,6 +14038,17 @@ def _handle_speech_segment(
             and _pending_face_reveal_confirm is None
             and command_parser.parse(text) is None
         ):
+            if _looks_like_background_crosstalk(text):
+                _log.info(
+                    "[interaction] ignoring visible-unknown background chatter "
+                    "text=%r raw_best=%s score=%.3f",
+                    text,
+                    raw_best_id,
+                    speaker_score,
+                )
+                final_executed_path = "ignored.visible_unknown_background_chatter"
+                completed = False
+                return
             q_text = _ask_visible_unknown_identity_question(
                 text,
                 recent_engagement=recent_engagement,

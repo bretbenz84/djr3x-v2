@@ -342,7 +342,8 @@ Rules:
 """
 
 _MUSIC_PLAY_REQUEST_RE = re.compile(
-    r"^\s*(?:please\s+)?(?:play|start\s+playing|put\s+on|throw\s+on|spin|queue|cue|turn\s+on)\b|"
+    r"(?:^|[.!?]\s+)\s*(?:please\s+)?"
+    r"(?:play|start\s+playing|put\s+on|throw\s+on|spin|queue|cue|turn\s+on)\b|"
     r"\b(?:can|could|would)\s+you\s+(?:please\s+)?(?:play|put\s+on|queue|cue)\b|"
     r"\b(?:play|put\s+on|throw\s+on|spin|queue|cue)\s+(?:me|us)\b",
     re.IGNORECASE,

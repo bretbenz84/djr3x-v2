@@ -71,6 +71,8 @@ _EXPLICIT_COMMAND_RE = re.compile(
     r"do\s+(?:a\s+|your\s+)?(?:bit|riff|dance|pose)|"
     r"look\s+(?:at|for|around|left|right|up|down)|"
     r"play\s+(?:music|a\s+song|something)|"
+    r"play\s+(?:some\s+)?(?:[A-Za-z0-9' -]{1,40}\s+)?music|"
+    r"(?:put|throw)\s+on\s+(?:some\s+)?[A-Za-z0-9' -]{1,40}|"
     r"stop\s+(?:playing|music|the\s+music)|"
     r"skip\s+(?:this|song|track)|"
     r"what\s+(?:time|date|day)\b|"
@@ -81,6 +83,11 @@ _EXPLICIT_COMMAND_RE = re.compile(
     r"(?:weather|temperature)\s+(?:forecast|outside)|"
     r"is\s+it\s+(?:raining|hot|cold)\b"
     r")\b",
+    re.IGNORECASE,
+)
+_DIRECT_SLEEP_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:hey\s+rex\s+|rex\s+)?"
+    r"(?:go\s+to\s+sleep|sleep)(?:\s+please)?[.!?]*\s*$",
     re.IGNORECASE,
 )
 _MEMORY_HINT_RE = re.compile(
@@ -286,6 +293,8 @@ def _direct_control_kind(text: str) -> Optional[str]:
         return "identity_control"
     if _MEMORY_CONTROL_RE.search(text):
         return "memory_control"
+    if _DIRECT_SLEEP_RE.match(text):
+        return "new_command"
     if _EXPLICIT_COMMAND_RE.search(text):
         return "new_command"
     if "?" in text and _QUESTION_START_RE.match(text):

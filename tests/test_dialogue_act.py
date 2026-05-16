@@ -56,6 +56,44 @@ class DialogueActReplayTests(unittest.TestCase):
         self.assertIsNotNone(dialogue_act.active_frame_context(1))
         self.assertIsNone(dialogue_act.active_frame_context(2))
 
+    def test_explicit_music_request_breaks_reply_frame(self):
+        from intelligence import dialogue_act
+
+        dialogue_act.note_rex_turn(
+            "You realize this is the point where you drop some beats, right?",
+            source="assistant_turn",
+            target_person_id=2,
+            expected_reply_types=["yes_no"],
+        )
+
+        decision = dialogue_act.classify(
+            "drop some sick beats. Play some country music.",
+            {"pending": {}, "active_game": False},
+            person_id=2,
+        )
+
+        self.assertEqual(decision.label, "new_command")
+        self.assertFalse(decision.skip_action_router)
+
+    def test_direct_sleep_command_breaks_reply_frame(self):
+        from intelligence import dialogue_act
+
+        dialogue_act.note_rex_turn(
+            "Feeling a bit less than stellar, huh?",
+            source="assistant_turn",
+            target_person_id=1,
+            expected_reply_types=["short_answer"],
+        )
+
+        decision = dialogue_act.classify(
+            "go to sleep",
+            {"pending": {}, "active_game": False},
+            person_id=1,
+        )
+
+        self.assertEqual(decision.label, "new_command")
+        self.assertFalse(decision.skip_action_router)
+
 
 if __name__ == "__main__":
     unittest.main()

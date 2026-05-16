@@ -110,6 +110,17 @@ _BAD_CLOSURE_PAT = re.compile(
     r"escape plan|finally escaped|need to escape)\b",
     re.IGNORECASE,
 )
+_VULNERABLE_TOPIC_JOKE_PAT = re.compile(
+    r"(?:\b(cataracts?|vision|visual|eyes?|blind|health|sick|ill|"
+    r"doctor|hospital|surgery|pain|diagnos\w*)\b.{0,90}\b("
+    r"jokes?|humou?r|funny|upgrade|diagnostics?|at least|guess|see\s+the\s+humou?r|could be worse|"
+    r"bad days?)\b|"
+    r"\b(jokes?|humou?r|funny|upgrade|diagnostics?|at least|guess|could be worse|"
+    r"bad days?)\b.{0,90}\b(cataracts?|vision|visual|eyes?|blind|"
+    r"health|sick|ill|doctor|hospital|surgery|pain|diagnos\w*)\b|"
+    r"\bsee\s+the\s+humou?r\b)",
+    re.IGNORECASE,
+)
 _DANGLING_WORDS = {
     "a", "an", "and", "are", "as", "at", "because", "but", "for", "from",
     "if", "in", "into", "like", "of", "on", "or", "so", "than", "that",
@@ -745,6 +756,7 @@ def _is_roast_sentence(sentence: str) -> bool:
             _CONDESCENDING_ORGANIC_PAT,
             _SARCASTIC_PRAISE_PAT,
             _BAD_CLOSURE_PAT,
+            _VULNERABLE_TOPIC_JOKE_PAT,
         )
     )
 
@@ -757,6 +769,8 @@ def _is_sharp_roast_sentence(sentence: str) -> bool:
     if _HARSH_ROAST_PAT.search(text):
         return True
     if _CONDESCENDING_ORGANIC_PAT.search(text):
+        return True
+    if _VULNERABLE_TOPIC_JOKE_PAT.search(text):
         return True
     # "You are a disaster" is sharp; "Bold choice, captain" can remain light.
     return bool(_DIRECT_ROAST_PAT.search(text) and not _SARCASTIC_PRAISE_PAT.search(text))

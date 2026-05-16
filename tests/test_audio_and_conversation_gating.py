@@ -5866,6 +5866,29 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertEqual(governed.text, "That sounds hard.")
         self.assertIn("removed_roast", governed.notes)
 
+    def test_social_frame_removes_health_pun_in_no_roast_mode(self):
+        from intelligence import social_frame
+
+        frame = social_frame.SocialFrame(
+            addressee="Jeff",
+            purpose="identity",
+            max_words=40,
+            max_sentences=3,
+            allow_question=True,
+            allow_roast="none",
+            allow_visual_comment=False,
+            reason="test",
+        )
+        governed = social_frame.govern_response(
+            "Cataracts, huh. Guess it's time for a little visual upgrade. "
+            "But hey, at least you're able to see the humor in it! "
+            "Who's your friend over there?",
+            frame,
+        )
+
+        self.assertEqual(governed.text, "Cataracts, huh. Who's your friend over there?")
+        self.assertIn("removed_roast", governed.notes)
+
     def test_social_frame_allows_tiny_tap_but_removes_sharp_roast_in_light_mode(self):
         from intelligence import social_frame
 
@@ -8687,6 +8710,120 @@ class GroupChatterGatingTest(unittest.TestCase):
 
 
 class PostResponseMemoryExtractionTest(unittest.TestCase):
+    def test_offscreen_identity_self_answer_rejects_third_person_presence(self):
+        from intelligence import interaction
+
+        self.assertFalse(
+            interaction._looks_like_direct_offscreen_identity_answer(
+                "Sara, is here",
+                "Sara",
+            )
+        )
+        self.assertFalse(
+            interaction._looks_like_direct_offscreen_identity_answer(
+                "Sarah is here",
+                "Sarah",
+            )
+        )
+        self.assertTrue(
+            interaction._looks_like_direct_offscreen_identity_answer(
+                "JT",
+                "JT",
+            )
+        )
+        self.assertTrue(
+            interaction._looks_like_direct_offscreen_identity_answer(
+                "I'm Sarah",
+                "Sarah",
+            )
+        )
+
+    def test_single_visible_face_does_not_override_hard_voice_match(self):
+        from intelligence import interaction
+
+        override = interaction._single_visible_face_voice_override(
+            resolved_person_id=3,
+            ws_person={"person_db_id": 2, "face_id": "Jeff"},
+            visible_known_by_id={2: {"person_db_id": 2, "face_id": "Jeff"}},
+            has_unknown_visible_or_recent=False,
+            speaker_score=0.836,
+            hard_threshold=0.75,
+        )
+
+        self.assertIsNone(override)
+
+    def test_single_visible_face_can_override_weak_conflicting_voice(self):
+        from intelligence import interaction
+
+        override = interaction._single_visible_face_voice_override(
+            resolved_person_id=3,
+            ws_person={"person_db_id": 2, "face_id": "Jeff"},
+            visible_known_by_id={2: {"person_db_id": 2, "face_id": "Jeff"}},
+            has_unknown_visible_or_recent=False,
+            speaker_score=0.62,
+            hard_threshold=0.75,
+        )
+
+        self.assertEqual(override, (2, "Jeff"))
+
+    def test_idle_known_offcamera_crosstalk_is_ignored_without_wake_or_command(self):
+        from intelligence import interaction
+
+        with mock.patch.object(
+            interaction,
+            "_known_person_visible_recently",
+            return_value=False,
+        ):
+            self.assertTrue(
+                interaction._should_ignore_idle_background_speech(
+                    from_idle_activation=True,
+                    person_id=3,
+                    has_unknown_visible=False,
+                    identity_prompt_active=False,
+                    text_input=False,
+                    text="the Justin shorts are good, which came out nice",
+                )
+            )
+            self.assertFalse(
+                interaction._should_ignore_idle_background_speech(
+                    from_idle_activation=True,
+                    person_id=3,
+                    has_unknown_visible=False,
+                    identity_prompt_active=False,
+                    text_input=False,
+                    text="Rex, how do you know so much?",
+                )
+            )
+            self.assertFalse(
+                interaction._should_ignore_idle_background_speech(
+                    from_idle_activation=True,
+                    person_id=3,
+                    has_unknown_visible=False,
+                    identity_prompt_active=False,
+                    text_input=False,
+                    text="Play some country music.",
+                )
+            )
+
+    def test_visible_unknown_identity_prompt_ignores_obvious_crosstalk(self):
+        from intelligence import interaction
+
+        self.assertTrue(
+            interaction._looks_like_background_crosstalk(
+                "It was powered off channels that we can"
+            )
+        )
+        self.assertTrue(
+            interaction._looks_like_background_crosstalk(
+                "when you're talking to it right"
+            )
+        )
+        self.assertFalse(
+            interaction._looks_like_background_crosstalk(
+                "how do you know so much?"
+            )
+        )
+
     def test_memory_extractors_use_turn_transcript_snapshot(self):
         from intelligence import interaction
 

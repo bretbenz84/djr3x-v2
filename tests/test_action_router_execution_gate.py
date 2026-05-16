@@ -277,6 +277,53 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
             "blocked_by_dialogue_act",
         )
 
+    def test_direct_sleep_command_breaks_out_of_dialogue_act(self):
+        from intelligence import command_parser, dialogue_act, interaction
+
+        match = command_parser.parse("go to sleep")
+        self.assertIsNotNone(match)
+        act = dialogue_act.DialogueActDecision(
+            "answer_to_rex",
+            0.90,
+            "reply to last Rex turn",
+            skip_action_router=True,
+        )
+
+        self.assertFalse(
+            interaction._legacy_command_blocked_by_dialogue(
+                match,
+                act,
+                "go to sleep",
+            )
+        )
+        self.assertIsNone(
+            interaction._legacy_command_execution_block_reason(
+                match,
+                text="go to sleep",
+                context={},
+                dialogue_decision=act,
+            )
+        )
+
+    def test_direct_music_intent_breaks_out_of_dialogue_act(self):
+        from intelligence import dialogue_act, interaction
+
+        act = dialogue_act.DialogueActDecision(
+            "answer_to_rex",
+            0.90,
+            "reply to last Rex turn",
+            skip_action_router=True,
+        )
+
+        self.assertIsNone(
+            interaction._intent_execution_block_reason(
+                "play_music",
+                text="drop some sick beats. Play some country music.",
+                context={},
+                dialogue_decision=act,
+            )
+        )
+
     def test_legacy_command_gate_requires_strong_evidence(self):
         from intelligence import command_parser, interaction
 

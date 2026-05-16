@@ -17,8 +17,10 @@ _WARNED_MISSING_LOCAL_MODEL = False
 try:
     import mlx_whisper
     _MLX_AVAILABLE = True
-except ImportError:
+except Exception as exc:
+    mlx_whisper = None
     _MLX_AVAILABLE = False
+    logger.warning("mlx_whisper unavailable; local Whisper disabled: %s", exc)
 
 
 def _local_model_ready() -> bool:
