@@ -71,6 +71,7 @@ from memory import social as social_memory
 from memory.name_validation import (
     looks_like_initials,
     normalize_person_name,
+    names_are_similar,
     normalized_name_key,
 )
 from awareness import interoception
@@ -409,7 +410,7 @@ _pending_offscreen_identify: Optional[dict] = None
 _pending_face_reveal_confirm: Optional[dict] = None
 
 # Explicit introduction flow. Separate from generic unknown-face curiosity:
-# when Bret says "this is my partner JT", this tracks the intro as a social
+# when someone says "this is my partner Alex", this tracks the intro as a social
 # event, saves the relationship, and asks one natural "how did you meet?" beat.
 _pending_introduction: Optional[dict] = None
 _pending_intro_followup: Optional[dict] = None
@@ -2948,6 +2949,101 @@ def _same_person_name(left: Optional[str], right: Optional[str]) -> bool:
     return left_norm.lower() == right_norm.lower()
 
 
+def _name_supported_by_user_text(name: Optional[str], text: str) -> bool:
+    normalized_name = _normalize_name(name or "")
+    if not normalized_name:
+        return False
+    text_key = normalized_name_key(text or "")
+    name_key = normalized_name_key(normalized_name)
+    if not text_key or not name_key:
+        return False
+    if re.search(rf"(?<!\w){re.escape(name_key)}(?!\w)", text_key):
+        return True
+    if looks_like_initials(normalized_name):
+        return name_key.replace(" ", "") in text_key.replace(" ", "")
+    return False
+
+
+def _relationship_supported_by_user_text(
+    relationship: Optional[str],
+    text: str,
+) -> bool:
+    rel = _normalize_relationship_word(relationship)
+    if not rel:
+        return False
+    text_plain = _plain_confirmation_text(text)
+    if not text_plain:
+        return False
+    aliases = {
+        rel,
+        rel.replace("_", " "),
+        rel.replace("_", "-"),
+        rel.replace("_", ""),
+    }
+    for raw, normalized in _RELATIONSHIP_WORD_NORMALIZE.items():
+        if normalized == rel:
+            aliases.add(raw)
+    for alias in aliases:
+        alias_plain = _plain_confirmation_text(alias)
+        if alias_plain and re.search(
+            rf"(?<!\w){re.escape(alias_plain)}(?!\w)",
+            text_plain,
+        ):
+            return True
+    return False
+
+
+def _filter_relationship_introduction_evidence(
+    parsed: dict,
+    user_text: str,
+    speaker_name: Optional[str],
+    *,
+    source: str,
+) -> tuple[Optional[str], Optional[str]]:
+    name = parsed.get("name")
+    relationship = parsed.get("relationship")
+    name = name.strip() if isinstance(name, str) else None
+    relationship = relationship.strip().lower() if isinstance(relationship, str) else None
+
+    if name and not _name_supported_by_user_text(name, user_text):
+        _log.warning(
+            "[identity] rejected extracted newcomer name without transcript evidence "
+            "source=%s name=%r text=%r parsed=%r",
+            source,
+            name,
+            user_text,
+            parsed,
+        )
+        name = None
+    if name and speaker_name and (
+        _same_person_name(name, speaker_name)
+        or names_are_similar(name, speaker_name)
+    ):
+        _log.warning(
+            "[identity] rejected extracted newcomer name matching speaker "
+            "source=%s name=%r speaker=%r text=%r",
+            source,
+            name,
+            speaker_name,
+            user_text,
+        )
+        name = None
+    if relationship and not _relationship_supported_by_user_text(
+        relationship,
+        user_text,
+    ):
+        _log.warning(
+            "[identity] rejected extracted relationship without transcript evidence "
+            "source=%s relationship=%r text=%r parsed=%r",
+            source,
+            relationship,
+            user_text,
+            parsed,
+        )
+        relationship = None
+    return name, relationship
+
+
 def _extract_self_identified_name(text: str) -> Optional[str]:
     normalized = (text or "").strip()
     if not normalized:
@@ -3963,6 +4059,12 @@ def _handle_pending_offscreen_identify_reply(
         text,
         person_name or prior_engaged_name,
     )
+    intro_name, rel_label = _filter_relationship_introduction_evidence(
+        {"name": intro_name, "relationship": rel_label},
+        text,
+        person_name or prior_engaged_name,
+        source="offscreen_identify",
+    )
     from_unknown_self_answer = (
         person_id is None
         and _looks_like_direct_offscreen_identity_answer(text, intro_name)
@@ -4313,8 +4415,12 @@ def _handle_relationship_reply(
         _log.debug("relationship extraction error: %s", exc)
         parsed = {"name": None, "relationship": None}
 
-    name = parsed.get("name")
-    relationship = parsed.get("relationship")
+    name, relationship = _filter_relationship_introduction_evidence(
+        parsed,
+        user_text,
+        speaker_person_name or (engaged_name if not mode_b else "newcomer"),
+        source="relationship_prompt_mode_b" if mode_b else "relationship_prompt_mode_a",
+    )
 
     # ── Mode B: just save the edge, no enrollment needed ──────────────────────
     if mode_b:
@@ -6025,7 +6131,7 @@ def _arm_visible_unknown_identity_followup(
     When Rex has just asked about a visible mystery guest from the normal LLM
     path, open the same parsing window used by proactive relationship prompts.
 
-    Without this, a natural bare reply like "JT" after "who's this?" can fall
+    Without this, a natural bare reply like "Alex" after "who's this?" can fall
     through as ordinary chat instead of enrolling the visible newcomer.
     """
     unknown_slot = None
@@ -12760,8 +12866,15 @@ def _handle_speech_segment(
                         parsed = llm.extract_relationship_introduction(
                             text, person_name or "friend"
                         )
-                        parsed_name = parsed.get("name") or intro_name
-                        relationship = parsed.get("relationship")
+                        parsed_name_from_llm, relationship = (
+                            _filter_relationship_introduction_evidence(
+                                parsed,
+                                text,
+                                person_name or "friend",
+                                source="describe_newcomer",
+                            )
+                        )
+                        parsed_name = parsed_name_from_llm or intro_name
                     except Exception as exc:
                         _log.debug("describe-newcomer extract error: %s", exc)
 

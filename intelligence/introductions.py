@@ -2,7 +2,7 @@
 intelligence/introductions.py - explicit social introduction handling.
 
 This is deliberately separate from generic unknown-face curiosity. When a known
-person says "this is my partner JT" or "I'd like you to meet my coworker", Rex
+person says "this is my partner Alex" or "I'd like you to meet my coworker", Rex
 should treat it as an introduction, not as random small talk.
 """
 

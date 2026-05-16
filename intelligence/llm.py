@@ -499,7 +499,7 @@ def _build_person_context(person_id: int) -> str:
         )
         callback_hook_used = True
 
-    # Known inter-person relationships (e.g. "Bret is partner of JT").
+    # Known inter-person relationships, summarized from saved memory only.
     try:
         from memory import social as _social
         rel_summary = _social.summarize_for_prompt(person_id, name)
@@ -961,7 +961,8 @@ def extract_relationship_introduction(
 ) -> dict:
     """
     Extract a newcomer's name and their relationship to the speaker from a short
-    reply like "Oh this is my partner JT" or "that's my brother Mike".
+    reply where the speaker explicitly gives the newcomer's name, relationship,
+    or both.
 
     Returns a dict with keys:
       {"name": str | None, "relationship": str | None}
@@ -975,8 +976,9 @@ def extract_relationship_introduction(
     prompt = (
         f'The person speaking is named {speaker_name!r}. They just said:\n'
         f'  "{user_text}"\n\n'
-        "This may be either a direct introduction (\"this is my partner JT\") "
-        "or an answer after Rex asked who an unfamiliar person is.\n\n"
+        "This may be either a direct introduction where the speaker gives a "
+        "relationship word plus a name, or an answer after Rex asked who an "
+        "unfamiliar person is.\n\n"
         "From the speaker's reply, extract:\n"
         '  "name": the newcomer\'s first name (string), or null if not stated.\n'
         '  "relationship": a single lowercase label for the relationship FROM THE '
@@ -984,6 +986,8 @@ def extract_relationship_introduction(
         '"brother", "son", "coworker", "roommate", "boss", "stranger"), or null '
         "if no relationship was mentioned.\n\n"
         "Rules:\n"
+        "- Use ONLY the quoted reply as evidence. Do not copy names or facts "
+        "from these instructions, examples, prior conversations, or memory.\n"
         "- If the entire reply is a plausible bare name, treat it as the "
         "newcomer's name even if it is also a common word or emotion "
         "(examples: Joy, Hope, Rose, May).\n"
@@ -1025,7 +1029,7 @@ def extract_face_reveal_answer(user_text: str) -> dict:
     Parse a reply to Rex's face-reveal confirmation question.
 
     Rex may have asked either:
-      (A) "Is that what you look like, JT?" — expects yes/no
+      (A) "Is that what you look like, Alex?" — expects yes/no
       (B) "Are you on my left or my right?" — expects left/right
 
     Returns a dict with exactly one key:

@@ -5462,6 +5462,59 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertEqual(ctx["engaged_name"], "Bret Benziger")
         self.assertEqual(ctx["slot_id"], "person_2")
 
+    def test_relationship_prompt_rejects_hallucinated_name_and_relationship(self):
+        from intelligence import interaction
+
+        rel_ctx = {
+            "engaged_person_id": 1,
+            "engaged_name": "Bret Benziker",
+            "slot_id": "person_1",
+            "asked_at": interaction.time.monotonic(),
+        }
+
+        with (
+            mock.patch.object(
+                interaction.llm,
+                "extract_relationship_introduction",
+                return_value={"name": "JT", "relationship": "partner"},
+            ) as extract,
+            mock.patch.object(
+                interaction.people_memory,
+                "find_or_create_person",
+            ) as find_or_create,
+            mock.patch.object(
+                interaction.consciousness,
+                "note_relationship_slot_handled",
+            ) as handled,
+        ):
+            response = interaction._handle_relationship_reply(
+                rel_ctx,
+                "Bret Benzigert",
+                1,
+                "Bret Benziker",
+            )
+
+        self.assertIsNone(response)
+        extract.assert_called_once()
+        find_or_create.assert_not_called()
+        handled.assert_called_once_with("person_1")
+
+    def test_relationship_evidence_accepts_explicit_partner_intro(self):
+        from intelligence import interaction
+
+        self.assertTrue(
+            interaction._name_supported_by_user_text(
+                "JT",
+                "This is my partner JT",
+            )
+        )
+        self.assertTrue(
+            interaction._relationship_supported_by_user_text(
+                "partner",
+                "This is my partner JT",
+            )
+        )
+
     def test_pronoun_repair_stores_explicit_named_pronouns(self):
         from intelligence import interaction
 
