@@ -3857,6 +3857,25 @@ def _looks_like_direct_offscreen_identity_answer(
     )
 
 
+def _is_offscreen_identify_cancel_reply(text: str) -> bool:
+    plain = _plain_confirmation_text(text)
+    return plain in {
+        "cancel",
+        "cancel that",
+        "drop it",
+        "forget it",
+        "forget that",
+        "ignore it",
+        "ignore that",
+        "never mind",
+        "never mind that",
+        "nevermind",
+        "nevermind that",
+        "skip it",
+        "stop",
+    }
+
+
 def _offscreen_identity_enrollment_audio(
     pending_audio: object,
     reply_audio: Optional[np.ndarray],
@@ -3909,14 +3928,40 @@ def _handle_pending_offscreen_identify_reply(
 
     prior_engaged_id = pending.get("prior_engaged_id")
     prior_engaged_name = pending.get("prior_engaged_name") or "friend"
-    intro_name, rel_label = _extract_offscreen_identify_reply(
-        text,
-        person_name or prior_engaged_name,
-    )
     from_engaged_person = (
         person_id is not None
         and prior_engaged_id is not None
         and int(person_id) == int(prior_engaged_id)
+    )
+
+    if _is_offscreen_identify_cancel_reply(text):
+        _pending_offscreen_identify = None
+        ack_text = "Never mind. Bad sensor read on my end."
+        if from_engaged_person:
+            completed = _speak_blocking(
+                ack_text,
+                emotion="neutral",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            conv_memory.add_to_transcript("Rex", ack_text)
+            conv_log.log_rex(ack_text)
+            _session_exchange_count += 1
+            _register_rex_utterance(ack_text)
+            repair_moves.mark_handled("misunderstood")
+            _log.info(
+                "[interaction] off-camera identify cancelled by engaged person "
+                "completed=%s text=%r",
+                completed,
+                text,
+            )
+            return True, ack_text
+        _log.info("[interaction] off-camera identify cancelled text=%r", text)
+        return True, None
+
+    intro_name, rel_label = _extract_offscreen_identify_reply(
+        text,
+        person_name or prior_engaged_name,
     )
     from_unknown_self_answer = (
         person_id is None

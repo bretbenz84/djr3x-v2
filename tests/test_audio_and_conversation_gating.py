@@ -8395,6 +8395,67 @@ class GroupChatterGatingTest(unittest.TestCase):
             interaction._session_exchange_count = old_exchange_count
             repair_moves.clear()
 
+    def test_offscreen_identity_nevermind_cancels_before_name_extraction(self):
+        import numpy as np
+        from intelligence import interaction, repair_moves
+
+        old_pending = interaction._pending_offscreen_identify
+        old_exchange_count = interaction._session_exchange_count
+        repair_moves.clear()
+        interaction._pending_offscreen_identify = {
+            "audio": np.array([1.0, 1.0, 1.0], dtype=np.float32),
+            "asked_at": interaction.time.monotonic(),
+            "prior_engaged_id": 1,
+            "prior_engaged_name": "Bret Benziger",
+            "overheard_text": "I'm gonna keep clean everything",
+            "anonymous_speaker_label": "unknown_voice_1",
+            "question_text": "Who's that off-screen, Bret?",
+        }
+        try:
+            with (
+                mock.patch.object(
+                    interaction.llm,
+                    "extract_relationship_introduction",
+                    return_value={"name": "Nevermind that", "relationship": None},
+                ) as extract,
+                mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+                mock.patch.object(interaction.conv_memory, "add_to_transcript") as add_transcript,
+                mock.patch.object(interaction.conv_log, "log_rex") as log_rex,
+                mock.patch.object(interaction, "_register_rex_utterance") as register,
+                mock.patch.object(interaction.people_memory, "find_or_create_person") as find_or_create,
+                mock.patch.object(interaction.speaker_id, "enroll_voice") as enroll_voice,
+            ):
+                consumed, response = interaction._handle_pending_offscreen_identify_reply(
+                    "Nevermind that",
+                    person_id=1,
+                    person_name="Bret Benziger",
+                    audio_array=np.array([2.0], dtype=np.float32),
+                    anonymous_speaker_label=None,
+                )
+
+            self.assertTrue(consumed)
+            self.assertEqual(response, "Never mind. Bad sensor read on my end.")
+            self.assertIsNone(interaction._pending_offscreen_identify)
+            extract.assert_not_called()
+            find_or_create.assert_not_called()
+            enroll_voice.assert_not_called()
+            speak.assert_called_once_with(
+                "Never mind. Bad sensor read on my end.",
+                emotion="neutral",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            add_transcript.assert_called_once_with(
+                "Rex",
+                "Never mind. Bad sensor read on my end.",
+            )
+            log_rex.assert_called_once_with("Never mind. Bad sensor read on my end.")
+            register.assert_called_once_with("Never mind. Bad sensor read on my end.")
+        finally:
+            interaction._pending_offscreen_identify = old_pending
+            interaction._session_exchange_count = old_exchange_count
+            repair_moves.clear()
+
     def test_anonymous_speaker_slot_reuses_matching_unknown_voice(self):
         import numpy as np
         from intelligence import interaction
