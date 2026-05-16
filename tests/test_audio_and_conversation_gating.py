@@ -8824,6 +8824,103 @@ class PostResponseMemoryExtractionTest(unittest.TestCase):
             )
         )
 
+    def test_identity_prompts_defer_to_direct_questions_and_commands(self):
+        from intelligence import interaction
+
+        self.assertTrue(interaction._turn_should_defer_identity_prompts("how do you know so much?"))
+        self.assertTrue(interaction._turn_should_defer_identity_prompts("Play some country music."))
+        self.assertFalse(interaction._turn_should_defer_identity_prompts("I'm Sara"))
+        self.assertFalse(interaction._utterance_invites_identity_question("how do you know so much?"))
+        self.assertTrue(interaction._utterance_invites_identity_question("Hey Rex"))
+
+    def test_shutdown_requested_checks_state_and_stop_event(self):
+        from intelligence import interaction
+        from state import State
+
+        interaction._stop_event.clear()
+        with mock.patch.object(interaction.state_module, "get_state", return_value=State.SHUTDOWN):
+            self.assertTrue(interaction._shutdown_requested())
+        with mock.patch.object(interaction.state_module, "get_state", return_value=State.ACTIVE):
+            self.assertFalse(interaction._shutdown_requested())
+            interaction._stop_event.set()
+            try:
+                self.assertTrue(interaction._shutdown_requested())
+            finally:
+                interaction._stop_event.clear()
+
+    def test_general_slow_path_ack_skips_short_turns_and_reply_frames(self):
+        from intelligence import dialogue_act, interaction
+
+        act = dialogue_act.DialogueActDecision(
+            "answer_to_rex",
+            0.90,
+            "reply to last Rex turn",
+            skip_action_router=True,
+        )
+
+        self.assertFalse(interaction._slow_path_ack_allowed_for_turn("general", "cataracts"))
+        self.assertFalse(
+            interaction._slow_path_ack_allowed_for_turn(
+                "general",
+                "I need to turn over where?",
+            )
+        )
+        self.assertFalse(
+            interaction._slow_path_ack_allowed_for_turn(
+                "general",
+                "this is a longer reply but it belongs to Rex's pending question",
+                act,
+            )
+        )
+        self.assertTrue(
+            interaction._slow_path_ack_allowed_for_turn(
+                "general",
+                "this is a longer conversational thought that might need an actual answer",
+            )
+        )
+
+    def test_voice_enrollment_requires_longer_sample(self):
+        import numpy as np
+        import config
+        from intelligence import interaction
+
+        short = np.zeros(int(config.AUDIO_SAMPLE_RATE * 0.25), dtype=np.float32)
+        long = np.zeros(int(config.AUDIO_SAMPLE_RATE * 1.4), dtype=np.float32)
+
+        allowed, reason = interaction._voice_enrollment_sample_allowed(
+            short,
+            transcript_text="Sara Ever",
+        )
+        self.assertFalse(allowed)
+        self.assertIn("audio_too_short", reason)
+
+        allowed, reason = interaction._voice_enrollment_sample_allowed(
+            long,
+            transcript_text="Sara Ever",
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "ok")
+
+    def test_proactive_unknown_identity_prompt_does_not_fire_while_active(self):
+        from intelligence import consciousness
+        import state as state_module
+        from state import State
+
+        old_state = state_module.get_state()
+        try:
+            state_module.set_state(State.ACTIVE)
+            with (
+                mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+                mock.patch.object(consciousness, "_speak_async", return_value=True) as speak,
+            ):
+                consciousness._maybe_prompt_unknown_identity(
+                    unknown_count=1,
+                    known_unique=[],
+                )
+            speak.assert_not_called()
+        finally:
+            state_module.set_state(old_state)
+
     def test_memory_extractors_use_turn_transcript_snapshot(self):
         from intelligence import interaction
 

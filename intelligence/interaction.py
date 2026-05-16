@@ -2207,6 +2207,18 @@ def _is_bare_wake_address(text: str) -> bool:
     return bool(_BARE_WAKE_ADDRESS_PAT.match(text or ""))
 
 
+def _shutdown_requested() -> bool:
+    try:
+        if _stop_event.is_set():
+            return True
+    except Exception:
+        pass
+    try:
+        return state_module.get_state() == State.SHUTDOWN
+    except Exception:
+        return False
+
+
 def _prefill_wake_ack_cache() -> None:
     """Warm the tiny wake-ack TTS set so wake feedback is instant."""
     if bool(
@@ -2327,6 +2339,17 @@ def _all_slow_path_ack_lines() -> list[str]:
     return result
 
 
+def _word_count(text: str) -> int:
+    return len(re.findall(r"[A-Za-z0-9']+", text or ""))
+
+
+def _simple_question(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if "?" not in cleaned:
+        return False
+    return _word_count(cleaned) <= 8
+
+
 def _slow_path_ack_expected_slow(kind: str) -> bool:
     try:
         minimum = float(getattr(config, "SLOW_PATH_ACK_MIN_EXPECTED_SECS", 1.5))
@@ -2344,10 +2367,40 @@ def _slow_path_ack_expected_slow(kind: str) -> bool:
         return True
 
 
-def _try_slow_path_ack(kind: str) -> bool:
+def _slow_path_ack_allowed_for_turn(
+    kind: str,
+    text: str = "",
+    dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None,
+) -> bool:
+    if kind != "general":
+        return True
+    try:
+        min_words = int(getattr(config, "SLOW_PATH_ACK_GENERAL_MIN_WORDS", 9) or 0)
+    except (TypeError, ValueError):
+        min_words = 9
+    if min_words > 0 and _word_count(text) < min_words:
+        return False
+    if (
+        not bool(getattr(config, "SLOW_PATH_ACK_GENERAL_ALLOW_SIMPLE_QUESTIONS", False))
+        and _simple_question(text)
+    ):
+        return False
+    if dialogue_decision is not None and dialogue_decision.label == "answer_to_rex":
+        return False
+    return True
+
+
+def _try_slow_path_ack(
+    kind: str,
+    *,
+    text: str = "",
+    dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None,
+) -> bool:
     """Queue a cached, non-blocking acknowledgment for a known slow path."""
     global _last_slow_path_ack
     if not bool(getattr(config, "SLOW_PATH_ACK_ENABLED", True)):
+        return False
+    if not _slow_path_ack_allowed_for_turn(kind, text, dialogue_decision):
         return False
     if not _slow_path_ack_expected_slow(kind):
         return False
@@ -3888,6 +3941,104 @@ def _looks_like_background_crosstalk(text: str) -> bool:
     return False
 
 
+def _looks_like_direct_question_to_rex(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned or "?" not in cleaned:
+        return False
+    if _extract_self_identified_name(cleaned):
+        return False
+    if _extract_introduced_name(cleaned, allow_bare_name=False):
+        return False
+    return True
+
+
+def _turn_should_defer_identity_prompts(text: str) -> bool:
+    if not bool(getattr(config, "IDENTITY_PROMPT_DEFER_ON_DIRECT_TURN", True)):
+        return False
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if _is_bare_wake_address(cleaned):
+        return False
+    if _extract_self_identified_name(cleaned):
+        return False
+    if _extract_introduced_name(cleaned, allow_bare_name=False):
+        return False
+    if command_parser.parse(cleaned) is not None:
+        return True
+    if _speech_is_directed_to_rex(cleaned):
+        return True
+    if _looks_like_direct_question_to_rex(cleaned):
+        return True
+    return False
+
+
+def _utterance_invites_identity_question(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if _is_bare_wake_address(cleaned):
+        return True
+    if _extract_self_identified_name(cleaned):
+        return True
+    if _extract_introduced_name(cleaned, allow_bare_name=False):
+        return True
+    if _looks_like_direct_question_to_rex(cleaned):
+        return False
+    words = _word_count(cleaned)
+    return bool(
+        words <= 5
+        and re.search(
+            r"\b(?:hi|hello|hey|yo|rex|r3x|dee\s*jay|dj)\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _clear_pending_identity_prompts(reason: str) -> bool:
+    global _identity_prompt_until, _pending_offscreen_identify, _pending_face_reveal_confirm
+    global _pending_common_first_name_identity, _pending_common_first_name_introduction
+    global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_prompted_name_confirmation, _pending_introduction
+    global _pending_intro_followup, _pending_intro_voice_capture
+
+    changed = any(
+        item is not None
+        for item in (
+            _pending_offscreen_identify,
+            _pending_face_reveal_confirm,
+            _pending_common_first_name_identity,
+            _pending_common_first_name_introduction,
+            _pending_existing_common_first_name,
+            _pending_identity_match_confirmation,
+            _pending_prompted_name_confirmation,
+            _pending_introduction,
+            _pending_intro_followup,
+            _pending_intro_voice_capture,
+        )
+    ) or _identity_prompt_until > 0.0
+
+    _identity_prompt_until = 0.0
+    _pending_offscreen_identify = None
+    _pending_face_reveal_confirm = None
+    _pending_common_first_name_identity = None
+    _pending_common_first_name_introduction = None
+    _pending_existing_common_first_name = None
+    _pending_identity_match_confirmation = None
+    _pending_prompted_name_confirmation = None
+    _pending_introduction = None
+    _pending_intro_followup = None
+    _pending_intro_voice_capture = None
+    try:
+        changed = consciousness.clear_pending_identity_prompts(reason=reason) or changed
+    except Exception as exc:
+        _log.debug("clear pending consciousness identity prompts failed: %s", exc)
+    if changed:
+        _log.info("[identity] cleared pending identity prompts reason=%s", reason)
+    return changed
+
+
 def _should_ignore_idle_background_speech(
     *,
     from_idle_activation: bool,
@@ -4129,6 +4280,64 @@ def _offscreen_identity_enrollment_audio(
     return np.zeros(1, dtype=np.float32)
 
 
+def _audio_duration_secs(audio_array: Optional[np.ndarray]) -> float:
+    if not isinstance(audio_array, np.ndarray) or len(audio_array) <= 0:
+        return 0.0
+    try:
+        rate = float(getattr(config, "AUDIO_SAMPLE_RATE", 16000) or 16000)
+    except Exception:
+        rate = 16000.0
+    if rate <= 0:
+        return 0.0
+    return float(len(audio_array)) / rate
+
+
+def _voice_enrollment_sample_allowed(
+    audio_array: Optional[np.ndarray],
+    *,
+    transcript_text: str = "",
+    confirmed: bool = False,
+) -> tuple[bool, str]:
+    min_secs = float(getattr(config, "IDENTITY_VOICE_ENROLL_MIN_AUDIO_SECS", 1.2) or 0.0)
+    min_words = int(getattr(config, "IDENTITY_VOICE_ENROLL_MIN_WORDS", 2) or 0)
+    duration = _audio_duration_secs(audio_array)
+    if duration < min_secs:
+        return False, f"audio_too_short:{duration:.2f}s<{min_secs:.2f}s"
+    if not confirmed and min_words > 0 and transcript_text:
+        words = _word_count(transcript_text)
+        if words < min_words:
+            return False, f"too_few_words:{words}<{min_words}"
+    return True, "ok"
+
+
+def _safe_enroll_voice(
+    person_id: int,
+    audio_array: Optional[np.ndarray],
+    *,
+    transcript_text: str = "",
+    source: str,
+    confirmed: bool = False,
+) -> bool:
+    allowed, reason = _voice_enrollment_sample_allowed(
+        audio_array,
+        transcript_text=transcript_text,
+        confirmed=confirmed,
+    )
+    if not allowed:
+        _log.info(
+            "[identity] skipped voice enrollment person_id=%s source=%s reason=%s",
+            person_id,
+            source,
+            reason,
+        )
+        return False
+    try:
+        return bool(speaker_id.enroll_voice(person_id, audio_array))
+    except Exception as exc:
+        _log.warning("voice enrollment failed for person_id=%s source=%s: %s", person_id, source, exc)
+        return False
+
+
 def _handle_pending_offscreen_identify_reply(
     text: str,
     *,
@@ -4254,7 +4463,13 @@ def _handle_pending_offscreen_identify_reply(
                 audio_array,
                 include_reply_audio=from_unknown_self_answer,
             )
-            speaker_id.enroll_voice(new_pid, enroll_audio)
+            _safe_enroll_voice(
+                new_pid,
+                enroll_audio,
+                transcript_text=text,
+                source="offscreen_identify",
+                confirmed=from_engaged_person,
+            )
             first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
             if created and first_inc > 0:
                 people_memory.update_familiarity(new_pid, first_inc)
@@ -5057,10 +5272,12 @@ def _attach_identity_sample_to_person(
     enroll_unknown_face: bool = False,
     defer_face_enrollment: bool = False,
 ) -> None:
-    try:
-        speaker_id.enroll_voice(person_id, audio_array)
-    except Exception as exc:
-        _log.warning("voice alias refresh failed for person_id=%s: %s", person_id, exc)
+    _safe_enroll_voice(
+        person_id,
+        audio_array,
+        source="identity_alias_refresh",
+        confirmed=True,
+    )
 
     def _enroll_face_biometric() -> None:
         try:
@@ -5363,7 +5580,12 @@ def _maybe_auto_refresh_voice(
 
     def _task() -> None:
         try:
-            ok = speaker_id.enroll_voice(person_id, audio_copy)
+            ok = _safe_enroll_voice(
+                person_id,
+                audio_copy,
+                source="auto_voice_refresh",
+                confirmed=True,
+            )
             if ok:
                 new_total = people_memory.count_biometrics(person_id, "voice")
                 _log.info(
@@ -5403,10 +5625,12 @@ def _enroll_new_person(
     if created and first_inc > 0:
         people_memory.update_familiarity(person_id, first_inc)
 
-    try:
-        speaker_id.enroll_voice(person_id, audio_array)
-    except Exception as exc:
-        _log.warning("voice enrollment failed for person_id=%s: %s", person_id, exc)
+    _safe_enroll_voice(
+        person_id,
+        audio_array,
+        source="new_person",
+        confirmed=True,
+    )
 
     def _enroll_face_biometric() -> None:
         try:
@@ -5838,7 +6062,13 @@ def _handle_intro_voice_capture(
     if not looks_like_newcomer and not accepted_unknown:
         return None
 
-    ok = speaker_id.enroll_voice(introduced_id, audio_array)
+    ok = _safe_enroll_voice(
+        introduced_id,
+        audio_array,
+        transcript_text=text,
+        source="intro_voice_capture",
+        confirmed=False,
+    )
     if not ok:
         ctx["asked_at"] = time.monotonic()
         first = _first_name_or(introduced_name)
@@ -11640,10 +11870,15 @@ def _handle_speech_segment(
     used_classified_intent = False
     trace_context_token: Optional[contextvars.Token] = None
 
+    if _shutdown_requested():
+        return
+
     # Randomised pre-response pause — prevents Rex from feeling instant/robotic
     delay_started = time.monotonic()
     delay_ms = random.randint(config.REACTION_DELAY_MS_MIN, config.REACTION_DELAY_MS_MAX)
     time.sleep(delay_ms / 1000.0)
+    if _shutdown_requested():
+        return
     _latency_log(turn_start, "reaction_delay", delay_started)
 
     # Once Rex starts speaking in response, hold AEC suppression open across any
@@ -11667,6 +11902,10 @@ def _handle_speech_segment(
             transcript_ready_at = time.monotonic()
             _latency_log(turn_start, "transcribe_and_speaker_id", process_started)
 
+        if _shutdown_requested():
+            final_executed_path = "ignored.shutdown"
+            completed = False
+            return
         if not text:
             return
 
@@ -12269,6 +12508,9 @@ def _handle_speech_segment(
                 "[interaction] speech segment — speaker=%r person_id=%s text=%r",
                 speaker_label, person_id, text,
             )
+
+        if _turn_should_defer_identity_prompts(text):
+            _clear_pending_identity_prompts("direct_turn")
 
         identity_match_response, identity_match_person_id, identity_match_name = (None, None, None)
         if not game_conversation_lock:
@@ -13958,14 +14200,25 @@ def _handle_speech_segment(
                 final_executed_path = "ignored.off_camera_background_chatter"
                 completed = False
                 return
-            if group_chatter_active:
+            if not _utterance_invites_identity_question(text):
+                _log.info(
+                    "[interaction] deferring off-camera identity ask; turn should get "
+                    "normal handling text=%r raw_best=%s score=%.3f",
+                    text,
+                    raw_best_id,
+                    speaker_score,
+                )
+                off_camera_unknown = False
+            if not off_camera_unknown:
+                pass
+            elif group_chatter_active:
                 _log.info(
                     "[interaction] suppressing off-camera identity ask during "
                     "group chatter; treating utterance as background text=%r",
                     text,
                 )
                 return
-            if person_id is not None:
+            elif person_id is not None:
                 try:
                     if boundary_memory.is_blocked(person_id, "ask", "identity"):
                         _log.info(
@@ -14020,7 +14273,6 @@ def _handle_speech_segment(
                 # person's next reply gets consumed by the _pending_offscreen_identify
                 # handler above.
                 return
-
         # Newcomer-on-camera: an unknown face is visible AND the speaker's voice
         # didn't match anyone AND this utterance didn't already enroll them via
         # the self-introduction path above. Covers the "camera handoff" case
@@ -14049,16 +14301,25 @@ def _handle_speech_segment(
                 final_executed_path = "ignored.visible_unknown_background_chatter"
                 completed = False
                 return
-            q_text = _ask_visible_unknown_identity_question(
-                text,
-                recent_engagement=recent_engagement,
-                group_chatter_active=group_chatter_active,
-                source="newcomer_on_camera",
-            )
-            if group_chatter_active:
-                return
-            if q_text:
-                return
+            if not _utterance_invites_identity_question(text):
+                _log.info(
+                    "[interaction] deferring visible-unknown identity ask; turn should "
+                    "get normal handling text=%r raw_best=%s score=%.3f",
+                    text,
+                    raw_best_id,
+                    speaker_score,
+                )
+            else:
+                q_text = _ask_visible_unknown_identity_question(
+                    text,
+                    recent_engagement=recent_engagement,
+                    group_chatter_active=group_chatter_active,
+                    source="newcomer_on_camera",
+                )
+                if group_chatter_active:
+                    return
+                if q_text:
+                    return
 
         # Empathy classification — kicked off in parallel so the affect/mode
         # directive is ready by the time the LLM-fallback path assembles its
@@ -14577,7 +14838,11 @@ def _handle_speech_segment(
                                 )
                         except Exception as exc:
                             _log.debug("emotional event ack error: %s", exc)
-                    _try_slow_path_ack("general")
+                    _try_slow_path_ack(
+                        "general",
+                        text=text,
+                        dialogue_decision=dialogue_decision,
+                    )
                     response_text = _stream_llm_response(
                         text,
                         person_id,

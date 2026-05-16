@@ -740,6 +740,26 @@ def consume_identity_prompt_request() -> bool:
     return False
 
 
+def clear_pending_identity_prompts(*, reason: str = "") -> bool:
+    """Drop identity/relationship reply windows that no longer fit the live turn."""
+    global _identity_prompt_reply_until
+    changed = (
+        _pending_identity_prompt.is_set()
+        or _identity_prompt_in_flight.is_set()
+        or _pending_relationship_prompt.is_set()
+        or bool(_pending_relationship_context)
+        or _identity_prompt_reply_until > 0.0
+    )
+    _pending_identity_prompt.clear()
+    _identity_prompt_in_flight.clear()
+    _identity_prompt_reply_until = 0.0
+    _pending_relationship_prompt.clear()
+    _pending_relationship_context.clear()
+    if changed:
+        _log.info("[identity_prompt] cleared pending identity prompts reason=%s", reason)
+    return changed
+
+
 def is_identity_prompt_in_flight() -> bool:
     """True while an unknown-person identity prompt is being queued/spoken."""
     return _identity_prompt_in_flight.is_set()
@@ -3128,6 +3148,10 @@ def _maybe_prompt_unknown_identity(
         return
 
     current_state = state_module.get_state()
+    if current_state == State.ACTIVE and not bool(
+        getattr(config, "IDENTITY_PROMPT_ALLOW_PROACTIVE_ACTIVE", False)
+    ):
+        return
     if current_state not in (State.IDLE, State.ACTIVE):
         return
     if not _can_proactive_speak():

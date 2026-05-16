@@ -234,6 +234,69 @@ def _update_crowd_count(count: int) -> dict:
     return result
 
 
+def _visible_people_count_from_world_state() -> int:
+    try:
+        people = world_state.get("people") or []
+    except Exception:
+        return 0
+    count = 0
+    for person in people:
+        if not isinstance(person, dict):
+            continue
+        if person.get("face_visible") is False or person.get("face_missing"):
+            continue
+        count += 1
+    return min(max(count, 0), 5)
+
+
+def _crowd_density_for_count(count: int) -> str:
+    if count <= 0:
+        return "empty"
+    if count <= 2:
+        return "sparse"
+    if count <= 4:
+        return "moderate"
+    return "dense"
+
+
+def _recent_animals(max_age_secs: float = 10.0) -> list[dict]:
+    try:
+        animals = world_state.get("animals") or []
+    except Exception:
+        return []
+    now = time.time()
+    recent: list[dict] = []
+    for animal in animals:
+        if not isinstance(animal, dict):
+            continue
+        last_seen = animal.get("last_seen")
+        try:
+            if last_seen is not None and (now - float(last_seen)) > max_age_secs:
+                continue
+        except (TypeError, ValueError):
+            pass
+        recent.append(animal)
+    return recent
+
+
+def _ground_environment_with_local_telemetry(result: dict) -> dict:
+    grounded = dict(result or {})
+    local_people = _visible_people_count_from_world_state()
+    if local_people > 0:
+        crowd = world_state.get("crowd") or {}
+        if int(crowd.get("count") or 0) < local_people:
+            crowd = _update_crowd_count(local_people)
+        grounded["crowd_density"] = _crowd_density_for_count(local_people)
+        grounded["local_people_count"] = local_people
+        grounded["local_crowd_label"] = crowd.get("count_label") or _count_label(local_people)
+    animals = _recent_animals()
+    if animals:
+        grounded["animals_visible"] = [
+            a.get("species", "unknown") for a in animals if isinstance(a, dict)
+        ]
+    return grounded
+
+
 def _world_state_has_visible_people() -> bool:
     try:
         people = world_state.get("people") or []
@@ -274,7 +337,10 @@ def analyze_environment(frame, force: bool = False) -> dict:
 
     # Cache check — skip the API call if the scene is likely unchanged
     now           = time.monotonic()
-    current_crowd = world_state.get("crowd").get("count", 0)
+    current_crowd = max(
+        int((world_state.get("crowd") or {}).get("count", 0) or 0),
+        _visible_people_count_from_world_state(),
+    )
     cache_age     = now - _env_cache_time
     crowd_stable  = abs(current_crowd - _env_cache_crowd) < _CROWD_CHANGE_DELTA
 
@@ -283,7 +349,11 @@ def analyze_environment(frame, force: bool = False) -> dict:
             and cache_age < config.ENVIRONMENT_SCAN_INTERVAL_SECS
             and crowd_stable):
         _log.debug("analyze_environment: cache hit (age=%.0fs)", cache_age)
-        return _env_cache
+        grounded_cache = _ground_environment_with_local_telemetry(_env_cache)
+        if grounded_cache != _env_cache:
+            _env_cache = grounded_cache
+            world_state.update("environment", grounded_cache)
+        return grounded_cache
 
     prompt = (
         "Analyze the scene in this image and return a JSON object with exactly "
@@ -316,10 +386,11 @@ def analyze_environment(frame, force: bool = False) -> dict:
         "description":    data.get("description"),
         "last_updated":   time.time(),
     }
+    result = _ground_environment_with_local_telemetry(result)
 
     _env_cache       = result
     _env_cache_time  = now
-    _env_cache_crowd = current_crowd
+    _env_cache_crowd = max(current_crowd, _visible_people_count_from_world_state())
 
     world_state.update("environment", result)
     _log.info(
@@ -454,6 +525,8 @@ def detect_lifeforms(frame) -> dict:
     crowd = _update_crowd_count(people_count)
 
     animals = _animal_records_from_response(data.get("animals") or [])
+    if not animals:
+        animals = _recent_animals()
     world_state.update("animals", animals)
 
     if animals:

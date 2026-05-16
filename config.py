@@ -2005,6 +2005,12 @@ RECENT_ENGAGEMENT_WINDOW_SECS = 60.0
 # in this window, the stored unknown audio is discarded and Rex moves on.
 OFFSCREEN_IDENTIFY_WINDOW_SECS = 30.0
 
+# Identity prompts are opportunistic social bookkeeping. If a human asks Rex a
+# direct question or gives a command while an identity prompt is pending, drop
+# the prompt instead of treating their next words as a name/relationship answer.
+IDENTITY_PROMPT_DEFER_ON_DIRECT_TURN = True
+IDENTITY_PROMPT_ALLOW_PROACTIVE_ACTIVE = False
+
 # Face detection can flicker off for a second while a newcomer is still present.
 # During this grace window, do not treat an unmatched voice as off-camera.
 UNKNOWN_FACE_RECENT_GRACE_SECS = 6.0
@@ -2078,6 +2084,12 @@ SPEAKER_ID_MAYBE_FLOOR = 0.50
 # a more robust multi-sample voice print over time without manual re-enrollment.
 AUTO_VOICE_REFRESH_MIN_SCORE = 0.90
 AUTO_VOICE_REFRESH_MAX_SAMPLES = 5
+
+# Voice enrollment samples should be long enough to represent a voice, not just
+# a one-word name or noisy aside. The person row/face can still be saved; the
+# voice biometric waits for a cleaner sample.
+IDENTITY_VOICE_ENROLL_MIN_AUDIO_SECS = 1.2
+IDENTITY_VOICE_ENROLL_MIN_WORDS = 2
 
 # If Rex asks a newcomer their name and they answer with only a very common
 # first name, ask for a last name before creating the memory row. This avoids
@@ -2401,6 +2413,8 @@ SLOW_PATH_ACK_REQUIRE_CACHE = True
 # filler messages.
 SLOW_PATH_ACK_IN_TEXT_ONLY = False
 SLOW_PATH_ACK_MIN_EXPECTED_SECS = 1.5
+SLOW_PATH_ACK_GENERAL_MIN_WORDS = 9
+SLOW_PATH_ACK_GENERAL_ALLOW_SIMPLE_QUESTIONS = False
 SLOW_PATH_ACK_EXPECTED_SECS = {
     "vision": 2.5,
     "memory": 2.0,
