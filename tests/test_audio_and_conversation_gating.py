@@ -5152,12 +5152,18 @@ class ConversationGatingTest(unittest.TestCase):
 
     def test_jeff_benziger_special_uses_starstruck_direct_greeting(self):
         from intelligence import consciousness
+        from threading import Event
 
         consciousness._jeff_celebrity_greeted_this_session.clear()
         consciousness._first_sight_seen_at.clear()
+        consciousness._pending_jeff_celebrity_greetings.clear()
+        done = Event()
+        done.set()
         with (
-            mock.patch.object(consciousness, "_should_fire_presence", return_value=True),
-            mock.patch.object(consciousness, "_generate_and_speak_presence", return_value=True) as speak,
+            mock.patch.object(consciousness, "_can_jeff_celebrity_speak", return_value=True),
+            mock.patch("audio.speech_queue.clear_below_priority") as clear_lower,
+            mock.patch("audio.speech_queue.enqueue", return_value=done) as enqueue,
+            mock.patch("memory.people.record_greeting"),
         ):
             fired = consciousness._try_fire_jeff_history_hunters_greeting(
                 key=11,
@@ -5167,10 +5173,11 @@ class ConversationGatingTest(unittest.TestCase):
             )
 
         self.assertTrue(fired)
-        kwargs = speak.call_args.kwargs
-        self.assertEqual(kwargs["emotion"], "starstruck")
-        self.assertIn(kwargs["direct_text"], consciousness._JEFF_HISTORY_HUNTERS_LINES)
-        self.assertIn("Jeff Benziger", kwargs["label"])
+        clear_lower.assert_called_once_with(2)
+        args = enqueue.call_args.args
+        self.assertIn(args[0], consciousness._JEFF_HISTORY_HUNTERS_LINES)
+        self.assertEqual(args[1], "starstruck")
+        self.assertEqual(enqueue.call_args.kwargs["priority"], 2)
         self.assertIn(11, consciousness._jeff_celebrity_greeted_this_session)
 
     def test_jeff_benziger_detection_waits_and_blocks_lower_priority_steps(self):
@@ -5178,6 +5185,7 @@ class ConversationGatingTest(unittest.TestCase):
 
         consciousness._jeff_celebrity_greeted_this_session.clear()
         consciousness._first_sight_seen_at.clear()
+        consciousness._pending_jeff_celebrity_greetings.clear()
         snapshot = {
             "people": [
                 {"person_db_id": 11, "face_id": "Jeff Benziger"},
@@ -5188,6 +5196,48 @@ class ConversationGatingTest(unittest.TestCase):
 
         self.assertTrue(handled)
         self.assertNotIn(11, consciousness._jeff_celebrity_greeted_this_session)
+
+    def test_jeff_benziger_detection_stays_pending_when_speech_busy(self):
+        from intelligence import consciousness
+
+        consciousness._jeff_celebrity_greeted_this_session.clear()
+        consciousness._first_sight_seen_at.clear()
+        consciousness._pending_jeff_celebrity_greetings.clear()
+        consciousness._first_sight_seen_at[11] = 90.0
+        snapshot = {
+            "people": [
+                {"person_db_id": 11, "face_id": "Jeff Benziger"},
+            ],
+        }
+        with (
+            mock.patch.object(consciousness.time, "monotonic", return_value=100.0),
+            mock.patch.object(consciousness, "_can_jeff_celebrity_speak", return_value=False),
+        ):
+            handled = consciousness._step_jeff_history_hunters_detection(snapshot, mock.Mock())
+
+        self.assertTrue(handled)
+        self.assertIn(11, consciousness._pending_jeff_celebrity_greetings)
+        self.assertNotIn(11, consciousness._jeff_celebrity_greeted_this_session)
+
+    def test_jeff_benziger_pending_greeting_fires_before_other_steps(self):
+        from intelligence import consciousness
+
+        consciousness._jeff_celebrity_greeted_this_session.clear()
+        consciousness._pending_jeff_celebrity_greetings.clear()
+        consciousness._pending_jeff_celebrity_greetings[11] = {
+            "person_name": "Jeff Benziger",
+            "returning": False,
+            "first_seen_at": 90.0,
+            "last_seen_at": 100.0,
+        }
+        with (
+            mock.patch.object(consciousness.time, "monotonic", return_value=101.0),
+            mock.patch.object(consciousness, "_try_fire_jeff_history_hunters_greeting", return_value=True) as fire,
+        ):
+            handled = consciousness._step_jeff_history_hunters_detection({}, mock.Mock())
+
+        self.assertTrue(handled)
+        fire.assert_called_once()
 
     def test_starstruck_emotion_is_more_dramatic_than_excited(self):
         from intelligence import emotion_orchestrator
