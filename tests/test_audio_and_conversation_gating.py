@@ -1338,26 +1338,45 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._wake_word_fired.clear()
 
-    def test_sleep_state_only_accepts_sleep_wake_word(self):
+    def test_sleep_state_accepts_general_and_sleep_wake_words(self):
         from intelligence import interaction
 
         old_state = interaction.state_module.get_state()
         interaction._wake_word_fired.clear()
         interaction.state_module.set_state(interaction.State.SLEEP)
         try:
-            with (
-                mock.patch.object(interaction, "_wake_word_recognition_gesture") as gesture,
-                mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            with mock.patch.object(
+                interaction.speech_queue,
+                "is_speaking",
+                return_value=False,
             ):
                 interaction._on_wake_word("Hey_rex")
-                self.assertFalse(interaction._wake_word_fired.is_set())
-                gesture.assert_not_called()
+                self.assertTrue(interaction._wake_word_fired.is_set())
+                with interaction._wake_lock:
+                    self.assertEqual(interaction._last_wake_word, "Hey_rex")
 
+                interaction._wake_word_fired.clear()
                 interaction._on_wake_word("wakeuprex")
                 self.assertTrue(interaction._wake_word_fired.is_set())
+                with interaction._wake_lock:
+                    self.assertEqual(interaction._last_wake_word, "wakeuprex")
         finally:
             interaction._wake_word_fired.clear()
             interaction.state_module.set_state(old_state)
+
+    def test_wake_word_detector_uses_general_models_as_sleep_fallbacks(self):
+        from audio import wake_word
+        from state import State
+
+        old_loaded = wake_word._loaded_models
+        wake_word._loaded_models = frozenset({"Hey_rex", "Yo_robot", "wakeuprex"})
+        try:
+            self.assertEqual(
+                wake_word._active_for_state(State.SLEEP),
+                frozenset({"Hey_rex", "Yo_robot", "wakeuprex"}),
+            )
+        finally:
+            wake_word._loaded_models = old_loaded
 
     def test_wake_word_recognition_gesture_filters_and_cools_down(self):
         from intelligence import interaction
@@ -1518,7 +1537,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
     def test_identity_prompt_name_reply_acknowledges_without_router_correction(self):
         from contextlib import ExitStack
         import numpy as np
-        from intelligence import interaction
+        from intelligence import interaction, person_specials
 
         old_people = interaction.world_state.get("people")
         old_until = interaction._identity_prompt_until
@@ -1683,17 +1702,18 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 person_id=2,
                 person_name="JT",
             )
+            expected_ack = person_specials.jt_volleyball_intro_ack("JT")
             speak.assert_called_once_with(
-                "Got it, JT. Nice to meet you.",
+                expected_ack,
                 emotion="happy",
                 pre_beat_ms=100,
                 post_beat_ms_override=200,
             )
             add_transcript.assert_any_call("JT", "JT")
-            add_transcript.assert_any_call("Rex", "Got it, JT. Nice to meet you.")
+            add_transcript.assert_any_call("Rex", expected_ack)
             log_heard.assert_called_once_with("JT", "JT")
-            log_rex.assert_called_once_with("Got it, JT. Nice to meet you.")
-            register.assert_called_once_with("Got it, JT. Nice to meet you.")
+            log_rex.assert_called_once_with(expected_ack)
+            register.assert_called_once_with(expected_ack)
             name_update.assert_not_called()
             decide.assert_not_called()
         finally:
@@ -1707,7 +1727,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
     def test_pending_identity_prompt_reply_from_idle_enrolls_before_background_filter(self):
         from contextlib import ExitStack
         import numpy as np
-        from intelligence import interaction
+        from intelligence import interaction, person_specials
 
         old_people = interaction.world_state.get("people")
         old_until = interaction._identity_prompt_until
@@ -1892,20 +1912,18 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 person_id=2,
                 person_name="Bret Benziger",
             )
+            expected_ack = person_specials.rex_creator_intro_ack("Bret Benziger")
             speak.assert_called_once_with(
-                "Got it, Bret Benziger. Nice to meet you.",
+                expected_ack,
                 emotion="happy",
                 pre_beat_ms=100,
                 post_beat_ms_override=200,
             )
             add_transcript.assert_any_call("Bret Benziger", "Bret Benziger")
-            add_transcript.assert_any_call(
-                "Rex",
-                "Got it, Bret Benziger. Nice to meet you.",
-            )
+            add_transcript.assert_any_call("Rex", expected_ack)
             log_heard.assert_called_once_with("Bret Benziger", "Bret Benziger")
-            log_rex.assert_called_once_with("Got it, Bret Benziger. Nice to meet you.")
-            register.assert_called_once_with("Got it, Bret Benziger. Nice to meet you.")
+            log_rex.assert_called_once_with(expected_ack)
+            register.assert_called_once_with(expected_ack)
             name_update.assert_not_called()
             decide.assert_not_called()
         finally:
@@ -3828,7 +3846,12 @@ class ConversationGatingTest(unittest.TestCase):
                 mock.patch.object(interaction.time, "monotonic", return_value=10.5),
                 mock.patch.object(interaction._log, "info"),
             ):
-                self.assertTrue(interaction._try_slow_path_ack("general"))
+                self.assertTrue(
+                    interaction._try_slow_path_ack(
+                        "general",
+                        text="Tell me something complicated enough to need a little thinking time.",
+                    )
+                )
         finally:
             interaction._last_slow_path_ack = previous_ack
             interaction._current_character_loop_trace.reset(token)
@@ -6696,6 +6719,11 @@ class ConversationGatingTest(unittest.TestCase):
                 mock.patch("vision.face.identify_face", return_value=None),
                 mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
                 mock.patch.object(consciousness.state_module, "get_state", return_value=State.ACTIVE),
+                mock.patch.object(
+                    consciousness.config,
+                    "IDENTITY_PROMPT_ALLOW_PROACTIVE_ACTIVE",
+                    True,
+                ),
                 mock.patch.object(consciousness.time, "monotonic", return_value=100.0),
                 mock.patch.object(consciousness, "_speak_async", return_value=True) as speak,
             ):
@@ -7031,14 +7059,14 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         with (
             mock.patch.object(interaction.time, "monotonic", return_value=101.0),
             mock.patch.object(dj, "handle_request", return_value=track) as handle,
-            mock.patch.object(dj, "play") as play,
+            mock.patch.object(interaction, "_start_dj_after_response") as start_dj,
             mock.patch.object(interaction, "_speak_blocking") as speak,
         ):
             response = interaction._handle_pending_music_offer_reply(1, "yes")
 
         self.assertIn("Spinning Classical Test", response)
         handle.assert_called_once_with("classical music")
-        play.assert_called_once_with(track)
+        start_dj.assert_called_once_with(track)
         speak.assert_called_once()
         self.assertIsNone(interaction._pending_music_offer)
 
@@ -8396,6 +8424,12 @@ class GroupChatterGatingTest(unittest.TestCase):
                     "find_or_create_person",
                     return_value=(77, True),
                 ) as find_or_create,
+                mock.patch.object(
+                    interaction.config,
+                    "IDENTITY_VOICE_ENROLL_MIN_AUDIO_SECS",
+                    0.0,
+                ),
+                mock.patch.object(interaction.config, "IDENTITY_VOICE_ENROLL_MIN_WORDS", 1),
                 mock.patch.object(interaction.speaker_id, "enroll_voice") as enroll_voice,
                 mock.patch.object(interaction.people_memory, "update_familiarity") as update_familiarity,
                 mock.patch.object(interaction, "_has_unknown_visible_person", return_value=False),

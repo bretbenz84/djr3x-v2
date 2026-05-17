@@ -554,9 +554,6 @@ def _on_wake_word(model_name: str) -> None:
         current_state = state_module.get_state()
     except Exception:
         current_state = State.IDLE
-    if current_state == State.SLEEP and model_name != "wakeuprex":
-        _log.info("[wake_word] ignored non-sleep wake word while asleep: %s", model_name)
-        return
     if current_state != State.SLEEP and model_name == "wakeuprex":
         _log.info("[wake_word] ignored sleep-only wake word while not asleep: %s", model_name)
         return
@@ -15176,7 +15173,7 @@ def _loop() -> None:
             _stop_event.wait(0.1)
             continue
 
-        # ── SLEEP — only wakeuprex fires the callback; gate transition here ────
+        # ── SLEEP — any active wake model can bring Rex back online ───────────
         if current_state == State.SLEEP:
             try:
                 _situation_assessor.set_vad_active(False)
@@ -15186,9 +15183,8 @@ def _loop() -> None:
                 _wake_word_fired.clear()
                 with _wake_lock:
                     model = _last_wake_word
-                # wake_word.py only routes 'wakeuprex' to the callback in SLEEP;
-                # the check is defensive in case that ever changes.
-                if model == "wakeuprex":
+                if model:
+                    _log.info("[wake_word] waking from sleep via model=%s", model)
                     _last_speech_at = time.monotonic()
                     _wake_from_sleep()
             _stop_event.wait(0.05)
