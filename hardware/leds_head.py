@@ -59,6 +59,10 @@ def _is_speech_led_command(family: str) -> bool:
     return family in {"SPEAK", "SPEAK_LEVEL", "SPEAK_STOP"}
 
 
+def _is_critical_led_command(family: str) -> bool:
+    return family in {"SPEAK_STOP", "OFF", "IDLE", "ACTIVE", "SLEEP"}
+
+
 def _report_drops_if_due(now: float) -> None:
     global _dropped_counts, _drop_window_started_at, _next_drop_report_at
     if not _dropped_counts or now < _next_drop_report_at:
@@ -180,6 +184,8 @@ def send_command(cmd: str) -> None:
         _flush_drop_summary("is online")
         try:
             _ser.write((cmd + "\n").encode())
+            if _is_critical_led_command(family):
+                _ser.flush()
         except _SERIAL_ERRORS as exc:
             _log.warning("Head Arduino write failed for %s command: %s", family, exc)
             try:
@@ -216,6 +222,7 @@ def speak_stop() -> None:
     if not _serial_online():
         send_command("SPEAK_STOP")
         return
+    send_command("SPEAK_LEVEL:0")
     repeats = int(getattr(config, "HEAD_LED_SPEAK_STOP_REPEATS", 3) or 1)
     repeats = max(1, min(10, repeats))
     delay = float(getattr(config, "HEAD_LED_SPEAK_STOP_REPEAT_DELAY_SECS", 0.025) or 0.0)
@@ -278,7 +285,23 @@ def off() -> None:
     _eyes_active = False
     _led_mode = "off"
     _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=False)
-    send_command("OFF")
+    if not _serial_online():
+        send_command("OFF")
+        return
+    send_command("SPEAK_LEVEL:0")
+    repeats = int(getattr(config, "HEAD_LED_SPEAK_STOP_REPEATS", 3) or 1)
+    repeats = max(1, min(10, repeats))
+    delay = float(getattr(config, "HEAD_LED_SPEAK_STOP_REPEAT_DELAY_SECS", 0.025) or 0.0)
+    delay = max(0.0, min(1.0, delay))
+    for idx in range(repeats):
+        send_command("SPEAK_STOP")
+        if not _serial_online():
+            break
+        send_command("OFF")
+        if not _serial_online():
+            break
+        if idx < repeats - 1 and delay > 0.0:
+            time.sleep(delay)
 
 
 def sleep() -> None:
