@@ -56,6 +56,7 @@ from intelligence import turn_completion
 from intelligence import friendship_patterns
 from intelligence import conversation_steering
 from intelligence import profile_questions
+from intelligence import person_specials
 from memory import facts as facts_memory
 from memory import preferences as preferences_memory
 from memory import interests as interests_memory
@@ -3051,6 +3052,45 @@ def _first_name_or(value: Optional[str], fallback: str = "") -> str:
     return parts[0] if parts else fallback
 
 
+def _identity_enrollment_ack(name: str) -> str:
+    special = person_specials.special_intro_ack(name)
+    if special:
+        return special
+    return f"Got it, {name}. Nice to meet you."
+
+
+def _special_intro_prompt(name: str) -> Optional[str]:
+    special_context = person_specials.special_prompt_context(name)
+    if not special_context:
+        return None
+    if person_specials.is_jt_volleyball_celebrity(name):
+        special_instruction = (
+            "acknowledge them by name as a major volleyball celebrity. Include "
+            "one affectionate joke about getting old as a volleyball athlete, "
+            "with bones or muscles as the absurd target."
+        )
+    elif person_specials.is_rex_creator(name):
+        special_instruction = (
+            "acknowledge Bret Benziger by name as Rex's creator and maker. Be "
+            "warm, reverent, loyal, and still dryly Rex about being Bret's "
+            "high-maintenance droid creation."
+        )
+    elif person_specials.is_galactic_hair_stylist(name):
+        special_instruction = (
+            "acknowledge them by name as one of the greatest hair stylists in "
+            "the galactic quadrant. Include one affectionate joke about elite "
+            "styling skills, legendary blowouts, emergency bang repair, or "
+            "frizz surrendering."
+        )
+    else:
+        special_instruction = "acknowledge them by name with the special hook."
+    return (
+        f"{special_context} You just learned this person's name is {name}. "
+        f"In ONE short in-character Rex line, {special_instruction} "
+        "No follow-up question."
+    )
+
+
 def _same_person_name(left: Optional[str], right: Optional[str]) -> bool:
     left_norm = _normalize_name(left or "")
     right_norm = _normalize_name(right or "")
@@ -3871,7 +3911,9 @@ def _handle_name_update_request(
         new_name,
         text,
     )
-    response = repair_moves.add_better_luck_line(f"Got it. I'll call you {new_name}.")
+    response = _identity_enrollment_ack(new_name)
+    if not person_specials.special_intro_ack(new_name):
+        response = repair_moves.add_better_luck_line(f"Got it. I'll call you {new_name}.")
     _speak_blocking(response, emotion="happy")
     return response
 
@@ -5515,7 +5557,7 @@ def _handle_pending_prompted_name_confirmation(
             person_name=candidate,
         )
         _mark_single_name_for_later_last_name(person_id, candidate)
-        return f"Got it, {candidate}. Nice to meet you.", person_id, candidate
+        return _identity_enrollment_ack(candidate), person_id, candidate
 
     if _identity_confirmation_declines(text):
         _pending_prompted_name_confirmation = None
@@ -5544,7 +5586,7 @@ def _handle_pending_prompted_name_confirmation(
             person_name=replacement,
         )
         _mark_single_name_for_later_last_name(person_id, replacement)
-        return f"Got it, {replacement}. Nice to meet you.", person_id, replacement
+        return _identity_enrollment_ack(replacement), person_id, replacement
 
     return None, None, None
 
@@ -5890,8 +5932,55 @@ def _intro_ack_and_followup(
     followup_kind = (
         "relationship_color" if self_explanatory_relationship else "connection_story"
     )
+    special_context = (
+        person_specials.special_prompt_context(introduced_name)
+        if visible_newcomer
+        else None
+    )
+    if person_specials.is_jt_volleyball_celebrity(introduced_name):
+        special_quip_instruction = (
+            f"acknowledge {introduced_first} by name as a major volleyball "
+            "celebrity with one affectionate joke about getting old, bones, "
+            "or muscles."
+        )
+    elif person_specials.is_rex_creator(introduced_name):
+        special_quip_instruction = (
+            "acknowledge Bret Benziger by name as Rex's creator and maker. Be "
+            "warm, reverent, loyal, and still dryly Rex about being Bret's "
+            "high-maintenance droid creation."
+        )
+    elif person_specials.is_galactic_hair_stylist(introduced_name):
+        special_quip_instruction = (
+            f"acknowledge {introduced_first} by name as one of the greatest "
+            "hair stylists in the galactic quadrant with one affectionate "
+            "joke about legendary styling skills, blowouts, bangs, or frizz."
+        )
+    else:
+        special_quip_instruction = f"acknowledge {introduced_first} by name."
 
-    if visible_newcomer and self_explanatory_relationship:
+    if special_context and self_explanatory_relationship:
+        question_instruction = _intro_relationship_question_instruction(
+            relationship,
+            introducer_first,
+            introduced_first,
+        )
+        prompt = (
+            f"{introducer_first} just explicitly introduced {introduced_first} "
+            f"as {introducer_first}'s {rel_clause}. {special_context} "
+            f"In one or two short in-character Rex sentences, "
+            f"{special_quip_instruction} {question_instruction} Address "
+            f"{introduced_first}, not {introducer_first}. Do NOT ask how they "
+            "know each other."
+        )
+    elif special_context:
+        prompt = (
+            f"{introducer_first} just explicitly introduced {introduced_first} "
+            f"as their {rel_clause}. {special_context} In ONE short "
+            f"in-character Rex line, {special_quip_instruction} Then ask how "
+            f"{introduced_first} and {introducer_first} know each other. Address {introduced_first}, "
+            f"not just {introducer_first}."
+        )
+    elif visible_newcomer and self_explanatory_relationship:
         question_instruction = _intro_relationship_question_instruction(
             relationship,
             introducer_first,
@@ -5932,7 +6021,17 @@ def _intro_ack_and_followup(
         _log.debug("intro ack generation failed: %s", exc)
         text = ""
     if not text:
-        if self_explanatory_relationship:
+        special_ack = person_specials.special_intro_ack(introduced_name)
+        if special_ack and self_explanatory_relationship:
+            text = (
+                f"{special_ack} What should I know about {introducer_first} "
+                "from your side of the evidence locker?"
+            )
+        elif special_ack:
+            text = (
+                f"{special_ack} How did you end up in {introducer_first}'s orbit?"
+            )
+        elif self_explanatory_relationship:
             text = (
                 f"{introduced_first}, welcome. So you're {introducer_first}'s "
                 f"{rel_clause}; suddenly several mysteries have useful context. "
@@ -12783,7 +12882,12 @@ def _handle_speech_segment(
 
                 first = _first_name_or(self_identified_name, self_identified_name)
                 prior_first = _first_name_or((prior_engagement or {}).get("name"))
-                if relationship and prior_first:
+                special_intro_ack = person_specials.special_intro_ack(
+                    self_identified_name
+                )
+                if special_intro_ack:
+                    ack_text = special_intro_ack
+                elif relationship and prior_first:
                     rel_words = relationship.replace("_", " ")
                     ack_text = (
                         f"{first}. Filed. Relationship to {prior_first}: {rel_words}. That explains at least "
@@ -12792,11 +12896,15 @@ def _handle_speech_segment(
                 else:
                     ack_text = f"{first}. Filed under 'new biological, probably trouble.'"
                 try:
+                    special_prompt = _special_intro_prompt(self_identified_name)
                     ack_text = llm.get_response(
-                        f"You just learned a visible newcomer's name is {self_identified_name}. "
-                        f"{('They said their relationship to ' + prior_first + ' is ' + relationship + '.') if relationship and prior_first else ''} "
-                        f"In ONE short in-character Rex line, acknowledge them by name. "
-                        f"Do not ask another question."
+                        special_prompt
+                        or (
+                            f"You just learned a visible newcomer's name is {self_identified_name}. "
+                            f"{('They said their relationship to ' + prior_first + ' is ' + relationship + '.') if relationship and prior_first else ''} "
+                            f"In ONE short in-character Rex line, acknowledge them by name. "
+                            f"Do not ask another question."
+                        )
                     ) or ack_text
                 except Exception as exc:
                     _log.debug("self-intro ack generation failed: %s", exc)
@@ -13363,9 +13471,7 @@ def _handle_speech_segment(
                             has_unknown_visible_or_recent=has_unknown_visible_or_recent,
                         )
                         _identity_prompt_until = 0.0
-                        prompted_identity_ack_text = (
-                            f"Got it, {intro_name}. Nice to meet you."
-                        )
+                        prompted_identity_ack_text = _identity_enrollment_ack(intro_name)
 
                         # Chain into a relationship follow-up if we were just
                         # engaged with someone else — set a flag for the post-
