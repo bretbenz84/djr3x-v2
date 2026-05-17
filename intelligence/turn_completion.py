@@ -37,6 +37,18 @@ _COMPLETE_PREPOSITION_QUESTION_PAT = re.compile(
     r".*\b(?:about|for|from|to|with)\s*\??\s*$",
     re.IGNORECASE,
 )
+_COMPLETE_EMBEDDED_PREPOSITION_PAT = re.compile(
+    r"\b(?:who|whom|what|which|where|whose|that)\b.*(?:"
+    r"\b(?:refer(?:red|ring)?|talk(?:ed|ing)?|speak(?:s|ing|spoke|spoken)?|"
+    r"ask(?:s|ed|ing)?|look(?:s|ed|ing)?|search(?:es|ed|ing)?|"
+    r"wait(?:s|ed|ing)?|listen(?:s|ed|ing)?|respond(?:s|ed|ing)?|"
+    r"repl(?:y|ies|ied|ying)|connect(?:s|ed|ing)?|belong(?:s|ed|ing)?|"
+    r"relat(?:es|ed|ing)|come|came|coming|work(?:s|ed|ing)?|"
+    r"live(?:s|d|ing)?|am|are|is|was|were|be|been|being)\b|"
+    r"\b(?:i|you|we|they|it|that|this|who|what|where|there)'(?:m|re|s)\b"
+    r")\s+(?:about|for|from|to|with)\s*$",
+    re.IGNORECASE,
+)
 
 _INCOMPLETE_END_WORDS = {
     "about", "after", "and", "because", "before", "but", "for", "from",
@@ -70,6 +82,8 @@ _INCOMPLETE_END_PHRASES = (
     "let me",
     "looking forward to",
     "my point is",
+    "need to",
+    "needed to",
     "planning to",
     "so i",
     "supposed to",
@@ -165,6 +179,11 @@ def classify(text: str) -> Optional[IncompleteSignal]:
         )
 
     if _COMPLETE_PREPOSITION_QUESTION_PAT.match(cleaned):
+        return None
+
+    # Embedded wh-clauses often end with a preposition but are complete
+    # answers: "I don't know who you're referring to", "that's where I'm from".
+    if _COMPLETE_EMBEDDED_PREPOSITION_PAT.search(lower):
         return None
 
     if last in _INCOMPLETE_END_WORDS:

@@ -3636,6 +3636,35 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertFalse(interaction._vad_barge_in_enabled())
 
 
+class TurnCompletionTest(unittest.TestCase):
+    def tearDown(self):
+        from intelligence import turn_completion
+
+        turn_completion.clear()
+
+    def test_embedded_preposition_answers_are_complete(self):
+        from intelligence import turn_completion
+
+        complete_answers = [
+            "I'm not sure who you're referring to",
+            "I don't know what you're talking about",
+            "That's where I'm from",
+            "That is what this is for.",
+        ]
+
+        for text in complete_answers:
+            with self.subTest(text=text):
+                self.assertIsNone(turn_completion.classify(text))
+
+    def test_real_to_fragments_still_hold(self):
+        from intelligence import turn_completion
+
+        for text in ("I need to", "I don't know what I need to", "I'm going to"):
+            with self.subTest(text=text):
+                signal = turn_completion.classify(text)
+                self.assertIsNotNone(signal)
+
+
 class ConversationGatingTest(unittest.TestCase):
     def test_latency_fillers_are_in_character_not_human_disfluencies(self):
         import config
