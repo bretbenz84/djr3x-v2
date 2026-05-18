@@ -1378,6 +1378,75 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             wake_word._loaded_models = old_loaded
 
+    def test_sleep_wake_transcript_requires_explicit_rex_wake_phrase(self):
+        from intelligence import interaction
+
+        for text in [
+            "wake up rex",
+            "wake up, Rex.",
+            "please wake up DJ Rex",
+            "R3X wake up",
+            "wakeuprex",
+        ]:
+            with self.subTest(text=text):
+                self.assertTrue(interaction._is_sleep_wake_transcript(text))
+
+        for text in [
+            "wake up",
+            "hey rex",
+            "wake me up rex",
+            "don't wake up rex",
+            "I should wake up Rex later",
+        ]:
+            with self.subTest(text=text):
+                self.assertFalse(interaction._is_sleep_wake_transcript(text))
+
+    def test_sleep_transcription_fallback_wakes_on_phrase(self):
+        import numpy as np
+        from intelligence import interaction
+
+        previous_last = interaction._last_speech_at
+        try:
+            with (
+                mock.patch.object(
+                    interaction.transcription,
+                    "transcribe",
+                    return_value="wake up rex",
+                ),
+                mock.patch.object(interaction, "_wake_from_sleep", return_value="awake") as wake,
+                mock.patch.object(interaction.time, "monotonic", return_value=123.0),
+            ):
+                self.assertTrue(
+                    interaction._wake_from_sleep_if_transcribed(
+                        np.ones(1600, dtype=np.float32)
+                    )
+                )
+
+            wake.assert_called_once()
+            self.assertEqual(interaction._last_speech_at, 123.0)
+        finally:
+            interaction._last_speech_at = previous_last
+
+    def test_sleep_transcription_fallback_ignores_non_wake_phrase(self):
+        import numpy as np
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(
+                interaction.transcription,
+                "transcribe",
+                return_value="thanks for watching",
+            ),
+            mock.patch.object(interaction, "_wake_from_sleep") as wake,
+        ):
+            self.assertFalse(
+                interaction._wake_from_sleep_if_transcribed(
+                    np.ones(1600, dtype=np.float32)
+                )
+            )
+
+        wake.assert_not_called()
+
     def test_wake_word_recognition_gesture_filters_and_cools_down(self):
         from intelligence import interaction
         from sequences import animations
@@ -2195,6 +2264,13 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             "Smith",
         )
         self.assertIsNone(interaction._extract_last_name_reply("John", "John"))
+        self.assertIsNone(interaction._extract_last_name_reply("No", "John"))
+        self.assertIsNone(
+            interaction._extract_last_name_reply(
+                "No, I'm not going to He has a memory Ah",
+                "John",
+            )
+        )
 
     def test_last_name_refusal_variations_are_recognized(self):
         from intelligence import interaction
@@ -2208,6 +2284,10 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             "first name only",
             "just John",
             "you can call me John",
+            "No",
+            "No thanks",
+            "No, I'm not going to",
+            "No, I'm not going to He has a memory Ah",
         ]
         for text in refusals:
             self.assertTrue(
@@ -2483,12 +2563,29 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._pending_common_first_name_introduction = None
 
-    def test_returning_common_first_name_person_is_prompted_once(self):
+    def test_returning_common_first_name_person_waits_for_longer_conversation(self):
         from intelligence import interaction
 
         interaction._pending_existing_common_first_name = None
         interaction._common_first_name_prompted_this_session.clear()
+        interaction._session_person_turn_counts.clear()
         try:
+            with mock.patch.object(
+                interaction,
+                "_has_declined_last_name",
+                return_value=False,
+            ):
+                response = interaction._maybe_prompt_existing_common_first_name(
+                    3,
+                    "Daniel",
+                )
+
+            self.assertIsNone(response)
+            self.assertIsNone(interaction._pending_existing_common_first_name)
+            self.assertNotIn(3, interaction._common_first_name_prompted_this_session)
+
+            min_turns = interaction._last_name_prompt_min_person_turns()
+            interaction._session_person_turn_counts[3] = min_turns
             with mock.patch.object(
                 interaction,
                 "_has_declined_last_name",
@@ -2519,12 +2616,14 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._pending_existing_common_first_name = None
             interaction._common_first_name_prompted_this_session.clear()
+            interaction._session_person_turn_counts.clear()
 
     def test_returning_common_first_name_prompt_defers_for_commands(self):
         from intelligence import interaction
 
         interaction._pending_existing_common_first_name = None
         interaction._common_first_name_prompted_this_session.clear()
+        interaction._session_person_turn_counts.clear()
         try:
             with mock.patch.object(
                 interaction,
@@ -2543,13 +2642,29 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._pending_existing_common_first_name = None
             interaction._common_first_name_prompted_this_session.clear()
+            interaction._session_person_turn_counts.clear()
 
-    def test_returning_single_non_common_name_is_prompted_for_last_name(self):
+    def test_returning_single_non_common_name_waits_for_longer_conversation(self):
         from intelligence import interaction
 
         interaction._pending_existing_common_first_name = None
         interaction._common_first_name_prompted_this_session.clear()
+        interaction._session_person_turn_counts.clear()
         try:
+            with mock.patch.object(
+                interaction,
+                "_has_declined_last_name",
+                return_value=False,
+            ):
+                response = interaction._maybe_prompt_existing_common_first_name(
+                    7,
+                    "Bret",
+                )
+
+            self.assertIsNone(response)
+            self.assertIsNone(interaction._pending_existing_common_first_name)
+
+            interaction._session_person_turn_counts[7] = interaction._last_name_prompt_min_person_turns()
             with mock.patch.object(
                 interaction,
                 "_has_declined_last_name",
@@ -2568,6 +2683,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._pending_existing_common_first_name = None
             interaction._common_first_name_prompted_this_session.clear()
+            interaction._session_person_turn_counts.clear()
 
     def test_first_name_match_asks_before_aliasing_existing_person(self):
         from intelligence import interaction
@@ -2740,6 +2856,12 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     "What time is it?"
                 )
             )
+            self.assertEqual(
+                interaction._pending_existing_common_first_name_reply_target(
+                    "No, I'm not going to He has a memory Ah"
+                ),
+                (3, "Gloria"),
+            )
         finally:
             interaction._pending_existing_common_first_name = None
 
@@ -2762,6 +2884,32 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 )
 
             self.assertIn("Daniel", response)
+            remember.assert_called_once_with(3, "Daniel")
+            self.assertIsNone(interaction._pending_existing_common_first_name)
+        finally:
+            interaction._pending_existing_common_first_name = None
+            interaction._common_first_name_prompted_this_session.clear()
+
+    def test_returning_common_first_name_implicit_refusal_is_not_saved_as_no(self):
+        from intelligence import interaction
+
+        interaction._pending_existing_common_first_name = {
+            "person_id": 3,
+            "first_name": "Daniel",
+            "asked_at": interaction.time.monotonic(),
+        }
+        interaction._common_first_name_prompted_this_session.clear()
+        try:
+            with (
+                mock.patch.object(interaction.people_memory, "rename_person") as rename,
+                mock.patch.object(interaction, "_remember_last_name_declined") as remember,
+            ):
+                response = interaction._handle_existing_common_first_name_last_name_reply(
+                    "No, I'm not going to He has a memory Ah"
+                )
+
+            self.assertIn("Daniel", response)
+            rename.assert_not_called()
             remember.assert_called_once_with(3, "Daniel")
             self.assertIsNone(interaction._pending_existing_common_first_name)
         finally:

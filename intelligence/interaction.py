@@ -204,6 +204,7 @@ _interrupted = threading.Event()
 
 # Session tracking ────────────────────────────────────────────────────────────
 _session_person_ids: set[int] = set()
+_session_person_turn_counts: dict[int, int] = {}
 _session_exchange_count: int = 0
 _last_speech_at: float = 0.0  # monotonic timestamp of most recent speech chunk
 _session_forget_terms: dict[int, set[str]] = {}
@@ -2205,6 +2206,31 @@ def _is_bare_wake_address(text: str) -> bool:
     return bool(_BARE_WAKE_ADDRESS_PAT.match(text or ""))
 
 
+def _is_sleep_wake_transcript(text: str) -> bool:
+    """Return True for explicit transcribed phrases that should exit sleep."""
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return False
+    cleaned = re.sub(r"[^a-z0-9]+", " ", raw).strip()
+    compact = re.sub(r"[^a-z0-9]", "", raw)
+    if compact in {
+        "wakeuprex",
+        "wakeupr3x",
+        "wakeuprx",
+        "rexwakeup",
+        "r3xwakeup",
+        "rxwakeup",
+    }:
+        return True
+    rex_name = r"(?:d\s*j\s+)?(?:rex|r\s*3\s*x|r3x|rx)"
+    wake_prefix = r"(?:(?:hey|yo)\s+)?(?:please\s+)?"
+    wake_suffix = r"(?:\s+please)?"
+    return bool(
+        re.fullmatch(rf"{wake_prefix}wake\s+up\s+{rex_name}{wake_suffix}", cleaned)
+        or re.fullmatch(rf"{wake_prefix}{rex_name}\s+wake\s+up{wake_suffix}", cleaned)
+    )
+
+
 def _shutdown_requested() -> bool:
     try:
         if _stop_event.is_set():
@@ -3402,6 +3428,18 @@ _LAST_NAME_REFUSAL_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_LAST_NAME_IMPLICIT_REFUSAL_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:no+|nope|nah|naw)(?:\s*[,!.]?\s*(?:thanks|thank\s+you)?)?$|"
+    r"(?:(?:no+|nope|nah|naw)\s*[,!.]?\s*)?"
+    r"(?:(?:i\s+)?(?:am\s+not|ain['’]?t)|i['’]?m\s+not)\s+"
+    r"(?:going|gonna)\s+to\b|"
+    r"(?:(?:no+|nope|nah|naw)\s*[,!.]?\s*)?"
+    r"(?:i\s+)?(?:won['’]?t|will\s+not|do\s+not|don['’]?t)\s+"
+    r"(?:(?:want|wanna)\s+to\s+)?(?:say|tell|share|give|do\s+that)\b"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _is_last_name_refusal(text: str, first_name: str) -> bool:
@@ -3410,7 +3448,10 @@ def _is_last_name_refusal(text: str, first_name: str) -> bool:
     if not cleaned or not first:
         return False
     pattern = _LAST_NAME_REFUSAL_RE.pattern.format(first=first)
-    return bool(re.search(pattern, cleaned, re.IGNORECASE))
+    return bool(
+        re.search(pattern, cleaned, re.IGNORECASE)
+        or _LAST_NAME_IMPLICIT_REFUSAL_RE.search(cleaned)
+    )
 
 
 def _common_first_name_context_fresh(ctx: Optional[dict]) -> bool:
@@ -3691,6 +3732,7 @@ def _scrub_world_state_after_memory_wipe(
 def _clear_deleted_person_session_state(person_id: int) -> None:
     pid = int(person_id)
     _session_person_ids.discard(pid)
+    _session_person_turn_counts.pop(pid, None)
     _session_forget_terms.pop(pid, None)
     _session_router_control_topics.pop(pid, None)
     _grief_flow_state.pop(pid, None)
@@ -3815,6 +3857,7 @@ def _handle_pending_memory_wipe_confirmation(
         elif scope == "all":
             people_memory.delete_all_people()
             _session_person_ids.clear()
+            _session_person_turn_counts.clear()
             _session_forget_terms.clear()
             _session_router_control_topics.clear()
             _clear_anonymous_speaker_slots()
@@ -5179,11 +5222,24 @@ def _maybe_prompt_existing_common_first_name(
         )
         return None
 
+    pid = int(person_id)
+    min_turns = _last_name_prompt_min_person_turns()
+    turn_count = _session_person_turn_counts.get(pid, 0)
+    if not _person_ready_for_last_name_prompt(pid):
+        _log.info(
+            "[identity] deferring last-name prompt for person_id=%s name=%r "
+            "until longer conversation turns=%s/%s",
+            pid,
+            person_name,
+            turn_count,
+            min_turns,
+        )
+        return None
+
     first_name = _normalize_name(person_name or "") or (person_name or "").strip()
     if not first_name:
         return None
 
-    pid = int(person_id)
     _pending_existing_common_first_name = {
         "person_id": pid,
         "first_name": first_name,
@@ -5209,6 +5265,33 @@ def _mark_single_name_for_later_last_name(person_id: Optional[int], person_name:
         person_id,
         normalized,
     )
+
+
+def _note_session_person_turn(person_id: Optional[int]) -> None:
+    pid = _safe_int(person_id)
+    if pid is None:
+        return
+    _session_person_turn_counts[pid] = _session_person_turn_counts.get(pid, 0) + 1
+
+
+def _last_name_prompt_min_person_turns() -> int:
+    configured = getattr(config, "COMMON_FIRST_NAME_LAST_NAME_MIN_PERSON_TURNS", None)
+    if configured is None:
+        configured = getattr(config, "LONG_CONVERSATION_MIN_EXCHANGES", 5)
+    try:
+        return max(0, int(configured))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _person_ready_for_last_name_prompt(person_id: Optional[int]) -> bool:
+    pid = _safe_int(person_id)
+    if pid is None:
+        return False
+    min_turns = _last_name_prompt_min_person_turns()
+    if min_turns <= 0:
+        return True
+    return _session_person_turn_counts.get(pid, 0) >= min_turns
 
 
 def _identity_match_confirmation_fresh(ctx: Optional[dict]) -> bool:
@@ -6673,7 +6756,11 @@ def _speech_capture_secs(speech_start_mono: float, finished_mono: Optional[float
     return min(duration, float(config.AUDIO_BUFFER_SECONDS))
 
 
-def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
+def _accumulate_speech(
+    speech_start_mono: float,
+    *,
+    allowed_states: tuple[State, ...] = (State.ACTIVE,),
+) -> Optional[np.ndarray]:
     """
     Poll VAD until config.SILENCE_TIMEOUT_SECS of sustained silence, then
     return the full speech segment captured from the rolling buffer.
@@ -6685,7 +6772,7 @@ def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
     silence_elapsed = 0.0
 
     while not _stop_event.is_set():
-        if state_module.get_state() != State.ACTIVE:
+        if state_module.get_state() not in allowed_states:
             return None
 
         chunk = stream.get_audio_chunk(_CHUNK_SECS)
@@ -6714,6 +6801,27 @@ def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
     # post-TTS handoff so Rex's own question is not transcribed as user speech.
     capture_secs = _speech_capture_secs(speech_start_mono)
     return stream.get_audio_chunk(capture_secs)
+
+
+def _wake_from_sleep_if_transcribed(audio_segment: Optional[np.ndarray]) -> bool:
+    """Wake from sleep when a transcribed sleep utterance is an explicit wake phrase."""
+    global _last_speech_at
+    if audio_segment is None or len(audio_segment) == 0:
+        return False
+    try:
+        text = transcription.transcribe(audio_segment).strip()
+    except Exception as exc:
+        _log.debug("[sleep_mode] wake transcript failed: %s", exc)
+        return False
+    if not text:
+        return False
+    if not _is_sleep_wake_transcript(text):
+        _log.info("[sleep_mode] ignored sleeping speech text=%r", text)
+        return False
+    _log.info("[sleep_mode] waking from transcribed phrase text=%r", text)
+    _last_speech_at = time.monotonic()
+    _wake_from_sleep()
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -9173,6 +9281,7 @@ def _end_session() -> None:
     if not transcript:
         _session_exchange_count = 0
         _session_person_ids.clear()
+        _session_person_turn_counts.clear()
         _session_forget_terms.clear()
         _session_router_control_topics.clear()
         _interest_idle_followups_spoken.clear()
@@ -9432,6 +9541,7 @@ def _end_session() -> None:
         pass
     _session_exchange_count = 0
     _session_person_ids.clear()
+    _session_person_turn_counts.clear()
     _identity_prompt_until = 0.0
     _awaiting_followup_event = None
     _pending_introduction = None
@@ -12604,6 +12714,7 @@ def _handle_speech_segment(
                 "[interaction] speech segment — speaker=%r person_id=%s text=%r",
                 speaker_label, person_id, text,
             )
+            _note_session_person_turn(person_id)
 
         if _turn_should_defer_identity_prompts(text):
             _clear_pending_identity_prompts("direct_turn")
@@ -15187,6 +15298,29 @@ def _loop() -> None:
                     _log.info("[wake_word] waking from sleep via model=%s", model)
                     _last_speech_at = time.monotonic()
                     _wake_from_sleep()
+                    continue
+            if not bool(getattr(config, "SLEEP_TRANSCRIBED_WAKE_FALLBACK_ENABLED", True)):
+                _stop_event.wait(0.05)
+                continue
+            if time.monotonic() < _listen_resume_at:
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+            chunk = stream.get_audio_chunk(_CHUNK_SECS)
+            if len(chunk) == 0:
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+            _sleep_speech = vad.is_speech(_chunk_for_vad(chunk))
+            _situation_assessor.set_vad_active(_sleep_speech)
+            if not _sleep_speech:
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+            _log.info("[sleep_mode] speech detected while asleep — checking wake phrase")
+            speech_start = time.monotonic()
+            audio_segment = _accumulate_speech(
+                speech_start,
+                allowed_states=(State.SLEEP,),
+            )
+            _wake_from_sleep_if_transcribed(audio_segment)
             _stop_event.wait(0.05)
             continue
 
@@ -15479,6 +15613,7 @@ def start(*, text_only: bool = False) -> None:
     _wake_word_fired.clear()
     _interrupted.clear()
     _session_person_ids.clear()
+    _session_person_turn_counts.clear()
     _session_router_control_topics.clear()
     _clear_anonymous_speaker_slots()
     _interest_idle_followups_spoken.clear()
@@ -15560,6 +15695,7 @@ def stop() -> None:
     _listen_resume_at = 0.0
     _listen_capture_floor_at = 0.0
     _post_tts_flush_needed = False
+    _session_person_turn_counts.clear()
     _pending_introduction = None
     _pending_intro_followup = None
     _pending_intro_voice_capture = None
