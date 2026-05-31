@@ -389,6 +389,26 @@ _NAME_MAX_WORDS = 3
 # event row so the next user utterance can be captured as the outcome.
 _awaiting_followup_event: Optional[dict] = None
 
+# Replies that say a remembered event never happened for the user. When answering
+# Rex's "how did X go?", these resolve the follow-up even if they parse as a
+# repair, so Rex stops re-asking about something the user says they didn't do.
+_FOLLOWUP_DID_NOT_HAPPEN_RE = re.compile(
+    r"\b(?:"
+    r"never\s+went|never\s+made\s+it|never\s+happened|never\s+ended\s+up|"
+    r"never\s+got\s+to|never\s+did\s+(?:go|that|it)|"
+    r"did\s*n['’]?t\s+go|did\s+not\s+go|did\s*n['’]?t\s+make\s+it|did\s+not\s+make\s+it|"
+    r"did\s*n['’]?t\s+happen|did\s+not\s+happen|did\s*n['’]?t\s+end\s+up|"
+    r"did\s*n['’]?t\s+attend|did\s*n['’]?t\s+get\s+to|"
+    r"was\s*n['’]?t\s+able\s+to|could\s*n['’]?t\s+make\s+it"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _followup_event_did_not_happen(text: str) -> bool:
+    """True when a reply says a remembered event did not happen for the user."""
+    return bool(_FOLLOWUP_DID_NOT_HAPPEN_RE.search(text or ""))
+
 # Single-cell list so nested closures can mutate without `global`.
 # When set, the post-response hook will fire a "how do you know <name>?"
 # question and open a relationship-prompt window for the newcomer's next reply.
@@ -13912,9 +13932,20 @@ def _handle_speech_segment(
                 or person_id is None
                 or pending_pid == person_id
             )
-            if pending_event_id is not None and pid_matches and not followup_repair:
+            # A reply that the event never happened ("I never went / didn't go")
+            # resolves the follow-up even if it parses as a repair — otherwise Rex
+            # keeps re-asking about something the user says they didn't do.
+            did_not_happen = _followup_event_did_not_happen(text)
+            # Don't badger: after a bounded number of unresolved (repair) turns,
+            # give up so the follow-up stops being re-injected into the agenda.
+            holds = int(_awaiting_followup_event.get("holds") or 0)
+            hold_cap = int(getattr(config, "FOLLOWUP_MAX_HELD_OPEN_TURNS", 1) or 0)
+            give_up = followup_repair and holds >= hold_cap
+            if pending_event_id is not None and pid_matches and (
+                did_not_happen or give_up or not followup_repair
+            ):
                 try:
-                    if events_memory.looks_like_cancellation(text):
+                    if not did_not_happen and events_memory.looks_like_cancellation(text):
                         target_pid = person_id if person_id is not None else pending_pid
                         event_hint = {
                             "id": int(pending_event_id),
@@ -13931,16 +13962,28 @@ def _handle_speech_segment(
                                 target_pid,
                             )
                     else:
+                        # Real answer, an "I didn't go", or a give-up: close the
+                        # loop in memory so this event stops surfacing.
                         events_memory.mark_followed_up(int(pending_event_id), text.strip())
                     _awaiting_followup_event = None
+                    if did_not_happen or give_up:
+                        _log.info(
+                            "[interaction] follow-up resolved without an outcome — "
+                            "event_id=%s reason=%s text=%r",
+                            pending_event_id,
+                            "did_not_happen" if did_not_happen else "gave_up_after_holds",
+                            text,
+                        )
                 except Exception as exc:
                     _log.debug("follow-up outcome write failed: %s", exc)
             elif followup_repair:
+                _awaiting_followup_event["holds"] = holds + 1
                 _log.info(
                     "[interaction] follow-up outcome held open because user requested repair — "
-                    "event_id=%s kind=%s text=%r",
+                    "event_id=%s kind=%s holds=%d text=%r",
                     pending_event_id,
                     repair_move.get("kind"),
+                    holds + 1,
                     text,
                 )
 

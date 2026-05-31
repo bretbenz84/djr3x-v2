@@ -2456,6 +2456,12 @@ RECENT_RETURN_THRESHOLD_HOURS = 48
 # Days after mentioned_at before a dateless event is due for follow-up
 FOLLOWUP_UNDATED_DAYS = 7
 
+# How many turns an unanswered event follow-up may stay "open" (re-injected into
+# the agenda as Rex's unresolved question) before Rex gives up and stops asking.
+# Prevents the "obsessively re-asks how the concert went" loop when the user
+# keeps deflecting instead of answering.
+FOLLOWUP_MAX_HELD_OPEN_TURNS = 1
+
 # ANTICIPATION — preemptive event greeting
 # When a known person is recognized, Rex may open with a reference to a stored
 # upcoming event (event_date in the future, not yet followed up) instead of a
