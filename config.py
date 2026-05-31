@@ -2489,16 +2489,17 @@ LATENCY_FILLER_LINES = [
     "One sec, consulting the memory banks.",
 ]
 
-# Filler should only cover real latency, not every turn. This avoids clipped,
-# choppy first-run filler TTS and keeps direct Q&A exchanges clean.
-LATENCY_FILLER_ENABLED = True
+# Filler ("One sec, thinking.") should only cover real latency. Disabled along
+# with the slow-path ack below: the "one sec" filler felt out of place, and the
+# streaming answer path now gets Rex's real first sentence out fast. True = back.
+LATENCY_FILLER_ENABLED = False
 LATENCY_FILLER_DELAY_SECS = 0.9
 LATENCY_FILLER_REQUIRE_CACHE = True
 
-# Instant acknowledgments for paths we already expect to be slow. These should
-# be cached at startup and skipped if uncached, so they never add an ElevenLabs
-# round trip to the user's live turn.
-SLOW_PATH_ACK_ENABLED = True
+# Instant acknowledgments ("One sec.") for paths we already expect to be slow.
+# Disabled: the canned receipt felt out of place, and streaming now gets Rex's
+# real first sentence out fast enough that the cover is unnecessary. True = back.
+SLOW_PATH_ACK_ENABLED = False
 SLOW_PATH_ACK_REQUIRE_CACHE = True
 # In text-only/noaudio mode, filler lines become visible chat clutter instead of
 # useful spoken latency cover. Leave this off unless you explicitly want GUI

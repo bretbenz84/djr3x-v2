@@ -3882,6 +3882,7 @@ class ConversationGatingTest(unittest.TestCase):
         try:
             interaction._last_slow_path_ack = None
             with (
+                mock.patch("config.SLOW_PATH_ACK_ENABLED", True),
                 mock.patch("audio.tts.is_cached", return_value=True),
                 mock.patch.object(interaction.random, "choice", side_effect=lambda items: items[0]),
                 mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
@@ -3918,6 +3919,7 @@ class ConversationGatingTest(unittest.TestCase):
         token = interaction._current_character_loop_trace.set(trace)
         try:
             with (
+                mock.patch("config.SLOW_PATH_ACK_ENABLED", True),
                 mock.patch("audio.tts.is_cached", return_value=False),
                 mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
                 mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
@@ -3947,6 +3949,7 @@ class ConversationGatingTest(unittest.TestCase):
         try:
             interaction._last_slow_path_ack = None
             with (
+                mock.patch("config.SLOW_PATH_ACK_ENABLED", True),
                 mock.patch("config.NO_AUDIO_MODE", True),
                 mock.patch("config.AUDIO_OUTPUT_SUPPRESSED", True),
                 mock.patch("config.SLOW_PATH_ACK_IN_TEXT_ONLY", False),
@@ -3983,6 +3986,7 @@ class ConversationGatingTest(unittest.TestCase):
         try:
             interaction._last_slow_path_ack = None
             with (
+                mock.patch("config.SLOW_PATH_ACK_ENABLED", True),
                 mock.patch("config.NO_AUDIO_MODE", True),
                 mock.patch("config.AUDIO_OUTPUT_SUPPRESSED", True),
                 mock.patch("config.SLOW_PATH_ACK_IN_TEXT_ONLY", True),
