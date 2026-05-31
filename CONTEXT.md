@@ -224,12 +224,8 @@ Key logs:
 Recent latency architecture:
 
 - `audio.speaker_id.preload()` runs at startup when `config.SPEAKER_ID_PRELOAD_ON_STARTUP` is true, removing first-turn Resemblyzer load cost.
-- Slow-path acknowledgments are short cached responses for known-slow paths: `general`, `memory`, and `vision`.
-- `config.SLOW_PATH_ACK_LINES` controls acknowledgment text.
-- `config.SLOW_PATH_ACK_EXPECTED_SECS` controls when a path is expected to be slow enough to acknowledge.
-- Slow-path acks are different from `LATENCY_FILLER_LINES`: acks are immediate receipts; latency fillers are delayed in-character thinking lines.
-- In audio mode, slow-path acks should already be cached so they never trigger an ElevenLabs round trip.
-- In no-audio mode, slow-path acknowledgments are disabled by default via `SLOW_PATH_ACK_IN_TEXT_ONLY = False`; if enabled, cache checks are skipped because the output is text only.
+- Slow-path acknowledgments (short "One sec." receipts for known-slow `general`/`memory`/`vision` paths) and the delayed latency filler (in-character "One sec, thinking." lines) are now **disabled by default** — `config.SLOW_PATH_ACK_ENABLED = False` and `config.LATENCY_FILLER_ENABLED = False`. They felt out of place, and the streaming answer path now gets Rex's real first sentence out fast, so the latency cover is unnecessary. The machinery and tunables (`SLOW_PATH_ACK_LINES`, `SLOW_PATH_ACK_EXPECTED_SECS`, `LATENCY_FILLER_LINES`, `SLOW_PATH_ACK_IN_TEXT_ONLY`) remain; flip either flag back to True to restore. The slow-path-ack tests enable the flag explicitly to keep covering the firing logic.
+- End-of-speech wait `config.SILENCE_TIMEOUT_SECS = 0.6` (was 0.9): how long of sustained silence after the user stops before transcription begins. Lowered for responsiveness on every turn; raise toward 0.8 if slow / pausing speakers get cut off mid-sentence.
 
 When assessing responsiveness, prefer TTFS/audio-start timings over total turn duration. Total duration includes how long Rex speaks.
 
@@ -370,8 +366,7 @@ venv/bin/python main.py
 - Speaker-ID encoder preload at startup.
 - Exact TTFS logging.
 - `[character_loop]` per-turn telemetry.
-- Slow-path acknowledgments for general, memory, and vision paths.
-- Text-only/no-audio mode suppresses slow-path acknowledgment filler by default.
+- Slow-path acknowledgments (general/memory/vision) and the latency filler exist but are now **disabled by default** (`SLOW_PATH_ACK_ENABLED` / `LATENCY_FILLER_ENABLED` = False) — see the Latency And Telemetry section.
 - Action-router guardrails downgrade common false positives: ongoing status updates are not event cancellations, pronoun-only fragments are not introductions, named holiday explanations are not date queries, and relationship-score questions outside games route to memory.
 - Dialogue-act frame gate (`intelligence/dialogue_act.py`) protects normal replies to Rex's last turn before routers can claim them.
 - Central turn-policy gates in `interaction.py` now require legacy command-parser and deterministic intent claims to pass dialogue context plus action-shaped evidence.
@@ -389,10 +384,14 @@ venv/bin/python main.py
 - Stale-event-cancel guard: `memory.events.looks_like_cancellation` now requires a cancellation phrase AND the absence of a false-positive idiom ("not going to lie", "not doing too bad", "on my way"), so a conversational outcome reply can't durably mark a remembered event canceled. This gate protects both the follow-up handler and `_cancel_stale_event_memory`.
 - Identity sub-0.75 floors require the top voice candidate to BE the attributed person: the single-visible-continuity and multi-visible-recent floors now check `raw_best_id == person` (the engaged-visible and grief floors already did), so a second speaker in a one-on-one frame is treated as off-camera-unknown instead of pinned on the engaged person.
 - Bug fixes to preserve: `SCENE_MUSIC_BAND_ENERGY_MIN = 2e-6` (was `2-6`, i.e. −4, which made every band count as active → music always "detected"); dead `GUI_SHOW_FPS` removed; `social_frame` optional-lookup `except` handlers now log at debug instead of swallowing silently.
+- Event follow-up resolution (fixes the "Rex obsessively re-asks how the concert went" loop): a reply that an event never happened ("I never went / didn't go" — `interaction._followup_event_did_not_happen`) resolves a pending follow-up instead of being held open as a repair, and an unanswered follow-up is dropped after `config.FOLLOWUP_MAX_HELD_OPEN_TURNS` (default 1) so it stops being re-injected into the agenda as Rex's "unresolved question". The follow-up handler lives in `interaction.py` (search `_awaiting_followup_event`); the proactive ask comes from `consciousness` Priority 2.5 (`get_pending_followups`).
+- The "one sec" fillers (slow-path ack + latency filler) are disabled by default and `SILENCE_TIMEOUT_SECS` is 0.6 — see the Latency And Telemetry section. Do not re-enable the fillers without a reason.
+- The local `assets/memory/people.db` is disposable dev/test data — reset, clean, or wipe it freely (no backups needed) when iterating; see the Memory Model section.
+- Upstream work merged onto `main` alongside this voice/latency/identity effort (authored separately, around commit `ffa068e`): special per-person greetings / identity intros in `intelligence/person_specials.py`, delayed last-name prompts, sleep wake-word fallback, turn-completion for embedded answer clauses, and head-LED speech-stop stabilization.
 
 ## Likely Future Work
 
-- Tune slow-path acknowledgment thresholds so Rex acknowledges only when useful.
+- Decide whether the streaming answer path is sufficient latency cover on its own, or whether to re-enable (and tune) the slow-path ack / latency filler for the slowest paths.
 - Add directional audio support for stereo ReSpeaker Lite input.
 - Improve group turn triage for crosstalk and ambiguous addressees.
 - Continue reducing OpenAI calls on common conversational paths.
