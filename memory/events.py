@@ -50,9 +50,34 @@ def _undated_followup_cutoff() -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
+# Loose negations that match _CANCEL_PAT but do NOT cancel the event: idioms
+# ("not going to lie/forget"), positive status ("not doing too bad"), and
+# ongoing-travel phrases ("on my way"). Mirrors the action router's continuation
+# guard so a conversational outcome reply can't silently cancel a remembered
+# event before the dialogue gate ever runs.
+_NOT_A_CANCELLATION_PAT = re.compile(
+    r"\bnot\s+(?:going|gonna)\s+to\s+"
+    r"(?:lie|forget|miss|deny|say|tell|pretend|kid|sugar-?coat|complain)\b"
+    r"|\bnot\s+doing\s+(?:too|so|that|this|pretty|very|real(?:ly)?|all\s+that|half|bad)\b"
+    r"|\bon\s+(?:my|our|the)\s+way\b",
+    re.IGNORECASE,
+)
+
+
 def looks_like_cancellation(text: str) -> bool:
-    """Return True when text likely cancels or retracts a planned event."""
-    return bool(_CANCEL_PAT.search(text or ""))
+    """Return True when text likely cancels or retracts a planned event.
+
+    Requires a cancellation phrase AND the absence of a known false-positive
+    idiom / ongoing-status phrase, so a conversational outcome reply such as
+    "not going to lie, it was amazing" or "I'm not doing too bad" is not treated
+    as a cancellation (which would durably mark the event canceled).
+    """
+    text = text or ""
+    if not _CANCEL_PAT.search(text):
+        return False
+    if _NOT_A_CANCELLATION_PAT.search(text):
+        return False
+    return True
 
 
 def _tokens(text: str) -> set[str]:
