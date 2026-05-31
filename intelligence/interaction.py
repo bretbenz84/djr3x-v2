@@ -56,6 +56,7 @@ from intelligence import turn_completion
 from intelligence import friendship_patterns
 from intelligence import conversation_steering
 from intelligence import profile_questions
+from intelligence import person_specials
 from memory import facts as facts_memory
 from memory import preferences as preferences_memory
 from memory import interests as interests_memory
@@ -203,6 +204,7 @@ _interrupted = threading.Event()
 
 # Session tracking ────────────────────────────────────────────────────────────
 _session_person_ids: set[int] = set()
+_session_person_turn_counts: dict[int, int] = {}
 _session_exchange_count: int = 0
 _last_speech_at: float = 0.0  # monotonic timestamp of most recent speech chunk
 _session_forget_terms: dict[int, set[str]] = {}
@@ -553,9 +555,6 @@ def _on_wake_word(model_name: str) -> None:
         current_state = state_module.get_state()
     except Exception:
         current_state = State.IDLE
-    if current_state == State.SLEEP and model_name != "wakeuprex":
-        _log.info("[wake_word] ignored non-sleep wake word while asleep: %s", model_name)
-        return
     if current_state != State.SLEEP and model_name == "wakeuprex":
         _log.info("[wake_word] ignored sleep-only wake word while not asleep: %s", model_name)
         return
@@ -2207,6 +2206,31 @@ def _is_bare_wake_address(text: str) -> bool:
     return bool(_BARE_WAKE_ADDRESS_PAT.match(text or ""))
 
 
+def _is_sleep_wake_transcript(text: str) -> bool:
+    """Return True for explicit transcribed phrases that should exit sleep."""
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return False
+    cleaned = re.sub(r"[^a-z0-9]+", " ", raw).strip()
+    compact = re.sub(r"[^a-z0-9]", "", raw)
+    if compact in {
+        "wakeuprex",
+        "wakeupr3x",
+        "wakeuprx",
+        "rexwakeup",
+        "r3xwakeup",
+        "rxwakeup",
+    }:
+        return True
+    rex_name = r"(?:d\s*j\s+)?(?:rex|r\s*3\s*x|r3x|rx)"
+    wake_prefix = r"(?:(?:hey|yo)\s+)?(?:please\s+)?"
+    wake_suffix = r"(?:\s+please)?"
+    return bool(
+        re.fullmatch(rf"{wake_prefix}wake\s+up\s+{rex_name}{wake_suffix}", cleaned)
+        or re.fullmatch(rf"{wake_prefix}{rex_name}\s+wake\s+up{wake_suffix}", cleaned)
+    )
+
+
 def _shutdown_requested() -> bool:
     try:
         if _stop_event.is_set():
@@ -3051,6 +3075,45 @@ def _first_name_or(value: Optional[str], fallback: str = "") -> str:
     return parts[0] if parts else fallback
 
 
+def _identity_enrollment_ack(name: str) -> str:
+    special = person_specials.special_intro_ack(name)
+    if special:
+        return special
+    return f"Got it, {name}. Nice to meet you."
+
+
+def _special_intro_prompt(name: str) -> Optional[str]:
+    special_context = person_specials.special_prompt_context(name)
+    if not special_context:
+        return None
+    if person_specials.is_jt_volleyball_celebrity(name):
+        special_instruction = (
+            "acknowledge them by name as a major volleyball celebrity. Include "
+            "one affectionate joke about getting old as a volleyball athlete, "
+            "with bones or muscles as the absurd target."
+        )
+    elif person_specials.is_rex_creator(name):
+        special_instruction = (
+            "acknowledge Bret Benziger by name as Rex's creator and maker. Be "
+            "warm, reverent, loyal, and still dryly Rex about being Bret's "
+            "high-maintenance droid creation."
+        )
+    elif person_specials.is_galactic_hair_stylist(name):
+        special_instruction = (
+            "acknowledge them by name as one of the greatest hair stylists in "
+            "the galactic quadrant. Include one affectionate joke about elite "
+            "styling skills, legendary blowouts, emergency bang repair, or "
+            "frizz surrendering."
+        )
+    else:
+        special_instruction = "acknowledge them by name with the special hook."
+    return (
+        f"{special_context} You just learned this person's name is {name}. "
+        f"In ONE short in-character Rex line, {special_instruction} "
+        "No follow-up question."
+    )
+
+
 def _same_person_name(left: Optional[str], right: Optional[str]) -> bool:
     left_norm = _normalize_name(left or "")
     right_norm = _normalize_name(right or "")
@@ -3365,6 +3428,18 @@ _LAST_NAME_REFUSAL_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_LAST_NAME_IMPLICIT_REFUSAL_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:no+|nope|nah|naw)(?:\s*[,!.]?\s*(?:thanks|thank\s+you)?)?$|"
+    r"(?:(?:no+|nope|nah|naw)\s*[,!.]?\s*)?"
+    r"(?:(?:i\s+)?(?:am\s+not|ain['’]?t)|i['’]?m\s+not)\s+"
+    r"(?:going|gonna)\s+to\b|"
+    r"(?:(?:no+|nope|nah|naw)\s*[,!.]?\s*)?"
+    r"(?:i\s+)?(?:won['’]?t|will\s+not|do\s+not|don['’]?t)\s+"
+    r"(?:(?:want|wanna)\s+to\s+)?(?:say|tell|share|give|do\s+that)\b"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _is_last_name_refusal(text: str, first_name: str) -> bool:
@@ -3373,7 +3448,10 @@ def _is_last_name_refusal(text: str, first_name: str) -> bool:
     if not cleaned or not first:
         return False
     pattern = _LAST_NAME_REFUSAL_RE.pattern.format(first=first)
-    return bool(re.search(pattern, cleaned, re.IGNORECASE))
+    return bool(
+        re.search(pattern, cleaned, re.IGNORECASE)
+        or _LAST_NAME_IMPLICIT_REFUSAL_RE.search(cleaned)
+    )
 
 
 def _common_first_name_context_fresh(ctx: Optional[dict]) -> bool:
@@ -3656,6 +3734,7 @@ def _scrub_world_state_after_memory_wipe(
 def _clear_deleted_person_session_state(person_id: int) -> None:
     pid = int(person_id)
     _session_person_ids.discard(pid)
+    _session_person_turn_counts.pop(pid, None)
     _session_forget_terms.pop(pid, None)
     _session_router_control_topics.pop(pid, None)
     _grief_flow_state.pop(pid, None)
@@ -3780,6 +3859,7 @@ def _handle_pending_memory_wipe_confirmation(
         elif scope == "all":
             people_memory.delete_all_people()
             _session_person_ids.clear()
+            _session_person_turn_counts.clear()
             _session_forget_terms.clear()
             _session_router_control_topics.clear()
             _clear_anonymous_speaker_slots()
@@ -3873,7 +3953,9 @@ def _handle_name_update_request(
         new_name,
         text,
     )
-    response = repair_moves.add_better_luck_line(f"Got it. I'll call you {new_name}.")
+    response = _identity_enrollment_ack(new_name)
+    if not person_specials.special_intro_ack(new_name):
+        response = repair_moves.add_better_luck_line(f"Got it. I'll call you {new_name}.")
     _speak_blocking(response, emotion="happy")
     return response
 
@@ -5141,11 +5223,24 @@ def _maybe_prompt_existing_common_first_name(
         )
         return None
 
+    pid = int(person_id)
+    min_turns = _last_name_prompt_min_person_turns()
+    turn_count = _session_person_turn_counts.get(pid, 0)
+    if not _person_ready_for_last_name_prompt(pid):
+        _log.info(
+            "[identity] deferring last-name prompt for person_id=%s name=%r "
+            "until longer conversation turns=%s/%s",
+            pid,
+            person_name,
+            turn_count,
+            min_turns,
+        )
+        return None
+
     first_name = _normalize_name(person_name or "") or (person_name or "").strip()
     if not first_name:
         return None
 
-    pid = int(person_id)
     _pending_existing_common_first_name = {
         "person_id": pid,
         "first_name": first_name,
@@ -5171,6 +5266,33 @@ def _mark_single_name_for_later_last_name(person_id: Optional[int], person_name:
         person_id,
         normalized,
     )
+
+
+def _note_session_person_turn(person_id: Optional[int]) -> None:
+    pid = _safe_int(person_id)
+    if pid is None:
+        return
+    _session_person_turn_counts[pid] = _session_person_turn_counts.get(pid, 0) + 1
+
+
+def _last_name_prompt_min_person_turns() -> int:
+    configured = getattr(config, "COMMON_FIRST_NAME_LAST_NAME_MIN_PERSON_TURNS", None)
+    if configured is None:
+        configured = getattr(config, "LONG_CONVERSATION_MIN_EXCHANGES", 5)
+    try:
+        return max(0, int(configured))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _person_ready_for_last_name_prompt(person_id: Optional[int]) -> bool:
+    pid = _safe_int(person_id)
+    if pid is None:
+        return False
+    min_turns = _last_name_prompt_min_person_turns()
+    if min_turns <= 0:
+        return True
+    return _session_person_turn_counts.get(pid, 0) >= min_turns
 
 
 def _identity_match_confirmation_fresh(ctx: Optional[dict]) -> bool:
@@ -5516,7 +5638,7 @@ def _handle_pending_prompted_name_confirmation(
             person_name=candidate,
         )
         _mark_single_name_for_later_last_name(person_id, candidate)
-        return f"Got it, {candidate}. Nice to meet you.", person_id, candidate
+        return _identity_enrollment_ack(candidate), person_id, candidate
 
     if _identity_confirmation_declines(text):
         _pending_prompted_name_confirmation = None
@@ -5545,7 +5667,7 @@ def _handle_pending_prompted_name_confirmation(
             person_name=replacement,
         )
         _mark_single_name_for_later_last_name(person_id, replacement)
-        return f"Got it, {replacement}. Nice to meet you.", person_id, replacement
+        return _identity_enrollment_ack(replacement), person_id, replacement
 
     return None, None, None
 
@@ -5891,8 +6013,55 @@ def _intro_ack_and_followup(
     followup_kind = (
         "relationship_color" if self_explanatory_relationship else "connection_story"
     )
+    special_context = (
+        person_specials.special_prompt_context(introduced_name)
+        if visible_newcomer
+        else None
+    )
+    if person_specials.is_jt_volleyball_celebrity(introduced_name):
+        special_quip_instruction = (
+            f"acknowledge {introduced_first} by name as a major volleyball "
+            "celebrity with one affectionate joke about getting old, bones, "
+            "or muscles."
+        )
+    elif person_specials.is_rex_creator(introduced_name):
+        special_quip_instruction = (
+            "acknowledge Bret Benziger by name as Rex's creator and maker. Be "
+            "warm, reverent, loyal, and still dryly Rex about being Bret's "
+            "high-maintenance droid creation."
+        )
+    elif person_specials.is_galactic_hair_stylist(introduced_name):
+        special_quip_instruction = (
+            f"acknowledge {introduced_first} by name as one of the greatest "
+            "hair stylists in the galactic quadrant with one affectionate "
+            "joke about legendary styling skills, blowouts, bangs, or frizz."
+        )
+    else:
+        special_quip_instruction = f"acknowledge {introduced_first} by name."
 
-    if visible_newcomer and self_explanatory_relationship:
+    if special_context and self_explanatory_relationship:
+        question_instruction = _intro_relationship_question_instruction(
+            relationship,
+            introducer_first,
+            introduced_first,
+        )
+        prompt = (
+            f"{introducer_first} just explicitly introduced {introduced_first} "
+            f"as {introducer_first}'s {rel_clause}. {special_context} "
+            f"In one or two short in-character Rex sentences, "
+            f"{special_quip_instruction} {question_instruction} Address "
+            f"{introduced_first}, not {introducer_first}. Do NOT ask how they "
+            "know each other."
+        )
+    elif special_context:
+        prompt = (
+            f"{introducer_first} just explicitly introduced {introduced_first} "
+            f"as their {rel_clause}. {special_context} In ONE short "
+            f"in-character Rex line, {special_quip_instruction} Then ask how "
+            f"{introduced_first} and {introducer_first} know each other. Address {introduced_first}, "
+            f"not just {introducer_first}."
+        )
+    elif visible_newcomer and self_explanatory_relationship:
         question_instruction = _intro_relationship_question_instruction(
             relationship,
             introducer_first,
@@ -5933,7 +6102,17 @@ def _intro_ack_and_followup(
         _log.debug("intro ack generation failed: %s", exc)
         text = ""
     if not text:
-        if self_explanatory_relationship:
+        special_ack = person_specials.special_intro_ack(introduced_name)
+        if special_ack and self_explanatory_relationship:
+            text = (
+                f"{special_ack} What should I know about {introducer_first} "
+                "from your side of the evidence locker?"
+            )
+        elif special_ack:
+            text = (
+                f"{special_ack} How did you end up in {introducer_first}'s orbit?"
+            )
+        elif self_explanatory_relationship:
             text = (
                 f"{introduced_first}, welcome. So you're {introducer_first}'s "
                 f"{rel_clause}; suddenly several mysteries have useful context. "
@@ -6578,7 +6757,11 @@ def _speech_capture_secs(speech_start_mono: float, finished_mono: Optional[float
     return min(duration, float(config.AUDIO_BUFFER_SECONDS))
 
 
-def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
+def _accumulate_speech(
+    speech_start_mono: float,
+    *,
+    allowed_states: tuple[State, ...] = (State.ACTIVE,),
+) -> Optional[np.ndarray]:
     """
     Poll VAD until config.SILENCE_TIMEOUT_SECS of sustained silence, then
     return the full speech segment captured from the rolling buffer.
@@ -6590,7 +6773,7 @@ def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
     silence_elapsed = 0.0
 
     while not _stop_event.is_set():
-        if state_module.get_state() != State.ACTIVE:
+        if state_module.get_state() not in allowed_states:
             return None
 
         chunk = stream.get_audio_chunk(_CHUNK_SECS)
@@ -6619,6 +6802,27 @@ def _accumulate_speech(speech_start_mono: float) -> Optional[np.ndarray]:
     # post-TTS handoff so Rex's own question is not transcribed as user speech.
     capture_secs = _speech_capture_secs(speech_start_mono)
     return stream.get_audio_chunk(capture_secs)
+
+
+def _wake_from_sleep_if_transcribed(audio_segment: Optional[np.ndarray]) -> bool:
+    """Wake from sleep when a transcribed sleep utterance is an explicit wake phrase."""
+    global _last_speech_at
+    if audio_segment is None or len(audio_segment) == 0:
+        return False
+    try:
+        text = transcription.transcribe(audio_segment).strip()
+    except Exception as exc:
+        _log.debug("[sleep_mode] wake transcript failed: %s", exc)
+        return False
+    if not text:
+        return False
+    if not _is_sleep_wake_transcript(text):
+        _log.info("[sleep_mode] ignored sleeping speech text=%r", text)
+        return False
+    _log.info("[sleep_mode] waking from transcribed phrase text=%r", text)
+    _last_speech_at = time.monotonic()
+    _wake_from_sleep()
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -9367,6 +9571,7 @@ def _end_session() -> None:
     if not transcript:
         _session_exchange_count = 0
         _session_person_ids.clear()
+        _session_person_turn_counts.clear()
         _session_forget_terms.clear()
         _session_router_control_topics.clear()
         _interest_idle_followups_spoken.clear()
@@ -9626,6 +9831,7 @@ def _end_session() -> None:
         pass
     _session_exchange_count = 0
     _session_person_ids.clear()
+    _session_person_turn_counts.clear()
     _identity_prompt_until = 0.0
     _awaiting_followup_event = None
     _pending_introduction = None
@@ -12805,6 +13011,7 @@ def _handle_speech_segment(
                 "[interaction] speech segment — speaker=%r person_id=%s text=%r",
                 speaker_label, person_id, text,
             )
+            _note_session_person_turn(person_id)
 
         if _turn_should_defer_identity_prompts(text):
             _clear_pending_identity_prompts("direct_turn")
@@ -13080,7 +13287,12 @@ def _handle_speech_segment(
 
                 first = _first_name_or(self_identified_name, self_identified_name)
                 prior_first = _first_name_or((prior_engagement or {}).get("name"))
-                if relationship and prior_first:
+                special_intro_ack = person_specials.special_intro_ack(
+                    self_identified_name
+                )
+                if special_intro_ack:
+                    ack_text = special_intro_ack
+                elif relationship and prior_first:
                     rel_words = relationship.replace("_", " ")
                     ack_text = (
                         f"{first}. Filed. Relationship to {prior_first}: {rel_words}. That explains at least "
@@ -13089,11 +13301,15 @@ def _handle_speech_segment(
                 else:
                     ack_text = f"{first}. Filed under 'new biological, probably trouble.'"
                 try:
+                    special_prompt = _special_intro_prompt(self_identified_name)
                     ack_text = llm.get_response(
-                        f"You just learned a visible newcomer's name is {self_identified_name}. "
-                        f"{('They said their relationship to ' + prior_first + ' is ' + relationship + '.') if relationship and prior_first else ''} "
-                        f"In ONE short in-character Rex line, acknowledge them by name. "
-                        f"Do not ask another question."
+                        special_prompt
+                        or (
+                            f"You just learned a visible newcomer's name is {self_identified_name}. "
+                            f"{('They said their relationship to ' + prior_first + ' is ' + relationship + '.') if relationship and prior_first else ''} "
+                            f"In ONE short in-character Rex line, acknowledge them by name. "
+                            f"Do not ask another question."
+                        )
                     ) or ack_text
                 except Exception as exc:
                     _log.debug("self-intro ack generation failed: %s", exc)
@@ -13660,9 +13876,7 @@ def _handle_speech_segment(
                             has_unknown_visible_or_recent=has_unknown_visible_or_recent,
                         )
                         _identity_prompt_until = 0.0
-                        prompted_identity_ack_text = (
-                            f"Got it, {intro_name}. Nice to meet you."
-                        )
+                        prompted_identity_ack_text = _identity_enrollment_ack(intro_name)
 
                         # Chain into a relationship follow-up if we were just
                         # engaged with someone else — set a flag for the post-
@@ -15367,7 +15581,7 @@ def _loop() -> None:
             _stop_event.wait(0.1)
             continue
 
-        # ── SLEEP — only wakeuprex fires the callback; gate transition here ────
+        # ── SLEEP — any active wake model can bring Rex back online ───────────
         if current_state == State.SLEEP:
             try:
                 _situation_assessor.set_vad_active(False)
@@ -15377,11 +15591,33 @@ def _loop() -> None:
                 _wake_word_fired.clear()
                 with _wake_lock:
                     model = _last_wake_word
-                # wake_word.py only routes 'wakeuprex' to the callback in SLEEP;
-                # the check is defensive in case that ever changes.
-                if model == "wakeuprex":
+                if model:
+                    _log.info("[wake_word] waking from sleep via model=%s", model)
                     _last_speech_at = time.monotonic()
                     _wake_from_sleep()
+                    continue
+            if not bool(getattr(config, "SLEEP_TRANSCRIBED_WAKE_FALLBACK_ENABLED", True)):
+                _stop_event.wait(0.05)
+                continue
+            if time.monotonic() < _listen_resume_at:
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+            chunk = stream.get_audio_chunk(_CHUNK_SECS)
+            if len(chunk) == 0:
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+            _sleep_speech = vad.is_speech(_chunk_for_vad(chunk))
+            _situation_assessor.set_vad_active(_sleep_speech)
+            if not _sleep_speech:
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+            _log.info("[sleep_mode] speech detected while asleep — checking wake phrase")
+            speech_start = time.monotonic()
+            audio_segment = _accumulate_speech(
+                speech_start,
+                allowed_states=(State.SLEEP,),
+            )
+            _wake_from_sleep_if_transcribed(audio_segment)
             _stop_event.wait(0.05)
             continue
 
@@ -15674,6 +15910,7 @@ def start(*, text_only: bool = False) -> None:
     _wake_word_fired.clear()
     _interrupted.clear()
     _session_person_ids.clear()
+    _session_person_turn_counts.clear()
     _session_router_control_topics.clear()
     _clear_anonymous_speaker_slots()
     _interest_idle_followups_spoken.clear()
@@ -15755,6 +15992,7 @@ def stop() -> None:
     _listen_resume_at = 0.0
     _listen_capture_floor_at = 0.0
     _post_tts_flush_needed = False
+    _session_person_turn_counts.clear()
     _pending_introduction = None
     _pending_intro_followup = None
     _pending_intro_voice_capture = None

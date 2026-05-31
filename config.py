@@ -1804,6 +1804,11 @@ WAKE_FROM_SLEEP_ACKNOWLEDGMENTS = [
     "Booting personality. Unfortunately for everyone, it survived.",
 ]
 
+# Backup path for the sleep wake word: if OpenWakeWord does not fire while
+# sleeping, Rex can still VAD/transcribe a short utterance and wake only for an
+# explicit "wake up Rex/R3X" phrase.
+SLEEP_TRANSCRIBED_WAKE_FALLBACK_ENABLED = True
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSCIOUSNESS LOOP
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2173,6 +2178,10 @@ IDENTITY_VOICE_ENROLL_MIN_WORDS = 2
 # merging multiple people into "John" / "Mike" / "Jennifer" style records.
 COMMON_FIRST_NAME_LAST_NAME_DISAMBIGUATION_ENABLED = True
 COMMON_FIRST_NAME_LAST_NAME_WINDOW_SECS = 30.0
+# First names are fine early in a relationship. Only ask a known first-name-only
+# person for a last name after Rex has had a real back-and-forth with them in
+# the current session.
+COMMON_FIRST_NAME_LAST_NAME_MIN_PERSON_TURNS = LONG_CONVERSATION_MIN_EXCHANGES
 COMMON_FIRST_NAMES_REQUIRE_LAST_NAME = [
     "Michael", "Mike", "David", "John", "James", "Robert", "William", "Bill",
     "Richard", "Rick", "Joseph", "Joe", "Thomas", "Tom", "Christopher", "Chris",

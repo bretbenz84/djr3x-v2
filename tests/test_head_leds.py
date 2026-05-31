@@ -8,11 +8,15 @@ class _FakeSerial:
     def __init__(self):
         self.is_open = True
         self.writes = []
+        self.flushes = 0
         self.closed = False
 
     def write(self, data):
         self.writes.append(data)
         return len(data)
+
+    def flush(self):
+        self.flushes += 1
 
     def close(self):
         self.closed = True
@@ -54,7 +58,12 @@ class HeadLedTests(unittest.TestCase):
 
         self.assertEqual(
             fake.writes,
-            [b"SPEAK_STOP\n", b"SPEAK_STOP\n", b"SPEAK_STOP\n"],
+            [
+                b"SPEAK_LEVEL:0\n",
+                b"SPEAK_STOP\n",
+                b"SPEAK_STOP\n",
+                b"SPEAK_STOP\n",
+            ],
         )
 
     def test_speak_stop_sends_single_drop_when_disconnected(self):
@@ -84,6 +93,32 @@ class HeadLedTests(unittest.TestCase):
         self.assertIsNone(h._ser)
         self.assertTrue(failing.closed)
         self.assertTrue(any("Head Arduino write failed" in line for line in logs.output))
+
+    def test_off_zeros_mouth_before_full_off_when_connected(self):
+        h = self.leds_head
+        fake = _FakeSerial()
+        h._ser = fake
+
+        with (
+            mock.patch.object(h, "HEAD_LEDS_ENABLED", True),
+            mock.patch.object(h.config, "HEAD_LED_SPEAK_STOP_REPEATS", 3),
+            mock.patch.object(h.config, "HEAD_LED_SPEAK_STOP_REPEAT_DELAY_SECS", 0.0),
+        ):
+            h.off()
+
+        self.assertEqual(
+            fake.writes,
+            [
+                b"SPEAK_LEVEL:0\n",
+                b"SPEAK_STOP\n",
+                b"OFF\n",
+                b"SPEAK_STOP\n",
+                b"OFF\n",
+                b"SPEAK_STOP\n",
+                b"OFF\n",
+            ],
+        )
+        self.assertEqual(fake.flushes, 6)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 import config
 import apikeys
+from intelligence import person_specials
 from intelligence import social_scene
 from world_state import world_state
 from memory import database as db
@@ -335,6 +336,10 @@ def _build_person_context(person_id: int) -> str:
     name = person.get("name") or "unknown"
     tier = person.get("friendship_tier", "stranger")
     lines.append(f"Person: {name} (tier: {tier}).")
+
+    special_context = person_specials.special_prompt_context(name)
+    if special_context:
+        lines.append(special_context)
 
     lines.append(
         f"Relationship — warmth: {person.get('warmth_score', 0.0):.2f}, "

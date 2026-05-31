@@ -30,6 +30,7 @@ from state import State
 from world_state import world_state
 from awareness.situation import assessor as _situation_assessor, SituationProfile
 from intelligence import emotion_orchestrator
+from intelligence import person_specials
 from intelligence import profile_questions
 from utils import conv_log
 
@@ -233,6 +234,10 @@ _presence_reaction_lock = threading.Lock()
 # Special-case celebrity greeting for Jeff Benziger from History Hunters.
 _jeff_celebrity_greeted_this_session: set[int] = set()
 _pending_jeff_celebrity_greetings: dict[int, dict] = {}
+
+# Special-case celebrity greeting for JT / Jay Tee, volleyball legend.
+_jt_volleyball_greeted_this_session: set[int] = set()
+_pending_jt_volleyball_greetings: dict[int, dict] = {}
 
 # Persons who have left frame but whose departure reaction hasn't fired yet.
 # Maps tracking_key → (departure_monotonic, person_name_or_None).
@@ -1544,6 +1549,175 @@ def _step_jeff_history_hunters_detection(snapshot: dict, profile: SituationProfi
         )
         return True
     return visible_jeff is not None
+
+
+def _is_jt_volleyball_celebrity(name: object) -> bool:
+    return person_specials.is_jt_volleyball_celebrity(name)
+
+
+def _can_jt_volleyball_speak(profile: SituationProfile) -> bool:
+    return _can_jeff_celebrity_speak(profile)
+
+
+def _stage_jt_volleyball_greeting(
+    *,
+    key: int,
+    person_name: str,
+    returning: bool = False,
+) -> None:
+    if not returning and key in _jt_volleyball_greeted_this_session:
+        return
+    existing = _pending_jt_volleyball_greetings.get(key)
+    if existing:
+        existing["last_seen_at"] = time.monotonic()
+        existing["returning"] = bool(existing.get("returning") or returning)
+        return
+    _pending_jt_volleyball_greetings[key] = {
+        "person_name": person_name,
+        "returning": bool(returning),
+        "first_seen_at": time.monotonic(),
+        "last_seen_at": time.monotonic(),
+    }
+    _log.info(
+        "consciousness: JT volleyball celebrity greeting staged (returning=%s)",
+        bool(returning),
+    )
+
+
+def _try_fire_jt_volleyball_greeting(
+    *,
+    key,
+    person_name: Optional[str],
+    person_db_id: Optional[int],
+    profile: SituationProfile,
+    returning: bool = False,
+) -> bool:
+    if not isinstance(key, int) or not _is_jt_volleyball_celebrity(person_name):
+        return False
+    if not returning and key in _jt_volleyball_greeted_this_session:
+        return False
+    if not _can_jt_volleyball_speak(profile):
+        return False
+    label = (
+        "return celebrity greeting for JT volleyball"
+        if returning
+        else "first-sight celebrity greeting for JT volleyball"
+    )
+    text = person_specials.jt_volleyball_line(returning=returning)
+    candidate_id = _observe_governor_candidate(
+        purpose="presence_reaction",
+        label=label,
+        suggested_text=text,
+        emotion="starstruck",
+        priority=2,
+        target_person_id=key,
+        requires_llm=False,
+    )
+    if not _presence_reaction_lock.acquire(blocking=False):
+        _mark_governor_candidate(candidate_id, "dropped", "presence_reaction_lock_busy")
+        return False
+
+    try:
+        from audio import speech_queue
+
+        _proactive_speech_pending.set()
+        speech_queue.clear_below_priority(2)
+        tag = f"presence:jt_volleyball:{key}"
+        _last_presence_reaction_at[key] = time.monotonic()
+        _log.info("consciousness: firing JT volleyball celebrity greeting: %r", text)
+        done = speech_queue.enqueue(text, "starstruck", priority=2, tag=tag)
+        _mark_governor_candidate(candidate_id, "accepted", "jt_volleyball_enqueued")
+        try:
+            from memory import people as people_mod
+            people_mod.record_greeting(key)
+        except Exception as exc:
+            _log.debug("record greeting failed for JT person_id=%s: %s", key, exc)
+        try:
+            conv_log.log_rex(text)
+        except Exception as exc:
+            _log.debug("conversation log write failed for JT greeting: %s", exc)
+        note_rex_utterance(
+            text,
+            open_response_wait=False,
+            source="presence_reaction",
+            topic=label,
+            target_person_id=key,
+        )
+        _jt_volleyball_greeted_this_session.add(key)
+        _greeted_this_session.add(key)
+        _first_sight_seen_at.pop(key, None)
+        _pending_jt_volleyball_greetings.pop(key, None)
+
+        def _clear_pending_flag() -> None:
+            done.wait()
+            _proactive_speech_pending.clear()
+            try:
+                _presence_reaction_lock.release()
+            except RuntimeError:
+                pass
+
+        threading.Thread(
+            target=_clear_pending_flag,
+            daemon=True,
+            name="jt-volleyball-presence-done",
+        ).start()
+        return True
+    except Exception as exc:
+        _mark_governor_candidate(candidate_id, "dropped", "jt_volleyball_error")
+        _proactive_speech_pending.clear()
+        try:
+            _presence_reaction_lock.release()
+        except RuntimeError:
+            pass
+        _log.debug("JT volleyball greeting failed: %s", exc)
+        return False
+
+
+def _step_jt_volleyball_detection(snapshot: dict, profile: SituationProfile) -> bool:
+    """
+    JT's recognition bit mirrors the Jeff celebrity override for volleyball lore.
+    """
+    now = time.monotonic()
+    confirm_visible = float(getattr(config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 3.0))
+    visible_jt: Optional[tuple[int, str]] = None
+    for person in snapshot.get("people", []) or []:
+        person_name = person.get("face_id") or person.get("voice_id") or ""
+        if not _is_jt_volleyball_celebrity(person_name):
+            continue
+        try:
+            key = int(person.get("person_db_id"))
+        except (TypeError, ValueError):
+            continue
+        if key in _jt_volleyball_greeted_this_session:
+            continue
+        first_visible = _first_sight_seen_at.setdefault(key, now)
+        if (now - first_visible) < max(0.0, confirm_visible):
+            return True
+        _stage_jt_volleyball_greeting(
+            key=key,
+            person_name=person_name,
+        )
+        visible_jt = (key, person_name)
+        break
+
+    for pending_key, pending in list(_pending_jt_volleyball_greetings.items()):
+        name = str(pending.get("person_name") or "JT")
+        if not _is_jt_volleyball_celebrity(name):
+            _pending_jt_volleyball_greetings.pop(pending_key, None)
+            continue
+        stale_after = float(getattr(config, "JEFF_CELEBRITY_GREETING_PENDING_SECS", 45.0) or 45.0)
+        if (now - float(pending.get("last_seen_at") or now)) > max(1.0, stale_after):
+            _pending_jt_volleyball_greetings.pop(pending_key, None)
+            continue
+        _try_fire_jt_volleyball_greeting(
+            key=pending_key,
+            person_name=name,
+            person_db_id=pending_key,
+            profile=profile,
+            returning=bool(pending.get("returning")),
+        )
+        return True
+    return visible_jt is not None
 
 
 def _prime_emotion_frame(frame) -> None:
@@ -5983,6 +6157,27 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 first_sight_pending_keys.add(key)
                 continue
 
+        if _is_jt_volleyball_celebrity(person_name):
+            first_visible = _first_sight_seen_at.setdefault(key, now)
+            confirm_visible = float(getattr(config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 3.0))
+            if (now - first_visible) < max(0.0, confirm_visible):
+                first_sight_pending_keys.add(key)
+                continue
+            _stage_jt_volleyball_greeting(
+                key=key,
+                person_name=person_name,
+            )
+            if _try_fire_jt_volleyball_greeting(
+                key=key,
+                person_name=person_name,
+                person_db_id=person_db_id,
+                profile=profile,
+            ):
+                continue
+            if key not in _jt_volleyball_greeted_this_session:
+                first_sight_pending_keys.add(key)
+                continue
+
         # First time ever seen this session.
         if key not in _last_seen:
             if isinstance(key, int) and person_name and key not in _greeted_this_session:
@@ -6311,6 +6506,20 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     returning=True,
                 )
                 _try_fire_jeff_history_hunters_greeting(
+                    key=key,
+                    person_name=person_name,
+                    person_db_id=person_db_id,
+                    profile=profile,
+                    returning=True,
+                )
+                continue
+            if _is_jt_volleyball_celebrity(person_name):
+                _stage_jt_volleyball_greeting(
+                    key=key,
+                    person_name=person_name,
+                    returning=True,
+                )
+                _try_fire_jt_volleyball_greeting(
                     key=key,
                     person_name=person_name,
                     person_db_id=person_db_id,
@@ -8333,9 +8542,12 @@ def _loop() -> None:
             # Snapshot after recognition/social analysis so steps 6–11 see identified persons
             snapshot = world_state.snapshot()
 
-            # 5c. Jeff Benziger / History Hunters override. This owns the first
-            # conversational beat before ordinary greetings or ambient remarks.
-            if _step_jeff_history_hunters_detection(snapshot, profile):
+            # 5c. Celebrity overrides. These own the first conversational beat
+            # before ordinary greetings or ambient remarks.
+            if (
+                _step_jeff_history_hunters_detection(snapshot, profile)
+                or _step_jt_volleyball_detection(snapshot, profile)
+            ):
                 _finish_governor_cycle()
                 _last_snapshot = snapshot
                 sleep_for = max(0.0, interval - (time.monotonic() - tick_start))
@@ -8471,6 +8683,9 @@ def start() -> None:
     _proactive_speech_pending.clear()
     _greeted_this_session.clear()
     _jeff_celebrity_greeted_this_session.clear()
+    _pending_jeff_celebrity_greetings.clear()
+    _jt_volleyball_greeted_this_session.clear()
+    _pending_jt_volleyball_greetings.clear()
     _pending_departure_keys.clear()
     _first_missing_at.clear()
     _confirmed_absent_at.clear()
@@ -8592,6 +8807,9 @@ def stop() -> None:
     _identity_prompt_reply_until = 0.0
     _proactive_speech_pending.clear()
     _jeff_celebrity_greeted_this_session.clear()
+    _pending_jeff_celebrity_greetings.clear()
+    _jt_volleyball_greeted_this_session.clear()
+    _pending_jt_volleyball_greetings.clear()
     _confirmed_absent_at.clear()
     _first_sight_seen_at.clear()
     _animal_seen_signatures.clear()

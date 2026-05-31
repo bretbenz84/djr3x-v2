@@ -116,6 +116,9 @@ class PeopleNameValidationTests(unittest.TestCase):
             "Tell People About IT",
             "The Manual Override",
             "I Know",
+            "No",
+            "Nope",
+            "Nah",
         ]
         for candidate in bad_names:
             self.assertIsNone(normalize_person_name(candidate), candidate)

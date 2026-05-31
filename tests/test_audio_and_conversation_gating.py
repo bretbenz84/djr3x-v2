@@ -1338,26 +1338,114 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._wake_word_fired.clear()
 
-    def test_sleep_state_only_accepts_sleep_wake_word(self):
+    def test_sleep_state_accepts_general_and_sleep_wake_words(self):
         from intelligence import interaction
 
         old_state = interaction.state_module.get_state()
         interaction._wake_word_fired.clear()
         interaction.state_module.set_state(interaction.State.SLEEP)
         try:
-            with (
-                mock.patch.object(interaction, "_wake_word_recognition_gesture") as gesture,
-                mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            with mock.patch.object(
+                interaction.speech_queue,
+                "is_speaking",
+                return_value=False,
             ):
                 interaction._on_wake_word("Hey_rex")
-                self.assertFalse(interaction._wake_word_fired.is_set())
-                gesture.assert_not_called()
+                self.assertTrue(interaction._wake_word_fired.is_set())
+                with interaction._wake_lock:
+                    self.assertEqual(interaction._last_wake_word, "Hey_rex")
 
+                interaction._wake_word_fired.clear()
                 interaction._on_wake_word("wakeuprex")
                 self.assertTrue(interaction._wake_word_fired.is_set())
+                with interaction._wake_lock:
+                    self.assertEqual(interaction._last_wake_word, "wakeuprex")
         finally:
             interaction._wake_word_fired.clear()
             interaction.state_module.set_state(old_state)
+
+    def test_wake_word_detector_uses_general_models_as_sleep_fallbacks(self):
+        from audio import wake_word
+        from state import State
+
+        old_loaded = wake_word._loaded_models
+        wake_word._loaded_models = frozenset({"Hey_rex", "Yo_robot", "wakeuprex"})
+        try:
+            self.assertEqual(
+                wake_word._active_for_state(State.SLEEP),
+                frozenset({"Hey_rex", "Yo_robot", "wakeuprex"}),
+            )
+        finally:
+            wake_word._loaded_models = old_loaded
+
+    def test_sleep_wake_transcript_requires_explicit_rex_wake_phrase(self):
+        from intelligence import interaction
+
+        for text in [
+            "wake up rex",
+            "wake up, Rex.",
+            "please wake up DJ Rex",
+            "R3X wake up",
+            "wakeuprex",
+        ]:
+            with self.subTest(text=text):
+                self.assertTrue(interaction._is_sleep_wake_transcript(text))
+
+        for text in [
+            "wake up",
+            "hey rex",
+            "wake me up rex",
+            "don't wake up rex",
+            "I should wake up Rex later",
+        ]:
+            with self.subTest(text=text):
+                self.assertFalse(interaction._is_sleep_wake_transcript(text))
+
+    def test_sleep_transcription_fallback_wakes_on_phrase(self):
+        import numpy as np
+        from intelligence import interaction
+
+        previous_last = interaction._last_speech_at
+        try:
+            with (
+                mock.patch.object(
+                    interaction.transcription,
+                    "transcribe",
+                    return_value="wake up rex",
+                ),
+                mock.patch.object(interaction, "_wake_from_sleep", return_value="awake") as wake,
+                mock.patch.object(interaction.time, "monotonic", return_value=123.0),
+            ):
+                self.assertTrue(
+                    interaction._wake_from_sleep_if_transcribed(
+                        np.ones(1600, dtype=np.float32)
+                    )
+                )
+
+            wake.assert_called_once()
+            self.assertEqual(interaction._last_speech_at, 123.0)
+        finally:
+            interaction._last_speech_at = previous_last
+
+    def test_sleep_transcription_fallback_ignores_non_wake_phrase(self):
+        import numpy as np
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(
+                interaction.transcription,
+                "transcribe",
+                return_value="thanks for watching",
+            ),
+            mock.patch.object(interaction, "_wake_from_sleep") as wake,
+        ):
+            self.assertFalse(
+                interaction._wake_from_sleep_if_transcribed(
+                    np.ones(1600, dtype=np.float32)
+                )
+            )
+
+        wake.assert_not_called()
 
     def test_wake_word_recognition_gesture_filters_and_cools_down(self):
         from intelligence import interaction
@@ -1518,7 +1606,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
     def test_identity_prompt_name_reply_acknowledges_without_router_correction(self):
         from contextlib import ExitStack
         import numpy as np
-        from intelligence import interaction
+        from intelligence import interaction, person_specials
 
         old_people = interaction.world_state.get("people")
         old_until = interaction._identity_prompt_until
@@ -1683,17 +1771,18 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 person_id=2,
                 person_name="JT",
             )
+            expected_ack = person_specials.jt_volleyball_intro_ack("JT")
             speak.assert_called_once_with(
-                "Got it, JT. Nice to meet you.",
+                expected_ack,
                 emotion="happy",
                 pre_beat_ms=100,
                 post_beat_ms_override=200,
             )
             add_transcript.assert_any_call("JT", "JT")
-            add_transcript.assert_any_call("Rex", "Got it, JT. Nice to meet you.")
+            add_transcript.assert_any_call("Rex", expected_ack)
             log_heard.assert_called_once_with("JT", "JT")
-            log_rex.assert_called_once_with("Got it, JT. Nice to meet you.")
-            register.assert_called_once_with("Got it, JT. Nice to meet you.")
+            log_rex.assert_called_once_with(expected_ack)
+            register.assert_called_once_with(expected_ack)
             name_update.assert_not_called()
             decide.assert_not_called()
         finally:
@@ -1707,7 +1796,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
     def test_pending_identity_prompt_reply_from_idle_enrolls_before_background_filter(self):
         from contextlib import ExitStack
         import numpy as np
-        from intelligence import interaction
+        from intelligence import interaction, person_specials
 
         old_people = interaction.world_state.get("people")
         old_until = interaction._identity_prompt_until
@@ -1892,20 +1981,18 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 person_id=2,
                 person_name="Bret Benziger",
             )
+            expected_ack = person_specials.rex_creator_intro_ack("Bret Benziger")
             speak.assert_called_once_with(
-                "Got it, Bret Benziger. Nice to meet you.",
+                expected_ack,
                 emotion="happy",
                 pre_beat_ms=100,
                 post_beat_ms_override=200,
             )
             add_transcript.assert_any_call("Bret Benziger", "Bret Benziger")
-            add_transcript.assert_any_call(
-                "Rex",
-                "Got it, Bret Benziger. Nice to meet you.",
-            )
+            add_transcript.assert_any_call("Rex", expected_ack)
             log_heard.assert_called_once_with("Bret Benziger", "Bret Benziger")
-            log_rex.assert_called_once_with("Got it, Bret Benziger. Nice to meet you.")
-            register.assert_called_once_with("Got it, Bret Benziger. Nice to meet you.")
+            log_rex.assert_called_once_with(expected_ack)
+            register.assert_called_once_with(expected_ack)
             name_update.assert_not_called()
             decide.assert_not_called()
         finally:
@@ -2177,6 +2264,13 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             "Smith",
         )
         self.assertIsNone(interaction._extract_last_name_reply("John", "John"))
+        self.assertIsNone(interaction._extract_last_name_reply("No", "John"))
+        self.assertIsNone(
+            interaction._extract_last_name_reply(
+                "No, I'm not going to He has a memory Ah",
+                "John",
+            )
+        )
 
     def test_last_name_refusal_variations_are_recognized(self):
         from intelligence import interaction
@@ -2190,6 +2284,10 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             "first name only",
             "just John",
             "you can call me John",
+            "No",
+            "No thanks",
+            "No, I'm not going to",
+            "No, I'm not going to He has a memory Ah",
         ]
         for text in refusals:
             self.assertTrue(
@@ -2465,12 +2563,29 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._pending_common_first_name_introduction = None
 
-    def test_returning_common_first_name_person_is_prompted_once(self):
+    def test_returning_common_first_name_person_waits_for_longer_conversation(self):
         from intelligence import interaction
 
         interaction._pending_existing_common_first_name = None
         interaction._common_first_name_prompted_this_session.clear()
+        interaction._session_person_turn_counts.clear()
         try:
+            with mock.patch.object(
+                interaction,
+                "_has_declined_last_name",
+                return_value=False,
+            ):
+                response = interaction._maybe_prompt_existing_common_first_name(
+                    3,
+                    "Daniel",
+                )
+
+            self.assertIsNone(response)
+            self.assertIsNone(interaction._pending_existing_common_first_name)
+            self.assertNotIn(3, interaction._common_first_name_prompted_this_session)
+
+            min_turns = interaction._last_name_prompt_min_person_turns()
+            interaction._session_person_turn_counts[3] = min_turns
             with mock.patch.object(
                 interaction,
                 "_has_declined_last_name",
@@ -2501,12 +2616,14 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._pending_existing_common_first_name = None
             interaction._common_first_name_prompted_this_session.clear()
+            interaction._session_person_turn_counts.clear()
 
     def test_returning_common_first_name_prompt_defers_for_commands(self):
         from intelligence import interaction
 
         interaction._pending_existing_common_first_name = None
         interaction._common_first_name_prompted_this_session.clear()
+        interaction._session_person_turn_counts.clear()
         try:
             with mock.patch.object(
                 interaction,
@@ -2525,13 +2642,29 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._pending_existing_common_first_name = None
             interaction._common_first_name_prompted_this_session.clear()
+            interaction._session_person_turn_counts.clear()
 
-    def test_returning_single_non_common_name_is_prompted_for_last_name(self):
+    def test_returning_single_non_common_name_waits_for_longer_conversation(self):
         from intelligence import interaction
 
         interaction._pending_existing_common_first_name = None
         interaction._common_first_name_prompted_this_session.clear()
+        interaction._session_person_turn_counts.clear()
         try:
+            with mock.patch.object(
+                interaction,
+                "_has_declined_last_name",
+                return_value=False,
+            ):
+                response = interaction._maybe_prompt_existing_common_first_name(
+                    7,
+                    "Bret",
+                )
+
+            self.assertIsNone(response)
+            self.assertIsNone(interaction._pending_existing_common_first_name)
+
+            interaction._session_person_turn_counts[7] = interaction._last_name_prompt_min_person_turns()
             with mock.patch.object(
                 interaction,
                 "_has_declined_last_name",
@@ -2550,6 +2683,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._pending_existing_common_first_name = None
             interaction._common_first_name_prompted_this_session.clear()
+            interaction._session_person_turn_counts.clear()
 
     def test_first_name_match_asks_before_aliasing_existing_person(self):
         from intelligence import interaction
@@ -2722,6 +2856,12 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     "What time is it?"
                 )
             )
+            self.assertEqual(
+                interaction._pending_existing_common_first_name_reply_target(
+                    "No, I'm not going to He has a memory Ah"
+                ),
+                (3, "Gloria"),
+            )
         finally:
             interaction._pending_existing_common_first_name = None
 
@@ -2744,6 +2884,32 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 )
 
             self.assertIn("Daniel", response)
+            remember.assert_called_once_with(3, "Daniel")
+            self.assertIsNone(interaction._pending_existing_common_first_name)
+        finally:
+            interaction._pending_existing_common_first_name = None
+            interaction._common_first_name_prompted_this_session.clear()
+
+    def test_returning_common_first_name_implicit_refusal_is_not_saved_as_no(self):
+        from intelligence import interaction
+
+        interaction._pending_existing_common_first_name = {
+            "person_id": 3,
+            "first_name": "Daniel",
+            "asked_at": interaction.time.monotonic(),
+        }
+        interaction._common_first_name_prompted_this_session.clear()
+        try:
+            with (
+                mock.patch.object(interaction.people_memory, "rename_person") as rename,
+                mock.patch.object(interaction, "_remember_last_name_declined") as remember,
+            ):
+                response = interaction._handle_existing_common_first_name_last_name_reply(
+                    "No, I'm not going to He has a memory Ah"
+                )
+
+            self.assertIn("Daniel", response)
+            rename.assert_not_called()
             remember.assert_called_once_with(3, "Daniel")
             self.assertIsNone(interaction._pending_existing_common_first_name)
         finally:
@@ -3634,6 +3800,35 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         self.assertFalse(config.VAD_BARGE_IN_ENABLED)
         self.assertFalse(interaction._vad_barge_in_enabled())
+
+
+class TurnCompletionTest(unittest.TestCase):
+    def tearDown(self):
+        from intelligence import turn_completion
+
+        turn_completion.clear()
+
+    def test_embedded_preposition_answers_are_complete(self):
+        from intelligence import turn_completion
+
+        complete_answers = [
+            "I'm not sure who you're referring to",
+            "I don't know what you're talking about",
+            "That's where I'm from",
+            "That is what this is for.",
+        ]
+
+        for text in complete_answers:
+            with self.subTest(text=text):
+                self.assertIsNone(turn_completion.classify(text))
+
+    def test_real_to_fragments_still_hold(self):
+        from intelligence import turn_completion
+
+        for text in ("I need to", "I don't know what I need to", "I'm going to"):
+            with self.subTest(text=text):
+                signal = turn_completion.classify(text)
+                self.assertIsNotNone(signal)
 
 
 class ConversationGatingTest(unittest.TestCase):
@@ -7015,7 +7210,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         with (
             mock.patch.object(interaction.time, "monotonic", return_value=101.0),
             mock.patch.object(dj, "handle_request", return_value=track) as handle,
-            mock.patch.object(dj, "play") as play,
+            mock.patch.object(interaction, "_start_dj_after_response") as start_dj,
             mock.patch.object(interaction, "_speak_blocking") as speak,
             # Playback is deferred via threading.Timer (commit 35999e7); run the
             # timer callback inline so the test can observe dj.play synchronously.
@@ -7028,7 +7223,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
 
         self.assertIn("Spinning Classical Test", response)
         handle.assert_called_once_with("classical music")
-        play.assert_called_once_with(track)
+        start_dj.assert_called_once_with(track)
         speak.assert_called_once()
         self.assertIsNone(interaction._pending_music_offer)
 
@@ -8386,6 +8581,12 @@ class GroupChatterGatingTest(unittest.TestCase):
                     "find_or_create_person",
                     return_value=(77, True),
                 ) as find_or_create,
+                mock.patch.object(
+                    interaction.config,
+                    "IDENTITY_VOICE_ENROLL_MIN_AUDIO_SECS",
+                    0.0,
+                ),
+                mock.patch.object(interaction.config, "IDENTITY_VOICE_ENROLL_MIN_WORDS", 1),
                 mock.patch.object(interaction.speaker_id, "enroll_voice") as enroll_voice,
                 mock.patch.object(interaction.people_memory, "update_familiarity") as update_familiarity,
                 mock.patch.object(interaction, "_has_unknown_visible_person", return_value=False),
@@ -8413,11 +8614,15 @@ class GroupChatterGatingTest(unittest.TestCase):
             self.assertEqual(response, "JT, welcome aboard.")
             self.assertIsNone(interaction._pending_offscreen_identify)
             find_or_create.assert_called_once_with("JT")
-            # Tightened gating (commit b749c82): a bare one-word "JT" with a
-            # sub-1.2s sample is still accepted as an identity — the person row is
-            # created and bound — but the voice biometric is deliberately deferred
-            # until a longer, cleaner sample arrives.
-            enroll_voice.assert_not_called()
+            # The gate is mocked open above (min audio 0.0 / min words 1), so the
+            # bare "JT" sample enrolls; the gate-defers-short-samples behavior is
+            # covered separately by test_voice_enrollment_requires_longer_sample.
+            enroll_voice.assert_called_once()
+            self.assertEqual(enroll_voice.call_args.args[0], 77)
+            np.testing.assert_array_equal(
+                enroll_voice.call_args.args[1],
+                np.array([1.0, 1.0, 1.0, 2.0, 2.0], dtype=np.float32),
+            )
             update_familiarity.assert_called_once()
             bind_identity.assert_called_once_with(77, "JT")
             retired = {call.args[0] for call in retire_slot.call_args_list}
