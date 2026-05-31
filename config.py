@@ -1695,8 +1695,11 @@ COMEDY_LINE_BANKS = {
 IDLE_LISTEN_WITHOUT_WAKE_WORD = True
 
 # Seconds of sustained silence after speech before the segment is processed.
-# This is the largest "I stopped talking, why is Rex waiting?" knob.
-SILENCE_TIMEOUT_SECS = 0.9
+# This is the largest "I stopped talking, why is Rex waiting?" knob -- lowering
+# it shaves dead time off the start of every turn. Tradeoff: too low and a
+# person who pauses mid-sentence can get cut off. 0.6 is a responsive default;
+# raise toward 0.8 if Rex starts replying before slow / pausing speakers finish.
+SILENCE_TIMEOUT_SECS = 0.6
 
 # Minimum seconds of accumulated audio before silence can end a recording.
 # Prevents single-word transcriptions when the person is still talking.
