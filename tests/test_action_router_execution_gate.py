@@ -23,6 +23,7 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
             "memory.recent_discard",
             "identity.who_is_speaking",
             "identity.name_correction",
+            "music.play",
             "music.options",
             "music.stop",
             "music.skip",
@@ -35,11 +36,13 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
             "status.uptime",
             "status.capabilities",
         }.issubset(allowed))
+        # music.play graduated to direct execution (added to the allowlist); the
+        # remaining destructive / state-changing actions stay off the auto-execute
+        # path and on the legacy route.
         self.assertTrue({
             "memory.forget_specific",
             "memory.forget_person",
             "event.cancel",
-            "music.play",
             "game.start",
             "vision.snapshot",
             "system.sleep",

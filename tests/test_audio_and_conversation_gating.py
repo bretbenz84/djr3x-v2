@@ -3799,7 +3799,13 @@ class ConversationGatingTest(unittest.TestCase):
                 mock.patch.object(interaction.time, "monotonic", return_value=10.5),
                 mock.patch.object(interaction._log, "info"),
             ):
-                self.assertTrue(interaction._try_slow_path_ack("general"))
+                # Needs >= SLOW_PATH_ACK_GENERAL_MIN_WORDS (9) words to clear the
+                # word-count gate added in commit b749c82; this exercises the
+                # text-only/no-cache path the test actually targets.
+                self.assertTrue(interaction._try_slow_path_ack(
+                    "general",
+                    text="Tell me a long story about the asteroid field incident please",
+                ))
         finally:
             interaction._last_slow_path_ack = previous_ack
             interaction._current_character_loop_trace.reset(token)
@@ -4070,6 +4076,10 @@ class ConversationGatingTest(unittest.TestCase):
                 mock.patch.object(consciousness, "_pick_milestone", return_value=None),
                 mock.patch.object(consciousness, "_pick_anticipated_event", return_value=None),
                 mock.patch.object(consciousness, "_pick_absence_phase", return_value=None),
+                # Isolate from real DB state: a passed pending follow-up (priority
+                # 2.5) reads memory.events directly and would otherwise outrank the
+                # first-sight profile question this test is asserting.
+                mock.patch("memory.events.get_pending_followups", return_value=[]),
                 mock.patch.object(consciousness, "_pick_startup_profile_question", return_value=question),
                 mock.patch.object(
                     consciousness,
@@ -6667,6 +6677,9 @@ class ConversationGatingTest(unittest.TestCase):
                 mock.patch("vision.face.identify_face", return_value=None),
                 mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
                 mock.patch.object(consciousness.state_module, "get_state", return_value=State.ACTIVE),
+                # Proactive identity prompts in ACTIVE state are opt-in (default
+                # off) since commit b749c82; enable it to exercise this path.
+                mock.patch.object(consciousness.config, "IDENTITY_PROMPT_ALLOW_PROACTIVE_ACTIVE", True),
                 mock.patch.object(consciousness.time, "monotonic", return_value=100.0),
                 mock.patch.object(consciousness, "_speak_async", return_value=True) as speak,
             ):
@@ -7004,6 +7017,12 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             mock.patch.object(dj, "handle_request", return_value=track) as handle,
             mock.patch.object(dj, "play") as play,
             mock.patch.object(interaction, "_speak_blocking") as speak,
+            # Playback is deferred via threading.Timer (commit 35999e7); run the
+            # timer callback inline so the test can observe dj.play synchronously.
+            mock.patch.object(
+                interaction.threading, "Timer",
+                side_effect=lambda delay, fn: mock.Mock(start=fn),
+            ),
         ):
             response = interaction._handle_pending_music_offer_reply(1, "yes")
 
@@ -8394,12 +8413,11 @@ class GroupChatterGatingTest(unittest.TestCase):
             self.assertEqual(response, "JT, welcome aboard.")
             self.assertIsNone(interaction._pending_offscreen_identify)
             find_or_create.assert_called_once_with("JT")
-            enroll_voice.assert_called_once()
-            self.assertEqual(enroll_voice.call_args.args[0], 77)
-            np.testing.assert_array_equal(
-                enroll_voice.call_args.args[1],
-                np.array([1.0, 1.0, 1.0, 2.0, 2.0], dtype=np.float32),
-            )
+            # Tightened gating (commit b749c82): a bare one-word "JT" with a
+            # sub-1.2s sample is still accepted as an identity — the person row is
+            # created and bound — but the voice biometric is deliberately deferred
+            # until a longer, cleaner sample arrives.
+            enroll_voice.assert_not_called()
             update_familiarity.assert_called_once()
             bind_identity.assert_called_once_with(77, "JT")
             retired = {call.args[0] for call in retire_slot.call_args_list}

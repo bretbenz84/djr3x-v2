@@ -260,9 +260,9 @@ class ActionRouterReplayTests(unittest.TestCase):
             RouterReplayCase(
                 utterance="play jazz",
                 router_action="music.play",
-                expected_allowlist_result="not_in_execute_allowlist",
+                expected_allowlist_result="allowed",
                 expected_legacy_command=None,
-                expected_final_path="llm.stream",
+                expected_final_path="router_takeover.music.play",
                 args={"music_query": "jazz"},
             ),
             RouterReplayCase(
