@@ -472,6 +472,49 @@ class FaceTrackingTests(unittest.TestCase):
             damped_step,
         )
 
+    def test_live_tracked_edge_face_slews_neck_responsively(self):
+        # Guard the responsiveness fix: an optical-flow (live_tracked) box at the
+        # frame edge — the common case, since ~11/12 ticks ride optical flow — must
+        # still move the neck a substantial amount per tick. Under the old tuning
+        # (neck max_step 120 * live damping 0.45 = 54 qus/tick) this crawled and
+        # Rex took seconds to face someone who moved. The face center sits at the
+        # vertical midline so only the neck moves.
+        c = self.consciousness
+        self._set_servo_positions()
+        c.world_state.update("people", [{
+            "id": "person_1",
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": True,
+            "face_box": (0, 300, 120, 120),  # far-left edge, vertically centered
+            "live_tracked": True,
+        }])
+        c._face_tracking_lock = {}
+        c._face_tracking_suspended_until = 0.0
+        c._face_tracking_last_error_key = None
+        c._face_tracking_last_error_x = None
+        c._face_tracking_last_error_y = None
+
+        with (
+            mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+            mock.patch.object(c.time, "monotonic", return_value=300.0),
+            mock.patch("hardware.servos.set_servos") as set_servos,
+            mock.patch("hardware.servos.set_motion_profile"),
+            mock.patch("hardware.servos.set_face_tracking_baseline"),
+        ):
+            c._step_face_tracking(self.frame)
+
+        updates = set_servos.call_args.args[0]
+        neck_ch = c.config.SERVO_CHANNELS["neck"]["ch"]
+        neutral = c.config.SERVO_CHANNELS["neck"]["neutral"]
+        neck_move = abs(updates[neck_ch] - neutral)
+        # Left-edge face → neck turns left (below neutral).
+        self.assertLess(updates[neck_ch], neutral)
+        # Responsive: comfortably more than the old ~54 qus/tick crawl, and never
+        # beyond the per-tick step cap.
+        self.assertGreaterEqual(neck_move, 150)
+        self.assertLessEqual(neck_move, c.config.FACE_TRACKING_NECK_MAX_STEP_QUS)
+
     @unittest.skipIf(cv2 is None, "OpenCV unavailable")
     def test_live_tracking_people_advances_box_between_recognition_ticks(self):
         c = self.consciousness

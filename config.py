@@ -1017,9 +1017,17 @@ BREATHING_PERIOD_SAD     = 6.0  # slower during sad emotion
 # FACE TRACKING & GAZE
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Face tracking is a closed loop (camera is on the head). The centering GAIN
+# below is roughly matched to the camera FOV, so the per-tick *target* is about
+# right; what made Rex lag many seconds behind a moving person was the SLEW-RATE
+# throttling — small max-step caps, halved again on optical-flow frames — not the
+# gain. The knobs here raise how fast the head moves toward that target while
+# leaving the gain and reversal damping (the anti-oscillation safety net) alone.
+# Every value is .env-overridable, so dial back on hardware if the head hunts.
+
 # 0.0 = servo snaps instantly to face position; 1.0 = servo never moves.
 # This needs to feel like turning toward a person, not a sleepy idle drift.
-TRACKING_SMOOTHING_FACTOR = 0.55
+TRACKING_SMOOTHING_FACTOR = 0.45
 
 # Pixels from frame center in which no neck correction is applied
 TRACKING_DEAD_ZONE_PX = 32
@@ -1052,37 +1060,47 @@ FACE_TRACKING_CENTERING_GAIN = _env_float(
 )
 
 # Maximum quarter-microsecond correction per face-tracking tick. These prevent
-# one edge-of-frame detection from slamming the head to a hard stop.
+# one edge-of-frame detection from slamming the head to a hard stop. At the
+# ~12.5 Hz loop rate, the neck cap sets the top tracking speed: 120 qus/tick was
+# only ~1500 qus/s (and ~675 qus/s on optical-flow frames after live-box
+# damping), so a big move took 2-4 s. 280 qus/tick (~3500 qus/s) stays well under
+# what the servo can physically traverse in one tick at the speed below, so the
+# commanded position the loop reads back stays in sync with the real head.
 FACE_TRACKING_NECK_MAX_STEP_QUS = _env_int(
     "FACE_TRACKING_NECK_MAX_STEP_QUS",
-    120,
+    280,
     min_value=1,
     max_value=4000,
 )
 FACE_TRACKING_LIFT_MAX_STEP_QUS = _env_int(
     "FACE_TRACKING_LIFT_MAX_STEP_QUS",
-    80,
+    190,
     min_value=1,
     max_value=4000,
 )
 FACE_TRACKING_TILT_MAX_STEP_QUS = _env_int(
     "FACE_TRACKING_TILT_MAX_STEP_QUS",
-    40,
+    95,
     min_value=1,
     max_value=2000,
 )
 
 # Face tracking is a live gaze correction, not a slow idle animation. Use a
 # faster Maestro profile for the head channels before sending tracking targets.
+# Speed must comfortably exceed the per-tick step above so the head reaches each
+# commanded target within the tick (else commands outrun the servo and the loop,
+# which reads back commanded position, oscillates). Acceleration was so low (10)
+# the neck spent ~2 s ramping up to speed on every move — raised so it commits to
+# a move quickly while staying smooth.
 FACE_TRACKING_SERVO_SPEED = _env_int(
     "FACE_TRACKING_SERVO_SPEED",
-    70,
+    95,
     min_value=0,
     max_value=255,
 )
 FACE_TRACKING_SERVO_ACCELERATION = _env_int(
     "FACE_TRACKING_SERVO_ACCELERATION",
-    10,
+    32,
     min_value=0,
     max_value=255,
 )
@@ -1092,9 +1110,15 @@ FACE_TRACKING_LOG_INTERVAL_SECS = _env_float(
     min_value=0.0,
     max_value=60.0,
 )
+# Real dlib detection runs at ~1 Hz; the other ~11 of every 12 tracking ticks ride
+# on optical-flow boxes, which this damping applies to. At 0.45 it HALVED the slew
+# on nearly every frame, so the head almost never moved at full speed. The flow
+# tracker follows the face accurately frame-to-frame (median feature displacement,
+# big-jump rejection), so trust it more — 0.8 keeps a little caution without
+# kneecapping the tracking bandwidth.
 FACE_TRACKING_LIVE_BOX_DAMPING = _env_float(
     "FACE_TRACKING_LIVE_BOX_DAMPING",
-    0.45,
+    0.8,
     min_value=0.05,
     max_value=1.0,
 )
