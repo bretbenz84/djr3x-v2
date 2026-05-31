@@ -340,31 +340,34 @@ def merge_expressions_into_world_state(expressions: list[dict]) -> int:
     if not expressions:
         return 0
 
-    people = world_state.get("people")
-    if not isinstance(people, list) or not people:
-        return 0
+    result = {"changed": 0}
 
-    updated = list(people)
-    visible_indices = _visible_person_indices(updated)
-    used_indices: set[int] = set()
-    changed = 0
-    for expression in expressions:
-        idx = _match_expression_to_people(expression, updated, visible_indices, used_indices)
-        if idx is None:
-            continue
-        used_indices.add(idx)
-        face_mood, face_expression, label = _expression_payload(expression)
-        person = dict(updated[idx])
-        person["face_mood"] = face_mood
-        person["face_expression"] = face_expression
-        person["facial_expression"] = face_expression
-        person["expression"] = label
-        updated[idx] = person
-        changed += 1
+    def _merge_expressions(people):
+        if not isinstance(people, list) or not people:
+            return None
 
-    if changed:
-        world_state.update("people", updated)
-    return changed
+        updated = list(people)
+        visible_indices = _visible_person_indices(updated)
+        used_indices: set[int] = set()
+        for expression in expressions:
+            idx = _match_expression_to_people(expression, updated, visible_indices, used_indices)
+            if idx is None:
+                continue
+            used_indices.add(idx)
+            face_mood, face_expression, label = _expression_payload(expression)
+            person = dict(updated[idx])
+            person["face_mood"] = face_mood
+            person["face_expression"] = face_expression
+            person["facial_expression"] = face_expression
+            person["expression"] = label
+            updated[idx] = person
+            result["changed"] += 1
+        return updated if result["changed"] else None
+
+    # Read-modify-write under the world_state lock so concurrent identity/pose
+    # writes aren't reverted by a stale snapshot.
+    world_state.mutate("people", _merge_expressions)
+    return result["changed"]
 
 
 def process_frame(frame) -> list[dict]:

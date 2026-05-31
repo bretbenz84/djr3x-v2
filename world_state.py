@@ -130,6 +130,28 @@ class WorldState:
                 raise KeyError(f"Unknown WorldState field: {field!r}")
             self._state[field] = value
 
+    def mutate(self, field: str, fn):
+        """Atomically read-modify-write a field while holding the lock.
+
+        `fn` receives a deep copy of the current value and returns the new value
+        to store, or None to leave the field unchanged. It runs with the lock
+        held, so it must be fast (pure in-memory work) and must NOT call back
+        into WorldState — get/update/mutate/snapshot would deadlock.
+
+        Use this instead of get()+update() whenever the new value depends on the
+        current one, so concurrent writers cannot silently overwrite each other
+        (the lost-update race). Returns a deep copy of the resulting value.
+        """
+        with self._lock:
+            if field not in self._state:
+                raise KeyError(f"Unknown WorldState field: {field!r}")
+            current = copy.deepcopy(self._state[field])
+            updated = fn(current)
+            if updated is None:
+                return current
+            self._state[field] = updated
+            return copy.deepcopy(updated)
+
     def get(self, field: str):
         with self._lock:
             if field not in self._state:

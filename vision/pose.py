@@ -483,36 +483,39 @@ def _update_world_state(detected: list[dict]) -> None:
     person's pose data, etc.). Entries beyond the detected count have pose fields
     cleared. This keeps face_id / voice_id assigned by other pipeline stages intact.
     """
-    current = world_state.get("people")
+    def _merge_pose(current):
+        updated = list(current)
 
-    updated = list(current)
+        for i, person_data in enumerate(detected):
+            pose_fields = {
+                "pose":         person_data["pose"],
+                "gesture":      person_data["gesture"],
+                "engagement":   person_data["engagement"],
+                "age_estimate": person_data["age_estimate"],
+                "position":     person_data["position"],
+            }
+            if i < len(updated):
+                updated[i] = {**updated[i], **pose_fields}
+            else:
+                updated.append({
+                    "id":            f"person_{i+1}",
+                    "face_id":       None,
+                    "voice_id":      None,
+                    "distance_zone": None,
+                    **pose_fields,
+                })
 
-    for i, person_data in enumerate(detected):
-        pose_fields = {
-            "pose":         person_data["pose"],
-            "gesture":      person_data["gesture"],
-            "engagement":   person_data["engagement"],
-            "age_estimate": person_data["age_estimate"],
-            "position":     person_data["position"],
-        }
-        if i < len(updated):
-            updated[i] = {**updated[i], **pose_fields}
-        else:
-            updated.append({
-                "id":            f"person_{i+1}",
-                "face_id":       None,
-                "voice_id":      None,
-                "distance_zone": None,
-                **pose_fields,
-            })
+        # Clear pose fields on any existing entries that no longer have a detected person
+        for i in range(len(detected), len(updated)):
+            updated[i] = {
+                **updated[i],
+                "pose":       None,
+                "gesture":    None,
+                "engagement": None,
+            }
 
-    # Clear pose fields on any existing entries that no longer have a detected person
-    for i in range(len(detected), len(updated)):
-        updated[i] = {
-            **updated[i],
-            "pose":       None,
-            "gesture":    None,
-            "engagement": None,
-        }
+        return updated
 
-    world_state.update("people", updated)
+    # Read-modify-write under the world_state lock so a concurrent face/identity
+    # write (which sets person_db_id) isn't reverted by a stale snapshot.
+    world_state.mutate("people", _merge_pose)

@@ -2923,16 +2923,26 @@ def _step_person_recognition(frame) -> None:
             # a single detector miss. Geometry is cleared immediately so the
             # GUI never draws a stale box at an old camera coordinate.
             hold_secs = float(getattr(config, "FACE_DETECTION_HOLD_SECS", 3.0) or 0.0)
-            people_now = world_state.get("people")
             now_mono = time.monotonic()
-            if people_now and hold_secs > 0 and (now_mono - _last_face_seen_at) <= hold_secs:
-                held_people = _mark_people_faces_missing(people_now, now_mono=now_mono)
-                world_state.update("people", held_people)
-                _previous_face_boxes.clear()
-                return
-            if people_now:
-                world_state.update("people", [])
+            within_hold = bool(
+                hold_secs > 0
+                and _last_face_seen_at
+                and (now_mono - _last_face_seen_at) <= hold_secs
+            )
+            outcome = {"held": False}
+
+            def _hold_or_clear(people):
+                if not people:
+                    return None
+                if within_hold:
+                    outcome["held"] = True
+                    return _mark_people_faces_missing(people, now_mono=now_mono)
+                return []
+
+            world_state.mutate("people", _hold_or_clear)
             _previous_face_boxes.clear()
+            if outcome["held"]:
+                return
             _last_face_feedback_signature = None
             return
 
@@ -3106,7 +3116,30 @@ def _step_person_recognition(frame) -> None:
         )
 
         if changed:
-            world_state.update("people", people)
+            # Commit under the world_state lock. The slow face DB lookups above
+            # ran without the lock, so another thread (pose / expression / an
+            # identity binder) may have written since we read. Overlay their
+            # decoration fields, and preserve any identity they bound where this
+            # tick didn't assign one, so recognition doesn't revert them.
+            def _commit(current):
+                decor = (
+                    "pose", "gesture", "engagement", "age_estimate",
+                    "face_mood", "face_expression", "facial_expression", "expression",
+                )
+                ident = ("person_db_id", "face_id", "voice_id")
+                for i, slot in enumerate(people):
+                    if i >= len(current):
+                        continue
+                    cur = current[i]
+                    for field in decor:
+                        if field in cur:
+                            slot[field] = cur[field]
+                    for field in ident:
+                        if slot.get(field) is None and cur.get(field) is not None:
+                            slot[field] = cur[field]
+                return people
+
+            world_state.mutate("people", _commit)
 
         # Update solo identity snapshot for next tick's stickiness check.
         if len(detected) == 1 and any_identified_this_tick and recognized_names:
@@ -4539,26 +4572,27 @@ def _step_gui_mood_telemetry(snapshot: dict, frame) -> None:
 
 def _write_face_mood_to_world_state(person_id: int, mood: dict) -> None:
     try:
-        people = world_state.get("people")
-        changed = False
-        for idx, person in enumerate(people):
-            if not isinstance(person, dict):
-                continue
-            try:
-                current_id = int(person.get("person_db_id"))
-            except (TypeError, ValueError):
-                continue
-            if current_id != int(person_id):
-                continue
-            updated = dict(person)
-            updated["face_mood"] = dict(mood)
-            expression = str(updated.get("expression") or "").strip().lower()
-            if expression in {"", "neutral", "unknown", "none"}:
-                updated["expression"] = mood.get("mood") or "neutral"
-            people[idx] = updated
-            changed = True
-        if changed:
-            world_state.update("people", people)
+        def _apply_mood(people):
+            changed = False
+            for idx, person in enumerate(people):
+                if not isinstance(person, dict):
+                    continue
+                try:
+                    current_id = int(person.get("person_db_id"))
+                except (TypeError, ValueError):
+                    continue
+                if current_id != int(person_id):
+                    continue
+                updated = dict(person)
+                updated["face_mood"] = dict(mood)
+                expression = str(updated.get("expression") or "").strip().lower()
+                if expression in {"", "neutral", "unknown", "none"}:
+                    updated["expression"] = mood.get("mood") or "neutral"
+                people[idx] = updated
+                changed = True
+            return people if changed else None
+
+        world_state.mutate("people", _apply_mood)
     except Exception as exc:
         _log.debug("face mood world_state update failed: %s", exc)
 
