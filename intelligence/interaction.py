@@ -245,6 +245,11 @@ _listen_capture_floor_at: float = 0.0
 # this False so a fast human answer is not deleted.
 _post_tts_flush_needed: bool = False
 
+# Monotonic time of the most recent question/fast-response post-TTS handoff. Used
+# to keep the responsive (no-flush) window sticky so a trailing-statement handoff
+# from the same turn cannot downgrade it and delete a fast human answer.
+_last_fast_handoff_at: float = 0.0
+
 # Time window (set by consciousness) where a short bare-name reply is accepted.
 _identity_prompt_until: float = 0.0
 
@@ -1729,8 +1734,34 @@ def _apply_post_tts_handoff(
     source: str = "speech_queue",
 ) -> _PostTtsHandoffPolicy:
     global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed, _last_speech_at
+    global _last_fast_handoff_at
     policy = _post_tts_handoff_policy(text)
     now = time.monotonic()
+
+    # Sticky responsiveness: a streamed reply fires this handoff per sentence and
+    # again for the whole reply. If Rex asked a question but his trailing sentence
+    # is a statement, that last handoff would flip back to the long flush window
+    # and delete the human's immediate answer. Keep the responsive (short,
+    # no-flush) window for a brief sticky window after any question handoff,
+    # regardless of which handoff lands last.
+    sticky_secs = float(getattr(config, "POST_QUESTION_HANDOFF_STICKY_SECS", 0.0) or 0.0)
+    if policy.fast_response_expected:
+        _last_fast_handoff_at = now
+    elif sticky_secs > 0.0 and (now - _last_fast_handoff_at) <= sticky_secs:
+        policy = _PostTtsHandoffPolicy(
+            asked_question=policy.asked_question,
+            fast_response_expected=True,
+            listen_delay_secs=min(
+                policy.listen_delay_secs,
+                float(getattr(config, "POST_QUESTION_LISTEN_DELAY_SECS", 0.12)),
+            ),
+            flush_buffer=bool(getattr(config, "POST_QUESTION_FLUSH_AUDIO_BUFFER", False)),
+        )
+        _log.debug(
+            "[aec] post-tts handoff kept responsive (sticky question window, source=%s)",
+            source,
+        )
+
     _last_speech_at = now
     _listen_resume_at = now + policy.listen_delay_secs
     if policy.fast_response_expected:
@@ -2623,6 +2654,15 @@ def _question_sentence_expects_response(sentence: str) -> bool:
     if re.search(r"\b(right|okay|ok|huh|yeah)\?\s*$", lowered):
         return False
     if re.search(r"\bwhy\s+(?:risk|bother|would|not)\b.+\bwhen\b", lowered):
+        return False
+    # Rhetorical "who doesn't / who wouldn't / who hasn't ... ?" — Rex's own
+    # flourish, not a real question. Don't arm the no-response quip on these
+    # (it fired awkwardly after lines like "who doesn't appreciate a droid...?").
+    if re.search(
+        r"\bwho\s+(?:doesn'?t|does\s+not|wouldn'?t|would\s+not|hasn'?t|has\s+not|"
+        r"isn'?t|ain'?t|can'?t)\b",
+        lowered,
+    ):
         return False
     if _SHORT_SLOT_QUESTION_RE.search(lowered):
         return True
@@ -12379,6 +12419,55 @@ def _handle_classified_intent(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Crosstalk / addressee triage
+# ─────────────────────────────────────────────────────────────────────────────
+# With an always-on mic, Rex overhears people talking to each OTHER (a partner in
+# another room, the user answering someone else). Perfect addressee detection is
+# impossible, so this is deliberately HIGH PRECISION: only the clearest
+# "talking to another person" cues, and never when Rex is addressed — so it can
+# never make Rex ignore plausibly-directed speech.
+
+_REX_ADDRESS_TOKEN_RE = re.compile(
+    r"\b(rex|r3x|r-?3x|dj|droid|robot|jukebox)\b",
+    re.IGNORECASE,
+)
+# "love you" / "love you too" at a clause edge — affection aimed at a person, not
+# a DJ droid. The edge anchor avoids requests like "I'd love you to play music".
+_AFFECTION_TO_PERSON_RE = re.compile(
+    r"\blove\s+(?:you|ya|u)(?:\s+too)?\s*(?:[,.!?]|$)",
+    re.IGNORECASE,
+)
+# "babe" is essentially never a common noun in a living room → partner vocative
+# anywhere in the line.
+_PARTNER_VOCATIVE_ANYWHERE_RE = re.compile(r"\bbabe\b", re.IGNORECASE)
+# Other endearments only count as vocatives when comma-set-off or at a sentence
+# edge, so "pass the honey" / "what a sweetheart of a deal" don't trip it.
+_PARTNER_VOCATIVE_EDGE_RE = re.compile(
+    r"(?:^|,)\s*(?:honey|hon|sweetie|sweetheart|darling)\s*(?:[,.!?]|$)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_third_party_crosstalk(text: str) -> bool:
+    """Best-effort: True when an utterance clearly addresses another person, not
+    Rex (partner endearments, "love you too"). High precision, low recall — it
+    must never fire on plausibly Rex-directed speech, so unsure cases return False.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if _REX_ADDRESS_TOKEN_RE.search(cleaned):
+        return False
+    if _AFFECTION_TO_PERSON_RE.search(cleaned):
+        return True
+    if _PARTNER_VOCATIVE_ANYWHERE_RE.search(cleaned):
+        return True
+    if _PARTNER_VOCATIVE_EDGE_RE.search(cleaned):
+        return True
+    return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Speech segment processing
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -12473,6 +12562,30 @@ def _handle_speech_segment(
         trace_context_token = _current_character_loop_trace.set(character_trace)
 
         heard_log_text = text
+
+        # Best-effort crosstalk suppression: if this utterance clearly addresses
+        # another person (partner endearment, "love you too") and never names Rex,
+        # treat it as overheard couple-talk, not a turn directed at Rex.
+        if (
+            not text_input
+            and bool(getattr(config, "CROSSTALK_SUPPRESSION_ENABLED", True))
+            and not _game_suppresses_conversation()
+            and _looks_like_third_party_crosstalk(text)
+        ):
+            _log.info(
+                "[interaction] suppressed overheard crosstalk (not addressed to Rex): %r",
+                text,
+            )
+            final_executed_path = "ignored.crosstalk"
+            completed = False
+            if from_idle_activation:
+                # Don't camp in ACTIVE on speech that was not even meant for Rex.
+                try:
+                    state_module.set_state(State.IDLE)
+                except Exception:
+                    pass
+            return
+
         if not _game_suppresses_conversation():
             completion = turn_completion.consume_continuation(
                 text=text,

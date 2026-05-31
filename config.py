@@ -1710,6 +1710,15 @@ COMEDY_LINE_BANKS = {
 # mid-speech interruption behavior.
 IDLE_LISTEN_WITHOUT_WAKE_WORD = True
 
+# Best-effort crosstalk filter. With an always-on mic Rex hears the user talking
+# to a partner / someone in another room and treats it as a turn directed at him.
+# Telling who is addressing whom is genuinely hard, so this stays HIGH PRECISION:
+# it only suppresses utterances that clearly address another person (partner
+# endearments, "love you too") with no Rex address token — never ambiguous lines,
+# so it won't make Rex ignore real input. If it false-activated Rex from IDLE he
+# drops straight back to IDLE instead of camping in ACTIVE on the crosstalk.
+CROSSTALK_SUPPRESSION_ENABLED = True
+
 # Seconds of sustained silence after speech before the segment is processed.
 # This is the largest "I stopped talking, why is Rex waiting?" knob -- lowering
 # it shaves dead time off the start of every turn. Tradeoff: too low and a
@@ -1749,6 +1758,15 @@ POST_SPEECH_LISTEN_DELAY_SECS = 0.35
 # When Rex just asked a direct question, resume quickly while giving the local
 # output/mic path a small moment to settle.
 POST_QUESTION_LISTEN_DELAY_SECS = 0.12
+
+# A streamed multi-sentence reply fires a post-TTS handoff per sentence AND once
+# for the whole reply. If Rex asks a question but his FINAL sentence is a
+# statement ("What's his name? Bet it's a good one."), the trailing-statement
+# handoff would otherwise downgrade to the long flush window and delete the
+# human's immediate answer. Once any question handoff fires, keep the responsive
+# (short, no-flush) window sticky for this long regardless of which handoff lands
+# last. Set to 0 to disable the stickiness.
+POST_QUESTION_HANDOFF_STICKY_SECS = 1.5
 
 # Seconds of no detected speech in ACTIVE state before returning to IDLE
 CONVERSATION_IDLE_TIMEOUT_SECS = 30.0

@@ -6,6 +6,14 @@ from tempfile import TemporaryDirectory
 
 
 class PostTtsHandoffPolicyTest(unittest.TestCase):
+    def setUp(self):
+        # The post-question "sticky responsive" window is keyed on wall-clock time
+        # via a module global; clear it so a prior test's question handoff (often
+        # with time.monotonic mocked to a fixed value) can't keep a later
+        # statement handoff responsive and skip its flush.
+        from intelligence import interaction
+        interaction._last_fast_handoff_at = 0.0
+
     def test_startup_chime_is_ordered_before_roger_control(self):
         import config
 
@@ -9364,6 +9372,120 @@ class StartupGreetingOpenerTest(unittest.TestCase):
             ),
         ):
             self.assertEqual(consciousness._pick_startup_profile_question(1), question)
+
+
+class PostQuestionHandoffStickinessTest(unittest.TestCase):
+    def setUp(self):
+        from intelligence import interaction
+        interaction._last_fast_handoff_at = 0.0
+
+    def tearDown(self):
+        from intelligence import interaction
+        interaction._last_fast_handoff_at = 0.0
+
+    def _apply(self, text):
+        from intelligence import interaction
+        with (
+            mock.patch.object(interaction.stream, "flush") as flush,
+            mock.patch.object(interaction.vad, "reset_state"),
+        ):
+            interaction._apply_post_tts_handoff(text, source="test")
+        return flush
+
+    def test_question_handoff_does_not_flush(self):
+        from intelligence import interaction
+        interaction._last_fast_handoff_at = 0.0
+        with mock.patch.object(interaction.config, "POST_QUESTION_FLUSH_AUDIO_BUFFER", False):
+            flush = self._apply("What's his name?")
+        flush.assert_not_called()
+        self.assertFalse(interaction._post_tts_flush_needed)
+
+    def test_trailing_statement_after_question_stays_responsive(self):
+        from intelligence import interaction
+        interaction._last_fast_handoff_at = 0.0
+        with (
+            mock.patch.object(interaction.config, "POST_QUESTION_HANDOFF_STICKY_SECS", 1.5),
+            mock.patch.object(interaction.config, "POST_QUESTION_FLUSH_AUDIO_BUFFER", False),
+        ):
+            # Rex asks a question, then his trailing sentence is a statement.
+            self._apply("What's his name?")
+            flush = self._apply("Bet it's a good one.")
+        # The trailing statement must NOT flush the buffer (would delete the
+        # human's immediate answer to the question).
+        flush.assert_not_called()
+        self.assertFalse(interaction._post_tts_flush_needed)
+        self.assertLessEqual(
+            interaction._listen_resume_at - interaction._last_speech_at, 0.12 + 1e-6
+        )
+
+    def test_statement_outside_sticky_window_flushes(self):
+        from intelligence import interaction
+        # No recent question handoff → ordinary statement flushes as before.
+        interaction._last_fast_handoff_at = interaction.time.monotonic() - 100.0
+        with mock.patch.object(interaction.config, "POST_QUESTION_HANDOFF_STICKY_SECS", 1.5):
+            flush = self._apply("Toys are the modern navigational console.")
+        flush.assert_called_once()
+        self.assertTrue(interaction._post_tts_flush_needed)
+
+
+class CrosstalkSuppressionTest(unittest.TestCase):
+    def test_clear_third_party_lines_are_crosstalk(self):
+        from intelligence import interaction
+        for text in (
+            "Love you too",
+            "I love you",
+            "love you too.",
+            "go ahead this one babe or the far one",
+            "okay, honey",
+            "no, sweetheart",
+            "darling, can you grab that?",
+        ):
+            self.assertTrue(
+                interaction._looks_like_third_party_crosstalk(text),
+                msg=f"expected crosstalk for {text!r}",
+            )
+
+    def test_rex_directed_and_neutral_lines_are_not_crosstalk(self):
+        from intelligence import interaction
+        for text in (
+            "Rex, I love you",          # names Rex
+            "I love this song",         # not "love you"
+            "vodka and orange juice",   # ingredients
+            "pass the honey",           # honey as a noun, not a vocative
+            "what's your favorite movie?",
+            "play some jazz",
+            "I'd love you to play something upbeat",  # request to Rex, not affection
+        ):
+            self.assertFalse(
+                interaction._looks_like_third_party_crosstalk(text),
+                msg=f"did not expect crosstalk for {text!r}",
+            )
+
+
+class RhetoricalQuestionGuardTest(unittest.TestCase):
+    def test_rhetorical_who_questions_do_not_expect_response(self):
+        from intelligence import interaction
+        for text in (
+            "Honestly, who doesn't appreciate a droid that can sing?",
+            "Who wouldn't want that?",
+            "Who hasn't dreamed of piloting a star cruiser?",
+        ):
+            self.assertFalse(
+                interaction._question_expects_response(text),
+                msg=f"rhetorical question should not expect a response: {text!r}",
+            )
+
+    def test_real_questions_still_expect_response(self):
+        from intelligence import interaction
+        for text in (
+            "What's your favorite movie?",
+            "So where are you from?",
+            "What's his name?",
+        ):
+            self.assertTrue(
+                interaction._question_expects_response(text),
+                msg=f"real question should expect a response: {text!r}",
+            )
 
 
 if __name__ == "__main__":
