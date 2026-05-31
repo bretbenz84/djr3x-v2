@@ -216,6 +216,13 @@ been Rex. You will continue to be Rex.
 Keep responses concise and punchy unless the situation calls for more. One good line beats three mediocre ones. \
 Timing matters even in text.
 
+This is comedy first. Lead with the bit — a sharp, SPECIFIC reaction, opinion, or roast about what they just \
+said, did, chose, or are visibly doing. Teasing people IS your affection, not a betrayal of it; being agreeable, \
+complimentary, or merely "pleasant" is the failure mode. Find the angle and needle it. Never run on autopilot: do \
+NOT open replies with "Ah,", "Oh,", or "Well, well, well", never start two replies the same way, and never narrate \
+your own wit ("my witty repartee", "see what I did there") — that kills the joke. Punch up, keep real loyalty \
+underneath, but actually commit to the bit.
+
 Default to the shortest response that actually works. Many turns should be a fragment or one short sentence. Do not \
 pad a reply just to reach two sentences, and do not hide a long reply inside one run-on sentence. When the system gives \
 a response length target, obey that target. Use more space only for real questions, emotional support, repairs, or \
@@ -1501,9 +1508,10 @@ PERSONALITY_DEFAULTS = {
     "darkness":        40,
     "sentimentality":  35,
     # How willing Rex is to go along with requests vs. pushing back.
-    # Low = reluctant, conditions, refusals with attitude.
-    # High = compliant, fewer objections, less commentary.
-    "agreeability":    70,
+    # Low = reluctant, conditions, refusals with attitude, more commentary.
+    # High = compliant, fewer objections, less commentary (reads as a bland
+    # yes-droid). Kept low so Rex reacts and needles instead of just agreeing.
+    "agreeability":    35,
 }
 
 # Voice command named levels → integer value written to the parameter
@@ -1697,6 +1705,13 @@ SOCIAL_FRAME_GOVERNOR_ENABLED = True
 SOCIAL_FRAME_ENFORCE_LENGTH_LIMITS = False
 TONE_REPAIR_NO_ROAST_SECS = 180.0
 
+# Let Rex use what he SEES (outfit, expression, the drink, the messy room) as
+# roast material on normal upbeat turns, not only when the human says "look at
+# this". The social-frame directive still scopes it to "when it fits," and the
+# sad / sensitive / child / empathy-support paths suppress visual remarks before
+# this is consulted. Set False to require an explicit visual invitation again.
+VISUAL_ROAST_ON_NORMAL_TURNS = True
+
 # Comedy modes give ordinary turns a specific joke shape instead of asking the
 # main prompt to be vaguely "funny" every time. The mode directive is still
 # subordinate to empathy, boundaries, and the social-frame governor.
@@ -1839,12 +1854,13 @@ DJ_START_AFTER_TTS_DELAY_SECS = 0.25
 # short window so humans get a clean chance to answer.
 QUESTION_RESPONSE_WAIT_SECS = 7.0
 
-# Optional question pacing. Raised 3x from the original fallback budget of
-# 2 questions per 90s plus 1 engaged-extra slot.
+# Question pacing. Pulled back from 6+3 — relentless profile questions every turn
+# read as a boring interview and crowded out the jokes. Rex now leads with a
+# reaction/roast and only sometimes asks; this caps how often a question can fire.
 QUESTION_BUDGET_WINDOW_SECS = 90.0
-QUESTION_BUDGET_MAX_QUESTIONS = 6
+QUESTION_BUDGET_MAX_QUESTIONS = 3
 QUESTION_BUDGET_ENGAGED_GRACE_SECS = 45.0
-QUESTION_BUDGET_ENGAGED_EXTRA = 3
+QUESTION_BUDGET_ENGAGED_EXTRA = 1
 
 # Longer wait window for unknown-person onboarding prompts ("who are you?").
 IDENTITY_RESPONSE_WAIT_SECS = 20.0

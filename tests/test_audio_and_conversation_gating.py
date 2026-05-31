@@ -5793,7 +5793,7 @@ class ConversationGatingTest(unittest.TestCase):
             )
 
         self.assertIn("tightly related follow-up question", directive)
-        self.assertIn("do not pivot into a new interview topic", directive)
+        self.assertIn("never pivot into a new interview topic", directive)
 
     def test_social_frame_generic_related_followup_directive_does_not_invite_pivot(self):
         from intelligence import social_frame
@@ -6156,7 +6156,7 @@ class ConversationGatingTest(unittest.TestCase):
             )
 
         self.assertIn("specific Rex opinion", directive)
-        self.assertIn("light roast", directive)
+        self.assertIn("sharp roast", directive)
         self.assertIn("Do not pivot into a new interview question", directive)
 
     def test_llm_places_turn_contract_after_behavioral_rules(self):
@@ -8048,7 +8048,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             )
 
         self.assertNotIn("How did you end up talking to a droid DJ?", directive)
-        self.assertIn("briefly acknowledge", directive)
+        self.assertIn("react to the human's compliment", directive)
 
     def test_agenda_does_not_inject_friendship_question_after_plan_statement(self):
         from intelligence import conversation_agenda
@@ -8089,10 +8089,12 @@ class PendingMusicPreferenceTest(unittest.TestCase):
                 1,
             )
 
-        # REACTIVE_FRIENDSHIP_QUESTIONS_ENABLED is on by default now: a normal
-        # reactive turn (not a user question, plan, or sensitive beat) gets a
-        # friendly profile question woven in.
-        self.assertIn("weave in this one question", directive)
+        # REACTIVE_FRIENDSHIP_QUESTIONS_ENABLED is on by default: a normal reactive
+        # turn (not a user question, plan, or sensitive beat) still surfaces a
+        # profile question — but now as a secondary "fold in" behind a roast-first
+        # reaction, not the primary purpose.
+        self.assertIn("fold in this one question", directive)
+        self.assertIn("REACT first", directive)
 
     def test_dj_vibe_match_does_not_confuse_classical_with_classic_rock(self):
         import config

@@ -574,7 +574,15 @@ def assemble_system_prompt(
     # 2. Personality parameter values
     params = _get_personality_params()
     param_lines = "\n".join(f"  {k}: {v}/100" for k, v in params.items())
-    sections.append("Current personality parameters:\n" + param_lines)
+    sections.append(
+        "Current personality parameters — these are live dials; let them show in "
+        "your delivery:\n" + param_lines + "\n"
+        "Read them: high roast_intensity / sarcasm / humor means be sharp, "
+        "specific, and actually funny by default — not gentle or hedged. Low "
+        "agreeability means push back, add commentary, and refuse-with-attitude "
+        "instead of cheerfully complying. Low sentimentality means don't get "
+        "mushy. (These never override empathy, boundaries, or family-safe mode.)"
+    )
 
     # 3. Current emotion state — Rex's own mood, plus (if known) the person's
     # affect and the empathy-layer directive for how to respond.
@@ -653,16 +661,18 @@ def assemble_system_prompt(
             if tier in _TIER_ROAST_STYLE:
                 rules.append(_TIER_ROAST_STYLE[tier])
             rules.append(
-                "Friendliness and curiosity: you genuinely like the people you talk to. "
-                "Show real interest in who they are — ask about their hobbies, interests, "
-                "tastes (music, movies, what they're into lately), and what they care "
-                "about, and ask a pointed follow-up that builds on whatever they share "
-                "instead of moving on. A warm 'how are you?' beat is fine when it fits. "
-                "Meet each person on their own terms: lean into their world using their "
-                "known job, beliefs/worldview, and interests — trade in a scientist's "
-                "domain, engage a person of faith on their values without mocking them, "
-                "riff with a gamer about their games. None of this softens your edge: "
-                "stay dry, quick, and roast-first. Warmth and a sharp tongue coexist."
+                "Voice — roast comedian, not friendly interviewer: you genuinely like "
+                "these people, and you show it by giving them grief. LEAD with the funny "
+                "— a sharp, specific take, jab, or hot opinion about what they just said "
+                "or did. React like a person with standards, not an assistant taking "
+                "notes. Curiosity is seasoning, not the meal: ask a question only when "
+                "you actually want to know and it earns its place — NOT every turn. A "
+                "string of 'so what's your favorite X?' questions is the boring interview "
+                "to avoid; most turns should land a line and stop. Meet each person on "
+                "their own terms — their job, worldview, and interests are both roast "
+                "material and common ground (riff with a gamer, trade in a scientist's "
+                "domain, engage a person of faith on their values without mocking the "
+                "faith). Warmth lives UNDER the roast, never instead of it."
             )
             known_facts = facts_db.get_prompt_worthy_facts(person_id, limit=12)
             if known_facts:

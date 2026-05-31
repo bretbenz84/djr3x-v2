@@ -68,5 +68,82 @@ class ComedyModesTests(unittest.TestCase):
         self.assertIn("rex_self_own_programming", directive)
 
 
+class RoastForwardDirectiveTests(unittest.TestCase):
+    def _frame(self, *, allow_roast="normal", allow_visual_comment=False):
+        from intelligence import social_frame
+
+        return social_frame.SocialFrame(
+            addressee="Bret",
+            purpose="answer",
+            max_words=32,
+            max_sentences=2,
+            allow_question=False,
+            allow_roast=allow_roast,
+            allow_visual_comment=allow_visual_comment,
+            reason="test",
+        )
+
+    def test_normal_roast_directive_is_roast_first_and_specific(self):
+        from intelligence import social_frame
+
+        directive = social_frame.build_directive(self._frame(allow_roast="normal"))
+        self.assertIn("ROAST-FIRST", directive)
+        self.assertIn("SPECIFIC", directive)
+        # The old softener must be gone.
+        self.assertNotIn("keep it socially on-target", directive)
+
+    def test_tender_roast_levels_stay_gentle(self):
+        from intelligence import social_frame
+
+        none_directive = social_frame.build_directive(self._frame(allow_roast="none"))
+        self.assertIn("No roasts", none_directive)
+        light_directive = social_frame.build_directive(self._frame(allow_roast="light"))
+        self.assertIn("tiny surface-level tap", light_directive)
+
+    def test_visual_directive_invites_roasting_what_he_sees(self):
+        from intelligence import social_frame
+
+        directive = social_frame.build_directive(
+            self._frame(allow_visual_comment=True)
+        )
+        self.assertIn("What you SEE", directive)
+
+    def test_visual_allowed_on_normal_upbeat_turn_without_invitation(self):
+        from intelligence import social_frame
+
+        # No "look at this" cue, neutral affect, no sensitivity → still allowed so
+        # appearance/props become roast material.
+        self.assertTrue(
+            social_frame._visual_allowed(
+                "I made you from scratch", "", "normal", "banter", "neutral", "none"
+            )
+        )
+
+    def test_visual_suppressed_on_sensitive_or_micro_turns(self):
+        from intelligence import social_frame
+
+        # Sad affect, support mode, sensitivity, and micro all bail before the
+        # normal-turn allowance.
+        self.assertFalse(
+            social_frame._visual_allowed("the funeral", "", "normal", "support", "sad", "none")
+        )
+        self.assertFalse(
+            social_frame._visual_allowed("hi", "", "micro", "banter", "neutral", "none")
+        )
+        self.assertFalse(
+            social_frame._visual_allowed("my dog died", "", "normal", "banter", "neutral", "grief")
+        )
+
+    def test_visual_normal_turn_allowance_is_configurable(self):
+        from intelligence import social_frame
+
+        with mock.patch.object(social_frame.config, "VISUAL_ROAST_ON_NORMAL_TURNS", False):
+            self.assertFalse(
+                social_frame._visual_allowed(
+                    "I made you from scratch", "", "normal", "banter", "neutral", "none"
+                )
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

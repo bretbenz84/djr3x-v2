@@ -304,15 +304,24 @@ def build_directive(frame: SocialFrame) -> str:
         "playful observation, or Rex-style banter beat when it fits the turn."
     )
     visual_rule = (
-        "A visual remark is allowed only if it directly connects to the human's turn."
+        "What you SEE is prime material: their outfit, expression, the drink in "
+        "their hand, the clutter behind them, the dog underfoot — name something "
+        "specific and roast or riff on it when it fits the turn (not every turn). "
+        "Punch up, keep it playful."
         if frame.allow_visual_comment
         else "Do not mention what you see, the camera, the room, their face, or their posture."
     )
     roast_rule = {
         "none": "No roasts or pointed teasing this turn.",
         "light": "If you roast, make it a tiny surface-level tap.",
-        "normal": "Normal Rex banter is allowed, but keep it socially on-target.",
-    }.get(frame.allow_roast, "Keep teasing mild and socially on-target.")
+        "normal": (
+            "ROAST-FIRST. Open with a sharp, SPECIFIC jab earned by what they just "
+            "said, did, wore, or chose this turn — a real punchline, not a generic "
+            "quip or a polite observation dressed up as one. Commit to the bit. "
+            "Punch up, stay good-natured (loyalty lives under the insult), but make "
+            "it actually land. A roast that lands beats three friendly sentences."
+        ),
+    }.get(frame.allow_roast, "Land one sharp, specific, good-natured jab when it fits.")
     return (
         "Final response shape contract:\n"
         "- Generate the reply in this shape now; the final cleanup layer should "
@@ -534,6 +543,12 @@ def _visual_allowed(
         return False
     if affect in {"sad", "withdrawn", "angry", "anxious"} or sensitivity != "none":
         return False
+    # Normal, upbeat adult turn: what Rex sees (appearance, props, the room) is
+    # fair roast material even when the human didn't explicitly invite it. The
+    # directive keeps it to "when it fits," so this enables the option without
+    # forcing a visual remark every turn. Sensitive/sad/kids paths bailed above.
+    if bool(getattr(config, "VISUAL_ROAST_ON_NORMAL_TURNS", True)):
+        return True
     return "available environmental cue" in (agenda_directive or "").lower()
 
 

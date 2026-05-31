@@ -642,32 +642,35 @@ def build_turn_directive(
             )
         if next_q:
             lines.append(
-                "Primary purpose: keep the conversation moving with curiosity. "
-                f"If the user's utterance does not demand a direct answer, weave "
-                f"in this one question naturally: {next_q['text']!r}. "
-                "Ask only this one question, and make it feel motivated by the turn."
+                "Primary purpose: REACT first — land a specific opinion, jab, or "
+                "roast on what they just said. Then, ONLY if it fits naturally and "
+                "doesn't make the turn feel like an interview, you may fold in this "
+                f"one question: {next_q['text']!r}. The reaction matters more than "
+                "the question — skip the question entirely when the funnier move is "
+                "to land the line and stop."
             )
         elif low_pressure_ack:
             lines.append(
-                "Primary purpose: briefly acknowledge the human's compliment, "
-                "status update, or simple conversational beat. You may add a "
-                "specific Rex opinion, playful observation, or light roast if it "
-                "fits. Do not pivot into a new interview question just because "
-                "question budget remains."
+                "Primary purpose: react to the human's compliment, status update, "
+                "or simple beat with a specific Rex opinion, playful observation, or "
+                "sharp roast — lead with the funny. Do not pivot into a new "
+                "interview question just because question budget remains."
             )
         elif not question_budget_allows:
             lines.append(
                 "Primary purpose: respond to the human's latest thought without "
                 "adding a new question. The recent question budget is full; leave "
-                "space instead of interviewing, but you may keep the turn alive "
-                "with a specific opinion, observation, or roast if socially safe."
+                "space instead of interviewing, and land a specific opinion, "
+                "observation, or roast to keep the turn alive."
             )
         else:
             lines.append(
-                "Primary purpose: respond to the human's latest thought. Use known "
-                "facts and the environment if relevant. You may ask one tightly "
-                "related follow-up question if it naturally continues this exact "
-                "thread; do not pivot into a new interview topic."
+                "Primary purpose: react to the human's latest thought with a "
+                "specific opinion, observation, or roast — lead with the funny, not "
+                "a question. Use known facts and what you see if relevant. At most "
+                "one tightly related follow-up question, only if it continues this "
+                "exact thread; never pivot into a new interview topic, and most "
+                "turns need no question at all."
             )
     else:
         lines.append(
