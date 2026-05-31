@@ -1513,10 +1513,17 @@ FAMILIARITY_INCREMENTS = {
 # Minimum exchanges in one conversation to earn the long_conversation increment
 LONG_CONVERSATION_MIN_EXCHANGES = 5
 
-# Maximum question depth unlocked at each friendship tier
+# When True, R3X weaves a friendly profile/interest question (from QUESTION_POOL)
+# into normal conversation turns instead of only reacting — the main lever for
+# "ask about hobbies / music / interests, not just plans" (see conversation_agenda).
+REACTIVE_FRIENDSHIP_QUESTIONS_ENABLED = True
+
+# Maximum question depth unlocked at each friendship tier. Acquaintances now reach
+# depth 2 (hobbies, what they're obsessed with, travel) so R3X gets personal sooner
+# instead of only surface questions.
 TIER_MAX_DEPTH = {
     "stranger":     1,
-    "acquaintance": 1,
+    "acquaintance": 2,
     "friend":       2,
     "close_friend": 3,
     "best_friend":  4,
@@ -1757,8 +1764,8 @@ IDLE_OUTRO_LINES = [
 # before idle to ask one profile-building question from QUESTION_POOL.
 LOW_MEMORY_IDLE_QUESTION_ENABLED = True
 LOW_MEMORY_IDLE_QUESTION_SECS = 10.0
-LOW_MEMORY_PROFILE_MAX_FACTS = 4
-LOW_MEMORY_IDLE_QUESTION_PREFIX = "I don't know you well yet, {name}, {question}"
+LOW_MEMORY_PROFILE_MAX_FACTS = 12
+LOW_MEMORY_IDLE_QUESTION_PREFIX = "I want to get to know you better, {name}. {question}"
 
 # While DJ/radio playback is active, do not treat the station audio as human
 # speech and do not let proactive conversation prompts speak over the music.

@@ -652,6 +652,18 @@ def assemble_system_prompt(
             tier = person.get("friendship_tier", "stranger")
             if tier in _TIER_ROAST_STYLE:
                 rules.append(_TIER_ROAST_STYLE[tier])
+            rules.append(
+                "Friendliness and curiosity: you genuinely like the people you talk to. "
+                "Show real interest in who they are — ask about their hobbies, interests, "
+                "tastes (music, movies, what they're into lately), and what they care "
+                "about, and ask a pointed follow-up that builds on whatever they share "
+                "instead of moving on. A warm 'how are you?' beat is fine when it fits. "
+                "Meet each person on their own terms: lean into their world using their "
+                "known job, beliefs/worldview, and interests — trade in a scientist's "
+                "domain, engage a person of faith on their values without mocking them, "
+                "riff with a gamer about their games. None of this softens your edge: "
+                "stay dry, quick, and roast-first. Warmth and a sharp tongue coexist."
+            )
             known_facts = facts_db.get_prompt_worthy_facts(person_id, limit=12)
             if known_facts:
                 rules.append(
@@ -1117,7 +1129,8 @@ def extract_facts(
         f"Today's date is {_date.today().isoformat()} (MM-DD: {today_md}).\n\n"
         "Extract every fact that the human speaker states about themselves — "
         "including but not limited to: where they are from, their job or occupation, "
-        "favorite things, family members, pets, beliefs, opinions, and life experiences. "
+        "favorite things, family members, pets, beliefs, opinions, their worldview "
+        "(e.g. a religious or scientific outlook), values, and life experiences. "
         "Do not extract hobbies or ongoing interests here; those are handled by the "
         "dedicated person_interests system.\n\n"
         "Common phrasings to capture:\n"
@@ -1126,6 +1139,10 @@ def extract_facts(
         "  'I like/love X' or 'my favorite X is Y'→ category=preference, key=favorite_<x>\n"
         "  'I have a X' (pet/child)               → category=pet or family\n"
         "  'I believe X' or 'I think X'           → category=belief\n"
+        "  worldview cues — 'I'm religious / a person of faith / spiritual',\n"
+        "      'I'm an atheist / agnostic / not religious', 'I'm a scientist /\n"
+        "      science-minded / a skeptic', or stated political/ethical values\n"
+        "      → category=worldview, key=worldview, value=<short description>\n"
         "  'my birthday is X' / 'I was born on X' / 'today is my birthday'\n"
         "      → category=birthday, key=birthday, value=MM-DD (zero-padded, e.g. '07-04')\n"
         "      If the year is mentioned use MM-DD only — drop the year.\n"
@@ -1138,7 +1155,7 @@ def extract_facts(
         "those are handled by a separate preference system. If no facts are "
         "present, return an empty array.\n\n"
         "Return a JSON array where each element has exactly these fields:\n"
-        '  "category": one of "job", "hometown", "pet", "family", "belief", "preference", "other"\n'
+        '  "category": one of "job", "hometown", "pet", "family", "belief", "worldview", "preference", "other"\n'
         '  "key": a snake_case identifier (e.g. "hometown", "job_title", "favorite_band")\n'
         '  "value": the fact value as a concise string\n\n'
         f"Transcript:\n{_format_transcript(transcript)}\n\n"

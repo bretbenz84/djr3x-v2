@@ -5046,11 +5046,14 @@ def _do_small_talk_question(snapshot: dict) -> None:
                     f"It's quiet and you're idly looking at '{target_name}', someone you know. "
                     f"They haven't said anything in a while.{plan_clause}{mood_clause} "
                     f"Open small talk by asking them one short, in-character Rex question. "
-                    f"If a specific cue above tells you what to ask about, ask about THAT. "
-                    f"Otherwise ask something open — how their day is going, what they've "
-                    f"been working on, what's on their mind, what they're listening to lately. "
-                    f"Warm but dry. Don't lecture, don't give your opinion — just ask. "
-                    f"Address {target_name} by name. One short sentence ending in a question mark."
+                    f"Lead with genuine curiosity about who they are — ask how they're doing, "
+                    f"about a hobby or interest of theirs, their taste in music or movies, what "
+                    f"they've been into or thinking about lately, or what they're passionate "
+                    f"about. If a cue above gives you something specific (a plan, their mood, a "
+                    f"known interest), you may ask about that instead — but don't default to "
+                    f"interrogating them about their schedule. Warm but dry. Don't lecture, "
+                    f"don't give your opinion — just ask. Address {target_name} by name. One "
+                    f"short sentence ending in a question mark."
                 )
             else:
                 ctx_bits = []

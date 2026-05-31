@@ -44,6 +44,8 @@ _HIGH_IMPORTANCE_CATEGORIES = {
     "preference",
     "boundary",
     "inside_joke",
+    "belief",
+    "worldview",
 }
 _NOISY_CATEGORIES = {"interest_note", "other"}
 _DECAY_DEFAULT_DAYS = {
@@ -94,7 +96,7 @@ def _decay_rate(category: str, key: str, source: str, explicit_decay: Optional[s
     category = (category or "").lower()
     key = (key or "").lower()
     normalized_source = _normalize_source(source)
-    if key in _PERMANENT_KEYS or category in {"birthday", "identity", "relationship"}:
+    if key in _PERMANENT_KEYS or category in {"birthday", "identity", "relationship", "worldview"}:
         return "permanent"
     if normalized_source == "inferred" or category in _NOISY_CATEGORIES:
         return "fast"

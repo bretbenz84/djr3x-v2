@@ -1270,7 +1270,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         with (
             mock.patch.object(interaction.config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True),
             mock.patch.object(interaction, "_primary_session_person_id", return_value=1),
-            mock.patch.object(interaction, "_profile_fact_count", return_value=12),
+            mock.patch.object(interaction, "_profile_fact_count", return_value=20),
             mock.patch.object(interaction, "_next_profile_question") as next_q,
         ):
             asked = interaction._maybe_low_memory_idle_question(
@@ -8059,7 +8059,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         self.assertIn("upcoming event", directive)
         self.assertNotIn("How did you end up talking to a droid DJ?", directive)
 
-    def test_agenda_does_not_inject_friendship_question_into_reactive_turns(self):
+    def test_agenda_injects_friendship_question_into_reactive_turns(self):
         from intelligence import conversation_agenda
 
         ws = {"people": [], "crowd": {}}
@@ -8081,8 +8081,10 @@ class PendingMusicPreferenceTest(unittest.TestCase):
                 1,
             )
 
-        self.assertNotIn("What do you do", directive)
-        self.assertNotIn("weave in this one question", directive)
+        # REACTIVE_FRIENDSHIP_QUESTIONS_ENABLED is on by default now: a normal
+        # reactive turn (not a user question, plan, or sensitive beat) gets a
+        # friendly profile question woven in.
+        self.assertIn("weave in this one question", directive)
 
     def test_dj_vibe_match_does_not_confuse_classical_with_classic_rock(self):
         import config
