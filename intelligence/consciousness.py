@@ -3912,6 +3912,11 @@ def _pick_startup_profile_question(person_id: Optional[int]) -> Optional[dict]:
     """Pick a basic profile question for known people Rex barely knows."""
     if not isinstance(person_id, int):
         return None
+    # A profile question is an awkward cold open. Let the first-sight greeting
+    # stay casual ("what's up?") and ask profile questions once the conversation
+    # is actually rolling instead.
+    if not bool(getattr(config, "STARTUP_PROFILE_QUESTION_ENABLED", False)):
+        return None
     if not bool(getattr(config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True)):
         return None
     max_facts = int(getattr(config, "LOW_MEMORY_PROFILE_MAX_FACTS", 4) or 4)

@@ -180,8 +180,22 @@ def _active_for_state(current_state: State) -> frozenset[str]:
     return frozenset()  # SHUTDOWN — nothing should fire
 
 
-def _threshold(model_name: str) -> float:
-    return config.WAKE_WORD_THRESHOLDS.get(model_name, config.WAKE_WORD_THRESHOLD)
+def _dj_playback_active() -> bool:
+    """True when DJ/radio music is playing (lazy import to avoid an import cycle)."""
+    try:
+        from features import dj as dj_mod
+        return bool(dj_mod.is_playing())
+    except Exception:
+        return False
+
+
+def _threshold(model_name: str, *, dj_playing: bool = False) -> float:
+    base = config.WAKE_WORD_THRESHOLDS.get(model_name, config.WAKE_WORD_THRESHOLD)
+    if not dj_playing:
+        return base
+    delta = max(0.0, float(getattr(config, "WAKE_WORD_DJ_PLAYBACK_THRESHOLD_DELTA", 0.0)))
+    floor = float(getattr(config, "WAKE_WORD_MIN_THRESHOLD", 0.0))
+    return max(floor, base - delta)
 
 
 # ── Detection loop ────────────────────────────────────────────────────────────
@@ -213,11 +227,17 @@ def _detection_loop(callback: Callable[[str], None]) -> None:
             _log.error("Wake word prediction error: %s", exc)
             continue
 
+        dj_playing = _dj_playback_active()
         for model_name, score in predictions.items():
             if model_name not in active:
                 continue
-            if score >= _threshold(model_name):
-                _log.info("Wake word detected: %s (confidence=%.3f)", model_name, score)
+            if score >= _threshold(model_name, dj_playing=dj_playing):
+                _log.info(
+                    "Wake word detected: %s (confidence=%.3f%s)",
+                    model_name,
+                    score,
+                    " during-dj" if dj_playing else "",
+                )
                 try:
                     callback(model_name)
                 except Exception as exc:

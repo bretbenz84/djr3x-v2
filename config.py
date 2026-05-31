@@ -596,6 +596,15 @@ WAKE_WORD_THRESHOLDS = {
     "wakeuprex":   0.5,
 }
 
+# Loud DJ/radio playback bleeds into the mic and masks the wake word, so a real
+# "hey Rex" can score below the normal bar while a track is playing — leaving no
+# voice way to stop the music. Drop the threshold by this much during DJ playback
+# so barge-in actually fires. The per-phrase models are specific enough that a
+# modest drop rarely false-triggers on music. Set to 0.0 to disable.
+WAKE_WORD_DJ_PLAYBACK_THRESHOLD_DELTA = 0.15
+# Floor the reduced threshold here so the delta can never make detection trivial.
+WAKE_WORD_MIN_THRESHOLD = 0.30
+
 # Immediate physical acknowledgment when a general wake word is detected.
 # This is separate from spoken wake acknowledgments so Rex visibly reacts even
 # before VAD/transcription has finished deciding what the human said next.
@@ -1766,6 +1775,15 @@ LOW_MEMORY_IDLE_QUESTION_ENABLED = True
 LOW_MEMORY_IDLE_QUESTION_SECS = 10.0
 LOW_MEMORY_PROFILE_MAX_FACTS = 12
 LOW_MEMORY_IDLE_QUESTION_PREFIX = "I want to get to know you better, {name}. {question}"
+
+# Cold opens should feel like a person, not an intake form: when Rex first sees
+# someone on startup, lead with a casual "what's up / how are you?" greeting
+# (FIRST_GREETING_STEERING_PHRASES / mood check-in) rather than a profile
+# question like "What kind of music are you into?". Profile-building still
+# happens once the conversation is rolling (REACTIVE_FRIENDSHIP_QUESTIONS_ENABLED)
+# and during lulls (LOW_MEMORY_IDLE_QUESTION_ENABLED). Flip to True to let the
+# first-sight greeting itself carry a profile question again.
+STARTUP_PROFILE_QUESTION_ENABLED = False
 
 # While DJ/radio playback is active, do not treat the station audio as human
 # speech and do not let proactive conversation prompts speak over the music.

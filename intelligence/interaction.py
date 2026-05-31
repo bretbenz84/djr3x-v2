@@ -656,6 +656,36 @@ def _dj_suppresses_conversation() -> bool:
     )
 
 
+def _stop_dj_for_wake() -> bool:
+    """Stop DJ playback in response to a wake word so Rex can take a command.
+
+    During playback the conversation loop and the VAD mic feed are intentionally
+    suppressed (the music would otherwise self-trigger), which also strands the
+    wake word — the user's only recourse was killing the process. The wake word
+    is the deliberate override, so stop the track, clear the post-playback
+    suppression tail, and let the normal listen loop resume cleanly.
+
+    Returns True if a track was actually stopped.
+    """
+    stopped = False
+    try:
+        from features import dj as dj_mod
+        if dj_mod.is_playing():
+            dj_mod.stop()
+            stopped = True
+            _log.info("[wake_word] stopped DJ playback for wake-word barge-in")
+    except Exception as exc:
+        _log.debug("[wake_word] DJ barge-in stop failed: %s", exc)
+    if stopped:
+        # dj.stop() arms a short post-playback suppression tail; drop it so the
+        # wake ack and the user's follow-up command are heard immediately.
+        try:
+            echo_cancel.clear_suppression_tail()
+        except Exception:
+            pass
+    return stopped
+
+
 def _start_dj_after_response(track) -> None:
     """Start DJ playback just after the current spoken response sequence closes."""
     def _play() -> None:
@@ -9999,7 +10029,13 @@ _AFFIRM_PAT = re.compile(
 )
 _DECLINE_PAT = re.compile(
     r"\b(no|nope|not really|don'?t want to|rather not|maybe later|"
-    r"not now|skip|drop it|leave it)\b",
+    r"not now|skip|drop it|leave it|let'?s not|"
+    # "muzzle" is Rex's own word for the keep-the-music-off option, so a reply
+    # like "let's keep it muzzled for now" must read as a decline even though it
+    # opens with the affirmative-sounding "let's".
+    r"muzzle[ds]?|keep it (?:off|down|quiet|muzzled|silent)|"
+    r"keep (?:the )?(?:jukebox|music) (?:off|down|quiet|muzzled|silent)|"
+    r"hold off|no music|keep quiet|stay quiet)\b",
     re.IGNORECASE,
 )
 _MUSIC_PLAY_REQUEST_PAT = re.compile(
@@ -15668,10 +15704,10 @@ def _loop() -> None:
         if current_state == State.IDLE:
             if _wake_word_fired.is_set():
                 _wake_word_fired.clear()
+                # A wake word during music is a deliberate barge-in: stop the
+                # track so Rex can hear and answer, then go ACTIVE and ack.
                 if _dj_suppresses_conversation():
-                    _last_speech_at = time.monotonic()
-                    _log.info("[wake_word] idle wake ack suppressed during DJ playback")
-                    continue
+                    _stop_dj_for_wake()
                 state_module.set_state(State.ACTIVE)
                 _last_speech_at = time.monotonic()
                 _wake_ack()
@@ -15755,9 +15791,11 @@ def _loop() -> None:
         if _wake_word_fired.is_set():
             _wake_word_fired.clear()
             _last_speech_at = time.monotonic()
+            # A wake word during music is a deliberate barge-in: stop the track
+            # so Rex can hear the follow-up command instead of swallowing the
+            # wake word (which left the user no way to shut the music off).
             if _dj_suppresses_conversation():
-                _log.info("[wake_word] active wake ack suppressed during DJ playback")
-                continue
+                _stop_dj_for_wake()
             if _should_play_active_wake_ack():
                 _wake_ack()
             else:

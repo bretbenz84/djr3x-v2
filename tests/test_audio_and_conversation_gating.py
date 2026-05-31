@@ -9190,5 +9190,181 @@ class PostResponseMemoryExtractionTest(unittest.TestCase):
         events.assert_called_once_with(1, snapshot, person_name="Bret")
 
 
+class MusicMuzzleConsentTest(unittest.TestCase):
+    def test_keep_it_muzzled_classifies_as_decline(self):
+        from intelligence import interaction
+
+        for text in (
+            "let's keep it muzzled for now",
+            "lets keep it muzzled for now",
+            "keep it muzzled",
+            "keep the jukebox muzzled",
+            "muzzle the music",
+            "no music",
+            "keep it off",
+            "hold off",
+        ):
+            self.assertIs(
+                interaction._classify_consent(text),
+                False,
+                msg=f"expected decline for {text!r}",
+            )
+
+    def test_plain_affirmations_still_classify_as_consent(self):
+        from intelligence import interaction
+
+        for text in ("yes", "yeah", "sure", "okay", "please do", "let's do it"):
+            self.assertIs(
+                interaction._classify_consent(text),
+                True,
+                msg=f"expected consent for {text!r}",
+            )
+
+    def test_muzzle_reply_to_offer_does_not_start_music(self):
+        from intelligence import interaction
+
+        interaction._pending_music_offer = {
+            "person_id": 1,
+            "music_query": "classical",
+            "asked_at": interaction.time.monotonic(),
+        }
+        with (
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+            mock.patch.object(interaction, "_start_dj_after_response") as start_dj,
+        ):
+            resp = interaction._handle_pending_music_offer_reply(
+                1, "let's keep it muzzled for now"
+            )
+
+        self.assertIsNotNone(resp)
+        self.assertIn("logged the taste", resp)
+        start_dj.assert_not_called()
+        self.assertIsNone(interaction._pending_music_offer)
+        speak.assert_called_once()
+
+    def test_yes_reply_to_offer_starts_music(self):
+        from intelligence import interaction
+        import features.dj as dj_mod
+
+        interaction._pending_music_offer = {
+            "person_id": 1,
+            "music_query": "classical",
+            "asked_at": interaction.time.monotonic(),
+        }
+        fake_track = dj_mod.TrackInfo("radio", "Classical KDFC", "http://x", "")
+        with (
+            mock.patch.object(dj_mod, "handle_request", return_value=fake_track),
+            mock.patch.object(interaction, "_speak_blocking", return_value=True),
+            mock.patch.object(interaction, "_start_dj_after_response") as start_dj,
+        ):
+            resp = interaction._handle_pending_music_offer_reply(1, "yeah go for it")
+
+        self.assertIsNotNone(resp)
+        start_dj.assert_called_once_with(fake_track)
+        self.assertIsNone(interaction._pending_music_offer)
+
+    def test_command_parser_maps_muzzle_to_dj_stop(self):
+        from intelligence import command_parser
+
+        for text in ("muzzle", "muzzle it", "muzzle the music", "muzzle the jukebox"):
+            match = command_parser.parse(text)
+            self.assertIsNotNone(match, msg=f"no match for {text!r}")
+            self.assertEqual(match.command_key, "dj_stop", msg=f"for {text!r}")
+
+
+class WakeWordDjBargeInTest(unittest.TestCase):
+    def test_stop_dj_for_wake_stops_playback_and_clears_tail(self):
+        from intelligence import interaction
+        import features.dj as dj_mod
+
+        with (
+            mock.patch.object(dj_mod, "is_playing", return_value=True),
+            mock.patch.object(dj_mod, "stop") as dj_stop,
+            mock.patch.object(interaction.echo_cancel, "clear_suppression_tail") as clear_tail,
+        ):
+            stopped = interaction._stop_dj_for_wake()
+
+        self.assertTrue(stopped)
+        dj_stop.assert_called_once()
+        clear_tail.assert_called_once()
+
+    def test_stop_dj_for_wake_noop_when_not_playing(self):
+        from intelligence import interaction
+        import features.dj as dj_mod
+
+        with (
+            mock.patch.object(dj_mod, "is_playing", return_value=False),
+            mock.patch.object(dj_mod, "stop") as dj_stop,
+            mock.patch.object(interaction.echo_cancel, "clear_suppression_tail") as clear_tail,
+        ):
+            stopped = interaction._stop_dj_for_wake()
+
+        self.assertFalse(stopped)
+        dj_stop.assert_not_called()
+        clear_tail.assert_not_called()
+
+    def test_wake_threshold_drops_during_dj_playback(self):
+        from audio import wake_word
+
+        with (
+            mock.patch.object(wake_word.config, "WAKE_WORD_DJ_PLAYBACK_THRESHOLD_DELTA", 0.15),
+            mock.patch.object(wake_word.config, "WAKE_WORD_MIN_THRESHOLD", 0.30),
+        ):
+            base = wake_word._threshold("Hey_rex", dj_playing=False)
+            ducked = wake_word._threshold("Hey_rex", dj_playing=True)
+
+        self.assertAlmostEqual(base, 0.5)
+        self.assertAlmostEqual(ducked, 0.35)
+        self.assertLess(ducked, base)
+
+    def test_wake_threshold_never_below_floor(self):
+        from audio import wake_word
+
+        with (
+            mock.patch.object(wake_word.config, "WAKE_WORD_DJ_PLAYBACK_THRESHOLD_DELTA", 0.9),
+            mock.patch.object(wake_word.config, "WAKE_WORD_MIN_THRESHOLD", 0.30),
+        ):
+            ducked = wake_word._threshold("Hey_rex", dj_playing=True)
+
+        self.assertAlmostEqual(ducked, 0.30)
+
+
+class StartupGreetingOpenerTest(unittest.TestCase):
+    def test_startup_profile_question_disabled_by_default(self):
+        from intelligence import consciousness
+
+        # Even with a sparse profile that would otherwise yield a question, the
+        # cold open must stay casual — no profile question.
+        with (
+            mock.patch.object(consciousness.config, "STARTUP_PROFILE_QUESTION_ENABLED", False),
+            mock.patch.object(consciousness.profile_questions, "profile_fact_count", return_value=0),
+            mock.patch.object(
+                consciousness.profile_questions,
+                "next_profile_question",
+                return_value={"key": "favorite_music", "text": "What kind of music are you into?", "depth": 1},
+            ) as next_q,
+        ):
+            self.assertIsNone(consciousness._pick_startup_profile_question(1))
+            next_q.assert_not_called()
+
+    def test_startup_profile_question_returns_question_when_enabled(self):
+        from intelligence import consciousness
+        from intelligence import question_budget
+
+        question = {"key": "hometown", "text": "So where are you from?", "depth": 1}
+        with (
+            mock.patch.object(consciousness.config, "STARTUP_PROFILE_QUESTION_ENABLED", True),
+            mock.patch.object(consciousness.config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True),
+            mock.patch.object(consciousness.profile_questions, "profile_fact_count", return_value=0),
+            mock.patch.object(question_budget, "can_ask", return_value=True),
+            mock.patch.object(
+                consciousness.profile_questions,
+                "next_profile_question",
+                return_value=question,
+            ),
+        ):
+            self.assertEqual(consciousness._pick_startup_profile_question(1), question)
+
+
 if __name__ == "__main__":
     unittest.main()
