@@ -715,6 +715,23 @@ def assemble_system_prompt(
     return "\n\n---\n\n".join(sections)
 
 
+def warmup() -> bool:
+    """Open the OpenAI connection pool so the first real turn doesn't pay cold
+    TLS / HTTP setup. Fires one tiny throwaway completion; errors are swallowed.
+    """
+    try:
+        _client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=1,
+        )
+        _log.info("[llm] OpenAI connection warmed")
+        return True
+    except Exception as exc:
+        _log.debug("[llm] OpenAI warmup failed (non-fatal): %s", exc)
+        return False
+
+
 def stream_response(
     user_text: str,
     person_id: Optional[int] = None,

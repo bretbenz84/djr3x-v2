@@ -801,6 +801,21 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     if not local_llm_ok:
         logger.warning("Local LLM preload failed; continuing without local sidecar model.")
 
+    if bool(getattr(config, "OPENAI_WARMUP_ON_STARTUP", True)):
+        # Warm both OpenAI clients (answer LLM + action router) in the background
+        # so the first turn doesn't eat cold TLS / connection setup. Non-blocking;
+        # failures (e.g. offline / missing key) are swallowed inside warmup().
+        def _warm_openai() -> None:
+            try:
+                from intelligence import llm, action_router
+                llm.warmup()
+                action_router.warmup()
+            except Exception as exc:
+                logger.debug("OpenAI warmup thread failed: %s", exc)
+
+        threading.Thread(target=_warm_openai, daemon=True, name="openai-warmup").start()
+        logger.info("OpenAI connection warmup started in background")
+
     if bool(getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True)) and bool(
         getattr(config, "LOCAL_ANIMAL_DETECTION_PRELOAD_ON_STARTUP", True)
     ):

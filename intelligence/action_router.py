@@ -1525,6 +1525,23 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
         return ActionDecision(reason=f"router error: {type(exc).__name__}")
 
 
+def warmup() -> bool:
+    """Open the action-router's OpenAI connection pool (a separate client from
+    llm._client) so the first ambiguous turn doesn't pay cold TLS / HTTP setup.
+    """
+    try:
+        _client.chat.completions.create(
+            model=getattr(config, "ACTION_ROUTER_MODEL", config.LLM_MODEL),
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=1,
+        )
+        _log.info("[action_router] OpenAI connection warmed")
+        return True
+    except Exception as exc:
+        _log.debug("[action_router] OpenAI warmup failed (non-fatal): %s", exc)
+        return False
+
+
 def log_decision(
     decision: ActionDecision,
     context: dict[str, Any] | None = None,
