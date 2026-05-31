@@ -208,7 +208,7 @@ The failure mode to avoid: a normal contextual response gets a second chance in 
 
 `audio/speech_queue.py` is the central response queue. It handles priority, coalescing, playback start callbacks, and completion.
 
-`audio/tts.py` handles ElevenLabs cache lookup/fetch/playback. In no-audio mode, `speak()` and `ensure_cached()` return before network or playback work.
+`audio/tts.py` handles ElevenLabs cache lookup/fetch/playback. In no-audio mode, `speak()` and `ensure_cached()` return before network or playback work. By default `speak()` derives expressive ElevenLabs `voice_settings` from the line's emotion (`emotion_orchestrator.voice_settings_for_emotion`, backed by `config.TTS_VOICE_SETTINGS_*`); an explicit empathy/grief override passed by the caller takes precedence.
 
 ## Latency And Telemetry
 
@@ -377,6 +377,13 @@ venv/bin/python main.py
 - Minor public holiday proactive questions are gated behind `HOLIDAY_PLANS_INCLUDE_MINOR`.
 - Introduction handling that links known visible/recent people instead of renaming the current speaker.
 - README startup flag documentation.
+- Expressive TTS voice: `tts.speak()` derives ElevenLabs `voice_settings` from the turn's emotion frame (`emotion_orchestrator.voice_settings_for_emotion`) whenever the caller passes no explicit override, so normal lines carry an expressive baseline instead of the voice clone's flat (style≈0) defaults. Tunables: `config.TTS_VOICE_SETTINGS_BASELINE`, `TTS_VOICE_SETTINGS_BY_STYLE` (keyed by emotion `voice_style`), and the `TTS_EXPRESSIVE_VOICE_ENABLED` kill switch. `TTS_MODEL_ID` is `eleven_multilingual_v2` because it honors `style` strongly (turbo_v2 applies it only weakly). The resolved voice settings and `model_id` are part of the TTS cache key, and `is_cached()`/`ensure_cached()` take an `emotion` arg so ack/wake prefill keys match live playback. Do not regress `speak()` back to sending `voice_settings=None` on normal turns, and keep empathy/grief overrides taking precedence.
+- Streaming answer → TTS: on audio turns the conversational answer streams sentence-by-sentence (`interaction._stream_and_speak_sentences`) — the first sentence is spoken as soon as the LLM produces it; the rest queue behind it through the single one-at-a-time speech queue, so Rex never overlaps himself. Per-sentence safety governance is preserved (`social_frame.govern_stream_sentence`, `comedy_modes.polish_stream_sentence`), the one-question cap holds across the stream, and a fallback speaks a whole-reply govern result if every sentence is filtered out. Flagged by `config.LLM_STREAMING_TTS_ENABLED` (default on); bypassed in no-audio mode. `speech_queue.enqueue`/`tts.speak` take `log_text=False` so a streamed turn is logged once, not per sentence.
+- WorldState lost-update race fix: `world_state.mutate(field, fn)` runs the whole read-modify-write under the lock. Every `people` writer (face recognition, pose, expression loops, the identity binders, face-mood) goes through it instead of `get()`+`update()`, so concurrent threads can't silently revert each other (the cause of `person_db_id` flicker / misattribution). Slow work (face-DB lookups) stays outside the lock. Use `mutate()` for any new people / self_state writers.
+- OpenAI connection warmup at startup: `llm.warmup()` + `action_router.warmup()` (separate clients) run in a background thread, gated by `config.OPENAI_WARMUP_ON_STARTUP`, so the first turn doesn't pay cold TLS/HTTP setup.
+- Stale-event-cancel guard: `memory.events.looks_like_cancellation` now requires a cancellation phrase AND the absence of a false-positive idiom ("not going to lie", "not doing too bad", "on my way"), so a conversational outcome reply can't durably mark a remembered event canceled. This gate protects both the follow-up handler and `_cancel_stale_event_memory`.
+- Identity sub-0.75 floors require the top voice candidate to BE the attributed person: the single-visible-continuity and multi-visible-recent floors now check `raw_best_id == person` (the engaged-visible and grief floors already did), so a second speaker in a one-on-one frame is treated as off-camera-unknown instead of pinned on the engaged person.
+- Bug fixes to preserve: `SCENE_MUSIC_BAND_ENERGY_MIN = 2e-6` (was `2-6`, i.e. −4, which made every band count as active → music always "detected"); dead `GUI_SHOW_FPS` removed; `social_frame` optional-lookup `except` handlers now log at debug instead of swallowing silently.
 
 ## Likely Future Work
 

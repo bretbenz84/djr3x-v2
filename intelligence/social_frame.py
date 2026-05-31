@@ -418,6 +418,41 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
     return GovernResult(current, changed, notes)
 
 
+def is_question_sentence(text: str) -> bool:
+    """True if the sentence contains an unquoted question (public wrapper)."""
+    return _has_unquoted_question(text or "")
+
+
+def govern_stream_sentence(sentence: str, frame: SocialFrame) -> str:
+    """Per-sentence governance for streamed (spoken-as-generated) replies.
+
+    Applies only the rules govern_response() applies *per sentence* — dropping a
+    sentence that violates the frame: a disallowed question, an off-limits visual
+    comment, or a roast when roasting is suppressed. Returns the normalized
+    sentence to speak, or "" if it should be skipped.
+
+    The cross-sentence rules (one-question cap, length trimming, bland-ack swap,
+    fallback) are intentionally NOT applied here — the streaming caller enforces
+    the one-question cap across the stream, and the remaining whole-reply polish
+    is best-effort on streamed turns. The safety-relevant filters are all
+    per-sentence, so they are fully preserved.
+    """
+    if not getattr(config, "SOCIAL_FRAME_GOVERNOR_ENABLED", True):
+        return _normalize_text((sentence or "").strip())
+    current = _normalize_text((sentence or "").strip())
+    if not current:
+        return ""
+    if not frame.allow_question and _has_unquoted_question(current):
+        return ""
+    if not frame.allow_visual_comment and _VISUAL_PAT.search(current):
+        return ""
+    if frame.allow_roast == "none" and _is_roast_sentence(current):
+        return ""
+    if frame.allow_roast == "light" and _is_sharp_roast_sentence(current):
+        return ""
+    return current
+
+
 def _safe_user_energy() -> dict:
     try:
         return user_energy.snapshot() or {}
@@ -513,8 +548,8 @@ def _roast_level(
         cooldown = float(getattr(config, "TONE_REPAIR_NO_ROAST_SECS", 180.0) or 0.0)
         if cooldown and repair_moves.recent_tone_repair(cooldown):
             return "none"
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("[social_frame] tone-repair roast cooldown check failed: %s", exc)
     if empathy_mode in {"listen", "support", "validate", "ground", "brief"}:
         return "none"
     if affect in {"sad", "withdrawn", "angry", "anxious"} or sensitivity == "heavy":
@@ -523,8 +558,8 @@ def _roast_level(
         try:
             if boundary_memory.is_blocked(person_id, "roast", "anything"):
                 return "none"
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug("[social_frame] roast boundary lookup failed: %s", exc)
         try:
             prefs = facts_memory.get_facts_by_category(person_id, "preference")
             pref_text = " ".join(str(p.get("value") or "").lower() for p in prefs)
@@ -532,8 +567,8 @@ def _roast_level(
                 return "none"
             if "likes light roasts" in pref_text and target not in {"micro", "brief"}:
                 return "light"
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug("[social_frame] roast preference lookup failed: %s", exc)
     if target in {"micro", "brief"}:
         return "light"
     return "normal"
@@ -552,8 +587,8 @@ def _addressee(
             )
             if ctx and ctx.addressee:
                 return ctx.addressee
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug("[social_frame] unknown-group addressee lookup failed: %s", exc)
     try:
         cast = social_scene.conversation_cast_context(
             world_state.snapshot(),
@@ -561,16 +596,16 @@ def _addressee(
         )
         if cast and cast.addressee:
             return cast.addressee
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("[social_frame] conversation-cast addressee lookup failed: %s", exc)
     if person_id is None:
         return "unknown person"
     try:
         person = people_memory.get_person(person_id)
         if person and person.get("name"):
             return str(person["name"])
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("[social_frame] addressee person lookup failed: %s", exc)
     return f"person_id={person_id}"
 
 

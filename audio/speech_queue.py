@@ -117,7 +117,7 @@ class _Item:
     __slots__ = (
         "neg_priority", "seq", "text", "emotion", "audio_path",
         "done", "tag", "pre_beat_ms", "post_beat_ms", "voice_settings",
-        "on_start",
+        "on_start", "log_text",
     )
 
     def __init__(
@@ -133,6 +133,7 @@ class _Item:
         post_beat_ms: int = 0,
         voice_settings: Optional[dict] = None,
         on_start: Optional[Callable[[], None]] = None,
+        log_text: bool = True,
     ) -> None:
         self.neg_priority = -priority
         self.seq = seq
@@ -145,6 +146,7 @@ class _Item:
         self.post_beat_ms = post_beat_ms
         self.voice_settings = voice_settings
         self.on_start = on_start
+        self.log_text = log_text
 
     def __lt__(self, other: "_Item") -> bool:
         if self.neg_priority != other.neg_priority:
@@ -185,6 +187,7 @@ class _SpeechQueue:
         post_beat_ms: int = 0,
         voice_settings: Optional[dict] = None,
         on_start: Optional[Callable[[], None]] = None,
+        log_text: bool = True,
     ) -> threading.Event:
         """Enqueue text for TTS. Returns an Event set when playback finishes.
 
@@ -197,10 +200,13 @@ class _SpeechQueue:
         voice_settings (optional dict of stability / style / similarity_boost /
         use_speaker_boost) overrides ElevenLabs voice parameters for this item.
         Cached separately from the default-voice take.
+
+        log_text=False suppresses the per-item conversation-log/GUI write — used
+        by streaming so a reply split across sentences is logged once as a turn.
         """
         return self._add(
             text, emotion, None, priority, tag,
-            pre_beat_ms, post_beat_ms, voice_settings, on_start,
+            pre_beat_ms, post_beat_ms, voice_settings, on_start, log_text,
         )
 
     def enqueue_audio_file(
@@ -274,6 +280,7 @@ class _SpeechQueue:
         post_beat_ms: int = 0,
         voice_settings: Optional[dict] = None,
         on_start: Optional[Callable[[], None]] = None,
+        log_text: bool = True,
     ) -> threading.Event:
         done = threading.Event()
         if _state_suppresses_output():
@@ -310,7 +317,7 @@ class _SpeechQueue:
             heapq.heappush(
                 self._heap,
                 _Item(priority, seq, text, emotion, audio_path, done, tag,
-                      pre_beat_ms, post_beat_ms, voice_settings, on_start),
+                      pre_beat_ms, post_beat_ms, voice_settings, on_start, log_text),
             )
             self._not_empty.notify()
 
@@ -428,6 +435,7 @@ class _SpeechQueue:
                         item.emotion,
                         voice_settings=item.voice_settings,
                         on_playback_start=_fire_item_start,
+                        log_text=item.log_text,
                         **_playback_handoff_options(item.text),
                     )
 
@@ -583,10 +591,12 @@ def enqueue(
     post_beat_ms: int = 0,
     voice_settings: Optional[dict] = None,
     on_start: Optional[Callable[[], None]] = None,
+    log_text: bool = True,
 ) -> threading.Event:
     """Enqueue text for TTS speech. Returns an Event set when playback finishes."""
     return _queue.enqueue(
-        text, emotion, priority, tag, pre_beat_ms, post_beat_ms, voice_settings, on_start,
+        text, emotion, priority, tag, pre_beat_ms, post_beat_ms,
+        voice_settings, on_start, log_text,
     )
 
 

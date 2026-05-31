@@ -181,6 +181,23 @@ def polish_response(text: str, mode: ComedyMode, *, allow_roast: str = "normal")
     return cleaned
 
 
+def polish_stream_sentence(sentence: str, mode: ComedyMode, *, allow_roast: str = "normal") -> str:
+    """Per-sentence comedy polish for streamed (spoken-as-generated) replies.
+
+    Safe subset of polish_response(): collapse an over-explained joke tail and
+    soften a direct second-person jab when roasting is off. Deliberately skips
+    the whole-reply bland-ack swap (which only makes sense for a complete reply)
+    and does not touch the anti-repetition memory, since it runs per sentence.
+    """
+    cleaned = " ".join(str(sentence or "").strip().split())
+    if not cleaned or mode.key == "straight":
+        return cleaned
+    cleaned = _collapse_overexplained_joke(cleaned)
+    if allow_roast == "none":
+        cleaned = _soften_direct_second_person(cleaned)
+    return cleaned.strip()
+
+
 def line_for(kind: str) -> str:
     """Return a non-repeating curated line from config."""
     pools = getattr(config, "COMEDY_LINE_BANKS", {}) or {}

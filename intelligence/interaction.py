@@ -3509,20 +3509,21 @@ def _resolve_name_update_target(
 def _refresh_world_state_person_name(person_id: int, name: str) -> None:
     """Keep live face/voice labels in sync after a memory rename."""
     try:
-        people = world_state.get("people") or []
-        changed = False
-        for person in people:
-            try:
-                pid = int(person.get("person_db_id"))
-            except (TypeError, ValueError):
-                continue
-            if pid != int(person_id):
-                continue
-            person["face_id"] = name
-            person["voice_id"] = name
-            changed = True
-        if changed:
-            world_state.update("people", people)
+        def _apply_rename(people):
+            changed = False
+            for person in people:
+                try:
+                    pid = int(person.get("person_db_id"))
+                except (TypeError, ValueError):
+                    continue
+                if pid != int(person_id):
+                    continue
+                person["face_id"] = name
+                person["voice_id"] = name
+                changed = True
+            return people if changed else None
+
+        world_state.mutate("people", _apply_rename)
 
         crowd = world_state.get("crowd") or {}
         if crowd.get("dominant_speaker"):
@@ -3613,24 +3614,25 @@ def _scrub_world_state_after_memory_wipe(
 ) -> None:
     """Drop deleted DB identity labels from the live WorldState snapshot."""
     try:
-        people = world_state.get("people") or []
-        changed = False
-        for person in people:
-            if all_people:
-                should_clear = True
-            else:
-                try:
-                    should_clear = int(person.get("person_db_id")) == int(person_id)
-                except (TypeError, ValueError):
-                    should_clear = False
-            if not should_clear:
-                continue
-            person["person_db_id"] = None
-            person["face_id"] = None
-            person["voice_id"] = None
-            changed = True
-        if changed:
-            world_state.update("people", people)
+        def _apply_clear(people):
+            changed = False
+            for person in people:
+                if all_people:
+                    should_clear = True
+                else:
+                    try:
+                        should_clear = int(person.get("person_db_id")) == int(person_id)
+                    except (TypeError, ValueError):
+                        should_clear = False
+                if not should_clear:
+                    continue
+                person["person_db_id"] = None
+                person["face_id"] = None
+                person["voice_id"] = None
+                changed = True
+            return people if changed else None
+
+        world_state.mutate("people", _apply_clear)
 
         crowd = world_state.get("crowd") or {}
         if all_people or crowd.get("dominant_speaker"):
@@ -4687,17 +4689,16 @@ def _bind_world_state_identity(person_id: int, name: str) -> None:
     Attach the newly enrolled identity to the first unknown world-state person slot.
     """
     try:
-        people = world_state.get("people")
-        changed = False
-        for person in people:
-            if person.get("person_db_id") is None or person.get("face_id") is None:
-                person["person_db_id"] = person_id
-                person["face_id"] = name
-                person["voice_id"] = name
-                changed = True
-                break
-        if changed:
-            world_state.update("people", people)
+        def _apply_bind(people):
+            for person in people:
+                if person.get("person_db_id") is None or person.get("face_id") is None:
+                    person["person_db_id"] = person_id
+                    person["face_id"] = name
+                    person["voice_id"] = name
+                    return people
+            return None
+
+        world_state.mutate("people", _apply_bind)
 
         crowd = world_state.get("crowd")
         crowd["dominant_speaker"] = name
@@ -6677,6 +6678,24 @@ def _stream_llm_response(
             comedy_modes.build_directive(comedy_mode),
         ])
         _log.info("[agenda] %s", agenda_directive.replace("\n", " | "))
+        if (
+            getattr(config, "LLM_STREAMING_TTS_ENABLED", True)
+            and not bool(
+                getattr(config, "NO_AUDIO_MODE", False)
+                or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+            )
+            and not _interrupted.is_set()
+        ):
+            return _stream_and_speak_sentences(
+                text,
+                person_id,
+                frame,
+                comedy_mode,
+                agenda_directive,
+                surprise_result,
+                turn_start,
+                filler_stop,
+            )
         llm_started = time.monotonic()
         full_text = llm.get_response(
             text,
@@ -6763,6 +6782,277 @@ def _stream_llm_response(
                 person_id,
                 source="agenda_llm_identity",
             )
+    return full_text
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Streaming response → TTS (speak sentence-by-sentence as the LLM generates)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# A sentence boundary: a run of . ! ? (plus any closing quotes/brackets)
+# followed by whitespace. Trailing punctuation at the very end of the buffer is
+# treated as still-in-progress, since more tokens may be coming.
+_STREAM_SENTENCE_BOUNDARY_RE = re.compile(r'[.!?]+["\')\]’”]*\s')
+
+
+def _split_stream_sentences(buffer: str, min_chars: int) -> tuple[list[str], str]:
+    """Pull complete sentences out of a growing stream buffer.
+
+    Returns (complete_sentences, remainder). A finished sentence shorter than
+    min_chars is merged into the following one, which keeps tiny fragments,
+    initials, abbreviations, and decimals (e.g. "Dr.", "3.") from splitting into
+    choppy one-word bursts.
+    """
+    sentences: list[str] = []
+    pending_start = 0
+    floor = max(1, int(min_chars or 1))
+    for match in _STREAM_SENTENCE_BOUNDARY_RE.finditer(buffer):
+        candidate = buffer[pending_start:match.end()].strip()
+        if len(candidate) >= floor:
+            sentences.append(candidate)
+            pending_start = match.end()
+    return sentences, buffer[pending_start:]
+
+
+def _streaming_surprise_beat(surprise_result: dict) -> int:
+    """Pre-beat (ms) before the first sentence when the utterance is surprising.
+
+    Reads the in-flight surprise classifier result without blocking — if it has
+    not resolved by the time the first sentence is ready, the beat is skipped so
+    the first word is never delayed.
+    """
+    if not surprise_result.get("value"):
+        return 0
+    beat_min = getattr(config, "SURPRISE_PAUSE_MS_MIN", 500)
+    beat_max = getattr(config, "SURPRISE_PAUSE_MS_MAX", 1000)
+    if beat_max >= beat_min > 0:
+        return random.randint(beat_min, beat_max)
+    return 0
+
+
+def _prepare_stream_sentence(sentence: str, frame, comedy_mode) -> str:
+    """Govern + polish a single streamed sentence; "" means skip it."""
+    governed = social_frame.govern_stream_sentence(sentence, frame)
+    if not governed:
+        return ""
+    try:
+        governed = comedy_modes.polish_stream_sentence(
+            governed, comedy_mode, allow_roast=frame.allow_roast
+        )
+    except Exception as exc:
+        _log.debug("[interaction] stream polish failed: %s", exc)
+    governed = llm.clean_response_text(governed or "")
+    return governed.strip() if governed else ""
+
+
+def _prefetch_stream_audio(
+    text: str, emotion: str, voice_settings: Optional[dict]
+) -> None:
+    """Warm the TTS cache for an upcoming sentence so playback doesn't gap."""
+    def _run() -> None:
+        try:
+            from audio import tts
+            tts.ensure_cached(text, voice_settings=voice_settings, emotion=emotion)
+        except Exception as exc:
+            _log.debug("[interaction] stream prefetch failed: %s", exc)
+
+    threading.Thread(target=_run, daemon=True, name="tts-prefetch").start()
+
+
+def _await_streamed_speech(
+    done_events: list[threading.Event], priority: int
+) -> bool:
+    """Block until every queued sentence finishes; honor wake-word interruption.
+
+    Mirrors _speak_blocking's interruption handling across multiple queued
+    items: on interrupt, cut current playback and drop the remaining sentences.
+    Returns True on normal completion, False if cut short.
+    """
+    for done in done_events:
+        while not done.wait(timeout=0.05):
+            if _interrupted.is_set():
+                try:
+                    import sounddevice as sd
+                    echo_cancel.request_cancel()
+                    sd.stop()
+                except Exception:
+                    pass
+                speech_queue.clear_below_priority(priority + 1)
+                done.wait(timeout=0.5)
+                return False
+    return True
+
+
+def _stream_and_speak_sentences(
+    user_text: str,
+    person_id: Optional[int],
+    frame,
+    comedy_mode,
+    agenda_directive: str,
+    surprise_result: dict,
+    turn_start: Optional[float],
+    filler_stop: threading.Event,
+) -> str:
+    """Stream the LLM reply and speak it sentence-by-sentence.
+
+    The first sentence is queued the instant it is generated (the latency win);
+    later sentences queue behind it in order through the single speech queue, so
+    Rex never overlaps himself. Returns the full spoken text.
+    """
+    trace = _current_character_loop_trace.get()
+    priority = 1
+    min_chars = int(getattr(config, "LLM_STREAMING_MIN_SENTENCE_CHARS", 12) or 1)
+    prefetch_enabled = bool(getattr(config, "LLM_STREAMING_PREFETCH_ENABLED", True))
+
+    # Person-based delivery shaping — independent of the reply text, so resolve
+    # once and apply to every sentence (emotion / voice settings) or to the right
+    # edge (pre-beat on the first line, post-beat after the last).
+    delivery_emotion = "neutral"
+    delivery_voice_settings: Optional[dict] = None
+    empathy_pre_beat_ms = 0
+    empathy_post_beat_ms = 0
+    try:
+        overrides = empathy.get_delivery_overrides(person_id)
+    except Exception as exc:
+        _log.debug("empathy.get_delivery_overrides error: %s", exc)
+        overrides = None
+    if overrides:
+        if overrides.get("emotion"):
+            delivery_emotion = overrides["emotion"]
+        empathy_pre_beat_ms = int(overrides.get("pre_beat_ms") or 0)
+        empathy_post_beat_ms = int(overrides.get("post_beat_ms") or 0)
+        delivery_voice_settings = overrides.get("voice_settings")
+
+    spoken: list[str] = []
+    done_events: list[threading.Event] = []
+    state = {"first": True, "spoke_question": False, "emotion": delivery_emotion}
+    llm_started = time.monotonic()
+
+    def _consume(raw_sentence: str) -> None:
+        prepared = _prepare_stream_sentence(raw_sentence, frame, comedy_mode)
+        if not prepared:
+            return
+        # One-question cap across the whole reply (govern keeps it per sentence).
+        if social_frame.is_question_sentence(prepared):
+            if state["spoke_question"]:
+                return
+            state["spoke_question"] = True
+
+        pre_beat_ms = empathy_pre_beat_ms
+        on_start = None
+        if state["first"]:
+            if surprise_result.get("value"):
+                state["emotion"] = "surprised"
+                surprise_beat = _streaming_surprise_beat(surprise_result)
+                if surprise_beat > 0:
+                    pre_beat_ms = max(pre_beat_ms, surprise_beat)
+                    try:
+                        _play_event_body_beat("emotion.surprise")
+                    except Exception as exc:
+                        _log.debug("[interaction] surprise beat skipped: %s", exc)
+            _mark_first_response_queued(trace, text=prepared, priority=priority)
+            if trace is not None:
+                on_start = lambda: _mark_first_response_audio_started(trace)
+            filler_stop.set()
+            if turn_start is not None:
+                _latency_log(turn_start, "llm_first_sentence", llm_started)
+        elif prefetch_enabled:
+            _prefetch_stream_audio(prepared, state["emotion"], delivery_voice_settings)
+
+        done = speech_queue.enqueue(
+            prepared,
+            state["emotion"],
+            priority=priority,
+            pre_beat_ms=pre_beat_ms,
+            post_beat_ms=0,
+            voice_settings=delivery_voice_settings,
+            on_start=on_start,
+            log_text=False,  # the whole turn is logged once below
+        )
+        done_events.append(done)
+        spoken.append(prepared)
+        state["first"] = False
+
+    buffer = ""
+    raw_chunks: list[str] = []
+    try:
+        for chunk in llm.stream_response(
+            user_text, person_id, agenda_directive=agenda_directive
+        ):
+            if _interrupted.is_set():
+                break
+            raw_chunks.append(chunk)
+            buffer += chunk
+            ready, buffer = _split_stream_sentences(buffer, min_chars)
+            for sentence in ready:
+                _consume(sentence)
+    except Exception as exc:
+        _log.error("[interaction] streaming LLM error: %s", exc)
+    finally:
+        filler_stop.set()
+
+    if not _interrupted.is_set():
+        tail = buffer.strip()
+        if tail:
+            _consume(tail)
+
+    # Safety net: if the model produced text but every sentence was governed away
+    # (e.g. an all-questions reply under a no-questions frame), fall back to
+    # whole-reply governance — which yields a frame fallback line — so Rex is
+    # never left silent. Rare: general frames never drop sentences here.
+    if not spoken and not _interrupted.is_set():
+        raw_full = "".join(raw_chunks).strip()
+        if raw_full:
+            fallback = ""
+            try:
+                fallback = social_frame.govern_response(raw_full, frame).text
+                fallback = comedy_modes.polish_response(
+                    fallback, comedy_mode, allow_roast=frame.allow_roast
+                )
+                fallback = llm.clean_response_text(fallback or "")
+            except Exception as exc:
+                _log.debug("[interaction] stream fallback failed: %s", exc)
+            if fallback:
+                filler_stop.set()
+                _speak_blocking(
+                    fallback,
+                    emotion=delivery_emotion,
+                    voice_settings=delivery_voice_settings,
+                )
+                return fallback
+
+    full_text = " ".join(part for part in spoken if part).strip()
+    if full_text:
+        # Log the whole reply once (file + GUI), not one entry per sentence.
+        try:
+            conv_log.log_rex(full_text)
+        except Exception as exc:
+            _log.debug("[interaction] stream conversation log failed: %s", exc)
+    if turn_start is not None:
+        _latency_log(turn_start, "llm_response", llm_started)
+
+    completed = _await_streamed_speech(done_events, priority)
+
+    if full_text:
+        if completed:
+            post_beat_ms = empathy_post_beat_ms
+            if not _assistant_asked_question(full_text):
+                beat_min = getattr(config, "POST_PUNCHLINE_BEAT_MS_MIN", 0)
+                beat_max = getattr(config, "POST_PUNCHLINE_BEAT_MS_MAX", 0)
+                if beat_max > 0 and beat_max >= beat_min:
+                    post_beat_ms = max(post_beat_ms, random.randint(beat_min, beat_max))
+            if post_beat_ms > 0:
+                time.sleep(post_beat_ms / 1000.0)
+        _apply_post_tts_handoff(full_text, source="streaming")
+        if (
+            completed
+            and getattr(frame, "purpose", None) == "identity"
+            and "?" in full_text
+        ):
+            _arm_visible_unknown_identity_followup(
+                person_id, source="agenda_llm_identity"
+            )
+
     return full_text
 
 
@@ -12116,6 +12406,9 @@ def _handle_speech_segment(
                     recent_id in visible_known_by_id
                     and not _has_unknown_visible_or_recent()
                     and not _other_known_visible_recently(recent_id)
+                    # Require the weak voice match to actually point at the recent
+                    # person before pinning the turn on them.
+                    and _safe_int(raw_best_id) == _safe_int(recent_id)
                     and speaker_score >= recent_floor
                 ):
                     vis = visible_known_by_id[int(recent_id)]
@@ -12180,7 +12473,11 @@ def _handle_speech_segment(
                     )
                     if (
                         len(visible_known_by_id) == 1
-                        and raw_best_id is not None
+                        # Only attribute to the engaged person if the top voice
+                        # candidate is actually them. Otherwise a second person
+                        # speaking in a one-on-one frame gets their words pinned
+                        # on the engaged person at a sub-threshold score.
+                        and _safe_int(raw_best_id) == _safe_int(ws_pid)
                         and speaker_score >= single_visible_continuity_floor
                     ):
                         person_id = ws_pid

@@ -114,6 +114,24 @@ def prewarm() -> None:
             logger.warning("[tts] prewarm failed (non-fatal): %s", exc)
 
 
+def _resolve_voice_settings(
+    emotion: str, override: Optional[dict]
+) -> Optional[dict]:
+    """Resolve the ElevenLabs voice_settings for a line.
+
+    An explicit override (empathy/grief delivery shaping) always wins. Otherwise
+    the settings are derived from the emotion frame's voice_style so normal lines
+    carry Rex's expressive baseline instead of the voice clone's flat defaults.
+    """
+    if override:
+        return override
+    try:
+        return emotion_orchestrator.voice_settings_for_emotion(emotion)
+    except Exception as exc:
+        logger.debug("[tts] voice settings resolution failed: %s", exc)
+        return None
+
+
 def speak(
     text: str,
     emotion: str = "neutral",
@@ -121,17 +139,19 @@ def speak(
     on_playback_start: Optional[Callable[[], None]] = None,
     post_playback_tail_secs: Optional[float] = None,
     flush_on_playback_stop: Optional[bool] = None,
+    log_text: bool = True,
 ) -> None:
     """Convert text to speech and play it, blocking until playback finishes.
 
     On cache hit: plays the cached MP3 with no API call.
     On cache miss: calls ElevenLabs streaming API, saves to cache, then plays.
 
-    `voice_settings` overrides ElevenLabs voice parameters (stability, style,
-    similarity_boost, use_speaker_boost). When provided AND non-empty, it is
-    folded into the cache key so the alternate take is cached separately —
-    the default cache (voice_settings=None) is unaffected, so existing cached
-    lines stay valid for normal-mode delivery.
+    `voice_settings` explicitly overrides ElevenLabs voice parameters (stability,
+    style, similarity_boost, use_speaker_boost, speed) — used by the empathy/grief
+    delivery layer. When omitted, expressive settings are derived from `emotion`
+    (see config.TTS_VOICE_SETTINGS_*), so normal lines are no longer rendered with
+    the clone's flat defaults. The resolved settings are folded into the cache key,
+    so each (text, emotion) take caches separately.
     """
     if not text or not text.strip():
         return
@@ -141,10 +161,11 @@ def speak(
         getattr(config, "NO_AUDIO_MODE", False)
         or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
     ):
-        try:
-            conv_log.log_rex(spoken_text)
-        except Exception as exc:
-            logger.debug("[tts] conversation log write failed: %s", exc)
+        if log_text:
+            try:
+                conv_log.log_rex(spoken_text)
+            except Exception as exc:
+                logger.debug("[tts] conversation log write failed: %s", exc)
         if on_playback_start is not None:
             try:
                 on_playback_start()
@@ -155,6 +176,7 @@ def speak(
 
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID
+    voice_settings = _resolve_voice_settings(emotion, voice_settings)
     cache_file = _cache_path(spoken_text, voice_id, model_id, voice_settings)
 
     if cache_file.exists():
@@ -178,10 +200,11 @@ def speak(
         return
     audio = _trim_trailing_silence(audio, samplerate)
 
-    try:
-        conv_log.log_rex(spoken_text)
-    except Exception as exc:
-        logger.debug("[tts] conversation log write failed: %s", exc)
+    if log_text:
+        try:
+            conv_log.log_rex(spoken_text)
+        except Exception as exc:
+            logger.debug("[tts] conversation log write failed: %s", exc)
 
     _play(
         audio,
@@ -388,7 +411,7 @@ def _settings_cache_token(voice_settings: Optional[dict]) -> str:
     """
     if not voice_settings:
         return ""
-    keys = ("stability", "similarity_boost", "style", "use_speaker_boost")
+    keys = ("stability", "similarity_boost", "style", "use_speaker_boost", "speed")
     parts = []
     for k in keys:
         if k in voice_settings and voice_settings[k] is not None:
@@ -420,11 +443,17 @@ def _cache_path(
 def is_cached(
     text: str,
     voice_settings: Optional[dict] = None,
+    emotion: str = "neutral",
 ) -> bool:
-    """Return True if this text already has cached audio for the active voice."""
+    """Return True if this text already has cached audio for the active voice.
+
+    `emotion` must match what the line will be spoken with so the cache key
+    lines up with the expressive voice settings used at playback time.
+    """
     if not text or not text.strip():
         return False
     spoken_text = _normalize_for_speech(text)
+    voice_settings = _resolve_voice_settings(emotion, voice_settings)
     return _cache_path(
         spoken_text,
         config.ELEVENLABS_VOICE_ID,
@@ -436,8 +465,13 @@ def is_cached(
 def ensure_cached(
     text: str,
     voice_settings: Optional[dict] = None,
+    emotion: str = "neutral",
 ) -> bool:
-    """Ensure text has a cached TTS file without playing it."""
+    """Ensure text has a cached TTS file without playing it.
+
+    `emotion` must match what the line will be spoken with so the prefilled
+    file lands under the same cache key the live turn looks up.
+    """
     if not text or not text.strip():
         return False
     if bool(
@@ -447,6 +481,7 @@ def ensure_cached(
         logger.info("[tts] cache prefill skipped — audio suppressed")
         return False
     spoken_text = _normalize_for_speech(text)
+    voice_settings = _resolve_voice_settings(emotion, voice_settings)
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID
     cache_file = _cache_path(spoken_text, voice_id, model_id, voice_settings)

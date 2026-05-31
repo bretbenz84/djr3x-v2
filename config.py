@@ -123,7 +123,6 @@ GUI_SERVO_SIM_ENABLED = True
 GUI_CONVERSATION_LOG_MAX_LINES = 300
 GUI_AVATAR_SMOOTHING = 0.25
 GUI_SHOW_SERVO_VALUES = True
-GUI_SHOW_FPS = False
 
 # Set at runtime by main.py --noaudio / -noaudio. In this mode the controller
 # skips microphone capture, wake-word listening, audio-scene analysis, audio
@@ -145,6 +144,12 @@ WHISPER_CONDITION_ON_PREVIOUS_TEXT = False
 LLM_MODEL             = "gpt-4o-mini"  # Streaming chat completions
 VISION_MODEL          = "gpt-4o-mini"  # All image and scene analysis queries
 
+# Fire a tiny throwaway OpenAI completion at startup (in a background thread) so
+# the first real turn doesn't pay cold TLS / HTTP-connection setup on the OpenAI
+# clients used by the answer LLM and the action router (separate clients, each
+# with its own connection pool). Disable for offline development.
+OPENAI_WARMUP_ON_STARTUP = True
+
 # Local Ollama model used for low-latency sidecar intelligence (intent routing,
 # empathy/shaping classifiers, etc.). The main conversational LLM can remain
 # cloud-backed while these smaller helper calls run locally.
@@ -156,6 +161,27 @@ OLLAMA_KEEP_ALIVE = -1  # Negative keeps the model loaded until explicitly stopp
 OLLAMA_PRELOAD_ON_STARTUP = True
 OLLAMA_PRELOAD_REQUIRED = True
 OLLAMA_STARTUP_TIMEOUT_SECS = 30.0
+
+# ── Streaming TTS (respond faster) ───────────────────────────────────────────
+# When True, Rex speaks his reply sentence-by-sentence as the LLM generates it,
+# instead of composing the whole reply before saying a word. The first sentence
+# goes out as soon as it is ready — the main "respond faster" win. Every sentence
+# still plays through the single speech queue (one line at a time), so Rex never
+# talks over himself. Per-sentence safety governance (no disallowed questions /
+# roasts / visual comments) is preserved. Automatically bypassed in no-audio mode
+# (no latency benefit there, and it would split the text/GUI log per sentence).
+LLM_STREAMING_TTS_ENABLED = True
+
+# A finished sentence shorter than this many characters is merged with the next
+# one before speaking, so tiny fragments ("Yeah.", initials, abbreviations,
+# decimals) don't produce choppy one-word bursts. Raise if delivery feels choppy;
+# lower for the fastest possible first word.
+LLM_STREAMING_MIN_SENTENCE_CHARS = 12
+
+# Pre-synthesize upcoming sentences while the current one plays so there is no
+# audible gap between them. Falls back to just-in-time synthesis if a prefetch
+# is slower than the line currently playing.
+LLM_STREAMING_PREFETCH_ENABLED = True
 
 # Base character prompt — always the first section of the GPT-4o-mini system prompt.
 # WorldState, person context, and behavioral modifiers are appended after this by llm.py.
@@ -485,10 +511,58 @@ TRIVIA_DIR         = "assets/trivia"
 # Rex voice clone ID — find this in your ElevenLabs account after cloning the voice
 ELEVENLABS_VOICE_ID = "kb9LZZlhckjFQsP89t9T"
 
-# ElevenLabs model to use for TTS. eleven_turbo_v2 trades a little quality for
-# lower latency — right choice for live conversation. Change to
-# eleven_multilingual_v2 for higher quality if latency budget allows.
-TTS_MODEL_ID = "eleven_turbo_v2"
+# ElevenLabs model to use for TTS. eleven_multilingual_v2 gives the fullest
+# expressive range — it honors the `style` voice setting strongly — at the cost
+# of a little more latency per uncached line. Switch back to eleven_turbo_v2 for
+# lowest latency, but note turbo applies `style` only weakly, so the expressive
+# settings below mostly move stability/speed there, not style.
+TTS_MODEL_ID = "eleven_multilingual_v2"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TTS — EXPRESSIVE VOICE (anti-monotone)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Rex's emotion is computed every turn (intelligence/emotion_orchestrator.py)
+# but historically only drove LEDs and servos — the ElevenLabs call was made
+# with no voice_settings, so every line rendered with the clone's flat defaults
+# (style≈0). That is the main reason Rex sounds monotone.
+#
+# TTS_VOICE_SETTINGS_BASELINE is applied to every spoken line that has no
+# explicit empathy/grief override. TTS_VOICE_SETTINGS_BY_STYLE then layers
+# per-emotion deltas on top, keyed by the emotion frame's voice_style.
+#
+# ElevenLabs voice_settings cheat-sheet:
+#   stability         0..1  lower = more emotional/variable, higher = monotone
+#   style             0..1  style exaggeration; 0 = flat, higher = theatrical
+#   similarity_boost  0..1  adherence to the cloned voice; keep mid-high
+#   use_speaker_boost bool  boosts presence/clarity toward the clone
+#   speed             ~0.7..1.2  speaking rate (1.0 = normal)
+#
+# Set TTS_EXPRESSIVE_VOICE_ENABLED = False to fall back to the clone's stored
+# defaults (and the pre-existing default cache).
+TTS_EXPRESSIVE_VOICE_ENABLED = True
+
+TTS_VOICE_SETTINGS_BASELINE = {
+    "stability": 0.40,
+    "similarity_boost": 0.80,
+    "style": 0.55,
+    "use_speaker_boost": True,
+}
+
+# Keyed by emotion_orchestrator voice_style; each dict is merged ONTO the
+# baseline, so only list what differs. Tune live to taste. The trailing comment
+# names the emotion(s) that produce each voice_style.
+TTS_VOICE_SETTINGS_BY_STYLE = {
+    "default":   {},                                                 # neutral / curious snark
+    "warm":      {"stability": 0.44, "style": 0.55},                 # happy
+    "energetic": {"stability": 0.30, "style": 0.68, "speed": 1.05},  # excited
+    "delighted": {"stability": 0.26, "style": 0.72, "speed": 1.07},  # starstruck / giddy
+    "startled":  {"stability": 0.30, "style": 0.66, "speed": 1.04},  # surprised
+    "clipped":   {"stability": 0.38, "style": 0.60, "speed": 1.05},  # angry
+    "repelled":  {"stability": 0.44, "style": 0.52},                 # disgusted
+    "calm":      {"stability": 0.58, "style": 0.30, "speed": 0.96},  # sad
+    "quiet":     {"stability": 0.66, "style": 0.22, "speed": 0.92},  # sleep
+}
 
 # Mouth LED brightness driven from audio RMS during playback.
 # How often to recompute RMS and send SPEAK_LEVEL to the head Arduino.
@@ -1291,7 +1365,7 @@ SCENE_AMBIENT_LOUD_RMS  = 0.07   # above → "loud"; between → "moderate"
 
 # Music detection: mean squared energy per frequency band (after normalising FFT
 # by window length) must exceed this to count a band as active.
-SCENE_MUSIC_BAND_ENERGY_MIN  = 2-6
+SCENE_MUSIC_BAND_ENERGY_MIN  = 2e-6
 # Minimum number of the three bands (bass/mid/treble) that must be active.
 SCENE_MUSIC_ACTIVE_BANDS_MIN = 2
 

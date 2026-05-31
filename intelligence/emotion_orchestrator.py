@@ -337,6 +337,32 @@ def frame_for_speech(emotion: str | EmotionFrame | dict | None) -> EmotionFrame:
     return frame_for_emotion(emotion, source="speech")
 
 
+def voice_settings_for_style(voice_style: str | None) -> Optional[dict[str, Any]]:
+    """Map an emotion frame's voice_style to ElevenLabs voice_settings.
+
+    Returns the configured baseline merged with any per-style deltas, so even
+    neutral lines get an expressive baseline instead of the voice clone's flat
+    defaults. Per-style dicts in config only need to list what differs from the
+    baseline. Returns None when expressive voice is disabled, which makes TTS
+    fall back to the clone's stored defaults (and the pre-existing cache).
+    """
+    if not getattr(config, "TTS_EXPRESSIVE_VOICE_ENABLED", True):
+        return None
+    baseline = dict(getattr(config, "TTS_VOICE_SETTINGS_BASELINE", {}) or {})
+    style_key = str(voice_style or "default").strip().lower()
+    overrides = (getattr(config, "TTS_VOICE_SETTINGS_BY_STYLE", {}) or {}).get(style_key)
+    if isinstance(overrides, dict):
+        baseline.update(overrides)
+    return baseline or None
+
+
+def voice_settings_for_emotion(
+    emotion: str | EmotionFrame | dict | None,
+) -> Optional[dict[str, Any]]:
+    """Resolve ElevenLabs voice_settings for an emotion label/frame."""
+    return voice_settings_for_style(frame_for_speech(emotion).voice_style)
+
+
 def frame_for_empathy_mode(mode: str | None) -> EmotionFrame:
     mode_key = str(mode or "default").strip().lower()
     mapping = {
