@@ -262,6 +262,12 @@ Recent introduction repair:
 
 Memory is stored in SQLite under `assets/memory/people.db`.
 
+This local DB is **disposable development/test data** — it is untracked and may be
+freely reset, cleaned, or erased during development (e.g. to clear stale rows like
+duplicate test events). Do not treat it as precious user data; back it up to
+`assets/memory/backups/` first if a change is non-trivial, but a full wipe is
+acceptable when iterating.
+
 Main concepts:
 
 - People records with names, biometrics, familiarity, and relationship metadata.
