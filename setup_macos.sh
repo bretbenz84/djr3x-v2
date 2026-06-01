@@ -1617,6 +1617,58 @@ else
     MANUAL_ATTENTION+=("setup_assets.py missing — run it once available: $VENV_PYTHON setup_assets.py")
 fi
 
+# ── 10. Always-on "wake up Rex" supervisor (optional) ──────────────────────────
+# Offer to install the LaunchAgent that listens for "wake up Rex" at login and
+# launches the robot on demand (see docs/supervisor.md). Opt-in only.
+SUPERVISOR_INSTALLER="$PROJECT_DIR/scripts/install_supervisor.sh"
+SUPERVISOR_LABEL="com.djr3x.supervisor"
+SUPERVISOR_PLIST="$HOME/Library/LaunchAgents/$SUPERVISOR_LABEL.plist"
+
+echo ""
+echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BOLD}  Optional: always-on \"wake up Rex\" launcher${NC}"
+echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+if [[ ! -f "$SUPERVISOR_INSTALLER" ]]; then
+    warn "Supervisor installer not found ($SUPERVISOR_INSTALLER) — skipping."
+elif [[ ! -x "$VENV_PYTHON" ]]; then
+    warn "venv Python not ready — skipping the supervisor option."
+    MANUAL_ATTENTION+=("Install the wake-word supervisor later: scripts/install_supervisor.sh")
+elif [[ -f "$SUPERVISOR_PLIST" ]]; then
+    ok "Wake-word supervisor already installed ($SUPERVISOR_PLIST)."
+    if _is_interactive && _prompt_yes_no "Reinstall / refresh it for this repo path? [y/N] " "n"; then
+        if "$SUPERVISOR_INSTALLER" install; then
+            ok "Wake-word supervisor reinstalled."
+            INSTALLED_ITEMS+=("Wake-word supervisor (LaunchAgent: $SUPERVISOR_LABEL)")
+        else
+            warn "Supervisor reinstall failed — install it manually later: scripts/install_supervisor.sh"
+            MANUAL_ATTENTION+=("Wake-word supervisor reinstall failed — run: scripts/install_supervisor.sh")
+        fi
+    fi
+else
+    echo ""
+    echo -e "  This starts a tiny background listener at login that waits for the"
+    echo -e "  single phrase ${BOLD}\"wake up Rex\"${NC} and then launches the robot. Saying"
+    echo -e "  ${BOLD}\"shut down\"${NC} powers the robot back down while the listener keeps"
+    echo -e "  running. Details: ${BOLD}docs/supervisor.md${NC}"
+    echo ""
+    if ! _is_interactive; then
+        log "Non-interactive run — skipping the supervisor prompt."
+        MANUAL_ATTENTION+=("Optional: install the wake-word supervisor with scripts/install_supervisor.sh")
+    elif _prompt_yes_no "Install the always-on \"wake up Rex\" launcher now? [y/N] " "n"; then
+        if "$SUPERVISOR_INSTALLER" install; then
+            ok "Wake-word supervisor installed and listening."
+            INSTALLED_ITEMS+=("Wake-word supervisor (LaunchAgent: $SUPERVISOR_LABEL)")
+            MANUAL_ATTENTION+=("Grant Microphone permission to the venv Python on first wake (System Settings > Privacy & Security > Microphone)")
+        else
+            warn "Supervisor install failed — you can run it manually: scripts/install_supervisor.sh"
+            MANUAL_ATTENTION+=("Wake-word supervisor install failed — run: scripts/install_supervisor.sh")
+        fi
+    else
+        log "Skipped the wake-word supervisor — install later with scripts/install_supervisor.sh"
+    fi
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
