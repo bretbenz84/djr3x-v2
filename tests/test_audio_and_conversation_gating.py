@@ -9490,5 +9490,150 @@ class RhetoricalQuestionGuardTest(unittest.TestCase):
             )
 
 
+class EndThreadClosureNarrowingTest(unittest.TestCase):
+    def setUp(self):
+        from intelligence import end_thread
+        end_thread.clear()
+
+    def tearDown(self):
+        from intelligence import end_thread
+        end_thread.clear()
+
+    def test_compliment_reply_does_not_arm_grace(self):
+        from intelligence import end_thread
+        # "Well thank you" is a reply to a compliment, not a goodbye. It must NOT
+        # arm the end-of-thread grace window (which muzzled proactive banter).
+        end_thread.note_assistant_turn("Keeping you from looking like a lost Womp Rat.")
+        end_thread.note_user_turn("Well thank you", 1)
+        self.assertFalse(end_thread.is_grace_active())
+
+    def test_real_goodbye_still_arms_grace(self):
+        from intelligence import end_thread
+        end_thread.note_user_turn("alright, I gotta go", 1)
+        self.assertTrue(end_thread.is_grace_active())
+
+    def test_bare_thanks_after_question_still_closes(self):
+        from intelligence import end_thread
+        # A bare ack after Rex asked a question is still a legitimate soft close.
+        end_thread.note_assistant_turn("Want me to queue something up?")
+        end_thread.note_user_turn("thanks", 1)
+        self.assertTrue(end_thread.is_grace_active())
+
+    def test_thats_all_closes(self):
+        from intelligence import end_thread
+        end_thread.note_user_turn("that's all", 1)
+        self.assertTrue(end_thread.is_grace_active())
+
+
+class IdleBanterTest(unittest.TestCase):
+    def setUp(self):
+        from intelligence import interaction
+        interaction._idle_banter_count = 0
+        interaction._last_idle_banter_at = 0.0
+
+    def tearDown(self):
+        from intelligence import interaction
+        interaction._idle_banter_count = 0
+        interaction._last_idle_banter_at = 0.0
+
+    def test_banter_fires_after_silence_and_drives_conversation(self):
+        from intelligence import interaction
+        with (
+            mock.patch.object(interaction, "_primary_session_person_id", return_value=1),
+            mock.patch.object(interaction, "_directed_context_fresh", return_value=False),
+            mock.patch.object(interaction, "_game_suppresses_conversation", return_value=False),
+            mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+            mock.patch.object(interaction.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch.object(interaction.end_thread, "is_grace_active", return_value=False),
+            mock.patch.object(interaction.llm, "get_response", return_value="So what's the dog up to?"),
+            mock.patch.object(interaction.llm, "clean_response_text", side_effect=lambda s: s),
+            mock.patch.object(interaction.social_frame, "build_frame"),
+            mock.patch.object(
+                interaction.social_frame, "govern_response",
+                return_value=type("G", (), {"text": "So what's the dog up to?"})(),
+            ),
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+            mock.patch.object(interaction.conv_memory, "add_to_transcript"),
+            mock.patch.object(interaction.conv_log, "log_rex"),
+            mock.patch.object(interaction, "_register_rex_utterance"),
+        ):
+            fired = interaction._maybe_idle_banter(idle_for=9.0, effective_idle_timeout=45.0)
+        self.assertTrue(fired)
+        speak.assert_called_once()
+        self.assertEqual(interaction._idle_banter_count, 1)
+
+    def test_banter_holds_until_threshold(self):
+        from intelligence import interaction
+        with (
+            mock.patch.object(interaction, "_primary_session_person_id", return_value=1),
+            mock.patch.object(interaction, "_directed_context_fresh", return_value=False),
+            mock.patch.object(interaction, "_game_suppresses_conversation", return_value=False),
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+        ):
+            fired = interaction._maybe_idle_banter(idle_for=3.0, effective_idle_timeout=45.0)
+        self.assertFalse(fired)
+        speak.assert_not_called()
+
+    def test_banter_caps_attempts_per_stretch(self):
+        from intelligence import interaction
+        interaction._idle_banter_count = 2  # IDLE_BANTER_MAX_PER_STRETCH default
+        with (
+            mock.patch.object(interaction, "_primary_session_person_id", return_value=1),
+            mock.patch.object(interaction, "_directed_context_fresh", return_value=False),
+            mock.patch.object(interaction, "_game_suppresses_conversation", return_value=False),
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+        ):
+            fired = interaction._maybe_idle_banter(idle_for=9.0, effective_idle_timeout=45.0)
+        self.assertFalse(fired)
+        speak.assert_not_called()
+
+    def test_banter_respects_cooldown(self):
+        from intelligence import interaction
+        interaction._idle_banter_count = 1
+        interaction._last_idle_banter_at = interaction.time.monotonic()  # just fired
+        with (
+            mock.patch.object(interaction, "_primary_session_person_id", return_value=1),
+            mock.patch.object(interaction, "_directed_context_fresh", return_value=False),
+            mock.patch.object(interaction, "_game_suppresses_conversation", return_value=False),
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+        ):
+            fired = interaction._maybe_idle_banter(idle_for=9.0, effective_idle_timeout=45.0)
+        self.assertFalse(fired)
+        speak.assert_not_called()
+
+    def test_banter_skipped_when_no_one_engaged(self):
+        from intelligence import interaction
+        with (
+            mock.patch.object(interaction, "_primary_session_person_id", return_value=None),
+            mock.patch.object(interaction, "_directed_context_fresh", return_value=False),
+            mock.patch.object(interaction, "_game_suppresses_conversation", return_value=False),
+            mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+            mock.patch.object(interaction.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch.object(interaction.end_thread, "is_grace_active", return_value=False),
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+        ):
+            fired = interaction._maybe_idle_banter(idle_for=9.0, effective_idle_timeout=45.0)
+        self.assertFalse(fired)
+        speak.assert_not_called()
+
+    def test_banter_skipped_during_end_thread_grace(self):
+        from intelligence import interaction
+        with (
+            mock.patch.object(interaction, "_primary_session_person_id", return_value=1),
+            mock.patch.object(interaction, "_directed_context_fresh", return_value=False),
+            mock.patch.object(interaction, "_game_suppresses_conversation", return_value=False),
+            mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+            mock.patch.object(interaction.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch.object(interaction.end_thread, "is_grace_active", return_value=True),
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+        ):
+            fired = interaction._maybe_idle_banter(idle_for=9.0, effective_idle_timeout=45.0)
+        self.assertFalse(fired)
+        speak.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

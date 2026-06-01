@@ -213,6 +213,10 @@ _interest_idle_followups_spoken: set[tuple[Optional[int], str]] = set()
 _low_memory_idle_questions_spoken: set[int] = set()
 _recent_memory_candidates = deque(maxlen=12)
 _idle_outro_spoken: bool = False
+# Proactive idle-banter pacing. _idle_banter_count resets in _begin_user_turn
+# when the user speaks again, so each silent stretch gets a fresh attempt budget.
+_last_idle_banter_at: float = 0.0
+_idle_banter_count: int = 0
 _pending_music_offer: Optional[dict] = None
 _no_response_recovery_token: int = 0
 _no_response_recovery_lock = threading.Lock()
@@ -258,6 +262,10 @@ _IDENTITY_REPLY_WINDOW_SECS = 45.0
 
 def _begin_user_turn() -> None:
     """Suppress proactive speech while the interaction loop handles a user turn."""
+    # The user is engaging again — refresh the proactive idle-banter budget so
+    # the next silent stretch gets a fresh set of re-engagement attempts.
+    global _idle_banter_count
+    _idle_banter_count = 0
     try:
         _situation_assessor.set_interaction_busy(True)
     except Exception:
@@ -3047,6 +3055,117 @@ def _maybe_low_memory_idle_question(
             )
         except Exception as exc:
             _log.debug("low-memory idle question save_qa failed: %s", exc)
+    return completed
+
+
+_IDLE_BANTER_DIRECTIVES = (
+    # Even attempts: turn the spotlight on the user.
+    "The conversation just went quiet — the user didn't say goodbye, they simply "
+    "stopped talking. DRIVE it forward, in character: ask ONE short, specific "
+    "question about the user that you're genuinely curious about given what you "
+    "know of them (their day, their work, their dog, what they're into), or riff "
+    "a question off something you can see. Light and inviting, one or two "
+    "sentences. Do not sign off and do not announce the silence.",
+    # Odd attempts: Rex volunteers something of his own.
+    "Still quiet. Keep the room alive by VOLUNTEERING something of your own, in "
+    "character — a strong Rex opinion, a music take, a preference, a memory, or a "
+    "dry observation about the room. Give them something worth reacting to. Do "
+    "NOT ask a question this time, and do not sign off or announce the silence.",
+)
+
+
+def _maybe_idle_banter(
+    *,
+    idle_for: float,
+    effective_idle_timeout: float,
+) -> bool:
+    """General proactive filler: when the user simply goes quiet (no goodbye),
+    Rex re-engages instead of waiting out the timeout and signing off. Alternates
+    between asking about the user and volunteering his own opinion/preference, up
+    to IDLE_BANTER_MAX_PER_STRETCH times per silent stretch. Unlike the interest /
+    low-memory idle paths, this also fires for well-known, fully-profiled people."""
+    global _last_idle_banter_at, _idle_banter_count, _session_exchange_count
+    if not bool(getattr(config, "IDLE_BANTER_ENABLED", True)):
+        return False
+    if _game_suppresses_conversation():
+        return False
+    if _directed_context_fresh():
+        return False
+    threshold = max(2.0, float(getattr(config, "IDLE_BANTER_SECS", 8.0) or 8.0))
+    if idle_for < threshold:
+        return False
+    # Leave room before the hard idle cutoff so the outro can still land.
+    if idle_for >= max(0.0, effective_idle_timeout - 1.0):
+        return False
+    if _idle_banter_count >= int(getattr(config, "IDLE_BANTER_MAX_PER_STRETCH", 2) or 0):
+        return False
+    now = time.monotonic()
+    if now - _last_idle_banter_at < float(getattr(config, "IDLE_BANTER_COOLDOWN_SECS", 12.0) or 0.0):
+        return False
+    if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
+        return False
+    if _interrupted.is_set():
+        return False
+    try:
+        if end_thread.is_grace_active():
+            return False
+    except Exception:
+        pass
+
+    person_id = _primary_session_person_id()
+    if person_id is None:
+        return False
+
+    attempt = _idle_banter_count % len(_IDLE_BANTER_DIRECTIVES)
+    directive = _IDLE_BANTER_DIRECTIVES[attempt]
+    ask_user = attempt == 0
+    try:
+        line = llm.get_response(
+            "You are re-engaging after a quiet pause in an ongoing conversation. "
+            + directive
+            + " Keep it to one or two short sentences. Return only the line.",
+            person_id,
+        )
+    except Exception as exc:
+        _log.debug("idle banter LLM failed: %s", exc)
+        return False
+
+    line = llm.clean_response_text(line or "")
+    if not line:
+        return False
+    try:
+        frame = social_frame.build_frame(
+            "(the user has gone quiet)",
+            person_id,
+            agenda_directive=(
+                "Primary purpose: after a quiet pause, proactively keep the "
+                "conversation alive. "
+                + ("Ask one short, genuine question about the user."
+                   if ask_user else
+                   "Volunteer one specific Rex opinion, preference, or observation; "
+                   "do not ask a question.")
+            ),
+        )
+        if not ask_user:
+            frame.allow_question = False
+        governed = social_frame.govern_response(line, frame)
+        if governed.text:
+            line = governed.text
+    except Exception as exc:
+        _log.debug("idle banter govern failed: %s", exc)
+
+    _last_idle_banter_at = time.monotonic()
+    _idle_banter_count += 1
+    _log.info(
+        "[interaction] idle banter — person_id=%s attempt=%d ask_user=%s text=%r",
+        person_id, _idle_banter_count, ask_user, line,
+    )
+    completed = _speak_blocking(line, emotion="curious", priority=1)
+    if completed:
+        conv_memory.add_to_transcript("Rex", line)
+        conv_log.log_rex(line)
+        _register_rex_utterance(line)
+        _session_exchange_count += 1
     return completed
 
 
