@@ -711,15 +711,18 @@ def startup() -> None:
 
 
 def shutdown() -> None:
-    """Shutdown: stop breathing, slowly close visor, droop head to rest position, LEDs off."""
+    """Shutdown: stop breathing, droop to the rest pose, LEDs off.
+
+    Visor close, neck recenter, head-lift droop and head-tilt down all travel
+    together in a SINGLE move_to so the droid powers down in one motion, instead
+    of the old visor→tilt→lift sequence. (Headtilt is inverted: HEADTILT_DOWN is
+    the "looking down" value.)
+    """
     servos.stop_breathing()
     time.sleep(0.1)   # let breathing thread exit before we move headlift
 
-    # Close visor first, then slowly center neck and droop head to the rest/startup pose.
-    servos.move_to({3: VISOR_CLOSED}, step_us=30, step_delay=0.025)
-    time.sleep(0.3)
     servos.move_to(
-        {0: NECK_CENTER, 1: HEADLIFT_FLOOR, 2: HEADTILT_DOWN},
+        {3: VISOR_CLOSED, 0: NECK_CENTER, 1: HEADLIFT_FLOOR, 2: HEADTILT_DOWN},
         step_us=25, step_delay=0.025,
     )
     time.sleep(0.5)

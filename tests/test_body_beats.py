@@ -191,10 +191,18 @@ class BodyBeatAnimationTest(unittest.TestCase):
             animations.shutdown()
 
         stop_breathing.assert_called_once()
-        self.assertEqual(moves[0], {3: animations.VISOR_CLOSED})
-        self.assertEqual(moves[1][0], expected_midpoint)
-        self.assertEqual(moves[1][1], animations.HEADLIFT_FLOOR)
-        self.assertEqual(moves[1][2], animations.HEADTILT_DOWN)
+        # Visor, neck, head-lift and head-tilt all droop together in ONE move_to
+        # so the droid powers down in a single motion (not visor→tilt→lift).
+        self.assertEqual(len(moves), 1)
+        self.assertEqual(
+            moves[0],
+            {
+                3: animations.VISOR_CLOSED,
+                0: expected_midpoint,
+                1: animations.HEADLIFT_FLOOR,
+                2: animations.HEADTILT_DOWN,
+            },
+        )
         head_off.assert_called_once()
         chest_off.assert_called_once()
 
