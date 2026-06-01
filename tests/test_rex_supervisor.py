@@ -99,5 +99,45 @@ class SupervisorModelTest(unittest.TestCase):
             self.assertAlmostEqual(sup._wake_threshold(), 0.5)
 
 
+class SupervisorWakePhraseTest(unittest.TestCase):
+    """The transcription wake path matches the same phrases the main app accepts
+    from SLEEP (intelligence.interaction._is_sleep_wake_transcript)."""
+
+    def setUp(self):
+        self.sup = _load_supervisor()
+
+    def test_accepts_wake_phrases(self):
+        for text in (
+            "wake up rex",
+            "wake up rex.",
+            "Wake up, Rex!",
+            "hey wake up rex",
+            "please wake up rex please",
+            "rex wake up",
+            "dj rex wake up",
+            "wake up r3x",
+            "wakeuprex",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(self.sup._transcript_is_wake_phrase(text))
+
+    def test_rejects_non_wake_phrases(self):
+        for text in (
+            "",
+            "what's the weather",
+            "wake up the kids",
+            "i need to wake up early",
+            "tell rex something",
+            "rex is a good droid",
+            "go to sleep",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(self.sup._transcript_is_wake_phrase(text))
+
+    def test_wake_mode_default_is_both(self):
+        # Default mode runs both detectors so the reliable transcription path is on.
+        self.assertEqual(self.sup._WAKE_MODE, "both")
+
+
 if __name__ == "__main__":
     unittest.main()
