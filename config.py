@@ -1807,8 +1807,10 @@ POST_QUESTION_LISTEN_DELAY_SECS = 0.12
 # last. Set to 0 to disable the stickiness.
 POST_QUESTION_HANDOFF_STICKY_SECS = 1.5
 
-# Seconds of no detected speech in ACTIVE state before returning to IDLE
-CONVERSATION_IDLE_TIMEOUT_SECS = 30.0
+# Seconds of no detected speech in ACTIVE state before returning to IDLE.
+# Raised from 30 so the proactive idle-banter path (below) has room to re-engage
+# a couple times before the session actually closes on silence.
+CONVERSATION_IDLE_TIMEOUT_SECS = 45.0
 ACTIVE_GAME_IDLE_TIMEOUT_SECS = 180.0
 
 # If a person has just volunteered a favorite thing or interest, give Rex one
@@ -1816,6 +1818,18 @@ ACTIVE_GAME_IDLE_TIMEOUT_SECS = 180.0
 INTEREST_IDLE_FOLLOWUP_ENABLED = True
 INTEREST_IDLE_FOLLOWUP_SECS = 12.0
 INTEREST_IDLE_FOLLOWUP_MAX_WORDS = 22
+
+# Proactive idle banter: when the user just goes quiet (no goodbye), Rex should
+# DRIVE the conversation instead of waiting it out and signing off. This is the
+# general filler — it fires for well-known people too, where the interest /
+# low-memory paths above don't apply. Alternates between asking the user
+# something and Rex volunteering his own opinion/preference/observation, so
+# silence prompts more conversation. After IDLE_BANTER_MAX_PER_STRETCH attempts
+# with no reply, it stops and lets the idle timeout close with the outro.
+IDLE_BANTER_ENABLED = True
+IDLE_BANTER_SECS = 8.0            # silence before the first proactive nudge
+IDLE_BANTER_COOLDOWN_SECS = 12.0  # minimum gap between nudges
+IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up
 
 # When an ACTIVE conversation expires from silence, let Rex make one tiny
 # closing remark instead of silently snapping back to IDLE.

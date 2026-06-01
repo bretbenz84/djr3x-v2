@@ -15948,6 +15948,11 @@ def _loop() -> None:
             effective_idle_timeout=effective_idle_timeout,
         ):
             continue
+        if _maybe_idle_banter(
+            idle_for=idle_for,
+            effective_idle_timeout=effective_idle_timeout,
+        ):
+            continue
 
         if time.monotonic() < _listen_resume_at:
             _situation_assessor.set_vad_active(False)

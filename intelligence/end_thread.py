@@ -17,6 +17,13 @@ from typing import Optional
 import config
 
 
+# Strong closure cues — explicit goodbyes / "we're done here" signals only.
+# Bare politeness ("thanks", "thank you", "sounds good", "got it", "cool") was
+# REMOVED from here: it falsely closed conversational replies like "Well thank
+# you" (a reply to a compliment, not a goodbye), arming the grace window that
+# muzzled Rex's proactive re-engagement. Those soft acks now close the thread
+# ONLY via _SHORT_ACK_PAT below — i.e. when the WHOLE utterance is just the ack
+# AND Rex had just asked a question.
 _CLOSURE_PAT = re.compile(
     r"\b(that'?s all|that is all|that'?s it|that is it|all good|i'?m good|"
     r"i am good|nothing else|no more|let'?s leave it there|leave it there|"
@@ -25,8 +32,7 @@ _CLOSURE_PAT = re.compile(
     r"do not want to talk about (?:it|that|this)(?: anymore| again)?|"
     r"i told you i didn'?t want to talk about (?:it|that|this)|"
     r"i told you i did not want to talk about (?:it|that|this)|"
-    r"thanks|thank you|appreciate it|sounds good|fair enough|got it|"
-    r"makes sense|okay,? cool|ok,? cool|bye|goodbye|good-bye|"
+    r"bye|goodbye|good-bye|"
     r"see you|see ya|later|talk to you later|talk later|nice speaking|"
     r"nice talking|nice chatting|i'?m\s+going\s+to\s+go|"
     r"i\s+am\s+going\s+to\s+go|i\s+have\s+to\s+go|gotta\s+go)\b",
