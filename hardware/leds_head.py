@@ -213,14 +213,33 @@ def speak_level(brightness: int) -> None:
     send_command(f"SPEAK_LEVEL:{brightness}")
 
 
+def _resume_eye_blink() -> None:
+    """Re-arm the head Arduino's autonomous eye blinking after a mouth stop.
+
+    The Arduino SUSPENDS blinking on SPEAK_STOP (eyesActive→false) and only
+    resumes it on an ACTIVE/EYE command. Without this, Rex blinks until his first
+    spoken line and then never again. Re-assert ACTIVE (which preserves the
+    current eye colour and resumes blinking). If the eyes are intentionally off
+    (no colour set), leave them off rather than forcing them on.
+    """
+    if any(_eye_color):
+        active()
+
+
 def speak_stop() -> None:
-    """Stop the mouth speak animation and return to idle pattern."""
+    """Stop the mouth speak animation and return to idle pattern.
+
+    Also re-arms eye blinking (see _resume_eye_blink): SPEAK_STOP suspends the
+    Arduino's blink loop, so we must hand the eyes back to ACTIVE or Rex freezes
+    his eyes open after the first thing he says.
+    """
     global _eyes_active, _led_mode
     _led_mode = "speak_stop"
     _eyes_active = False
     _mirror_gui_head_led_state(mode=_led_mode, eyes_active=False)
     if not _serial_online():
         send_command("SPEAK_STOP")
+        _resume_eye_blink()
         return
     send_command("SPEAK_LEVEL:0")
     repeats = int(getattr(config, "HEAD_LED_SPEAK_STOP_REPEATS", 3) or 1)
@@ -233,6 +252,7 @@ def speak_stop() -> None:
             break
         if idx < repeats - 1 and delay > 0.0:
             time.sleep(delay)
+    _resume_eye_blink()
 
 
 def idle() -> None:
