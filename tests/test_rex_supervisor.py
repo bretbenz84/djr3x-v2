@@ -139,5 +139,61 @@ class SupervisorWakePhraseTest(unittest.TestCase):
         self.assertEqual(self.sup._WAKE_MODE, "both")
 
 
+class SupervisorEnvParsingTest(unittest.TestCase):
+    """The .env mic device must resolve correctly (the cause of 'no trigger')."""
+
+    def setUp(self):
+        self.sup = _load_supervisor()
+
+    def test_env_parser_strips_surrounding_quotes(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            envfile = Path(d) / ".env"
+            envfile.write_text(
+                'AUDIO_DEVICE_NAME="MacBook Pro Microphone"\n'
+                "AUDIO_DEVICE_INDEX=\n"
+                "OTHER='single quoted'\n"
+                "PLAIN=bare\n"
+            )
+            with mock.patch.object(self.sup, "_PROJECT_ROOT", Path(d)):
+                env = self.sup._read_env_file()
+        # Quotes must be gone so the name matches a real device.
+        self.assertEqual(env["AUDIO_DEVICE_NAME"], "MacBook Pro Microphone")
+        self.assertEqual(env["OTHER"], "single quoted")
+        self.assertEqual(env["PLAIN"], "bare")
+
+    def _clear_audio_env(self):
+        # _resolve_input_device reads os.environ first; clear so the passed-in
+        # dict is the only source (the dev box / shell may export these).
+        return mock.patch.dict(
+            os.environ, {"AUDIO_DEVICE_NAME": "", "AUDIO_DEVICE_INDEX": ""}, clear=False
+        )
+
+    def test_resolve_input_device_matches_case_insensitively(self):
+        # Mock the device list so the test is hardware-independent.
+        with self._clear_audio_env(), mock.patch.object(
+            self.sup, "_list_input_devices",
+            return_value=[(0, "ReSpeaker Lite"), (1, "MacBook Pro Microphone")],
+        ):
+            idx = self.sup._resolve_input_device({"AUDIO_DEVICE_NAME": "macbook pro microphone"})
+        self.assertEqual(idx, 1)
+
+    def test_resolve_input_device_substring_match(self):
+        with self._clear_audio_env(), mock.patch.object(
+            self.sup, "_list_input_devices",
+            return_value=[(0, "ReSpeaker Lite"), (2, "MacBook Air Microphone")],
+        ):
+            idx = self.sup._resolve_input_device({"AUDIO_DEVICE_NAME": "ReSpeaker"})
+        self.assertEqual(idx, 0)
+
+    def test_resolve_falls_back_to_index_when_name_absent(self):
+        with self._clear_audio_env(), mock.patch.object(
+            self.sup, "_list_input_devices", return_value=[(0, "X")]
+        ):
+            idx = self.sup._resolve_input_device({"AUDIO_DEVICE_INDEX": "3"})
+        self.assertEqual(idx, 3)
+
+
 if __name__ == "__main__":
     unittest.main()

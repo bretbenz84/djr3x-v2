@@ -95,32 +95,93 @@ def _read_env_file() -> dict[str, str]:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
-            env[key.strip()] = value.strip()
+            value = value.strip()
+            # Strip a matching pair of surrounding quotes — .env values like
+            # AUDIO_DEVICE_NAME="MacBook Pro Microphone" must resolve to the bare
+            # device name, not include the literal quotes (which never match).
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            env[key.strip()] = value
     except OSError:
         pass
     return env
 
 
-def _resolve_input_device(env: dict[str, str]):
-    """Resolve a sounddevice input device from .env, else the system default."""
+def _list_input_devices():
+    """Return [(index, name), ...] for devices with at least one input channel."""
     import sounddevice as sd
+    out = []
+    try:
+        for idx, dev in enumerate(sd.query_devices()):
+            try:
+                if int(dev.get("max_input_channels", 0)) > 0:
+                    out.append((idx, str(dev.get("name") or "").strip()))
+            except Exception:
+                continue
+    except Exception as exc:
+        log.warning("Could not query audio devices: %s", exc)
+    return out
 
+
+def _device_max_input_channels(device) -> int:
+    """Max input channels the (resolved) device exposes; 0/unknown → 0."""
+    try:
+        import sounddevice as sd
+        info = sd.query_devices(device if device is not None else None, kind="input")
+        return int(info.get("max_input_channels", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _resolve_input_device(env: dict[str, str]):
+    """Resolve a sounddevice input device from .env, else the system default.
+
+    Mirrors the main app's tolerant matching (utils.config_loader): exact name
+    match first (case-insensitive), then a unique substring match, then the
+    AUDIO_DEVICE_INDEX fallback, then the system default.
+    """
     name = (os.environ.get("AUDIO_DEVICE_NAME") or env.get("AUDIO_DEVICE_NAME") or "").strip()
     index_raw = (os.environ.get("AUDIO_DEVICE_INDEX") or env.get("AUDIO_DEVICE_INDEX") or "").strip()
 
+    inputs = _list_input_devices()
+
     if name:
-        try:
-            for idx, dev in enumerate(sd.query_devices()):
-                if dev.get("max_input_channels", 0) > 0 and dev.get("name") == name:
-                    return idx
-        except Exception as exc:
-            log.warning("Could not match AUDIO_DEVICE_NAME=%r: %s", name, exc)
+        wanted = name.lower()
+        exact = [(idx, nm) for idx, nm in inputs if nm.lower() == wanted]
+        if exact:
+            return exact[0][0]
+        contains = [(idx, nm) for idx, nm in inputs if wanted in nm.lower()]
+        if len(contains) == 1:
+            return contains[0][0]
+        if len(contains) > 1:
+            opts = ", ".join(f"{idx}:{nm}" for idx, nm in contains)
+            log.warning("AUDIO_DEVICE_NAME=%r matched multiple inputs (%s) — be more specific.", name, opts)
+        else:
+            avail = ", ".join(f"{idx}:{nm}" for idx, nm in inputs) or "no input devices"
+            log.warning("AUDIO_DEVICE_NAME=%r did not match any input. Available: %s", name, avail)
+
     if index_raw:
         try:
             return int(index_raw)
         except ValueError:
             log.warning("AUDIO_DEVICE_INDEX=%r is not an integer; using default.", index_raw)
     return None  # sounddevice picks the default input
+
+
+def _device_label(device) -> str:
+    """Human-readable name for a resolved device index (or 'default')."""
+    if device is None:
+        try:
+            import sounddevice as sd
+            di = sd.query_devices(kind="input")
+            return f"default ({str(di.get('name','?'))})"
+        except Exception:
+            return "default"
+    try:
+        import sounddevice as sd
+        return f"{device}:{str(sd.query_devices(device).get('name','?'))}"
+    except Exception:
+        return str(device)
 
 
 # ── Controller liveness ────────────────────────────────────────────────────────
@@ -320,8 +381,8 @@ def run() -> int:
     device = _resolve_input_device(env)
     log.info(
         "Supervisor online. Listening for 'wake up rex' "
-        "(device=%s, mode=%s, onnx_threshold=%.2f, debug=%s).",
-        device if device is not None else "default", _WAKE_MODE, threshold, _DEBUG,
+        "(mic=%s, mode=%s, onnx_threshold=%.2f, debug=%s).",
+        _device_label(device), _WAKE_MODE, threshold, _DEBUG,
     )
     use_onnx = _WAKE_MODE in ("onnx", "both")
     use_transcribe = _WAKE_MODE in ("transcribe", "both")
@@ -331,6 +392,7 @@ def run() -> int:
     child: Optional[subprocess.Popen] = None
     stream = None
     listening = False
+    open_channels = 1  # actual channel count the mic stream was opened with
 
     # Diagnostics + transcription accumulation state.
     peak_score = 0.0
@@ -338,16 +400,38 @@ def run() -> int:
     speech_frames: list = []          # accumulated chunks during a spoken phrase
     silence_run = 0.0                 # trailing silence while accumulating
 
+    # Channel candidates: the device's real max-input first (e.g. ReSpeaker Lite
+    # is 2-in), then mono. macOS PortAudio rejects requesting more channels than
+    # the device exposes, and forcing a 2-ch device to 1-ch can yield silence —
+    # which is exactly why a "correct" ReSpeaker produced no wake trigger.
+    max_in = _device_max_input_channels(device)
+    chan_candidates = []
+    if max_in and max_in not in chan_candidates:
+        chan_candidates.append(max_in)
+    if 1 not in chan_candidates:
+        chan_candidates.append(1)
+
     def _open_stream():
-        s = sd.InputStream(
-            device=device,
-            samplerate=_SAMPLE_RATE,
-            channels=1,
-            dtype="float32",
-            blocksize=_CHUNK_SAMPLES,
-        )
-        s.start()
-        return s
+        nonlocal open_channels
+        last_exc = None
+        for ch in chan_candidates:
+            try:
+                s = sd.InputStream(
+                    device=device,
+                    samplerate=_SAMPLE_RATE,
+                    channels=ch,
+                    dtype="float32",
+                    blocksize=_CHUNK_SAMPLES,
+                )
+                s.start()
+                open_channels = ch
+                if ch != 1:
+                    log.info("Mic opened with %d channels (mixing → mono).", ch)
+                return s
+            except Exception as exc:
+                last_exc = exc
+                continue
+        raise RuntimeError(f"could not open mic with channels {chan_candidates}: {last_exc}")
 
     def _fire(reason: str):
         nonlocal stream, listening, child
@@ -411,7 +495,14 @@ def run() -> int:
                 stream = None
                 continue
 
-            samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+            # Mix to mono: sounddevice returns (frames, channels). On a 2-in
+            # device (ReSpeaker Lite) averaging both capsules is what the main app
+            # does; a naive reshape would interleave L/R into garbage.
+            arr = np.asarray(audio, dtype=np.float32)
+            if arr.ndim == 2 and arr.shape[1] > 1:
+                samples = arr.mean(axis=1)
+            else:
+                samples = arr.reshape(-1)
             rms = float(np.sqrt(np.mean(samples ** 2))) if samples.size else 0.0
 
             # ── Path 1: openWakeWord confidence score ──────────────────────────
@@ -477,5 +568,108 @@ def run() -> int:
     return 0
 
 
+# ── Diagnostic modes (no launchd, no controller launch) ────────────────────────
+
+def list_devices() -> int:
+    """Print all input devices and which one the supervisor would pick."""
+    try:
+        import sounddevice as sd
+    except Exception as exc:
+        print(f"sounddevice unavailable: {exc}")
+        return 1
+    env = _read_env_file()
+    chosen = _resolve_input_device(env)
+    try:
+        default_in = sd.query_devices(kind="input")
+        default_name = str(default_in.get("name", "?"))
+    except Exception:
+        default_name = "?"
+
+    print("Input devices (index: name):")
+    for idx, nm in _list_input_devices():
+        marks = []
+        if chosen is not None and idx == chosen:
+            marks.append("← supervisor will use this")
+        elif chosen is None and nm == default_name:
+            marks.append("← system default (supervisor will use this)")
+        print(f"  {idx:>2}: {nm}  {' '.join(marks)}")
+    print()
+    nm = (os.environ.get("AUDIO_DEVICE_NAME") or env.get("AUDIO_DEVICE_NAME") or "").strip()
+    idx = (os.environ.get("AUDIO_DEVICE_INDEX") or env.get("AUDIO_DEVICE_INDEX") or "").strip()
+    print(f".env AUDIO_DEVICE_NAME = {nm!r}")
+    print(f".env AUDIO_DEVICE_INDEX = {idx!r}")
+    print(f"Resolved mic: {_device_label(chosen)}")
+    return 0
+
+
+def meter(seconds: float = 20.0) -> int:
+    """Open the resolved mic and print a live input-level meter, so you can
+    confirm audio is actually arriving. Speak — the bar should jump."""
+    try:
+        import numpy as np
+        import sounddevice as sd
+    except Exception as exc:
+        print(f"audio stack unavailable: {exc}")
+        return 1
+    env = _read_env_file()
+    device = _resolve_input_device(env)
+    # Open with the device's real channel count (ReSpeaker Lite = 2-in), mono-mix.
+    max_in = _device_max_input_channels(device)
+    channels = max_in if max_in else 1
+    print(f"Metering mic: {_device_label(device)} ({channels}-ch → mono)")
+    print("Speak now — the bar should move. Ctrl-C to stop.\n")
+    peak = 0.0
+    try:
+        with sd.InputStream(device=device, samplerate=_SAMPLE_RATE, channels=channels,
+                            dtype="float32", blocksize=_CHUNK_SAMPLES) as s:
+            end = time.monotonic() + max(1.0, seconds)
+            while time.monotonic() < end and not _stop.is_set():
+                audio, _ = s.read(_CHUNK_SAMPLES)
+                a = np.asarray(audio, dtype=np.float32)
+                x = a.mean(axis=1) if (a.ndim == 2 and a.shape[1] > 1) else a.reshape(-1)
+                rms = float(np.sqrt(np.mean(x ** 2))) if x.size else 0.0
+                peak = max(peak, rms)
+                bars = int(min(1.0, rms * 20) * 40)
+                sys.stdout.write(f"\rrms={rms:0.4f} |{'#' * bars}{' ' * (40 - bars)}|")
+                sys.stdout.flush()
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:
+        print(f"\nmic read failed: {exc}")
+        return 1
+    print(f"\n\nDone. Peak rms observed: {peak:0.4f}")
+    if peak < 0.001:
+        print("⚠  Essentially silent — the supervisor is NOT getting mic audio.")
+        print("   Check Microphone permission for the venv Python and AUDIO_DEVICE_NAME in .env.")
+    else:
+        print("✓  Mic audio is arriving. If wake still fails, it's detection, not the mic.")
+    return 0
+
+
+def _print_usage() -> None:
+    print(
+        "Usage: rex_supervisor.py [command]\n"
+        "  (no args)        run the supervisor (listen + launch on wake)\n"
+        "  --list-devices   list input devices and show which mic is selected\n"
+        "  --meter [secs]   live mic level meter to confirm audio is arriving\n"
+        "  --help           this message\n"
+    )
+
+
 if __name__ == "__main__":
-    sys.exit(run())
+    signal.signal(signal.SIGINT, lambda *_: _stop.set())
+    arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    if arg in ("--list-devices", "-l", "list"):
+        sys.exit(list_devices())
+    elif arg in ("--meter", "-m", "meter"):
+        secs = float(sys.argv[2]) if len(sys.argv) > 2 else 20.0
+        sys.exit(meter(secs))
+    elif arg in ("--help", "-h", "help"):
+        _print_usage()
+        sys.exit(0)
+    elif arg.startswith("-"):
+        print(f"Unknown option: {arg}\n")
+        _print_usage()
+        sys.exit(2)
+    else:
+        sys.exit(run())

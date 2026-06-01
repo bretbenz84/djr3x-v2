@@ -91,6 +91,30 @@ If you want the lighter, lower-CPU behavior and your ONNX model works well for
 you, set `REX_SUPERVISOR_WAKE_MODE=transcribe` to skip the (idle) Whisper work,
 or `=onnx` to skip transcription.
 
+## Checking the microphone
+
+First confirm which input the supervisor will use and that audio is arriving —
+no launchd, no robot launch:
+
+```bash
+venv/bin/python rex_supervisor.py --list-devices   # which mic is selected
+venv/bin/python rex_supervisor.py --meter          # live input-level bar; speak
+```
+
+`--list-devices` prints every input device and marks the one the supervisor
+resolved from `.env`. `--meter` opens that mic and shows a live RMS bar — speak
+and it should jump; if it stays flat/zero, the supervisor isn't getting audio
+(permission or wrong device), not a detection problem.
+
+Notes on device selection (these were real "no trigger" causes):
+- `AUDIO_DEVICE_NAME` in `.env` may be quoted (`"MacBook Pro Microphone"`); the
+  supervisor strips the quotes and matches case-insensitively / by substring,
+  the same as the main app. If the name doesn't match any input it logs the
+  available list and falls back to `AUDIO_DEVICE_INDEX`, then the system default.
+- Multi-channel mics (the **ReSpeaker Lite** is 2-in) are opened with their real
+  channel count and mixed to mono. Forcing such a device to 1 channel can yield
+  silence — which is why a "correct" ReSpeaker produced no wake trigger.
+
 ## Troubleshooting: "I said 'wake up Rex' and nothing happened"
 
 The supervisor logs to `logs/supervisor.out.log` / `logs/supervisor.err.log`. It
@@ -103,10 +127,11 @@ venv/bin/python rex_supervisor.py
 ```
 
 - **`mic rms` stays ~0.0000 even while you talk** → it's not hearing the mic.
-  Check Microphone permission for the venv Python (System Settings → Privacy &
-  Security → Microphone) and that `AUDIO_DEVICE_NAME`/`INDEX` in `.env` point at
-  the right input. Under launchd the permission prompt may not surface; running
-  by hand once forces it.
+  Run `--meter` to confirm. Check Microphone permission for the venv Python
+  (System Settings → Privacy & Security → Microphone) and that
+  `AUDIO_DEVICE_NAME`/`INDEX` in `.env` point at the right input (`--list-devices`).
+  Under launchd the permission prompt may not surface; running by hand once
+  forces it.
 - **`mic rms` moves but `peak onnx score` stays low** → the ONNX model isn't
   firing (expected; that's why `transcribe` is the default). You should see a
   `Heard … → 'wake up rex' (wake=True)` line from the transcription path; if you
