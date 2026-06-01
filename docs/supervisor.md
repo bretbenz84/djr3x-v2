@@ -1,8 +1,10 @@
 # Always-on wake-word supervisor
 
 This lets your Mac stay quietly ready to hear **"wake up Rex"** without the full
-robot running. Saying the phrase launches the controller; saying **"shut down"**
-powers it back down — while the listener keeps running.
+robot running. Saying the phrase plays a startup chime (instant "I heard you"
+feedback) and launches the controller; saying **"shut down"** powers it back
+down — while the listener keeps running. Test the chime any time with
+`venv/bin/python rex_supervisor.py --test-chime`.
 
 ## The two processes
 
@@ -69,6 +71,7 @@ Logs: `logs/supervisor.out.log` and `logs/supervisor.err.log`.
 | `REX_SUPERVISOR_WAKE_MODE` | `both` | How wake is detected: `transcribe` (VAD + local Whisper, reliable), `onnx` (wakeuprex.onnx score only), or `both` |
 | `REX_SUPERVISOR_WAKE_THRESHOLD` | `0.5` | onnx confidence to trigger (only used by the `onnx`/`both` paths) |
 | `REX_SUPERVISOR_DEBUG` | unset | Set to `1` for verbose per-frame logging |
+| `REX_SUPERVISOR_CHIME` | `1` | Play `startup_chime.mp3` the instant a wake is accepted (instant feedback before the robot boots). Set `0` to disable. |
 | `DJR3X_LOCK_PATH` | `<tmpdir>/djr3x-main.lock` | Single-instance lock location (must match between supervisor and `main.py`) |
 | `DJR3X_SKIP_SINGLE_INSTANCE` | unset | Set to `1` to let `main.py` skip the lock (manual dev runs) |
 | `AUDIO_DEVICE_NAME` / `AUDIO_DEVICE_INDEX` | from `.env` | Mic the supervisor listens on (same keys `main.py` uses) |

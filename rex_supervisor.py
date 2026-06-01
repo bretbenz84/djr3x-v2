@@ -46,6 +46,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 _VENV_PYTHON = _PROJECT_ROOT / "venv" / "bin" / "python"
 _WAKE_MODEL = _PROJECT_ROOT / "assets" / "models" / "wake_word" / "wakeuprex.onnx"
 _WHISPER_DIR = _PROJECT_ROOT / "assets" / "models" / "whisper"
+# Short chime played the instant a wake word is accepted, so there's immediate
+# feedback before the (slower) full controller finishes booting.
+_CHIME_FILE = _PROJECT_ROOT / "assets" / "audio" / "startup" / "startup_chime.mp3"
 
 # 80 ms at 16 kHz — openWakeWord's preferred sequential frame size.
 _SAMPLE_RATE = 16000
@@ -60,6 +63,9 @@ _CHUNK_SECS = _CHUNK_SAMPLES / _SAMPLE_RATE
 #   both       — either one fires
 _WAKE_MODE = (os.environ.get("REX_SUPERVISOR_WAKE_MODE", "both").strip().lower())
 _DEBUG = os.environ.get("REX_SUPERVISOR_DEBUG", "").strip() in ("1", "true", "True")
+# Play the startup chime on wake (instant feedback before the robot boots).
+# Set REX_SUPERVISOR_CHIME=0 to disable.
+_CHIME_ENABLED = os.environ.get("REX_SUPERVISOR_CHIME", "1").strip() not in ("0", "false", "False")
 
 # Accumulate up to this many seconds of speech before transcribing a phrase.
 _MAX_PHRASE_SECS = 3.0
@@ -196,6 +202,44 @@ def _controller_running(child: Optional[subprocess.Popen]) -> bool:
     except Exception as exc:
         log.debug("single_instance check failed: %s", exc)
         return False
+
+
+def _play_chime() -> None:
+    """Play the startup chime as immediate wake feedback. Fire-and-forget, in a
+    separate process so it never blocks the wake loop or touches the mic.
+
+    Prefers macOS `afplay` (built in, decodes MP3, no Python deps). Falls back to
+    soundfile + sounddevice if afplay is unavailable.
+    """
+    if not _CHIME_ENABLED:
+        return
+    if not _CHIME_FILE.exists():
+        log.warning("Startup chime missing: %s", _CHIME_FILE)
+        return
+    import shutil
+    afplay = shutil.which("afplay")
+    if afplay:
+        try:
+            subprocess.Popen(
+                [afplay, str(_CHIME_FILE)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        except Exception as exc:
+            log.debug("afplay chime failed (%s) — trying soundfile.", exc)
+
+    def _play_blocking():
+        try:
+            import soundfile as sf
+            import sounddevice as sd
+            audio, sr = sf.read(str(_CHIME_FILE), dtype="float32", always_2d=False)
+            sd.play(audio, sr)
+            sd.wait()
+        except Exception as exc:
+            log.debug("soundfile chime playback failed: %s", exc)
+
+    threading.Thread(target=_play_blocking, daemon=True, name="rex-chime").start()
 
 
 def _launch_controller() -> Optional[subprocess.Popen]:
@@ -443,6 +487,9 @@ def run() -> int:
                 pass
             stream = None
         listening = False
+        # Instant audio feedback (chime) before the slower controller boots. Mic
+        # is already closed, so the chime can't bleed back into the input.
+        _play_chime()
         child = _launch_controller()
         _stop.wait(3.0)  # let main.py take the lock so we don't double-fire
 
@@ -652,6 +699,7 @@ def _print_usage() -> None:
         "  (no args)        run the supervisor (listen + launch on wake)\n"
         "  --list-devices   list input devices and show which mic is selected\n"
         "  --meter [secs]   live mic level meter to confirm audio is arriving\n"
+        "  --test-chime     play the wake chime once and exit\n"
         "  --help           this message\n"
     )
 
@@ -664,6 +712,11 @@ if __name__ == "__main__":
     elif arg in ("--meter", "-m", "meter"):
         secs = float(sys.argv[2]) if len(sys.argv) > 2 else 20.0
         sys.exit(meter(secs))
+    elif arg in ("--test-chime", "chime"):
+        print(f"Playing chime: {_CHIME_FILE}")
+        _play_chime()
+        time.sleep(2.0)  # let the fire-and-forget playback finish before exit
+        sys.exit(0)
     elif arg in ("--help", "-h", "help"):
         _print_usage()
         sys.exit(0)

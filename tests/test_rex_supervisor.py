@@ -195,5 +195,44 @@ class SupervisorEnvParsingTest(unittest.TestCase):
         self.assertEqual(idx, 3)
 
 
+class SupervisorChimeTest(unittest.TestCase):
+    def setUp(self):
+        self.sup = _load_supervisor()
+
+    def test_chime_file_exists(self):
+        self.assertTrue(self.sup._CHIME_FILE.exists(), "startup chime asset missing")
+
+    def test_chime_uses_afplay_when_available(self):
+        import shutil
+        with (
+            mock.patch.object(self.sup, "_CHIME_ENABLED", True),
+            mock.patch.object(shutil, "which", return_value="/usr/bin/afplay"),
+            mock.patch.object(self.sup.subprocess, "Popen") as popen,
+        ):
+            self.sup._play_chime()
+        popen.assert_called_once()
+        args = popen.call_args.args[0]
+        self.assertEqual(args[0], "/usr/bin/afplay")
+        self.assertEqual(args[1], str(self.sup._CHIME_FILE))
+
+    def test_chime_disabled_plays_nothing(self):
+        with (
+            mock.patch.object(self.sup, "_CHIME_ENABLED", False),
+            mock.patch.object(self.sup.subprocess, "Popen") as popen,
+        ):
+            self.sup._play_chime()
+        popen.assert_not_called()
+
+    def test_chime_missing_file_warns_no_crash(self):
+        from pathlib import Path
+        with (
+            mock.patch.object(self.sup, "_CHIME_ENABLED", True),
+            mock.patch.object(self.sup, "_CHIME_FILE", Path("/nonexistent/chime.mp3")),
+            mock.patch.object(self.sup.subprocess, "Popen") as popen,
+        ):
+            self.sup._play_chime()  # must not raise
+        popen.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
