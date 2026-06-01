@@ -138,6 +138,13 @@ class SupervisorWakePhraseTest(unittest.TestCase):
         # Default mode runs both detectors so the reliable transcription path is on.
         self.assertEqual(self.sup._WAKE_MODE, "both")
 
+    def test_rms_gate_has_sane_default(self):
+        # The transcription path triggers on loudness (per-80ms VAD was unreliable).
+        self.assertGreater(self.sup._RMS_GATE, 0.0)
+        self.assertLess(self.sup._RMS_GATE, 0.1)
+        # Dead per-chunk VAD helpers must be gone.
+        self.assertFalse(hasattr(self.sup, "_chunk_has_speech"))
+
 
 class SupervisorEnvParsingTest(unittest.TestCase):
     """The .env mic device must resolve correctly (the cause of 'no trigger')."""

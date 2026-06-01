@@ -70,6 +70,7 @@ Logs: `logs/supervisor.out.log` and `logs/supervisor.err.log`.
 | --- | --- | --- |
 | `REX_SUPERVISOR_WAKE_MODE` | `both` | How wake is detected: `transcribe` (VAD + local Whisper, reliable), `onnx` (wakeuprex.onnx score only), or `both` |
 | `REX_SUPERVISOR_WAKE_THRESHOLD` | `0.5` | onnx confidence to trigger (only used by the `onnx`/`both` paths) |
+| `REX_SUPERVISOR_RMS_GATE` | `0.012` | Loudness (RMS) above which the transcribe path starts capturing a phrase. Raise in a noisy room, lower if your mic is quiet (use `--meter` to see your speaking level). |
 | `REX_SUPERVISOR_DEBUG` | unset | Set to `1` for verbose per-frame logging |
 | `REX_SUPERVISOR_CHIME` | `1` | Play `startup_chime.mp3` the instant a wake is accepted (instant feedback before the robot boots). Set `0` to disable. |
 | `DJR3X_LOCK_PATH` | `<tmpdir>/djr3x-main.lock` | Single-instance lock location (must match between supervisor and `main.py`) |
@@ -85,9 +86,11 @@ matches the transcribed phrase, not the ONNX score. The supervisor mirrors that.
 
 By default (`both`) it runs two detectors in parallel and fires on either:
 
-1. **transcribe** — Silero VAD detects a spoken phrase, the local `mlx-whisper`
-   model transcribes it, and it fires if the text is "wake up Rex" (and close
-   variants: "rex wake up", "wake up r3x", …). This is the reliable path.
+1. **transcribe** — when the mic level rises above `REX_SUPERVISOR_RMS_GATE` it
+   captures the phrase until you stop talking, transcribes it with the local
+   `mlx-whisper` model, and fires if the text is "wake up Rex" (and close
+   variants: "rex wake up", "wake up r3x", …). This is the reliable path. (It
+   gates on loudness, not Silero VAD — per-80 ms VAD frames were unreliable.)
 2. **onnx** — the `wakeuprex.onnx` confidence score crossing the threshold.
 
 If you want the lighter, lower-CPU behavior and your ONNX model works well for
@@ -135,6 +138,12 @@ venv/bin/python rex_supervisor.py
   `AUDIO_DEVICE_NAME`/`INDEX` in `.env` point at the right input (`--list-devices`).
   Under launchd the permission prompt may not surface; running by hand once
   forces it.
+- **`mic rms` moves when you talk** → audio is arriving (good). When your speech
+  pushes rms over the gate you should see a `Heard … → '…' (wake=True/False)`
+  line. If you never see `Heard …`, your speaking level may be below the gate —
+  check `--meter` and lower `REX_SUPERVISOR_RMS_GATE` toward your level. If you
+  see `Heard …` but `wake=False`, paste what it transcribed so the matcher can
+  be tuned.
 - **`mic rms` moves but `peak onnx score` stays low** → the ONNX model isn't
   firing (expected; that's why `transcribe` is the default). You should see a
   `Heard … → 'wake up rex' (wake=True)` line from the transcription path; if you

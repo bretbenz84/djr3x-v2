@@ -70,7 +70,18 @@ _CHIME_ENABLED = os.environ.get("REX_SUPERVISOR_CHIME", "1").strip() not in ("0"
 # Accumulate up to this many seconds of speech before transcribing a phrase.
 _MAX_PHRASE_SECS = 3.0
 # Stop accumulating after this much trailing silence.
-_SILENCE_TAIL_SECS = 0.5
+_SILENCE_TAIL_SECS = 0.6
+# Loudness (RMS) gate for the transcription path. A chunk louder than this starts
+# / continues a phrase; quieter ends it. Silero VAD on 80 ms chunks was unreliable
+# (it needs a longer window to find a segment), so we gate on simple loudness and
+# let Whisper + the phrase matcher reject non-wake speech. Tune via env if the
+# room is noisy (raise) or the mic is quiet (lower); --meter shows your levels.
+try:
+    _RMS_GATE = float(os.environ.get("REX_SUPERVISOR_RMS_GATE", "0.012"))
+except ValueError:
+    _RMS_GATE = 0.012
+# Minimum phrase length worth transcribing (ignore single-chunk clicks/pops).
+_MIN_PHRASE_SECS = 0.4
 
 # Make utils.single_instance importable without importing the heavy project config.
 if str(_PROJECT_ROOT) not in sys.path:
@@ -342,41 +353,6 @@ def _transcript_is_wake_phrase(text: str) -> bool:
     return bool(_WAKE_RE_A.fullmatch(cleaned) or _WAKE_RE_B.fullmatch(cleaned))
 
 
-_vad = None  # cached silero VAD callable
-
-
-def _load_vad():
-    """Load Silero VAD (lazily). Returns a get_speech_timestamps-style callable or None."""
-    global _vad
-    if _vad is not None:
-        return _vad
-    try:
-        from silero_vad import get_speech_timestamps, load_silero_vad
-        model = load_silero_vad()
-        _vad = (get_speech_timestamps, model)
-        return _vad
-    except Exception as exc:
-        log.warning("Silero VAD unavailable (%s) — transcription wake disabled.", exc)
-        return None
-
-
-def _chunk_has_speech(samples) -> bool:
-    vad = _load_vad()
-    if vad is None:
-        return False
-    get_speech_timestamps, model = vad
-    try:
-        import numpy as np
-        segments = get_speech_timestamps(
-            samples.astype(np.float32),
-            model,
-            threshold=0.5,
-            sampling_rate=_SAMPLE_RATE,
-        )
-        return bool(segments)
-    except Exception as exc:
-        log.debug("VAD check failed: %s", exc)
-        return False
 
 
 def _transcribe(samples) -> str:
@@ -430,8 +406,6 @@ def run() -> int:
     )
     use_onnx = _WAKE_MODE in ("onnx", "both")
     use_transcribe = _WAKE_MODE in ("transcribe", "both")
-    if use_transcribe:
-        _load_vad()  # warm VAD now so the first phrase isn't slow
 
     child: Optional[subprocess.Popen] = None
     stream = None
@@ -440,6 +414,7 @@ def run() -> int:
 
     # Diagnostics + transcription accumulation state.
     peak_score = 0.0
+    peak_rms = 0.0
     last_diag = 0.0
     speech_frames: list = []          # accumulated chunks during a spoken phrase
     silence_run = 0.0                 # trailing silence while accumulating
@@ -514,7 +489,7 @@ def run() -> int:
                 if listening:
                     log.info("Controller is running — supervisor dormant (mic released).")
                     listening = False
-                speech_frames.clear(); silence_run = 0.0
+                speech_frames.clear(); silence_run = 0.0; peak_rms = 0.0
                 _stop.wait(1.0)
                 continue
 
@@ -567,15 +542,21 @@ def run() -> int:
                     speech_frames.clear(); silence_run = 0.0
                     continue
 
-            # ── Path 2: VAD-gated local transcription ──────────────────────────
+            # ── Path 2: RMS-gated local transcription ──────────────────────────
+            # Loud chunk → (continue) a phrase; trailing quiet → transcribe it.
+            # Per-80ms Silero VAD was unreliable, so we gate on loudness and let
+            # Whisper + the phrase matcher decide whether it was "wake up rex".
             if use_transcribe:
-                voiced = _chunk_has_speech(samples)
-                if voiced:
+                loud = rms >= _RMS_GATE
+                if loud:
+                    if not speech_frames:
+                        log.debug("speech onset (rms=%.4f)", rms)
                     speech_frames.append(samples)
                     silence_run = 0.0
                 elif speech_frames:
+                    speech_frames.append(samples)  # keep a little trailing audio
                     silence_run += _CHUNK_SECS
-                # Cap the phrase length so we don't accumulate forever.
+                peak_rms = max(peak_rms, rms)
                 phrase_secs = len(speech_frames) * _CHUNK_SECS
                 phrase_done = speech_frames and (
                     silence_run >= _SILENCE_TAIL_SECS or phrase_secs >= _MAX_PHRASE_SECS
@@ -583,25 +564,29 @@ def run() -> int:
                 if phrase_done:
                     phrase = np.concatenate(speech_frames)
                     speech_frames.clear(); silence_run = 0.0
-                    text = _transcribe(phrase)
-                    if text:
-                        match = _transcript_is_wake_phrase(text)
-                        log.info("Heard %.1fs of speech → %r (wake=%s)",
-                                 phrase_secs, text, match)
+                    if phrase_secs >= _MIN_PHRASE_SECS:
+                        text = _transcribe(phrase)
+                        match = _transcript_is_wake_phrase(text) if text else False
+                        log.info("Heard %.1fs (peak rms=%.4f) → %r (wake=%s)",
+                                 phrase_secs, peak_rms, text, match)
+                        peak_rms = 0.0
                         if match:
                             _fire(f"transcript={text!r}")
                             peak_score = 0.0
                             continue
+                    else:
+                        peak_rms = 0.0
 
             # ── Periodic diagnostics ───────────────────────────────────────────
             now = time.monotonic()
             if now - last_diag >= 5.0:
                 last_diag = now
+                bits = [f"mic rms={rms:.4f}", f"gate={_RMS_GATE:.4f}"]
                 if use_onnx:
-                    log.info("[diag] listening… peak onnx score (last 5s)=%.3f, mic rms=%.4f",
-                             peak_score, rms)
-                else:
-                    log.info("[diag] listening… mic rms=%.4f", rms)
+                    bits.append(f"peak onnx={peak_score:.3f}")
+                if use_transcribe:
+                    bits.append(f"accumulating={len(speech_frames)} chunks")
+                log.info("[diag] listening… %s", ", ".join(bits))
                 peak_score = 0.0
     finally:
         if stream is not None:
