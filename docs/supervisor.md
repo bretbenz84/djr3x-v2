@@ -68,7 +68,8 @@ Logs: `logs/supervisor.out.log` and `logs/supervisor.err.log`.
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `REX_SUPERVISOR_WAKE_THRESHOLD` | `0.5` | `wakeuprex.onnx` confidence required to trigger. A clean "wake up rex" scores ~0.99, so 0.5 has wide margin; lower it only if your voice/mic won't cross it (`--meter` shows your live score). |
+| `REX_SUPERVISOR_WAKE_THRESHOLD` | `0.7` | `wakeuprex.onnx` confidence required to trigger. A clean "wake up rex" scores ~0.99 and background TV/ambient tops out around 0.12, so 0.7 has wide margin both ways. Lower it only if your real phrase won't cross it (`--meter` shows your live score); raise it if anything still false-triggers. |
+| `REX_SUPERVISOR_WAKE_CONSECUTIVE` | `3` | How many consecutive 80 ms frames must clear the threshold before firing. A real phrase holds the score near 1.0 for ~10 frames in a row; a TV phonetic near-miss is a 1-2 frame spike, so this rejects background-audio false triggers. Raise toward 4-5 if a noisy room still trips it; 1 disables the debounce. |
 | `REX_SUPERVISOR_DEBUG` | unset | Set to `1` for verbose per-frame logging |
 | `REX_SUPERVISOR_CHIME` | `1` | Play `startup_chime.mp3` the instant a wake is accepted (instant feedback before the robot boots). Set `0` to disable. |
 | `DJR3X_LOCK_PATH` | `<tmpdir>/djr3x-main.lock` | Single-instance lock location (must match between supervisor and `main.py`) |
@@ -78,10 +79,18 @@ Logs: `logs/supervisor.out.log` and `logs/supervisor.err.log`.
 ## How wake detection works (and why)
 
 It's deliberately simple: the supervisor reads 80 ms mic frames, mixes them to
-mono, and runs the `wakeuprex.onnx` openWakeWord model. When the score crosses
-`REX_SUPERVISOR_WAKE_THRESHOLD` it fires (chime + launch). No VAD, no Whisper, no
-transcription — the robot is OFF while the supervisor listens, so the only job is
-to spot one wake word and launch `main.py`.
+mono, and runs the `wakeuprex.onnx` openWakeWord model. It fires (chime + launch)
+when the score clears `REX_SUPERVISOR_WAKE_THRESHOLD` for `REX_SUPERVISOR_WAKE_CONSECUTIVE`
+frames in a row. No VAD, no Whisper, no transcription — the robot is OFF while the
+supervisor listens, so the only job is to spot one wake word and launch `main.py`.
+
+**Avoiding false triggers (e.g. the TV):** a real "wake up rex" pegs the model
+near 1.0 for ~10 consecutive frames; background TV/ambient rarely exceeds ~0.12,
+and the occasional phonetic near-miss is just a 1-2 frame blip. Two cheap guards
+exploit that gap: the threshold default is **0.7** (well above ambient, well
+below a real phrase), and firing requires a **sustained run** of frames over the
+bar (default **3**), not a single spike. If the TV still trips it, raise either
+knob; if a real phrase stops triggering, lower the threshold.
 
 **The bug that made it look like the ONNX model "didn't work":** openWakeWord's
 melspectrogram front-end is trained on **16-bit PCM** (range ±32767), but

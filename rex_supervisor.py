@@ -315,10 +315,26 @@ def _load_model():
 
 
 def _wake_threshold() -> float:
+    # 0.7 (not 0.5) so background TV/ambient — which tops out around 0.12 in
+    # practice — can't graze the bar. A clean "wake up rex" scores ~0.99, so
+    # there's wide margin. Lower it only if a real phrase won't trigger.
     try:
-        return float(os.environ.get("REX_SUPERVISOR_WAKE_THRESHOLD", "0.5"))
+        return float(os.environ.get("REX_SUPERVISOR_WAKE_THRESHOLD", "0.7"))
     except ValueError:
-        return 0.5
+        return 0.7
+
+
+def _wake_consecutive() -> int:
+    """How many CONSECUTIVE 80 ms frames must clear the threshold before firing.
+
+    A real "wake up rex" holds the model near 1.0 for ~10 frames in a row; a TV
+    phonetic near-miss is a 1-2 frame spike. Requiring a short sustained run
+    (default 3 ≈ 240 ms) kills those spikes without risking real wakes.
+    """
+    try:
+        return max(1, int(os.environ.get("REX_SUPERVISOR_WAKE_CONSECUTIVE", "3")))
+    except ValueError:
+        return 3
 
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
@@ -333,6 +349,7 @@ def run() -> int:
 
     env = _read_env_file()
     threshold = _wake_threshold()
+    required_consecutive = _wake_consecutive()
 
     try:
         import numpy as np
@@ -344,8 +361,8 @@ def run() -> int:
     device = _resolve_input_device(env)
     log.info(
         "Supervisor online. Listening for 'wake up rex' "
-        "(mic=%s, threshold=%.2f, debug=%s).",
-        _device_label(device), threshold, _DEBUG,
+        "(mic=%s, threshold=%.2f, consecutive=%d, debug=%s).",
+        _device_label(device), threshold, required_consecutive, _DEBUG,
     )
 
     child: Optional[subprocess.Popen] = None
@@ -356,6 +373,7 @@ def run() -> int:
     # Diagnostics.
     peak_score = 0.0
     last_diag = 0.0
+    consecutive = 0  # frames in a row at/above threshold (debounce vs. TV spikes)
 
     # Channel candidates: the device's real max-input first (e.g. ReSpeaker Lite
     # is 2-in), then mono. macOS PortAudio rejects requesting more channels than
@@ -435,6 +453,7 @@ def run() -> int:
                 try:
                     stream = _open_stream()
                     model.reset()
+                    consecutive = 0
                 except Exception as exc:
                     log.error("Could not open mic (%s) — retrying in 2s.", exc)
                     _stop.wait(2.0)
@@ -473,10 +492,22 @@ def run() -> int:
                 log.warning("Wake prediction error: %s", exc)
                 score = 0.0
             peak_score = max(peak_score, score)
+            # Require a short sustained run over threshold, not a single frame —
+            # a real phrase holds ~10 frames near 1.0; TV near-misses are 1-2
+            # frame spikes. This is the main defense against background-audio
+            # false triggers (e.g. firing on the TV).
             if score >= threshold:
-                _fire(f"onnx score={score:.3f}")
-                peak_score = 0.0
-                continue
+                consecutive += 1
+                if consecutive >= required_consecutive:
+                    _fire(f"onnx score={score:.3f}, {consecutive} consecutive frames")
+                    peak_score = 0.0
+                    consecutive = 0
+                    continue
+            else:
+                if _DEBUG and consecutive:
+                    log.debug("wake run broke at %d frame(s) (score=%.3f < %.2f)",
+                              consecutive, score, threshold)
+                consecutive = 0
 
             # ── Periodic diagnostics ───────────────────────────────────────────
             now = time.monotonic()

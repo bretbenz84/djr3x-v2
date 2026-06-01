@@ -92,11 +92,26 @@ class SupervisorModelTest(unittest.TestCase):
 
     def test_threshold_env_override(self):
         sup = _load_supervisor()
-        with mock.patch.dict(os.environ, {"REX_SUPERVISOR_WAKE_THRESHOLD": "0.7"}):
-            self.assertAlmostEqual(sup._wake_threshold(), 0.7)
+        with mock.patch.dict(os.environ, {"REX_SUPERVISOR_WAKE_THRESHOLD": "0.85"}):
+            self.assertAlmostEqual(sup._wake_threshold(), 0.85)
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("REX_SUPERVISOR_WAKE_THRESHOLD", None)
-            self.assertAlmostEqual(sup._wake_threshold(), 0.5)
+            # Default raised to 0.7 so background TV (~0.12) can't graze the bar.
+            self.assertAlmostEqual(sup._wake_threshold(), 0.7)
+
+    def test_consecutive_frame_default_and_override(self):
+        sup = _load_supervisor()
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REX_SUPERVISOR_WAKE_CONSECUTIVE", None)
+            # Default requires a short sustained run (debounce vs. TV spikes).
+            self.assertEqual(sup._wake_consecutive(), 3)
+        with mock.patch.dict(os.environ, {"REX_SUPERVISOR_WAKE_CONSECUTIVE": "5"}):
+            self.assertEqual(sup._wake_consecutive(), 5)
+        # Never below 1, and bad values fall back to the default.
+        with mock.patch.dict(os.environ, {"REX_SUPERVISOR_WAKE_CONSECUTIVE": "0"}):
+            self.assertEqual(sup._wake_consecutive(), 1)
+        with mock.patch.dict(os.environ, {"REX_SUPERVISOR_WAKE_CONSECUTIVE": "x"}):
+            self.assertEqual(sup._wake_consecutive(), 3)
 
 
 class SupervisorInputScalingTest(unittest.TestCase):
