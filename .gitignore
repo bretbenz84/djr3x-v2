@@ -241,4 +241,8 @@ assets/memory/people.db.bak-*
 # Runtime logs
 logs/
 
+# Single-instance lock (if DJR3X_LOCK_PATH points inside the repo)
+*.lock
+djr3x-main.lock
+
 .VSCodeCounter/

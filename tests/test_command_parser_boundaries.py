@@ -51,5 +51,57 @@ class CommandParserBoundaryTests(unittest.TestCase):
                 self.assertEqual(match.command_key, command_key)
 
 
+class ShutdownVsSleepSplitTests(unittest.TestCase):
+    """Full shutdown (exit main.py) is distinct from sleep (stay alive)."""
+
+    def test_standalone_shutdown_phrases(self):
+        from intelligence import command_parser as cp
+
+        for text in (
+            "shut down",
+            "shut down rex",
+            "shutdown",
+            "shutdown rex",
+            "power down",
+            "power down rex",
+            "power off rex",
+            "turn yourself off",
+            "rex shut down please",
+            "shut down now",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(cp.is_standalone_shutdown_command(text))
+                self.assertFalse(cp.is_standalone_sleep_command(text))
+                match = cp.parse(text)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.command_key, "shutdown")
+
+    def test_sleep_phrases_are_not_shutdown(self):
+        from intelligence import command_parser as cp
+
+        for text in ("go to sleep", "sleep", "rex go to sleep", "go to sleep please"):
+            with self.subTest(text=text):
+                self.assertTrue(cp.is_standalone_sleep_command(text))
+                self.assertFalse(cp.is_standalone_shutdown_command(text))
+                match = cp.parse(text)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.command_key, "sleep")
+
+    def test_shutdown_narration_and_scoped_phrases_do_not_trigger_shutdown(self):
+        from intelligence import command_parser as cp
+
+        # Embedded narration / scoped "shut down X" must NOT power off the droid.
+        for text in (
+            "I had to shut down my old server yesterday",
+            "can you shut down the music",
+            "shut down the music",
+            "the reactor will shut down if it overheats",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(cp.is_standalone_shutdown_command(text))
+                match = cp.parse(text)
+                self.assertFalse(match is not None and match.command_key == "shutdown")
+
+
 if __name__ == "__main__":
     unittest.main()

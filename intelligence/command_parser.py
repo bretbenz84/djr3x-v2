@@ -102,6 +102,56 @@ def is_standalone_sleep_command(text: str) -> bool:
     return clean in _SLEEP_COMMAND_CORES
 
 
+# Full-process shutdown is a heavier action than sleep (it exits main.py and
+# hands control back to the always-on supervisor), so guard it the same way:
+# only a short, direct phrase triggers it — never narration like "I had to shut
+# down my old server yesterday".
+_SHUTDOWN_COMMAND_CORES = {
+    "shut down",
+    "shutdown",
+    "shut down rex",
+    "shutdown rex",
+    "power down",
+    "power down rex",
+    "power off",
+    "power off rex",
+    "turn off",
+    "turn yourself off",
+}
+_SHUTDOWN_COMMAND_PREFIXES = (
+    "please ",
+    "rex ",
+    "hey rex ",
+    "okay ",
+    "ok ",
+)
+_SHUTDOWN_COMMAND_SUFFIXES = (
+    " please",
+    " now",
+)
+
+
+def is_standalone_shutdown_command(text: str) -> bool:
+    """True only for short, direct full-shutdown commands, not embedded narration."""
+    clean = _plain(text)
+    if not clean:
+        return False
+
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _SHUTDOWN_COMMAND_PREFIXES:
+            if clean.startswith(prefix):
+                clean = clean[len(prefix):].strip()
+                changed = True
+        for suffix in _SHUTDOWN_COMMAND_SUFFIXES:
+            if clean.endswith(suffix):
+                clean = clean[: -len(suffix)].strip()
+                changed = True
+
+    return clean in _SHUTDOWN_COMMAND_CORES
+
+
 _GENERIC_VISUAL_TARGET_WORDS = {
     "a", "an", "the", "this", "that", "these", "those", "my", "your",
     "thing", "things", "stuff", "one", "here", "there",
@@ -467,8 +517,14 @@ EXACT_COMMANDS: dict[str, str] = {
     "go quiet":                       "quiet_mode",
     "shut down":                      "shutdown",
     "shutdown":                       "shutdown",
+    "shut down rex":                  "shutdown",
+    "shutdown rex":                   "shutdown",
     "power off":                      "shutdown",
+    "power off rex":                  "shutdown",
+    "power down":                     "shutdown",
+    "power down rex":                 "shutdown",
     "turn off":                       "shutdown",
+    "turn yourself off":              "shutdown",
     # Memory
     "forget me":                      "forget_me",
     "delete me from your memory":     "forget_me",
@@ -709,6 +765,9 @@ def parse(text: str) -> CommandMatch | None:
 
     if is_standalone_sleep_command(original):
         return CommandMatch("sleep", "exact", {})
+
+    if is_standalone_shutdown_command(original):
+        return CommandMatch("shutdown", "exact", {})
 
     # 1. Exact match
     if normalized in EXACT_COMMANDS:

@@ -109,6 +109,10 @@ At startup, DJ-R3X preloads the local Ollama `qwen2.5:1.5b` model before accepti
 
 You need to activate the virtual environment in every new terminal session before running project commands.
 
+### Always-on "wake up Rex" launcher (optional)
+
+Instead of starting `main.py` by hand, you can have macOS stay quietly ready and launch the robot by voice. A tiny LaunchAgent (`rex_supervisor.py`) listens only for **"wake up Rex"** and starts the full controller on demand; **"shut down"** powers it back down while the listener keeps running. Install with `scripts/install_supervisor.sh`. See **[docs/supervisor.md](docs/supervisor.md)** for how it works and how the single-instance lock prevents a double-launch (including when Rex is asleep).
+
 ## Configuration
 
 User-tunable defaults live in [config.py](config.py). API keys should stay in `apikeys.py`, and host-specific hardware paths plus build-specific servo limit overrides should stay in `.env`; both are intentionally excluded from git.

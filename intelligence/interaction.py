@@ -1117,7 +1117,7 @@ _LEGACY_COMMAND_ACTION_MAP: dict[str, str] = {
     "sleep": "system.sleep",
     "wake_up": "system.sleep",
     "quiet_mode": "system.sleep",
-    "shutdown": "system.sleep",
+    "shutdown": "system.shutdown",
 }
 
 
@@ -1185,6 +1185,8 @@ def _dialogue_allows_action_breakout(
         return False
     if action == "system.sleep":
         return command_parser.is_standalone_sleep_command(cleaned)
+    if action == "system.shutdown":
+        return command_parser.is_standalone_shutdown_command(cleaned)
     if action == "music.play":
         return bool(_IDLE_DIRECT_MUSIC_RE.search(cleaned))
     if action in {"music.stop", "music.skip"}:
@@ -8713,7 +8715,11 @@ def _execute_command(
 
     if key == "shutdown":
         resp = llm.get_response(
-            "You are about to shut down. One final in-character shutdown line.", person_id
+            "You are powering all the way down now (not just napping). Your "
+            "always-listening helper stays awake and will boot you back up when "
+            "someone says 'wake up Rex'. Give one final, in-character sign-off "
+            "line — a little dramatic, like a pilot powering down the cockpit.",
+            person_id,
         )
         _speak_blocking(resp)
         state_module.set_state(State.SHUTDOWN)
@@ -10879,6 +10885,26 @@ def _handle_router_takeover_action(
             text,
         )
         return _handle_classified_intent("query_uptime", text, person_id)
+
+    if action == "system.shutdown":
+        if not command_parser.is_standalone_shutdown_command(text):
+            _log.info(
+                "[action_router] ignored non-standalone system.shutdown candidate person_id=%s text=%r",
+                person_id,
+                text,
+            )
+            return None
+        _log.info(
+            "[action_router] executing system.shutdown person_id=%s text=%r",
+            person_id,
+            text,
+        )
+        return _execute_command(
+            command_parser.CommandMatch("shutdown", "action_router", {}),
+            person_id,
+            person_name,
+            text,
+        )
 
     if action == "system.sleep":
         key = _router_system_command(text, decision)

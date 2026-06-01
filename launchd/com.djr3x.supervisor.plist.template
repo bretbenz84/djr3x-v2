@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent for the DJ-R3X always-on wake-word supervisor.
+
+  This is a TEMPLATE. Do not load it directly — run scripts/install_supervisor.sh,
+  which substitutes __PROJECT_ROOT__ with this repo's absolute path and installs
+  the result to ~/Library/LaunchAgents/com.djr3x.supervisor.plist.
+
+  It runs at login (RunAtLoad) and is kept alive (KeepAlive) so the Mac is always
+  ready to hear "wake up rex" and launch the full robot. It is a user LaunchAgent
+  (not a system daemon) on purpose: microphone, speakers, camera and the TCC
+  privacy permissions only work inside a logged-in GUI session.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.djr3x.supervisor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PROJECT_ROOT__/venv/bin/python</string>
+        <string>__PROJECT_ROOT__/rex_supervisor.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_ROOT__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Don't hammer relaunches if it exits immediately. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>__PROJECT_ROOT__/logs/supervisor.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_ROOT__/logs/supervisor.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>

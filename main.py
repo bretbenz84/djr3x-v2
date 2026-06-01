@@ -547,6 +547,14 @@ def _shutdown() -> None:
     leds_head.disconnect()
     leds_chest.disconnect()
 
+    # Release the single-instance lock so the always-on supervisor can relaunch
+    # on the next "wake up rex". (The OS would also free it on process exit.)
+    try:
+        from utils import single_instance
+        single_instance.release()
+    except Exception as exc:
+        logger.debug("single-instance release skipped: %s", exc)
+
     logger.info("=== Shutdown complete ===")
 
 
@@ -1135,8 +1143,41 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _acquire_single_instance_or_exit() -> None:
+    """Take the cross-process single-instance lock, or exit if a controller is
+    already running.
+
+    The always-on supervisor (rex_supervisor.py) launches main.py on "wake up
+    rex". This guard makes a duplicate launch harmless: if a controller is
+    already alive — even just asleep — the second process logs and exits 0
+    instead of fighting over the mic/servos. The lock auto-frees when the holder
+    dies, so a crash never strands it. Set DJR3X_SKIP_SINGLE_INSTANCE=1 to bypass
+    (manual dev runs, tests).
+    """
+    if os.environ.get("DJR3X_SKIP_SINGLE_INSTANCE", "").strip() in ("1", "true", "True"):
+        return
+    try:
+        from utils import single_instance
+    except Exception as exc:  # never let the guard itself prevent startup
+        logger.warning("Single-instance lock unavailable (%s) — continuing.", exc)
+        return
+    if single_instance.acquire():
+        logger.info("Single-instance lock acquired (%s).", single_instance.lock_path())
+        return
+    owner = single_instance.read_owner_pid()
+    logger.warning(
+        "DJ-R3X controller is already running (pid=%s, lock=%s). Exiting this "
+        "duplicate launch.",
+        owner if owner is not None else "unknown",
+        single_instance.lock_path(),
+    )
+    # Clean exit code so the supervisor/launchd treats it as a no-op, not a crash.
+    sys.exit(0)
+
+
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
+    _acquire_single_instance_or_exit()
     _apply_cli_runtime_flags(args)
     if not _gui_requested(args):
         _run_headless(startup_jeopardy=args.jeopardy)
