@@ -209,6 +209,10 @@ def _run_migrations() -> None:
             for column, definition in (
                 ("lifetime_greeting_count", "INTEGER DEFAULT 0"),
                 ("last_greeted_at", "DATETIME"),
+                # Per-local-day greeting counter so Rex can do "oh, it's you again"
+                # repeat-visit banter when summoned multiple times in one day.
+                ("greetings_today", "INTEGER DEFAULT 0"),
+                ("greetings_today_date", "TEXT"),
             ):
                 _ensure_column(
                     conn,

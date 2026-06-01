@@ -104,6 +104,8 @@ CREATE TABLE IF NOT EXISTS people (
     lifetime_apology_count  INTEGER DEFAULT 0,
     lifetime_greeting_count INTEGER DEFAULT 0,
     last_greeted_at         DATETIME,
+    greetings_today         INTEGER DEFAULT 0,
+    greetings_today_date    TEXT,
     height                  TEXT,
     build                   TEXT,
     hair_color              TEXT,

@@ -460,21 +460,61 @@ def update_visit(person_id: int) -> None:
     update_familiarity(person_id, config.FAMILIARITY_INCREMENTS["return_visit"])
 
 
+def _local_date() -> str:
+    """Today's calendar day in LOCAL time as 'YYYY-MM-DD'.
+
+    Used for "same day" greeting tallies — the user experiences "again today" in
+    their local day, not UTC. Self-contained: only ever compared against itself.
+    """
+    return datetime.now().date().isoformat()
+
+
 def record_greeting(person_id: int) -> None:
-    """Track durable Rex-initiated greetings for future self-memory answers."""
+    """Track durable Rex-initiated greetings for future self-memory answers.
+
+    Also maintains a per-local-day tally (`greetings_today` / `greetings_today_date`)
+    so the startup greeting can tell when the same person has summoned Rex more
+    than once in a day and do "oh, it's you again" repeat-visit banter.
+    """
     try:
         pid = int(person_id)
     except (TypeError, ValueError):
         return
+    today = _local_date()
     db.execute(
         """
         UPDATE people
            SET lifetime_greeting_count = COALESCE(lifetime_greeting_count, 0) + 1,
-               last_greeted_at = ?
+               last_greeted_at = ?,
+               greetings_today = CASE
+                   WHEN greetings_today_date = ? THEN COALESCE(greetings_today, 0) + 1
+                   ELSE 1
+               END,
+               greetings_today_date = ?
          WHERE id = ?
         """,
-        (_now(), pid),
+        (_now(), today, today, pid),
     )
+
+
+def greetings_today_count(person_id: int) -> int:
+    """How many times Rex has already greeted this person so far TODAY (local day).
+
+    Returns 0 if the stored tally is from a previous day (stale) or unknown. Read
+    this BEFORE recording the current greeting to know how many prior greetings
+    happened today: 0 → first time today, >=1 → a same-day repeat visit.
+    """
+    try:
+        pid = int(person_id)
+    except (TypeError, ValueError):
+        return 0
+    row = db.fetchone(
+        "SELECT greetings_today, greetings_today_date FROM people WHERE id = ?",
+        (pid,),
+    )
+    if row is None or row["greetings_today_date"] != _local_date():
+        return 0
+    return int(row["greetings_today"] or 0)
 
 
 def update_familiarity(person_id: int, increment: float) -> None:

@@ -2550,6 +2550,12 @@ LONG_ABSENCE_THRESHOLD_DAYS = 60
 # If a person visited within this many hours Rex comments on the quick return
 RECENT_RETURN_THRESHOLD_HOURS = 48
 
+# Same-day repeat-visit banter: when the same person summons Rex more than once in
+# one local day, his startup greeting opens with a short "oh, it's you again" roast
+# (then drops into normal conversation) instead of the generic greeting. Counts
+# Rex's own greetings that day (see memory.people.greetings_today_count).
+PRESENCE_SAME_DAY_RETURN_ENABLED = True
+
 # Days after mentioned_at before a dateless event is due for follow-up
 FOLLOWUP_UNDATED_DAYS = 7
 

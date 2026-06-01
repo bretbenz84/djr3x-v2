@@ -3741,6 +3741,55 @@ def _build_recent_return_prompt(first_name: str, hours: float) -> str:
     )
 
 
+def _ordinal(n: int) -> str:
+    """1 -> '1st', 2 -> '2nd', 3 -> '3rd', 4 -> '4th', …"""
+    if 10 <= (n % 100) <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _same_day_return_count(person_db_id: Optional[int]) -> int:
+    """Prior greetings for this person earlier TODAY (0 if first time today)."""
+    if not isinstance(person_db_id, int):
+        return 0
+    if not bool(getattr(config, "PRESENCE_SAME_DAY_RETURN_ENABLED", True)):
+        return 0
+    try:
+        from memory import people as people_mod
+        return people_mod.greetings_today_count(person_db_id)
+    except Exception as exc:
+        _log.debug("same-day return count lookup error: %s", exc)
+        return 0
+
+
+def _build_same_day_return_prompt(first_name: str, prior_greetings_today: int) -> str:
+    """Roast-style 'oh, it's you again' opener for a same-day repeat activation.
+
+    `prior_greetings_today` is how many times Rex already greeted them earlier
+    today (>=1 here), so this activation is the (prior+1)th of the day.
+    """
+    nth = _ordinal(prior_greetings_today + 1)
+    if prior_greetings_today >= 2:
+        tally = (
+            f"'{first_name}' has now powered you up for the {nth} time today — they "
+            f"will not leave you alone"
+        )
+    else:
+        tally = (
+            f"You already greeted '{first_name}' earlier today, and here they are AGAIN"
+        )
+    return (
+        f"{tally}. Open with a sharp, funny 'oh, it's you again' roast about how they "
+        f"keep summoning you today — punch up, commit to the bit, keep it affectionate, "
+        f"not mean. Then drop straight into normal conversation with ONE short question "
+        f"about what they need this time. Address {first_name} by name. Two short "
+        f"sentences max — the second must end in a question mark. Do NOT re-introduce "
+        f"yourself or act like you haven't seen them today."
+    )
+
+
 def _build_anticipation_prompt(
     first_name: str, event: dict, situation: str
 ) -> Optional[str]:
@@ -6323,6 +6372,23 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                                 "consciousness: startup anticipation for %s (event=%s)",
                                 person_name, anticipated.get("event_name"),
                             )
+
+                # Priority 3.5 — same-day repeat activation ("oh, it's you again").
+                # More specific than the generic recent-return banter below: if Rex
+                # already greeted this person earlier TODAY, open with a short roast
+                # about the repeat visit, then move into conversation. Keyed on Rex's
+                # own recorded greetings (memory.people.greetings_today_count), so it
+                # only counts real prior greetings, not camera re-sightings.
+                if prompt is None:
+                    prior_today = _same_day_return_count(person_db_id)
+                    if prior_today >= 1:
+                        prompt = _build_same_day_return_prompt(first_name, prior_today)
+                        label = f"startup same-day return (#{prior_today + 1}) for {person_name}"
+                        emotion = "excited"
+                        _log.info(
+                            "consciousness: startup same-day return for %s (greeting #%d today)",
+                            person_name, prior_today + 1,
+                        )
 
                 # Priority 4 — long absence or recent return
                 if prompt is None:
