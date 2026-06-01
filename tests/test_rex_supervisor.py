@@ -99,51 +99,44 @@ class SupervisorModelTest(unittest.TestCase):
             self.assertAlmostEqual(sup._wake_threshold(), 0.5)
 
 
-class SupervisorWakePhraseTest(unittest.TestCase):
-    """The transcription wake path matches the same phrases the main app accepts
-    from SLEEP (intelligence.interaction._is_sleep_wake_transcript)."""
+class SupervisorInputScalingTest(unittest.TestCase):
+    """openWakeWord needs int16-range PCM. Feeding the raw float32 [-1,1] that
+    sounddevice returns pins every score at ~0.001 and the wake word NEVER fires
+    (the real "nothing happened" bug). _to_oww_input must rescale to int16."""
 
     def setUp(self):
         self.sup = _load_supervisor()
 
-    def test_accepts_wake_phrases(self):
-        for text in (
-            "wake up rex",
-            "wake up rex.",
-            "Wake up, Rex!",
-            "hey wake up rex",
-            "please wake up rex please",
-            "rex wake up",
-            "dj rex wake up",
-            "wake up r3x",
-            "wakeuprex",
-        ):
-            with self.subTest(text=text):
-                self.assertTrue(self.sup._transcript_is_wake_phrase(text))
+    def test_scales_float_to_int16_range(self):
+        import numpy as np
+        out = self.sup._to_oww_input(np.array([0.0, 1.0, -1.0, 0.5], dtype=np.float32))
+        self.assertEqual(out.dtype, np.int16)
+        self.assertEqual(int(out[0]), 0)
+        self.assertEqual(int(out[1]), 32767)
+        self.assertEqual(int(out[2]), -32767)
+        # A loud full-scale signal must map to int16 magnitudes, not stay ~±1.
+        self.assertGreater(int(np.max(np.abs(out))), 30000)
 
-    def test_rejects_non_wake_phrases(self):
-        for text in (
-            "",
-            "what's the weather",
-            "wake up the kids",
-            "i need to wake up early",
-            "tell rex something",
-            "rex is a good droid",
-            "go to sleep",
-        ):
-            with self.subTest(text=text):
-                self.assertFalse(self.sup._transcript_is_wake_phrase(text))
+    def test_clips_out_of_range_input(self):
+        import numpy as np
+        out = self.sup._to_oww_input(np.array([2.0, -3.0], dtype=np.float32))
+        self.assertEqual(int(out[0]), 32767)
+        self.assertEqual(int(out[1]), -32767)
 
-    def test_wake_mode_default_is_both(self):
-        # Default mode runs both detectors so the reliable transcription path is on.
-        self.assertEqual(self.sup._WAKE_MODE, "both")
+    def test_no_transcription_machinery_remains(self):
+        # The helper is ONNX-only now: no VAD / Whisper / RMS-gate / phrase matcher.
+        for dead in ("_chunk_has_speech", "_load_vad", "_transcribe",
+                     "_transcript_is_wake_phrase", "_RMS_GATE", "_WAKE_MODE"):
+            self.assertFalse(hasattr(self.sup, dead),
+                             f"{dead} should be gone in the ONNX-only supervisor")
 
-    def test_rms_gate_has_sane_default(self):
-        # The transcription path triggers on loudness (per-80ms VAD was unreliable).
-        self.assertGreater(self.sup._RMS_GATE, 0.0)
-        self.assertLess(self.sup._RMS_GATE, 0.1)
-        # Dead per-chunk VAD helpers must be gone.
-        self.assertFalse(hasattr(self.sup, "_chunk_has_speech"))
+    def test_silent_input_scores_below_threshold(self):
+        # End-to-end through the real model: silence must not false-trigger.
+        import numpy as np
+        model = self.sup._load_model()
+        self.assertIsNotNone(model)
+        scores = model.predict(self.sup._to_oww_input(np.zeros(self.sup._CHUNK_SAMPLES, dtype=np.float32)))
+        self.assertLess(max(scores.values()), self.sup._wake_threshold())
 
 
 class SupervisorEnvParsingTest(unittest.TestCase):

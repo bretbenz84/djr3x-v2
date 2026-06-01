@@ -7,6 +7,10 @@ login session (via a macOS LaunchAgent). It does ONE thing: listen for the singl
 wake word "wake up rex" (wakeuprex.onnx) and, when it hears it, launch the full
 DJ-R3X controller (main.py in the project venv).
 
+It is intentionally simple: just the openWakeWord ONNX model. No VAD, no Whisper,
+no transcription — the robot is OFF while the supervisor listens, so the only
+thing that ever needs to happen is detecting one wake word and launching main.py.
+
 Why a separate process instead of just running main.py at login:
   - The robot stays "off" (no servos waking, no camera, no LLM) until you summon
     it by voice, but the Mac is always ready to listen.
@@ -45,7 +49,6 @@ from typing import Optional
 _PROJECT_ROOT = Path(__file__).resolve().parent
 _VENV_PYTHON = _PROJECT_ROOT / "venv" / "bin" / "python"
 _WAKE_MODEL = _PROJECT_ROOT / "assets" / "models" / "wake_word" / "wakeuprex.onnx"
-_WHISPER_DIR = _PROJECT_ROOT / "assets" / "models" / "whisper"
 # Short chime played the instant a wake word is accepted, so there's immediate
 # feedback before the (slower) full controller finishes booting.
 _CHIME_FILE = _PROJECT_ROOT / "assets" / "audio" / "startup" / "startup_chime.mp3"
@@ -55,33 +58,10 @@ _SAMPLE_RATE = 16000
 _CHUNK_SAMPLES = 1280
 _CHUNK_SECS = _CHUNK_SAMPLES / _SAMPLE_RATE
 
-# How the supervisor decides it heard "wake up rex":
-#   transcribe — VAD + local Whisper, match the phrase (same proven path the main
-#                app uses to wake from SLEEP; reliable, the default)
-#   onnx       — only the wakeuprex.onnx confidence score (lighter, but the model
-#                is finicky and was the reason "nothing happened")
-#   both       — either one fires
-_WAKE_MODE = (os.environ.get("REX_SUPERVISOR_WAKE_MODE", "both").strip().lower())
 _DEBUG = os.environ.get("REX_SUPERVISOR_DEBUG", "").strip() in ("1", "true", "True")
 # Play the startup chime on wake (instant feedback before the robot boots).
 # Set REX_SUPERVISOR_CHIME=0 to disable.
 _CHIME_ENABLED = os.environ.get("REX_SUPERVISOR_CHIME", "1").strip() not in ("0", "false", "False")
-
-# Accumulate up to this many seconds of speech before transcribing a phrase.
-_MAX_PHRASE_SECS = 3.0
-# Stop accumulating after this much trailing silence.
-_SILENCE_TAIL_SECS = 0.6
-# Loudness (RMS) gate for the transcription path. A chunk louder than this starts
-# / continues a phrase; quieter ends it. Silero VAD on 80 ms chunks was unreliable
-# (it needs a longer window to find a segment), so we gate on simple loudness and
-# let Whisper + the phrase matcher reject non-wake speech. Tune via env if the
-# room is noisy (raise) or the mic is quiet (lower); --meter shows your levels.
-try:
-    _RMS_GATE = float(os.environ.get("REX_SUPERVISOR_RMS_GATE", "0.012"))
-except ValueError:
-    _RMS_GATE = 0.012
-# Minimum phrase length worth transcribing (ignore single-chunk clicks/pops).
-_MIN_PHRASE_SECS = 0.4
 
 # Make utils.single_instance importable without importing the heavy project config.
 if str(_PROJECT_ROOT) not in sys.path:
@@ -199,6 +179,21 @@ def _device_label(device) -> str:
         return f"{device}:{str(sd.query_devices(device).get('name','?'))}"
     except Exception:
         return str(device)
+
+
+# ── Audio scaling for openWakeWord ─────────────────────────────────────────────
+
+def _to_oww_input(mono):
+    """Scale a mono float32 [-1,1] array to int16-range PCM for openWakeWord.
+
+    THIS IS LOAD-BEARING: openWakeWord's melspectrogram front-end is trained on
+    16-bit PCM (range ±32767). Feeding the raw float [-1,1] that sounddevice
+    returns makes the model see near-silence, so every score pins at ~0.001 and
+    the wake word NEVER fires — the real reason "I said wake up Rex and nothing
+    happened." Scaling to int16 makes a clear "wake up rex" score ~0.99.
+    """
+    import numpy as np
+    return (np.clip(mono, -1.0, 1.0) * 32767.0).astype(np.int16)
 
 
 # ── Controller liveness ────────────────────────────────────────────────────────
@@ -326,58 +321,6 @@ def _wake_threshold() -> float:
         return 0.5
 
 
-# ── VAD + transcription wake path (mirrors the main app's SLEEP wake) ───────────
-# The custom wakeuprex.onnx model is unreliable on its own (it's why "nothing
-# happened"). The full robot doesn't trust it either: from SLEEP it wakes by
-# running VAD + local Whisper and matching the phrase. We reuse that approach
-# here, self-contained (no project `config` import), behind _WAKE_MODE.
-
-import re as _re
-
-# "wake up rex" / "rex wake up" and close variants — same shapes the main app
-# accepts (intelligence.interaction._is_sleep_wake_transcript).
-_REX_NAME = r"(?:d\s*j\s+)?(?:rex|r\s*3\s*x|r3x|rx)"
-_WAKE_RE_A = _re.compile(rf"^(?:(?:hey|yo)\s+)?(?:please\s+)?wake\s+up\s+{_REX_NAME}(?:\s+please)?$")
-_WAKE_RE_B = _re.compile(rf"^(?:(?:hey|yo)\s+)?(?:please\s+)?{_REX_NAME}\s+wake\s+up(?:\s+please)?$")
-_WAKE_COMPACT = {"wakeuprex", "wakeupr3x", "wakeuprx", "rexwakeup", "r3xwakeup", "rxwakeup"}
-
-
-def _transcript_is_wake_phrase(text: str) -> bool:
-    raw = (text or "").strip().lower()
-    if not raw:
-        return False
-    compact = _re.sub(r"[^a-z0-9]", "", raw)
-    if compact in _WAKE_COMPACT:
-        return True
-    cleaned = _re.sub(r"[^a-z0-9]+", " ", raw).strip()
-    return bool(_WAKE_RE_A.fullmatch(cleaned) or _WAKE_RE_B.fullmatch(cleaned))
-
-
-
-
-def _transcribe(samples) -> str:
-    """Transcribe a mono float32 [-1,1] array with the local mlx-whisper model."""
-    try:
-        import mlx_whisper
-    except Exception as exc:
-        log.warning("mlx_whisper unavailable (%s) — transcription wake disabled.", exc)
-        return ""
-    if not (_WHISPER_DIR / "config.json").exists():
-        log.warning("Local Whisper model missing at %s — run setup_assets.py.", _WHISPER_DIR)
-        return ""
-    try:
-        result = mlx_whisper.transcribe(
-            samples,
-            path_or_hf_repo=str(_WHISPER_DIR),
-            language="en",
-            fp16=True,
-        )
-        return str(result.get("text", "") if isinstance(result, dict) else "").strip()
-    except Exception as exc:
-        log.warning("Transcription failed: %s", exc)
-        return ""
-
-
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 def run() -> int:
@@ -401,23 +344,18 @@ def run() -> int:
     device = _resolve_input_device(env)
     log.info(
         "Supervisor online. Listening for 'wake up rex' "
-        "(mic=%s, mode=%s, onnx_threshold=%.2f, debug=%s).",
-        _device_label(device), _WAKE_MODE, threshold, _DEBUG,
+        "(mic=%s, threshold=%.2f, debug=%s).",
+        _device_label(device), threshold, _DEBUG,
     )
-    use_onnx = _WAKE_MODE in ("onnx", "both")
-    use_transcribe = _WAKE_MODE in ("transcribe", "both")
 
     child: Optional[subprocess.Popen] = None
     stream = None
     listening = False
     open_channels = 1  # actual channel count the mic stream was opened with
 
-    # Diagnostics + transcription accumulation state.
+    # Diagnostics.
     peak_score = 0.0
-    peak_rms = 0.0
     last_diag = 0.0
-    speech_frames: list = []          # accumulated chunks during a spoken phrase
-    silence_run = 0.0                 # trailing silence while accumulating
 
     # Channel candidates: the device's real max-input first (e.g. ReSpeaker Lite
     # is 2-in), then mono. macOS PortAudio rejects requesting more channels than
@@ -489,7 +427,6 @@ def run() -> int:
                 if listening:
                     log.info("Controller is running — supervisor dormant (mic released).")
                     listening = False
-                speech_frames.clear(); silence_run = 0.0; peak_rms = 0.0
                 _stop.wait(1.0)
                 continue
 
@@ -527,66 +464,26 @@ def run() -> int:
                 samples = arr.reshape(-1)
             rms = float(np.sqrt(np.mean(samples ** 2))) if samples.size else 0.0
 
-            # ── Path 1: openWakeWord confidence score ──────────────────────────
-            if use_onnx:
-                try:
-                    scores = model.predict(samples)
-                    score = max(scores.values()) if scores else 0.0
-                except Exception as exc:
-                    log.warning("Wake prediction error: %s", exc)
-                    score = 0.0
-                peak_score = max(peak_score, score)
-                if score >= threshold:
-                    _fire(f"onnx score={score:.3f}")
-                    peak_score = 0.0
-                    speech_frames.clear(); silence_run = 0.0
-                    continue
-
-            # ── Path 2: RMS-gated local transcription ──────────────────────────
-            # Loud chunk → (continue) a phrase; trailing quiet → transcribe it.
-            # Per-80ms Silero VAD was unreliable, so we gate on loudness and let
-            # Whisper + the phrase matcher decide whether it was "wake up rex".
-            if use_transcribe:
-                loud = rms >= _RMS_GATE
-                if loud:
-                    if not speech_frames:
-                        log.debug("speech onset (rms=%.4f)", rms)
-                    speech_frames.append(samples)
-                    silence_run = 0.0
-                elif speech_frames:
-                    speech_frames.append(samples)  # keep a little trailing audio
-                    silence_run += _CHUNK_SECS
-                peak_rms = max(peak_rms, rms)
-                phrase_secs = len(speech_frames) * _CHUNK_SECS
-                phrase_done = speech_frames and (
-                    silence_run >= _SILENCE_TAIL_SECS or phrase_secs >= _MAX_PHRASE_SECS
-                )
-                if phrase_done:
-                    phrase = np.concatenate(speech_frames)
-                    speech_frames.clear(); silence_run = 0.0
-                    if phrase_secs >= _MIN_PHRASE_SECS:
-                        text = _transcribe(phrase)
-                        match = _transcript_is_wake_phrase(text) if text else False
-                        log.info("Heard %.1fs (peak rms=%.4f) → %r (wake=%s)",
-                                 phrase_secs, peak_rms, text, match)
-                        peak_rms = 0.0
-                        if match:
-                            _fire(f"transcript={text!r}")
-                            peak_score = 0.0
-                            continue
-                    else:
-                        peak_rms = 0.0
+            # openWakeWord wants int16-range PCM (see _to_oww_input). Feeding raw
+            # float [-1,1] pins every score at ~0.001 and nothing ever fires.
+            try:
+                scores = model.predict(_to_oww_input(samples))
+                score = max(scores.values()) if scores else 0.0
+            except Exception as exc:
+                log.warning("Wake prediction error: %s", exc)
+                score = 0.0
+            peak_score = max(peak_score, score)
+            if score >= threshold:
+                _fire(f"onnx score={score:.3f}")
+                peak_score = 0.0
+                continue
 
             # ── Periodic diagnostics ───────────────────────────────────────────
             now = time.monotonic()
             if now - last_diag >= 5.0:
                 last_diag = now
-                bits = [f"mic rms={rms:.4f}", f"gate={_RMS_GATE:.4f}"]
-                if use_onnx:
-                    bits.append(f"peak onnx={peak_score:.3f}")
-                if use_transcribe:
-                    bits.append(f"accumulating={len(speech_frames)} chunks")
-                log.info("[diag] listening… %s", ", ".join(bits))
+                log.info("[diag] listening… peak onnx score (last 5s)=%.3f, mic rms=%.4f",
+                         peak_score, rms)
                 peak_score = 0.0
     finally:
         if stream is not None:
@@ -635,8 +532,10 @@ def list_devices() -> int:
 
 
 def meter(seconds: float = 20.0) -> int:
-    """Open the resolved mic and print a live input-level meter, so you can
-    confirm audio is actually arriving. Speak — the bar should jump."""
+    """Open the resolved mic and print a live input-level meter PLUS the live
+    wakeuprex ONNX score, so you can confirm both that audio is arriving and that
+    the model fires on "wake up rex". Speak — the bar should jump and, when you
+    say the wake phrase, the score should spike toward 1.0."""
     try:
         import numpy as np
         import sounddevice as sd
@@ -645,12 +544,14 @@ def meter(seconds: float = 20.0) -> int:
         return 1
     env = _read_env_file()
     device = _resolve_input_device(env)
+    model = _load_model()
     # Open with the device's real channel count (ReSpeaker Lite = 2-in), mono-mix.
     max_in = _device_max_input_channels(device)
     channels = max_in if max_in else 1
     print(f"Metering mic: {_device_label(device)} ({channels}-ch → mono)")
-    print("Speak now — the bar should move. Ctrl-C to stop.\n")
+    print("Speak now — bar = level, score = wakeuprex confidence. Ctrl-C to stop.\n")
     peak = 0.0
+    peak_score = 0.0
     try:
         with sd.InputStream(device=device, samplerate=_SAMPLE_RATE, channels=channels,
                             dtype="float32", blocksize=_CHUNK_SAMPLES) as s:
@@ -661,20 +562,34 @@ def meter(seconds: float = 20.0) -> int:
                 x = a.mean(axis=1) if (a.ndim == 2 and a.shape[1] > 1) else a.reshape(-1)
                 rms = float(np.sqrt(np.mean(x ** 2))) if x.size else 0.0
                 peak = max(peak, rms)
-                bars = int(min(1.0, rms * 20) * 40)
-                sys.stdout.write(f"\rrms={rms:0.4f} |{'#' * bars}{' ' * (40 - bars)}|")
+                score = 0.0
+                if model is not None:
+                    try:
+                        sc = model.predict(_to_oww_input(x))
+                        score = max(sc.values()) if sc else 0.0
+                    except Exception:
+                        score = 0.0
+                peak_score = max(peak_score, score)
+                bars = int(min(1.0, rms * 20) * 30)
+                sys.stdout.write(
+                    f"\rrms={rms:0.4f} |{'#' * bars}{' ' * (30 - bars)}| score={score:0.3f}"
+                )
                 sys.stdout.flush()
     except KeyboardInterrupt:
         pass
     except Exception as exc:
         print(f"\nmic read failed: {exc}")
         return 1
-    print(f"\n\nDone. Peak rms observed: {peak:0.4f}")
+    print(f"\n\nDone. Peak rms={peak:0.4f}, peak wakeuprex score={peak_score:0.3f}")
     if peak < 0.001:
         print("⚠  Essentially silent — the supervisor is NOT getting mic audio.")
         print("   Check Microphone permission for the venv Python and AUDIO_DEVICE_NAME in .env.")
+    elif peak_score < _wake_threshold():
+        print("⚠  Mic audio is arriving but the wakeuprex score never crossed the")
+        print(f"   threshold ({_wake_threshold():.2f}). Say 'wake up rex' clearly into the mic;")
+        print("   if it still won't cross, lower REX_SUPERVISOR_WAKE_THRESHOLD.")
     else:
-        print("✓  Mic audio is arriving. If wake still fails, it's detection, not the mic.")
+        print("✓  Mic audio is arriving and 'wake up rex' crossed the threshold.")
     return 0
 
 
@@ -683,7 +598,7 @@ def _print_usage() -> None:
         "Usage: rex_supervisor.py [command]\n"
         "  (no args)        run the supervisor (listen + launch on wake)\n"
         "  --list-devices   list input devices and show which mic is selected\n"
-        "  --meter [secs]   live mic level meter to confirm audio is arriving\n"
+        "  --meter [secs]   live mic level + wakeuprex score to confirm detection\n"
         "  --test-chime     play the wake chime once and exit\n"
         "  --help           this message\n"
     )

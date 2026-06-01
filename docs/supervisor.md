@@ -68,9 +68,7 @@ Logs: `logs/supervisor.out.log` and `logs/supervisor.err.log`.
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `REX_SUPERVISOR_WAKE_MODE` | `both` | How wake is detected: `transcribe` (VAD + local Whisper, reliable), `onnx` (wakeuprex.onnx score only), or `both` |
-| `REX_SUPERVISOR_WAKE_THRESHOLD` | `0.5` | onnx confidence to trigger (only used by the `onnx`/`both` paths) |
-| `REX_SUPERVISOR_RMS_GATE` | `0.012` | Loudness (RMS) above which the transcribe path starts capturing a phrase. Raise in a noisy room, lower if your mic is quiet (use `--meter` to see your speaking level). |
+| `REX_SUPERVISOR_WAKE_THRESHOLD` | `0.5` | `wakeuprex.onnx` confidence required to trigger. A clean "wake up rex" scores ~0.99, so 0.5 has wide margin; lower it only if your voice/mic won't cross it (`--meter` shows your live score). |
 | `REX_SUPERVISOR_DEBUG` | unset | Set to `1` for verbose per-frame logging |
 | `REX_SUPERVISOR_CHIME` | `1` | Play `startup_chime.mp3` the instant a wake is accepted (instant feedback before the robot boots). Set `0` to disable. |
 | `DJR3X_LOCK_PATH` | `<tmpdir>/djr3x-main.lock` | Single-instance lock location (must match between supervisor and `main.py`) |
@@ -79,23 +77,20 @@ Logs: `logs/supervisor.out.log` and `logs/supervisor.err.log`.
 
 ## How wake detection works (and why)
 
-The custom `wakeuprex.onnx` model is unreliable on its own — it often never
-crosses the score threshold. The full robot doesn't trust it either: when it
-wakes from the "go to sleep" state it uses **VAD + the local Whisper model** and
-matches the transcribed phrase, not the ONNX score. The supervisor mirrors that.
+It's deliberately simple: the supervisor reads 80 ms mic frames, mixes them to
+mono, and runs the `wakeuprex.onnx` openWakeWord model. When the score crosses
+`REX_SUPERVISOR_WAKE_THRESHOLD` it fires (chime + launch). No VAD, no Whisper, no
+transcription — the robot is OFF while the supervisor listens, so the only job is
+to spot one wake word and launch `main.py`.
 
-By default (`both`) it runs two detectors in parallel and fires on either:
-
-1. **transcribe** — when the mic level rises above `REX_SUPERVISOR_RMS_GATE` it
-   captures the phrase until you stop talking, transcribes it with the local
-   `mlx-whisper` model, and fires if the text is "wake up Rex" (and close
-   variants: "rex wake up", "wake up r3x", …). This is the reliable path. (It
-   gates on loudness, not Silero VAD — per-80 ms VAD frames were unreliable.)
-2. **onnx** — the `wakeuprex.onnx` confidence score crossing the threshold.
-
-If you want the lighter, lower-CPU behavior and your ONNX model works well for
-you, set `REX_SUPERVISOR_WAKE_MODE=transcribe` to skip the (idle) Whisper work,
-or `=onnx` to skip transcription.
+**The bug that made it look like the ONNX model "didn't work":** openWakeWord's
+melspectrogram front-end is trained on **16-bit PCM** (range ±32767), but
+sounddevice hands us **float32 in [-1, 1]**. Feeding that raw float makes the
+model see near-silence, so every score pins at ~0.001 and nothing ever fires.
+The supervisor now rescales each frame to int16 (`_to_oww_input`) before
+`predict()`, and a clean "wake up rex" scores ~0.99. If you ever see scores
+stuck near zero while the mic clearly has audio, that scaling is the first thing
+to check (the main app's `audio/wake_word.py` has the same latent issue).
 
 ## Checking the microphone
 
@@ -108,9 +103,11 @@ venv/bin/python rex_supervisor.py --meter          # live input-level bar; speak
 ```
 
 `--list-devices` prints every input device and marks the one the supervisor
-resolved from `.env`. `--meter` opens that mic and shows a live RMS bar — speak
-and it should jump; if it stays flat/zero, the supervisor isn't getting audio
-(permission or wrong device), not a detection problem.
+resolved from `.env`. `--meter` opens that mic and shows a live RMS bar **and the
+live wakeuprex score** — speak and the bar should jump; say "wake up rex" and the
+score should spike toward 1.0. If the bar stays flat/zero the supervisor isn't
+getting audio (permission or wrong device); if the bar moves but the score never
+rises, it's detection (threshold or the int16 scaling described below).
 
 Notes on device selection (these were real "no trigger" causes):
 - `AUDIO_DEVICE_NAME` in `.env` may be quoted (`"MacBook Pro Microphone"`); the
@@ -138,16 +135,14 @@ venv/bin/python rex_supervisor.py
   `AUDIO_DEVICE_NAME`/`INDEX` in `.env` point at the right input (`--list-devices`).
   Under launchd the permission prompt may not surface; running by hand once
   forces it.
-- **`mic rms` moves when you talk** → audio is arriving (good). When your speech
-  pushes rms over the gate you should see a `Heard … → '…' (wake=True/False)`
-  line. If you never see `Heard …`, your speaking level may be below the gate —
-  check `--meter` and lower `REX_SUPERVISOR_RMS_GATE` toward your level. If you
-  see `Heard …` but `wake=False`, paste what it transcribed so the matcher can
-  be tuned.
-- **`mic rms` moves but `peak onnx score` stays low** → the ONNX model isn't
-  firing (expected; that's why `transcribe` is the default). You should see a
-  `Heard … → 'wake up rex' (wake=True)` line from the transcription path; if you
-  don't, confirm the local Whisper model exists (`assets/models/whisper/config.json`).
+- **`mic rms` moves but `peak onnx score` stays near 0.001** → audio is arriving
+  but the model sees near-silence. This is the int16-scaling bug (see "How wake
+  detection works"); the supervisor rescales with `_to_oww_input`, so if you see
+  this, that step is missing/broken. Confirm with `--meter` (it shows the live
+  score) and that `wakeuprex.onnx` exists under `assets/models/wake_word/`.
+- **`peak onnx score` rises but never crosses the threshold** → say "wake up rex"
+  more clearly/closer, or lower `REX_SUPERVISOR_WAKE_THRESHOLD` toward the peak
+  you see in `--meter`.
 - **Nothing logs at all / it says "dormant"** → a controller (`main.py`) is
   already running or asleep and holding the lock, so the supervisor is
   intentionally silent. Shut down `main.py` first.
@@ -155,6 +150,6 @@ venv/bin/python rex_supervisor.py
 ## Running the supervisor manually (debug)
 
 ```bash
-venv/bin/python rex_supervisor.py            # default mode=both
+venv/bin/python rex_supervisor.py                          # listen + launch on wake
 REX_SUPERVISOR_DEBUG=1 venv/bin/python rex_supervisor.py   # verbose
 ```
