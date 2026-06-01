@@ -270,6 +270,14 @@ def _begin_user_turn() -> None:
         _situation_assessor.set_interaction_busy(True)
     except Exception:
         pass
+    # Show gentle "I'm listening / thinking" body language for the whole wait
+    # (transcription → LLM → TTS) so Rex isn't frozen until he speaks. Speech
+    # motion takes over automatically when he starts talking.
+    try:
+        from hardware import servos
+        servos.start_listening_motion()
+    except Exception:
+        pass
     if _game_suppresses_conversation():
         return
     try:
@@ -394,6 +402,13 @@ def _mark_first_response_audio_started(
 def _end_user_turn() -> None:
     try:
         _situation_assessor.set_interaction_busy(False)
+    except Exception:
+        pass
+    # Stop listening motion if the turn produced no speech (if Rex responds,
+    # begin_speech_motion already handed off). Idempotent.
+    try:
+        from hardware import servos
+        servos.stop_listening_motion()
     except Exception:
         pass
 _NAME_MAX_WORDS = 3

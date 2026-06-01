@@ -58,6 +58,13 @@ _speech_elbow_direction = 1
 _next_speech_elbow_at = 0.0
 _speech_emotion_frame: dict = {}
 
+# Listening-motion state: gentle "I'm processing you" body language that runs
+# from speech onset through transcription/LLM/TTS so Rex isn't frozen while he
+# thinks. Subtler than speech motion. Breathing + face tracking yield to it.
+_listening_active = threading.Event()
+_listening_thread: "threading.Thread | None" = None
+_listening_lock = threading.Lock()
+
 # ── Channel index lookups ──────────────────────────────────────────────────────
 
 def _channel_cfg(channel: int) -> "dict | None":
@@ -604,6 +611,9 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
     if _program_servo_updates_blocked():
         return
 
+    # Rex is about to talk — hand the body off from listening motion to speech.
+    stop_listening_motion()
+
     frame = _resolve_speech_emotion_frame(emotion)
     motion = frame.get("speech_motion") or {}
 
@@ -817,6 +827,161 @@ def speech_reactive_move(intensity: float) -> None:
     set_servos(targets)
 
 
+# ── Listening motion (subtle "I'm thinking about what you said" feedback) ───────
+# Runs from the moment VAD/Whisper hears the user through transcription → LLM →
+# TTS, so Rex shows he's listening instead of freezing. Deliberately gentler and
+# slower than speech motion: small head nods orbiting the current gaze, a slow
+# visor flutter, and occasional small arm/hand shifts. Breathing and face
+# tracking yield while it's active (see breathing_thread and
+# consciousness._step_face_tracking), and it yields the instant Rex speaks.
+
+def listening_motion_active() -> bool:
+    return _listening_active.is_set()
+
+
+def _listening_targets(beat: int) -> dict[int, int]:
+    """One beat of gentle listening pose targets, orbiting the current gaze.
+
+    Pure-ish helper (reads config + the face-tracking baseline) so it can be unit
+    tested without hardware. Head nods/visor every beat; arms on a slower cadence.
+    """
+    neck_ch = _channel("neck")
+    lift_ch = _channel("headlift")
+    tilt_ch = _channel("headtilt")
+    visor_ch = _channel("visor")
+    elbow_ch = _channel("elbow")
+    hand_ch = _channel("hand")
+    hero_ch = _channel("heroarm")
+
+    with _lock:
+        base = dict(_face_tracking_baseline)
+    base_neck = _clamp(neck_ch, base.get(neck_ch, _baseline_position(neck_ch)))
+    base_lift = _clamp(lift_ch, base.get(lift_ch, _baseline_position(lift_ch)))
+    base_tilt = _clamp(tilt_ch, base.get(tilt_ch, _baseline_position(tilt_ch)))
+
+    targets: dict[int, int] = {}
+
+    # Head: gentle downward "mhm" nod every few beats, easing back to the tracked
+    # gaze in between. headlift lower = head down; headtilt is inverted (higher =
+    # looking down), so a nod biases lift DOWN and tilt slightly DOWN.
+    nod_every = max(1, _get_config_int("SERVO_LISTENING_NOD_EVERY_BEATS", 2))
+    if beat % nod_every == 0:
+        lift_amp = _get_config_int("SERVO_LISTENING_LIFT_NOD_QUS", 240)
+        tilt_amp = _get_config_int("SERVO_LISTENING_TILT_QUS", 80)
+        neck_amp = _get_config_int("SERVO_LISTENING_NECK_QUS", 110)
+        targets[lift_ch] = _clamp(lift_ch, base_lift - random.randint(int(lift_amp * 0.3), lift_amp))
+        targets[tilt_ch] = _clamp(tilt_ch, base_tilt + random.randint(0, tilt_amp))
+        targets[neck_ch] = _clamp(neck_ch, base_neck + random.randint(-neck_amp, neck_amp))
+    else:
+        targets[lift_ch] = base_lift
+        targets[tilt_ch] = base_tilt
+        targets[neck_ch] = base_neck
+
+    # Visor: slow, shallow flutter around a slightly-open resting position.
+    visor_cfg = config.SERVO_CHANNELS["visor"]
+    visor_swing = _get_config_int("SERVO_LISTENING_VISOR_QUS", 220)
+    wave = 0.5 + 0.5 * math.sin(beat * 0.9)
+    targets[visor_ch] = _clamp(
+        visor_ch,
+        int(visor_cfg["neutral"] - visor_swing * 0.4 + wave * visor_swing) + random.randint(-30, 30),
+    )
+
+    # Arms: small, occasional shifts so the hand/arm look alive, not twitchy.
+    arm_every = max(1, _get_config_int("SERVO_LISTENING_ARM_EVERY_BEATS", 2))
+    if beat % arm_every == 0:
+        elbow_cfg = config.SERVO_CHANNELS["elbow"]
+        hand_cfg = config.SERVO_CHANNELS["hand"]
+        hero_cfg = config.SERVO_CHANNELS["heroarm"]
+        elbow_amp = _get_config_int("SERVO_LISTENING_ELBOW_QUS", 110)
+        hand_amp = _get_config_int("SERVO_LISTENING_HAND_QUS", 380)
+        hero_amp = _get_config_int("SERVO_LISTENING_HERO_QUS", 300)
+        targets[elbow_ch] = _clamp(elbow_ch, elbow_cfg["neutral"] + random.randint(-elbow_amp, elbow_amp))
+        targets[hand_ch] = _clamp(hand_ch, hand_cfg["neutral"] + random.randint(-hand_amp, hand_amp))
+        targets[hero_ch] = _clamp(hero_ch, hero_cfg["neutral"] + random.randint(-hero_amp, hero_amp))
+
+    return targets
+
+
+def _listening_loop() -> None:
+    """Background loop: emit gentle listening beats until stop_listening_motion()."""
+    beat = 0
+    started = time.monotonic()
+    # Safety net: never let a missed stop strand listening motion (which would
+    # also keep face tracking yielded). Auto-stop after a generous ceiling.
+    max_secs = _get_config_float("SERVO_LISTENING_MAX_SECS", 20.0)
+    while _listening_active.is_set() and not _stop_breathing.is_set():
+        if time.monotonic() - started >= max_secs:
+            _log.debug("listening motion hit max duration — auto-stopping.")
+            stop_listening_motion()
+            return
+        # Yield to real speech and to blocked/asleep states; re-check shortly.
+        if (
+            _program_servo_updates_blocked()
+            or not _automatic_motion_allowed()
+            or _speech_active.is_set()
+        ):
+            time.sleep(0.1)
+            continue
+        beat += 1
+        try:
+            set_servos(_listening_targets(beat))
+        except Exception as exc:
+            _log.debug("listening beat failed: %s", exc)
+        lo = _get_config_float("SERVO_LISTENING_BEAT_MIN_SECS", 0.45)
+        hi = _get_config_float("SERVO_LISTENING_BEAT_MAX_SECS", 0.85)
+        time.sleep(random.uniform(min(lo, hi), max(lo, hi)))
+
+
+def start_listening_motion() -> None:
+    """Begin gentle listening motion (idempotent). No-op without servos/sim, while
+    Rex is already speaking, or if disabled via config."""
+    global _listening_thread
+    if not bool(getattr(config, "SERVO_LISTENING_MOTION_ENABLED", True)):
+        return
+    if _program_servo_updates_blocked() or _speech_active.is_set():
+        return
+    if not SERVOS_ENABLED and not _gui_servo_sim_enabled():
+        return
+    with _listening_lock:
+        if _listening_active.is_set():
+            return
+        _listening_active.set()
+        pause_arm_idle()
+        if SERVOS_ENABLED:
+            set_motion_profile(
+                config.HEAD_CHANNELS + config.ARM_CHANNELS,
+                speed=_get_config_int("SERVO_LISTENING_SPEED", 22),
+                acceleration=_get_config_int("SERVO_LISTENING_ACCELERATION", 6),
+            )
+        if _listening_thread is None or not _listening_thread.is_alive():
+            _listening_thread = threading.Thread(
+                target=_listening_loop, daemon=True, name="listening-motion"
+            )
+            _listening_thread.start()
+
+
+def stop_listening_motion() -> None:
+    """Stop listening motion: restore the default motion profile, ease the visor
+    back to rest, and hand the arms back to idle wander. Breathing and face
+    tracking resume on their own once the flag clears. Idempotent."""
+    with _listening_lock:
+        if not _listening_active.is_set():
+            return
+        _listening_active.clear()
+    try:
+        if SERVOS_ENABLED:
+            set_motion_profile(
+                config.HEAD_CHANNELS + config.ARM_CHANNELS,
+                speed=_get_config_int("SERVO_DEFAULT_SPEED", 40),
+                acceleration=_get_config_int("SERVO_DEFAULT_ACCELERATION", 8),
+            )
+        if SERVOS_ENABLED or _gui_servo_sim_enabled():
+            # Settle the visor (nothing else owns it); arms return via idle wander.
+            set_servo(_channel("visor"), config.SERVO_CHANNELS["visor"]["neutral"])
+    finally:
+        resume_arm_idle()
+
+
 # ── High-level behaviours ──────────────────────────────────────────────────────
 
 def neutral(step_us: int = 40, step_delay: float = 0.02) -> None:
@@ -905,6 +1070,10 @@ def breathing_thread() -> None:
 
     while not _stop_breathing.is_set():
         if _program_servo_updates_blocked() or not _automatic_motion_allowed():
+            _stop_breathing.wait(tick)
+            continue
+        # Listening motion owns the head-lift nod while active — don't fight it.
+        if _listening_active.is_set():
             _stop_breathing.wait(tick)
             continue
 

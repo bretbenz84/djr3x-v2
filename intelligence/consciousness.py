@@ -8226,6 +8226,11 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
     try:
         from hardware import servos as servo_mod
 
+        # While listening motion owns the head (gentle nods during the
+        # transcription/LLM/TTS wait), don't fight it with face centering.
+        if getattr(servo_mod, "listening_motion_active", lambda: False)():
+            return
+
         now = time.monotonic()
         candidates = _visible_face_tracking_candidates(people)
         speaker_intent = _speaker_gaze_current_intent(now)

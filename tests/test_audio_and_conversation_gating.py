@@ -609,10 +609,14 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
     def test_begin_user_turn_keeps_game_prompts_queued(self):
         from intelligence import interaction
+        from hardware import servos
 
         with (
             mock.patch.object(interaction, "_game_suppresses_conversation", return_value=True),
             mock.patch.object(interaction.speech_queue, "clear_below_priority") as clear,
+            # _begin_user_turn now also starts listening motion; stub it so the
+            # test doesn't spawn a real servo thread on a hardware-attached box.
+            mock.patch.object(servos, "start_listening_motion"),
         ):
             interaction._begin_user_turn()
 
@@ -4211,6 +4215,8 @@ class ConversationGatingTest(unittest.TestCase):
                 mock.patch.object(consciousness, "_pick_milestone", return_value=None),
                 mock.patch.object(consciousness, "_pick_anticipated_event", return_value=None),
                 mock.patch.object(consciousness, "_pick_absence_phase", return_value=None),
+                # Priority 3.5 same-day "you again" reads the live people DB; neutralize it.
+                mock.patch.object(consciousness, "_same_day_return_count", return_value=0),
                 mock.patch.object(consciousness, "_pick_startup_profile_question", return_value=None),
                 mock.patch.object(consciousness, "_build_first_sight_mood_prompt", return_value=None),
                 mock.patch.object(
@@ -4283,6 +4289,8 @@ class ConversationGatingTest(unittest.TestCase):
                 mock.patch.object(consciousness, "_pick_milestone", return_value=None),
                 mock.patch.object(consciousness, "_pick_anticipated_event", return_value=None),
                 mock.patch.object(consciousness, "_pick_absence_phase", return_value=None),
+                # Priority 3.5 same-day "you again" reads the live people DB; neutralize it.
+                mock.patch.object(consciousness, "_same_day_return_count", return_value=0),
                 # Isolate from real DB state: a passed pending follow-up (priority
                 # 2.5) reads memory.events directly and would otherwise outrank the
                 # first-sight profile question this test is asserting.
