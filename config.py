@@ -1827,7 +1827,7 @@ INTEREST_IDLE_FOLLOWUP_MAX_WORDS = 22
 # silence prompts more conversation. After IDLE_BANTER_MAX_PER_STRETCH attempts
 # with no reply, it stops and lets the idle timeout close with the outro.
 IDLE_BANTER_ENABLED = True
-IDLE_BANTER_SECS = 8.0            # silence before the first proactive nudge
+IDLE_BANTER_SECS = 5.0            # silence before the first proactive nudge
 IDLE_BANTER_COOLDOWN_SECS = 12.0  # minimum gap between nudges
 IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up
 
