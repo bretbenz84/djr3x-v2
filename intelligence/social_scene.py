@@ -15,16 +15,21 @@ from world_state import world_state
 from memory import social as social_memory
 
 
+# Short, natural openers offered to the LLM as a menu for the first greeting of a
+# run. Keep these CASUAL and conversational — the way a person actually says hi,
+# not a baroque intake-form question. Rex's snark belongs in the greeting line and
+# the rest of the conversation, not in a weird opener. (Earlier versions like
+# "What corner of your organic life are we discussing first?" read as bizarre.)
 FIRST_GREETING_STEERING_PHRASES = (
+    "What's up?",
     "What are you up to today?",
     "What do you want to talk about?",
-    "What mission are we pretending is important today?",
-    "What corner of your organic life are we discussing first?",
-    "What topic gets the honor of my extremely limited patience today?",
     "What are you working on today?",
+    "What's on your mind?",
+    "How's it going?",
+    "What's going on with you today?",
     "What are you into today?",
-    "What problem are we pretending I caused?",
-    "What tiny human drama needs a droid opinion?",
+    "So what's the plan?",
 )
 
 

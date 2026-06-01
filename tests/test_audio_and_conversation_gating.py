@@ -6207,7 +6207,7 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertIn("what do you want to talk about", prompt.lower())
         self.assertIn("Pick one from this menu", prompt)
         self.assertIn("do not reuse the same wording every run", prompt)
-        self.assertIn("What mission are we pretending is important today?", prompt)
+        self.assertIn("What are you working on today?", prompt)
 
     def test_first_sight_mood_prompt_uses_high_confidence_expression(self):
         from intelligence import consciousness
@@ -6328,7 +6328,7 @@ class ConversationGatingTest(unittest.TestCase):
         self.assertIn("conversation-steering question", prompt)
         self.assertIn("what are you up to today", prompt.lower())
         self.assertIn("do not reuse the same wording every run", prompt)
-        self.assertIn("What topic gets the honor", prompt)
+        self.assertIn("What's on your mind?", prompt)
 
     def test_person_context_injects_preferences_and_boundaries(self):
         from intelligence import llm
