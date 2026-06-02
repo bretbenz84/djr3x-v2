@@ -503,6 +503,12 @@ def note_speaker_gaze_intent(
         visible = _person_has_visible_face(pid)
     elif unknown_voice:
         visible = _any_visible_unknown_face()
+        # A voice that didn't resolve while a KNOWN face is right in front of the
+        # camera is almost always that person, just mis-scored — don't abandon the
+        # lock and thrash the head scanning for an off-camera speaker. Only the
+        # explicit off-camera decision (or a forced startup scan) should search.
+        if not visible and reason != "off_camera_unknown" and _any_visible_face():
+            visible = True
     else:
         visible = _any_visible_face()
     search_requested = (not visible) if force_search is None else bool(force_search)
@@ -8026,7 +8032,7 @@ def _speaker_gaze_candidate(candidates: list[dict], intent: Optional[dict]) -> O
     return None
 
 
-def _build_speaker_gaze_search_plan() -> list[tuple]:
+def _build_speaker_gaze_search_plan(reason: str = "startup") -> list[tuple]:
     """Build one randomized, two-axis room-scan pass.
 
     Returns a list of ``(neck_frac, vert_frac)`` waypoints, where ``neck_frac`` is in
@@ -8042,17 +8048,25 @@ def _build_speaker_gaze_search_plan() -> list[tuple]:
     points = int(getattr(config, "SPEAKER_GAZE_SEARCH_POINTS", 5) or 5)
     points = max(3, min(points, 12))
 
-    # Lanes spaced across the full left..right range (endpoints included, so the outer
-    # beats crane all the way to the neck's min/max), each jittered off its lane centre
-    # and paired with its own random (down-biased) pitch — so no two scans trace the
-    # same path while the whole room still gets swept edge to edge.
+    # The STARTUP room scan sweeps the full neck range (find anyone in the room). A
+    # mid-conversation speaker search stays gentler — the talker is usually right in
+    # front of Rex, so a full-range swing just thrashes his head and yanks the camera
+    # off the face it was tracking. Scale the lane spread down for non-startup reasons.
+    if str(reason or "").lower() in ("startup", "scan"):
+        neck_scale = 1.0
+    else:
+        neck_scale = float(getattr(config, "SPEAKER_GAZE_SEARCH_SPEECH_NECK_SCALE", 0.45))
+
+    # Lanes spaced across the (scaled) left..right range, each jittered off its lane
+    # centre and paired with its own random (down-biased) pitch — so no two scans
+    # trace the same path while the room still gets swept.
     step = 2.0 / (points - 1)
     lanes: list[tuple] = []
     for i in range(points):
         centre = -1.0 + step * i
         neck_frac = max(-1.0, min(1.0, centre + random.uniform(-step * 0.4, step * 0.4)))
         vert_frac = random.uniform(0.2, 1.0)
-        lanes.append((neck_frac, vert_frac))
+        lanes.append((neck_frac * neck_scale, vert_frac))
     random.shuffle(lanes)
 
     plan: list[tuple] = [(None, random.uniform(0.9, 1.0))]  # look down first, no turn
@@ -8173,7 +8187,7 @@ def _step_speaker_gaze_search(servo_mod, intent: Optional[dict], now: float) -> 
         plan_idx = int(_speaker_gaze_intent.get("search_plan_index") or 0)
         if not plan or plan_idx >= len(plan):
             # Fresh randomized pass (also re-rolls if the search outlasts one pass).
-            plan = _build_speaker_gaze_search_plan()
+            plan = _build_speaker_gaze_search_plan(_speaker_gaze_intent.get("reason", "startup"))
             _speaker_gaze_intent["search_plan"] = plan
             plan_idx = 0
         neck_frac, vert_frac = plan[plan_idx]

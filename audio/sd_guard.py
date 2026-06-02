@@ -34,6 +34,13 @@ _io_lock = threading.RLock()
 _install_lock = threading.Lock()
 _installed = False
 
+# Per-thread flag: True while THIS thread is inside _guarded_play(). sounddevice's
+# play() calls stop() internally before starting each clip; that internal stop must
+# NOT incur the post-stop settle (it would pad a gap before every clip and glitch
+# playback). Only an explicit barge-in stop on another path should settle. Thread-
+# local so a cross-thread barge-in stop (different thread) still settles correctly.
+_local = threading.local()
+
 _DEFAULT_STOP_SETTLE_SECS = 0.05
 
 
@@ -71,17 +78,23 @@ def install() -> bool:
             # play() is non-blocking (it starts the stream and returns); hold the
             # lock only for that brief start so a concurrent stop() can't race it.
             with _io_lock:
-                result = _orig_play(*args, **kwargs)
-            # Feed exactly what we just started playing to the echo canceller as its
-            # reference, so it can subtract Rex's voice from the mic and let a wake
-            # word be heard over him. Outside the io lock (resampling must not block a
-            # concurrent stop/play); failures never affect playback.
+                _local.in_play = True
+                try:
+                    result = _orig_play(*args, **kwargs)
+                finally:
+                    _local.in_play = False
+            # Feed exactly what we just started playing to the (optional) software
+            # echo canceller as its reference. Skipped entirely unless AEC is enabled
+            # (it ships off), so there's zero per-clip overhead in the normal path.
+            # Outside the io lock; failures never affect playback.
             try:
-                data = args[0] if args else kwargs.get("data")
-                sr = args[1] if len(args) > 1 else kwargs.get("samplerate")
-                if data is not None and sr:
-                    from audio import aec
-                    aec.push_reference(data, int(sr))
+                import config as _config
+                if getattr(_config, "AEC_SOFTWARE_ENABLED", False):
+                    data = args[0] if args else kwargs.get("data")
+                    sr = args[1] if len(args) > 1 else kwargs.get("samplerate")
+                    if data is not None and sr:
+                        from audio import aec
+                        aec.push_reference(data, int(sr))
             except Exception:
                 pass
             return result
@@ -89,11 +102,15 @@ def install() -> bool:
         def _guarded_stop(*args, **kwargs):
             with _io_lock:
                 result = _orig_stop(*args, **kwargs)
-                settle = _stop_settle_secs()
-                if settle > 0:
-                    # Hold the lock through the settle so any replay's play() waits
-                    # for the device to release before re-initializing the stream.
-                    time.sleep(settle)
+                # Skip the settle for the stop() that play() issues internally before
+                # each clip (same thread, in_play set) — that gap is what caused the
+                # startup TTS pauses/glitching. Only an explicit barge-in stop settles.
+                if not getattr(_local, "in_play", False):
+                    settle = _stop_settle_secs()
+                    if settle > 0:
+                        # Hold the lock through the settle so a replay's play() waits
+                        # for the device to release before re-initializing the stream.
+                        time.sleep(settle)
                 return result
 
         sd.play = _guarded_play

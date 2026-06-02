@@ -193,12 +193,12 @@ def _dj_playback_active() -> bool:
 def _tts_playback_active() -> bool:
     """True while Rex's OWN spoken-audio playback is active (TTS / speech-queue).
 
-    Rex's playback through the speakers bleeds into the mic and acoustically MASKS
-    a spoken wake word, so a "hey rex" said to interrupt him scores far lower while
-    he's talking than after he stops. We use this to drop the wake threshold during
-    his speech so a mid-sentence interrupt can still fire. DJ music is handled
-    separately by ``_dj_playback_active()``; ``echo_cancel.is_suppressed()`` is True
-    for both, so callers check dj first.
+    Rex's playback bleeds into the mic, so the wake word hears his own voice — which
+    both masks a real interrupting "hey rex" AND lets his own lines self-trigger.
+    Used to stand the wake word down during his speech (unless a clean hardware-AEC'd
+    channel is in use; see WAKE_WORD_ALLOW_DURING_TTS). DJ music is handled separately
+    by ``_dj_playback_active()``; ``echo_cancel.is_suppressed()`` is True for both, so
+    callers check dj first.
     """
     try:
         from audio import echo_cancel
@@ -229,6 +229,11 @@ def _threshold(model_name: str, *, dj_playing: bool = False, tts_playing: bool =
 _NEAR_MISS_SCORE_FLOOR = 0.2
 _NEAR_MISS_LOG_INTERVAL_SECS = 1.5
 _last_near_miss_log_at = 0.0
+
+# One spoken wake word lights up the model for several consecutive 80 ms frames;
+# without a cooldown EACH frame re-fires the callback and Rex acks/repeats himself.
+# Collapse a burst into a single fire.
+_last_wake_fire_at = 0.0
 
 
 def _maybe_log_masked_near_miss(model_name: str, score: float, threshold: float, dj_playing: bool) -> None:
@@ -277,9 +282,23 @@ def _detection_loop(callback: Callable[[str], None]) -> None:
         if len(audio) < _CHUNK_SAMPLES:
             continue  # stream not yet warmed up
 
+        current_state = state_module.get_state()
+        active = _active_for_state(current_state)
+        if not active:
+            continue
+
+        # Stand down while Rex is speaking his OWN TTS — the mic hears his voice, and
+        # his lines (esp. "Hey <name>" greetings) self-trigger the wake word so he
+        # interrupts himself. Skip unless WAKE_WORD_ALLOW_DURING_TTS is set, which is
+        # only safe when reading a hardware-AEC'd channel with his voice removed. DJ
+        # music is exempt (barge-in to stop music is intentional).
+        if (not bool(getattr(config, "WAKE_WORD_ALLOW_DURING_TTS", False))
+                and _tts_playback_active() and not _dj_playback_active()):
+            continue
+
         mic = audio[-_CHUNK_SAMPLES:]
-        # Suppress Rex's own playback echo so a wake word can be heard over him while
-        # he's speaking. No-op passthrough when he's quiet (see audio/aec.py).
+        # Optional software echo suppression (off by default — see audio/aec.py and
+        # config.AEC_SOFTWARE_ENABLED; ineffective in-room, kept for experimentation).
         try:
             from audio import aec
             mic = aec.process(mic)
@@ -287,11 +306,6 @@ def _detection_loop(callback: Callable[[str], None]) -> None:
             _log.debug("[wake_word] aec passthrough: %s", exc)
 
         chunk = _to_oww_input(mic)
-
-        current_state = state_module.get_state()
-        active = _active_for_state(current_state)
-        if not active:
-            continue
 
         try:
             predictions = _oww_model.predict(chunk)
@@ -301,31 +315,42 @@ def _detection_loop(callback: Callable[[str], None]) -> None:
 
         dj_playing = _dj_playback_active()
         tts_playing = (not dj_playing) and _tts_playback_active()
+        # Pick the single best model this frame so two models crossing at once
+        # (e.g. Dee-Jay_Rex + Hey_rex) don't fire twice for one spoken phrase.
         best_model: Optional[str] = None
         best_score = 0.0
         best_threshold = 1.0
-        fired = False
         for model_name, score in predictions.items():
             if model_name not in active:
                 continue
             threshold = _threshold(model_name, dj_playing=dj_playing, tts_playing=tts_playing)
             if score > best_score:
                 best_model, best_score, best_threshold = model_name, float(score), threshold
-            if score >= threshold:
-                fired = True
+
+        if best_model is not None and best_score >= best_threshold:
+            global _last_wake_fire_at
+            now = time.monotonic()
+            cooldown = float(getattr(config, "WAKE_WORD_REFIRE_COOLDOWN_SECS", 1.5))
+            if now - _last_wake_fire_at >= cooldown:
+                _last_wake_fire_at = now
                 _log.info(
                     "Wake word detected: %s (confidence=%.3f%s)",
-                    model_name,
-                    score,
+                    best_model,
+                    best_score,
                     " during-dj" if dj_playing else (" during-tts" if tts_playing else ""),
                 )
                 try:
-                    callback(model_name)
+                    callback(best_model)
                 except Exception as exc:
                     _log.error("Wake word callback raised: %s", exc)
-        # While Rex is playing audio, log how close a (masked) wake word got, so the
-        # mid-speech-interrupt threshold can be tuned to the room.
-        if not fired and (dj_playing or tts_playing) and best_model is not None:
+            else:
+                # Same utterance still ringing the model — one ack already fired.
+                _log.debug(
+                    "Wake re-fire suppressed (%.2fs < %.2fs): %s %.3f",
+                    now - _last_wake_fire_at, cooldown, best_model, best_score,
+                )
+        elif (dj_playing or tts_playing) and best_model is not None:
+            # While Rex is playing audio, log how close a (masked) wake word got.
             _maybe_log_masked_near_miss(best_model, best_score, best_threshold, dj_playing)
 
     _log.info("Wake word detection loop stopped.")

@@ -570,6 +570,42 @@ def _audio_output_suppressed() -> bool:
     )
 
 
+def _configure_audio_output_device() -> None:
+    """Route all sounddevice playback to a configured output device.
+
+    Used to send Rex's audio THROUGH the ReSpeaker Lite so its onboard hardware AEC
+    receives the playback reference and can cancel his voice from the mic. No-op when
+    neither AUDIO_OUTPUT_DEVICE_INDEX (>=0) nor AUDIO_OUTPUT_DEVICE_NAME is set —
+    playback then uses the OS default output, unchanged.
+    """
+    idx = int(getattr(config, "AUDIO_OUTPUT_DEVICE_INDEX", -1))
+    name = str(getattr(config, "AUDIO_OUTPUT_DEVICE_NAME", "") or "").strip()
+    if idx < 0 and not name:
+        return
+    try:
+        import sounddevice as sd
+        if idx < 0 and name:
+            for i, dev in enumerate(sd.query_devices()):
+                if name.lower() in str(dev.get("name", "")).lower() and int(dev.get("max_output_channels", 0)) > 0:
+                    idx = i
+                    break
+        if idx is None or idx < 0:
+            logger.warning(
+                "Audio output device %r not found; using default output.",
+                name or idx,
+            )
+            return
+        current = sd.default.device
+        in_dev = current[0] if isinstance(current, (list, tuple)) else current
+        sd.default.device = (in_dev, idx)
+        logger.info(
+            "Audio output routed to device %d (%s) for hardware AEC.",
+            idx, sd.query_devices(idx).get("name", "?"),
+        )
+    except Exception as exc:
+        logger.warning("Could not set audio output device: %s", exc)
+
+
 def _start_startup_boot_tts_thread() -> threading.Thread | None:
     if _audio_output_suppressed():
         logger.info("Startup boot TTS disabled by --noaudio")
@@ -681,6 +717,12 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         sd_guard.install()
     except Exception as exc:
         logger.debug("sd_guard install skipped: %s", exc)
+
+    # Route playback to a specific output device (e.g. the ReSpeaker Lite, so its
+    # onboard hardware AEC gets the reference). No-op unless configured.
+    if not no_audio:
+        _configure_audio_output_device()
+
     if no_audio:
         logger.info("Skipping local Whisper verification (--noaudio text-input mode).")
     else:

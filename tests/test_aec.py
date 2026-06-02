@@ -9,6 +9,10 @@ class SoftwareAECTests(unittest.TestCase):
         from audio import aec
         self.aec = aec
         aec.reset()
+        # The software AEC ships DISABLED (ineffective in-room); enable it for the
+        # DSP tests. test_passthrough_when_disabled overrides this back to False.
+        self._enable_patch = mock.patch.object(aec.config, "AEC_SOFTWARE_ENABLED", True)
+        self._enable_patch.start()
         # Deterministic, controllable clock so reference placement + reads align.
         self._t = [0.0]
         self._clock_patch = mock.patch.object(aec, "_clock", side_effect=lambda: self._t[0])
@@ -16,6 +20,7 @@ class SoftwareAECTests(unittest.TestCase):
 
     def tearDown(self):
         self._clock_patch.stop()
+        self._enable_patch.stop()
         self.aec.reset()
 
     def _aligned_mic(self, n):

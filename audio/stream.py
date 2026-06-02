@@ -32,6 +32,10 @@ _buf: deque = deque(maxlen=_MAXLEN)
 _buf_lock = threading.Lock()
 _stream = None  # sounddevice.InputStream, or None when disabled
 _input_channels: int = 1  # actual device channels; set during start()
+# When >= 0, read ONLY this mic channel (the ReSpeaker Lite AEC firmware puts the
+# echo-cancelled audio on one channel and the raw reference on another — mixing them
+# would re-add the echo). -1 ⇒ mix all channels. Set from config in start().
+_aec_channel: int | None = None
 
 
 # ── Callback ──────────────────────────────────────────────────────────────────
@@ -39,9 +43,13 @@ _input_channels: int = 1  # actual device channels; set during start()
 def _callback(indata, frames, time_info, status):  # noqa: ANN001
     if status:
         _log.warning("sounddevice status: %s", status)
-    # Mix stereo → mono by averaging channels so both capsules contribute.
     if _input_channels > 1:
-        chunk = indata.mean(axis=1).copy()
+        if _aec_channel is not None and 0 <= _aec_channel < _input_channels:
+            # Use the hardware-AEC'd channel verbatim — do NOT mix in the raw channel.
+            chunk = indata[:, _aec_channel].copy()
+        else:
+            # Mix stereo → mono by averaging channels so both capsules contribute.
+            chunk = indata.mean(axis=1).copy()
     else:
         chunk = indata[:, 0].copy()
     with _buf_lock:
@@ -52,7 +60,12 @@ def _callback(indata, frames, time_info, status):  # noqa: ANN001
 
 def start() -> None:
     """Open the microphone and begin filling the rolling buffer."""
-    global _stream, _input_channels
+    global _stream, _input_channels, _aec_channel
+
+    ch_cfg = int(getattr(config, "AUDIO_AEC_INPUT_CHANNEL", -1))
+    _aec_channel = ch_cfg if ch_cfg >= 0 else None
+    if _aec_channel is not None:
+        _log.info("Audio input will use AEC channel %d only (no channel mixing).", _aec_channel)
 
     if AUDIO_DEVICE_INDEX is None:
         _log.warning(

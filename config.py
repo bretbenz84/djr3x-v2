@@ -605,14 +605,25 @@ WAKE_WORD_THRESHOLDS = {
 # so barge-in actually fires. The per-phrase models are specific enough that a
 # modest drop rarely false-triggers on music. Set to 0.0 to disable.
 WAKE_WORD_DJ_PLAYBACK_THRESHOLD_DELTA = 0.15
-# Same idea for Rex's OWN speech: while he's talking, his voice bleeds into the mic
-# and masks a spoken wake word, so an interrupting "hey rex" scores lower than when
-# he's quiet. Drop the bar during his TTS playback so a mid-sentence interrupt can
-# still fire. Raise toward 0.2 (the floor) if interrupts don't register; lower
-# toward 0.0 if Rex starts triggering himself on his own lines. Set 0.0 to disable.
-WAKE_WORD_TTS_PLAYBACK_THRESHOLD_DELTA = 0.15
+# DISABLED (0.0): dropping the bar during Rex's own speech caused him to self-trigger
+# on his own lines (esp. "Hey <name>" greetings score high on the Hey_rex model), and
+# software AEC only achieved ~5 dB in the real room — not enough to separate the user
+# from Rex. Mid-speech barge-in needs the wake word to read a CLEAN channel (hardware
+# AEC); see WAKE_WORD_ALLOW_DURING_TTS / AUDIO_AEC_INPUT_CHANNEL below.
+WAKE_WORD_TTS_PLAYBACK_THRESHOLD_DELTA = 0.0
+# Whether the wake word may fire while Rex is speaking his OWN TTS. Default False:
+# the mic hears Rex's own voice, so leaving it on makes him interrupt himself
+# (self-trigger). Set True ONLY when the wake word is reading a hardware-AEC'd mic
+# channel that has Rex's voice removed (AUDIO_AEC_INPUT_CHANNEL + output routed
+# through the ReSpeaker Lite). DJ music is always exempt — barge-in to stop music
+# is intentional and music doesn't phonetically self-trigger.
+WAKE_WORD_ALLOW_DURING_TTS = _env_bool("WAKE_WORD_ALLOW_DURING_TTS", False)
 # Floor the reduced threshold here so the delta can never make detection trivial.
 WAKE_WORD_MIN_THRESHOLD = 0.30
+# One spoken wake word keeps the model above threshold for several consecutive
+# 80ms frames; without a cooldown each frame re-fires and Rex acknowledges/repeats
+# himself multiple times for one "hey rex". Ignore re-fires within this window.
+WAKE_WORD_REFIRE_COOLDOWN_SECS = _env_float("WAKE_WORD_REFIRE_COOLDOWN_SECS", 1.5, min_value=0.0, max_value=10.0)
 
 # Immediate physical acknowledgment when a general wake word is detected.
 # This is separate from spoken wake acknowledgments so Rex visibly reacts even
@@ -1314,6 +1325,15 @@ SPEAKER_GAZE_SEARCH_NECK_FRACTION = _env_float(
     min_value=0.0,
     max_value=1.0,
 )
+# Multiplier applied to the search sweep for MID-CONVERSATION speaker searches (not
+# the startup room scan). The talker is usually right in front of Rex, so a full
+# swing just thrashes his head; 0.45 keeps it a gentle glance. 1.0 = same as startup.
+SPEAKER_GAZE_SEARCH_SPEECH_NECK_SCALE = _env_float(
+    "SPEAKER_GAZE_SEARCH_SPEECH_NECK_SCALE",
+    0.45,
+    min_value=0.0,
+    max_value=1.0,
+)
 SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION = _env_float(
     "SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION",
     0.65,
@@ -1388,6 +1408,23 @@ AUDIO_CHANNELS       = 1      # mono — pipeline always works with 1-channel ar
 AUDIO_INPUT_CHANNELS = 2      # hardware capture channels (ReSpeaker Lite is stereo)
 AUDIO_BUFFER_SECONDS = 30     # rolling circular buffer duration
 
+# ── Output routing for hardware AEC (ReSpeaker Lite) ─────────────────────────
+# To use the ReSpeaker Lite's ONBOARD acoustic echo cancellation, Rex's audio must
+# play OUT THROUGH the ReSpeaker (its XU316 chip uses the USB-output stream it
+# receives as the AEC reference, cancels it from the mic, and routes the sound to a
+# speaker/amp on its 3.5mm jack or JST connector). Set one of these to the ReSpeaker
+# Lite output device so all playback is routed there. Index from `python -m
+# sounddevice`; name is a case-insensitive substring (e.g. "ReSpeaker"). Unset
+# (index < 0 and empty name) ⇒ use the OS default output (no routing change).
+AUDIO_OUTPUT_DEVICE_INDEX = _env_int("AUDIO_OUTPUT_DEVICE_INDEX", -1, min_value=-1, max_value=128)
+AUDIO_OUTPUT_DEVICE_NAME = os.getenv("AUDIO_OUTPUT_DEVICE_NAME", "").strip()
+# Which mic channel carries the AEC-PROCESSED audio. The ReSpeaker Lite AEC firmware
+# (ffva_ua_v2.0.6_output_proc0_ref0.bin) puts processed audio on channel 0 and the
+# raw reference on channel 1 — so we must read ONLY channel 0, never mix them (mixing
+# re-adds the echo). Set to 0 with that firmware. -1 ⇒ mix all channels (stock
+# firmware / no hardware AEC). With this set, also set WAKE_WORD_ALLOW_DURING_TTS=True.
+AUDIO_AEC_INPUT_CHANNEL = _env_int("AUDIO_AEC_INPUT_CHANNEL", -1, min_value=-1, max_value=7)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ECHO CANCELLATION (AEC)
 # Simple suppression approach: reduce mic sensitivity during playback rather
@@ -1419,7 +1456,13 @@ AUDIO_PLAYBACK_STOP_SETTLE_SECS = 0.05
 # Engages ONLY while Rex is playing; pure passthrough otherwise, so it can't hurt
 # normal wake detection. These need tuning on real hardware — watch the periodic
 # [aec] ERLE log and the [wake_diag] near-miss scores.
-AEC_SOFTWARE_ENABLED = True
+# DISABLED: in the real room this only cancelled ~5 dB (clock drift between the
+# output device and the ReSpeaker mic + reverb defeat host-side cancellation), far
+# short of the ~30 dB needed to unmask a wake word — and worse, its distorted
+# residual made Rex's own voice score HIGHER on the wake model, so he self-triggered
+# and interrupted himself. Left wired but off; true barge-in needs hardware AEC (the
+# ReSpeaker Lite's onboard XU316 AEC). Flip True only to experiment.
+AEC_SOFTWARE_ENABLED = False
 AEC_OVERSUBTRACTION = _env_float("AEC_OVERSUBTRACTION", 1.6, min_value=1.0, max_value=4.0)
 AEC_SPECTRAL_FLOOR = _env_float("AEC_SPECTRAL_FLOOR", 0.10, min_value=0.0, max_value=1.0)
 AEC_MAX_DELAY_SECS = _env_float("AEC_MAX_DELAY_SECS", 0.4, min_value=0.05, max_value=2.0)
