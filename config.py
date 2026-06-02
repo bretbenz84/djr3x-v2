@@ -1484,8 +1484,19 @@ POST_QUESTION_PLAYBACK_SUPPRESSION_SECS = 0.12
 
 # After Rex asks a direct question, preserve the rolling mic buffer at handoff.
 # Flushing here can delete the first syllables of a fast human answer that began
-# while Rex was finishing the question. Non-question speech still flushes.
+# while Rex was finishing the question.
 POST_QUESTION_FLUSH_AUDIO_BUFFER = False
+
+# Statements invite immediate replies too (a provocative opinion gets rebutted
+# just as fast as a question gets answered). The old statement handoff used the
+# full 0.5s attenuation tail AND flushed the buffer, so a reply that began as Rex
+# finished a statement lost its front ("there's much more to Sacramento than
+# politics" → "to Sacramento than politics"). These give statements the same
+# responsive treatment questions already get: a short tail and no destructive
+# flush. The capture floor + preroll grace (below) recover the front from the
+# raw (un-attenuated) buffer. Words spoken *over* Rex still need hardware AEC.
+POST_SPEECH_PLAYBACK_SUPPRESSION_SECS = 0.25
+POST_SPEECH_FLUSH_AUDIO_BUFFER = False
 
 # ElevenLabs clips can contain trailing near-silence. Humans naturally answer
 # when Rex sounds done, but the audio device may still be playing that padding,
@@ -1892,9 +1903,12 @@ MIN_SPEECH_DURATION_SECS = 0.45
 SPEECH_PREROLL_SECS = 0.45
 POST_QUESTION_SPEECH_PREROLL_SECS = 2.0
 
-# Never let question-answer pre-roll reach back into Rex's just-finished prompt.
-# Set above zero only if the first syllable after TTS is consistently clipped.
-POST_TTS_CAPTURE_PREROLL_GRACE_SECS = 0.0
+# How far a NON-question reply's capture may reach back past the post-TTS handoff
+# into the raw (un-attenuated) rolling buffer. 0.0 meant a reply that began as Rex
+# finished a statement had its front clipped (the buffer holds it, but the capture
+# floor refused to reach back). 0.12 mirrors the question grace — enough to recover
+# the front, small enough that it rarely reaches Rex's final word (≥0.25s does).
+POST_TTS_CAPTURE_PREROLL_GRACE_SECS = 0.12
 
 # Let question-answer capture reach slightly before the handoff, but only into
 # the typical silent pad at the end of TTS. 250ms can include Rex's final word.
@@ -1907,9 +1921,11 @@ INCOMPLETE_TURN_ENABLED = True
 INCOMPLETE_TURN_HOLD_SECS = 4.0
 INCOMPLETE_TURN_PROMPT_REPLY_WINDOW_SECS = 10.0
 
-# Seconds after TTS completes before VAD detections are accepted. The audio
-# buffer is flushed when playback ends; this guard just lets room echo decay.
-POST_SPEECH_LISTEN_DELAY_SECS = 0.35
+# Seconds after a Rex statement completes before VAD detections are accepted —
+# just long enough for room echo of his own voice to decay. Lowered 0.35 → 0.2 so
+# a reply that starts right as Rex finishes a statement is detected sooner (the
+# buffer is no longer flushed, so the front is preserved and recovered via preroll).
+POST_SPEECH_LISTEN_DELAY_SECS = 0.2
 
 # When Rex just asked a direct question, resume quickly while giving the local
 # output/mic path a small moment to settle.

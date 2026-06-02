@@ -408,18 +408,23 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             bool(__import__("config").POST_QUESTION_FLUSH_AUDIO_BUFFER),
         )
 
-    def test_social_queue_item_uses_normal_flush_playback_handoff(self):
+    def test_social_queue_item_uses_responsive_no_flush_handoff(self):
         from audio import speech_queue
 
         opts = speech_queue._playback_handoff_options(
             "Got it, Bret. Nice to meet you."
         )
 
+        # Statements now get the short tail and no flush so an immediate reply survives.
         self.assertEqual(
             opts["post_playback_tail_secs"],
-            float(__import__("config").POST_PLAYBACK_SUPPRESSION_SECS),
+            float(__import__("config").POST_SPEECH_PLAYBACK_SUPPRESSION_SECS),
         )
-        self.assertTrue(opts["flush_on_playback_stop"])
+        self.assertEqual(
+            opts["flush_on_playback_stop"],
+            bool(__import__("config").POST_SPEECH_FLUSH_AUDIO_BUFFER),
+        )
+        self.assertFalse(opts["flush_on_playback_stop"])
 
     def test_last_name_prompt_without_question_mark_uses_fast_handoff(self):
         from audio import speech_queue
@@ -437,16 +442,16 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             bool(__import__("config").POST_QUESTION_FLUSH_AUDIO_BUFFER),
         )
 
-    def test_statement_queue_item_uses_normal_flush_playback_handoff(self):
+    def test_statement_queue_item_uses_responsive_no_flush_handoff(self):
         from audio import speech_queue
 
         opts = speech_queue._playback_handoff_options("Classic choice.")
 
         self.assertEqual(
             opts["post_playback_tail_secs"],
-            float(__import__("config").POST_PLAYBACK_SUPPRESSION_SECS),
+            float(__import__("config").POST_SPEECH_PLAYBACK_SUPPRESSION_SECS),
         )
-        self.assertTrue(opts["flush_on_playback_stop"])
+        self.assertFalse(opts["flush_on_playback_stop"])
 
     def test_question_playback_stop_can_skip_flush_and_short_tail(self):
         from audio import echo_cancel
@@ -756,7 +761,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         )
         self.assertFalse(policy.flush_buffer)
 
-    def test_social_handoff_flushes_buffer_and_uses_normal_delay(self):
+    def test_social_handoff_preserves_buffer_for_immediate_reply(self):
         from intelligence import interaction
         import config
 
@@ -768,9 +773,10 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             policy.listen_delay_secs,
             float(config.POST_SPEECH_LISTEN_DELAY_SECS),
         )
-        self.assertTrue(policy.flush_buffer)
+        # A statement reply that began as Rex finished must not be flushed away.
+        self.assertFalse(policy.flush_buffer)
 
-    def test_statement_handoff_flushes_buffer_and_uses_normal_delay(self):
+    def test_statement_handoff_preserves_buffer_for_immediate_reply(self):
         from intelligence import interaction
         import config
 
@@ -782,7 +788,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             policy.listen_delay_secs,
             float(config.POST_SPEECH_LISTEN_DELAY_SECS),
         )
-        self.assertTrue(policy.flush_buffer)
+        self.assertFalse(policy.flush_buffer)
 
     def test_assistant_question_detector_ignores_quoted_questions_and_tiny_openers(self):
         from intelligence import interaction
@@ -848,14 +854,14 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         flush.assert_not_called()
         self.assertAlmostEqual(floor, 99.88)
 
-    def test_social_handoff_flushes_and_uses_no_tail_preroll(self):
+    def test_social_handoff_preserves_buffer_and_uses_tail_preroll(self):
         from intelligence import interaction
 
         old_floor = interaction._listen_capture_floor_at
         try:
             with (
                 mock.patch.object(interaction.time, "monotonic", return_value=100.0),
-                mock.patch.object(interaction.config, "POST_QUESTION_CAPTURE_PREROLL_GRACE_SECS", 0.12),
+                mock.patch.object(interaction.config, "POST_TTS_CAPTURE_PREROLL_GRACE_SECS", 0.12),
                 mock.patch.object(interaction.stream, "flush") as flush,
                 mock.patch.object(interaction.vad, "reset_state"),
             ):
@@ -867,18 +873,21 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             floor = interaction._listen_capture_floor_at
             interaction._listen_capture_floor_at = old_floor
 
-        flush.assert_called_once()
-        self.assertAlmostEqual(floor, 100.0)
+        # A statement reply is no longer flushed away, and the capture floor reaches
+        # 120ms back into the raw buffer to recover the front of an immediate reply.
+        flush.assert_not_called()
+        self.assertAlmostEqual(floor, 99.88)
 
-    def test_social_sequence_end_uses_normal_flush_handoff(self):
+    def test_social_sequence_end_uses_responsive_no_flush_handoff(self):
         from intelligence import interaction
+        import config
 
         with mock.patch.object(interaction.echo_cancel, "end_sequence") as end_sequence:
             interaction._end_response_sequence_for_text("Got it, Bret. Nice to meet you.")
 
         end_sequence.assert_called_once_with(
-            flush=True,
-            tail_secs=None,
+            flush=False,
+            tail_secs=float(config.POST_SPEECH_PLAYBACK_SUPPRESSION_SECS),
         )
 
     def test_post_tts_handoff_refreshes_idle_timer(self):
@@ -9550,14 +9559,22 @@ class PostQuestionHandoffStickinessTest(unittest.TestCase):
             interaction._listen_resume_at - interaction._last_speech_at, 0.12 + 1e-6
         )
 
-    def test_statement_outside_sticky_window_flushes(self):
+    def test_statement_outside_sticky_window_uses_normal_delay(self):
         from intelligence import interaction
-        # No recent question handoff → ordinary statement flushes as before.
+        import config
+        # No recent question handoff → ordinary statement. It still must NOT flush
+        # (statements preserve the buffer now so an immediate reply survives), but it
+        # uses the normal statement listen delay, not the shorter sticky/question one.
         interaction._last_fast_handoff_at = interaction.time.monotonic() - 100.0
         with mock.patch.object(interaction.config, "POST_QUESTION_HANDOFF_STICKY_SECS", 1.5):
             flush = self._apply("Toys are the modern navigational console.")
-        flush.assert_called_once()
-        self.assertTrue(interaction._post_tts_flush_needed)
+        flush.assert_not_called()
+        self.assertFalse(interaction._post_tts_flush_needed)
+        self.assertAlmostEqual(
+            interaction._listen_resume_at - interaction._last_speech_at,
+            float(config.POST_SPEECH_LISTEN_DELAY_SECS),
+            places=6,
+        )
 
 
 class CrosstalkSuppressionTest(unittest.TestCase):

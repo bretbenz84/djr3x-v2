@@ -1737,7 +1737,9 @@ def _post_tts_handoff_policy(text: Optional[str]) -> _PostTtsHandoffPolicy:
     asked_question = _assistant_asked_question(text or "")
     fast_response_expected = _fast_response_handoff_expected(text)
     delay_secs = float(getattr(config, "POST_SPEECH_LISTEN_DELAY_SECS", 0.35))
-    flush_buffer = True
+    # Statements no longer flush by default: a reply that began as Rex finished a
+    # statement sits (un-attenuated) in the rolling buffer, and flushing deleted it.
+    flush_buffer = bool(getattr(config, "POST_SPEECH_FLUSH_AUDIO_BUFFER", False))
     if fast_response_expected:
         delay_secs = float(
             getattr(config, "POST_QUESTION_LISTEN_DELAY_SECS", delay_secs)
@@ -1827,13 +1829,23 @@ def _apply_post_tts_handoff(
     return policy
 
 
+def _reply_playback_tail_secs(asked_question: bool) -> float:
+    """Mic-attenuation tail to hold after a spoken reply ends.
+
+    Questions and statements both invite immediate replies, so both use a short
+    tail — long enough to let room echo of Rex's own voice decay, short enough that
+    a human reply starting as Rex finishes is detected promptly. Falls back to the
+    general post-playback tail if the specific knob is unset.
+    """
+    general = float(getattr(config, "POST_PLAYBACK_SUPPRESSION_SECS", 0.5))
+    if asked_question:
+        return float(getattr(config, "POST_QUESTION_PLAYBACK_SUPPRESSION_SECS", general))
+    return float(getattr(config, "POST_SPEECH_PLAYBACK_SUPPRESSION_SECS", general))
+
+
 def _end_response_sequence_for_text(text: Optional[str]) -> None:
     policy = _post_tts_handoff_policy(text)
-    tail_secs = None
-    if policy.fast_response_expected:
-        tail_secs = float(
-            getattr(config, "POST_QUESTION_PLAYBACK_SUPPRESSION_SECS", 0.05)
-        )
+    tail_secs = _reply_playback_tail_secs(policy.fast_response_expected)
     echo_cancel.end_sequence(flush=policy.flush_buffer, tail_secs=tail_secs)
 
 
@@ -14485,16 +14497,10 @@ def _handle_speech_segment(
                     _register_rex_utterance(game_response)
                     assistant_asked_question = _assistant_asked_question(game_response)
                     if sequence_started:
-                        question_tail = None
-                        if assistant_asked_question:
-                            question_tail = float(
-                                getattr(
-                                    config,
-                                    "POST_QUESTION_PLAYBACK_SUPPRESSION_SECS",
-                                    getattr(config, "POST_PLAYBACK_SUPPRESSION_SECS", 0.5),
-                                )
-                            )
-                        echo_cancel.end_sequence(flush=False, tail_secs=question_tail)
+                        echo_cancel.end_sequence(
+                            flush=False,
+                            tail_secs=_reply_playback_tail_secs(assistant_asked_question),
+                        )
                         sequence_started = False
                         if game_after_audio_path and not _interrupted.is_set():
                             speech_queue.enqueue_audio_file(
@@ -15820,16 +15826,10 @@ def _handle_speech_segment(
         # Otherwise an immediate human reply can land in the rolling buffer and
         # then get flushed when the API-backed fact/sentiment pass finishes.
         if sequence_started:
-            question_tail = None
-            if assistant_asked_question:
-                question_tail = float(
-                    getattr(
-                        config,
-                        "POST_QUESTION_PLAYBACK_SUPPRESSION_SECS",
-                        getattr(config, "POST_PLAYBACK_SUPPRESSION_SECS", 0.5),
-                    )
-                )
-            echo_cancel.end_sequence(flush=False, tail_secs=question_tail)
+            echo_cancel.end_sequence(
+                flush=False,
+                tail_secs=_reply_playback_tail_secs(assistant_asked_question),
+            )
             sequence_started = False
             if game_after_audio_path and not _interrupted.is_set():
                 speech_queue.enqueue_audio_file(

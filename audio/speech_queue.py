@@ -98,11 +98,19 @@ def _playback_handoff_options(text: Optional[str]) -> dict:
                     getattr(config, "POST_QUESTION_FLUSH_AUDIO_BUFFER", False)
                 ),
             }
+        # Statements invite immediate replies too; use the short tail and skip the
+        # destructive buffer flush so a reply that starts as Rex finishes survives.
         return {
             "post_playback_tail_secs": float(
-                getattr(config, "POST_PLAYBACK_SUPPRESSION_SECS", 0.5)
+                getattr(
+                    config,
+                    "POST_SPEECH_PLAYBACK_SUPPRESSION_SECS",
+                    getattr(config, "POST_PLAYBACK_SUPPRESSION_SECS", 0.5),
+                )
             ),
-            "flush_on_playback_stop": True,
+            "flush_on_playback_stop": bool(
+                getattr(config, "POST_SPEECH_FLUSH_AUDIO_BUFFER", False)
+            ),
         }
     except Exception:
         return {
