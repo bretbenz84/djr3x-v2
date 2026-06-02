@@ -9346,6 +9346,34 @@ class WakeWordDjBargeInTest(unittest.TestCase):
 
         self.assertAlmostEqual(ducked, 0.30)
 
+    def test_own_tts_speech_suppresses_wake_detection(self):
+        # Rex speaking his own TTS (echo_cancel suppressed, not DJ) must suppress
+        # wake detection so he can't self-trigger the wake word on his own voice.
+        from audio import wake_word, echo_cancel
+
+        with (
+            mock.patch.object(echo_cancel, "is_suppressed", return_value=True),
+            mock.patch.object(wake_word, "_dj_playback_active", return_value=False),
+        ):
+            self.assertTrue(wake_word._own_speech_suppresses_wake())
+
+    def test_dj_music_and_silence_do_not_suppress_wake_detection(self):
+        # DJ music is exempt (barge-in to stop the music is intentional), and an
+        # idle/quiet mic must always allow detection.
+        from audio import wake_word, echo_cancel
+
+        with (
+            mock.patch.object(echo_cancel, "is_suppressed", return_value=True),
+            mock.patch.object(wake_word, "_dj_playback_active", return_value=True),
+        ):
+            self.assertFalse(wake_word._own_speech_suppresses_wake())
+
+        with (
+            mock.patch.object(echo_cancel, "is_suppressed", return_value=False),
+            mock.patch.object(wake_word, "_dj_playback_active", return_value=False),
+        ):
+            self.assertFalse(wake_word._own_speech_suppresses_wake())
+
 
 class StartupGreetingOpenerTest(unittest.TestCase):
     def test_startup_profile_question_disabled_by_default(self):

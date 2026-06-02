@@ -189,6 +189,27 @@ def _dj_playback_active() -> bool:
         return False
 
 
+def _own_speech_suppresses_wake() -> bool:
+    """True while Rex's OWN TTS/speech is playing — so the wake word does not fire
+    on his own voice bleeding back through the mic.
+
+    The wake path reads the raw mic; unlike VAD (which echo_cancel attenuates
+    during playback), nothing was masking Rex's own voice here. Without this guard
+    Rex self-triggers the wake word while speaking and barges in on himself — which
+    drives a stop+replay on the shared CoreAudio stream that can hard-crash
+    (Trace/BPT trap). DJ MUSIC playback is exempt: wake-word barge-in to stop the
+    music is intentional (see interaction._stop_dj_for_wake), and music is not
+    speech so it does not phonetically self-trigger.
+    """
+    try:
+        from audio import echo_cancel
+        if not echo_cancel.is_suppressed():
+            return False
+        return not _dj_playback_active()
+    except Exception:
+        return False
+
+
 def _threshold(model_name: str, *, dj_playing: bool = False) -> float:
     base = config.WAKE_WORD_THRESHOLDS.get(model_name, config.WAKE_WORD_THRESHOLD)
     if not dj_playing:
@@ -226,6 +247,12 @@ def _detection_loop(callback: Callable[[str], None]) -> None:
         audio = stream.get_audio_chunk(_CHUNK_SECS)
         if len(audio) < _CHUNK_SAMPLES:
             continue  # stream not yet warmed up
+
+        # Skip detection while Rex is speaking his own TTS — the mic captures his
+        # playback and would self-trigger the wake word (barging in on himself).
+        # DJ music is exempt so wake-word barge-in to stop the music still works.
+        if _own_speech_suppresses_wake():
+            continue
 
         chunk = _to_oww_input(audio[-_CHUNK_SAMPLES:])
 
