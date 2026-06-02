@@ -129,10 +129,17 @@ def _is_hallucination(text: str) -> bool:
     if len(meaningful) < config.WHISPER_MIN_WORDS:
         return True
 
-    # Repetition pattern: any single word appearing more than threshold times is a loop artifact.
+    # Repetition pattern: a real Whisper loop repeats ONE word until it dominates the
+    # utterance ("you you you you"). A varied sentence that naturally reuses a function
+    # word ("I like Bach, I like Beethoven, I like Bach") is NOT a loop — counting raw
+    # occurrences wrongly discarded real speech. Require BOTH: the top word exceeds the
+    # count threshold AND it makes up a large fraction of all words.
     words = [w.lower() for w in re.findall(r"[a-zA-Z0-9']+", normalized)]
     if words:
-        if max(Counter(words).values()) > config.WHISPER_REPETITION_THRESHOLD:
+        top_count = max(Counter(words).values())
+        dominance = top_count / len(words)
+        dominance_min = float(getattr(config, "WHISPER_REPETITION_DOMINANCE", 0.5) or 0.5)
+        if top_count > config.WHISPER_REPETITION_THRESHOLD and dominance >= dominance_min:
             return True
     # Non-Latin alphabetic characters (e.g. Japanese, Chinese, Arabic) indicate
     # Whisper hallucinating in another language on near-silence or ambient noise.

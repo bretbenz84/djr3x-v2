@@ -674,8 +674,13 @@ WHISPER_CORRECTIONS = {
     "rex's":  "Rex",
 }
 
-# Repetition filter: any single word appearing more than this many times is a loop artifact.
+# Repetition filter: flag a transcript as a loop artifact only when one word both
+# exceeds this count AND dominates the utterance (see WHISPER_REPETITION_DOMINANCE),
+# so a real Whisper loop ("you you you you") is caught but natural repetition
+# ("I like Bach, I like Beethoven, I like Bach") is not discarded.
 WHISPER_REPETITION_THRESHOLD = 4
+# Fraction of all words a single repeated word must make up to count as a loop.
+WHISPER_REPETITION_DOMINANCE = 0.5
 
 # Character-loop filter: long transcripts dominated by one repeated character
 # are usually Whisper artifacts on near-silence, e.g. "Zzzzzzzzzzzzzzzzzzz".
@@ -2869,9 +2874,12 @@ STARTLE_SOUND_EVENT_REACTION_COOLDOWN_SECS = 20
 
 STARTUP_AUDIO_FILES = [
     "assets/audio/startup/light_speed.mp3",
-    LISTENING_CHIME_FILE,
     "assets/audio/startup/Roger Control.mp3",
 ]
+# The listening chime (LISTENING_CHIME_FILE) is deliberately NOT in the opening
+# burst above — main.py plays it at the END of startup, once all models are loaded
+# and Rex is listening, so the chime signals "done loading, go ahead". Gated by
+# PLAY_LISTENING_CHIME.
 
 # Pre-recorded audio clips that are Rex speaking, not sound effects. These get
 # the same mouth LED and speech-motion treatment as TTS.

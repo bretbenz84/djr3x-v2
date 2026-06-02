@@ -14,16 +14,16 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         from intelligence import interaction
         interaction._last_fast_handoff_at = 0.0
 
-    def test_startup_chime_is_ordered_before_roger_control(self):
+    def test_startup_burst_defers_chime_to_ready_cue(self):
         import config
 
         files = [Path(path).name for path in config.STARTUP_AUDIO_FILES]
-        self.assertIn("startup_chime.mp3", files)
+        # The chime is intentionally NOT in the opening burst — main.py plays it at
+        # the END of startup (once models are loaded and listening) as the ready cue.
+        self.assertNotIn("startup_chime.mp3", files)
         self.assertIn("Roger Control.mp3", files)
-        self.assertLess(
-            files.index("startup_chime.mp3"),
-            files.index("Roger Control.mp3"),
-        )
+        # The chime file is still configured; it's just played later, at end-of-load.
+        self.assertEqual(Path(config.LISTENING_CHIME_FILE).name, "startup_chime.mp3")
 
     def test_direct_startup_clip_arms_aec_and_limits_level(self):
         import numpy as np
@@ -1038,6 +1038,21 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertTrue(transcription._is_hallucination("mmm"))
         self.assertTrue(transcription._is_hallucination("Z" * 160))
         self.assertFalse(transcription._is_hallucination("Soooo yes"))
+
+    def test_repetition_filter_keeps_natural_repetition_but_drops_loops(self):
+        from audio import transcription
+
+        # Natural repetition of a function word in a VARIED sentence is real speech,
+        # not a Whisper loop — must NOT be filtered (regression: this was discarded).
+        self.assertFalse(transcription._is_hallucination(
+            "I like lots of composers. I like Beethoven, I like Bach, "
+            "I like Tchaikovsky, I like Stravinsky."
+        ))
+        # A real loop where one word dominates the utterance must still be filtered.
+        self.assertTrue(transcription._is_hallucination("you you you you you you"))
+        self.assertTrue(transcription._is_hallucination(
+            "thank you thank you thank you thank you thank you"
+        ))
 
     def test_intro_name_trims_trailing_greeting(self):
         from intelligence import introductions

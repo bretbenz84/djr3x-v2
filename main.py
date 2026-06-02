@@ -851,6 +851,13 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         startup_scan_thread.start()
 
     startup_boot_tts_thread = _start_startup_boot_tts_thread()
+    # Let the boot line play and FINISH before the CPU-heavy preloads below. Running
+    # the model loads (esp. Whisper, ~2s) concurrently with playback starves the audio
+    # thread and glitches/echoes the line. The look-around scan keeps the head moving
+    # (it yields to his speech via _speaking, then scans during the preloads), so this
+    # still feels alive — no frozen pause — but the audio comes out clean.
+    if startup_boot_tts_thread is not None and startup_boot_tts_thread.is_alive():
+        startup_boot_tts_thread.join()
 
     if no_audio:
         logger.info("Skipping local Whisper preload (--noaudio)")
@@ -908,12 +915,9 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     else:
         logger.info("Local animal detector preload disabled by config.")
 
-    # Preloads are done. Let the boot line finish (it overlapped the loading), then
-    # stop the look-around scan and recenter before sensors / consciousness take the
-    # head — so face tracking inherits a known, centered pose.
-    if startup_boot_tts_thread is not None and startup_boot_tts_thread.is_alive():
-        logger.info("Waiting for startup boot TTS to finish before starting sensor services...")
-        startup_boot_tts_thread.join()
+    # Preloads are done (the boot line already finished above, on an idle CPU). Stop
+    # the look-around scan and recenter before sensors / consciousness take the head,
+    # so face tracking inherits a known, centered pose.
     if startup_scan_thread is not None:
         startup_scan_stop.set()
         startup_scan_thread.join(timeout=3.0)
@@ -990,6 +994,19 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
 
     logger.info("Setting arm to idle position...")
     animations.arm_idle()
+
+    # Done-loading cue: now that all models are loaded and the wake word / VAD are
+    # listening, play the chime so the user knows startup finished and Rex is ready.
+    # (Moved here from the opening STARTUP_AUDIO_FILES burst.) mark_startup_chime_played
+    # suppresses the duplicate listening chime the speech queue would add before the
+    # first reply. _play_audio_file is a no-op in --noaudio.
+    if not no_audio and bool(getattr(config, "PLAY_LISTENING_CHIME", True)):
+        try:
+            logger.info("Playing ready chime — models loaded, listening.")
+            _play_audio_file(config.LISTENING_CHIME_FILE)
+            speech_queue.mark_startup_chime_played()
+        except Exception as exc:
+            logger.warning("Could not play ready chime: %s", exc)
 
     if startup_jeopardy:
         _launch_startup_jeopardy()
