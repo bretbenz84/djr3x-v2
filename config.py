@@ -605,6 +605,12 @@ WAKE_WORD_THRESHOLDS = {
 # so barge-in actually fires. The per-phrase models are specific enough that a
 # modest drop rarely false-triggers on music. Set to 0.0 to disable.
 WAKE_WORD_DJ_PLAYBACK_THRESHOLD_DELTA = 0.15
+# Same idea for Rex's OWN speech: while he's talking, his voice bleeds into the mic
+# and masks a spoken wake word, so an interrupting "hey rex" scores lower than when
+# he's quiet. Drop the bar during his TTS playback so a mid-sentence interrupt can
+# still fire. Raise toward 0.2 (the floor) if interrupts don't register; lower
+# toward 0.0 if Rex starts triggering himself on his own lines. Set 0.0 to disable.
+WAKE_WORD_TTS_PLAYBACK_THRESHOLD_DELTA = 0.15
 # Floor the reduced threshold here so the delta can never make detection trivial.
 WAKE_WORD_MIN_THRESHOLD = 0.30
 

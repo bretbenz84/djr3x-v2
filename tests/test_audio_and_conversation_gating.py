@@ -9346,6 +9346,22 @@ class WakeWordDjBargeInTest(unittest.TestCase):
 
         self.assertAlmostEqual(ducked, 0.30)
 
+    def test_wake_threshold_drops_during_rex_tts_so_user_can_interrupt(self):
+        # Rex's own speech masks an interrupting "hey rex" in the mic, so the bar
+        # must drop while he's talking (mid-sentence barge-in). DJ takes precedence.
+        from audio import wake_word
+
+        with (
+            mock.patch.object(wake_word.config, "WAKE_WORD_TTS_PLAYBACK_THRESHOLD_DELTA", 0.15),
+            mock.patch.object(wake_word.config, "WAKE_WORD_MIN_THRESHOLD", 0.30),
+        ):
+            base = wake_word._threshold("Hey_rex")
+            ducked = wake_word._threshold("Hey_rex", tts_playing=True)
+
+        self.assertAlmostEqual(base, 0.5)
+        self.assertAlmostEqual(ducked, 0.35)
+        self.assertLess(ducked, base)
+
     def test_sd_guard_serializes_and_settles_stop(self):
         # Wake-word barge-in does a cross-thread sd.stop() + immediate replay; the
         # guard must wrap play/stop and hold a settle after a stop so the global
