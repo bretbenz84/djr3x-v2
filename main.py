@@ -942,6 +942,15 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     logger.info("Starting vision.scene (periodic scan)...")
     vision_scene.start_periodic_scan(config.ENVIRONMENT_SCAN_INTERVAL_SECS)
 
+    # Claim the listening chime now, BEFORE any startup speech can be enqueued.
+    # main plays the single "ready" chime at the very end of startup (once all models
+    # are loaded). Without this early claim, the first speech_queue.enqueue() during
+    # startup (e.g. a sensor warning) makes the queue prepend its own listening chime —
+    # so the user hears the chime twice (the prepended one, then main's ready chime).
+    # mark_startup_chime_played() is idempotent, so the end-of-startup call is a no-op.
+    if not no_audio and bool(getattr(config, "PLAY_LISTENING_CHIME", True)):
+        speech_queue.mark_startup_chime_played()
+
     if not bool(
         getattr(config, "NO_AUDIO_MODE", False)
         or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
@@ -997,9 +1006,10 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
 
     # Done-loading cue: now that all models are loaded and the wake word / VAD are
     # listening, play the chime so the user knows startup finished and Rex is ready.
-    # (Moved here from the opening STARTUP_AUDIO_FILES burst.) mark_startup_chime_played
-    # suppresses the duplicate listening chime the speech queue would add before the
-    # first reply. _play_audio_file is a no-op in --noaudio.
+    # (Moved here from the opening STARTUP_AUDIO_FILES burst.) The ownership claim that
+    # suppresses the speech queue's duplicate listening chime is made earlier (before
+    # the sensor-warning enqueue); the call below is a defensive, idempotent re-claim.
+    # _play_audio_file is a no-op in --noaudio.
     if not no_audio and bool(getattr(config, "PLAY_LISTENING_CHIME", True)):
         try:
             logger.info("Playing ready chime — models loaded, listening.")

@@ -1820,6 +1820,67 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             interaction._pending_face_reveal_confirm = old_pending_face_reveal
             interaction._pending_post_greet_relationship[0] = old_pending_relationship
 
+    def test_empty_transcript_from_idle_returns_to_idle(self):
+        from contextlib import ExitStack
+        import numpy as np
+        from intelligence import interaction
+        from state import State
+
+        old_state = interaction.state_module.get_state()
+        try:
+            interaction.state_module.set_state(State.ACTIVE)
+            with ExitStack() as stack:
+                stack.enter_context(
+                    mock.patch.object(interaction.random, "randint", return_value=0)
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_process_audio",
+                        return_value=("", None, None, 0.0),
+                    )
+                )
+                interaction._handle_speech_segment(
+                    np.ones(16, dtype=np.float32),
+                    from_idle_activation=True,
+                )
+            # A blank transcript (false VAD trigger / filtered hallucination) that
+            # only flipped Rex to ACTIVE must drop straight back to IDLE instead of
+            # camping in ACTIVE until the conversation idle timeout.
+            self.assertEqual(interaction.state_module.get_state(), State.IDLE)
+        finally:
+            interaction.state_module.set_state(old_state)
+
+    def test_empty_transcript_mid_conversation_stays_active(self):
+        from contextlib import ExitStack
+        import numpy as np
+        from intelligence import interaction
+        from state import State
+
+        old_state = interaction.state_module.get_state()
+        try:
+            interaction.state_module.set_state(State.ACTIVE)
+            with ExitStack() as stack:
+                stack.enter_context(
+                    mock.patch.object(interaction.random, "randint", return_value=0)
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_process_audio",
+                        return_value=("", None, None, 0.0),
+                    )
+                )
+                interaction._handle_speech_segment(
+                    np.ones(16, dtype=np.float32),
+                    from_idle_activation=False,
+                )
+            # A blank trigger DURING an active exchange must not end the session —
+            # only idle-activations drop back to IDLE.
+            self.assertEqual(interaction.state_module.get_state(), State.ACTIVE)
+        finally:
+            interaction.state_module.set_state(old_state)
+
     def test_pending_identity_prompt_reply_from_idle_enrolls_before_background_filter(self):
         from contextlib import ExitStack
         import numpy as np

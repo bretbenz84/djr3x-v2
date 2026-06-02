@@ -2893,7 +2893,15 @@ SPEECH_ANIMATED_AUDIO_TRANSCRIPTS = {
 # Startup self-diagnostic banter for missing live input devices. These lines are
 # intentionally about R3X's droid sensors, not human disability.
 STARTUP_SENSOR_WARNING_ENABLED = True
-STARTUP_SENSOR_WARNING_CAMERA_WAIT_SECS = 2.5
+# How long to wait for the first live camera frame before declaring vision offline.
+# Must comfortably exceed how long the camera takes to open + deliver frame 1 — the
+# C922 via ffmpeg AVFoundation needs ~3s (more when it logs "Configuration of video
+# device failed, falling back to default"). At 2.5s it timed out a fraction of a
+# second early and Rex falsely announced "Vision system unavailable" while the camera
+# was in fact fine (face recognition worked moments later). wait_for_frame() returns
+# the instant a frame arrives, so a larger value only adds latency on a truly dead
+# camera — never on a healthy one.
+STARTUP_SENSOR_WARNING_CAMERA_WAIT_SECS = 6.0
 STARTUP_SENSOR_WARNING_EMOTION = "curious"
 STARTUP_SENSOR_WARNING_LINES = {
     "camera": [

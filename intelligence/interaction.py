@@ -12708,6 +12708,18 @@ def _handle_speech_segment(
             completed = False
             return
         if not text:
+            # Empty/blank transcript — a false VAD trigger or fully-filtered audio
+            # (e.g. a Whisper hallucination loop). Nothing was actually said to Rex.
+            # If we only flipped to ACTIVE because of this segment, drop straight back
+            # to IDLE instead of camping in ACTIVE until the 45s conversation idle
+            # timeout. Mirrors the crosstalk path below.
+            final_executed_path = "ignored.empty_transcript"
+            completed = False
+            if from_idle_activation:
+                try:
+                    state_module.set_state(State.IDLE)
+                except Exception:
+                    pass
             return
 
         character_trace = _new_character_loop_trace(
