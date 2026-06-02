@@ -277,7 +277,16 @@ def _detection_loop(callback: Callable[[str], None]) -> None:
         if len(audio) < _CHUNK_SAMPLES:
             continue  # stream not yet warmed up
 
-        chunk = _to_oww_input(audio[-_CHUNK_SAMPLES:])
+        mic = audio[-_CHUNK_SAMPLES:]
+        # Suppress Rex's own playback echo so a wake word can be heard over him while
+        # he's speaking. No-op passthrough when he's quiet (see audio/aec.py).
+        try:
+            from audio import aec
+            mic = aec.process(mic)
+        except Exception as exc:
+            _log.debug("[wake_word] aec passthrough: %s", exc)
+
+        chunk = _to_oww_input(mic)
 
         current_state = state_module.get_state()
         active = _active_for_state(current_state)

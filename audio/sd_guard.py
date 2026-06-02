@@ -71,7 +71,20 @@ def install() -> bool:
             # play() is non-blocking (it starts the stream and returns); hold the
             # lock only for that brief start so a concurrent stop() can't race it.
             with _io_lock:
-                return _orig_play(*args, **kwargs)
+                result = _orig_play(*args, **kwargs)
+            # Feed exactly what we just started playing to the echo canceller as its
+            # reference, so it can subtract Rex's voice from the mic and let a wake
+            # word be heard over him. Outside the io lock (resampling must not block a
+            # concurrent stop/play); failures never affect playback.
+            try:
+                data = args[0] if args else kwargs.get("data")
+                sr = args[1] if len(args) > 1 else kwargs.get("samplerate")
+                if data is not None and sr:
+                    from audio import aec
+                    aec.push_reference(data, int(sr))
+            except Exception:
+                pass
+            return result
 
         def _guarded_stop(*args, **kwargs):
             with _io_lock:

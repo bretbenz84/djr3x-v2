@@ -1410,6 +1410,26 @@ POST_PLAYBACK_SUPPRESSION_SECS = 0.5
 # still crashes on a given machine; lower toward 0 if the ack feels laggy.
 AUDIO_PLAYBACK_STOP_SETTLE_SECS = 0.05
 
+# ── Software acoustic echo suppression (audio/aec.py) ────────────────────────
+# Rex's own playback masks a spoken wake word in the mic. The ReSpeaker Lite's
+# hardware AEC isn't reachable in the robot's wiring, so we cancel in software:
+# capture exactly what Rex plays (the digital reference), align it to the mic by
+# cross-correlation (tracks clock drift between output device and mic), and
+# spectrally subtract his voice so a wake word can get through while he talks.
+# Engages ONLY while Rex is playing; pure passthrough otherwise, so it can't hurt
+# normal wake detection. These need tuning on real hardware — watch the periodic
+# [aec] ERLE log and the [wake_diag] near-miss scores.
+AEC_SOFTWARE_ENABLED = True
+AEC_OVERSUBTRACTION = _env_float("AEC_OVERSUBTRACTION", 1.6, min_value=1.0, max_value=4.0)
+AEC_SPECTRAL_FLOOR = _env_float("AEC_SPECTRAL_FLOOR", 0.10, min_value=0.0, max_value=1.0)
+AEC_MAX_DELAY_SECS = _env_float("AEC_MAX_DELAY_SECS", 0.4, min_value=0.05, max_value=2.0)
+AEC_DELAY_REFINE_INTERVAL_SECS = _env_float("AEC_DELAY_REFINE_INTERVAL_SECS", 0.25, min_value=0.05, max_value=5.0)
+AEC_GAIN_EMA = _env_float("AEC_GAIN_EMA", 0.15, min_value=0.01, max_value=1.0)
+AEC_DOUBLETALK_RATIO = _env_float("AEC_DOUBLETALK_RATIO", 2.5, min_value=1.0, max_value=10.0)
+AEC_REF_ACTIVE_RMS = _env_float("AEC_REF_ACTIVE_RMS", 0.0015, min_value=0.0, max_value=1.0)
+AEC_REF_BUFFER_SECS = _env_float("AEC_REF_BUFFER_SECS", 6.0, min_value=1.0, max_value=30.0)
+AEC_DIAG_INTERVAL_SECS = _env_float("AEC_DIAG_INTERVAL_SECS", 2.0, min_value=0.0, max_value=30.0)
+
 # Direct questions need a responsive handoff. Keep only a short post-playback
 # attenuation tail; the capture floor below handles Rex's final-word bleed.
 POST_QUESTION_PLAYBACK_SUPPRESSION_SECS = 0.12
