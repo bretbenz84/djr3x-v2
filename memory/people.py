@@ -581,6 +581,23 @@ def update_relationship_scores(person_id: int, **kwargs: float) -> None:
     )
 
 
+def apply_relationship_increment(person_id: Optional[int], kind: str) -> None:
+    """Apply a named relationship delta from ``config.RELATIONSHIP_INCREMENTS``.
+
+    Keeps that table as the single source of truth for per-interaction
+    relationship adjustments instead of scattering magic numbers across call
+    sites. Unknown kinds and a missing ``person_id`` are no-ops.
+    """
+    if person_id is None:
+        return
+    try:
+        dimension, delta = config.RELATIONSHIP_INCREMENTS[kind]
+    except (KeyError, TypeError, ValueError):
+        _log.debug("unknown relationship increment kind: %s", kind)
+        return
+    update_relationship_scores(person_id, **{dimension: float(delta)})
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Memory wipe
 # ─────────────────────────────────────────────────────────────────────────────

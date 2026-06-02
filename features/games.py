@@ -176,7 +176,7 @@ def _get_agreeability() -> int:
             return int(rows[0]["value"])
     except Exception:
         pass
-    return config.PERSONALITY_DEFAULTS.get("agreeability", 60)
+    return config.PERSONALITY_DEFAULTS.get("agreeability", 35)
 
 
 def _body_beat(name: str, **context) -> None:
@@ -1681,9 +1681,12 @@ def can_play(game_name: str) -> tuple[bool, Optional[str]]:
     history = [t for t in history if now - t < window]
     _game_play_log[normalized] = history
 
-    # Scale limit by agreeability: agreeability=60 → limit unchanged
+    # Scale the repeat limit by agreeability around the 0–100 scale's neutral
+    # midpoint (50): agreeability=50 → limit unchanged, below tires faster, above
+    # plays more. Rex's default agreeability is deliberately low (35), so he tires
+    # a touch faster than a neutral personality — matching his needling persona.
     agreeability = _get_agreeability()
-    multiplier = agreeability / 60.0
+    multiplier = agreeability / 50.0
     effective_limit = max(1, round(config.GAME_REPEAT_LIMIT * multiplier))
 
     if len(history) < effective_limit:

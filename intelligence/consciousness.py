@@ -518,6 +518,8 @@ def note_speaker_gaze_intent(
             "search_started_at": now if search_requested else 0.0,
             "last_search_at": 0.0,
             "search_index": 0,
+            "search_plan": None,
+            "search_plan_index": 0,
             "acquired_at": 0.0,
         })
     _log.info(
@@ -572,6 +574,8 @@ def _speaker_gaze_note_acquired(candidate: dict) -> None:
             return
         _speaker_gaze_intent["search_requested"] = False
         _speaker_gaze_intent["search_index"] = 0
+        _speaker_gaze_intent["search_plan"] = None
+        _speaker_gaze_intent["search_plan_index"] = 0
         _speaker_gaze_intent["last_search_at"] = 0.0
         _speaker_gaze_intent["acquired_at"] = now
 
@@ -8022,11 +8026,67 @@ def _speaker_gaze_candidate(candidates: list[dict], intent: Optional[dict]) -> O
     return None
 
 
-def _speaker_gaze_search_sequence() -> list[str]:
-    return ["down", "down_left", "down_right", "left", "right", "center"]
+def _build_speaker_gaze_search_plan() -> list[tuple]:
+    """Build one randomized, two-axis room-scan pass.
+
+    Returns a list of ``(neck_frac, vert_frac)`` waypoints, where ``neck_frac`` is in
+    ``[-1, 1]`` (full left .. full right, or ``None`` to hold the current heading) and
+    ``vert_frac`` is in ``[0, 1]`` (level/adaptive-rest .. fully down). Every waypoint
+    moves BOTH the neck and the head pitch at once, so Rex sweeps the room diagonally
+    instead of one axis at a time, and the lane order + exact targets are reshuffled
+    each pass so he doesn't look around the same predictable way every boot.
+
+    The pass always opens by dropping the gaze straight down without turning (people
+    are usually seated, below the camera) and closes back at neutral/level.
+    """
+    points = int(getattr(config, "SPEAKER_GAZE_SEARCH_POINTS", 5) or 5)
+    points = max(3, min(points, 12))
+
+    # Lanes spaced across the full left..right range (endpoints included, so the outer
+    # beats crane all the way to the neck's min/max), each jittered off its lane centre
+    # and paired with its own random (down-biased) pitch — so no two scans trace the
+    # same path while the whole room still gets swept edge to edge.
+    step = 2.0 / (points - 1)
+    lanes: list[tuple] = []
+    for i in range(points):
+        centre = -1.0 + step * i
+        neck_frac = max(-1.0, min(1.0, centre + random.uniform(-step * 0.4, step * 0.4)))
+        vert_frac = random.uniform(0.2, 1.0)
+        lanes.append((neck_frac, vert_frac))
+    random.shuffle(lanes)
+
+    plan: list[tuple] = [(None, random.uniform(0.9, 1.0))]  # look down first, no turn
+    plan.extend(lanes)
+    plan.append((0.0, 0.0))  # recentre level so the head parks neutral after the pass
+    return plan
 
 
-def _speaker_gaze_search_targets(pose: str) -> dict[int, int]:
+def _speaker_gaze_search_label(neck_frac, vert_frac: float) -> str:
+    """Short human-readable label for a search waypoint (for logs / telemetry)."""
+    if neck_frac is None:
+        horiz = "hold"
+    elif neck_frac <= -0.15:
+        horiz = "left"
+    elif neck_frac >= 0.15:
+        horiz = "right"
+    else:
+        horiz = "center"
+    if vert_frac >= 0.66:
+        vert = "down"
+    elif vert_frac >= 0.25:
+        vert = "low"
+    else:
+        vert = "level"
+    return f"{horiz}_{vert}"
+
+
+def _speaker_gaze_search_targets(neck_frac, vert_frac: float) -> dict[int, int]:
+    """Resolve a ``(neck_frac, vert_frac)`` search waypoint to servo targets.
+
+    ``neck_frac``: ``-1..1`` (left..right), or ``None`` to hold the current heading.
+    ``vert_frac``: ``0..1`` (level/adaptive-rest .. fully down). Visor is held open so
+    the camera keeps a clear view while searching.
+    """
     neck_cfg = config.SERVO_CHANNELS["neck"]
     lift_cfg = config.SERVO_CHANNELS["headlift"]
     tilt_cfg = config.SERVO_CHANNELS["headtilt"]
@@ -8037,57 +8097,47 @@ def _speaker_gaze_search_targets(pose: str) -> dict[int, int]:
     tilt_ch = int(tilt_cfg["ch"])
     visor_ch = int(visor_cfg["ch"])
 
-    current_neck = _current_servo_position("neck")
+    neutral_neck = int(neck_cfg["neutral"])
     rest_lift, rest_tilt = _adaptive_head_rest_target()
 
     neck_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_NECK_FRACTION", 0.42))
     down_tilt_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION", 0.72))
     down_lift_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_DOWN_LIFT_FRACTION", 0.18))
 
-    neutral_neck = int(neck_cfg["neutral"])
-    left_neck = _clamp_servo(
-        "neck",
-        neutral_neck - (neutral_neck - int(neck_cfg["min"])) * neck_fraction,
+    if neck_frac is None:
+        neck = _current_servo_position("neck")
+    elif neck_frac >= 0:
+        neck = neutral_neck + (int(neck_cfg["max"]) - neutral_neck) * neck_fraction * float(neck_frac)
+    else:
+        neck = neutral_neck - (neutral_neck - int(neck_cfg["min"])) * neck_fraction * (-float(neck_frac))
+
+    # Down end of the pitch range. Tilt is inverted (larger PWM points lower); lift
+    # points lower with smaller PWM. Never push past the adaptive rest toward "up".
+    down_tilt = max(
+        _clamp_servo(
+            "headtilt",
+            int(tilt_cfg["neutral"]) + (int(tilt_cfg["max"]) - int(tilt_cfg["neutral"])) * down_tilt_fraction,
+        ),
+        rest_tilt,
     )
-    right_neck = _clamp_servo(
-        "neck",
-        neutral_neck + (int(neck_cfg["max"]) - neutral_neck) * neck_fraction,
+    down_lift = min(
+        _clamp_servo(
+            "headlift",
+            int(lift_cfg["neutral"]) - (int(lift_cfg["neutral"]) - int(lift_cfg["min"])) * down_lift_fraction,
+        ),
+        rest_lift,
     )
-    down_tilt = _clamp_servo(
-        "headtilt",
-        int(tilt_cfg["neutral"]) + (int(tilt_cfg["max"]) - int(tilt_cfg["neutral"])) * down_tilt_fraction,
-    )
-    down_lift = _clamp_servo(
-        "headlift",
-        int(lift_cfg["neutral"]) - (int(lift_cfg["neutral"]) - int(lift_cfg["min"])) * down_lift_fraction,
-    )
-    # Tilt is inverted: larger PWM points lower. Lift points lower with smaller PWM.
-    down_tilt = max(down_tilt, rest_tilt)
-    down_lift = min(down_lift, rest_lift)
+
+    vert = max(0.0, min(1.0, float(vert_frac)))
+    lift = rest_lift + (down_lift - rest_lift) * vert
+    tilt = rest_tilt + (down_tilt - rest_tilt) * vert
 
     targets: dict[int, int] = {
         visor_ch: int(visor_cfg["max"]),
-        lift_ch: down_lift,
-        tilt_ch: down_tilt,
+        neck_ch: neck,
+        lift_ch: lift,
+        tilt_ch: tilt,
     }
-    if pose == "down":
-        targets[neck_ch] = current_neck
-    elif pose == "down_left":
-        targets[neck_ch] = left_neck
-    elif pose == "down_right":
-        targets[neck_ch] = right_neck
-    elif pose == "left":
-        targets[neck_ch] = left_neck
-        targets[lift_ch] = rest_lift
-        targets[tilt_ch] = rest_tilt
-    elif pose == "right":
-        targets[neck_ch] = right_neck
-        targets[lift_ch] = rest_lift
-        targets[tilt_ch] = rest_tilt
-    elif pose == "center":
-        targets[neck_ch] = int(neck_cfg["neutral"])
-        targets[lift_ch] = rest_lift
-        targets[tilt_ch] = rest_tilt
     return {
         channel: _clamp_servo(_CHANNEL_TO_SERVO_NAME[channel], value)
         if channel in _CHANNEL_TO_SERVO_NAME else int(value)
@@ -8113,21 +8163,28 @@ def _step_speaker_gaze_search(servo_mod, intent: Optional[dict], now: float) -> 
         pass
 
     interval = float(getattr(config, "SPEAKER_GAZE_SEARCH_INTERVAL_SECS", 0.70) or 0.70)
-    sequence = _speaker_gaze_search_sequence()
     with _speaker_gaze_lock:
         if not _speaker_gaze_intent:
             return None
         last_search_at = float(_speaker_gaze_intent.get("last_search_at") or 0.0)
         if last_search_at > 0.0 and (now - last_search_at) < max(0.1, interval):
             return None
-        idx = int(_speaker_gaze_intent.get("search_index") or 0)
-        pose = sequence[idx % len(sequence)]
-        _speaker_gaze_intent["search_index"] = idx + 1
+        plan = _speaker_gaze_intent.get("search_plan")
+        plan_idx = int(_speaker_gaze_intent.get("search_plan_index") or 0)
+        if not plan or plan_idx >= len(plan):
+            # Fresh randomized pass (also re-rolls if the search outlasts one pass).
+            plan = _build_speaker_gaze_search_plan()
+            _speaker_gaze_intent["search_plan"] = plan
+            plan_idx = 0
+        neck_frac, vert_frac = plan[plan_idx]
+        _speaker_gaze_intent["search_plan_index"] = plan_idx + 1
+        _speaker_gaze_intent["search_index"] = int(_speaker_gaze_intent.get("search_index") or 0) + 1
         _speaker_gaze_intent["last_search_at"] = now
         if not _speaker_gaze_intent.get("search_started_at"):
             _speaker_gaze_intent["search_started_at"] = now
 
-    targets = _speaker_gaze_search_targets(pose)
+    pose = _speaker_gaze_search_label(neck_frac, vert_frac)
+    targets = _speaker_gaze_search_targets(neck_frac, vert_frac)
     try:
         servo_mod.set_motion_profile(
             list(targets.keys()),

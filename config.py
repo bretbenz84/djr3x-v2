@@ -122,7 +122,6 @@ GUI_CAMERA_PREVIEW_ENABLED = True
 GUI_SERVO_SIM_ENABLED = True
 GUI_CONVERSATION_LOG_MAX_LINES = 300
 GUI_AVATAR_SMOOTHING = 0.25
-GUI_SHOW_SERVO_VALUES = True
 
 # Set at runtime by main.py --noaudio / -noaudio. In this mode the controller
 # skips microphone capture, wake-word listening, audio-scene analysis, audio
@@ -247,7 +246,6 @@ WHISPER_MODEL_DIR     = "assets/models/whisper"
 FACE_MODELS_DIR       = "assets/models/face"
 WAKE_WORD_MODELS_DIR  = "assets/models/wake_word"
 RESEMBLYZER_MODEL_DIR = "assets/models/resemblyzer"
-OBJECT_DETECTION_MODELS_DIR = "assets/models/object_detection"
 
 FACE_LANDMARK_MODEL   = "assets/models/face/shape_predictor_68_face_landmarks.dat"
 FACE_RECOGNITION_MODEL = "assets/models/face/dlib_face_recognition_resnet_model_v1.dat"
@@ -504,8 +502,6 @@ FACIAL_DISPOSITION_FIRST_SIGHT_COOLDOWN_DAYS = _env_float(
 MUSIC_DIR          = "assets/music"
 TTS_CACHE_DIR      = "assets/audio/tts_cache"
 AUDIO_CLIPS_DIR    = "assets/audio/clips"
-AUDIO_STARTUP_DIR  = "assets/audio/startup"
-JEOPARDY_DIR       = "assets/jeopardy"
 JEOPARDY_CLUES_FILE = "assets/jeopardy/clues.tsv"
 JEOPARDY_AUDIO_DIR = "assets/audio/jeopardy"
 DB_PATH            = "assets/memory/people.db"
@@ -819,6 +815,11 @@ EMPATHY_CHECKIN_NEGATIVE_STREAK_SECS = 30.0
 # Rate-limit the consciousness step itself (cheap polling, no API calls per
 # tick — but we still don't need to evaluate it every second).
 EMPATHY_CHECKIN_CHECK_INTERVAL_SECS = 10.0
+
+# Window (minutes) the emotional check-in treats a sensitive event/boundary as
+# "recent enough" to reference. Read via getattr by the empathy check-in paths
+# (consciousness._step_emotional_checkin and interaction's boundary handling).
+EMOTIONAL_CHECKIN_BOUNDARY_WINDOW_MINUTES = 20
 
 # When True, the active empathy mode also shapes Rex's BODY for the response:
 # LED/eye color and mouth animation switch to "sad" (sympathetic posture) for
@@ -1303,7 +1304,7 @@ SPEAKER_GAZE_SEARCH_SERVO_ACCELERATION = _env_int(
 )
 SPEAKER_GAZE_SEARCH_NECK_FRACTION = _env_float(
     "SPEAKER_GAZE_SEARCH_NECK_FRACTION",
-    0.26,
+    1.0,  # Default: full neck travel — the scan craning all the way left/right to find people.
     min_value=0.0,
     max_value=1.0,
 )
@@ -1318,6 +1319,16 @@ SPEAKER_GAZE_SEARCH_DOWN_LIFT_FRACTION = _env_float(
     0.18,
     min_value=0.0,
     max_value=1.0,
+)
+# Number of horizontal lanes the randomized room scan sweeps per pass (in addition
+# to the initial look-down beat and the closing recenter). The scan reshuffles these
+# lanes and pairs each with a random pitch every pass, so Rex doesn't look around the
+# same predictable way each boot. ~5 lanes ≈ one pass inside SEARCH_WINDOW_SECS.
+SPEAKER_GAZE_SEARCH_POINTS = _env_int(
+    "SPEAKER_GAZE_SEARCH_POINTS",
+    5,
+    min_value=3,
+    max_value=12,
 )
 SPEAKER_GAZE_STARTUP_SCAN_ENABLED = _env_bool("SPEAKER_GAZE_STARTUP_SCAN_ENABLED", True)
 
@@ -1353,6 +1364,10 @@ SPEAKER_ID_SIMILARITY_THRESHOLD = 0.75
 # Load the Resemblyzer encoder during startup so the first live spoken turn
 # does not pay the model load cost.
 SPEAKER_ID_PRELOAD_ON_STARTUP = True
+
+# How long (seconds) a pending introduction stays open to capture the new
+# person's voice sample after their name is given (interaction intro handling).
+INTRO_VOICE_CAPTURE_WINDOW_SECS = 45.0
 
 # VAD (Silero) — probability threshold above which speech is considered detected
 VAD_THRESHOLD = 0.5
@@ -1997,6 +2012,10 @@ FULL_MEMORY_WIPE_ACCESS_CODE = os.getenv(
     "Picard alpha 47 tango",
 ).strip()
 
+# How long (seconds) a spoken memory-wipe request stays awaiting its confirmation
+# before the pending wipe expires (interaction memory-wipe confirm window).
+MEMORY_WIPE_CONFIRM_WINDOW_SECS = 30.0
+
 # Structured per-user-turn black-box trace. This is operational telemetry,
 # not person memory.
 CHARACTER_LOOP_TRACE_ENABLED = True
@@ -2445,9 +2464,6 @@ NOSTALGIA_ELIGIBLE_TIERS = ("close_friend", "best_friend")
 # (excludes the most recent — that's already in 'last conversation' context)
 NOSTALGIA_HISTORY_DEPTH = 10
 
-# Probability Rex shares a private thought during IDLE between interactions
-PRIVATE_THOUGHT_TRIGGER_PROBABILITY = 0.08
-
 # ─────────────────────────────────────────────────────────────────────────────
 # ADDRESS-MODE CLASSIFICATION
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2576,6 +2592,10 @@ RECENT_RETURN_THRESHOLD_HOURS = 48
 # (then drops into normal conversation) instead of the generic greeting. Counts
 # Rex's own greetings that day (see memory.people.greetings_today_count).
 PRESENCE_SAME_DAY_RETURN_ENABLED = True
+
+# How long (seconds) a queued celebrity-style special greeting stays pending
+# before it goes stale and is dropped (consciousness person-specials greeting).
+JEFF_CELEBRITY_GREETING_PENDING_SECS = 45.0
 
 # Days after mentioned_at before a dateless event is due for follow-up
 FOLLOWUP_UNDATED_DAYS = 7
@@ -2719,7 +2739,12 @@ PLAY_STARTUP_AUDIO = True
 PLAY_SHUTDOWN_AUDIO = True
 
 # Spoken after the theatrical startup clip, while heavier model preloads are
-# happening, so startup feels alive instead of silently stalled.
+# happening, so startup feels alive instead of silently stalled. The line is
+# kicked off BEFORE the slow preloads (Whisper / speaker-ID / Ollama) and plays
+# concurrently with them — it literally says "hang on while I boot up", so it
+# should cover the load, not follow it. Keep the delay small: it's now just the
+# beat between the startup clip ending and this line starting, not dead space in
+# front of all the loading.
 PLAY_STARTUP_BOOT_TTS = True
 STARTUP_BOOT_TTS_LINE = (
     "Hang on folks while I'm booting up. I'm still getting used to my programming!"
@@ -2727,10 +2752,15 @@ STARTUP_BOOT_TTS_LINE = (
 STARTUP_BOOT_TTS_EMOTION = "curious"
 STARTUP_BOOT_TTS_DELAY_SECS = _env_float(
     "STARTUP_BOOT_TTS_DELAY_SECS",
-    1.5,
+    0.3,
     min_value=0.0,
     max_value=5.0,
 )
+
+# While the heavy startup preloads run, sweep the head around the room (randomized
+# two-axis "looking around" motion) so the droid doesn't look frozen mid-boot.
+# Stops and recenters before consciousness / face tracking take over the head.
+STARTUP_LOADING_SCAN_ENABLED = _env_bool("STARTUP_LOADING_SCAN_ENABLED", True)
 
 # Pre-recorded startup/shutdown clips are mastered louder than TTS on some
 # setups. Keep headroom so small speakers and nearby mics do not feed back.
@@ -2800,9 +2830,6 @@ STARTUP_SENSOR_WARNING_LINES = {
 }
 
 SHUTDOWN_AUDIO_FILE = "assets/audio/startup/hyperdrive_down.mp3"
-
-# Maximum number of response variations kept per command (anti-repeat shuffle)
-AUDIO_RESPONSE_VARIATIONS = 5
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WORLD AWARENESS — Weather & Location

@@ -9124,15 +9124,15 @@ def _post_response(
                 if not pre_classified_insult:
                     personality.increment_anger(person_id)
                     if person_id is not None:
-                        people_memory.update_relationship_scores(person_id, antagonism=+0.03)
+                        people_memory.apply_relationship_increment(person_id, "insult_mild")
 
             elif sentiment.get("is_apology"):
                 personality.decrement_anger()
                 if person_id is not None:
-                    people_memory.update_relationship_scores(person_id, antagonism=-0.02)
+                    people_memory.apply_relationship_increment(person_id, "sincere_apology")
 
             if sentiment.get("is_compliment") and person_id is not None:
-                people_memory.update_relationship_scores(person_id, warmth=+0.02)
+                people_memory.apply_relationship_increment(person_id, "compliment")
 
         except Exception as exc:
             _log.debug("post_response sentiment error: %s", exc)
@@ -15420,7 +15420,7 @@ def _handle_speech_segment(
             except Exception as exc:
                 _log.debug("[interaction] insult body beat skipped: %s", exc)
             if person_id is not None:
-                people_memory.update_relationship_scores(person_id, antagonism=+0.03)
+                people_memory.apply_relationship_increment(person_id, "insult_mild")
             _log.info(
                 "[interaction] layer-1 insult detected — anger now %d", new_level,
             )

@@ -300,7 +300,7 @@ class FaceTrackingTests(unittest.TestCase):
             mock.patch.object(c.config, "FACE_TRACKING_ADAPTIVE_REST_ENABLED", True),
             mock.patch.object(c.config, "FACE_TRACKING_VERTICAL_ENABLED", True),
         ):
-            targets = c._speaker_gaze_search_targets("center")
+            targets = c._speaker_gaze_search_targets(0.0, 0.0)
 
         self.assertEqual(targets[lift_ch], 5480)
         self.assertEqual(targets[tilt_ch], 5010)
@@ -408,7 +408,9 @@ class FaceTrackingTests(unittest.TestCase):
         self.assertEqual(updates[visor_ch], c.config.SERVO_CHANNELS["visor"]["max"])
         tracking = c.world_state.get("self_state").get("face_tracking") or {}
         self.assertTrue(tracking.get("searching"))
-        self.assertEqual(tracking.get("search_pose"), "down")
+        # First beat of the randomized scan drops the gaze down (seated-person bias)
+        # without turning the neck — label is "{horiz}_{vert}", so check the vertical.
+        self.assertTrue(str(tracking.get("search_pose") or "").endswith("down"))
 
     def test_startup_scan_accepts_visible_face_instead_of_searching(self):
         c = self.consciousness

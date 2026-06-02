@@ -779,6 +779,28 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         logger.info("Pre-warming audio output device...")
         tts.prewarm()
 
+    # Kick off the boot line + head "look around" motion BEFORE the slow preloads
+    # (Whisper / speaker-ID / Ollama) so "hang on folks while I'm booting up" plays
+    # and the head scans the room WHILE the models load — instead of dead silence
+    # and a frozen head, then the line once booting is basically already done.
+    startup_scan_stop = threading.Event()
+    startup_scan_thread: threading.Thread | None = None
+    if (
+        SERVOS_ENABLED
+        and servo_ok
+        and bool(getattr(config, "STARTUP_LOADING_SCAN_ENABLED", True))
+    ):
+        logger.info("Starting startup look-around scan during model loading...")
+        startup_scan_thread = threading.Thread(
+            target=animations.boot_scan_thread,
+            args=(startup_scan_stop,),
+            daemon=True,
+            name="startup_loading_scan",
+        )
+        startup_scan_thread.start()
+
+    startup_boot_tts_thread = _start_startup_boot_tts_thread()
+
     if no_audio:
         logger.info("Skipping local Whisper preload (--noaudio)")
     elif bool(getattr(config, "WHISPER_PRELOAD_ON_STARTUP", True)):
@@ -835,10 +857,15 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     else:
         logger.info("Local animal detector preload disabled by config.")
 
-    startup_boot_tts_thread = _start_startup_boot_tts_thread()
+    # Preloads are done. Let the boot line finish (it overlapped the loading), then
+    # stop the look-around scan and recenter before sensors / consciousness take the
+    # head — so face tracking inherits a known, centered pose.
     if startup_boot_tts_thread is not None and startup_boot_tts_thread.is_alive():
         logger.info("Waiting for startup boot TTS to finish before starting sensor services...")
         startup_boot_tts_thread.join()
+    if startup_scan_thread is not None:
+        startup_scan_stop.set()
+        startup_scan_thread.join(timeout=3.0)
 
     # audio.wake_word is started internally by intelligence.interaction.start() —
     # starting it separately would create a duplicate daemon thread.

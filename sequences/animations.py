@@ -710,6 +710,72 @@ def startup() -> None:
     time.sleep(0.2)
 
 
+# Boot-time "looking around the room while models load" motion. Tuned to read as
+# unhurried, curious scanning — not the frantic full-swing of a search.
+_BOOT_SCAN_STEP_US = 90
+_BOOT_SCAN_STEP_DELAY_SECS = 0.018
+_BOOT_SCAN_DWELL_RANGE_SECS = (0.25, 0.6)
+_BOOT_SCAN_MIN_NECK_JUMP_FRACTION = 0.22   # ensure each look visibly moves the head
+_BOOT_SCAN_DOWN_LIFT_FRACTION = 0.32       # how far the headlift may dip below neutral
+_BOOT_SCAN_DOWN_TILT_FRACTION = 0.50       # how far the headtilt may angle down
+
+
+def boot_scan_thread(stop_event: "threading.Event") -> None:
+    """Look around the room while startup models load, so the head isn't frozen.
+
+    Sweeps to randomized two-axis poses (neck across its full configured range,
+    paired with a varied downward pitch) until ``stop_event`` is set, then recenters
+    to neutral so consciousness / face tracking inherit a known pose. ``move_to``
+    clamps every target to the servo limits, so the full-range neck sweep stays safe.
+    Runs as a daemon thread during the preload window only — nothing else drives the
+    head until consciousness starts well afterward.
+    """
+    try:
+        neck_cfg = config.SERVO_CHANNELS["neck"]
+        lift_cfg = config.SERVO_CHANNELS["headlift"]
+        tilt_cfg = config.SERVO_CHANNELS["headtilt"]
+        neck_min, neck_max = int(neck_cfg["min"]), int(neck_cfg["max"])
+        lift_neutral, tilt_neutral = int(lift_cfg["neutral"]), int(tilt_cfg["neutral"])
+        # Pitch dips from level toward "down" (people sit/stand below the head camera).
+        lift_down = lift_neutral - int((lift_neutral - int(lift_cfg["min"])) * _BOOT_SCAN_DOWN_LIFT_FRACTION)
+        tilt_down = tilt_neutral + int((int(tilt_cfg["max"]) - tilt_neutral) * _BOOT_SCAN_DOWN_TILT_FRACTION)
+        min_jump = int((neck_max - neck_min) * _BOOT_SCAN_MIN_NECK_JUMP_FRACTION)
+
+        last_neck: int | None = None
+        while not stop_event.is_set():
+            if _speaking.is_set():
+                # The boot line is talking — its speech gestures own the head; stand
+                # down (like wander/breathing do) and resume scanning once it finishes.
+                last_neck = None
+                stop_event.wait(0.15)
+                continue
+            # Pick a neck target that's a clear jump from the last, so the head moves.
+            neck = random.randint(neck_min, neck_max)
+            for _ in range(4):
+                if last_neck is None or abs(neck - last_neck) >= min_jump:
+                    break
+                neck = random.randint(neck_min, neck_max)
+            last_neck = neck
+            # Pair the turn with a random pitch so each move is two-axis (diagonal).
+            f = random.random()
+            lift = lift_neutral + int((lift_down - lift_neutral) * f)
+            tilt = tilt_neutral + int((tilt_down - tilt_neutral) * f)
+            servos.move_to(
+                {0: neck, 1: lift, 2: tilt},
+                step_us=_BOOT_SCAN_STEP_US,
+                step_delay=_BOOT_SCAN_STEP_DELAY_SECS,
+            )
+            stop_event.wait(random.uniform(*_BOOT_SCAN_DWELL_RANGE_SECS))
+
+        servos.move_to(
+            {0: NECK_CENTER, 1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL},
+            step_us=40,
+            step_delay=0.02,
+        )
+    except Exception as exc:
+        _log.debug("boot scan thread error: %s", exc)
+
+
 def shutdown() -> None:
     """Shutdown: stop breathing, droop to the rest pose, LEDs off.
 

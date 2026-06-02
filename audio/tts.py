@@ -7,8 +7,13 @@ is needed.
 
 Cache strategy
 ──────────────
-Before every API call, a SHA-256 of (text + voice_id + model_id) is computed and
-checked against assets/audio/tts_cache/{hash}.mp3. On a hit the file is played
+Before every API call, a SHA-256 of (text + voice_id + model_id + voice_settings) is
+computed and checked against assets/audio/tts_cache/{hash}.mp3. The voice_settings
+component is the resolved expressive ElevenLabs settings (stability / similarity_boost
+/ style / use_speaker_boost / speed), so lines that differ only by emotion-derived
+voice settings get distinct cache files; it folds in as an empty string when there is
+no override, so default-mode lines keep their pre-existing cache entries. On a hit the
+file is played
 directly — no API call is made. On a miss the ElevenLabs streaming response is
 collected, written to the cache file, then played from disk. Writing then reading
 from disk (rather than decoding from a BytesIO) keeps the MP3 decode path

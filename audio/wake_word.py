@@ -193,9 +193,22 @@ def _threshold(model_name: str, *, dj_playing: bool = False) -> float:
     base = config.WAKE_WORD_THRESHOLDS.get(model_name, config.WAKE_WORD_THRESHOLD)
     if not dj_playing:
         return base
-    delta = max(0.0, float(getattr(config, "WAKE_WORD_DJ_PLAYBACK_THRESHOLD_DELTA", 0.0)))
-    floor = float(getattr(config, "WAKE_WORD_MIN_THRESHOLD", 0.0))
+    delta = max(0.0, float(getattr(config, "WAKE_WORD_DJ_PLAYBACK_THRESHOLD_DELTA", 0.15)))
+    floor = float(getattr(config, "WAKE_WORD_MIN_THRESHOLD", 0.30))
     return max(floor, base - delta)
+
+
+def _to_oww_input(mono: "np.ndarray") -> "np.ndarray":
+    """Scale a mono float32 [-1, 1] frame to int16-range PCM for openWakeWord.
+
+    LOAD-BEARING (same fix as ``rex_supervisor._to_oww_input``): openWakeWord's
+    melspectrogram front-end is trained on 16-bit PCM (±32767). ``audio.stream``
+    returns float32 in [-1, 1]; feeding that raw makes the model see near-silence,
+    so every score pins at ~0.001 and the wake word never fires — the real cause of
+    "I said the wake word and nothing happened." Scaling to int16 makes a clear wake
+    phrase score ~0.9+, which the ``WAKE_WORD_THRESHOLDS`` (0.5) are written for.
+    """
+    return (np.clip(mono, -1.0, 1.0) * 32767.0).astype(np.int16)
 
 
 # ── Detection loop ────────────────────────────────────────────────────────────
@@ -214,7 +227,7 @@ def _detection_loop(callback: Callable[[str], None]) -> None:
         if len(audio) < _CHUNK_SAMPLES:
             continue  # stream not yet warmed up
 
-        chunk = audio[-_CHUNK_SAMPLES:].astype(np.float32)
+        chunk = _to_oww_input(audio[-_CHUNK_SAMPLES:])
 
         current_state = state_module.get_state()
         active = _active_for_state(current_state)
