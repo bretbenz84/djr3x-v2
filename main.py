@@ -672,6 +672,15 @@ def _launch_startup_jeopardy() -> None:
 def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     _apply_startup_mode_overrides(jeopardy=startup_jeopardy)
     no_audio = bool(getattr(config, "NO_AUDIO_MODE", False))
+
+    # Serialize sounddevice play/stop before ANY playback so wake-word barge-in
+    # (a cross-thread stop() + immediate replay) can't crash the global CoreAudio
+    # stream. Must run before the startup clip — the first sd.play(). See sd_guard.
+    try:
+        from audio import sd_guard
+        sd_guard.install()
+    except Exception as exc:
+        logger.debug("sd_guard install skipped: %s", exc)
     if no_audio:
         logger.info("Skipping local Whisper verification (--noaudio text-input mode).")
     else:

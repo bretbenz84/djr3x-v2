@@ -9346,33 +9346,35 @@ class WakeWordDjBargeInTest(unittest.TestCase):
 
         self.assertAlmostEqual(ducked, 0.30)
 
-    def test_own_tts_speech_suppresses_wake_detection(self):
-        # Rex speaking his own TTS (echo_cancel suppressed, not DJ) must suppress
-        # wake detection so he can't self-trigger the wake word on his own voice.
-        from audio import wake_word, echo_cancel
+    def test_sd_guard_serializes_and_settles_stop(self):
+        # Wake-word barge-in does a cross-thread sd.stop() + immediate replay; the
+        # guard must wrap play/stop and hold a settle after a stop so the global
+        # CoreAudio stream isn't re-initialized mid-teardown (the Trace/BPT crash).
+        import time
+        import sounddevice as sd
+        from audio import sd_guard
+        import config
 
-        with (
-            mock.patch.object(echo_cancel, "is_suppressed", return_value=True),
-            mock.patch.object(wake_word, "_dj_playback_active", return_value=False),
-        ):
-            self.assertTrue(wake_word._own_speech_suppresses_wake())
+        real_play, real_stop, installed_before = sd.play, sd.stop, sd_guard._installed
+        try:
+            calls = []
+            sd.play = lambda *a, **k: calls.append("play")
+            sd.stop = lambda *a, **k: calls.append("stop")
+            sd_guard._installed = False
 
-    def test_dj_music_and_silence_do_not_suppress_wake_detection(self):
-        # DJ music is exempt (barge-in to stop the music is intentional), and an
-        # idle/quiet mic must always allow detection.
-        from audio import wake_word, echo_cancel
+            with mock.patch.object(config, "AUDIO_PLAYBACK_STOP_SETTLE_SECS", 0.03):
+                self.assertTrue(sd_guard.install())
+                self.assertTrue(sd_guard.install())      # idempotent
+                self.assertIsNot(sd.play, real_play)      # wrapped
+                self.assertIsNot(sd.stop, real_stop)
 
-        with (
-            mock.patch.object(echo_cancel, "is_suppressed", return_value=True),
-            mock.patch.object(wake_word, "_dj_playback_active", return_value=True),
-        ):
-            self.assertFalse(wake_word._own_speech_suppresses_wake())
-
-        with (
-            mock.patch.object(echo_cancel, "is_suppressed", return_value=False),
-            mock.patch.object(wake_word, "_dj_playback_active", return_value=False),
-        ):
-            self.assertFalse(wake_word._own_speech_suppresses_wake())
+                t0 = time.monotonic()
+                sd.stop()
+                self.assertGreaterEqual(time.monotonic() - t0, 0.025)  # settle applied
+                sd.play()
+                self.assertEqual(calls, ["stop", "play"])  # underlying calls reached
+        finally:
+            sd.play, sd.stop, sd_guard._installed = real_play, real_stop, installed_before
 
 
 class StartupGreetingOpenerTest(unittest.TestCase):

@@ -1397,6 +1397,13 @@ AEC_SUPPRESSION_FACTOR = 0.05
 # voice tail that has already bled into the mic buffer from passing the VAD.
 POST_PLAYBACK_SUPPRESSION_SECS = 0.5
 
+# Seconds the audio guard (audio/sd_guard.py) holds after a sounddevice stop()
+# before any replay's play() may run, so CoreAudio releases the global output
+# stream before it is re-initialized. Prevents the wake-word barge-in stop+replay
+# from hard-crashing the process (Trace/BPT trap). Raise toward 0.1 if a barge-in
+# still crashes on a given machine; lower toward 0 if the ack feels laggy.
+AUDIO_PLAYBACK_STOP_SETTLE_SECS = 0.05
+
 # Direct questions need a responsive handoff. Keep only a short post-playback
 # attenuation tail; the capture floor below handles Rex's final-word bleed.
 POST_QUESTION_PLAYBACK_SUPPRESSION_SECS = 0.12
