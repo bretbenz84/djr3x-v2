@@ -1196,6 +1196,8 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
             mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
             mock.patch.object(interaction.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch("audio.tts.ensure_cached", return_value=True),
+            mock.patch.object(interaction.barge_guard, "user_speaking_now", return_value=False),
             mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
             mock.patch.object(interaction.conv_memory, "add_to_transcript") as transcript,
             mock.patch.object(interaction.conv_log, "log_rex") as log_rex,
@@ -1206,7 +1208,9 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         self.assertTrue(first)
         self.assertFalse(second)
-        speak.assert_called_once_with("Nobody talking now.", emotion="neutral", priority=1)
+        speak.assert_called_once_with(
+            "Nobody talking now.", emotion="neutral", priority=1, voice_settings=None
+        )
         transcript.assert_called_once_with("Rex", "Nobody talking now.")
         log_rex.assert_called_once_with("Nobody talking now.")
         register.assert_called_once_with("Nobody talking now.")
@@ -1239,6 +1243,8 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
             mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
             mock.patch.object(interaction.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch("audio.tts.ensure_cached", return_value=True),
+            mock.patch.object(interaction.barge_guard, "user_speaking_now", return_value=False),
             mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
             mock.patch.object(interaction.conv_memory, "add_to_transcript") as transcript,
             mock.patch.object(interaction.conv_log, "log_rex") as log_rex,
@@ -1256,7 +1262,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         self.assertTrue(first)
         self.assertFalse(second)
-        speak.assert_called_once_with(spoken, emotion="curious", priority=1)
+        speak.assert_called_once_with(spoken, emotion="curious", priority=1, voice_settings=None)
         transcript.assert_called_once_with("Rex", spoken)
         log_rex.assert_called_once_with(spoken)
         register.assert_called_once_with(spoken)
@@ -5976,6 +5982,8 @@ class ConversationGatingTest(unittest.TestCase):
                 "get_response",
                 return_value="Mint chocolate chip has main-character freezer energy. What makes it your pick?",
             ),
+            mock.patch("audio.tts.ensure_cached", return_value=True),
+            mock.patch.object(interaction.barge_guard, "user_speaking_now", return_value=False),
             mock.patch.object(
                 interaction,
                 "_speak_blocking",
@@ -9700,6 +9708,8 @@ class IdleBanterTest(unittest.TestCase):
                 interaction.social_frame, "govern_response",
                 return_value=type("G", (), {"text": "So what's the dog up to?"})(),
             ),
+            mock.patch("audio.tts.ensure_cached", return_value=True),
+            mock.patch.object(interaction.barge_guard, "user_speaking_now", return_value=False),
             mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
             mock.patch.object(interaction.conv_memory, "add_to_transcript"),
             mock.patch.object(interaction.conv_log, "log_rex"),

@@ -7,6 +7,7 @@ returns an empty list) and the failure is logged rather than raised.
 """
 
 import logging
+import threading
 
 import numpy as np
 
@@ -17,6 +18,11 @@ _log = logging.getLogger(__name__)
 _model = None
 _get_speech_timestamps = None
 _loaded = False
+# The Silero model is a single stateful object. The interaction loop streams
+# is_speech() from its own thread while the proactive-yield guard may call
+# get_speech_segments() from another (consciousness); serialize all model access
+# so a concurrent reset/inference can't corrupt the streaming state.
+_lock = threading.Lock()
 
 
 def _load() -> None:
@@ -51,7 +57,7 @@ def is_speech(audio_chunk: np.ndarray) -> bool:
         import torch
 
         tensor = torch.from_numpy(audio_chunk.astype(np.float32))
-        with torch.no_grad():
+        with _lock, torch.no_grad():
             prob: float = _model(tensor, config.AUDIO_SAMPLE_RATE).item()
         return prob >= config.VAD_THRESHOLD
     except Exception as exc:
@@ -64,7 +70,8 @@ def reset_state() -> None:
     if not _loaded:
         return
     try:
-        _model.reset_states()
+        with _lock:
+            _model.reset_states()
     except Exception as exc:
         _log.debug("VAD reset_state error: %s", exc)
 
@@ -80,16 +87,19 @@ def get_speech_segments(audio_array: np.ndarray) -> list[tuple[float, float]]:
     try:
         import torch
 
-        # Reset stateful context so this batch call is self-contained.
-        _model.reset_states()
-
         tensor = torch.from_numpy(audio_array.astype(np.float32))
-        segments = _get_speech_timestamps(
-            tensor,
-            _model,
-            threshold=config.VAD_THRESHOLD,
-            sampling_rate=config.AUDIO_SAMPLE_RATE,
-        )
+        with _lock:
+            # Reset stateful context so this batch call is self-contained, then
+            # restore it after so a concurrent streaming is_speech() isn't left
+            # mid-reset.
+            _model.reset_states()
+            segments = _get_speech_timestamps(
+                tensor,
+                _model,
+                threshold=config.VAD_THRESHOLD,
+                sampling_rate=config.AUDIO_SAMPLE_RATE,
+            )
+            _model.reset_states()
         return [
             (seg["start"] / config.AUDIO_SAMPLE_RATE, seg["end"] / config.AUDIO_SAMPLE_RATE)
             for seg in segments

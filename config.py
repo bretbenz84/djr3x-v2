@@ -657,6 +657,27 @@ INTERRUPT_ACKNOWLEDGMENTS = [
 # Wake words remain the intentional mid-speech interruption path.
 VAD_BARGE_IN_ENABLED = False
 
+# ── Proactive-speech "yield the floor" guard ─────────────────────────────────
+# Rex chooses to say some lines on his own (idle banter, idle follow-ups,
+# consciousness greetings/check-ins). Between DECIDING to speak and the audio
+# actually playing he spends ~1-2s generating the line and fetching TTS, during
+# which the user may begin talking — and because the interaction VAD loop is
+# blocked through that window, Rex plays right over them. (This is distinct from
+# true barge-in: it catches speech that begins BEFORE/at playback, not mid-line.)
+# With this on, a proactive line is pre-cached so playback is instant, then the
+# mic is re-checked immediately before the sound; if the user has already started,
+# Rex stays quiet and the normal turn loop picks up their utterance (the rolling
+# buffer is un-attenuated, so the onset is preserved). Direct replies — where the
+# user JUST spoke — are unaffected; this only gates self-initiated speech.
+PROACTIVE_SPEECH_YIELD_ENABLED = True
+# Look-back window (s) of recent mic audio scanned for the user's voice. Covers
+# the "started just before Rex's line plays" case without reaching back far enough
+# to catch Rex's own prior playback tail.
+PROACTIVE_SPEECH_YIELD_WINDOW_SECS = 0.6
+# Minimum total detected speech (s) within the window to treat as "user speaking"
+# and yield. Above a single VAD frame so a stray blip doesn't suppress Rex.
+PROACTIVE_SPEECH_YIELD_MIN_SPEECH_SECS = 0.1
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TRANSCRIPTION — Whisper Accuracy Tuning
 # ─────────────────────────────────────────────────────────────────────────────

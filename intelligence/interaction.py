@@ -34,6 +34,7 @@ from state import State
 from audio import stream, vad, wake_word, transcription, speaker_id
 from audio import speech_queue, output_gate
 from audio import echo_cancel
+from audio import barge_guard
 from audio import prosody
 from intelligence import action_router, command_parser, llm, personality, rex_preferences
 from intelligence import performance_output
@@ -1733,6 +1734,50 @@ def _speak_blocking(
     return True
 
 
+def _speak_proactive(
+    text: str,
+    *,
+    emotion: str = "neutral",
+    priority: int = 1,
+    voice_settings: Optional[dict] = None,
+    label: str = "proactive",
+) -> bool:
+    """Speak a self-initiated line, but yield the floor if the user has started.
+
+    Unlike a direct reply (where the user just spoke), a proactive line is decided
+    on a silence timer and then spends ~1-2s in LLM + TTS generation before any
+    sound — long enough for the user to begin talking unseen, after which Rex used
+    to play right over them. This pre-caches the audio so playback is instant, then
+    re-checks the mic immediately before the sound: if the user is already
+    speaking, it returns False WITHOUT speaking and the normal loop captures their
+    turn from the (un-attenuated) rolling buffer. Falls back to plain blocking
+    speech when the guard is disabled or in text-only mode.
+    """
+    if not text or not text.strip():
+        return False
+    if bool(getattr(config, "PROACTIVE_SPEECH_YIELD_ENABLED", True)) and not _text_only_mode:
+        # Collapse the check->sound gap: get the audio ready first so the mic
+        # check below happens right before playback, not ~1s before it.
+        try:
+            from audio import tts
+            tts.ensure_cached(text, voice_settings=voice_settings, emotion=emotion)
+        except Exception as exc:
+            _log.debug("[interaction] proactive pre-cache failed: %s", exc)
+        try:
+            if barge_guard.user_speaking_now():
+                _log.info(
+                    "[interaction] proactive line yielded — user already speaking (%s): %r",
+                    label,
+                    text,
+                )
+                return False
+        except Exception as exc:
+            _log.debug("[interaction] proactive yield check failed: %s", exc)
+    return _speak_blocking(
+        text, emotion=emotion, priority=priority, voice_settings=voice_settings
+    )
+
+
 def _post_tts_handoff_policy(text: Optional[str]) -> _PostTtsHandoffPolicy:
     asked_question = _assistant_asked_question(text or "")
     fast_response_expected = _fast_response_handoff_expected(text)
@@ -2987,15 +3032,17 @@ def _maybe_interest_idle_followup(
     if not line:
         return False
 
-    _interest_idle_followups_spoken.add(key)
     _log.info(
         "[interaction] interest idle follow-up — person_id=%s topic=%r text=%r",
         person_id,
         steering.topic,
         line,
     )
-    completed = _speak_blocking(line, emotion="curious", priority=1)
+    completed = _speak_proactive(
+        line, emotion="curious", priority=1, label="interest_idle_followup"
+    )
     if completed:
+        _interest_idle_followups_spoken.add(key)
         conv_memory.add_to_transcript("Rex", line)
         conv_log.log_rex(line)
         _register_rex_utterance(line)
@@ -3062,7 +3109,6 @@ def _maybe_low_memory_idle_question(
     if not spoken_text:
         return False
 
-    _low_memory_idle_questions_spoken.add(person_id)
     _log.info(
         "[interaction] low-memory idle profile question — person_id=%s fact_count=%d key=%r text=%r",
         person_id,
@@ -3070,8 +3116,11 @@ def _maybe_low_memory_idle_question(
         question.get("key"),
         spoken_text,
     )
-    completed = _speak_blocking(spoken_text, emotion="curious", priority=1)
+    completed = _speak_proactive(
+        spoken_text, emotion="curious", priority=1, label="low_memory_idle_question"
+    )
     if completed:
+        _low_memory_idle_questions_spoken.add(person_id)
         conv_memory.add_to_transcript("Rex", spoken_text)
         conv_log.log_rex(spoken_text)
         _register_rex_utterance(spoken_text)
@@ -3183,14 +3232,16 @@ def _maybe_idle_banter(
     except Exception as exc:
         _log.debug("idle banter govern failed: %s", exc)
 
-    _last_idle_banter_at = time.monotonic()
-    _idle_banter_count += 1
-    _log.info(
-        "[interaction] idle banter — person_id=%s attempt=%d ask_user=%s text=%r",
-        person_id, _idle_banter_count, ask_user, line,
+    completed = _speak_proactive(
+        line, emotion="curious", priority=1, label="idle_banter"
     )
-    completed = _speak_blocking(line, emotion="curious", priority=1)
     if completed:
+        _last_idle_banter_at = time.monotonic()
+        _idle_banter_count += 1
+        _log.info(
+            "[interaction] idle banter — person_id=%s attempt=%d ask_user=%s text=%r",
+            person_id, _idle_banter_count, ask_user, line,
+        )
         conv_memory.add_to_transcript("Rex", line)
         conv_log.log_rex(line)
         _register_rex_utterance(line)
@@ -3219,10 +3270,10 @@ def _maybe_idle_outro() -> bool:
     if not line:
         return False
 
-    _idle_outro_spoken = True
     _log.info("[interaction] idle outro before IDLE: %r", line)
-    completed = _speak_blocking(line, emotion="neutral", priority=1)
+    completed = _speak_proactive(line, emotion="neutral", priority=1, label="idle_outro")
     if completed:
+        _idle_outro_spoken = True
         conv_memory.add_to_transcript("Rex", line)
         conv_log.log_rex(line)
         _register_rex_utterance(line)

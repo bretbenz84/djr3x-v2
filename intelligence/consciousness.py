@@ -1143,6 +1143,29 @@ def _speak_async(
         if not text or not text.strip():
             _mark_governor_candidate(candidate_id, "dropped", "empty_text")
             return False
+        # Yield the floor if the user has already started talking. This line was
+        # decided + generated before now; pre-cache its audio so the mic re-check
+        # lands right before playback (not ~1s before it, the window in which Rex
+        # used to start talking over a reply that began during TTS generation),
+        # then bail if the user beat us to it — the interaction turn loop will
+        # pick them up from the un-attenuated rolling buffer.
+        if bool(getattr(config, "PROACTIVE_SPEECH_YIELD_ENABLED", True)):
+            try:
+                from audio import tts
+                tts.ensure_cached(text, emotion=emotion)
+            except Exception as exc:
+                _log.debug("proactive pre-cache failed: %s", exc)
+            try:
+                from audio import barge_guard
+                if barge_guard.user_speaking_now():
+                    _mark_governor_candidate(candidate_id, "dropped", "user_speaking")
+                    _log.info(
+                        "[consciousness] proactive line yielded — user already speaking: %r",
+                        text,
+                    )
+                    return False
+            except Exception as exc:
+                _log.debug("proactive yield check failed: %s", exc)
         from audio import speech_queue
         _proactive_speech_pending.set()
         done = speech_queue.enqueue(text, emotion, priority=0)
