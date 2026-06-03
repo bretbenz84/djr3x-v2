@@ -144,6 +144,17 @@ conversation + a structured spine**, leaning on the LLM for fuzzy judgments.
 ## Roadmap (prioritized, with code areas)
 
 ### ★ Bet 1 — Arc-memory (running summary + callbacks)  [highest felt impact]
+> **STATUS — first cut landed (2026-06-02).** Folded into `intelligence/topic_thread.py`
+> (not a parallel module): a running summary (topics / landed vs flopped / mood / open
+> threads) maintained by a coalesced background `local_llm` worker off the speech path,
+> injected via `llm.assemble_system_prompt` (§6b, after "Session so far"), gated by
+> `config.CONVERSATION_ARC_ENABLED` (default True, kill switch) + `local_llm.enabled()`.
+> Purely additive — no anti-repetition hacks deleted yet. Tests: `tests/test_conversation_arc.py`.
+> See the "Conversation arc memory (Bet 1)" do-not-regress entry in `CONTEXT.md` for the full
+> design + knobs. **Still to do:** live-validate on the robot, then the fast-follows —
+> cross-session persistence (`memory/conversations.py`), `friendship_patterns` callback
+> selector, and *then* start deleting the deterministic anti-repetition once the arc proves out.
+
 A short **running conversation summary**, updated each turn (cheap `local_llm` call),
 holding: topics covered, what **landed vs flopped**, the person's mood, open threads. Feed
 it back into the prompt. Then: repetition dissolves (he can see he already asked/roasted

@@ -631,6 +631,19 @@ def assemble_system_prompt(
     if transcript:
         sections.append("Session so far (recent exchanges):\n" + _format_transcript(transcript[-20:]))
 
+    # 6b. Conversation arc — the distilled running memory (topics, what landed vs
+    # flopped, mood, open threads) maintained by topic_thread. Complements the raw
+    # transcript above: it survives past the 20-line window and is what lets Rex
+    # avoid repeating himself and call back to earlier threads. Injected here,
+    # downstream of the agenda/social-frame governors, on purpose.
+    try:
+        from intelligence import topic_thread as _topic_thread
+        arc_directive = _topic_thread.build_arc_directive()
+        if arc_directive:
+            sections.append(arc_directive)
+    except Exception as exc:
+        _log.debug("conversation arc injection skipped: %s", exc)
+
     # 7. Behavioral rules
     rules = [
         "Never break character under any circumstances.",

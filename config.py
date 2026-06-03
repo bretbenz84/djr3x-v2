@@ -161,6 +161,28 @@ OLLAMA_PRELOAD_ON_STARTUP = True
 OLLAMA_PRELOAD_REQUIRED = True
 OLLAMA_STARTUP_TIMEOUT_SECS = 30.0
 
+# ── Conversation arc memory (Bet 1) ──────────────────────────────────────────
+# A short running summary of the CURRENT conversation — topics covered, what
+# landed vs flopped, the person's mood, and open threads — maintained by a cheap
+# local-LLM (Ollama) call and fed back into the system prompt. It lets Rex see
+# what he already asked/roasted (so he stops repeating himself) and call back to
+# an earlier thread ("did you fix the droid's eyes?"). It lives inside
+# intelligence/topic_thread.py and is refreshed on a coalesced BACKGROUND worker
+# triggered from the user-turn path, so it never touches the time-to-first-speech
+# path. Inert when this flag is off or when the local LLM is unavailable (the
+# previous summary is simply retained). Kill switch: set False to disable.
+CONVERSATION_ARC_ENABLED = True
+# num_predict for the summary refresh (the running summary is short by design).
+CONVERSATION_ARC_MAX_TOKENS = 220
+# Target length the model is asked to keep the summary under, in words.
+CONVERSATION_ARC_MAX_WORDS = 90
+# Timeout for the background refresh call. Generous (it is off the speech path)
+# but bounded — on timeout the previous summary is kept.
+CONVERSATION_ARC_TIMEOUT_SECS = 3.0
+# Most recent transcript lines handed to the summarizer per refresh (the running
+# summary already carries older context, so we only fold the fresh tail).
+CONVERSATION_ARC_MAX_NEW_LINES = 8
+
 # ── Streaming TTS (respond faster) ───────────────────────────────────────────
 # When True, Rex speaks his reply sentence-by-sentence as the LLM generates it,
 # instead of composing the whole reply before saying a word. The first sentence

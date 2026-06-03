@@ -1,18 +1,32 @@
 """
-intelligence/topic_thread.py - lightweight in-session topic continuity.
+intelligence/topic_thread.py - in-session topic continuity + conversation arc.
 
 This module tracks the "soft thread" of the current conversation: what the
 conversation is roughly about, whether the user seems engaged or avoidant, and
 whether Rex has a question hanging in the air. It is intentionally heuristic and
 session-local; durable memories belong in memory/*.
+
+It also owns the **conversation arc** (Bet 1): a short running summary of the
+live conversation — topics covered, what landed vs flopped, the person's mood,
+and open threads — maintained by a cheap local-LLM (Ollama) call and fed back
+into the system prompt so Rex can see what he already asked/roasted (stop
+repeating himself) and call back to an earlier thread. The arc is refreshed on a
+coalesced BACKGROUND worker triggered from the user-turn path, so it never
+touches the time-to-first-speech path; on any failure the previous summary is
+retained. Gated by config.CONVERSATION_ARC_ENABLED and local_llm availability.
+The arc shares this module's session lifecycle: clear() wipes it.
 """
 
 from __future__ import annotations
 
+import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, asdict
 from typing import Optional
+
+_log = logging.getLogger(__name__)
 
 
 _AVOID_PAT = re.compile(
@@ -94,12 +108,17 @@ _current: Optional[TopicThread] = None
 def clear() -> None:
     global _current
     _current = None
+    _clear_arc()
 
 
 def snapshot() -> Optional[dict]:
     if _current is None:
         return None
-    return asdict(_current)
+    data = asdict(_current)
+    # Expose the running arc summary too (consumers that read label /
+    # unresolved_question are unaffected — this only adds a key).
+    data["arc_summary"] = arc_summary()
+    return data
 
 
 def note_assistant_turn(text: str) -> None:
@@ -177,6 +196,10 @@ def note_user_turn(
 
     if answered_question or answers_unresolved or stance in {"engaged", "avoidant"}:
         _current.unresolved_question = None
+
+    # An exchange has progressed — refresh the running conversation arc in the
+    # background (coalesced, off the speech path, no-op when disabled/unavailable).
+    _trigger_arc_refresh()
 
 
 def note_answered_question(answered_question: Optional[dict] = None) -> None:
@@ -363,4 +386,238 @@ def _is_polar_or_tag_question(question: str) -> bool:
             q,
             re.IGNORECASE,
         )
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Conversation arc memory (Bet 1)
+#
+# A running, local-LLM-maintained summary of the live conversation. It is folded
+# into THIS module (rather than a parallel module) so the one place that already
+# tracks "what this conversation is about" also owns the richer memory and shares
+# its session lifecycle. The summary lives as module-level state — NOT on the
+# per-thread TopicThread dataclass — because it must survive topic switches
+# within a session (note_user_turn replaces _current on a new thread).
+#
+# Flow: note_user_turn() -> _trigger_arc_refresh() marks dirty and ensures one
+# background worker is summarizing. The worker reads the new tail of the in-memory
+# session transcript (memory/conversations.py), folds it into the running summary
+# via a single local_llm call, and stores the result under _arc_lock. The prompt
+# assembler reads the stored summary instantly via build_arc_directive(). Nothing
+# here ever runs on the turn/speech path, and every failure path retains the
+# previous summary.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_arc_lock = threading.Lock()
+_arc_summary: str = ""          # running summary text (read into the system prompt)
+_arc_cursor: int = 0            # number of transcript lines already folded in
+_arc_refreshing: bool = False   # a background worker is currently summarizing
+_arc_dirty: bool = False        # new material arrived while a worker was running
+_arc_thread: Optional[threading.Thread] = None  # most recent worker (tests join it)
+
+_ARC_SYSTEM_PROMPT = (
+    "You maintain a running memory of a live, in-progress conversation between a "
+    "user and Rex, a witty sarcastic droid. Output ONLY the updated memory in the "
+    "requested format — no preamble, no commentary, no quotation marks."
+)
+
+
+def _clear_arc() -> None:
+    global _arc_summary, _arc_cursor, _arc_dirty
+    with _arc_lock:
+        _arc_summary = ""
+        _arc_cursor = 0
+        _arc_dirty = False
+        # An in-flight worker is left to finish; its post-generate commit guard
+        # (cursor check) discards a summary computed from the old transcript.
+
+
+def _arc_enabled() -> bool:
+    """True only when the arc is configured on AND the local LLM is available."""
+    try:
+        import config
+        if not bool(getattr(config, "CONVERSATION_ARC_ENABLED", True)):
+            return False
+        from intelligence import local_llm
+        return bool(local_llm.enabled())
+    except Exception:
+        return False
+
+
+def arc_summary() -> str:
+    """Return the current running summary text (instant read; never blocks)."""
+    with _arc_lock:
+        return _arc_summary
+
+
+def build_arc_directive() -> str:
+    """Prompt section exposing the running conversation summary.
+
+    Empty when the arc is disabled or there is no summary yet. Injected into the
+    system prompt (downstream of the social-frame governors), never into the
+    agenda directive — keeping the free-text summary clear of the agenda's
+    regex re-parsing in social_frame.
+    """
+    try:
+        import config
+        if not bool(getattr(config, "CONVERSATION_ARC_ENABLED", True)):
+            return ""
+    except Exception:
+        pass
+    summary = arc_summary().strip()
+    if not summary:
+        return ""
+    return (
+        "Conversation arc — your running memory of THIS conversation. Lean on it: "
+        "don't re-ask questions or reuse jokes/roasts you've already landed, notice "
+        "what landed vs flopped, and you MAY call back to an open thread when it "
+        "fits naturally. Never force a callback, read these notes aloud, or recite "
+        "them verbatim.\n" + summary
+    )
+
+
+def _trigger_arc_refresh() -> None:
+    """Mark the arc dirty and ensure a single background worker is summarizing.
+
+    Coalesces a burst of calls (multiple note_user_turn paths in one turn) into at
+    most one in-flight worker. Returns immediately — the refresh runs on a daemon
+    thread. No-op when disabled/unavailable or when there is no new material.
+    """
+    global _arc_dirty, _arc_refreshing, _arc_cursor, _arc_thread
+    if not _arc_enabled():
+        return
+    try:
+        from memory import conversations
+        transcript_len = len(conversations.get_session_transcript())
+    except Exception:
+        return
+    with _arc_lock:
+        if _arc_cursor > transcript_len:
+            _arc_cursor = 0  # transcript was reset/cleared underneath us
+        if transcript_len <= _arc_cursor:
+            return  # nothing new to fold
+        _arc_dirty = True
+        if _arc_refreshing:
+            return  # the running worker will pick up the new material
+        _arc_refreshing = True
+    thread = threading.Thread(target=_arc_worker, name="arc-refresh", daemon=True)
+    _arc_thread = thread
+    thread.start()
+
+
+def _arc_worker() -> None:
+    """Background loop: summarize while there is fresh material, then stop."""
+    global _arc_dirty, _arc_refreshing
+    try:
+        while True:
+            with _arc_lock:
+                if not _arc_dirty:
+                    return
+                _arc_dirty = False
+            _arc_refresh_core()
+    finally:
+        with _arc_lock:
+            _arc_refreshing = False
+
+
+def _arc_refresh_core() -> bool:
+    """Fold new transcript lines into the running summary. Synchronous.
+
+    Returns True iff a refresh ran and the summary was updated. Never raises — on
+    any failure (disabled, no new lines, local LLM down/slow, empty output) the
+    previous summary is retained and this returns False.
+    """
+    global _arc_summary, _arc_cursor
+    if not _arc_enabled():
+        return False
+    try:
+        from memory import conversations
+        transcript = conversations.get_session_transcript()
+    except Exception:
+        return False
+
+    with _arc_lock:
+        if _arc_cursor > len(transcript):
+            _arc_cursor = 0  # transcript reset — re-summarize from scratch
+        cursor = _arc_cursor
+        new_lines = transcript[cursor:]
+        if not new_lines:
+            return False
+        prev = _arc_summary
+        committed_cursor = cursor
+
+    try:
+        import config
+        max_tokens = int(getattr(config, "CONVERSATION_ARC_MAX_TOKENS", 220))
+        timeout = float(getattr(config, "CONVERSATION_ARC_TIMEOUT_SECS", 3.0))
+        cap = int(getattr(config, "CONVERSATION_ARC_MAX_NEW_LINES", 8))
+    except Exception:
+        max_tokens, timeout, cap = 220, 3.0, 8
+
+    folded = new_lines[-cap:] if cap > 0 else new_lines
+    prompt = _build_arc_prompt(prev, _render_transcript_lines(folded))
+
+    started = time.monotonic()
+    try:
+        from intelligence import local_llm
+        updated = local_llm.generate(
+            prompt,
+            system=_ARC_SYSTEM_PROMPT,
+            temperature=0.0,
+            max_tokens=max_tokens,
+            timeout_secs=timeout,
+        ).strip()
+    except Exception as exc:
+        _log.debug("[arc] refresh skipped (local LLM unavailable): %s", exc)
+        return False
+
+    if not updated:
+        return False
+
+    new_len = len(transcript)
+    with _arc_lock:
+        # Commit only if no clear()/reset slipped in while we were generating.
+        if _arc_cursor != committed_cursor:
+            _log.debug("[arc] discarding stale summary (cursor moved)")
+            return False
+        _arc_summary = updated
+        _arc_cursor = new_len
+    _log.info(
+        "[arc] summary updated in %.2fs (%d chars, folded %d/%d new lines)",
+        time.monotonic() - started, len(updated), len(folded), len(new_lines),
+    )
+    return True
+
+
+def _render_transcript_lines(lines: list[dict]) -> str:
+    out: list[str] = []
+    for entry in lines:
+        speaker = str(entry.get("speaker") or "").strip() or "?"
+        text = re.sub(r"\s+", " ", str(entry.get("text") or "")).strip()
+        if text:
+            out.append(f"{speaker}: {text}")
+    return "\n".join(out)
+
+
+def _build_arc_prompt(prev_summary: str, new_lines_rendered: str) -> str:
+    try:
+        import config
+        max_words = int(getattr(config, "CONVERSATION_ARC_MAX_WORDS", 90))
+    except Exception:
+        max_words = 90
+    prev = prev_summary.strip() or "(nothing yet)"
+    return (
+        "Running memory so far:\n"
+        f"{prev}\n\n"
+        "New lines since the last update:\n"
+        f"{new_lines_rendered}\n\n"
+        "Rewrite the running memory so it incorporates the new lines. Keep only "
+        "what still matters; drop stale detail. Be concrete and specific (name the "
+        f"actual topics). Keep it under {max_words} words. Output EXACTLY these "
+        "five labelled lines and nothing else:\n"
+        "Topics: <comma-separated topics discussed>\n"
+        "Landed: <what the user engaged with or enjoyed; '-' if none>\n"
+        "Flopped: <what fell flat or they pulled away from; '-' if none>\n"
+        "Mood: <the user's current mood/energy in a few words>\n"
+        "Open threads: <unresolved things Rex could naturally follow up on; '-' if none>"
     )
