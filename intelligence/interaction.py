@@ -1740,6 +1740,8 @@ def _speak_proactive(
     emotion: str = "neutral",
     priority: int = 1,
     voice_settings: Optional[dict] = None,
+    pre_beat_ms: int = 0,
+    post_beat_ms_override: int = 0,
     label: str = "proactive",
 ) -> bool:
     """Speak a self-initiated line, but yield the floor if the user has started.
@@ -1774,7 +1776,12 @@ def _speak_proactive(
         except Exception as exc:
             _log.debug("[interaction] proactive yield check failed: %s", exc)
     return _speak_blocking(
-        text, emotion=emotion, priority=priority, voice_settings=voice_settings
+        text,
+        emotion=emotion,
+        priority=priority,
+        pre_beat_ms=pre_beat_ms,
+        post_beat_ms_override=post_beat_ms_override,
+        voice_settings=voice_settings,
     )
 
 
@@ -2822,22 +2829,26 @@ def _arm_no_response_recovery(
         ):
             return
 
-        try:
-            if person_id is not None:
-                rel_memory.decline_latest_pending_question(
-                    person_id,
-                    reason="no response after Rex question",
-                )
-        except Exception as exc:
-            _log.debug("no-response pending question close failed: %s", exc)
-
         quips = getattr(config, "CONVERSATION_NO_RESPONSE_QUIPS", None) or [
             "Guess that question landed in the cargo bay."
         ]
         quip = random.choice(list(quips))
         _log.info("[interaction] no-response recovery quip after question=%r", question_text)
-        completed = _speak_blocking(quip, emotion="neutral", priority=1)
+        completed = _speak_proactive(
+            quip, emotion="neutral", priority=1, label="no_response_recovery"
+        )
         if completed:
+            # Only treat the question as unanswered once the quip actually plays.
+            # If it was aborted because the user just started answering, leave the
+            # pending question open so their reply still matches it.
+            try:
+                if person_id is not None:
+                    rel_memory.decline_latest_pending_question(
+                        person_id,
+                        reason="no response after Rex question",
+                    )
+            except Exception as exc:
+                _log.debug("no-response pending question close failed: %s", exc)
             conv_memory.add_to_transcript("Rex", quip)
             conv_log.log_rex(quip)
             _register_rex_utterance(quip)
@@ -6936,11 +6947,12 @@ def _maybe_prompt_incomplete_turn() -> bool:
         prompt,
     )
 
-    completed = _speak_blocking(
+    completed = _speak_proactive(
         prompt,
         emotion="neutral",
         pre_beat_ms=100,
         post_beat_ms_override=150,
+        label="incomplete_turn_prompt",
     )
     if completed:
         conv_memory.add_to_transcript("Rex", prompt)

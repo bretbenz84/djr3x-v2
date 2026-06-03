@@ -1209,7 +1209,12 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertTrue(first)
         self.assertFalse(second)
         speak.assert_called_once_with(
-            "Nobody talking now.", emotion="neutral", priority=1, voice_settings=None
+            "Nobody talking now.",
+            emotion="neutral",
+            priority=1,
+            pre_beat_ms=0,
+            post_beat_ms_override=0,
+            voice_settings=None,
         )
         transcript.assert_called_once_with("Rex", "Nobody talking now.")
         log_rex.assert_called_once_with("Nobody talking now.")
@@ -1262,7 +1267,14 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         self.assertTrue(first)
         self.assertFalse(second)
-        speak.assert_called_once_with(spoken, emotion="curious", priority=1, voice_settings=None)
+        speak.assert_called_once_with(
+            spoken,
+            emotion="curious",
+            priority=1,
+            pre_beat_ms=0,
+            post_beat_ms_override=0,
+            voice_settings=None,
+        )
         transcript.assert_called_once_with("Rex", spoken)
         log_rex.assert_called_once_with(spoken)
         register.assert_called_once_with(spoken)

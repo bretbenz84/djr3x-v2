@@ -677,6 +677,14 @@ PROACTIVE_SPEECH_YIELD_WINDOW_SECS = 0.6
 # Minimum total detected speech (s) within the window to treat as "user speaking"
 # and yield. Above a single VAD frame so a stray blip doesn't suppress Rex.
 PROACTIVE_SPEECH_YIELD_MIN_SPEECH_SECS = 0.1
+# After the look-back, keep listening forward up to this long for the user to
+# START talking before committing to the line. A pure single-instant look-back
+# misses a reply that begins in the same beat the proactive line fires (e.g. you
+# answer a question right as the no-response timer elapses); polling a few hundred
+# ms catches that onset. Returns early the moment speech is detected, so this only
+# adds latency to proactive lines when you're actually silent. Set 0 for look-back
+# only.
+PROACTIVE_SPEECH_YIELD_POLL_SECS = 0.35
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TRANSCRIPTION — Whisper Accuracy Tuning
