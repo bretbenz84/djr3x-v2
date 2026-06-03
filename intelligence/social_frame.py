@@ -182,6 +182,7 @@ def build_frame(
     *,
     answered_question: Optional[dict] = None,
     agenda_directive: str = "",
+    turn_plan: Optional["TurnPlan"] = None,
 ) -> SocialFrame:
     plan = response_length.classify(user_text, answered_question=answered_question)
     energy = _safe_user_energy()
@@ -192,16 +193,45 @@ def build_frame(
         "topic_sensitivity", "none"
     )
 
-    purpose = _purpose_from(agenda_directive, plan.reason, energy)
+    # Bet 2: prefer the agenda's structured decision (TurnPlan) over regex-reparsing
+    # its prose. Falls back to _purpose_from when no plan is passed or the agenda left
+    # purpose unset (generic turns where purpose comes from energy/length, as before).
+    if turn_plan is not None and turn_plan.purpose is not None:
+        purpose = turn_plan.purpose
+    else:
+        purpose = _purpose_from(agenda_directive, plan.reason, energy)
     unknown_count = _unknown_visible_count()
-    urgent_identity = _urgent_group_identity(agenda_directive)
     user_asked_question = _looks_like_user_question(user_text)
     budget_allows = _question_budget_allows()
-    fresh_interest_followup = (
-        "human just volunteered a genuine interest" in (agenda_directive or "").lower()
-        and _ASK_ALLOWED_PAT.search(agenda_directive or "") is not None
+
+    # Bet 2: read each agenda question-signal from the TurnPlan when the agenda set
+    # it, else regex-derive it (the no-plan fallback). On the LIVE path the agenda
+    # populates every signal (build_turn_plan → _populate_signals via derive_signals),
+    # so build_frame does NOT reparse the directive here — the lambdas only run for
+    # no-plan callers. derive_signals() uses these same patterns, so the two paths
+    # are equivalent by construction.
+    _d = agenda_directive or ""
+
+    def _sig(name, fallback):
+        if turn_plan is not None and getattr(turn_plan, name) is not None:
+            return getattr(turn_plan, name)
+        return fallback()
+
+    urgent_identity = _sig("urgent_identity", lambda: _urgent_group_identity(_d))
+    fresh_interest_followup = _sig(
+        "fresh_interest_followup",
+        lambda: (
+            "human just volunteered a genuine interest" in _d.lower()
+            and _ASK_ALLOWED_PAT.search(_d) is not None
+        ),
     )
-    explicit_followup = _explicit_followup_allowed(agenda_directive, purpose)
+    explicit_followup = _sig(
+        "explicit_followup", lambda: _explicit_followup_allowed(_d, purpose)
+    )
+    ask_allowed = _sig("ask_allowed", lambda: bool(_ASK_ALLOWED_PAT.search(_d)))
+    hard_no_question = _sig(
+        "hard_no_question", lambda: bool(_HARD_NO_QUESTION_PAT.search(_d))
+    )
 
     # Earned on-thread follow-ups (a tight follow-up to the interest/answer the
     # human just gave, or an identity ask) bypass the question budget: that
@@ -211,11 +241,11 @@ def build_frame(
     allow_question = False
     if urgent_identity and unknown_count:
         allow_question = True
-    elif unknown_count and person_id is not None and _ASK_ALLOWED_PAT.search(agenda_directive):
+    elif unknown_count and person_id is not None and ask_allowed:
         allow_question = True
     elif answered_question is not None:
         allow_question = bool(explicit_followup)
-    elif _HARD_NO_QUESTION_PAT.search(agenda_directive):
+    elif hard_no_question:
         allow_question = False
     elif fresh_interest_followup:
         allow_question = True
@@ -288,6 +318,28 @@ def _explicit_followup_allowed(agenda_directive: str, purpose: str) -> bool:
     if purpose in {"answer", "answer_ack"} and "after answering" in lowered:
         return True
     return False
+
+
+def derive_signals(agenda_directive: str, purpose: str) -> dict:
+    """Regex-derive the agenda's question-allowance signals from its directive.
+
+    Single source of truth for the directive→signals mapping, used both as
+    build_frame's no-plan fallback and by conversation_agenda.build_turn_plan to
+    POPULATE a TurnPlan (so the live build_frame reads structured fields rather than
+    reparsing the agenda's prose). Because both paths call this, the structured and
+    fallback results are identical by construction.
+    """
+    d = agenda_directive or ""
+    ask_allowed = bool(_ASK_ALLOWED_PAT.search(d))
+    return {
+        "ask_allowed": ask_allowed,
+        "hard_no_question": bool(_HARD_NO_QUESTION_PAT.search(d)),
+        "explicit_followup": _explicit_followup_allowed(d, purpose),
+        "fresh_interest_followup": (
+            "human just volunteered a genuine interest" in d.lower() and ask_allowed
+        ),
+        "urgent_identity": _urgent_group_identity(d),
+    }
 
 
 def build_directive(frame: SocialFrame) -> str:
@@ -633,6 +685,17 @@ def _roast_level(
             _log.debug("[social_frame] roast preference lookup failed: %s", exc)
     if target in {"micro", "brief"}:
         return "light"
+    # Act-on-signal: if the conversation arc reads flat (disengaged/disappointed
+    # mood), ease a would-be "normal" roast to "light" so Rex stops needling a
+    # flagging room. Additive — only downgrades the default; the care/affect "none"
+    # branches above are untouched. Gated by config; never raises.
+    try:
+        if getattr(config, "ARC_EASES_ROAST_ON_FLOP", True):
+            from intelligence import topic_thread as _topic_thread
+            if _topic_thread.arc_reads_flat():
+                return "light"
+    except Exception as exc:
+        _log.debug("[social_frame] arc roast-ease check failed: %s", exc)
     return "normal"
 
 

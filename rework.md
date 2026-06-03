@@ -177,6 +177,17 @@ sessions ("last time you were chasing the Whirlpool galaxy…").
   `_is_near_repeat`) once the model can just *see* what it already said.
 
 ### ★ Bet 2 — Structured `TurnPlan` (kill the prose-matching)  [code-health multiplier]
+> **STATUS — landed (2026-06-03), patterns kept as fallback.** `intelligence/turn_plan.py`
+> `TurnPlan` carries the agenda's decisions (purpose + the allow_question signals);
+> `conversation_agenda.build_turn_plan()` populates them and renders the directive
+> (`build_turn_directive` is now a back-compat wrapper); `social_frame.build_frame(turn_plan=…)`
+> reads the structured fields, so the LIVE agenda→social_frame handoff no longer
+> regex-reparses prose. Equivalence guaranteed by construction + `tests/test_turn_plan.py`.
+> The regex patterns (`_purpose_from`/`_EXPLICIT_FOLLOWUP_PAT`/`_ASK_ALLOWED_PAT`/
+> `_HARD_NO_QUESTION_PAT`) are KEPT as the no-plan fallback; literally deleting them is a
+> deferred follow-up (rewrite ~5 pinned string-based tests onto the plan API, then delete).
+> See the "TurnPlan" do-not-regress entry in `CONTEXT.md`.
+
 Replace string-append + regex-reparse with a typed object. Each governor populates fields
 (`purpose`, `allow_question`, `roast_level`, `topic`, `mode`, `length`, `addressee`…); render
 the prompt **once** from it.

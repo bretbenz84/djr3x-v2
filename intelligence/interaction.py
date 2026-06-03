@@ -7227,16 +7227,18 @@ def _stream_llm_response(
 
     filler_stop = _start_latency_filler_timer()
     try:
-        agenda_directive = conversation_agenda.build_turn_directive(
+        turn_plan = conversation_agenda.build_turn_plan(
             text,
             person_id,
             answered_question=answered_question,
         )
+        agenda_directive = turn_plan.directive
         frame = social_frame.build_frame(
             text,
             person_id,
             answered_question=answered_question,
             agenda_directive=agenda_directive,
+            turn_plan=turn_plan,
         )
         comedy_mode = comedy_modes.select_mode(
             text,
@@ -10019,13 +10021,30 @@ def _end_session() -> None:
             person_transcript = _filter_forgotten_transcript(transcript, person_id)
 
             if person_transcript:
-                summary = llm.generate_session_summary(person_id, person_transcript)
+                # Prefer the conversation arc — it's already computed each turn,
+                # richer (mood/landed-flopped/open threads), and reusing it saves an
+                # extra session-summary OpenAI call. Guards: only a 1:1 session (the
+                # arc summarizes the whole conversation, not per-person), AND only
+                # when the arc's recent-window actually covered the session — for a
+                # long session the windowed arc would drop early content, so fall
+                # back to the full-transcript generate_session_summary.
+                arc_window = int(getattr(config, "CONVERSATION_ARC_CONTEXT_LINES", 12))
+                arc_fields = (
+                    topic_thread.arc_persistence_fields()
+                    if len(_session_person_ids) == 1 and len(transcript) <= arc_window
+                    else None
+                )
+                if arc_fields:
+                    summary, emotion_tone, topics = arc_fields
+                else:
+                    summary = llm.generate_session_summary(person_id, person_transcript)
+                    emotion_tone, topics = "neutral", ""
                 if summary:
                     conv_memory.save_conversation(
                         person_id,
                         summary,
-                        emotion_tone="neutral",
-                        topics="",
+                        emotion_tone=emotion_tone,
+                        topics=topics,
                     )
 
             forgotten_terms = _forgotten_terms_for_person(person_id)

@@ -526,6 +526,45 @@ def arc_summary() -> str:
         return _arc_summary
 
 
+def _arc_field(summary: str, label: str) -> str:
+    """Pull one labelled line's value out of the arc summary (e.g. 'Mood')."""
+    m = re.search(rf"(?mi)^\s*{re.escape(label)}\s*:\s*(.+)$", summary or "")
+    return m.group(1).strip() if m else ""
+
+
+def arc_persistence_fields() -> Optional[tuple[str, str, str]]:
+    """Derive (summary, emotion_tone, topics) from the current arc for cross-session
+    persistence (`memory/conversations.save_conversation`), or None if no arc yet.
+    `summary` is the arc flattened to one line; tone/topics fill the structured
+    columns from the Mood/Topics lines."""
+    summary = arc_summary().strip()
+    if not summary:
+        return None
+    flat = re.sub(r"\s*\n\s*", " · ", summary).strip()
+    return flat, (_arc_field(summary, "Mood") or "neutral"), _arc_field(summary, "Topics")
+
+
+# Mood words that mean "this is falling flat" — used to ease off the roast. Kept
+# conservative (explicit disengagement/negativity) so a neutral/positive arc, or an
+# empty one, never trips it.
+_ARC_FLAT_MOOD_RE = re.compile(
+    r"\b(diseng|flat|bored|boring|disappoint|annoy|frustrat|evasive|withdrawn|"
+    r"indifferen|irritat|unimpressed|unenthusi|low.?energy|reluctan|dismissiv|"
+    r"checked.?out|uninterested|aloof|terse|curt|deflat|defensive|guarded|tired)",
+    re.IGNORECASE,
+)
+
+
+def arc_reads_flat() -> bool:
+    """True when the arc's Mood read says the conversation is falling flat.
+
+    Drives the 'ease off the roast' behavior (`social_frame._roast_level`). Keyed
+    on Mood (the reliable 'read the room' field) rather than Landed/flopped, which
+    usually mentions some flop every turn. Empty/positive arc → False.
+    """
+    return bool(_ARC_FLAT_MOOD_RE.search(_arc_field(arc_summary(), "Mood")))
+
+
 def build_arc_directive() -> str:
     """Prompt section exposing the running conversation summary.
 

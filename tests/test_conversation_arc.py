@@ -286,5 +286,98 @@ class ArcOpenAIHelperTest(unittest.TestCase):
         self.assertEqual(kwargs["max_tokens"], 50)
 
 
+class ArcPersistenceTest(_ArcTestBase):
+    def test_persistence_fields_parses_arc(self):
+        from intelligence import topic_thread as tt
+        self._run_refresh(
+            _transcript(("Bret", "hi")),
+            returns=(
+                "Topics: astrophotography, weekend\n"
+                "Shared: shoots from his backyard\n"
+                "Mood: relaxed, enthusiastic\n"
+                "Landed/flopped: deep-sky landed\n"
+                "Open threads: which galaxy next"
+            ),
+        )
+        fields = tt.arc_persistence_fields()
+        self.assertIsNotNone(fields)
+        summary, tone, topics = fields
+        self.assertNotIn("\n", summary)            # flattened to one line
+        self.assertIn("astrophotography", summary)
+        self.assertEqual(tone, "relaxed, enthusiastic")
+        self.assertEqual(topics, "astrophotography, weekend")
+
+    def test_persistence_fields_none_when_empty(self):
+        from intelligence import topic_thread as tt
+        self.assertIsNone(tt.arc_persistence_fields())
+
+
+class ArcReadsFlatTest(_ArcTestBase):
+    def _seed(self, mood):
+        self._run_refresh(
+            _transcript(("Bret", "hi")), returns=f"Topics: x\nMood: {mood}\nOpen threads: -"
+        )
+
+    def test_flat_on_negative_mood(self):
+        from intelligence import topic_thread as tt
+        for mood in (
+            "disengaged", "bored", "positive but slightly disappointed",
+            "evasive", "annoyed, terse", "low energy",
+        ):
+            tt.clear()
+            self._seed(mood)
+            self.assertTrue(tt.arc_reads_flat(), mood)
+
+    def test_not_flat_on_positive_or_empty(self):
+        from intelligence import topic_thread as tt
+        for mood in ("relaxed, enthusiastic", "playful, amused", "curious", "happy, chatty"):
+            tt.clear()
+            self._seed(mood)
+            self.assertFalse(tt.arc_reads_flat(), mood)
+        tt.clear()
+        self.assertFalse(tt.arc_reads_flat())  # empty arc never trips it
+
+
+class ActOnSignalRoastTest(unittest.TestCase):
+    """The arc's flat read eases social_frame's roast normal->light (additive)."""
+
+    def _roast(self, **kw):
+        from intelligence import social_frame
+        return social_frame._roast_level(
+            kw.get("person_id"),
+            kw.get("target", "medium"),
+            kw.get("empathy_mode", "default"),
+            kw.get("affect", "neutral"),
+            kw.get("sensitivity", "none"),
+        )
+
+    def test_normal_eased_to_light_when_arc_flat(self):
+        from intelligence import topic_thread
+        with mock.patch.object(topic_thread, "arc_reads_flat", return_value=True):
+            self.assertEqual(self._roast(person_id=None), "light")
+
+    def test_normal_stays_when_arc_not_flat(self):
+        from intelligence import topic_thread
+        with mock.patch.object(topic_thread, "arc_reads_flat", return_value=False):
+            self.assertEqual(self._roast(person_id=None), "normal")
+
+    def test_kill_switch_disables_easing(self):
+        import config
+        from intelligence import topic_thread
+        with (
+            mock.patch.object(config, "ARC_EASES_ROAST_ON_FLOP", False),
+            mock.patch.object(topic_thread, "arc_reads_flat", return_value=True),
+        ):
+            self.assertEqual(self._roast(person_id=None), "normal")
+
+    def test_care_none_cases_unaffected_by_flat_arc(self):
+        # A sad/sensitive/support turn stays "none" even if the arc reads flat —
+        # the downgrade only touches the would-be-"normal" path.
+        from intelligence import topic_thread
+        with mock.patch.object(topic_thread, "arc_reads_flat", return_value=True):
+            self.assertEqual(self._roast(person_id=None, affect="sad"), "none")
+            self.assertEqual(self._roast(person_id=None, empathy_mode="support"), "none")
+
+
 if __name__ == "__main__":
     unittest.main()

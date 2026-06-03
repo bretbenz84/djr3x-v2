@@ -193,6 +193,25 @@ CONVERSATION_ARC_TIMEOUT_SECS = 8.0
 # is re-derived FRESH from this window every time (NOT incrementally rewritten —
 # feeding the prior summary back made the local model echo it verbatim and freeze).
 CONVERSATION_ARC_CONTEXT_LINES = 12
+# ── Turn classifier (Bet 3) ──────────────────────────────────────────────────
+# One cheap structured read of each user turn via the local qwen2.5:1.5b sidecar:
+# {topic, engagement, intent, sentiment, wants_pivot, addressee}. Meant to retire
+# the regex zoo (user_energy._classify / conversation_steering._looks_disengaged /
+# topic_thread._classify_topic). It runs ON the turn's critical path (it informs
+# routing/governors for THIS reply), so it adds local-LLM latency — default OFF
+# until validated on the robot. When on, callers AUGMENT their existing
+# deterministic heuristics with it and fall back on any failure (classify→None).
+CONVERSATION_TURN_CLASSIFIER_ENABLED = False
+CONVERSATION_TURN_CLASSIFIER_MAX_TOKENS = 64
+CONVERSATION_TURN_CLASSIFIER_TIMEOUT_SECS = 1.5
+
+# Act on the arc's read: when its Mood line says the conversation is falling flat
+# (disengaged / bored / disappointed / …), ease Rex's roast from normal→light in
+# social_frame._roast_level so he stops needling a flagging room. Only downgrades
+# what would otherwise be a "normal" roast (never touches the care/affect "none"
+# cases or the engaged-turn default). The existing conversation_steering pivot
+# already handles "change the channel". Kill switch: set False to disable.
+ARC_EASES_ROAST_ON_FLOP = True
 
 # Verbose diagnostic: log the FULL assembled system prompt (every section,
 # including the conversation-arc block) at INFO each turn, so you can confirm

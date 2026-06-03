@@ -20,6 +20,7 @@ import config
 from intelligence import empathy
 from intelligence import conversation_steering
 from intelligence import social_scene
+from intelligence.turn_plan import TurnPlan
 from memory import facts as facts_memory
 from memory import people as people_memory
 from memory import relationships as rel_memory
@@ -418,21 +419,54 @@ def _friendship_question_allowed(text: str, person_id: Optional[int]) -> bool:
     return True
 
 
-def build_turn_directive(
+def _finish(plan: TurnPlan, lines: list, purpose: Optional[str] = None) -> TurnPlan:
+    """Render the directive into the plan, populate any question-signals the branch
+    didn't set, and return it. A `purpose` passed here is only a default — an inline
+    `plan.purpose = ...` set by a branch takes precedence."""
+    plan.directive = "\n".join(lines)
+    if purpose is not None and plan.purpose is None:
+        plan.purpose = purpose
+    _populate_signals(plan)
+    return plan
+
+
+def _populate_signals(plan: TurnPlan) -> None:
+    """Fill any question-signals the branch left unset by regex-deriving them from the
+    rendered directive — the SAME mapping build_frame's fallback uses (social_frame.
+    derive_signals) — so the live build_frame reads structured TurnPlan fields instead
+    of reparsing the prose. Never raises; on error the fields stay None and build_frame
+    falls back to its own regex."""
+    try:
+        from intelligence import social_frame
+        sig = social_frame.derive_signals(plan.directive, plan.purpose or "")
+    except Exception:
+        return
+    for name in (
+        "ask_allowed", "hard_no_question", "explicit_followup",
+        "fresh_interest_followup", "urgent_identity",
+    ):
+        if getattr(plan, name) is None:
+            setattr(plan, name, sig[name])
+
+
+def build_turn_plan(
     user_text: str,
     person_id: Optional[int],
     *,
     answered_question: Optional[dict] = None,
-) -> str:
+) -> TurnPlan:
     """
-    Return a compact directive that gives the next generated reply one job.
+    Build the turn's TurnPlan: the structured decisions (purpose, …) the agenda
+    makes, plus the rendered `directive` string that gives the next reply one job.
 
-    The directive is intentionally plain. The Rex voice still comes from the
-    core prompt; this just decides what the turn is for.
+    The directive is intentionally plain. The Rex voice still comes from the core
+    prompt; this just decides what the turn is for. social_frame reads the
+    structured fields instead of regex-reparsing the directive (Bet 2).
     """
     text = (user_text or "").strip()
     ws = world_state.snapshot()
 
+    plan = TurnPlan()
     lines = [
         "Conversation agenda: choose ONE purpose for this turn. Do not stack "
         "multiple follow-up questions, presence reactions, opinions, roasts, "
@@ -506,7 +540,7 @@ def build_turn_directive(
             "For death, grief, illness, or crisis language, acknowledge plainly; "
             "ask at most one low-pressure support question only if it helps."
         )
-        return "\n".join(lines)
+        return _finish(plan, lines)
 
     if _looks_like_offscreen_correction(text):
         lines.append(
@@ -515,7 +549,7 @@ def build_turn_directive(
             "they are, using their name if known, then stop. No new questions, "
             "no interest-thread pivot, no generic friendship question."
         )
-        return "\n".join(lines)
+        return _finish(plan, lines)
 
     if _looks_like_health_resolved(text):
         lines.append(
@@ -524,7 +558,7 @@ def build_turn_directive(
             "Do not keep probing the health topic, do not ask a new question, and "
             "do not pivot into an unrelated interview topic."
         )
-        return "\n".join(lines)
+        return _finish(plan, lines)
 
     if _looks_like_reassurance(text):
         lines.append(
@@ -534,7 +568,7 @@ def build_turn_directive(
             "NOT imply they are repressing or hiding feelings, and do not insist the "
             "mood is worse than they say. A brief, genuine beat is the whole move."
         )
-        return "\n".join(lines)
+        return _finish(plan, lines)
 
     if end_thread_pending:
         lines.append(
@@ -542,7 +576,8 @@ def build_turn_directive(
             "acknowledgement or soft final beat, then stop. No new questions, "
             "no unrelated memory hooks, no visual riff."
         )
-        return "\n".join(lines)
+        plan.purpose = "closure"
+        return _finish(plan, lines)
 
     unknown_context = social_scene.unknown_group_context(
         ws,
@@ -558,7 +593,7 @@ def build_turn_directive(
             )
         else:
             lines.append(unknown_context.directive)
-        return "\n".join(lines)
+        return _finish(plan, lines)
 
     steering_ctx = None
     try:
@@ -586,6 +621,7 @@ def build_turn_directive(
                     f"{next_q['text']!r}."
                 )
             lines.append(pivot_line)
+            plan.explicit_followup = True
         elif _looks_like_user_question(text):
             lines.append(
                 "Primary purpose: answer the human's direct question first, then "
@@ -601,7 +637,9 @@ def build_turn_directive(
                 "natural follow-up about their experience with that topic — what "
                 "got them into it, how they got into it, or their favorite part."
             )
-        return "\n".join(lines)
+            plan.explicit_followup = True
+        plan.purpose = "interest"
+        return _finish(plan, lines)
 
     if answered_question:
         q_text = answered_question.get("question_text") or "your previous question"
@@ -619,6 +657,7 @@ def build_turn_directive(
                 "exact topic, or carry the turn with a specific Rex opinion / "
                 "light roast instead. Do not pivot into a new interview topic."
             )
+            plan.explicit_followup = True
         else:
             lines.append(
                 "Primary purpose: the human just answered a question Rex asked. "
@@ -627,7 +666,8 @@ def build_turn_directive(
                 "another question in the same breath; a short opinion or light "
                 "roast is okay if it fits the answer."
             )
-        return "\n".join(lines)
+        plan.purpose = "answer_ack"
+        return _finish(plan, lines)
 
     if _looks_like_user_question(text):
         if question_budget_allows:
@@ -642,7 +682,8 @@ def build_turn_directive(
                 "Do not add a new follow-up question; the recent question budget "
                 "is full."
             )
-        return "\n".join(lines)
+        plan.purpose = "answer"
+        return _finish(plan, lines)
 
     if person_id is not None:
         pending = rel_memory.get_latest_pending_question(person_id)
@@ -653,7 +694,7 @@ def build_turn_directive(
                 "question yet; respond to what the human just said and leave "
                 "space for them to answer if they have not."
             )
-            return "\n".join(lines)
+            return _finish(plan, lines)
 
         low_pressure_ack = _is_compliment_or_ack(text)
         if _PLAN_STATEMENT_PAT.search(text):
@@ -662,7 +703,7 @@ def build_turn_directive(
                 "Give one concrete positive or curious beat connected to that plan, "
                 "then stop. Do not pivot into an unrelated interview question."
             )
-            return "\n".join(lines)
+            return _finish(plan, lines)
 
         next_q = None
         if bool(getattr(config, "REACTIVE_FRIENDSHIP_QUESTIONS_ENABLED", False)):
@@ -724,7 +765,20 @@ def build_turn_directive(
             "if it genuinely connects to the user's turn."
         )
 
-    return "\n".join(lines)
+    return _finish(plan, lines)
+
+
+def build_turn_directive(
+    user_text: str,
+    person_id: Optional[int],
+    *,
+    answered_question: Optional[dict] = None,
+) -> str:
+    """Back-compat string accessor: render just the agenda directive from the
+    TurnPlan. Prefer build_turn_plan() where the structured fields are wanted."""
+    return build_turn_plan(
+        user_text, person_id, answered_question=answered_question
+    ).directive
 
 
 _OFFSCREEN_CORRECTION_PAT = re.compile(
