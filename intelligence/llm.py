@@ -752,7 +752,12 @@ def assemble_system_prompt(
             "Turn-specific response contract:\n" + agenda_directive.strip()
         )
 
-    return "\n\n---\n\n".join(sections)
+    prompt = "\n\n---\n\n".join(sections)
+    if getattr(config, "LOG_SYSTEM_PROMPT", False):
+        _log.info(
+            "[llm] assembled system prompt (person_id=%s):\n%s", person_id, prompt
+        )
+    return prompt
 
 
 def warmup() -> bool:
@@ -879,6 +884,34 @@ def analyze_sentiment(text: str) -> dict:
     except Exception as exc:
         _log.error("analyze_sentiment failed: %s", exc)
         return dict(_defaults)
+
+
+def summarize_conversation_arc(
+    prompt: str,
+    *,
+    system: str,
+    max_tokens: int = 200,
+    timeout_secs: float = 8.0,
+) -> str:
+    """Run the conversation-arc summary prompt on the cheap chat model.
+
+    Called by intelligence/topic_thread on a BACKGROUND thread (off the speech
+    path), so a capable cloud model is fine here. The prompt + schema are built by
+    the caller; this is just the transport. Raises on transport/API error so the
+    caller can retain the previous summary. Non-streaming, low temperature.
+    """
+    model = getattr(config, "CONVERSATION_ARC_OPENAI_MODEL", None) or config.LLM_MODEL
+    resp = _client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.2,
+        max_tokens=int(max_tokens),
+        timeout=float(timeout_secs),
+    )
+    return (resp.choices[0].message.content or "").strip()
 
 
 def generate_session_summary(person_id: int, transcript: list[dict]) -> str:

@@ -172,16 +172,32 @@ OLLAMA_STARTUP_TIMEOUT_SECS = 30.0
 # path. Inert when this flag is off or when the local LLM is unavailable (the
 # previous summary is simply retained). Kill switch: set False to disable.
 CONVERSATION_ARC_ENABLED = True
-# num_predict for the summary refresh (the running summary is short by design).
-CONVERSATION_ARC_MAX_TOKENS = 220
-# Target length the model is asked to keep the summary under, in words.
-CONVERSATION_ARC_MAX_WORDS = 90
+# Which model maintains the arc summary:
+#   "openai" (default) — gpt-4o-mini via the existing OpenAI client. Better quality
+#       and a richer schema (mood, what landed vs flopped). The refresh is OFF the
+#       speech path (background thread), so the cloud round-trip never delays Rex's
+#       reply, and the cost is ~$0.0002/turn. Rex's replies already require OpenAI,
+#       so this adds no new hard dependency.
+#   "local" — the qwen2.5:1.5b Ollama sidecar (no cloud call). Falls back to a
+#       3-field factual-only schema because the small model can't reliably judge
+#       mood / landed-vs-flopped (it froze and looped in testing — see CONTEXT.md).
+CONVERSATION_ARC_BACKEND = "openai"
+# OpenAI model used when backend="openai" (defaults to the main chat model).
+CONVERSATION_ARC_OPENAI_MODEL = "gpt-4o-mini"
+# max_tokens for the summary (five short labelled lines).
+CONVERSATION_ARC_MAX_TOKENS = 200
 # Timeout for the background refresh call. Generous (it is off the speech path)
 # but bounded — on timeout the previous summary is kept.
-CONVERSATION_ARC_TIMEOUT_SECS = 3.0
-# Most recent transcript lines handed to the summarizer per refresh (the running
-# summary already carries older context, so we only fold the fresh tail).
-CONVERSATION_ARC_MAX_NEW_LINES = 8
+CONVERSATION_ARC_TIMEOUT_SECS = 8.0
+# How many of the most recent transcript lines to summarize each refresh. The arc
+# is re-derived FRESH from this window every time (NOT incrementally rewritten —
+# feeding the prior summary back made the local model echo it verbatim and freeze).
+CONVERSATION_ARC_CONTEXT_LINES = 12
+
+# Verbose diagnostic: log the FULL assembled system prompt (every section,
+# including the conversation-arc block) at INFO each turn, so you can confirm
+# what the main LLM actually sees. Noisy — flip to False when done inspecting.
+LOG_SYSTEM_PROMPT = True
 
 # ── Streaming TTS (respond faster) ───────────────────────────────────────────
 # When True, Rex speaks his reply sentence-by-sentence as the LLM generates it,

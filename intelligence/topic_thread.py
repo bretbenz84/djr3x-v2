@@ -20,9 +20,12 @@ The arc shares this module's session lifecycle: clear() wipes it.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import sys
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass, asdict
 from typing import Optional
 
@@ -400,25 +403,38 @@ def _is_polar_or_tag_question(question: str) -> bool:
 # within a session (note_user_turn replaces _current on a new thread).
 #
 # Flow: note_user_turn() -> _trigger_arc_refresh() marks dirty and ensures one
-# background worker is summarizing. The worker reads the new tail of the in-memory
-# session transcript (memory/conversations.py), folds it into the running summary
+# background worker is summarizing. The worker re-derives the summary FRESH from
+# the most recent window of the in-memory session transcript (memory/conversations.py)
 # via a single local_llm call, and stores the result under _arc_lock. The prompt
 # assembler reads the stored summary instantly via build_arc_directive(). Nothing
 # here ever runs on the turn/speech path, and every failure path retains the
 # previous summary.
+#
+# Backend (config.CONVERSATION_ARC_BACKEND): "openai" (default) summarizes with
+# gpt-4o-mini via the existing OpenAI client for a rich 5-field schema (Topics /
+# Shared / Mood / Landed-flopped / Open threads); "local" uses the qwen2.5:1.5b
+# sidecar with a 3-field factual-only schema. The cloud call is fine here because
+# the refresh is off the speech path and Rex's replies already depend on OpenAI.
+#
+# Either backend summarizes FRESH from the transcript window — NOT an incremental
+# rewrite. An earlier version fed the prior summary back and the local model echoed
+# it verbatim, freezing the arc on turn 1. The affective fields are local-unsafe
+# (the 1.5B called declined topics "landed" and reported Rex's mood as the user's),
+# hence the reduced local schema.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _arc_lock = threading.Lock()
 _arc_summary: str = ""          # running summary text (read into the system prompt)
-_arc_cursor: int = 0            # number of transcript lines already folded in
+_arc_cursor: int = 0            # transcript length summarized through (new-material gate)
 _arc_refreshing: bool = False   # a background worker is currently summarizing
 _arc_dirty: bool = False        # new material arrived while a worker was running
 _arc_thread: Optional[threading.Thread] = None  # most recent worker (tests join it)
 
 _ARC_SYSTEM_PROMPT = (
-    "You maintain a running memory of a live, in-progress conversation between a "
-    "user and Rex, a witty sarcastic droid. Output ONLY the updated memory in the "
-    "requested format — no preamble, no commentary, no quotation marks."
+    "You are the memory module for Rex, a witty sarcastic droid talking with a user. "
+    "Compress the conversation into a compact memory Rex can reuse so he does not "
+    "repeat himself and can follow up later. Summarize in your own words — never copy "
+    "the dialogue back, never use quotation marks. Track the USER, not Rex."
 )
 
 
@@ -432,16 +448,76 @@ def _clear_arc() -> None:
         # (cursor check) discards a summary computed from the old transcript.
 
 
+def _under_test_runner() -> bool:
+    """True when running under unittest/pytest (and not explicitly opted in).
+
+    Keys off the ENTRY POINT — sys.argv[0] is 'python -m unittest' under the
+    project's test command, and pytest sets PYTEST_CURRENT_TEST — rather than
+    "'unittest' in sys.modules", so an incidental import of unittest by some
+    dependency can NOT disable the arc on the robot (which runs `python main.py`,
+    argv0='main.py'). DJR3X_ARC_TEST_OPT_IN forces the production path (used by
+    live-validation harnesses).
+    """
+    if os.environ.get("DJR3X_ARC_TEST_OPT_IN"):
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    argv0 = (sys.argv[0] if sys.argv else "").lower()
+    return "unittest" in argv0 or "pytest" in argv0 or "py.test" in argv0
+
+
 def _arc_enabled() -> bool:
-    """True only when the arc is configured on AND the local LLM is available."""
+    """Whether the arc may run RIGHT NOW.
+
+    Fail-safe under a test runner: the refresh fires from deep inside
+    note_user_turn and (with the openai backend) would make a real cloud call with
+    the live API key in apikeys.py. So unless a test explicitly opts in
+    (DJR3X_ARC_TEST_OPT_IN), the arc is inert under unittest/pytest. Unit tests that
+    exercise the refresh mock `_arc_enabled` (or set the opt-in) directly.
+    """
+    if _under_test_runner():
+        return False
+    return _arc_backend_available()
+
+
+def _arc_backend_available() -> bool:
+    """The real gate: arc configured on AND the chosen backend usable."""
     try:
         import config
         if not bool(getattr(config, "CONVERSATION_ARC_ENABLED", True)):
             return False
-        from intelligence import local_llm
-        return bool(local_llm.enabled())
+        backend = str(getattr(config, "CONVERSATION_ARC_BACKEND", "openai")).lower()
+        if backend == "local":
+            from intelligence import local_llm
+            return bool(local_llm.enabled())
+        return True  # openai: assume usable; a failed call retains the prior summary
     except Exception:
         return False
+
+
+def _arc_generate(prompt: str, *, max_tokens: int, timeout: float) -> str:
+    """Dispatch the summary call to the configured backend. Raises on failure so
+    the caller retains the previous summary."""
+    import config
+    backend = str(getattr(config, "CONVERSATION_ARC_BACKEND", "openai")).lower()
+    if backend == "local":
+        from intelligence import local_llm
+        return local_llm.generate(
+            prompt, system=_ARC_SYSTEM_PROMPT, temperature=0.0,
+            max_tokens=max_tokens, timeout_secs=timeout,
+        ).strip()
+    from intelligence import llm
+    return llm.summarize_conversation_arc(
+        prompt, system=_ARC_SYSTEM_PROMPT, max_tokens=max_tokens, timeout_secs=timeout,
+    ).strip()
+
+
+def _arc_backend() -> str:
+    try:
+        import config
+        return str(getattr(config, "CONVERSATION_ARC_BACKEND", "openai")).lower()
+    except Exception:
+        return "openai"
 
 
 def arc_summary() -> str:
@@ -469,10 +545,9 @@ def build_arc_directive() -> str:
         return ""
     return (
         "Conversation arc — your running memory of THIS conversation. Lean on it: "
-        "don't re-ask questions or reuse jokes/roasts you've already landed, notice "
-        "what landed vs flopped, and you MAY call back to an open thread when it "
-        "fits naturally. Never force a callback, read these notes aloud, or recite "
-        "them verbatim.\n" + summary
+        "don't re-ask questions or reuse jokes/roasts you've already used, and you "
+        "MAY call back to an open thread when it fits naturally. Never force a "
+        "callback, read these notes aloud, or recite them verbatim.\n" + summary
     )
 
 
@@ -521,11 +596,11 @@ def _arc_worker() -> None:
 
 
 def _arc_refresh_core() -> bool:
-    """Fold new transcript lines into the running summary. Synchronous.
+    """Re-derive the running summary from the recent transcript window. Synchronous.
 
     Returns True iff a refresh ran and the summary was updated. Never raises — on
-    any failure (disabled, no new lines, local LLM down/slow, empty output) the
-    previous summary is retained and this returns False.
+    any failure (disabled, no new material, local LLM down/slow, empty/garbage
+    output) the previous summary is retained and this returns False.
     """
     global _arc_summary, _arc_cursor
     if not _arc_enabled():
@@ -538,39 +613,36 @@ def _arc_refresh_core() -> bool:
 
     with _arc_lock:
         if _arc_cursor > len(transcript):
-            _arc_cursor = 0  # transcript reset — re-summarize from scratch
-        cursor = _arc_cursor
-        new_lines = transcript[cursor:]
-        if not new_lines:
-            return False
-        prev = _arc_summary
-        committed_cursor = cursor
+            _arc_cursor = 0  # transcript reset under us
+        if len(transcript) <= _arc_cursor:
+            return False  # nothing new since the last summary
+        committed_cursor = _arc_cursor
 
     try:
         import config
-        max_tokens = int(getattr(config, "CONVERSATION_ARC_MAX_TOKENS", 220))
-        timeout = float(getattr(config, "CONVERSATION_ARC_TIMEOUT_SECS", 3.0))
-        cap = int(getattr(config, "CONVERSATION_ARC_MAX_NEW_LINES", 8))
+        max_tokens = int(getattr(config, "CONVERSATION_ARC_MAX_TOKENS", 200))
+        timeout = float(getattr(config, "CONVERSATION_ARC_TIMEOUT_SECS", 8.0))
+        window = int(getattr(config, "CONVERSATION_ARC_CONTEXT_LINES", 12))
     except Exception:
-        max_tokens, timeout, cap = 220, 3.0, 8
+        max_tokens, timeout, window = 200, 8.0, 12
 
-    folded = new_lines[-cap:] if cap > 0 else new_lines
-    prompt = _build_arc_prompt(prev, _render_transcript_lines(folded))
+    recent = transcript[-window:] if window > 0 else transcript
+    # The cloud model handles the richer 5-field schema (mood, landed-vs-flopped);
+    # the local 1.5B sidecar only gets the 3 factual fields it can do reliably.
+    rich = _arc_backend() != "local"
+    prompt = _build_arc_prompt(_render_transcript_lines(recent), rich=rich)
 
     started = time.monotonic()
     try:
-        from intelligence import local_llm
-        updated = local_llm.generate(
-            prompt,
-            system=_ARC_SYSTEM_PROMPT,
-            temperature=0.0,
-            max_tokens=max_tokens,
-            timeout_secs=timeout,
-        ).strip()
+        updated = _arc_generate(prompt, max_tokens=max_tokens, timeout=timeout)
     except Exception as exc:
-        _log.debug("[arc] refresh skipped (local LLM unavailable): %s", exc)
+        _log.debug("[arc] refresh skipped (%s backend unavailable): %s", _arc_backend(), exc)
         return False
 
+    if not _arc_output_ok(updated):
+        _log.debug("[arc] rejected low-quality summary: %r", updated[:120])
+        return False
+    updated = _sanitize_summary(updated)
     if not updated:
         return False
 
@@ -582,42 +654,97 @@ def _arc_refresh_core() -> bool:
             return False
         _arc_summary = updated
         _arc_cursor = new_len
+    preview = re.sub(r"\s*\n\s*", " | ", updated).strip()
     _log.info(
-        "[arc] summary updated in %.2fs (%d chars, folded %d/%d new lines)",
-        time.monotonic() - started, len(updated), len(folded), len(new_lines),
+        "[arc] summary updated in %.2fs (window %d lines): %s",
+        time.monotonic() - started, len(recent), preview,
     )
     return True
 
 
+def _arc_output_ok(text: str) -> bool:
+    """Reject empty output, a transcript echo, or a degenerate repetition loop.
+
+    The 1.5B model occasionally (a) parrots the dialogue back (lines beginning with
+    a "User:"/"Rex:" speaker prefix) or (b) runs away repeating one token
+    ("motivation, motivation, ..."). Neither may be stored as "memory" — keeping
+    the previous good summary is strictly better.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if re.search(r"(?mi)^[~\s>*\-]*(user|rex)\s*:", t):  # transcript echo
+        return False
+    words = re.findall(r"[a-z']+", t.lower())  # runaway single-token repetition
+    if len(words) >= 12:
+        most = Counter(words).most_common(1)[0][1]
+        if most >= 8 and most / len(words) > 0.30:
+            return False
+    return True
+
+
+def _sanitize_summary(text: str) -> str:
+    """Tidy an accepted summary: strip markdown emphasis/bullets and dedup + cap the
+    comma list on each labelled line (kills milder repetition the guard let pass)."""
+    out: list[str] = []
+    for raw in text.strip().splitlines():
+        line = raw.strip().lstrip("*#->• ").replace("**", "").strip()
+        if not line:
+            continue
+        if ":" in line:
+            label, _, rest = line.partition(":")
+            items: list[str] = []
+            seen: set[str] = set()
+            for item in rest.split(","):
+                item = item.strip().strip("*").strip()
+                key = item.lower()
+                if item and key not in seen:
+                    seen.add(key)
+                    items.append(item)
+                if len(items) >= 6:
+                    break
+            line = f"{label.strip()}: {', '.join(items)}" if items else f"{label.strip()}: -"
+        out.append(line)
+    return "\n".join(out)
+
+
 def _render_transcript_lines(lines: list[dict]) -> str:
+    # Normalize speakers to roles ("User"/"Rex") so the person's NAME never leaks
+    # into the summary (it was landing in "Topics:" as e.g. "Bret Benziger").
     out: list[str] = []
     for entry in lines:
-        speaker = str(entry.get("speaker") or "").strip() or "?"
+        raw = str(entry.get("speaker") or "").strip()
+        speaker = "Rex" if raw.lower() == "rex" else "User"
         text = re.sub(r"\s+", " ", str(entry.get("text") or "")).strip()
         if text:
             out.append(f"{speaker}: {text}")
     return "\n".join(out)
 
 
-def _build_arc_prompt(prev_summary: str, new_lines_rendered: str) -> str:
-    try:
-        import config
-        max_words = int(getattr(config, "CONVERSATION_ARC_MAX_WORDS", 90))
-    except Exception:
-        max_words = 90
-    prev = prev_summary.strip() or "(nothing yet)"
-    return (
-        "Running memory so far:\n"
-        f"{prev}\n\n"
-        "New lines since the last update:\n"
-        f"{new_lines_rendered}\n\n"
-        "Rewrite the running memory so it incorporates the new lines. Keep only "
-        "what still matters; drop stale detail. Be concrete and specific (name the "
-        f"actual topics). Keep it under {max_words} words. Output EXACTLY these "
-        "five labelled lines and nothing else:\n"
-        "Topics: <comma-separated topics discussed>\n"
-        "Landed: <what the user engaged with or enjoyed; '-' if none>\n"
-        "Flopped: <what fell flat or they pulled away from; '-' if none>\n"
-        "Mood: <the user's current mood/energy in a few words>\n"
-        "Open threads: <unresolved things Rex could naturally follow up on; '-' if none>"
+def _build_arc_prompt(transcript_rendered: str, *, rich: bool = True) -> str:
+    # No prior summary is fed (that caused echo/freeze); the conversation comes
+    # first, the rigid format last, and the prompt does NOT end with blank labels
+    # (that turned it into a completion task and made the model echo the transcript).
+    count = "five" if rich else "three"
+    instructions = (
+        f"Conversation to summarize (oldest to newest):\n{transcript_rendered}\n\n"
+        f"Summarize the conversation so far as EXACTLY these {count} labelled lines "
+        "and nothing else — no preamble, no dialogue, no paragraph. Each line is the "
+        "label then a few words. Name the real subjects, never the speakers. Use '-' "
+        "if empty.\n"
+    )
+    if rich:
+        # Cloud model — the full "feels alive" schema (mood, landed-vs-flopped).
+        return instructions + (
+            "Topics: <subjects discussed>\n"
+            "Shared: <concrete facts the user revealed about themselves>\n"
+            "Mood: <the user's current mood and energy>\n"
+            "Landed/flopped: <what amused or engaged them; what fell flat or they dodged>\n"
+            "Open threads: <specific things Rex could follow up on later>"
+        )
+    # Local 1.5B sidecar — three factual fields only (it can't judge affect).
+    return instructions + (
+        "Topics: <subjects discussed>\n"
+        "Shared: <facts the user revealed about themselves>\n"
+        "Open threads: <specific things Rex could follow up on>"
     )
