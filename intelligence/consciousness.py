@@ -3866,8 +3866,51 @@ def _pick_due_emotional_checkin(person_db_id: Optional[int]) -> Optional[dict]:
         return None
 
 
+_VAGUE_AFFECT_RE = re.compile(
+    r"^\s*(?:the\s+)?(?:speaker|user|person|they|he|she)?\s*"
+    r"(?:feels?|seems?|appears?|is|was|seemed)\s+"
+    r"(?:really\s+|very\s+|quite\s+|pretty\s+)?"
+    r"(?:proud|happy|excited|good|pleased|glad|content|positive|confident|"
+    r"upbeat|cheerful|satisfied|optimistic)\b",
+    re.IGNORECASE,
+)
+
+
+def _event_age_days(mentioned_at: Optional[str]) -> float:
+    """Age of an event in days; a large number when the timestamp is unusable so
+    an undateable memory is treated as too old to lead a cold open."""
+    raw = (mentioned_at or "").strip()
+    if not raw:
+        return 1e9
+    try:
+        when = datetime.fromisoformat(raw.replace("T", " "))
+        return max(0.0, (datetime.utcnow() - when).total_seconds() / 86400.0)
+    except Exception:
+        return 1e9
+
+
+def _celebration_worth_leading_with(event: dict) -> bool:
+    """Gate vague/inferred/stale 'good news' out of the first-sight greeting.
+
+    Leading a cold open with "you must feel proud of your problem-solving skills"
+    reads as awkward. Only a concrete milestone — one the person actually told
+    Rex about, or a recent one — is worth opening with. Everything else falls
+    through to a normal warm greeting (the memory can still come up later)."""
+    if not bool(getattr(config, "PRESENCE_CELEBRATION_REQUIRE_CONCRETE", True)):
+        return True
+    desc = str((event or {}).get("description") or "").strip()
+    if len(re.findall(r"[A-Za-z']+", desc)) < 3:
+        return False
+    if _VAGUE_AFFECT_RE.search(desc):
+        return False
+    if (event or {}).get("person_invited_topic"):
+        return True
+    max_age = float(getattr(config, "PRESENCE_CELEBRATION_LEAD_MAX_AGE_DAYS", 21.0))
+    return _event_age_days((event or {}).get("mentioned_at")) <= max_age
+
+
 def _pick_due_celebration_checkin(person_db_id: Optional[int]) -> Optional[dict]:
-    """Return the most recent positive event due for a startup celebration."""
+    """Return the most recent concrete positive event worth leading a greeting."""
     if not isinstance(person_db_id, int):
         return None
     try:
@@ -3875,9 +3918,12 @@ def _pick_due_celebration_checkin(person_db_id: Optional[int]) -> Optional[dict]
         due = emo_events.get_startup_celebrations(
             person_db_id,
             process_started_iso=_process_started_iso,
-            limit=1,
+            limit=5,
         )
-        return due[0] if due else None
+        for event in due:
+            if _celebration_worth_leading_with(event):
+                return event
+        return None
     except Exception as exc:
         _log.debug("celebration check-in lookup error: %s", exc)
         return None

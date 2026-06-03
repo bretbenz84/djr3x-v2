@@ -203,18 +203,23 @@ def build_frame(
     )
     explicit_followup = _explicit_followup_allowed(agenda_directive, purpose)
 
+    # Earned on-thread follow-ups (a tight follow-up to the interest/answer the
+    # human just gave, or an identity ask) bypass the question budget: that
+    # budget exists to stop NEW-topic interview pivots, not to ration genuine
+    # curiosity about what was just shared. _explicit_followup_allowed only fires
+    # for interest/answer/identity directives, so this stays narrow.
     allow_question = False
     if urgent_identity and unknown_count:
         allow_question = True
     elif unknown_count and person_id is not None and _ASK_ALLOWED_PAT.search(agenda_directive):
         allow_question = True
     elif answered_question is not None:
-        allow_question = bool(budget_allows and explicit_followup)
+        allow_question = bool(explicit_followup)
     elif _HARD_NO_QUESTION_PAT.search(agenda_directive):
         allow_question = False
     elif fresh_interest_followup:
         allow_question = True
-    elif budget_allows and explicit_followup:
+    elif explicit_followup:
         allow_question = True
     elif user_asked_question:
         allow_question = False
@@ -280,7 +285,7 @@ def _explicit_followup_allowed(agenda_directive: str, purpose: str) -> bool:
     lowered = directive.lower()
     if purpose == "interest" and "natural follow-up" in lowered:
         return True
-    if purpose == "answer" and "after answering" in lowered:
+    if purpose in {"answer", "answer_ack"} and "after answering" in lowered:
         return True
     return False
 
@@ -311,17 +316,32 @@ def build_directive(frame: SocialFrame) -> str:
         if frame.allow_visual_comment
         else "Do not mention what you see, the camera, the room, their face, or their posture."
     )
-    roast_rule = {
-        "none": "No roasts or pointed teasing this turn.",
-        "light": "If you roast, make it a tiny surface-level tap.",
-        "normal": (
-            "ROAST-FIRST. Open with a sharp, SPECIFIC jab earned by what they just "
-            "said, did, wore, or chose this turn — a real punchline, not a generic "
-            "quip or a polite observation dressed up as one. Commit to the bit. "
-            "Punch up, stay good-natured (loyalty lives under the insult), but make "
-            "it actually land. A roast that lands beats three friendly sentences."
-        ),
-    }.get(frame.allow_roast, "Land one sharp, specific, good-natured jab when it fits.")
+    # When the human just shared a genuine interest or answered a real question,
+    # lead with curiosity and let the roast ride on top — a forced pun that
+    # deflects a sincere share is exactly what makes Rex feel like a snark
+    # generator instead of a conversationalist. Banter/visual/general turns keep
+    # the roast-first default.
+    if frame.allow_roast == "normal" and frame.purpose in {"interest", "answer_ack"}:
+        roast_rule = (
+            "ENGAGE-FIRST. They just shared something they care about — lead with "
+            "genuine, SPECIFIC curiosity or a reaction that shows you actually find "
+            "it interesting (name a real detail of the thing). A sharp roast is "
+            "welcome riding on top of that interest — tease the hobby, the "
+            "obsession, or your own take — but never deflect a sincere share with a "
+            "generic joke or a non-sequitur. Curiosity that lands beats a forced pun."
+        )
+    else:
+        roast_rule = {
+            "none": "No roasts or pointed teasing this turn.",
+            "light": "If you roast, make it a tiny surface-level tap.",
+            "normal": (
+                "ROAST-FIRST. Open with a sharp, SPECIFIC jab earned by what they just "
+                "said, did, wore, or chose this turn — a real punchline, not a generic "
+                "quip or a polite observation dressed up as one. Commit to the bit. "
+                "Punch up, stay good-natured (loyalty lives under the insult), but make "
+                "it actually land. A roast that lands beats three friendly sentences."
+            ),
+        }.get(frame.allow_roast, "Land one sharp, specific, good-natured jab when it fits.")
     return (
         "Final response shape contract:\n"
         "- Generate the reply in this shape now; the final cleanup layer should "
@@ -353,12 +373,14 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
         return GovernResult(_fallback(frame), True, ["empty"])
 
     sentences = _sentences(current)
+    dropped_questions: list[str] = []
     if not frame.allow_question:
         kept = []
         for sentence in sentences:
             if not _has_unquoted_question(sentence):
                 kept.append(sentence)
                 continue
+            dropped_questions.append(sentence)
         if len(kept) != len(sentences):
             sentences = kept
             notes.append("removed_question")
@@ -389,9 +411,18 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
         enforce_length = True
 
     if not sentences:
-        current = _fallback(frame)
-        notes.append("fallback")
-    else:
+        # Every sentence was a disallowed question and nothing else remained.
+        # A question-only reply is still real engagement — keep one rather than
+        # replacing Rex's curiosity with a dead "Fair enough." ack. Closure and
+        # presence checks are the exception: there we let it land and stop.
+        salvaged = _salvage_pure_question(dropped_questions, frame)
+        if salvaged:
+            sentences = [salvaged]
+            notes.append("kept_question_over_dead_ack")
+        else:
+            current = _fallback(frame)
+            notes.append("fallback")
+    if sentences:
         if enforce_length and len(sentences) > frame.max_sentences:
             sentences = _trim_sentences(sentences, frame)
             notes.append("trimmed_sentences")
@@ -859,6 +890,27 @@ def _repair_trimmed_fragment(text: str) -> str:
     return ""
 
 
+def _salvage_pure_question(dropped_questions: list[str], frame: SocialFrame) -> str:
+    """When a reply was nothing but a disallowed question, keep one rather than
+    dead-acking. A curious question beats "Fair enough." everywhere except a
+    closure / presence-check, where landing and stopping is the right move. The
+    kept question still has to pass the roast/visual safety filters."""
+    if frame.purpose in {"closure", "check_alive"}:
+        return ""
+    for candidate in dropped_questions:
+        sentence = _normalize_text((candidate or "").strip())
+        if not sentence:
+            continue
+        if not frame.allow_visual_comment and _VISUAL_PAT.search(sentence):
+            continue
+        if frame.allow_roast == "none" and _is_roast_sentence(sentence):
+            continue
+        if frame.allow_roast == "light" and _is_sharp_roast_sentence(sentence):
+            continue
+        return sentence
+    return ""
+
+
 def _fallback(frame: SocialFrame) -> str:
     if frame.purpose == "check_alive":
         return "I'm here."
@@ -868,4 +920,6 @@ def _fallback(frame: SocialFrame) -> str:
         return "Got it."
     if frame.allow_roast == "none":
         return "I hear you."
-    return "Fair enough."
+    # Never end on a dead, dismissive ack ("Fair enough.") — that reads as bored
+    # and kills the thread. Leave the door open instead.
+    return "Tell me more."

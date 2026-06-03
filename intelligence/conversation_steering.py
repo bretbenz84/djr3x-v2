@@ -35,6 +35,26 @@ _BAD_TOPIC = {
 }
 _BARE_TOPIC_MAX_WORDS = 6
 
+# Profile/curiosity questions whose answer names a thing the person is into, so a
+# short reply ("astrophotography") is a high-value topic seed to deepen — not a
+# low-energy throwaway. Keys match config.QUESTION_POOL. Emotional/biographical
+# keys (proudest_moment, fears, values, …) are deliberately excluded.
+# NOTE: "favorite_music" is intentionally absent — that answer is owned by the
+# music-offer flow ("Want me to play some classical?"), which is already an
+# engaging response; seeding it as a steering topic would double-handle it.
+INTEREST_SEED_QUESTION_KEYS = {
+    "obsession",
+    "hobbies",
+    "favorite_movie",
+    "travel",
+    "job",
+}
+_SEED_REFUSAL_RE = re.compile(
+    r"^(?:yes|yeah|yep|no|nope|nah|okay|ok|sure|nothing|none|"
+    r"i don'?t know|dunno|idk|not sure|maybe|whatever)\.?$",
+    re.IGNORECASE,
+)
+
 _INTEREST_PATTERNS: list[re.Pattern[str]] = [
     re.compile(
         r"\b(?:i\s*(?:really\s+)?(?:want|wanna|would like)\s+to\s+talk\s+about|"
@@ -88,6 +108,19 @@ _SUBSTANTIVE_PAT = re.compile(
     r"camera|printer|print|style|cut|color|design|process|favorite|hardest|"
     r"best|worst|trick|technique|gear|tool)\b",
     re.IGNORECASE,
+)
+
+
+# Ordered follow-up angles Rex walks down as a topic continues across turns, so
+# he keeps getting more curious instead of asking the same "what got you into it?"
+# every turn. Advanced once per user turn that stays on the active topic.
+_FOLLOWUP_ANGLES = (
+    "what first got them into it",
+    "their favorite part of it",
+    "the hardest or most frustrating part of it",
+    "the best thing they've made, done, caught, or seen with it",
+    "what they're chasing or working toward with it next",
+    "who or what first got them started",
 )
 
 
@@ -165,6 +198,7 @@ def note_user_turn(
             "topic": topic,
             "ts": time.monotonic(),
             "source": "explicit_interest",
+            "angle": 0,
         }
         if person_id is not None and not suppress_memory_learning:
             _store_interest_fact(person_id, topic, source="interest_declaration")
@@ -178,12 +212,16 @@ def note_user_turn(
                 "topic": topic,
                 "ts": time.monotonic(),
                 "source": "topic_question",
+                "angle": 0,
             }
         else:
             active = _read_active(person_id)
             topic = active.get("topic") if active else None
             if not topic:
                 return None
+            # Same topic continues into another turn — advance the follow-up
+            # angle so Rex digs somewhere new instead of repeating himself.
+            active["angle"] = int(active.get("angle", 0)) + 1
 
     if person_id is not None and not suppress_memory_learning:
         _maybe_store_interest_note(person_id, topic, cleaned, fresh=fresh)
@@ -209,11 +247,54 @@ def note_bare_interest_answer(
         "topic": topic,
         "ts": time.monotonic(),
         "source": source,
+        "angle": 0,
     }
     if person_id is not None and not suppress_memory_learning:
         _store_interest_fact(int(person_id), topic, source=source)
         _maybe_store_interest_note(int(person_id), topic, text.strip(), fresh=True)
     return build_context(person_id, topic=topic, fresh=True)
+
+
+def is_interest_seed_question(question_key: Optional[str]) -> bool:
+    """True for profile questions whose answer names a deepenable interest."""
+    return bool(question_key) and str(question_key) in INTEREST_SEED_QUESTION_KEYS
+
+
+def looks_like_interest_seed_answer(text: str, question_key: Optional[str]) -> bool:
+    """True when this turn answers an interest-seeking question with real content.
+
+    Looser than ``_clean_bare_topic``: it accepts longer answers too, so the
+    length/energy layers give the share room even when the exact topic slug is
+    not extracted. A refusal ("I don't know") or boundary still returns False.
+    """
+    if not is_interest_seed_question(question_key):
+        return False
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned or "?" in cleaned:
+        return False
+    if _SEED_REFUSAL_RE.match(cleaned) or _AVOID_PAT.search(cleaned):
+        return False
+    return bool(re.search(r"[A-Za-z]", cleaned))
+
+
+def seed_from_answer(
+    person_id: Optional[int],
+    text: str,
+    question_key: Optional[str],
+    *,
+    suppress_memory_learning: bool = False,
+) -> Optional[SteeringContext]:
+    """Register a short answer to one of Rex's interest questions as the active
+    topic, so the steering machinery deepens it instead of letting the turn
+    collapse into a 12-word throwaway. No-op for non-interest-seed keys."""
+    if not is_interest_seed_question(question_key):
+        return None
+    return note_bare_interest_answer(
+        person_id,
+        text,
+        source=f"interest_answer:{question_key}",
+        suppress_memory_learning=suppress_memory_learning,
+    )
 
 
 def build_context(
@@ -230,12 +311,13 @@ def build_context(
         return None
     fact_key = _interest_key(resolved_topic)
     source = "explicit_interest" if fresh else ((active or {}).get("source") or "known_interest")
+    angle = 0 if fresh else int((active or {}).get("angle", 0))
     return SteeringContext(
         topic=resolved_topic,
         source=source,
         fresh=fresh,
         fact_key=fact_key,
-        directive=_directive_for(resolved_topic, fresh=fresh),
+        directive=_directive_for(resolved_topic, fresh=fresh, angle=angle),
     )
 
 
@@ -254,19 +336,21 @@ def _read_active(person_id: Optional[int]) -> Optional[dict]:
     return active
 
 
-def _directive_for(topic: str, *, fresh: bool) -> str:
+def _directive_for(topic: str, *, fresh: bool, angle: int = 0) -> str:
     lead = (
         "The human just volunteered a genuine interest"
         if fresh else
         "The current thread matches a known/active interest"
     )
+    angle_hint = _FOLLOWUP_ANGLES[int(angle) % len(_FOLLOWUP_ANGLES)]
     return (
         f"Conversation steering: {lead}: {topic!r}. Keep this turn steered "
         "toward that subject unless the human asks for something else. Rex should "
         "sound curious about their skill, taste, tools, process, or knowledge. "
         "Use the main LLM to add one compact subject-specific observation or "
         "'did you know' style tidbit when you can do it confidently, then ask at "
-        "most one natural follow-up about their experience with it. Keep it "
+        f"most one natural follow-up — this turn, aim it at {angle_hint}, and do "
+        "not re-ask an angle you've already covered this conversation. Keep it "
         "funny and in-character; do not confuse franchises or fields as if they "
         "are the same thing, and ask instead of bluffing if you are unsure. "
         "If the topic is Star Trek, answer as Star Trek first; a Star Wars "

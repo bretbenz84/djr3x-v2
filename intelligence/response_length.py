@@ -109,6 +109,21 @@ def classify(
             "then end with one short natural follow-up question.",
         )
 
+    # A short answer naming an interest ("astrophotography") is the high point of
+    # the conversation, not a low-energy throwaway. Give it room to breathe and a
+    # genuine follow-up instead of collapsing it into a 12-word brush-off.
+    if _is_interest_seed_answer(answered_question, cleaned):
+        return _plan(
+            "short",
+            50,
+            3,
+            "interest answer to Rex's question (topic interest)",
+            "The human just named something they're into. React with specific, "
+            "in-character curiosity, add one compact subject-aware beat, then ask "
+            "one short natural follow-up about their angle, gear, taste, or what "
+            "got them into it. Do not brush it off in a single line.",
+        )
+
     try:
         from intelligence import conversation_steering
         volunteered_interest = conversation_steering.detect_interest(cleaned)
@@ -225,6 +240,22 @@ def classify(
         "default conversational turn",
         "Default to one compact line, with room for a tiny second sentence when it carries personality.",
     )
+
+
+def _is_interest_seed_answer(
+    answered_question: Optional[dict],
+    cleaned: str,
+) -> bool:
+    if not answered_question:
+        return False
+    try:
+        from intelligence import conversation_steering
+        return conversation_steering.looks_like_interest_seed_answer(
+            cleaned,
+            answered_question.get("question_key"),
+        )
+    except Exception:
+        return False
 
 
 def _plan(

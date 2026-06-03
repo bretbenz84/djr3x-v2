@@ -74,13 +74,32 @@ def note_user_turn(
     *,
     prosody_features: Optional[dict] = None,
     affect_result: Optional[dict] = None,
+    answered_question: Optional[dict] = None,
 ) -> dict:
     del person_id  # reserved for future per-person calibration
     global _current
 
-    profile = _classify(text, prosody_features=prosody_features, affect_result=affect_result)
+    profile = _classify(
+        text,
+        prosody_features=prosody_features,
+        affect_result=affect_result,
+        answered_question=answered_question,
+    )
     _current = profile
     return asdict(profile)
+
+
+def _is_topic_seed(cleaned: str, answered_question: Optional[dict]) -> bool:
+    if not answered_question:
+        return False
+    try:
+        from intelligence import conversation_steering
+        return conversation_steering.looks_like_interest_seed_answer(
+            cleaned,
+            answered_question.get("question_key"),
+        )
+    except Exception:
+        return False
 
 
 def build_directive() -> str:
@@ -104,12 +123,14 @@ def _classify(
     *,
     prosody_features: Optional[dict],
     affect_result: Optional[dict],
+    answered_question: Optional[dict] = None,
 ) -> UserEnergy:
     cleaned = (text or "").strip()
     words = re.findall(r"[A-Za-z']+", cleaned)
     word_count = len(words)
     lowered = cleaned.lower()
     signals: list[str] = []
+    is_topic_seed = _is_topic_seed(cleaned, answered_question)
 
     arousal_score = 0.0
     engagement_score = 0.0
@@ -138,6 +159,13 @@ def _classify(
         engagement_score += 0.4
         arousal_score += 0.2
         signals.append("playful language")
+    elif is_topic_seed:
+        # A short answer naming an interest ("astrophotography") is the most
+        # engaged moment in the conversation, not low energy. Don't read it as
+        # "quiet" — that suppresses Rex's curiosity right when it matters most.
+        mode = "depth" if mode == "neutral" else mode
+        engagement_score += 0.5
+        signals.append("named an interest")
     elif word_count >= 12 or _DEPTH_PAT.search(cleaned):
         mode = "depth" if mode == "neutral" else mode
         engagement_score += 0.5

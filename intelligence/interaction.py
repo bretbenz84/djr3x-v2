@@ -3235,8 +3235,12 @@ def _maybe_idle_banter(
                    "do not ask a question.")
             ),
         )
-        if not ask_user:
-            frame.allow_question = False
+        # Asking IS the point of an "ask the user" nudge — force the question
+        # through (otherwise the quiet-energy frame strips it and Rex dead-acks).
+        frame.allow_question = bool(ask_user)
+        if ask_user:
+            frame.max_sentences = max(frame.max_sentences, 2)
+            frame.max_words = max(frame.max_words, 24)
         governed = social_frame.govern_response(line, frame)
         if governed.text:
             line = governed.text
@@ -12082,6 +12086,20 @@ def _maybe_capture_pending_qa(
                     )
                 except Exception as exc:
                     _log.debug("startup steering answer capture failed: %s", exc)
+            elif conversation_steering.is_interest_seed_question(
+                answered.get("question_key")
+            ):
+                # Answer to a profile interest question (obsession/hobbies/music/
+                # …) — seed it as the active topic so Rex deepens it with real
+                # curiosity instead of a throwaway quip.
+                try:
+                    conversation_steering.seed_from_answer(
+                        person_id,
+                        cleaned,
+                        answered.get("question_key"),
+                    )
+                except Exception as exc:
+                    _log.debug("interest-seed answer capture failed: %s", exc)
         return answered
     except Exception as exc:
         _log.debug("pending Q&A capture failed: %s", exc)
@@ -14802,11 +14820,15 @@ def _handle_speech_segment(
             _register_rex_utterance(blocked_router_response)
             return
         try:
-            topic_thread.note_user_turn(text, person_id)
+            topic_thread.note_user_turn(
+                text, person_id, answered_question=answered_question
+            )
         except Exception as exc:
             _log.debug("topic thread user update failed: %s", exc)
         try:
-            user_energy.note_user_turn(text, person_id)
+            user_energy.note_user_turn(
+                text, person_id, answered_question=answered_question
+            )
         except Exception as exc:
             _log.debug("user energy text update failed: %s", exc)
 

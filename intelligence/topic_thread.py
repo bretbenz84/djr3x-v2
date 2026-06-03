@@ -63,6 +63,11 @@ _STOPWORDS = {
     "the", "and", "but", "for", "with", "that", "this", "you", "your",
     "about", "have", "just", "what", "when", "where", "yeah", "yes",
     "no", "not", "really", "pretty", "good", "okay", "like",
+    # Conversational filler that must never become a topic label. Without these,
+    # "things are going well" produced the garbage topic "things / are".
+    "things", "thing", "stuff", "are", "going", "well", "doing", "been",
+    "got", "now", "today", "lot", "kind", "sort", "way", "fine", "great",
+    "guess", "maybe", "sure", "alright", "nothing", "something", "anything",
 }
 
 
@@ -159,6 +164,13 @@ def note_user_turn(
         _current.updated_at = now
         _current.turn_count += 1
         _current.last_user_text = cleaned
+
+    # An answer to Rex's question IS the new topic — adopt it instead of staying
+    # stuck on whatever the thread was labelled before (the old merge kept the
+    # garbage "things / are" label even after the user said "astrophotography").
+    if answered_question and label and label != "current exchange":
+        _current.label = label
+        _current.summary = _summarize_text(cleaned, label)
 
     if answered_question or answers_unresolved or stance in {"engaged", "avoidant"}:
         _current.unresolved_question = None

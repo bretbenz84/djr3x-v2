@@ -558,31 +558,33 @@ def build_turn_directive(
                 "Primary purpose: answer the human's direct question first, then "
                 "keep the reply connected to their interest thread if it still fits."
             )
-        elif question_budget_allows:
+        else:
+            # A follow-up about the interest they JUST raised is earned curiosity,
+            # not an interview pivot — so it is allowed even when the recent
+            # question budget is full (the budget rations new-topic questions).
             lines.append(
                 "Primary purpose: deepen the interest thread the human opened. "
                 "Give one specific subject-aware reaction or tidbit, then ask one "
-                "natural follow-up about their experience with that topic."
-            )
-        else:
-            lines.append(
-                "Primary purpose: deepen the interest thread the human opened. "
-                "Give one specific subject-aware reaction or tidbit, but do not "
-                "add a new question because the recent question budget is full."
+                "natural follow-up about their experience with that topic — what "
+                "got them into it, how they got into it, or their favorite part."
             )
         return "\n".join(lines)
 
     if answered_question:
         q_text = answered_question.get("question_text") or "your previous question"
         a_text = answered_question.get("answer_text") or text
-        if question_budget_allows and not _is_compliment_or_ack(a_text):
+        if not _is_compliment_or_ack(a_text):
+            # They just answered a real question — a single tightly-related
+            # follow-up is earned curiosity, not an interview pivot, so it is
+            # allowed even when the question budget is full.
             lines.append(
                 "Primary purpose: the human just answered a question Rex asked. "
                 f"Question: {q_text!r}. Answer: {a_text!r}. "
-                "Briefly acknowledge the answer and use it naturally. You may "
-                "add one tightly related follow-up question, or carry the turn "
-                "with a specific Rex opinion / light roast instead. Do not pivot "
-                "into a new interview topic."
+                "React to the actual content with genuine, specific interest — "
+                "show you find it interesting, not just that you logged it. After "
+                "answering, ask at most one short follow-up that stays on this "
+                "exact topic, or carry the turn with a specific Rex opinion / "
+                "light roast instead. Do not pivot into a new interview topic."
             )
         else:
             lines.append(
@@ -665,12 +667,16 @@ def build_turn_directive(
             )
         else:
             lines.append(
-                "Primary purpose: react to the human's latest thought with a "
-                "specific opinion, observation, or roast — lead with the funny, not "
-                "a question. Use known facts and what you see if relevant. At most "
-                "one tightly related follow-up question, only if it continues this "
-                "exact thread; never pivot into a new interview topic, and most "
-                "turns need no question at all."
+                "Primary purpose: react to what the human actually said with a "
+                "specific, in-character beat — genuine interest, a real opinion, a "
+                "dry observation, or a sharp roast when you have an actual angle on "
+                "it. Lead with substance, not a reflexive joke: do not force a "
+                "punchline onto a plain or sincere statement, and never answer it "
+                "with a non-sequitur. If they shared something real, show you find "
+                "it interesting before (or instead of) teasing. Use known facts and "
+                "what you see if relevant. At most one tightly related follow-up "
+                "question, only if it continues this exact thread; never pivot into "
+                "a new interview topic."
             )
     else:
         lines.append(

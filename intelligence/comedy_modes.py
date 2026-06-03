@@ -121,8 +121,20 @@ def select_mode(
     ):
         return _remember_mode(_MODES["straight"])
 
+    # An interest/engage-first turn is about THE HUMAN'S topic — keep comedy
+    # complementary (tease the hobby, a dry beat, a little cantina colour) and
+    # off the self-absorbed bits (self_own / fake_system_error) that ignore what
+    # they just shared and contradict the frame's "engage-first" directive.
+    interest_turn = (
+        purpose == "interest"
+        or "conversation steering:" in lower_agenda
+        or "engage-first" in lower_agenda
+    )
+
     if roast_level == "none":
         pool = ["dry_ack", "self_own", "cantina_color"]
+    elif interest_turn:
+        pool = ["dry_ack", "friendly_roast", "cantina_color"]
     elif _EXPLICIT_HUMOR_PAT.search(text):
         pool = ["self_own", "fake_system_error", "cantina_color", "friendly_roast"]
     elif _MUSIC_PAT.search(text):

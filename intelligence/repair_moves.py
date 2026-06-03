@@ -56,10 +56,20 @@ _INTERRUPT_PAT = re.compile(
 )
 _WRONG_PERSON_PAT = re.compile(
     r"\b(wrong person|not me|that wasn'?t me|that was not me|"
-    r"i didn'?t say that|i did not say that|"
     r"you mean (him|her|them|[A-Z][A-Za-z]+)|"
     r"you'?re talking to (him|her|them|the wrong person)|"
     r"that was (him|her|them|[A-Z][A-Za-z]+))\b",
+    re.IGNORECASE,
+)
+# "(No,) I didn't say that" on its own disagrees with what Rex just CLAIMED — it
+# is not an identity correction ("wrong person") or a transcription fix. Used to
+# misfire as wrong_person → "faulty coordinate… better luck next time", derailing
+# the conversation. Let a bare denial flow to normal conversational handling; a
+# real correction ("I didn't say jazz, I said blues") carries more and still
+# routes through the misheard/correction path below.
+_BARE_CONTENT_DENIAL_PAT = re.compile(
+    r"^\s*(?:no[,!.]?\s*|nope[,!.]?\s*|nah[,!.]?\s*)?"
+    r"i\s+(?:didn'?t|did not)\s+say\s+that\b[.!]?\s*$",
     re.IGNORECASE,
 )
 _PRONOUN_PAT = re.compile(
@@ -152,6 +162,11 @@ def detect(user_text: str) -> Optional[dict]:
     lowered = cleaned.lower()
     kind = ""
     severity = "medium"
+
+    # A bare "I didn't say that" is a content disagreement, not a repair — hand
+    # it to normal conversation so Rex can engage instead of derailing.
+    if _BARE_CONTENT_DENIAL_PAT.match(cleaned):
+        return None
 
     if _INTERRUPT_PAT.search(cleaned):
         kind = "interruption"

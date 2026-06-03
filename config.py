@@ -2719,6 +2719,18 @@ RECENT_RETURN_THRESHOLD_HOURS = 48
 # Rex's own greetings that day (see memory.people.greetings_today_count).
 PRESENCE_SAME_DAY_RETURN_ENABLED = True
 
+# Cold-open celebration gating: Rex should NOT lead his first-sight greeting with
+# a vague, inferred, or stale "good news" memory (e.g. "the speaker feels proud
+# of their problem-solving skills") — that reads as an awkward way to open. A
+# celebration only leads the greeting when it is concrete (not a vague affect
+# inference) AND either the person told Rex about it themselves
+# (person_invited_topic) or it happened within PRESENCE_CELEBRATION_LEAD_MAX_AGE_DAYS.
+# Otherwise the greeting falls through to a normal warm opener; the memory can
+# still surface once the conversation is rolling. Flip REQUIRE_CONCRETE to False
+# to restore the old "lead with any positive event" behavior.
+PRESENCE_CELEBRATION_REQUIRE_CONCRETE = True
+PRESENCE_CELEBRATION_LEAD_MAX_AGE_DAYS = 21.0
+
 # How long (seconds) a queued celebrity-style special greeting stays pending
 # before it goes stale and is dropped (consciousness person-specials greeting).
 JEFF_CELEBRITY_GREETING_PENDING_SECS = 45.0
