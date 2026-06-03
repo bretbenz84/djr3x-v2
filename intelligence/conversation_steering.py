@@ -23,7 +23,10 @@ from memory import interests as interests_memory
 
 _log = logging.getLogger(__name__)
 
-_TTL_SECS = 15 * 60
+# How long an "active interest" stays steered before it goes stale. 15 min was
+# long enough that Rex kept steering toward a topic the conversation had clearly
+# moved on from; 8 min still covers a continued conversation.
+_TTL_SECS = 8 * 60
 _MAX_TOPIC_CHARS = 80
 _TRAILING_JUNK = re.compile(
     r"\s+(?:a lot|so much|these days|right now|lately|for fun|as a hobby)\.?$",
@@ -90,6 +93,17 @@ _INTEREST_PATTERNS: list[re.Pattern[str]] = [
         r"(?P<topic>[^.?!,;]{3,90})",
         re.IGNORECASE,
     ),
+    # "I'm building/making/working on X" — a thing they're actively into, so the
+    # active topic UPDATES instead of getting stuck on an earlier interest (the
+    # live "still steering toward Apple TV while we talk about the droid" bug).
+    # Direct verb only (no "trying to") so "I'm trying to make him funny" is skipped.
+    re.compile(
+        r"\bi(?:'?m|\s+am)\s+(?:building|making|creating|designing|developing|"
+        r"coding|programming|writing|painting|growing|restoring|fixing|"
+        r"working\s+on|learning|studying)\s+"
+        r"(?P<topic>(?:a|an|the|my)\s+[^.?!,;]{3,80}|[^.?!,;]{3,80})",
+        re.IGNORECASE,
+    ),
 ]
 _TOPIC_KNOWLEDGE_PAT = re.compile(
     r"\b(?:what\s+do\s+you\s+know|do\s+you\s+know\s+anything|"
@@ -124,6 +138,33 @@ _FOLLOWUP_ANGLES = (
 )
 
 
+# A bare low-content reply ("yeah", "sure", "I guess", "not really") signals the
+# subject isn't generating elaboration. Two in a row on the same topic and Rex
+# should pivot rather than keep probing. Must match the WHOLE utterance so a real
+# short answer ("mostly nebulae") is not mistaken for disengagement.
+_GENERIC_REPLY_RE = re.compile(
+    r"^\s*(?:yeah|yep|yup|yes|sure|okay|ok|absolutely|totally|definitely|"
+    r"i guess|i suppose|maybe|kinda|kind of|sorta|sort of|not really|nope|no|"
+    r"nah|i don'?t know|i dunno|dunno|idk|not sure|cool|nice|fine|fair|"
+    r"true|right|exactly|pretty much|i think so|sometimes|mostly|whatever|"
+    r"meh|whatever you say)\b[\s.!,]*$",
+    re.IGNORECASE,
+)
+# Consecutive disengaged turns on the same active interest before Rex pivots.
+_PIVOT_AFTER_MISSES = 2
+
+
+def _looks_disengaged(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return True
+    if "?" in cleaned:  # the human asking something back is engagement
+        return False
+    if _AVOID_PAT.search(cleaned):
+        return True
+    return bool(_GENERIC_REPLY_RE.match(cleaned))
+
+
 @dataclass
 class SteeringContext:
     topic: str
@@ -131,6 +172,9 @@ class SteeringContext:
     fresh: bool
     fact_key: str
     directive: str
+    # "deepen" = stay on / dig into the topic; "pivot" = the subject isn't
+    # landing, swing to a related subject or open a new one.
+    mode: str = "deepen"
 
 
 _active: dict[Optional[int], dict] = {}
@@ -222,6 +266,17 @@ def note_user_turn(
             # Same topic continues into another turn — advance the follow-up
             # angle so Rex digs somewhere new instead of repeating himself.
             active["angle"] = int(active.get("angle", 0)) + 1
+            # Track engagement: bare low-content replies mean the subject isn't
+            # landing. After a couple in a row, pivot away and drop the topic so
+            # Rex doesn't keep probing a dead subject.
+            if _looks_disengaged(cleaned):
+                active["misses"] = int(active.get("misses", 0)) + 1
+            else:
+                active["misses"] = 0
+            if int(active.get("misses", 0)) >= _PIVOT_AFTER_MISSES:
+                pivot_ctx = _build_pivot_context(person_id, topic)
+                clear(person_id)
+                return pivot_ctx
 
     if person_id is not None and not suppress_memory_learning:
         _maybe_store_interest_note(person_id, topic, cleaned, fresh=fresh)
@@ -318,6 +373,19 @@ def build_context(
         fresh=fresh,
         fact_key=fact_key,
         directive=_directive_for(resolved_topic, fresh=fresh, angle=angle),
+        mode="deepen",
+    )
+
+
+def _build_pivot_context(person_id: Optional[int], topic: str) -> SteeringContext:
+    """A 'this subject stalled — change the channel' steering context."""
+    return SteeringContext(
+        topic=topic,
+        source="pivot",
+        fresh=False,
+        fact_key=_interest_key(topic),
+        directive=_pivot_directive_for(topic),
+        mode="pivot",
     )
 
 
@@ -362,6 +430,20 @@ def _directive_for(topic: str, *, fresh: bool, angle: int = 0) -> str:
         "a remembered interest. "
         "Light roasts are allowed only about the hobby or Rex's ignorance, not "
         "the person's competence."
+    )
+
+
+def _pivot_directive_for(topic: str) -> str:
+    category = _category_for_topic(topic)
+    return (
+        f"Conversation steering: {topic!r} has stopped landing — the human has "
+        "given a couple of flat, low-energy replies on it, so STOP probing this "
+        "subject. Change the channel naturally: give one brief reaction to what "
+        "they just said, then either (a) swing to a RELATED subject — an adjacent "
+        f"angle, a sibling hobby, or the wider {category} space around it — or (b) "
+        "open a genuinely new topic / ask about something else they're into. Make "
+        "it a smooth, in-character conversational turn, not an abrupt jump or an "
+        "interrogation, and do NOT keep asking about the stalled subject."
     )
 
 

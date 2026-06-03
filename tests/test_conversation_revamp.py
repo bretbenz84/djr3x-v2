@@ -643,5 +643,201 @@ class OpenerVarietyTest(unittest.TestCase):
         self.assertIn("Opening variety", directive)
 
 
+class NoRepeatQuestionTest(unittest.TestCase):
+    """P1a: Rex doesn't ask the same question twice over the user's answer."""
+
+    def setUp(self):
+        from intelligence import comedy_modes
+        comedy_modes.reset_recent_state()
+
+    def tearDown(self):
+        from intelligence import comedy_modes
+        comedy_modes.reset_recent_state()
+
+    def _frame(self):
+        from intelligence import social_frame
+        return social_frame.SocialFrame(
+            addressee="Bret", purpose="interest", max_words=36, max_sentences=2,
+            allow_question=False, allow_roast="normal", allow_visual_comment=True,
+            reason="test",
+        )
+
+    def test_salvage_skips_repeat_and_keeps_a_new_question(self):
+        from intelligence import social_frame, comedy_modes
+        comedy_modes.note_spoken_line("A solo project, huh?")
+        governed = social_frame.govern_response(
+            "A solo project, huh? Do you expect glory or disaster?", self._frame()
+        )
+        self.assertNotEqual(governed.text, "A solo project, huh?")
+        self.assertIn("glory or disaster", governed.text)
+
+    def test_pure_repeat_is_not_spoken(self):
+        from intelligence import social_frame, comedy_modes
+        comedy_modes.note_spoken_line("A solo project, huh?")
+        governed = social_frame.govern_response("A solo project, huh?", self._frame())
+        self.assertNotIn("solo project", governed.text.lower())
+
+
+class SubtitleHallucinationTest(unittest.TestCase):
+    """P1b: Whisper subtitle/credit hallucinations are filtered."""
+
+    def test_subtitle_credits_are_hallucinations(self):
+        from audio import transcription
+        for junk in (
+            "Subs by www.zeoranger.co.uk",
+            "Subtitles by the Amara.org community",
+            "Thanks for watching!",
+            "like and subscribe",
+        ):
+            self.assertTrue(transcription._is_hallucination(junk), junk)
+
+    def test_real_speech_survives(self):
+        from audio import transcription
+        for real in (
+            "I like watching Apple TV Plus shows",
+            "I'm building the R3X droid",
+            "I need to subscribe to Netflix",
+        ):
+            self.assertFalse(transcription._is_hallucination(real), real)
+
+
+class StreamTailTruncationTest(unittest.TestCase):
+    """P2a: an unpunctuated stream remainder (mid-sentence cut) is dropped."""
+
+    def test_incomplete_tail_dropped_finished_tail_spoken(self):
+        from intelligence import interaction
+        self.assertFalse(interaction._tail_is_speakable("What's the deal"))
+        self.assertFalse(interaction._tail_is_speakable("Glad to"))
+        self.assertTrue(interaction._tail_is_speakable("What galaxy next?"))
+        self.assertTrue(interaction._tail_is_speakable("You got this."))
+
+
+class StaleSteeringAndReassuranceTest(unittest.TestCase):
+    """P3a/P3b: active interest updates to a new build/make topic; a reassurance
+    is taken at face value, not roasted."""
+
+    def setUp(self):
+        from intelligence import conversation_steering
+        conversation_steering.clear()
+
+    def tearDown(self):
+        from intelligence import conversation_steering
+        conversation_steering.clear()
+
+    def test_building_something_becomes_the_active_interest(self):
+        from intelligence import conversation_steering as cs
+        self.assertEqual(cs.detect_interest("I'm building the R3X droid"), "R3X droid")
+        self.assertEqual(cs.detect_interest("I am building the R3X droid"), "R3X droid")
+        # "trying to make" is not a clean interest declaration.
+        self.assertIsNone(cs.detect_interest("I'm trying to make him funny"))
+
+    def test_reassurance_directive_forbids_the_needle(self):
+        from unittest import mock
+        from intelligence import conversation_agenda as ca
+        with (
+            mock.patch.object(
+                ca.world_state, "snapshot",
+                return_value={"people": [], "environment": {}},
+            ),
+            mock.patch.object(
+                ca.empathy, "classify_local_sensitivity", return_value=None
+            ),
+        ):
+            directive = ca.build_turn_directive("I'm not sad, it's okay", None)
+        self.assertIn("do not roast or needle", directive.lower())
+        self.assertIn("repressing", directive.lower())
+
+
+class SubjectPivotTest(unittest.TestCase):
+    """When a subject stops engaging the user, Rex pivots to a related/new one
+    instead of probing a dead topic."""
+
+    def setUp(self):
+        from intelligence import conversation_steering
+        conversation_steering.clear()
+
+    def tearDown(self):
+        from intelligence import conversation_steering
+        conversation_steering.clear()
+
+    def _steer(self, *turns):
+        from intelligence import conversation_steering as cs
+        ctx = None
+        with (
+            mock.patch.object(cs.boundary_memory, "is_blocked", return_value=False),
+            mock.patch.object(cs.facts_memory, "add_fact"),
+            mock.patch.object(cs.facts_memory, "get_facts", return_value=[]),
+            mock.patch.object(cs.interests_memory, "upsert_interest"),
+        ):
+            for t in turns:
+                ctx = cs.note_user_turn(1, t)
+        return ctx
+
+    def test_disengagement_triggers_a_pivot(self):
+        from intelligence import conversation_steering as cs
+        self.assertEqual(self._steer("I love astrophotography").mode, "deepen")
+        # one flat reply is tolerated...
+        ctx1 = self._steer("I love astrophotography", "yeah")
+        self.assertEqual(ctx1.mode, "deepen")
+        # ...two in a row and Rex pivots, dropping the dead topic.
+        ctx2 = self._steer("I love astrophotography", "yeah", "I guess")
+        self.assertEqual(ctx2.mode, "pivot")
+        self.assertIn("stopped landing", ctx2.directive.lower())
+        self.assertIsNone(cs.build_context(1))  # topic dropped
+
+    def test_substantive_short_answer_is_not_disengagement(self):
+        # A real short answer keeps deepening; only bare acks count as flat.
+        ctx = self._steer(
+            "I love astrophotography", "yeah", "mostly nebulae and the Whirlpool"
+        )
+        self.assertEqual(ctx.mode, "deepen")
+
+    def test_pivot_directive_steers_to_related_or_new(self):
+        from intelligence import conversation_steering as cs
+        ctx = self._steer("I love astrophotography", "sure", "not really")
+        self.assertEqual(ctx.mode, "pivot")
+        low = ctx.directive.lower()
+        self.assertTrue("related subject" in low or "new topic" in low)
+        self.assertIn("do not keep", low)
+
+    def test_pivot_turn_offers_a_fresh_question_and_allows_it(self):
+        from intelligence import (
+            conversation_steering as cs,
+            conversation_agenda as ca,
+            social_frame as sf,
+        )
+        cs.clear()
+        with (
+            mock.patch.object(cs.boundary_memory, "is_blocked", return_value=False),
+            mock.patch.object(cs.facts_memory, "add_fact"),
+            mock.patch.object(cs.facts_memory, "get_facts", return_value=[]),
+            mock.patch.object(cs.interests_memory, "upsert_interest"),
+            mock.patch.object(
+                ca.world_state, "snapshot",
+                return_value={"people": [], "environment": {}},
+            ),
+            mock.patch.object(sf.world_state, "snapshot", return_value={"people": []}),
+            mock.patch.object(ca.empathy, "classify_local_sensitivity", return_value=None),
+            mock.patch.object(ca.empathy, "peek", return_value={}),
+            mock.patch.object(ca.rel_memory, "get_latest_pending_question", return_value=None),
+            mock.patch.object(
+                ca, "_next_useful_question",
+                return_value={"text": "What kind of music are you into?"},
+            ),
+            # Even with the budget spent, a pivot question is allowed (it's the
+            # re-engagement move, not interview spam).
+            mock.patch("intelligence.question_budget.can_ask", return_value=False),
+        ):
+            cs.note_user_turn(1, "I love astrophotography")
+            cs.note_user_turn(1, "yeah")
+            directive = ca.build_turn_directive("I guess", 1)
+            frame = sf.build_frame("I guess", person_id=1, agenda_directive=directive)
+        self.assertIn("pivot", directive.lower())
+        self.assertIn("what kind of music", directive.lower())
+        self.assertEqual(frame.purpose, "interest")
+        self.assertTrue(frame.allow_question)
+        cs.clear()
+
+
 if __name__ == "__main__":
     unittest.main()

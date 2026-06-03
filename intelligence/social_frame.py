@@ -448,6 +448,16 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
     if frame.purpose == "closure" and _BAD_CLOSURE_PAT.search(current):
         current = _fallback(frame)
         notes.append("fallback_bad_closure")
+    # Backstop: never speak a line that just repeats Rex's previous one (the
+    # "A solo project, huh?" replay when the user already answered it). Closure
+    # acks are allowed to repeat ("Catch you later.").
+    if (
+        current
+        and frame.purpose != "closure"
+        and _is_near_repeat(current, _rex_last_line())
+    ):
+        current = _fallback(frame)
+        notes.append("deduped_repeat")
     if not current:
         current = _fallback(frame)
         notes.append("fallback")
@@ -896,16 +906,50 @@ def _repair_trimmed_fragment(text: str) -> str:
     return ""
 
 
+def _rex_last_line() -> str:
+    try:
+        from intelligence import comedy_modes
+        return comedy_modes.last_spoken_line()
+    except Exception:
+        return ""
+
+
+def _norm_for_repeat(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())).strip()
+
+
+def _is_near_repeat(candidate: str, previous: str) -> bool:
+    """True when ``candidate`` is essentially Rex's previous line again — so he
+    doesn't ask "A solo project, huh?" twice in a row over the user's answer."""
+    a = _norm_for_repeat(candidate)
+    b = _norm_for_repeat(previous)
+    if not a or not b or len(a) < 12:
+        return False
+    if a == b:
+        return True
+    shorter, longer = sorted((a, b), key=len)
+    if len(shorter) >= 12 and shorter in longer:
+        return True
+    ta, tb = set(a.split()), set(b.split())
+    if len(ta) >= 3 and tb and len(ta & tb) / len(ta | tb) >= 0.85:
+        return True
+    return False
+
+
 def _salvage_pure_question(dropped_questions: list[str], frame: SocialFrame) -> str:
     """When a reply was nothing but a disallowed question, keep one rather than
     dead-acking. A curious question beats "Fair enough." everywhere except a
     closure / presence-check, where landing and stopping is the right move. The
-    kept question still has to pass the roast/visual safety filters."""
+    kept question still has to pass the roast/visual safety filters — and must not
+    just repeat Rex's own previous line."""
     if frame.purpose in {"closure", "check_alive"}:
         return ""
+    last_line = _rex_last_line()
     for candidate in dropped_questions:
         sentence = _normalize_text((candidate or "").strip())
         if not sentence:
+            continue
+        if _is_near_repeat(sentence, last_line):
             continue
         if not frame.allow_visual_comment and _VISUAL_PAT.search(sentence):
             continue

@@ -64,10 +64,13 @@ _STOPWORDS = {
     "about", "have", "just", "what", "when", "where", "yeah", "yes",
     "no", "not", "really", "pretty", "good", "okay", "like",
     # Conversational filler that must never become a topic label. Without these,
-    # "things are going well" produced the garbage topic "things / are".
+    # "things are going well" produced the garbage topic "things / are" and
+    # "I like watching Apple TV..." produced "watching / apple".
     "things", "thing", "stuff", "are", "going", "well", "doing", "been",
     "got", "now", "today", "lot", "kind", "sort", "way", "fine", "great",
     "guess", "maybe", "sure", "alright", "nothing", "something", "anything",
+    "watching", "trying", "personally", "currently", "tonight", "little",
+    "here", "there", "actually", "still", "gonna", "wanna", "really",
 }
 
 

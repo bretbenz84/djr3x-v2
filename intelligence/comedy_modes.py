@@ -22,6 +22,9 @@ _RECENT_MODES: deque[str] = deque(maxlen=8)
 _RECENT_PREMISES: deque[str] = deque(maxlen=12)
 _RECENT_LINES: deque[str] = deque(maxlen=16)
 _RECENT_OPENERS: deque[str] = deque(maxlen=4)
+# The full text of Rex's most recently finalized line, so the next turn can
+# avoid repeating it verbatim (the "A solo project, huh?" / "Absolutely" loop).
+_LAST_SPOKEN_LINE: str = ""
 
 # Stock filler openers Rex overuses ("Ah, …", "Oh, …", "Well, well, well, …").
 # The core prompt bans them but the model still reaches for them, so strip them
@@ -265,10 +268,20 @@ def _opener_key(text: str) -> str:
 
 def note_spoken_line(text: str) -> None:
     """Record the opening word of a finalized Rex line so the next turn can vary
-    its opener (stops back-to-back "Glad…" / "Glad…" openings)."""
+    its opener (stops back-to-back "Glad…" / "Glad…" openings), and remember the
+    full line so the next turn can avoid repeating it verbatim."""
+    global _LAST_SPOKEN_LINE
     opener = _opener_key(text)
     if opener:
         _RECENT_OPENERS.append(opener)
+    cleaned = " ".join(str(text or "").strip().split())
+    if cleaned:
+        _LAST_SPOKEN_LINE = cleaned
+
+
+def last_spoken_line() -> str:
+    """The full text of Rex's most recently finalized line."""
+    return _LAST_SPOKEN_LINE
 
 
 def recent_openers_to_avoid(limit: int = 2) -> list[str]:
@@ -283,10 +296,12 @@ def recent_openers_to_avoid(limit: int = 2) -> list[str]:
 
 def reset_recent_state() -> None:
     """Test helper."""
+    global _LAST_SPOKEN_LINE
     _RECENT_MODES.clear()
     _RECENT_PREMISES.clear()
     _RECENT_LINES.clear()
     _RECENT_OPENERS.clear()
+    _LAST_SPOKEN_LINE = ""
 
 
 def _choose_without_stutter(pool: list[str]) -> str:

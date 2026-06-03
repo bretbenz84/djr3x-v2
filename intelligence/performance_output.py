@@ -95,12 +95,16 @@ def execute_plan(
         split = _split_setup_question_and_punchline(text)
         if split is not None:
             setup, punchline = split
+            # Deliver the joke as setup + punchline, but DON'T log each piece —
+            # the caller logs the whole joke once (otherwise the conversation log
+            # showed the setup, the punchline, AND the full joke = three lines).
             completed = bool(
                 speak_text(
                     setup,
                     emotion=plan.emotion,
                     pre_beat_ms=plan.pre_beat_ms,
                     post_beat_ms_override=0,
+                    log_text=False,
                 )
             )
             if completed:
@@ -114,6 +118,7 @@ def execute_plan(
                         emotion=plan.emotion,
                         pre_beat_ms=pause_ms,
                         post_beat_ms_override=plan.post_beat_ms,
+                        log_text=False,
                     )
                 )
         else:
@@ -123,6 +128,7 @@ def execute_plan(
                     emotion=plan.emotion,
                     pre_beat_ms=plan.pre_beat_ms,
                     post_beat_ms_override=plan.post_beat_ms,
+                    log_text=False,
                 )
             )
     else:
@@ -132,6 +138,7 @@ def execute_plan(
                 emotion=plan.emotion,
                 pre_beat_ms=plan.pre_beat_ms,
                 post_beat_ms_override=plan.post_beat_ms,
+                log_text=False,
             )
         )
     return PerformanceOutput(

@@ -78,8 +78,31 @@ def _apply_corrections(text: str) -> str:
     return text
 
 
+# Whisper hallucinates subtitle/credit boilerplate on silence or noise
+# ("Subs by www.zeoranger.co.uk", "Thanks for watching", "Amara.org"). These
+# phrases / URLs never occur in real speech to Rex, so a substring match here is
+# safe (and important: such a hallucination was being attributed to the user,
+# which both derailed Rex and kept his "still engaged" timer alive so he never
+# noticed the user had left the frame).
+_SUBTITLE_HALLUCINATION_RE = re.compile(
+    r"\b(?:subs?|subtitle[sd]?|caption[sd]?|transcription|translation)\s+by\b|"
+    r"\b(?:closed\s+caption|cc)\s+by\b|"
+    r"\bthank(?:s| you)\s+for\s+watching\b|"
+    r"\b(?:like\s+and\s+subscribe|please\s+subscribe|don'?t\s+forget\s+to\s+"
+    r"subscribe|subscribe\s+to\s+(?:my|our|the)\s+channel)\b|"
+    r"\bamara\.org\b|"
+    r"\bwww\.\S+|"
+    r"\bhttps?://\S+|"
+    r"\b\S+\.(?:com|org|net|io|tv|co\.uk)\b",
+    re.IGNORECASE,
+)
+
+
 def _is_hallucination(text: str) -> bool:
     lower = text.lower().strip()
+    # Subtitle/credit boilerplate and stray URLs are always hallucinations.
+    if _SUBTITLE_HALLUCINATION_RE.search(lower):
+        return True
     # Compare against full-utterance matches only (after basic normalization).
     # Substring matching is too aggressive and can hide valid speech.
     normalized = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9'\s]", " ", lower)).strip()

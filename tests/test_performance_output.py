@@ -38,6 +38,7 @@ class PerformanceOutputTests(unittest.TestCase):
             emotion="happy",
             pre_beat_ms=10,
             post_beat_ms_override=20,
+            log_text=False,
         )
 
     def test_quick_punchline_splits_setup_and_punchline_with_pause(self):
@@ -79,12 +80,14 @@ class PerformanceOutputTests(unittest.TestCase):
                 emotion="happy",
                 pre_beat_ms=0,
                 post_beat_ms_override=0,
+                log_text=False,
             ),
             mock.call(
                 "Because the drinks were on the house.",
                 emotion="happy",
                 pre_beat_ms=650,
                 post_beat_ms_override=20,
+                log_text=False,
             ),
         ])
 

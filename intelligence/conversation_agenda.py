@@ -526,6 +526,16 @@ def build_turn_directive(
         )
         return "\n".join(lines)
 
+    if _looks_like_reassurance(text):
+        lines.append(
+            "Primary purpose: the human is reassuring you or de-escalating ('I'm "
+            "not sad', 'it's okay', 'no worries'). Take it at face value — respond "
+            "warmly and lightly and move on. Do NOT roast or needle them for it, do "
+            "NOT imply they are repressing or hiding feelings, and do not insist the "
+            "mood is worse than they say. A brief, genuine beat is the whole move."
+        )
+        return "\n".join(lines)
+
     if end_thread_pending:
         lines.append(
             "Primary purpose: close the current thread gracefully. Give a brief "
@@ -550,10 +560,33 @@ def build_turn_directive(
             lines.append(unknown_context.directive)
         return "\n".join(lines)
 
-    steering_directive = conversation_steering.build_directive(person_id, text)
-    if steering_directive:
-        lines.append(steering_directive)
-        if _looks_like_user_question(text):
+    steering_ctx = None
+    try:
+        steering_ctx = conversation_steering.note_user_turn(person_id, text)
+    except Exception as exc:
+        _log.debug("conversation steering note failed: %s", exc)
+    if steering_ctx and steering_ctx.directive:
+        lines.append(steering_ctx.directive)
+        if getattr(steering_ctx, "mode", "deepen") == "pivot":
+            # The subject stopped landing — change the channel. Offer a concrete
+            # fresh thing to ask about so the pivot lands somewhere instead of
+            # being a vague "let's talk about something else".
+            next_q = (
+                _next_useful_question(person_id) if person_id is not None else None
+            )
+            pivot_line = (
+                "Primary purpose: that subject stalled — pivot. Lead with a brief "
+                "reaction to what they just said, then steer to a RELATED subject "
+                "or open a new one, and ask one natural follow-up about that fresh "
+                "subject. Do not keep probing the stalled topic."
+            )
+            if next_q:
+                pivot_line += (
+                    " A natural fresh question to use if it fits: "
+                    f"{next_q['text']!r}."
+                )
+            lines.append(pivot_line)
+        elif _looks_like_user_question(text):
             lines.append(
                 "Primary purpose: answer the human's direct question first, then "
                 "keep the reply connected to their interest thread if it still fits."
@@ -710,6 +743,18 @@ _HEALTH_RESOLVED_PAT = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_REASSURANCE_PAT = re.compile(
+    r"\b("
+    r"i'?m not (?:sad|upset|mad|angry|worried|bothered|hurt|stressed|down)|"
+    r"i am not (?:sad|upset|mad|angry|worried|bothered|hurt|stressed|down)|"
+    r"it'?s (?:okay|ok|fine|all good|alright|no big deal)|"
+    r"it is (?:okay|ok|fine|all good|alright|no big deal)|"
+    r"no worries|don'?t worry|do not worry|"
+    r"it'?s not (?:a big deal|that bad|that serious)|"
+    r"really[,]? it'?s fine|i'?m good[,]? (?:really|honestly)"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _looks_like_offscreen_correction(text: str) -> bool:
@@ -718,3 +763,7 @@ def _looks_like_offscreen_correction(text: str) -> bool:
 
 def _looks_like_health_resolved(text: str) -> bool:
     return bool(_HEALTH_RESOLVED_PAT.search(text or ""))
+
+
+def _looks_like_reassurance(text: str) -> bool:
+    return bool(_REASSURANCE_PAT.search(text or ""))

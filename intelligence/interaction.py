@@ -1685,6 +1685,7 @@ def _speak_blocking(
     pre_beat_ms: int = 0,
     post_beat_ms_override: int = 0,
     voice_settings: Optional[dict] = None,
+    log_text: bool = True,
 ) -> bool:
     """
     Enqueue text for speech and block until playback finishes, monitoring for
@@ -1730,6 +1731,7 @@ def _speak_blocking(
         pre_beat_ms=pre_beat_ms, post_beat_ms=post_beat_ms,
         voice_settings=voice_settings,
         on_start=_on_playback_start if trace is not None else None,
+        log_text=log_text,
     )
 
     while not done.wait(timeout=0.05):
@@ -7363,6 +7365,15 @@ def _stream_llm_response(
 # followed by whitespace. Trailing punctuation at the very end of the buffer is
 # treated as still-in-progress, since more tokens may be coming.
 _STREAM_SENTENCE_BOUNDARY_RE = re.compile(r'[.!?]+["\')\]’”]*\s')
+_STREAM_TAIL_TERMINAL_RE = re.compile(r'[.!?…]["\')\]’”]*$')
+
+
+def _tail_is_speakable(tail: str) -> bool:
+    """A leftover stream tail is spoken only if it's a finished sentence. An
+    unpunctuated remainder means the model was cut mid-sentence ("What's the
+    deal", "Glad to") — speaking it would emit a truncated fragment, so drop it."""
+    t = (tail or "").strip()
+    return bool(t) and bool(_STREAM_TAIL_TERMINAL_RE.search(t))
 
 
 def _split_stream_sentences(buffer: str, min_chars: int) -> tuple[list[str], str]:
@@ -7563,8 +7574,13 @@ def _stream_and_speak_sentences(
 
     if not _interrupted.is_set():
         tail = buffer.strip()
-        if tail:
+        if tail and _tail_is_speakable(tail):
             _consume(tail)
+        elif tail:
+            _log.info(
+                "[interaction] dropped incomplete stream tail (mid-sentence cut): %r",
+                tail,
+            )
 
     # Safety net: if the model produced text but every sentence was governed away
     # (e.g. an all-questions reply under a no-questions frame), fall back to
