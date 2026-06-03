@@ -1,0 +1,49 @@
+[
+  {
+    "name": "astrophotography interest follow-up survives a spent budget",
+    "person_id": 1,
+    "steering_seed": {"answer": "astrophotography", "key": "obsession"},
+    "answered_question": {"question_key": "obsession", "question_text": "What are you obsessed with?", "answer_text": "astrophotography"},
+    "utterance": "astrophotography",
+    "question_budget_allows": false,
+    "expect": {"purpose": "interest", "allow_question": true}
+  },
+  {
+    "name": "answered question (no active interest) acks and allows one earned follow-up",
+    "person_id": 1,
+    "answered_question": {"question_key": "hobbies", "question_text": "What are your hobbies?", "answer_text": "woodworking"},
+    "utterance": "woodworking",
+    "question_budget_allows": false,
+    "expect": {"purpose": "answer_ack", "allow_question": true}
+  },
+  {
+    "name": "reassurance is taken at face value, never needled",
+    "person_id": 1,
+    "utterance": "I'm not sad, it's okay",
+    "expect": {"directive_includes": ["do not roast", "repressing"]}
+  },
+  {
+    "name": "Rex does not repeat his own last line over the user's answer",
+    "person_id": 1,
+    "rex_last_line": "A solo project, huh?",
+    "utterance": "Absolutely",
+    "candidate": "A solo project, huh?",
+    "expect": {"governed_excludes": ["solo project"]}
+  },
+  {
+    "name": "statement-plus-question drops the unearned question on a spent budget",
+    "person_id": 1,
+    "utterance": "I'm from Waterford",
+    "question_budget_allows": false,
+    "candidate": "Classic small-town energy. So where are you from?",
+    "expect": {"governed_includes": ["classic small-town energy"], "governed_excludes": ["where are you from"]}
+  },
+  {
+    "name": "one-question cap holds when a follow-up is allowed",
+    "person_id": 1,
+    "answered_question": {"question_key": "hobbies", "answer_text": "woodworking"},
+    "utterance": "woodworking and hiking",
+    "candidate": "Woodworking, respectable. What got you into it? And where do you do it?",
+    "expect": {"allow_question": true, "governed_max_questions": 1}
+  }
+]

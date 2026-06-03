@@ -3875,6 +3875,18 @@ _VAGUE_AFFECT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Concrete-milestone cues — a description with one of these reads as a real event
+# worth opening with (vs. a borderline "things are going well"), so it scores high
+# on the concreteness axis of the cold-open ranker.
+_CONCRETE_MILESTONE_RE = re.compile(
+    r"\b(won|win|wins|winning|champion|championship|promot|graduat|hire[sd]?|"
+    r"got\s+(?:the|a|an)\s+(?:job|gig|role|offer)|new\s+(?:job|gig|role|house|home|car)|"
+    r"award|prize|medal|trophy|finished|completed|launch|publish|released|"
+    r"married|engaged|wedding|baby|newborn|bought|passed|exam|degree|diploma|"
+    r"record|milestone|signed|closed\s+the\s+deal|first\s+place|personal\s+best)\b",
+    re.IGNORECASE,
+)
+
 
 def _event_age_days(mentioned_at: Optional[str]) -> float:
     """Age of an event in days; a large number when the timestamp is unusable so
@@ -3909,8 +3921,34 @@ def _celebration_worth_leading_with(event: dict) -> bool:
     return _event_age_days((event or {}).get("mentioned_at")) <= max_age
 
 
+def _celebration_lead_score(event: dict) -> float:
+    """Rank a gate-passing celebration for leading a cold open: did-they-invite-it
+    (they told Rex themselves) dominates, then recency, then how concrete/specific
+    the milestone is. Higher = more worth opening with. Tunable via the
+    PRESENCE_CELEBRATION_W_* weights."""
+    ev = event or {}
+    halflife = float(getattr(config, "PRESENCE_CELEBRATION_RECENCY_HALFLIFE_DAYS", 14.0))
+    recency = 1.0 / (1.0 + max(0.0, _event_age_days(ev.get("mentioned_at"))) / max(1.0, halflife))
+    invited = 1.0 if ev.get("person_invited_topic") else 0.0
+    desc = str(ev.get("description") or "")
+    # A milestone keyword is the strong concreteness signal; without one, length is
+    # only a weak proxy and must NEVER outscore a real milestone (a wordy "had a
+    # decent day" should not beat "won the championship").
+    if _CONCRETE_MILESTONE_RE.search(desc):
+        concreteness = 1.0
+    else:
+        concreteness = min(0.6, len(re.findall(r"[A-Za-z']+", desc)) / 12.0)
+    return (
+        float(getattr(config, "PRESENCE_CELEBRATION_W_INVITED", 1.0)) * invited
+        + float(getattr(config, "PRESENCE_CELEBRATION_W_RECENCY", 0.6)) * recency
+        + float(getattr(config, "PRESENCE_CELEBRATION_W_CONCRETE", 0.3)) * concreteness
+    )
+
+
 def _pick_due_celebration_checkin(person_db_id: Optional[int]) -> Optional[dict]:
-    """Return the most recent concrete positive event worth leading a greeting."""
+    """Return the celebration worth leading a greeting with — the BEST of the
+    gate-passing candidates (ranked by recency x concreteness x invited), not just
+    the first/most-recent that happens to pass."""
     if not isinstance(person_db_id, int):
         return None
     try:
@@ -3920,10 +3958,12 @@ def _pick_due_celebration_checkin(person_db_id: Optional[int]) -> Optional[dict]
             process_started_iso=_process_started_iso,
             limit=5,
         )
-        for event in due:
-            if _celebration_worth_leading_with(event):
-                return event
-        return None
+        worthy = [event for event in due if _celebration_worth_leading_with(event)]
+        if not worthy:
+            return None
+        if bool(getattr(config, "PRESENCE_CELEBRATION_RANK_ENABLED", True)):
+            return max(worthy, key=_celebration_lead_score)
+        return worthy[0]
     except Exception as exc:
         _log.debug("celebration check-in lookup error: %s", exc)
         return None

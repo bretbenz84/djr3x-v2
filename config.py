@@ -213,6 +213,16 @@ CONVERSATION_TURN_CLASSIFIER_TIMEOUT_SECS = 1.5
 # already handles "change the channel". Kill switch: set False to disable.
 ARC_EASES_ROAST_ON_FLOP = True
 
+# ── Relationship-tone (smaller win) ──────────────────────────────────────────
+# Make warmth/edge track the RELATIONSHIP, not flip per turn: a relationship-tone
+# line is woven into the system prompt from the person's warmth/antagonism/trust
+# scores (memory/people.py, each 0.0-1.0) — affectionate ribbing with close
+# friends, sharper sparring with people who needle Rex, neutral otherwise. Only
+# fires once a relationship is clearly off its 0.0 baseline, so new/neutral people
+# are unaffected. Tone only — it never relaxes the empathy / boundary / family-safe
+# gates. Kill switch: set False to disable.
+RELATIONSHIP_TONE_ENABLED = True
+
 # Verbose diagnostic: log the FULL assembled system prompt (every section,
 # including the conversation-arc block) at INFO each turn, so you can confirm
 # what the main LLM actually sees. Noisy — flip to False when done inspecting.
@@ -2802,6 +2812,17 @@ PRESENCE_SAME_DAY_RETURN_ENABLED = True
 # to restore the old "lead with any positive event" behavior.
 PRESENCE_CELEBRATION_REQUIRE_CONCRETE = True
 PRESENCE_CELEBRATION_LEAD_MAX_AGE_DAYS = 21.0
+
+# Among the candidates that PASS the gate above, rank "what's worth bringing up"
+# by recency x concreteness x did-they-invite-it and lead with the BEST one,
+# instead of just the most recent that happens to pass. "Invited" (the person
+# told Rex about it themselves) dominates, then recency, then concreteness.
+# Set RANK_ENABLED False to restore the old first-worthy pick.
+PRESENCE_CELEBRATION_RANK_ENABLED = True
+PRESENCE_CELEBRATION_RECENCY_HALFLIFE_DAYS = 14.0  # recency score halves every N days
+PRESENCE_CELEBRATION_W_INVITED = 1.0
+PRESENCE_CELEBRATION_W_RECENCY = 0.6
+PRESENCE_CELEBRATION_W_CONCRETE = 0.3
 
 # How long (seconds) a queued celebrity-style special greeting stays pending
 # before it goes stale and is dropped (consciousness person-specials greeting).

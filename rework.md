@@ -216,14 +216,20 @@ One small structured `qwen2.5:1.5b` call per turn returning
   in-character content, not just interviews. `intelligence/rex_preferences.py` (make
   dynamic), the idle/volunteer paths (`interaction._IDLE_BANTER_DIRECTIVES`,
   `consciousness._do_small_talk_question`). Cheapest way to make him less exhausting.
-- **Tone tracks the relationship, not per-turn dials.** `memory/people.py` already stores
-  `warmth_score`/`antagonism_score`/`trust_score` — wire them into
-  `llm.assemble_system_prompt` / `social_frame._roast_level` so warmth/edge are coherent
-  (warmer with friends, sharper with people who needle him) instead of flip-flopping.
-- **Better "what's worth bringing up" selector.** Replace the clumsy startup celebration
-  cold-open with a ranker over the memory DB (recency × concreteness × "did they invite
-  it"). `consciousness._pick_due_celebration_checkin` + `memory/emotional_events.py`,
-  `facts.py`, `interests.py`.
+- **Tone tracks the relationship, not per-turn dials.** ✅ **DONE (2026-06-03):**
+  `llm._relationship_tone_rule` maps `warmth_score`/`antagonism_score`/`trust_score` into a
+  persistent tone line in `assemble_system_prompt` (affectionate with warm friends, sharper
+  with people who needle Rex, neutral otherwise). Additive + tone-only (the `_roast_level`
+  care/affect gates are untouched — that's where "whether to roast" lives; this colors "how").
+  Gated by `config.RELATIONSHIP_TONE_ENABLED`. See the do-not-regress entry in `CONTEXT.md`;
+  tests `tests/test_relationship_tone.py`.
+- **Better "what's worth bringing up" selector.** ✅ **DONE (2026-06-03):**
+  `consciousness._pick_due_celebration_checkin` now ranks the gate-passing celebration
+  candidates via `_celebration_lead_score` = invited (dominant) × recency × concreteness
+  and leads with the BEST one (was: first-that-passes). Gate unchanged; kill switch
+  `config.PRESENCE_CELEBRATION_RANK_ENABLED`. Tests `tests/test_celebration_ranker.py`;
+  do-not-regress entry in `CONTEXT.md`. **Follow-up:** extend the same score across
+  `facts.py` / `interests.py` (currently ranks emotional-event celebrations only).
 - **Offline replay/eval harness.** Today the only eval is run-the-robot-and-read-logs (how
   the "A solo project" repeat shipped). Feed recorded transcripts through the pipeline and
   assert on responses. Seed: `tests/fixtures/misroute_replays.json` +

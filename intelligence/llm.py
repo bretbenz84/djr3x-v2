@@ -561,6 +561,35 @@ def _build_person_context(person_id: int) -> str:
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _relationship_tone_rule(person: dict, name: str) -> str:
+    """A persistent relationship-tone line from the person's warmth/antagonism/trust
+    scores, so Rex's warmth/edge tracks the RELATIONSHIP instead of flip-flopping per
+    turn — affectionate ribbing with close friends, sharper sparring with people who
+    needle him, "" for neutral / not-yet-established people. Tone only: it never
+    relaxes the empathy / boundary / family-safe gates that govern whether to roast."""
+    try:
+        warmth = float(person.get("warmth_score") or 0.0)
+        antagonism = float(person.get("antagonism_score") or 0.0)
+        trust = float(person.get("trust_score") or 0.0)
+    except (TypeError, ValueError):
+        return ""
+    who = name or "this person"
+    if antagonism >= 0.4 and antagonism >= warmth:
+        return (
+            f"Relationship tone: {who} likes to needle you and give you grief — so "
+            "give as good as you get. Sharper edge, more pushback, less softening; "
+            "you two enjoy the sparring, so lean into it (never actually cruel)."
+        )
+    if warmth >= 0.5:
+        trust_clause = " You trust them, so you can be real with them." if trust >= 0.6 else ""
+        return (
+            f"Relationship tone: you and {who} go back a ways — your roasting is "
+            "affectionate ribbing between friends. Keep the edge, but let the warmth "
+            f"show through; you're on their side.{trust_clause}"
+        )
+    return ""
+
+
 def assemble_system_prompt(
     person_id: Optional[int] = None,
     agenda_directive: Optional[str] = None,
@@ -687,6 +716,10 @@ def assemble_system_prompt(
                 "domain, engage a person of faith on their values without mocking the "
                 "faith). Warmth lives UNDER the roast, never instead of it."
             )
+            if getattr(config, "RELATIONSHIP_TONE_ENABLED", True):
+                tone_rule = _relationship_tone_rule(person, person.get("name") or "")
+                if tone_rule:
+                    rules.append(tone_rule)
             known_facts = facts_db.get_prompt_worthy_facts(person_id, limit=12)
             if known_facts:
                 rules.append(
