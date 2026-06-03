@@ -51,7 +51,10 @@ _PACING_PAT = re.compile(
 )
 _INTERRUPT_PAT = re.compile(
     r"\b(you interrupted|you cut me off|you talked over me|let me finish|"
-    r"i wasn't done|i was still talking)\b",
+    r"i wasn'?t done|i was still talking|"
+    r"didn'?t (?:give me (?:any |enough )?time|let me) (?:to )?"
+    r"(?:answer|respond|finish|reply|speak|talk|think)|"
+    r"wouldn'?t let me (?:answer|respond|finish|reply|speak|talk))\b",
     re.IGNORECASE,
 )
 _WRONG_PERSON_PAT = re.compile(

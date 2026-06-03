@@ -218,6 +218,12 @@ _idle_outro_spoken: bool = False
 # when the user speaks again, so each silent stretch gets a fresh attempt budget.
 _last_idle_banter_at: float = 0.0
 _idle_banter_count: int = 0
+# Wall-clock of the last self-initiated (proactive) line of any kind. Used to
+# keep proactive lines from stacking back-to-back (see _proactive_line_recently_fired).
+_last_proactive_line_at: float = 0.0
+# After Rex asks a real question, hold the floor until this time so he doesn't
+# jump back in with idle banter before the user has had a chance to answer.
+_floor_held_until: float = 0.0
 _pending_music_offer: Optional[dict] = None
 _no_response_recovery_token: int = 0
 _no_response_recovery_lock = threading.Lock()
@@ -264,9 +270,13 @@ _IDENTITY_REPLY_WINDOW_SECS = 45.0
 def _begin_user_turn() -> None:
     """Suppress proactive speech while the interaction loop handles a user turn."""
     # The user is engaging again — refresh the proactive idle-banter budget so
-    # the next silent stretch gets a fresh set of re-engagement attempts.
-    global _idle_banter_count
+    # the next silent stretch gets a fresh set of re-engagement attempts, and
+    # clear the proactive-line gap so the next stretch isn't suppressed by a line
+    # from the previous one.
+    global _idle_banter_count, _last_proactive_line_at, _floor_held_until
     _idle_banter_count = 0
+    _last_proactive_line_at = 0.0
+    _floor_held_until = 0.0
     try:
         _situation_assessor.set_interaction_busy(True)
     except Exception:
@@ -1255,6 +1265,7 @@ def _intent_execution_block_reason(
     text: str,
     context: Optional[dict[str, Any]] = None,
     dialogue_decision: Optional[dialogue_act.DialogueActDecision] = None,
+    router_action: Optional[str] = None,
 ) -> Optional[str]:
     """Central turn-policy gate for deterministic intent-classifier claims."""
     if not intent or intent == "general":
@@ -1262,6 +1273,13 @@ def _intent_execution_block_reason(
     decision = _intent_action_decision(intent)
     if decision is None:
         return None
+    # The LLM router already judged this turn a conversational REPAIR (a
+    # correction or complaint like "you didn't give me time to answer"). A
+    # repair is never a clock/date/weather/data query — so don't let a keyword
+    # match in the deterministic fallback hijack it into a tool answer (this is
+    # what produced "It's 8:33 PM." in response to a pacing complaint).
+    if (router_action or "") == "conversation.repair":
+        return "router_classified_repair"
     evidence_reason = action_router.missing_required_evidence_reason(
         text,
         decision,
@@ -1775,7 +1793,7 @@ def _speak_proactive(
                 return False
         except Exception as exc:
             _log.debug("[interaction] proactive yield check failed: %s", exc)
-    return _speak_blocking(
+    completed = _speak_blocking(
         text,
         emotion=emotion,
         priority=priority,
@@ -1783,6 +1801,20 @@ def _speak_proactive(
         post_beat_ms_override=post_beat_ms_override,
         voice_settings=voice_settings,
     )
+    if completed:
+        global _last_proactive_line_at
+        _last_proactive_line_at = time.monotonic()
+    return completed
+
+
+def _proactive_line_recently_fired(min_gap: Optional[float] = None) -> bool:
+    """True if any proactive line played within the last ``min_gap`` seconds, so
+    a second one should hold off instead of stacking (one line, then wait)."""
+    if min_gap is None:
+        min_gap = float(getattr(config, "PROACTIVE_LINE_MIN_GAP_SECS", 6.0) or 0.0)
+    if min_gap <= 0 or _last_proactive_line_at <= 0:
+        return False
+    return (time.monotonic() - _last_proactive_line_at) < min_gap
 
 
 def _post_tts_handoff_policy(text: Optional[str]) -> _PostTtsHandoffPolicy:
@@ -2753,6 +2785,16 @@ def _question_sentence_expects_response(sentence: str) -> bool:
         lowered,
     ):
         return False
+    # Rhetorical reformulations ("So what you're saying is …?", "So you're
+    # telling me …?") restate the human's point for comic effect — they don't
+    # expect a literal answer, so they must not arm the no-response quip (the
+    # live "No answer. Bold strategy." misfire fired off exactly this shape).
+    if re.search(
+        r"\bso[, ]+(?:what\s+you'?re\s+saying|you'?re\s+(?:saying|telling)|"
+        r"that\s+means|i\s+(?:guess|take\s+it))\b",
+        lowered,
+    ):
+        return False
     if _SHORT_SLOT_QUESTION_RE.search(lowered):
         return True
     words = re.findall(r"[a-z0-9']+", lowered)
@@ -2804,6 +2846,12 @@ def _arm_no_response_recovery(
         return
 
     asked_at = time.monotonic()
+    # Hold the floor: Rex asked a real question, so give the user an actual window
+    # to answer before idle banter jumps in with a new prompt.
+    global _floor_held_until
+    _floor_held_until = asked_at + float(
+        getattr(config, "POST_QUESTION_FLOOR_HOLD_SECS", 10.0) or 0.0
+    )
     with _no_response_recovery_lock:
         _no_response_recovery_token += 1
         token = _no_response_recovery_token
@@ -2827,6 +2875,11 @@ def _arm_no_response_recovery(
             or echo_cancel.is_suppressed()
             or _interrupted.is_set()
         ):
+            return
+        # Defer to a more useful proactive beat (e.g. an idle-banter question that
+        # asks about the user) — don't stack the snarky quip on top of it so the
+        # user gets one re-engagement and then real silence to answer into.
+        if _proactive_line_recently_fired():
             return
 
         quips = getattr(config, "CONVERSATION_NO_RESPONSE_QUIPS", None) or [
@@ -2875,6 +2928,10 @@ def _register_rex_utterance(
         return
     try:
         repair_moves.note_assistant_turn(text)
+    except Exception:
+        pass
+    try:
+        comedy_modes.note_spoken_line(text)
     except Exception:
         pass
     try:
@@ -3182,6 +3239,10 @@ def _maybe_idle_banter(
         return False
     threshold = max(2.0, float(getattr(config, "IDLE_BANTER_SECS", 8.0) or 8.0))
     if idle_for < threshold:
+        return False
+    # Rex just asked a real question — hold the floor so the user can actually
+    # answer instead of getting a fresh prompt piled on top.
+    if time.monotonic() < _floor_held_until:
         return False
     # Leave room before the hard idle cutoff so the outro can still land.
     if idle_for >= max(0.0, effective_idle_timeout - 1.0):
@@ -15668,6 +15729,9 @@ def _handle_speech_segment(
                     text=text,
                     context=router_context,
                     dialogue_decision=dialogue_decision,
+                    router_action=(
+                        router_decision.action if router_decision is not None else None
+                    ),
                 )
                 if intent_block_reason:
                     _log.info(

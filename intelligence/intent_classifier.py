@@ -113,9 +113,13 @@ _TOPIC_KNOWLEDGE_QUERY_RE = re.compile(
 )
 _BARE_TOPIC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 '&:-]{2,60}$")
 
+# Only real clock queries — NOT "give me time to answer" / "any time" (duration).
+# "what time", "the/current time", "time is it/now", or "o'clock"/"the clock".
 _TIME_QUERY_RE = re.compile(
-    r"\b(what(?:'s| is)?|tell me|give me|do you know)\b.{0,30}\b(time|clock)\b|"
-    r"\b(time|clock)\b.{0,20}\b(now|is it)\b",
+    r"\bwhat\s+time\b|"
+    r"\b(?:the|current|exact)\s+time\b(?!\s+(?:of|being|to|when|that|i|we|you|he|she|they)\b)|"
+    r"\btime\s+(?:is\s+it|right\s+now|now)\b|"
+    r"\b(?:o'?clock|the\s+clock)\b",
     re.IGNORECASE,
 )
 _DATE_QUERY_RE = re.compile(

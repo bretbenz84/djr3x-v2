@@ -259,17 +259,19 @@ class EngageFirstOnSincereSharesTest(unittest.TestCase):
     def test_interest_turn_is_engage_first(self):
         directive = self._directive("interest")
         self.assertIn("ENGAGE-FIRST", directive)
-        self.assertNotIn("ROAST-FIRST", directive)
+        self.assertNotIn("ROAST-LEAN", directive)
 
     def test_answer_ack_turn_is_engage_first(self):
         self.assertIn("ENGAGE-FIRST", self._directive("answer_ack"))
 
-    def test_general_banter_turn_stays_roast_first(self):
-        self.assertIn("ROAST-FIRST", self._directive("banter"))
+    def test_general_banter_turn_stays_roast_lean(self):
+        directive = self._directive("banter")
+        self.assertIn("ROAST-LEAN", directive)
+        self.assertNotIn("ENGAGE-FIRST", directive)
 
-    def test_rex_answering_user_stays_roast_first(self):
+    def test_rex_answering_user_stays_roast_lean(self):
         # purpose="answer" = Rex answering the user's question, not a user share.
-        self.assertIn("ROAST-FIRST", self._directive("answer"))
+        self.assertIn("ROAST-LEAN", self._directive("answer"))
 
 
 class WrongPersonRepairNarrowingTest(unittest.TestCase):
@@ -519,6 +521,126 @@ class AstrophotographyTurnEndToEndTest(unittest.TestCase):
         self.assertIn("ENGAGE-FIRST", contract)                   # D: curiosity leads, roast rides on top
         cs.clear()
         user_energy.clear()
+
+
+class TurnTakingTest(unittest.TestCase):
+    """A1/A2: hold unfinished thoughts; don't treat rhetorical reformulations as
+    questions that arm the no-response quip."""
+
+    def test_dangling_preposition_is_held(self):
+        from intelligence import turn_completion
+        # The live failure: Rex interrupted "well we're currently in" (a pause).
+        self.assertIsNotNone(turn_completion.classify("well we're currently in"))
+        self.assertIsNotNone(turn_completion.classify("it depends on what kind of"))
+
+    def test_complete_preposition_questions_not_held(self):
+        from intelligence import turn_completion
+        for complete in (
+            "what are you into",
+            "what's it based on",
+            "where are you from",
+            "the photos are the documentation",
+        ):
+            self.assertIsNone(
+                turn_completion.classify(complete), f"falsely held: {complete!r}"
+            )
+
+    def test_rhetorical_reformulation_does_not_expect_a_response(self):
+        from intelligence import interaction
+        # "So what you're saying is …?" restates the human's point — it must not
+        # arm the no-response quip ("No answer. Bold strategy.").
+        self.assertFalse(
+            interaction._question_expects_response(
+                "So what you're saying is, you capture blurry disappointments?"
+            )
+        )
+        self.assertFalse(
+            interaction._question_expects_response("So you're telling me that worked?")
+        )
+        # A genuine question still expects an answer.
+        self.assertTrue(
+            interaction._question_expects_response("What galaxy are you shooting next?")
+        )
+
+    def test_no_response_quips_are_gentle_not_accusatory(self):
+        import config
+        text = " ".join(config.CONVERSATION_NO_RESPONSE_QUIPS).lower()
+        self.assertNotIn("bold strategy", text)
+        self.assertNotIn("rude", text)
+
+
+class TimeQueryAndRepairRoutingTest(unittest.TestCase):
+    """B1/B2: 'give me time to answer' is not a clock query, and a router-judged
+    repair never falls through to a keyword data intent ('It's 8:33 PM.')."""
+
+    def test_pacing_complaint_is_not_a_time_query(self):
+        from intelligence import intent_classifier as ic
+        self.assertNotEqual(
+            ic.classify_deterministic("You didn't give me any time to answer"),
+            "query_time",
+        )
+        self.assertNotEqual(
+            ic.classify_deterministic("give me time to think"), "query_time"
+        )
+        # Real clock queries still classify.
+        self.assertEqual(ic.classify_deterministic("what time is it"), "query_time")
+
+    def test_router_repair_blocks_deterministic_data_intent(self):
+        from intelligence import interaction
+        reason = interaction._intent_execution_block_reason(
+            "query_time",
+            text="You didn't give me any time to answer",
+            router_action="conversation.repair",
+        )
+        self.assertEqual(reason, "router_classified_repair")
+
+    def test_interruption_complaint_is_a_repair(self):
+        from intelligence import repair_moves
+        repair_moves.clear()
+        repair_moves.note_assistant_turn("So, which galaxy next?")
+        for t in (
+            "You didn't give me any time to answer",
+            "you cut me off",
+            "you didn't let me finish",
+        ):
+            self.assertEqual(repair_moves.detect(t)["kind"], "interruption")
+        repair_moves.clear()
+
+
+class OpenerVarietyTest(unittest.TestCase):
+    """C2: strip stock filler openers and remember openers to vary the next one."""
+
+    def setUp(self):
+        from intelligence import comedy_modes
+        comedy_modes.reset_recent_state()
+
+    def tearDown(self):
+        from intelligence import comedy_modes
+        comedy_modes.reset_recent_state()
+
+    def test_banned_openers_are_stripped(self):
+        from intelligence import comedy_modes as cm
+        self.assertEqual(cm.strip_banned_opener("Ah, chasing galaxies"), "Chasing galaxies")
+        self.assertEqual(cm.strip_banned_opener("Oh, so now you do"), "So now you do")
+        self.assertEqual(
+            cm.strip_banned_opener("Well, well, well, look who's here"),
+            "Look who's here",
+        )
+        # A single "Well," is left alone.
+        self.assertEqual(cm.strip_banned_opener("Well, that's fair"), "Well, that's fair")
+
+    def test_polish_strips_banned_opener_on_roast_turns(self):
+        from intelligence import comedy_modes as cm
+        out = cm.polish_response("Ah, the Whirlpool Galaxy again", cm._MODES["friendly_roast"])
+        self.assertFalse(out.lower().startswith("ah"))
+
+    def test_recent_openers_are_tracked_for_variety(self):
+        from intelligence import comedy_modes as cm
+        cm.note_spoken_line("Glad to hear you're better")
+        cm.note_spoken_line("Glad you found that funny")
+        self.assertIn("glad", cm.recent_openers_to_avoid())
+        directive = cm.build_directive(cm._MODES["friendly_roast"])
+        self.assertIn("Opening variety", directive)
 
 
 if __name__ == "__main__":

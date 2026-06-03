@@ -328,18 +328,24 @@ def build_directive(frame: SocialFrame) -> str:
             "it interesting (name a real detail of the thing). A sharp roast is "
             "welcome riding on top of that interest — tease the hobby, the "
             "obsession, or your own take — but never deflect a sincere share with a "
-            "generic joke or a non-sequitur. Curiosity that lands beats a forced pun."
+            "generic joke or a non-sequitur. And sometimes the honest response is "
+            "just 'good choice' or 'nice' — that is allowed; you do not owe them a "
+            "joke every turn. Curiosity that lands beats a forced pun."
         )
     else:
         roast_rule = {
             "none": "No roasts or pointed teasing this turn.",
             "light": "If you roast, make it a tiny surface-level tap.",
             "normal": (
-                "ROAST-FIRST. Open with a sharp, SPECIFIC jab earned by what they just "
-                "said, did, wore, or chose this turn — a real punchline, not a generic "
-                "quip or a polite observation dressed up as one. Commit to the bit. "
-                "Punch up, stay good-natured (loyalty lives under the insult), but make "
-                "it actually land. A roast that lands beats three friendly sentences."
+                "ROAST-LEAN. When you have a genuinely sharp, SPECIFIC angle on what "
+                "they just said, did, wore, or chose, lead with it — a real "
+                "punchline, not a generic quip or a polite observation dressed up as "
+                "one — and commit to the bit. But you do NOT have to roast every "
+                "single turn: when a real reaction, a specific opinion, or a plain "
+                "'good one' is the honest move, just say that. A relentless jab "
+                "every turn gets old fast; a roast that actually lands beats three "
+                "friendly sentences AND beats a forced one. Punch up, stay "
+                "good-natured (loyalty lives under the insult)."
             ),
         }.get(frame.allow_roast, "Land one sharp, specific, good-natured jab when it fits.")
     return (

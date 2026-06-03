@@ -83,13 +83,16 @@ class RoastForwardDirectiveTests(unittest.TestCase):
             reason="test",
         )
 
-    def test_normal_roast_directive_is_roast_first_and_specific(self):
+    def test_normal_roast_directive_is_roast_lean_and_specific(self):
         from intelligence import social_frame
 
         directive = social_frame.build_directive(self._frame(allow_roast="normal"))
-        self.assertIn("ROAST-FIRST", directive)
+        # Roast-lean: still sharp and SPECIFIC when it roasts, but no longer a
+        # mandatory jab every single turn (a plain genuine reaction is allowed).
+        self.assertIn("ROAST-LEAN", directive)
         self.assertIn("SPECIFIC", directive)
-        # The old softener must be gone.
+        self.assertIn("have to roast every single turn", directive)
+        # The old socially-on-target softener must still be gone.
         self.assertNotIn("keep it socially on-target", directive)
 
     def test_tender_roast_levels_stay_gentle(self):

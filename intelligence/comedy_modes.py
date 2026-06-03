@@ -21,6 +21,16 @@ import config
 _RECENT_MODES: deque[str] = deque(maxlen=8)
 _RECENT_PREMISES: deque[str] = deque(maxlen=12)
 _RECENT_LINES: deque[str] = deque(maxlen=16)
+_RECENT_OPENERS: deque[str] = deque(maxlen=4)
+
+# Stock filler openers Rex overuses ("Ah, …", "Oh, …", "Well, well, well, …").
+# The core prompt bans them but the model still reaches for them, so strip them
+# deterministically. Single "Well," is left alone (it can be natural).
+_BANNED_OPENER_RE = re.compile(
+    r"^\s*(?:ah+|oh+|ooh+|uh+|um+|hmm+|well[,\s]+well(?:[,\s]+well)?)"
+    r"\b[\s,.!—–-]*",
+    re.IGNORECASE,
+)
 
 _SENSITIVE_PAT = re.compile(
     r"\b("
@@ -159,16 +169,26 @@ def select_mode(
 def build_directive(mode: ComedyMode) -> str:
     """Return prompt text for the selected mode."""
     if mode.key == "straight":
-        return mode.directive
-    return (
-        mode.directive
-        + "\nComedy guardrails: one joke shape only; no stacked punchlines; no "
-        "body, age, identity, health, money, grief, trauma, or private-fact jokes. "
-        "If the useful answer is already funny enough, stop there."
-        + "\nAnti-repeat: avoid reusing recent premises: "
-        + (_recent_premise_summary() or "none yet")
-        + "."
-    )
+        directive = mode.directive
+    else:
+        directive = (
+            mode.directive
+            + "\nComedy guardrails: one joke shape only; no stacked punchlines; no "
+            "body, age, identity, health, money, grief, trauma, or private-fact jokes. "
+            "If the useful answer is already funny enough, stop there."
+            + "\nAnti-repeat: avoid reusing recent premises: "
+            + (_recent_premise_summary() or "none yet")
+            + "."
+        )
+    openers = recent_openers_to_avoid()
+    if openers:
+        directive += (
+            "\nOpening variety: vary your first words — do not open this reply with "
+            + " or ".join(repr(o) for o in openers)
+            + " (you just opened that way), and never open with 'Ah,', 'Oh,', or "
+            "'Well, well'."
+        )
+    return directive
 
 
 def polish_response(text: str, mode: ComedyMode, *, allow_roast: str = "normal") -> str:
@@ -180,6 +200,7 @@ def polish_response(text: str, mode: ComedyMode, *, allow_roast: str = "normal")
         _remember_line(cleaned, mode)
         return cleaned
 
+    cleaned = strip_banned_opener(cleaned)
     cleaned = _collapse_overexplained_joke(cleaned)
     if allow_roast == "none":
         cleaned = _soften_direct_second_person(cleaned)
@@ -204,6 +225,7 @@ def polish_stream_sentence(sentence: str, mode: ComedyMode, *, allow_roast: str 
     cleaned = " ".join(str(sentence or "").strip().split())
     if not cleaned or mode.key == "straight":
         return cleaned
+    cleaned = strip_banned_opener(cleaned)
     cleaned = _collapse_overexplained_joke(cleaned)
     if allow_roast == "none":
         cleaned = _soften_direct_second_person(cleaned)
@@ -222,11 +244,49 @@ def line_for(kind: str) -> str:
     return line
 
 
+def strip_banned_opener(text: str) -> str:
+    """Drop a stock filler opener ("Ah,", "Oh,", "Well, well, well,") and
+    re-capitalize. Never empties the line."""
+    cleaned = (text or "").lstrip()
+    match = _BANNED_OPENER_RE.match(cleaned)
+    if not match:
+        return text
+    rest = cleaned[match.end():].lstrip()
+    if not rest:
+        return text
+    return rest[0].upper() + rest[1:]
+
+
+def _opener_key(text: str) -> str:
+    cleaned = strip_banned_opener(text)
+    words = re.findall(r"[A-Za-z']+", cleaned.lower())
+    return words[0] if words else ""
+
+
+def note_spoken_line(text: str) -> None:
+    """Record the opening word of a finalized Rex line so the next turn can vary
+    its opener (stops back-to-back "Glad…" / "Glad…" openings)."""
+    opener = _opener_key(text)
+    if opener:
+        _RECENT_OPENERS.append(opener)
+
+
+def recent_openers_to_avoid(limit: int = 2) -> list[str]:
+    seen: list[str] = []
+    for opener in reversed(_RECENT_OPENERS):
+        if opener and opener not in seen:
+            seen.append(opener)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
 def reset_recent_state() -> None:
     """Test helper."""
     _RECENT_MODES.clear()
     _RECENT_PREMISES.clear()
     _RECENT_LINES.clear()
+    _RECENT_OPENERS.clear()
 
 
 def _choose_without_stutter(pool: list[str]) -> str:

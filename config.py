@@ -1538,13 +1538,28 @@ TTS_TRIM_TRAILING_SILENCE_PADDING_MS = 40
 
 # If Rex asks a question and the human does not answer, wait this long before
 # letting him recover with one joke/quip and move on.
-CONVERSATION_NO_RESPONSE_QUIP_SECS = 7.0
+# How long Rex waits after asking before a no-response quip. Raised 7 -> 12 so a
+# user who is thinking (or who couldn't get a word in over half-duplex) isn't
+# rushed and then needled. The quips themselves are now gentle, not accusatory —
+# the old "Bold strategy, mildly rude" punished the user for silence Rex caused.
+CONVERSATION_NO_RESPONSE_QUIP_SECS = 12.0
 CONVERSATION_NO_RESPONSE_QUIPS = [
-    "Guess that question landed in the cargo bay.",
-    "No answer. Bold strategy. I will pretend that was mysterious on purpose.",
-    "All right, saving that question for the historians.",
-    "Silence. My favorite review from the committee.",
+    "Still there, or did I finally bore a human into stasis?",
+    "No rush — I'll idle here looking charming.",
+    "Take your time. My circuits aren't going anywhere.",
+    "I'll keep that question warm for you.",
 ]
+
+# Minimum gap between any two self-initiated (proactive) lines — no-response
+# quip, idle banter, idle outro, etc. Stops Rex stacking a follow-up question
+# AND a no-response quip back-to-back so the user never gets a turn (the live
+# "you didn't give me any time to answer" failure). One proactive line, then wait.
+PROACTIVE_LINE_MIN_GAP_SECS = 6.0
+
+# After Rex asks a real question, hold the floor this long before idle banter is
+# allowed to re-engage — a genuine window for the user to answer. The no-response
+# quip (CONVERSATION_NO_RESPONSE_QUIP_SECS) lands just after this if still silent.
+POST_QUESTION_FLOOR_HOLD_SECS = 10.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AUDITORY SCENE ANALYSIS

@@ -34,7 +34,8 @@ _TERMINAL_QUESTION_PAT = re.compile(r"\?\s*$")
 _COMPLETE_PREPOSITION_QUESTION_PAT = re.compile(
     r"^\s*(?:who|what|when|where|why|how|which|whose|whom|"
     r"can|could|would|will|do|does|did|is|are|am|should)\b"
-    r".*\b(?:about|for|from|to|with)\s*\??\s*$",
+    r".*\b(?:about|for|from|to|with|in|on|at|of|as|by|up|out|over|into|like)"
+    r"\s*\??\s*$",
     re.IGNORECASE,
 )
 _COMPLETE_EMBEDDED_PREPOSITION_PAT = re.compile(
@@ -46,7 +47,7 @@ _COMPLETE_EMBEDDED_PREPOSITION_PAT = re.compile(
     r"relat(?:es|ed|ing)|come|came|coming|work(?:s|ed|ing)?|"
     r"live(?:s|d|ing)?|am|are|is|was|were|be|been|being)\b|"
     r"\b(?:i|you|we|they|it|that|this|who|what|where|there)'(?:m|re|s)\b"
-    r")\s+(?:about|for|from|to|with)\s*$",
+    r")\s+(?:about|for|from|to|with|in|on|at|of|as|by|up|out|over|into|like)\s*$",
     re.IGNORECASE,
 )
 
@@ -55,6 +56,10 @@ _INCOMPLETE_END_WORDS = {
     "if", "into", "or", "than", "the", "to",
     "unless", "until", "when", "where", "while", "who", "with",
     "without",
+    # Common danglers that were missing — "well we're currently in" (the live
+    # case where Rex interrupted a mid-sentence pause) ends with "in".
+    "in", "on", "at", "of", "as", "by", "up", "out", "over",
+    "a", "an", "my", "our",
 }
 _INCOMPLETE_END_PHRASES = (
     "about to",
