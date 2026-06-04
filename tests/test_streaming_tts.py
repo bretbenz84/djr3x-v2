@@ -65,6 +65,42 @@ class SplitStreamSentencesTest(unittest.TestCase):
         self.assertEqual(ready, ["Wait... what is happening here?"])
 
 
+class TailIsSpeakableTest(unittest.TestCase):
+    """End-of-stream tail handling. The model likes to trail off mid-clause with
+    an ellipsis ("…the excitement of…"); that passes the terminal-punctuation
+    check but the ellipsis is stripped for TTS, leaving a bare dangling fragment
+    that lands as a hard cut-off. Such tails must be dropped (the complete earlier
+    sentence still plays), while genuinely finished tails are kept."""
+
+    def test_complete_sentences_are_speakable(self):
+        for tail in [
+            "That is hilarious.",
+            "Best concert of my life!",
+            "Visual reacquired. There you are, Bret.",
+            "Well, this is awkward…",          # trail-off on a complete-enough word
+            "the joy of contemplating the universe.",
+        ]:
+            with self.subTest(tail=tail):
+                self.assertTrue(I._tail_is_speakable(tail))
+
+    def test_ellipsis_trailoff_on_dangling_word_is_dropped(self):
+        # The two live cut-offs and other dangling trail-offs.
+        for tail in [
+            "I guess the excitement of…",
+            "I guess the excitement of...",
+            "I mean, I've…",
+            "Maybe it was the…",
+            "I was just thinking about…",
+        ]:
+            with self.subTest(tail=tail):
+                self.assertFalse(I._tail_is_speakable(tail))
+
+    def test_unpunctuated_or_empty_tail_is_dropped(self):
+        for tail in ["Glad to", "I guess the excitement of", "", "   ", None]:
+            with self.subTest(tail=tail):
+                self.assertFalse(I._tail_is_speakable(tail))
+
+
 class GovernStreamSentenceTest(unittest.TestCase):
     def test_drops_disallowed_question(self):
         self.assertEqual(SF.govern_stream_sentence("Who are you?", _frame(allow_question=False)), "")

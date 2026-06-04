@@ -143,15 +143,19 @@ conversation + a structured spine**, leaning on the LLM for fuzzy judgments.
 
 ## Roadmap (prioritized, with code areas)
 
-> **WHERE THINGS STAND (updated 2026-06-03) — see "Status & where to resume" at the bottom for the resume plan.**
-> Done, tested, and **all COMMITTED on `main`** (working tree clean; full suite green at **851**): **Bet 1**
-> (arc-memory, full), **Bet 2** (TurnPlan), **relationship-tone**, **offline eval harness**, **cold-open ranker**,
-> **Rex persistent POV** (the north-star smaller win), and the **Roast rebalance** (curious-first — the big
-> behavior fix from the last live run; see its STATUS in "Smaller, high-ROI"). **Bet 3** (turn classifier) was
-> built, validated, and **SHELVED** (slower AND worse than the deterministic heuristics + ~1s on-path latency).
-> Each landed item carries an inline **STATUS** note below; deferred/next items + reminders are in **Status &
-> where to resume**. **Caveat:** the POV + Roast rebalance have NOT had a clean live `--gui`/robot pass yet
-> (they shipped right after the run that exposed the roast problem).
+> **WHERE THINGS STAND (updated 2026-06-04) — see "Status & where to resume" at the bottom for the resume plan.**
+> Done + tested (suite green at **863**). **COMMITTED on `main`:** **Bet 1** (arc-memory, full), **Bet 2** (TurnPlan),
+> **relationship-tone**, **offline eval harness**, **cold-open ranker**, **Rex persistent POV** (the north-star smaller
+> win), the **Roast rebalance** (curious-first). **UNCOMMITTED — in the working tree, being live-tested on the user's
+> box** (user runs locally before committing): the **memory-followup cadence clamp** and the **cut-off / idle-banter-POV /
+> invented-drink fixes** (both from the 2026-06-04 live runs — see their STATUS in "Smaller, high-ROI").
+> **Bet 3** (turn classifier) was built, validated, and **SHELVED** (slower AND worse than the deterministic
+> heuristics + ~1s on-path latency). Each landed item carries an inline **STATUS** note below; deferred/next
+> items + reminders are in **Status & where to resume**. **Live-run status (2026-06-04 `--gui`):** the Roast
+> rebalance LANDED (no invented props, no doubling-down, sincere/boundary shares left alone — clean win); but the
+> run exposed that Rex is now exhausting via *interrogation* not *roasting* (back-to-back memory follow-ups about
+> remembered events, even ones the user said didn't happen), and the **POV still never surfaced** (crowded out by
+> the follow-ups this time). The cadence clamp addresses both; **it now needs its OWN live pass.**
 
 ### ★ Bet 1 — Arc-memory (running summary + callbacks)  [highest felt impact]
 > **STATUS — first cut landed + live-tuned (2026-06-03).** Folded into
@@ -243,10 +247,38 @@ One small structured `qwen2.5:1.5b` call per turn returning
   `config.REX_POV_ENABLED`; seeds are venue-neutral (no "cantina", test-enforced). Tests
   `tests/test_rex_pov.py`; do-not-regress entry in `CONTEXT.md`. **Fast-follows:** cross-session
   persistence, feed `_do_private_thought`/`_do_aspiration` from the POV, an LLM-evolved POV.
-  **Needs a live `--gui` pass to judge the felt change (the qualitative payoff).**
-  *Original idea:* loop was react→roast→question; give Rex a small evolving POV so he volunteers real
-  in-character content instead of just interviewing — the cheapest way to make him less exhausting.
-- **Roast rebalance — curious-first, not roast-first.** ✅ **DONE (2026-06-03):** the live `--gui` run that
+  **STATUS (2026-06-04 live `--gui`): still does NOT surface.** Plumbing verified again (selected `astromech-smugness`,
+  directive injected into all 9 prompts) but Rex never volunteered it — this time NOT because of the roast (it's
+  dialed back) but because back-to-back memory follow-ups consumed every proactive slot and kept replies in
+  answer-mode. The memory-followup cadence clamp (below) is what gives the POV oxygen; **re-judge the POV on the
+  NEXT live pass.** *Original idea:* loop was react→roast→question; give Rex a small evolving POV so he volunteers
+  real in-character content instead of just interviewing — the cheapest way to make him less exhausting.
+- **Memory-followup cadence clamp — stop the proactive interrogation.** ✅ **DONE (2026-06-04):** the live `--gui`
+  run that validated the Roast rebalance exposed the next layer — with the roast down, Rex was exhausting via
+  *interrogation*: `interaction._post_response` fires one queued "how did <event> go?" after every turn where Rex
+  didn't just ask a question, so he ran down a checklist (Disneyland → swimming → Disney again), asked about events
+  the user said didn't happen, and starved the POV. The Roast rebalance INDIRECTLY unleashed it (fewer reply-questions
+  → the `assistant_asked_question=False` branch passes almost every turn). Fix (user chose "moderate"): a cadence clamp
+  in `_post_response` — per-session anti-repeat (`_fired_followup_event_ids`, never re-raise a resolved event), a gap+cooldown
+  gate (`_memory_followup_cadence_allows`: ≥`FOLLOWUP_MIN_GAP_EXCHANGES` 5 transcript exchanges AND ≥`FOLLOWUP_COOLDOWN_SECS`
+  60s, self-resetting on transcript shrink), flat-room suppression (`FOLLOWUP_SUPPRESS_WHEN_FLAT`), and a "didn't happen"
+  hold (extended `suppress_stale_followup`). Gated follow-ups are re-queued (not lost) and the resulting lulls are the POV's
+  oxygen. Deterministic, no latency. Tests `tests/test_followup_resolution.py` (`MemoryFollowupCadenceTest`); do-not-regress
+  entry in `CONTEXT.md`. **Needs a live `--gui` pass** (less interrogation + POV finally surfacing). (Note: the test
+  suite/any startup clears `logs/djr3x.log`+`conversation.log` — copy them first to analyze a run.)
+- **Reply cut-off + idle-banter POV + invented "drink".** ✅ **DONE (2026-06-04, uncommitted — local live-test):** the
+  SECOND live run (with the cadence clamp) surfaced three things, all fixed. **(1) Cut-off** (top complaint, both runs):
+  Rex stopped mid-sentence ("…I guess the excitement of", "…I mean, I've") because the model TRAILS OFF with an ellipsis
+  and `_tail_is_speakable` counted `…` as a finished sentence; the ellipsis is then dropped for TTS, so a bare dangling
+  fragment is spoken. Fix: drop an ellipsis-tail that ends on a dangling connector (`_ELLIPSIS_TAIL_RE`+`_DANGLING_TAIL_WORDS`),
+  scoped so normal "You got this."/"I'd love to." are untouched (`TailIsSpeakableTest`). **(2) POV still buried + still
+  interrogating** — this run via IDLE BANTER: `_maybe_idle_banter` asked-first every quiet stretch (count resets per turn,
+  so the POV-volunteer branch never ran). Fix: volunteer-FIRST (`ask_user = attempt != 0`) so the first re-engagement
+  volunteers `rex_pov`. **(3) Invented a "drink" again**: `social_frame` Visual permission literally listed "the drink in
+  their hand" as material → primed the hallucination; turned it into a negative example. See the combined do-not-regress
+  entry in `CONTEXT.md`. **Re-judge all three live.**
+- **Roast rebalance — curious-first, not roast-first.** ✅ **DONE (2026-06-03); LANDED live 2026-06-04** (no invented
+  props, no doubling-down, sincere/boundary shares left alone). the live `--gui` run that
   tested the POV exposed the real problem — the POV plumbing worked perfectly but NEVER SURFACED because Rex
   roasted every turn: he needled a sensitive boundary the agenda told him to drop, INVENTED a "half-finished
   drink" with no visual data and DOUBLED DOWN when denied, and roasted a sincere share. Root cause: the
@@ -295,24 +327,34 @@ One small structured `qwen2.5:1.5b` call per turn returning
   `audio/transcription.py`, the wake/VAD path. NOT a full fix for deep talk-over (acoustic
   masking → needs the ReSpeaker hardware-AEC firmware path noted in CONTEXT.md).
 
-### Status & where to resume (as of 2026-06-03)
+### Status & where to resume (as of 2026-06-04)
 The original "arc → classifier → TurnPlan" ordering is now mostly executed (and one bet was
 shelved). Concrete state:
 
-**Landed, tested & COMMITTED on `main`** (working tree clean; full suite green at **851**):
+**COMMITTED on `main`** (full suite green at **863**):
 **Bet 1** arc-memory (gpt-4o-mini running summary + cross-session persistence + act-on-signal) ·
 **Bet 2** TurnPlan (live agenda→social_frame handoff de-brittled; regex kept as fallback) ·
 **relationship-tone** · **offline eval harness** · **cold-open ranker** ·
 **Rex persistent POV** (`intelligence/rex_pov.py`; north-star smaller win — first cut) ·
 **Roast rebalance** (curious-first: dials 55/60/50 + reframed `REX_CORE_PROMPT` + sincere/boundary &
-no-hallucination guardrails + de-cantina). **Bet 3** turn classifier = **SHELVED** (see its STATUS). Each
-has an inline STATUS note + a do-not-regress entry in `CONTEXT.md`.
+no-hallucination guardrails + de-cantina).
+**Bet 3** turn classifier = **SHELVED** (see its STATUS).
 
-**NOT YET VALIDATED LIVE (do this first):** the POV + Roast rebalance shipped right after the bad live run
-that motivated the rebalance, so they need a fresh `--gui` / robot pass to confirm the felt change (Rex less
-exhausting, genuinely curious, drops the bit on sincerity/boundaries, the POV actually surfacing). Reminder:
-the lowered dials only auto-apply to a FRESH DB — the robot's existing `people.db` still holds 90/80/35 (move
-the dashboard sliders or run a one-time UPDATE).
+**UNCOMMITTED — in the working tree, being live-tested locally** (user runs on their box before committing):
+**memory-followup cadence clamp** (`_post_response`; stop the proactive event interrogation + give the POV oxygen) ·
+**cut-off / idle-banter-POV / invented-drink fixes** (`_tail_is_speakable` ellipsis trail-off, `_maybe_idle_banter`
+volunteer-first, `social_frame` visual rule). Each has an inline STATUS note + a do-not-regress entry in `CONTEXT.md`.
+
+**LIVE-RUN FINDINGS (two 2026-06-04 `--gui` runs) + WHAT'S STILL UNVALIDATED:** Run 1: Roast rebalance LANDED — no
+invented props, no doubling-down, sincere/boundary shares left alone (clean on 3 of 4 goals); but Rex was now
+exhausting via *interrogation* (memory-followup checklist) and the **POV never surfaced**. → cadence clamp. Run 2
+(with the clamp): the **reply cut off again** (the headline complaint — diagnosed as the model trailing off with an
+ellipsis, now FIXED in `_tail_is_speakable`), the **POV still never surfaced** (this time IDLE BANTER asked-first
+every turn — fixed to volunteer-first), and Rex **invented a "drink"** again (the Visual-permission example primed it
+— fixed). **All UNVALIDATED live — do a fresh `--gui` pass first** (cut-off gone? POV finally volunteering? less
+interrogation? no invented props?). Reminders: the lowered dials only auto-apply to a FRESH DB — the robot's existing
+`people.db` still holds 90/80/35 (move the dashboard sliders or run a one-time UPDATE); and the test suite / any
+startup CLEARS `logs/djr3x.log`+`conversation.log` (config.py:100 + RotatingFileHandler) — copy a run's log first.
 
 **Deferred / good resume points** (roughly in value order):
 1. **Delete the TurnPlan regex patterns** (Bet 2 follow-up) — needs live testing; de-riskable via the

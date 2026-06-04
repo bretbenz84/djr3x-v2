@@ -2968,6 +2968,25 @@ FOLLOWUP_UNDATED_DAYS = 7
 # keeps deflecting instead of answering.
 FOLLOWUP_MAX_HELD_OPEN_TURNS = 1
 
+# ── Moderate cadence clamp on proactive memory follow-ups ────────────────────
+# After every turn where Rex did NOT just ask a question, `_post_response` fires
+# one queued "how did <event> go?" from memory. Once the roast rebalance made
+# replies ask fewer questions, that gate passed almost every turn and turned into
+# a back-to-back checklist interrogation (Disneyland → swimming → …) that also
+# starved Rex's own POV / idle volunteering. These space follow-ups out so at most
+# one fires per conversational lull:
+#   - MIN_GAP_EXCHANGES: minimum transcript growth (~2 lines per back-and-forth)
+#     since the last follow-up before another may fire.
+#   - COOLDOWN_SECS: wall-clock floor between follow-ups (belt-and-suspenders for
+#     rapid turns); 0 disables the time gate.
+#   - SUPPRESS_WHEN_FLAT: skip follow-ups when the conversation arc reads the room
+#     as flat/disengaged (reuses topic_thread.arc_reads_flat()).
+# A "didn't happen" reply also holds the queue for that turn (don't pivot straight
+# to another remembered event), and no event is ever followed up twice per session.
+FOLLOWUP_MIN_GAP_EXCHANGES = 5
+FOLLOWUP_COOLDOWN_SECS = 60.0
+FOLLOWUP_SUPPRESS_WHEN_FLAT = True
+
 # ANTICIPATION — preemptive event greeting
 # When a known person is recognized, Rex may open with a reference to a stored
 # upcoming event (event_date in the future, not yet followed up) instead of a

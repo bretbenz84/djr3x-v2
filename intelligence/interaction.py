@@ -223,6 +223,14 @@ _idle_banter_count: int = 0
 # Wall-clock of the last self-initiated (proactive) line of any kind. Used to
 # keep proactive lines from stacking back-to-back (see _proactive_line_recently_fired).
 _last_proactive_line_at: float = 0.0
+# Memory follow-up cadence — the moderate clamp so Rex doesn't run down a checklist
+# of remembered events turn-after-turn (see config.FOLLOWUP_MIN_GAP_EXCHANGES). Clocked
+# on transcript length (like rex_pov / the arc) so it self-resets at session boundaries
+# with no extra reset plumbing; _fired_followup_event_ids is the per-session anti-repeat
+# that stops a resolved event from being re-raised if the queue gets re-seeded.
+_last_followup_exchange: int = -(10**9)
+_last_followup_at: float = 0.0
+_fired_followup_event_ids: set[int] = set()
 # After Rex asks a real question, hold the floor until this time so he doesn't
 # jump back in with idle banter before the user has had a chance to answer.
 _floor_held_until: float = 0.0
@@ -3289,14 +3297,22 @@ def _maybe_idle_banter(
     if person_id is None:
         return False
 
+    # Lead with SUBSTANCE, not an interview: the first re-engagement after a pause
+    # VOLUNTEERS Rex's own current preoccupation (rex_pov); only a later banter in
+    # the same silent stretch turns the spotlight back on the user. This is the
+    # design intent ("volunteer, don't just interview"), and because a silent
+    # stretch usually gets only ONE banter before the user replies, the old
+    # ask-first default buried the POV every turn (it never surfaced live). The
+    # reply path already carries curiosity about the user; idle banter is the slot
+    # where Rex brings his own thing.
     attempt = _idle_banter_count % len(_IDLE_BANTER_DIRECTIVES)
-    directive = _IDLE_BANTER_DIRECTIVES[attempt]
-    ask_user = attempt == 0
+    ask_user = attempt != 0
+    directive = _IDLE_BANTER_DIRECTIVES[0 if ask_user else 1]
     if not ask_user:
         # Volunteer attempt: lead with Rex's SPECIFIC current preoccupation (rex_pov)
         # rather than a generic improvised opinion, so idle volunteering matches what
-        # he's been bringing up in replies. Falls back to the generic directive when
-        # POV is disabled/empty.
+        # he's been bringing up in replies. Falls back to the generic volunteer
+        # directive when POV is disabled/empty.
         try:
             pov_text = rex_pov.active_pov_text()
         except Exception:
@@ -7406,13 +7422,38 @@ def _stream_llm_response(
 _STREAM_SENTENCE_BOUNDARY_RE = re.compile(r'[.!?]+["\')\]’”]*\s')
 _STREAM_TAIL_TERMINAL_RE = re.compile(r'[.!?…]["\')\]’”]*$')
 
+# A tail ending in an ellipsis ("…" or "...") — the model trailing off.
+_ELLIPSIS_TAIL_RE = re.compile(r'(?:…|\.{2,})["\')\]’”]*\s*$')
+
+# Connector / article / auxiliary words that leave an UNFINISHED thought when an
+# ellipsis trail-off ends on them ("…the excitement of…", "…I mean, I've…"). Such
+# a tail passes the terminal-punctuation check (… is terminal) but the ellipsis is
+# stripped before TTS, so what gets spoken is a bare dangling fragment that lands
+# as a hard cut-off. Deliberately excludes words that can legitimately END a
+# sentence ("this", "to", "is") so only genuinely-dangling trail-offs are dropped.
+_DANGLING_TAIL_WORDS = frozenset({
+    "a", "an", "the", "of", "with", "for", "into", "about", "than", "and", "or",
+    "but", "my", "your", "his", "her", "their", "its", "our",
+    "i'm", "i've", "you're", "we're", "they're", "it's", "he's", "she's",
+})
+
 
 def _tail_is_speakable(tail: str) -> bool:
     """A leftover stream tail is spoken only if it's a finished sentence. An
     unpunctuated remainder means the model was cut mid-sentence ("What's the
-    deal", "Glad to") — speaking it would emit a truncated fragment, so drop it."""
+    deal", "Glad to") — speaking it would emit a truncated fragment, so drop it.
+    A tail the model trailed off on mid-clause with an ELLIPSIS ("…the excitement
+    of…") also reads as a hard cut-off once TTS strips the ellipsis, so drop it
+    when it ends on a dangling connector word. A '.'/'!'/'?' sentence is a finished
+    thought even if it ends on "this"/"to" — keep it."""
     t = (tail or "").strip()
-    return bool(t) and bool(_STREAM_TAIL_TERMINAL_RE.search(t))
+    if not t or not _STREAM_TAIL_TERMINAL_RE.search(t):
+        return False
+    if _ELLIPSIS_TAIL_RE.search(t):
+        words = re.findall(r"[a-z']+", t.lower())
+        if words and words[-1] in _DANGLING_TAIL_WORDS:
+            return False
+    return True
 
 
 def _split_stream_sentences(buffer: str, min_chars: int) -> tuple[list[str], str]:
@@ -9192,6 +9233,68 @@ def _extracted_memory_allowed(payload: dict, person_id: Optional[int]) -> bool:
     return not forgetting.fact_or_event_matches(payload, terms)
 
 
+def _conversation_exchange_count() -> int:
+    """Transcript length so far — the cadence clock (~2 lines per back-and-forth).
+
+    Mirrors how rex_pov / the conversation arc clock themselves; shrinks at a
+    session reset, which `_memory_followup_cadence_allows` uses to self-reset."""
+    try:
+        return len(conv_memory.get_session_transcript() or [])
+    except Exception:
+        return 0
+
+
+def _memory_followup_cadence_allows() -> bool:
+    """Moderate clamp: may a proactive memory follow-up ("how did X go?") fire now?
+
+    Fires at most one per conversational lull — requires a minimum gap in
+    transcript exchanges AND a seconds cooldown since the last follow-up, and
+    stays quiet when the arc reads the room as flat. The spacing is also what lets
+    Rex's own POV / idle banter occasionally win the proactive slot instead of
+    every gap becoming another interview question. Self-resets when the transcript
+    shrinks (new session)."""
+    global _last_followup_exchange, _last_followup_at, _fired_followup_event_ids
+    try:
+        import config
+        min_gap = int(getattr(config, "FOLLOWUP_MIN_GAP_EXCHANGES", 5) or 0)
+        cooldown = float(getattr(config, "FOLLOWUP_COOLDOWN_SECS", 60.0) or 0.0)
+        suppress_flat = bool(getattr(config, "FOLLOWUP_SUPPRESS_WHEN_FLAT", True))
+    except Exception:
+        min_gap, cooldown, suppress_flat = 5, 60.0, True
+
+    now_exchange = _conversation_exchange_count()
+    if now_exchange < _last_followup_exchange:  # transcript shrank → new session
+        _last_followup_exchange = -(10**9)
+        _last_followup_at = 0.0
+        _fired_followup_event_ids = set()
+
+    if suppress_flat:
+        try:
+            if topic_thread.arc_reads_flat():
+                return False
+        except Exception:
+            pass
+    if now_exchange - _last_followup_exchange < min_gap:
+        return False
+    if cooldown > 0.0 and _last_followup_at > 0.0 and (
+        time.monotonic() - _last_followup_at < cooldown
+    ):
+        return False
+    return True
+
+
+def _note_memory_followup_fired(event_id) -> None:
+    """Record that a proactive memory follow-up just fired (cadence + anti-repeat)."""
+    global _last_followup_exchange, _last_followup_at
+    _last_followup_exchange = _conversation_exchange_count()
+    _last_followup_at = time.monotonic()
+    try:
+        if event_id is not None:
+            _fired_followup_event_ids.add(int(event_id))
+    except Exception:
+        pass
+
+
 def _post_response(
     user_text: str,
     person_id: Optional[int],
@@ -9221,6 +9324,15 @@ def _post_response(
         suppress_stale_followup = events_memory.looks_like_cancellation(user_text)
     except Exception:
         suppress_stale_followup = False
+    # A reply that an event didn't happen ("I didn't end up going") shouldn't be
+    # answered by immediately pivoting to a follow-up about a DIFFERENT remembered
+    # event — that reads as not listening. Hold the queue for this turn.
+    if not suppress_stale_followup:
+        try:
+            if _followup_event_did_not_happen(user_text):
+                suppress_stale_followup = True
+        except Exception:
+            pass
     try:
         visible_known_count = sum(
             1
@@ -9236,60 +9348,81 @@ def _post_response(
         try:
             followups = consciousness.get_pending_followup(person_id)
             if followups:
+                # Never follow up twice on the same event in a session. The in-memory
+                # queue can get re-seeded from the DB in the window before a "didn't
+                # happen" reply is written, which otherwise re-raises a resolved event
+                # (e.g. re-asking about a trip the user already said they skipped).
+                followups = [
+                    event
+                    for event in followups
+                    if int(event.get("id") or -1) not in _fired_followup_event_ids
+                ]
+            if not followups:
+                pass
+            elif assistant_asked_question:
                 # If Rex just asked a question, do not immediately ask another one.
                 # Re-queue and wait for the person's reply first.
-                if assistant_asked_question:
-                    for event in followups:
-                        consciousness.set_pending_followup(person_id, event)
-                else:
-                    # Ask one follow-up at a time; keep the rest queued.
-                    event = followups[0]
-                    for leftover in followups[1:]:
-                        consciousness.set_pending_followup(person_id, leftover)
+                for event in followups:
+                    consciousness.set_pending_followup(person_id, event)
+            elif not _memory_followup_cadence_allows():
+                # Moderate cadence clamp: at most one follow-up per conversational
+                # lull, and none while the room reads flat. Re-queue everything so
+                # nothing is lost — it fires in a later lull, which also leaves the
+                # proactive slot open for Rex's own POV / idle banter.
+                for event in followups:
+                    consciousness.set_pending_followup(person_id, event)
+            else:
+                # Ask one follow-up at a time; keep the rest queued.
+                event = followups[0]
+                for leftover in followups[1:]:
+                    consciousness.set_pending_followup(person_id, leftover)
 
-                    event_name = event.get("event_name", "that thing you mentioned")
-                    resp = llm.get_response(
-                        f"You're following up on something this person mentioned before: "
-                        f"'{event_name}'. Ask how it went in one short Rex-style line.",
-                        person_id,
-                    )
-                    if resp:
-                        conv_memory.add_to_transcript("Rex", resp)
-                        conv_log.log_rex(resp)
-                        completed = _speak_blocking(resp)
-                        if completed:
-                            _register_rex_utterance(
-                                resp,
-                                source="memory_followup",
-                                topic=event_name,
-                                target_person_id=person_id,
-                                target_name=person_name,
-                                expected_reply_types=[
-                                    "status_update",
-                                    "cancel_event",
-                                    "dismissal",
-                                ],
-                                blocked_actions=[
-                                    "identity.name_correction",
-                                    "identity.introduce_person",
-                                ],
-                            )
-                            _awaiting_followup_event = None
-                            event_id = event.get("id")
-                            if event_id is not None:
-                                _awaiting_followup_event = {
-                                    "person_id": person_id,
-                                    "event_id": int(event_id),
-                                    "event_name": event_name,
-                                }
-                            try:
-                                consciousness.note_memory_hint(resp, person_id)
-                            except Exception as exc:
-                                _log.debug("note follow-up memory hint failed: %s", exc)
-                        else:
-                            consciousness.set_pending_followup(person_id, event)
+                event_name = event.get("event_name", "that thing you mentioned")
+                resp = llm.get_response(
+                    f"You're following up on something this person mentioned before: "
+                    f"'{event_name}'. Ask how it went in one short Rex-style line.",
+                    person_id,
+                )
+                if resp:
+                    conv_memory.add_to_transcript("Rex", resp)
+                    conv_log.log_rex(resp)
+                    completed = _speak_blocking(resp)
+                    if completed:
+                        _register_rex_utterance(
+                            resp,
+                            source="memory_followup",
+                            topic=event_name,
+                            target_person_id=person_id,
+                            target_name=person_name,
+                            expected_reply_types=[
+                                "status_update",
+                                "cancel_event",
+                                "dismissal",
+                            ],
+                            blocked_actions=[
+                                "identity.name_correction",
+                                "identity.introduce_person",
+                            ],
+                        )
+                        _awaiting_followup_event = None
+                        event_id = event.get("id")
+                        # Record the fire for cadence spacing + per-session
+                        # anti-repeat (so this event is never re-raised).
+                        _note_memory_followup_fired(event_id)
+                        if event_id is not None:
+                            _awaiting_followup_event = {
+                                "person_id": person_id,
+                                "event_id": int(event_id),
+                                "event_name": event_name,
+                            }
+                        try:
+                            consciousness.note_memory_hint(resp, person_id)
+                        except Exception as exc:
+                            _log.debug("note follow-up memory hint failed: %s", exc)
                     else:
                         consciousness.set_pending_followup(person_id, event)
+                else:
+                    consciousness.set_pending_followup(person_id, event)
         except Exception as exc:
             _log.debug("post_response follow-up error: %s", exc)
 

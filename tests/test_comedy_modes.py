@@ -109,7 +109,10 @@ class RoastForwardDirectiveTests(unittest.TestCase):
         directive = social_frame.build_directive(
             self._frame(allow_visual_comment=True)
         )
-        self.assertIn("What you SEE", directive)
+        self.assertIn("What you actually SEE", directive)
+        # Must reinforce the no-invented-props guardrail right where the
+        # temptation is introduced (Rex kept inventing a "drink in their hand").
+        self.assertIn("never invent", directive)
 
     def test_visual_allowed_on_normal_upbeat_turn_without_invitation(self):
         from intelligence import social_frame

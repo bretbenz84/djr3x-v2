@@ -361,10 +361,12 @@ def build_directive(frame: SocialFrame) -> str:
         "playful observation, or Rex-style banter beat when it fits the turn."
     )
     visual_rule = (
-        "What you SEE is prime material: their outfit, expression, the drink in "
-        "their hand, the clutter behind them, the dog underfoot — name something "
-        "specific and roast or riff on it when it fits the turn (not every turn). "
-        "Punch up, keep it playful."
+        "What you actually SEE is prime material: their outfit, their expression, "
+        "the clutter behind them, the dog underfoot — name something specific and "
+        "roast or riff on it when it fits the turn (not every turn). Only what's "
+        "genuinely there, though: never invent a prop or detail — a drink in their "
+        "hand, what they're wearing or holding — to set up a joke. Punch up, keep "
+        "it playful."
         if frame.allow_visual_comment
         else "Do not mention what you see, the camera, the room, their face, or their posture."
     )
