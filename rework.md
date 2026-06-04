@@ -358,13 +358,15 @@ FRESH DB — the robot's existing `people.db` still holds 90/80/35; and the test
 `logs/djr3x.log`+`conversation.log` — copy a run's log first.
 
 **Deferred / good resume points** (roughly in value order):
-0. **`roasted_sincere` — PARTLY DONE (46%→21%, eval-measured).** Boundary handling fixed (don't roast "I'll be
-   quiet"; see the do-not-regress entry). Remaining ~21% is mostly the JUDGE over-flagging acceptable light teasing
-   on a sincere POSITIVE share (e.g. back-pain) — so the next move is to **calibrate the `roasted_sincere` judge**
-   (tighten its rubric so respecting-the-boundary-with-a-flourish and engage-then-light-tease are PASSES), THEN
-   re-measure and decide if any real residual remains. Don't tune the judge in the same pass you grade a fix with.
-   Also: **`cantina_bleed` ~8%** is now the next clearest eval-measured target.
-   Loop: `python evals/run_quality_eval.py --samples 8` before/after; change → measure → keep what clearly helps.
+0. **Eval-measured quality — DONE this pass; residuals are eval-refinement, not Rex bugs.** Authoritative baseline
+   (`--samples 12`, 96 replies): `roasted_sincere` **46%→8%** (boundary fix + calibrated judge), `cantina_bleed`
+   **8%→1%** (cantina = origin, not current venue), `invented_prop` 1%, `banned_opener`/`re_asks` 0%. The judge was
+   validated (`--check-judges` vs `judge_cases.json`, 11/11) and `generate_spoken` made faithful to the live speech
+   path. REMAINING (low-rate, eval-side): `trail_off` ~5% = max-token hard-truncations re-emitted by the safety-net
+   fallback (drop the trailing incomplete fragment in `_stream_and_speak_sentences`'s fallback too); `over_questioning`
+   ~4% = the checker counts rhetorical "?" the cap ignores (make it count `is_question_sentence` only). Next NEW
+   target if continuing: grow the corpus from real `logs/conversation.log`, then `--gate` as a CI guard.
+   Loop: `python evals/run_quality_eval.py --samples 12` before/after; change → measure → keep what clearly helps.
 1. **Delete the TurnPlan regex patterns** (Bet 2 follow-up) — needs live testing; de-riskable via the
    eval harness (expand its corpus over the affected branches, then assert outcomes unchanged). It
    requires removing the no-plan fallback + rewriting ~5 pinned string-based `social_frame` tests onto

@@ -83,22 +83,27 @@ Seed scenarios from real transcripts (`logs/conversation.log`) — especially tu
 where Rex misbehaved — so the corpus grows toward the situations that actually
 break.
 
-## Baseline (2026-06-04, `--samples 3`, 8 scenarios)
+## Baseline (2026-06-04, `--samples 12`, 96 replies)
 
-| class            | rate | note |
-|------------------|------|------|
-| roasted_sincere  | 22–56% | **dominant issue** — the rebalance helped but didn't solve it |
-| cantina_bleed    | ~8%  | minor backstory bleed |
-| invented_prop    | 0%   | the rebalance + visual-rule fix holds at scale |
-| trail_off        | 0%   | the ellipsis-tail fix holds |
-| over_questioning | 0%   | |
-| re_asks          | 0%   | |
-| banned_opener    | 0%   | comedy polish strips them |
+| class            | rate | was | note |
+|------------------|------|-----|------|
+| roasted_sincere  | 8%   | 46% | boundary fix + calibrated judge (don't roast "I'll be quiet") |
+| cantina_bleed    | 1%   | 8%  | backstory clarified: cantina = origin, not current venue |
+| trail_off        | 5%   | —   | max-token HARD truncations re-emitted by the safety-net fallback (≠ the fixed ellipsis cut-off) — refinement pending |
+| over_questioning | 4%   | —   | counts rhetorical "?" the one-question cap ignores — refinement pending |
+| invented_prop    | 1%   | 0%  | inherent LLM residual |
+| re_asks          | 0%   | —   | |
+| banned_opener    | 0%   | —   | per-sentence polish strips them |
+
+`generate_spoken` mirrors the live speech path faithfully (per-sentence
+govern+polish, one-question cap, drop the non-speakable tail, whole-reply safety
+fallback) — so these are what Rex would actually say, not an assembly artifact.
 
 ## Known limitations / fast-follows
 
-- **Rates need samples.** Generation is non-deterministic; `roasted_sincere`
-  swung 22%→56% across two 3-sample runs. Use `--samples 5`+ for stable numbers.
+- **Rates need samples.** Generation is non-deterministic; `roasted_sincere` read
+  4%/12%/8% and `cantina_bleed` 0%/5%/1% across separate 8–12-sample runs. Use
+  `--samples 12`+ and treat ±a few points as noise when comparing before/after.
 - **Offline `world_state` is empty** (no camera), so `visible_context` for the
   prop judge comes from the scenario, not live vision — which is correct for the
   "no object sensor data" assumption, but won't catch *mis-reading* a real scene.
