@@ -35,6 +35,10 @@ class FaceTrackingTests(unittest.TestCase):
         with consciousness._directed_gaze_hold_lock:
             self.old_directed_gaze_hold = dict(consciousness._directed_gaze_hold)
         consciousness.clear_directed_gaze_hold()
+        self.old_process_started_mono = consciousness._process_started_mono
+        self.old_presence_evidence_at = consciousness._startup_presence_evidence_at
+        self.old_fallback_started = consciousness._startup_presence_fallback_started
+        self.old_fallback_active = consciousness._startup_presence_fallback_active
         self.frame = np.zeros((720, 1280, 3), dtype=np.uint8)
 
     def tearDown(self):
@@ -59,6 +63,10 @@ class FaceTrackingTests(unittest.TestCase):
         with c._directed_gaze_hold_lock:
             c._directed_gaze_hold.clear()
             c._directed_gaze_hold.update(self.old_directed_gaze_hold)
+        c._process_started_mono = self.old_process_started_mono
+        c._startup_presence_evidence_at = self.old_presence_evidence_at
+        c._startup_presence_fallback_started = self.old_fallback_started
+        c._startup_presence_fallback_active = self.old_fallback_active
 
     def _frame_with_patch(self, x: int, y: int) -> np.ndarray:
         rng = np.random.default_rng(1234)
@@ -419,6 +427,95 @@ class FaceTrackingTests(unittest.TestCase):
             servo_mod, dict(c._speaker_gaze_intent), 1000.0 + hold + 0.01,
         )
         self.assertEqual(servo_mod.set_servos.call_count, 2)
+
+    def test_greeting_height_maps_vertical_to_lift(self):
+        c = self.consciousness
+        lift_cfg = c.config.SERVO_CHANNELS["headlift"]
+        neutral = int(lift_cfg["neutral"])
+
+        low_lift, _ = c._greeting_height_targets("low")
+        high_lift, _ = c._greeting_height_targets("high")
+        center_lift, _ = c._greeting_height_targets("center")
+
+        self.assertLess(low_lift, neutral - 1000)        # head drops well below neutral
+        self.assertGreater(high_lift, neutral + 1000)    # head rises well above neutral
+        self.assertEqual(center_lift, neutral)
+        self.assertGreaterEqual(low_lift, int(lift_cfg["min"]))
+        self.assertLessEqual(high_lift, int(lift_cfg["max"]))
+
+    def test_apply_greeting_height_pins_low_and_holds(self):
+        c = self.consciousness
+        lift_ch = int(c.config.SERVO_CHANNELS["headlift"]["ch"])
+        neutral = int(c.config.SERVO_CHANNELS["headlift"]["neutral"])
+
+        with (
+            mock.patch.object(c.time, "monotonic", return_value=500.0),
+            mock.patch("hardware.servos.set_servos") as set_servos,
+            mock.patch("hardware.servos.set_motion_profile"),
+            mock.patch("hardware.servos.set_face_tracking_baseline") as set_baseline,
+        ):
+            c._apply_greeting_height("low")
+
+        set_servos.assert_called_once()
+        self.assertLess(set_servos.call_args.args[0][lift_ch], neutral)  # head went low
+        self.assertTrue(set_baseline.called)
+        self.assertLess(set_baseline.call_args.kwargs.get("lift"), neutral)
+        # The head is pinned so it holds still long enough for dlib to lock.
+        self.assertTrue(c.directed_gaze_hold_active(500.0))
+
+    def test_presence_fallback_trigger_spawns_once_when_room_empty(self):
+        c = self.consciousness
+        c._process_started_mono = 1000.0
+        c._last_face_seen_at = 0.0
+        c._startup_presence_evidence_at = 0.0
+        c._startup_presence_fallback_started = False
+        c._startup_presence_fallback_active = False
+        snapshot = {"people": [], "crowd": {"count": 0}}
+
+        # 20s in: past the dlib scan window (13.5+0.5) and inside the startup window.
+        with (
+            mock.patch.object(c.time, "monotonic", return_value=1020.0),
+            mock.patch.object(c, "threading") as threading_mod,
+        ):
+            c._step_startup_presence_fallback_trigger(snapshot)
+            threading_mod.Thread.assert_called_once()
+            self.assertTrue(c._startup_presence_fallback_started)
+            self.assertTrue(c._startup_presence_fallback_active)
+
+            # Second call must not spawn a second worker.
+            c._step_startup_presence_fallback_trigger(snapshot)
+            threading_mod.Thread.assert_called_once()
+
+    def test_empty_room_comment_blocked_while_fallback_active(self):
+        c = self.consciousness
+        old_fired = c._startup_empty_room_fired
+        c._startup_empty_room_fired = False
+        c._startup_presence_fallback_active = True
+        try:
+            with mock.patch.object(c, "_speak_async") as speak:
+                c._step_startup_empty_room_comment(
+                    {"people": [], "crowd": {"count": 0}}, mock.MagicMock(),
+                )
+            speak.assert_not_called()
+        finally:
+            c._startup_empty_room_fired = old_fired
+
+    def test_presence_fallback_trigger_skips_when_face_seen(self):
+        c = self.consciousness
+        c._process_started_mono = 1000.0
+        c._last_face_seen_at = 1010.0   # dlib already proved presence
+        c._startup_presence_evidence_at = 0.0
+        c._startup_presence_fallback_started = False
+        c._startup_presence_fallback_active = False
+        snapshot = {"people": [], "crowd": {"count": 0}}
+
+        with (
+            mock.patch.object(c.time, "monotonic", return_value=1020.0),
+            mock.patch.object(c, "threading") as threading_mod,
+        ):
+            c._step_startup_presence_fallback_trigger(snapshot)
+            threading_mod.Thread.assert_not_called()
+        self.assertFalse(c._startup_presence_fallback_started)
 
     def test_unknown_speech_without_face_searches_down_first(self):
         c = self.consciousness

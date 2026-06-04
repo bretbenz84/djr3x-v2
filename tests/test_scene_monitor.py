@@ -132,6 +132,51 @@ class SceneMonitorTests(unittest.TestCase):
         self.assertEqual(result["animals"], existing)
         self.assertEqual(world_state.get("animals"), existing)
 
+    def test_locate_people_reads_presence_and_vertical(self):
+        from vision import scene
+
+        raw = '{"present": true, "count": 1, "vertical": "low", "posture": "seated", "confidence": "high"}'
+        with mock.patch.object(scene, "_call_gpt4o", return_value=raw):
+            result = scene.locate_people(object())
+
+        self.assertTrue(result["present"])
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["vertical"], "low")
+        self.assertEqual(result["posture"], "seated")
+        self.assertEqual(result["confidence"], "high")
+
+    def test_locate_people_normalizes_unknown_values(self):
+        from vision import scene
+
+        raw = '{"present": true, "count": 99, "vertical": "floor", "posture": "dancing", "confidence": "certain"}'
+        with mock.patch.object(scene, "_call_gpt4o", return_value=raw):
+            result = scene.locate_people(object())
+
+        self.assertEqual(result["count"], 5)            # capped
+        self.assertEqual(result["vertical"], "center")  # unknown → center
+        self.assertEqual(result["posture"], "unknown")  # unknown → unknown
+        self.assertEqual(result["confidence"], "low")   # unknown → low
+
+    def test_locate_people_safe_fallback_on_no_response(self):
+        from vision import scene
+
+        # None frame and a None model response (e.g. missing API key) both degrade
+        # to "nobody, low confidence" — never a false positive.
+        self.assertFalse(scene.locate_people(None)["present"])
+        with mock.patch.object(scene, "_call_gpt4o", return_value=None):
+            result = scene.locate_people(object())
+        self.assertFalse(result["present"])
+        self.assertEqual(result["confidence"], "low")
+
+    def test_locate_people_present_when_count_positive(self):
+        from vision import scene
+
+        # A count > 0 implies presence even if the model omits/false the flag.
+        raw = '{"present": false, "count": 2, "vertical": "center", "posture": "standing", "confidence": "medium"}'
+        with mock.patch.object(scene, "_call_gpt4o", return_value=raw):
+            result = scene.locate_people(object())
+        self.assertTrue(result["present"])
+
 
 if __name__ == "__main__":
     unittest.main()

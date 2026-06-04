@@ -600,6 +600,103 @@ def count_crowd(frame) -> dict:
     return {"count": count, "count_label": label}
 
 
+# Allowed normalized values for locate_people, used to coerce model output.
+_PRESENCE_VERTICALS = ("low", "center", "high")
+_PRESENCE_POSTURES = ("seated", "standing", "lying", "unknown")
+_PRESENCE_CONFIDENCES = ("low", "medium", "high")
+
+
+def _locate_people_fallback() -> dict:
+    return {
+        "present": False,
+        "count": 0,
+        "vertical": "center",
+        "posture": "unknown",
+        "confidence": "low",
+    }
+
+
+def locate_people(frame) -> dict:
+    """Verify whether a person is present and read WHERE they are in frame.
+
+    A startup fallback for when local dlib face detection finds nobody (wide-angle
+    camera makes distant people tiny; dlib misses turned-away faces). Asks the
+    vision model only for presence + frame position + posture so Rex can decide if
+    the room is truly empty and, if not, greet the person at their height.
+
+    Returns a dict:
+        present     bool  — at least one real person visible (not a photo/screen)
+        count       int   — people visible, 0..5 (5 means "5 or more")
+        vertical    str   — "low" | "center" | "high" (where in the frame, not who)
+        posture     str   — "seated" | "standing" | "lying" | "unknown"
+        confidence  str   — "low" | "medium" | "high"
+
+    Degrades to a safe "nobody, low confidence" fallback on frame=None, a missing
+    API key, or a malformed response — never a false positive.
+    """
+    if frame is None:
+        return _locate_people_fallback()
+
+    prompt = (
+        "You are the vision system of a social robot scanning a room for someone "
+        "to greet. Report ONLY what is clearly visible. Return a JSON object with "
+        "exactly these keys:\n"
+        '  "present": boolean — true only if at least one real, live person is '
+        "visible (NOT a photo, poster, screen, statue, or reflection),\n"
+        '  "count": integer 0..5 (use 5 for "5 or more"),\n'
+        '  "vertical": "low" if the nearest/most prominent person occupies the '
+        "LOWER part of the frame (e.g. seated, crouched, reclining, or small/far "
+        'and low), "high" if the UPPER part (e.g. standing and close/tall), '
+        '"center" otherwise,\n'
+        '  "posture": "seated", "standing", "lying", or "unknown",\n'
+        '  "confidence": "low", "medium", or "high".\n'
+        "Safety: do NOT identify anyone; do NOT infer or state age, whether someone "
+        "is a child, race, health, body size, or any other sensitive trait. Judge "
+        '"vertical" purely from WHERE IN THE FRAME the person appears, never from a '
+        "guess about who they are.\n"
+        "Return ONLY the JSON object — no preamble, no explanation, no markdown fences."
+    )
+
+    raw = _call_gpt4o(frame, prompt, "presence_scan", max_tokens=200)
+    if raw is None:
+        return _locate_people_fallback()
+
+    data = _parse_json(raw)
+    if not isinstance(data, dict):
+        _log.error("locate_people: expected dict, got: %.120s", raw)
+        return _locate_people_fallback()
+
+    try:
+        count = min(max(int(data.get("count", 0)), 0), 5)
+    except (TypeError, ValueError):
+        count = 0
+
+    vertical = str(data.get("vertical") or "center").strip().lower()
+    if vertical not in _PRESENCE_VERTICALS:
+        vertical = "center"
+    posture = str(data.get("posture") or "unknown").strip().lower()
+    if posture not in _PRESENCE_POSTURES:
+        posture = "unknown"
+    confidence = str(data.get("confidence") or "low").strip().lower()
+    if confidence not in _PRESENCE_CONFIDENCES:
+        confidence = "low"
+
+    present = bool(data.get("present")) or count > 0
+
+    result = {
+        "present": present,
+        "count": count,
+        "vertical": vertical,
+        "posture": posture,
+        "confidence": confidence,
+    }
+    _log.info(
+        "locate_people: present=%s count=%d vertical=%s posture=%s confidence=%s",
+        present, count, vertical, posture, confidence,
+    )
+    return result
+
+
 def describe_scene() -> str:
     """
     Return a short natural-language scene summary using the latest WorldState data.

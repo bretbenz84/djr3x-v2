@@ -169,6 +169,14 @@ _startup_camera_first_frame_at: float = 0.0
 _startup_presence_evidence_at: float = 0.0
 _startup_presence_evidence_reason: str = ""
 
+# Startup-only OpenAI presence fallback (runs once per boot when the dlib room scan
+# finds nobody). `_started` gates the one spawn; `_active` blocks the empty-room line
+# while a verification sweep is in flight; `_verified_empty_at` marks a confirmed
+# empty room (telemetry — the "no organics" line is now truthful).
+_startup_presence_fallback_started: bool = False
+_startup_presence_fallback_active: bool = False
+_startup_openai_verified_empty_at: float = 0.0
+
 # Overheard chime-in tracking. Counts how many times Rex has chimed in on
 # being-discussed mentions this session and rate-limits how often the step
 # considers a chime-in.
@@ -4710,6 +4718,9 @@ def _step_startup_empty_room_comment(snapshot: dict, profile: SituationProfile) 
 
     if _startup_empty_room_fired:
         return
+    # Never declare the room empty while the OpenAI presence sweep is still verifying.
+    if _startup_presence_fallback_active:
+        return
     if not bool(getattr(config, "STARTUP_EMPTY_ROOM_COMMENT_ENABLED", True)):
         return
 
@@ -8414,6 +8425,255 @@ def _step_speaker_gaze_search(servo_mod, intent: Optional[dict], now: float) -> 
     return pose
 
 
+# ── Greet-at-their-height (Part C) ──────────────────────────────────────────────
+
+def _greeting_height_targets(vertical: str) -> tuple[int, int]:
+    """Map a person's vertical position in frame to (headlift, headtilt) targets.
+
+    "low" → head drops toward its minimum (greet a seated/short/low person where
+    they are); "high" → head rises toward its maximum (meet a standing/tall person);
+    "center" → neutral. Headtilt is inverted (larger = looking down) and gets a
+    gentle matching nudge so the camera points the way the head leans.
+    """
+    lift_cfg = config.SERVO_CHANNELS["headlift"]
+    tilt_cfg = config.SERVO_CHANNELS["headtilt"]
+    lift_neutral, lift_min, lift_max = int(lift_cfg["neutral"]), int(lift_cfg["min"]), int(lift_cfg["max"])
+    tilt_neutral, tilt_min, tilt_max = int(tilt_cfg["neutral"]), int(tilt_cfg["min"]), int(tilt_cfg["max"])
+
+    v = str(vertical or "center").strip().lower()
+    if v == "low":
+        frac = float(getattr(config, "GREET_HEIGHT_LOW_LIFT_FRACTION", 0.88))
+        lift = lift_neutral - frac * (lift_neutral - lift_min)
+        tilt = tilt_neutral + 0.5 * (tilt_max - tilt_neutral)   # look down
+    elif v == "high":
+        frac = float(getattr(config, "GREET_HEIGHT_HIGH_LIFT_FRACTION", 0.85))
+        lift = lift_neutral + frac * (lift_max - lift_neutral)
+        tilt = tilt_neutral - 0.4 * (tilt_neutral - tilt_min)   # look up a touch
+    else:
+        lift, tilt = lift_neutral, tilt_neutral
+    return _clamp_servo("headlift", lift), _clamp_servo("headtilt", tilt)
+
+
+def _apply_greeting_height(vertical: str) -> None:
+    """Pin head-lift to greet a person at their physical height and hold it.
+
+    Sets the lift/tilt now, makes it the face-tracking baseline (so breathing/speech
+    orbit this height instead of recentering), and arms a directed-gaze hold so the
+    speaker scan, idle wander, and adaptive-rest drift all stand down while the head
+    holds still long enough for dlib to lock. The instant a face is locked, normal
+    face tracking takes over and fine-centers on it (neck-tilt stays the fine axis).
+    """
+    if not bool(getattr(config, "GREET_HEIGHT_ENABLED", True)):
+        return
+    try:
+        from hardware import servos as servo_mod
+    except Exception:
+        return
+
+    lift, tilt = _greeting_height_targets(vertical)
+    lift_ch = int(config.SERVO_CHANNELS["headlift"]["ch"])
+    tilt_ch = int(config.SERVO_CHANNELS["headtilt"]["ch"])
+    try:
+        servo_mod.set_motion_profile(
+            [lift_ch, tilt_ch],
+            speed=int(getattr(config, "GREET_HEIGHT_SERVO_SPEED", 90)),
+            acceleration=int(getattr(config, "SPEAKER_GAZE_SEARCH_SERVO_ACCELERATION", 20)),
+        )
+    except Exception as exc:
+        _log.debug("greeting height motion profile failed: %s", exc)
+    try:
+        servo_mod.set_servos({lift_ch: lift, tilt_ch: tilt})
+    except Exception as exc:
+        _log.debug("greeting height set_servos failed: %s", exc)
+    try:
+        servo_mod.set_face_tracking_baseline(lift=lift, tilt=tilt)
+    except Exception as exc:
+        _log.debug("greeting height baseline failed: %s", exc)
+
+    # The hold (not adaptive rest — its ±offset clamp can't reach a deep-low pose)
+    # is what keeps the head steady at the greeting height while dlib tries to lock.
+    hold_secs = float(getattr(config, "GREET_HEIGHT_HOLD_SECS", 6.0))
+    hold_directed_gaze("hold", secs=hold_secs)
+    _log.info("[greet_height] vertical=%s lift=%d tilt=%d hold=%.1fs", vertical, lift, tilt, hold_secs)
+
+
+def _vertical_from_box(candidate: Optional[dict], frame_h: int) -> str:
+    """Classify a visible face's vertical position in frame as low/center/high."""
+    try:
+        center = (candidate or {}).get("center")
+        if not center or frame_h <= 0:
+            return "center"
+        vy = float(center[1]) / float(frame_h)
+    except (TypeError, ValueError, IndexError):
+        return "center"
+    if vy < 0.4:
+        return "high"
+    if vy > 0.66:
+        return "low"
+    return "center"
+
+
+# ── Startup-only OpenAI presence fallback (Part B) ──────────────────────────────
+
+# Head directions (neck_frac, vert_frac) the fallback sweeps, reusing the search
+# pose resolver. Down-biased — people usually sit/stand below the head camera.
+_PRESENCE_FALLBACK_DIRECTIONS: list[tuple] = [
+    (None, 0.95),   # straight down, no turn
+    (-0.6, 0.8),    # down-left
+    (0.6, 0.8),     # down-right
+    (0.0, 0.3),     # near level, centered
+]
+
+_PRESENCE_CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+
+def _presence_min_confidence_ok(confidence) -> bool:
+    want = str(getattr(config, "STARTUP_OPENAI_PRESENCE_MIN_CONFIDENCE", "medium") or "medium").strip().lower()
+    have = str(confidence or "low").strip().lower()
+    return _PRESENCE_CONFIDENCE_ORDER.get(have, 0) >= _PRESENCE_CONFIDENCE_ORDER.get(want, 1)
+
+
+def _run_openai_presence_fallback() -> None:
+    """Worker: sweep a few directions and ask the vision model whether anyone is
+    there before Rex declares the room empty. On the first confident hit, record
+    presence evidence (suppress the false empty-room line), bump the crowd count,
+    and steer the head to greet the person at their height. Runs on its own daemon
+    thread because each vision call is ~1 s and must not block the servo/cognition
+    loops."""
+    global _startup_presence_fallback_active, _startup_openai_verified_empty_at
+    try:
+        from hardware import servos as servo_mod
+        from vision import camera as camera_mod
+        from vision import scene as scene_mod
+    except Exception as exc:
+        _log.debug("presence fallback imports failed: %s", exc)
+        _startup_presence_fallback_active = False
+        return
+
+    try:
+        if not bool(getattr(config, "STARTUP_OPENAI_PRESENCE_FALLBACK_ENABLED", True)):
+            return
+        # No API key → skip the head moves entirely (locate_people would only ever
+        # return "nobody", and we'd waste servo travel + failed calls).
+        try:
+            import apikeys
+            if not getattr(apikeys, "OPENAI_API_KEY", None):
+                _log.info("[presence_fallback] no OpenAI key — skipping verification sweep")
+                return
+        except Exception:
+            return
+
+        max_dirs = max(1, int(getattr(config, "STARTUP_OPENAI_PRESENCE_MAX_DIRECTIONS", 4)))
+        directions = _PRESENCE_FALLBACK_DIRECTIONS[:max_dirs]
+        settle = float(getattr(config, "STARTUP_OPENAI_PRESENCE_SETTLE_SECS", 0.35))
+        neck_ch = int(config.SERVO_CHANNELS["neck"]["ch"])
+        lift_ch = int(config.SERVO_CHANNELS["headlift"]["ch"])
+        tilt_ch = int(config.SERVO_CHANNELS["headtilt"]["ch"])
+
+        for neck_frac, vert_frac in directions:
+            now = time.monotonic()
+            # Bail if conditions changed under us: startup window closed, dlib/another
+            # signal already proved presence, or the user took the gaze.
+            if not _within_startup_group_window(now):
+                return
+            if _last_face_seen_at > 0.0 or _startup_presence_evidence_at > 0.0:
+                return
+            if directed_gaze_hold_active(now):
+                return
+            try:
+                if servo_mod.manual_override_enabled() or servo_mod.speech_motion_active():
+                    return
+            except Exception:
+                pass
+            if not camera_mod.has_recent_frame(2.0):
+                return
+
+            targets = _speaker_gaze_search_targets(neck_frac, vert_frac)
+            try:
+                servo_mod.set_motion_profile(
+                    list(targets.keys()),
+                    speed=int(getattr(config, "SPEAKER_GAZE_SEARCH_SERVO_SPEED", 130)),
+                    acceleration=int(getattr(config, "SPEAKER_GAZE_SEARCH_SERVO_ACCELERATION", 20)),
+                )
+            except Exception as exc:
+                _log.debug("presence fallback motion profile failed: %s", exc)
+            servo_mod.set_servos(targets)
+            try:
+                servo_mod.set_face_tracking_baseline(
+                    neck=targets.get(neck_ch),
+                    lift=targets.get(lift_ch),
+                    tilt=targets.get(tilt_ch),
+                )
+            except Exception:
+                pass
+
+            frame = camera_mod.capture_current_gaze(settle_secs=settle)
+            if frame is None:
+                continue
+            result = scene_mod.locate_people(frame)
+            if result.get("present") and _presence_min_confidence_ok(result.get("confidence")):
+                _note_startup_presence_evidence("openai_vision")
+                try:
+                    scene_mod._update_crowd_count(int(result.get("count") or 1))
+                except Exception as exc:
+                    _log.debug("presence fallback crowd bump failed: %s", exc)
+                _log.info(
+                    "[presence_fallback] person found vertical=%s posture=%s conf=%s — greeting at height",
+                    result.get("vertical"), result.get("posture"), result.get("confidence"),
+                )
+                _apply_greeting_height(str(result.get("vertical") or "center"))
+                return
+
+        # Swept every direction and found nobody — the empty room is now verified,
+        # so the eventual "no organics" line is truthful rather than a missed lock.
+        _startup_openai_verified_empty_at = time.monotonic()
+        _log.info(
+            "[presence_fallback] swept %d direction(s), no person — empty room verified",
+            len(directions),
+        )
+    except Exception as exc:
+        _log.debug("presence fallback worker error: %s", exc)
+    finally:
+        _startup_presence_fallback_active = False
+
+
+def _step_startup_presence_fallback_trigger(snapshot: dict) -> None:
+    """Spawn the OpenAI presence fallback once, after the dlib startup scan has had
+    its full chance and still found nobody — before Rex says the room is empty."""
+    global _startup_presence_fallback_started, _startup_presence_fallback_active
+
+    if _startup_presence_fallback_started:
+        return
+    if not bool(getattr(config, "STARTUP_OPENAI_PRESENCE_FALLBACK_ENABLED", True)):
+        return
+    now = time.monotonic()
+    if _process_started_mono <= 0.0 or not _within_startup_group_window(now):
+        return
+    # Only after the (now longer, dwelled) dlib scan has fully run.
+    search_window = float(getattr(config, "SPEAKER_GAZE_SEARCH_WINDOW_SECS", 13.5) or 0.0)
+    if (now - _process_started_mono) < (search_window + 0.5):
+        return
+    if _last_face_seen_at > 0.0 or _startup_presence_evidence_at > 0.0:
+        return
+    if not _room_looks_empty(snapshot):
+        return
+    if directed_gaze_hold_active(now):
+        return
+
+    _startup_presence_fallback_started = True
+    _startup_presence_fallback_active = True
+    try:
+        threading.Thread(
+            target=_run_openai_presence_fallback,
+            name="startup-presence-fallback",
+            daemon=True,
+        ).start()
+        _log.info("[presence_fallback] dlib scan found nobody — starting OpenAI verification sweep")
+    except Exception as exc:
+        _startup_presence_fallback_active = False
+        _log.debug("presence fallback spawn failed: %s", exc)
+
+
 def _record_face_tracking_state(
     *,
     locked: bool,
@@ -8502,13 +8762,14 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
 
         candidate = _speaker_gaze_candidate(candidates, speaker_intent)
 
-        # User told Rex to hold a gaze (e.g. "look down"). While that hold is
-        # live and nobody is visible to track, don't scan the room or drift back
-        # to rest — just hold the commanded pose (breathing still bobs around the
-        # directed baseline). Mark it so the idle wander stands down too. If any
-        # face IS visible we fall through to normal tracking below, so the moment
-        # he spots someone low in frame he locks on and keeps looking down.
-        if not candidates and directed_gaze_hold_active(now):
+        # User told Rex to hold a gaze (e.g. "look down"), OR the OpenAI presence
+        # sweep is driving the head between captures. While that's true and nobody
+        # is visible to track, don't scan the room or drift back to rest — just hold
+        # the commanded pose (breathing still bobs around the directed baseline) and
+        # let the owning code point the head. Mark it so the idle wander stands down
+        # too. If any face IS visible we fall through to normal tracking below, so
+        # the moment he spots someone low in frame he locks on and keeps looking down.
+        if not candidates and (directed_gaze_hold_active(now) or _startup_presence_fallback_active):
             _face_tracking_lock = {}
             _record_face_tracking_state(
                 locked=False,
@@ -8933,7 +9194,12 @@ def _loop() -> None:
             # 10. Presence tracking (departure / return reactions)
             _step_presence_tracking(snapshot, profile)
 
-            # 10a. If startup found no confirmed person after the scan, Rex may
+            # 10a. If startup found no confirmed person after the scan, verify with
+            # an OpenAI vision sweep before concluding empty (dlib misses small /
+            # turned-away faces). On a hit it steers Rex to greet at their height.
+            _step_startup_presence_fallback_trigger(snapshot)
+
+            # 10a2. If startup found no confirmed person after the scan, Rex may
             # acknowledge uncertainty once. Presence/identity gets first claim.
             _step_startup_empty_room_comment(snapshot, profile)
 

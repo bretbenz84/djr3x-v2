@@ -312,6 +312,7 @@ VISION_DETAIL = {
     "animal_detection":       "low",   # species identification
     "active_conversation":    "auto",  # general vision queries mid-conversation
     "mood_analysis":          "low",   # mood read of the engaged person's face
+    "presence_scan":          "low",   # is-anyone-there + where-in-frame startup fallback
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1393,7 +1394,7 @@ SPEAKER_GAZE_SEARCH_INTERVAL_SECS = _env_float(
 # a small/distant/averted face to get a fair chance to lock before the head moves on.
 SPEAKER_GAZE_SEARCH_SETTLE_SECS = _env_float(
     "SPEAKER_GAZE_SEARCH_SETTLE_SECS",
-    0.4,
+    0.7,
     min_value=0.0,
     max_value=3.0,
 )
@@ -1445,19 +1446,19 @@ SPEAKER_GAZE_TILT_MAX_STEP_QUS = _env_int(
     min_value=1,
     max_value=2000,
 )
-# Snappy move TO each waypoint (was 55/8). The head should reach the pose quickly so
-# the bulk of the per-waypoint time is a still DWELL the camera can detect through,
-# not a slow drift. Motion blur during the brief move is fine — detection happens in
-# the dwell after it settles.
+# Calm, graceful move TO each waypoint — the head should turn slowly and read as
+# curious, not frantic. The DWELL (below), not move speed, is what gives the camera
+# its steady window, so the move can be unhurried; SETTLE just covers the move
+# finishing before that still window. Raise speed/accel if the scan feels sluggish.
 SPEAKER_GAZE_SEARCH_SERVO_SPEED = _env_int(
     "SPEAKER_GAZE_SEARCH_SERVO_SPEED",
-    130,
+    60,
     min_value=0,
     max_value=255,
 )
 SPEAKER_GAZE_SEARCH_SERVO_ACCELERATION = _env_int(
     "SPEAKER_GAZE_SEARCH_SERVO_ACCELERATION",
-    20,
+    10,
     min_value=0,
     max_value=255,
 )
@@ -2682,6 +2683,66 @@ STARTUP_EMPTY_ROOM_RECENT_PRESENCE_EVIDENCE_SECS = _env_float(
     20.0,
     min_value=0.0,
     max_value=120.0,
+)
+
+# Startup-only OpenAI presence fallback: when the dlib room scan finishes finding
+# nobody, sweep a few head directions and ask the vision model (gpt-4o-mini) whether
+# anyone is actually there before Rex declares the room empty. dlib misses small
+# wide-angle / turned-away faces; this verifies "no organics" is true and, on a hit,
+# steers Rex to greet the person at their height. Runs once per boot on a worker
+# thread (~1 OpenAI call per direction). Set False to revert to scan-only behavior.
+STARTUP_OPENAI_PRESENCE_FALLBACK_ENABLED = _env_bool(
+    "STARTUP_OPENAI_PRESENCE_FALLBACK_ENABLED",
+    True,
+)
+STARTUP_OPENAI_PRESENCE_MAX_DIRECTIONS = _env_int(
+    "STARTUP_OPENAI_PRESENCE_MAX_DIRECTIONS",
+    4,
+    min_value=1,
+    max_value=8,
+)
+STARTUP_OPENAI_PRESENCE_SETTLE_SECS = _env_float(
+    "STARTUP_OPENAI_PRESENCE_SETTLE_SECS",
+    0.35,
+    min_value=0.0,
+    max_value=3.0,
+)
+# Ignore reads below this confidence so a hazy guess can't fake/deny a person.
+# One of: "low", "medium", "high".
+STARTUP_OPENAI_PRESENCE_MIN_CONFIDENCE = "medium"
+
+# Greet-at-their-height: when a person is located (by the presence fallback, or a
+# visible dlib face), set head-LIFT to match where they are so Rex meets them at
+# their level — head drops toward its lowest for someone low in frame (seated, a
+# child, lying down) and rises for someone high/standing. Neck-tilt stays the fine
+# face-tracking axis. The directed-gaze hold (GREET_HEIGHT_HOLD_SECS) keeps the head
+# at the chosen height long enough for dlib to lock; breathing orbits that baseline.
+# Each fraction is how far to travel FROM NEUTRAL toward the servo extreme (min for
+# low, max for high): 1.0 = all the way to the limit, 0.0 = stay at neutral.
+GREET_HEIGHT_ENABLED = _env_bool("GREET_HEIGHT_ENABLED", True)
+GREET_HEIGHT_HOLD_SECS = _env_float(
+    "GREET_HEIGHT_HOLD_SECS",
+    6.0,
+    min_value=0.0,
+    max_value=30.0,
+)
+GREET_HEIGHT_LOW_LIFT_FRACTION = _env_float(
+    "GREET_HEIGHT_LOW_LIFT_FRACTION",
+    0.88,  # toward LOWEST (near headlift min) — greet someone low in frame
+    min_value=0.0,
+    max_value=1.0,
+)
+GREET_HEIGHT_HIGH_LIFT_FRACTION = _env_float(
+    "GREET_HEIGHT_HIGH_LIFT_FRACTION",
+    0.85,  # toward HIGHEST (near headlift max) — meet someone standing/tall
+    min_value=0.0,
+    max_value=1.0,
+)
+GREET_HEIGHT_SERVO_SPEED = _env_int(
+    "GREET_HEIGHT_SERVO_SPEED",
+    90,
+    min_value=0,
+    max_value=255,
 )
 IDENTITY_FACE_ENROLL_CURRENT_GAZE_SETTLE_SECS = _env_float(
     "IDENTITY_FACE_ENROLL_CURRENT_GAZE_SETTLE_SECS",
