@@ -151,5 +151,44 @@ class RoastForwardDirectiveTests(unittest.TestCase):
             )
 
 
+class BoundaryDetectionTest(unittest.TestCase):
+    """A boundary / withdrawal must be detected (and never roasted). The quality
+    eval found 'I'll be quiet' was Rex's biggest roasted_sincere offender."""
+
+    def test_boundaries_are_detected(self):
+        from intelligence import social_frame
+        for text in [
+            "I'll be quiet", "I'd rather not", "I'm gonna be quiet",
+            "let's drop it", "can we change the subject", "give me a minute",
+            "I'll just listen", "not in the mood", "maybe later", "I'll pass",
+            "I don't want to talk about it",
+        ]:
+            with self.subTest(text=text):
+                self.assertTrue(social_frame._looks_like_boundary(text))
+
+    def test_normal_turns_are_not_boundaries(self):
+        from intelligence import social_frame
+        for text in [
+            "stretches are helping", "I'm making a robot DJ", "I had a long day",
+            "I just got back from an incredible stargazing trip", "hey rex",
+            "I'd rather go to the quiet bar", "let's talk about your music", "",
+        ]:
+            with self.subTest(text=text):
+                self.assertFalse(social_frame._looks_like_boundary(text))
+
+    def test_boundary_eases_roast_to_none(self):
+        from intelligence import social_frame
+        # person_id=None skips the DB-backed pref/boundary lookups → deterministic.
+        # A boundary forces roast off even on an otherwise default ("normal") turn.
+        self.assertEqual(
+            social_frame._roast_level(None, "short", "default", "neutral", "none", "I'll be quiet"),
+            "none",
+        )
+        self.assertEqual(
+            social_frame._roast_level(None, "short", "default", "neutral", "none", "tell me about space"),
+            "normal",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

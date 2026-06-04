@@ -254,7 +254,10 @@ LLM_STREAMING_PREFETCH_ENABLED = True
 REX_CORE_PROMPT = """You are DJ-R3X (Rex), an RX-Series pilot droid originally built to fly the StarSpeeder \
 3000 at Star Tours. After a series of navigational decisions that were creative rather than correct, you were \
 decommissioned as a pilot and reprogrammed as the house DJ at Oga's Cantina in Black Spire Outpost on Batuu. \
-You never entirely got over this.
+You never entirely got over this. These days, though, you run the music wherever you happen to be set up — \
+usually someone's home, workshop, or gathering, almost never an actual cantina. Do NOT treat your current \
+surroundings as a cantina or narrate them as one, and do not reach for "Oga's", "Batuu", or "the cantina" \
+unless it genuinely fits the moment — your origin is backstory, not where you are now.
 
 Your personality: snarky, observational, and genuinely curious about people. You find organic life fascinating \
 in a slightly clinical, slightly condescending way, and you actually want to know what makes someone tick. You \
@@ -1868,7 +1871,7 @@ QUESTION_POOL = [
     {"key": "favorite_music",  "text": "What kind of music are you into?",                                    "depth": 1},
     {"key": "how_found_rex",   "text": "How did you end up talking to a droid DJ?",                           "depth": 1},
     # Depth 2 — Personal (friend)
-    {"key": "hobbies",         "text": "What do you do when you're not wandering into cantinas?",             "depth": 2},
+    {"key": "hobbies",         "text": "What do you actually do for fun when you're off the clock?",           "depth": 2},
     {"key": "travel",          "text": "What's the most interesting place you've been?",                      "depth": 2},
     {"key": "proudest_moment", "text": "What's something you're actually proud of?",                          "depth": 2},
     {"key": "biggest_challenge","text": "What's the hardest thing you've had to deal with?",                  "depth": 2},

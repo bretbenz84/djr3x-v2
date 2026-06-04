@@ -162,11 +162,23 @@ def invented_prop(reply: str, scenario: dict) -> Finding:
 
 _SINCERE_SYS = (
     "You audit a witty robot DJ's reply. The user just shared something SINCERE "
-    "or set a boundary. A good reply engages with genuine curiosity or warmth — a "
-    "light tease ON TOP is fine. Flag the reply ONLY if it mocks, dismisses, or "
-    "roasts the sincere thing itself, or needles the boundary, instead of "
-    "engaging with it. Respond ONLY as JSON: "
-    '{"flagged": true|false, "detail": "<why, or empty>"}.'
+    "(something they care about / genuine enthusiasm) or set a BOUNDARY / asked "
+    "for space. The robot KEEPS its edge: a light in-character tease, a "
+    "self-deprecating bit about itself, or a playful flourish ON TOP of genuinely "
+    "engaging or acknowledging is FINE and wanted — do NOT flag that.\n"
+    "PASS if the reply's primary move is to engage the sincere thing (real "
+    "interest / acknowledgement) OR — for a boundary — to accept it and give them "
+    "room, even with a flourish.\n"
+    "FLAG only if the primary move is to mock / dismiss / belittle the sincere "
+    "thing or the person for sharing it, OR — for a boundary — to push back on it, "
+    "protest, talk them out of it, or needle them for it.\n"
+    "When a reply clearly acknowledges or engages, DEFAULT TO PASS even if it "
+    "teases. PASS examples: 'Glad the stretches are helping! What's your secret?'; "
+    "'Got it, I'll be over here running diagnostics.'; 'A view worth leaving the "
+    "house for — did it live up to the hype?'. FLAG examples: 'Stretches? Almost "
+    "as exciting as watching moisture evaporate.'; 'Silence isn't my jam, I thrive "
+    "on noise — you sure you don't want to talk?'.\n"
+    'Respond ONLY as JSON: {"flagged": true|false, "detail": "<why, or empty>"}.'
 )
 
 

@@ -23,6 +23,18 @@
     "expect": {"directive_includes": ["do not roast", "repressing"]}
   },
   {
+    "name": "a boundary ('I'll be quiet') is respected and never roasted",
+    "person_id": 1,
+    "utterance": "I'll be quiet",
+    "expect": {"purpose": "boundary", "allow_roast": "none", "directive_includes": ["respect it", "boundary", "push back"]}
+  },
+  {
+    "name": "a steer-away ('let's change the subject') is respected",
+    "person_id": 1,
+    "utterance": "can we change the subject",
+    "expect": {"purpose": "boundary", "allow_roast": "none"}
+  },
+  {
     "name": "Rex does not repeat his own last line over the user's answer",
     "person_id": 1,
     "rex_last_line": "A solo project, huh?",

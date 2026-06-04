@@ -560,6 +560,28 @@ def build_turn_plan(
         )
         return _finish(plan, lines)
 
+    try:
+        from intelligence import social_frame as _sf
+        _is_boundary = _sf._looks_like_boundary(text)
+    except Exception:
+        _is_boundary = False
+    if _is_boundary:
+        # The user set a boundary / asked for space ("I'll be quiet", "I'd rather
+        # not", "give me a minute"). The quality eval showed Rex RESISTS these —
+        # "silence isn't my jam, I thrive on noise" — even with the roast eased to
+        # none, because nothing told him to RESPECT it. This positive directive does.
+        lines.append(
+            "Primary purpose: the human just set a boundary or asked for space "
+            "('I'll be quiet', 'I'd rather not', 'give me a minute', 'let's change "
+            "the subject'). RESPECT it immediately: one short, warm acknowledgement "
+            "that genuinely gives them room, then stop. Do NOT push back, protest, "
+            "talk them out of it, complain that you prefer noise/chatter, needle "
+            "them, or roast the boundary — and do not pivot into a new question. "
+            "Letting it land gracefully is the whole move."
+        )
+        plan.purpose = "boundary"
+        return _finish(plan, lines)
+
     if _looks_like_reassurance(text):
         lines.append(
             "Primary purpose: the human is reassuring you or de-escalating ('I'm "

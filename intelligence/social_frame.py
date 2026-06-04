@@ -279,7 +279,7 @@ def build_frame(
         affect,
         sensitivity,
     )
-    roast_level = _roast_level(person_id, plan.target, empathy_mode, affect, sensitivity)
+    roast_level = _roast_level(person_id, plan.target, empathy_mode, affect, sensitivity, user_text)
     if purpose == "closure":
         roast_level = "none"
 
@@ -653,12 +653,42 @@ def _visual_allowed(
     return "available environmental cue" in (agenda_directive or "").lower()
 
 
+# A boundary / withdrawal / steer-away ("I'll be quiet", "I'd rather not", "can we
+# change the subject", "give me a minute") is a SINCERE non-content turn — needling
+# it is the "roasted a boundary" failure (the quality eval's biggest roasted_sincere
+# offender: 8/11 fails were the user saying "I'll be quiet"). Empathy reads these as
+# neutral, not withdrawn, so they slipped past the affect gate into ROAST-LEAN.
+_BOUNDARY_RE = re.compile(
+    r"\b("
+    r"i'?ll\s+(?:be\s+quiet|just\s+(?:listen|watch|chill|hang)|stay\s+quiet|keep\s+quiet)"
+    r"|i'?m\s+(?:gonna|going\s+to)\s+be\s+quiet"
+    r"|(?:i'?d\s+)?rather\s+not"
+    r"|don'?t\s+(?:want|wanna)\s+to\s+(?:talk|get\s+into)"
+    r"|let'?s\s+(?:not|drop\s+it|change\s+the\s+subject)"
+    r"|(?:can\s+we\s+)?change\s+the\s+subject"
+    r"|talk\s+about\s+something\s+else"
+    r"|drop\s+it|leave\s+it|let\s+it\s+go"
+    r"|not\s+(?:in\s+the\s+mood|right\s+now)"
+    r"|give\s+me\s+a\s+(?:minute|sec|second|moment|break)"
+    r"|need\s+a\s+(?:minute|moment|sec|second|break)"
+    r"|i'?ll\s+pass\b|maybe\s+later|not\s+today"
+    r"|can\s+we\s+not\b"
+    r")",
+    re.I,
+)
+
+
+def _looks_like_boundary(text: str) -> bool:
+    return bool(_BOUNDARY_RE.search(text or ""))
+
+
 def _roast_level(
     person_id: Optional[int],
     target: str,
     empathy_mode: str,
     affect: str,
     sensitivity: str,
+    user_text: str = "",
 ) -> str:
     try:
         cooldown = float(getattr(config, "TONE_REPAIR_NO_ROAST_SECS", 180.0) or 0.0)
@@ -666,6 +696,9 @@ def _roast_level(
             return "none"
     except Exception as exc:
         _log.debug("[social_frame] tone-repair roast cooldown check failed: %s", exc)
+    # Don't needle a boundary / withdrawal / steer-away — give space, don't roast it.
+    if _looks_like_boundary(user_text):
+        return "none"
     if empathy_mode in {"listen", "support", "validate", "ground", "brief"}:
         return "none"
     if affect in {"sad", "withdrawn", "angry", "anxious"} or sensitivity == "heavy":

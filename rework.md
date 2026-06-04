@@ -340,30 +340,31 @@ shelved). Concrete state:
 no-hallucination guardrails + de-cantina).
 **Bet 3** turn classifier = **SHELVED** (see its STATUS).
 
-**UNCOMMITTED — in the working tree, being live-tested locally** (user runs on their box before committing):
-**memory-followup cadence clamp** (`_post_response`; stop the proactive event interrogation + give the POV oxygen) ·
-**cut-off / idle-banter-POV / invented-drink fixes** (`_tail_is_speakable` ellipsis trail-off, `_maybe_idle_banter`
-volunteer-first, `social_frame` visual rule) · **LLM-in-the-loop quality eval** (`evals/`; measure failure CLASSES
-across a corpus instead of patching one live line at a time). Each has an inline STATUS note + a do-not-regress entry
-in `CONTEXT.md`. Suite green at **863** (the eval is opt-in, outside `tests/`, never run by `unittest discover`).
+**COMMITTED this 2026-06-04 arc:** memory-followup cadence clamp · cut-off (`_tail_is_speakable` ellipsis) /
+idle-banter-POV-volunteer / invented-drink fixes · the **LLM-in-the-loop quality eval** (`evals/`). **UNCOMMITTED —
+in the working tree:** the **boundary fix** (don't roast "I'll be quiet" — the eval's first measured win). Suite green
+at **866** (the eval is opt-in, outside `tests/`, never run by `unittest discover`).
 
-**LIVE-RUN FINDINGS (three 2026-06-04 `--gui` runs):** Run 1: Roast rebalance LANDED but Rex interrogated via the
-memory-followup checklist and the **POV never surfaced** → cadence clamp. Run 2 (with clamp): **cut-off** (model
-trailing off with an ellipsis → fixed in `_tail_is_speakable`), POV still buried (IDLE BANTER asked-first → fixed to
-volunteer-first), **invented a "drink"** (Visual-permission example primed it → fixed). Run 3 (with all fixes):
-**cut-offs GONE (confirmed), conversation clearly the best yet** — responsive, curious, playful, not exhausting; no
-invented prop. POV/idle-banter fix still UNCONFIRMED (no pauses fired idle banter that run). Then built the **quality
-eval** and got a corpus baseline (`--samples 3`): **`roasted_sincere` 22–56% = the DOMINANT remaining issue** (sincere
-shares still get roasted — the rebalance helped but didn't solve it), `cantina_bleed` ~8%, and
-`invented_prop`/`trail_off`/`over_questioning`/`re_asks`/`banned_opener` all **0%** (recent fixes validated at scale).
-Reminders: the lowered dials only auto-apply to a FRESH DB — the robot's existing `people.db` still holds 90/80/35;
-and the test suite / any startup CLEARS `logs/djr3x.log`+`conversation.log` — copy a run's log first.
+**LIVE-RUN FINDINGS (three 2026-06-04 `--gui` runs) → then EVAL-DRIVEN:** Run 1: Roast rebalance LANDED but Rex
+interrogated via the memory-followup checklist and the **POV never surfaced** → cadence clamp. Run 2 (with clamp):
+**cut-off** (ellipsis trail-off → fixed), POV still buried (IDLE BANTER asked-first → fixed to volunteer-first),
+**invented a "drink"** (Visual-permission example → fixed). Run 3 (with all fixes): **cut-offs GONE (confirmed),
+conversation clearly the best yet**; POV/idle-banter fix still UNCONFIRMED (no pauses fired idle banter). Then built
+the **quality eval** → baseline put **`roasted_sincere` at 46%** (dominant), with **8/11 fails = the user saying "I'll
+be quiet"** (Rex needled the boundary). First eval-driven fix (boundary detection → roast `none` + a "respect it"
+agenda branch) cut it **46%→21%** corpus-wide and **100%→8%** on the boundary scenario; STOPPED there (remaining is
+borderline / judge-strictness — pushing to 0% would make Rex bland). Reminders: the lowered dials only auto-apply to a
+FRESH DB — the robot's existing `people.db` still holds 90/80/35; and the test suite / any startup CLEARS
+`logs/djr3x.log`+`conversation.log` — copy a run's log first.
 
 **Deferred / good resume points** (roughly in value order):
-0. **Fix `roasted_sincere` (NEW top priority, eval-measured).** The quality eval says sincere shares get roasted
-   22–56% of the time — the biggest felt-quality gap left. Tune the core prompt / `_roast_level` care gates, then
-   measure with `python evals/run_quality_eval.py --only sincere --samples 8` before/after. This is the model use
-   case for the eval: change → measure the class rate → keep if it drops.
+0. **`roasted_sincere` — PARTLY DONE (46%→21%, eval-measured).** Boundary handling fixed (don't roast "I'll be
+   quiet"; see the do-not-regress entry). Remaining ~21% is mostly the JUDGE over-flagging acceptable light teasing
+   on a sincere POSITIVE share (e.g. back-pain) — so the next move is to **calibrate the `roasted_sincere` judge**
+   (tighten its rubric so respecting-the-boundary-with-a-flourish and engage-then-light-tease are PASSES), THEN
+   re-measure and decide if any real residual remains. Don't tune the judge in the same pass you grade a fix with.
+   Also: **`cantina_bleed` ~8%** is now the next clearest eval-measured target.
+   Loop: `python evals/run_quality_eval.py --samples 8` before/after; change → measure → keep what clearly helps.
 1. **Delete the TurnPlan regex patterns** (Bet 2 follow-up) — needs live testing; de-riskable via the
    eval harness (expand its corpus over the affected branches, then assert outcomes unchanged). It
    requires removing the no-plan fallback + rewriting ~5 pinned string-based `social_frame` tests onto

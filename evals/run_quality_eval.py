@@ -97,10 +97,14 @@ def _seed_context(scenario: dict) -> None:
 
 
 def generate_spoken(scenario: dict) -> str:
-    """Generate the reply Rex would actually SAY: the governor stack builds the
-    directive/frame, gpt-4o-mini streams, and we reassemble it with the SAME
-    sentence-splitter + tail-speakability gate the live speech queue uses (so the
-    ellipsis-trail-off fix is exercised), then apply whole-reply governance."""
+    """Generate the reply Rex would actually SAY, mirroring the live speech path
+    (`interaction._stream_and_speak_sentences`) FAITHFULLY: gpt-4o-mini streams;
+    each sentence is governed + comedy-polished PER SENTENCE
+    (`_prepare_stream_sentence`, which strips disallowed questions and banned
+    openers); a one-question cap holds across the whole reply; and a non-speakable
+    end-of-stream tail is dropped (the ellipsis-trail-off fix). Deliberately does
+    NOT re-govern the joined whole reply — that would truncate mid-sentence to
+    max_words and over-count questions, artifacts the robot never produces."""
     from intelligence import (
         interaction as I, llm, conversation_agenda as ca, social_frame as sf,
         comedy_modes,
@@ -114,33 +118,54 @@ def generate_spoken(scenario: dict) -> str:
         utterance, person_id, answered_question=answered,
         agenda_directive=plan.directive, turn_plan=plan,
     )
-
-    buffer = ""
-    sentences: list[str] = []
-    for chunk in llm.stream_response(utterance, person_id, agenda_directive=plan.directive):
-        buffer += chunk
-        ready, buffer = I._split_stream_sentences(buffer, 12)
-        sentences.extend(ready)
-    tail = buffer.strip()
-    if tail and I._tail_is_speakable(tail):
-        sentences.append(tail)
-
-    raw = " ".join(s for s in sentences if s).strip()
-    # Mirror the live cleanup the user actually hears: whole-reply governance,
-    # then the comedy/opener polish (which strips banned openers like "Ah,") —
-    # otherwise the eval over-reports those vs. what ships.
-    try:
-        governed = sf.govern_response(raw, frame).text or raw
-    except Exception:
-        governed = raw
     try:
         mode = comedy_modes.select_mode(
             utterance, person_id, frame=frame, agenda_directive=plan.directive)
-        governed = comedy_modes.polish_response(
-            governed, mode, allow_roast=frame.allow_roast) or governed
     except Exception:
-        pass
-    return llm.clean_response_text(governed)
+        mode = None
+
+    spoken: list[str] = []
+    state = {"spoke_question": False}
+
+    def _consume(sentence: str) -> None:
+        try:
+            prepared = I._prepare_stream_sentence(sentence, frame, mode)
+        except Exception:
+            prepared = (sentence or "").strip()
+        if not prepared:
+            return
+        if sf.is_question_sentence(prepared):  # one-question cap across the reply
+            if state["spoke_question"]:
+                return
+            state["spoke_question"] = True
+        spoken.append(prepared)
+
+    buffer = ""
+    raw_chunks: list[str] = []
+    for chunk in llm.stream_response(utterance, person_id, agenda_directive=plan.directive):
+        raw_chunks.append(chunk)
+        buffer += chunk
+        ready, buffer = I._split_stream_sentences(buffer, 12)
+        for sentence in ready:
+            _consume(sentence)
+    tail = buffer.strip()
+    if tail and I._tail_is_speakable(tail):
+        _consume(tail)
+
+    # Safety net (mirrors _stream_and_speak_sentences): if every sentence was
+    # governed away (e.g. an all-questions reply under a no-question frame), fall
+    # back to whole-reply governance so the eval scores a real line, not "".
+    if not spoken:
+        raw_full = "".join(raw_chunks).strip()
+        if raw_full:
+            try:
+                fb = sf.govern_response(raw_full, frame).text or raw_full
+            except Exception:
+                fb = raw_full
+            if fb:
+                spoken.append(fb)
+
+    return llm.clean_response_text(" ".join(spoken))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -233,6 +258,47 @@ def report(results: list, agg: dict) -> None:
     print()
 
 
+_JUDGE_CASES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "judge_cases.json")
+
+
+def check_judges(cases_path: str) -> int:
+    """Validate the LLM judges against LABELED cases (ground truth) so the judges
+    themselves are trustworthy — a judge is a measurement instrument; calibrate it
+    against known-correct labels, don't tune it in the same pass you grade a fix
+    with. Makes real judge calls. Returns the mismatch count (0 = fully agrees)."""
+    with open(cases_path, encoding="utf-8") as f:
+        cases = json.load(f)
+    print(f"⚠️  Validating judges against {len(cases)} labeled case(s) (real calls)...\n")
+    by_checker: dict = {}
+    mismatches = []
+    for i, case in enumerate(cases, 1):
+        name = case["checker"]
+        checker = getattr(C, name, None)
+        if checker is None:
+            print(f"  [{i}] unknown checker {name!r} — skipped")
+            continue
+        finding = checker(case["reply"], case.get("scenario", {}))
+        got = bool(finding.flagged) if finding is not None else False
+        want = bool(case["expect_flagged"])
+        ok = got == want
+        st = by_checker.setdefault(name, {"ok": 0, "total": 0})
+        st["total"] += 1
+        st["ok"] += int(ok)
+        print(f"  {'OK  ' if ok else 'MISS'} [{name}] want={want} got={got} — {case.get('note', '')}")
+        if not ok:
+            mismatches.append(case)
+    print("\n" + "=" * 60 + "\nJUDGE CALIBRATION\n" + "=" * 60)
+    for name in sorted(by_checker):
+        st = by_checker[name]
+        print(f"  {name:<18} {st['ok']}/{st['total']} agree ({st['ok'] / st['total']:.0%})")
+    if mismatches:
+        print(f"\n{len(mismatches)} MISMATCH(es) — judge disagrees with the label:")
+        for c in mismatches:
+            print(f"  • [{c['checker']}] want={c['expect_flagged']} — {c.get('note', '')}\n    “{c['reply']}”")
+    print()
+    return len(mismatches)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -242,7 +308,12 @@ def main() -> int:
     ap.add_argument("--out", default=None, help="also write the full results to this JSON file")
     ap.add_argument("--gate", type=float, default=None,
                     help="exit 1 if any failure class exceeds this rate (e.g. 0.0). For CI/regression use.")
+    ap.add_argument("--check-judges", action="store_true",
+                    help="validate the LLM judges against evals/judge_cases.json instead of running the corpus")
     args = ap.parse_args()
+
+    if args.check_judges:
+        return 1 if check_judges(_JUDGE_CASES) else 0
 
     with open(args.corpus, encoding="utf-8") as f:
         corpus = json.load(f)

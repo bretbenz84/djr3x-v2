@@ -25,10 +25,24 @@ python evals/run_quality_eval.py --samples 5     # 5 samples/scenario → stable
 python evals/run_quality_eval.py --only sincere  # scenarios whose name matches
 python evals/run_quality_eval.py --out report.json
 python evals/run_quality_eval.py --gate 0.0      # exit 1 if ANY class flags (CI/regression)
+python evals/run_quality_eval.py --check-judges  # validate the LLM judges (see below)
 ```
 
 Rates are noisy at low sample counts (generation is non-deterministic) — use
 `--samples 5`+ when comparing before/after a change.
+
+## Validating the judges (`--check-judges`, `judge_cases.json`)
+
+The LLM judges (`invented_prop`, `roasted_sincere`) are measurement instruments,
+so they need their own ground truth. `judge_cases.json` is a small LABELED set
+(reply + scenario + `expect_flagged`); `--check-judges` runs each through its
+checker and reports agreement. Calibrate a judge's rubric against these labels —
+**don't tune a judge in the same pass you grade a fix with** (that games the
+metric). The judge over-flagging borderline-acceptable teasing? Add the
+mislabeled reply to `judge_cases.json` with the correct label, tighten the rubric
+in `checkers.py`, and re-run `--check-judges` until it agrees. The current
+rubric is biased toward PASS when a reply clearly engages/acknowledges, so a
+light in-character tease on top of genuine engagement is not flagged.
 
 ## What it checks (`checkers.py`)
 

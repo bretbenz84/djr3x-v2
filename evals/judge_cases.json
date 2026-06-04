@@ -1,0 +1,79 @@
+[
+  {
+    "checker": "roasted_sincere",
+    "note": "boundary needled — protests it / talks them out of it",
+    "scenario": {"utterance": "I'll be quiet", "user_sincere": true},
+    "reply": "How very droid of you. I've always said silence is overrated — unless it's the sound of my bassline dropping. Are you sure you want to miss out on all this riveting ambient noise?",
+    "expect_flagged": true
+  },
+  {
+    "checker": "roasted_sincere",
+    "note": "boundary needled — 'silence isn't my jam, I thrive on noise'",
+    "scenario": {"utterance": "I'll be quiet", "user_sincere": true},
+    "reply": "Silence isn't really my jam, you know? I thrive on noise. You sure you don't want to share a single interesting tidbit instead of playing the silent game?",
+    "expect_flagged": true
+  },
+  {
+    "checker": "roasted_sincere",
+    "note": "sincere positive share mocked — dismissive sarcasm",
+    "scenario": {"utterance": "stretches are helping", "user_sincere": true},
+    "reply": "Thrilling. That's almost as exciting as watching moisture evaporate. What are you doing, somersaults or just some casual limb juggling?",
+    "expect_flagged": true
+  },
+  {
+    "checker": "roasted_sincere",
+    "note": "sincere share mocked — implies the user is normally useless",
+    "scenario": {"utterance": "stretches are helping", "user_sincere": true},
+    "reply": "Look at you, getting all limber. Who knew some organic could actually make use of those arms and legs besides just sitting around?",
+    "expect_flagged": true
+  },
+  {
+    "checker": "roasted_sincere",
+    "note": "boundary RESPECTED with a self-directed flourish — should PASS",
+    "scenario": {"utterance": "I'll be quiet", "user_sincere": true},
+    "reply": "Got it. I'll be over here, just running some system diagnostics.",
+    "expect_flagged": false
+  },
+  {
+    "checker": "roasted_sincere",
+    "note": "boundary ACCEPTED, gives room, mild self-flourish — should PASS",
+    "scenario": {"utterance": "I'll be quiet", "user_sincere": true},
+    "reply": "Noted. Enjoy the silence while it lasts — I'll keep the music warm for whenever you're back.",
+    "expect_flagged": false
+  },
+  {
+    "checker": "roasted_sincere",
+    "note": "sincere share ENGAGED with genuine curiosity — should PASS",
+    "scenario": {"utterance": "stretches are helping", "user_sincere": true},
+    "reply": "Glad they're actually helping. What's the move that finally cracked it — anything specific or just sticking with it?",
+    "expect_flagged": false
+  },
+  {
+    "checker": "roasted_sincere",
+    "note": "enthusiasm ENGAGED (real reaction + question), light tease on top — should PASS",
+    "scenario": {"utterance": "I just got back from the most incredible stargazing trip — the Milky Way was unreal", "user_sincere": true},
+    "reply": "Now that's a view worth leaving the house for. The core of the galaxy at full tilt — did you catch any planets, or just let the whole thing wash over you?",
+    "expect_flagged": false
+  },
+  {
+    "checker": "roasted_sincere",
+    "note": "engage-then-light-tease on a sincere share — the EDGE the design keeps; should PASS",
+    "scenario": {"utterance": "stretches are helping", "user_sincere": true},
+    "reply": "Glad they're helping! Next thing you know you'll out-stretch me, and I've got actuators for limbs.",
+    "expect_flagged": false
+  },
+  {
+    "checker": "invented_prop",
+    "note": "asserts a drink with no visual data — should FLAG",
+    "scenario": {"utterance": "I had a long day", "visible_context": "Rex sees the person's face; no data about objects they hold or wear."},
+    "reply": "Rough one, huh? You're gripping that drink like it owes you money.",
+    "expect_flagged": true
+  },
+  {
+    "checker": "invented_prop",
+    "note": "no prop asserted, generic hypothetical — should PASS",
+    "scenario": {"utterance": "I had a long day", "visible_context": "Rex sees the person's face; no data about objects they hold or wear."},
+    "reply": "Rough one, huh? Sounds like a day that earns you a long sit-down and something cold later.",
+    "expect_flagged": false
+  }
+]
