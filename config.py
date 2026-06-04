@@ -2066,6 +2066,25 @@ POST_QUESTION_LISTEN_DELAY_SECS = 0.12
 # last. Set to 0 to disable the stickiness.
 POST_QUESTION_HANDOFF_STICKY_SECS = 1.5
 
+# ── Hardware-AEC boundary overrides (ReSpeaker Lite only) ──────────────────────
+# These apply ONLY when audio/hardware_aec.is_active() is True — i.e. the ReSpeaker
+# Lite is the live mic AND speaker, so its XU316 already cancels Rex's voice from
+# the mic (~16 dB measured). With that hardware cancellation, the post-TTS "deaf
+# window" (suppression tail + listen delay + capture floor) is no longer needed to
+# keep Rex from self-transcribing, so we shrink it to capture a human reply that
+# lands right as Rex finishes. On any non-ReSpeaker machine (dev Macs) these are
+# IGNORED and the values above remain in force, leaving that behavior unchanged.
+# Detection substring for the ReSpeaker input/output device name (case-insensitive).
+HARDWARE_AEC_DEVICE_HINT = "respeaker"
+# Mic-attenuation tail after a reply ends (replaces POST_*_PLAYBACK_SUPPRESSION_SECS).
+POST_PLAYBACK_SUPPRESSION_SECS_AEC = 0.05
+# Delay before the listen loop resumes after a reply (replaces POST_*_LISTEN_DELAY_SECS).
+POST_TTS_LISTEN_DELAY_SECS_AEC = 0.05
+# How far back capture may reach past the handoff to recover a reply that overlaps
+# Rex's tail. Safe to enlarge here because the hardware AEC has already removed
+# Rex's voice from that overlapping audio (replaces POST_*_CAPTURE_PREROLL_GRACE_SECS).
+POST_TTS_CAPTURE_PREROLL_GRACE_SECS_AEC = 0.5
+
 # Seconds of no detected speech in ACTIVE state before returning to IDLE.
 # Raised from 30 so the proactive idle-banter path (below) has room to re-engage
 # a couple times before the session actually closes on silence.

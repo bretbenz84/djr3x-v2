@@ -34,6 +34,7 @@ from state import State
 from audio import stream, vad, wake_word, transcription, speaker_id
 from audio import speech_queue, output_gate
 from audio import echo_cancel
+from audio import hardware_aec
 from audio import barge_guard
 from audio import prosody
 from intelligence import action_router, command_parser, llm, personality, rex_preferences
@@ -1877,7 +1878,16 @@ def _apply_post_tts_handoff(
         )
 
     _last_speech_at = now
-    _listen_resume_at = now + policy.listen_delay_secs
+    aec_on = hardware_aec.is_active()
+    listen_delay = policy.listen_delay_secs
+    if aec_on:
+        # Hardware AEC removed Rex's voice from the mic — resume listening almost
+        # immediately so a reply landing as he finishes is not missed.
+        listen_delay = min(
+            listen_delay,
+            float(getattr(config, "POST_TTS_LISTEN_DELAY_SECS_AEC", 0.05)),
+        )
+    _listen_resume_at = now + listen_delay
     if policy.fast_response_expected:
         grace = max(
             0.0,
@@ -1895,6 +1905,10 @@ def _apply_post_tts_handoff(
             0.0,
             float(getattr(config, "POST_TTS_CAPTURE_PREROLL_GRACE_SECS", 0.0) or 0.0),
         )
+    if aec_on:
+        # Safe to reach further back past the handoff to recover an overlapping
+        # reply: that audio is hardware-AEC'd, so Rex's tail in it is ~16 dB down.
+        grace = max(grace, float(getattr(config, "POST_TTS_CAPTURE_PREROLL_GRACE_SECS_AEC", 0.5)))
     _listen_capture_floor_at = max(0.0, now - grace)
     if policy.flush_buffer:
         stream.flush()
@@ -1923,7 +1937,13 @@ def _reply_playback_tail_secs(asked_question: bool) -> float:
     tail — long enough to let room echo of Rex's own voice decay, short enough that
     a human reply starting as Rex finishes is detected promptly. Falls back to the
     general post-playback tail if the specific knob is unset.
+
+    When the ReSpeaker Lite's hardware AEC is active it has already removed Rex's
+    voice from the mic, so the tail only needs to cover the speaker's mechanical
+    settle — shrink it so a reply landing as Rex finishes is not attenuated away.
     """
+    if hardware_aec.is_active():
+        return float(getattr(config, "POST_PLAYBACK_SUPPRESSION_SECS_AEC", 0.05))
     general = float(getattr(config, "POST_PLAYBACK_SUPPRESSION_SECS", 0.5))
     if asked_question:
         return float(getattr(config, "POST_QUESTION_PLAYBACK_SUPPRESSION_SECS", general))

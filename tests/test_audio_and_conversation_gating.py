@@ -13,6 +13,13 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         # statement handoff responsive and skip its flush.
         from intelligence import interaction
         interaction._last_fast_handoff_at = 0.0
+        # These tests assert the default (non-hardware-AEC) post-TTS tuning. Force the
+        # ReSpeaker hardware-AEC gate OFF so they are deterministic regardless of
+        # whether a ReSpeaker Lite is plugged into the test machine. The AEC-on
+        # overrides are covered by HardwareAecBoundaryTest below.
+        _aec = mock.patch("audio.hardware_aec.is_active", return_value=False)
+        _aec.start()
+        self.addCleanup(_aec.stop)
 
     def test_startup_burst_defers_chime_to_ready_cue(self):
         import config
@@ -9535,10 +9542,52 @@ class StartupGreetingOpenerTest(unittest.TestCase):
             self.assertEqual(consciousness._pick_startup_profile_question(1), question)
 
 
+class HardwareAecBoundaryTest(unittest.TestCase):
+    """When the ReSpeaker Lite hardware AEC is active, the post-TTS deaf window is
+    shrunk so a human reply landing as Rex finishes is still captured. On any
+    non-ReSpeaker machine the gate is off and the original tuning (asserted by
+    PostTtsHandoffPolicyTest) is unchanged."""
+
+    def setUp(self):
+        from intelligence import interaction
+        interaction._last_fast_handoff_at = 0.0
+
+    def test_tail_shrinks_when_aec_active(self):
+        from intelligence import interaction
+        with mock.patch("audio.hardware_aec.is_active", return_value=True):
+            self.assertEqual(interaction._reply_playback_tail_secs(True), 0.05)
+            self.assertEqual(interaction._reply_playback_tail_secs(False), 0.05)
+
+    def test_tail_unchanged_when_aec_inactive(self):
+        from intelligence import interaction
+        with mock.patch("audio.hardware_aec.is_active", return_value=False):
+            self.assertEqual(interaction._reply_playback_tail_secs(True), 0.12)
+            self.assertEqual(interaction._reply_playback_tail_secs(False), 0.25)
+
+    def test_handoff_resumes_fast_and_reaches_back_when_aec_active(self):
+        from intelligence import interaction
+        interaction._last_fast_handoff_at = 0.0
+        with (
+            mock.patch("audio.hardware_aec.is_active", return_value=True),
+            mock.patch.object(interaction.time, "monotonic", return_value=100.0),
+            mock.patch.object(interaction.stream, "flush"),
+            mock.patch.object(interaction.vad, "reset_state"),
+        ):
+            interaction._apply_post_tts_handoff("The sky is blue.", source="test")
+        # resume ~immediately (0.05s) and capture floor reaches 0.5s back past handoff
+        self.assertAlmostEqual(interaction._listen_resume_at, 100.05)
+        self.assertAlmostEqual(interaction._listen_capture_floor_at, 99.5)
+
+
 class PostQuestionHandoffStickinessTest(unittest.TestCase):
     def setUp(self):
         from intelligence import interaction
         interaction._last_fast_handoff_at = 0.0
+        # Assert default (non-hardware-AEC) tuning deterministically — see note in
+        # PostTtsHandoffPolicyTest.setUp.
+        _aec = mock.patch("audio.hardware_aec.is_active", return_value=False)
+        _aec.start()
+        self.addCleanup(_aec.stop)
 
     def tearDown(self):
         from intelligence import interaction
