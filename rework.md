@@ -11,7 +11,7 @@
 - **Work on `main` only. No PRs / feature branches.** Commit + push to `main` is how code
   reaches the physical robot for testing.
 - Tests: `source venv/bin/activate && venv/bin/python -m unittest discover -s tests`
-  (no pytest). ~749 tests today; keep them green. Text-only manual test:
+  (no pytest). ~851 tests today; keep them green. Text-only manual test:
   `venv/bin/python main.py --gui --noaudio`.
 - The repo has many interacting behavior layers and a strong "do not regress" culture
   (every behavior change gets a `CONTEXT.md` entry). Keep changes scoped; add a CONTEXT.md
@@ -143,14 +143,15 @@ conversation + a structured spine**, leaning on the LLM for fuzzy judgments.
 
 ## Roadmap (prioritized, with code areas)
 
-> **WHERE THINGS STAND (2026-06-03) — see "Status & where to resume" at the bottom for the resume plan.**
-> Done & tested (full suite green): **Bet 1** (arc-memory, full), **Bet 2** (TurnPlan), **relationship-tone**,
-> **offline eval harness**, **cold-open ranker** — all **COMMITTED on `main`** (commits `d6b3afe`→`e3aa5d4`).
-> **Bet 3** (turn classifier) was built, validated, and **SHELVED** (slower AND worse than the deterministic
-> heuristics + ~1s on-path latency). NEW this session: **Rex persistent POV** (the north-star smaller win)
-> — landed + tested, **UNCOMMITTED** until you commit+push (commit+push to `main` is how code reaches the
-> robot). Each landed item carries an inline **STATUS** note below; deferred/next items + reminders are in
-> **Status & where to resume**.
+> **WHERE THINGS STAND (updated 2026-06-03) — see "Status & where to resume" at the bottom for the resume plan.**
+> Done, tested, and **all COMMITTED on `main`** (working tree clean; full suite green at **851**): **Bet 1**
+> (arc-memory, full), **Bet 2** (TurnPlan), **relationship-tone**, **offline eval harness**, **cold-open ranker**,
+> **Rex persistent POV** (the north-star smaller win), and the **Roast rebalance** (curious-first — the big
+> behavior fix from the last live run; see its STATUS in "Smaller, high-ROI"). **Bet 3** (turn classifier) was
+> built, validated, and **SHELVED** (slower AND worse than the deterministic heuristics + ~1s on-path latency).
+> Each landed item carries an inline **STATUS** note below; deferred/next items + reminders are in **Status &
+> where to resume**. **Caveat:** the POV + Roast rebalance have NOT had a clean live `--gui`/robot pass yet
+> (they shipped right after the run that exposed the roast problem).
 
 ### ★ Bet 1 — Arc-memory (running summary + callbacks)  [highest felt impact]
 > **STATUS — first cut landed + live-tuned (2026-06-03).** Folded into
@@ -245,6 +246,23 @@ One small structured `qwen2.5:1.5b` call per turn returning
   **Needs a live `--gui` pass to judge the felt change (the qualitative payoff).**
   *Original idea:* loop was react→roast→question; give Rex a small evolving POV so he volunteers real
   in-character content instead of just interviewing — the cheapest way to make him less exhausting.
+- **Roast rebalance — curious-first, not roast-first.** ✅ **DONE (2026-06-03):** the live `--gui` run that
+  tested the POV exposed the real problem — the POV plumbing worked perfectly but NEVER SURFACED because Rex
+  roasted every turn: he needled a sensitive boundary the agenda told him to drop, INVENTED a "half-finished
+  drink" with no visual data and DOUBLED DOWN when denied, and roasted a sincere share. Root cause: the
+  character spine was cranked to roast-dominate (dials `roast_intensity=90`/`sarcasm=80`/`sentimentality=35`
+  + a "roast-first / comedy-first / constitutionally incapable of letting anything slide" `REX_CORE_PROMPT`)
+  and OVERRODE the per-turn "ease off" governors. Fix (user chose the full rebalance): (1) dials lowered to
+  **55 / 60 / 50** in BOTH `config.PERSONALITY_DEFAULTS` and the live `personality_settings` DB; (2)
+  `REX_CORE_PROMPT` reframed CURIOUS-first / roast-CAPABLE (kept his edge — explicitly "not a yes-droid");
+  (3) hard guardrails in the core prompt (highest authority, since governors get overridden): don't roast
+  sincere shares or boundary deflections, and never invent physical details you can't see / drop it when
+  corrected; (4) de-cantina'd (dropped "cantina energy" + the reflexive Star Wars one-liner instruction; see
+  the [[rex-no-cantina-overuse]] auto-memory). **Lesson:** you can't make Rex less exhausting by ADDING
+  instructions on top of a roast reflex — the roast balance itself was the lever (the POV should finally
+  surface now). See the "Roast rebalance" do-not-regress entry in `CONTEXT.md`. **NOTE — dials are GLOBAL
+  (not per-person):** `config.PERSONALITY_DEFAULTS` (the seed) only auto-applies to a FRESH DB, so the
+  robot's existing `people.db` still has 90/80/35 — move the dashboard sliders or run a one-time UPDATE there.
 - **Tone tracks the relationship, not per-turn dials.** ✅ **DONE (2026-06-03):**
   `llm._relationship_tone_rule` maps `warmth_score`/`antagonism_score`/`trust_score` into a
   persistent tone line in `assemble_system_prompt` (affectionate with warm friends, sharper
@@ -281,16 +299,20 @@ One small structured `qwen2.5:1.5b` call per turn returning
 The original "arc → classifier → TurnPlan" ordering is now mostly executed (and one bet was
 shelved). Concrete state:
 
-**Landed & COMMITTED on `main`** (prior session; full suite green; commits `d6b3afe`→`e3aa5d4`):
+**Landed, tested & COMMITTED on `main`** (working tree clean; full suite green at **851**):
 **Bet 1** arc-memory (gpt-4o-mini running summary + cross-session persistence + act-on-signal) ·
 **Bet 2** TurnPlan (live agenda→social_frame handoff de-brittled; regex kept as fallback) ·
-**relationship-tone** · **offline eval harness** · **cold-open ranker**. **Bet 3** turn classifier =
-**SHELVED** (see its STATUS). Each has an inline STATUS note + a do-not-regress entry in `CONTEXT.md`.
+**relationship-tone** · **offline eval harness** · **cold-open ranker** ·
+**Rex persistent POV** (`intelligence/rex_pov.py`; north-star smaller win — first cut) ·
+**Roast rebalance** (curious-first: dials 55/60/50 + reframed `REX_CORE_PROMPT` + sincere/boundary &
+no-hallucination guardrails + de-cantina). **Bet 3** turn classifier = **SHELVED** (see its STATUS). Each
+has an inline STATUS note + a do-not-regress entry in `CONTEXT.md`.
 
-**This session (NEW — landed + tested, UNCOMMITTED; commit+push to `main` to reach the robot):**
-**Rex persistent POV** (`intelligence/rex_pov.py`) — the north-star smaller win; first cut (see its
-STATUS above + the `CONTEXT.md` do-not-regress entry). Still needs a live `--gui` pass to judge the
-felt change.
+**NOT YET VALIDATED LIVE (do this first):** the POV + Roast rebalance shipped right after the bad live run
+that motivated the rebalance, so they need a fresh `--gui` / robot pass to confirm the felt change (Rex less
+exhausting, genuinely curious, drops the bit on sincerity/boundaries, the POV actually surfacing). Reminder:
+the lowered dials only auto-apply to a FRESH DB — the robot's existing `people.db` still holds 90/80/35 (move
+the dashboard sliders or run a one-time UPDATE).
 
 **Deferred / good resume points** (roughly in value order):
 1. **Delete the TurnPlan regex patterns** (Bet 2 follow-up) — needs live testing; de-riskable via the
@@ -307,6 +329,10 @@ felt change.
 **Reminders for the next window:**
 - `config.LOG_SYSTEM_PROMPT` is left **`True`** (verbose full-prompt logging) — flip it `False` once done
   inspecting prompts.
+- **Personality dials are GLOBAL + DB-backed.** The Roast rebalance set them to 55/60/50 in
+  `config.PERSONALITY_DEFAULTS` and this machine's `personality_settings`, but the seed is `INSERT OR IGNORE`
+  (fresh DB only) and the DB wins over config at runtime — so the **robot's existing `people.db` still has
+  90/80/35** until you move the dashboard sliders or run a one-time `UPDATE personality_settings SET value=…`.
 - Consider migrating off **`gpt-4o-mini`** → GPT-5.4 mini/nano before it sunsets (affects the main reply
   AND the arc backend; both via `config.*_MODEL`).
 - Speaker-ID flicker / weak voiceprints in a NOISY room (seen live 2026-06-03: every voice scan landed
