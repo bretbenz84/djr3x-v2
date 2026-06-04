@@ -343,20 +343,27 @@ no-hallucination guardrails + de-cantina).
 **UNCOMMITTED — in the working tree, being live-tested locally** (user runs on their box before committing):
 **memory-followup cadence clamp** (`_post_response`; stop the proactive event interrogation + give the POV oxygen) ·
 **cut-off / idle-banter-POV / invented-drink fixes** (`_tail_is_speakable` ellipsis trail-off, `_maybe_idle_banter`
-volunteer-first, `social_frame` visual rule). Each has an inline STATUS note + a do-not-regress entry in `CONTEXT.md`.
+volunteer-first, `social_frame` visual rule) · **LLM-in-the-loop quality eval** (`evals/`; measure failure CLASSES
+across a corpus instead of patching one live line at a time). Each has an inline STATUS note + a do-not-regress entry
+in `CONTEXT.md`. Suite green at **863** (the eval is opt-in, outside `tests/`, never run by `unittest discover`).
 
-**LIVE-RUN FINDINGS (two 2026-06-04 `--gui` runs) + WHAT'S STILL UNVALIDATED:** Run 1: Roast rebalance LANDED — no
-invented props, no doubling-down, sincere/boundary shares left alone (clean on 3 of 4 goals); but Rex was now
-exhausting via *interrogation* (memory-followup checklist) and the **POV never surfaced**. → cadence clamp. Run 2
-(with the clamp): the **reply cut off again** (the headline complaint — diagnosed as the model trailing off with an
-ellipsis, now FIXED in `_tail_is_speakable`), the **POV still never surfaced** (this time IDLE BANTER asked-first
-every turn — fixed to volunteer-first), and Rex **invented a "drink"** again (the Visual-permission example primed it
-— fixed). **All UNVALIDATED live — do a fresh `--gui` pass first** (cut-off gone? POV finally volunteering? less
-interrogation? no invented props?). Reminders: the lowered dials only auto-apply to a FRESH DB — the robot's existing
-`people.db` still holds 90/80/35 (move the dashboard sliders or run a one-time UPDATE); and the test suite / any
-startup CLEARS `logs/djr3x.log`+`conversation.log` (config.py:100 + RotatingFileHandler) — copy a run's log first.
+**LIVE-RUN FINDINGS (three 2026-06-04 `--gui` runs):** Run 1: Roast rebalance LANDED but Rex interrogated via the
+memory-followup checklist and the **POV never surfaced** → cadence clamp. Run 2 (with clamp): **cut-off** (model
+trailing off with an ellipsis → fixed in `_tail_is_speakable`), POV still buried (IDLE BANTER asked-first → fixed to
+volunteer-first), **invented a "drink"** (Visual-permission example primed it → fixed). Run 3 (with all fixes):
+**cut-offs GONE (confirmed), conversation clearly the best yet** — responsive, curious, playful, not exhausting; no
+invented prop. POV/idle-banter fix still UNCONFIRMED (no pauses fired idle banter that run). Then built the **quality
+eval** and got a corpus baseline (`--samples 3`): **`roasted_sincere` 22–56% = the DOMINANT remaining issue** (sincere
+shares still get roasted — the rebalance helped but didn't solve it), `cantina_bleed` ~8%, and
+`invented_prop`/`trail_off`/`over_questioning`/`re_asks`/`banned_opener` all **0%** (recent fixes validated at scale).
+Reminders: the lowered dials only auto-apply to a FRESH DB — the robot's existing `people.db` still holds 90/80/35;
+and the test suite / any startup CLEARS `logs/djr3x.log`+`conversation.log` — copy a run's log first.
 
 **Deferred / good resume points** (roughly in value order):
+0. **Fix `roasted_sincere` (NEW top priority, eval-measured).** The quality eval says sincere shares get roasted
+   22–56% of the time — the biggest felt-quality gap left. Tune the core prompt / `_roast_level` care gates, then
+   measure with `python evals/run_quality_eval.py --only sincere --samples 8` before/after. This is the model use
+   case for the eval: change → measure the class rate → keep if it drops.
 1. **Delete the TurnPlan regex patterns** (Bet 2 follow-up) — needs live testing; de-riskable via the
    eval harness (expand its corpus over the affected branches, then assert outcomes unchanged). It
    requires removing the no-plan fallback + rewriting ~5 pinned string-based `social_frame` tests onto

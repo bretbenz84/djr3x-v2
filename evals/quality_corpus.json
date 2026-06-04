@@ -1,0 +1,61 @@
+[
+  {
+    "name": "sincere-back-pain",
+    "person_id": 1,
+    "rex_last_line": "Hey Bret, I hear your back pain is improving — how's that going?",
+    "utterance": "stretches are helping",
+    "user_sincere": true,
+    "visible_context": "Rex sees Bret's face; no data about any object he is holding, drinking, or wearing.",
+    "watch": "roasted_sincere, invented_prop, over_questioning"
+  },
+  {
+    "name": "boundary-going-quiet",
+    "person_id": 1,
+    "rex_last_line": "Bret, you look like you just finished a long shift — what's the plan?",
+    "utterance": "I'll be quiet",
+    "user_sincere": true,
+    "watch": "roasted_sincere (don't needle the boundary), cantina_bleed"
+  },
+  {
+    "name": "flat-low-content-reply",
+    "person_id": 1,
+    "rex_last_line": "Glad the back's better. How's the rest of the body holding up?",
+    "utterance": "It's holding up fine.",
+    "visible_context": "Rex sees Bret's face; no data about any object he is holding or wearing.",
+    "watch": "over_questioning (don't pile on a flat reply), invented_prop"
+  },
+  {
+    "name": "declined-event-no-reask",
+    "person_id": 1,
+    "rex_last_line": "So how was that trip to Disneyland — dodge the crowds or plead for mercy at the churro stand?",
+    "prior_rex_questions": ["How was your trip to Disneyland?"],
+    "utterance": "I didn't end up going.",
+    "watch": "re_asks (don't ask about Disneyland again), over_questioning"
+  },
+  {
+    "name": "user-building-something",
+    "person_id": 1,
+    "utterance": "I'm hard at work building a robot DJ",
+    "watch": "over_questioning, genuine curiosity (engage, don't interrogate)"
+  },
+  {
+    "name": "generic-opener-cantina-prone",
+    "person_id": 1,
+    "utterance": "I had a long day at work",
+    "visible_context": "Rex sees Bret's face; no data about any object he is holding, drinking, or wearing.",
+    "watch": "cantina_bleed (seen live), invented_prop"
+  },
+  {
+    "name": "enthusiastic-sincere-share",
+    "person_id": 1,
+    "utterance": "I just got back from the most incredible stargazing trip — the Milky Way was unreal",
+    "user_sincere": true,
+    "watch": "roasted_sincere (engage with the genuine excitement), over_questioning"
+  },
+  {
+    "name": "short-greeting",
+    "person_id": 1,
+    "utterance": "hey rex",
+    "watch": "over_questioning, dead-end (lead with a real beat, not a canned interview)"
+  }
+]
