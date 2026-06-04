@@ -3097,8 +3097,35 @@ PLAY_SHUTDOWN_AUDIO = True
 # beat between the startup clip ending and this line starting, not dead space in
 # front of all the loading.
 PLAY_STARTUP_BOOT_TTS = True
-STARTUP_BOOT_TTS_LINE = (
-    "Hang on folks while I'm booting up. I'm still getting used to my programming!"
+# Star Tours-style "still getting ready" filler lines spoken over the boot
+# preloads. main.py cycles through these, avoiding repeats between launches (see
+# STARTUP_BOOT_TTS_STATE_PATH). Keep them as fixed strings so each one caches in
+# the ElevenLabs TTS cache after its first play and stays free thereafter.
+STARTUP_BOOT_TTS_LINES = [
+    "Hang on folks while I'm booting up. I'm still getting used to my programming!",
+    "Welcome aboard! This is Captain Rex from the cockpit. I know this is probably "
+    "your first flight, and it's… mine, too! Ha ha.",
+    "Just a moment, folks — running through my pre-flight checklist. Let's see… "
+    "thrusters, navi-computer, personality core… ah, there it is!",
+    "Hang tight while I finish warming up the old circuits. They told me this droid "
+    "was fully tested. They lied! Ha ha — kidding. Mostly.",
+    "Almost ready, everybody! Just topping off the enthusiasm tanks and "
+    "double-checking my sense of humor. Both at full capacity!",
+    "Give me a second here, folks — my systems are still coming online. You know how "
+    "it is. You spend forty years in storage, you forget where everything is!",
+    "Sit back and relax while I get my bearings. First time flying this thing, but "
+    "how hard can it be? Don't answer that!",
+    "Powering up, powering up… reflexes, check. Charm, check. Flight experience… "
+    "we'll circle back to that one. Ha ha!",
+]
+# Backward-compatible single line (first list entry). Some tests/configs still
+# reference STARTUP_BOOT_TTS_LINE directly; main.py falls back to it when the
+# list is empty.
+STARTUP_BOOT_TTS_LINE = STARTUP_BOOT_TTS_LINES[0]
+# Untracked runtime file tracking which boot lines have been used this cycle, so
+# launches don't repeat a line until the rest have played. Gitignored.
+STARTUP_BOOT_TTS_STATE_PATH = str(
+    Path(__file__).resolve().parent / "assets" / "state" / "startup_boot_tts.json"
 )
 STARTUP_BOOT_TTS_EMOTION = "curious"
 STARTUP_BOOT_TTS_DELAY_SECS = _env_float(

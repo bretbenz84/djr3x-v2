@@ -185,6 +185,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(main.config, "NO_AUDIO_MODE", False))
             stack.enter_context(mock.patch.object(main.config, "AUDIO_OUTPUT_SUPPRESSED", False))
             stack.enter_context(mock.patch.object(main.config, "PLAY_STARTUP_BOOT_TTS", True))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_BOOT_TTS_LINES", [line]))
             stack.enter_context(mock.patch.object(main.config, "STARTUP_BOOT_TTS_LINE", line))
             stack.enter_context(mock.patch.object(main.config, "STARTUP_BOOT_TTS_DELAY_SECS", 1.25))
             stack.enter_context(mock.patch.object(main.config, "STARTUP_BOOT_TTS_EMOTION", "curious"))

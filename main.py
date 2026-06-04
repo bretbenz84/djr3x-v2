@@ -66,6 +66,8 @@ except RuntimeError as e:
 import time
 import threading
 import random
+import hashlib
+import json
 
 import numpy as np
 import sounddevice as sd
@@ -606,6 +608,69 @@ def _configure_audio_output_device() -> None:
         logger.warning("Could not set audio output device: %s", exc)
 
 
+def _boot_tts_line_key(line: str) -> str:
+    """Stable per-line key so the state file survives edits/reordering of the list."""
+    return hashlib.sha1(line.encode("utf-8")).hexdigest()[:12]
+
+
+def _select_startup_boot_tts_line() -> str:
+    """Pick a boot line, cycling through the configured set without repeating
+    between launches. Recently used lines are tracked in an untracked JSON state
+    file so consecutive boots get different filler. When every line has been used
+    the cycle restarts, avoiding an immediate back-to-back repeat of the last line.
+    """
+    lines = [
+        str(item).strip()
+        for item in (getattr(config, "STARTUP_BOOT_TTS_LINES", None) or [])
+        if str(item).strip()
+    ]
+    if not lines:
+        return str(getattr(config, "STARTUP_BOOT_TTS_LINE", "") or "").strip()
+    if len(lines) == 1:
+        return lines[0]
+
+    state_path = Path(
+        str(getattr(config, "STARTUP_BOOT_TTS_STATE_PATH", "") or "")
+        or (Path(__file__).resolve().parent / "assets" / "state" / "startup_boot_tts.json")
+    )
+
+    used: list[str] = []
+    last: str = ""
+    try:
+        if state_path.exists():
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                used = [str(k) for k in data.get("used", []) if isinstance(k, str)]
+                last = str(data.get("last", "") or "")
+    except Exception as exc:
+        logger.debug("Could not read startup boot TTS state (%s); starting fresh.", exc)
+
+    keys = {_boot_tts_line_key(line): line for line in lines}
+    # Drop any stale keys (lines that were edited/removed) from the used set.
+    used = [k for k in used if k in keys]
+
+    candidates = [line for key, line in keys.items() if key not in used]
+    if not candidates:
+        # Whole cycle exhausted — restart, but don't immediately repeat the last line.
+        used = []
+        candidates = [line for key, line in keys.items() if key != last] or lines
+
+    chosen = random.choice(candidates)
+    chosen_key = _boot_tts_line_key(chosen)
+    used.append(chosen_key)
+
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(
+            json.dumps({"used": used, "last": chosen_key}, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.debug("Could not persist startup boot TTS state: %s", exc)
+
+    return chosen
+
+
 def _start_startup_boot_tts_thread() -> threading.Thread | None:
     if _audio_output_suppressed():
         logger.info("Startup boot TTS disabled by --noaudio")
@@ -614,9 +679,9 @@ def _start_startup_boot_tts_thread() -> threading.Thread | None:
         logger.info("Startup boot TTS disabled by config.PLAY_STARTUP_BOOT_TTS")
         return None
 
-    line = str(getattr(config, "STARTUP_BOOT_TTS_LINE", "") or "").strip()
+    line = _select_startup_boot_tts_line()
     if not line:
-        logger.info("Startup boot TTS skipped because STARTUP_BOOT_TTS_LINE is empty")
+        logger.info("Startup boot TTS skipped because no boot line is configured")
         return None
 
     try:

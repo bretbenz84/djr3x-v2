@@ -238,6 +238,9 @@ assets/memory/people.db-wal
 assets/memory/people.db.bak-*
 
 
+# Startup boot-line rotation state — local runtime bookkeeping
+assets/state/
+
 # Runtime logs
 logs/
 
