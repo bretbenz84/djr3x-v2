@@ -37,6 +37,7 @@ from audio import echo_cancel
 from audio import barge_guard
 from audio import prosody
 from intelligence import action_router, command_parser, llm, personality, rex_preferences
+from intelligence import rex_pov
 from intelligence import performance_output
 from intelligence import performance_plan
 from intelligence import consciousness
@@ -3271,6 +3272,22 @@ def _maybe_idle_banter(
     attempt = _idle_banter_count % len(_IDLE_BANTER_DIRECTIVES)
     directive = _IDLE_BANTER_DIRECTIVES[attempt]
     ask_user = attempt == 0
+    if not ask_user:
+        # Volunteer attempt: lead with Rex's SPECIFIC current preoccupation (rex_pov)
+        # rather than a generic improvised opinion, so idle volunteering matches what
+        # he's been bringing up in replies. Falls back to the generic directive when
+        # POV is disabled/empty.
+        try:
+            pov_text = rex_pov.active_pov_text()
+        except Exception:
+            pov_text = ""
+        if pov_text:
+            directive = (
+                "Still quiet. Keep the room alive by VOLUNTEERING what's on your mind "
+                "right now — " + pov_text + " Say it like a passing thought you want "
+                "them to react to. Do NOT ask a question this time, and do not sign off "
+                "or announce the silence."
+            )
     try:
         line = llm.get_response(
             "You are re-engaging after a quiet pause in an ongoing conversation. "
@@ -9969,6 +9986,10 @@ def _end_session() -> None:
         _idle_outro_spoken = False
         try:
             topic_thread.clear()
+        except Exception:
+            pass
+        try:
+            rex_pov.clear()
         except Exception:
             pass
         try:

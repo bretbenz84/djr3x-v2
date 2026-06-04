@@ -673,6 +673,19 @@ def assemble_system_prompt(
     except Exception as exc:
         _log.debug("conversation arc injection skipped: %s", exc)
 
+    # 6c. Rex's current preoccupation — his persistent point of view (rex_pov). Gives
+    # him his OWN thing to volunteer so he leads with substance instead of only
+    # react→roast→question. Injected here (downstream of the agenda/social-frame
+    # governors, alongside the arc) so it colors every reply AND — because every
+    # proactive/idle path calls get_response — those lines too. Deterministic; no call.
+    try:
+        from intelligence import rex_pov as _rex_pov
+        pov_directive = _rex_pov.current_pov_directive()
+        if pov_directive:
+            sections.append(pov_directive)
+    except Exception as exc:
+        _log.debug("rex POV injection skipped: %s", exc)
+
     # 7. Behavioral rules
     rules = [
         "Never break character under any circumstances.",

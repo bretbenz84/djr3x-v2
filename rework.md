@@ -143,6 +143,15 @@ conversation + a structured spine**, leaning on the LLM for fuzzy judgments.
 
 ## Roadmap (prioritized, with code areas)
 
+> **WHERE THINGS STAND (2026-06-03) — see "Status & where to resume" at the bottom for the resume plan.**
+> Done & tested (full suite green): **Bet 1** (arc-memory, full), **Bet 2** (TurnPlan), **relationship-tone**,
+> **offline eval harness**, **cold-open ranker** — all **COMMITTED on `main`** (commits `d6b3afe`→`e3aa5d4`).
+> **Bet 3** (turn classifier) was built, validated, and **SHELVED** (slower AND worse than the deterministic
+> heuristics + ~1s on-path latency). NEW this session: **Rex persistent POV** (the north-star smaller win)
+> — landed + tested, **UNCOMMITTED** until you commit+push (commit+push to `main` is how code reaches the
+> robot). Each landed item carries an inline **STATUS** note below; deferred/next items + reminders are in
+> **Status & where to resume**.
+
 ### ★ Bet 1 — Arc-memory (running summary + callbacks)  [highest felt impact]
 > **STATUS — first cut landed + live-tuned (2026-06-03).** Folded into
 > `intelligence/topic_thread.py` (not a parallel module): a running summary (topics /
@@ -199,6 +208,18 @@ the prompt **once** from it.
   wiring Bets 1 & 3 since you're touching the handoffs anyway.
 
 ### ★ Bet 3 — Local-LLM turn classifier (retire the regex zoo)  [enables 1 & 2]
+> **STATUS — SHELVED (2026-06-03); do NOT rebuild on-path.** Built `intelligence/turn_classifier.py`
+> + `tests/test_turn_classifier.py` and validated against the real `qwen2.5:1.5b`: it is **slower AND
+> worse** than the existing deterministic heuristics on the fields that matter — `engagement` defaulted
+> to "engaged" even for flat replies ("pretty much", "yeah whatever"), and it MISSED an explicit pivot
+> request — while adding ~1s of ON-PATH latency per turn (it must finish before the reply is built, so
+> the latency can't be hidden). Any on-path classifier, even the fastest cloud model (GPT-5.4-nano,
+> ~0.57s TTFT → ~1s full), hurts time-to-first-speech, which the user prioritizes. The deterministic
+> heuristics (`conversation_steering._looks_disengaged`, `user_energy._classify`) already read
+> engagement/pivot well and instantly, and the **arc already supplies a clean topic**. The module is left
+> INERT behind `config.CONVERSATION_TURN_CLASSIFIER_ENABLED` (default False) for a possible future
+> OFF-path use (background/lagged like the arc). See its do-not-regress entry in `CONTEXT.md`.
+
 One small structured `qwen2.5:1.5b` call per turn returning
 `{topic, engagement, intent, sentiment, wants_pivot, addressee}`.
 - New `intelligence/turn_classifier.py` on `intelligence/local_llm.py`.
@@ -211,11 +232,19 @@ One small structured `qwen2.5:1.5b` call per turn returning
   (`[latency]`/`[ttfs]` telemetry).
 
 ### Smaller, high-ROI
-- **Rex leads with substance / persistent POV.** Loop today is react→roast→question. Give
-  Rex a small *evolving* POV (what he's into, a mood that carries) so he *volunteers* real
-  in-character content, not just interviews. `intelligence/rex_preferences.py` (make
-  dynamic), the idle/volunteer paths (`interaction._IDLE_BANTER_DIRECTIVES`,
-  `consciousness._do_small_talk_question`). Cheapest way to make him less exhausting.
+- **Rex leads with substance / persistent POV.** ✅ **DONE — first cut (2026-06-03):**
+  new `intelligence/rex_pov.py` gives Rex ONE persistent *current preoccupation* (curated
+  `config.REX_POV_SEEDS`, **hybrid** context-biased selection, held on a transcript clock so it
+  CARRIES across turns, rotates on a material context change or max-hold). Surfaced via
+  `llm.assemble_system_prompt` §6c (which — through `get_response` — covers normal replies AND every
+  proactive/idle line) and the `interaction._maybe_idle_banter` "volunteer" attempt. Deterministic
+  (no LLM call → no latency, per the shelved-classifier lesson), session-only, kill-switch
+  `config.REX_POV_ENABLED`; seeds are venue-neutral (no "cantina", test-enforced). Tests
+  `tests/test_rex_pov.py`; do-not-regress entry in `CONTEXT.md`. **Fast-follows:** cross-session
+  persistence, feed `_do_private_thought`/`_do_aspiration` from the POV, an LLM-evolved POV.
+  **Needs a live `--gui` pass to judge the felt change (the qualitative payoff).**
+  *Original idea:* loop was react→roast→question; give Rex a small evolving POV so he volunteers real
+  in-character content instead of just interviewing — the cheapest way to make him less exhausting.
 - **Tone tracks the relationship, not per-turn dials.** ✅ **DONE (2026-06-03):**
   `llm._relationship_tone_rule` maps `warmth_score`/`antagonism_score`/`trust_score` into a
   persistent tone line in `assemble_system_prompt` (affectionate with warm friends, sharper
@@ -230,11 +259,14 @@ One small structured `qwen2.5:1.5b` call per turn returning
   `config.PRESENCE_CELEBRATION_RANK_ENABLED`. Tests `tests/test_celebration_ranker.py`;
   do-not-regress entry in `CONTEXT.md`. **Follow-up:** extend the same score across
   `facts.py` / `interests.py` (currently ranks emotional-event celebrations only).
-- **Offline replay/eval harness.** Today the only eval is run-the-robot-and-read-logs (how
-  the "A solo project" repeat shipped). Feed recorded transcripts through the pipeline and
-  assert on responses. Seed: `tests/fixtures/misroute_replays.json` +
-  `interaction.submit_text(...)` (the text-input entry point). Widen into a
-  conversational-quality eval.
+- **Offline replay/eval harness.** ✅ **DONE (2026-06-03):** `tests/test_conversation_replay.py`
+  + `tests/fixtures/conversation_replays.json` — replays scenarios through the DETERMINISTIC stack
+  (`build_turn_plan → build_frame → govern_response`) and asserts STRUCTURAL properties (purpose,
+  allow_question, governed includes/excludes, ≤N questions, governance notes). **No LLM, suite-safe,
+  data-driven** (add a JSON scenario, no Python). Complements the existing ROUTING replay
+  (`tests/fixtures/misroute_replays.json` via `test_dialogue_act.py`). do-not-regress entry in
+  `CONTEXT.md`. **Follow-ups:** grow the corpus from real conversation logs; it's also the lever to
+  de-risk the deferred TurnPlan pattern-deletion (assert structural outcomes unchanged across it).
 - **Real barge-in via text-echo rejection** (assessed earlier, still the best software path
   to "he heard me while talking"): transcribe during playback on the un-attenuated rolling
   buffer, fuzzy-diff the transcript against the known in-flight TTS text (`audio/tts.py` /
@@ -245,10 +277,41 @@ One small structured `qwen2.5:1.5b` call per turn returning
   `audio/transcription.py`, the wake/VAD path. NOT a full fix for deep talk-over (acoustic
   masking → needs the ReSpeaker hardware-AEC firmware path noted in CONTEXT.md).
 
-### Where to start
-**Arc-memory first** (biggest felt impact, and it retroactively simplifies half the
-deterministic anti-repetition hacks) → **local-LLM turn classifier** (kills regex
-brittleness, feeds the arc a clean topic) → fold the **`TurnPlan` refactor** in as you go.
+### Status & where to resume (as of 2026-06-03)
+The original "arc → classifier → TurnPlan" ordering is now mostly executed (and one bet was
+shelved). Concrete state:
+
+**Landed & COMMITTED on `main`** (prior session; full suite green; commits `d6b3afe`→`e3aa5d4`):
+**Bet 1** arc-memory (gpt-4o-mini running summary + cross-session persistence + act-on-signal) ·
+**Bet 2** TurnPlan (live agenda→social_frame handoff de-brittled; regex kept as fallback) ·
+**relationship-tone** · **offline eval harness** · **cold-open ranker**. **Bet 3** turn classifier =
+**SHELVED** (see its STATUS). Each has an inline STATUS note + a do-not-regress entry in `CONTEXT.md`.
+
+**This session (NEW — landed + tested, UNCOMMITTED; commit+push to `main` to reach the robot):**
+**Rex persistent POV** (`intelligence/rex_pov.py`) — the north-star smaller win; first cut (see its
+STATUS above + the `CONTEXT.md` do-not-regress entry). Still needs a live `--gui` pass to judge the
+felt change.
+
+**Deferred / good resume points** (roughly in value order):
+1. **Delete the TurnPlan regex patterns** (Bet 2 follow-up) — needs live testing; de-riskable via the
+   eval harness (expand its corpus over the affected branches, then assert outcomes unchanged). It
+   requires removing the no-plan fallback + rewriting ~5 pinned string-based `social_frame` tests onto
+   the plan API. See the TurnPlan do-not-regress entry.
+2. **Extend the cold-open ranker across `facts`/`interests`** — currently ranks emotional-event
+   celebrations only (small, unit-testable).
+3. **Grow the eval corpus from real conversation logs** — turn recent transcripts into pinned scenarios.
+4. **Rex POV fast-follows** — cross-session persistence (resume/evolve a preoccupation across visits),
+   feed `_do_private_thought`/`_do_aspiration` from the POV, and (only if it proves worth the cost) an
+   LLM-evolved POV. See the Rex persistent POV do-not-regress entry.
+
+**Reminders for the next window:**
+- `config.LOG_SYSTEM_PROMPT` is left **`True`** (verbose full-prompt logging) — flip it `False` once done
+  inspecting prompts.
+- Consider migrating off **`gpt-4o-mini`** → GPT-5.4 mini/nano before it sunsets (affects the main reply
+  AND the arc backend; both via `config.*_MODEL`).
+- Speaker-ID flicker / weak voiceprints in a NOISY room (seen live 2026-06-03: every voice scan landed
+  0.35–0.69, all below the 0.75 threshold) is a known **hardware-AEC** limitation, NOT a code bug — don't
+  chase it in software. The introduction flow + the arc both handled that noisy session correctly.
 
 ---
 
