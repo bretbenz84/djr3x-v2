@@ -32,6 +32,9 @@ class FaceTrackingTests(unittest.TestCase):
         with consciousness._speaker_gaze_lock:
             self.old_speaker_gaze_intent = dict(consciousness._speaker_gaze_intent)
             consciousness._speaker_gaze_intent.clear()
+        with consciousness._directed_gaze_hold_lock:
+            self.old_directed_gaze_hold = dict(consciousness._directed_gaze_hold)
+        consciousness.clear_directed_gaze_hold()
         self.frame = np.zeros((720, 1280, 3), dtype=np.uint8)
 
     def tearDown(self):
@@ -53,6 +56,9 @@ class FaceTrackingTests(unittest.TestCase):
         with c._speaker_gaze_lock:
             c._speaker_gaze_intent.clear()
             c._speaker_gaze_intent.update(self.old_speaker_gaze_intent)
+        with c._directed_gaze_hold_lock:
+            c._directed_gaze_hold.clear()
+            c._directed_gaze_hold.update(self.old_directed_gaze_hold)
 
     def _frame_with_patch(self, x: int, y: int) -> np.ndarray:
         rng = np.random.default_rng(1234)
@@ -377,6 +383,43 @@ class FaceTrackingTests(unittest.TestCase):
         self.assertEqual(c._face_tracking_lock.get("key"), "db:1")
         self.assertLess(updates[neck_ch], c.config.SERVO_CHANNELS["neck"]["neutral"])
 
+    def test_search_holds_each_waypoint_still_before_advancing(self):
+        c = self.consciousness
+        self._set_servo_positions()
+        c.world_state.update("people", [])
+
+        servo_mod = mock.MagicMock()
+        servo_mod.manual_override_enabled.return_value = False
+
+        with mock.patch.object(c.time, "monotonic", return_value=1000.0):
+            c.note_speaker_gaze_intent(
+                None, unknown_voice=True, reason="startup", force_search=True,
+            )
+
+        settle = float(c.config.SPEAKER_GAZE_SEARCH_SETTLE_SECS)
+        dwell = float(c.config.SPEAKER_GAZE_SEARCH_DWELL_SECS)
+        hold = settle + dwell
+
+        # First call commits waypoint #1 — exactly one servo move issued.
+        pose1 = c._step_speaker_gaze_search(servo_mod, dict(c._speaker_gaze_intent), 1000.0)
+        self.assertIsNotNone(pose1)
+        self.assertEqual(servo_mod.set_servos.call_count, 1)
+
+        # Through the entire settle+dwell window the head holds still: no further
+        # servo commands, and the held pose label is reported unchanged.
+        for dt in (settle * 0.5, settle + dwell * 0.5, hold - 0.01):
+            pose = c._step_speaker_gaze_search(
+                servo_mod, dict(c._speaker_gaze_intent), 1000.0 + dt,
+            )
+            self.assertEqual(pose, pose1)
+        self.assertEqual(servo_mod.set_servos.call_count, 1)
+
+        # Once the dwell elapses, the next call advances to waypoint #2.
+        c._step_speaker_gaze_search(
+            servo_mod, dict(c._speaker_gaze_intent), 1000.0 + hold + 0.01,
+        )
+        self.assertEqual(servo_mod.set_servos.call_count, 2)
+
     def test_unknown_speech_without_face_searches_down_first(self):
         c = self.consciousness
         self._set_servo_positions()
@@ -411,6 +454,67 @@ class FaceTrackingTests(unittest.TestCase):
         # First beat of the randomized scan drops the gaze down (seated-person bias)
         # without turning the neck — label is "{horiz}_{vert}", so check the vertical.
         self.assertTrue(str(tracking.get("search_pose") or "").endswith("down"))
+
+    def test_directed_gaze_hold_suppresses_search_and_holds_pose(self):
+        c = self.consciousness
+        self._set_servo_positions()
+        c.world_state.update("people", [])
+        c._face_tracking_lock = {}
+        c._face_tracking_suspended_until = 0.0
+
+        with (
+            mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+            mock.patch.object(c.time, "monotonic", return_value=300.0),
+            mock.patch("hardware.servos.set_servos") as set_servos,
+            mock.patch("hardware.servos.set_motion_profile"),
+            mock.patch("hardware.servos.set_face_tracking_baseline"),
+        ):
+            # User just said "look down": hold the gaze, then a fresh off-camera
+            # voice arrives. The hold must win — no room-scan, head stays put.
+            c.hold_directed_gaze("down")
+            c.note_speaker_gaze_intent(
+                None,
+                unknown_voice=True,
+                reason="speech",
+                force_search=True,
+            )
+            c._step_face_tracking(self.frame)
+
+        set_servos.assert_not_called()
+        tracking = c.world_state.get("self_state").get("face_tracking") or {}
+        self.assertTrue(tracking.get("directed_hold"))
+        self.assertFalse(tracking.get("searching"))
+        # The wander stands down while a directed gaze is held.
+        from sequences import animations
+        self.assertTrue(animations._face_tracking_holding_gaze())
+
+    def test_visible_face_during_hold_still_tracks(self):
+        c = self.consciousness
+        self._set_servo_positions()
+        c.world_state.update("people", [{
+            "id": "person_1",
+            "person_db_id": 1,
+            "face_id": "Bret",
+            "face_visible": True,
+            "face_box": (100, 180, 120, 120),
+        }])
+        c._face_tracking_lock = {}
+        c._face_tracking_suspended_until = 0.0
+
+        with (
+            mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+            mock.patch.object(c.time, "monotonic", return_value=300.0),
+            mock.patch("hardware.servos.set_servos") as set_servos,
+            mock.patch("hardware.servos.set_motion_profile"),
+            mock.patch("hardware.servos.set_face_tracking_baseline"),
+        ):
+            # Holding "look down" must not block face tracking: if Rex spots
+            # someone (e.g. low in frame), he locks on and keeps watching them.
+            c.hold_directed_gaze("down")
+            c._step_face_tracking(self.frame)
+
+        set_servos.assert_called_once()
+        self.assertEqual(c._face_tracking_lock.get("key"), "db:1")
 
     def test_startup_scan_accepts_visible_face_instead_of_searching(self):
         c = self.consciousness

@@ -1130,7 +1130,7 @@ def _face_tracking_holding_gaze() -> bool:
     tracking = _world_self_state().get("face_tracking") or {}
     if not isinstance(tracking, dict):
         return False
-    if tracking.get("searching"):
+    if tracking.get("searching") or tracking.get("directed_hold"):
         return True
     return bool(
         tracking.get("locked")

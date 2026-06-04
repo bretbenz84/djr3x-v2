@@ -1127,6 +1127,14 @@ DIRECTED_LOOK_CONTEXT_WINDOW_SECS = 25.0
 DIRECTED_LOOK_CLARIFY_AFTER_COMMANDS = 3
 DIRECTED_LOOK_OBJECT_SEARCH_MAX_ATTEMPTS = 5
 DIRECTED_LOOK_FACE_SEARCH_MAX_ATTEMPTS = 5
+# After an explicit bare directional look ("look down", "look left", ...), commit
+# to that gaze for a while: the speaker-search room scan and the adaptive
+# head-rest drift are suppressed and the idle wander stands down, so Rex's head
+# holds where he was told to look instead of popping back up to level. Face
+# tracking still runs — if he spots someone he locks on and keeps watching them.
+# The hold lapses after DIRECTED_LOOK_HOLD_SECS so he resumes looking around.
+DIRECTED_LOOK_HOLD_ENABLED = True
+DIRECTED_LOOK_HOLD_SECS = 25.0
 
 # Wave gesture defaults for "wave to X".
 WAVE_COUNT = 3
@@ -1363,17 +1371,37 @@ SPEAKER_GAZE_INTENT_WINDOW_SECS = _env_float(
     min_value=0.0,
     max_value=60.0,
 )
+# How long the whole room scan stays "requested". Sized to fit one full dwelled
+# pass: ~5 waypoints × (SETTLE + DWELL) ≈ 12s, so 13.5 leaves margin.
 SPEAKER_GAZE_SEARCH_WINDOW_SECS = _env_float(
     "SPEAKER_GAZE_SEARCH_WINDOW_SECS",
-    8.0,
+    13.5,
     min_value=0.0,
-    max_value=30.0,
+    max_value=60.0,
 )
+# Legacy min-gap between waypoint commands. Superseded by the SETTLE + DWELL
+# cadence below (kept defined for back-compat; no longer gates the scan).
 SPEAKER_GAZE_SEARCH_INTERVAL_SECS = _env_float(
     "SPEAKER_GAZE_SEARCH_INTERVAL_SECS",
     1.15,
     min_value=0.1,
     max_value=5.0,
+)
+# Per-waypoint cadence: snap to the pose (SETTLE, servo move finishing), then HOLD
+# STILL (DWELL) issuing no servo command so the head is steady. dlib detection runs
+# on the ~1 Hz cognition loop, so the dwell must span ≥2 detection passes (≥~2s) for
+# a small/distant/averted face to get a fair chance to lock before the head moves on.
+SPEAKER_GAZE_SEARCH_SETTLE_SECS = _env_float(
+    "SPEAKER_GAZE_SEARCH_SETTLE_SECS",
+    0.4,
+    min_value=0.0,
+    max_value=3.0,
+)
+SPEAKER_GAZE_SEARCH_DWELL_SECS = _env_float(
+    "SPEAKER_GAZE_SEARCH_DWELL_SECS",
+    2.0,
+    min_value=0.0,
+    max_value=10.0,
 )
 SPEAKER_GAZE_LOST_SEARCH_AFTER_SECS = _env_float(
     "SPEAKER_GAZE_LOST_SEARCH_AFTER_SECS",
@@ -1417,15 +1445,19 @@ SPEAKER_GAZE_TILT_MAX_STEP_QUS = _env_int(
     min_value=1,
     max_value=2000,
 )
+# Snappy move TO each waypoint (was 55/8). The head should reach the pose quickly so
+# the bulk of the per-waypoint time is a still DWELL the camera can detect through,
+# not a slow drift. Motion blur during the brief move is fine — detection happens in
+# the dwell after it settles.
 SPEAKER_GAZE_SEARCH_SERVO_SPEED = _env_int(
     "SPEAKER_GAZE_SEARCH_SERVO_SPEED",
-    55,
+    130,
     min_value=0,
     max_value=255,
 )
 SPEAKER_GAZE_SEARCH_SERVO_ACCELERATION = _env_int(
     "SPEAKER_GAZE_SEARCH_SERVO_ACCELERATION",
-    8,
+    20,
     min_value=0,
     max_value=255,
 )
@@ -1459,10 +1491,11 @@ SPEAKER_GAZE_SEARCH_DOWN_LIFT_FRACTION = _env_float(
 # Number of horizontal lanes the randomized room scan sweeps per pass (in addition
 # to the initial look-down beat and the closing recenter). The scan reshuffles these
 # lanes and pairs each with a random pitch every pass, so Rex doesn't look around the
-# same predictable way each boot. ~5 lanes ≈ one pass inside SEARCH_WINDOW_SECS.
+# same predictable way each boot. Fewer lanes (3) + a longer per-waypoint DWELL beats
+# many fast lanes: each spot is held still long enough for dlib to lock.
 SPEAKER_GAZE_SEARCH_POINTS = _env_int(
     "SPEAKER_GAZE_SEARCH_POINTS",
-    5,
+    3,
     min_value=3,
     max_value=12,
 )
@@ -2629,9 +2662,12 @@ STARTUP_EMPTY_ROOM_REQUIRE_SCAN_COMPLETE = _env_bool(
     "STARTUP_EMPTY_ROOM_REQUIRE_SCAN_COMPLETE",
     True,
 )
+# Floor on how long Rex must scan before he's allowed to call the room empty. The
+# gate auto-stretches this to max(this, SPEAKER_GAZE_SEARCH_WINDOW_SECS + 0.5), so it
+# tracks the now-longer dwelled scan — don't let "no organics" beat a real look.
 STARTUP_EMPTY_ROOM_MIN_SCAN_SECS = _env_float(
     "STARTUP_EMPTY_ROOM_MIN_SCAN_SECS",
-    9.5,
+    13.5,
     min_value=0.0,
     max_value=60.0,
 )

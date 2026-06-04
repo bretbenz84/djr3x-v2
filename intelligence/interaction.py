@@ -8265,6 +8265,12 @@ def _execute_directed_look_command(
         )
 
         if bare_directional:
+            # Commit to the gaze he was told to take instead of immediately
+            # scanning the room / drifting his head back up to level.
+            try:
+                consciousness.hold_directed_gaze(actual_direction)
+            except Exception as exc:
+                _log.debug("directed gaze hold failed: %s", exc)
             _directed_look_context["bare_count"] = int(
                 _directed_look_context.get("bare_count") or 0
             ) + 1

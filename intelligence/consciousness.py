@@ -281,6 +281,12 @@ _recent_engaged_touch_at: float = 0.0
 _speaker_gaze_lock = threading.Lock()
 _speaker_gaze_intent: dict = {}
 
+# Directed-gaze hold: an explicit "look down" (etc.) pins the head where it was
+# told to look for a cooldown window, instead of letting the speaker room-scan,
+# the adaptive rest drift, or the idle wander pull it back up to level.
+_directed_gaze_hold_lock = threading.Lock()
+_directed_gaze_hold: dict = {"until": 0.0, "direction": None, "started_at": 0.0}
+
 # Learned vertical rest gaze. Active face tracking still owns the exact gaze
 # baseline; this only changes where Rex settles/searches after a face disappears.
 _adaptive_head_rest: dict = {
@@ -512,6 +518,10 @@ def note_speaker_gaze_intent(
     else:
         visible = _any_visible_face()
     search_requested = (not visible) if force_search is None else bool(force_search)
+    # An explicit directed look ("look down") owns the head right now — don't let
+    # fresh speech kick off a room scan that would sweep his gaze back up.
+    if search_requested and directed_gaze_hold_active(now):
+        search_requested = False
 
     with _speaker_gaze_lock:
         _speaker_gaze_intent.clear()
@@ -526,6 +536,8 @@ def note_speaker_gaze_intent(
             "search_index": 0,
             "search_plan": None,
             "search_plan_index": 0,
+            "waypoint_committed_at": 0.0,
+            "waypoint_pose": None,
             "acquired_at": 0.0,
         })
     _log.info(
@@ -536,6 +548,59 @@ def note_speaker_gaze_intent(
         visible,
         search_requested,
     )
+
+
+def hold_directed_gaze(direction: str, *, secs: Optional[float] = None) -> None:
+    """Commit Rex to a user-directed gaze (e.g. "look down") for a cooldown.
+
+    While the hold is active the speaker-search room scan and the adaptive
+    head-rest drift are suppressed, and the idle wander stands down, so Rex's
+    head stays where he was told to look instead of popping back up to level.
+    Face tracking still runs: if he spots someone he locks on and keeps watching
+    them. The hold lapses after the cooldown so he resumes looking around.
+    """
+    if not bool(getattr(config, "DIRECTED_LOOK_HOLD_ENABLED", True)):
+        return
+    norm = (direction or "").strip().lower()
+    # Re-centering to neutral isn't a gaze worth pinning in place.
+    if norm in ("", "center", "centre", "current", "front", "forward", "ahead", "straight"):
+        clear_directed_gaze_hold()
+        return
+    if secs is None:
+        secs = float(getattr(config, "DIRECTED_LOOK_HOLD_SECS", 25.0))
+    secs = max(0.0, float(secs))
+    if secs <= 0.0:
+        return
+    now = time.monotonic()
+    with _directed_gaze_hold_lock:
+        _directed_gaze_hold.update({
+            "until": now + secs,
+            "direction": norm,
+            "started_at": now,
+        })
+    # A fresh directed look supersedes any in-flight speaker room-scan: stop the
+    # search so it can't sweep the head back up out from under the hold.
+    with _speaker_gaze_lock:
+        if _speaker_gaze_intent:
+            _speaker_gaze_intent["search_requested"] = False
+            _speaker_gaze_intent["search_plan"] = None
+            _speaker_gaze_intent["search_plan_index"] = 0
+            _speaker_gaze_intent["waypoint_committed_at"] = 0.0
+            _speaker_gaze_intent["waypoint_pose"] = None
+    _log.info("[directed_gaze] hold direction=%s secs=%.1f", norm, secs)
+
+
+def directed_gaze_hold_active(now: Optional[float] = None) -> bool:
+    """True while an explicit directed look is still being held."""
+    now = time.monotonic() if now is None else now
+    with _directed_gaze_hold_lock:
+        return float(_directed_gaze_hold.get("until") or 0.0) > now
+
+
+def clear_directed_gaze_hold() -> None:
+    """Release any directed-gaze hold so normal idle behavior resumes."""
+    with _directed_gaze_hold_lock:
+        _directed_gaze_hold.update({"until": 0.0, "direction": None, "started_at": 0.0})
 
 
 def request_face_acquisition_scan(reason: str = "startup") -> None:
@@ -583,6 +648,8 @@ def _speaker_gaze_note_acquired(candidate: dict) -> None:
         _speaker_gaze_intent["search_plan"] = None
         _speaker_gaze_intent["search_plan_index"] = 0
         _speaker_gaze_intent["last_search_at"] = 0.0
+        _speaker_gaze_intent["waypoint_committed_at"] = 0.0
+        _speaker_gaze_intent["waypoint_pose"] = None
         _speaker_gaze_intent["acquired_at"] = now
 
 
@@ -8223,8 +8290,9 @@ def _speaker_gaze_search_targets(neck_frac, vert_frac: float) -> dict[int, int]:
     neutral_neck = int(neck_cfg["neutral"])
     rest_lift, rest_tilt = _adaptive_head_rest_target()
 
-    neck_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_NECK_FRACTION", 0.42))
-    down_tilt_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION", 0.72))
+    # Inline fallbacks mirror the config defaults so config stays the one source of truth.
+    neck_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_NECK_FRACTION", 1.0))
+    down_tilt_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_DOWN_TILT_FRACTION", 0.65))
     down_lift_fraction = float(getattr(config, "SPEAKER_GAZE_SEARCH_DOWN_LIFT_FRACTION", 0.18))
 
     if neck_frac is None:
@@ -8285,13 +8353,22 @@ def _step_speaker_gaze_search(servo_mod, intent: Optional[dict], now: float) -> 
     except Exception:
         pass
 
-    interval = float(getattr(config, "SPEAKER_GAZE_SEARCH_INTERVAL_SECS", 0.70) or 0.70)
+    # Per-waypoint cadence is "snap to the pose, then HOLD STILL" so the head
+    # actually stops moving long enough for dlib (which only runs on the ~1 Hz
+    # cognition loop) to get a couple of clean frames and lock a face. Each
+    # waypoint gets a short SETTLE (servo move finishing) followed by a longer
+    # DWELL (no servo command at all — the camera is steady). Only once the dwell
+    # elapses do we advance to the next waypoint.
+    settle = float(getattr(config, "SPEAKER_GAZE_SEARCH_SETTLE_SECS", 0.4) or 0.0)
+    dwell = float(getattr(config, "SPEAKER_GAZE_SEARCH_DWELL_SECS", 2.0) or 0.0)
+    hold_total = max(0.1, settle + dwell)
     with _speaker_gaze_lock:
         if not _speaker_gaze_intent:
             return None
-        last_search_at = float(_speaker_gaze_intent.get("last_search_at") or 0.0)
-        if last_search_at > 0.0 and (now - last_search_at) < max(0.1, interval):
-            return None
+        committed_at = float(_speaker_gaze_intent.get("waypoint_committed_at") or 0.0)
+        if committed_at > 0.0 and (now - committed_at) < hold_total:
+            # Still settling/dwelling at the current waypoint — keep the head put.
+            return _speaker_gaze_intent.get("waypoint_pose")
         plan = _speaker_gaze_intent.get("search_plan")
         plan_idx = int(_speaker_gaze_intent.get("search_plan_index") or 0)
         if not plan or plan_idx >= len(plan):
@@ -8300,13 +8377,15 @@ def _step_speaker_gaze_search(servo_mod, intent: Optional[dict], now: float) -> 
             _speaker_gaze_intent["search_plan"] = plan
             plan_idx = 0
         neck_frac, vert_frac = plan[plan_idx]
+        pose = _speaker_gaze_search_label(neck_frac, vert_frac)
         _speaker_gaze_intent["search_plan_index"] = plan_idx + 1
         _speaker_gaze_intent["search_index"] = int(_speaker_gaze_intent.get("search_index") or 0) + 1
+        _speaker_gaze_intent["waypoint_committed_at"] = now
+        _speaker_gaze_intent["waypoint_pose"] = pose
         _speaker_gaze_intent["last_search_at"] = now
         if not _speaker_gaze_intent.get("search_started_at"):
             _speaker_gaze_intent["search_started_at"] = now
 
-    pose = _speaker_gaze_search_label(neck_frac, vert_frac)
     targets = _speaker_gaze_search_targets(neck_frac, vert_frac)
     try:
         servo_mod.set_motion_profile(
@@ -8345,6 +8424,7 @@ def _record_face_tracking_state(
     searching: bool = False,
     search_reason: str | None = None,
     search_pose: str | None = None,
+    directed_hold: bool = False,
 ) -> None:
     try:
         self_state = world_state.get("self_state")
@@ -8355,6 +8435,7 @@ def _record_face_tracking_state(
             "visible": bool(visible),
             "holding_lost_lock": bool(holding_lost_lock),
             "searching": bool(searching),
+            "directed_hold": bool(directed_hold),
             "search_reason": search_reason if searching else None,
             "search_pose": search_pose if searching else None,
             "lock_key": _face_tracking_lock.get("key") if locked else None,
@@ -8420,6 +8501,22 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         lost_search_after = float(getattr(config, "SPEAKER_GAZE_LOST_SEARCH_AFTER_SECS", 0.45) or 0.0)
 
         candidate = _speaker_gaze_candidate(candidates, speaker_intent)
+
+        # User told Rex to hold a gaze (e.g. "look down"). While that hold is
+        # live and nobody is visible to track, don't scan the room or drift back
+        # to rest — just hold the commanded pose (breathing still bobs around the
+        # directed baseline). Mark it so the idle wander stands down too. If any
+        # face IS visible we fall through to normal tracking below, so the moment
+        # he spots someone low in frame he locks on and keeps looking down.
+        if not candidates and directed_gaze_hold_active(now):
+            _face_tracking_lock = {}
+            _record_face_tracking_state(
+                locked=False,
+                visible=False,
+                directed_hold=True,
+            )
+            return
+
         speaker_target_missing = (
             candidate is None
             and _speaker_gaze_intent_needs_specific_target(speaker_intent)

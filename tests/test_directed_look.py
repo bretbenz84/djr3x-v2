@@ -5,6 +5,13 @@ import numpy as np
 
 
 class DirectedLookTests(unittest.TestCase):
+    def tearDown(self):
+        # A bare directional look pins a directed-gaze hold; clear it so the
+        # 25s hold doesn't leak into face-tracking tests later in the suite.
+        from intelligence import consciousness
+
+        consciousness.clear_directed_gaze_hold()
+
     def test_parser_accepts_each_cardinal_look_direction(self):
         from intelligence import command_parser
 
