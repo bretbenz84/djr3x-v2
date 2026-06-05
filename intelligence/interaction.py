@@ -7475,6 +7475,22 @@ def _split_stream_sentences(buffer: str, min_chars: int) -> tuple[list[str], str
     return sentences, buffer[pending_start:]
 
 
+def _complete_sentence_prefix(text: str) -> str:
+    """Trim `text` to its last COMPLETE sentence, dropping a trailing mid-sentence
+    fragment (the model got cut off by max_tokens). Uses min_chars=1 so a short but
+    finished sentence ("Wow indeed!") is recognized rather than merged into the
+    truncated tail. Returns "" when nothing complete remains. Used by the streaming
+    safety-net fallback so it never re-emits a cut-off fragment ("Wow indeed! I")."""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    sentences, remainder = _split_stream_sentences(t, 1)
+    remainder = remainder.strip()
+    if remainder and _tail_is_speakable(remainder):
+        sentences.append(remainder)
+    return " ".join(s for s in sentences if s).strip()
+
+
 def _streaming_surprise_beat(surprise_result: dict) -> int:
     """Pre-beat (ms) before the first sentence when the utterance is surprising.
 
@@ -7667,7 +7683,11 @@ def _stream_and_speak_sentences(
     # whole-reply governance — which yields a frame fallback line — so Rex is
     # never left silent. Rare: general frames never drop sentences here.
     if not spoken and not _interrupted.is_set():
-        raw_full = "".join(raw_chunks).strip()
+        # Trim a trailing mid-sentence fragment first — otherwise a max_tokens
+        # truncation ("Wow indeed! I") gets re-emitted as a cut-off line. A short
+        # finished sentence the splitter's min-chars merge skipped ("Wow indeed!",
+        # 11<12 chars) is recovered here; nothing complete → stay silent.
+        raw_full = _complete_sentence_prefix("".join(raw_chunks))
         if raw_full:
             fallback = ""
             try:

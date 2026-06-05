@@ -590,6 +590,53 @@ def _relationship_tone_rule(person: dict, name: str) -> str:
     return ""
 
 
+_LIVE_EXPRESSION_PHRASES = {
+    "smile": "smiling / visibly amused",
+    "surprise": "wide-eyed / looks surprised",
+    "frown": "frowning / looks down",
+    "brow_furrow": "furrowing their brow / looks focused or skeptical",
+}
+
+
+def _live_expression_prompt_line(ws: dict, person_id: Optional[int]) -> str:
+    """Surface the engaged person's NOTABLE live facial expression (a smile right
+    NOW, surprise, etc.) so Rex can react to it WITHIN his reply. The camera's
+    in-the-moment emotional read otherwise only reaches the proactive smile-reaction
+    path, which competes for the proactive slot and is usually suppressed
+    mid-conversation. Reuses consciousness._person_reactable_expression so the gating
+    (per-kind confidence + reading-staleness) matches that proactive reaction
+    exactly. Returns "" when disabled, no notable expression, or on any error."""
+    try:
+        if not bool(getattr(config, "LIVE_EXPRESSION_IN_REPLY_ENABLED", True)):
+            return ""
+        people = ws.get("people") or []
+        person = None
+        if person_id is not None:
+            for candidate in people:
+                if candidate.get("person_db_id") == person_id:
+                    person = candidate
+                    break
+        if person is None and len(people) == 1:
+            person = people[0]
+        if not isinstance(person, dict):
+            return ""
+        from intelligence import consciousness
+        kind, _conf = consciousness._person_reactable_expression(person)
+        if not kind:
+            return ""
+        phrase = _LIVE_EXPRESSION_PHRASES.get(kind, str(kind))
+        who = str(person.get("name") or "").split()[0] or "they"
+        return (
+            f"Live camera read: {who} is {phrase} right NOW (this moment, not their "
+            "usual). If it naturally fits, you may briefly acknowledge or play off it "
+            "in-character — don't force it, don't react every turn, and never say a "
+            "camera told you."
+        )
+    except Exception as exc:
+        _log.debug("live expression prompt injection skipped: %s", exc)
+        return ""
+
+
 def assemble_system_prompt(
     person_id: Optional[int] = None,
     agenda_directive: Optional[str] = None,
@@ -638,6 +685,12 @@ def assemble_system_prompt(
 
     # 4. WorldState snapshot summary
     sections.append("World context:\n" + _summarize_world_state(ws))
+
+    # 4b. Live facial expression in the moment (a smile right now, etc.) so Rex can
+    # react to it inside his reply — see _live_expression_prompt_line.
+    live_expression = _live_expression_prompt_line(ws, person_id)
+    if live_expression:
+        sections.append(live_expression)
 
     try:
         cast = social_scene.conversation_cast_context(

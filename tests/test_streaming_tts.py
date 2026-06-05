@@ -101,6 +101,27 @@ class TailIsSpeakableTest(unittest.TestCase):
                 self.assertFalse(I._tail_is_speakable(tail))
 
 
+class CompleteSentencePrefixTest(unittest.TestCase):
+    """The streaming safety-net fallback must NOT re-emit a max-token-truncated
+    fragment ("Wow indeed! I" — the live cut-off). _complete_sentence_prefix trims
+    to the last complete sentence (recovering short finished ones the min-chars
+    merge skipped) and returns "" when nothing complete remains."""
+
+    def test_drops_truncated_tail_keeps_short_finished_sentence(self):
+        self.assertEqual(I._complete_sentence_prefix("Wow indeed! I"), "Wow indeed!")
+
+    def test_keeps_fully_complete_reply(self):
+        self.assertEqual(
+            I._complete_sentence_prefix("That's great. Tell me more."),
+            "That's great. Tell me more.",
+        )
+
+    def test_no_complete_sentence_returns_empty(self):
+        for text in ["I mean, I've", "Hi there, friend, how", "", "   ", None]:
+            with self.subTest(text=text):
+                self.assertEqual(I._complete_sentence_prefix(text), "")
+
+
 class GovernStreamSentenceTest(unittest.TestCase):
     def test_drops_disallowed_question(self):
         self.assertEqual(SF.govern_stream_sentence("Who are you?", _frame(allow_question=False)), "")

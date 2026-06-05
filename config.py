@@ -452,6 +452,15 @@ SMILE_REACTION_RECENT_ENGAGEMENT_SECS = _env_float(
     max_value=180.0,
 )
 
+# Live facial expression in the REPLY prompt. The proactive smile/expression
+# reactions (above) only fire when they win the proactive arbitration, which they
+# often lose mid-conversation (busy + cooldown). This instead surfaces the engaged
+# person's NOTABLE current expression (a smile, surprise, etc. right now) inside
+# the reply system prompt, so Rex can acknowledge it WITHIN his normal reply. Reuses
+# the same per-kind confidence + reading-staleness gating as the proactive reaction
+# (consciousness._person_reactable_expression). Kill switch:
+LIVE_EXPRESSION_IN_REPLY_ENABLED = _env_bool("LIVE_EXPRESSION_IN_REPLY_ENABLED", True)
+
 # General facial-expression reactions. Neutral is intentionally ignored; these
 # are for clear shifts like surprise, frowns, and brow furrows.
 FACIAL_EXPRESSION_REACTIONS_ENABLED = _env_bool(

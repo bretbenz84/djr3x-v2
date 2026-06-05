@@ -154,9 +154,10 @@ def generate_spoken(scenario: dict) -> str:
 
     # Safety net (mirrors _stream_and_speak_sentences): if every sentence was
     # governed away (e.g. an all-questions reply under a no-question frame), fall
-    # back to whole-reply governance so the eval scores a real line, not "".
+    # back to whole-reply governance so the eval scores a real line, not "" —
+    # trimming a trailing mid-sentence fragment first (the truncated-tail fix).
     if not spoken:
-        raw_full = "".join(raw_chunks).strip()
+        raw_full = I._complete_sentence_prefix("".join(raw_chunks))
         if raw_full:
             try:
                 fb = sf.govern_response(raw_full, frame).text or raw_full

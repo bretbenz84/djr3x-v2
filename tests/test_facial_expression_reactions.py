@@ -180,5 +180,45 @@ class FacialExpressionReactionTests(unittest.TestCase):
         self.assertNotIn(lines[0], choice.call_args.args[0])
 
 
+class LiveExpressionInReplyTests(unittest.TestCase):
+    """`llm._live_expression_prompt_line` surfaces the engaged person's NOTABLE
+    live expression into the reply prompt so Rex can react to a smile WITHIN his
+    reply (not only via the proactive smile reaction, which is often suppressed
+    mid-conversation). The detection gating is consciousness's job (tested above);
+    this pins person-finding, phrasing, and the kill switch."""
+
+    def _ws(self, person_id=1, name="Bret Benziger"):
+        return {"people": [{"person_db_id": person_id, "name": name,
+                            "face_expression": {"expression": "smile", "confidence": 0.9}}]}
+
+    def test_notable_expression_surfaces_for_engaged_person(self):
+        from intelligence import llm, consciousness
+        with mock.patch.object(consciousness, "_person_reactable_expression",
+                               return_value=("smile", 0.9)):
+            line = llm._live_expression_prompt_line(self._ws(), 1)
+        self.assertIn("smiling", line.lower())
+        self.assertIn("Bret", line)
+        self.assertIn("right now", line.lower())
+        self.assertIn("never say a camera", line.lower())  # instructs against narrating the camera
+
+    def test_no_notable_expression_is_silent(self):
+        from intelligence import llm, consciousness
+        with mock.patch.object(consciousness, "_person_reactable_expression",
+                               return_value=(None, 0.0)):
+            self.assertEqual(llm._live_expression_prompt_line(self._ws(), 1), "")
+
+    def test_kill_switch_disables_injection(self):
+        from intelligence import llm, consciousness
+        with mock.patch.object(llm.config, "LIVE_EXPRESSION_IN_REPLY_ENABLED", False), \
+             mock.patch.object(consciousness, "_person_reactable_expression",
+                               return_value=("smile", 0.9)):
+            self.assertEqual(llm._live_expression_prompt_line(self._ws(), 1), "")
+
+    def test_no_person_is_silent(self):
+        from intelligence import llm
+        self.assertEqual(llm._live_expression_prompt_line({"people": []}, 1), "")
+        self.assertEqual(llm._live_expression_prompt_line({}, None), "")
+
+
 if __name__ == "__main__":
     unittest.main()
