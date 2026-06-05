@@ -99,12 +99,12 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # When True, clears logs/djr3x.log and logs/conversation.log at startup so
 # each run begins with fresh log files.
-DEBUG_MODE = True
+DEBUG_MODE = False
 
 # conversation.log is written by a tiny custom logger rather than Python's
 # RotatingFileHandler. Keep recent lines only so debug sessions do not leave a
 # giant conversational transcript behind.
-CONVERSATION_LOG_MAX_LINES = 400
+CONVERSATION_LOG_MAX_LINES = 1500
 CONVERSATION_LOG_DEBUG_MAX_LINES = 120
 
 # ─────────────────────────────────────────────────────────────────────────────
