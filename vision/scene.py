@@ -735,6 +735,30 @@ def describe_scene() -> str:
     return ". ".join(parts) + "." if parts else "Nothing notable right now."
 
 
+def quick_caption(frame=None) -> str:
+    """ONE cheap GPT-4o-mini vision call: a short plain caption of what's in front of
+    Rex right now ("a cluttered workshop, dim light, one person at a desk"). Used for
+    the once-per-run startup snapshot logged to episodic memory. Low detail + tiny
+    token budget = minimal cost. Returns "" on any failure (no frame, no camera, API
+    error) — never raises."""
+    try:
+        if frame is None:
+            from vision import camera
+            frame = camera.get_frame()
+        if frame is None:
+            return ""
+        prompt = (
+            "In ONE short sentence, plainly describe this room/scene — what kind of "
+            "space it is, the lighting, how cluttered or tidy it looks, and roughly "
+            "how many people (if any) are visible. Just the description, no preamble."
+        )
+        raw = _call_gpt4o(frame, prompt, "scene_analysis", max_tokens=120)
+        return (raw or "").strip()
+    except Exception as exc:
+        _log.debug("quick_caption failed: %s", exc)
+        return ""
+
+
 def describe_scene_detailed(frame) -> dict:
     """
     Return a detailed, safety-filtered visual summary for conversation hooks.

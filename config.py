@@ -596,6 +596,23 @@ JEOPARDY_AUDIO_DIR = "assets/audio/jeopardy"
 DB_PATH            = "assets/memory/people.db"
 TRIVIA_DIR         = "assets/trivia"
 
+# Rex's OWN first-person episodic memory ("his autobiography") — a SEPARATE SQLite
+# DB from people.db (different lifecycle: people.db is what he knows ABOUT people,
+# rex.db is what's happened to HIM — people seen, scenes, things he did, session
+# summaries, with timestamps). PHASE 1: capture/logging only; nothing reads it back
+# yet (we want many runs to populate it before designing how he references it).
+REX_DB_PATH        = "assets/memory/rex.db"
+# Kill switch for episodic-memory CAPTURE. Off → no rex.db writes at all.
+EPISODIC_MEMORY_ENABLED = True
+# On shutdown, summarize the session transcript via the LLM and store it as a
+# 'conversation_summary' episode. Bounded by a timeout so it can't hang shutdown.
+EPISODIC_SHUTDOWN_SUMMARY_ENABLED = True
+EPISODIC_SHUTDOWN_SUMMARY_TIMEOUT_SECS = 12.0
+# Once per run, take ONE cheap GPT-4o-mini image caption of Rex's first look at the
+# room and log it as a 'scene' episode ("When I powered up, I saw: …"). Off the tick
+# (background thread), gated like all episodic writes.
+EPISODIC_STARTUP_IMAGE_ENABLED = True
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TTS — ELEVENLABS
 # ─────────────────────────────────────────────────────────────────────────────

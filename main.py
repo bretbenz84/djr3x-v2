@@ -54,6 +54,14 @@ except RuntimeError as e:
     print("Run:  python setup_assets.py", file=sys.stderr)
     sys.exit(1)
 
+# Rex's episodic-memory DB (rex.db) — create/ensure the schema (best-effort; never
+# fatal). Phase 1: capture only, nothing reads it back yet.
+try:
+    from memory import episodes as _episodes
+    _episodes.ensure_ready()
+except Exception as _exc:
+    logger.debug("rex.db ensure_ready failed: %s", _exc)
+
 # Step 3: Load config — raises RuntimeError at import time if API keys are missing.
 logger.info("Loading configuration and API keys...")
 try:
@@ -483,6 +491,60 @@ def _queue_camera_reconnect_line(downtime_secs: float = 0.0) -> Optional[str]:
     return line
 
 
+def _episodic_shutdown_summary() -> None:
+    """Summarize this session's conversation via the LLM and store it as a
+    'conversation_summary' episode in rex.db. Called at shutdown BEFORE interaction.stop()
+    so the transcript + session people are still intact. Failure-safe and TIMEOUT-bounded
+    (a background thread + join) so a slow/hung LLM call can never block shutdown."""
+    try:
+        import config
+        if not getattr(config, "EPISODIC_SHUTDOWN_SUMMARY_ENABLED", True):
+            return
+        from memory import episodes
+        if episodes._suppressed():  # gated: disabled / under the test runner
+            return
+        from memory import conversations as conv_memory
+        transcript = conv_memory.get_session_transcript() or []
+        if not transcript:
+            return  # nothing happened this session
+
+        # Best-effort: who was around (soft person refs for the episode).
+        people = []
+        try:
+            from intelligence import interaction as _intx
+            from memory import people as _people
+            for pid in list(getattr(_intx, "_session_person_ids", set()) or set()):
+                if isinstance(pid, int):
+                    try:
+                        name = (_people.get_person(pid) or {}).get("name")
+                    except Exception:
+                        name = None
+                    people.append({"person_id": pid, "name": name})
+        except Exception:
+            pass
+
+        result: dict = {}
+
+        def _work() -> None:
+            try:
+                from intelligence import llm
+                primary = people[0]["person_id"] if people else 0
+                result["summary"] = llm.generate_session_summary(primary, transcript)
+            except Exception as exc:
+                logger.debug("episodic shutdown summary llm failed: %s", exc)
+
+        timeout = float(getattr(config, "EPISODIC_SHUTDOWN_SUMMARY_TIMEOUT_SECS", 12.0))
+        worker = threading.Thread(target=_work, daemon=True, name="episodic-shutdown-summary")
+        worker.start()
+        worker.join(timeout)
+        summary = (result.get("summary") or "").strip()
+        if summary:
+            episodes.record_conversation_summary(summary, people=people or None)
+            logger.info("Saved shutdown conversation summary to rex.db (%d people).", len(people))
+    except Exception as exc:
+        logger.debug("episodic shutdown summary failed: %s", exc)
+
+
 def _shutdown() -> None:
     logger.info("=== Shutdown sequence begin ===")
 
@@ -492,6 +554,10 @@ def _shutdown() -> None:
         rex_pov.persist()
     except Exception as exc:
         logger.debug("rex_pov persist on shutdown failed: %s", exc)
+
+    # Episodic memory: summarize this session into rex.db (before interaction.stop()
+    # clears the transcript). Timeout-bounded so it can't hang shutdown.
+    _episodic_shutdown_summary()
 
     # Stop services in reverse startup order.
     logger.info("Stopping intelligence.interaction...")

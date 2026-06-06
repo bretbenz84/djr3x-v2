@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     DB_PATH,
+    REX_DB_PATH,
     FACE_MODELS_DIR,
     MEDIAPIPE_OBJECT_DETECTOR_MODEL,
     MEDIAPIPE_FACE_LANDMARKER_MODEL,
@@ -765,6 +766,44 @@ def initialize_database(
     return created, skipped, failed
 
 
+# Schema for Rex's OWN episodic-memory DB (rex.db) — mirrors memory/rex_db.SCHEMA.
+# Kept here too so a fresh system gets the file created at setup time.
+REX_DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS rex_episodes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at  TEXT    NOT NULL,
+    kind        TEXT    NOT NULL,
+    summary     TEXT    NOT NULL,
+    person_id   INTEGER,
+    person_name TEXT,
+    detail      TEXT,
+    salience    REAL    NOT NULL DEFAULT 0.5,
+    session_id  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rex_episodes_created ON rex_episodes(created_at);
+CREATE INDEX IF NOT EXISTS idx_rex_episodes_kind    ON rex_episodes(kind);
+CREATE INDEX IF NOT EXISTS idx_rex_episodes_person  ON rex_episodes(person_id);
+"""
+
+
+def initialize_rex_database(root: Path) -> tuple[list[str], list[str], list[str]]:
+    """Create Rex's episodic-memory DB (rex.db) on a fresh system. Separate file from
+    people.db, with its own schema. Idempotent (CREATE TABLE IF NOT EXISTS)."""
+    created, skipped, failed = [], [], []
+    db_path = root / REX_DB_PATH
+    try:
+        existed = db_path.exists()
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript(REX_DB_SCHEMA)
+        conn.commit()
+        conn.close()
+        (created if not existed else skipped).append("memory/rex.db — episodic schema")
+    except Exception as exc:
+        failed.append(f"memory/rex.db: {exc}")
+    return created, skipped, failed
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 9 — Summary
 # ─────────────────────────────────────────────────────────────────────────────
@@ -860,6 +899,9 @@ def main() -> None:
 
     print("[8/8] Database schema and personality defaults ...")
     c, s, f = initialize_database(root)
+    all_created += c; all_skipped += s; all_failed += f
+    _report(c, s, f)
+    c, s, f = initialize_rex_database(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 

@@ -237,6 +237,12 @@ assets/memory/people.db-shm
 assets/memory/people.db-wal
 assets/memory/people.db.bak-*
 
+# Rex's episodic memory ("his diary") — local runtime data, never commit
+assets/memory/rex.db
+assets/memory/rex.db-shm
+assets/memory/rex.db-wal
+assets/memory/rex.db.bak-*
+
 
 # Startup boot-line rotation state — local runtime bookkeeping
 assets/state/

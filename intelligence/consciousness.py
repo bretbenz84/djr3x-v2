@@ -1939,6 +1939,120 @@ def _animal_reaction_frame_and_line(animal: dict):
     return frame, random.choice(_GENERIC_ANIMAL_REACTION_LINES)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Episodic memory CAPTURE (Phase 1) — log Rex's own experiences to rex.db.
+# These are thin, failure-safe, GATED wrappers (memory.episodes no-ops under the
+# test runner / when disabled). NOTHING reads them back yet; we're populating the
+# DB across many runs for a later "what's worth remembering" Phase 2.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _episodic_person_seen(person_id, name) -> None:
+    if not isinstance(person_id, int):
+        return
+    try:
+        from memory import episodes
+        episodes.record_person_seen(person_id, name)
+    except Exception as exc:
+        _log.debug("episodic person_seen failed: %s", exc)
+
+
+def _episodic_made_laugh(person_id, name, kind: str = "smile") -> None:
+    try:
+        from memory import episodes
+        episodes.record_made_laugh(person_id if isinstance(person_id, int) else None, name, kind=kind)
+    except Exception as exc:
+        _log.debug("episodic made_laugh failed: %s", exc)
+
+
+def _episodic_animal(species, position=None) -> None:
+    try:
+        from memory import episodes
+        episodes.record_animal(species, position=position)
+    except Exception as exc:
+        _log.debug("episodic animal failed: %s", exc)
+
+
+_last_scene_episode_sig = None
+
+
+def _capture_scene_episode(snapshot: dict) -> None:
+    """Log a 'scene' episode when the observed environment MATERIALLY changes (deduped
+    on a signature, so it captures 'the room got cluttered/crowded' transitions, not
+    every tick). Cheap dict reads; the write itself is gated in memory.episodes."""
+    global _last_scene_episode_sig
+    try:
+        env = (snapshot or {}).get("environment") or {}
+        scene_type = str(env.get("scene_type") or "").strip()
+        lighting = str(env.get("lighting") or "").strip()
+        crowd = str(env.get("crowd_density") or "").strip()
+        desc = str(env.get("description") or "").strip()
+        if not (scene_type or desc):
+            return
+        sig = (scene_type, lighting, crowd, desc[:80])
+        if sig == _last_scene_episode_sig:
+            return
+        _last_scene_episode_sig = sig
+        if desc:
+            summary = f"I looked around the room: {desc}"
+        else:
+            parts = [p for p in (
+                scene_type or "",
+                f"{lighting} light" if lighting else "",
+                f"{crowd} crowd" if crowd else "",
+            ) if p]
+            if not parts:
+                return
+            summary = "The room was " + ", ".join(parts) + "."
+        from memory import episodes
+        episodes.record_scene(
+            summary,
+            detail={"scene_type": scene_type, "lighting": lighting,
+                    "crowd_density": crowd, "description": desc},
+        )
+    except Exception as exc:
+        _log.debug("episodic scene failed: %s", exc)
+
+
+_startup_image_captured = False
+
+
+def _capture_startup_image_episode(frame) -> None:
+    """Once per run: ONE cheap GPT image caption of Rex's first look at the room, logged
+    to rex.db as a 'scene' episode ("When I powered up, I saw: …"). The GPT call runs OFF
+    the tick (background thread) so it never delays consciousness; gated like all episodic
+    writes (no GPT call under the test runner / when disabled)."""
+    global _startup_image_captured
+    if _startup_image_captured or frame is None:
+        return
+    if not bool(getattr(config, "EPISODIC_STARTUP_IMAGE_ENABLED", True)):
+        _startup_image_captured = True
+        return
+    try:
+        from memory import episodes
+        if episodes._suppressed():   # disabled / under the test runner → no GPT call
+            _startup_image_captured = True
+            return
+    except Exception:
+        return
+    _startup_image_captured = True   # one-shot: latch BEFORE spawning so we fire once
+
+    def _work(frame=frame) -> None:
+        try:
+            from vision import scene as _scene
+            caption = _scene.quick_caption(frame)
+            if caption:
+                from memory import episodes
+                episodes.record_episode(
+                    "scene", f"When I powered up, I saw: {caption}",
+                    detail={"source": "startup_image_caption"}, salience=0.55,
+                )
+                _log.info("episodic: startup image caption logged")
+        except Exception as exc:
+            _log.debug("startup image caption failed: %s", exc)
+
+    threading.Thread(target=_work, daemon=True, name="startup-image-caption").start()
+
+
 def _fire_pending_animal_arrival_reaction() -> bool:
     if not _pending_animal_arrivals:
         return False
@@ -1950,12 +2064,17 @@ def _fire_pending_animal_arrival_reaction() -> bool:
             continue
         frame, line = _animal_reaction_frame_and_line(animal)
 
-        def _on_spoke(signature=signature, frame=frame, line=line, now=now) -> None:
+        _ep_species = (animal.get("species") or "creature")
+        _ep_position = animal.get("position")
+
+        def _on_spoke(signature=signature, frame=frame, line=line, now=now,
+                      species=_ep_species, position=_ep_position) -> None:
             # Prime the face + retire the pending arrival only on an actual spoken
             # reaction — under ENFORCE a losing candidate must not pop the queue.
             _prime_emotion_frame(frame)
             _animal_reacted_at[signature] = now
             _pending_animal_arrivals.pop(signature, None)
+            _episodic_animal(species, position)  # "I saw a dog" → rex.db
             _log.info(
                 "consciousness: animal arrival reaction fired signature=%s text=%r",
                 signature,
@@ -2507,6 +2626,13 @@ def _step_smile_reaction(snapshot: dict, profile: SituationProfile) -> None:
             watch.get("person_key"),
             watch.get("baseline_expression"),
             _person_expression_label(person),
+        )
+        # "I made <name> smile" → rex.db. person_key is a STRING ("db:123"), so pull
+        # the int id from the person dict instead.
+        _episodic_made_laugh(
+            _person_db_id(person) if person else None,
+            _first_name((person or {}).get("face_id"), "them"),
+            kind="smile",
         )
 
 
@@ -7117,6 +7243,8 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                             )
                     _greeted_this_session.add(key)
                     _first_sight_seen_at.pop(key, None)
+                    # "I saw <name>" → rex.db (once per known person per run).
+                    _episodic_person_seen(person_db_id, person_name)
                 else:
                     first_sight_pending_keys.add(key)
             # Already greeted/enrolled people and anonymous slots should become
@@ -9543,6 +9671,8 @@ def _loop() -> None:
             except Exception:
                 frame = None
             _note_startup_camera_frame(frame)
+            # Once per run: cheap GPT caption of Rex's first look → rex.db (off-tick).
+            _capture_startup_image_episode(frame)
 
             # 3. Interoception
             _step_interoception()
@@ -9565,6 +9695,10 @@ def _loop() -> None:
 
             # Snapshot after recognition/social analysis so steps 6–11 see identified persons
             snapshot = world_state.snapshot()
+
+            # Episodic memory: log a scene observation when the room materially changes
+            # (deduped). Capture only; nothing reads it back yet.
+            _capture_scene_episode(snapshot)
 
             # 5c. Celebrity overrides. These own the first conversational beat
             # before ordinary greetings or ambient remarks.
