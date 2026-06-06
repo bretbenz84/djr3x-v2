@@ -160,8 +160,24 @@ class ComplimentDetectionTest(unittest.TestCase):
         for t in ("you're amazing", "Good job, Rex!", "that was brilliant", "I love you buddy"):
             self.assertTrue(personality.is_obvious_compliment(t), t)
 
+    def test_everyday_compliments_aimed_at_rex(self):
+        # Regression for a real robot run: "You're a nice robot" produced no reaction
+        # because "nice"/"nice robot" wasn't recognized.
+        for t in (
+            "You're a nice robot",
+            "you are a nice robot",
+            "good robot",
+            "you're so cool",
+            "I like you",
+            "you're cute",
+            "what a good boy",
+        ):
+            self.assertTrue(personality.is_obvious_compliment(t), t)
+
     def test_non_compliments(self):
-        for t in ("what's the weather", "", "you're an idiot", "play some music"):
+        # Ambiguous bare words must NOT false-trigger out of context.
+        for t in ("what's the weather", "", "you're an idiot", "play some music",
+                  "nice weather today", "cool, let's go", "that's a great question"):
             self.assertFalse(personality.is_obvious_compliment(t), t)
 
 

@@ -8625,6 +8625,22 @@ def _limited_tracking_step(name: str, current: int, target: int, max_step: int) 
     return _clamp_servo(name, int(current) + (max_step if delta > 0 else -max_step))
 
 
+def _neck_saturated_at_rail(current: float, target: float, cfg: dict) -> bool:
+    """True when the neck is already pinned at a mechanical limit AND the centering
+    target still wants to push it further into that same rail — so a correction can't
+    reduce the error and only jitters the head. Caller holds position instead."""
+    if not bool(getattr(config, "FACE_TRACKING_RAIL_DAMP_ENABLED", True)):
+        return False
+    eps = int(getattr(config, "FACE_TRACKING_RAIL_DAMP_EPSILON_QUS", 60) or 0)
+    if eps <= 0:
+        return False
+    lo = int(cfg["min"])
+    hi = int(cfg["max"])
+    at_high = current >= hi - eps and target >= hi - eps
+    at_low = current <= lo + eps and target <= lo + eps
+    return bool(at_high or at_low)
+
+
 def _adaptive_head_rest_enabled() -> bool:
     return bool(getattr(config, "FACE_TRACKING_ADAPTIVE_REST_ENABLED", True)) and bool(
         getattr(config, "FACE_TRACKING_VERTICAL_ENABLED", True)
@@ -9557,6 +9573,10 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         if getattr(servo_mod, "listening_motion_active", lambda: False)():
             return
 
+        # While SPEAKING, the speaker-gaze pose + speech wobble already move the head;
+        # we soften (not suspend) centering below so they don't all fight.
+        speech_active = bool(getattr(servo_mod, "speech_motion_active", lambda: False)())
+
         now = time.monotonic()
         candidates = _visible_face_tracking_candidates(people)
         speaker_intent = _speaker_gaze_current_intent(now)
@@ -9705,6 +9725,18 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
             neck_max_step = int(getattr(config, "SPEAKER_GAZE_NECK_MAX_STEP_QUS", neck_max_step))
             lift_max_step = int(getattr(config, "SPEAKER_GAZE_LIFT_MAX_STEP_QUS", lift_max_step))
             tilt_max_step = int(getattr(config, "SPEAKER_GAZE_TILT_MAX_STEP_QUS", tilt_max_step))
+        # Calm face-centering while Rex is speaking so it doesn't fight the speech
+        # motion / speaker-gaze pose: gentler gain + steps, wider dead-zone (only
+        # correct for large offsets). Speaker-gaze still points the head; this just
+        # stops the rapid micro-corrections that made the head thrash.
+        if speech_active and bool(getattr(config, "FACE_TRACKING_SPEECH_CALM_ENABLED", True)):
+            calm = max(0.0, min(1.0, float(getattr(config, "FACE_TRACKING_SPEECH_CALM_FACTOR", 0.4))))
+            gain *= calm
+            vertical_gain *= calm
+            neck_max_step = max(1, int(neck_max_step * calm))
+            lift_max_step = max(1, int(lift_max_step * calm))
+            tilt_max_step = max(1, int(tilt_max_step * calm))
+            dead_zone = max(dead_zone, float(getattr(config, "FACE_TRACKING_SPEECH_DEAD_ZONE_PX", 90)))
         cx, cy = candidate["center"]
         frame_cx = frame_w / 2.0
         frame_cy = frame_h / 2.0
@@ -9768,9 +9800,15 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
                 next_neck,
                 neck_max_step,
             )
-            if abs(next_neck - current_neck) >= 2:
+            if _neck_saturated_at_rail(current_neck, target_neck, neck_cfg):
+                # Neck is pinned at its limit and can't reduce this error — hold instead
+                # of jittering against the rail.
+                _neck_smooth = float(current_neck)
+            elif abs(next_neck - current_neck) >= 2:
                 updates[neck_ch] = next_neck
                 _neck_smooth = float(next_neck)
+            else:
+                _neck_smooth = float(current_neck)
         else:
             _neck_smooth = float(current_neck)
 

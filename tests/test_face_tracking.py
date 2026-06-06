@@ -222,6 +222,76 @@ class FaceTrackingTests(unittest.TestCase):
             tilt=updates[tilt_ch],
         )
 
+    def _run_one_face_tracking_tick(self, *, face_box, neck_start=6000, speech=False,
+                                    rail_damp=True):
+        """Run a single fresh face-tracking tick and return the set_servos updates dict."""
+        c = self.consciousness
+        self_state = c.world_state.get("self_state")
+        self_state["servo_positions"] = {
+            "neck": neck_start, "headlift": 6000, "headtilt": 4320, "visor": 6000,
+            "elbow": 6720, "hand": 6000, "pokerarm": 6000, "heroarm": 6000,
+        }
+        c.world_state.update("self_state", self_state)
+        c.world_state.update("people", [{
+            "id": "person_1", "person_db_id": 1, "face_id": "Bret",
+            "face_visible": True, "face_box": face_box,
+        }])
+        c._face_tracking_lock = {}
+        c._face_tracking_suspended_until = 0.0
+        c._face_tracking_last_error_key = None
+        c._face_tracking_last_error_x = 0.0
+        c._face_tracking_last_error_y = 0.0
+        c._face_tracking_last_error_at = 0.0
+        with (
+            mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+            mock.patch.object(c.time, "monotonic", return_value=300.0),
+            mock.patch("hardware.servos.set_servos") as set_servos,
+            mock.patch("hardware.servos.set_motion_profile"),
+            mock.patch("hardware.servos.set_face_tracking_baseline"),
+            mock.patch("hardware.servos.listening_motion_active", return_value=False),
+            mock.patch("hardware.servos.speech_motion_active", return_value=speech),
+            mock.patch.object(c.config, "FACE_TRACKING_VERTICAL_ENABLED", True),
+            mock.patch.object(c.config, "FACE_TRACKING_RAIL_DAMP_ENABLED", rail_damp),
+        ):
+            c._step_face_tracking(self.frame)
+        return set_servos.call_args.args[0] if set_servos.called else {}
+
+    def test_neck_saturated_at_rail_helper(self):
+        c = self.consciousness
+        cfg = c.config.SERVO_CHANNELS["neck"]
+        hi, lo = int(cfg["max"]), int(cfg["min"])
+        # Pinned at the high rail and still demanding more → saturated.
+        self.assertTrue(c._neck_saturated_at_rail(hi, hi, cfg))
+        self.assertTrue(c._neck_saturated_at_rail(hi - 10, hi, cfg))
+        self.assertTrue(c._neck_saturated_at_rail(lo, lo, cfg))           # low rail
+        # Pinned high but the target wants to come BACK toward centre → free to move.
+        self.assertFalse(c._neck_saturated_at_rail(hi, 6000, cfg))
+        self.assertFalse(c._neck_saturated_at_rail(6000, 9000, cfg))      # mid-range
+        with mock.patch.object(c.config, "FACE_TRACKING_RAIL_DAMP_ENABLED", False):
+            self.assertFalse(c._neck_saturated_at_rail(hi, hi, cfg))
+
+    def test_speech_calms_neck_centering(self):
+        # Face far to the right → strong neck correction; speaking should soften it.
+        far_right = (940, 300, 120, 120)  # center (1000, 360) in a 1280x720 frame
+        neck_ch = self.consciousness.config.SERVO_CHANNELS["neck"]["ch"]
+        neutral = int(self.consciousness.config.SERVO_CHANNELS["neck"]["neutral"])
+        off = self._run_one_face_tracking_tick(face_box=far_right, speech=False)
+        on = self._run_one_face_tracking_tick(face_box=far_right, speech=True)
+        off_delta = abs(off.get(neck_ch, neutral) - neutral)
+        on_delta = abs(on.get(neck_ch, neutral) - neutral)
+        self.assertGreater(off_delta, 0)
+        self.assertLess(on_delta, off_delta)  # speaking softens the head correction
+
+    def test_rail_damp_holds_pinned_neck(self):
+        # Neck nearly pinned at its max, face far right → centering wants the rail.
+        far_right = (1140, 300, 120, 120)  # center (1200, 360)
+        neck_ch = self.consciousness.config.SERVO_CHANNELS["neck"]["ch"]
+        near_max = int(self.consciousness.config.SERVO_CHANNELS["neck"]["max"]) - 34
+        damped = self._run_one_face_tracking_tick(face_box=far_right, neck_start=near_max, rail_damp=True)
+        undamped = self._run_one_face_tracking_tick(face_box=far_right, neck_start=near_max, rail_damp=False)
+        self.assertNotIn(neck_ch, damped)   # held: no jitter into the rail
+        self.assertIn(neck_ch, undamped)    # without damping it crawls into the rail
+
     def test_adaptive_rest_learns_downward_pose_from_low_face(self):
         c = self.consciousness
         self._set_servo_positions()

@@ -1329,6 +1329,26 @@ FACE_TRACKING_REVERSAL_DAMPING = _env_float(
     max_value=1.0,
 )
 
+# ── Calmer head during speech + at the servo rails ───────────────────────────
+# While Rex is SPEAKING, the speaker-gaze "look at the listener" pose and the
+# speech wobble already move the head; full-strength face-centering on top makes
+# all of them fight (the head thrashes). Soften centering during speech so it makes
+# only slow, large-error corrections and lets the speaking motion own the head.
+FACE_TRACKING_SPEECH_CALM_ENABLED = _env_bool("FACE_TRACKING_SPEECH_CALM_ENABLED", True)
+FACE_TRACKING_SPEECH_CALM_FACTOR = _env_float(  # scales gain + max-step during speech
+    "FACE_TRACKING_SPEECH_CALM_FACTOR", 0.4, min_value=0.0, max_value=1.0,
+)
+FACE_TRACKING_SPEECH_DEAD_ZONE_PX = _env_int(  # wider dead-zone while speaking (ignore small offsets)
+    "FACE_TRACKING_SPEECH_DEAD_ZONE_PX", 90, min_value=0, max_value=640,
+)
+# When a subject is so far off-centre that the neck saturates at its mechanical
+# limit, re-issuing tiny "turn further" commands just jitters the head against the
+# rail. Hold position instead once the neck is pinned and still can't reduce the error.
+FACE_TRACKING_RAIL_DAMP_ENABLED = _env_bool("FACE_TRACKING_RAIL_DAMP_ENABLED", True)
+FACE_TRACKING_RAIL_DAMP_EPSILON_QUS = _env_int(  # how close to min/max counts as "at the rail"
+    "FACE_TRACKING_RAIL_DAMP_EPSILON_QUS", 60, min_value=0, max_value=2000,
+)
+
 # Horizontal tracking uses the neck; vertical tracking combines lift and tilt.
 FACE_TRACKING_VERTICAL_ENABLED = _env_bool("FACE_TRACKING_VERTICAL_ENABLED", True)
 FACE_TRACKING_VERTICAL_GAIN = _env_float(
@@ -1992,12 +2012,22 @@ COMPLIMENT_KEYWORDS = [
     "amazing", "awesome", "brilliant", "clever", "wonderful", "fantastic",
     "incredible", "impressive", "genius", "love you", "the best", "good job",
     "well done", "nailed it", "you rock", "adorable", "charming",
+    "lovable", "delightful", "marvelous", "talented",
 ]
 COMPLIMENT_PHRASES = [
     "you're amazing", "you are amazing", "you're awesome", "you are awesome",
     "you're the best", "you are the best", "i love you", "you're so smart",
     "you are so smart", "good job", "well done", "you're brilliant",
     "you are brilliant", "that was funny", "you're hilarious", "you are hilarious",
+    # Common everyday compliments aimed at Rex. Phrases (not bare words) so an
+    # ambiguous "nice"/"cool"/"great" can't false-trigger on "nice weather"/"cool, bye".
+    "nice robot", "good robot", "good droid", "cool robot", "cute robot",
+    "best robot", "good boy", "you're nice", "you are nice", "you're a nice",
+    "you are a nice", "you're sweet", "you are sweet", "you're so sweet",
+    "you're cute", "you are cute", "you're adorable", "you are adorable",
+    "you're cool", "you are cool", "you're so cool", "you're great",
+    "you are great", "you're the coolest", "i like you", "i really like you",
+    "you're my favorite", "you are my favorite", "love you buddy",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
