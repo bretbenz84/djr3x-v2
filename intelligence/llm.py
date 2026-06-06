@@ -1021,10 +1021,15 @@ def generate_session_summary(person_id: int, transcript: list[dict]) -> str:
     if not transcript:
         return ""
     prompt = (
-        "You are summarizing a conversation between DJ-R3X (Rex), a robot DJ droid, "
-        "and a person he met. Write a 2–3 sentence summary capturing: "
-        "main topics discussed, emotional tone, anything notable or memorable. "
-        "Write in third person. Be concise.\n\n"
+        "You are writing a short memory note so DJ-R3X (Rex), a robot DJ droid, can "
+        "recall this conversation the NEXT time he talks with this person. Write a "
+        "2–3 sentence summary in third person, focused on the PERSON: the real-world "
+        "topics they discussed, what they shared about themselves, their mood, and "
+        "anything worth following up on next time. Capture substance, not performance "
+        "— do NOT describe, quote, or praise Rex's own jokes, bits, or in-character "
+        "flavor (his DJ shtick, his cantina/Batuu backstory, Star Wars references), "
+        "and do not carry those into the summary unless the PERSON brought them up. "
+        "Be concise and factual.\n\n"
         f"Transcript:\n{_format_transcript(transcript)}"
     )
     try:

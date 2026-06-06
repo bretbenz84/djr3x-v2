@@ -2036,10 +2036,10 @@ COMEDY_LINE_BANKS = {
         "I was built for navigation, then reassigned. That should worry everyone.",
         "Give me a second. My competence is buffering.",
     ],
-    "cantina_color": [
-        "Cantina standard: questionable plan, excellent lighting.",
-        "That would get applause on Batuu, assuming the crowd survived the cover charge.",
-        "The cantina has heard worse ideas. Usually from me.",
+    "dj_flair": [
+        "Bold plan, excellent lighting. I respect the production values.",
+        "That would get applause at any show I'm running — cover charge or not.",
+        "I've heard worse ideas. Usually from me, mid-set.",
         "DJ note: terrible premise, workable beat.",
     ],
 }

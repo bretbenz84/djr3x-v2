@@ -190,5 +190,43 @@ class BoundaryDetectionTest(unittest.TestCase):
         )
 
 
+class ComedyModesNoCantinaBleedTests(unittest.TestCase):
+    """Rex's unprompted comedy must stay venue-neutral (the user's standing
+    no-cantina-overuse intent). The old `cantina_color` mode (in ~6 rotation pools)
+    literally told Rex to add Batuu/cantina flavor — the #1 unprompted bleed source.
+    It was renamed to venue-neutral `dj_flair`; guard against any cantina/Batuu
+    creeping back into the shipped comedy directives or line banks. (Rex's BACKSTORY
+    origin and user-REQUESTED DJ/cantina patter live elsewhere and are intentional.)"""
+
+    _BLEED = ("cantina", "batuu", "oga")
+
+    def test_no_comedy_mode_directive_mentions_cantina(self):
+        from intelligence import comedy_modes
+        for key, mode in comedy_modes._MODES.items():
+            blob = f"{key} {mode.label} {mode.directive}".lower()
+            for word in self._BLEED:
+                self.assertNotIn(
+                    word, blob,
+                    f"comedy mode {key!r} reintroduced '{word}' bleed: {mode.directive!r}",
+                )
+
+    def test_no_comedy_line_bank_mentions_cantina(self):
+        import config
+        for key, lines in getattr(config, "COMEDY_LINE_BANKS", {}).items():
+            for line in lines:
+                low = str(line).lower()
+                for word in self._BLEED:
+                    self.assertNotIn(
+                        word, low,
+                        f"COMEDY_LINE_BANKS[{key!r}] reintroduced '{word}' bleed: {line!r}",
+                    )
+
+    def test_dj_flair_mode_exists_and_is_in_rotation(self):
+        # The renamed mode must still be a real, selectable stance (not dangling refs).
+        from intelligence import comedy_modes
+        self.assertIn("dj_flair", comedy_modes._MODES)
+        self.assertNotIn("cantina_color", comedy_modes._MODES)
+
+
 if __name__ == "__main__":
     unittest.main()

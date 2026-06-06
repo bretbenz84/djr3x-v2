@@ -92,10 +92,12 @@ _MODES: dict[str, ComedyMode] = {
         "fake system error",
         "Comedy mode: fake_system_error. Frame the joke as a harmless droid diagnostic, subroutine glitch, or sensor complaint.",
     ),
-    "cantina_color": ComedyMode(
-        "cantina_color",
-        "cantina color",
-        "Comedy mode: cantina_color. Add a small Batuu/cantina/showbiz-DJ flavor note if it serves the answer.",
+    "dj_flair": ComedyMode(
+        "dj_flair",
+        "DJ flair",
+        "Comedy mode: dj_flair. Add a small showbiz-DJ flourish if it serves the answer — "
+        "hype-man energy, a booth or mixing-desk aside, a bit of stage showmanship. Keep it "
+        "about the music and the show, not a place.",
     ),
     "self_own": ComedyMode(
         "self_own",
@@ -135,7 +137,7 @@ def select_mode(
         return _remember_mode(_MODES["straight"])
 
     # An interest/engage-first turn is about THE HUMAN'S topic — keep comedy
-    # complementary (tease the hobby, a dry beat, a little cantina colour) and
+    # complementary (tease the hobby, a dry beat, a little DJ flair) and
     # off the self-absorbed bits (self_own / fake_system_error) that ignore what
     # they just shared and contradict the frame's "engage-first" directive.
     interest_turn = (
@@ -145,23 +147,23 @@ def select_mode(
     )
 
     if roast_level == "none":
-        pool = ["dry_ack", "self_own", "cantina_color"]
+        pool = ["dry_ack", "self_own", "dj_flair"]
     elif interest_turn:
-        pool = ["dry_ack", "friendly_roast", "cantina_color"]
+        pool = ["dry_ack", "friendly_roast", "dj_flair"]
     elif _EXPLICIT_HUMOR_PAT.search(text):
-        pool = ["self_own", "fake_system_error", "cantina_color", "friendly_roast"]
+        pool = ["self_own", "fake_system_error", "dj_flair", "friendly_roast"]
     elif _MUSIC_PAT.search(text):
-        pool = ["cantina_color", "dry_ack", "self_own"]
+        pool = ["dj_flair", "dry_ack", "self_own"]
     elif _STATUS_PAT.match(text.strip()):
         pool = ["dry_ack", "fake_system_error"]
     elif _SYSTEM_WORDS_PAT.search(text):
         pool = ["fake_system_error", "self_own", "dry_ack"]
     elif _QUESTION_PAT.search(text):
-        pool = ["dry_ack", "cantina_color", "self_own"]
+        pool = ["dry_ack", "dj_flair", "self_own"]
     elif person_id is not None and roast_level in {"light", "normal"}:
         pool = ["dry_ack", "friendly_roast", "self_own", "callback"]
     else:
-        pool = ["dry_ack", "self_own", "fake_system_error", "cantina_color"]
+        pool = ["dry_ack", "self_own", "fake_system_error", "dj_flair"]
 
     chosen = _choose_without_stutter(pool)
     if chosen == "callback" and not _RECENT_PREMISES:
@@ -338,7 +340,7 @@ def _premise_for(text: str, mode: ComedyMode) -> str:
         return "cantina_dj"
     if "system" in lower or "diagnostic" in lower or "sensor" in lower:
         return "fake_system_diagnostic"
-    if mode.key in {"friendly_roast", "dry_ack", "fake_system_error", "cantina_color"}:
+    if mode.key in {"friendly_roast", "dry_ack", "fake_system_error", "dj_flair"}:
         return mode.key
     return ""
 

@@ -405,18 +405,26 @@ mostly squashed and now CAUGHT AS CLASSES by the eval. The remaining work is **s
    `_do_private_thought`/`_do_aspiration`/`_do_empty_room_joke` already submit in-cycle — never bypassers. `_generate_and_speak_presence`
    speaks via `speech_queue` directly — still a deferred full bypasser, low crowding risk.) **suite 895.** Tests:
    `MicroBehaviorEnforceRoutingTest` + governor `has_active_cycle`/off-tick-routing. SEPARATE quality bug from run #1
-   (open): cantina bleed re-primed by the injected "Last conversation:" summary praising "his cantina-patron remarks".
+   (✅ FIXED 2026-06-05): cantina bleed — two root sources (the `cantina_color` comedy mode → renamed venue-neutral
+   `dj_flair`; `generate_session_summary` editorializing Rex's cantina jokes → reframed person-focused). Guard tests +
+   eval `cantina_bleed` 0/12. See the "Cantina-bleed sources fixed" do-not-regress entry in CONTEXT.md.
    **ENFORCE RUN #2 (19:47) CLEAN:** visual_curiosity routed (won cycle-19, `outcome=observed`, NO claim_rejected) +
    idle banter yielded (score 15, active) then won (score 50, quiet). No errors/double-speak/cantina. **INCREMENT 5a —
    GATE RELOCATION DONE (suite 899):** step 5 isn't a simple delete — the `conversation_agenda` claim bundles grace +
    question-budget gates the governor did NOT replicate, so ENFORCE was silently bypassing them (latent regression).
    Relocated them: `conversation_agenda.proactive_grace_blocks`/`proactive_budget_blocks` → `_observe_governor_candidate`
    metadata → governor `_score` rejection reasons (`end_thread_grace_suppressed`/`question_budget_exhausted`). Now the
-   single decider honors both. Tests added. **THE ACTUAL DELETION REMAINS A COMMIT:** deleting the (now-redundant) claim
-   layer removes the legacy fallback = the `ACTION_GOVERNOR_ENFORCE` kill-switch → irreversible. Gate it on a live run
-   confirming the relocated grace/budget gates fire under enforce + explicit go-ahead. Per-mechanism cooldowns are NOT
-   redundant (submit-throttles) — centralize, don't delete. Revert the flag to False if arbitration misbehaves. See the
-   "Proactive-layer consolidation" do-not-regress entries.
+   single decider honors both. Tests added. **ENFORCE RUNS #2 (19:47) + #3 (20:06) CLEAN:** visual_curiosity + idle
+   banter + identity_prompt all arbitrate correctly (yield during active convo, win in lulls), no errors/double-speak/
+   cut-offs/cantina. The relocated grace/budget gates stayed unit-tested-only (hard to trigger live — budget exhaustion
+   happens in active convo, but proactive question candidates only submit in lulls; the two rarely coincide).
+   **✅ CONSOLIDATION LANDED — DECISION 2026-06-05: KEEP THE KILL-SWITCH, DO NOT DELETE.** The user chose reversibility
+   over tidiness: enforce is the validated default, the governor is the single decider for the routed mechanisms, the
+   grace/budget gates are correctly relocated, and `ACTION_GOVERNOR_ENFORCE=False` remains a working one-line revert.
+   The final claim-layer/cooldown deletion (the irreversible commit) is **deliberately NOT done** — the now-redundant-
+   under-enforce code is harmless and stays as the legacy fallback. The consolidation goal ("stop good things getting
+   crowded out") is ACHIEVED. Per-mechanism cooldowns are NOT redundant (submit-throttles). Revert the flag to False if
+   arbitration ever misbehaves. See the "Proactive-layer consolidation" do-not-regress entries. (Suite **900**.)
 2. **Delete the deterministic anti-repetition hacks** the arc now makes redundant (comedy opener-stripper, the
    follow-up angle rotation, `social_frame._is_near_repeat`) — Bet 1 fast-follow; the arc can SEE what Rex already
    said. De-risk via the eval (assert no regression in repetition).
