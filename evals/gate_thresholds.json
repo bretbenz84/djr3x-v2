@@ -1,0 +1,11 @@
+{
+  "_comment": "Per-class regression-gate thresholds for run_quality_eval.py --gate-config. A class FAILS the gate if its flagged rate exceeds its threshold. Strict on classes that should stay ~0% (deterministic fixes that must not regress), lenient on the inherently noisy LLM-judge class. Run with --samples 12+ so run-to-run noise (see CONTEXT.md: roasted_sincere swung 4-12% across runs) doesn't trip CI. Tighten these as rates stabilize. Baselines (2026-06-05): banned_opener/re_asks/cantina_bleed/invented_prop ~0%, over_questioning/trail_off low single digits, roasted_sincere ~8%.",
+  "banned_opener": 0.05,
+  "re_asks": 0.05,
+  "cantina_bleed": 0.05,
+  "invented_prop": 0.05,
+  "over_questioning": 0.10,
+  "trail_off": 0.10,
+  "roasted_sincere": 0.18,
+  "_default": 0.10
+}

@@ -9,6 +9,8 @@ Call log_heard() when speech is transcribed, log_rex() when Rex speaks.
 Thread-safe; appends only; creates the file on first write.
 """
 
+import os
+import sys
 import threading
 import time
 from datetime import datetime
@@ -17,7 +19,29 @@ from pathlib import Path
 import config
 
 _LOG_PATH = Path(__file__).parent.parent / "logs" / "conversation.log"
+# The real on-disk log, captured before any test patches _LOG_PATH. Writes to THIS
+# path are suppressed under the test runner so `unittest discover` never clobbers a
+# live run's conversation.log (the suite's conversation-flow tests call log_rex/
+# log_heard; without this they overwrite/trim the real transcript). A test that
+# patches _LOG_PATH to a temp file is exempt — it's exercising the writer on purpose.
+_DEFAULT_LOG_PATH = _LOG_PATH
 _lock = threading.Lock()
+
+
+def _under_test_runner() -> bool:
+    """True when running under unittest/pytest, keyed on the ENTRY POINT (sys.argv[0]
+    / PYTEST_CURRENT_TEST) rather than 'unittest' in sys.modules — so an incidental
+    import can't disable real logging on the robot (which runs `python main.py`)."""
+    if os.environ.get("DJR3X_CONV_LOG_TEST_OPT_IN"):
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    argv0 = (sys.argv[0] if sys.argv else "").lower()
+    return "unittest" in argv0 or "pytest" in argv0 or "py.test" in argv0
+
+
+def _writes_suppressed() -> bool:
+    return _under_test_runner() and _LOG_PATH == _DEFAULT_LOG_PATH
 _last_rex_norm: str = ""
 _last_rex_at: float = 0.0
 # Central TTS logging writes when playback starts; legacy call sites often log
@@ -45,6 +69,12 @@ def _trim_locked() -> None:
 
 
 def _append_locked(line: str) -> None:
+    # Single on-disk write chokepoint (both _write and log_rex route here). Suppress
+    # writes to the DEFAULT real log under the test runner so `unittest discover`
+    # never clobbers a live run's conversation.log; a test that patched _LOG_PATH to
+    # a temp file is exempt and writes normally.
+    if _writes_suppressed():
+        return
     _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _LOG_PATH.open("a", encoding="utf-8") as f:
         f.write(line + "\n")

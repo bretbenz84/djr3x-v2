@@ -486,6 +486,13 @@ def _queue_camera_reconnect_line(downtime_secs: float = 0.0) -> Optional[str]:
 def _shutdown() -> None:
     logger.info("=== Shutdown sequence begin ===")
 
+    # Save Rex's current preoccupation so it resumes next launch (best-effort).
+    try:
+        from intelligence import rex_pov
+        rex_pov.persist()
+    except Exception as exc:
+        logger.debug("rex_pov persist on shutdown failed: %s", exc)
+
     # Stop services in reverse startup order.
     logger.info("Stopping intelligence.interaction...")
     interaction.stop()  # also calls wake_word.stop() internally
@@ -1034,6 +1041,15 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
 
     logger.info("Starting awareness.interoception...")
     interoception.start_periodic_update()
+
+    # Resume Rex's preoccupation from last session (before consciousness/idle paths
+    # can read it) so it carries across visits instead of re-rolling fresh.
+    try:
+        from intelligence import rex_pov
+        if rex_pov.load_persisted():
+            logger.info("Resumed Rex preoccupation: %s", rex_pov.active_seed_id())
+    except Exception as exc:
+        logger.debug("rex_pov load_persisted on startup failed: %s", exc)
 
     logger.info("Starting intelligence.consciousness...")
     consciousness.start()

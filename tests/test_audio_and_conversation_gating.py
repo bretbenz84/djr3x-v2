@@ -727,6 +727,36 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         self.assertIn("line 4", lines[-1])
         conv_log.clear_dedupe_state()
 
+    def test_real_conversation_log_is_not_clobbered_under_test_runner(self):
+        # QoL: running the suite must NOT write to the live logs/conversation.log
+        # (it kept overwriting/trimming a real run's transcript). Writes to the
+        # DEFAULT path are suppressed under the runner; both write entry points
+        # (log_rex routes straight to _append_locked, log_heard via _write).
+        from utils import conv_log
+        self.assertTrue(conv_log._under_test_runner())
+        self.assertTrue(conv_log._writes_suppressed())
+        real = conv_log._DEFAULT_LOG_PATH
+        before = real.read_text(encoding="utf-8") if real.exists() else ""
+        conv_log.clear_dedupe_state()
+        conv_log.log_rex("MUST_NOT_HIT_REAL_LOG_rex")
+        conv_log.log_heard("Tester", "MUST_NOT_HIT_REAL_LOG_heard")
+        after = real.read_text(encoding="utf-8") if real.exists() else ""
+        self.assertEqual(before, after)
+        conv_log.clear_dedupe_state()
+
+    def test_patched_log_path_still_writes_under_test_runner(self):
+        # A test that patches _LOG_PATH to a temp file opts in to exercising the
+        # writer — suppression must NOT apply there (it only guards the real log).
+        from utils import conv_log
+        with TemporaryDirectory() as tmp:
+            p = Path(tmp) / "conversation.log"
+            with mock.patch.object(conv_log, "_LOG_PATH", p):
+                self.assertFalse(conv_log._writes_suppressed())
+                conv_log.clear_dedupe_state()
+                conv_log.log_rex("this SHOULD reach the temp log")
+                self.assertIn("this SHOULD reach the temp log", p.read_text(encoding="utf-8"))
+        conv_log.clear_dedupe_state()
+
     def test_conversation_log_labels_unknown_speakers_explicitly(self):
         from utils import conv_log
 
@@ -4417,6 +4447,10 @@ class ConversationGatingTest(unittest.TestCase):
                 # 2.5) reads memory.events directly and would otherwise outrank the
                 # first-sight profile question this test is asserting.
                 mock.patch("memory.events.get_pending_followups", return_value=[]),
+                # The interest cold-open tier sits just above the profile question; this
+                # test asserts the profile-question fallback, so neutralize it like the
+                # other higher tiers above.
+                mock.patch.object(consciousness, "_pick_cold_open_callback", return_value=None),
                 mock.patch.object(consciousness, "_pick_startup_profile_question", return_value=question),
                 mock.patch.object(
                     consciousness,

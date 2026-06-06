@@ -445,15 +445,20 @@ mostly squashed and now CAUGHT AS CLASSES by the eval. The remaining work is **s
    backend (`config.*_MODEL`). Looming; re-run the eval before/after to confirm no quality regression.
 
 **Smaller / opportunistic:**
-- **Tighten the eval loop:** grow the corpus from real `logs/conversation.log` transcripts → `--gate` as a CI
-  guard; fix `over_questioning` to count `is_question_sentence` (not rhetorical "?"); chase the rare `trail_off`
-  ~4% residual; add an "acknowledges-visible-emotion" check for the live-expression fix.
-- **Gate the startup log-clear under the test runner** (like the arc) — running the suite keeps CLOBBERING a
-  run's `logs/djr3x.log` (bit me repeatedly). `config.py:100` clear-on-startup + RotatingFileHandler.
-- **Extend the cold-open ranker** across `facts`/`interests` (currently emotional-events only; small).
-- **Boundary regex extension** — `_BOUNDARY_RE` misses "we don't need to talk about that anymore"; and
-  negative-event muting on a topic boundary (the scope note in the boundary→mute entry).
-- **Rex POV fast-follows** — cross-session persistence, feed `_do_private_thought`/`_do_aspiration` from the POV.
+- ✅ **Tighten the eval loop — DONE (2026-06-05, suite 920):** corpus grown 8→13 with real-run utterances; `--gate-config`
+  per-class CI guard + `evals/gate_thresholds.json`; `over_questioning` now counts `is_question_sentence` (ignores quoted
+  '?'); `trail_off` fidelity guard in `generate_spoken`. (Remaining tiny: an "acknowledges-visible-emotion" checker.)
+- ✅ **Gate the startup log-clear under the test runner — DONE.** Was misdiagnosed: the suite clobbered `conversation.log`
+  via `conv_log` flow-test writes (not a startup clear). `conv_log._append_locked` now suppresses real-log writes under the
+  test runner (temp-path tests exempt). djr3x.log isn't clobbered by the suite.
+- ✅ **Extend the cold-open ranker across facts/interests — DONE.** `_pick_cold_open_callback` ranks interest-hooks + warm
+  activity facts by the celebration lead-score; new greeting tier above the generic profile question; favorites excluded.
+- ✅ **Boundary regex extension — DONE.** `_BOUNDARY_RE` broadened (don't-NEED-to-talk / prefer-not / move-on / enough-about
+  / stop-asking / that's-private / done-talking) with negative cases pinned. (Negative-event muting on a topic boundary
+  remains a separate small follow-up — see the boundary→mute entry.)
+- ✅ **Rex POV fast-follows — DONE.** Cross-session persistence (`snapshot_state`/`restore_state`/`persist`/`load_persisted`,
+  startup/shutdown/session-reset hooks) + `_do_private_thought`/`_do_aspiration` now voice the active POV. See the do-not-regress entries.
+  All five do-not-regress entries are in CONTEXT.md ("Eval-loop tightening + QoL batch", "Rex-POV cross-session persistence", "Cold-open ranker extended").
 
 **Reminders for the next window:**
 - `config.LOG_SYSTEM_PROMPT` is left **`True`** (verbose full-prompt logging) — flip it `False` once done

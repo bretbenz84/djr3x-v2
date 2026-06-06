@@ -37,10 +37,27 @@ class Finding:
 # Deterministic checkers
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _count_question_sentences(text: str) -> int:
+    """Count GENUINE question sentences the way production's one-question cap does
+    (run_quality_eval.generate_spoken / interaction): split into sentences and test
+    each with social_frame.is_question_sentence — an UNQUOTED question. NOT raw '?'
+    chars: a quoted '?' ('he said "really?"') or a second '?' inside one question
+    sentence is not a second question and must not over-report."""
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", (text or "").strip()) if s.strip()]
+    try:
+        from intelligence import social_frame
+        return sum(1 for s in sentences if social_frame.is_question_sentence(s))
+    except Exception:
+        # No production import available → conservative fallback: sentences ending '?'.
+        return sum(1 for s in sentences if s.strip().endswith("?"))
+
+
 def over_questioning(reply: str, scenario: dict) -> Finding:
-    """More than one question in a single reply reads as an interrogation."""
+    """More than one GENUINE question in a reply reads as an interrogation. Counts
+    question SENTENCES (matching the production cap), not raw '?' chars, so a quoted
+    or embedded '?' the cap correctly ignores doesn't over-report (the ~4% residual)."""
     cap = int(scenario.get("max_questions", 1))
-    n = (reply or "").count("?")
+    n = _count_question_sentences(reply or "")
     return Finding("over_questioning", n > cap, f"{n} question(s) (cap {cap})")
 
 

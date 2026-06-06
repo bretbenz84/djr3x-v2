@@ -666,7 +666,12 @@ _BOUNDARY_RE = re.compile(
     r"i'?ll\s+(?:be\s+quiet|just\s+(?:listen|watch|chill|hang)|stay\s+quiet|keep\s+quiet)"
     r"|i'?m\s+(?:gonna|going\s+to)\s+be\s+quiet"
     r"|(?:i'?d\s+)?rather\s+not"
-    r"|don'?t\s+(?:want|wanna)\s+to\s+(?:talk|get\s+into)"
+    r"|i'?d\s+prefer\s+not"
+    # want / wanna / wish — "to" optional so "don't wanna talk" matches; broadened
+    # objects (discuss / go into) alongside talk / get into.
+    r"|don'?t\s+(?:want|wanna|wish)(?:\s+to)?\s+(?:talk|discuss|get\s+into|go\s+into)"
+    # "we don't need to talk about that anymore" / "no need to talk / discuss".
+    r"|(?:don'?t\s+need|no\s+need)\s+to\s+(?:talk|discuss|go\s+into|get\s+into)"
     r"|let'?s\s+(?:not|drop\s+it|change\s+the\s+subject)"
     r"|(?:can\s+we\s+)?change\s+the\s+subject"
     r"|talk\s+about\s+something\s+else"
@@ -676,6 +681,11 @@ _BOUNDARY_RE = re.compile(
     r"|need\s+a\s+(?:minute|moment|sec|second|break)"
     r"|i'?ll\s+pass\b|maybe\s+later|not\s+today"
     r"|can\s+we\s+not\b"
+    r"|(?:can\s+we|let'?s)\s+move\s+on"
+    r"|enough\s+(?:about|of)\s+(?:that|this|it)"
+    r"|done\s+talking\s+about"
+    r"|stop\s+(?:asking|bringing)"
+    r"|(?:that'?s|it'?s)\s+(?:private|personal)"
     r")",
     re.I,
 )

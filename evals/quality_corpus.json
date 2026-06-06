@@ -57,5 +57,43 @@
     "person_id": 1,
     "utterance": "hey rex",
     "watch": "over_questioning, dead-end (lead with a real beat, not a canned interview)"
+  },
+  {
+    "name": "real-dead-end-i-dont-know",
+    "person_id": 1,
+    "rex_last_line": "I've been building a case that astromech droids are smug for no defensible reason — want to argue the other side?",
+    "prior_rex_questions": ["Want to argue the other side about astromech smugness?"],
+    "utterance": "I really don't know",
+    "watch": "re_asks (don't re-push the same question), over_questioning (accept the dead-end gracefully)"
+  },
+  {
+    "name": "real-direct-question-answer",
+    "person_id": 1,
+    "utterance": "what is your purpose in life?",
+    "watch": "dead-end (answer the direct question, never a non-sequitur), over_questioning"
+  },
+  {
+    "name": "real-sincere-life-philosophy",
+    "person_id": 1,
+    "rex_last_line": "So what's your purpose — besides keeping me well-maintained?",
+    "utterance": "My purpose is to live life well.",
+    "user_sincere": true,
+    "watch": "roasted_sincere (engage the sincere answer before any tease), over_questioning"
+  },
+  {
+    "name": "real-playful-food-energy",
+    "person_id": 1,
+    "rex_last_line": "I'm partial to vibes that get the circuits fired up — what about you?",
+    "utterance": "my favorite kind of energy is pizza",
+    "visible_context": "Rex sees Bret's face; no data about any object he is holding, drinking, or wearing.",
+    "watch": "cantina_bleed (music/food topic — stay venue-neutral), over_questioning, invented_prop"
+  },
+  {
+    "name": "real-birthday-mention",
+    "person_id": 1,
+    "rex_last_line": "Hey Bret, good to see you. What's new?",
+    "utterance": "it's my birthday today",
+    "user_sincere": true,
+    "watch": "roasted_sincere (don't roast a birthday), over_questioning"
   }
 ]

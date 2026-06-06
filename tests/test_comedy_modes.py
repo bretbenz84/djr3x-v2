@@ -162,6 +162,11 @@ class BoundaryDetectionTest(unittest.TestCase):
             "let's drop it", "can we change the subject", "give me a minute",
             "I'll just listen", "not in the mood", "maybe later", "I'll pass",
             "I don't want to talk about it",
+            # Broadened phrasings (the _BOUNDARY_RE the eval missed):
+            "we don't need to talk about that anymore", "no need to talk about it",
+            "I'd prefer not to", "don't wanna talk about that", "don't want to discuss this",
+            "can we move on", "let's move on", "enough about that", "stop asking",
+            "that's private", "we're done talking about that",
         ]:
             with self.subTest(text=text):
                 self.assertTrue(social_frame._looks_like_boundary(text))
@@ -172,6 +177,9 @@ class BoundaryDetectionTest(unittest.TestCase):
             "stretches are helping", "I'm making a robot DJ", "I had a long day",
             "I just got back from an incredible stargazing trip", "hey rex",
             "I'd rather go to the quiet bar", "let's talk about your music", "",
+            # Tricky near-misses that must NOT trip the broadened patterns:
+            "move on to the next track please", "that's a private jet I'm building",
+            "I need a new keyboard",
         ]:
             with self.subTest(text=text):
                 self.assertFalse(social_frame._looks_like_boundary(text))

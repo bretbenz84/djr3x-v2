@@ -4174,6 +4174,115 @@ def _pick_due_celebration_checkin(person_db_id: Optional[int]) -> Optional[dict]
         return None
 
 
+def _cold_open_lead_score(cand: dict) -> float:
+    """Unified cold-open lead-score, the SAME shape as _celebration_lead_score
+    (invited dominant → recency → concreteness) but for an interest/fact callback
+    candidate {invited, recency_iso, text, base}. Lets the cold-open picker rank a
+    remembered-interest opener against a fact the same way it ranks a celebration —
+    so Rex leads with the single best thing to bring up, not just a celebration."""
+    ev = cand or {}
+    halflife = float(getattr(config, "PRESENCE_CELEBRATION_RECENCY_HALFLIFE_DAYS", 14.0))
+    recency = 1.0 / (1.0 + max(0.0, _event_age_days(ev.get("recency_iso"))) / max(1.0, halflife))
+    invited = 1.0 if ev.get("invited") else 0.0
+    text = str(ev.get("text") or "")
+    if _CONCRETE_MILESTONE_RE.search(text):
+        concreteness = 1.0
+    else:
+        concreteness = min(0.6, len(re.findall(r"[A-Za-z']+", text)) / 12.0)
+    return (
+        float(getattr(config, "PRESENCE_CELEBRATION_W_INVITED", 1.0)) * invited
+        + float(getattr(config, "PRESENCE_CELEBRATION_W_RECENCY", 0.6)) * recency
+        + float(getattr(config, "PRESENCE_CELEBRATION_W_CONCRETE", 0.3)) * concreteness
+        + float(ev.get("base", 0.0))
+    )
+
+
+# Fact categories that make warm "how's X going?" cold-open material — genuine
+# ACTIVITIES the person DOES, not static preferences ("favorite ice cream") or
+# identity/sensitive facts (those read awkwardly as "how's the ice cream going?").
+# Interests proper come from the interests table, not here.
+_COLD_OPEN_FACT_CATEGORIES = {"hobby", "project", "activity"}
+
+
+def _cold_open_callback_candidates(person_db_id: int) -> list[dict]:
+    """Gather interest-hook + warm-fact candidates worth OPENING a greeting with,
+    normalized for _cold_open_lead_score. Interests are things the person told Rex
+    (invited=True) and get a small base bump over inferred facts."""
+    cands: list[dict] = []
+    try:
+        from memory import interests as interests_mem
+        for hook in (interests_mem.get_interest_hooks(person_db_id) or [])[:6]:
+            name = str(hook.get("name") or "").strip()
+            if not name:
+                continue
+            cands.append({
+                "kind": "interest",
+                "topic": name,
+                "text": name,
+                "invited": True,
+                "recency_iso": hook.get("last_mentioned_at") or hook.get("first_mentioned_at"),
+                "base": 0.20,
+            })
+    except Exception as exc:
+        _log.debug("cold-open interest candidates error: %s", exc)
+    try:
+        from memory import facts as facts_mem
+        for fact in (facts_mem.get_prompt_worthy_facts(person_db_id, limit=8) or []):
+            category = str(fact.get("category") or "").strip().lower()
+            value = str(fact.get("value") or "").strip()
+            if category not in _COLD_OPEN_FACT_CATEGORIES or not value:
+                continue
+            if str(fact.get("freshness_label")) == "stale":
+                continue
+            cands.append({
+                "kind": "fact",
+                "topic": value,
+                "text": value,
+                "invited": _normalize_source_is_volunteered(fact.get("source")),
+                "recency_iso": fact.get("last_mentioned_at") or fact.get("created_at"),
+                "base": 0.0,
+            })
+    except Exception as exc:
+        _log.debug("cold-open fact candidates error: %s", exc)
+    return cands
+
+
+def _normalize_source_is_volunteered(source) -> bool:
+    return str(source or "").strip().lower() in {"explicit", "corrected", "volunteered"}
+
+
+def _pick_cold_open_callback(person_db_id: Optional[int]) -> Optional[dict]:
+    """The single remembered interest/fact worth LEADING a cold open with — the
+    best of the gate-passing candidates by _cold_open_lead_score (invited × recency ×
+    concreteness). Extends the celebration ranker across facts/interests. Returns the
+    candidate dict (with 'topic'), or None when there's nothing worth opening with."""
+    if not isinstance(person_db_id, int):
+        return None
+    if not bool(getattr(config, "COLD_OPEN_INTEREST_RANK_ENABLED", True)):
+        return None
+    try:
+        cands = _cold_open_callback_candidates(person_db_id)
+        if not cands:
+            return None
+        return max(cands, key=_cold_open_lead_score)
+    except Exception as exc:
+        _log.debug("cold-open callback pick error: %s", exc)
+        return None
+
+
+def _build_cold_open_callback_prompt(
+    first_name: str, candidate: dict, context_sentence: str,
+) -> str:
+    topic = str((candidate or {}).get("topic") or "").strip()
+    return (
+        f"{context_sentence} You remember {first_name} is into '{topic}'. Greet them by "
+        f"name and lead with genuine curiosity about it — ask how '{topic}' is going or "
+        f"what they've been up to with it lately, in one or two short in-character Rex "
+        f"sentences. The last sentence must end in a question mark. Don't invent details "
+        f"you don't have; just open the door."
+    )
+
+
 def _first_sight_context(first_name: str) -> tuple[str, str]:
     """Return prompt phrasing for seeing a known person first time this run."""
     if _process_started_mono and (time.monotonic() - _process_started_mono) <= 45.0:
@@ -5499,8 +5608,34 @@ def _do_small_talk_question(snapshot: dict) -> None:
     threading.Thread(target=_task, daemon=True, name="small-talk-question").start()
 
 
+def _voice_pov_as_micro_behavior(label: str, prompt: str, *, emotion: str) -> bool:
+    """When Rex has an active preoccupation (rex_pov) and REX_POV_FEEDS_MICRO_BEHAVIORS
+    is on, VOICE it through the reply LLM (which already injects the POV via §6c) as the
+    idle micro-behavior — so his mutterings are about the thing he's actually chewing
+    on, not a random canned line. `_generate_and_speak` does its own claim + governor
+    routing. Returns True if it handled the behavior (caller skips the canned fallback)."""
+    if not bool(getattr(config, "REX_POV_FEEDS_MICRO_BEHAVIORS", True)):
+        return False
+    try:
+        from intelligence import rex_pov
+        if not rex_pov.active_pov_text():
+            return False
+    except Exception:
+        return False
+    _generate_and_speak(prompt, emotion=emotion, purpose="idle_monologue", label=label)
+    return True
+
+
 def _do_private_thought() -> None:
     if not _can_proactive_speak():
+        return
+    if _voice_pov_as_micro_behavior(
+        "private thought",
+        "Voice your CURRENT preoccupation out loud as a brief private thought to "
+        "yourself — like thinking aloud. Don't address anyone; just muse in one short "
+        "in-character Rex sentence.",
+        emotion="neutral",
+    ):
         return
     token = _claim_proactive_purpose("idle_monologue", label="private thought")
     if token is None:
@@ -5526,6 +5661,14 @@ def _do_aspiration() -> None:
     """Speak one of Rex's forward-looking aspirations as an idle micro-behavior."""
     global _last_aspiration
     if not _can_proactive_speak():
+        return
+    if _voice_pov_as_micro_behavior(
+        "aspiration",
+        "Riff forward on your CURRENT preoccupation as a brief out-loud aspiration — "
+        "where you'd like to take it or what you're working toward with it. One short "
+        "in-character Rex sentence, thinking aloud.",
+        emotion="curious",
+    ):
         return
     pool = getattr(config, "ASPIRATIONS", None)
     if not pool:
@@ -6842,6 +6985,22 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                             "consciousness: startup disposition greeting for %s label=%s",
                             person_name,
                             disposition_label,
+                        )
+
+                # Interest/fact cold-open — lead with something Rex already KNOWS they
+                # care about (ranked across interests+facts by the same lead-score as
+                # celebrations) before falling to a generic profile question.
+                if prompt is None:
+                    callback = _pick_cold_open_callback(person_db_id)
+                    if callback is not None:
+                        prompt = _build_cold_open_callback_prompt(
+                            first_name, callback, context_sentence,
+                        )
+                        label = f"first-sight interest cold-open ({callback.get('kind')}) for {person_name}"
+                        emotion = "curious"
+                        _log.info(
+                            "consciousness: first-sight interest cold-open for %s — %s:%r",
+                            person_name, callback.get("kind"), callback.get("topic"),
                         )
 
                 if prompt is None:

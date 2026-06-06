@@ -298,3 +298,142 @@ def clear() -> None:
     with _lock:
         _active = None
         _used_ids = set()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cross-session persistence — resume/evolve a preoccupation across restarts
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The POV is otherwise session-scoped (clear() wipes it), so each boot Rex re-rolls
+# a fresh preoccupation and forgets what he was chewing on. Persisting the active
+# seed + the within-session anti-repeat set lets him RESUME the same preoccupation
+# next session (it CARRIES across visits, the whole point of a "current" POV) and
+# not immediately repeat ones he just cycled through. On restore the hold clock is
+# reset to the new session's exchange count so the resumed POV gets a fresh hold
+# window, then rotates normally per the holding policy.
+
+def _persist_enabled() -> bool:
+    try:
+        import config
+        return bool(getattr(config, "REX_POV_PERSIST_ENABLED", True)) and _enabled()
+    except Exception:
+        return False
+
+
+def _default_state_path():
+    from pathlib import Path
+    return Path(__file__).parent.parent / "assets" / "memory" / "rex_pov_state.json"
+
+
+def _state_path():
+    from pathlib import Path
+    try:
+        import config
+        p = getattr(config, "REX_POV_STATE_PATH", None)
+        if p:
+            return Path(p)
+    except Exception:
+        pass
+    return _default_state_path()
+
+
+def _under_test_runner() -> bool:
+    """Keyed on the ENTRY POINT (sys.argv[0] / PYTEST_CURRENT_TEST), so the suite
+    doesn't write the real state file from a flow test's session-reset hook."""
+    import os
+    import sys
+    if os.environ.get("DJR3X_POV_TEST_OPT_IN"):
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    argv0 = (sys.argv[0] if sys.argv else "").lower()
+    return "unittest" in argv0 or "pytest" in argv0 or "py.test" in argv0
+
+
+def _file_io_suppressed() -> bool:
+    # Suppress real-file persistence under the test runner; a test that patched
+    # REX_POV_STATE_PATH to a temp file is exercising it on purpose and is exempt.
+    return _under_test_runner() and _state_path() == _default_state_path()
+
+
+def snapshot_state() -> Optional[dict]:
+    """Serializable POV state to persist: the active seed id + the anti-repeat set.
+    Pure read; returns None when nothing is active. (Telemetry/clock fields are NOT
+    persisted — the hold clock is reset on restore.)"""
+    with _lock:
+        if _active is None and not _used_ids:
+            return None
+        return {
+            "active_seed_id": _active.seed_id if _active else None,
+            "used_ids": sorted(_used_ids),
+        }
+
+
+def restore_state(data: Optional[dict], exchange: Optional[int] = None) -> bool:
+    """Install a persisted snapshot (from snapshot_state). Validates ids against the
+    CURRENT seed pool (a renamed/removed seed is silently dropped), resets the hold
+    clock to `exchange` (default: live count) so the resumed POV holds for a fresh
+    stretch. Returns True if an active POV was restored. Caller-safe / never raises."""
+    global _active, _used_ids
+    if not isinstance(data, dict):
+        return False
+    try:
+        valid_ids = {s["id"] for s in _seeds()}
+        if exchange is None:
+            exchange = _exchange_count()
+        used = {str(i) for i in (data.get("used_ids") or []) if str(i) in valid_ids}
+        seed_id = data.get("active_seed_id")
+        seed = next((s for s in _seeds() if s["id"] == seed_id), None) if seed_id else None
+        with _lock:
+            _used_ids = used
+            if seed is None:
+                _active = None
+                return False
+            _used_ids.add(seed["id"])
+            _active = _ActivePov(
+                seed_id=seed["id"],
+                pov=seed["pov"],
+                selected_at_exchange=int(exchange or 0),
+                context_sig=_context_signature(None),
+            )
+        _log.info("[rex_pov] restored %r (used=%d)", seed["id"], len(used))
+        return True
+    except Exception as exc:
+        _log.debug("[rex_pov] restore_state failed: %s", exc)
+        return False
+
+
+def persist() -> None:
+    """Write the current POV state to disk (call on session end / shutdown). No-op
+    when persistence is disabled; never raises."""
+    if not _persist_enabled() or _file_io_suppressed():
+        return
+    try:
+        import json
+        state = snapshot_state()
+        path = _state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if state is None:
+            if path.exists():
+                path.unlink()
+            return
+        path.write_text(json.dumps(state), encoding="utf-8")
+    except Exception as exc:
+        _log.debug("[rex_pov] persist failed: %s", exc)
+
+
+def load_persisted(exchange: Optional[int] = None) -> bool:
+    """Read + install persisted POV state (call on session start, BEFORE the first
+    reply). No-op / returns False when disabled or no state on disk; never raises."""
+    if not _persist_enabled() or _file_io_suppressed():
+        return False
+    try:
+        import json
+        path = _state_path()
+        if not path.exists():
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return restore_state(data, exchange=exchange)
+    except Exception as exc:
+        _log.debug("[rex_pov] load_persisted failed: %s", exc)
+        return False

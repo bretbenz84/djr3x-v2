@@ -2997,6 +2997,14 @@ PRESENCE_CELEBRATION_W_INVITED = 1.0
 PRESENCE_CELEBRATION_W_RECENCY = 0.6
 PRESENCE_CELEBRATION_W_CONCRETE = 0.3
 
+# Cold-open interest/fact callback: when no higher-priority greeting applies (no
+# celebration / milestone / follow-up / absence), Rex can LEAD with something he
+# already knows the person is into ("how's the astrophotography going?"), ranked
+# across their interests + warm facts by the SAME invited×recency×concreteness
+# lead-score as celebrations — instead of falling straight to a generic profile
+# question. Set False to keep the old generic-greeting fallback.
+COLD_OPEN_INTEREST_RANK_ENABLED = True
+
 # How long (seconds) a queued celebrity-style special greeting stays pending
 # before it goes stale and is dropped (consciousness person-specials greeting).
 JEFF_CELEBRITY_GREETING_PENDING_SECS = 45.0
@@ -3236,6 +3244,20 @@ REX_POV_SEEDS = [
 # (e.g. room goes quiet↔people) can rotate it any time after MIN.
 REX_POV_MIN_HOLD_EXCHANGES = 4
 REX_POV_MAX_HOLD_EXCHANGES = 14
+
+# Cross-session persistence: save the active preoccupation + the within-session
+# anti-repeat set on session-end/shutdown and restore them on startup, so Rex
+# RESUMES the same preoccupation across visits (it carries) instead of re-rolling a
+# fresh one every boot, and doesn't immediately repeat ones he just cycled through.
+# Stored as a tiny JSON blob (REX_POV_STATE_PATH, default assets/memory/). The hold
+# clock resets on restore so the resumed POV gets a fresh hold window.
+REX_POV_PERSIST_ENABLED = True
+REX_POV_STATE_PATH = None  # None → assets/memory/rex_pov_state.json
+# When a preoccupation is active, the idle "private thought" / "aspiration" micro-
+# behaviors VOICE it (in Rex's words, via the reply LLM which already gets the POV
+# injection) instead of a random canned line — so his idle mutterings are about the
+# thing he's actually chewing on. Falls back to the canned pools when no POV / off.
+REX_POV_FEEDS_MICRO_BEHAVIORS = True
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AUDIO CLIPS — Startup & Shutdown

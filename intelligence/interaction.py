@@ -10210,6 +10210,9 @@ def _end_session() -> None:
         except Exception:
             pass
         try:
+            # Persist the preoccupation (+ anti-repeat set) BEFORE wiping it, so it
+            # carries across visits; the next session restores it via load_persisted().
+            rex_pov.persist()
             rex_pov.clear()
         except Exception:
             pass

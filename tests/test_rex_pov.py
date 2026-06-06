@@ -178,5 +178,65 @@ class RexPovShippedPoolTest(unittest.TestCase):
             self.assertNotIn("cantina", blob, f"seed leans on 'cantina': {seed.get('id')}")
 
 
+class PovPersistenceTest(unittest.TestCase):
+    """Cross-session persistence: the active preoccupation + anti-repeat set survive a
+    restart so Rex RESUMES it (carries across visits) instead of re-rolling fresh."""
+
+    def setUp(self):
+        rex_pov.clear()
+
+    def tearDown(self):
+        rex_pov.clear()
+
+    def test_snapshot_then_restore_round_trips_active_and_anti_repeat(self):
+        rex_pov.current_pov_directive(context={"people": True, "flat": False}, exchange=0)
+        seed_id = rex_pov.active_seed_id()
+        self.assertIsNotNone(seed_id)
+        snap = rex_pov.snapshot_state()
+        self.assertEqual(snap["active_seed_id"], seed_id)
+        self.assertIn(seed_id, snap["used_ids"])
+
+        rex_pov.clear()
+        self.assertIsNone(rex_pov.active_seed_id())
+
+        # Restore into a fresh session: the same preoccupation resumes; clock reset to
+        # the new exchange so it holds for a fresh window.
+        self.assertTrue(rex_pov.restore_state(snap, exchange=10))
+        self.assertEqual(rex_pov.active_seed_id(), seed_id)
+
+    def test_restore_drops_unknown_seed_ids(self):
+        ok = rex_pov.restore_state(
+            {"active_seed_id": "__no_such_seed__", "used_ids": ["__also_gone__"]},
+            exchange=0,
+        )
+        self.assertFalse(ok)                         # unknown active id → nothing restored
+        self.assertIsNone(rex_pov.active_seed_id())
+        self.assertIsNone(rex_pov.snapshot_state())  # bogus used id dropped too
+
+    def test_file_persist_and_load_round_trip_with_temp_path(self):
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rex_pov_state.json"
+            # A non-default path makes _file_io_suppressed() False, so file I/O runs
+            # even under the test runner (the suppression only guards the real file).
+            with mock.patch.object(config, "REX_POV_STATE_PATH", str(path)):
+                rex_pov.current_pov_directive(context={"people": False, "flat": False}, exchange=0)
+                seed_id = rex_pov.active_seed_id()
+                rex_pov.persist()
+                self.assertTrue(path.exists())
+
+                rex_pov.clear()
+                self.assertTrue(rex_pov.load_persisted(exchange=0))
+                self.assertEqual(rex_pov.active_seed_id(), seed_id)
+
+    def test_default_path_file_io_is_suppressed_under_test_runner(self):
+        # No path override → default path → suppressed under the suite (no real file).
+        self.assertTrue(rex_pov._file_io_suppressed())
+        rex_pov.current_pov_directive(context={"people": True, "flat": False}, exchange=0)
+        rex_pov.persist()  # must be a no-op
+        self.assertFalse(rex_pov._default_state_path().exists())
+
+
 if __name__ == "__main__":
     unittest.main()

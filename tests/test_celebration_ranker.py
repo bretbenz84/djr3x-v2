@@ -132,5 +132,63 @@ class StartupCelebrationCooldownTest(unittest.TestCase):
         self.assertNotIn("-0 days", cap["params"])
 
 
+class ColdOpenCallbackRankerTest(unittest.TestCase):
+    """The cold-open ranker EXTENDED across facts/interests: when nothing higher
+    applies, Rex leads with the best remembered interest/fact, scored by the SAME
+    invited × recency × concreteness lead-score as celebrations."""
+
+    def test_lead_score_prefers_invited_then_recency(self):
+        from intelligence import consciousness as c
+        invited_recent = {"invited": True, "recency_iso": "2026-06-04 12:00:00", "text": "astrophotography"}
+        not_invited = {"invited": False, "recency_iso": "2026-06-04 12:00:00", "text": "astrophotography"}
+        invited_old = {"invited": True, "recency_iso": "2025-01-01 12:00:00", "text": "astrophotography"}
+        self.assertGreater(c._cold_open_lead_score(invited_recent), c._cold_open_lead_score(not_invited))
+        self.assertGreater(c._cold_open_lead_score(invited_recent), c._cold_open_lead_score(invited_old))
+
+    def test_candidates_include_interests_and_activity_facts_drop_favorites(self):
+        from intelligence import consciousness as c
+        interests = [
+            {"name": "astrophotography", "last_mentioned_at": "2026-06-04 12:00:00"},
+            {"name": "birdwatching", "last_mentioned_at": "2025-01-01 12:00:00"},
+        ]
+        facts = [
+            {"category": "favorite", "value": "mint chocolate chip ice cream",
+             "source": "explicit", "freshness_label": "fresh"},  # NOT cold-open material
+            {"category": "project", "value": "building a robot DJ", "source": "explicit",
+             "last_mentioned_at": "2026-06-04 12:00:00", "freshness_label": "fresh"},
+        ]
+        with (
+            mock.patch("memory.interests.get_interest_hooks", return_value=interests),
+            mock.patch("memory.facts.get_prompt_worthy_facts", return_value=facts),
+        ):
+            cands = c._cold_open_callback_candidates(1)
+        topics = {x["topic"] for x in cands}
+        self.assertIn("astrophotography", topics)            # interest in
+        self.assertIn("building a robot DJ", topics)         # project fact in
+        self.assertNotIn("mint chocolate chip ice cream", topics)  # favorite excluded
+        # The recent astrophotography interest outranks the older birdwatching.
+        self.assertEqual(max(cands, key=c._cold_open_lead_score)["topic"], "astrophotography")
+
+    def test_pick_returns_best_and_respects_flag(self):
+        from intelligence import consciousness as c
+        interests = [{"name": "astrophotography", "last_mentioned_at": "2026-06-04 12:00:00"}]
+        with (
+            mock.patch("memory.interests.get_interest_hooks", return_value=interests),
+            mock.patch("memory.facts.get_prompt_worthy_facts", return_value=[]),
+        ):
+            picked = c._pick_cold_open_callback(1)
+            self.assertEqual(picked["topic"], "astrophotography")
+            with mock.patch.object(c.config, "COLD_OPEN_INTEREST_RANK_ENABLED", False):
+                self.assertIsNone(c._pick_cold_open_callback(1))
+
+    def test_pick_returns_none_when_no_candidates(self):
+        from intelligence import consciousness as c
+        with (
+            mock.patch("memory.interests.get_interest_hooks", return_value=[]),
+            mock.patch("memory.facts.get_prompt_worthy_facts", return_value=[]),
+        ):
+            self.assertIsNone(c._pick_cold_open_callback(1))
+
+
 if __name__ == "__main__":
     unittest.main()
