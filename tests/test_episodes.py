@@ -244,7 +244,7 @@ class EpisodicBatch2GateTest(unittest.TestCase):
 
 
 class GreetingLabelCaptureTest(unittest.TestCase):
-    """consciousness._capture_greeting_episode_from_label routes a dispatched greeting's
+    """episodic_hooks.greeting_from_label routes a dispatched greeting's
     label to the right episodic kind — only memorable tiers log, ordinary greetings don't."""
 
     def setUp(self):
@@ -260,8 +260,8 @@ class GreetingLabelCaptureTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def _capture(self, label):
-        from intelligence import consciousness as c
-        c._capture_greeting_episode_from_label(label, 3, "Bret")
+        from intelligence import episodic_hooks as c
+        c.greeting_from_label(label, 3, "Bret")
 
     def test_birthday_t0_maps_to_birthday_wish(self):
         self._capture("startup birthday (T-0) for Bret")
@@ -298,40 +298,40 @@ class GreetingLabelCaptureTest(unittest.TestCase):
         self.assertEqual(episodes.count(), 0)
 
     def test_non_int_person_id_logs_nothing(self):
-        from intelligence import consciousness as c
-        c._capture_greeting_episode_from_label("startup birthday (T-0) for Bret", "slot:7", "Bret")
+        from intelligence import episodic_hooks as c
+        c.greeting_from_label("startup birthday (T-0) for Bret", "slot:7", "Bret")
         self.assertEqual(episodes.count(), 0)
 
 
 class ConsciousnessEpisodicHelperTest(unittest.TestCase):
-    """The consciousness-side episodic wrappers (departure/celebrity) compute the right
+    """The episodic_hooks wrappers (departure/celebrity) compute the right
     payload and skip cleanly when arrival is unknown."""
 
     def test_visit_departure_skips_when_no_arrival(self):
-        from intelligence import consciousness as c
+        from intelligence import episodic_hooks as c
         with mock.patch.object(episodes, "record_visit_departure") as rec:
-            c._episodic_visit_departure(3, "Bret", None, 1000.0)
+            c.visit_departure(3, "Bret", None, 1000.0)
             rec.assert_not_called()
 
     def test_visit_departure_computes_duration(self):
-        from intelligence import consciousness as c
+        from intelligence import episodic_hooks as c
         with mock.patch.object(episodes, "record_visit_departure") as rec:
-            c._episodic_visit_departure(3, "Bret", 100.0, 760.0)  # 660s visit
+            c.visit_departure(3, "Bret", 100.0, 760.0)  # 660s visit
             rec.assert_called_once()
             self.assertEqual(rec.call_args.args[0], 3)
             self.assertEqual(rec.call_args.args[1], "Bret")
             self.assertAlmostEqual(rec.call_args.args[2], 660.0, places=3)
 
     def test_visit_departure_clamps_negative_duration(self):
-        from intelligence import consciousness as c
+        from intelligence import episodic_hooks as c
         with mock.patch.object(episodes, "record_visit_departure") as rec:
-            c._episodic_visit_departure(3, "Bret", 900.0, 100.0)  # arrival after departure
+            c.visit_departure(3, "Bret", 900.0, 100.0)  # arrival after departure
             self.assertAlmostEqual(rec.call_args.args[2], 0.0, places=3)
 
     def test_celebrity_routes_returning_flag(self):
-        from intelligence import consciousness as c
+        from intelligence import episodic_hooks as c
         with mock.patch.object(episodes, "record_celebrity") as rec:
-            c._episodic_celebrity(5, "Jeff Benziger", "History Hunters", returning=True)
+            c.celebrity(5, "Jeff Benziger", "History Hunters", returning=True)
             rec.assert_called_once()
             self.assertEqual(rec.call_args.args[0], 5)
             self.assertTrue(rec.call_args.kwargs.get("returning"))
@@ -342,11 +342,11 @@ class StartupImageCaptionTest(unittest.TestCase):
     The GPT call is gated like every episodic write (never fires under the suite)."""
 
     def setUp(self):
-        from intelligence import consciousness as c
+        from intelligence import episodic_hooks as c
         c._startup_image_captured = False
 
     def tearDown(self):
-        from intelligence import consciousness as c
+        from intelligence import episodic_hooks as c
         c._startup_image_captured = False
 
     def test_quick_caption_is_empty_without_a_frame_and_makes_no_call(self):
@@ -365,24 +365,24 @@ class StartupImageCaptionTest(unittest.TestCase):
             gpt.assert_called_once()
 
     def test_startup_hook_is_gated_under_test_runner_no_gpt_call(self):
-        from intelligence import consciousness as c
+        from intelligence import episodic_hooks as c
         from vision import scene
         with mock.patch.object(scene, "quick_caption") as qc:
-            c._capture_startup_image_episode(object())  # non-None frame
+            c.startup_image(object())  # non-None frame
             qc.assert_not_called()                      # episodes._suppressed() → no GPT call
             self.assertTrue(c._startup_image_captured)  # but it's a one-shot, so it latches
 
     def test_startup_hook_waits_for_a_real_frame(self):
-        from intelligence import consciousness as c
-        c._capture_startup_image_episode(None)
+        from intelligence import episodic_hooks as c
+        c.startup_image(None)
         self.assertFalse(c._startup_image_captured)     # no frame yet → don't latch
 
     def test_startup_hook_is_one_shot(self):
-        from intelligence import consciousness as c
+        from intelligence import episodic_hooks as c
         from vision import scene
         c._startup_image_captured = True
         with mock.patch.object(scene, "quick_caption") as qc:
-            c._capture_startup_image_episode(object())
+            c.startup_image(object())
             qc.assert_not_called()
 
 

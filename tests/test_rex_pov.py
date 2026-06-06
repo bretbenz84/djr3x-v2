@@ -231,11 +231,16 @@ class PovPersistenceTest(unittest.TestCase):
                 self.assertEqual(rex_pov.active_seed_id(), seed_id)
 
     def test_default_path_file_io_is_suppressed_under_test_runner(self):
-        # No path override → default path → suppressed under the suite (no real file).
+        # No path override → default path → suppressed under the suite: persist() must NOT
+        # create or modify the real file. Tolerate a pre-existing artifact left by an
+        # actual robot run (this asserts persist() is a no-op, not that the file is absent).
         self.assertTrue(rex_pov._file_io_suppressed())
+        path = rex_pov._default_state_path()
+        before = path.read_bytes() if path.exists() else None
         rex_pov.current_pov_directive(context={"people": True, "flat": False}, exchange=0)
-        rex_pov.persist()  # must be a no-op
-        self.assertFalse(rex_pov._default_state_path().exists())
+        rex_pov.persist()  # must be a no-op on the default path under the runner
+        after = path.read_bytes() if path.exists() else None
+        self.assertEqual(after, before)  # neither created nor modified
 
 
 if __name__ == "__main__":
