@@ -425,11 +425,22 @@ mostly squashed and now CAUGHT AS CLASSES by the eval. The remaining work is **s
    under-enforce code is harmless and stays as the legacy fallback. The consolidation goal ("stop good things getting
    crowded out") is ACHIEVED. Per-mechanism cooldowns are NOT redundant (submit-throttles). Revert the flag to False if
    arbitration ever misbehaves. See the "Proactive-layer consolidation" do-not-regress entries. (Suite **900**.)
-2. **Delete the deterministic anti-repetition hacks** the arc now makes redundant (comedy opener-stripper, the
-   follow-up angle rotation, `social_frame._is_near_repeat`) — Bet 1 fast-follow; the arc can SEE what Rex already
-   said. De-risk via the eval (assert no regression in repetition).
-3. **Delete the TurnPlan regex patterns** (Bet 2 follow-up) — remove the no-plan fallback + rewrite ~5 pinned
-   string-based `social_frame` tests onto the plan API. De-riskable via the eval corpus. See the TurnPlan entry.
+2. **Anti-repetition hacks — PARTLY DONE (2026-06-05): only 1 of 3 was an arc-redundant fake.** Verifying via the eval
+   (the point) showed the premise mostly false. ✅ DELETED the follow-up ANGLE rotation (`_FOLLOWUP_ANGLES` + the angle
+   counter) — prompt guidance the arc + an inlined "fresh angle / don't re-ask" steer now cover; eval `re_asks` 0→0.
+   ⛔ KEPT `social_frame._is_near_repeat` (a deterministic GOVERNOR backstop — a different layer than the arc; structurally
+   tested + replay scenario; NOT eval-de-riskable) and ⛔ `comedy_modes.strip_banned_opener` (a stylistic filler filter,
+   not content-repetition; eval `banned_opener` 0% depends on it). See the "Anti-repetition-hack deletion" do-not-regress
+   entry in CONTEXT.md. **Lesson: the arc only makes redundant CONTENT-level pre-generation hacks; governor backstops +
+   stylistic filters live elsewhere and stay.**
+3. **TurnPlan regex — NOT a deletable fallback; deleting it = COMPLETING Bet 2 (deferred, scoped).** Investigation (2026-06-05)
+   found the regex (`_purpose_from`/`_ASK_ALLOWED_PAT`/`_HARD_NO_QUESTION_PAT`/`_EXPLICIT_FOLLOWUP_PAT`) is the LIVE
+   signal-derivation mechanism: `build_turn_plan`→`_populate_signals`→`social_frame.derive_signals` regex-parses the rendered
+   directive to populate 4 of 5 TurnPlan signals (only `explicit_followup` is set directly by branches). To delete it, every
+   agenda branch in `build_turn_plan` must set all five signals DIRECTLY (replicating each regex's exact extraction), then drop
+   `_populate_signals`'s regex call + the patterns + `build_frame`'s fallback — a substantial, correctness-critical refactor
+   guarded by the eval + the `test_turn_plan` via_regex/via_plan equivalence tests, NOT a quick deletion. See the "TurnPlan
+   regex patterns are LOAD-BEARING" do-not-regress entry in CONTEXT.md.
 4. **Model migration: `gpt-4o-mini` → GPT-5.4 mini/nano before it sunsets** — affects the main reply AND the arc
    backend (`config.*_MODEL`). Looming; re-run the eval before/after to confirm no quality regression.
 

@@ -380,9 +380,11 @@ class TopicThreadLabelTest(unittest.TestCase):
         self.assertEqual(topic_thread.snapshot()["label"], "astrophotography")
 
 
-class CuriosityFollowupRotationTest(unittest.TestCase):
-    """G: Rex walks down a stack of follow-up angles as a topic continues, so he
-    keeps getting more curious instead of re-asking the same opener."""
+class CuriosityFollowupVarietyTest(unittest.TestCase):
+    """G (post arc-cleanup): the deterministic angle ROTATION (_FOLLOWUP_ANGLES) was
+    removed — the conversation arc now lets Rex see what he already asked. The steering
+    directive still STEERS toward a fresh follow-up angle and tells him not to re-ask a
+    covered one; the model + arc choose the angle instead of a hardcoded rotation."""
 
     def setUp(self):
         from intelligence import conversation_steering
@@ -392,12 +394,7 @@ class CuriosityFollowupRotationTest(unittest.TestCase):
         from intelligence import conversation_steering
         conversation_steering.clear()
 
-    def _angle(self, ctx):
-        import re
-        m = re.search(r"aim it at (.*?), and do not", ctx.directive)
-        return m.group(1) if m else None
-
-    def test_followup_angle_advances_across_turns(self):
+    def test_steering_directive_asks_for_a_fresh_unrepeated_angle(self):
         from intelligence import conversation_steering as cs
         with (
             mock.patch.object(cs.boundary_memory, "is_blocked", return_value=False),
@@ -405,13 +402,13 @@ class CuriosityFollowupRotationTest(unittest.TestCase):
             mock.patch.object(cs.facts_memory, "get_facts", return_value=[]),
             mock.patch.object(cs.interests_memory, "upsert_interest"),
         ):
-            first = cs.note_user_turn(1, "I'm really into astrophotography")
-            second = cs.note_user_turn(1, "it is genuinely so relaxing for me")
-            third = cs.note_user_turn(1, "i shoot from the backyard most nights")
-        angles = [self._angle(first), self._angle(second), self._angle(third)]
-        self.assertEqual(angles[0], "what first got them into it")
-        # Each continuation turn digs at a different angle.
-        self.assertEqual(len(set(angles)), 3)
+            ctx = cs.note_user_turn(1, "I'm really into astrophotography")
+        self.assertIsNotNone(ctx)
+        directive = ctx.directive.lower()
+        self.assertIn("fresh angle", directive)
+        self.assertIn("do not re-ask an angle you've already covered", directive)
+        # The deterministic rotation phrasing is gone.
+        self.assertNotIn("aim it at", directive)
 
 
 class ComedyAlignsWithInterestTest(unittest.TestCase):

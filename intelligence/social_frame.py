@@ -504,7 +504,10 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
         notes.append("fallback_bad_closure")
     # Backstop: never speak a line that just repeats Rex's previous one (the
     # "A solo project, huh?" replay when the user already answered it). Closure
-    # acks are allowed to repeat ("Catch you later.").
+    # acks are allowed to repeat ("Catch you later."). The conversation arc steers
+    # generation AWAY from repeats but does not GUARANTEE it (it's a different,
+    # pre-generation layer); this deterministic governor-level net is the guarantee
+    # — kept on purpose (structural coverage: NoRepeatQuestionTest + replay corpus).
     if (
         current
         and frame.purpose != "closure"

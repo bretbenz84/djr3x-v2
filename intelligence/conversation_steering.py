@@ -125,18 +125,6 @@ _SUBSTANTIVE_PAT = re.compile(
 )
 
 
-# Ordered follow-up angles Rex walks down as a topic continues across turns, so
-# he keeps getting more curious instead of asking the same "what got you into it?"
-# every turn. Advanced once per user turn that stays on the active topic.
-_FOLLOWUP_ANGLES = (
-    "what first got them into it",
-    "their favorite part of it",
-    "the hardest or most frustrating part of it",
-    "the best thing they've made, done, caught, or seen with it",
-    "what they're chasing or working toward with it next",
-    "who or what first got them started",
-)
-
 
 # A bare low-content reply ("yeah", "sure", "I guess", "not really") signals the
 # subject isn't generating elaboration. Two in a row on the same topic and Rex
@@ -242,7 +230,6 @@ def note_user_turn(
             "topic": topic,
             "ts": time.monotonic(),
             "source": "explicit_interest",
-            "angle": 0,
         }
         if person_id is not None and not suppress_memory_learning:
             _store_interest_fact(person_id, topic, source="interest_declaration")
@@ -256,16 +243,12 @@ def note_user_turn(
                 "topic": topic,
                 "ts": time.monotonic(),
                 "source": "topic_question",
-                "angle": 0,
             }
         else:
             active = _read_active(person_id)
             topic = active.get("topic") if active else None
             if not topic:
                 return None
-            # Same topic continues into another turn — advance the follow-up
-            # angle so Rex digs somewhere new instead of repeating himself.
-            active["angle"] = int(active.get("angle", 0)) + 1
             # Track engagement: bare low-content replies mean the subject isn't
             # landing. After a couple in a row, pivot away and drop the topic so
             # Rex doesn't keep probing a dead subject.
@@ -302,7 +285,6 @@ def note_bare_interest_answer(
         "topic": topic,
         "ts": time.monotonic(),
         "source": source,
-        "angle": 0,
     }
     if person_id is not None and not suppress_memory_learning:
         _store_interest_fact(int(person_id), topic, source=source)
@@ -366,13 +348,12 @@ def build_context(
         return None
     fact_key = _interest_key(resolved_topic)
     source = "explicit_interest" if fresh else ((active or {}).get("source") or "known_interest")
-    angle = 0 if fresh else int((active or {}).get("angle", 0))
     return SteeringContext(
         topic=resolved_topic,
         source=source,
         fresh=fresh,
         fact_key=fact_key,
-        directive=_directive_for(resolved_topic, fresh=fresh, angle=angle),
+        directive=_directive_for(resolved_topic, fresh=fresh),
         mode="deepen",
     )
 
@@ -404,21 +385,22 @@ def _read_active(person_id: Optional[int]) -> Optional[dict]:
     return active
 
 
-def _directive_for(topic: str, *, fresh: bool, angle: int = 0) -> str:
+def _directive_for(topic: str, *, fresh: bool) -> str:
     lead = (
         "The human just volunteered a genuine interest"
         if fresh else
         "The current thread matches a known/active interest"
     )
-    angle_hint = _FOLLOWUP_ANGLES[int(angle) % len(_FOLLOWUP_ANGLES)]
     return (
         f"Conversation steering: {lead}: {topic!r}. Keep this turn steered "
         "toward that subject unless the human asks for something else. Rex should "
         "sound curious about their skill, taste, tools, process, or knowledge. "
         "Use the main LLM to add one compact subject-specific observation or "
         "'did you know' style tidbit when you can do it confidently, then ask at "
-        f"most one natural follow-up — this turn, aim it at {angle_hint}, and do "
-        "not re-ask an angle you've already covered this conversation. Keep it "
+        "most one natural follow-up on a FRESH angle — e.g. what first got them "
+        "into it, their favorite or most frustrating part, the best thing they've "
+        "done with it, or what they're chasing next — and do not re-ask an angle "
+        "you've already covered this conversation. Keep it "
         "funny and in-character; do not confuse franchises or fields as if they "
         "are the same thing, and ask instead of bluffing if you are unsure. "
         "If the topic is Star Trek, answer as Star Trek first; a Star Wars "
