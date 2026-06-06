@@ -2261,7 +2261,12 @@ ACTION_GOVERNOR_MIN_SCORE = 20
 # speaks (losers are suppressed). Fixes the scattered "a good thing gets crowded
 # out / dropped" arbitration. Off = legacy behavior (each mechanism speaks for
 # itself; the governor only logs). Flip on once the routed mechanisms are validated.
-ACTION_GOVERNOR_ENFORCE = False
+# 2026-06-05: flipped ON for step-4 live validation of the proactive-layer
+# consolidation (steps 1–3 complete: deferred speak_fn, cross-thread intake, on_spoke
+# bookkeeping). Watch logs/djr3x.log for `[action_governor] … shadow_decision`/winner
+# lines + cross-thread `submit_external` candidates. Revert to False if arbitration
+# misbehaves; do NOT delete the redundant gates (step 5) until this proves out live.
+ACTION_GOVERNOR_ENFORCE = True
 
 # Higher-level user-turn action router.
 #
@@ -3196,7 +3201,7 @@ REX_POV_SEEDS = [
     },
     {
         "id": "appliance-nemesis",
-        "pov": "You've developed a thoroughly one-sided rivalry with a nearby machine you're convinced is judging you.",
+        "pov": "You've got a thoroughly one-sided rivalry going with machines in general - you're convinced they judge you, and you've quietly started judging them right back.",
         "fits": ["quiet", "people", "any"],
     },
     {

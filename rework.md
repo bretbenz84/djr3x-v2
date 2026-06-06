@@ -388,9 +388,16 @@ mostly squashed and now CAUGHT AS CLASSES by the eval. The remaining work is **s
    `mark_acknowledged`), animal-arrival (`_prime_emotion_frame`+pop-pending), startup-empty-room latch, holiday-plans,
    weekly-smalltalk. Left as-is: the `if not _generate_and_speak(...)` relationship-inquiry (clear-on-not-queued — correct
    under enforce). Tests gained a `_speak_async_spoke` side_effect stub + a `SpeakAsyncOnSpokeBookkeepingTest` (on_spoke fires on
-   actual speak, not on suppression). Both flag-gated OFF, **suite 890**. **THEN**
-   (4) validate (shadow logs + live) + flip enforce on incrementally, (5) delete the redundant gates (`conversation_agenda`
-   claim + scattered cooldowns). See the "Proactive-layer consolidation" do-not-regress entries.
+   actual speak, not on suppression). **suite 890**. **INCREMENT 4 — ENFORCE FLIPPED ON (live validation, 2026-06-05):**
+   `ACTION_GOVERNOR_ENFORCE=True` is now the default (the 2026-06-05 shadow run couldn't validate the consolidation —
+   only 1 governor candidate appeared all run because the routed bypassers only `submit_external` when enforcing). The
+   default-flip surfaced ONE legacy-pinned test (`test_banter_fires_after_silence_and_drives_conversation` asserted
+   inline `_speak_blocking`) → pinned it to legacy mode + added `test_banter_under_enforce_submits_candidate_instead_of_speaking_inline`
+   (idle banter SUBMITS a candidate, arms cooldown on submit, defers the speak to the governor winner). **suite 891.**
+   AWAITING a live run with enforce on — read `logs/djr3x.log` for governor winner/loser decisions + cross-thread
+   `submit_external` candidates, confirm no double-speak / no dropped good lines, then (5). Revert the flag to False if
+   arbitration misbehaves. **THEN** (5) delete the redundant gates (`conversation_agenda`
+   claim + scattered cooldowns) — ONLY after enforce proves out live. See the "Proactive-layer consolidation" do-not-regress entries.
 2. **Delete the deterministic anti-repetition hacks** the arc now makes redundant (comedy opener-stripper, the
    follow-up angle rotation, `social_frame._is_near_repeat`) — Bet 1 fast-follow; the arc can SEE what Rex already
    said. De-risk via the eval (assert no regression in repetition).

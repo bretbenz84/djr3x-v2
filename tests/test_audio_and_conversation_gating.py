@@ -9787,11 +9787,64 @@ class IdleBanterTest(unittest.TestCase):
             mock.patch.object(interaction.conv_memory, "add_to_transcript"),
             mock.patch.object(interaction.conv_log, "log_rex"),
             mock.patch.object(interaction, "_register_rex_utterance"),
+            # LEGACY (inline-speak) path: pin enforce OFF so this test stays valid
+            # regardless of the ACTION_GOVERNOR_ENFORCE default. The enforce path
+            # (submit-a-candidate, deferred speak) is covered by the test below.
+            mock.patch.object(interaction, "_governor_enforcing", return_value=False),
         ):
             fired = interaction._maybe_idle_banter(idle_for=9.0, effective_idle_timeout=45.0)
         self.assertTrue(fired)
         speak.assert_called_once()
         self.assertEqual(interaction._idle_banter_count, 1)
+
+    def test_banter_under_enforce_submits_candidate_instead_of_speaking_inline(self):
+        """Consolidation enforce mode: idle banter is an interaction-thread BYPASSER —
+        under ACTION_GOVERNOR_ENFORCE it must SUBMIT a candidate (so the governor can
+        arbitrate it against the consciousness tick) and arm its cooldown on submit,
+        NOT speak inline. The deferred speak_fn drives the conversation only if idle
+        banter wins the tick."""
+        from intelligence import interaction
+        from intelligence.action_governor import governor
+        interaction._idle_banter_count = 0
+        interaction._last_idle_banter_at = 0.0
+        submitted = []
+        with (
+            mock.patch.object(interaction, "_primary_session_person_id", return_value=1),
+            mock.patch.object(interaction, "_directed_context_fresh", return_value=False),
+            mock.patch.object(interaction, "_game_suppresses_conversation", return_value=False),
+            mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+            mock.patch.object(interaction.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch.object(interaction.end_thread, "is_grace_active", return_value=False),
+            mock.patch.object(interaction.llm, "get_response", return_value="So what's the dog up to?"),
+            mock.patch.object(interaction.llm, "clean_response_text", side_effect=lambda s: s),
+            mock.patch.object(interaction.social_frame, "build_frame"),
+            mock.patch.object(
+                interaction.social_frame, "govern_response",
+                return_value=type("G", (), {"text": "So what's the dog up to?"})(),
+            ),
+            mock.patch("audio.tts.ensure_cached", return_value=True),
+            mock.patch.object(interaction.barge_guard, "user_speaking_now", return_value=False),
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+            mock.patch.object(interaction.conv_memory, "add_to_transcript"),
+            mock.patch.object(interaction.conv_log, "log_rex"),
+            mock.patch.object(interaction, "_register_rex_utterance"),
+            mock.patch.object(interaction, "_governor_enforcing", return_value=True),
+            mock.patch.object(governor, "submit_external", side_effect=lambda c: submitted.append(c)),
+        ):
+            fired = interaction._maybe_idle_banter(idle_for=9.0, effective_idle_timeout=45.0)
+            # Submitted a candidate; did NOT speak inline; armed the cooldown on submit.
+            self.assertTrue(fired)
+            speak.assert_not_called()
+            self.assertEqual(interaction._idle_banter_count, 1)
+            self.assertEqual(len(submitted), 1)
+            candidate = submitted[0]
+            self.assertEqual(candidate.purpose, "idle_monologue")
+            self.assertEqual(candidate.source, "interaction._maybe_idle_banter")
+            self.assertIsNotNone(candidate.speak_fn)
+            # The governor winner runs the deferred speak_fn → THAT drives the line.
+            self.assertTrue(candidate.speak_fn())
+            speak.assert_called_once()
 
     def test_banter_holds_until_threshold(self):
         from intelligence import interaction
