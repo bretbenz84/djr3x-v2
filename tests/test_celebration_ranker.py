@@ -99,5 +99,38 @@ class PickRankerTest(unittest.TestCase):
         self.assertIsNone(consciousness._pick_due_celebration_checkin(None))
 
 
+class StartupCelebrationCooldownTest(unittest.TestCase):
+    """Once a celebration has led a greeting it must NOT re-lead every restart.
+    `get_startup_celebrations` suppresses an acknowledged event for
+    PRESENCE_CELEBRATION_RELEAD_COOLDOWN_DAYS (cross-process), instead of the old
+    within-process-only `last_acknowledged_at < process_started_iso` dedup."""
+
+    def _captured_query(self, cooldown_days):
+        from memory import emotional_events as ee
+        captured = {}
+
+        def fake_fetchall(query, params):
+            captured["query"] = query
+            captured["params"] = params
+            return []
+
+        with mock.patch.object(ee.config, "PRESENCE_CELEBRATION_RELEAD_COOLDOWN_DAYS", cooldown_days), \
+             mock.patch.object(ee.db, "fetchall", side_effect=fake_fetchall):
+            ee.get_startup_celebrations(1, "2026-01-01 00:00:00", limit=3)
+        return captured
+
+    def test_cooldown_applies_a_cross_process_window(self):
+        cap = self._captured_query(14)
+        self.assertIn("datetime('now'", cap["query"])
+        self.assertIn("-14 days", cap["params"])
+        # the per-process iso is NOT used when the cooldown is active
+        self.assertNotIn("2026-01-01 00:00:00", cap["params"])
+
+    def test_cooldown_zero_restores_per_process_behavior(self):
+        cap = self._captured_query(0)
+        self.assertIn("2026-01-01 00:00:00", cap["params"])
+        self.assertNotIn("-0 days", cap["params"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -372,8 +372,21 @@ def get_startup_celebrations(
     process_started_iso: Optional[str],
     limit: int = 1,
 ) -> list[dict]:
-    """Return positive events that can lead a fresh-process greeting."""
-    if process_started_iso:
+    """Return positive events that can lead a fresh-process greeting.
+
+    Once an event has led a greeting (last_acknowledged_at set), it is suppressed
+    for PRESENCE_CELEBRATION_RELEAD_COOLDOWN_DAYS — CROSS-process. The old behavior
+    only dedup'd within one running process (`last_acknowledged_at <
+    process_started_iso`), so the same event re-led the greeting on EVERY restart
+    for its whole lead window. Cooldown=0 restores that per-process behavior."""
+    cooldown_days = int(getattr(config, "PRESENCE_CELEBRATION_RELEAD_COOLDOWN_DAYS", 14) or 0)
+    if cooldown_days > 0:
+        ack_clause = (
+            "AND (last_acknowledged_at IS NULL "
+            "OR last_acknowledged_at < datetime('now', ?))"
+        )
+        params = (int(person_id), f"-{cooldown_days} days", int(limit))
+    elif process_started_iso:
         ack_clause = (
             "AND (last_acknowledged_at IS NULL OR last_acknowledged_at < ?)"
         )

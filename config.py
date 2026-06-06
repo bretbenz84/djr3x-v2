@@ -2154,6 +2154,9 @@ IDLE_BANTER_ENABLED = True
 IDLE_BANTER_SECS = 5.0            # silence before the first proactive nudge
 IDLE_BANTER_COOLDOWN_SECS = 12.0  # minimum gap between nudges
 IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up
+# Priority idle banter competes with under ACTION_GOVERNOR_ENFORCE (proactive-layer
+# consolidation). Moderate — above ambient idle_monologue (15), below the check-ins.
+IDLE_BANTER_GOVERNOR_PRIORITY = 50
 
 # When an ACTIVE conversation expires from silence, let Rex make one tiny
 # closing remark instead of silently snapping back to IDLE.
@@ -2252,6 +2255,13 @@ ACTION_GOVERNOR_SHADOW_MODE = True
 ACTION_GOVERNOR_LOG_CANDIDATES = True
 ACTION_GOVERNOR_LOG_EMPTY_CYCLES = False
 ACTION_GOVERNOR_MIN_SCORE = 20
+# ENFORCE mode (rollout step 2 — default OFF): when True the governor becomes the
+# single decider for proactive speech — each mechanism SUBMITS a candidate instead
+# of speaking inline, and only the highest-scoring winner of the tick actually
+# speaks (losers are suppressed). Fixes the scattered "a good thing gets crowded
+# out / dropped" arbitration. Off = legacy behavior (each mechanism speaks for
+# itself; the governor only logs). Flip on once the routed mechanisms are validated.
+ACTION_GOVERNOR_ENFORCE = False
 
 # Higher-level user-turn action router.
 #
@@ -2955,6 +2965,21 @@ PRESENCE_SAME_DAY_RETURN_ENABLED = True
 # to restore the old "lead with any positive event" behavior.
 PRESENCE_CELEBRATION_REQUIRE_CONCRETE = True
 PRESENCE_CELEBRATION_LEAD_MAX_AGE_DAYS = 21.0
+
+# Once a celebration HAS led a startup greeting, don't re-lead with it for this
+# many days — CROSS-process. Without this, the acknowledgment only suppressed the
+# event within one running process, so the same "your back pain is improving" event
+# re-led the greeting on EVERY restart for the whole 21-day lead window (the user's
+# complaint: "I said that days ago, now it's every startup line"). Celebrate once,
+# then leave it alone. Set 0 to restore the old per-process behavior.
+PRESENCE_CELEBRATION_RELEAD_COOLDOWN_DAYS = 14
+
+# When the person sets a boundary asking Rex to stop bringing up a topic ("do not
+# ask about my back pain"), also MUTE proactive check-ins for remembered events
+# matching that topic — otherwise the celebration/emotional greeting keeps leading
+# with it even though they explicitly said to stop. Token-overlap matching, so a
+# vague topic ("anything") mutes nothing. Set False to disable.
+BOUNDARY_MUTES_MATCHING_EVENTS = True
 
 # Among the candidates that PASS the gate above, rank "what's worth bringing up"
 # by recency x concreteness x did-they-invite-it and lead with the BEST one,

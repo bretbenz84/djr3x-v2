@@ -17,13 +17,23 @@ import threading
 import time
 from dataclasses import dataclass, field
 from itertools import count
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import config
 
 _log = logging.getLogger(__name__)
 
 _ids = count(1)
+
+# Cross-thread proactive intake (Increment 2): mechanisms on threads OTHER than the
+# consciousness loop (e.g. interaction's idle banter / memory follow-ups) can't join
+# the thread-local cycle, so they submit candidates here instead of speaking. The next
+# consciousness tick drains them into its cycle, so ALL proactive speech is arbitrated
+# by ONE decider. Lock-guarded; stale entries (older than the TTL) are dropped so a
+# paused consciousness loop can't replay an old idle line.
+_external_lock = threading.Lock()
+_external_candidates: list = []
+_EXTERNAL_CANDIDATE_TTL_SECS = 2.0
 
 
 _PURPOSE_PRIORITIES: dict[str, int] = {
@@ -85,6 +95,10 @@ class CandidateMove:
     requires_llm: bool = True
     wait_secs: Optional[float] = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # When ENFORCING, the cycle resolver invokes this on the winning candidate
+    # (and on no one else) — the deferred "generate + speak" work. Ignored in
+    # shadow mode, where each mechanism still speaks for itself.
+    speak_fn: Optional[Callable[[], None]] = None
     candidate_id: str = field(default_factory=lambda: f"cg-{next(_ids)}")
     created_at: float = field(default_factory=time.monotonic)
     outcome: str = "observed"
@@ -128,18 +142,49 @@ class ActionGovernor:
     def log_candidates(self) -> bool:
         return bool(getattr(config, "ACTION_GOVERNOR_LOG_CANDIDATES", True))
 
+    @property
+    def enforcing(self) -> bool:
+        """When True the governor is the single decider: candidates are collected
+        for the tick and ONLY the winner's `speak_fn` is invoked (losers are
+        suppressed). When False (default) it only observes/logs and each mechanism
+        speaks for itself (the legacy scattered behavior)."""
+        return bool(getattr(config, "ACTION_GOVERNOR_ENFORCE", False))
+
     def active(self) -> bool:
-        return self.shadow_mode or self.log_candidates
+        return self.shadow_mode or self.log_candidates or self.enforcing
+
+    def submit_external(self, candidate: "CandidateMove") -> str:
+        """Submit a proactive candidate from a NON-consciousness thread (e.g.
+        interaction's idle banter). It is picked up and arbitrated by the next
+        consciousness tick (within ~1 cycle). No-op when not enforcing — callers
+        fall back to their legacy inline speaking."""
+        if not self.enforcing:
+            return candidate.candidate_id
+        with _external_lock:
+            _external_candidates.append(candidate)
+        return candidate.candidate_id
+
+    def _drain_external(self) -> list:
+        now = time.monotonic()
+        with _external_lock:
+            fresh = [
+                c for c in _external_candidates
+                if (now - c.created_at) <= _EXTERNAL_CANDIDATE_TTL_SECS
+            ]
+            _external_candidates.clear()
+        return fresh
 
     def start_cycle(self, *, profile: Any = None, snapshot: Optional[dict] = None) -> None:
         if not self.active():
             return
+        # Pull in any cross-thread candidates so they compete in this tick.
+        external = self._drain_external() if self.enforcing else []
         self._local.cycle = {
             "id": f"cycle-{next(_ids)}",
             "started_at": time.monotonic(),
             "profile": profile,
             "snapshot": snapshot or {},
-            "candidates": [],
+            "candidates": external,
         }
 
     def observe(self, candidate: CandidateMove) -> str:

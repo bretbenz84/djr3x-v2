@@ -3251,6 +3251,17 @@ _IDLE_BANTER_DIRECTIVES = (
 )
 
 
+def _governor_enforcing() -> bool:
+    """True when the action governor is the single decider for proactive speech
+    (ACTION_GOVERNOR_ENFORCE). Interaction-thread proactive paths then SUBMIT a
+    candidate (governor.submit_external) instead of speaking inline."""
+    try:
+        from intelligence.action_governor import governor
+        return bool(governor.enforcing)
+    except Exception:
+        return False
+
+
 def _maybe_idle_banter(
     *,
     idle_for: float,
@@ -3324,59 +3335,90 @@ def _maybe_idle_banter(
                 "them to react to. Do NOT ask a question this time, and do not sign off "
                 "or announce the silence."
             )
-    try:
-        line = llm.get_response(
-            "You are re-engaging after a quiet pause in an ongoing conversation. "
-            + directive
-            + " Keep it to one or two short sentences. Return only the line.",
-            person_id,
-        )
-    except Exception as exc:
-        _log.debug("idle banter LLM failed: %s", exc)
-        return False
+    # The generate + govern + speak + on-spoken bookkeeping, deferred so the action
+    # governor can run it ONLY if idle banter wins the tick (enforce mode). Captures
+    # `directive`/`ask_user`/`person_id` decided above.
+    def _deliver() -> bool:
+        global _session_exchange_count
+        try:
+            line = llm.get_response(
+                "You are re-engaging after a quiet pause in an ongoing conversation. "
+                + directive
+                + " Keep it to one or two short sentences. Return only the line.",
+                person_id,
+            )
+        except Exception as exc:
+            _log.debug("idle banter LLM failed: %s", exc)
+            return False
 
-    line = llm.clean_response_text(line or "")
-    if not line:
-        return False
-    try:
-        frame = social_frame.build_frame(
-            "(the user has gone quiet)",
-            person_id,
-            agenda_directive=(
-                "Primary purpose: after a quiet pause, proactively keep the "
-                "conversation alive. "
-                + ("Ask one short, genuine question about the user."
-                   if ask_user else
-                   "Volunteer one specific Rex opinion, preference, or observation; "
-                   "do not ask a question.")
-            ),
-        )
-        # Asking IS the point of an "ask the user" nudge — force the question
-        # through (otherwise the quiet-energy frame strips it and Rex dead-acks).
-        frame.allow_question = bool(ask_user)
-        if ask_user:
-            frame.max_sentences = max(frame.max_sentences, 2)
-            frame.max_words = max(frame.max_words, 24)
-        governed = social_frame.govern_response(line, frame)
-        if governed.text:
-            line = governed.text
-    except Exception as exc:
-        _log.debug("idle banter govern failed: %s", exc)
+        line = llm.clean_response_text(line or "")
+        if not line:
+            return False
+        try:
+            frame = social_frame.build_frame(
+                "(the user has gone quiet)",
+                person_id,
+                agenda_directive=(
+                    "Primary purpose: after a quiet pause, proactively keep the "
+                    "conversation alive. "
+                    + ("Ask one short, genuine question about the user."
+                       if ask_user else
+                       "Volunteer one specific Rex opinion, preference, or observation; "
+                       "do not ask a question.")
+                ),
+            )
+            # Asking IS the point of an "ask the user" nudge — force the question
+            # through (otherwise the quiet-energy frame strips it and Rex dead-acks).
+            frame.allow_question = bool(ask_user)
+            if ask_user:
+                frame.max_sentences = max(frame.max_sentences, 2)
+                frame.max_words = max(frame.max_words, 24)
+            governed = social_frame.govern_response(line, frame)
+            if governed.text:
+                line = governed.text
+        except Exception as exc:
+            _log.debug("idle banter govern failed: %s", exc)
 
-    completed = _speak_proactive(
-        line, emotion="curious", priority=1, label="idle_banter"
-    )
+        completed = _speak_proactive(
+            line, emotion="curious", priority=1, label="idle_banter"
+        )
+        if completed:
+            _log.info(
+                "[interaction] idle banter — person_id=%s ask_user=%s text=%r",
+                person_id, ask_user, line,
+            )
+            conv_memory.add_to_transcript("Rex", line)
+            conv_log.log_rex(line)
+            _register_rex_utterance(line)
+            _session_exchange_count += 1
+        return completed
+
+    if _governor_enforcing():
+        # ENFORCE: the governor is the single decider. Arm the idle-banter cooldown
+        # NOW so the idle loop doesn't re-submit every tick, then submit a candidate
+        # carrying the deferred speak work — only the tick's winner runs; if a
+        # higher-priority proactive wins, idle banter quietly yields.
+        _last_idle_banter_at = time.monotonic()
+        _idle_banter_count += 1
+        try:
+            from intelligence.action_governor import CandidateMove, governor
+            governor.submit_external(CandidateMove(
+                source="interaction._maybe_idle_banter",
+                purpose="idle_monologue",
+                priority=int(getattr(config, "IDLE_BANTER_GOVERNOR_PRIORITY", 50)),
+                label="idle_banter",
+                speak_fn=_deliver,
+                metadata={"topic_key": f"idle_banter:{person_id}"},
+            ))
+        except Exception as exc:
+            _log.debug("idle banter governor submit failed: %s", exc)
+        return True
+
+    # LEGACY: speak inline; arm the cooldown only on an actual spoken line.
+    completed = _deliver()
     if completed:
         _last_idle_banter_at = time.monotonic()
         _idle_banter_count += 1
-        _log.info(
-            "[interaction] idle banter — person_id=%s attempt=%d ask_user=%s text=%r",
-            person_id, _idle_banter_count, ask_user, line,
-        )
-        conv_memory.add_to_transcript("Rex", line)
-        conv_log.log_rex(line)
-        _register_rex_utterance(line)
-        _session_exchange_count += 1
     return completed
 
 

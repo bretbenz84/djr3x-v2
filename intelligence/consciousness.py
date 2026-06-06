@@ -1200,7 +1200,98 @@ def _speak_async(
     label: str = "",
     governed: bool = True,
     on_done: Optional[Callable[[], None]] = None,
+    on_spoke: Optional[Callable[[], None]] = None,
 ) -> bool:
+    # `on_spoke` fires once the line is committed to the speech queue (only the
+    # ENFORCE winner reaches here) — the place for "I fired this" bookkeeping that
+    # must NOT happen for a losing candidate. See _generate_and_speak's note.
+    def _do_speak(candidate_id: Optional[str]) -> bool:
+        try:
+            if not _can_proactive_speak():
+                _mark_governor_candidate(candidate_id, "dropped", "can_proactive_speak_false")
+                return False
+            if not text or not text.strip():
+                _mark_governor_candidate(candidate_id, "dropped", "empty_text")
+                return False
+            # Yield the floor if the user has already started talking. This line was
+            # decided + generated before now; pre-cache its audio so the mic re-check
+            # lands right before playback (not ~1s before it, the window in which Rex
+            # used to start talking over a reply that began during TTS generation),
+            # then bail if the user beat us to it — the interaction turn loop will
+            # pick them up from the un-attenuated rolling buffer.
+            if bool(getattr(config, "PROACTIVE_SPEECH_YIELD_ENABLED", True)):
+                try:
+                    from audio import tts
+                    tts.ensure_cached(text, emotion=emotion)
+                except Exception as exc:
+                    _log.debug("proactive pre-cache failed: %s", exc)
+                try:
+                    from audio import barge_guard
+                    if barge_guard.user_speaking_now():
+                        _mark_governor_candidate(candidate_id, "dropped", "user_speaking")
+                        _log.info(
+                            "[consciousness] proactive line yielded — user already speaking: %r",
+                            text,
+                        )
+                        return False
+                except Exception as exc:
+                    _log.debug("proactive yield check failed: %s", exc)
+            from audio import speech_queue
+            _proactive_speech_pending.set()
+            done = speech_queue.enqueue(text, emotion, priority=0)
+            _mark_governor_candidate(candidate_id, "accepted", "current_behavior_enqueued_speech")
+            should_open_wait_on_done = (
+                on_done is None and (wait_secs is not None or _utterance_expects_reply(text))
+            )
+
+            def _on_done() -> None:
+                done.wait()
+                try:
+                    if on_done is not None:
+                        on_done()
+                    elif should_open_wait_on_done:
+                        begin_response_wait(wait_secs)
+                finally:
+                    _proactive_speech_pending.clear()
+
+            threading.Thread(target=_on_done, daemon=True, name="speech-pending-clear").start()
+            try:
+                conv_log.log_rex(text)
+            except Exception as exc:
+                _log.debug("conversation log write failed for proactive speech: %s", exc)
+            note_rex_utterance(
+                text,
+                wait_secs=wait_secs,
+                open_response_wait=False,
+                source=purpose,
+            )
+            if on_spoke is not None:
+                try:
+                    on_spoke()
+                except Exception as exc:
+                    _log.debug("on_spoke callback failed: %s", exc)
+            return True
+        except Exception as exc:
+            _mark_governor_candidate(candidate_id, "dropped", "speak_async_error")
+            _proactive_speech_pending.clear()
+            _log.debug("_speak_async error: %s", exc)
+            return False
+
+    if governed and _governor_enforcing():
+        # ENFORCE: submit a candidate carrying the deferred enqueue; only the tick's
+        # winner speaks. (governed=False callers — e.g. _generate_and_speak's own
+        # already-arbitrated winner — bypass this and speak directly, no double pass.)
+        candidate_id = _observe_governor_candidate(
+            purpose=purpose or "direct_speech",
+            label=label,
+            suggested_text=text,
+            emotion=emotion,
+            wait_secs=wait_secs,
+            requires_llm=False,
+            speak_fn=lambda: _do_speak(None),
+        )
+        return candidate_id is not None
+
     candidate_id = None
     if governed:
         candidate_id = _observe_governor_candidate(
@@ -1211,71 +1302,7 @@ def _speak_async(
             wait_secs=wait_secs,
             requires_llm=False,
         )
-    try:
-        if not _can_proactive_speak():
-            _mark_governor_candidate(candidate_id, "dropped", "can_proactive_speak_false")
-            return False
-        if not text or not text.strip():
-            _mark_governor_candidate(candidate_id, "dropped", "empty_text")
-            return False
-        # Yield the floor if the user has already started talking. This line was
-        # decided + generated before now; pre-cache its audio so the mic re-check
-        # lands right before playback (not ~1s before it, the window in which Rex
-        # used to start talking over a reply that began during TTS generation),
-        # then bail if the user beat us to it — the interaction turn loop will
-        # pick them up from the un-attenuated rolling buffer.
-        if bool(getattr(config, "PROACTIVE_SPEECH_YIELD_ENABLED", True)):
-            try:
-                from audio import tts
-                tts.ensure_cached(text, emotion=emotion)
-            except Exception as exc:
-                _log.debug("proactive pre-cache failed: %s", exc)
-            try:
-                from audio import barge_guard
-                if barge_guard.user_speaking_now():
-                    _mark_governor_candidate(candidate_id, "dropped", "user_speaking")
-                    _log.info(
-                        "[consciousness] proactive line yielded — user already speaking: %r",
-                        text,
-                    )
-                    return False
-            except Exception as exc:
-                _log.debug("proactive yield check failed: %s", exc)
-        from audio import speech_queue
-        _proactive_speech_pending.set()
-        done = speech_queue.enqueue(text, emotion, priority=0)
-        _mark_governor_candidate(candidate_id, "accepted", "current_behavior_enqueued_speech")
-        should_open_wait_on_done = (
-            on_done is None and (wait_secs is not None or _utterance_expects_reply(text))
-        )
-
-        def _on_done() -> None:
-            done.wait()
-            try:
-                if on_done is not None:
-                    on_done()
-                elif should_open_wait_on_done:
-                    begin_response_wait(wait_secs)
-            finally:
-                _proactive_speech_pending.clear()
-
-        threading.Thread(target=_on_done, daemon=True, name="speech-pending-clear").start()
-        try:
-            conv_log.log_rex(text)
-        except Exception as exc:
-            _log.debug("conversation log write failed for proactive speech: %s", exc)
-        note_rex_utterance(
-            text,
-            wait_secs=wait_secs,
-            open_response_wait=False,
-            source=purpose,
-        )
-        return True
-    except Exception as exc:
-        _mark_governor_candidate(candidate_id, "dropped", "speak_async_error")
-        _proactive_speech_pending.clear()
-        _log.debug("_speak_async error: %s", exc)
-        return False
+    return _do_speak(candidate_id)
 
 
 _SMILE_REACTION_LINES = (
@@ -1922,12 +1949,10 @@ def _fire_pending_animal_arrival_reaction() -> bool:
             _pending_animal_arrivals.pop(signature, None)
             continue
         frame, line = _animal_reaction_frame_and_line(animal)
-        if _speak_async(
-            line,
-            frame.affect,
-            purpose="world.animal_arrival",
-            label=f"animal arrival: {(animal.get('species') or 'creature').strip().lower()}",
-        ):
+
+        def _on_spoke(signature=signature, frame=frame, line=line, now=now) -> None:
+            # Prime the face + retire the pending arrival only on an actual spoken
+            # reaction — under ENFORCE a losing candidate must not pop the queue.
             _prime_emotion_frame(frame)
             _animal_reacted_at[signature] = now
             _pending_animal_arrivals.pop(signature, None)
@@ -1936,6 +1961,14 @@ def _fire_pending_animal_arrival_reaction() -> bool:
                 signature,
                 line,
             )
+
+        if _speak_async(
+            line,
+            frame.affect,
+            purpose="world.animal_arrival",
+            label=f"animal arrival: {(animal.get('species') or 'creature').strip().lower()}",
+            on_spoke=_on_spoke,
+        ):
             return True
     return False
 
@@ -2579,7 +2612,9 @@ def _facial_expression_reaction_on_cooldown(
     return bool(per_expression_gap and (now - last_at) < per_expression_gap)
 
 
-def _speak_facial_expression_reaction(kind: str, text: str) -> bool:
+def _speak_facial_expression_reaction(
+    kind: str, text: str, *, on_spoke: Optional[Callable[[], None]] = None
+) -> bool:
     emotion = {
         "smile": "happy",
         "surprise": "curious",
@@ -2592,6 +2627,7 @@ def _speak_facial_expression_reaction(kind: str, text: str) -> bool:
         wait_secs=None,
         purpose=f"social.facial_expression.{kind}",
         label=f"facial expression reaction: {kind}",
+        on_spoke=on_spoke,
     )
 
 
@@ -2623,7 +2659,10 @@ def _step_facial_expression_reactions(snapshot: dict, profile: SituationProfile)
     line = _choose_expression_reaction_line(kind, lines)
     if not line:
         return
-    if _speak_facial_expression_reaction(kind, line):
+    def _on_spoke() -> None:
+        # Cooldown arms only when the line ACTUALLY speaks — under ENFORCE a smile
+        # reaction that loses the tick must NOT suppress itself.
+        global _last_facial_expression_reaction_at
         _last_facial_expression_reaction_at = time.monotonic()
         _facial_expression_reacted_at[(person_key, kind)] = _last_facial_expression_reaction_at
         _log.info(
@@ -2632,6 +2671,8 @@ def _step_facial_expression_reactions(snapshot: dict, profile: SituationProfile)
             kind,
             float(score),
         )
+
+    _speak_facial_expression_reaction(kind, line, on_spoke=_on_spoke)
 
 
 def _claim_proactive_purpose(
@@ -2755,6 +2796,7 @@ def _observe_governor_candidate(
     requires_llm: bool = True,
     source: Optional[str] = None,
     metadata: Optional[dict] = None,
+    speak_fn: Optional[Callable[[], None]] = None,
 ) -> Optional[str]:
     try:
         from intelligence.action_governor import CandidateMove, governor
@@ -2776,6 +2818,7 @@ def _observe_governor_candidate(
             requires_llm=requires_llm,
             wait_secs=wait_secs,
             metadata=merged,
+            speak_fn=speak_fn,
         )
         return governor.observe(candidate)
     except Exception as exc:
@@ -2801,10 +2844,30 @@ def _start_governor_cycle(profile: SituationProfile) -> None:
         _log.debug("action governor cycle start failed: %s", exc)
 
 
+def _governor_enforcing() -> bool:
+    try:
+        from intelligence.action_governor import governor
+        return bool(governor.enforcing)
+    except Exception:
+        return False
+
+
 def _finish_governor_cycle() -> None:
     try:
         from intelligence.action_governor import governor
-        governor.finish_cycle()
+        decision = governor.finish_cycle()
+        # ENFORCE mode: the governor is the single decider — run ONLY the winning
+        # candidate's deferred speak work (losers stay silent). Shadow mode returns
+        # here without acting; each mechanism already spoke for itself.
+        if decision is None or not governor.enforcing:
+            return
+        if decision.action == "speak" and decision.selected is not None:
+            speak_fn = getattr(decision.selected.candidate, "speak_fn", None)
+            if callable(speak_fn):
+                try:
+                    speak_fn()
+                except Exception as exc:
+                    _log.debug("governor winner speak_fn failed: %s", exc)
     except Exception as exc:
         _log.debug("action governor cycle finish failed: %s", exc)
 
@@ -2818,7 +2881,55 @@ def _generate_and_speak(
     priority: Optional[int] = None,
     label: str = "",
     metadata: Optional[dict] = None,
+    on_spoke: Optional[Callable[[], None]] = None,
 ) -> bool:
+    # `on_spoke` runs only when this line ACTUALLY speaks (inside the task, after a
+    # successful enqueue) — NOT when it's merely queued/submitted. So a caller's
+    # "I fired this" bookkeeping (cooldown arm, mark_acknowledged, _fired marker)
+    # belongs here, not on the return: under ENFORCE a losing candidate never speaks
+    # and so never marks itself done. (Legacy: the held purpose-claim blocks a
+    # re-fire until the task finishes, so there is no double-fire window.)
+    def _task(token):
+        try:
+            if token is not None and not _proactive_purpose_current(token):
+                return
+            if not _can_proactive_speak():
+                return
+            from intelligence.llm import get_response
+            text = get_response(_apply_proactive_directive(prompt, purpose))
+            if text and (token is None or _proactive_purpose_current(token)):
+                if _speak_async(text, emotion, wait_secs=wait_secs, governed=False):
+                    if on_spoke is not None:
+                        try:
+                            on_spoke()
+                        except Exception as exc:
+                            _log.debug("on_spoke callback failed: %s", exc)
+        except Exception as exc:
+            _log.debug("_generate_and_speak error: %s", exc)
+        finally:
+            if token is not None:
+                _release_proactive_purpose(token)
+
+    if _governor_enforcing():
+        # ENFORCE: submit a candidate carrying the deferred speak work; the cycle
+        # resolver runs only the tick's winner. No conversation_agenda claim — the
+        # governor subsumes that gate. Speak-time still re-checks _can_proactive_speak.
+        candidate_id = _observe_governor_candidate(
+            purpose=purpose,
+            label=label,
+            prompt=prompt,
+            emotion=emotion,
+            wait_secs=wait_secs,
+            priority=priority,
+            requires_llm=True,
+            metadata=metadata,
+            speak_fn=lambda: threading.Thread(
+                target=lambda: _task(None), daemon=True
+            ).start(),
+        )
+        return candidate_id is not None
+
+    # LEGACY (shadow): observe (log only) + conversation_agenda claim + speak now.
     candidate_id = _observe_governor_candidate(
         purpose=purpose,
         label=label,
@@ -2844,24 +2955,7 @@ def _generate_and_speak(
             )
             return False
     _mark_governor_candidate(candidate_id, "accepted", "current_behavior_queued_llm")
-    prompt = _apply_proactive_directive(prompt, purpose)
-
-    def _task():
-        try:
-            if not _proactive_purpose_current(token):
-                return
-            if not _can_proactive_speak():
-                return
-            from intelligence.llm import get_response
-            text = get_response(prompt)
-            if text and _proactive_purpose_current(token):
-                _speak_async(text, emotion, wait_secs=wait_secs, governed=False)
-        except Exception as exc:
-            _log.debug("_generate_and_speak error: %s", exc)
-        finally:
-            _release_proactive_purpose(token)
-
-    threading.Thread(target=_task, daemon=True).start()
+    threading.Thread(target=lambda: _task(token), daemon=True).start()
     return True
 
 
@@ -4028,6 +4122,13 @@ def _pick_due_celebration_checkin(person_db_id: Optional[int]) -> Optional[dict]
         return None
     try:
         from memory import emotional_events as emo_events
+        # Honor existing "don't bring up X" boundaries (even ones set in a prior
+        # session) before choosing what to lead with — mutes matching events.
+        try:
+            from memory import boundaries as _boundaries
+            _boundaries.reconcile_event_mutes(person_db_id)
+        except Exception as exc:
+            _log.debug("boundary→event reconcile skipped: %s", exc)
         due = emo_events.get_startup_celebrations(
             person_db_id,
             process_started_iso=_process_started_iso,
@@ -4764,13 +4865,20 @@ def _step_startup_empty_room_comment(snapshot: dict, profile: SituationProfile) 
         if not _proactive_purpose_current(token):
             return
         line = random.choice(list(pool))
-        if _speak_async(
+
+        def _on_spoke() -> None:
+            # Latch the once-per-session flag only when the joke actually speaks —
+            # under ENFORCE a losing candidate must not permanently suppress it.
+            global _startup_empty_room_fired
+            _startup_empty_room_fired = True
+
+        _speak_async(
             line,
             emotion="curious",
             purpose="startup_empty_room",
             label="startup empty-room joke",
-        ):
-            _startup_empty_room_fired = True
+            on_spoke=_on_spoke,
+        )
     finally:
         _release_proactive_purpose(token)
 
@@ -7473,12 +7581,17 @@ def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
             f"the holiday — just ask the question, in Rex's voice."
         )
 
-        if _generate_and_speak(prompt, emotion="curious", purpose="memory_followup"):
+        def _on_spoke() -> None:
+            # Mark this holiday's plans question asked only on an actual spoken turn.
             _holiday_plans_asked.add((engaged_id, target["date"]))
             _log.info(
                 "consciousness: holiday plans question for person_id=%s — %s (T-%dd, %s)",
                 engaged_id, target["name"], days_until, target["window"],
             )
+
+        _generate_and_speak(
+            prompt, emotion="curious", purpose="memory_followup", on_spoke=_on_spoke,
+        )
     except Exception as exc:
         _log.debug("holiday plans step error: %s", exc)
 
@@ -7624,12 +7737,17 @@ def _step_weekly_smalltalk(snapshot: dict, profile: SituationProfile) -> None:
                 )
             emotion = "curious"
 
-        if _generate_and_speak(prompt, emotion=emotion, purpose="small_talk"):
+        def _on_spoke() -> None:
+            # Mark this week's small-talk slot used only on an actual spoken turn.
             _weekly_smalltalk_asked.add(dedupe_key)
             _log.info(
                 "consciousness: weekly small-talk for person_id=%s — slot=%s (week %d/%d)",
                 engaged_id, slot, iso_week, iso_year,
             )
+
+        _generate_and_speak(
+            prompt, emotion=emotion, purpose="small_talk", on_spoke=_on_spoke,
+        )
     except Exception as exc:
         _log.debug("weekly smalltalk step error: %s", exc)
 
@@ -7720,7 +7838,10 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
                     f"'how's that going?' for milestone)."
                 )
                 emotion = "sad" if valence < 0 else "happy"
-                if _generate_and_speak(prompt, emotion=emotion, purpose="emotional_checkin"):
+                def _on_spoke() -> None:
+                    # Mark the event acknowledged only when Rex actually SPOKE the
+                    # check-in — under ENFORCE a losing candidate must not silently
+                    # mark an event done it never voiced.
                     _note_emotional_checkin_fired(engaged_id)
                     try:
                         emo_events.mark_acknowledged(int(ev["id"]))
@@ -7731,6 +7852,11 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
                         "unacknowledged %s event) for person_id=%s",
                         cat, engaged_id,
                     )
+
+                _generate_and_speak(
+                    prompt, emotion=emotion, purpose="emotional_checkin",
+                    on_spoke=_on_spoke,
+                )
                 return
 
         # ── Trigger A2: remembered positive news / celebration ─────────────
@@ -7750,7 +7876,8 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
                 f"expense. You may ask one low-pressure follow-up like 'how's that "
                 f"going?' only if it feels natural."
             )
-            if _generate_and_speak(prompt, emotion="happy", purpose="celebration_checkin"):
+            def _on_spoke() -> None:
+                # Acknowledge only on an actual spoken celebration (ENFORCE-safe).
                 try:
                     emo_events.mark_acknowledged(int(ev["id"]))
                 except Exception:
@@ -7760,6 +7887,11 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
                     "(category=%s, event_id=%s) for person_id=%s",
                     cat, ev.get("id"), engaged_id,
                 )
+
+            _generate_and_speak(
+                prompt, emotion="happy", purpose="celebration_checkin",
+                on_spoke=_on_spoke,
+            )
             return
 
         # ── Trigger B: sustained negative affect ───────────────────────────
@@ -7819,7 +7951,8 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
             f"question that's easy to deflect."
         )
         emotion = "neutral"
-        if _generate_and_speak(prompt, emotion=emotion, purpose="emotional_checkin"):
+        def _on_spoke() -> None:
+            # Arm cooldown / clear the streak only on an actual spoken check-in.
             _note_emotional_checkin_fired(engaged_id)
             _negative_streak_started_at.pop(engaged_id, None)
             _log.info(
@@ -7827,6 +7960,11 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
                 "streak=%.1fs, conf=%.2f) for person_id=%s",
                 affect, now - streak_start, confidence, engaged_id,
             )
+
+        _generate_and_speak(
+            prompt, emotion=emotion, purpose="emotional_checkin",
+            on_spoke=_on_spoke,
+        )
     except Exception as exc:
         _log.debug("emotional check-in step error: %s", exc)
 

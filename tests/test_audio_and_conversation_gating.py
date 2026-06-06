@@ -5,6 +5,17 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 
+def _speak_async_spoke(*args, on_spoke=None, **kwargs):
+    """Faithful stub for consciousness._speak_async: it returns True ("I spoke")
+    AND fires the on_spoke bookkeeping callback, exactly as the real function does
+    when a line reaches the speech queue. Use as `side_effect` so tests that assert
+    on-spoke side effects (cooldown latch, _prime_emotion_frame, pop pending) see
+    them the same way the production winner-only path does."""
+    if on_spoke is not None:
+        on_spoke()
+    return True
+
+
 class PostTtsHandoffPolicyTest(unittest.TestCase):
     def setUp(self):
         # The post-question "sticky responsive" window is keyed on wall-clock time
@@ -4549,7 +4560,7 @@ class ConversationGatingTest(unittest.TestCase):
                 mock.patch.object(consciousness, "_claim_proactive_purpose", return_value="tok") as claim,
                 mock.patch.object(consciousness, "_proactive_purpose_current", return_value=True),
                 mock.patch.object(consciousness, "_release_proactive_purpose") as release,
-                mock.patch.object(consciousness, "_speak_async", return_value=True) as speak,
+                mock.patch.object(consciousness, "_speak_async", side_effect=_speak_async_spoke) as speak,
             ):
                 consciousness._step_startup_empty_room_comment(snapshot, profile)
 
@@ -8400,7 +8411,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             with (
                 mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
                 mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
-                mock.patch.object(consciousness, "_speak_async", return_value=True) as speak,
+                mock.patch.object(consciousness, "_speak_async", side_effect=_speak_async_spoke) as speak,
                 mock.patch("sequences.animations.play_body_beat") as body_beat,
             ):
                 consciousness._step_proactive_reactions(curr, profile)
@@ -8478,7 +8489,7 @@ class PendingMusicPreferenceTest(unittest.TestCase):
             with (
                 mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
                 mock.patch.object(consciousness, "_startup_known_greeting_pending", return_value=False),
-                mock.patch.object(consciousness, "_speak_async", return_value=True) as speak,
+                mock.patch.object(consciousness, "_speak_async", side_effect=_speak_async_spoke) as speak,
                 mock.patch("sequences.animations.play_body_beat") as body_beat,
             ):
                 consciousness._step_proactive_reactions(curr, profile)
@@ -9852,6 +9863,61 @@ class IdleBanterTest(unittest.TestCase):
             fired = interaction._maybe_idle_banter(idle_for=9.0, effective_idle_timeout=45.0)
         self.assertFalse(fired)
         speak.assert_not_called()
+
+
+class SpeakAsyncOnSpokeBookkeepingTest(unittest.TestCase):
+    """Consolidation step 3: `on_spoke` is the cooldown/ack hook, and it must fire
+    ONLY when a line actually reaches the speech queue — never on a suppressed or
+    losing candidate. (Under ENFORCE, `_speak_async`'s RETURN means "submitted for
+    arbitration", not "spoke"; bookkeeping that arms cooldowns or marks events
+    acknowledged on the return would let a loser wrongly suppress itself.)"""
+
+    def _patches(self, consciousness, *, can_speak):
+        from audio import speech_queue  # function-local import in _do_speak
+        done = mock.Mock()
+        done.wait = mock.Mock(return_value=None)
+        return (
+            mock.patch.object(consciousness.config, "PROACTIVE_SPEECH_YIELD_ENABLED", False),
+            mock.patch.object(consciousness, "_can_proactive_speak", return_value=can_speak),
+            mock.patch.object(speech_queue, "enqueue", return_value=done),
+            mock.patch.object(consciousness, "note_rex_utterance"),
+            mock.patch.object(consciousness.conv_log, "log_rex"),
+            mock.patch.object(consciousness.threading, "Thread"),  # skip the _on_done waiter
+        )
+
+    def test_on_spoke_fires_when_the_line_actually_speaks(self):
+        from intelligence import consciousness
+
+        fired = []
+        with ExitStack() as stack:
+            for p in self._patches(consciousness, can_speak=True):
+                stack.enter_context(p)
+            spoke = consciousness._speak_async(
+                "Carbon-based smiling detected.",
+                "happy",
+                governed=False,  # legacy direct path; ENFORCE winner runs the same body
+                on_spoke=lambda: fired.append(True),
+            )
+
+        self.assertTrue(spoke)
+        self.assertEqual(fired, [True])  # bookkeeping ran exactly once, on the speak
+
+    def test_on_spoke_does_not_fire_when_speech_is_suppressed(self):
+        from intelligence import consciousness
+
+        fired = []
+        with ExitStack() as stack:
+            for p in self._patches(consciousness, can_speak=False):
+                stack.enter_context(p)
+            spoke = consciousness._speak_async(
+                "This line should be swallowed.",
+                "neutral",
+                governed=False,
+                on_spoke=lambda: fired.append(True),
+            )
+
+        self.assertFalse(spoke)
+        self.assertEqual(fired, [])  # a non-spoken line never arms its bookkeeping
 
 
 if __name__ == "__main__":

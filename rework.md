@@ -357,26 +357,58 @@ borderline / judge-strictness — pushing to 0% would make Rex bland). Reminders
 FRESH DB — the robot's existing `people.db` still holds 90/80/35; and the test suite / any startup CLEARS
 `logs/djr3x.log`+`conversation.log` — copy a run's log first.
 
+**WHAT'S DONE + VALIDATED LIVE (2026-06-04, several `--gui` runs).** The eval-driven behavioral pass largely
+landed and is confirmed on the robot: Roast rebalance, cadence clamp, cut-off fixes (ellipsis trail-off AND the
+truncated-tail fallback "Wow indeed! I"), idle-banter POV-volunteer-first (**POV surfaced live**), boundary
+respect (don't roast "I'll be quiet" — **landed live**), cantina-origin, live facial expression in replies,
+celebration re-lead cooldown + boundary→event mute (**"back pain" no longer leads every startup — confirmed by
+the user**). The LLM-in-the-loop **eval** is built, judge-validated, and the convergent loop is proven
+(`roasted_sincere` 46%→8%, `cantina_bleed` 8%→1%). The engine is in strong shape — the one-off behavioral bugs are
+mostly squashed and now CAUGHT AS CLASSES by the eval. The remaining work is **subtractive/structural** + upkeep.
+
 **Deferred / good resume points** (roughly in value order):
-0. **Eval-measured quality — DONE this pass; residuals are eval-refinement, not Rex bugs.** Authoritative baseline
-   (`--samples 12`, 96 replies): `roasted_sincere` **46%→8%** (boundary fix + calibrated judge), `cantina_bleed`
-   **8%→1%** (cantina = origin, not current venue), `invented_prop` 1%, `banned_opener`/`re_asks` 0%. The judge was
-   validated (`--check-judges` vs `judge_cases.json`, 11/11) and `generate_spoken` made faithful to the live speech
-   path. REMAINING (low-rate, eval-side): `trail_off` ~5% = max-token hard-truncations re-emitted by the safety-net
-   fallback (drop the trailing incomplete fragment in `_stream_and_speak_sentences`'s fallback too); `over_questioning`
-   ~4% = the checker counts rhetorical "?" the cap ignores (make it count `is_question_sentence` only). Next NEW
-   target if continuing: grow the corpus from real `logs/conversation.log`, then `--gate` as a CI guard.
-   Loop: `python evals/run_quality_eval.py --samples 12` before/after; change → measure → keep what clearly helps.
-1. **Delete the TurnPlan regex patterns** (Bet 2 follow-up) — needs live testing; de-riskable via the
-   eval harness (expand its corpus over the affected branches, then assert outcomes unchanged). It
-   requires removing the no-plan fallback + rewriting ~5 pinned string-based `social_frame` tests onto
-   the plan API. See the TurnPlan do-not-regress entry.
-2. **Extend the cold-open ranker across `facts`/`interests`** — currently ranks emotional-event
-   celebrations only (small, unit-testable).
-3. **Grow the eval corpus from real conversation logs** — turn recent transcripts into pinned scenarios.
-4. **Rex POV fast-follows** — cross-session persistence (resume/evolve a preoccupation across visits),
-   feed `_do_private_thought`/`_do_aspiration` from the POV, and (only if it proves worth the cost) an
-   LLM-evolved POV. See the Rex persistent POV do-not-regress entry.
+1. **★ Consolidate the proactive layer — IN PROGRESS (user chose "full consolidation").** The recurring "a good
+   thing gets crowded out / dropped" failure (POV buried twice, smile dropped, follow-up checklist, celebration
+   re-leading) has ONE root: ~14 proactive mechanisms (an Explore map found far more than four) compete for the
+   single "Rex speaks unprompted" slot via SCATTERED gates, and 3 BYPASS the `action_governor` entirely. REFRAME:
+   the `action_governor` is already the intended single decider — it just runs in SHADOW mode and never enforces.
+   So the work is: route the stragglers in → ENFORCE → delete the redundant gates. **INCREMENT 1 DONE** (enforcement
+   infra: `CandidateMove.speak_fn`, `ACTION_GOVERNOR_ENFORCE`, `_generate_and_speak` defers + `_finish_governor_cycle`
+   runs only the winner). **INCREMENT 2 — CROSS-THREAD INTAKE DONE** (`governor.submit_external` + drain-on-`start_cycle`
+   + TTL: interaction-thread mechanisms can submit candidates the consciousness tick arbitrates). Both flag-gated OFF,
+   behavior unchanged, **suite 888**. **ROUTING:** ✅ `_maybe_idle_banter` (POV case) + ✅ `_speak_async` (facial/SMILE
+   + micro-behaviors) routed through the deferred model. STILL TO ROUTE (lower priority, not user pain points):
+   `_generate_and_speak_presence` (low crowding risk) and `_post_response` follow-ups (turn-coupled — decide if they
+   belong in the governor at all). **INCREMENT 3 — COOLDOWN/ACK BOOKKEEPING DONE** (the enforce-safety prerequisite):
+   an `on_spoke` callback now threads through `_speak_async` (fires after `note_rex_utterance`, i.e. on actual
+   queue-commit) and `_generate_and_speak` (fires when `_speak_async` returns True). Every return-conditional caller
+   (`if _generate_and_speak(...): <arm cooldown / mark_acknowledged>`) was converted to a `def _on_spoke()` passed as
+   `on_spoke=` — so under ENFORCE a LOSER (whose return now means "submitted", not "spoke") no longer arms its cooldown
+   or marks an event acknowledged it never voiced. Converted: the 3 durable check-ins (emotional A+B, celebration —
+   `mark_acknowledged`), animal-arrival (`_prime_emotion_frame`+pop-pending), startup-empty-room latch, holiday-plans,
+   weekly-smalltalk. Left as-is: the `if not _generate_and_speak(...)` relationship-inquiry (clear-on-not-queued — correct
+   under enforce). Tests gained a `_speak_async_spoke` side_effect stub + a `SpeakAsyncOnSpokeBookkeepingTest` (on_spoke fires on
+   actual speak, not on suppression). Both flag-gated OFF, **suite 890**. **THEN**
+   (4) validate (shadow logs + live) + flip enforce on incrementally, (5) delete the redundant gates (`conversation_agenda`
+   claim + scattered cooldowns). See the "Proactive-layer consolidation" do-not-regress entries.
+2. **Delete the deterministic anti-repetition hacks** the arc now makes redundant (comedy opener-stripper, the
+   follow-up angle rotation, `social_frame._is_near_repeat`) — Bet 1 fast-follow; the arc can SEE what Rex already
+   said. De-risk via the eval (assert no regression in repetition).
+3. **Delete the TurnPlan regex patterns** (Bet 2 follow-up) — remove the no-plan fallback + rewrite ~5 pinned
+   string-based `social_frame` tests onto the plan API. De-riskable via the eval corpus. See the TurnPlan entry.
+4. **Model migration: `gpt-4o-mini` → GPT-5.4 mini/nano before it sunsets** — affects the main reply AND the arc
+   backend (`config.*_MODEL`). Looming; re-run the eval before/after to confirm no quality regression.
+
+**Smaller / opportunistic:**
+- **Tighten the eval loop:** grow the corpus from real `logs/conversation.log` transcripts → `--gate` as a CI
+  guard; fix `over_questioning` to count `is_question_sentence` (not rhetorical "?"); chase the rare `trail_off`
+  ~4% residual; add an "acknowledges-visible-emotion" check for the live-expression fix.
+- **Gate the startup log-clear under the test runner** (like the arc) — running the suite keeps CLOBBERING a
+  run's `logs/djr3x.log` (bit me repeatedly). `config.py:100` clear-on-startup + RotatingFileHandler.
+- **Extend the cold-open ranker** across `facts`/`interests` (currently emotional-events only; small).
+- **Boundary regex extension** — `_BOUNDARY_RE` misses "we don't need to talk about that anymore"; and
+  negative-event muting on a topic boundary (the scope note in the boundary→mute entry).
+- **Rex POV fast-follows** — cross-session persistence, feed `_do_private_thought`/`_do_aspiration` from the POV.
 
 **Reminders for the next window:**
 - `config.LOG_SYSTEM_PROMPT` is left **`True`** (verbose full-prompt logging) — flip it `False` once done

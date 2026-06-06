@@ -202,5 +202,87 @@ class ActionGovernorScopeTests(unittest.TestCase):
         self.assertGreaterEqual(decision.selected.score, 40)
 
 
+class GovernorEnforcementTests(unittest.TestCase):
+    """Enforce mode (consolidation): the governor becomes the single decider —
+    candidates carry a deferred `speak_fn` and only the tick's WINNER's runs."""
+
+    def test_enforcing_property_reflects_config_and_activates(self):
+        from unittest import mock
+        from intelligence import action_governor as ag
+        gov = ag.ActionGovernor()
+        with mock.patch.object(ag.config, "ACTION_GOVERNOR_ENFORCE", True):
+            self.assertTrue(gov.enforcing)
+            self.assertTrue(gov.active())  # enforcing keeps the cycle collecting
+        with mock.patch.object(ag.config, "ACTION_GOVERNOR_ENFORCE", False):
+            self.assertFalse(gov.enforcing)
+
+    def test_only_winner_carries_the_runnable_speak_fn(self):
+        from intelligence.action_governor import ActionGovernor, CandidateMove
+        calls = []
+        gov = ActionGovernor()
+        gov.start_cycle()
+        gov.observe(CandidateMove(
+            source="_step_a", purpose="visual_curiosity", priority=50,
+            speak_fn=lambda: calls.append("loser")))
+        gov.observe(CandidateMove(
+            source="_step_b", purpose="emotional_checkin", priority=100,
+            speak_fn=lambda: calls.append("winner")))
+        decision = gov.finish_cycle()
+        self.assertEqual(decision.action, "speak")
+        self.assertEqual(decision.selected.candidate.priority, 100)
+        # The cycle resolver (consciousness._finish_governor_cycle) runs ONLY the
+        # winner's speak_fn — the loser stays silent.
+        decision.selected.candidate.speak_fn()
+        self.assertEqual(calls, ["winner"])
+
+
+class GovernorCrossThreadIntakeTests(unittest.TestCase):
+    """Increment 2: a candidate from a non-consciousness thread (idle banter,
+    memory follow-ups) is submitted to a shared buffer and drained into the next
+    consciousness tick, so one decider arbitrates ALL proactive speech."""
+
+    def _clear(self, ag):
+        with ag._external_lock:
+            ag._external_candidates.clear()
+
+    def test_external_candidate_drained_and_arbitrated_when_enforcing(self):
+        from unittest import mock
+        from intelligence import action_governor as ag
+        gov = ag.ActionGovernor()
+        with mock.patch.object(ag.config, "ACTION_GOVERNOR_ENFORCE", True):
+            self._clear(ag)
+            gov.submit_external(ag.CandidateMove(
+                source="interaction._maybe_idle_banter", purpose="idle_monologue",
+                priority=50, speak_fn=lambda: None))
+            gov.start_cycle()            # drains the external candidate into the cycle
+            decision = gov.finish_cycle()
+            self.assertIsNotNone(decision)
+            self.assertEqual(decision.action, "speak")
+            self.assertEqual(decision.selected.candidate.source,
+                             "interaction._maybe_idle_banter")
+
+    def test_submit_external_is_noop_when_not_enforcing(self):
+        from unittest import mock
+        from intelligence import action_governor as ag
+        gov = ag.ActionGovernor()
+        with mock.patch.object(ag.config, "ACTION_GOVERNOR_ENFORCE", False):
+            self._clear(ag)
+            gov.submit_external(ag.CandidateMove(source="x", purpose="idle_monologue"))
+            with ag._external_lock:
+                self.assertEqual(ag._external_candidates, [])
+
+    def test_stale_external_candidates_are_dropped(self):
+        from unittest import mock
+        from intelligence import action_governor as ag
+        gov = ag.ActionGovernor()
+        with mock.patch.object(ag.config, "ACTION_GOVERNOR_ENFORCE", True):
+            self._clear(ag)
+            stale = ag.CandidateMove(source="x", purpose="idle_monologue", priority=50)
+            stale.created_at -= (ag._EXTERNAL_CANDIDATE_TTL_SECS + 1.0)
+            gov.submit_external(stale)
+            gov.start_cycle()
+            self.assertIsNone(gov.finish_cycle())  # stale dropped → empty cycle
+
+
 if __name__ == "__main__":
     unittest.main()

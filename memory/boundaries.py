@@ -325,8 +325,65 @@ def apply_detected_boundary(person_id: int, detected: dict) -> Optional[dict]:
             "[boundaries] saved boundary id=%s person_id=%s behavior=%s topic=%s",
             row_id, person_id, behavior, topic,
         )
+        # "Stop bringing up X" must also stop the proactive check-ins about X —
+        # otherwise the celebration/emotional greeting keeps leading with a
+        # remembered event (e.g. "your back pain is improving") the person just
+        # asked Rex to drop. Only the "don't ask / don't mention" behaviors (not
+        # "roast"); token-overlap means a vague topic mutes nothing.
+        if behavior in {"ask", "mention"} and _boundary_mutes_events():
+            try:
+                from memory import emotional_events as _emo
+                muted = _emo.mute_matching_positive_events(
+                    person_id, topic, reason=f"boundary: {behavior} {topic}"
+                )
+                if muted:
+                    _log.info(
+                        "[boundaries] muted %d check-in event(s) for topic %r",
+                        len(muted), topic,
+                    )
+            except Exception as exc:
+                _log.debug("[boundaries] event-mute on boundary failed: %s", exc)
         return {"action": "add", "id": row_id, "behavior": behavior, "topic": topic}
     return None
+
+
+def _boundary_mutes_events() -> bool:
+    try:
+        import config
+        return bool(getattr(config, "BOUNDARY_MUTES_MATCHING_EVENTS", True))
+    except Exception:
+        return True
+
+
+def reconcile_event_mutes(person_id: int) -> int:
+    """Apply this person's EXISTING active 'don't bring up X' boundaries to their
+    remembered events — mute check-ins for events matching each boundary topic.
+
+    Set-time muting (apply_detected_boundary) only covers boundaries set AFTER that
+    code existed; a boundary stored in a prior session would otherwise never mute
+    the event. Idempotent (already-muted events are skipped by the muter), cheap, and
+    safe to call on first-sight before picking a celebration to lead with."""
+    if not _boundary_mutes_events():
+        return 0
+    try:
+        from memory import emotional_events as _emo
+    except Exception:
+        return 0
+    total = 0
+    for boundary in get_boundaries(person_id, active_only=True):
+        if (boundary.get("behavior") or "") not in {"ask", "mention"}:
+            continue
+        topic = (boundary.get("topic") or "").strip()
+        if not topic:
+            continue
+        try:
+            total += len(_emo.mute_matching_positive_events(
+                person_id, topic,
+                reason=f"boundary: {boundary.get('behavior')} {topic}",
+            ))
+        except Exception as exc:
+            _log.debug("[boundaries] reconcile mute failed topic=%r: %s", topic, exc)
+    return total
 
 
 def _normalize_behavior(value: str) -> str:
