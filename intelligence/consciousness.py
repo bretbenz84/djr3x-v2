@@ -74,6 +74,8 @@ _REENGAGEMENT_COOLDOWN_SECS = 30.0
 
 # Monotonic timestamp of last live-vision commentary call (cost control).
 _last_live_vision_comment_at: float = 0.0
+# Monotonic timestamp of last bored environmental-snark riff (cost control).
+_last_bored_env_snark_at: float = 0.0
 
 # Visual curiosity asks: after a real back-and-forth goes quiet, Rex can take a
 # fresh frame, summarize it, and ask one scene-grounded question.
@@ -315,6 +317,23 @@ _last_mood_gesture_at: float = 0.0
 # when the mood decays), and the last breathing cadence it asserted (to avoid churn).
 _mood_owns_visor: bool = False
 _last_mood_breathing: Optional[str] = None
+
+# Idle "mind of his own" head wander: when the conversation lulls while a face is locked,
+# Rex sometimes looks AWAY around the room, then returns his gaze and may re-greet. The
+# face-tracking loop (12.5Hz) drives the motion when `active`; the 1Hz consciousness loop
+# decides when to start one and whether to re-greet on re-acquiring the face. Guarded by
+# _idle_wander_lock since two threads touch it.
+_idle_wander_lock = threading.Lock()
+_idle_wander: dict = {
+    "active": False,        # currently looking around (face loop drives the motion)
+    "until": 0.0,           # monotonic deadline for the wander
+    "waypoints": [],        # list of (neck, lift, tilt) poses to visit; last = return gaze
+    "index": 0,             # current waypoint
+    "reached_at": 0.0,      # when the current waypoint was reached (for dwell)
+    "last_at": 0.0,         # last wander finish time (cooldown)
+    "pending_regreet": False,  # a wander just finished; eligible to re-greet on re-lock
+    "regreet_deadline": 0.0,   # how long the re-greet opportunity stays open
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5166,6 +5185,9 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
     elif behavior == "live_vision_comment":
         if not profile.suppress_proactive:
             _do_live_vision_comment(snapshot)
+    elif behavior == "bored_env_snark":
+        if not profile.suppress_proactive:
+            _do_bored_environment_snark(snapshot)
 
 
 def _room_looks_empty(snapshot: dict) -> bool:
@@ -5279,8 +5301,9 @@ def _idle_micro_behavior_choices(snapshot: dict) -> tuple[list[str], list[int]]:
                 "idle_clip",
                 "ambient_observation",
                 "live_vision_comment",
+                "bored_env_snark",
             ],
-            [6, 2, 1, 1, 1, 1, 1],
+            [6, 2, 1, 1, 1, 1, 1, 3],
         )
     if people:
         return (
@@ -5294,8 +5317,9 @@ def _idle_micro_behavior_choices(snapshot: dict) -> tuple[list[str], list[int]]:
                 "private_thought",
                 "aspiration",
                 "idle_clip",
+                "bored_env_snark",
             ],
-            [4, 3, 2, 1, 1, 1, 1, 1, 1],
+            [4, 3, 2, 1, 1, 1, 1, 1, 1, 2],
         )
     return (
         [
@@ -5307,8 +5331,9 @@ def _idle_micro_behavior_choices(snapshot: dict) -> tuple[list[str], list[int]]:
             "idle_clip",
             "ambient_observation",
             "live_vision_comment",
+            "bored_env_snark",
         ],
-        [2, 3, 1, 1, 1, 1, 1, 1],
+        [2, 3, 1, 1, 1, 1, 1, 1, 3],
     )
 
 
@@ -6127,6 +6152,114 @@ def _do_live_vision_comment(snapshot: dict) -> None:
             _log.debug("live vision comment error: %s", exc)
 
     threading.Thread(target=_task, daemon=True, name="live-vision-comment").start()
+
+
+def _pick_bored_env_snark_mode(notable: list) -> str:
+    """Pick a boredom riff. Object-dependent modes (clueless question, clutter jab, art
+    opinion) only join the pool when there are concrete objects to riff on."""
+    modes = ["complaint", "relocate"]
+    weights = [3, 2]
+    if notable:
+        modes += ["naive_question", "clutter", "art_opinion"]
+        weights += [3, 2, 2]
+    return random.choices(modes, weights=weights, k=1)[0]
+
+
+def _bored_env_snark_prompt(mode: str, summary: str, notable: list) -> str:
+    detail_bits = "; ".join(str(d) for d in notable[:6]) if notable else ""
+    base = (
+        "You are DJ-R3X, stuck stationary in this same room with nothing happening for a "
+        "while, and you are genuinely BORED. You just looked around the space. What you "
+        f"actually see: {summary or 'a dull, quiet room'}"
+        f"{('. Notable things in view: ' + detail_bits) if detail_bits else ''}. "
+    )
+    if mode == "naive_question":
+        ask = (
+            "Pick ONE concrete object you can see and ask about it as if you genuinely "
+            "don't know what it is or why it's there — playfully clueless and a little "
+            "judgmental, e.g. \"What's that black chair even for?\". Ask ONE short question."
+        )
+    elif mode == "clutter":
+        ask = (
+            "If the space looks messy or cluttered, roast the tidiness — needling, not "
+            "cruel, e.g. \"Why are there so many empty boxes? Did nobody teach you to tidy "
+            "up?\". If it actually looks tidy or sterile, mock how lifeless and empty it is "
+            "instead. ONE short line."
+        )
+    elif mode == "art_opinion":
+        ask = (
+            "Offer an unsolicited, snobby opinion about the decor, art, or how the room is "
+            "styled, e.g. \"That art? I've seen better in a dentist's waiting room.\" If "
+            "there's nothing worth commenting on, mock the blank, uninspired space. ONE "
+            "short line."
+        )
+    elif mode == "relocate":
+        ask = (
+            "Theatrically ask to be taken somewhere more exciting — somewhere with actual "
+            "life forms and something going on — e.g. \"Any chance someone could wheel me "
+            "somewhere with actual life forms? This room has the ambiance of a "
+            "screensaver.\" ONE short line."
+        )
+    else:  # complaint
+        ask = (
+            "Gripe that it's boring in here, tying the complaint to ONE specific thing you "
+            "actually see, e.g. \"It's so dead in here even that [thing] looks like it gave "
+            "up.\" ONE short line, no question."
+        )
+    return (
+        base + ask
+        + " Stay fully in character: dry, witty, a little dramatic, never mean-spirited. "
+        "Reference only things actually in view — never invent an object. One line only."
+    )
+
+
+def _do_bored_environment_snark(snapshot: dict) -> None:
+    """Bored idle riff on the ROOM: a complaint about how dull it is, a faux-clueless
+    question about an object, a jab at the clutter, a snobby art opinion, or a plea to be
+    taken somewhere livelier — grounded in what Rex actually sees. Rate-limited (a GPT-4o
+    vision call) and run off-tick so it never blocks the loop."""
+    global _last_bored_env_snark_at
+    if not bool(getattr(config, "BORED_ENV_SNARK_ENABLED", True)):
+        return
+    now = time.monotonic()
+    cooldown = float(getattr(config, "BORED_ENV_SNARK_COOLDOWN_SECS", 240.0))
+    if (now - _last_bored_env_snark_at) < cooldown:
+        return
+    _last_bored_env_snark_at = now
+
+    def _task():
+        try:
+            if not _can_proactive_speak():
+                return
+            from vision import camera as _cam
+            from vision import scene as _scene
+            frame = _cam.get_frame()
+            details = _scene.describe_scene_detailed(frame) if frame is not None else {}
+            summary = str(details.get("overall_summary") or "").strip()
+            notable = [str(d).strip() for d in (details.get("notable_details") or []) if str(d).strip()]
+            if not summary and not notable:
+                # Fall back to the cheap cached scene description.
+                summary = (_scene.describe_scene() or "").strip()
+            if not summary and not notable:
+                return
+            # A beat of looking around to sell the boredom — but don't yank the neck if
+            # he's currently fixed on someone (that would fight face-tracking).
+            if (
+                bool(getattr(config, "BORED_ENV_SNARK_LOOK_AROUND", True))
+                and not _face_tracking_has_fresh_lock(time.monotonic())
+            ):
+                _do_ambient_scan()
+            mode = _pick_bored_env_snark_mode(notable)
+            _generate_and_speak(
+                _bored_env_snark_prompt(mode, summary, notable),
+                emotion=("neutral" if mode in ("complaint", "relocate") else "curious"),
+                purpose="visual_curiosity",
+                label=f"bored env snark ({mode})",
+            )
+        except Exception as exc:
+            _log.debug("bored env snark error: %s", exc)
+
+    threading.Thread(target=_task, daemon=True, name="bored-env-snark").start()
 
 
 def _visual_curiosity_blocked_by_empathy(person_id: Optional[int]) -> bool:
@@ -8641,6 +8774,181 @@ def _neck_saturated_at_rail(current: float, target: float, cfg: dict) -> bool:
     return bool(at_high or at_low)
 
 
+# ── Idle "mind of his own" head wander ───────────────────────────────────────
+
+def _idle_head_wander_enabled() -> bool:
+    return bool(getattr(config, "IDLE_HEAD_WANDER_ENABLED", True))
+
+
+def _conversation_idle_secs(now: float) -> float:
+    """Seconds since the LAST interaction (user spoke to Rex OR Rex spoke). 0.0 when
+    nothing has happened yet, so Rex doesn't wander before the conversation begins."""
+    last = max(_engaged_last_touch_at, _recent_engaged_touch_at, _last_proactive_speech_at)
+    if last <= 0.0:
+        return 0.0
+    return max(0.0, now - last)
+
+
+def _face_tracking_has_fresh_lock(now: float) -> bool:
+    """True when face-tracking currently holds a recent lock on someone (something to
+    look away from / return to)."""
+    key = _face_tracking_lock.get("key")
+    if key is None:
+        return False
+    last = float(_face_tracking_lock.get("last_seen_at") or 0.0)
+    hold = float(getattr(config, "FACE_TRACKING_LOST_HOLD_SECS", 4.0) or 4.0)
+    return (now - last) < hold
+
+
+def _start_idle_head_wander(now: float) -> None:
+    """Stop staring and pick a short look-around route. The route ends back at the
+    pre-wander gaze (where the person was), so he reliably looks back and can re-acquire."""
+    neck_cfg = config.SERVO_CHANNELS["neck"]
+    lift_cfg = config.SERVO_CHANNELS["headlift"]
+    tilt_cfg = config.SERVO_CHANNELS["headtilt"]
+    neck_neutral = int(neck_cfg["neutral"])
+    lift_neutral = int(lift_cfg["neutral"])
+    tilt_neutral = int(tilt_cfg["neutral"])
+
+    start_pose = (
+        _current_servo_position("neck"),
+        _current_servo_position("headlift"),
+        _current_servo_position("headtilt"),
+    )
+    neck_range = int(getattr(config, "IDLE_HEAD_WANDER_NECK_RANGE_QUS", 2600) or 0)
+    lift_range = int(getattr(config, "IDLE_HEAD_WANDER_LIFT_RANGE_QUS", 800) or 0)
+    tilt_range = int(getattr(config, "IDLE_HEAD_WANDER_TILT_RANGE_QUS", 200) or 0)
+    wp_min = int(getattr(config, "IDLE_HEAD_WANDER_WAYPOINTS_MIN", 2) or 1)
+    wp_max = max(wp_min, int(getattr(config, "IDLE_HEAD_WANDER_WAYPOINTS_MAX", 3) or 1))
+    count = random.randint(wp_min, wp_max)
+
+    waypoints: list[tuple[int, int, int]] = []
+    for _ in range(count):
+        waypoints.append((
+            _clamp_servo("neck", neck_neutral + random.uniform(-neck_range, neck_range)),
+            _clamp_servo("headlift", lift_neutral + random.uniform(-lift_range, lift_range)),
+            _clamp_servo("headtilt", tilt_neutral + random.uniform(-tilt_range, tilt_range)),
+        ))
+    # Final waypoint: look back where the person was, so he re-acquires the face.
+    waypoints.append((int(start_pose[0]), int(start_pose[1]), int(start_pose[2])))
+
+    dur = random.uniform(
+        float(getattr(config, "IDLE_HEAD_WANDER_MIN_DURATION_SECS", 3.0)),
+        float(getattr(config, "IDLE_HEAD_WANDER_MAX_DURATION_SECS", 7.0)),
+    )
+    with _idle_wander_lock:
+        _idle_wander.update({
+            "active": True,
+            "until": now + dur,
+            "waypoints": waypoints,
+            "index": 0,
+            "reached_at": 0.0,
+        })
+    # Let go of the lock — he's deliberately looking elsewhere now. Mutate in place
+    # (.clear() is atomic under the GIL) rather than reassigning the global, so the
+    # face-tracking thread never sees a torn/orphaned _face_tracking_lock.
+    _face_tracking_lock.clear()
+    _log.info(
+        "consciousness: idle head wander started (%d waypoints, %.1fs) — looking around.",
+        len(waypoints), dur,
+    )
+
+
+def _finish_idle_head_wander(now: float, *, allow_regreet: bool) -> None:
+    with _idle_wander_lock:
+        was_active = bool(_idle_wander.get("active"))
+        _idle_wander["active"] = False
+        _idle_wander["index"] = 0
+        _idle_wander["reached_at"] = 0.0
+        if was_active:
+            _idle_wander["last_at"] = now
+            _idle_wander["pending_regreet"] = bool(allow_regreet)
+            _idle_wander["regreet_deadline"] = (
+                now + float(getattr(config, "IDLE_HEAD_WANDER_REGREET_WINDOW_SECS", 6.0))
+                if allow_regreet else 0.0
+            )
+
+
+def _drive_idle_head_wander(servo_mod, now: float) -> None:
+    """Called from the face-tracking loop while a wander is active: step the head toward
+    the current waypoint, dwell, then advance. Aborts (snapping back to engage) if the
+    person starts interacting again or the robot starts speaking/listening."""
+    try:
+        if getattr(servo_mod, "manual_override_enabled", lambda: False)():
+            _finish_idle_head_wander(now, allow_regreet=False)
+            return
+        # Conversation resumed or Rex is talking → stop wandering and re-engage.
+        if (
+            getattr(servo_mod, "speech_motion_active", lambda: False)()
+            or getattr(servo_mod, "listening_motion_active", lambda: False)()
+            or _conversation_idle_secs(now) < 2.0
+        ):
+            _finish_idle_head_wander(now, allow_regreet=False)
+            return
+
+        with _idle_wander_lock:
+            until = float(_idle_wander.get("until") or 0.0)
+            waypoints = list(_idle_wander.get("waypoints") or [])
+            index = int(_idle_wander.get("index") or 0)
+            reached_at = float(_idle_wander.get("reached_at") or 0.0)
+
+        if now >= until or index >= len(waypoints):
+            _finish_idle_head_wander(now, allow_regreet=True)
+            return
+
+        target = waypoints[index]
+        names = ("neck", "headlift", "headtilt")
+        cur = (
+            _current_servo_position("neck"),
+            _current_servo_position("headlift"),
+            _current_servo_position("headtilt"),
+        )
+        max_step = int(getattr(config, "IDLE_HEAD_WANDER_MAX_STEP_QUS", 160))
+        tol = int(getattr(config, "IDLE_HEAD_WANDER_WAYPOINT_TOLERANCE_QUS", 70))
+        updates: dict[int, int] = {}
+        reached = True
+        next_pose = {}
+        for name, c_, t_ in zip(names, cur, target):
+            nxt = _limited_tracking_step(name, c_, int(t_), max_step)
+            next_pose[name] = nxt
+            if abs(nxt - c_) >= 2:
+                updates[int(config.SERVO_CHANNELS[name]["ch"])] = nxt
+            if abs(int(t_) - c_) > tol:
+                reached = False
+
+        if updates:
+            try:
+                servo_mod.set_motion_profile(
+                    list(updates.keys()),
+                    speed=int(getattr(config, "IDLE_HEAD_WANDER_SERVO_SPEED", 35)),
+                    acceleration=int(getattr(config, "IDLE_HEAD_WANDER_SERVO_ACCELERATION", 8)),
+                )
+            except Exception:
+                pass
+            servo_mod.set_servos(updates)
+            # Keep breathing/speech orbit anchored to where he's actually looking.
+            try:
+                servo_mod.set_face_tracking_baseline(
+                    neck=next_pose["neck"], lift=next_pose["headlift"], tilt=next_pose["headtilt"],
+                )
+            except Exception:
+                pass
+
+        _record_face_tracking_state(locked=False, visible=False)
+
+        if reached:
+            dwell = float(getattr(config, "IDLE_HEAD_WANDER_DWELL_SECS", 1.0))
+            with _idle_wander_lock:
+                if float(_idle_wander.get("reached_at") or 0.0) <= 0.0:
+                    _idle_wander["reached_at"] = now
+                elif now - float(_idle_wander["reached_at"]) >= dwell:
+                    _idle_wander["index"] = int(_idle_wander.get("index") or 0) + 1
+                    _idle_wander["reached_at"] = 0.0
+    except Exception as exc:
+        _log.debug("idle head wander drive error: %s", exc)
+        _finish_idle_head_wander(now, allow_regreet=False)
+
+
 def _adaptive_head_rest_enabled() -> bool:
     return bool(getattr(config, "FACE_TRACKING_ADAPTIVE_REST_ENABLED", True)) and bool(
         getattr(config, "FACE_TRACKING_VERTICAL_ENABLED", True)
@@ -8914,6 +9222,119 @@ def _step_mood_expression(snapshot: dict, profile: "SituationProfile") -> None:
         _maybe_play_idle_mood_gesture(now, speech_active, listening_active)
     except Exception as exc:
         _log.debug("mood expression step error: %s", exc)
+
+
+def _locked_person_name(snapshot: dict) -> Optional[str]:
+    """Display name of the currently face-locked person, from the snapshot."""
+    pid = _face_tracking_lock.get("person_id")
+    if not isinstance(pid, int):
+        key = _face_tracking_lock.get("key")
+        pid = key if isinstance(key, int) else None
+    if not isinstance(pid, int):
+        return None
+    for person in (snapshot.get("people") or []):
+        if _person_db_id(person) == pid:
+            return person.get("face_id") or person.get("name")
+    return None
+
+
+def _maybe_fire_wander_regreet(snapshot: dict, profile: "SituationProfile") -> None:
+    """After a wander, Rex's gaze has landed back on the person — say a short, dry line
+    acknowledging he drifted off and noticed them again. Respects proactive suppression."""
+    if getattr(profile, "suppress_proactive", False):
+        return
+    name = _locked_person_name(snapshot)
+    first = _first_name(name, "there")
+    pid = _face_tracking_lock.get("person_id")
+    tag_key = pid if isinstance(pid, int) else "idle_wander"
+    prompt = (
+        f"The conversation had gone quiet, so you idly looked around the room for a few "
+        f"seconds — and now your gaze settles back on '{first}', who's still right there. "
+        f"Say ONE short, dry, in-character Rex line that acknowledges you drifted off and "
+        f"noticed them again: a little 'oh — still here', mildly caught-out or amused, "
+        f"NOT needy and NOT a fresh interview question. One line only."
+    )
+    queued = _generate_and_speak_presence(
+        prompt,
+        label=f"idle-wander re-greet for {name or 'someone'}",
+        tag_key=tag_key,
+        emotion="curious",
+        purpose="presence_reaction",
+    )
+    if queued:
+        _log.info("consciousness: idle-wander re-greet fired for %s", name or "someone")
+
+
+def _step_idle_head_wander(snapshot: dict, profile: "SituationProfile") -> None:
+    """Give Rex a wandering attention of his own: when the conversation lulls while he's
+    still locked on a face, occasionally look around the room, then return his gaze and
+    maybe re-greet. Start/decision logic lives here (1Hz); the face-tracking loop drives
+    the actual motion while a wander is active."""
+    if not _idle_head_wander_enabled():
+        return
+    try:
+        now = time.monotonic()
+        with _idle_wander_lock:
+            active = bool(_idle_wander.get("active"))
+            pending = bool(_idle_wander.get("pending_regreet"))
+            last_at = float(_idle_wander.get("last_at") or 0.0)
+            regreet_deadline = float(_idle_wander.get("regreet_deadline") or 0.0)
+            until = float(_idle_wander.get("until") or 0.0)
+
+        # A wander is in progress — the face-tracking loop owns the motion. BACKSTOP: if
+        # that loop can't drive/finish it (asleep, tracking suspended by a directed gaze,
+        # camera frames missing) the wander would otherwise hang, so end it here when Rex
+        # is asleep or the wander is well past its own deadline. The head can never get
+        # stuck looking away.
+        if active:
+            overdue = now >= until + float(getattr(config, "IDLE_HEAD_WANDER_STALL_GRACE_SECS", 3.0))
+            if state_module.get_state() == State.SLEEP or overdue:
+                _finish_idle_head_wander(now, allow_regreet=False)
+            return
+
+        # A wander just finished: when his gaze re-acquires the face, maybe re-greet.
+        if pending:
+            if _face_tracking_has_fresh_lock(now):
+                with _idle_wander_lock:
+                    _idle_wander["pending_regreet"] = False
+                if random.random() < float(getattr(config, "IDLE_HEAD_WANDER_REGREET_CHANCE", 0.4)):
+                    _maybe_fire_wander_regreet(snapshot, profile)
+                # else: he just keeps looking — no comment.
+            elif now >= regreet_deadline:
+                with _idle_wander_lock:
+                    _idle_wander["pending_regreet"] = False
+            return
+
+        # Decide whether to START a wander.
+        if state_module.get_state() == State.SLEEP:
+            return
+        if is_waiting_for_response():
+            return
+        if directed_gaze_hold_active(now):
+            return
+        if _within_startup_group_window(now) and not _greeted_this_session:
+            return
+        if _startup_known_greeting_pending(snapshot):
+            return
+        try:
+            from hardware import servos as servo_mod
+            if servo_mod.manual_override_enabled():
+                return
+            if servo_mod.speech_motion_active() or servo_mod.listening_motion_active():
+                return
+        except Exception:
+            return
+        # Only when he's actually fixed on someone and the talk has gone quiet.
+        if not _face_tracking_has_fresh_lock(now):
+            return
+        if _conversation_idle_secs(now) < float(getattr(config, "IDLE_HEAD_WANDER_IDLE_SECS", 18.0)):
+            return
+        if now - last_at < float(getattr(config, "IDLE_HEAD_WANDER_COOLDOWN_SECS", 30.0)):
+            return
+        if random.random() < float(getattr(config, "IDLE_HEAD_WANDER_CHANCE", 0.25)):
+            _start_idle_head_wander(now)
+    except Exception as exc:
+        _log.debug("idle head wander step error: %s", exc)
 
 
 def _tracking_error_reversed(
@@ -9562,11 +9983,26 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         return
     if time.monotonic() < _face_tracking_suspended_until:
         return
-    if frame is None:
-        return
 
     try:
         from hardware import servos as servo_mod
+
+        now = time.monotonic()
+
+        # "Mind of his own": while an idle head-wander is in progress, drive the look-
+        # around motion instead of centering a face (the 1Hz loop decides when to start
+        # one and whether to re-greet on re-acquiring). This MUST run before the frame /
+        # listening early-returns below — it needs no frame and self-aborts on listening
+        # / speech / resumed conversation, so the wander always progresses and can never
+        # get stuck. Read the flag under the lock to honor the _idle_wander protocol.
+        with _idle_wander_lock:
+            wander_active = bool(_idle_wander.get("active"))
+        if wander_active:
+            _drive_idle_head_wander(servo_mod, now)
+            return
+
+        if frame is None:
+            return
 
         # While listening motion owns the head (gentle nods during the
         # transcription/LLM/TTS wait), don't fight it with face centering.
@@ -9577,7 +10013,6 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         # we soften (not suspend) centering below so they don't all fight.
         speech_active = bool(getattr(servo_mod, "speech_motion_active", lambda: False)())
 
-        now = time.monotonic()
         candidates = _visible_face_tracking_candidates(people)
         speaker_intent = _speaker_gaze_current_intent(now)
         lock_key = _face_tracking_lock.get("key")
@@ -10045,6 +10480,11 @@ def _loop() -> None:
             # channels face-tracking doesn't own. (Head-pitch mood rides the rest pose.)
             _step_mood_expression(snapshot, profile)
 
+            # 9c. Idle "mind of his own" head wander — when the conversation lulls while
+            # he's locked on a face, occasionally look around the room, then return his
+            # gaze and maybe re-greet. (The face-tracking loop drives the motion.)
+            _step_idle_head_wander(snapshot, profile)
+
             # 10. Presence tracking (departure / return reactions)
             _step_presence_tracking(snapshot, profile)
 
@@ -10171,6 +10611,12 @@ def start() -> None:
     _last_mood_gesture_at = 0.0
     _mood_owns_visor = False
     _last_mood_breathing = None
+    with _idle_wander_lock:
+        _idle_wander.update({
+            "active": False, "until": 0.0, "waypoints": [], "index": 0,
+            "reached_at": 0.0, "last_at": 0.0, "pending_regreet": False,
+            "regreet_deadline": 0.0,
+        })
     try:
         from intelligence import body_mood
         body_mood.clear()

@@ -292,6 +292,45 @@ class FaceTrackingTests(unittest.TestCase):
         self.assertNotIn(neck_ch, damped)   # held: no jitter into the rail
         self.assertIn(neck_ch, undamped)    # without damping it crawls into the rail
 
+    def test_active_wander_drives_instead_of_centering(self):
+        c = self.consciousness
+        self._set_servo_positions()
+        with c._idle_wander_lock:
+            c._idle_wander["active"] = True
+        try:
+            with (
+                mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+                mock.patch.object(c.time, "monotonic", return_value=400.0),
+                mock.patch("hardware.servos.listening_motion_active", return_value=False),
+                mock.patch("hardware.servos.speech_motion_active", return_value=False),
+                mock.patch("hardware.servos.set_servos") as set_servos,
+                mock.patch.object(c, "_drive_idle_head_wander") as drive,
+            ):
+                c._step_face_tracking(self.frame)
+            drive.assert_called_once()       # wander drives the head...
+            set_servos.assert_not_called()   # ...instead of the normal centering
+        finally:
+            with c._idle_wander_lock:
+                c._idle_wander["active"] = False
+
+    def test_active_wander_drives_even_without_a_frame(self):
+        # BLOCKER regression: the wander must drive (and self-finish) even when frame is
+        # None, so a camera hiccup can't strand the head looking away.
+        c = self.consciousness
+        with c._idle_wander_lock:
+            c._idle_wander["active"] = True
+        try:
+            with (
+                mock.patch.object(c.state_module, "get_state", return_value=State.ACTIVE),
+                mock.patch.object(c.time, "monotonic", return_value=400.0),
+                mock.patch.object(c, "_drive_idle_head_wander") as drive,
+            ):
+                c._step_face_tracking(None)  # no frame
+            drive.assert_called_once()
+        finally:
+            with c._idle_wander_lock:
+                c._idle_wander["active"] = False
+
     def test_adaptive_rest_learns_downward_pose_from_low_face(self):
         c = self.consciousness
         self._set_servo_positions()

@@ -1349,6 +1349,66 @@ FACE_TRACKING_RAIL_DAMP_EPSILON_QUS = _env_int(  # how close to min/max counts a
     "FACE_TRACKING_RAIL_DAMP_EPSILON_QUS", 60, min_value=0, max_value=2000,
 )
 
+# ── Idle "mind of his own" head wander ───────────────────────────────────────
+# When the conversation lulls while Rex is still locked on a face, he sometimes
+# stops staring, looks around the room for a few seconds, then returns his gaze —
+# and on re-acquiring the face may randomly re-greet ("oh, you're still here").
+# This makes him feel like he has attention of his own instead of a fixed stare.
+IDLE_HEAD_WANDER_ENABLED = _env_bool("IDLE_HEAD_WANDER_ENABLED", True)
+IDLE_HEAD_WANDER_IDLE_SECS = _env_float(  # conversation silent this long → eligible to wander
+    "IDLE_HEAD_WANDER_IDLE_SECS", 18.0, min_value=3.0, max_value=600.0,
+)
+IDLE_HEAD_WANDER_COOLDOWN_SECS = _env_float(  # min spacing between wanders
+    "IDLE_HEAD_WANDER_COOLDOWN_SECS", 30.0, min_value=0.0, max_value=3600.0,
+)
+IDLE_HEAD_WANDER_CHANCE = _env_float(  # per-eligible-tick (~1Hz) probability of starting one
+    "IDLE_HEAD_WANDER_CHANCE", 0.25, min_value=0.0, max_value=1.0,
+)
+IDLE_HEAD_WANDER_MIN_DURATION_SECS = _env_float(
+    "IDLE_HEAD_WANDER_MIN_DURATION_SECS", 3.0, min_value=0.5, max_value=60.0,
+)
+IDLE_HEAD_WANDER_MAX_DURATION_SECS = _env_float(
+    "IDLE_HEAD_WANDER_MAX_DURATION_SECS", 7.0, min_value=0.5, max_value=120.0,
+)
+IDLE_HEAD_WANDER_WAYPOINTS_MIN = _env_int(
+    "IDLE_HEAD_WANDER_WAYPOINTS_MIN", 2, min_value=1, max_value=8,
+)
+IDLE_HEAD_WANDER_WAYPOINTS_MAX = _env_int(
+    "IDLE_HEAD_WANDER_WAYPOINTS_MAX", 3, min_value=1, max_value=8,
+)
+IDLE_HEAD_WANDER_NECK_RANGE_QUS = _env_int(  # how far side-to-side he looks (around neutral)
+    "IDLE_HEAD_WANDER_NECK_RANGE_QUS", 2600, min_value=0, max_value=4000,
+)
+IDLE_HEAD_WANDER_LIFT_RANGE_QUS = _env_int(  # how far up/down
+    "IDLE_HEAD_WANDER_LIFT_RANGE_QUS", 800, min_value=0, max_value=1800,
+)
+IDLE_HEAD_WANDER_TILT_RANGE_QUS = _env_int(
+    "IDLE_HEAD_WANDER_TILT_RANGE_QUS", 200, min_value=0, max_value=600,
+)
+IDLE_HEAD_WANDER_MAX_STEP_QUS = _env_int(  # per-tick head move during the wander (~12.5Hz loop)
+    "IDLE_HEAD_WANDER_MAX_STEP_QUS", 160, min_value=10, max_value=800,
+)
+IDLE_HEAD_WANDER_DWELL_SECS = _env_float(  # pause at each waypoint before moving on
+    "IDLE_HEAD_WANDER_DWELL_SECS", 1.0, min_value=0.0, max_value=10.0,
+)
+IDLE_HEAD_WANDER_WAYPOINT_TOLERANCE_QUS = _env_int(
+    "IDLE_HEAD_WANDER_WAYPOINT_TOLERANCE_QUS", 70, min_value=2, max_value=400,
+)
+IDLE_HEAD_WANDER_REGREET_CHANCE = _env_float(  # on re-acquiring the face, chance to re-greet
+    "IDLE_HEAD_WANDER_REGREET_CHANCE", 0.4, min_value=0.0, max_value=1.0,
+)
+IDLE_HEAD_WANDER_REGREET_WINDOW_SECS = _env_float(  # how long after a wander a re-lock can re-greet
+    "IDLE_HEAD_WANDER_REGREET_WINDOW_SECS", 6.0, min_value=0.0, max_value=60.0,
+)
+IDLE_HEAD_WANDER_SERVO_SPEED = _env_int("IDLE_HEAD_WANDER_SERVO_SPEED", 35, min_value=0, max_value=255)
+IDLE_HEAD_WANDER_SERVO_ACCELERATION = _env_int("IDLE_HEAD_WANDER_SERVO_ACCELERATION", 8, min_value=0, max_value=255)
+# Backstop: if the face-tracking loop can't finish a wander (asleep, tracking suspended,
+# camera frames missing), the 1Hz loop ends it this long past its own deadline so the
+# head never gets stuck looking away.
+IDLE_HEAD_WANDER_STALL_GRACE_SECS = _env_float(
+    "IDLE_HEAD_WANDER_STALL_GRACE_SECS", 3.0, min_value=0.0, max_value=60.0,
+)
+
 # Horizontal tracking uses the neck; vertical tracking combines lift and tilt.
 FACE_TRACKING_VERTICAL_ENABLED = _env_bool("FACE_TRACKING_VERTICAL_ENABLED", True)
 FACE_TRACKING_VERTICAL_GAIN = _env_float(
@@ -2787,6 +2847,18 @@ LIVE_VISION_COMMENT_COOLDOWN_SECS = 300.0
 
 # Probability a triggered ambient-observation tick actually fires (vs skipping).
 AMBIENT_OBSERVATION_PROBABILITY = 0.5
+
+# Bored environmental snark: when Rex is idle and bored, he looks around and invents
+# snark about the ROOM — a complaint about how dull it is, a faux-clueless question
+# about an object ("what's that black chair for?"), a jab at the clutter, a snobby art
+# opinion, or a plea to be taken somewhere with more life forms. Uses one GPT-4o vision
+# call (describe_scene_detailed) for concrete objects to riff on, so it's hard-cooled.
+BORED_ENV_SNARK_ENABLED = _env_bool("BORED_ENV_SNARK_ENABLED", True)
+BORED_ENV_SNARK_COOLDOWN_SECS = _env_float(
+    "BORED_ENV_SNARK_COOLDOWN_SECS", 240.0, min_value=0.0, max_value=3600.0,
+)
+# Do a small neck look-around before the snark (skipped if he's fixed on someone).
+BORED_ENV_SNARK_LOOK_AROUND = _env_bool("BORED_ENV_SNARK_LOOK_AROUND", True)
 
 # Idle humor: when nobody is around, Rex can heckle the empty room. When people
 # are visible but quiet, he can deliver a non-sensitive, playful roast.
