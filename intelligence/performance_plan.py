@@ -216,6 +216,8 @@ _ACTION_BODY_BEATS = {
 
 _EVENT_BODY_BEATS = {
     "action": None,
+    "amusement.detected": "giddy_wiggle",
+    "compliment.detected": "proud_dj_pose",
     "correction.accepted": "thinking_tilt",
     "dj.bit": "proud_dj_pose",
     "empty.room.joke": "thinking_tilt",

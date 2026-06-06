@@ -249,5 +249,55 @@ class SupervisorChimeTest(unittest.TestCase):
         popen.assert_not_called()
 
 
+class SupervisorLaunchTest(unittest.TestCase):
+    """The supervisor must redirect the controller's stdout/stderr to its OWN file (not
+    inherit the supervisor's launchd descriptors), so the controller's console output
+    never pollutes supervisor.out/err.log."""
+
+    def setUp(self):
+        self.sup = _load_supervisor()
+        self._tmp = tempfile.TemporaryDirectory()
+        self._console = Path(self._tmp.name) / "controller.console.log"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_controller_stdout_stderr_are_redirected_not_inherited(self):
+        with (
+            mock.patch.object(self.sup, "_VENV_PYTHON", Path(sys.executable)),
+            mock.patch.object(self.sup, "_CONTROLLER_CONSOLE_LOG", self._console),
+            mock.patch.object(self.sup.subprocess, "Popen") as popen,
+        ):
+            popen.return_value = mock.Mock()
+            self.sup._launch_controller()
+        popen.assert_called_once()
+        kwargs = popen.call_args.kwargs
+        # stderr folded into stdout; stdout must be an explicit destination (a file or
+        # DEVNULL), NEVER None (None = inherit the supervisor's descriptors → the bug).
+        self.assertEqual(kwargs.get("stderr"), self.sup.subprocess.STDOUT)
+        self.assertIsNotNone(kwargs.get("stdout"))
+        self.assertNotEqual(kwargs.get("stdout"), None)
+        # The dedicated controller console log was opened (so output goes there).
+        self.assertTrue(self._console.exists())
+
+    def test_falls_back_to_devnull_when_console_log_unopenable(self):
+        # Make the console log's parent a regular FILE so mkdir/open raise OSError;
+        # launch must still happen with output redirected to DEVNULL (never inherited).
+        blocker = Path(self._tmp.name) / "not_a_dir"
+        blocker.write_text("x")
+        bad = blocker / "controller.console.log"
+        with (
+            mock.patch.object(self.sup, "_VENV_PYTHON", Path(sys.executable)),
+            mock.patch.object(self.sup, "_CONTROLLER_CONSOLE_LOG", bad),
+            mock.patch.object(self.sup.subprocess, "Popen") as popen,
+        ):
+            popen.return_value = mock.Mock()
+            self.sup._launch_controller()
+        popen.assert_called_once()
+        kwargs = popen.call_args.kwargs
+        self.assertEqual(kwargs.get("stdout"), self.sup.subprocess.DEVNULL)
+        self.assertEqual(kwargs.get("stderr"), self.sup.subprocess.STDOUT)
+
+
 if __name__ == "__main__":
     unittest.main()

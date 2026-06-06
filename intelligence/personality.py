@@ -255,6 +255,8 @@ def get_anger_level() -> int:
 # config edits during a session don't require a restart to pick up new words.
 _insult_keyword_re: Optional[re.Pattern] = None
 _insult_keyword_signature: Optional[tuple] = None
+_compliment_keyword_re: Optional[re.Pattern] = None
+_compliment_keyword_signature: Optional[tuple] = None
 
 
 def _get_insult_keyword_re() -> Optional[re.Pattern]:
@@ -291,6 +293,45 @@ def is_obvious_insult(text: str) -> bool:
         if phrase in lowered:
             return True
     pattern = _get_insult_keyword_re()
+    if pattern is not None and pattern.search(text):
+        return True
+    return False
+
+
+def _get_compliment_keyword_re() -> Optional[re.Pattern]:
+    """Build (or rebuild on config change) a compiled word-boundary regex for compliment
+    keywords — the positive mirror of the insult keyword regex."""
+    global _compliment_keyword_re, _compliment_keyword_signature
+    keywords = tuple(getattr(config, "COMPLIMENT_KEYWORDS", ()) or ())
+    if not keywords:
+        _compliment_keyword_re = None
+        _compliment_keyword_signature = ()
+        return None
+    if keywords != _compliment_keyword_signature:
+        token_words = [re.escape(k) for k in keywords if " " not in k]
+        _compliment_keyword_re = (
+            re.compile(r"\b(?:" + "|".join(token_words) + r")\b", re.IGNORECASE)
+            if token_words else None
+        )
+        _compliment_keyword_signature = keywords
+    return _compliment_keyword_re
+
+
+def is_obvious_compliment(text: str) -> bool:
+    """
+    Layer-1 fast compliment check — keyword/phrase match, no LLM call.
+
+    Returns True for clearly warm/praising utterances Rex should react to with a pleased
+    body-language beat on the same turn. Subtler praise still gets caught by layer 2
+    (llm.analyze_sentiment is_compliment).
+    """
+    if not text or not text.strip():
+        return False
+    lowered = text.lower()
+    for phrase in getattr(config, "COMPLIMENT_PHRASES", ()) or ():
+        if phrase in lowered:
+            return True
+    pattern = _get_compliment_keyword_re()
     if pattern is not None and pattern.search(text):
         return True
     return False

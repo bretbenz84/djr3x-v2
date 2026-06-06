@@ -39,6 +39,7 @@ from audio import barge_guard
 from audio import prosody
 from intelligence import action_router, command_parser, llm, personality, rex_preferences
 from intelligence import rex_pov
+from intelligence import body_mood
 from intelligence import performance_output
 from intelligence import performance_plan
 from intelligence import consciousness
@@ -9383,6 +9384,7 @@ def _post_response(
     *,
     assistant_asked_question: bool = False,
     pre_classified_insult: bool = False,
+    pre_classified_compliment: bool = False,
     suppress_memory_learning: bool = False,
 ) -> None:
     """
@@ -9540,14 +9542,24 @@ def _post_response(
                     personality.increment_anger(person_id)
                     if person_id is not None:
                         people_memory.apply_relationship_increment(person_id, "insult_mild")
+                    _set_body_mood("offended", source="layer2_insult")
 
             elif sentiment.get("is_apology"):
                 personality.decrement_anger()
                 if person_id is not None:
                     people_memory.apply_relationship_increment(person_id, "sincere_apology")
 
-            if sentiment.get("is_compliment") and person_id is not None:
-                people_memory.apply_relationship_increment(person_id, "compliment")
+            if sentiment.get("is_compliment"):
+                if person_id is not None:
+                    people_memory.apply_relationship_increment(person_id, "compliment")
+                # Layer-2 pleased reaction for subtler praise the keyword pre-check
+                # missed; skip when layer 1 already reacted this turn.
+                if not pre_classified_compliment:
+                    try:
+                        _play_event_body_beat("compliment.detected")
+                        _set_body_mood("proud", source="layer2_compliment")
+                    except Exception as exc:
+                        _log.debug("[interaction] layer-2 compliment beat skipped: %s", exc)
 
         except Exception as exc:
             _log.debug("post_response sentiment error: %s", exc)
@@ -10893,6 +10905,15 @@ def _play_event_body_beat(event: str, **context) -> Optional[str]:
     if not beat:
         _log.debug("[performance] no body beat played for event=%s context=%s", event, context)
     return beat
+
+
+def _set_body_mood(mood: str, *, source: str = "") -> None:
+    """Set Rex's sustained body mood (drives his posture/visor between turns). Gated +
+    failure-safe; no-op if the body-mood feature is disabled."""
+    try:
+        body_mood.set_mood(mood, source=source)
+    except Exception as exc:
+        _log.debug("[interaction] set_body_mood(%s) failed: %s", mood, exc)
 
 
 _PLAN_ROUTER_ACTIONS = {
@@ -15876,11 +15897,13 @@ def _handle_speech_segment(
         # Layer 2 (llm.analyze_sentiment in _post_response) skips its own
         # increment when this flag is set so we never double-count.
         pre_classified_insult = False
+        pre_classified_compliment = False
         if response_text is None and personality.is_obvious_insult(text):
             new_level = personality.increment_anger(person_id)
             pre_classified_insult = True
             try:
                 _play_event_body_beat("insult.detected")
+                _set_body_mood("offended", source="layer1_insult")
             except Exception as exc:
                 _log.debug("[interaction] insult body beat skipped: %s", exc)
             if person_id is not None:
@@ -15888,6 +15911,17 @@ def _handle_speech_segment(
             _log.info(
                 "[interaction] layer-1 insult detected — anger now %d", new_level,
             )
+        elif response_text is None and personality.is_obvious_compliment(text):
+            # Layer-1 compliment pre-check: immediate pleased body language on this turn.
+            # Layer 2 (llm.analyze_sentiment) skips its own beat when this flag is set so
+            # we never double-react; subtle praise still gets caught there.
+            pre_classified_compliment = True
+            try:
+                _play_event_body_beat("compliment.detected")
+                _set_body_mood("proud", source="layer1_compliment")
+            except Exception as exc:
+                _log.debug("[interaction] compliment body beat skipped: %s", exc)
+            _log.info("[interaction] layer-1 compliment detected")
 
         # Active grief flow must consume short replies before command/intent
         # routing. A name like "Tom Foster" can otherwise be misclassified as
@@ -16303,6 +16337,7 @@ def _handle_speech_segment(
                 person_name,
                 assistant_asked_question=assistant_asked_question,
                 pre_classified_insult=pre_classified_insult,
+                pre_classified_compliment=pre_classified_compliment,
                 suppress_memory_learning=suppress_memory_learning,
             )
     except Exception as exc:

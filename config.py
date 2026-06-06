@@ -1966,6 +1966,51 @@ INSULT_PHRASES = [
     "i hate you",
 ]
 
+# Layer-1 COMPLIMENT detection — fast keyword/phrase pre-check that fires a pleased
+# body-language reaction (and bumps the relationship) on the same turn, mirroring the
+# insult pre-check. Layer 2 (llm.analyze_sentiment) still catches subtler praise.
+COMPLIMENT_KEYWORDS = [
+    "amazing", "awesome", "brilliant", "clever", "wonderful", "fantastic",
+    "incredible", "impressive", "genius", "love you", "the best", "good job",
+    "well done", "nailed it", "you rock", "adorable", "charming",
+]
+COMPLIMENT_PHRASES = [
+    "you're amazing", "you are amazing", "you're awesome", "you are awesome",
+    "you're the best", "you are the best", "i love you", "you're so smart",
+    "you are so smart", "good job", "well done", "you're brilliant",
+    "you are brilliant", "that was funny", "you're hilarious", "you are hilarious",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MOOD-DRIVEN BODY LANGUAGE
+# A sustained "body mood" (intelligence/body_mood.py) shapes Rex's posture between
+# and around face-tracking: a head lift/tilt bias on his RESTING pose, visor openness,
+# breathing cadence, and occasional idle mood gestures. Set by conversational events
+# (complimented → proud, insulted → offended, amused → giddy) and decays back to
+# neutral. It NEVER fights the face-centering controller (rides the rest pose) and
+# never closes the visor past the lens-clear floor. All gated + hardware-safe.
+# ─────────────────────────────────────────────────────────────────────────────
+BODY_LANGUAGE_MOOD_ENABLED = _env_bool("BODY_LANGUAGE_MOOD_ENABLED", True)
+BODY_MOOD_DEFAULT_TTL_SECS = 45.0          # how long a set mood lingers before fully decaying
+BODY_MOOD_HEAD_SCALE = 1.0                 # global multiplier on head lift/tilt bias (0 = no head bias)
+BODY_MOOD_VISOR_ENABLED = _env_bool("BODY_MOOD_VISOR_ENABLED", True)
+BODY_MOOD_VISOR_MIN_INTENSITY = 0.25       # don't touch the visor below this mood intensity
+BODY_MOOD_AMBIENT_FALLBACK_ENABLED = _env_bool("BODY_MOOD_AMBIENT_FALLBACK_ENABLED", True)
+BODY_MOOD_AMBIENT_INTENSITY = 0.4          # intensity of posture derived from ambient emotion (no event)
+BODY_MOOD_IDLE_GESTURE_ENABLED = _env_bool("BODY_MOOD_IDLE_GESTURE_ENABLED", True)
+BODY_MOOD_IDLE_GESTURE_MIN_INTENSITY = 0.4 # only express an idle mood gesture above this intensity
+BODY_MOOD_IDLE_GESTURE_COOLDOWN_SECS = 25.0  # min spacing between idle mood gestures
+BODY_MOOD_IDLE_GESTURE_CHANCE = 0.35       # per-eligible-tick probability of an idle mood gesture
+BODY_MOOD_REST_MAX_LIFT_OFFSET_QUS = 1100  # clamp the mood head-lift bias on the rest pose
+BODY_MOOD_REST_MAX_TILT_OFFSET_QUS = 320   # clamp the mood head-tilt bias on the rest pose
+# Visor lens-clear floor (quarter-µs): VISOR_HALF — "default resting open, clear of the
+# camera lens". The mood layer must NEVER command the visor below this (lower = more
+# closed = covers the lens Rex tracks faces with), including when releasing it back to
+# rest after a mood decays. Shared by body_mood.visor_target() and the visor release.
+BODY_MOOD_VISOR_LENS_CLEAR_FLOOR = 6400
+BODY_MOOD_VISOR_SERVO_SPEED = 30           # Maestro speed for gentle mood visor moves (0-255)
+BODY_MOOD_VISOR_SERVO_ACCELERATION = 8     # Maestro acceleration for mood visor moves (0-255)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TIMING
 # ─────────────────────────────────────────────────────────────────────────────

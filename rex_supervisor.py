@@ -49,6 +49,14 @@ from typing import Optional
 _PROJECT_ROOT = Path(__file__).resolve().parent
 _VENV_PYTHON = _PROJECT_ROOT / "venv" / "bin" / "python"
 _WAKE_MODEL = _PROJECT_ROOT / "assets" / "models" / "wake_word" / "wakeuprex.onnx"
+# The controller (main.py) writes its OWN structured log to logs/djr3x.log. Its raw
+# stdout/stderr is redirected HERE (its own file) instead of being inherited from the
+# supervisor — otherwise the controller's console output (a duplicate of djr3x.log)
+# floods the supervisor's launchd logs (supervisor.out/err.log). This file additionally
+# captures any pre-logging boot/crash output (import errors before main.py configures
+# logging), which djr3x.log can't. Truncated per launch (only one controller runs at a
+# time; djr3x.log keeps the rotated history).
+_CONTROLLER_CONSOLE_LOG = _PROJECT_ROOT / "logs" / "controller.console.log"
 # Short chime played the instant a wake word is accepted, so there's immediate
 # feedback before the (slower) full controller finishes booting.
 _CHIME_FILE = _PROJECT_ROOT / "assets" / "audio" / "startup" / "startup_chime.mp3"
@@ -249,19 +257,49 @@ def _play_chime() -> None:
 
 
 def _launch_controller() -> Optional[subprocess.Popen]:
-    """Start main.py in the project venv as a detached child."""
+    """Start main.py in the project venv as a detached child.
+
+    The child's stdout/stderr are redirected to its OWN console log (or DEVNULL if that
+    can't be opened) — NOT inherited from the supervisor — so the controller's output
+    never pollutes the supervisor's launchd logs. The controller keeps its full log in
+    logs/djr3x.log regardless.
+    """
     if not _VENV_PYTHON.exists():
         log.error("venv python not found at %s — cannot launch controller.", _VENV_PYTHON)
         return None
     log.info("Wake word heard — launching DJ-R3X controller.")
+
+    child_log = None
+    try:
+        _CONTROLLER_CONSOLE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        # Truncate per launch; only one controller runs at a time and djr3x.log keeps
+        # the rotated history, so this stays bounded.
+        child_log = open(_CONTROLLER_CONSOLE_LOG, "w", encoding="utf-8")
+    except OSError as exc:
+        log.warning(
+            "Could not open controller console log %s (%s) — discarding controller output.",
+            _CONTROLLER_CONSOLE_LOG, exc,
+        )
+
+    child_stdout = child_log if child_log is not None else subprocess.DEVNULL
     try:
         return subprocess.Popen(
             [str(_VENV_PYTHON), str(_PROJECT_ROOT / "main.py")],
             cwd=str(_PROJECT_ROOT),
+            stdout=child_stdout,
+            stderr=subprocess.STDOUT,  # fold the controller's stderr into the same file
         )
     except Exception as exc:
         log.error("Failed to launch controller: %s", exc)
         return None
+    finally:
+        # The child got its own dup of the fd at spawn; close the supervisor's handle so
+        # we don't keep an extra reference to the controller's log file.
+        if child_log is not None:
+            try:
+                child_log.close()
+            except Exception:
+                pass
 
 
 # ── Wake-word model ────────────────────────────────────────────────────────────

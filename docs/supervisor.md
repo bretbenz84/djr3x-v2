@@ -62,7 +62,15 @@ The installer substitutes this repo's absolute path into
 Python. Grant it (System Settings → Privacy & Security → Microphone). The robot's
 camera/automation prompts still appear the first time `main.py` itself runs.
 
-Logs: `logs/supervisor.out.log` and `logs/supervisor.err.log`.
+**Logs — kept separate from the controller's:**
+- `logs/supervisor.out.log` / `logs/supervisor.err.log` — the supervisor's OWN output
+  (launchd-captured): wake-word diagnostics, launch/dormant transitions. These contain
+  *only* supervisor activity.
+- `logs/controller.console.log` — the launched controller's (`main.py`) raw stdout/stderr,
+  redirected here per launch (truncated each time) so it never floods the supervisor logs.
+  Mostly a duplicate of the controller's own structured log plus any pre-logging boot/crash
+  output.
+- `logs/djr3x.log` — the controller's full, rotated structured log (written by `main.py`).
 
 ## Tunables (environment variables)
 

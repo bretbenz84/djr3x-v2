@@ -309,6 +309,13 @@ _adaptive_head_rest: dict = {
     "updated_at": 0.0,
 }
 
+# Last time a mood-driven idle body gesture fired (monotonic), for cooldown spacing.
+_last_mood_gesture_at: float = 0.0
+# Whether the mood layer currently owns the visor (so it knows to release it to neutral
+# when the mood decays), and the last breathing cadence it asserted (to avoid churn).
+_mood_owns_visor: bool = False
+_last_mood_breathing: Optional[str] = None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Engagement API — called by interaction.py
@@ -2731,6 +2738,12 @@ def _step_smile_reaction(snapshot: dict, profile: SituationProfile) -> None:
             _first_name((person or {}).get("face_id"), "them"),
             kind="smile",
         )
+        # Landing a laugh delights Rex → let it carry into his body mood/posture.
+        try:
+            from intelligence import body_mood
+            body_mood.set_mood("giddy", source="made_laugh")
+        except Exception:
+            pass
 
 
 def _facial_expression_reaction_sustain_secs(kind: str) -> float:
@@ -8646,6 +8659,25 @@ def _adaptive_head_rest_target() -> tuple[int, int]:
     )
 
 
+def _mood_rest_bias() -> tuple[int, int]:
+    """(headlift_delta, headtilt_delta) the current body mood adds to the RESTING head
+    pose — where the head settles when no face is actively being centered. Riding the
+    rest pose (not the live centering output) means mood never fights face-tracking.
+    Clamped to config offsets; gated + failure-safe (0,0 when disabled/unavailable)."""
+    try:
+        from intelligence import body_mood
+        if not body_mood.enabled():
+            return (0, 0)
+        lift_d, tilt_d = body_mood.head_bias()
+    except Exception:
+        return (0, 0)
+    max_lift = int(getattr(config, "BODY_MOOD_REST_MAX_LIFT_OFFSET_QUS", 1100) or 0)
+    max_tilt = int(getattr(config, "BODY_MOOD_REST_MAX_TILT_OFFSET_QUS", 320) or 0)
+    lift_d = max(-max_lift, min(max_lift, int(lift_d)))
+    tilt_d = max(-max_tilt, min(max_tilt, int(tilt_d)))
+    return (lift_d, tilt_d)
+
+
 def _face_area_fraction(candidate: dict, frame_w: int, frame_h: int) -> float:
     frame_area = max(1.0, float(frame_w) * float(frame_h))
     try:
@@ -8705,7 +8737,11 @@ def _step_adaptive_head_rest_return(
     *,
     lost_age_secs: float | None = None,
 ) -> bool:
-    if not _adaptive_head_rest_enabled() or int(_adaptive_head_rest.get("samples") or 0) <= 0:
+    # The mood bias can express posture even before an adaptive rest pose is learned,
+    # so proceed when EITHER a learned rest exists OR a mood bias is active.
+    bias_lift, bias_tilt = _mood_rest_bias()
+    has_learned_rest = _adaptive_head_rest_enabled() and int(_adaptive_head_rest.get("samples") or 0) > 0
+    if not has_learned_rest and bias_lift == 0 and bias_tilt == 0:
         return False
     delay = float(getattr(config, "FACE_TRACKING_REST_RETURN_AFTER_LOST_SECS", 0.8) or 0.0)
     if lost_age_secs is not None and lost_age_secs < max(0.0, delay):
@@ -8715,10 +8751,15 @@ def _step_adaptive_head_rest_return(
             return False
         if getattr(servo_mod, "speech_motion_active", lambda: False)():
             return False
+        if getattr(servo_mod, "listening_motion_active", lambda: False)():
+            return False
     except Exception:
         return False
 
     target_lift, target_tilt = _adaptive_head_rest_target()
+    # Compose the mood posture onto the settling target (clamped to servo limits).
+    target_lift = _clamp_servo("headlift", target_lift + bias_lift)
+    target_tilt = _clamp_servo("headtilt", target_tilt + bias_tilt)
     current_neck = _current_servo_position("neck")
     current_lift = _current_servo_position("headlift")
     current_tilt = _current_servo_position("headtilt")
@@ -8753,6 +8794,110 @@ def _step_adaptive_head_rest_return(
     except Exception as exc:
         _log.debug("adaptive rest baseline update failed: %s", exc)
     return True
+
+
+def _maybe_play_idle_mood_gesture(now: float, speech_active: bool, listening_active: bool) -> None:
+    """Occasionally punctuate the current body mood with a brief idle gesture (a proud
+    bounce, a giddy wiggle, a suspicious side-eye) when Rex is otherwise idle. Reuses the
+    existing body-beat system (non-blocking lock → never fights speech). Cooldown + chance
+    gated so it's a garnish, not a tic."""
+    global _last_mood_gesture_at
+    if not bool(getattr(config, "BODY_MOOD_IDLE_GESTURE_ENABLED", True)):
+        return
+    if speech_active or listening_active:
+        return
+    cooldown = float(getattr(config, "BODY_MOOD_IDLE_GESTURE_COOLDOWN_SECS", 25.0))
+    if now - _last_mood_gesture_at < cooldown:
+        return
+    try:
+        from intelligence import body_mood
+        beat = body_mood.idle_beat()
+    except Exception:
+        return
+    if not beat:
+        return
+    if random.random() > float(getattr(config, "BODY_MOOD_IDLE_GESTURE_CHANCE", 0.35)):
+        return
+    try:
+        from sequences import animations
+        if animations.play_body_beat(beat):
+            _last_mood_gesture_at = now
+            _log.debug("consciousness: idle mood gesture %r fired", beat)
+    except Exception as exc:
+        _log.debug("idle mood gesture failed: %s", exc)
+
+
+def _step_mood_expression(snapshot: dict, profile: "SituationProfile") -> None:
+    """Express Rex's sustained body mood on the channels NOT owned by face-tracking:
+    visor openness + breathing cadence, plus an occasional idle mood gesture. Yields to
+    speech / listening / manual override; the head-pitch side of mood rides the rest pose
+    (see _mood_rest_bias) so this never fights the face-centering controller.
+
+    Visor + breathing are set-and-forget channels, so when a mood DECAYS we explicitly
+    RELEASE them back to neutral (otherwise the visor would stay open / breathing stay
+    excited until the next speech). The head rest-bias needs no release — it's recomputed
+    from the current mood each rest tick and returns to neutral on its own."""
+    global _mood_owns_visor, _last_mood_breathing
+    try:
+        from intelligence import body_mood
+        if not body_mood.enabled():
+            return
+        from hardware import servos as servo_mod
+
+        try:
+            if servo_mod.manual_override_enabled():
+                return
+        except Exception:
+            return
+        try:
+            speech_active = bool(servo_mod.speech_motion_active())
+            listening_active = bool(servo_mod.listening_motion_active())
+        except Exception:
+            speech_active = listening_active = False
+
+        now = time.monotonic()
+
+        # Visor + breathing are Rex's free expressive channels when he isn't speaking or
+        # listening (those own the visor flutter / breathing cadence themselves).
+        if not speech_active and not listening_active:
+            visor_ch = int(config.SERVO_CHANNELS["visor"]["ch"])
+            try:
+                target = body_mood.visor_target()
+            except Exception:
+                target = None
+            if target is None and _mood_owns_visor:
+                # Mood ended → release the visor back to its lens-clear resting position.
+                # MUST be the lens-clear floor (VISOR_HALF), NOT the servo neutral (6000),
+                # which sits below the floor and would partially cover the camera lens.
+                target = int(body_mood.visor_lens_clear_floor())
+                _mood_owns_visor = False
+            elif target is not None:
+                _mood_owns_visor = True
+            if target is not None:
+                try:
+                    servo_mod.set_motion_profile(
+                        [visor_ch],
+                        speed=int(getattr(config, "BODY_MOOD_VISOR_SERVO_SPEED", 30)),
+                        acceleration=int(getattr(config, "BODY_MOOD_VISOR_SERVO_ACCELERATION", 8)),
+                    )
+                except Exception:
+                    pass
+                try:
+                    servo_mod.set_servo(visor_ch, int(target))
+                except Exception as exc:
+                    _log.debug("mood visor set failed: %s", exc)
+            try:
+                breath = body_mood.breathing_emotion()
+                desired = breath or ("neutral" if _last_mood_breathing not in (None, "neutral") else None)
+                if desired is not None and desired != _last_mood_breathing:
+                    servo_mod.set_breathing_emotion(desired)
+                    _last_mood_breathing = desired
+            except Exception as exc:
+                _log.debug("mood breathing set failed: %s", exc)
+
+        _maybe_play_idle_mood_gesture(now, speech_active, listening_active)
+    except Exception as exc:
+        _log.debug("mood expression step error: %s", exc)
 
 
 def _tracking_error_reversed(
@@ -9857,6 +10002,11 @@ def _loop() -> None:
             # 9. Idle micro-behaviors
             _step_idle_micro_behavior(snapshot, profile)
 
+            # 9b. Mood-driven body language — visor openness, breathing cadence, and the
+            # occasional idle mood gesture, expressing Rex's sustained body mood on the
+            # channels face-tracking doesn't own. (Head-pitch mood rides the rest pose.)
+            _step_mood_expression(snapshot, profile)
+
             # 10. Presence tracking (departure / return reactions)
             _step_presence_tracking(snapshot, profile)
 
@@ -9955,6 +10105,7 @@ def start() -> None:
     global _smile_reaction_watch, _last_smile_reaction_at
     global _last_facial_expression_reaction_at
     global _last_startle_sound_reaction_at
+    global _last_mood_gesture_at, _mood_owns_visor, _last_mood_breathing
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
@@ -9979,6 +10130,14 @@ def start() -> None:
     _confirmed_absent_at.clear()
     _first_sight_seen_at.clear()
     _visit_started_at.clear()
+    _last_mood_gesture_at = 0.0
+    _mood_owns_visor = False
+    _last_mood_breathing = None
+    try:
+        from intelligence import body_mood
+        body_mood.clear()
+    except Exception:
+        pass
     _last_presence_reaction_at.clear()
     _animal_seen_signatures.clear()
     _animal_reacted_at.clear()

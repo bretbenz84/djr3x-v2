@@ -14,6 +14,7 @@ The project is built for live, in-room use: Rex can recognize people, remember d
 - Persistent memory database for people, relationships, preferences, and events (`people.db`)
 - Rex's own first-person episodic memory (`rex.db`) — a timestamped log of his experiences (people seen, scenes observed, things he did, per-session conversation summaries)
 - Social intelligence layers for repairs, boundaries, grief, celebrations, callbacks, and group discretion
+- Mood-driven body language — Rex's posture (head lift/tilt, visor openness, breathing, idle gestures) reflects a sustained "body mood" that shifts when he's complimented, insulted, or amused, riding on top of face-tracking
 - Servo and LED hardware hooks for a physical droid body
 - Music controls and verbal games: I Spy, 20 Questions, themed five-question Trivia rounds, Jeopardy, and Word Association
 
