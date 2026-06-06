@@ -9973,5 +9973,43 @@ class SpeakAsyncOnSpokeBookkeepingTest(unittest.TestCase):
         self.assertEqual(fired, [])  # a non-spoken line never arms its bookkeeping
 
 
+class MicroBehaviorEnforceRoutingTest(unittest.TestCase):
+    """Consolidation: the consciousness-thread micro-behaviors that used to BYPASS
+    the governor (own conversation_agenda claim + a worker thread that spoke via
+    `_speak_async(governed=False)`) must, under ENFORCE, instead SUBMIT a candidate
+    carrying the deferred work as a `speak_fn` and take NO legacy claim — so the
+    governor is the single decider. (visual_curiosity follows the same shape; small
+    talk has the cleanest preconditions to drive directly.)"""
+
+    def test_small_talk_submits_candidate_and_skips_claim_under_enforce(self):
+        from intelligence import consciousness
+        observed = []
+        with (
+            mock.patch.object(consciousness, "_governor_enforcing", return_value=True),
+            mock.patch.object(consciousness, "_can_proactive_speak", return_value=True),
+            mock.patch.object(
+                consciousness, "_observe_governor_candidate",
+                side_effect=lambda **kw: observed.append(kw) or "cg-test",
+            ),
+            mock.patch.object(consciousness, "_claim_proactive_purpose") as claim,
+            mock.patch.object(consciousness.threading, "Thread") as Thread,
+        ):
+            # Empty room → open-question path (no DB lookups), still routes the same.
+            consciousness._do_small_talk_question({"people": [], "time": {}})
+
+            # ENFORCE: took NO legacy conversation_agenda claim...
+            claim.assert_not_called()
+            # ...and submitted exactly ONE candidate carrying a runnable speak_fn.
+            self.assertEqual(len(observed), 1)
+            self.assertEqual(observed[0].get("purpose"), "small_talk")
+            speak_fn = observed[0].get("speak_fn")
+            self.assertTrue(callable(speak_fn))
+            # The deferred speak_fn spawns the worker thread (slow LLM work stays off
+            # the tick) — it does NOT speak inline.
+            Thread.assert_not_called()
+            speak_fn()
+            Thread.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -201,6 +201,46 @@ class ActionGovernorScopeTests(unittest.TestCase):
         self.assertEqual(decision.selected.candidate.purpose, "weather.proactive_comment")
         self.assertGreaterEqual(decision.selected.score, 40)
 
+    def test_end_thread_grace_metadata_rejects_candidate(self):
+        # Step 5: grace suppression — a gate formerly bundled in the conversation_agenda
+        # claim (which ENFORCE bypasses) — must reject the candidate at the governor.
+        from intelligence.action_governor import ActionGovernor, CandidateMove
+
+        governor = ActionGovernor()
+        governor.start_cycle()
+        governor.observe(CandidateMove(
+            source="_step_visual_curiosity",
+            purpose="visual_curiosity",
+            priority=55,
+            metadata={"grace_suppressed": True},
+        ))
+
+        decision = governor.finish_cycle()
+
+        self.assertEqual(decision.action, "wait")
+        scored = decision.scored[0]
+        self.assertTrue(scored.rejected)
+        self.assertIn("end_thread_grace_suppressed", scored.reasons)
+
+    def test_question_budget_metadata_rejects_candidate(self):
+        from intelligence.action_governor import ActionGovernor, CandidateMove
+
+        governor = ActionGovernor()
+        governor.start_cycle()
+        governor.observe(CandidateMove(
+            source="_do_small_talk_question",
+            purpose="small_talk",
+            priority=40,
+            metadata={"question_budget_exhausted": True},
+        ))
+
+        decision = governor.finish_cycle()
+
+        self.assertEqual(decision.action, "wait")
+        scored = decision.scored[0]
+        self.assertTrue(scored.rejected)
+        self.assertIn("question_budget_exhausted", scored.reasons)
+
 
 class GovernorEnforcementTests(unittest.TestCase):
     """Enforce mode (consolidation): the governor becomes the single decider —
@@ -282,6 +322,86 @@ class GovernorCrossThreadIntakeTests(unittest.TestCase):
             gov.submit_external(stale)
             gov.start_cycle()
             self.assertIsNone(gov.finish_cycle())  # stale dropped → empty cycle
+
+    def test_has_active_cycle_tracks_start_and_finish(self):
+        from unittest import mock
+        from intelligence import action_governor as ag
+        gov = ag.ActionGovernor()
+        with mock.patch.object(ag.config, "ACTION_GOVERNOR_ENFORCE", True):
+            self.assertFalse(gov.has_active_cycle())  # no cycle on this thread yet
+            gov.start_cycle()
+            self.assertTrue(gov.has_active_cycle())
+            gov.finish_cycle()
+            self.assertFalse(gov.has_active_cycle())
+
+    def test_offtick_enforce_submit_routes_to_external_not_lost(self):
+        """The crux of the worker-thread bug: an ENFORCE submit carrying a speak_fn
+        from a thread with NO active cycle (a spawned _task, e.g. _do_live_vision_comment)
+        must go to the cross-thread buffer — NOT observe()'s standalone-log path, which
+        would drop the speak_fn so the line never speaks."""
+        from unittest import mock
+        from intelligence import action_governor as ag
+        from intelligence import consciousness
+        with mock.patch.object(ag.config, "ACTION_GOVERNOR_ENFORCE", True):
+            self._clear(ag)
+            # This thread is NOT inside a tick (no start_cycle) → off-tick.
+            self.assertFalse(ag.governor.has_active_cycle())
+            cid = consciousness._observe_governor_candidate(
+                purpose="visual_curiosity",
+                label="live vision comment",
+                requires_llm=True,
+                speak_fn=lambda: None,
+            )
+            self.assertIsNotNone(cid)
+            with ag._external_lock:
+                buffered = list(ag._external_candidates)
+            self.assertEqual(len(buffered), 1)
+            self.assertEqual(buffered[0].purpose, "visual_curiosity")
+            self.assertIsNotNone(buffered[0].speak_fn)
+            self._clear(ag)
+
+    def test_offtick_submit_without_speak_fn_is_not_externalized(self):
+        """A shadow/log-only observe (no speak_fn) off-tick keeps its existing
+        standalone-log behavior — only runnable ENFORCE submits get externalized."""
+        from unittest import mock
+        from intelligence import action_governor as ag
+        from intelligence import consciousness
+        with mock.patch.object(ag.config, "ACTION_GOVERNOR_ENFORCE", True):
+            self._clear(ag)
+            consciousness._observe_governor_candidate(
+                purpose="visual_curiosity", requires_llm=True,  # no speak_fn
+            )
+            with ag._external_lock:
+                self.assertEqual(ag._external_candidates, [])
+            self._clear(ag)
+
+
+class ProactiveGateExtractionTests(unittest.TestCase):
+    """Step 5: the end-of-thread grace + question-budget gates were extracted from
+    _claim_proactive_purpose into reusable conversation_agenda functions so the
+    governor (which bypasses the claim under ENFORCE) applies the SAME gates. They
+    are not subsumed by arbitration, so this guards against a silent regression."""
+
+    def test_grace_blocks_only_listed_purposes_and_when_grace_active(self):
+        from unittest import mock
+        from intelligence import conversation_agenda as ca
+        # A purpose NOT in the grace-suppressed set is never blocked.
+        self.assertFalse(ca.proactive_grace_blocks("weather.proactive_comment"))
+        # A listed purpose is blocked only while grace forbids it.
+        with mock.patch("intelligence.end_thread.can_proactive_purpose", return_value=False):
+            self.assertTrue(ca.proactive_grace_blocks("idle_monologue"))
+        with mock.patch("intelligence.end_thread.can_proactive_purpose", return_value=True):
+            self.assertFalse(ca.proactive_grace_blocks("idle_monologue"))
+
+    def test_budget_blocks_only_budgeted_purposes_when_exhausted(self):
+        from unittest import mock
+        from intelligence import conversation_agenda as ca
+        # idle_monologue is grace-suppressed but NOT budgeted → budget never blocks it.
+        self.assertFalse(ca.proactive_budget_blocks("idle_monologue"))
+        with mock.patch("intelligence.question_budget.can_ask", return_value=False):
+            self.assertTrue(ca.proactive_budget_blocks("small_talk"))
+        with mock.patch("intelligence.question_budget.can_ask", return_value=True):
+            self.assertFalse(ca.proactive_budget_blocks("small_talk"))
 
 
 if __name__ == "__main__":

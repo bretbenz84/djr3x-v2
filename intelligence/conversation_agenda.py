@@ -179,6 +179,34 @@ _GRACE_SUPPRESSED_PROACTIVE_PURPOSES = {
     "idle_monologue",
 }
 
+def proactive_grace_blocks(purpose: str) -> bool:
+    """True when end-of-thread grace currently suppresses this proactive purpose.
+
+    Extracted from _claim_proactive_purpose so the action governor (the single
+    decider under ENFORCE, which bypasses the claim) can apply the SAME gate — it
+    is not subsumed by arbitration. Side-effect-free."""
+    if purpose not in _GRACE_SUPPRESSED_PROACTIVE_PURPOSES:
+        return False
+    try:
+        from intelligence import end_thread
+        return not end_thread.can_proactive_purpose(purpose)
+    except Exception:
+        return False
+
+
+def proactive_budget_blocks(purpose: str) -> bool:
+    """True when the question budget is exhausted for this budgeted proactive
+    purpose. Companion to proactive_grace_blocks — same rationale. Side-effect-free
+    (question_budget.can_ask only reads the current count)."""
+    if purpose not in _BUDGETED_PROACTIVE_PURPOSES:
+        return False
+    try:
+        from intelligence import question_budget
+        return not question_budget.can_ask(purpose)
+    except Exception:
+        return False
+
+
 _proactive_lock = threading.Lock()
 _active_proactive_claim: Optional[_ProactiveClaim] = None
 
@@ -248,32 +276,22 @@ def claim_proactive_purpose(
     rule_priority = _PROACTIVE_RULES.get(purpose, (20, ""))[0]
     requested_priority = int(rule_priority if priority is None else priority)
 
-    if purpose in _GRACE_SUPPRESSED_PROACTIVE_PURPOSES:
-        try:
-            from intelligence import end_thread
-            if not end_thread.can_proactive_purpose(purpose):
-                _log.info(
-                    "proactive purpose suppressed by end-of-thread grace — "
-                    "purpose=%s label=%r",
-                    purpose,
-                    label,
-                )
-                return None
-        except Exception as exc:
-            _log.debug("end-of-thread proactive check failed: %s", exc)
+    if proactive_grace_blocks(purpose):
+        _log.info(
+            "proactive purpose suppressed by end-of-thread grace — "
+            "purpose=%s label=%r",
+            purpose,
+            label,
+        )
+        return None
 
-    if purpose in _BUDGETED_PROACTIVE_PURPOSES:
-        try:
-            from intelligence import question_budget
-            if not question_budget.can_ask(purpose):
-                _log.info(
-                    "proactive purpose suppressed by question budget — purpose=%s label=%r",
-                    purpose,
-                    label,
-                )
-                return None
-        except Exception as exc:
-            _log.debug("question budget proactive check failed: %s", exc)
+    if proactive_budget_blocks(purpose):
+        _log.info(
+            "proactive purpose suppressed by question budget — purpose=%s label=%r",
+            purpose,
+            label,
+        )
+        return None
 
     with _proactive_lock:
         if (

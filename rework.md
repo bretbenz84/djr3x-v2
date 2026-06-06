@@ -394,10 +394,29 @@ mostly squashed and now CAUGHT AS CLASSES by the eval. The remaining work is **s
    default-flip surfaced ONE legacy-pinned test (`test_banter_fires_after_silence_and_drives_conversation` asserted
    inline `_speak_blocking`) → pinned it to legacy mode + added `test_banter_under_enforce_submits_candidate_instead_of_speaking_inline`
    (idle banter SUBMITS a candidate, arms cooldown on submit, defers the speak to the governor winner). **suite 891.**
-   AWAITING a live run with enforce on — read `logs/djr3x.log` for governor winner/loser decisions + cross-thread
-   `submit_external` candidates, confirm no double-speak / no dropped good lines, then (5). Revert the flag to False if
-   arbitration misbehaves. **THEN** (5) delete the redundant gates (`conversation_agenda`
-   claim + scattered cooldowns) — ONLY after enforce proves out live. See the "Proactive-layer consolidation" do-not-regress entries.
+   **INCREMENT 4b — BYPASSER ROUTING DONE (enforce live run #1, 2026-06-05):** run #1 confirmed the infra works (idle
+   banter routed cross-thread + correctly YIELDED at score -10 during conversation; no errors/double-speak) but exposed
+   that consciousness-thread micro-behaviors still bypassed enforce (own claim + worker `_task` speaking `governed=False`).
+   Converted the two true thread-spawning bypassers (`_step_visual_curiosity`, `_do_small_talk_question`) to submit ONE
+   deferred-`speak_fn` candidate ON THE TICK THREAD (no claim; heavy work runs only for the winner). Added a GENERAL
+   off-tick fallback: `governor.has_active_cycle()` + `_observe_governor_candidate` routes any ENFORCE submit with a
+   `speak_fn` from a thread with no live cycle (a worker `_task`, e.g. `_do_live_vision_comment`) to `submit_external`
+   instead of losing it via `observe()`'s standalone-log path — fixing the whole worker-thread CLASS. (Synchronous
+   `_do_private_thought`/`_do_aspiration`/`_do_empty_room_joke` already submit in-cycle — never bypassers. `_generate_and_speak_presence`
+   speaks via `speech_queue` directly — still a deferred full bypasser, low crowding risk.) **suite 895.** Tests:
+   `MicroBehaviorEnforceRoutingTest` + governor `has_active_cycle`/off-tick-routing. SEPARATE quality bug from run #1
+   (open): cantina bleed re-primed by the injected "Last conversation:" summary praising "his cantina-patron remarks".
+   **ENFORCE RUN #2 (19:47) CLEAN:** visual_curiosity routed (won cycle-19, `outcome=observed`, NO claim_rejected) +
+   idle banter yielded (score 15, active) then won (score 50, quiet). No errors/double-speak/cantina. **INCREMENT 5a —
+   GATE RELOCATION DONE (suite 899):** step 5 isn't a simple delete — the `conversation_agenda` claim bundles grace +
+   question-budget gates the governor did NOT replicate, so ENFORCE was silently bypassing them (latent regression).
+   Relocated them: `conversation_agenda.proactive_grace_blocks`/`proactive_budget_blocks` → `_observe_governor_candidate`
+   metadata → governor `_score` rejection reasons (`end_thread_grace_suppressed`/`question_budget_exhausted`). Now the
+   single decider honors both. Tests added. **THE ACTUAL DELETION REMAINS A COMMIT:** deleting the (now-redundant) claim
+   layer removes the legacy fallback = the `ACTION_GOVERNOR_ENFORCE` kill-switch → irreversible. Gate it on a live run
+   confirming the relocated grace/budget gates fire under enforce + explicit go-ahead. Per-mechanism cooldowns are NOT
+   redundant (submit-throttles) — centralize, don't delete. Revert the flag to False if arbitration misbehaves. See the
+   "Proactive-layer consolidation" do-not-regress entries.
 2. **Delete the deterministic anti-repetition hacks** the arc now makes redundant (comedy opener-stripper, the
    follow-up angle rotation, `social_frame._is_near_repeat`) — Bet 1 fast-follow; the arc can SEE what Rex already
    said. De-risk via the eval (assert no regression in repetition).

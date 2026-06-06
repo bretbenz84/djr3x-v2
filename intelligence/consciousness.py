@@ -2805,6 +2805,22 @@ def _observe_governor_candidate(
         merged = _governor_speech_metadata()
         if metadata:
             merged.update(metadata)
+        # Apply the end-of-thread grace + question-budget gates that the legacy
+        # conversation_agenda claim enforced. The governor (single decider under
+        # ENFORCE) bypasses the claim, and neither it nor _can_proactive_speak
+        # replicates these gates — so surface them as metadata → rejection reasons,
+        # otherwise ENFORCE would fire proactive questions during grace or past the
+        # budget. (In shadow/legacy this only enriches the candidate log; the claim
+        # still gates the actual speak.)
+        try:
+            from intelligence import conversation_agenda as _agenda
+            _p = purpose or "direct_speech"
+            if _agenda.proactive_grace_blocks(_p):
+                merged["grace_suppressed"] = True
+            if _agenda.proactive_budget_blocks(_p):
+                merged["question_budget_exhausted"] = True
+        except Exception:
+            pass
         candidate = CandidateMove(
             source=source or _governor_source(),
             purpose=purpose or "direct_speech",
@@ -2820,6 +2836,19 @@ def _observe_governor_candidate(
             metadata=merged,
             speak_fn=speak_fn,
         )
+        if (
+            speak_fn is not None
+            and governor.enforcing
+            and not governor.has_active_cycle()
+        ):
+            # Off-tick ENFORCE submit (e.g. _generate_and_speak / _speak_async called
+            # from a spawned worker thread like _do_live_vision_comment): the cycle is
+            # thread-local to the consciousness tick, so observe() here would only
+            # standalone-log and the speak_fn would never run → the line is silently
+            # dropped. Route through the cross-thread buffer so the next tick arbitrates
+            # it (same path idle banter uses from the interaction thread).
+            governor.submit_external(candidate)
+            return candidate.candidate_id
         return governor.observe(candidate)
     except Exception as exc:
         _log.debug("action governor observe failed: %s", exc)
@@ -5369,26 +5398,32 @@ def _do_small_talk_question(snapshot: dict) -> None:
         and random.random() < float(getattr(config, "MOOD_ANALYSIS_PROBABILITY", 0.7))
     )
     purpose = "memory_followup" if plan_clause else "small_talk"
-    candidate_id = _observe_governor_candidate(
-        purpose=purpose,
-        label="small-talk question",
-        prompt=(
-            "Small-talk candidate: choose a known visible person if available, "
-            "optionally use mood or plan context, then ask one short question."
-        ),
-        emotion="curious",
-        target_person_id=target_db_id,
-        requires_llm=True,
-    )
-    token = _claim_proactive_purpose(purpose, label="small-talk question")
-    if token is None:
-        _mark_governor_candidate(
-            candidate_id,
-            "dropped",
-            "conversation_agenda_claim_rejected",
+    # `token` is the legacy conversation_agenda claim (LEGACY) or None (ENFORCE — the
+    # governor arbitrates; None is claim-safe). The idle micro-behavior caller already
+    # rate-limits how often small talk is attempted, so ENFORCE needs no extra cooldown.
+    token = None
+    enforcing = _governor_enforcing()
+    if not enforcing:
+        candidate_id = _observe_governor_candidate(
+            purpose=purpose,
+            label="small-talk question",
+            prompt=(
+                "Small-talk candidate: choose a known visible person if available, "
+                "optionally use mood or plan context, then ask one short question."
+            ),
+            emotion="curious",
+            target_person_id=target_db_id,
+            requires_llm=True,
         )
-        return
-    _mark_governor_candidate(candidate_id, "accepted", "current_behavior_queued_llm")
+        token = _claim_proactive_purpose(purpose, label="small-talk question")
+        if token is None:
+            _mark_governor_candidate(
+                candidate_id,
+                "dropped",
+                "conversation_agenda_claim_rejected",
+            )
+            return
+        _mark_governor_candidate(candidate_id, "accepted", "current_behavior_queued_llm")
 
     def _task() -> None:
         try:
@@ -5439,7 +5474,27 @@ def _do_small_talk_question(snapshot: dict) -> None:
         except Exception as exc:
             _log.debug("_do_small_talk_question task error: %s", exc)
         finally:
-            _release_proactive_purpose(token)
+            if token is not None:
+                _release_proactive_purpose(token)
+
+    if enforcing:
+        # ENFORCE: submit the candidate carrying the deferred generate+ask; the
+        # governor runs it ONLY if small talk wins this tick.
+        _observe_governor_candidate(
+            purpose=purpose,
+            label="small-talk question",
+            prompt=(
+                "Small-talk candidate: choose a known visible person if available, "
+                "optionally use mood or plan context, then ask one short question."
+            ),
+            emotion="curious",
+            target_person_id=target_db_id,
+            requires_llm=True,
+            speak_fn=lambda: threading.Thread(
+                target=_task, daemon=True, name="small-talk-question"
+            ).start(),
+        )
+        return
 
     threading.Thread(target=_task, daemon=True, name="small-talk-question").start()
 
@@ -5856,43 +5911,56 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
     if _visual_curiosity_blocked_by_empathy(engaged_id):
         return
 
-    candidate_id = _observe_governor_candidate(
-        purpose="visual_curiosity",
-        label=f"visual curiosity for {engaged_id}",
-        prompt=(
-            "Visual curiosity candidate: take a fresh visual snapshot after a "
-            "mid-conversation lull and ask one grounded question."
-        ),
-        emotion="curious",
-        wait_secs=float(getattr(config, "QUESTION_RESPONSE_WAIT_SECS", 7.0)),
-        target_person_id=engaged_id,
-        requires_llm=True,
-    )
-    token = _claim_proactive_purpose(
-        "visual_curiosity",
-        label=f"visual curiosity for {engaged_id}",
-    )
-    if token is None:
-        _mark_governor_candidate(
-            candidate_id,
-            "dropped",
-            "conversation_agenda_claim_rejected",
+    # `token` is the legacy conversation_agenda claim (LEGACY) or None (ENFORCE — the
+    # governor arbitrates the win, so the claim is moot; None is claim-safe).
+    token = None
+    enforcing = _governor_enforcing()
+    if enforcing:
+        # ENFORCE: do NOT claim — arm the cooldowns NOW (on submit) so the top-of-
+        # function gates (global + per-person) stop us re-submitting every tick while
+        # arbitration is pending; a loser just waits out the cooldown and re-submits.
+        # The candidate (submitted below, once _task is defined) carries the deferred
+        # vision+ask as its speak_fn; only the governor winner runs it.
+        _last_visual_curiosity_at = now
+        _visual_curiosity_by_person[engaged_id] = now
+    else:
+        candidate_id = _observe_governor_candidate(
+            purpose="visual_curiosity",
+            label=f"visual curiosity for {engaged_id}",
+            prompt=(
+                "Visual curiosity candidate: take a fresh visual snapshot after a "
+                "mid-conversation lull and ask one grounded question."
+            ),
+            emotion="curious",
+            wait_secs=float(getattr(config, "QUESTION_RESPONSE_WAIT_SECS", 7.0)),
+            target_person_id=engaged_id,
+            requires_llm=True,
         )
-        return
-    _mark_governor_candidate(candidate_id, "accepted", "current_behavior_queued_llm")
+        token = _claim_proactive_purpose(
+            "visual_curiosity",
+            label=f"visual curiosity for {engaged_id}",
+        )
+        if token is None:
+            _mark_governor_candidate(
+                candidate_id,
+                "dropped",
+                "conversation_agenda_claim_rejected",
+            )
+            return
+        _mark_governor_candidate(candidate_id, "accepted", "current_behavior_queued_llm")
 
-    with _visual_curiosity_lock:
-        if _visual_curiosity_in_flight:
-            _mark_governor_candidate(candidate_id, "dropped", "visual_curiosity_in_flight")
-            _release_proactive_purpose(token)
-            return
-        if (time.monotonic() - _last_visual_curiosity_at) < global_cooldown:
-            _mark_governor_candidate(candidate_id, "dropped", "visual_curiosity_global_cooldown")
-            _release_proactive_purpose(token)
-            return
-        _visual_curiosity_in_flight = True
-        _last_visual_curiosity_at = time.monotonic()
-        _visual_curiosity_by_person[engaged_id] = _last_visual_curiosity_at
+        with _visual_curiosity_lock:
+            if _visual_curiosity_in_flight:
+                _mark_governor_candidate(candidate_id, "dropped", "visual_curiosity_in_flight")
+                _release_proactive_purpose(token)
+                return
+            if (time.monotonic() - _last_visual_curiosity_at) < global_cooldown:
+                _mark_governor_candidate(candidate_id, "dropped", "visual_curiosity_global_cooldown")
+                _release_proactive_purpose(token)
+                return
+            _visual_curiosity_in_flight = True
+            _last_visual_curiosity_at = time.monotonic()
+            _visual_curiosity_by_person[engaged_id] = _last_visual_curiosity_at
 
     def _task() -> None:
         global _visual_curiosity_in_flight
@@ -5954,9 +6022,38 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
         except Exception as exc:
             _log.debug("visual curiosity step error: %s", exc)
         finally:
-            _release_proactive_purpose(token)
+            if token is not None:
+                _release_proactive_purpose(token)
             with _visual_curiosity_lock:
                 _visual_curiosity_in_flight = False
+
+    if enforcing:
+        # Submit the candidate carrying the deferred task. _winner_speak runs ONLY if
+        # visual curiosity wins this tick; it sets the in-flight latch (cleared in
+        # _task's finally) and spawns the worker so the slow vision+LLM work stays off
+        # the consciousness tick.
+        def _winner_speak() -> None:
+            global _visual_curiosity_in_flight
+            with _visual_curiosity_lock:
+                if _visual_curiosity_in_flight:
+                    return
+                _visual_curiosity_in_flight = True
+            threading.Thread(target=_task, daemon=True, name="visual-curiosity").start()
+
+        _observe_governor_candidate(
+            purpose="visual_curiosity",
+            label=f"visual curiosity for {engaged_id}",
+            prompt=(
+                "Visual curiosity candidate: take a fresh visual snapshot after a "
+                "mid-conversation lull and ask one grounded question."
+            ),
+            emotion="curious",
+            wait_secs=float(getattr(config, "QUESTION_RESPONSE_WAIT_SECS", 7.0)),
+            target_person_id=engaged_id,
+            requires_llm=True,
+            speak_fn=_winner_speak,
+        )
+        return
 
     threading.Thread(target=_task, daemon=True, name="visual-curiosity").start()
 

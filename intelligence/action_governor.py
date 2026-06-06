@@ -153,6 +153,13 @@ class ActionGovernor:
     def active(self) -> bool:
         return self.shadow_mode or self.log_candidates or self.enforcing
 
+    def has_active_cycle(self) -> bool:
+        """True when THIS thread is inside a start_cycle/finish_cycle window (the
+        consciousness tick). The cycle is thread-local, so a candidate submitted via
+        observe() from any OTHER thread (a spawned worker) would only standalone-log
+        and never run its speak_fn — such callers must use submit_external instead."""
+        return getattr(self._local, "cycle", None) is not None
+
     def submit_external(self, candidate: "CandidateMove") -> str:
         """Submit a proactive candidate from a NON-consciousness thread (e.g.
         interaction's idle banter). It is picked up and arbitrated by the next
@@ -294,6 +301,13 @@ class ActionGovernor:
             reasons.append("can_proactive_speak_false")
         if candidate.metadata.get("can_speak") is False:
             reasons.append("can_speak_false")
+        # Gates relocated from the conversation_agenda claim (which ENFORCE bypasses)
+        # so the governor — the single decider — still honors end-of-thread grace and
+        # the question budget for proactive purposes.
+        if candidate.metadata.get("grace_suppressed"):
+            reasons.append("end_thread_grace_suppressed")
+        if candidate.metadata.get("question_budget_exhausted"):
+            reasons.append("question_budget_exhausted")
         if candidate.metadata.get("cooldown_active"):
             cooldown_reason = str(candidate.metadata.get("cooldown_reason") or "cooldown_active")
             remaining = candidate.metadata.get("cooldown_remaining_secs")
@@ -330,6 +344,8 @@ class ActionGovernor:
             or "output_gate_status_error" in reasons
             or "can_proactive_speak_false" in reasons
             or "can_speak_false" in reasons
+            or "end_thread_grace_suppressed" in reasons
+            or "question_budget_exhausted" in reasons
             or candidate.metadata.get("cooldown_active")
         )
         min_score = int(getattr(config, "ACTION_GOVERNOR_MIN_SCORE", 20))
