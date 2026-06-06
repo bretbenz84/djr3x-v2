@@ -1581,6 +1581,25 @@ AUDIO_CHANNELS       = 1      # mono — pipeline always works with 1-channel ar
 AUDIO_INPUT_CHANNELS = 2      # hardware capture channels (ReSpeaker Lite is stereo)
 AUDIO_BUFFER_SECONDS = 30     # rolling circular buffer duration
 
+# ── Mic stall watchdog (audio/stream.py) ─────────────────────────────────────
+# The mic is one long-lived sounddevice InputStream whose callback fills the
+# rolling buffer. On macOS, another stream's open/close on the shared CoreAudio
+# device (e.g. DJ music playback) can silently kill that callback — no error, no
+# PortAudio status flag — leaving the buffer frozen. Every consumer (wake word,
+# VAD, transcription, speaker ID) then reads the SAME stale audio forever, so Rex
+# goes permanently deaf until the process is restarted. The watchdog timestamps
+# each callback and reopens the stream when callbacks stop arriving.
+AUDIO_STALL_WATCHDOG_ENABLED = True
+# Seconds without a callback before the input stream is considered stalled. A
+# healthy stream fires every ~32 ms (512 samples @ 16 kHz), so 1.5 s is ~47
+# missed callbacks — far below any normal scheduling jitter, no false positives.
+AUDIO_STALL_TIMEOUT_SECS = 1.5
+# How often the watchdog checks callback freshness.
+AUDIO_STALL_CHECK_INTERVAL_SECS = 0.5
+# Minimum seconds between reopen attempts, so a truly-gone device (unplugged mic)
+# can't trigger a tight reopen storm — it retries on this cadence until it returns.
+AUDIO_STALL_REOPEN_MIN_SPACING_SECS = 3.0
+
 # ── Output routing for hardware AEC (ReSpeaker Lite) ─────────────────────────
 # To use the ReSpeaker Lite's ONBOARD acoustic echo cancellation, Rex's audio must
 # play OUT THROUGH the ReSpeaker (its XU316 chip uses the USB-output stream it

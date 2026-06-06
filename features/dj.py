@@ -30,6 +30,7 @@ from rapidfuzz import process as fuzz_process
 
 import config
 from audio import echo_cancel
+from audio import sd_guard
 from hardware import leds_head
 
 logger = logging.getLogger(__name__)
@@ -380,42 +381,63 @@ def _playback_loop(track_info: TrackInfo) -> None:
     ]
 
     proc: Optional[subprocess.Popen] = None
+    stream: Optional["sd.OutputStream"] = None
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
         bytes_per_chunk = _CHUNK_FRAMES * _CHANNELS * 4  # float32 = 4 bytes
 
-        with sd.OutputStream(
-            samplerate=_SAMPLE_RATE,
-            channels=_CHANNELS,
-            dtype="float32",
-        ) as stream:
-            while not _stop_event.is_set():
-                raw = proc.stdout.read(bytes_per_chunk)
-                if not raw:
-                    break
-                # Pad final partial chunk so reshape is always valid
-                if len(raw) < bytes_per_chunk:
-                    raw = raw + b"\x00" * (bytes_per_chunk - len(raw))
+        # Open the output stream under the shared device-control lock so this raw
+        # OutputStream start can't run concurrently with a TTS sd.play()/sd.stop()
+        # on the shared CoreAudio device. That race (e.g. a wake-word barge-in
+        # stopping music + Rex's voice at once) silently wedges the mic input
+        # callback and freezes the rolling buffer — see audio/sd_guard.py.
+        with sd_guard.device_control():
+            stream = sd.OutputStream(
+                samplerate=_SAMPLE_RATE,
+                channels=_CHANNELS,
+                dtype="float32",
+            )
+            stream.start()
 
-                chunk = (
-                    np.frombuffer(raw, dtype=np.float32)
-                    .reshape(_CHUNK_FRAMES, _CHANNELS)
-                )
-                chunk = chunk * _volume
-                stream.write(chunk)
+        # Steady-state writes run OUTSIDE the lock so a multi-minute song never
+        # blocks TTS playback for its full duration.
+        while not _stop_event.is_set():
+            raw = proc.stdout.read(bytes_per_chunk)
+            if not raw:
+                break
+            # Pad final partial chunk so reshape is always valid
+            if len(raw) < bytes_per_chunk:
+                raw = raw + b"\x00" * (bytes_per_chunk - len(raw))
 
-                rms = float(np.sqrt(np.mean(chunk ** 2)))
-                brightness = int(min(255, rms * config.TTS_LED_BRIGHTNESS_SCALE))
-                try:
-                    leds_head.speak_level(brightness)
-                except Exception:
-                    pass
+            chunk = (
+                np.frombuffer(raw, dtype=np.float32)
+                .reshape(_CHUNK_FRAMES, _CHANNELS)
+            )
+            chunk = chunk * _volume
+            stream.write(chunk)
+
+            rms = float(np.sqrt(np.mean(chunk ** 2)))
+            brightness = int(min(255, rms * config.TTS_LED_BRIGHTNESS_SCALE))
+            try:
+                leds_head.speak_level(brightness)
+            except Exception:
+                pass
 
     except Exception as exc:
         logger.error("[dj] Playback error (%s): %s", track_info.name, exc)
     finally:
+        if stream is not None:
+            # Close under the same lock (with CoreAudio settle) so the device
+            # teardown is serialized against — and releases the device before —
+            # any barge-in replay's sd.play().
+            with sd_guard.device_control(settle=True):
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception as exc:
+                    logger.warning("[dj] Error closing output stream: %s", exc)
         if proc and proc.poll() is None:
             proc.terminate()
             try:

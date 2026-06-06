@@ -5,6 +5,13 @@ Opens the mic once and never closes it. Audio is written into a rolling circular
 buffer by a non-blocking sounddevice callback. Callers read from the buffer via
 get_audio_chunk() or get_full_buffer().
 
+A background watchdog guards against a silently-stalled input callback: on macOS,
+another stream's open/close on the shared CoreAudio device (e.g. DJ music
+playback) can kill this callback with no error and no PortAudio status flag,
+freezing the buffer so every consumer (wake word, VAD, transcription, speaker ID)
+reads the same stale audio forever. The watchdog timestamps each callback and
+reopens the stream when callbacks stop arriving — see config.AUDIO_STALL_*.
+
 If AUDIO_DEVICE_NAME / AUDIO_DEVICE_INDEX is not set in .env the module
 initialises as a no-op and all read functions return empty arrays.
 """
@@ -12,6 +19,7 @@ initialises as a no-op and all read functions return empty arrays.
 import logging
 import math
 import threading
+import time
 from collections import deque
 
 import numpy as np
@@ -37,10 +45,28 @@ _input_channels: int = 1  # actual device channels; set during start()
 # would re-add the echo). -1 ⇒ mix all channels. Set from config in start().
 _aec_channel: int | None = None
 
+# ── Stall-watchdog state ──────────────────────────────────────────────────────
+# Serializes stream lifecycle (open/close/reopen) so the watchdog and stop()
+# can't tear the stream down from under each other. Re-entrant so the same
+# thread can nest open inside a guarded section.
+_stream_lock = threading.RLock()
+# time.monotonic() of the most recent callback; 0.0 == none since (re)open.
+_last_callback_at: float = 0.0
+# True between start() and stop(): callbacks are expected, so a gap means a stall.
+_running: bool = False
+_last_reopen_at: float = 0.0
+_reopen_count: int = 0
+_watchdog_thread: "threading.Thread | None" = None
+_watchdog_stop = threading.Event()
+
 
 # ── Callback ──────────────────────────────────────────────────────────────────
 
 def _callback(indata, frames, time_info, status):  # noqa: ANN001
+    # Stamp first so even a status-flagged callback counts as "alive" for the
+    # watchdog (a single global float store is atomic under the GIL — no lock).
+    global _last_callback_at
+    _last_callback_at = time.monotonic()
     if status:
         _log.warning("sounddevice status: %s", status)
     if _input_channels > 1:
@@ -58,34 +84,21 @@ def _callback(indata, frames, time_info, status):  # noqa: ANN001
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
-def start() -> None:
-    """Open the microphone and begin filling the rolling buffer."""
-    global _stream, _input_channels, _aec_channel
+def _open_stream() -> bool:
+    """Open the InputStream and assign module state. Caller must hold _stream_lock.
 
-    ch_cfg = int(getattr(config, "AUDIO_AEC_INPUT_CHANNEL", -1))
-    _aec_channel = ch_cfg if ch_cfg >= 0 else None
-    if _aec_channel is not None:
-        _log.info("Audio input will use AEC channel %d only (no channel mixing).", _aec_channel)
-
-    if AUDIO_DEVICE_INDEX is None:
-        _log.warning(
-            "AUDIO_DEVICE_NAME/AUDIO_DEVICE_INDEX not set or not resolved in .env — audio stream disabled. "
-            "Wake word, VAD, transcription, and speaker ID will not function."
-        )
-        return
-
-    if _stream is not None and _stream.active:
-        return
+    Tries the configured channel count first, then the device's reported
+    max_input_channels, then mono. macOS PortAudio rejects a request for more
+    channels than the active device exposes, so a fixed config that assumes the
+    ReSpeaker (2-ch) silently disables the mic whenever a mono device
+    (built-in/AirPods) is selected instead. Returns True on success.
+    """
+    global _stream, _input_channels, _last_callback_at
 
     requested = getattr(config, "AUDIO_INPUT_CHANNELS", config.AUDIO_CHANNELS)
 
     import sounddevice as sd
 
-    # Try the configured channel count first, then fall back to the device's
-    # reported max_input_channels, then mono. macOS PortAudio rejects a
-    # request for more channels than the active device exposes, so a fixed
-    # config that assumes the ReSpeaker (2-ch) silently disables the mic
-    # whenever a mono device (built-in/AirPods) is selected instead.
     candidates = [requested]
     try:
         device_info = sd.query_devices(AUDIO_DEVICE_INDEX)
@@ -114,6 +127,9 @@ def start() -> None:
             continue
         _stream = stream
         _input_channels = ch
+        # Arm the watchdog grace window: count from open, not from the last
+        # callback of a prior (possibly stalled) stream.
+        _last_callback_at = time.monotonic()
         if ch != requested:
             _log.warning(
                 "Audio device %s does not support %d channels; opened with %d-ch instead.",
@@ -126,10 +142,37 @@ def start() -> None:
             ch,
             config.AUDIO_BUFFER_SECONDS,
         )
-        return
+        return True
 
     _log.error("Failed to open audio stream (tried channels %s): %s", candidates, last_exc)
     _stream = None
+    return False
+
+
+def start() -> None:
+    """Open the microphone and begin filling the rolling buffer."""
+    global _aec_channel, _running
+
+    ch_cfg = int(getattr(config, "AUDIO_AEC_INPUT_CHANNEL", -1))
+    _aec_channel = ch_cfg if ch_cfg >= 0 else None
+    if _aec_channel is not None:
+        _log.info("Audio input will use AEC channel %d only (no channel mixing).", _aec_channel)
+
+    if AUDIO_DEVICE_INDEX is None:
+        _log.warning(
+            "AUDIO_DEVICE_NAME/AUDIO_DEVICE_INDEX not set or not resolved in .env — audio stream disabled. "
+            "Wake word, VAD, transcription, and speaker ID will not function."
+        )
+        return
+
+    with _stream_lock:
+        if _stream is not None and _stream.active:
+            return
+        opened = _open_stream()
+        _running = opened
+
+    if _running:
+        _start_watchdog()
 
 
 def is_active() -> bool:
@@ -142,18 +185,144 @@ def is_active() -> bool:
 
 def stop() -> None:
     """Stop and close the microphone stream."""
-    global _stream
+    global _stream, _running
 
-    if _stream is None:
-        return
-    try:
-        _stream.stop()
-        _stream.close()
-    except Exception as exc:
-        _log.warning("Error closing audio stream: %s", exc)
-    finally:
+    with _stream_lock:
+        _running = False
+
+    # Stop the watchdog first (without holding _stream_lock — it joins a thread
+    # that itself takes the lock during a reopen) so it can't reopen mid-teardown.
+    _stop_watchdog()
+
+    with _stream_lock:
+        if _stream is None:
+            return
+        try:
+            _stream.stop()
+            _stream.close()
+        except Exception as exc:
+            _log.warning("Error closing audio stream: %s", exc)
+        finally:
+            _stream = None
+            _log.info("Audio stream stopped.")
+
+
+# ── Stall watchdog ────────────────────────────────────────────────────────────
+
+def _reopen(reason: str) -> bool:
+    """Tear down a stalled stream and open a fresh one. Called by the watchdog."""
+    global _stream, _reopen_count, _last_reopen_at
+
+    with _stream_lock:
+        if not _running:
+            return False
+        _reopen_count += 1
+        _last_reopen_at = time.monotonic()
+        _log.warning(
+            "[stream_watchdog] mic input stalled (%s) — reopening (attempt %d).",
+            reason, _reopen_count,
+        )
+
+        old = _stream
         _stream = None
-        _log.info("Audio stream stopped.")
+        if old is not None:
+            try:
+                old.stop()
+                old.close()
+            except Exception as exc:
+                _log.warning("[stream_watchdog] error closing stalled stream: %s", exc)
+
+        # Drop the frozen audio so consumers don't keep reading the stale samples
+        # the wedged callback left behind.
+        with _buf_lock:
+            _buf.clear()
+
+        ok = _open_stream()
+
+    if ok:
+        _log.info("[stream_watchdog] mic input reopened.")
+    else:
+        _log.error("[stream_watchdog] mic reopen failed; will retry.")
+    return ok
+
+
+def _watchdog_loop() -> None:
+    interval = max(0.05, float(getattr(config, "AUDIO_STALL_CHECK_INTERVAL_SECS", 0.5)))
+    timeout = max(0.2, float(getattr(config, "AUDIO_STALL_TIMEOUT_SECS", 1.5)))
+    min_spacing = max(0.0, float(getattr(config, "AUDIO_STALL_REOPEN_MIN_SPACING_SECS", 3.0)))
+
+    while not _watchdog_stop.wait(interval):
+        if not _running:
+            continue
+        last = _last_callback_at
+        if last <= 0.0:
+            continue  # no callback since (re)open yet — still in the grace window
+        now = time.monotonic()
+        if now - last < timeout:
+            continue  # healthy: callbacks are flowing
+        if now - _last_reopen_at < min_spacing:
+            continue  # reopened recently; give the new stream time to warm
+        _reopen(f"no mic callback for {now - last:.1f}s")
+
+    _log.info("[stream_watchdog] stopped.")
+
+
+def _start_watchdog() -> None:
+    global _watchdog_thread
+
+    if not bool(getattr(config, "AUDIO_STALL_WATCHDOG_ENABLED", True)):
+        return
+
+    with _stream_lock:
+        if _watchdog_thread is not None and _watchdog_thread.is_alive():
+            return
+        _watchdog_stop.clear()
+        _watchdog_thread = threading.Thread(
+            target=_watchdog_loop, daemon=True, name="mic-stall-watchdog",
+        )
+        _watchdog_thread.start()
+    _log.info(
+        "[stream_watchdog] started (stall timeout %.1fs, check every %.1fs).",
+        max(0.2, float(getattr(config, "AUDIO_STALL_TIMEOUT_SECS", 1.5))),
+        max(0.05, float(getattr(config, "AUDIO_STALL_CHECK_INTERVAL_SECS", 0.5))),
+    )
+
+
+def _stop_watchdog() -> None:
+    global _watchdog_thread
+
+    with _stream_lock:
+        t = _watchdog_thread
+        if t is None:
+            return
+        _watchdog_stop.set()
+
+    t.join(timeout=2.0)
+    if t.is_alive():
+        _log.warning("[stream_watchdog] thread did not stop cleanly.")
+
+    with _stream_lock:
+        _watchdog_thread = None
+
+
+def last_callback_age() -> float:
+    """Seconds since the last input callback, or inf if none has fired yet.
+
+    Diagnostic / test hook: a healthy stream returns a value near 0; a stalled
+    one grows without bound until the watchdog reopens it.
+    """
+    last = _last_callback_at
+    if last <= 0.0:
+        return float("inf")
+    return time.monotonic() - last
+
+
+def is_stalled() -> bool:
+    """True when the stream should be delivering audio but callbacks have stopped."""
+    if not _running:
+        return False
+    timeout = max(0.2, float(getattr(config, "AUDIO_STALL_TIMEOUT_SECS", 1.5)))
+    return last_callback_age() >= timeout
 
 
 # ── Buffer reads ──────────────────────────────────────────────────────────────

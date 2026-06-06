@@ -24,6 +24,7 @@ control-plane start/stop calls, so it can't cause audio dropouts.
 import logging
 import threading
 import time
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,38 @@ def install() -> bool:
         _installed = True
         logger.info("[sd_guard] sounddevice play/stop serialized (settle %.0f ms)", _stop_settle_secs() * 1000)
         return True
+
+
+@contextmanager
+def device_control(*, settle: bool = False):
+    """Serialize a RAW stream's open/close against ``sd.play()``/``sd.stop()``.
+
+    The DJ/radio playback path uses ``sd.OutputStream`` directly rather than the
+    ``sd.play()`` convenience function, so its ``start()``/``stop()``/``close()``
+    calls bypass the play/stop guard above and can race a wake-word barge-in stop
+    on the shared process-global PortAudio device. On macOS that race silently
+    wedges the long-lived mic InputStream (the buffer freezes and Rex goes deaf).
+
+    Hold this around the OutputStream construction/start and again around its
+    stop/close — but NOT around the steady-state ``stream.write()`` loop, which
+    must run lock-free so it can't block TTS for the length of a song. Pass
+    ``settle=True`` on the close so CoreAudio is given the same post-stop settle
+    a guarded ``sd.stop()`` gets before the device may be re-initialized.
+
+    The lock is the same re-entrant ``_io_lock`` the play/stop guard uses, so a
+    DJ open/close and a TTS play/stop can never touch the device concurrently.
+    """
+    _io_lock.acquire()
+    try:
+        yield
+    finally:
+        try:
+            if settle:
+                secs = _stop_settle_secs()
+                if secs > 0:
+                    time.sleep(secs)
+        finally:
+            _io_lock.release()
 
 
 def is_installed() -> bool:
