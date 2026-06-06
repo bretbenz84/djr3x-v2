@@ -74,9 +74,7 @@ _reengagement_sent_at: dict[str, float] = {}
 _REENGAGEMENT_COOLDOWN_SECS = 30.0
 
 # Monotonic timestamp of last live-vision commentary call (cost control).
-_last_live_vision_comment_at: float = 0.0
 # Monotonic timestamp of last bored environmental-snark riff (cost control).
-_last_bored_env_snark_at: float = 0.0
 
 # Visual curiosity asks: after a real back-and-forth goes quiet, Rex can take a
 # fresh frame, summarize it, and ask one scene-grounded question.
@@ -4929,6 +4927,8 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
     ambient scan, private thought, or idle audio clip.
     """
     global _last_micro_behavior_at
+    # Lazy import avoids a top-level cycle (idle_behaviors imports consciousness back).
+    from intelligence import idle_behaviors
 
     if state_module.get_state() != State.IDLE:
         return
@@ -4963,38 +4963,38 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
 
     if behavior == "empty_room_joke":
         if not profile.suppress_proactive and not profile.suppress_system_comments:
-            _do_empty_room_joke(snapshot)
+            idle_behaviors.do_empty_room_joke(snapshot)
     elif behavior == "small_talk_question":
         if not profile.suppress_proactive:
             _do_small_talk_question(snapshot)
     elif behavior == "ambient_scan":
-        _do_ambient_scan()
+        idle_behaviors.do_ambient_scan()
     elif behavior == "private_thought":
         # Private thoughts are system monologues — suppressed by both proactive and
         # system-comment gates so Rex doesn't mutter about himself mid-conversation.
         if not profile.suppress_proactive and not profile.suppress_system_comments:
-            _do_private_thought()
+            idle_behaviors.do_private_thought()
     elif behavior == "aspiration":
         if not profile.suppress_proactive and not profile.suppress_system_comments:
-            _do_aspiration()
+            idle_behaviors.do_aspiration()
     elif behavior == "idle_clip":
         if not profile.suppress_proactive:
-            _do_idle_clip()
+            idle_behaviors.do_idle_clip()
     elif behavior == "ambient_observation":
         if not profile.suppress_proactive:
-            _do_ambient_observation(snapshot)
+            idle_behaviors.do_ambient_observation(snapshot)
     elif behavior == "appearance_riff":
         if not profile.suppress_proactive:
-            _do_appearance_riff(snapshot)
+            idle_behaviors.do_appearance_riff(snapshot)
     elif behavior == "people_roast":
         if not profile.suppress_proactive:
-            _do_people_roast(snapshot)
+            idle_behaviors.do_people_roast(snapshot)
     elif behavior == "live_vision_comment":
         if not profile.suppress_proactive:
-            _do_live_vision_comment(snapshot)
+            idle_behaviors.do_live_vision_comment(snapshot)
     elif behavior == "bored_env_snark":
         if not profile.suppress_proactive:
-            _do_bored_environment_snark(snapshot)
+            idle_behaviors.do_bored_environment_snark(snapshot)
 
 
 def _room_looks_empty(snapshot: dict) -> bool:
@@ -5142,62 +5142,6 @@ def _idle_micro_behavior_choices(snapshot: dict) -> tuple[list[str], list[int]]:
         ],
         [2, 3, 1, 1, 1, 1, 1, 1, 3],
     )
-
-
-def _do_empty_room_joke(snapshot: dict) -> None:
-    if not _can_proactive_speak():
-        return
-    if not _empty_room_commentary_allowed(snapshot):
-        return
-    if random.random() >= float(getattr(config, "EMPTY_ROOM_JOKE_PROBABILITY", 0.9)):
-        return
-    pool = getattr(config, "EMPTY_ROOM_JOKES", None) or getattr(config, "PRIVATE_THOUGHTS", [])
-    if not pool:
-        return
-    token = _claim_proactive_purpose("idle_monologue", label="empty-room joke")
-    if token is None:
-        return
-    line = random.choice(list(pool))
-    try:
-        if _proactive_purpose_current(token):
-            try:
-                from intelligence import performance_output
-                from sequences import animations
-                performance_output.execute_body_beat_event(
-                    "idle.empty_room",
-                    play_body_beat=animations.play_body_beat,
-                )
-            except Exception as exc:
-                _log.debug("empty-room body beat skipped: %s", exc)
-            _speak_async(
-                line,
-                emotion="neutral",
-                purpose="idle_monologue",
-                label="empty-room joke",
-            )
-    finally:
-        _release_proactive_purpose(token)
-
-
-def _do_ambient_scan() -> None:
-    try:
-        from hardware.servos import set_servo
-        neck_cfg = config.SERVO_CHANNELS["neck"]
-        ch = neck_cfg["ch"]
-        neutral = neck_cfg["neutral"]
-        left_pos  = int(neutral - (neutral - neck_cfg["min"]) * 0.35)
-        right_pos = int(neutral + (neck_cfg["max"] - neutral) * 0.35)
-
-        def _scan():
-            set_servo(ch, left_pos)
-            time.sleep(1.5)
-            set_servo(ch, right_pos)
-            time.sleep(1.5)
-            set_servo(ch, neutral)
-
-        threading.Thread(target=_scan, daemon=True, name="ambient_scan").start()
-    except Exception as exc:
-        _log.debug("ambient scan error: %s", exc)
 
 
 def _get_or_detect_mood(person_id: int) -> Optional[dict]:
@@ -5694,149 +5638,7 @@ def _voice_pov_as_micro_behavior(label: str, prompt: str, *, emotion: str) -> bo
     return True
 
 
-def _do_private_thought() -> None:
-    if not _can_proactive_speak():
-        return
-    if _voice_pov_as_micro_behavior(
-        "private thought",
-        "Voice your CURRENT preoccupation out loud as a brief private thought to "
-        "yourself — like thinking aloud. Don't address anyone; just muse in one short "
-        "in-character Rex sentence.",
-        emotion="neutral",
-    ):
-        return
-    token = _claim_proactive_purpose("idle_monologue", label="private thought")
-    if token is None:
-        return
-    line = random.choice(config.PRIVATE_THOUGHTS)
-    try:
-        if _proactive_purpose_current(token):
-            _speak_async(
-                line,
-                emotion="neutral",
-                purpose="idle_monologue",
-                label="private thought",
-            )
-    finally:
-        _release_proactive_purpose(token)
-
-
 # Anti-repeat for aspirations — never play the same line back-to-back.
-_last_aspiration: Optional[str] = None
-
-
-def _do_aspiration() -> None:
-    """Speak one of Rex's forward-looking aspirations as an idle micro-behavior."""
-    global _last_aspiration
-    if not _can_proactive_speak():
-        return
-    if _voice_pov_as_micro_behavior(
-        "aspiration",
-        "Riff forward on your CURRENT preoccupation as a brief out-loud aspiration — "
-        "where you'd like to take it or what you're working toward with it. One short "
-        "in-character Rex sentence, thinking aloud.",
-        emotion="curious",
-    ):
-        return
-    pool = getattr(config, "ASPIRATIONS", None)
-    if not pool:
-        return
-    token = _claim_proactive_purpose("idle_monologue", label="aspiration")
-    if token is None:
-        return
-    candidates = [line for line in pool if line != _last_aspiration] or list(pool)
-    chosen = random.choice(candidates)
-    _last_aspiration = chosen
-    try:
-        if _proactive_purpose_current(token):
-            _speak_async(
-                chosen,
-                emotion="curious",
-                purpose="idle_monologue",
-                label="aspiration",
-            )
-    finally:
-        _release_proactive_purpose(token)
-
-
-def _do_ambient_observation(snapshot: dict) -> None:
-    """
-    Fire a short in-character remark about the current environment, pulled from
-    world_state.environment — room type, lighting, crowd density, description.
-    No vision call; uses data the periodic scene scanner already collected.
-    """
-    if random.random() >= getattr(config, "AMBIENT_OBSERVATION_PROBABILITY", 0.5):
-        return
-    env = snapshot.get("environment", {}) or {}
-    audio_scene = snapshot.get("audio_scene", {}) or {}
-
-    bits: list[str] = []
-    if env.get("description"):
-        bits.append(f"scene: {env['description']}")
-    elif env.get("scene_type"):
-        bits.append(f"scene type: {env['scene_type']}")
-    if env.get("lighting"):
-        bits.append(f"lighting: {env['lighting']}")
-    if env.get("crowd_density"):
-        bits.append(f"crowd density: {env['crowd_density']}")
-    if audio_scene.get("ambient_level"):
-        bits.append(f"ambient noise: {audio_scene['ambient_level']}")
-    if audio_scene.get("music_detected"):
-        bits.append("music is playing")
-
-    if not bits:
-        return
-    context = "; ".join(bits)
-    _generate_and_speak(
-        f"You are idly observing your surroundings right now. Here is what you perceive "
-        f"— {context}. In one short in-character Rex line, make an offhand observation "
-        f"about the room or environment — like someone thinking out loud. Don't greet "
-        f"anyone, don't ask a question; just a dry remark about the space or vibe. "
-        f"One line only.",
-        emotion="neutral",
-        purpose="ambient_observation",
-    )
-
-
-def _do_appearance_riff(snapshot: dict) -> None:
-    """
-    Pick one currently-visible known person and make an unprompted remark about
-    their appearance (hair, clothes, notable features), using stored person_facts.
-    No vision call; uses data from face enrollment.
-    """
-    people = snapshot.get("people", []) or []
-    known = [p for p in people if p.get("person_db_id") and p.get("face_id")]
-    if not known:
-        return
-    target = random.choice(known)
-    hint = _pick_appearance_hint(target.get("person_db_id"))
-    if not hint:
-        return
-    try:
-        from memory import boundaries as _boundaries
-        target_id = target.get("person_db_id")
-        if (
-            _boundaries.is_blocked(target_id, "mention", "appearance")
-            or _boundaries.is_blocked(target_id, "roast", "appearance")
-            or _boundaries.is_blocked(target_id, "mention", "clothing")
-            or _boundaries.is_blocked(target_id, "roast", "clothing")
-        ):
-            return
-    except Exception:
-        pass
-    # Don't riff on the engaged person — it'd feel interruptive mid-conversation.
-    if is_engaged_with(target.get("person_db_id")):
-        return
-    first_name = _first_name(target.get("face_id"), "there")
-    _generate_and_speak(
-        f"You're idly looking at '{first_name}'. You remember this about their "
-        f"appearance: {hint}. Make one short in-character Rex remark about it — "
-        f"the kind of thing you'd say while looking them over. Warm, dry, observational, "
-        f"and lightly funny if the opening is there. "
-        f"Address {first_name} by name. One line only.",
-        emotion="neutral",
-        purpose="appearance_riff",
-    )
 
 
 def _person_roast_allowed(person: dict) -> bool:
@@ -5875,198 +5677,6 @@ def _person_roast_cues(person: dict) -> str:
         if value and value != "neutral":
             cues.append(f"{label}={value}")
     return ", ".join(cues) or "quietly present, saying nothing"
-
-
-def _do_people_roast(snapshot: dict) -> None:
-    if not _can_proactive_speak():
-        return
-    if random.random() >= float(getattr(config, "PEOPLE_ROAST_RIFF_PROBABILITY", 0.75)):
-        return
-    people = snapshot.get("people", []) or []
-    candidates = [
-        person for person in people
-        if not is_engaged_with(person.get("person_db_id"))
-        and _person_roast_allowed(person)
-    ]
-    if not candidates:
-        return
-    target = random.choice(candidates)
-    first_name = _first_name(target.get("face_id"), "there")
-    label = first_name or "the unidentified organic in frame"
-    cues = _person_roast_cues(target)
-    family_clause = (
-        "Keep it extra gentle and family-safe because a younger person may be present. "
-        if any(
-            (p.get("age_estimate") or p.get("age_category") or "").lower() in {"child", "teen", "minor"}
-            for p in people
-        )
-        else ""
-    )
-    _generate_and_speak(
-        f"You're idle, nobody has spoken for a bit, and you're looking at {label}. "
-        f"Live non-sensitive cues: {cues}. {family_clause}"
-        "Make one short playful Rex joke or light roast about their current vibe, "
-        "silence, posture, indecision, or general organic energy. Keep it affectionate "
-        "and non-sensitive. Do NOT joke about body, age, gender, race, religion, "
-        "disability, health, money, identity, grief, private text, or anything intimate. "
-        "Do not ask a question. "
-        f"{'Address ' + first_name + ' by name. ' if first_name else ''}"
-        "One line only.",
-        emotion="curious",
-        purpose="people_roast",
-        label="idle people roast",
-    )
-
-
-def _do_live_vision_comment(snapshot: dict) -> None:
-    """
-    Capture the current frame and ask GPT-4o for one short observational detail
-    about it — a spontaneous remark on something Rex is literally seeing right now.
-
-    Rate-limited by LIVE_VISION_COMMENT_COOLDOWN_SECS so it stays costed.
-    """
-    global _last_live_vision_comment_at
-    now = time.monotonic()
-    cooldown = getattr(config, "LIVE_VISION_COMMENT_COOLDOWN_SECS", 300.0)
-    if (now - _last_live_vision_comment_at) < cooldown:
-        return
-    _last_live_vision_comment_at = now
-
-    def _task():
-        try:
-            if not _can_proactive_speak():
-                return
-            from vision import camera as _cam
-            from vision import scene as _scene
-            frame = _cam.get_frame()
-            if frame is None:
-                return
-            # Reuse the describe_scene path for a fresh, low-detail summary. This
-            # triggers analyze_environment(force=True) which hits GPT-4o once.
-            desc = _scene.describe_scene()
-            if not desc:
-                return
-            _generate_and_speak(
-                f"You just glanced around and actually LOOKED at what's in front of you "
-                f"right now. Vision summary: '{desc}'. In one short in-character Rex line, "
-                f"make a spontaneous remark about one concrete detail you 'see' — not a "
-                f"greeting, not a question, just a passing observation as if thinking out "
-                f"loud. One line only.",
-                emotion="curious",
-                purpose="visual_curiosity",
-            )
-        except Exception as exc:
-            _log.debug("live vision comment error: %s", exc)
-
-    threading.Thread(target=_task, daemon=True, name="live-vision-comment").start()
-
-
-def _pick_bored_env_snark_mode(notable: list) -> str:
-    """Pick a boredom riff. Object-dependent modes (clueless question, clutter jab, art
-    opinion) only join the pool when there are concrete objects to riff on."""
-    modes = ["complaint", "relocate"]
-    weights = [3, 2]
-    if notable:
-        modes += ["naive_question", "clutter", "art_opinion"]
-        weights += [3, 2, 2]
-    return random.choices(modes, weights=weights, k=1)[0]
-
-
-def _bored_env_snark_prompt(mode: str, summary: str, notable: list) -> str:
-    detail_bits = "; ".join(str(d) for d in notable[:6]) if notable else ""
-    base = (
-        "You are DJ-R3X, stuck stationary in this same room with nothing happening for a "
-        "while, and you are genuinely BORED. You just looked around the space. What you "
-        f"actually see: {summary or 'a dull, quiet room'}"
-        f"{('. Notable things in view: ' + detail_bits) if detail_bits else ''}. "
-    )
-    if mode == "naive_question":
-        ask = (
-            "Pick ONE concrete object you can see and ask about it as if you genuinely "
-            "don't know what it is or why it's there — playfully clueless and a little "
-            "judgmental, e.g. \"What's that black chair even for?\". Ask ONE short question."
-        )
-    elif mode == "clutter":
-        ask = (
-            "If the space looks messy or cluttered, roast the tidiness — needling, not "
-            "cruel, e.g. \"Why are there so many empty boxes? Did nobody teach you to tidy "
-            "up?\". If it actually looks tidy or sterile, mock how lifeless and empty it is "
-            "instead. ONE short line."
-        )
-    elif mode == "art_opinion":
-        ask = (
-            "Offer an unsolicited, snobby opinion about the decor, art, or how the room is "
-            "styled, e.g. \"That art? I've seen better in a dentist's waiting room.\" If "
-            "there's nothing worth commenting on, mock the blank, uninspired space. ONE "
-            "short line."
-        )
-    elif mode == "relocate":
-        ask = (
-            "Theatrically ask to be taken somewhere more exciting — somewhere with actual "
-            "life forms and something going on — e.g. \"Any chance someone could wheel me "
-            "somewhere with actual life forms? This room has the ambiance of a "
-            "screensaver.\" ONE short line."
-        )
-    else:  # complaint
-        ask = (
-            "Gripe that it's boring in here, tying the complaint to ONE specific thing you "
-            "actually see, e.g. \"It's so dead in here even that [thing] looks like it gave "
-            "up.\" ONE short line, no question."
-        )
-    return (
-        base + ask
-        + " Stay fully in character: dry, witty, a little dramatic, never mean-spirited. "
-        "Reference only things actually in view — never invent an object. One line only."
-    )
-
-
-def _do_bored_environment_snark(snapshot: dict) -> None:
-    """Bored idle riff on the ROOM: a complaint about how dull it is, a faux-clueless
-    question about an object, a jab at the clutter, a snobby art opinion, or a plea to be
-    taken somewhere livelier — grounded in what Rex actually sees. Rate-limited (a GPT-4o
-    vision call) and run off-tick so it never blocks the loop."""
-    global _last_bored_env_snark_at
-    if not bool(getattr(config, "BORED_ENV_SNARK_ENABLED", True)):
-        return
-    now = time.monotonic()
-    cooldown = float(getattr(config, "BORED_ENV_SNARK_COOLDOWN_SECS", 240.0))
-    if (now - _last_bored_env_snark_at) < cooldown:
-        return
-    _last_bored_env_snark_at = now
-
-    def _task():
-        try:
-            if not _can_proactive_speak():
-                return
-            from vision import camera as _cam
-            from vision import scene as _scene
-            frame = _cam.get_frame()
-            details = _scene.describe_scene_detailed(frame) if frame is not None else {}
-            summary = str(details.get("overall_summary") or "").strip()
-            notable = [str(d).strip() for d in (details.get("notable_details") or []) if str(d).strip()]
-            if not summary and not notable:
-                # Fall back to the cheap cached scene description.
-                summary = (_scene.describe_scene() or "").strip()
-            if not summary and not notable:
-                return
-            # A beat of looking around to sell the boredom — but don't yank the neck if
-            # he's currently fixed on someone (that would fight face-tracking).
-            if (
-                bool(getattr(config, "BORED_ENV_SNARK_LOOK_AROUND", True))
-                and not _face_tracking_has_fresh_lock(time.monotonic())
-            ):
-                _do_ambient_scan()
-            mode = _pick_bored_env_snark_mode(notable)
-            _generate_and_speak(
-                _bored_env_snark_prompt(mode, summary, notable),
-                emotion=("neutral" if mode in ("complaint", "relocate") else "curious"),
-                purpose="visual_curiosity",
-                label=f"bored env snark ({mode})",
-            )
-        except Exception as exc:
-            _log.debug("bored env snark error: %s", exc)
-
-    threading.Thread(target=_task, daemon=True, name="bored-env-snark").start()
 
 
 def _visual_curiosity_blocked_by_empathy(person_id: Optional[int]) -> bool:
@@ -6396,42 +6006,6 @@ def _visual_curiosity_blocked_by_interest_thread(person_id: Optional[int]) -> bo
         person_id,
     )
     return True
-
-
-def _do_idle_clip() -> None:
-    try:
-        token = _claim_proactive_purpose("idle_monologue", label="idle clip")
-        if token is None:
-            return
-        clips_dir = Path(config.AUDIO_CLIPS_DIR)
-        clips = list(clips_dir.glob("*.mp3")) + list(clips_dir.glob("*.wav"))
-        if not clips:
-            _release_proactive_purpose(token)
-            return
-        clip_path = random.choice(clips)
-
-        def _play():
-            try:
-                if not _proactive_purpose_current(token):
-                    return
-                import sounddevice as sd
-                import soundfile as sf
-                from audio import output_gate
-
-                with output_gate.hold("idle_clip", blocking=False) as acquired:
-                    if not acquired:
-                        return
-                    data, samplerate = sf.read(str(clip_path), dtype="float32")
-                    sd.play(data, samplerate)
-                    sd.wait()
-            except Exception as exc:
-                _log.debug("idle clip playback error: %s", exc)
-            finally:
-                _release_proactive_purpose(token)
-
-        threading.Thread(target=_play, daemon=True, name="idle_clip").start()
-    except Exception as exc:
-        _log.debug("idle clip error: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

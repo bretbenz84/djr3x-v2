@@ -10,6 +10,7 @@ from unittest import mock
 
 import config
 from intelligence import consciousness as c
+from intelligence import idle_behaviors as ib
 
 
 class _SyncThread:
@@ -26,17 +27,17 @@ class _SyncThread:
 class ModePickTest(unittest.TestCase):
     def test_no_objects_limits_to_object_free_modes(self):
         for _ in range(50):
-            self.assertIn(c._pick_bored_env_snark_mode([]), ("complaint", "relocate"))
+            self.assertIn(ib._pick_bored_env_snark_mode([]), ("complaint", "relocate"))
 
     def test_objects_unlock_object_modes(self):
-        seen = {c._pick_bored_env_snark_mode(["a black chair", "empty boxes"]) for _ in range(200)}
+        seen = {ib._pick_bored_env_snark_mode(["a black chair", "empty boxes"]) for _ in range(200)}
         # All object-dependent modes should be reachable when there are objects.
         self.assertTrue({"naive_question", "clutter", "art_opinion"} <= seen)
 
 
 class PromptTest(unittest.TestCase):
     def test_prompt_includes_scene_and_objects_and_is_one_line(self):
-        p = c._bored_env_snark_prompt("naive_question", "a dim cluttered office", ["a black chair", "empty boxes"])
+        p = ib._bored_env_snark_prompt("naive_question", "a dim cluttered office", ["a black chair", "empty boxes"])
         self.assertIn("a dim cluttered office", p)
         self.assertIn("black chair", p)
         self.assertIn("One line only", p)
@@ -45,7 +46,7 @@ class PromptTest(unittest.TestCase):
     def test_each_mode_has_distinct_instruction(self):
         s = "a room"
         objs = ["art on the wall", "boxes"]
-        prompts = {m: c._bored_env_snark_prompt(m, s, objs)
+        prompts = {m: ib._bored_env_snark_prompt(m, s, objs)
                    for m in ("complaint", "naive_question", "clutter", "art_opinion", "relocate")}
         # Mode-specific cues present.
         self.assertIn("don't know what it is", prompts["naive_question"])
@@ -57,10 +58,10 @@ class PromptTest(unittest.TestCase):
 
 class FireTest(unittest.TestCase):
     def setUp(self):
-        c._last_bored_env_snark_at = 0.0
+        ib._last_bored_env_snark_at = 0.0
 
     def tearDown(self):
-        c._last_bored_env_snark_at = 0.0
+        ib._last_bored_env_snark_at = 0.0
 
     def _fire(self, *, now=1000.0, details=None, can_speak=True, locked=False):
         if details is None:
@@ -72,12 +73,12 @@ class FireTest(unittest.TestCase):
             mock.patch.object(c.threading, "Thread", _SyncThread),
             mock.patch.object(c, "_can_proactive_speak", return_value=can_speak),
             mock.patch.object(c, "_face_tracking_has_fresh_lock", return_value=locked),
-            mock.patch.object(c, "_do_ambient_scan") as scan,
+            mock.patch.object(ib, "do_ambient_scan") as scan,
             mock.patch.object(c, "_generate_and_speak", gen),
             mock.patch("vision.camera.get_frame", return_value=object()),
             mock.patch("vision.scene.describe_scene_detailed", return_value=details),
         ):
-            c._do_bored_environment_snark({})
+            ib.do_bored_environment_snark({})
         return gen, scan
 
     def test_fires_a_visual_curiosity_line_grounded_in_objects(self):
@@ -99,7 +100,7 @@ class FireTest(unittest.TestCase):
         with mock.patch.object(config, "BORED_ENV_SNARK_ENABLED", False), \
              mock.patch.object(c, "_generate_and_speak") as gen, \
              mock.patch.object(c.threading, "Thread", _SyncThread):
-            c._do_bored_environment_snark({})
+            ib.do_bored_environment_snark({})
         gen.assert_not_called()
 
     def test_cooldown_blocks_rapid_refire(self):
@@ -121,7 +122,7 @@ class FireTest(unittest.TestCase):
             mock.patch("vision.scene.describe_scene_detailed", return_value={}),
             mock.patch("vision.scene.describe_scene", return_value="a quiet beige room"),
         ):
-            c._do_bored_environment_snark({})
+            ib.do_bored_environment_snark({})
         gen.assert_called_once()
         self.assertIn("a quiet beige room", gen.call_args.args[0])
 
@@ -137,7 +138,7 @@ class FireTest(unittest.TestCase):
             mock.patch("vision.scene.describe_scene_detailed", return_value={}),
             mock.patch("vision.scene.describe_scene", return_value=""),
         ):
-            c._do_bored_environment_snark({})
+            ib.do_bored_environment_snark({})
         gen.assert_not_called()
 
 

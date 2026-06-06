@@ -4245,6 +4245,7 @@ class ConversationGatingTest(unittest.TestCase):
 
     def test_startup_known_greeting_pending_suppresses_idle_micro_behavior(self):
         from intelligence import consciousness
+        from intelligence import idle_behaviors
         from state import State
 
         old_started = consciousness._process_started_mono
@@ -4265,7 +4266,7 @@ class ConversationGatingTest(unittest.TestCase):
                 mock.patch.object(consciousness, "is_waiting_for_response", return_value=False),
                 mock.patch.object(consciousness.time, "monotonic", return_value=120.0),
                 mock.patch.object(consciousness.random, "uniform", return_value=0.0),
-                mock.patch.object(consciousness, "_do_private_thought") as thought,
+                mock.patch.object(idle_behaviors, "do_private_thought") as thought,
             ):
                 consciousness._step_idle_micro_behavior(
                     snapshot,
@@ -4806,6 +4807,7 @@ class ConversationGatingTest(unittest.TestCase):
 
     def test_empty_room_joke_speaks_local_self_deprecation(self):
         from intelligence import consciousness
+        from intelligence import idle_behaviors
 
         snapshot = {"people": [], "crowd": {"count": 0}}
         with (
@@ -4817,7 +4819,7 @@ class ConversationGatingTest(unittest.TestCase):
             mock.patch.object(consciousness, "_release_proactive_purpose") as release,
             mock.patch.object(consciousness, "_speak_async") as speak,
         ):
-            consciousness._do_empty_room_joke(snapshot)
+            idle_behaviors.do_empty_room_joke(snapshot)
 
         speak.assert_called_once()
         self.assertEqual(speak.call_args.args[0], "Empty room test line.")
@@ -4826,6 +4828,7 @@ class ConversationGatingTest(unittest.TestCase):
 
     def test_people_roast_prompt_stays_non_sensitive(self):
         from intelligence import consciousness
+        from intelligence import idle_behaviors
 
         snapshot = {
             "people": [
@@ -4847,7 +4850,7 @@ class ConversationGatingTest(unittest.TestCase):
             mock.patch.object(consciousness, "_person_roast_allowed", return_value=True),
             mock.patch.object(consciousness, "_generate_and_speak") as generate,
         ):
-            consciousness._do_people_roast(snapshot)
+            idle_behaviors.do_people_roast(snapshot)
 
         generate.assert_called_once()
         prompt = generate.call_args.args[0]
