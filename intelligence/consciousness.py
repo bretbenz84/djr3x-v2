@@ -6808,36 +6808,49 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 profile_question_to_record: Optional[dict] = None
                 disposition_to_mark: Optional[int] = None
 
+                # Birthday window, computed up front. On the ACTUAL day (T-0) the
+                # birthday OUTRANKS even the sensitive emotional check-in below
+                # (config.BIRTHDAY_WINS_ON_DAY) — you should hear "happy birthday" on
+                # your birthday. In the LEAD-UP days it stays BELOW the check-in
+                # ("care before the bit"), handled as Priority 1 lower down.
+                bday_days = _pick_birthday_window(person_db_id)
+                if bday_days == 0 and bool(getattr(config, "BIRTHDAY_WINS_ON_DAY", True)):
+                    prompt = _build_birthday_prompt(first_name, bday_days)
+                    label = f"startup birthday (T-0) for {person_name}"
+                    emotion = "happy"
+                    _log.info(
+                        "consciousness: startup birthday (T-0, wins-on-day) for %s",
+                        person_name,
+                    )
+
                 # Priority 0 — recent sensitive emotional event.
                 # This intentionally outranks temporal banter like
                 # "back so soon"; care comes before the bit.
-                emotional = None
-                try:
-                    crowd_count = int((snapshot.get("crowd") or {}).get("count", 1) or 1)
-                except Exception:
-                    crowd_count = 1
-                suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
-                if not (suppress_in_crowd and crowd_count > 1):
-                    emotional = _pick_due_emotional_checkin(person_db_id)
-                if emotional is not None:
-                    prompt = _build_emotional_checkin_prompt(
-                        first_name, emotional, context_sentence,
-                    )
-                    label = f"first-sight emotional check-in for {person_name}"
-                    emotion = "sad" if float(emotional.get("valence", -0.5) or -0.5) < 0 else "happy"
-                    emotional_to_ack = emotional
-                    _log.info(
-                        "consciousness: first-sight emotional check-in for %s "
-                        "(category=%s, event_id=%s)",
-                        person_name, emotional.get("category"), emotional.get("id"),
-                    )
-
-                # Priority 1 — birthday within reminder window
                 if prompt is None:
-                    bday_days = _pick_birthday_window(person_db_id)
-                else:
-                    bday_days = None
-                if bday_days is not None:
+                    emotional = None
+                    try:
+                        crowd_count = int((snapshot.get("crowd") or {}).get("count", 1) or 1)
+                    except Exception:
+                        crowd_count = 1
+                    suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
+                    if not (suppress_in_crowd and crowd_count > 1):
+                        emotional = _pick_due_emotional_checkin(person_db_id)
+                    if emotional is not None:
+                        prompt = _build_emotional_checkin_prompt(
+                            first_name, emotional, context_sentence,
+                        )
+                        label = f"first-sight emotional check-in for {person_name}"
+                        emotion = "sad" if float(emotional.get("valence", -0.5) or -0.5) < 0 else "happy"
+                        emotional_to_ack = emotional
+                        _log.info(
+                            "consciousness: first-sight emotional check-in for %s "
+                            "(category=%s, event_id=%s)",
+                            person_name, emotional.get("category"), emotional.get("id"),
+                        )
+
+                # Priority 1 — birthday within reminder window (LEAD-UP days; the
+                # actual day T-0 was already handled above, before the check-in).
+                if prompt is None and bday_days is not None:
                     prompt = _build_birthday_prompt(first_name, bday_days)
                     label = f"startup birthday (T-{bday_days}) for {person_name}"
                     _log.info(

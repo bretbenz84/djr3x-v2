@@ -3448,6 +3448,12 @@ HOLIDAY_PLANS_INCLUDE_MINOR = False
 # week before.
 BIRTHDAY_REMINDER_WINDOW_DAYS = 7
 
+# When True, on the ACTUAL birthday (T-0) the birthday greeting OUTRANKS even a
+# pending sensitive emotional check-in (Priority 0) — so the person reliably hears
+# "happy birthday" on their day. In the lead-up days the check-in still comes first
+# ("care before the bit"). Set False to keep care-always-first even on the day.
+BIRTHDAY_WINS_ON_DAY = True
+
 # Probability the holiday-plans question fires on any given eligible loop tick
 # for an engaged person who hasn't been asked about that holiday this year.
 HOLIDAY_PLANS_PROBABILITY = 0.25

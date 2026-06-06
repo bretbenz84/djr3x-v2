@@ -4479,6 +4479,134 @@ class ConversationGatingTest(unittest.TestCase):
             consciousness._greeted_this_session.clear()
             consciousness._greeted_this_session.update(old_greeted)
 
+    def test_first_sight_on_birthday_speaks_a_birthday_line(self):
+        # END-TO-END wiring (NOT a mock of _pick_birthday_window): recognizing a known
+        # person at first-sight ON their birthday must open with the birthday line. The
+        # birthday is read for REAL from a 'birthday' fact = today's MM-DD, so
+        # _pick_birthday_window returns 0 and the Priority-1 tier fires.
+        from datetime import date
+        from intelligence import consciousness
+
+        old_visible = set(consciousness._visible_people)
+        old_last_seen = dict(consciousness._last_seen)
+        old_first_seen = dict(consciousness._first_sight_seen_at)
+        old_greeted = set(consciousness._greeted_this_session)
+        try:
+            consciousness._visible_people.clear()
+            consciousness._last_seen.clear()
+            consciousness._first_sight_seen_at.clear()
+            consciousness._first_sight_seen_at[1] = 100.0
+            consciousness._greeted_this_session.clear()
+            snapshot = {
+                "people": [{"person_db_id": 1, "face_id": "Bret Benziger"}],
+                "crowd": {"count": 1},
+            }
+            profile = mock.Mock(
+                suppress_proactive=False, interaction_busy=False,
+                user_mid_sentence=False, likely_still_present=False,
+                apparent_departure=False,
+            )
+            today_md = date.today().strftime("%m-%d")
+            with (
+                mock.patch.object(consciousness.time, "monotonic", return_value=105.0),
+                mock.patch.object(consciousness.config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 0.0),
+                mock.patch.object(consciousness, "_hold_startup_individual_greeting", return_value=False),
+                mock.patch.object(consciousness, "_should_fire_presence", return_value=True),
+                # Priority 0 (a sensitive emotional check-in) deliberately OUTRANKS the
+                # birthday — "care before the bit". Neutralize it so the birthday fires.
+                mock.patch.object(consciousness, "_pick_due_emotional_checkin", return_value=None),
+                # Birthday read for real: a 'birthday' fact whose value is today's MM-DD.
+                mock.patch("memory.facts.get_facts",
+                           return_value=[{"key": "birthday", "value": today_md}]),
+                mock.patch.object(consciousness, "_generate_and_speak_presence", return_value=True) as generate,
+            ):
+                consciousness._step_presence_tracking(snapshot, profile)
+
+            self.assertTrue(generate.called, "no greeting fired on the birthday")
+            prompt = generate.call_args.args[0]
+            self.assertIn("is TODAY", prompt)
+            self.assertIn("Bret", prompt)
+            self.assertEqual(
+                generate.call_args.kwargs["label"],
+                "startup birthday (T-0) for Bret Benziger",
+            )
+        finally:
+            consciousness._visible_people.clear()
+            consciousness._visible_people.update(old_visible)
+            consciousness._last_seen.clear()
+            consciousness._last_seen.update(old_last_seen)
+            consciousness._first_sight_seen_at.clear()
+            consciousness._first_sight_seen_at.update(old_first_seen)
+            consciousness._greeted_this_session.clear()
+            consciousness._greeted_this_session.update(old_greeted)
+
+    def _run_birthday_vs_checkin(self, *, wins_on_day):
+        """Drive first-sight on the birthday WITH a pending sensitive emotional
+        check-in. Returns the greeting label that fired."""
+        from datetime import date
+        from intelligence import consciousness
+
+        old_visible = set(consciousness._visible_people)
+        old_last_seen = dict(consciousness._last_seen)
+        old_first_seen = dict(consciousness._first_sight_seen_at)
+        old_greeted = set(consciousness._greeted_this_session)
+        try:
+            consciousness._visible_people.clear()
+            consciousness._last_seen.clear()
+            consciousness._first_sight_seen_at.clear()
+            consciousness._first_sight_seen_at[1] = 100.0
+            consciousness._greeted_this_session.clear()
+            snapshot = {
+                "people": [{"person_db_id": 1, "face_id": "Bret Benziger"}],
+                "crowd": {"count": 1},
+            }
+            profile = mock.Mock(
+                suppress_proactive=False, interaction_busy=False,
+                user_mid_sentence=False, likely_still_present=False,
+                apparent_departure=False,
+            )
+            today_md = date.today().strftime("%m-%d")
+            pending_event = {"category": "health", "id": 9, "valence": -0.6}
+            with (
+                mock.patch.object(consciousness.time, "monotonic", return_value=105.0),
+                mock.patch.object(consciousness.config, "PRESENCE_FIRST_SIGHT_CONFIRM_SECS", 0.0),
+                mock.patch.object(consciousness.config, "BIRTHDAY_WINS_ON_DAY", wins_on_day),
+                mock.patch.object(consciousness, "_hold_startup_individual_greeting", return_value=False),
+                mock.patch.object(consciousness, "_should_fire_presence", return_value=True),
+                mock.patch("memory.facts.get_facts",
+                           return_value=[{"key": "birthday", "value": today_md}]),
+                # A sensitive event IS pending (Priority 0) — it would normally win.
+                mock.patch.object(consciousness, "_pick_due_emotional_checkin", return_value=pending_event),
+                mock.patch.object(consciousness, "_build_emotional_checkin_prompt", return_value="checkin"),
+                mock.patch.object(consciousness, "_generate_and_speak_presence", return_value=True) as generate,
+            ):
+                consciousness._step_presence_tracking(snapshot, profile)
+            return generate.call_args.kwargs["label"] if generate.called else None
+        finally:
+            consciousness._visible_people.clear()
+            consciousness._visible_people.update(old_visible)
+            consciousness._last_seen.clear()
+            consciousness._last_seen.update(old_last_seen)
+            consciousness._first_sight_seen_at.clear()
+            consciousness._first_sight_seen_at.update(old_first_seen)
+            consciousness._greeted_this_session.clear()
+            consciousness._greeted_this_session.update(old_greeted)
+
+    def test_birthday_outranks_emotional_checkin_on_the_actual_day(self):
+        # BIRTHDAY_WINS_ON_DAY=True: on the day, "happy birthday" beats a pending
+        # sensitive check-in (you reliably hear it on your birthday).
+        self.assertEqual(
+            self._run_birthday_vs_checkin(wins_on_day=True),
+            "startup birthday (T-0) for Bret Benziger",
+        )
+
+    def test_emotional_checkin_still_wins_when_flag_off(self):
+        # Flag off → care-always-first even on the day.
+        self.assertEqual(
+            self._run_birthday_vs_checkin(wins_on_day=False),
+            "first-sight emotional check-in for Bret Benziger",
+        )
+
     def test_startup_window_suppresses_idle_micro_behavior_before_any_greeting(self):
         from intelligence import consciousness
         from state import State
