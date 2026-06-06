@@ -132,6 +132,211 @@ class EpisodicWriteReadTest(unittest.TestCase):
         self.assertEqual(episodes.count(), 0)
 
 
+class EpisodicBatch2WriteReadTest(unittest.TestCase):
+    """Batch-2 capture kinds (enrollment, departure, boundary, celebrity, check-in,
+    games, greeting tiers) round-trip through a temp rex.db."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._path = Path(self._tmp.name) / "rex.db"
+        self._patch = mock.patch.object(config, "REX_DB_PATH", str(self._path))
+        self._patch.start()
+        episodes.reset_session("run-b2")
+
+    def tearDown(self):
+        self._patch.stop()
+        episodes.reset_session(None)
+        self._tmp.cleanup()
+
+    def test_person_enrolled(self):
+        self.assertIsNotNone(episodes.record_person_enrolled(3, "Bret"))
+        row = episodes.recent_episodes(1)[0]
+        self.assertEqual(row["kind"], "person_enrolled")
+        self.assertEqual(row["summary"], "I met Bret.")
+        self.assertEqual(row["person_id"], 3)
+        self.assertAlmostEqual(row["salience"], 0.8, places=3)
+
+    def test_person_enrolled_blank_name_falls_back(self):
+        episodes.record_person_enrolled(None, "")
+        self.assertEqual(episodes.recent_episodes(1)[0]["summary"], "I met someone new.")
+
+    def test_game_played_with_outcome_and_person(self):
+        episodes.record_game_played("Trivia", "scored 4 out of 5", person_id=3, person_name="Bret")
+        row = episodes.recent_episodes(1)[0]
+        self.assertEqual(row["kind"], "game_played")
+        self.assertEqual(row["summary"], "I played Trivia with Bret — scored 4 out of 5.")
+        self.assertEqual(row["person_id"], 3)
+
+    def test_game_played_no_person_no_outcome(self):
+        episodes.record_game_played("I Spy")
+        self.assertEqual(episodes.recent_episodes(1)[0]["summary"], "I played I Spy.")
+
+    def test_format_duration_buckets(self):
+        self.assertEqual(episodes._format_duration(30), "a minute")
+        self.assertEqual(episodes._format_duration(600), "about 10 minutes")
+        self.assertEqual(episodes._format_duration(3600), "about an hour")
+        self.assertEqual(episodes._format_duration(5400), "about an hour and a half")
+        self.assertEqual(episodes._format_duration(7200), "about 2 hours")
+        self.assertEqual(episodes._format_duration(9000), "about 2.5 hours")
+
+    def test_visit_departure_skips_fleeting(self):
+        self.assertIsNone(episodes.record_visit_departure(3, "Bret", 30))
+        self.assertEqual(episodes.count(), 0)
+
+    def test_visit_departure_records_real_visit(self):
+        self.assertIsNotNone(episodes.record_visit_departure(3, "Bret", 600))
+        row = episodes.recent_episodes(1)[0]
+        self.assertEqual(row["kind"], "visit_departure")
+        self.assertEqual(row["summary"], "I spent about 10 minutes with Bret.")
+
+    def test_boundary_add_and_clear_phrasing(self):
+        episodes.record_boundary(3, "ask", "his ex", "add", person_name="Bret")
+        episodes.record_boundary(3, "ask", "his ex", "clear", person_name="Bret")
+        rows = {r["summary"] for r in episodes.recent_episodes(10)}
+        self.assertIn("Bret asked me not to ask about his ex.", rows)
+        self.assertIn("Bret said it's okay to ask about his ex again.", rows)
+
+    def test_boundary_unknown_name_uses_someone(self):
+        episodes.record_boundary(None, "mention", "the weather", "add")
+        self.assertEqual(
+            episodes.recent_episodes(1)[0]["summary"],
+            "Someone asked me not to mention about the weather.",
+        )
+
+    def test_celebrity_met_vs_saw(self):
+        episodes.record_celebrity(5, "Jeff Benziger", "History Hunters", returning=False)
+        episodes.record_celebrity(5, "Jeff Benziger", "History Hunters", returning=True)
+        summaries = {r["summary"] for r in episodes.recent_episodes(10)}
+        self.assertIn("I met Jeff Benziger.", summaries)
+        self.assertIn("I saw Jeff Benziger.", summaries)
+        for r in episodes.recent_episodes(10):
+            self.assertEqual(r["kind"], "celebrity")
+
+    def test_checkin_kind_and_salience(self):
+        episodes.record_checkin(3, "Bret", "I checked in on Bret about a hard thing on their mind.")
+        row = episodes.recent_episodes(1)[0]
+        self.assertEqual(row["kind"], "emotional_checkin")
+        self.assertAlmostEqual(row["salience"], 0.78, places=3)
+
+    def test_greeting_event_kinds(self):
+        episodes.record_greeting_event("birthday_wish", "I wished Bret a happy birthday.",
+                                       person_id=3, person_name="Bret")
+        episodes.record_greeting_event("reunion", "I welcomed Bret back after a long while away.",
+                                       person_id=3, person_name="Bret")
+        kinds = {r["kind"] for r in episodes.recent_episodes(10)}
+        self.assertEqual(kinds, {"birthday_wish", "reunion"})
+
+
+class EpisodicBatch2GateTest(unittest.TestCase):
+    """The batch-2 writers must also no-op on the DEFAULT path under the test runner."""
+
+    def test_batch2_record_on_default_path_is_a_noop(self):
+        default = rex_db._default_db_path()
+        existed_before = default.exists()
+        self.assertIsNone(episodes.record_person_enrolled(1, "Bret"))
+        self.assertIsNone(episodes.record_game_played("Trivia", "won", person_id=1))
+        self.assertIsNone(episodes.record_visit_departure(1, "Bret", 600))
+        self.assertIsNone(episodes.record_boundary(1, "ask", "x", "add"))
+        self.assertIsNone(episodes.record_celebrity(1, "Jeff", "History Hunters"))
+        self.assertIsNone(episodes.record_checkin(1, "Bret", "I checked in."))
+        self.assertIsNone(episodes.record_greeting_event("milestone", "visit #5", person_id=1))
+        self.assertEqual(default.exists(), existed_before)
+
+
+class GreetingLabelCaptureTest(unittest.TestCase):
+    """consciousness._capture_greeting_episode_from_label routes a dispatched greeting's
+    label to the right episodic kind — only memorable tiers log, ordinary greetings don't."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._path = Path(self._tmp.name) / "rex.db"
+        self._patch = mock.patch.object(config, "REX_DB_PATH", str(self._path))
+        self._patch.start()
+        episodes.reset_session("run-greet")
+
+    def tearDown(self):
+        self._patch.stop()
+        episodes.reset_session(None)
+        self._tmp.cleanup()
+
+    def _capture(self, label):
+        from intelligence import consciousness as c
+        c._capture_greeting_episode_from_label(label, 3, "Bret")
+
+    def test_birthday_t0_maps_to_birthday_wish(self):
+        self._capture("startup birthday (T-0) for Bret")
+        row = episodes.recent_episodes(1)[0]
+        self.assertEqual(row["kind"], "birthday_wish")
+        self.assertEqual(row["summary"], "I wished Bret a happy birthday.")
+
+    def test_birthday_leadup_maps_to_birthday_wish(self):
+        self._capture("startup birthday (T-3) for Bret")
+        self.assertEqual(episodes.recent_episodes(1)[0]["kind"], "birthday_wish")
+
+    def test_celebration_label(self):
+        self._capture("first-sight celebration check-in for Bret")
+        self.assertEqual(episodes.recent_episodes(1)[0]["kind"], "celebration")
+
+    def test_milestone_label_parses_visit_number(self):
+        self._capture("startup milestone (#5) for Bret")
+        row = episodes.recent_episodes(1)[0]
+        self.assertEqual(row["kind"], "milestone")
+        self.assertIn("#5", row["summary"])
+
+    def test_long_absence_maps_to_reunion(self):
+        self._capture("startup long-absence for Bret")
+        self.assertEqual(episodes.recent_episodes(1)[0]["kind"], "reunion")
+
+    def test_emotional_checkin_label(self):
+        self._capture("first-sight emotional check-in for Bret")
+        self.assertEqual(episodes.recent_episodes(1)[0]["kind"], "emotional_checkin")
+
+    def test_ordinary_greeting_logs_nothing(self):
+        self._capture("first-sight greeting for Bret")
+        self._capture("first-sight mood greeting for Bret")
+        self._capture("startup recent-return for Bret")
+        self.assertEqual(episodes.count(), 0)
+
+    def test_non_int_person_id_logs_nothing(self):
+        from intelligence import consciousness as c
+        c._capture_greeting_episode_from_label("startup birthday (T-0) for Bret", "slot:7", "Bret")
+        self.assertEqual(episodes.count(), 0)
+
+
+class ConsciousnessEpisodicHelperTest(unittest.TestCase):
+    """The consciousness-side episodic wrappers (departure/celebrity) compute the right
+    payload and skip cleanly when arrival is unknown."""
+
+    def test_visit_departure_skips_when_no_arrival(self):
+        from intelligence import consciousness as c
+        with mock.patch.object(episodes, "record_visit_departure") as rec:
+            c._episodic_visit_departure(3, "Bret", None, 1000.0)
+            rec.assert_not_called()
+
+    def test_visit_departure_computes_duration(self):
+        from intelligence import consciousness as c
+        with mock.patch.object(episodes, "record_visit_departure") as rec:
+            c._episodic_visit_departure(3, "Bret", 100.0, 760.0)  # 660s visit
+            rec.assert_called_once()
+            self.assertEqual(rec.call_args.args[0], 3)
+            self.assertEqual(rec.call_args.args[1], "Bret")
+            self.assertAlmostEqual(rec.call_args.args[2], 660.0, places=3)
+
+    def test_visit_departure_clamps_negative_duration(self):
+        from intelligence import consciousness as c
+        with mock.patch.object(episodes, "record_visit_departure") as rec:
+            c._episodic_visit_departure(3, "Bret", 900.0, 100.0)  # arrival after departure
+            self.assertAlmostEqual(rec.call_args.args[2], 0.0, places=3)
+
+    def test_celebrity_routes_returning_flag(self):
+        from intelligence import consciousness as c
+        with mock.patch.object(episodes, "record_celebrity") as rec:
+            c._episodic_celebrity(5, "Jeff Benziger", "History Hunters", returning=True)
+            rec.assert_called_once()
+            self.assertEqual(rec.call_args.args[0], 5)
+            self.assertTrue(rec.call_args.kwargs.get("returning"))
+
+
 class StartupImageCaptionTest(unittest.TestCase):
     """One cheap GPT caption of Rex's first look at the room, once per run → rex.db.
     The GPT call is gated like every episodic write (never fires under the suite)."""

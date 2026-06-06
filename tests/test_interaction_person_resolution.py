@@ -116,5 +116,35 @@ class InteractionPersonResolutionTests(unittest.TestCase):
         )
 
 
+class EnrollmentEpisodicCaptureTests(unittest.TestCase):
+    """Enrolling a brand-new person logs "I met <name>" to Rex's episodic memory —
+    but only on a genuinely new row (created=True), never on a re-bind."""
+
+    def test_records_only_when_created_true(self):
+        from intelligence import interaction
+        with mock.patch.object(interaction.episodes_memory, "record_person_enrolled") as rec:
+            interaction._episodic_person_enrolled(5, "Bret", created=True)
+            rec.assert_called_once_with(5, "Bret")
+
+    def test_skips_when_created_false(self):
+        from intelligence import interaction
+        with mock.patch.object(interaction.episodes_memory, "record_person_enrolled") as rec:
+            interaction._episodic_person_enrolled(5, "Bret", created=False)
+            rec.assert_not_called()
+
+    def test_non_int_person_id_passed_as_none(self):
+        from intelligence import interaction
+        with mock.patch.object(interaction.episodes_memory, "record_person_enrolled") as rec:
+            interaction._episodic_person_enrolled("slot:5", "Bret", created=True)
+            rec.assert_called_once_with(None, "Bret")
+
+    def test_recorder_failure_is_swallowed(self):
+        from intelligence import interaction
+        with mock.patch.object(interaction.episodes_memory, "record_person_enrolled",
+                               side_effect=RuntimeError("db down")):
+            # Must never raise into the enrollment flow.
+            interaction._episodic_person_enrolled(5, "Bret", created=True)
+
+
 if __name__ == "__main__":
     unittest.main()

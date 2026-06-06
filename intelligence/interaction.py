@@ -72,6 +72,7 @@ from memory import boundaries as boundary_memory
 from memory import forgetting
 from memory import person_summary
 from memory import social as social_memory
+from memory import episodes as episodes_memory
 from memory.name_validation import (
     looks_like_initials,
     normalize_person_name,
@@ -5067,6 +5068,7 @@ def _handle_pending_offscreen_identify_reply(
                 intro_name, new_pid,
                 f" with relationship {rel_label!r}" if rel_label else "",
             )
+            _episodic_person_enrolled(new_pid, intro_name, created=created)
     except Exception as exc:
         _log.error("off-camera identify enrollment failed: %s", exc)
 
@@ -5226,6 +5228,20 @@ def _known_person_visible_recently(person_id: Optional[int]) -> bool:
         )
     except Exception:
         return False
+
+
+def _episodic_person_enrolled(person_id, name, *, created: bool) -> None:
+    """Log "I met <name>" to rex.db — only on a genuinely NEW enrollment (created=True),
+    so re-binding an existing person doesn't re-log a first meeting. Gated + failure-safe
+    (episodes.* no-ops under the test runner / when episodic memory is disabled)."""
+    if not created:
+        return
+    try:
+        episodes_memory.record_person_enrolled(
+            person_id if isinstance(person_id, int) else None, name,
+        )
+    except Exception as exc:
+        _log.debug("episodic person_enrolled failed: %s", exc)
 
 
 def _bind_world_state_identity(person_id: int, name: str) -> None:
@@ -5435,6 +5451,7 @@ def _handle_relationship_reply(
             "[interaction] mode-A enrolled newcomer %s (person_id=%s) as %s of %s",
             name, new_id, relationship or "acquaintance", engaged_name,
         )
+        _episodic_person_enrolled(new_id, name, created=created)
         introducer_for_ack = engaged_id or speaker_person_id
         if introducer_for_ack is None:
             return f"{_first_name_or(name, 'there')}, welcome. Identity filed under 'better than mystery organic.'"
@@ -6258,6 +6275,7 @@ def _enroll_new_person(
 
     _bind_world_state_identity(person_id, name)
     _log.info("[interaction] enrolled new person: %s (person_id=%s)", name, person_id)
+    _episodic_person_enrolled(person_id, name, created=created)
     return person_id
 
 
@@ -6429,6 +6447,7 @@ def _enroll_introduced_person(
         name,
         relationship,
     )
+    _episodic_person_enrolled(new_id, name, created=created)
     return new_id
 
 
@@ -14595,6 +14614,7 @@ def _handle_speech_segment(
                             person_name, person_id, parsed_name, new_id,
                             relationship or "—",
                         )
+                        _episodic_person_enrolled(new_id, parsed_name, created=created)
                         _identity_prompt_until = 0.0
                 else:
                     if _maybe_ask_prompted_name_confirmation(

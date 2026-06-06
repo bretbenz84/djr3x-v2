@@ -49,6 +49,48 @@ class BoundaryMutesMatchingEventsTest(unittest.TestCase):
         mute.assert_not_called()
 
 
+class BoundaryEpisodicCaptureTest(unittest.TestCase):
+    """apply_detected_boundary logs an episodic memory ("Bret asked me not to ask
+    about his ex") for both add and clear, with a best-effort name snapshot."""
+
+    def _apply(self, detected):
+        from memory import boundaries, episodes, people
+        with mock.patch.object(boundaries, "add_boundary", return_value=7), \
+             mock.patch.object(boundaries, "deactivate_boundary"), \
+             mock.patch.object(boundaries, "_boundary_mutes_events", return_value=False), \
+             mock.patch.object(people, "get_person", return_value={"name": "Bret"}), \
+             mock.patch.object(episodes, "record_boundary") as rec:
+            boundaries.apply_detected_boundary(1, detected)
+        return rec
+
+    def test_add_records_boundary_episode_with_name(self):
+        rec = self._apply({"action": "add", "behavior": "ask", "topic": "his ex"})
+        rec.assert_called_once()
+        self.assertEqual(rec.call_args.args[0], 1)        # person_id
+        self.assertEqual(rec.call_args.args[1], "ask")    # behavior
+        self.assertEqual(rec.call_args.args[2], "his ex") # topic
+        self.assertEqual(rec.call_args.args[3], "add")    # action
+        self.assertEqual(rec.call_args.kwargs.get("person_name"), "Bret")
+
+    def test_clear_records_boundary_episode(self):
+        rec = self._apply({"action": "clear", "behavior": "ask", "topic": "his ex"})
+        rec.assert_called_once()
+        self.assertEqual(rec.call_args.args[3], "clear")
+
+    def test_name_lookup_failure_is_swallowed(self):
+        from memory import boundaries, episodes, people
+        with mock.patch.object(boundaries, "add_boundary", return_value=7), \
+             mock.patch.object(boundaries, "_boundary_mutes_events", return_value=False), \
+             mock.patch.object(people, "get_person", side_effect=RuntimeError("db down")), \
+             mock.patch.object(episodes, "record_boundary") as rec:
+            # Must still record (with name=None) and never raise.
+            result = boundaries.apply_detected_boundary(
+                1, {"action": "add", "behavior": "mention", "topic": "x"})
+        rec.assert_called_once()
+        self.assertIsNone(rec.call_args.kwargs.get("person_name"))
+        self.assertEqual(result["action"], "add")
+
+
 class ReconcileExistingBoundariesTest(unittest.TestCase):
     """Existing (prior-session) boundaries must still mute matching events —
     reconcile_event_mutes is called before picking a startup celebration."""

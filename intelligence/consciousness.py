@@ -270,6 +270,11 @@ _confirmed_absent_at: dict = {}
 # First-sight greeting candidates must remain visible briefly before Rex speaks.
 _first_sight_seen_at: dict = {}
 
+# Arrival (monotonic) of the CURRENT visit, per person key — set once per visit and
+# held until departure (unlike _first_sight_seen_at, which is popped at greeting time),
+# so the departure reaction can log "I spent ~N minutes with <name>" to rex.db.
+_visit_started_at: dict = {}
+
 # Animal arrival dedupe uses species/position signatures instead of unstable
 # animal_1/animal_2 IDs returned by the vision prompt.
 _animal_seen_signatures: set[str] = set()
@@ -1612,6 +1617,8 @@ def _try_fire_jeff_history_hunters_greeting(
         _greeted_this_session.add(key)
         _first_sight_seen_at.pop(key, None)
         _pending_jeff_celebrity_greetings.pop(key, None)
+        # "I met Jeff Benziger" → rex.db (celebrity easter egg).
+        _episodic_celebrity(key, person_name, "Jeff Benziger (History Hunters)", returning=returning)
 
         def _clear_pending_flag() -> None:
             done.wait()
@@ -1782,6 +1789,8 @@ def _try_fire_jt_volleyball_greeting(
         _greeted_this_session.add(key)
         _first_sight_seen_at.pop(key, None)
         _pending_jt_volleyball_greetings.pop(key, None)
+        # "I met JT" → rex.db (celebrity easter egg).
+        _episodic_celebrity(key, person_name, "JT (volleyball legend)", returning=returning)
 
         def _clear_pending_flag() -> None:
             done.wait()
@@ -2051,6 +2060,94 @@ def _capture_startup_image_episode(frame) -> None:
             _log.debug("startup image caption failed: %s", exc)
 
     threading.Thread(target=_work, daemon=True, name="startup-image-caption").start()
+
+
+def _episodic_visit_departure(person_id, name, arrival_secs, departure_secs) -> None:
+    if arrival_secs is None:
+        return  # never recorded an arrival this session → no duration
+    try:
+        from memory import episodes
+        episodes.record_visit_departure(
+            person_id if isinstance(person_id, int) else None, name,
+            max(0.0, float(departure_secs) - float(arrival_secs)),
+            detail={"arrival_secs": arrival_secs, "departure_secs": departure_secs},
+        )
+    except Exception as exc:
+        _log.debug("episodic visit_departure failed: %s", exc)
+
+
+def _episodic_celebrity(person_id, name, celebrity, returning: bool = False) -> None:
+    try:
+        from memory import episodes
+        episodes.record_celebrity(
+            person_id if isinstance(person_id, int) else None, name, celebrity,
+            returning=bool(returning),
+        )
+    except Exception as exc:
+        _log.debug("episodic celebrity failed: %s", exc)
+
+
+def _episodic_checkin(person_id, name, summary, detail=None) -> None:
+    try:
+        from memory import episodes
+        episodes.record_checkin(
+            person_id if isinstance(person_id, int) else None, name, summary, detail=detail,
+        )
+    except Exception as exc:
+        _log.debug("episodic checkin failed: %s", exc)
+
+
+def _episodic_celebration(person_id, name, summary, detail=None) -> None:
+    try:
+        from memory import episodes
+        episodes.record_greeting_event(
+            "celebration", summary,
+            person_id=person_id if isinstance(person_id, int) else None,
+            person_name=name, detail=detail,
+        )
+    except Exception as exc:
+        _log.debug("episodic celebration failed: %s", exc)
+
+
+def _capture_greeting_episode_from_label(label, person_id, name) -> None:
+    """Log a memorable first-sight greeting (birthday / celebration / milestone /
+    reunion / check-in), keyed on the dispatched tier's `label`. Called only inside the
+    `if queued:` success block, so it reflects a greeting Rex ACTUALLY spoke — never a
+    candidate dropped under ENFORCE. The label is set by the tier that won the priority
+    chain, so this captures exactly the fired tier (ordinary greetings log nothing). We
+    key on the label (vs the branch-local tier vars) to avoid touching the greeting
+    chain itself; a label rename just silently stops the capture (graceful)."""
+    if not isinstance(person_id, int):
+        return
+    who = name or "them"
+    lab = str(label or "")
+    kind = summary = None
+    detail: dict = {}
+    if lab.startswith("startup birthday (T-0)"):
+        kind, summary, detail = "birthday_wish", f"I wished {who} a happy birthday.", {"t_minus": 0}
+    elif lab.startswith("startup birthday (T-"):
+        kind, summary = "birthday_wish", f"I reminded {who} their birthday is coming up soon."
+    elif lab.startswith("first-sight celebration"):
+        kind, summary = "celebration", f"I celebrated some good news with {who}."
+    elif lab.startswith("startup milestone (#"):
+        import re as _re
+        m = _re.search(r"#(\d+)", lab)
+        n = m.group(1) if m else "?"
+        kind, summary, detail = "milestone", f"I marked {who}'s visit #{n}.", {"visit_number": n}
+    elif lab.startswith("startup long-absence"):
+        kind, summary = "reunion", f"I welcomed {who} back after a long while away."
+    elif lab.startswith("first-sight emotional check-in"):
+        kind, summary = "emotional_checkin", f"I checked in on {who} when I saw them."
+    else:
+        return  # ordinary greeting → not a memorable event
+    try:
+        from memory import episodes
+        if kind == "emotional_checkin":
+            episodes.record_checkin(person_id, name, summary, detail=detail)
+        else:
+            episodes.record_greeting_event(kind, summary, person_id=person_id, person_name=name, detail=detail)
+    except Exception as exc:
+        _log.debug("episodic greeting event failed: %s", exc)
 
 
 def _fire_pending_animal_arrival_reaction() -> bool:
@@ -6825,6 +6922,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         _last_presence_reaction_at[key] = now
         _first_missing_at.pop(key, None)
         del _pending_departure_keys[key]
+        _visit_arrival = _visit_started_at.pop(key, None)  # arrival of the just-ended visit
 
         is_known = isinstance(key, int) and person_name
 
@@ -6843,6 +6941,10 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 label=f"departure for {person_name}",
                 tag_key=key,
                 emotion="curious",
+            )
+            # "I spent about 40 minutes with Bret" → rex.db (visit arrival → departure).
+            _episodic_visit_departure(
+                person_db_id, person_name, _visit_arrival, departed_at,
             )
         else:
             address = random.choice(unknown_addresses)
@@ -7245,6 +7347,9 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     _first_sight_seen_at.pop(key, None)
                     # "I saw <name>" → rex.db (once per known person per run).
                     _episodic_person_seen(person_db_id, person_name)
+                    # Memorable greeting tiers (birthday/celebration/milestone/reunion/
+                    # check-in) → rex.db, keyed on the dispatched greeting's label.
+                    _capture_greeting_episode_from_label(label, person_db_id, person_name)
                 else:
                     first_sight_pending_keys.add(key)
             # Already greeted/enrolled people and anonymous slots should become
@@ -7380,6 +7485,8 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         if key in first_sight_pending_keys:
             continue
         _last_seen[key] = now
+        # Stamp the visit's arrival once; held until departure for visit-duration recall.
+        _visit_started_at.setdefault(key, now)
     _visible_people = current_keys - first_sight_pending_keys
 
 
@@ -8249,6 +8356,12 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
                         "unacknowledged %s event) for person_id=%s",
                         cat, engaged_id,
                     )
+                    # "I checked in on <name> about a hard thing" → rex.db.
+                    _episodic_checkin(
+                        engaged_id, person.get("name"),
+                        f"I checked in on {first_name} about a {vibe} on their mind.",
+                        detail={"category": cat, "valence": valence, "trigger": "remembered_event"},
+                    )
 
                 _generate_and_speak(
                     prompt, emotion=emotion, purpose="emotional_checkin",
@@ -8283,6 +8396,12 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
                     "consciousness: proactive celebration check-in "
                     "(category=%s, event_id=%s) for person_id=%s",
                     cat, ev.get("id"), engaged_id,
+                )
+                # "I celebrated <name>'s good news" → rex.db.
+                _episodic_celebration(
+                    engaged_id, person.get("name"),
+                    f"I celebrated {first_name}'s good news with them.",
+                    detail={"category": cat, "trigger": "remembered_celebration"},
                 )
 
             _generate_and_speak(
@@ -8356,6 +8475,12 @@ def _step_emotional_checkin(snapshot: dict, profile: SituationProfile) -> None:
                 "consciousness: proactive emotional check-in (B: sustained %s, "
                 "streak=%.1fs, conf=%.2f) for person_id=%s",
                 affect, now - streak_start, confidence, engaged_id,
+            )
+            # "I checked in on <name> when they sounded down" → rex.db.
+            _episodic_checkin(
+                engaged_id, person.get("name"),
+                f"I checked in on {first_name} when they sounded {affect}.",
+                detail={"affect": affect, "trigger": "sustained_negative"},
             )
 
         _generate_and_speak(
@@ -9853,6 +9978,7 @@ def start() -> None:
     _first_missing_at.clear()
     _confirmed_absent_at.clear()
     _first_sight_seen_at.clear()
+    _visit_started_at.clear()
     _last_presence_reaction_at.clear()
     _animal_seen_signatures.clear()
     _animal_reacted_at.clear()

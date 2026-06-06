@@ -155,7 +155,7 @@ logs/           Runtime logs
 - Real API keys should never be committed.
 - Two SQLite databases under `assets/memory/` (both gitignored, both created by `setup_assets.py`):
   - `people.db` — what Rex knows **about people** (faces, voices, facts, interests, events, conversation summaries per person).
-  - `rex.db` — Rex's own **episodic memory** (his "diary"): a timestamped, first-person log of experiences — people seen, scenes observed ("the room was cluttered"), things he did ("I made Bret laugh", "I saw a dog"), and an LLM session summary saved on shutdown. **Phase 1 is capture-only** — these are logged for later use but nothing reads them back into Rex's behavior yet. Toggle with `config.EPISODIC_MEMORY_ENABLED`.
+  - `rex.db` — Rex's own **episodic memory** (his "diary"): a timestamped, first-person log of experiences. He records people seen, scenes observed ("the room was cluttered"), things he did ("I made Bret laugh", "I saw a dog"), people he **met** ("I met Bret."), **visits** ("I spent about 40 minutes with Bret."), **games** ("I played Trivia with Bret — scored 4 out of 5."), **boundaries** people set ("Bret asked me not to ask about his ex."), **emotional check-ins**, **celebrity** sightings (the Jeff/JT easter eggs), and memorable greeting moments — **birthdays, milestones, celebrations, and long-absence reunions** — plus an LLM session summary saved on shutdown. **Phase 1 is capture-only** — these are logged for later use but nothing reads them back into Rex's behavior yet. Toggle with `config.EPISODIC_MEMORY_ENABLED`.
 
 ## License
 

@@ -175,6 +175,111 @@ def record_conversation_summary(
     )
 
 
+# ── Batch-2 convenience helpers (people/relationship/activity milestones) ────────
+
+def record_person_enrolled(person_id: Optional[int], name: Optional[str]) -> Optional[int]:
+    label = (name or "").strip() or "someone new"
+    return record_episode(
+        "person_enrolled", f"I met {label}.",
+        person_id=person_id, person_name=name, salience=0.8,
+    )
+
+
+def record_game_played(
+    game: str, outcome: str = "", *, person_id: Optional[int] = None,
+    person_name: Optional[str] = None, detail: Optional[dict] = None,
+) -> Optional[int]:
+    who = (person_name or "").strip()
+    with_who = f" with {who}" if who else ""
+    tail = f" — {outcome}" if outcome else ""
+    return record_episode(
+        "game_played", f"I played {game}{with_who}{tail}.",
+        person_id=person_id, person_name=person_name, detail=detail, salience=0.6,
+    )
+
+
+def _format_duration(secs: float) -> str:
+    secs = max(0.0, float(secs or 0.0))
+    mins = secs / 60.0
+    if mins < 1.5:
+        return "a minute"
+    if mins < 50:
+        return f"about {int(round(mins))} minutes"
+    hours = mins / 60.0
+    if hours < 1.25:
+        return "about an hour"
+    if hours < 1.75:
+        return "about an hour and a half"
+    return f"about {hours:.1f} hours".replace(".0 ", " ")
+
+
+def record_visit_departure(
+    person_id: Optional[int], name: Optional[str], duration_secs: float,
+    *, detail: Optional[dict] = None,
+) -> Optional[int]:
+    # Skip fleeting glimpses — a real "visit" is worth remembering, a 10-second
+    # pass-through is noise.
+    if (duration_secs or 0) < 60:
+        return None
+    who = (name or "").strip() or "someone"
+    return record_episode(
+        "visit_departure", f"I spent {_format_duration(duration_secs)} with {who}.",
+        person_id=person_id, person_name=name, detail=detail, salience=0.55,
+    )
+
+
+def record_boundary(
+    person_id: Optional[int], behavior: str, topic: str, action: str,
+    *, person_name: Optional[str] = None,
+) -> Optional[int]:
+    topic = (topic or "that").strip() or "that"
+    behavior = (behavior or "bring up").strip() or "bring up"
+    who = (person_name or "").strip()
+    subj = who or "Someone"
+    if action == "clear":
+        summary = f"{subj} said it's okay to {behavior} about {topic} again."
+    else:
+        summary = f"{subj} asked me not to {behavior} about {topic}."
+    return record_episode(
+        "boundary", summary, person_id=person_id, person_name=person_name,
+        detail={"behavior": behavior, "topic": topic, "action": action}, salience=0.7,
+    )
+
+
+def record_celebrity(
+    person_id: Optional[int], name: Optional[str], celebrity: str, *, returning: bool = False,
+) -> Optional[int]:
+    who = (name or "").strip() or "a celebrity"
+    verb = "saw" if returning else "met"
+    return record_episode(
+        "celebrity", f"I {verb} {who}.",
+        person_id=person_id, person_name=name,
+        detail={"celebrity": celebrity, "returning": bool(returning)}, salience=0.75,
+    )
+
+
+def record_checkin(
+    person_id: Optional[int], name: Optional[str], summary: str, *, detail: Optional[dict] = None,
+) -> Optional[int]:
+    """An empathy check-in / heavy moment. Caller builds the (sensitive) summary."""
+    return record_episode(
+        "emotional_checkin", summary, person_id=person_id, person_name=name,
+        detail=detail, salience=0.78,
+    )
+
+
+def record_greeting_event(
+    kind: str, summary: str, *, person_id: Optional[int] = None,
+    person_name: Optional[str] = None, detail: Optional[dict] = None,
+) -> Optional[int]:
+    """A memorable first-sight greeting tier (birthday/milestone/celebration/reunion).
+    `kind` is one of: birthday_wish | milestone | celebration | reunion."""
+    return record_episode(
+        kind, summary, person_id=person_id, person_name=person_name,
+        detail=detail, salience=0.65,
+    )
+
+
 # ── Read API — for PHASE-2 exploration only (NOT wired into behavior) ────────────
 
 def recent_episodes(limit: int = 50, *, kind: Optional[str] = None) -> list:

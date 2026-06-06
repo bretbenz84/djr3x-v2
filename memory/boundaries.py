@@ -300,6 +300,28 @@ def detect_boundary(
     return None
 
 
+def _record_boundary_episode(person_id: int, behavior: str, topic: str, action: str) -> None:
+    """Log a boundary set/cleared to Rex's episodic memory ("Bret asked me not to
+    bring up X"). Lazy imports keep memory/ DAG-clean; gated + failure-safe so a diary
+    hiccup never blocks a consent change."""
+    try:
+        from memory import episodes
+        name = None
+        try:
+            from memory import people as _people
+            row = _people.get_person(person_id)
+            if row is not None:
+                name = row.get("name")
+        except Exception:
+            name = None
+        episodes.record_boundary(
+            person_id if isinstance(person_id, int) else None,
+            behavior, topic, action, person_name=name,
+        )
+    except Exception as exc:
+        _log.debug("[boundaries] episodic boundary capture failed: %s", exc)
+
+
 def apply_detected_boundary(person_id: int, detected: dict) -> Optional[dict]:
     if not detected:
         return None
@@ -312,6 +334,7 @@ def apply_detected_boundary(person_id: int, detected: dict) -> Optional[dict]:
             "[boundaries] cleared boundary person_id=%s behavior=%s topic=%s",
             person_id, behavior, topic,
         )
+        _record_boundary_episode(person_id, behavior, topic, "clear")
         return {"action": "clear", "behavior": behavior, "topic": topic}
     if action == "add":
         row_id = add_boundary(
@@ -343,6 +366,7 @@ def apply_detected_boundary(person_id: int, detected: dict) -> Optional[dict]:
                     )
             except Exception as exc:
                 _log.debug("[boundaries] event-mute on boundary failed: %s", exc)
+        _record_boundary_episode(person_id, behavior, topic, "add")
         return {"action": "add", "id": row_id, "behavior": behavior, "topic": topic}
     return None
 

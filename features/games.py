@@ -1654,6 +1654,46 @@ def _clear_game() -> None:
     _game_state = {}
 
 
+def _extract_game_outcome(state: dict) -> str:
+    """Best-effort one-phrase outcome from a game's state, for the episodic memory.
+    Reliable for trivia (score survives to natural end); other games clear their state
+    internally, so this returns "" and the memory is just "I played X". Defensive."""
+    try:
+        if not isinstance(state, dict) or not state:
+            return ""
+        if "score" in state and ("total_questions" in state or "history" in state):
+            score = int(state.get("score", 0) or 0)
+            total = int(
+                state.get("total_questions")
+                or len(state.get("history") or [])
+                or 0
+            )
+            if total > 0:
+                return f"scored {score} out of {total}"
+    except Exception:
+        pass
+    return ""
+
+
+def _episodic_game_played(game: Optional[str], person_id, outcome: str = "") -> None:
+    """Log "I played Trivia with Bret — scored 4 out of 5" to Rex's episodic memory.
+    Gated + failure-safe (no-ops under the test runner / when episodic memory is off)."""
+    if not game:
+        return
+    try:
+        from memory import episodes
+        display = _GAME_DISPLAY_NAMES.get(game, game.replace("_", " ").title())
+        name = _jeopardy_person_name(person_id)  # generic people.db name lookup
+        episodes.record_game_played(
+            display, outcome,
+            person_id=person_id if isinstance(person_id, int) else None,
+            person_name=name,
+            detail={"game": game} if game else None,
+        )
+    except Exception as exc:
+        _log.debug("[games] episodic game_played failed: %s", exc)
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def can_play(game_name: str) -> tuple[bool, Optional[str]]:
@@ -1787,7 +1827,10 @@ def handle_input(text: str, person_id: Optional[int] = None, audio_array=None) -
 
     if done:
         with _lock:
+            outcome = _extract_game_outcome(_game_state)
             _clear_game()
+        # "I played Trivia with Bret — scored 4 out of 5" → rex.db.
+        _episodic_game_played(game, person_id, outcome)
         _log.info("[games] Game %s ended naturally", game)
 
     return response
@@ -1807,10 +1850,15 @@ def stop_game(person_id: Optional[int] = None) -> str:
         )
 
     _log.info("[games] Stopping game: %s", game)
+    with _lock:
+        outcome = _extract_game_outcome(_game_state)  # snapshot before the stop handler clears it
     response = _GAME_HANDLERS[game]["stop"](person_id)
 
     with _lock:
         _clear_game()
+
+    # "I played Trivia with Bret — scored 3 out of 5" → rex.db (user-stopped mid-round).
+    _episodic_game_played(game, person_id, outcome)
 
     return response
 
