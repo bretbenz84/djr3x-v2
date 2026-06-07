@@ -180,6 +180,8 @@ def _drive_speech_clip_outputs(
 ) -> None:
     interval = float(getattr(config, "TTS_LED_UPDATE_INTERVAL_SECS", 0.04) or 0.04)
     chunk_len = max(1, int(int(samplerate) * interval))
+    min_delta = int(getattr(config, "HEAD_LED_SPEAK_LEVEL_MIN_DELTA", 8))
+    last_sent = -1
     for i in range(0, len(audio), chunk_len):
         if stop_event.is_set():
             break
@@ -188,7 +190,15 @@ def _drive_speech_clip_outputs(
             continue
         rms = float(np.sqrt(np.mean(chunk * chunk)))
         brightness = min(255, int(rms * config.TTS_LED_BRIGHTNESS_SCALE))
-        leds_head.speak_level(brightness)
+        # Throttle the mouth-level flood (see audio/tts._drive_leds): fewer serial
+        # writes during speech = fewer dropped commands on the lossy head link.
+        if (
+            last_sent < 0
+            or abs(brightness - last_sent) >= min_delta
+            or (brightness == 0 and last_sent != 0)
+        ):
+            leds_head.speak_level(brightness)
+            last_sent = brightness
         servos.speech_reactive_move(brightness / 255.0)
         stop_event.wait(timeout=interval)
 
@@ -263,6 +273,9 @@ def _play_audio_file(
                 except Exception:
                     pass
                 leds_head.speak(led_emotion)
+                # Re-assert the eyes ON every clip — the mouth SPEAK command never
+                # touches the eyes, and the heartbeat keeps them lit between turns.
+                leds_head.ensure_eyes_on(led_emotion)
                 leds_chest.speak(led_emotion)
                 led_thread = threading.Thread(
                     target=_drive_speech_clip_outputs,

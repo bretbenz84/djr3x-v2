@@ -1949,6 +1949,36 @@ HEAD_LED_SPEAK_STOP_REPEAT_DELAY_SECS = _env_float(
     max_value=1.0,
 )
 
+# Eye "keep-alive" heartbeat. The head Arduino's serial link is lossy during
+# speech (FastLED.show() disables AVR interrupts → dropped UART bytes), so the
+# single post-speech ACTIVE re-arm can be lost, leaving the eyes dark with no
+# other re-assertion while running. A low-rate background thread re-sends the
+# eye colour whenever Rex is awake and not mid-speech, so any dropped command
+# self-heals within one interval. Disable to fall back to per-event re-arm only.
+HEAD_LED_HEARTBEAT_ENABLED = _env_bool("HEAD_LED_HEARTBEAT_ENABLED", True)
+HEAD_LED_HEARTBEAT_INTERVAL_SECS = _env_float(
+    "HEAD_LED_HEARTBEAT_INTERVAL_SECS",
+    1.5,
+    min_value=0.2,
+    max_value=10.0,
+)
+# Default "awake" eye colour the heartbeat asserts when no colour is set
+# (e.g. running state reached without a fresh EYE/ACTIVE). Warm gold = boot eyes.
+HEAD_LED_RUNNING_EYE_COLOR = (255, 200, 0)
+# When True, the per-turn eye assertion colours the eyes by the line's emotion
+# (matches the old speak_with_emotion behaviour). Set False to keep the eyes a
+# steady HEAD_LED_RUNNING_EYE_COLOR while running instead of shifting per turn.
+HEAD_LED_EYE_FOLLOWS_EMOTION = _env_bool("HEAD_LED_EYE_FOLLOWS_EMOTION", True)
+# Throttle SPEAK_LEVEL writes during speech: only push a new mouth level when it
+# changes by at least this much (or hits 0). Cuts the per-frame serial flood that
+# overlaps the Arduino's interrupt-off show() windows, reducing dropped commands.
+HEAD_LED_SPEAK_LEVEL_MIN_DELTA = _env_int(
+    "HEAD_LED_SPEAK_LEVEL_MIN_DELTA",
+    8,
+    min_value=0,
+    max_value=128,
+)
+
 # RGB values for each eye emotion state. Mouth colors are managed in Arduino firmware.
 EYE_COLORS = {
     "neutral":  (0,   180, 255),  # cool blue-white

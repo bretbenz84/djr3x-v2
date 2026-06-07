@@ -333,6 +333,12 @@ def _play(
             except Exception as exc:
                 logger.debug("[tts] speech servo start failed: %s", exc)
             leds_head.speak(led_emotion)
+            # Re-assert the eyes ON at the emotion colour every turn. The mouth
+            # SPEAK command never touches the eyes, and the serial link is lossy
+            # during speech, so without this the eyes ride entirely on a single
+            # easily-dropped post-speech re-arm. The heartbeat keeps them lit
+            # between turns; this guarantees they are lit for the turn itself.
+            leds_head.ensure_eyes_on(led_emotion)
             leds_chest.speak(led_emotion)
             echo_cancel.set_playing(True)
             led_thread.start()
@@ -396,6 +402,8 @@ def _drive_leds(
     """Iterate audio in fixed chunks, driving mouth LED brightness from RMS."""
     interval = config.TTS_LED_UPDATE_INTERVAL_SECS
     chunk_len = max(1, int(samplerate * interval))
+    min_delta = int(getattr(config, "HEAD_LED_SPEAK_LEVEL_MIN_DELTA", 8))
+    last_sent = -1
 
     for i in range(0, len(audio), chunk_len):
         if stop_event.is_set():
@@ -403,7 +411,17 @@ def _drive_leds(
         chunk = audio[i : i + chunk_len]
         rms = float(np.sqrt(np.mean(chunk ** 2)))
         brightness = min(255, int(rms * config.TTS_LED_BRIGHTNESS_SCALE))
-        leds_head.speak_level(brightness)
+        # Only push a new mouth level when it changes meaningfully (or hits 0):
+        # the per-frame flood overlaps the Arduino's interrupt-off show() windows
+        # and is the main source of dropped commands. The mouth keeps animating
+        # off the last level, so fewer writes don't freeze it.
+        if (
+            last_sent < 0
+            or abs(brightness - last_sent) >= min_delta
+            or (brightness == 0 and last_sent != 0)
+        ):
+            leds_head.speak_level(brightness)
+            last_sent = brightness
         servos.speech_reactive_move(brightness / 255.0)
         stop_event.wait(timeout=interval)
 

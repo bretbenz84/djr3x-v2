@@ -31,6 +31,17 @@ _eye_color: tuple[int, int, int] = (0, 0, 0)
 _eyes_active = False
 _led_mode = "off"
 
+# Heartbeat / running-eye state.
+#   _eyes_should_be_on — True while Rex is awake and the eyes are meant to show
+#     (set by active/idle/set_eye_color; cleared by off/sleep). The "intentionally
+#     dark" signal, distinct from the transient _eyes_active blink-suspend flag.
+#   _speaking — True between speak() and speak_stop(); the heartbeat yields then so
+#     it never fights the mouth animation or adds serial traffic during the flood.
+_eyes_should_be_on = False
+_speaking = False
+_heartbeat_thread: "threading.Thread | None" = None
+_heartbeat_stop = threading.Event()
+
 
 def _mirror_gui_head_led_state(
     *,
@@ -60,7 +71,11 @@ def _is_speech_led_command(family: str) -> bool:
 
 
 def _is_critical_led_command(family: str) -> bool:
-    return family in {"SPEAK_STOP", "OFF", "IDLE", "ACTIVE", "SLEEP"}
+    # SPEAK and EYE are flushed too: SPEAK is the mouth-on trigger (must not sit
+    # buffered behind the SPEAK_LEVEL flood, or the mouth fails to light) and EYE
+    # is the eye-on assertion (speech-start + heartbeat). SPEAK_LEVEL stays
+    # unflushed — it is the high-rate flood we deliberately let coalesce.
+    return family in {"SPEAK", "SPEAK_STOP", "OFF", "IDLE", "ACTIVE", "SLEEP", "EYE"}
 
 
 def _report_drops_if_due(now: float) -> None:
@@ -132,6 +147,7 @@ def connect() -> bool:
         _log.info("Head Arduino connected on %s at %d baud", ARDUINO_HEAD_PORT, config.HEAD_ARDUINO_BAUD)
         _flush_drop_summary("reconnected")
         _speech_drop_notified = False
+        _start_heartbeat()
         return True
     except _SERIAL_ERRORS as exc:
         _log.error("Failed to open head Arduino port %s: %s", ARDUINO_HEAD_PORT, exc)
@@ -141,6 +157,7 @@ def connect() -> bool:
 
 def disconnect() -> None:
     global _ser, _speech_drop_notified
+    _stop_heartbeat()
     with _lock:
         if _ser and _ser.is_open:
             _ser.close()
@@ -204,7 +221,55 @@ def send_command(cmd: str) -> None:
 
 def speak(emotion: str) -> None:
     """Start mouth speak animation for the given emotion. Eyes stay unchanged."""
+    global _speaking
+    _speaking = True
     send_command(f"SPEAK:{emotion}")
+
+
+def _default_running_color() -> tuple[int, int, int]:
+    """The 'awake' eye colour the heartbeat/ensure assert when none is set."""
+    c = getattr(config, "HEAD_LED_RUNNING_EYE_COLOR", (255, 200, 0))
+    try:
+        return (max(0, min(255, int(c[0]))), max(0, min(255, int(c[1]))), max(0, min(255, int(c[2]))))
+    except Exception:
+        return (255, 200, 0)
+
+
+def _resolve_running_eye_color(emotion: str | None) -> tuple[int, int, int]:
+    """Pick a NON-black eye colour for the running/speaking state.
+
+    Prefers the emotion's EYE_COLORS entry (when not the dark 'sleep' style),
+    then the last set colour, then the configured default. Never returns black —
+    the eyes must stay visible while Rex is awake, even on a 'sleep'-styled line.
+    """
+    if emotion:
+        color = config.EYE_COLORS.get(emotion)
+        if color and any(color):
+            return (int(color[0]), int(color[1]), int(color[2]))
+    if any(_eye_color):
+        return _eye_color
+    return _default_running_color()
+
+
+def ensure_eyes_on(emotion: str | None = None) -> None:
+    """Assert that the eyes are ON (lit + blinking) right now, at a live colour.
+
+    Called at speech start so the eyes are reliably lit for the turn regardless of
+    whether an earlier ACTIVE/EYE command was dropped, and reusable anywhere the
+    eyes must be guaranteed on. Sends EYE:r,g,b — which lights the eyes and resumes
+    blinking on the Arduino in any non-sleep mode — and marks the running state so
+    the heartbeat keeps re-asserting it. Never turns the eyes off.
+    """
+    global _eye_color, _eyes_active, _eyes_should_be_on, _led_mode
+    if not bool(getattr(config, "HEAD_LED_EYE_FOLLOWS_EMOTION", True)):
+        emotion = None  # keep a steady running colour instead of per-turn emotion
+    r, g, b = _resolve_running_eye_color(emotion)
+    _eye_color = (r, g, b)
+    _eyes_active = True
+    _eyes_should_be_on = True
+    _led_mode = "eye"
+    _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=True)
+    send_command(f"EYE:{r},{g},{b}")
 
 
 def speak_level(brightness: int) -> None:
@@ -233,9 +298,10 @@ def speak_stop() -> None:
     Arduino's blink loop, so we must hand the eyes back to ACTIVE or Rex freezes
     his eyes open after the first thing he says.
     """
-    global _eyes_active, _led_mode
+    global _eyes_active, _led_mode, _speaking
     _led_mode = "speak_stop"
     _eyes_active = False
+    _speaking = False
     _mirror_gui_head_led_state(mode=_led_mode, eyes_active=False)
     if not _serial_online():
         send_command("SPEAK_STOP")
@@ -257,21 +323,23 @@ def speak_stop() -> None:
 
 def idle() -> None:
     """Enter idle LED pattern (slow breathing pulse)."""
-    global _eyes_active, _led_mode
+    global _eyes_active, _led_mode, _eyes_should_be_on
     _led_mode = "idle"
     if any(_eye_color):
         _eyes_active = True
+    _eyes_should_be_on = True
     _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=_eyes_active)
     send_command("IDLE")
 
 
 def active() -> None:
     """Enter active LED pattern (brighter, more energetic)."""
-    global _eye_color, _eyes_active, _led_mode
+    global _eye_color, _eyes_active, _led_mode, _eyes_should_be_on
     _led_mode = "active"
     if not any(_eye_color):
         _eye_color = (255, 255, 255)
     _eyes_active = True
+    _eyes_should_be_on = True
     _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=True)
     send_command("ACTIVE")
 
@@ -281,12 +349,13 @@ def set_eye_color(r: int, g: int, b: int) -> None:
     Set eye pixels 0–1 to an RGB color.
     Eyes are standard RGB LEDs — values are passed through unchanged.
     """
-    global _eye_color, _eyes_active, _led_mode
+    global _eye_color, _eyes_active, _led_mode, _eyes_should_be_on
     r = max(0, min(255, r))
     g = max(0, min(255, g))
     b = max(0, min(255, b))
     _eye_color = (r, g, b)
     _eyes_active = any(_eye_color)
+    _eyes_should_be_on = _eyes_active
     _led_mode = "eye"
     _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=_eyes_active)
     send_command(f"EYE:{r},{g},{b}")
@@ -300,9 +369,11 @@ def set_eye_emotion(emotion: str) -> None:
 
 def off() -> None:
     """Turn all head LEDs off immediately."""
-    global _eye_color, _eyes_active, _led_mode
+    global _eye_color, _eyes_active, _led_mode, _eyes_should_be_on, _speaking
     _eye_color = (0, 0, 0)
     _eyes_active = False
+    _eyes_should_be_on = False
+    _speaking = False
     _led_mode = "off"
     _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=False)
     if not _serial_online():
@@ -326,9 +397,76 @@ def off() -> None:
 
 def sleep() -> None:
     """Enter sleep LED state (eyes off, mouth dim or off)."""
-    global _eye_color, _eyes_active, _led_mode
+    global _eye_color, _eyes_active, _led_mode, _eyes_should_be_on, _speaking
     _eye_color = (0, 0, 0)
     _eyes_active = False
+    _eyes_should_be_on = False
+    _speaking = False
     _led_mode = "sleep"
     _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=False)
     send_command("SLEEP")
+
+
+# ── Eye keep-alive heartbeat ─────────────────────────────────────────────────
+#
+# The head Arduino's serial link drops bytes during speech (FastLED.show()
+# disables AVR interrupts while clocking 82 pixels), so the single post-speech
+# ACTIVE re-arm can be lost — and nothing else re-asserts the eyes while running,
+# leaving them dark until some later turn's re-arm happens to land. This low-rate
+# daemon re-sends the current eye colour whenever Rex is awake (_eyes_should_be_on)
+# and not mid-speech, so a dropped command self-heals within one interval. It is a
+# pure passthrough when offline / off / sleeping / speaking, so it can never light
+# eyes that are meant to be dark.
+
+def _heartbeat_interval() -> float:
+    try:
+        return max(0.2, float(getattr(config, "HEAD_LED_HEARTBEAT_INTERVAL_SECS", 1.5)))
+    except Exception:
+        return 1.5
+
+
+def _heartbeat_tick() -> None:
+    """One keep-alive pass: re-assert the eyes if Rex is awake and quiet."""
+    global _eye_color
+    with _lock:
+        if not _serial_online_locked() or _speaking or not _eyes_should_be_on:
+            return
+        color = _eye_color if any(_eye_color) else _default_running_color()
+        if not any(color):
+            return
+        _eye_color = color  # persist a defaulted colour so re-arm paths agree
+    r, g, b = color
+    # Outside the lock: send_command takes _lock itself (plain, non-reentrant).
+    send_command(f"EYE:{r},{g},{b}")
+
+
+def _heartbeat_loop() -> None:
+    while not _heartbeat_stop.is_set():
+        if _heartbeat_stop.wait(_heartbeat_interval()):
+            break
+        try:
+            _heartbeat_tick()
+        except Exception as exc:  # never let the keep-alive thread die
+            _log.debug("Head LED heartbeat tick failed: %s", exc)
+
+
+def _start_heartbeat() -> None:
+    global _heartbeat_thread
+    if not bool(getattr(config, "HEAD_LED_HEARTBEAT_ENABLED", True)):
+        return
+    if _heartbeat_thread is not None and _heartbeat_thread.is_alive():
+        return
+    _heartbeat_stop.clear()
+    _heartbeat_thread = threading.Thread(
+        target=_heartbeat_loop, daemon=True, name="head-led-heartbeat"
+    )
+    _heartbeat_thread.start()
+
+
+def _stop_heartbeat() -> None:
+    global _heartbeat_thread
+    _heartbeat_stop.set()
+    thread = _heartbeat_thread
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=1.0)
+    _heartbeat_thread = None
