@@ -228,6 +228,10 @@ _nostalgia_used_this_session: set[int] = set()
 # fact isn't re-asked turn after turn. Cleared on process restart.
 _stale_facts_asked_this_session: set[int] = set()
 
+# Episodic shared-memory callbacks (rex.db) Rex has already surfaced this session,
+# keyed by "<person_id>:<summary>", so the same one isn't repeated. Process-scoped.
+_episodic_callbacks_used_this_session: set[str] = set()
+
 
 def _pick_stale_fact(person_id: int) -> Optional[dict]:
     """
@@ -295,6 +299,30 @@ def _pick_nostalgia_callback(person_id: int, tier: str) -> Optional[dict]:
     chosen = random.choice(candidates)
     _nostalgia_used_this_session.add(chosen["id"])
     return chosen
+
+
+def _pick_episodic_callback(person_id: int) -> Optional[str]:
+    """Roll the episodic-callback probability and, on success, return ONE first-person
+    experiential memory (rex.db) about this person that hasn't been surfaced this
+    session — "I made you laugh", "we played trivia", "I met you". Sensitive kinds are
+    excluded (people.db's emotional_events owns grief/illness acknowledgment). Returns
+    None when disabled, the roll fails, or there's nothing fresh."""
+    if not getattr(config, "EPISODIC_RECALL_ENABLED", False):
+        return None
+    if random.random() >= float(getattr(config, "EPISODIC_RECALL_PERSON_CALLBACK_PROBABILITY", 0.25)):
+        return None
+    try:
+        from memory import episodic_recall
+        items = episodic_recall.person_episodes(person_id, exclude_sensitive=True)
+    except Exception as exc:
+        _log.debug("episodic callback lookup failed: %s", exc)
+        return None
+    for summary in items:
+        key = f"{person_id}:{summary}"
+        if key not in _episodic_callbacks_used_this_session:
+            _episodic_callbacks_used_this_session.add(key)
+            return summary
+    return None
 
 
 _ANGER_RULES = {
@@ -501,6 +529,20 @@ def _build_person_context(person_id: int) -> str:
         lines.append(
             f"Next unanswered question to weave in naturally: "
             f"\"{next_q['text']}\" (depth {next_q['depth']})."
+        )
+        callback_hook_used = True
+
+    # Episodic shared-memory callback (rex.db) — lowest-priority hook: only when nothing
+    # above claimed the turn's single callback budget. Experiential, light (sensitive
+    # kinds excluded — emotional_events owns those). Counts against callback_hook_used.
+    episodic_cb = None if callback_hook_used else _pick_episodic_callback(person_id)
+    if episodic_cb:
+        _log.info("[llm] episodic shared-memory callback for %s — %r", name, episodic_cb)
+        lines.append(
+            f"SHARED-MEMORY HOOK: you and {name} have history — you remember: "
+            f"\"{episodic_cb}\". If it fits naturally, weave ONE short, specific callback "
+            f"to that shared moment into your reply — warm and dry, classic Rex. Don't "
+            f"force it or announce it as a memory; just let it surface like a passing thought."
         )
         callback_hook_used = True
 

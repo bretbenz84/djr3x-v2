@@ -615,9 +615,8 @@ EPISODIC_STARTUP_IMAGE_ENABLED = True
 
 # ── PHASE 2: episodic RECALL (reading the diary back into behavior) ──────────────
 # SEPARATE kill switch from capture (EPISODIC_MEMORY_ENABLED). Off → recall is inert:
-# rex.db is still written, but nothing is ever surfaced. Turn on once the diary has
-# accumulated worthwhile material. Env override: EPISODIC_RECALL_ENABLED.
-EPISODIC_RECALL_ENABLED = _env_bool("EPISODIC_RECALL_ENABLED", False)
+# rex.db is still written, but nothing is ever surfaced. Env override: EPISODIC_RECALL_ENABLED.
+EPISODIC_RECALL_ENABLED = _env_bool("EPISODIC_RECALL_ENABLED", True)
 # Recency half-life (days) for ranking — an episode's weight halves every N days.
 EPISODIC_RECALL_RECENCY_HALFLIFE_DAYS = 5.0
 # How far back the cross-session "since last time" recap looks.
@@ -648,9 +647,15 @@ EPISODIC_RECALL_KIND_WEIGHTS = {
 }
 EPISODIC_RECALL_DEFAULT_KIND_WEIGHT = 0.5
 # Sensitive kinds — never aired in the out-loud idle "memory musing" (could be
-# overheard). person-scoped recall (Phase 2b) may still surface them under the
-# existing emotional-events discretion rules.
+# overheard), and excluded from the per-person callback hook too: people.db's
+# emotional_events already owns careful grief/illness acknowledgment, so episodic
+# recall sticks to the LIGHT experiential stuff (laughs, games, birthdays, "I met you").
 EPISODIC_RECALL_SENSITIVE_KINDS = ("emotional_checkin", "boundary")
+# Phase 2b: when a known person is talking and no higher-priority callback (stale-fact
+# confirmation / nostalgia / next-question) has claimed the turn, probability that Rex
+# surfaces ONE experiential shared-memory callback ("I made you laugh last time"). Kept
+# low so it stays a spice; counts against the one-callback-per-reply budget.
+EPISODIC_RECALL_PERSON_CALLBACK_PROBABILITY = 0.25
 # Retention: keep at most this many of the newest scene episodes; older scenes are
 # pruned at shutdown (they accrue ~15/run and are only ever clustered to a vibe).
 EPISODIC_RECALL_SCENE_RETENTION = 40

@@ -241,11 +241,12 @@ def session_recap(
 
 def person_episodes(
     person_id: Optional[int], *, limit: int = 3, lookback_days: Optional[int] = None,
-    now: Optional[datetime] = None,
+    exclude_sensitive: bool = False, now: Optional[datetime] = None,
 ) -> list[str]:
     """Ranked experiential callbacks for ONE person ("I made you laugh", "we played
     trivia") — first-person summary strings. Excludes scenes, person_seen (low value),
-    and conversation_summary. Returns [] when disabled / no person."""
+    and conversation_summary. With `exclude_sensitive`, also drops sensitive kinds
+    (emotional check-ins, boundaries). Returns [] when disabled / no person."""
     if not _enabled() or not isinstance(person_id, int):
         return []
     try:
@@ -257,8 +258,11 @@ def person_episodes(
             "ORDER BY created_at DESC",
             (person_id, cutoff),
         )
+        skip = {"person_seen"}
+        if exclude_sensitive:
+            skip |= set(_cfg("EPISODIC_RECALL_SENSITIVE_KINDS", ()) or ())
         ranked = rank_episodes(
-            [r for r in rows if r["kind"] != "person_seen"], now=now
+            [r for r in rows if r["kind"] not in skip], now=now
         )
         deduped = _dedupe(ranked, limit=limit)
         return [(r["summary"] or "").strip().rstrip(".") for r in deduped if (r["summary"] or "").strip()]

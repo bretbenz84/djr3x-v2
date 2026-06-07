@@ -151,6 +151,56 @@ class PersonEpisodesTest(_TempRexDb):
     def test_non_int_person_returns_empty(self):
         self.assertEqual(episodic_recall.person_episodes(None), [])
 
+    def test_exclude_sensitive_drops_checkins_and_boundaries(self):
+        self._insert("emotional_checkin", "I checked in on Bret about a hard thing.",
+                     person_id=1, salience=0.95)
+        self._insert("made_laugh", "I made Bret laugh.", person_id=1, salience=0.6)
+        kept = episodic_recall.person_episodes(1, exclude_sensitive=True)
+        self.assertEqual(kept, ["I made Bret laugh"])
+        # Without the flag, the sensitive one is included (and ranks first).
+        both = episodic_recall.person_episodes(1, exclude_sensitive=False)
+        self.assertTrue(any("hard thing" in c for c in both))
+
+
+class PersonCallbackHookTest(_TempRexDb):
+    """llm._pick_episodic_callback — Phase 2b person-context hook."""
+
+    def setUp(self):
+        super().setUp()
+        from intelligence import llm
+        self.llm = llm
+        llm._episodic_callbacks_used_this_session.clear()
+
+    def tearDown(self):
+        self.llm._episodic_callbacks_used_this_session.clear()
+        super().tearDown()
+
+    def test_disabled_returns_none(self):
+        self._insert("made_laugh", "I made Bret laugh.", person_id=1, salience=0.7)
+        with mock.patch.object(config, "EPISODIC_RECALL_ENABLED", False):
+            self.assertIsNone(self.llm._pick_episodic_callback(1))
+
+    def test_probability_gate(self):
+        self._insert("made_laugh", "I made Bret laugh.", person_id=1, salience=0.7)
+        with mock.patch.object(self.llm.random, "random", return_value=1.0):
+            self.assertIsNone(self.llm._pick_episodic_callback(1))  # roll fails
+        with mock.patch.object(self.llm.random, "random", return_value=0.0):
+            self.assertEqual(self.llm._pick_episodic_callback(1), "I made Bret laugh")
+
+    def test_sensitive_excluded_from_hook(self):
+        self._insert("emotional_checkin", "I checked in on Bret about a hard thing.",
+                     person_id=1, salience=0.95)
+        with mock.patch.object(self.llm.random, "random", return_value=0.0):
+            self.assertIsNone(self.llm._pick_episodic_callback(1))
+
+    def test_session_dedupe(self):
+        self._insert("made_laugh", "I made Bret laugh.", person_id=1, salience=0.7)
+        with mock.patch.object(self.llm.random, "random", return_value=0.0):
+            first = self.llm._pick_episodic_callback(1)
+            second = self.llm._pick_episodic_callback(1)
+        self.assertEqual(first, "I made Bret laugh")
+        self.assertIsNone(second)  # only one row, already surfaced this session
+
 
 class PruneTest(_TempRexDb):
     def test_prune_caps_scenes_keeps_newest(self):
