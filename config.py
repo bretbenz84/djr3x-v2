@@ -340,13 +340,32 @@ MEDIAPIPE_OBJECT_DETECTOR_MODEL = (
 FACE_DETECTOR_FORCE_HOG = True
 
 # dlib upsample passes before face detection. Higher values see smaller faces at
-# the cost of CPU. Wide-angle robot cameras make faces small at conversational
-# distance, so default to 3; set FACE_DETECTOR_UPSAMPLE=2 in .env if CPU is tight.
+# the cost of CPU (each pass ~4x the pixels — geometric). Lowered 3 -> 2 now that
+# capture is native 1080p: the extra REAL pixels recover distant faces, so we no
+# longer need as much (interpolated) upsampling, and 1080p+upsample2 is both
+# higher quality and cheaper than 720p+upsample3. Bump to 3 if 6ft faces still
+# miss; drop to 1 if CPU/FPS is tight.
 FACE_DETECTOR_UPSAMPLE = _env_int(
     "FACE_DETECTOR_UPSAMPLE",
-    3,
+    2,
     min_value=0,
     max_value=4,
+)
+
+# Minimum detector confidence to accept a face. Background clutter that the dlib
+# HOG detector reports surfaces as LOW-confidence detections (not necessarily
+# small), so a confidence gate cuts phantom faces — which were spawning bogus
+# "unknown person" identity prompts in a messy room — without discarding small/
+# distant REAL faces (a min-SIZE gate would drop exactly the 6ft face we want).
+# Tuned for HOG scores (roughly -1..+2; a confident frontal face scores ~0.5+).
+# 0.0 disables the gate. Raise toward 0.4-0.5 if phantom faces persist; lower if a
+# real distant person is being dropped. Native 1080p raises real-face scores, so
+# this gate and the resolution bump reinforce each other.
+FACE_DETECTOR_MIN_CONFIDENCE = _env_float(
+    "FACE_DETECTOR_MIN_CONFIDENCE",
+    0.2,
+    min_value=0.0,
+    max_value=2.0,
 )
 
 # Keep the last face slots alive briefly when one detector tick misses. This
@@ -751,7 +770,12 @@ WAKE_WORD_THRESHOLDS = {
     "Hey_rex":     0.5,
     "Yo_robot":    0.5,
     "wakeuprex":   0.5,
-    "shut_down":   0.5,
+    # 0.6 (not 0.5): a modest pre-filter that trims the lowest-confidence false
+    # positives before the (more expensive) transcript confirm runs, while staying
+    # safely below a real "shut down" hit (logged at 0.726). Do NOT raise to 0.8 —
+    # that would reject genuine shutdowns near 0.726. The transcript gate in
+    # interaction._on_wake_word is the real safety; this is just tuning.
+    "shut_down":   0.6,
 }
 
 # Dedicated "shut down" wake word (trained ONNX kill-switch). Detecting this model
@@ -766,6 +790,15 @@ WAKE_WORD_SHUTDOWN_MODEL = "shut_down"
 # TTS. Leave False until the trained model is verified not to self-trigger on Rex's own
 # lines; safest with the hardware-AEC'd mic channel. Env override: WAKE_WORD_SHUTDOWN_DURING_TTS.
 WAKE_WORD_SHUTDOWN_DURING_TTS = _env_bool("WAKE_WORD_SHUTDOWN_DURING_TTS", False)
+# Before the shut_down wake word powers Rex off, transcribe the recent mic buffer
+# and require it to be an actual standalone shutdown command ("shut down" / "power
+# down" / "turn off"). Stops phonetically similar phrases ("look down") from
+# triggering shutdown. Set False to restore the legacy instant-kill behavior.
+# CONFIRM_AUDIO_SECS is how much of the rolling buffer to transcribe for the check.
+WAKE_WORD_SHUTDOWN_CONFIRM_ENABLED = _env_bool("WAKE_WORD_SHUTDOWN_CONFIRM_ENABLED", True)
+WAKE_WORD_SHUTDOWN_CONFIRM_AUDIO_SECS = _env_float(
+    "WAKE_WORD_SHUTDOWN_CONFIRM_AUDIO_SECS", 2.0, min_value=0.5, max_value=5.0,
+)
 
 # Loud DJ/radio playback bleeds into the mic and masks the wake word, so a real
 # "hey Rex" can score below the normal bar while a track is playing — leaving no
@@ -1094,6 +1127,16 @@ SERVO_RECONNECT_COOLDOWN_SECS = 5.0
 SERVO_APPLY_STARTUP_MOTION_PROFILE = True
 SERVO_DEFAULT_SPEED = 40
 SERVO_DEFAULT_ACCELERATION = 8
+
+# Brisk profile applied to the head channels at the start of animations.shutdown()
+# so the droop to the rest pose isn't stranded by a stale slow profile (listening
+# 22/6, adaptive-rest 35/6) left behind by the last subsystem. Keep these high
+# enough that the physical servo keeps up with the droop's software step rate, but
+# not so high the head slams down — tune on hardware. SETTLE is how long to wait
+# for the head to physically arrive before LEDs off / serial close.
+SHUTDOWN_DROOP_SERVO_SPEED = 70
+SHUTDOWN_DROOP_SERVO_ACCELERATION = 14
+SHUTDOWN_DROOP_SETTLE_SECS = 0.8
 SERVO_SPEECH_HEAD_SPEED = 45
 SERVO_SPEECH_ARM_SPEED = 35
 SERVO_SPEECH_ACCELERATION = 8
@@ -1238,9 +1281,16 @@ WAVE_HOLD_SECS = 0.14
 # CAMERA
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Frame resolution set on the capture device at startup
-CAMERA_WIDTH  = 1280
-CAMERA_HEIGHT = 720
+# Frame resolution set on the capture device at startup.
+# Native 1080p (not 720p + dlib upsampling): on a wide-angle lens a face at ~6ft
+# spans too few pixels at 720p for HOG to clear its minimum template size, and
+# upsampling only interpolates — it adds no real detail. 1080p gives 2.25x the
+# REAL pixels, which improves both detection AND recognition-encoding quality
+# (fewer false-identity flips). Verify the camera actually negotiates 1920x1080 in
+# the "Camera opened ... 1920x1080" startup log — if it can't, OpenCV silently
+# falls back to a supported (possibly lower) mode, so drop back to 1280x720 then.
+CAMERA_WIDTH  = 1920
+CAMERA_HEIGHT = 1080
 CAMERA_FPS    = 30
 
 # macOS AVFoundation defaults to yuv420p, which many FaceTime/Continuity
@@ -2938,7 +2988,11 @@ APPEARANCE_RIFF_PROBABILITY = 0.35
 LIVE_VISION_COMMENT_COOLDOWN_SECS = 300.0
 
 # Probability a triggered ambient-observation tick actually fires (vs skipping).
-AMBIENT_OBSERVATION_PROBABILITY = 0.5
+# Raised 0.5 -> 0.8 to make Rex comment on the room more. This is the cost-free
+# engagement lever: do_ambient_observation reuses already-scanned world_state
+# environment data (no fresh vision/GPT-4o call), unlike live_vision_comment /
+# bored_env_snark which make a hard-cooled vision call.
+AMBIENT_OBSERVATION_PROBABILITY = 0.8
 
 # Bored environmental snark: when Rex is idle and bored, he looks around and invents
 # snark about the ROOM — a complaint about how dull it is, a faux-clueless question

@@ -56,7 +56,12 @@ _PURPOSE_PRIORITIES: dict[str, int] = {
     "world_reaction": 40,
     "ambient_observation": 30,
     "appearance_riff": 28,
-    "idle_monologue": 15,
+    # 22 (not the old 15) so idle monologue / empty-room lines clear
+    # ACTION_GOVERNOR_MIN_SCORE (20). At 15 they were always rejected
+    # below_min_score, i.e. unreachable once ACTION_GOVERNOR_ENFORCE was turned on
+    # — they could never fire even on an otherwise-empty idle tick. Still low
+    # priority: any presence/identity/check-in candidate outranks them.
+    "idle_monologue": 22,
     "direct_speech": 20,
 }
 

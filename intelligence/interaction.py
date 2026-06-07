@@ -634,7 +634,36 @@ def _on_wake_word(model_name: str) -> None:
     if shutdown_model and model_name == shutdown_model:
         if current_state == State.SHUTDOWN:
             return
-        _log.info("[wake_word] shutdown wake word %r detected — initiating shutdown", model_name)
+        # Confirm the utterance really was a shutdown command before powering off.
+        # The acoustic model alone confuses "look down" with "shut down" (it fires
+        # at ~0.5-0.8 for both), and unlike every other shutdown route this one was
+        # NOT lexically gated. Transcribe ~2s of the rolling buffer (the whole
+        # phrase, not a VAD fragment that clips "shut down" to "down") and only shut
+        # down if it's an actual standalone shutdown command. Fails safe: an empty
+        # or failed transcript is rejected, so an STT outage never powers Rex off.
+        if bool(getattr(config, "WAKE_WORD_SHUTDOWN_CONFIRM_ENABLED", True)):
+            try:
+                secs = float(getattr(config, "WAKE_WORD_SHUTDOWN_CONFIRM_AUDIO_SECS", 2.0))
+                recent = stream.get_audio_chunk(secs)
+                text = transcription.transcribe(recent) if len(recent) else ""
+            except Exception as exc:
+                text = ""
+                _log.warning("[wake_word] shutdown confirm transcription failed: %s", exc)
+            if not command_parser.is_standalone_shutdown_command(text):
+                _log.info(
+                    "[wake_word] shut_down wake hit NOT confirmed by transcript %r — "
+                    "ignoring (likely 'look down')", text,
+                )
+                return
+            _log.info(
+                "[wake_word] shutdown wake word %r confirmed by transcript %r — initiating shutdown",
+                model_name, text,
+            )
+        else:
+            _log.info(
+                "[wake_word] shutdown wake word %r detected (confirm disabled) — initiating shutdown",
+                model_name,
+            )
         with _wake_lock:
             _last_wake_word = model_name
         try:

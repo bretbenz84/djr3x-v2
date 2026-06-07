@@ -4529,7 +4529,10 @@ def _idle_micro_behavior_choices(snapshot: dict) -> tuple[list[str], list[int]]:
                 "live_vision_comment",
                 "bored_env_snark",
             ],
-            [6, 2, 1, 1, 1, 1, 1, 3],
+            # Weighted toward room/environment commentary (ambient_observation,
+            # live_vision_comment, bored_env_snark) so an idle tick is more likely
+            # to land on "comment on the room" than self-monologue.
+            [6, 1, 1, 1, 1, 3, 2, 4],
         )
     if people:
         return (
@@ -4545,7 +4548,10 @@ def _idle_micro_behavior_choices(snapshot: dict) -> tuple[list[str], list[int]]:
                 "idle_clip",
                 "bored_env_snark",
             ],
-            [4, 3, 2, 1, 1, 1, 1, 1, 1, 2],
+            # Room/environment commentary (ambient_observation 1->3,
+            # live_vision_comment 1->2, bored_env_snark 2->3) gets more share so
+            # Rex riffs on the room, not just on the person, when idle.
+            [4, 3, 2, 3, 2, 1, 1, 1, 1, 3],
         )
     return (
         [
@@ -4559,7 +4565,9 @@ def _idle_micro_behavior_choices(snapshot: dict) -> tuple[list[str], list[int]]:
             "live_vision_comment",
             "bored_env_snark",
         ],
-        [2, 3, 1, 1, 1, 1, 1, 1, 3],
+        # More room/environment commentary share (ambient_observation 1->3,
+        # live_vision_comment 1->2) here too.
+        [2, 3, 1, 1, 1, 1, 3, 2, 3],
     )
 
 

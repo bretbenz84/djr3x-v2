@@ -105,6 +105,16 @@ HEROARM_NEUTRAL = 6000
 HEROARM_FORWARD = 4800
 HEROARM_BACK    = 7200
 
+# The pose shutdown() / sleep() park the head in — head fully lowered, looking down,
+# visor closed, neck centred. startup() seeds its slow raise from this so it never
+# depends on a fresh-connect proprioception read to know where it's starting from.
+SHUTDOWN_REST_POSE = {
+    0: NECK_CENTER,
+    1: HEADLIFT_FLOOR,
+    2: HEADTILT_DOWN,
+    3: VISOR_CLOSED,
+}
+
 # Idle arm wander should read as intentional arm motion, not servo creep. The
 # hero arm gets the broadest swing; pokerarm stays a quieter secondary accent.
 _IDLE_ARM_WAIT_RANGE_SECS = (4.0, 9.0)
@@ -681,23 +691,35 @@ def startup() -> None:
     # Raise head + open visor in a background thread while the main thread
     # runs the neck sweep — gives the impression of waking up and looking around
     # simultaneously, instead of head-up-then-look.
+    #
+    # Seed the sweep from the known shutdown rest pose rather than a fresh-connect
+    # proprioception read: that first read is the least reliable, and if it comes
+    # back wrong the floor->neutral interpolation collapses and the head jerks
+    # straight up instead of rising slowly. We parked it at the rest pose on the
+    # last shutdown()/sleep(), so we know exactly where it is.
     lift_thread = threading.Thread(
         target=servos.move_to,
         args=({1: HEADLIFT_NEUTRAL, 2: HEADTILT_NEUTRAL, 3: VISOR_HALF},),
-        kwargs={"step_us": 25, "step_delay": 0.025},
+        kwargs={
+            "step_us": 25,
+            "step_delay": 0.025,
+            "start": {ch: SHUTDOWN_REST_POSE[ch] for ch in (1, 2, 3)},
+        },
         daemon=True,
         name="startup_lift",
     )
     lift_thread.start()
 
-    # Look around as if waking up — randomly choose left-right or right-left.
+    # Look around as if waking up — randomly choose left-right or right-left. The
+    # first turn starts from the centred rest pose for the same reason as the lift.
+    neck_start = {0: SHUTDOWN_REST_POSE[0]}
     if random.random() < 0.5:
-        servos.move_to({0: NECK_LEFT},  step_us=40, step_delay=0.025)
+        servos.move_to({0: NECK_LEFT},  step_us=40, step_delay=0.025, start=neck_start)
         time.sleep(0.3)
         servos.move_to({0: NECK_RIGHT}, step_us=40, step_delay=0.025)
         time.sleep(0.3)
     else:
-        servos.move_to({0: NECK_RIGHT}, step_us=40, step_delay=0.025)
+        servos.move_to({0: NECK_RIGHT}, step_us=40, step_delay=0.025, start=neck_start)
         time.sleep(0.3)
         servos.move_to({0: NECK_LEFT},  step_us=40, step_delay=0.025)
         time.sleep(0.3)
@@ -787,15 +809,34 @@ def shutdown() -> None:
     Timing: step_us=50 / step_delay=0.012 makes the droop brisk and apparent (~1s
     over the ~4000-unit head-lift travel) rather than the old ~4s crawl, while
     staying smooth (finer steps than the expressive gestures, which use 80-150).
+
+    Motion profile: move_to only streams Set-Target steps; it never programs the
+    Maestro's per-channel speed/accel. So the droop inherits whatever profile the
+    last subsystem left on the head channels — and that is often a SLOW one
+    (listening = speed 22 / accel 6, adaptive-rest = 35 / 6). At step_us=50 /
+    step_delay=0.012 the software finishes streaming the FLOOR target in ~0.7s
+    while the slow-capped servo is still mid-travel, then serial closes and the
+    head is stranded near where it was (≈ neutral). We reset to a brisk profile
+    here so the physical servo can actually keep up and reach the rest pose.
     """
     servos.stop_breathing()
     time.sleep(0.1)   # let breathing thread exit before we move headlift
+
+    # Clear any stale slow speed/accel left on the head channels before the droop.
+    servos.set_motion_profile(
+        config.HEAD_CHANNELS,
+        speed=int(getattr(config, "SHUTDOWN_DROOP_SERVO_SPEED", 70)),
+        acceleration=int(getattr(config, "SHUTDOWN_DROOP_SERVO_ACCELERATION", 14)),
+    )
 
     servos.move_to(
         {3: VISOR_CLOSED, 0: NECK_CENTER, 1: HEADLIFT_FLOOR, 2: HEADTILT_DOWN},
         step_us=50, step_delay=0.012,
     )
-    time.sleep(0.3)
+    # Give the head time to physically arrive at FLOOR before LEDs off / serial
+    # close. Don't rely on the shutdown-audio join window (skipped when audio is
+    # disabled), or a correct-speed droop could still be cut short.
+    time.sleep(float(getattr(config, "SHUTDOWN_DROOP_SETTLE_SECS", 0.8)))
     leds_head.off()
     leds_chest.off()
 

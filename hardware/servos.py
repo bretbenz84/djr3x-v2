@@ -1134,8 +1134,21 @@ def idle_animation() -> None:
     set_servos({neck_cfg["ch"]: neck_cfg["neutral"], lift_cfg["ch"]: lift_cfg["neutral"]})
 
 
-def move_to(targets: "dict[int, int]", step_us: int = 40, step_delay: float = 0.02) -> None:
-    """Smoothly interpolate specific channels to target positions (quarter-microseconds)."""
+def move_to(
+    targets: "dict[int, int]",
+    step_us: int = 40,
+    step_delay: float = 0.02,
+    start: "dict[int, int] | None" = None,
+) -> None:
+    """Smoothly interpolate specific channels to target positions (quarter-microseconds).
+
+    The interpolation start point is read from the Maestro (proprioception) so the
+    sweep begins wherever the servo actually is. Pass ``start`` to override that read
+    with a known pose for specific channels — use it when the caller already knows the
+    current position and the proprioception read is unreliable (e.g. the first move
+    right after a fresh serial connect, where a failed/garbage read would otherwise
+    collapse the sweep into a jump).
+    """
     if _program_servo_updates_blocked():
         return
     targets = {ch: _clamp(ch, int(tgt)) for ch, tgt in targets.items()}
@@ -1149,7 +1162,10 @@ def move_to(targets: "dict[int, int]", step_us: int = 40, step_delay: float = 0.
 
     current: dict[int, int] = {}
     for ch, tgt in targets.items():
-        pos = get_servo(ch)
+        if start is not None and ch in start:
+            pos = int(start[ch])
+        else:
+            pos = get_servo(ch)
         current[ch] = _clamp(ch, pos if pos is not None else tgt)
 
     done = False

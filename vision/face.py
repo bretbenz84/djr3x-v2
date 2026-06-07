@@ -101,17 +101,32 @@ def _load_models() -> bool:
 # ── Internal detection helpers ────────────────────────────────────────────────
 
 def _detect_rects(rgb: np.ndarray) -> list:
-    """Run the active detector and return a list of dlib rectangles."""
+    """Run the active detector and return a list of dlib rectangles.
+
+    Detections below config.FACE_DETECTOR_MIN_CONFIDENCE are dropped. Background
+    clutter the HOG detector reports comes back as LOW-confidence detections, so a
+    confidence gate removes phantom faces (which were spawning bogus "unknown
+    person" prompts in a messy room) without discarding small/distant real faces —
+    a min-SIZE gate would instead drop exactly the distant face we want to keep.
+    """
     global _use_hog, _slow_count
 
     upsample = max(0, int(getattr(config, "FACE_DETECTOR_UPSAMPLE", 1) or 0))
+    min_conf = float(getattr(config, "FACE_DETECTOR_MIN_CONFIDENCE", 0.0) or 0.0)
+
     if _use_hog:
-        return list(_hog_detector(rgb, upsample))
+        # Scored overload: run() returns (rects, scores, sub_detector_idx). The
+        # plain __call__ overload returns rects only, with no score to gate on.
+        rects, scores, _ = _hog_detector.run(rgb, upsample, 0.0)
+        return [r for r, s in zip(rects, scores) if s >= min_conf]
 
     t0 = time.monotonic()
     cnn_dets = _cnn_detector(rgb, upsample)
     elapsed = time.monotonic() - t0
-    rects = [d.rect for d in cnn_dets]
+    # mmod exposes per-detection .confidence (a different scale than HOG; the
+    # default threshold is HOG-tuned, so this mainly affects the HOG path actually
+    # in use). Keep detections at or above the gate.
+    rects = [d.rect for d in cnn_dets if float(getattr(d, "confidence", 1.0)) >= min_conf]
 
     if elapsed > _SLOW_THRESHOLD_SECS:
         _slow_count += 1
