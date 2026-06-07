@@ -99,7 +99,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # When True, clears logs/djr3x.log and logs/conversation.log at startup so
 # each run begins with fresh log files.
-DEBUG_MODE = False
+DEBUG_MODE = True
 
 # conversation.log is written by a tiny custom logger rather than Python's
 # RotatingFileHandler. Keep recent lines only so debug sessions do not leave a
@@ -691,6 +691,7 @@ WAKE_WORD_MODELS = {
     "Hey_rex":     "assets/models/wake_word/Hey_rex.onnx",
     "Yo_robot":    "assets/models/wake_word/Yo_robot.onnx",
     "wakeuprex":   "assets/models/wake_word/wakeuprex.onnx",  # SLEEP state only
+    "shut_down":   "assets/models/wake_word/shut_down.onnx",  # dedicated shutdown kill-switch
 }
 
 # Detection confidence threshold — raise to reduce false positives, lower for sensitivity
@@ -703,7 +704,21 @@ WAKE_WORD_THRESHOLDS = {
     "Hey_rex":     0.5,
     "Yo_robot":    0.5,
     "wakeuprex":   0.5,
+    "shut_down":   0.5,
 }
+
+# Dedicated "shut down" wake word (trained ONNX kill-switch). Detecting this model
+# drives an immediate State.SHUTDOWN, bypassing VAD segmentation + STT — where
+# "shut down" is routinely clipped to "down" or dropped as too-short. The name must
+# match the .onnx filename stem registered in WAKE_WORD_MODELS above (drop the file in
+# at assets/models/wake_word/<name>.onnx). Set to "" to disable the fast-path branch.
+WAKE_WORD_SHUTDOWN_MODEL = "shut_down"
+# By default the wake-word loop stands down entirely while Rex is speaking (his own
+# voice bleeds into the mic and self-triggers the models). The shutdown kill-switch is
+# most useful mid-speech, so this flag keeps ONLY the shutdown model live during Rex's
+# TTS. Leave False until the trained model is verified not to self-trigger on Rex's own
+# lines; safest with the hardware-AEC'd mic channel. Env override: WAKE_WORD_SHUTDOWN_DURING_TTS.
+WAKE_WORD_SHUTDOWN_DURING_TTS = _env_bool("WAKE_WORD_SHUTDOWN_DURING_TTS", False)
 
 # Loud DJ/radio playback bleeds into the mic and masks the wake word, so a real
 # "hey Rex" can score below the normal bar while a track is playing — leaving no

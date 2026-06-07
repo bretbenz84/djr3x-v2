@@ -626,6 +626,24 @@ def _on_wake_word(model_name: str) -> None:
         current_state = state_module.get_state()
     except Exception:
         current_state = State.IDLE
+
+    # Dedicated "shut down" wake word → immediate shutdown, skipping the VAD/STT path
+    # (where "shut down" is often clipped to "down" or dropped) and the LLM farewell.
+    # main.py runs the normal shutdown sequence (audio + animation) on the state change.
+    shutdown_model = str(getattr(config, "WAKE_WORD_SHUTDOWN_MODEL", "") or "").strip()
+    if shutdown_model and model_name == shutdown_model:
+        if current_state == State.SHUTDOWN:
+            return
+        _log.info("[wake_word] shutdown wake word %r detected — initiating shutdown", model_name)
+        with _wake_lock:
+            _last_wake_word = model_name
+        try:
+            _interrupted.set()  # cut off any in-progress speech immediately
+        except Exception:
+            pass
+        state_module.set_state(State.SHUTDOWN)
+        return
+
     if current_state != State.SLEEP and model_name == "wakeuprex":
         _log.info("[wake_word] ignored sleep-only wake word while not asleep: %s", model_name)
         return

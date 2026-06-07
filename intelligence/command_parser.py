@@ -189,13 +189,11 @@ def _parse_directed_look(normalized: str, original: str) -> dict | None:
     for cases where the user is directing Rex's head/camera toward a target.
     """
     clean = _strip_direct_command_leaders(_plain(normalized))
-    if clean in _BARE_LOOK_DIRECTIONS:
-        return {
-            "direction": _BARE_LOOK_DIRECTIONS[clean],
-            "target_hint": "",
-            "search_target": False,
-            "utterance": original.strip(),
-        }
+    # A bare directional word ("down", "up", "left", "right", "center") is NOT a
+    # gaze command on its own: short STT fragments routinely clip a longer phrase
+    # down to a single direction (e.g. "shut down" → "down"), and firing a silent
+    # head-turn for that reads as Rex ignoring the user. Require an explicit
+    # "look" — as a prefix ("look down") or embedded ("... look down") — instead.
     if not clean.startswith("look "):
         embedded = _EMBEDDED_LOOK_DIRECTION_RE.search(original or "")
         if embedded is None:

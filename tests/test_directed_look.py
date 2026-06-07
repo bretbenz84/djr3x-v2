@@ -28,15 +28,16 @@ class DirectedLookTests(unittest.TestCase):
                 self.assertEqual(match.command_key, "directed_look")
                 self.assertEqual(match.args["direction"], direction)
 
-    def test_parser_accepts_bare_direction(self):
+    def test_parser_ignores_bare_direction(self):
         from intelligence import command_parser
 
+        # A bare direction is a common STT clip of a longer command (notably
+        # "shut down" → "down"). It must not silently fire a head-turn; require
+        # an explicit "look" instead.
         match = command_parser.parse("down")
 
-        self.assertIsNotNone(match)
-        self.assertEqual(match.command_key, "directed_look")
-        self.assertEqual(match.args["direction"], "down")
-        self.assertFalse(match.args["search_target"])
+        if match is not None:
+            self.assertNotEqual(match.command_key, "directed_look")
 
     def test_parser_extracts_embedded_imperative_look_direction(self):
         from intelligence import command_parser

@@ -42,6 +42,13 @@ _CHUNK_SECS = _CHUNK_SAMPLES / config.AUDIO_SAMPLE_RATE
 _GENERAL_MODELS = frozenset({"Dee-Jay_Rex", "Hey_DJ_Rex", "Hey_rex", "Yo_robot"})
 _SLEEP_MODELS = frozenset({"wakeuprex"})
 
+# Dedicated "shut down" wake word — a robust voice kill-switch that bypasses VAD
+# segmentation + STT (where "shut down" is often clipped to "down" or dropped). Kept
+# live in every state except SHUTDOWN so it can stop Rex from anywhere. The handler in
+# interaction._on_wake_word turns a detection into an immediate State.SHUTDOWN.
+_shutdown_model_name = str(getattr(config, "WAKE_WORD_SHUTDOWN_MODEL", "") or "").strip()
+_SHUTDOWN_MODELS = frozenset({_shutdown_model_name}) if _shutdown_model_name else frozenset()
+
 _oww_model = None
 _loaded_models: frozenset[str] = frozenset()
 
@@ -175,9 +182,9 @@ def _resolve_feature_model_paths(openwakeword_pkg) -> dict[str, str]:
 
 def _active_for_state(current_state: State) -> frozenset[str]:
     if current_state in (State.IDLE, State.QUIET, State.ACTIVE):
-        return _GENERAL_MODELS & _loaded_models
+        return (_GENERAL_MODELS | _SHUTDOWN_MODELS) & _loaded_models
     if current_state is State.SLEEP:
-        return (_SLEEP_MODELS | _GENERAL_MODELS) & _loaded_models
+        return (_SLEEP_MODELS | _GENERAL_MODELS | _SHUTDOWN_MODELS) & _loaded_models
     return frozenset()  # SHUTDOWN — nothing should fire
 
 
@@ -294,7 +301,15 @@ def _detection_loop(callback: Callable[[str], None]) -> None:
         # music is exempt (barge-in to stop music is intentional).
         if (not bool(getattr(config, "WAKE_WORD_ALLOW_DURING_TTS", False))
                 and _tts_playback_active() and not _dj_playback_active()):
-            continue
+            # The shutdown kill-switch is most useful mid-speech, so optionally keep
+            # ONLY it live during Rex's TTS while every other model still stands down.
+            shutdown_live = (
+                bool(getattr(config, "WAKE_WORD_SHUTDOWN_DURING_TTS", False))
+                and bool(_SHUTDOWN_MODELS & active)
+            )
+            if not shutdown_live:
+                continue
+            active = _SHUTDOWN_MODELS & active
 
         mic = audio[-_CHUNK_SAMPLES:]
         # Optional software echo suppression (off by default — see audio/aec.py and
