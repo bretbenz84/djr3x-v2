@@ -783,15 +783,19 @@ def shutdown() -> None:
     together in a SINGLE move_to so the droid powers down in one motion, instead
     of the old visor→tilt→lift sequence. (Headtilt is inverted: HEADTILT_DOWN is
     the "looking down" value.)
+
+    Timing: step_us=50 / step_delay=0.012 makes the droop brisk and apparent (~1s
+    over the ~4000-unit head-lift travel) rather than the old ~4s crawl, while
+    staying smooth (finer steps than the expressive gestures, which use 80-150).
     """
     servos.stop_breathing()
     time.sleep(0.1)   # let breathing thread exit before we move headlift
 
     servos.move_to(
         {3: VISOR_CLOSED, 0: NECK_CENTER, 1: HEADLIFT_FLOOR, 2: HEADTILT_DOWN},
-        step_us=25, step_delay=0.025,
+        step_us=50, step_delay=0.012,
     )
-    time.sleep(0.5)
+    time.sleep(0.3)
     leds_head.off()
     leds_chest.off()
 
