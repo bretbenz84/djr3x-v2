@@ -4367,6 +4367,11 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
 
     _last_micro_behavior_at = now
     choices, weights = _idle_micro_behavior_choices(snapshot)
+    # Episodic recall (Phase 2) is opt-in: only offer the "memory musing" behavior
+    # when enabled, so the idle mix is unchanged while the feature is off.
+    if getattr(config, "EPISODIC_RECALL_ENABLED", False) and "memory_musing" not in choices:
+        choices = choices + ["memory_musing"]
+        weights = weights + [2]
     behavior = random.choices(choices, weights=weights, k=1)[0]
     _log.debug("consciousness: idle micro-behavior → %s", behavior)
 
@@ -4386,6 +4391,11 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
     elif behavior == "aspiration":
         if not profile.suppress_proactive and not profile.suppress_system_comments:
             idle_behaviors.do_aspiration()
+    elif behavior == "memory_musing":
+        # A system monologue like private_thought — suppressed by both gates so Rex
+        # doesn't reminisce out loud mid-conversation.
+        if not profile.suppress_proactive and not profile.suppress_system_comments:
+            idle_behaviors.do_memory_musing()
     elif behavior == "idle_clip":
         if not profile.suppress_proactive:
             idle_behaviors.do_idle_clip()

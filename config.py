@@ -613,6 +613,48 @@ EPISODIC_SHUTDOWN_SUMMARY_TIMEOUT_SECS = 12.0
 # (background thread), gated like all episodic writes.
 EPISODIC_STARTUP_IMAGE_ENABLED = True
 
+# ── PHASE 2: episodic RECALL (reading the diary back into behavior) ──────────────
+# SEPARATE kill switch from capture (EPISODIC_MEMORY_ENABLED). Off → recall is inert:
+# rex.db is still written, but nothing is ever surfaced. Turn on once the diary has
+# accumulated worthwhile material. Env override: EPISODIC_RECALL_ENABLED.
+EPISODIC_RECALL_ENABLED = _env_bool("EPISODIC_RECALL_ENABLED", False)
+# Recency half-life (days) for ranking — an episode's weight halves every N days.
+EPISODIC_RECALL_RECENCY_HALFLIFE_DAYS = 5.0
+# How far back the cross-session "since last time" recap looks.
+EPISODIC_RECALL_LOOKBACK_DAYS = 14
+# When the idle "memory musing" micro-behavior is selected, probability it actually
+# surfaces a recap (subtle & occasional — a spice, not every idle tick).
+EPISODIC_RECALL_SESSION_RECAP_PROBABILITY = 0.5
+# Per-kind ranking weights. conversation_summary is DELIBERATELY absent → excluded
+# from recall: people.db owns per-person conversation recall ("Last conversation" +
+# the nostalgia hook), so re-surfacing it here would double up. Unknown kinds default
+# to EPISODIC_RECALL_DEFAULT_KIND_WEIGHT below.
+EPISODIC_RECALL_KIND_WEIGHTS = {
+    "emotional_checkin": 1.0,
+    "celebrity":         0.95,
+    "made_laugh":        0.9,
+    "game_played":       0.9,
+    "person_enrolled":   0.85,
+    "milestone":         0.8,
+    "celebration":       0.8,
+    "reunion":           0.8,
+    "boundary":          0.75,
+    "visit_departure":   0.7,
+    "animal":            0.7,
+    "birthday_wish":     0.5,
+    "person_seen":       0.3,
+    "scene":             0.2,   # clustered to a "vibe", never surfaced individually
+    "conversation_summary": 0.0,  # excluded (people.db owns conversation recall)
+}
+EPISODIC_RECALL_DEFAULT_KIND_WEIGHT = 0.5
+# Sensitive kinds — never aired in the out-loud idle "memory musing" (could be
+# overheard). person-scoped recall (Phase 2b) may still surface them under the
+# existing emotional-events discretion rules.
+EPISODIC_RECALL_SENSITIVE_KINDS = ("emotional_checkin", "boundary")
+# Retention: keep at most this many of the newest scene episodes; older scenes are
+# pruned at shutdown (they accrue ~15/run and are only ever clustered to a vibe).
+EPISODIC_RECALL_SCENE_RETENTION = 40
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TTS — ELEVENLABS
 # ─────────────────────────────────────────────────────────────────────────────

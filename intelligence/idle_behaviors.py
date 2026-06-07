@@ -117,6 +117,34 @@ def do_private_thought() -> None:
         _c._release_proactive_purpose(token)
 
 
+def do_memory_musing() -> None:
+    """Surface a cross-session recollection from Rex's diary (rex.db) as a brief,
+    out-loud musing — "since I was last on" continuity. Gated by EPISODIC_RECALL_ENABLED
+    and a probability so it stays a subtle, occasional spice (not every idle tick).
+    No-op when recall is off or there's nothing worth recalling."""
+    if not getattr(config, "EPISODIC_RECALL_ENABLED", False):
+        return
+    if not _c._can_proactive_speak():
+        return
+    if random.random() >= float(getattr(config, "EPISODIC_RECALL_SESSION_RECAP_PROBABILITY", 0.5)):
+        return
+    try:
+        from memory import episodic_recall
+        recap = episodic_recall.session_recap()
+    except Exception:
+        recap = None
+    if not recap:
+        return
+    _c._generate_and_speak(
+        f"You're idly thinking back on things you remember from before — here's what "
+        f"comes to mind: {recap} In ONE short, dry, in-character Rex line, muse aloud "
+        f"about something you recall — like a passing recollection. Don't greet anyone "
+        f"or ask a question; just reminisce briefly. One line only.",
+        emotion="neutral",
+        purpose="memory_musing",
+    )
+
+
 def do_aspiration() -> None:
     """Speak one of Rex's forward-looking aspirations as an idle micro-behavior."""
     global _last_aspiration

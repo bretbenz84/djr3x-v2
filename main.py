@@ -559,6 +559,16 @@ def _shutdown() -> None:
     # clears the transcript). Timeout-bounded so it can't hang shutdown.
     _episodic_shutdown_summary()
 
+    # Retention: cap the diary's scene episodes so they don't accumulate unbounded
+    # (~15/run, only ever used as a clustered "vibe"). Best-effort, gated internally.
+    try:
+        from memory import episodic_recall
+        pruned = episodic_recall.prune()
+        if pruned:
+            logger.info("Pruned %d old scene episode(s) from rex.db.", pruned)
+    except Exception as exc:
+        logger.debug("episodic prune on shutdown failed: %s", exc)
+
     # Stop services in reverse startup order.
     logger.info("Stopping intelligence.interaction...")
     interaction.stop()  # also calls wake_word.stop() internally

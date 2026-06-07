@@ -173,7 +173,7 @@ def enroll_person(name: str) -> Optional[int]:
         _log.warning("enroll_person rejected non-name candidate: %r", name)
         return None
     now = _now()
-    return db.execute(
+    new_id = db.execute(
         """
         INSERT INTO people
             (name, first_seen, last_seen, visit_count,
@@ -184,6 +184,15 @@ def enroll_person(name: str) -> Optional[int]:
         """,
         (clean, now, now),
     )
+    # Log a first-person "I met <name>" episode to Rex's diary (rex.db). Gated +
+    # failure-safe inside episodes; never let a diary hiccup break enrollment.
+    if isinstance(new_id, int):
+        try:
+            from memory import episodes
+            episodes.record_person_enrolled(new_id, clean)
+        except Exception as exc:
+            _log.debug("[people] episodic person_enrolled capture failed: %s", exc)
+    return new_id
 
 
 def find_person_by_name(name: str) -> Optional[dict]:
