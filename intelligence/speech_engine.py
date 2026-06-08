@@ -51,7 +51,14 @@ class _ConsciousnessProxy:
 _c = _ConsciousnessProxy()
 
 
-def can_proactive_speak() -> bool:
+def can_proactive_speak(*, salient: bool = False) -> bool:
+    # salient=True marks a high-value, time-sensitive event (e.g. a new animal
+    # arriving in frame) that may interrupt a normal ACTIVE conversation and ignore
+    # the proactive pacing cooldown — otherwise a priority-85 reaction is starved by
+    # the same gate that low-priority idle chatter (which submits via a different
+    # path) bypasses. It STILL respects DJ playback, active games, awaiting-a-reply,
+    # an in-flight proactive line, and not talking over live speech, and the governor
+    # still arbitrates its priority.
     if not _c._can_speak():
         return False
 
@@ -77,7 +84,8 @@ def can_proactive_speak() -> bool:
 
     current_state = state_module.get_state()
     if (
-        current_state == State.ACTIVE
+        not salient
+        and current_state == State.ACTIVE
         and not getattr(config, "CONSCIOUSNESS_ALLOW_PROACTIVE_IN_ACTIVE", False)
     ):
         return False
@@ -92,11 +100,12 @@ def can_proactive_speak() -> bool:
     except Exception:
         pass
 
-    with _c._turn_lock:
-        last_spoken = _c._last_proactive_speech_at
-    min_gap = max(0.0, float(getattr(config, "CONSCIOUSNESS_PROACTIVE_MIN_GAP_SECS", 0.0)))
-    if min_gap and (time.monotonic() - last_spoken) < min_gap:
-        return False
+    if not salient:
+        with _c._turn_lock:
+            last_spoken = _c._last_proactive_speech_at
+        min_gap = max(0.0, float(getattr(config, "CONSCIOUSNESS_PROACTIVE_MIN_GAP_SECS", 0.0)))
+        if min_gap and (time.monotonic() - last_spoken) < min_gap:
+            return False
 
     try:
         from audio import speech_queue, output_gate
@@ -117,13 +126,17 @@ def speak_async(
     governed: bool = True,
     on_done: Optional[Callable[[], None]] = None,
     on_spoke: Optional[Callable[[], None]] = None,
+    force_salient: bool = False,
 ) -> bool:
     # `on_spoke` fires once the line is committed to the speech queue (only the
     # ENFORCE winner reaches here) — the place for "I fired this" bookkeeping that
     # must NOT happen for a losing candidate. See generate_and_speak's note.
+    # force_salient=True lets a high-value event (e.g. an animal arrival) speak
+    # during an ACTIVE conversation and skip the pacing cooldown (see
+    # can_proactive_speak); it still yields to live user speech below.
     def _do_speak(candidate_id: Optional[str]) -> bool:
         try:
-            if not _c._can_proactive_speak():
+            if not _c._can_proactive_speak(salient=force_salient):
                 _c._mark_governor_candidate(candidate_id, "dropped", "can_proactive_speak_false")
                 return False
             if not text or not text.strip():

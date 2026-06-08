@@ -24,6 +24,10 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         # statement handoff responsive and skip its flush.
         from intelligence import interaction
         interaction._last_fast_handoff_at = 0.0
+        # Proactive paths now hold off if another proactive line fired in the last
+        # few seconds; clear the leaked global so a prior test can't suppress this
+        # one's question/banter.
+        interaction._last_proactive_line_at = 0.0
         # These tests assert the default (non-hardware-AEC) post-TTS tuning. Force the
         # ReSpeaker hardware-AEC gate OFF so they are deterministic regardless of
         # whether a ReSpeaker Lite is plugged into the test machine. The AEC-on
@@ -9922,14 +9926,21 @@ class EndThreadClosureNarrowingTest(unittest.TestCase):
 
 class IdleBanterTest(unittest.TestCase):
     def setUp(self):
-        from intelligence import interaction
+        from intelligence import interaction, consciousness
         interaction._idle_banter_count = 0
         interaction._last_idle_banter_at = 0.0
+        # Proactive paths hold off if another proactive line fired in the last few
+        # seconds, or while Rex is awaiting an answer — clear the leaked globals so a
+        # prior test can't suppress banter.
+        interaction._last_proactive_line_at = 0.0
+        consciousness.clear_response_wait()
 
     def tearDown(self):
-        from intelligence import interaction
+        from intelligence import interaction, consciousness
         interaction._idle_banter_count = 0
         interaction._last_idle_banter_at = 0.0
+        interaction._last_proactive_line_at = 0.0
+        consciousness.clear_response_wait()
 
     def test_banter_fires_after_silence_and_drives_conversation(self):
         from intelligence import interaction

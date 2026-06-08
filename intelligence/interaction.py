@@ -3257,6 +3257,11 @@ def _maybe_low_memory_idle_question(
     if not spoken_text:
         return False
 
+    # One proactive line at a time — don't ask a profile question right on top of
+    # another proactive line (idle banter / interest follow-up) that just fired.
+    if _proactive_line_recently_fired():
+        return False
+
     _log.info(
         "[interaction] low-memory idle profile question — person_id=%s fact_count=%d key=%r text=%r",
         person_id,
@@ -3335,6 +3340,21 @@ def _maybe_idle_banter(
     # answer instead of getting a fresh prompt piled on top.
     if time.monotonic() < _floor_held_until:
         return False
+    # One proactive line at a time. The proactive QUESTION paths (low-memory /
+    # interest follow-up) speak inline and never arm _floor_held_until, so without
+    # this a profile question and this banter can commit back-to-back in the same
+    # lull — Rex talking over his own question. PROACTIVE_LINE_MIN_GAP_SECS spaces
+    # them so it's "one line, then wait."
+    if _proactive_line_recently_fired():
+        return False
+    # Belt-and-suspenders for the still-open-question case: if Rex is awaiting an
+    # answer to ANY question (including a proactive one that didn't arm the floor
+    # hold), don't volunteer over it.
+    try:
+        if consciousness.is_waiting_for_response():
+            return False
+    except Exception:
+        pass
     # Leave room before the hard idle cutoff so the outro can still land.
     if idle_for >= max(0.0, effective_idle_timeout - 1.0):
         return False

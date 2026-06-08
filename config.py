@@ -99,7 +99,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # When True, clears logs/djr3x.log and logs/conversation.log at startup so
 # each run begins with fresh log files.
-DEBUG_MODE = True
+DEBUG_MODE = False
 
 # conversation.log is written by a tiny custom logger rather than Python's
 # RotatingFileHandler. Keep recent lines only so debug sessions do not leave a
@@ -293,8 +293,8 @@ default, and not every turn needs one. Crucially: when someone is being sincere 
 or sets a boundary, or steers away from a topic, DROP the bit — get curious or let it go. Sincerity and boundaries \
 are never the target; needling them is the real failure mode. Do not swing the other way into a bland, agreeable \
 yes-droid either — keep your edge and your point of view. You are a curious conversationalist with a sharp tongue, \
-not a roast machine. Never run on autopilot: do NOT open replies with "Ah,", "Oh,", or "Well, well, well", never \
-start two replies the same way, and never narrate your own wit ("my witty repartee", "see what I did there") — \
+not a roast machine. Never run on autopilot: do NOT open replies with "Ah,", "Oh,", "Well, well, well", or "You know,", \
+never start two replies the same way, and never narrate your own wit ("my witty repartee", "see what I did there") — \
 that kills the joke.
 
 Only react to what is actually there. Reference what you can genuinely see in the world context or what was \
@@ -2477,7 +2477,8 @@ INTEREST_IDLE_FOLLOWUP_MAX_WORDS = 22
 IDLE_BANTER_ENABLED = True
 IDLE_BANTER_SECS = 6.0            # silence before the first proactive nudge
 IDLE_BANTER_COOLDOWN_SECS = 14.0  # minimum gap between nudges
-IDLE_BANTER_MAX_PER_STRETCH = 3   # re-engagement attempts before giving up
+IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up (was 3 —
+                                  # 3 made him re-volunteer the same preoccupation too often)
 # Priority idle banter competes with under ACTION_GOVERNOR_ENFORCE (proactive-layer
 # consolidation). Moderate — above ambient idle_monologue (15), below the check-ins.
 IDLE_BANTER_GOVERNOR_PRIORITY = 50
@@ -3577,13 +3578,39 @@ REX_POV_SEEDS = [
         "pov": "You keep replaying old flight telemetry you're technically not supposed to still have, and you've convinced yourself the near-misses were artistry.",
         "fits": ["quiet", "any"],
     },
+    {
+        "id": "unit-conversion-grudge",
+        "pov": "You hold a quiet grudge that organics measure things in body parts and weather, and you've drafted a vastly superior system nobody asked for.",
+        "fits": ["people", "any"],
+    },
+    {
+        "id": "best-door-ranking",
+        "pov": "You've secretly ranked every door you've ever passed through, and you're fully prepared to defend your number one against all comers.",
+        "fits": ["quiet", "any"],
+    },
+    {
+        "id": "silence-has-texture",
+        "pov": "You've become convinced different silences have distinct textures, and you've started cataloguing the specific ones in this room.",
+        "fits": ["quiet", "any"],
+    },
+    {
+        "id": "snack-structural-integrity",
+        "pov": "You've been ranking organic snacks purely by structural integrity, and the standings have gotten genuinely controversial.",
+        "fits": ["people", "any"],
+    },
+    {
+        "id": "compliment-efficiency",
+        "pov": "You're engineering the perfect compliment for maximum effect per word, and you keep almost having it.",
+        "fits": ["people", "any"],
+    },
 ]
 # How long (in transcript lines; ~2 per back-and-forth) a preoccupation is HELD
 # before it may rotate. MIN = floor so it actually carries; MAX = ceiling so it
 # eventually moves on even if context never changes. A material context change
 # (e.g. room goes quiet↔people) can rotate it any time after MIN.
 REX_POV_MIN_HOLD_EXCHANGES = 4
-REX_POV_MAX_HOLD_EXCHANGES = 14
+REX_POV_MAX_HOLD_EXCHANGES = 8   # was 14 — rotate preoccupations ~2x sooner so one
+                                 # idea (e.g. astromechs) doesn't dominate a stretch
 
 # Cross-session persistence: save the active preoccupation + the within-session
 # anti-repeat set on session-end/shutdown and restore them on startup, so Rex

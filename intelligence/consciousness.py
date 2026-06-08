@@ -1870,6 +1870,7 @@ def _fire_pending_animal_arrival_reaction() -> bool:
             purpose="world.animal_arrival",
             label=f"animal arrival: {(animal.get('species') or 'creature').strip().lower()}",
             on_spoke=_on_spoke,
+            force_salient=True,
         ):
             return True
     return False
@@ -4090,6 +4091,20 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
 
     if _last_snapshot:
         _stage_animal_arrivals(snapshot)
+        # A newly-arrived animal is a salient, time-sensitive event (300s cooldown)
+        # and deserves a reaction even mid-conversation — so attempt it BEFORE the
+        # general proactive-suppression gates below, which would otherwise starve it
+        # the way they did when a dog was held up during an active conversation. The
+        # fire path is marked salient (force_salient) so it can interrupt ACTIVE /
+        # skip the pacing cooldown, but it still yields to live user speech and to a
+        # pending startup greeting or identity prompt, and the governor still
+        # arbitrates its priority (85).
+        if (
+            not _startup_known_greeting_pending(snapshot)
+            and not is_identity_prompt_waiting_for_reply()
+            and _fire_pending_animal_arrival_reaction()
+        ):
+            return
 
     if profile.suppress_proactive or profile.rapid_exchange:
         return
@@ -4098,8 +4113,6 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
     if _startup_known_greeting_pending(snapshot):
         return
     if is_identity_prompt_waiting_for_reply():
-        return
-    if _fire_pending_animal_arrival_reaction():
         return
 
     try:

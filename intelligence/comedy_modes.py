@@ -26,12 +26,16 @@ _RECENT_OPENERS: deque[str] = deque(maxlen=4)
 # avoid repeating it verbatim (the "A solo project, huh?" / "Absolutely" loop).
 _LAST_SPOKEN_LINE: str = ""
 
-# Stock filler openers Rex overuses ("Ah, …", "Oh, …", "Well, well, well, …").
-# The core prompt bans them but the model still reaches for them, so strip them
-# deterministically. Single "Well," is left alone (it can be natural).
+# Stock filler openers Rex overuses ("Ah, …", "Oh, …", "Well, well, well, …",
+# "You know, …"). The core prompt bans them but the model still reaches for them,
+# so strip them deterministically. Single "Well," is left alone (it can be natural).
+# "You know" is only stripped when followed by a comma, so a legitimate mid-clause
+# subject+verb like "You know the rules" is never mangled.
 _BANNED_OPENER_RE = re.compile(
-    r"^\s*(?:ah+|oh+|ooh+|uh+|um+|hmm+|well[,\s]+well(?:[,\s]+well)?)"
-    r"\b[\s,.!—–-]*",
+    r"^\s*(?:"
+    r"(?:ah+|oh+|ooh+|uh+|um+|hmm+|well[,\s]+well(?:[,\s]+well)?)\b[\s,.!—–-]*"
+    r"|y(?:ou|')\s*know(?:\s+what)?\s*,[\s,.!—–-]*"
+    r")",
     re.IGNORECASE,
 )
 
@@ -190,8 +194,8 @@ def build_directive(mode: ComedyMode) -> str:
         directive += (
             "\nOpening variety: vary your first words — do not open this reply with "
             + " or ".join(repr(o) for o in openers)
-            + " (you just opened that way), and never open with 'Ah,', 'Oh,', or "
-            "'Well, well'."
+            + " (you just opened that way), and never open with 'Ah,', 'Oh,', "
+            "'Well, well', or 'You know,'."
         )
     return directive
 

@@ -625,6 +625,13 @@ class OpenerVarietyTest(unittest.TestCase):
         )
         # A single "Well," is left alone.
         self.assertEqual(cm.strip_banned_opener("Well, that's fair"), "Well, that's fair")
+        # "You know," (and variants) is a stock opener Rex overuses — strip it.
+        self.assertEqual(cm.strip_banned_opener("You know, that track slaps"), "That track slaps")
+        self.assertEqual(cm.strip_banned_opener("You know what, you might be right"), "You might be right")
+        self.assertEqual(cm.strip_banned_opener("Y'know, I've seen better"), "I've seen better")
+        # A legitimate mid-clause "you know" (no comma) is NEVER mangled.
+        self.assertEqual(cm.strip_banned_opener("You know the rules by now"), "You know the rules by now")
+        self.assertEqual(cm.strip_banned_opener("I think you know the answer"), "I think you know the answer")
 
     def test_polish_strips_banned_opener_on_roast_turns(self):
         from intelligence import comedy_modes as cm
