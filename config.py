@@ -2724,9 +2724,26 @@ LOCAL_ANIMAL_DETECTION_INTERVAL_SECS = _env_float(
     min_value=0.5,
     max_value=30.0,
 )
+# Acceptance threshold: a detected animal must score at least this to count.
+# Lowered 0.45 -> 0.30 because EfficientDet-Lite0 scores a dog held close to the
+# wide-angle lens fairly low. The MODEL_FLOOR below is intentionally even lower so
+# the detector still RETURNS the dog and we can LOG its real score (animal_detector
+# logs animal-species sightings between the floor and this threshold) — so if a
+# held dog still isn't caught, the next run shows what it actually scored and you
+# can drop this further (env: LOCAL_ANIMAL_DETECTION_SCORE_THRESHOLD). Going lower
+# trades more false positives (clutter misread as an animal) for fewer misses.
 LOCAL_ANIMAL_DETECTION_SCORE_THRESHOLD = _env_float(
     "LOCAL_ANIMAL_DETECTION_SCORE_THRESHOLD",
-    0.45,
+    0.30,
+    min_value=0.05,
+    max_value=0.95,
+)
+# The score_threshold handed to MediaPipe itself. Kept below the acceptance
+# threshold so sub-threshold animal candidates are still returned (and logged for
+# tuning) instead of silently dropped inside the model.
+LOCAL_ANIMAL_DETECTION_MODEL_FLOOR = _env_float(
+    "LOCAL_ANIMAL_DETECTION_MODEL_FLOOR",
+    0.15,
     min_value=0.05,
     max_value=0.95,
 )

@@ -75,8 +75,11 @@ def _load_model() -> bool:
             base_options=BaseOptions(model_asset_path=str(model_path)),
             running_mode=VisionRunningMode.IMAGE,
             max_results=int(getattr(config, "LOCAL_ANIMAL_DETECTION_MAX_RESULTS", 8) or 8),
+            # Use the low MODEL_FLOOR here, NOT the acceptance threshold, so the
+            # detector still returns sub-threshold animal candidates; acceptance is
+            # applied (and sub-threshold sightings logged) in _records_from_detections.
             score_threshold=float(
-                getattr(config, "LOCAL_ANIMAL_DETECTION_SCORE_THRESHOLD", 0.45)
+                getattr(config, "LOCAL_ANIMAL_DETECTION_MODEL_FLOOR", 0.15)
             ),
         )
         _detector = ObjectDetector.create_from_options(options)
@@ -212,12 +215,23 @@ def _records_from_detections(detections, frame_shape, *, now: Optional[float] = 
     timestamp = time.time() if now is None else now
     records: list[dict] = []
     seen: set[tuple[str, str]] = set()
+    accept = float(getattr(config, "LOCAL_ANIMAL_DETECTION_SCORE_THRESHOLD", 0.30))
 
     for detection in detections or []:
         best = _best_animal_category(detection)
         if best is None:
             continue
         species, score = best
+        if score < accept:
+            # Below acceptance but above the model floor — log it so a near-miss
+            # (e.g. a dog held close that scores low) is visible for tuning instead
+            # of silently dropped. Lower LOCAL_ANIMAL_DETECTION_SCORE_THRESHOLD if
+            # these are real animals you want Rex to react to.
+            _log.info(
+                "animal candidate below accept threshold: %s score=%.3f (accept=%.2f)",
+                species, score, accept,
+            )
+            continue
         bbox = getattr(detection, "bounding_box", None)
         position = _position_from_bbox(bbox, frame_shape) if bbox is not None else "unknown"
         box = _box_tuple(bbox)
