@@ -144,6 +144,20 @@ EmotionColor speakColor  = { 255, 140, 0 };  // default: neutral amber
 uint8_t      speakLevel  = 0;                 // 0–255 audio intensity
 float        speakPhase  = 0.0f;              // wave front 0.0 – NUM_ZONES
 
+// Mouth watchdog. The mouth animation (ANIM_SPEAK) is free-running and is only
+// stopped by a host command (SPEAK_STOP/ACTIVE/IDLE/OFF). Those bytes can be
+// DROPPED on the lossy serial link — a running mouth calls show() every frame,
+// which disables interrupts and can lose inbound UART bytes, and the eye keep-
+// alive heartbeat contends for the link at stop time. If every stop byte is lost
+// the mouth would pulse forever. So: if we are in ANIM_SPEAK but no SPEAK or
+// SPEAK_LEVEL has arrived for SPEAK_TIMEOUT_MS, self-extinguish the mouth. The
+// host stops sending SPEAK_LEVEL the instant playback ends, so this auto-clears
+// the mouth even if the SPEAK_STOP is never received. SPEAK_TIMEOUT_MS must exceed
+// the longest real gap between SPEAK_LEVEL writes (host ~30 Hz, delta-throttled);
+// 1500 ms is safe — validate on real TTS audio before lowering it.
+#define SPEAK_TIMEOUT_MS 1500
+uint32_t     lastSpeakActivityMs = 0;         // millis() of last SPEAK/SPEAK_LEVEL
+
 // Idle breathing state
 float        idlePhase   = 0.0f;              // 0.0 – TWO_PI
 
@@ -337,6 +351,7 @@ void handleCommand(char *cmd) {
     // SPEAK_LEVEL:{0-255}  — check before SPEAK: to avoid prefix collision
     if (strncmp(cmd, "SPEAK_LEVEL:", 12) == 0) {
         speakLevel = clampByte(atoi(cmd + 12));
+        lastSpeakActivityMs = millis();   // feed the mouth watchdog
         return;
     }
 
@@ -364,6 +379,7 @@ void handleCommand(char *cmd) {
         speakColor = ec;
         speakPhase = 0.0f;
         animMode   = ANIM_SPEAK;
+        lastSpeakActivityMs = millis();   // reset watchdog at utterance start
         // Eyes not touched — blink continues at current eyeColor/eyesActive state.
         return;
     }
@@ -593,7 +609,20 @@ void tickAnimation() {
 
     if (dt > 0.1f) dt = 0.1f;   // clamp: ignore stalls > 100 ms (e.g. first tick)
 
-    if (animMode == ANIM_SPEAK) { tickSpeak(dt); return; }
+    if (animMode == ANIM_SPEAK) {
+        // Mouth watchdog backstop: if no SPEAK/SPEAK_LEVEL has arrived recently the
+        // host has stopped speaking and the stop command was dropped — extinguish
+        // the mouth ourselves. Only touches the mouth + animMode; eyes/blink are
+        // left alone (the heartbeat keeps them lit), so this is a clean stop.
+        if ((uint32_t)(now - lastSpeakActivityMs) > SPEAK_TIMEOUT_MS) {
+            animMode = ANIM_OFF;
+            mouthOff();
+            FastLED.show();
+            return;
+        }
+        tickSpeak(dt);
+        return;
+    }
     if (animMode == ANIM_IDLE)  { tickIdle(dt);  return; }
     if (animMode == ANIM_SLEEP) { tickSleep();   return; }
 }

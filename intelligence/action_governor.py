@@ -79,6 +79,13 @@ _ACTIVE_CONVERSATION_ALLOWED_SOURCES = {
     "_step_group_turn_taking",
     "_step_visual_curiosity",
     "_step_emotional_checkin",
+    # Re-engaging a present person who went quiet mid-conversation IS the
+    # active-conversation job — so idle banter must NOT take the -35
+    # conversation_active penalty (which dropped its priority-50 candidate to 15,
+    # below ACTION_GOVERNOR_MIN_SCORE, every cycle). It still loses to any
+    # presence/identity/check-in candidate (80-100) and stays below
+    # visual_curiosity (55), so it never talks over higher-value speech.
+    "interaction._maybe_idle_banter",
 }
 PROACTIVE_CANDIDATE_KIND = "proactive"
 

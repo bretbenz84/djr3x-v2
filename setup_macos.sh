@@ -138,6 +138,26 @@ _brew_shellenv
 
 if [[ "$RUN_ENV_SETUP" -eq 1 ]]; then
 
+# ── 0. Rosetta 2 (Apple Silicon) ──────────────────────────────────────────────
+# The Arduino AVR core ships an x86_64 avr-gcc toolchain, so compiling/uploading
+# the LED firmware fails with "bad CPU type in executable" on Apple Silicon
+# without Rosetta 2. Install it up front. No-op on Intel Macs.
+if [[ "$(uname -m)" == "arm64" ]]; then
+    log "Checking Rosetta 2 (needed for the x86_64 Arduino AVR toolchain)..."
+    if arch -x86_64 /usr/bin/true 2>/dev/null; then
+        ok "Rosetta 2 already present."
+    else
+        log "Installing Rosetta 2..."
+        if softwareupdate --install-rosetta --agree-to-license; then
+            INSTALLED_ITEMS+=("Rosetta 2")
+            ok "Rosetta 2 installed."
+        else
+            warn "Could not install Rosetta 2 automatically."
+            MANUAL_ATTENTION+=("Install Rosetta 2 (needed to upload Arduino firmware): softwareupdate --install-rosetta --agree-to-license")
+        fi
+    fi
+fi
+
 # ── 1. Homebrew ───────────────────────────────────────────────────────────────
 log "Checking Homebrew..."
 if ! command -v brew &>/dev/null; then

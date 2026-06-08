@@ -2880,7 +2880,9 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
             self.assertTrue(asked)
             prompt = speak.call_args.args[0]
-            self.assertIn("Are you Bret Benziger?", prompt)
+            # Confirm-before-aliasing prompt names the existing person and asks.
+            self.assertIn("Bret Benziger", prompt)
+            self.assertIn("?", prompt)
             self.assertEqual(
                 interaction._pending_identity_match_confirmation["existing_person_id"],
                 1,
@@ -10025,7 +10027,11 @@ class IdleBanterTest(unittest.TestCase):
 
     def test_banter_caps_attempts_per_stretch(self):
         from intelligence import interaction
-        interaction._idle_banter_count = 2  # IDLE_BANTER_MAX_PER_STRETCH default
+        # At the configured cap, banter must stop (read the value so this test
+        # stays correct if the cap is retuned).
+        interaction._idle_banter_count = int(
+            getattr(interaction.config, "IDLE_BANTER_MAX_PER_STRETCH", 2)
+        )
         with (
             mock.patch.object(interaction, "_primary_session_person_id", return_value=1),
             mock.patch.object(interaction, "_directed_context_fresh", return_value=False),

@@ -1773,6 +1773,17 @@ AUDIO_CHANNELS       = 1      # mono — pipeline always works with 1-channel ar
 AUDIO_INPUT_CHANNELS = 2      # hardware capture channels (ReSpeaker Lite is stereo)
 AUDIO_BUFFER_SECONDS = 30     # rolling circular buffer duration
 
+# Digital makeup gain applied to every captured block before it reaches VAD /
+# wake word / Whisper / speaker-ID. The ReSpeaker Lite's stock firmware has no AGC
+# and a modest fixed gain, so a far-field talker (~6 ft) lands close to the noise
+# floor — quiet enough that Whisper hallucinates on near-silent segments. A linear
+# multiply with hard-clip protection brings the level up so the pipeline reads it
+# cleanly. 1.0 = unchanged. Tune per room/distance: 3-4 (~+10 dB) is a good start
+# for a 6 ft talker; back off if speech starts clipping (distorting). This does not
+# improve SNR — it also lifts the noise floor — so the bigger win for far-field is
+# flashing the ReSpeaker AEC/AGC firmware; this is the zero-friction lever.
+AUDIO_INPUT_GAIN = _env_float("AUDIO_INPUT_GAIN", 1.0, min_value=0.1, max_value=32.0)
+
 # ── Mic stall watchdog (audio/stream.py) ─────────────────────────────────────
 # The mic is one long-lived sounddevice InputStream whose callback fills the
 # rolling buffer. On macOS, another stream's open/close on the shared CoreAudio
@@ -2464,9 +2475,9 @@ INTEREST_IDLE_FOLLOWUP_MAX_WORDS = 22
 # silence prompts more conversation. After IDLE_BANTER_MAX_PER_STRETCH attempts
 # with no reply, it stops and lets the idle timeout close with the outro.
 IDLE_BANTER_ENABLED = True
-IDLE_BANTER_SECS = 5.0            # silence before the first proactive nudge
-IDLE_BANTER_COOLDOWN_SECS = 12.0  # minimum gap between nudges
-IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up
+IDLE_BANTER_SECS = 6.0            # silence before the first proactive nudge
+IDLE_BANTER_COOLDOWN_SECS = 14.0  # minimum gap between nudges
+IDLE_BANTER_MAX_PER_STRETCH = 3   # re-engagement attempts before giving up
 # Priority idle banter competes with under ACTION_GOVERNOR_ENFORCE (proactive-layer
 # consolidation). Moderate — above ambient idle_monologue (15), below the check-ins.
 IDLE_BANTER_GOVERNOR_PRIORITY = 50

@@ -301,11 +301,18 @@ def speak_stop() -> None:
     global _eyes_active, _led_mode, _speaking
     _led_mode = "speak_stop"
     _eyes_active = False
-    _speaking = False
+    # Keep _speaking True through the ENTIRE stop sequence. The eye keep-alive
+    # heartbeat is gated only on _speaking (see _heartbeat_tick); if we cleared it
+    # here, the heartbeat could grab the lock during the SPEAK_STOP repeat loop's
+    # GIL-releasing sleeps and inject flushed EYE: writes that contend with the
+    # critical SPEAK_STOP on the lossy serial link — and a dropped SPEAK_STOP
+    # leaves the firmware's autonomous mouth animation (ANIM_SPEAK) running
+    # forever. Clear _speaking only AFTER the stop + eye re-arm are fully sent.
     _mirror_gui_head_led_state(mode=_led_mode, eyes_active=False)
     if not _serial_online():
         send_command("SPEAK_STOP")
         _resume_eye_blink()
+        _speaking = False
         return
     send_command("SPEAK_LEVEL:0")
     repeats = int(getattr(config, "HEAD_LED_SPEAK_STOP_REPEATS", 3) or 1)
@@ -319,6 +326,7 @@ def speak_stop() -> None:
         if idx < repeats - 1 and delay > 0.0:
             time.sleep(delay)
     _resume_eye_blink()
+    _speaking = False
 
 
 def idle() -> None:

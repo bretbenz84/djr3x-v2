@@ -5847,8 +5847,8 @@ def _identity_match_prompt(candidate_name: str, existing_name: str, match_type: 
     candidate_first = _first_name_or(candidate_name, "that")
     if match_type == "first_name":
         return (
-            f"Are you {existing_name}? I'll update my records so I don't create "
-            f"another {candidate_first}."
+            f"Wait — are you the same {existing_name} I already know? My optical "
+            f"sensors are being dramatic; I almost filed a second {candidate_first}."
         )
     return f"Did you mean {existing_name}, or is {candidate_name} someone new?"
 
@@ -6028,7 +6028,8 @@ def _handle_pending_identity_match_confirmation(
         )
         _pending_identity_match_confirmation = None
         response = (
-            f"Got it. I'll treat {candidate} as {existing_name} and keep that record tidy."
+            f"Ugh — my optical sensors must be on the fritz, I barely recognized you. "
+            f"You ARE {existing_name}. Re-syncing your face and voice so it sticks this time."
         )
         return response, person_id, existing_name
 

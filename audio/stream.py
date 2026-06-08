@@ -44,6 +44,9 @@ _input_channels: int = 1  # actual device channels; set during start()
 # echo-cancelled audio on one channel and the raw reference on another — mixing them
 # would re-add the echo). -1 ⇒ mix all channels. Set from config in start().
 _aec_channel: int | None = None
+# Linear makeup gain applied to every captured block (config.AUDIO_INPUT_GAIN).
+# 1.0 ⇒ no change. Set from config in start().
+_input_gain: float = 1.0
 
 # ── Stall-watchdog state ──────────────────────────────────────────────────────
 # Serializes stream lifecycle (open/close/reopen) so the watchdog and stop()
@@ -78,6 +81,10 @@ def _callback(indata, frames, time_info, status):  # noqa: ANN001
             chunk = indata.mean(axis=1).copy()
     else:
         chunk = indata[:, 0].copy()
+    if _input_gain != 1.0:
+        # Makeup gain for low-output mics (e.g. stock ReSpeaker Lite at a distance),
+        # hard-clipped to [-1, 1] so a loud/close sound can't wrap or overflow.
+        chunk = (chunk * _input_gain).clip(-1.0, 1.0)
     with _buf_lock:
         _buf.append(chunk)
 
@@ -151,12 +158,16 @@ def _open_stream() -> bool:
 
 def start() -> None:
     """Open the microphone and begin filling the rolling buffer."""
-    global _aec_channel, _running
+    global _aec_channel, _running, _input_gain
 
     ch_cfg = int(getattr(config, "AUDIO_AEC_INPUT_CHANNEL", -1))
     _aec_channel = ch_cfg if ch_cfg >= 0 else None
     if _aec_channel is not None:
         _log.info("Audio input will use AEC channel %d only (no channel mixing).", _aec_channel)
+
+    _input_gain = float(getattr(config, "AUDIO_INPUT_GAIN", 1.0) or 1.0)
+    if _input_gain != 1.0:
+        _log.info("Audio input makeup gain: %.2fx (config.AUDIO_INPUT_GAIN).", _input_gain)
 
     if AUDIO_DEVICE_INDEX is None:
         _log.warning(
