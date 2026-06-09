@@ -350,7 +350,7 @@ FACE_DETECTOR_FORCE_HOG = True
 # miss; drop to 1 if CPU/FPS is tight.
 FACE_DETECTOR_UPSAMPLE = _env_int(
     "FACE_DETECTOR_UPSAMPLE",
-    2,
+    1,
     min_value=0,
     max_value=4,
 )
@@ -366,7 +366,7 @@ FACE_DETECTOR_UPSAMPLE = _env_int(
 # this gate and the resolution bump reinforce each other.
 FACE_DETECTOR_MIN_CONFIDENCE = _env_float(
     "FACE_DETECTOR_MIN_CONFIDENCE",
-    0.2,
+    0.35,
     min_value=0.0,
     max_value=2.0,
 )
@@ -1344,7 +1344,7 @@ BREATHING_PERIOD_SAD     = 6.0  # slower during sad emotion
 TRACKING_SMOOTHING_FACTOR = 0.45
 
 # Pixels from frame center in which no neck correction is applied
-TRACKING_DEAD_ZONE_PX = 32
+TRACKING_DEAD_ZONE_PX = 60
 
 # Servo gaze tracking runs faster than the conversational consciousness loop so
 # head pose can follow live camera motion between heavier recognition ticks.
@@ -1368,7 +1368,7 @@ FACE_TRACKING_LOST_HOLD_SECS = _env_float(
 # a single edge-of-frame lock drive closer to the configured servo limits.
 FACE_TRACKING_CENTERING_GAIN = _env_float(
     "FACE_TRACKING_CENTERING_GAIN",
-    0.65,
+    0.50,
     min_value=0.1,
     max_value=3.0,
 )
@@ -1382,7 +1382,7 @@ FACE_TRACKING_CENTERING_GAIN = _env_float(
 # commanded position the loop reads back stays in sync with the real head.
 FACE_TRACKING_NECK_MAX_STEP_QUS = _env_int(
     "FACE_TRACKING_NECK_MAX_STEP_QUS",
-    280,
+    180,
     min_value=1,
     max_value=4000,
 )
@@ -1449,13 +1449,13 @@ FACE_TRACKING_LIVE_BOX_MAX_EXTRAPOLATION_SECS = _env_float(
 # Exception: if the jumped-to position holds for FACE_TRACKING_JUMP_CONFIRM_SECS it's a
 # genuine fast move and gets followed. Set FRAC to 0 to disable; lower = stricter.
 FACE_TRACKING_MAX_JUMP_FRAC = _env_float(
-    "FACE_TRACKING_MAX_JUMP_FRAC", 0.33, min_value=0.0, max_value=1.5,
+    "FACE_TRACKING_MAX_JUMP_FRAC", 0.15, min_value=0.0, max_value=1.5,
 )
 FACE_TRACKING_JUMP_CONFIRM_SECS = _env_float(
     "FACE_TRACKING_JUMP_CONFIRM_SECS", 0.5, min_value=0.0, max_value=5.0,
 )
 FACE_TRACKING_JUMP_MAX_AGE_SECS = _env_float(
-    "FACE_TRACKING_JUMP_MAX_AGE_SECS", 0.5, min_value=0.05, max_value=5.0,
+    "FACE_TRACKING_JUMP_MAX_AGE_SECS", 1.5, min_value=0.05, max_value=5.0,
 )
 FACE_TRACKING_REVERSAL_DAMPING = _env_float(
     "FACE_TRACKING_REVERSAL_DAMPING",
