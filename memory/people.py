@@ -656,6 +656,73 @@ def delete_person(person_id: int) -> None:
         conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
 
 
+def merge_person(survivor_id: int, victim_id: int) -> bool:
+    """Merge ``victim_id`` into ``survivor_id`` and delete the victim row.
+
+    Re-points every per-person row (biometrics/voiceprints, facts, interests,
+    preferences, QA, events, aliases, …) from the victim onto the survivor, so the
+    survivor inherits the victim's voice/face encodings and history, then removes
+    the now-empty victim person. Use when two rows turn out to be the SAME human
+    (e.g. a mis-registered duplicate that captured the person's voiceprint).
+
+    UNIQUE-constrained tables (person_aliases.alias_norm,
+    person_conversation_boundaries) use UPDATE OR IGNORE so a victim row that would
+    collide with an existing survivor row is dropped rather than raising; any such
+    leftover victim rows are then deleted. ``biometrics`` has no unique index, so the
+    voice and face encodings always migrate intact (the survivor starts matching the
+    victim's voice). Returns False if either id is missing or the ids are equal.
+    """
+    if survivor_id is None or victim_id is None:
+        return False
+    survivor_id = int(survivor_id)
+    victim_id = int(victim_id)
+    if survivor_id == victim_id:
+        return False
+    with db.connection() as conn:
+        have = {
+            int(r[0])
+            for r in conn.execute(
+                "SELECT id FROM people WHERE id IN (?, ?)", (survivor_id, victim_id)
+            ).fetchall()
+        }
+        if survivor_id not in have or victim_id not in have:
+            _log.warning(
+                "[identity] merge_person aborted — missing row(s) survivor=%s victim=%s",
+                survivor_id,
+                victim_id,
+            )
+            return False
+        for table in _PERSON_TABLES:
+            conn.execute(
+                f"UPDATE OR IGNORE {table} SET person_id = ? WHERE person_id = ?",
+                (survivor_id, victim_id),
+            )
+            conn.execute(f"DELETE FROM {table} WHERE person_id = ?", (victim_id,))
+        rel_cols = {
+            str(r[1])
+            for r in conn.execute(
+                f"PRAGMA table_info({_RELATIONSHIP_TABLE})"
+            ).fetchall()
+        }
+        for col in ("from_person_id", "to_person_id", "described_by"):
+            if col in rel_cols:
+                conn.execute(
+                    f"UPDATE OR IGNORE {_RELATIONSHIP_TABLE} "
+                    f"SET {col} = ? WHERE {col} = ?",
+                    (survivor_id, victim_id),
+                )
+        conn.execute(
+            f"DELETE FROM {_RELATIONSHIP_TABLE} "
+            "WHERE from_person_id = ? OR to_person_id = ?",
+            (victim_id, victim_id),
+        )
+        conn.execute("DELETE FROM people WHERE id = ?", (victim_id,))
+    _log.info(
+        "[identity] merged person_id=%s into survivor_id=%s", victim_id, survivor_id
+    )
+    return True
+
+
 def delete_all_people() -> None:
     """
     Remove all rows from every person-related table.

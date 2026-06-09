@@ -3140,6 +3140,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         from intelligence import repair_moves
 
         repair_moves.clear()
+        _prev_exchange_count = interaction._session_exchange_count
         try:
             with (
                 mock.patch.object(
@@ -3159,6 +3160,9 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 ),
                 mock.patch.object(interaction.people_memory, "rename_person") as rename,
                 mock.patch.object(interaction, "_speak_blocking") as speak,
+                mock.patch.object(interaction, "_register_rex_utterance"),
+                mock.patch.object(interaction.conv_memory, "add_to_transcript"),
+                mock.patch.object(interaction.conv_log, "log_rex"),
             ):
                 response = interaction._handle_name_update_request(
                     "That's not Bret, I'm Daniel",
@@ -3166,12 +3170,18 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     person_name="Bret",
                 )
 
-            self.assertIn("Daniel is already a separate person", response)
-            self.assertIn("I won't rename Bret into Daniel", response)
+            # New behavior: instead of refusing, Rex asks to confirm a MERGE — the
+            # voice-matched speaker is claiming to be an existing person (same human,
+            # two rows). No rename happens; the merge stays pending until they confirm.
+            self.assertIn("Daniel", response)
+            self.assertIn("silicon wafers", response)
             rename.assert_not_called()
             speak.assert_called_once()
+            self.assertIsNotNone(interaction._pending_name_merge_confirmation)
         finally:
             repair_moves.clear()
+            interaction._pending_name_merge_confirmation = None
+            interaction._session_exchange_count = _prev_exchange_count
 
     def test_repair_response_adds_better_luck_line_for_misunderstanding(self):
         from intelligence import interaction

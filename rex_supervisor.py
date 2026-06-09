@@ -128,6 +128,22 @@ def _list_input_devices():
     return out
 
 
+def _list_output_devices():
+    """Return [(index, name), ...] for devices with at least one output channel."""
+    import sounddevice as sd
+    out = []
+    try:
+        for idx, dev in enumerate(sd.query_devices()):
+            try:
+                if int(dev.get("max_output_channels", 0)) > 0:
+                    out.append((idx, str(dev.get("name") or "").strip()))
+            except Exception:
+                continue
+    except Exception as exc:
+        log.warning("Could not query audio output devices: %s", exc)
+    return out
+
+
 def _device_max_input_channels(device) -> int:
     """Max input channels the (resolved) device exposes; 0/unknown → 0."""
     try:
@@ -171,6 +187,49 @@ def _resolve_input_device(env: dict[str, str]):
         except ValueError:
             log.warning("AUDIO_DEVICE_INDEX=%r is not an integer; using default.", index_raw)
     return None  # sounddevice picks the default input
+
+
+def _resolve_output_device(env: dict[str, str]):
+    """Resolve a sounddevice OUTPUT device from .env, else the system default.
+
+    Mirrors _resolve_input_device and the main app's output pinning so the chime
+    plays through the same device as the controller (the ReSpeaker), not the macOS
+    default output. Returns None when nothing is pinned.
+    """
+    name = (
+        os.environ.get("AUDIO_OUTPUT_DEVICE_NAME")
+        or env.get("AUDIO_OUTPUT_DEVICE_NAME")
+        or ""
+    ).strip()
+    index_raw = (
+        os.environ.get("AUDIO_OUTPUT_DEVICE_INDEX")
+        or env.get("AUDIO_OUTPUT_DEVICE_INDEX")
+        or ""
+    ).strip()
+
+    outputs = _list_output_devices()
+
+    if name:
+        wanted = name.lower()
+        exact = [(idx, nm) for idx, nm in outputs if nm.lower() == wanted]
+        if exact:
+            return exact[0][0]
+        contains = [(idx, nm) for idx, nm in outputs if wanted in nm.lower()]
+        if len(contains) == 1:
+            return contains[0][0]
+        if len(contains) > 1:
+            opts = ", ".join(f"{idx}:{nm}" for idx, nm in contains)
+            log.warning("AUDIO_OUTPUT_DEVICE_NAME=%r matched multiple outputs (%s) — be more specific.", name, opts)
+        else:
+            avail = ", ".join(f"{idx}:{nm}" for idx, nm in outputs) or "no output devices"
+            log.warning("AUDIO_OUTPUT_DEVICE_NAME=%r did not match any output. Available: %s", name, avail)
+
+    if index_raw:
+        try:
+            return int(index_raw)
+        except ValueError:
+            log.warning("AUDIO_OUTPUT_DEVICE_INDEX=%r is not an integer; using default.", index_raw)
+    return None  # sounddevice picks the default output
 
 
 def _device_label(device) -> str:
@@ -219,17 +278,42 @@ def _controller_running(child: Optional[subprocess.Popen]) -> bool:
 
 
 def _play_chime() -> None:
-    """Play the startup chime as immediate wake feedback. Fire-and-forget, in a
-    separate process so it never blocks the wake loop or touches the mic.
+    """Play the startup chime as immediate wake feedback. Fire-and-forget, on a
+    daemon thread so it never blocks the wake loop or touches the mic.
 
-    Prefers macOS `afplay` (built in, decodes MP3, no Python deps). Falls back to
-    soundfile + sounddevice if afplay is unavailable.
+    If an output device is pinned (AUDIO_OUTPUT_DEVICE_NAME/INDEX in .env), play via
+    soundfile+sounddevice with device=<idx> so the chime routes through the same
+    device as the controller (the ReSpeaker) — macOS `afplay` can only ever use the
+    system default output. Only when NO device is pinned do we fall back to afplay
+    (then to default-device sounddevice).
     """
     if not _CHIME_ENABLED:
         return
     if not _CHIME_FILE.exists():
         log.warning("Startup chime missing: %s", _CHIME_FILE)
         return
+
+    out_device = _resolve_output_device(_read_env_file())
+
+    def _play_blocking(device):
+        try:
+            import soundfile as sf
+            import sounddevice as sd
+            audio, sr = sf.read(str(_CHIME_FILE), dtype="float32", always_2d=False)
+            if getattr(audio, "ndim", 1) > 1:  # downmix stereo -> mono, like the main app
+                audio = audio.mean(axis=1)
+            sd.play(audio, sr, device=device)
+            sd.wait()
+        except Exception as exc:
+            log.debug("sounddevice chime on device %s failed: %s", device, exc)
+
+    # Pinned device: afplay can't target a non-default device, so use sounddevice.
+    if out_device is not None:
+        threading.Thread(
+            target=_play_blocking, args=(out_device,), daemon=True, name="rex-chime"
+        ).start()
+        return
+
     import shutil
     afplay = shutil.which("afplay")
     if afplay:
@@ -243,17 +327,9 @@ def _play_chime() -> None:
         except Exception as exc:
             log.debug("afplay chime failed (%s) — trying soundfile.", exc)
 
-    def _play_blocking():
-        try:
-            import soundfile as sf
-            import sounddevice as sd
-            audio, sr = sf.read(str(_CHIME_FILE), dtype="float32", always_2d=False)
-            sd.play(audio, sr)
-            sd.wait()
-        except Exception as exc:
-            log.debug("soundfile chime playback failed: %s", exc)
-
-    threading.Thread(target=_play_blocking, daemon=True, name="rex-chime").start()
+    threading.Thread(
+        target=_play_blocking, args=(None,), daemon=True, name="rex-chime"
+    ).start()
 
 
 def _launch_controller() -> Optional[subprocess.Popen]:

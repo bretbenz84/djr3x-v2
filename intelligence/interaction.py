@@ -498,6 +498,10 @@ _pending_common_first_name_identity: Optional[dict] = None
 _pending_common_first_name_introduction: Optional[dict] = None
 _pending_existing_common_first_name: Optional[dict] = None
 _pending_identity_match_confirmation: Optional[dict] = None
+# Set when a voice/face-matched speaker says their name is a DIFFERENT existing
+# person (i.e. they're the same human split across two rows). Holds the survivor +
+# victim ids until they confirm, then we merge_person() to consolidate voiceprints.
+_pending_name_merge_confirmation: Optional[dict] = None
 _pending_prompted_name_confirmation: Optional[dict] = None
 _common_first_name_prompted_this_session: set[int] = set()
 
@@ -4443,28 +4447,31 @@ def _handle_name_update_request(
         existing = None
     if existing is not None:
         existing_id = int(existing["id"])
-        if target_id is None or (
-            existing_id != int(target_id)
-            and _known_person_visible_recently(existing_id)
-        ):
+        existing_name_clean = str(existing.get("name") or "").strip()
+        if target_id is None:
+            # No resolved speaker — fall back to the existing named row.
             target_id = existing_id
             old_name = existing.get("name")
             old_clean = (old_name or "").strip()
-        elif target_id is not None and existing_id != int(target_id):
-            response = repair_moves.add_better_luck_line(
-                f"Got it. {new_name} is already a separate person in my memory, "
-                f"so I won't rename {old_clean or 'this speaker'} into {new_name}."
-            )
+        elif existing_id != int(target_id):
+            # The current voice/face-matched speaker is claiming to BE an existing
+            # person. They are almost certainly the same human split across two rows
+            # (e.g. a mis-registered duplicate that grabbed their voiceprint). Confirm
+            # first, then MERGE the current row into the existing one on a "yes" —
+            # never silently rename the wrong row or refuse outright.
             _log.info(
-                "[identity] name correction matched existing person "
-                "target_id=%s existing_id=%s new=%r text=%r",
-                target_id,
-                existing_id,
-                new_name,
-                text,
+                "[identity] name correction implies merge: speaker target_id=%s "
+                "claims existing_id=%s (%r) new=%r — asking to confirm merge text=%r",
+                target_id, existing_id, existing_name_clean, new_name, text,
             )
-            _speak_blocking(response, emotion="neutral")
-            return response
+            return _ask_name_merge_confirmation(
+                survivor_id=existing_id,
+                survivor_name=existing_name_clean or new_name,
+                victim_id=int(target_id),
+                victim_name=old_clean,
+            )
+        # else existing_id == target_id: the name already belongs to this speaker;
+        # fall through to the normal rename path below.
 
     if target_id is None:
         _log.info("[identity] name update had no clear target text=%r", text)
@@ -4493,6 +4500,99 @@ def _handle_name_update_request(
         response = repair_moves.add_better_luck_line(f"Got it. I'll call you {new_name}.")
     _speak_blocking(response, emotion="happy")
     return response
+
+
+def _ask_name_merge_confirmation(
+    *,
+    survivor_id: int,
+    survivor_name: str,
+    victim_id: int,
+    victim_name: str,
+) -> str:
+    """Ask the speaker to confirm they ARE an existing person, then merge on "yes".
+
+    Triggered when a voice/face-matched speaker (``victim_id`` — often a mis-labeled
+    duplicate row) states a name that already belongs to a different person
+    (``survivor_id``). They're almost certainly the same human, so on confirmation we
+    merge the current row into the existing one and the voiceprints consolidate.
+    """
+    global _pending_name_merge_confirmation, _session_exchange_count
+    _pending_name_merge_confirmation = {
+        "survivor_id": int(survivor_id),
+        "survivor_name": survivor_name,
+        "victim_id": int(victim_id),
+        "victim_name": victim_name,
+        "asked_at": time.monotonic(),
+    }
+    prompt = (
+        f"You mean to tell me you're the {survivor_name} I already know? "
+        f"My circuits must be misfiring tonight. I'll update my silicon wafers."
+    )
+    _speak_blocking(prompt, emotion="curious", pre_beat_ms=100, post_beat_ms_override=200)
+    conv_memory.add_to_transcript("Rex", prompt)
+    conv_log.log_rex(prompt)
+    _session_exchange_count += 1
+    _register_rex_utterance(prompt)
+    return prompt
+
+
+def _handle_pending_name_merge_confirmation(
+    text: str,
+) -> tuple[Optional[str], Optional[int], Optional[str]]:
+    """Consume yes/no after Rex asks whether the speaker is an existing person.
+
+    On "yes" merge the current (mislabeled) row into the existing person so the
+    voiceprint/history consolidate, returning (ack, survivor_id, survivor_name) so
+    the turn loop re-points the live speaker. On "no" keep them separate. Returns
+    (None, None, None) when there's no fresh pending merge or the reply is ambiguous.
+    """
+    global _pending_name_merge_confirmation
+
+    ctx = _pending_name_merge_confirmation
+    if not ctx:
+        return None, None, None
+    ttl = max(1.0, float(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_WINDOW_SECS", 30.0)))
+    if (time.monotonic() - float(ctx.get("asked_at", 0.0))) > ttl:
+        _pending_name_merge_confirmation = None
+        return None, None, None
+
+    survivor_id = int(ctx.get("survivor_id"))
+    survivor_name = str(ctx.get("survivor_name") or "").strip()
+    victim_id = int(ctx.get("victim_id"))
+
+    if _identity_confirmation_affirms(text):
+        _pending_name_merge_confirmation = None
+        try:
+            merged = people_memory.merge_person(survivor_id, victim_id)
+        except Exception as exc:
+            _log.error(
+                "[identity] merge_person failed survivor=%s victim=%s: %s",
+                survivor_id, victim_id, exc,
+            )
+            merged = False
+        if not merged:
+            return (
+                f"Hmm, my circuits jammed mid-merge — but you're still {survivor_name} in my book.",
+                survivor_id,
+                survivor_name,
+            )
+        _refresh_world_state_person_name(survivor_id, survivor_name)
+        _log.info(
+            "[identity] name-merge confirmed: merged victim=%s into survivor=%s(%r)",
+            victim_id, survivor_id, survivor_name,
+        )
+        return (
+            f"Re-synced. One {survivor_name}, the way it should be — wafers updated.",
+            survivor_id,
+            survivor_name,
+        )
+
+    if _identity_confirmation_declines(text):
+        _pending_name_merge_confirmation = None
+        return ("Huh — my mistake. Keeping you two as separate humans, then.", None, None)
+
+    # Ambiguous (not a clear yes/no) — leave the question pending for this window.
+    return None, None, None
 
 
 _IDLE_DIRECT_MUSIC_RE = re.compile(
@@ -4621,6 +4721,7 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_prompted_name_confirmation, _pending_introduction
     global _pending_intro_followup, _pending_intro_voice_capture
+    global _pending_name_merge_confirmation
 
     changed = any(
         item is not None
@@ -4645,6 +4746,7 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
     _pending_identity_match_confirmation = None
+    _pending_name_merge_confirmation = None
     _pending_prompted_name_confirmation = None
     _pending_introduction = None
     _pending_intro_followup = None
@@ -13931,6 +14033,37 @@ def _handle_speech_segment(
                 speaker_label, person_id, text,
             )
             _note_session_person_turn(person_id)
+
+        name_merge_response, name_merge_person_id, name_merge_name = (None, None, None)
+        if not game_conversation_lock:
+            name_merge_response, name_merge_person_id, name_merge_name = (
+                _handle_pending_name_merge_confirmation(text)
+            )
+        if name_merge_response:
+            if name_merge_person_id is not None:
+                person_id = name_merge_person_id
+                person_name = name_merge_name
+                _session_person_ids.add(name_merge_person_id)
+                _retire_anonymous_speaker_slot(
+                    anonymous_speaker_label,
+                    person_id=person_id,
+                    person_name=person_name,
+                )
+            _identity_prompt_until = 0.0
+            _record_heard_turn_once()
+            response_text = name_merge_response
+            final_executed_path = "identity.name_merge_confirmation"
+            _speak_blocking(
+                name_merge_response,
+                emotion="happy",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            conv_memory.add_to_transcript("Rex", name_merge_response)
+            conv_log.log_rex(name_merge_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(name_merge_response)
+            return
 
         if _turn_should_defer_identity_prompts(text):
             _clear_pending_identity_prompts("direct_turn")

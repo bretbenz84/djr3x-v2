@@ -7,6 +7,7 @@ Bug E: a proactive line could play after a shutdown command (queue not suppresse
 """
 
 import unittest
+from unittest import mock
 
 
 class JokeCollapseRegexTest(unittest.TestCase):
@@ -108,6 +109,66 @@ class ShutdownSuppressesSpeechTest(unittest.TestCase):
             self.assertFalse(speech_queue._state_suppresses_output())
         finally:
             state_module.set_state(prev)
+
+
+class NameMergeConfirmationTest(unittest.TestCase):
+    """A voice-matched speaker who says they ARE an existing person gets a confirm
+    prompt; a 'yes' merges the two rows (consolidating voiceprints), a 'no' keeps
+    them separate. Guards against the old "Also" split that couldn't be corrected."""
+
+    def setUp(self):
+        from intelligence import interaction
+        self.interaction = interaction
+        self._prev_pending = interaction._pending_name_merge_confirmation
+
+    def tearDown(self):
+        self.interaction._pending_name_merge_confirmation = self._prev_pending
+
+    def _arm_pending(self):
+        import time
+        self.interaction._pending_name_merge_confirmation = {
+            "survivor_id": 1,
+            "survivor_name": "Bret Benziger",
+            "victim_id": 3,
+            "victim_name": "Also",
+            "asked_at": time.monotonic(),
+        }
+
+    def test_yes_merges_victim_into_survivor(self):
+        interaction = self.interaction
+        self._arm_pending()
+        with (
+            mock.patch.object(
+                interaction.people_memory, "merge_person", return_value=True
+            ) as merge,
+            mock.patch.object(interaction, "_refresh_world_state_person_name"),
+        ):
+            resp, pid, name = interaction._handle_pending_name_merge_confirmation("yes")
+        merge.assert_called_once_with(1, 3)  # victim 3 -> survivor 1
+        self.assertEqual(pid, 1)
+        self.assertEqual(name, "Bret Benziger")
+        self.assertIn("Bret Benziger", resp)
+        self.assertIsNone(interaction._pending_name_merge_confirmation)
+
+    def test_no_keeps_them_separate(self):
+        interaction = self.interaction
+        self._arm_pending()
+        with mock.patch.object(interaction.people_memory, "merge_person") as merge:
+            resp, pid, name = interaction._handle_pending_name_merge_confirmation("no")
+        merge.assert_not_called()
+        self.assertIsNone(pid)
+        self.assertIsNone(interaction._pending_name_merge_confirmation)
+
+    def test_ambiguous_reply_leaves_merge_pending(self):
+        interaction = self.interaction
+        self._arm_pending()
+        with mock.patch.object(interaction.people_memory, "merge_person") as merge:
+            resp, pid, name = interaction._handle_pending_name_merge_confirmation(
+                "play some jazz"
+            )
+        merge.assert_not_called()
+        self.assertIsNone(resp)
+        self.assertIsNotNone(interaction._pending_name_merge_confirmation)
 
 
 if __name__ == "__main__":
