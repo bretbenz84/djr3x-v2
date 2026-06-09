@@ -1439,6 +1439,21 @@ FACE_TRACKING_LIVE_BOX_MAX_EXTRAPOLATION_SECS = _env_float(
     min_value=0.0,
     max_value=5.0,
 )
+# Jump rejection: a real face can't teleport across the frame in one ~0.08s tick, so a
+# detection box that jumps more than this fraction of the frame DIAGONAL from the last
+# accepted position is treated as a spurious detector box (the HOG detector loves to
+# flicker onto clutter) and IGNORED — the head HOLDS its gaze instead of chasing it.
+# Exception: if the jumped-to position holds for FACE_TRACKING_JUMP_CONFIRM_SECS it's a
+# genuine fast move and gets followed. Set FRAC to 0 to disable; lower = stricter.
+FACE_TRACKING_MAX_JUMP_FRAC = _env_float(
+    "FACE_TRACKING_MAX_JUMP_FRAC", 0.33, min_value=0.0, max_value=1.5,
+)
+FACE_TRACKING_JUMP_CONFIRM_SECS = _env_float(
+    "FACE_TRACKING_JUMP_CONFIRM_SECS", 0.5, min_value=0.0, max_value=5.0,
+)
+FACE_TRACKING_JUMP_MAX_AGE_SECS = _env_float(
+    "FACE_TRACKING_JUMP_MAX_AGE_SECS", 0.5, min_value=0.05, max_value=5.0,
+)
 FACE_TRACKING_REVERSAL_DAMPING = _env_float(
     "FACE_TRACKING_REVERSAL_DAMPING",
     0.35,

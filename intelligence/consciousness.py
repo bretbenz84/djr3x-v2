@@ -82,6 +82,11 @@ _face_tracking_last_error_key: Optional[str] = None
 _face_tracking_last_error_x: Optional[float] = None
 _face_tracking_last_error_y: Optional[float] = None
 _face_tracking_last_error_at: float = 0.0
+# Jump-rejection state: the last ACCEPTED face-box center (so a spurious teleport can be
+# measured against it) and a pending position being confirmed as a genuine fast move.
+_face_tracking_last_center: Optional[dict] = None
+_face_tracking_pending_center: Optional[dict] = None
+_face_tracking_last_jump_log_at: float = 0.0
 
 # WorldState snapshot from the previous loop iteration (for change detection)
 _last_snapshot: dict = {}
@@ -8899,6 +8904,55 @@ def _record_face_tracking_state(
         _log.debug("face tracking state update failed: %s", exc)
 
 
+def _evaluate_face_jump(cx, cy, key, now, frame_w, frame_h, last_center, pending_center):
+    """Decide whether a freshly-detected face box is an implausible single-tick teleport
+    (a spurious detector box) that should be ignored so the head holds its gaze.
+
+    Pure/deterministic (reads config only) so it can be unit-tested. Returns
+    (accept, last_center, pending_center): when ``accept`` is False the caller should
+    hold the current gaze this tick. A big jump is accepted only once the jumped-to
+    position has persisted for FACE_TRACKING_JUMP_CONFIRM_SECS (a genuine fast move)."""
+    jump_frac = float(getattr(config, "FACE_TRACKING_MAX_JUMP_FRAC", 0.0) or 0.0)
+    if jump_frac <= 0.0 or frame_w <= 0 or frame_h <= 0:
+        return True, {"key": key, "cx": cx, "cy": cy, "at": now}, None
+    max_jump = jump_frac * ((frame_w * frame_w + frame_h * frame_h) ** 0.5)
+    max_age = float(getattr(config, "FACE_TRACKING_JUMP_MAX_AGE_SECS", 0.5))
+    fresh_same = (
+        last_center is not None
+        and last_center.get("key") == key
+        and (now - float(last_center.get("at", 0.0))) <= max_age
+    )
+    if not fresh_same:
+        # No fresh reference for this face (first lock / re-acquire / changed target).
+        return True, {"key": key, "cx": cx, "cy": cy, "at": now}, None
+    jump_dist = (
+        (cx - float(last_center["cx"])) ** 2 + (cy - float(last_center["cy"])) ** 2
+    ) ** 0.5
+    if jump_dist <= max_jump:
+        return True, {"key": key, "cx": cx, "cy": cy, "at": now}, None
+    # Big jump — accept only if the jumped-to position has been holding (a real move).
+    confirm_secs = float(getattr(config, "FACE_TRACKING_JUMP_CONFIRM_SECS", 0.5))
+    near_pending = pending_center is not None and (
+        ((cx - float(pending_center["cx"])) ** 2 + (cy - float(pending_center["cy"])) ** 2) ** 0.5
+    ) <= max_jump
+    if near_pending and (now - float(pending_center.get("since", now))) >= confirm_secs:
+        return True, {"key": key, "cx": cx, "cy": cy, "at": now}, None
+    new_pending = pending_center if near_pending else {"cx": cx, "cy": cy, "since": now}
+    return False, last_center, new_pending
+
+
+def _maybe_log_face_jump_reject(cx, cy, now) -> None:
+    """Rate-limited note that the head is ignoring a teleporting detector box."""
+    global _face_tracking_last_jump_log_at
+    if (now - _face_tracking_last_jump_log_at) >= 2.0:
+        _face_tracking_last_jump_log_at = now
+        _log.info(
+            "[face_tracking] ignoring implausible jump to (%.0f,%.0f) — holding gaze "
+            "(likely a spurious detector box on clutter)",
+            cx, cy,
+        )
+
+
 def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
     """
     Center the current face lock in Rex's camera frame.
@@ -8910,6 +8964,7 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
     global _neck_smooth, _face_tracking_lock
     global _face_tracking_last_error_key, _face_tracking_last_error_x
     global _face_tracking_last_error_y, _face_tracking_last_error_at
+    global _face_tracking_last_center, _face_tracking_pending_center
 
     if state_module.get_state() == State.SLEEP:
         return
@@ -9121,6 +9176,19 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         error_x = cx - frame_cx
         error_y = cy - frame_cy
         candidate_key = str(candidate.get("key") or "")
+
+        # Jump-rejection: a box that teleported across the frame this tick is almost
+        # always a spurious detector box on clutter, not the person moving — hold the
+        # gaze instead of chasing it (unless the new spot persists; see the helper).
+        accept_box, _face_tracking_last_center, _face_tracking_pending_center = _evaluate_face_jump(
+            cx, cy, candidate_key, now, frame_w, frame_h,
+            _face_tracking_last_center, _face_tracking_pending_center,
+        )
+        if not accept_box:
+            _maybe_log_face_jump_reject(cx, cy, now)
+            _record_face_tracking_state(locked=True, visible=True, candidate=candidate)
+            return
+
         reversal_damping = float(getattr(config, "FACE_TRACKING_REVERSAL_DAMPING", 0.35))
         reversal_damping = max(0.05, min(1.0, reversal_damping))
         live_damping = float(getattr(config, "FACE_TRACKING_LIVE_BOX_DAMPING", 0.45))
