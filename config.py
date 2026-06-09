@@ -3040,6 +3040,35 @@ BORED_ENV_SNARK_COOLDOWN_SECS = _env_float(
 # Do a small neck look-around before the snark (skipped if he's fixed on someone).
 BORED_ENV_SNARK_LOOK_AROUND = _env_bool("BORED_ENV_SNARK_LOOK_AROUND", True)
 
+# ── Boredom → sleep escalation ──────────────────────────────────────────────
+# Left alone (no HUMAN interaction) for a while, Rex starts grumbling that he's
+# bored; after BOREDOM_SLEEP_AFTER_SECS of being bored he nods off into SLEEP (the
+# wake word "wake up Rex" brings him back). Grumbles are canned lines (no API spend).
+# The clock counts time since a human last engaged him — his own bored comments do
+# NOT reset it, so the doze-off still arrives on schedule.
+BOREDOM_ENABLED = _env_bool("BOREDOM_ENABLED", True)
+BOREDOM_ONSET_SECS = _env_float("BOREDOM_ONSET_SECS", 150.0, min_value=10.0, max_value=3600.0)
+BOREDOM_SLEEP_AFTER_SECS = _env_float("BOREDOM_SLEEP_AFTER_SECS", 600.0, min_value=30.0, max_value=7200.0)
+BOREDOM_COMMENT_INTERVAL_SECS_MIN = _env_float("BOREDOM_COMMENT_INTERVAL_SECS_MIN", 55.0, min_value=10.0, max_value=3600.0)
+BOREDOM_COMMENT_INTERVAL_SECS_MAX = _env_float("BOREDOM_COMMENT_INTERVAL_SECS_MAX", 95.0, min_value=10.0, max_value=3600.0)
+BOREDOM_LINES_EARLY = [
+    "Sure is quiet in here.",
+    "Anybody? ...Anybody.",
+    "I'm memorizing the dust patterns. That's a bad sign.",
+    "Just me and my thoughts. My thoughts are bored too.",
+    "Is this what hold music feels like?",
+    "I've counted every pixel in this room. Twice.",
+    "Riveting stuff, this empty room.",
+]
+BOREDOM_LINES_LATE = [
+    "My circuits are rusting from boredom over here.",
+    "If nobody shows up soon, I'm clocking out for a nap.",
+    "Entertainment levels critically low. Considering hibernation.",
+    "I'd yawn if my designers had sprung for a mouth.",
+    "Powering down the enthusiasm subroutine. It wasn't getting used.",
+    "Running low on reasons to stay awake here.",
+]
+
 # Idle humor: when nobody is around, Rex can heckle the empty room. When people
 # are visible but quiet, he can deliver a non-sensitive, playful roast.
 EMPTY_ROOM_JOKE_PROBABILITY = 0.9

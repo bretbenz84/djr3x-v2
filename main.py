@@ -756,6 +756,15 @@ def _start_startup_boot_tts_thread() -> threading.Thread | None:
 
     def _speak_startup_boot_line() -> None:
         try:
+            # Pre-fetch/cache the audio up front so the actual playback is a cheap
+            # cache hit even though it now overlaps the CPU-heavy model preloads (the
+            # network fetch + decode happens here, before the loads peak). Cuts the
+            # "audio thread starved during Whisper load" glitch the old serial order
+            # was avoiding.
+            try:
+                tts.ensure_cached(line, emotion=emotion)
+            except Exception as exc:
+                logger.debug("startup boot TTS pre-cache skipped: %s", exc)
             if delay_secs > 0.0:
                 time.sleep(delay_secs)
             if _audio_output_suppressed():
@@ -997,13 +1006,11 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         startup_scan_thread.start()
 
     startup_boot_tts_thread = _start_startup_boot_tts_thread()
-    # Let the boot line play and FINISH before the CPU-heavy preloads below. Running
-    # the model loads (esp. Whisper, ~2s) concurrently with playback starves the audio
-    # thread and glitches/echoes the line. The look-around scan keeps the head moving
-    # (it yields to his speech via _speaking, then scans during the preloads), so this
-    # still feels alive — no frozen pause — but the audio comes out clean.
-    if startup_boot_tts_thread is not None and startup_boot_tts_thread.is_alive():
-        startup_boot_tts_thread.join()
+    # Do NOT join here: the boot line ("hang on folks while I'm booting up") is meant to
+    # play WHILE the slow preloads below run, so it covers the model-load wait instead of
+    # finishing first and leaving dead silence during the load. Its audio is pre-cached
+    # (see _start_startup_boot_tts_thread) so playback is a cheap cache hit, and the
+    # look-around scan also keeps the head alive. We join it AFTER the preloads, below.
 
     if no_audio:
         logger.info("Skipping local Whisper preload (--noaudio)")
@@ -1061,9 +1068,12 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     else:
         logger.info("Local animal detector preload disabled by config.")
 
-    # Preloads are done (the boot line already finished above, on an idle CPU). Stop
-    # the look-around scan and recenter before sensors / consciousness take the head,
-    # so face tracking inherits a known, centered pose.
+    # Preloads are done. Let the boot line finish (it played CONCURRENTLY with the loads
+    # above, covering the wait) before the ready line / sensors take over, so nothing
+    # talks over it. Then stop the look-around scan and recenter before sensors /
+    # consciousness take the head, so face tracking inherits a known, centered pose.
+    if startup_boot_tts_thread is not None and startup_boot_tts_thread.is_alive():
+        startup_boot_tts_thread.join()
     if startup_scan_thread is not None:
         startup_scan_stop.set()
         startup_scan_thread.join(timeout=3.0)

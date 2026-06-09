@@ -4429,6 +4429,117 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
             idle_behaviors.do_bored_environment_snark(snapshot)
 
 
+# ── Boredom escalation: grumble when left alone, then doze off to SLEEP ──────────
+_boredom_started_at: float = 0.0        # monotonic time boredom began (0.0 = not bored)
+_last_boredom_comment_at: float = 0.0
+_boredom_sleeping: bool = False         # True while the doze-off sleep flow is in flight
+_boredom_loop_started_at: float = 0.0   # anchor so a never-engaged droid still gets bored
+
+
+def _human_idle_secs(now: float) -> float:
+    """Seconds since a HUMAN last engaged Rex. Unlike _conversation_idle_secs this does
+    NOT count Rex's own proactive chatter, so his bored grumbling can't reset the
+    boredom→sleep clock. Anchored to the loop start so a droid nobody has ever spoken
+    to still eventually gets bored."""
+    last_human = max(_engaged_last_touch_at, _recent_engaged_touch_at)
+    anchor = last_human if last_human > 0.0 else _boredom_loop_started_at
+    if anchor <= 0.0:
+        return 0.0
+    return max(0.0, now - anchor)
+
+
+def _speak_boredom_line(bored_for: float) -> None:
+    """Speak one canned bored grumble (no API spend), drowsier the longer he's ignored."""
+    sleep_after = float(getattr(config, "BOREDOM_SLEEP_AFTER_SECS", 600.0))
+    late = sleep_after > 0 and bored_for >= sleep_after * 0.6
+    early_lines = list(getattr(config, "BOREDOM_LINES_EARLY", []) or [])
+    late_lines = list(getattr(config, "BOREDOM_LINES_LATE", []) or [])
+    pool = (late_lines or early_lines) if late else (early_lines or late_lines)
+    if not pool:
+        pool = ["...is anyone even here?"]
+    _speak_async(
+        random.choice(pool),
+        emotion=("sleepy" if late else "neutral"),
+        purpose="idle_monologue",
+        label="boredom grumble",
+    )
+
+
+def _trigger_boredom_sleep() -> None:
+    """Doze off via interaction's sleep flow (sleepy line → SLEEP state → sleep pose),
+    on a daemon thread so the spoken line doesn't block the consciousness loop."""
+    _log.info("[boredom] bored too long with no interaction — dozing off into SLEEP.")
+
+    def _task() -> None:
+        global _boredom_sleeping
+        try:
+            from intelligence import interaction  # lazy: interaction imports consciousness
+            interaction._enter_sleep_mode()
+        except Exception as exc:
+            _log.warning("[boredom] sleep transition failed: %s", exc)
+            _boredom_sleeping = False  # recover so boredom can re-arm
+
+    threading.Thread(target=_task, daemon=True, name="boredom-sleep").start()
+
+
+def _step_boredom_escalation(snapshot: dict, profile: "SituationProfile") -> None:
+    """Left alone (no human interaction) for a while → Rex grumbles he's bored; after
+    BOREDOM_SLEEP_AFTER_SECS of boredom he nods off into SLEEP. Wake word brings him
+    back. Comments are canned, so this costs nothing in API calls."""
+    global _boredom_started_at, _last_boredom_comment_at, _boredom_sleeping
+
+    if not bool(getattr(config, "BOREDOM_ENABLED", True)):
+        return
+
+    # A doze-off is in flight (sleepy line still playing). Hold until SLEEP lands —
+    # don't grumble over the going-to-sleep line — then disarm.
+    if _boredom_sleeping:
+        if state_module.get_state() != State.IDLE:
+            _boredom_sleeping = False
+        return
+
+    # Only get bored while idle and not mid-exchange. Any other state (active convo,
+    # already asleep, shutting down) clears the boredom clock.
+    if state_module.get_state() != State.IDLE or is_waiting_for_response():
+        _boredom_started_at = 0.0
+        return
+
+    now = time.monotonic()
+    if _human_idle_secs(now) < float(getattr(config, "BOREDOM_ONSET_SECS", 150.0)):
+        _boredom_started_at = 0.0   # engaged recently / not alone long enough
+        return
+
+    # --- Bored. ---
+    if _boredom_started_at <= 0.0:
+        _boredom_started_at = now
+        _last_boredom_comment_at = 0.0
+        _log.info("[boredom] no interaction for ~%.0fs — Rex is bored.", _human_idle_secs(now))
+
+    bored_for = now - _boredom_started_at
+
+    # Doze off after enough boredom.
+    if bored_for >= float(getattr(config, "BOREDOM_SLEEP_AFTER_SECS", 600.0)):
+        _boredom_started_at = 0.0
+        _last_boredom_comment_at = 0.0
+        _boredom_sleeping = True
+        _trigger_boredom_sleep()
+        return
+
+    # Periodic bored grumbling (yield to anything suppressing proactive speech).
+    if profile.suppress_proactive or profile.suppress_system_comments:
+        return
+    interval = random.uniform(
+        float(getattr(config, "BOREDOM_COMMENT_INTERVAL_SECS_MIN", 55.0)),
+        float(getattr(config, "BOREDOM_COMMENT_INTERVAL_SECS_MAX", 95.0)),
+    )
+    if (now - _last_boredom_comment_at) < interval:
+        return
+    if not _can_proactive_speak():
+        return
+    _last_boredom_comment_at = now
+    _speak_boredom_line(bored_for)
+
+
 def _room_looks_empty(snapshot: dict) -> bool:
     people = snapshot.get("people", []) or []
     crowd = snapshot.get("crowd", {}) or {}
@@ -9200,10 +9311,12 @@ def _face_tracking_loop() -> None:
 
 def _loop() -> None:
     global _last_snapshot, _last_micro_behavior_at, _neck_smooth
+    global _boredom_loop_started_at
 
     interval = getattr(config, "CONSCIOUSNESS_LOOP_INTERVAL_SECS", 1.0)
     last_tick = time.monotonic()
     _last_micro_behavior_at = time.monotonic()
+    _boredom_loop_started_at = time.monotonic()
 
     while not _stop_event.is_set():
         tick_start = time.monotonic()
@@ -9295,6 +9408,9 @@ def _loop() -> None:
 
             # 9. Idle micro-behaviors
             _step_idle_micro_behavior(snapshot, profile)
+
+            # 9a. Boredom escalation — grumble when left alone, then doze into SLEEP.
+            _step_boredom_escalation(snapshot, profile)
 
             # 9b. Mood-driven body language — visor openness, breathing cadence, and the
             # occasional idle mood gesture, expressing Rex's sustained body mood on the
