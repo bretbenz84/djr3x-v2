@@ -97,8 +97,11 @@ def _env_bool(name: str, default: bool) -> bool:
 # DEBUG
 # ─────────────────────────────────────────────────────────────────────────────
 
-# When True, clears logs/djr3x.log and logs/conversation.log at startup so
-# each run begins with fresh log files.
+# When True, each run writes its OWN timestamped log files —
+# logs/djr3x-<YYYY-MM-DD-HH-MM-SS>.log and logs/conversation-<stamp>.log — so per-run
+# history accumulates distinctly (handy for comparing runs; clean old ones up
+# manually). When False, one shared logs/djr3x.log that size-rotates (10MB x 5) is
+# used instead.
 DEBUG_MODE = False
 
 # conversation.log is written by a tiny custom logger rather than Python's

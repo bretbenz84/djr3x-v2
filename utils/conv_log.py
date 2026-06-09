@@ -18,7 +18,20 @@ from pathlib import Path
 
 import config
 
-_LOG_PATH = Path(__file__).parent.parent / "logs" / "conversation.log"
+def _conversation_log_path() -> Path:
+    """conversation.log normally; conversation-<run stamp>.log in DEBUG_MODE so each
+    run keeps its own transcript, matching the per-run djr3x-<stamp>.log files."""
+    base = Path(__file__).parent.parent / "logs"
+    if getattr(config, "DEBUG_MODE", False):
+        try:
+            from utils.logging import run_stamp
+            return base / f"conversation-{run_stamp()}.log"
+        except Exception:
+            pass
+    return base / "conversation.log"
+
+
+_LOG_PATH = _conversation_log_path()
 # The real on-disk log, captured before any test patches _LOG_PATH. Writes to THIS
 # path are suppressed under the test runner so `unittest discover` never clobbers a
 # live run's conversation.log (the suite's conversation-flow tests call log_rex/
