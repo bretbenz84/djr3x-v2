@@ -74,8 +74,6 @@ except RuntimeError as e:
 import time
 import threading
 import random
-import hashlib
-import json
 
 import numpy as np
 import sounddevice as sd
@@ -95,6 +93,7 @@ from utils.config_loader import (
     AUDIO_SELECTION_DESCRIPTION,
 )
 from sequences import animations
+from utils import phrase_cycler
 from audio import (
     stream,
     scene as audio_scene,
@@ -416,15 +415,19 @@ def _is_shutdown_state() -> bool:
 
 
 def _turn_leds_off_for_shutdown() -> None:
-    """Best-effort final LED darkening before serial ports are closed."""
+    """Final LED darkening on shutdown — a smooth fade-to-black (not an instant off)
+    for a lifelike power-down. The firmware runs the ~4s ramp autonomously, so this
+    returns immediately and the fade finishes well before the serial ports close.
+    Idempotent at the firmware level, so the repeat calls on the shutdown path are
+    harmless."""
     try:
-        leds_head.off()
+        leds_head.fade_off()
     except Exception as exc:
-        logger.warning("Could not turn head LEDs off during shutdown: %s", exc)
+        logger.warning("Could not fade head LEDs off during shutdown: %s", exc)
     try:
-        leds_chest.off()
+        leds_chest.fade_off()
     except Exception as exc:
-        logger.warning("Could not turn chest LEDs off during shutdown: %s", exc)
+        logger.warning("Could not fade chest LEDs off during shutdown: %s", exc)
 
 
 def _queue_startup_device_warning(
@@ -704,67 +707,28 @@ def _configure_audio_output_device() -> None:
         logger.warning("Could not set audio output device: %s", exc)
 
 
-def _boot_tts_line_key(line: str) -> str:
-    """Stable per-line key so the state file survives edits/reordering of the list."""
-    return hashlib.sha1(line.encode("utf-8")).hexdigest()[:12]
+def _select_cycling_tts_line(lines, state_path: Path) -> str:
+    """Pick a line, cycling without back-to-back repeats. See utils.phrase_cycler."""
+    return phrase_cycler.select_cycling_line(lines, state_path)
 
 
 def _select_startup_boot_tts_line() -> str:
-    """Pick a boot line, cycling through the configured set without repeating
-    between launches. Recently used lines are tracked in an untracked JSON state
-    file so consecutive boots get different filler. When every line has been used
-    the cycle restarts, avoiding an immediate back-to-back repeat of the last line.
-    """
-    lines = [
-        str(item).strip()
-        for item in (getattr(config, "STARTUP_BOOT_TTS_LINES", None) or [])
-        if str(item).strip()
-    ]
-    if not lines:
-        return str(getattr(config, "STARTUP_BOOT_TTS_LINE", "") or "").strip()
-    if len(lines) == 1:
-        return lines[0]
-
+    """Pick a boot ('still loading') filler line, cycling without back-to-back repeats."""
     state_path = Path(
         str(getattr(config, "STARTUP_BOOT_TTS_STATE_PATH", "") or "")
         or (Path(__file__).resolve().parent / "assets" / "state" / "startup_boot_tts.json")
     )
+    line = _select_cycling_tts_line(getattr(config, "STARTUP_BOOT_TTS_LINES", None), state_path)
+    return line or str(getattr(config, "STARTUP_BOOT_TTS_LINE", "") or "").strip()
 
-    used: list[str] = []
-    last: str = ""
-    try:
-        if state_path.exists():
-            data = json.loads(state_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                used = [str(k) for k in data.get("used", []) if isinstance(k, str)]
-                last = str(data.get("last", "") or "")
-    except Exception as exc:
-        logger.debug("Could not read startup boot TTS state (%s); starting fresh.", exc)
 
-    keys = {_boot_tts_line_key(line): line for line in lines}
-    # Drop any stale keys (lines that were edited/removed) from the used set.
-    used = [k for k in used if k in keys]
-
-    candidates = [line for key, line in keys.items() if key not in used]
-    if not candidates:
-        # Whole cycle exhausted — restart, but don't immediately repeat the last line.
-        used = []
-        candidates = [line for key, line in keys.items() if key != last] or lines
-
-    chosen = random.choice(candidates)
-    chosen_key = _boot_tts_line_key(chosen)
-    used.append(chosen_key)
-
-    try:
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(
-            json.dumps({"used": used, "last": chosen_key}, indent=2),
-            encoding="utf-8",
-        )
-    except Exception as exc:
-        logger.debug("Could not persist startup boot TTS state: %s", exc)
-
-    return chosen
+def _select_startup_ready_tts_line() -> str:
+    """Pick a 'models loaded, I'm ready' roast line, cycling without back-to-back repeats."""
+    state_path = Path(
+        str(getattr(config, "STARTUP_READY_TTS_STATE_PATH", "") or "")
+        or (Path(__file__).resolve().parent / "assets" / "state" / "startup_ready_tts.json")
+    )
+    return _select_cycling_tts_line(getattr(config, "STARTUP_READY_TTS_LINES", None), state_path)
 
 
 def _start_startup_boot_tts_thread() -> threading.Thread | None:
@@ -1181,12 +1145,19 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     # the sensor-warning enqueue); the call below is a defensive, idempotent re-claim.
     # _play_audio_file is a no-op in --noaudio.
     if not no_audio and bool(getattr(config, "PLAY_LISTENING_CHIME", True)):
+        ready_line = _select_startup_ready_tts_line()
         try:
-            logger.info("Playing ready chime — models loaded, listening.")
-            _play_audio_file(config.LISTENING_CHIME_FILE)
+            if ready_line:
+                emotion = str(getattr(config, "STARTUP_READY_TTS_EMOTION", "neutral") or "neutral")
+                logger.info("Speaking ready line — models loaded, listening: %s", ready_line)
+                tts.speak(ready_line, emotion)
+            else:
+                # No ready lines configured → fall back to the original chime.
+                logger.info("Playing ready chime — models loaded, listening.")
+                _play_audio_file(config.LISTENING_CHIME_FILE)
             speech_queue.mark_startup_chime_played()
         except Exception as exc:
-            logger.warning("Could not play ready chime: %s", exc)
+            logger.warning("Could not play ready signal: %s", exc)
 
     if startup_jeopardy:
         _launch_startup_jeopardy()

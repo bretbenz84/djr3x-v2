@@ -184,8 +184,8 @@ class BodyBeatAnimationTest(unittest.TestCase):
         with (
             mock.patch.object(animations.servos, "stop_breathing") as stop_breathing,
             mock.patch.object(animations.servos, "move_to", side_effect=record_move),
-            mock.patch.object(animations.leds_head, "off") as head_off,
-            mock.patch.object(animations.leds_chest, "off") as chest_off,
+            mock.patch.object(animations.leds_head, "fade_off") as head_fade_off,
+            mock.patch.object(animations.leds_chest, "fade_off") as chest_fade_off,
             mock.patch.object(animations.time, "sleep", return_value=None),
         ):
             animations.shutdown()
@@ -203,8 +203,9 @@ class BodyBeatAnimationTest(unittest.TestCase):
                 2: animations.HEADTILT_DOWN,
             },
         )
-        head_off.assert_called_once()
-        chest_off.assert_called_once()
+        # Shutdown fades the LEDs out (lifelike power-down), not an instant off.
+        head_fade_off.assert_called_once()
+        chest_fade_off.assert_called_once()
 
     def test_wake_animation_restores_active_pose_and_arm_idle(self):
         from sequences import animations

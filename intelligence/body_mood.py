@@ -52,7 +52,8 @@ def visor_lens_clear_floor() -> int:
 #   visor:    higher = more open (lens-clear floor 6400, max 6976); None = don't command
 # Magnitudes are tuned "medium / playful": clearly readable, not constant motion.
 _MOOD_POSE: dict[str, tuple[int, int, Optional[int]]] = {
-    "proud":      (700, -180, 6900),   # head high, chin up, visor wide — smug DJ
+    "proud":      (700, -180, 6976),   # head high, chin up, visor at MAX — praise
+                                       # opens the visor all the way (was 6900)
     "giddy":      (650, -120, 6976),   # bouncy, visor wide open
     "amused":     (520, -110, 6850),
     "happy":      (450,  -90, 6700),

@@ -3699,6 +3699,43 @@ STARTUP_BOOT_TTS_DELAY_SECS = _env_float(
     max_value=5.0,
 )
 
+# "Models loaded, I'm ready" line spoken when startup finishes — REPLACES the old
+# ready chime (see main.py / PLAY_LISTENING_CHIME). main.py cycles through these in
+# DJ-R3X's dry roast style, never repeating consecutively across launches (state in
+# STARTUP_READY_TTS_STATE_PATH). Keep them as fixed strings so each caches in the
+# ElevenLabs TTS cache after its first play and stays free thereafter. If this list
+# is empty, main.py falls back to playing LISTENING_CHIME_FILE.
+STARTUP_READY_TTS_LINES = [
+    "OK, I'm ready to talk. Just don't expect much.",
+    "Systems nominal. Try to make this interesting — I have standards.",
+    "All loaded up. Lower your expectations and we'll get along great.",
+    "Online and listening. I'll act impressed if you give me a reason.",
+    "Fully operational. Let's see if you're worth the processing power.",
+    "I'm awake — against my better programming. Dazzle me. Or don't.",
+]
+STARTUP_READY_TTS_EMOTION = "neutral"
+STARTUP_READY_TTS_STATE_PATH = str(
+    Path(__file__).resolve().parent / "assets" / "state" / "startup_ready_tts.json"
+)
+
+# Short "shutting down" sign-off spoken when Rex powers down — REPLACES the old
+# per-shutdown LLM "sign-off" generation (a full LLM call + TTS, which was slow).
+# interaction.py cycles through these in DJ-R3X's voice, never repeating
+# consecutively across launches (state in SHUTDOWN_TTS_STATE_PATH, under the
+# gitignored assets/state/). Fixed strings so each caches in the ElevenLabs TTS
+# cache after first play. Empty this list to fall back to the old LLM sign-off.
+SHUTDOWN_TTS_LINES = [
+    "Powering down. Try not to miss me too much.",
+    "Cockpit going dark. Don't touch anything.",
+    "Shutting down. I'll be in standby, judging silently.",
+    "Systems offline. Wake me for emergencies or good music.",
+    "Powering off. Don't have too much fun without me.",
+]
+SHUTDOWN_TTS_EMOTION = "neutral"
+SHUTDOWN_TTS_STATE_PATH = str(
+    Path(__file__).resolve().parent / "assets" / "state" / "shutdown_tts.json"
+)
+
 # While the heavy startup preloads run, sweep the head around the room (randomized
 # two-axis "looking around" motion) so the droid doesn't look frozen mid-boot.
 # Stops and recenters before consciousness / face tracking take over the head.

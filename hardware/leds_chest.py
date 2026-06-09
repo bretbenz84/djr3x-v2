@@ -162,6 +162,21 @@ def off() -> None:
     send_command("OFF")
 
 
+def fade_off() -> None:
+    """Smoothly fade the chest LEDs to black instead of an instant off — a lifelike
+    power-down for shutdown. The firmware freezes the current frame and ramps
+    brightness to 0 over ~4s autonomously, so this returns immediately."""
+    send_command("FADEOFF")
+
+
 def next_pattern() -> None:
     """Cycle to the next built-in LED pattern."""
     send_command("NEXT")
+
+
+def compliment_flash() -> None:
+    """Celebratory white<->blue flash — the chest reaction to a compliment (the
+    positive mirror of the red angry-flash insults get). One-shot: the firmware
+    self-terminates the flash after a couple of seconds (or until the next command),
+    so it can't get stuck on."""
+    send_command("COMPLIMENT")

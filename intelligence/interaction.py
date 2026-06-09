@@ -84,7 +84,7 @@ from awareness import interoception
 from awareness import address_mode
 from awareness.situation import assessor as _situation_assessor
 from world_state import world_state
-from utils import conv_log
+from utils import conv_log, phrase_cycler
 
 _log = logging.getLogger(__name__)
 
@@ -9046,6 +9046,18 @@ def _execute_memory_remember_fact_command(
     return resp
 
 
+def _select_shutdown_tts_line() -> str:
+    """Pick a short 'shutting down' sign-off, cycling without back-to-back repeats.
+    Returns "" if no canned shutdown lines are configured (caller falls back to LLM)."""
+    state_path = (
+        str(getattr(config, "SHUTDOWN_TTS_STATE_PATH", "") or "")
+        or str(Path(__file__).resolve().parent.parent / "assets" / "state" / "shutdown_tts.json")
+    )
+    return phrase_cycler.select_cycling_line(
+        getattr(config, "SHUTDOWN_TTS_LINES", None), state_path
+    )
+
+
 def _execute_command(
     match: command_parser.CommandMatch,
     person_id: Optional[int],
@@ -9121,13 +9133,18 @@ def _execute_command(
         return resp
 
     if key == "shutdown":
-        resp = llm.get_response(
-            "You are powering all the way down now (not just napping). Your "
-            "always-listening helper stays awake and will boot you back up when "
-            "someone says 'wake up Rex'. Give one final, in-character sign-off "
-            "line — a little dramatic, like a pilot powering down the cockpit.",
-            person_id,
-        )
+        # Use a short canned sign-off (cycled, never consecutively) instead of a
+        # full LLM generation, which made shutdown feel sluggish. Falls back to the
+        # LLM line only if no canned shutdown lines are configured.
+        resp = _select_shutdown_tts_line()
+        if not resp:
+            resp = llm.get_response(
+                "You are powering all the way down now (not just napping). Your "
+                "always-listening helper stays awake and will boot you back up when "
+                "someone says 'wake up Rex'. Give one final, in-character sign-off "
+                "line — a little dramatic, like a pilot powering down the cockpit.",
+                person_id,
+            )
         _speak_blocking(resp)
         state_module.set_state(State.SHUTDOWN)
         return resp
@@ -9626,6 +9643,7 @@ def _post_response(
                     try:
                         _play_event_body_beat("compliment.detected")
                         _set_body_mood("proud", source="layer2_compliment")
+                        _flash_chest_compliment()
                     except Exception as exc:
                         _log.debug("[interaction] layer-2 compliment beat skipped: %s", exc)
 
@@ -10982,6 +11000,16 @@ def _set_body_mood(mood: str, *, source: str = "") -> None:
         body_mood.set_mood(mood, source=source)
     except Exception as exc:
         _log.debug("[interaction] set_body_mood(%s) failed: %s", mood, exc)
+
+
+def _flash_chest_compliment() -> None:
+    """Fire the chest's white->blue celebratory flash in reaction to a compliment —
+    the positive mirror of the red angry-flash insults trigger. Failure-safe."""
+    try:
+        from hardware import leds_chest
+        leds_chest.compliment_flash()
+    except Exception as exc:
+        _log.debug("[interaction] chest compliment flash skipped: %s", exc)
 
 
 _PLAN_ROUTER_ACTIONS = {
@@ -15987,6 +16015,7 @@ def _handle_speech_segment(
             try:
                 _play_event_body_beat("compliment.detected")
                 _set_body_mood("proud", source="layer1_compliment")
+                _flash_chest_compliment()
             except Exception as exc:
                 _log.debug("[interaction] compliment body beat skipped: %s", exc)
             _log.info("[interaction] layer-1 compliment detected")

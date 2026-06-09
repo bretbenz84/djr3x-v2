@@ -158,6 +158,13 @@ float        speakPhase  = 0.0f;              // wave front 0.0 – NUM_ZONES
 #define SPEAK_TIMEOUT_MS 1500
 uint32_t     lastSpeakActivityMs = 0;         // millis() of last SPEAK/SPEAK_LEVEL
 
+// FADEOFF: smooth shutdown fade — freeze the current frame (eyes) and ramp master
+// brightness to 0 over HEAD_FADEOFF_MS, then go dark. A lifelike "powering down".
+#define HEAD_FADEOFF_MS 4000
+bool         headFading         = false;
+uint32_t     headFadeStartMs     = 0;
+uint8_t      headFadeStartBright = 255;
+
 // Idle breathing state
 float        idlePhase   = 0.0f;              // 0.0 – TWO_PI
 
@@ -425,10 +432,24 @@ void handleCommand(char *cmd) {
 
     // EYE:{r},{g},{b} — set eye colour; blink resumes.
     if (strncmp(cmd, "EYE:", 4) == 0) {
+        if (headFading) return;   // don't re-light the eyes mid shutdown-fade
         int r, g, b;
         if (sscanf(cmd + 4, "%d,%d,%d", &r, &g, &b) == 3) {
             setEyes(clampByte(r), clampByte(g), clampByte(b));
             FastLED.show();
+        }
+        return;
+    }
+
+    // FADEOFF — smooth shutdown fade of the current frame (eyes) to black, then
+    // dark. Idempotent: a repeat during an in-progress fade is ignored. Freezes
+    // the eyes as-is and stops the mouth; the actual ramp runs in loop().
+    if (strcmp(cmd, "FADEOFF") == 0) {
+        if (!headFading) {
+            headFading          = true;
+            headFadeStartMs     = millis();
+            headFadeStartBright = FastLED.getBrightness();
+            animMode            = ANIM_OFF;   // stop mouth; leave eyes lit to fade
         }
         return;
     }
@@ -678,6 +699,27 @@ void loop() {
             serialBuf[serialPos++] = c;
         }
         // If buffer overflows, discard characters until next newline.
+    }
+
+    if (headFading) {
+        // Shutdown fade: freeze the current frame and ramp master brightness to 0
+        // over HEAD_FADEOFF_MS, then go dark. Skip the normal ticks so nothing
+        // redraws (or blinks) over the fading eyes.
+        uint32_t elapsed = millis() - headFadeStartMs;
+        if (elapsed >= HEAD_FADEOFF_MS) {
+            headFading = false;
+            eyeColor   = CRGB::Black;
+            eyesActive = false;
+            animMode   = ANIM_OFF;
+            FastLED.setBrightness(headFadeStartBright);  // restore for next use
+            FastLED.clear();
+            FastLED.show();
+        } else {
+            FastLED.setBrightness(
+                (uint8_t)((uint32_t)headFadeStartBright * (HEAD_FADEOFF_MS - elapsed) / HEAD_FADEOFF_MS));
+            FastLED.show();   // re-show the frozen leds[] at decreasing brightness
+        }
+        return;
     }
 
     tickAnimation();   // mouth animation (speak wave, idle)

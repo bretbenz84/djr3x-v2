@@ -81,6 +81,10 @@ HEADTILT_SLIGHT_DOWN = 4700
 
 # Ch 3 — Visor: 4544–6976, neutral 6000, higher = more open
 VISOR_CLOSED  = 4544   # sleep / privacy — covers camera lens
+VISOR_SQUINT  = 5400   # below neutral — visor dips to partly cover the eyes (a
+                       # narrowed "displeased squint", e.g. reacting to an insult).
+                       # Transient only: below the lens-clear floor, so beats dip
+                       # here briefly then return. Tune 5200–5700 for more/less squint.
 VISOR_HALF    = 6400   # default resting open — clear of camera lens
 VISOR_NEUTRAL = 6000
 VISOR_OPEN    = 6976   # max — required before any camera capture
@@ -400,7 +404,8 @@ def _beat_anger_flash(snapshot: dict[int, int]) -> None:
             0: NECK_CENTER + side * 320,
             1: HEADLIFT_UP,
             2: HEADTILT_DOWN,
-            3: VISOR_NEUTRAL,
+            3: VISOR_SQUINT,   # dip the visor below neutral — narrowed, displeased
+                               # squint (this is the beat insults route to)
             4: ELBOW_UP,
             5: HAND_RIGHT if side > 0 else HAND_LEFT,
             7: HEROARM_FORWARD,
@@ -837,8 +842,11 @@ def shutdown() -> None:
     # close. Don't rely on the shutdown-audio join window (skipped when audio is
     # disabled), or a correct-speed droop could still be cut short.
     time.sleep(float(getattr(config, "SHUTDOWN_DROOP_SETTLE_SECS", 0.8)))
-    leds_head.off()
-    leds_chest.off()
+    # Fade the LEDs out (lifelike power-down) rather than snapping them off. The
+    # state-change callback already kicked off the same fade when SHUTDOWN was set;
+    # FADEOFF is idempotent in firmware, so this is a harmless re-assert.
+    leds_head.fade_off()
+    leds_chest.fade_off()
 
 # ---------------------------------------------------------------------------
 # Sleep / wake

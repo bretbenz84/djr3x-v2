@@ -97,11 +97,20 @@ enum ChestMode : uint8_t {
     CM_SPEAK_SAD,     // speaking sad: AllBlue, dim
     CM_SPEAK_ANGRY,   // speaking angry: rapid red strobe
     CM_SPEAK_HAPPY,   // speaking happy: confetti
+    CM_COMPLIMENT,    // reacting to a compliment: white<->blue flash (self-ends ~2.5s)
+    CM_FADEOFF,       // shutdown: smoothly fade the current frame to black, then OFF
     CM_SLEEP,         // sleep: very dim slow red breath
     CM_OFF,           // all off
     CM_MANUAL,        // NEXT command: cycle gPatterns[] manually
 };
 ChestMode chestMode = CM_OFF;
+uint32_t complimentStartMs = 0;   // millis() when CM_COMPLIMENT began (self-timeout)
+
+// FADEOFF: freeze the last rendered frame and ramp master brightness to 0 over
+// CHEST_FADEOFF_MS, then go fully OFF — a lifelike "powering down" fade.
+#define CHEST_FADEOFF_MS 4000
+uint32_t chestFadeStartMs    = 0;
+uint8_t  chestFadeStartBright = 0;
 
 // setup() function -- runs once at startup --------------------------------
 
@@ -213,6 +222,30 @@ void runCurrentMode() {
 			confetti();
 			break;
 
+		case CM_COMPLIMENT:
+			complimentFlash();
+			// Self-terminate so a missed follow-up command can't leave the panel
+			// stuck flashing; hand back to the awake/active pattern.
+			if (millis() - complimentStartMs > 2500UL) {
+				chestMode = CM_ACTIVE;
+				FastLED.setBrightness(200);
+			}
+			break;
+
+		case CM_FADEOFF: {
+			// Freeze the last frame (don't redraw a pattern) and ramp brightness
+			// down with elapsed time for a smooth, frame-rate-independent fade.
+			uint32_t elapsed = millis() - chestFadeStartMs;
+			if (elapsed >= CHEST_FADEOFF_MS) {
+				FastLED.clear();
+				chestMode = CM_OFF;
+			} else {
+				FastLED.setBrightness(
+					(uint8_t)((uint32_t)chestFadeStartBright * (CHEST_FADEOFF_MS - elapsed) / CHEST_FADEOFF_MS));
+			}
+			break;
+		}
+
 		case CM_SLEEP:
 			sleepBreath();
 			break;
@@ -236,8 +269,9 @@ void loop() {
 		previousMillis = millis();
 		// Call the current mode function, updating the 'leds' array
 		runCurrentMode();
-		// RandomEyes only in active modes — skip during sleep/off
-		if (chestMode != CM_SLEEP && chestMode != CM_OFF) RandomEyes();
+		// RandomEyes only in active modes — skip during sleep/off and while fading
+		// (the fade freezes the last frame, so nothing should redraw onto it).
+		if (chestMode != CM_SLEEP && chestMode != CM_OFF && chestMode != CM_FADEOFF) RandomEyes();
 	}
 
 	if (millis() - LEDUpdateMillis > LEDUpdateInterval) {
@@ -361,6 +395,20 @@ void handleCommand(char *cmd) {
 	} else if (strcmp(cmd, "NEXT") == 0) {
 		nextPattern();
 		chestMode = CM_MANUAL;
+
+	} else if (strcmp(cmd, "COMPLIMENT") == 0) {
+		FastLED.setBrightness(200);
+		complimentStartMs = millis();
+		chestMode = CM_COMPLIMENT;
+
+	} else if (strcmp(cmd, "FADEOFF") == 0) {
+		// Smoothly fade the current frame to black (shutdown). Idempotent: a
+		// repeat during an in-progress fade is ignored so the fade isn't restarted.
+		if (chestMode != CM_FADEOFF) {
+			chestFadeStartMs     = millis();
+			chestFadeStartBright = FastLED.getBrightness();
+			chestMode = CM_FADEOFF;
+		}
 	}
 	// Unknown commands are silently ignored.
 }
@@ -786,5 +834,24 @@ void angryFlash() {
         fill_solid(DJLEDs, NUM_LEDS, CRGB(255, 0, 0));
     } else {
         fill_solid(DJLEDs, NUM_LEDS, CRGB(0, 0, 0));
+    }
+}
+
+// complimentFlash — alternate WHITE then BLUE at ~2.5 Hz (200 ms each), the
+// celebratory positive mirror of angryFlash (triggered when Rex is complimented).
+//
+// The white is INTENTIONALLY a reduced-intensity white (CRGB(100,100,100)), not full
+// (255,255,255): white lights all 3 channels at once, so full white on 98 LEDs draws
+// ~3x the current of the single-channel red/blue effects. If that exceeds the panel's
+// supply the WS2811 chips brown out and render white as RED. At brightness 200 this
+// keeps the white half's draw below the red flash (which the supply already handles),
+// so it shows as a clean (soft) white. Raise WHITE_LEVEL toward 255 only if your PSU
+// has headroom; if white ever looks red/orange again, lower it.
+#define WHITE_LEVEL 100
+void complimentFlash() {
+    if ((millis() % 400UL) < 200UL) {
+        fill_solid(DJLEDs, NUM_LEDS, CRGB(WHITE_LEVEL, WHITE_LEVEL, WHITE_LEVEL));  // soft white
+    } else {
+        fill_solid(DJLEDs, NUM_LEDS, CRGB(0, 0, 255));                              // blue
     }
 }

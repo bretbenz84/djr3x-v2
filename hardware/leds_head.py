@@ -75,7 +75,7 @@ def _is_critical_led_command(family: str) -> bool:
     # buffered behind the SPEAK_LEVEL flood, or the mouth fails to light) and EYE
     # is the eye-on assertion (speech-start + heartbeat). SPEAK_LEVEL stays
     # unflushed — it is the high-rate flood we deliberately let coalesce.
-    return family in {"SPEAK", "SPEAK_STOP", "OFF", "IDLE", "ACTIVE", "SLEEP", "EYE"}
+    return family in {"SPEAK", "SPEAK_STOP", "OFF", "IDLE", "ACTIVE", "SLEEP", "EYE", "FADEOFF"}
 
 
 def _report_drops_if_due(now: float) -> None:
@@ -401,6 +401,22 @@ def off() -> None:
             break
         if idx < repeats - 1 and delay > 0.0:
             time.sleep(delay)
+
+
+def fade_off() -> None:
+    """Smoothly fade the head LEDs (eyes) to black instead of an instant off — a
+    lifelike power-down for shutdown. Marks the eyes off and clears the heartbeat's
+    keep-alive so nothing re-lights them; the firmware runs the ~4s brightness
+    ramp autonomously, so this returns immediately (no blocking)."""
+    global _eye_color, _eyes_active, _led_mode, _eyes_should_be_on, _speaking
+    # Stop the eye heartbeat from re-asserting EYE: mid-fade (it gates on this flag).
+    _eyes_should_be_on = False
+    _eye_color = (0, 0, 0)
+    _eyes_active = False
+    _speaking = False
+    _led_mode = "off"
+    _mirror_gui_head_led_state(mode=_led_mode, eye_color=_eye_color, eyes_active=False)
+    send_command("FADEOFF")
 
 
 def sleep() -> None:
