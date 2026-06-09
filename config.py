@@ -2014,11 +2014,38 @@ GROUP_CHATTER_VOICE_CANDIDATE_FLOOR = 0.30
 # ─────────────────────────────────────────────────────────────────────────────
 
 HEAD_ARDUINO_BAUD = 115200
+# pyserial write_timeout for the head Arduino. This was 0.20s, which is too tight
+# for USB-CDC on macOS: the IOKit driver briefly reports the write buffer as full
+# under load, raising a SerialTimeoutException even though the board is perfectly
+# healthy. A single such timeout used to close the port and latch the board
+# "offline" for the whole session (with no reconnect path), killing the eyes and
+# mouth LEDs while the rest of the robot kept running. Give the buffer more room.
 HEAD_ARDUINO_WRITE_TIMEOUT_SECS = _env_float(
     "HEAD_ARDUINO_WRITE_TIMEOUT_SECS",
-    0.20,
+    0.75,
     min_value=0.01,
     max_value=5.0,
+)
+# A write *timeout* is not a disconnect: the board is still there, the OS buffer
+# was just momentarily full. Skip the one write and keep the port open. Only after
+# this many CONSECUTIVE write timeouts do we treat the link as genuinely wedged,
+# close it, and let the heartbeat reconnect. Any successful write resets the count.
+HEAD_ARDUINO_WRITE_TIMEOUT_MAX_CONSECUTIVE = _env_int(
+    "HEAD_ARDUINO_WRITE_TIMEOUT_MAX_CONSECUTIVE",
+    5,
+    min_value=1,
+    max_value=100,
+)
+# When the head Arduino link drops (real disconnect, or too many consecutive
+# write timeouts), the keep-alive heartbeat periodically tries to reopen the port
+# and re-assert the eye state, so a transient USB blip self-heals instead of
+# leaving the head LEDs dark until the next full restart.
+HEAD_LED_AUTO_RECONNECT = _env_bool("HEAD_LED_AUTO_RECONNECT", True)
+HEAD_LED_RECONNECT_INTERVAL_SECS = _env_float(
+    "HEAD_LED_RECONNECT_INTERVAL_SECS",
+    10.0,
+    min_value=1.0,
+    max_value=120.0,
 )
 HEAD_LED_SPEAK_STOP_REPEATS = _env_int(
     "HEAD_LED_SPEAK_STOP_REPEATS",

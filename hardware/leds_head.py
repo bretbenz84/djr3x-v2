@@ -5,6 +5,13 @@ Pixels 0–1: eyes (RGB).
 Pixels 2–81: mouth trapezoid PCB (physically GRB, but the Arduino handles the swap
 in its EMOTION_COLORS table — Python sends plain RGB unchanged).
 
+While Rex is awake and not speaking (ACTIVE / IDLE / after SPEAK_STOP), the
+firmware autonomously pulses the mouth at a dim 15–25 % of the current emotion
+colour (the emotion of the last SPEAK:, neutral amber before the first turn) —
+no host traffic needed to maintain it. Speaking brightens the mouth through the
+wave animation, then it settles back to the glow. OFF / SLEEP / FADEOFF keep
+the mouth dark / red-breathing / fading as before.
+
 All operations are no-ops (with a debug log) when HEAD_LEDS_ENABLED is False.
 """
 
@@ -26,7 +33,12 @@ _DROP_REPORT_INTERVAL_SECS = 5.0
 _dropped_counts: dict[str, int] = {}
 _drop_window_started_at = 0.0
 _next_drop_report_at = 0.0
+_drop_window_open = False
 _speech_drop_notified = False
+# Consecutive write timeouts (not disconnects). Reset on any successful write.
+_consecutive_write_timeouts = 0
+# Throttle for offline reconnect attempts from the heartbeat loop.
+_last_reconnect_attempt_at = 0.0
 _eye_color: tuple[int, int, int] = (0, 0, 0)
 _eyes_active = False
 _led_mode = "off"
@@ -99,11 +111,17 @@ def _report_drops_if_due(now: float) -> None:
 
 
 def _record_drop(cmd: str) -> None:
-    global _drop_window_started_at, _next_drop_report_at
+    global _drop_window_started_at, _next_drop_report_at, _drop_window_open
     now = time.monotonic()
-    if not _dropped_counts:
+    # Open the window (and report immediately) only on the FIRST drop of a new
+    # disconnect. Once open, subsequent drops accumulate silently and surface as
+    # a single rolled-up summary every _DROP_REPORT_INTERVAL_SECS — _report_drops_if_due
+    # clears the per-window counts but leaves the window open, so we must not treat
+    # the now-empty dict as a brand-new disconnect (that bug logged every drop).
+    if not _drop_window_open:
         _drop_window_started_at = now
         _next_drop_report_at = now  # report first drop immediately
+        _drop_window_open = True
     family = _cmd_family(cmd)
     _dropped_counts[family] = _dropped_counts.get(family, 0) + 1
     _report_drops_if_due(now)
@@ -111,7 +129,10 @@ def _record_drop(cmd: str) -> None:
 
 def _flush_drop_summary(reason: str) -> None:
     """Emit one final drop summary (if pending) and clear counters."""
-    global _dropped_counts, _drop_window_started_at, _next_drop_report_at
+    global _dropped_counts, _drop_window_started_at, _next_drop_report_at, _drop_window_open
+    # Going back online closes any open drop window so the next disconnect logs
+    # its first drop immediately again.
+    _drop_window_open = False
     if not _dropped_counts:
         return
     now = time.monotonic()
@@ -133,7 +154,7 @@ def _flush_drop_summary(reason: str) -> None:
 # ── Connection ─────────────────────────────────────────────────────────────────
 
 def connect() -> bool:
-    global _ser, _speech_drop_notified
+    global _ser, _speech_drop_notified, _consecutive_write_timeouts
     if not HEAD_LEDS_ENABLED:
         _log.debug("HEAD_LEDS_ENABLED=False — skipping connect")
         return False
@@ -142,17 +163,43 @@ def connect() -> bool:
             ARDUINO_HEAD_PORT,
             config.HEAD_ARDUINO_BAUD,
             timeout=1,
-            write_timeout=float(getattr(config, "HEAD_ARDUINO_WRITE_TIMEOUT_SECS", 0.20)),
+            write_timeout=float(getattr(config, "HEAD_ARDUINO_WRITE_TIMEOUT_SECS", 0.75)),
         )
         _log.info("Head Arduino connected on %s at %d baud", ARDUINO_HEAD_PORT, config.HEAD_ARDUINO_BAUD)
         _flush_drop_summary("reconnected")
         _speech_drop_notified = False
+        _consecutive_write_timeouts = 0
         _start_heartbeat()
         return True
     except _SERIAL_ERRORS as exc:
         _log.error("Failed to open head Arduino port %s: %s", ARDUINO_HEAD_PORT, exc)
         _ser = None
         return False
+
+
+def _write_timeout_disconnect_limit() -> int:
+    """Consecutive write timeouts tolerated before we treat the link as down."""
+    try:
+        return max(1, int(getattr(config, "HEAD_ARDUINO_WRITE_TIMEOUT_MAX_CONSECUTIVE", 5)))
+    except Exception:
+        return 5
+
+
+def _latch_offline_locked(cmd: str, family: str) -> None:
+    """Close the port and mark the head Arduino offline. Caller must hold _lock."""
+    global _ser, _speech_drop_notified
+    try:
+        if _ser and _ser.is_open:
+            _ser.close()
+    except Exception:
+        pass
+    _ser = None
+    if _is_speech_led_command(family):
+        # Re-arm the one-shot speech-drop notice so the next offline speech
+        # routine logs once.
+        _speech_drop_notified = False
+    else:
+        _record_drop(cmd)
 
 
 def disconnect() -> None:
@@ -178,7 +225,7 @@ def _serial_online() -> bool:
 
 def send_command(cmd: str) -> None:
     """Send a newline-terminated command string to the head Arduino."""
-    global _ser, _speech_drop_notified
+    global _ser, _speech_drop_notified, _consecutive_write_timeouts
     if not HEAD_LEDS_ENABLED:
         _log.debug("send_command no-op: HEAD_LEDS_ENABLED=False (cmd=%r)", cmd)
         return
@@ -203,18 +250,32 @@ def send_command(cmd: str) -> None:
             _ser.write((cmd + "\n").encode())
             if _is_critical_led_command(family):
                 _ser.flush()
-        except _SERIAL_ERRORS as exc:
-            _log.warning("Head Arduino write failed for %s command: %s", family, exc)
-            try:
-                if _ser and _ser.is_open:
-                    _ser.close()
-            except Exception:
-                pass
-            _ser = None
-            if _is_speech_led_command(family):
-                _speech_drop_notified = False
+            _consecutive_write_timeouts = 0
+        except serial.SerialTimeoutException as exc:
+            # A write *timeout* is not a disconnect: the USB-CDC buffer was
+            # momentarily full (common on macOS under load), but the board is
+            # still there. Skip this one write and keep the port open — closing
+            # here is what used to latch the head LEDs offline for the rest of
+            # the session. Only give up after a run of consecutive timeouts,
+            # which does suggest a genuinely wedged link.
+            _consecutive_write_timeouts += 1
+            limit = _write_timeout_disconnect_limit()
+            if _consecutive_write_timeouts >= limit:
+                _log.warning(
+                    "Head Arduino: %d consecutive write timeouts on %s — treating "
+                    "as disconnect; heartbeat will attempt to reconnect.",
+                    _consecutive_write_timeouts, family,
+                )
+                _latch_offline_locked(cmd, family)
             else:
-                _record_drop(cmd)
+                _log.debug(
+                    "Head Arduino write timeout on %s (%d/%d) — skipping one write, "
+                    "port stays open: %s",
+                    family, _consecutive_write_timeouts, limit, exc,
+                )
+        except (serial.SerialException, OSError) as exc:
+            _log.warning("Head Arduino write failed for %s command: %s", family, exc)
+            _latch_offline_locked(cmd, family)
 
 
 # ── Command API ────────────────────────────────────────────────────────────────
@@ -292,7 +353,8 @@ def _resume_eye_blink() -> None:
 
 
 def speak_stop() -> None:
-    """Stop the mouth speak animation and return to idle pattern.
+    """Stop the mouth speak animation; the mouth settles into the firmware's dim
+    emotional idle glow (15–25 % of the last SPEAK emotion's colour).
 
     Also re-arms eye blinking (see _resume_eye_blink): SPEAK_STOP suspends the
     Arduino's blink loop, so we must hand the eyes back to ACTIVE or Rex freezes
@@ -330,7 +392,7 @@ def speak_stop() -> None:
 
 
 def idle() -> None:
-    """Enter idle LED pattern (slow breathing pulse)."""
+    """Enter idle LED pattern (slow eye breathing + dim mouth glow)."""
     global _eyes_active, _led_mode, _eyes_should_be_on
     _led_mode = "idle"
     if any(_eye_color):
@@ -341,7 +403,7 @@ def idle() -> None:
 
 
 def active() -> None:
-    """Enter active LED pattern (brighter, more energetic)."""
+    """Enter active LED pattern (steady eyes + dim mouth glow)."""
     global _eye_color, _eyes_active, _led_mode, _eyes_should_be_on
     _led_mode = "active"
     if not any(_eye_color):
@@ -420,7 +482,7 @@ def fade_off() -> None:
 
 
 def sleep() -> None:
-    """Enter sleep LED state (eyes off, mouth dim or off)."""
+    """Enter sleep LED state (eyes off, mouth slow red breathing)."""
     global _eye_color, _eyes_active, _led_mode, _eyes_should_be_on, _speaking
     _eye_color = (0, 0, 0)
     _eyes_active = False
@@ -438,9 +500,10 @@ def sleep() -> None:
 # ACTIVE re-arm can be lost — and nothing else re-asserts the eyes while running,
 # leaving them dark until some later turn's re-arm happens to land. This low-rate
 # daemon re-sends the current eye colour whenever Rex is awake (_eyes_should_be_on)
-# and not mid-speech, so a dropped command self-heals within one interval. It is a
-# pure passthrough when offline / off / sleeping / speaking, so it can never light
-# eyes that are meant to be dark.
+# and not mid-speech, so a dropped command self-heals within one interval. The tick
+# itself is a pure passthrough when offline / off / sleeping / speaking, so it can
+# never light eyes that are meant to be dark; the loop separately attempts a
+# throttled reconnect while the port is down so a transient USB blip self-heals.
 
 def _heartbeat_interval() -> float:
     try:
@@ -450,7 +513,12 @@ def _heartbeat_interval() -> float:
 
 
 def _heartbeat_tick() -> None:
-    """One keep-alive pass: re-assert the eyes if Rex is awake and quiet."""
+    """One keep-alive pass: re-assert the eyes if Rex is awake and quiet.
+
+    The firmware treats an EYE: arriving in its OFF mode as "awake again" and
+    resumes the mouth idle glow too, so this heartbeat also self-heals the glow
+    after a firmware reboot mid-session (e.g. a USB blip + auto-reconnect).
+    """
     global _eye_color
     with _lock:
         if not _serial_online_locked() or _speaking or not _eyes_should_be_on:
@@ -464,11 +532,36 @@ def _heartbeat_tick() -> None:
     send_command(f"EYE:{r},{g},{b}")
 
 
+def _attempt_reconnect() -> None:
+    """Throttled attempt to reopen the head Arduino after it dropped offline.
+
+    Runs from the heartbeat loop while the port is down. On success, connect()
+    resets the drop/timeout state and the next _heartbeat_tick() re-asserts the
+    eye colour, so a transient USB blip recovers on its own instead of leaving
+    the head LEDs dark until the next full restart.
+    """
+    global _last_reconnect_attempt_at
+    if not bool(getattr(config, "HEAD_LED_AUTO_RECONNECT", True)):
+        return
+    now = time.monotonic()
+    try:
+        interval = max(1.0, float(getattr(config, "HEAD_LED_RECONNECT_INTERVAL_SECS", 10.0)))
+    except Exception:
+        interval = 10.0
+    if now - _last_reconnect_attempt_at < interval:
+        return
+    _last_reconnect_attempt_at = now
+    _log.info("Head Arduino offline — attempting reconnect on %s ...", ARDUINO_HEAD_PORT)
+    connect()
+
+
 def _heartbeat_loop() -> None:
     while not _heartbeat_stop.is_set():
         if _heartbeat_stop.wait(_heartbeat_interval()):
             break
         try:
+            if not _serial_online():
+                _attempt_reconnect()
             _heartbeat_tick()
         except Exception as exc:  # never let the keep-alive thread die
             _log.debug("Head LED heartbeat tick failed: %s", exc)

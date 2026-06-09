@@ -26,19 +26,40 @@
  *
  * Serial protocol — 115200 baud, ASCII, newline-terminated
  * ---------------------------------------------------------
- *   SPEAK:{emotion}       Start speaking animation.
- *                         emotion = neutral | happy | excited | sad | angry
+ *   SPEAK:{emotion}       Start speaking animation. Also sets the mouth's
+ *                         emotion colour used by the idle glow afterwards.
+ *                         emotion = neutral | happy | excited | sad | angry | curious
  *   SPEAK_LEVEL:{0-255}   Update audio intensity — drives pulse speed + brightness.
  *                         Send as often as needed; non-blocking.
- *   SPEAK_STOP            Mouth off immediately; eyes unchanged; blinking
- *                         suspended until next EYE: or ACTIVE command.
- *   IDLE                  Mouth off; eyes breathe slowly at last EYE: colour;
+ *   SPEAK_STOP            Mouth returns to the dim idle glow (current emotion
+ *                         colour); eyes unchanged; blinking suspended until next
+ *                         EYE: or ACTIVE command.
+ *   IDLE                  Mouth idle glow; eyes breathe slowly at last EYE: colour;
  *                         blink system activates (or stays active) immediately.
- *   ACTIVE                Mouth off; preserve the current eye colour and
+ *   ACTIVE                Mouth idle glow; preserve the current eye colour and
  *                         resume blinking. Falls back to bright white only
  *                         if no eye colour has been set yet.
- *   EYE:{r},{g},{b}       Set both eyes to RGB colour; blinking resumes.
+ *   EYE:{r},{g},{b}       Set both eyes to RGB colour; blinking resumes. If the
+ *                         board was in OFF mode (e.g. fresh reboot mid-session,
+ *                         re-lit by the host's eye keep-alive heartbeat), this
+ *                         also re-enters ACTIVE so the mouth glow resumes.
  *   OFF                   All 82 pixels off immediately; blinking suspended.
+ *
+ * Mouth idle glow
+ * ---------------
+ *   Whenever Rex is awake and not speaking (ACTIVE / IDLE / after SPEAK_STOP),
+ *   the whole mouth pulses gently between GLOW_MIN and GLOW_MAX brightness
+ *   (15–25 %) of the current emotion colour, so the mouth is never fully dark
+ *   while he's "on". Speaking brightens it through the existing wave animation,
+ *   then it settles back to the glow. OFF / SLEEP / FADEOFF keep their existing
+ *   dark / red-breathing behaviour. The glow writes ONLY mouth pixels — eyes
+ *   stay exclusively owned by setEyes()/tickIdle()/tickBlink().
+ *
+ *   When the glow starts from a dark mouth (boot / OFF / waking from SLEEP),
+ *   it ramps in from 0 over GLOW_RAMP_IN_MS (4 s) — program launch breathes
+ *   the mouth in rather than snapping it on. A SPEAK: cancels the ramp. The
+ *   shutdown mirror is FADEOFF, which fades the frozen frame (glowing mouth
+ *   included) to black over HEAD_FADEOFF_MS (4 s).
  */
 
 #include <FastLED.h>
@@ -101,7 +122,8 @@ struct EmotionColor { uint8_t r, g, b; };
 #define EMO_EXCITED  2
 #define EMO_SAD      3
 #define EMO_ANGRY    4
-#define EMO_COUNT    5
+#define EMO_CURIOUS  5
+#define EMO_COUNT    6
 
 // IMPORTANT — mouth colour encoding (leds[2..81]):
 // The eye pixels (leds[0-1]) are RGB-ordered LEDs; the mouth PCB uses
@@ -117,6 +139,7 @@ const EmotionColor EMOTION_COLORS[EMO_COUNT] PROGMEM = {
     { 200, 255,   0 },   // excited  — yellow       (physical R=255 G=200 B=0 → swap → 200,255,0)
     {   0,  40, 200 },   // sad      — blue-purple  (physical R=40  G=0   B=200 → swap → 0,40,200)
     {   0, 255,   0 },   // angry    — red          (physical R=255 G=0   B=0 → swap → 0,255,0)
+    {   0, 180, 255 },   // curious  — purple       (physical R=180 G=0   B=255 → swap → 0,180,255)
 };
 
 // ---------------------------------------------------------------------------
@@ -139,10 +162,40 @@ enum AnimMode : uint8_t {
 
 AnimMode animMode = ANIM_OFF;
 
-// Speaking state
-EmotionColor speakColor  = { 255, 140, 0 };  // default: neutral amber
+// Mouth colour — set by SPEAK:{emotion}; used by BOTH the speaking wave and the
+// idle glow, so the mouth settles back to the same emotion colour it spoke in.
+// Default matches EMOTION_COLORS[EMO_NEUTRAL] (wire-order, R↔G pre-swapped for
+// the GRB mouth strip — see the EMOTION_COLORS note).
+EmotionColor mouthColor  = { 140, 255, 0 };   // neutral amber (wire order)
 uint8_t      speakLevel  = 0;                 // 0–255 audio intensity
 float        speakPhase  = 0.0f;              // wave front 0.0 – NUM_ZONES
+
+// Mouth idle glow (ACTIVE / IDLE / post-speech): gentle sine pulse between
+// GLOW_MIN and GLOW_MAX of mouthColor (~6.3 s period at 1.0 rad/s).
+// glowLastScale throttles FastLED.show() to actual brightness-byte changes
+// (~8 frames/s) so the glow doesn't hammer the WS2812B bus or starve the
+// serial port; 255 is a sentinel forcing a redraw on the next tick (the real
+// scale never exceeds GLOW_MAX*255 = 64).
+#define GLOW_MIN  0.15f
+#define GLOW_MAX  0.25f
+#define GLOW_RATE 1.0f                        // rad/s
+float        glowPhase     = 0.0f;            // 0.0 – TWO_PI
+uint8_t      glowLastScale = 255;             // sentinel: force first frame
+
+// Glow ramp-in: when the glow starts from a dark mouth (boot / OFF, or waking
+// from SLEEP), brightness ramps 0 → full glow over GLOW_RAMP_IN_MS so program
+// launch breathes the mouth in instead of snapping it on.  glowRampStartMs is
+// the ramp's millis() origin; 0 = no ramp active.  Speaking cancels the ramp
+// (the mouth is fully lit by the wave, so the post-speech glow is full level).
+// The shutdown mirror is FADEOFF, which fades the frozen frame — glowing
+// mouth included — to black over HEAD_FADEOFF_MS.
+#define GLOW_RAMP_IN_MS 4000
+uint32_t     glowRampStartMs = 0;
+
+inline void forceGlowRefresh() { glowLastScale = 255; }
+
+inline void startGlowRamp()   { glowRampStartMs = millis() | 1; }  // |1: never the 0 sentinel
+inline void cancelGlowRamp()  { glowRampStartMs = 0; }
 
 // Mouth watchdog. The mouth animation (ANIM_SPEAK) is free-running and is only
 // stopped by a host command (SPEAK_STOP/ACTIVE/IDLE/OFF). Those bytes can be
@@ -274,6 +327,7 @@ static uint8_t parseEmotion(const char *s) {
     if (strcmp(s, "excited") == 0) return EMO_EXCITED;
     if (strcmp(s, "sad")     == 0) return EMO_SAD;
     if (strcmp(s, "angry")   == 0) return EMO_ANGRY;
+    if (strcmp(s, "curious") == 0) return EMO_CURIOUS;
     return EMO_NEUTRAL;
 }
 
@@ -362,19 +416,19 @@ void handleCommand(char *cmd) {
         return;
     }
 
-    // SPEAK_STOP — mouth off; eyes unchanged in leds[] but blink suspended
-    // until the next EYE: or ACTIVE re-enables it.
+    // SPEAK_STOP — mouth returns to the dim idle glow at the current emotion
+    // colour; eyes unchanged in leds[] but blink suspended until the next EYE:
+    // or ACTIVE re-enables it.
     //
-    // Intentionally idempotent: mouthOff() + FastLED.show() run unconditionally
-    // even if animMode is already ANIM_OFF.  The Pi may send this command multiple
-    // times as a reliability measure; redundant calls are harmless and guarantee
-    // the mouth pixels reach the off state.
+    // Intentionally idempotent: re-entering ANIM_ACTIVE + forcing a glow frame
+    // is harmless if already there.  The Pi may send this command multiple
+    // times as a reliability measure; the forced refresh guarantees the mouth
+    // leaves the bright speak frame for the glow within one loop pass.
     if (strcmp(cmd, "SPEAK_STOP") == 0) {
-        animMode   = ANIM_OFF;
+        animMode   = ANIM_ACTIVE;
         eyesActive = false;
         blinkState = BLINK_OPEN;   // reset so next activation starts cleanly
-        mouthOff();
-        FastLED.show();
+        forceGlowRefresh();        // snap mouth from speak frame to glow now
         return;
     }
 
@@ -383,28 +437,24 @@ void handleCommand(char *cmd) {
         uint8_t emo = parseEmotion(cmd + 6);
         EmotionColor ec;
         memcpy_P(&ec, &EMOTION_COLORS[emo], sizeof(EmotionColor));
-        speakColor = ec;
+        mouthColor = ec;
         speakPhase = 0.0f;
         animMode   = ANIM_SPEAK;
+        cancelGlowRamp();       // speech lights the mouth fully; glow resumes at full level
         lastSpeakActivityMs = millis();   // reset watchdog at utterance start
         // Eyes not touched — blink continues at current eyeColor/eyesActive state.
         return;
     }
 
-    // IDLE — mouth off; eyes breathe slowly; blink system active.
+    // IDLE — mouth idle glow; eyes breathe slowly; blink system active.
     if (strcmp(cmd, "IDLE") == 0) {
-        // Clear mouth pixels FIRST — before touching any other state — so that
-        // pixels 2-81 (MOUTH_START … NUM_LEDS-1) are guaranteed black the
-        // instant this command is processed, regardless of what animMode was
-        // previously.  A single stale non-black value in the buffer (e.g. from
-        // tickSpeak's ambient floor) would otherwise survive until the next
-        // FastLED.show() writes it out.
-        mouthOff();
-        FastLED.show();
-
+        if (animMode == ANIM_OFF || animMode == ANIM_SLEEP) {
+            startGlowRamp();    // mouth was dark — breathe the glow in over 4 s
+        }
         animMode      = ANIM_IDLE;
         idlePhase     = 0.0f;
         eyeBrightness = 1.0f;   // tickIdle will update from here on first tick
+        forceGlowRefresh();     // repaint the mouth at glow level immediately
         // Activate blink system if it was suspended (e.g. after SPEAK_STOP).
         // Only start if eyeColor is non-black — no point blinking dark eyes.
         if (!eyesActive && (eyeColor.r | eyeColor.g | eyeColor.b)) {
@@ -417,10 +467,13 @@ void handleCommand(char *cmd) {
         return;
     }
 
-    // ACTIVE — mouth off; preserve current eye colour; blink resumes.
+    // ACTIVE — mouth idle glow; preserve current eye colour; blink resumes.
     if (strcmp(cmd, "ACTIVE") == 0) {
+        if (animMode == ANIM_OFF || animMode == ANIM_SLEEP) {
+            startGlowRamp();    // mouth was dark — breathe the glow in over 4 s
+        }
         animMode = ANIM_ACTIVE;
-        mouthOff();
+        forceGlowRefresh();
         if (eyeColor.r || eyeColor.g || eyeColor.b) {
             setEyes(eyeColor.r, eyeColor.g, eyeColor.b);
         } else {
@@ -430,11 +483,20 @@ void handleCommand(char *cmd) {
         return;
     }
 
-    // EYE:{r},{g},{b} — set eye colour; blink resumes.
+    // EYE:{r},{g},{b} — set eye colour; blink resumes.  If the board is in OFF
+    // mode, an EYE means "awake again" (the host's eye keep-alive heartbeat
+    // re-lighting us, e.g. after a firmware reboot mid-session) — re-enter
+    // ACTIVE so the mouth idle glow resumes too.  Never interrupts SPEAK /
+    // IDLE / SLEEP.
     if (strncmp(cmd, "EYE:", 4) == 0) {
         if (headFading) return;   // don't re-light the eyes mid shutdown-fade
         int r, g, b;
         if (sscanf(cmd + 4, "%d,%d,%d", &r, &g, &b) == 3) {
+            if (animMode == ANIM_OFF && (r | g | b)) {
+                animMode = ANIM_ACTIVE;
+                startGlowRamp();   // dark → awake: breathe the glow in over 4 s
+                forceGlowRefresh();
+            }
             setEyes(clampByte(r), clampByte(g), clampByte(b));
             FastLED.show();
         }
@@ -535,12 +597,61 @@ void tickSpeak(float dt) {
 
         uint8_t sc = (uint8_t)(brightness * 255.0f);
         leds[ledIdx] = CRGB(
-            scale8(speakColor.r, sc),
-            scale8(speakColor.g, sc),
-            scale8(speakColor.b, sc)
+            scale8(mouthColor.r, sc),
+            scale8(mouthColor.g, sc),
+            scale8(mouthColor.b, sc)
         );
     }
     FastLED.show();
+}
+
+// ---------------------------------------------------------------------------
+// Mouth idle glow — dim emotional pulse while awake and not speaking
+// ---------------------------------------------------------------------------
+//
+// All 80 mouth pixels pulse together between GLOW_MIN (15 %) and GLOW_MAX
+// (25 %) of mouthColor on a slow sine (~6.3 s period at GLOW_RATE rad/s), so
+// the mouth shows a soft version of the current emotion colour whenever Rex
+// is on but quiet.  Runs in ANIM_ACTIVE and ANIM_IDLE.
+//
+// Writes ONLY mouth pixels (MOUTH_START …) and returns true when the frame
+// changed — the caller decides when to FastLED.show(), so IDLE mode can fold
+// the glow and the eye breathing into a single show per frame.  Throttled to
+// brightness-byte changes (~8 fps); forceGlowRefresh() makes the next tick
+// repaint unconditionally (used on mode entry so a stale speak frame or
+// mouthOff() never lingers).
+//
+// NOTE: eye pixels leds[0]/leds[1] are never written here — eyes stay
+// exclusively owned by setEyes()/tickIdle()/tickBlink().
+
+bool tickMouthGlow(float dt) {
+    glowPhase += GLOW_RATE * dt;
+    if (glowPhase >= TWO_PI) glowPhase -= TWO_PI;
+
+    float mid  = (GLOW_MIN + GLOW_MAX) * 0.5f;
+    float amp  = (GLOW_MAX - GLOW_MIN) * 0.5f;
+    float brightness = mid + amp * sinf(glowPhase);
+
+    // Ramp-in from dark (program launch / wake): scale the glow 0 → 1 over
+    // GLOW_RAMP_IN_MS, then drop the ramp state once complete.
+    if (glowRampStartMs) {
+        uint32_t elapsed = millis() - glowRampStartMs;
+        if (elapsed >= GLOW_RAMP_IN_MS) {
+            glowRampStartMs = 0;
+        } else {
+            brightness *= (float)elapsed / (float)GLOW_RAMP_IN_MS;
+        }
+    }
+
+    uint8_t sc = (uint8_t)(brightness * 255.0f);
+    if (sc == glowLastScale) return false;   // nothing visible changed
+    glowLastScale = sc;
+
+    CRGB c = CRGB(scale8(mouthColor.r, sc),
+                  scale8(mouthColor.g, sc),
+                  scale8(mouthColor.b, sc));
+    for (uint8_t i = MOUTH_START; i < NUM_LEDS; i++) leds[i] = c;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -557,11 +668,16 @@ void tickSpeak(float dt) {
 //
 // IMPORTANT — mouth pixels (indices 2-81 / MOUTH_START … NUM_LEDS-1):
 //   tickIdle() intentionally writes ONLY leds[0] and leds[1] (the two eyes).
-//   Mouth pixels are cleared by mouthOff() in the IDLE command handler and
-//   are never modified here.  Any future edit that writes a mouth pixel
-//   inside tickIdle() is a bug.
+//   Mouth pixels are owned by tickMouthGlow() while awake; any edit that
+//   writes a mouth pixel inside tickIdle() is a bug.
+//
+// Returns true when the eye frame changed — the caller decides when to
+// FastLED.show() (folded with the mouth glow into one show per frame), and
+// the byte-change throttle (~45 fps at this breathing rate) keeps show()
+// calls — which disable interrupts and can drop inbound serial bytes — off
+// the loop()'s hot path.
 
-void tickIdle(float dt) {
+bool tickIdle(float dt) {
     idlePhase += 0.8f * dt;
     if (idlePhase >= TWO_PI) idlePhase -= TWO_PI;
 
@@ -569,16 +685,21 @@ void tickIdle(float dt) {
     eyeBrightness = 0.30f + 0.35f * (1.0f + sinf(idlePhase));
 
     // Let tickBlink() own leds[] while eyes are closed.
-    if (blinkState == BLINK_CLOSED) return;
+    if (blinkState == BLINK_CLOSED) return false;
+
+    // Only push a new frame when the scaled brightness byte actually changed.
+    static uint8_t lastSc = 255;
+    uint8_t sc = (uint8_t)(eyeBrightness * 255.0f);
+    if (sc == lastSc) return false;
+    lastSc = sc;
 
     // Only eye pixels — mouth pixels are never written here.
-    uint8_t sc = (uint8_t)(eyeBrightness * 255.0f);
     leds[0] = CRGB(scale8(eyeColor.r, sc),
                    scale8(eyeColor.g, sc),
                    scale8(eyeColor.b, sc));
     leds[1] = leds[0];
     // leds[2] … leds[NUM_LEDS-1] (mouth) are intentionally NOT modified.
-    FastLED.show();
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -622,7 +743,7 @@ void tickSleep() {
 // ---------------------------------------------------------------------------
 
 void tickAnimation() {
-    if (animMode == ANIM_OFF || animMode == ANIM_ACTIVE) return;
+    if (animMode == ANIM_OFF) return;
 
     uint32_t now     = millis();
     float    dt      = (now - lastMs) * 0.001f;   // seconds since last tick
@@ -632,20 +753,25 @@ void tickAnimation() {
 
     if (animMode == ANIM_SPEAK) {
         // Mouth watchdog backstop: if no SPEAK/SPEAK_LEVEL has arrived recently the
-        // host has stopped speaking and the stop command was dropped — extinguish
-        // the mouth ourselves. Only touches the mouth + animMode; eyes/blink are
-        // left alone (the heartbeat keeps them lit), so this is a clean stop.
+        // host has stopped speaking and the stop command was dropped — settle the
+        // mouth into the idle glow ourselves. Only touches the mouth + animMode;
+        // eyes/blink are left alone (the heartbeat keeps them lit), so this is a
+        // clean stop.
         if ((uint32_t)(now - lastSpeakActivityMs) > SPEAK_TIMEOUT_MS) {
-            animMode = ANIM_OFF;
-            mouthOff();
-            FastLED.show();
-            return;
+            animMode = ANIM_ACTIVE;
+            forceGlowRefresh();
+            return;   // glow takes over on the next tick
         }
         tickSpeak(dt);
         return;
     }
-    if (animMode == ANIM_IDLE)  { tickIdle(dt);  return; }
-    if (animMode == ANIM_SLEEP) { tickSleep();   return; }
+    if (animMode == ANIM_SLEEP) { tickSleep(); return; }
+
+    // ANIM_ACTIVE / ANIM_IDLE — mouth idle glow, plus eye breathing in IDLE.
+    // Both ticks only mark the buffer; a single show() pushes the combined frame.
+    bool changed = tickMouthGlow(dt);
+    if (animMode == ANIM_IDLE) changed = tickIdle(dt) || changed;
+    if (changed) FastLED.show();
 }
 
 // ---------------------------------------------------------------------------

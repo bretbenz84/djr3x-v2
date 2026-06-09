@@ -162,9 +162,16 @@ _UPTIME_QUERY_RE = re.compile(
     r"been awake|when did you start)\b",
     re.IGNORECASE,
 )
+# Keep in sync with action_router._VISION_DESCRIBE_RE (the central evidence
+# gate) — this layer only needs to CATCH vision phrasings; the turn-policy
+# gate validates against the canonical pattern before execution.
 _VISION_QUERY_RE = re.compile(
-    r"\b(what do you see|what can you see|look at|take a look|"
-    r"what am i holding|describe (?:the )?(room|scene)|see me)\b",
+    r"\b(what do you see|what can you see|look at|take a look|look around|"
+    r"(?:do|can|did) you see|"
+    r"what am i (?:holding|wearing|showing)|"
+    r"what (?:i'm|i am) (?:holding|wearing|showing)|"
+    r"what(?:'s| is) in my hand|what(?:'s| is) in front of you|"
+    r"describe (?:the )?(room|scene)|see me)\b",
     re.IGNORECASE,
 )
 _WHO_QUERY_RE = re.compile(

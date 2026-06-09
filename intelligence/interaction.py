@@ -1185,6 +1185,14 @@ _LEGACY_COMMAND_ACTION_MAP: dict[str, str] = {
     "date_query": "date.query",
     "status_uptime": "status.uptime",
     "vision_describe": "vision.describe_scene",
+    # Physical gaze commands ("look to your right", "look at this"). Mapping
+    # them here gives the turn-policy gate a real ActionDecision, so a clear
+    # look imperative can break out of a stale answer_to_rex binding via
+    # _dialogue_allows_action_breakout + the central directed-look evidence
+    # check, instead of being silently dropped to conversation (the live
+    # failure: "look to your right" → blocked_by_dialogue_act → Rex
+    # hallucinated "nothing to my right except a wall" without moving).
+    "directed_look": "vision.directed_look",
     "vision_who_am_i": "identity.who_is_speaking",
     "whats_my_name": "identity.who_is_speaking",
     "rename_me": "identity.name_correction",
@@ -1280,6 +1288,16 @@ def _dialogue_allows_action_breakout(
         return bool(_IDLE_DIRECT_MUSIC_RE.search(cleaned))
     if action in {"music.stop", "music.skip"}:
         return bool(re.search(r"^\s*(?:stop|pause|skip)\b", cleaned, re.IGNORECASE))
+    # Camera requests are aimed at Rex's eyes, not at his last conversational
+    # turn — "look to your right" or "can you see what I'm holding" mid-chat
+    # is still a command/query. Both reuse the action router's deterministic
+    # evidence checks (the same bar the central policy applies), so this is
+    # not a new bypass: a turn only breaks out if it would also pass
+    # missing_required_evidence_reason for the same action.
+    if action == "vision.directed_look":
+        return action_router.has_directed_look_evidence(cleaned)
+    if action == "vision.describe_scene":
+        return action_router.has_vision_query_evidence(cleaned)
     return False
 
 
@@ -9454,16 +9472,7 @@ def _execute_command(
 
     # ── Vision ─────────────────────────────────────────────────────────────────
     if key == "vision_describe":
-        desc = ""
-        try:
-            from vision import scene as vision_scene
-            desc = vision_scene.describe_scene()
-        except Exception as exc:
-            _log.debug("vision describe error: %s", exc)
-        return _say(
-            f"You were asked what you see. Scene analysis: '{desc or 'nothing notable'}'. "
-            f"Describe it in character in one or two lines."
-        )
+        return _say(_vision_question_answer_prompt(raw_text))
 
     if key == "vision_who_am_i":
         if person_name:
@@ -12999,6 +13008,88 @@ def _handle_pending_music_preference_answer(
 # Intent-routed local responses (LLM fallback path)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _vision_question_target_hint(text: str) -> str:
+    """Extract a target hint from a visual question for the vision prompt."""
+    cleaned = " ".join((text or "").lower().split())
+    if re.search(r"\b(?:holding|in my hand|showing)\b", cleaned):
+        return "the object the person is holding up or showing to the camera"
+    if re.search(r"\b(?:wearing|outfit|my shirt|my hat)\b", cleaned):
+        return "what the person is wearing"
+    m = re.search(
+        r"\b(?:see|look(?:ing)? at|check out)\s+"
+        r"(?:my|this|that|the|these|those|his|her|their)\s+"
+        r"([a-z0-9' -]{2,40})",
+        cleaned,
+    )
+    if m:
+        return m.group(1).strip(" ?!.")
+    return ""
+
+
+def _vision_question_answer_prompt(raw_text: str) -> str:
+    """Take a fresh camera look at the user's visual question and build a
+    grounded LLM prompt for the in-character answer.
+
+    This is the path behind "what do you see", "can you see what I'm holding",
+    "look at my X", etc. It makes ONE GPT vision call carrying the user's
+    actual question (analyze_directed_attention), so the answer is grounded in
+    what the camera genuinely shows — including an honest miss — instead of
+    the cached room-level summary (which can't see a held-up object) or, worse,
+    a pure-text hallucinated "I see it". Only runs on explicit user vision
+    queries, so the vision spend is strictly user-initiated.
+    """
+    analysis: dict = {}
+    frame = None
+    try:
+        from vision import camera
+        frame = camera.get_frame()
+    except Exception as exc:
+        _log.debug("vision question frame grab failed: %s", exc)
+    if frame is not None:
+        try:
+            from vision import scene as vision_scene
+            analysis = vision_scene.analyze_directed_attention(
+                frame,
+                direction="current",
+                utterance=raw_text,
+                target_hint=_vision_question_target_hint(raw_text),
+            ) or {}
+        except Exception as exc:
+            _log.debug("vision question analyze error: %s", exc)
+    if analysis:
+        _log.info(
+            "[interaction] vision query fresh look target_visible=%s subject=%s summary=%r",
+            analysis.get("target_visible"),
+            analysis.get("subject_type"),
+            (analysis.get("target_summary") or "")[:120],
+        )
+        return (
+            f"The user asked a visual question: {raw_text!r}. You took a fresh "
+            f"look through your camera and got this vision analysis:\n"
+            f"{json.dumps(analysis, ensure_ascii=False)}\n\n"
+            "Answer their question as Rex in one or two lines, grounded ONLY in "
+            "the analysis. If target_visible is true, name the target concretely "
+            "using target_summary and notable_details. If target_visible is "
+            "false, say honestly that you can't make it out and suggest holding "
+            "it closer or pointing — never claim to see something the analysis "
+            "doesn't show. Do not mention JSON, APIs, screenshots, or image "
+            "analysis."
+        )
+    # No frame or the vision call failed — fall back to the cached world-state
+    # summary rather than inventing detail.
+    desc = ""
+    try:
+        from vision import scene as vision_scene
+        desc = vision_scene.describe_scene()
+    except Exception as exc:
+        _log.debug("vision describe fallback error: %s", exc)
+    return (
+        f"You were asked what you see. Scene analysis: '{desc or 'nothing notable'}'. "
+        f"Describe it in character in one or two lines. If the analysis is "
+        f"empty, admit your view is coming up empty rather than inventing detail."
+    )
+
+
 def _handle_classified_intent(
     intent: str,
     raw_text: str,
@@ -13102,16 +13193,7 @@ def _handle_classified_intent(
         )
 
     if intent == "query_what_do_you_see":
-        desc = ""
-        try:
-            from vision import scene as vision_scene
-            desc = vision_scene.describe_scene()
-        except Exception as exc:
-            _log.debug("intent vision describe error: %s", exc)
-        return _say(
-            f"You were asked what you see. Scene analysis: '{desc or 'nothing notable'}'. "
-            f"Describe it in character in one or two lines."
-        )
+        return _say(_vision_question_answer_prompt(raw_text))
 
     if intent == "query_music_options":
         try:

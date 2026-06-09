@@ -408,11 +408,94 @@ _UPTIME_QUERY_RE = re.compile(
     r"\b(?:how long have you been|uptime|been running|been awake|when did you start)\b",
     re.IGNORECASE,
 )
+# Evidence that an utterance is a genuine "use your camera" question. Kept
+# deliberately broader than the original (which missed live phrasings like
+# "can you see what I'm holding" and "look at my telescope" — both blocked as
+# missing_vision_query_evidence in real runs and answered with hallucinated
+# "I see it" text). Conversational idioms ("see what I mean", "look at the
+# bright side") are excluded by _VISION_IDIOM_RE below, checked first.
 _VISION_DESCRIBE_RE = re.compile(
-    r"\b(?:what do you see|what can you see|look around|describe (?:the )?"
-    r"(?:room|scene)|what am i holding|what's in front of you)\b",
+    r"\b(?:"
+    r"what (?:do|can|did) you see"
+    r"|what(?:'s| is| are) (?:in front of you|on (?:the|your) camera|that|this|these|those)"
+    r"|(?:do|can|did) you see"
+    r"|what am i (?:holding|wearing|showing|pointing)"
+    r"|what (?:i'm|i am) (?:holding|wearing|showing|pointing)"
+    r"|what (?:is|are) (?:he|she|they) (?:holding|wearing)"
+    r"|what(?:'s| is) (?:in|on) my hand"
+    r"|look around"
+    r"|look at (?:my|this|that|the|these|those|him|her|them|me|us|it|what)"
+    r"|take a look(?: at)?"
+    r"|check (?:this|that|it) out"
+    r"|describe (?:the |this |my )?(?:room|scene|view|place)"
+    r"|(?:describe|tell me) what you (?:see|can see|are seeing)"
+    r"|use your (?:camera|eyes)"
+    r")\b",
     re.IGNORECASE,
 )
+# Figure-of-speech guard: these contain "see"/"look at" but are conversation,
+# not camera requests. Mirrors the stale-event-cancel idiom guard pattern.
+_VISION_IDIOM_RE = re.compile(
+    r"\b(?:"
+    r"(?:do you |can you |you )?see (?:what i mean|my point|your point|the point|why|how it goes)"
+    r"|look at (?:the bright side|it this way|the big picture|the time|you go)"
+    r"|we(?:'ll)? see"
+    r"|i see\b"
+    r"|see you (?:later|soon|around|tomorrow)"
+    r")",
+    re.IGNORECASE,
+)
+# Physical gaze imperatives ("look to your right", "look at this") — evidence
+# for vision.directed_look (the servo head-turn + directed camera analysis).
+_DIRECTED_LOOK_RE = re.compile(
+    r"\b(?:"
+    r"look (?:to (?:the |your )?)?(?:left|right|up|down|behind(?: you)?|ahead|forward|"
+    r"straight(?: ahead)?|center|centre|around|over (?:here|there))"
+    r"|look (?:at )?(?:this|that|here|there)"
+    r"|look at (?:my|the|his|her|their|these|those|him|her|them|me|us|it)\b"
+    r"|look for\b"
+    r"|look the other way"
+    r"|turn (?:your head|around)"
+    r")",
+    re.IGNORECASE,
+)
+_LOOK_IDIOM_RE = re.compile(
+    r"\b(?:"
+    r"look at (?:the bright side|it this way|the big picture|the time|you go)"
+    r"|look (?:sharp|alive|out)\b"
+    r"|looking (?:good|sharp|forward)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def has_vision_query_evidence(text: str) -> bool:
+    """Deterministic check that an utterance is a real camera question.
+
+    Single source of truth shared by the central evidence policy below and the
+    dialogue-act breakout in interaction.py, so a vision query passes or fails
+    the same bar everywhere.
+    """
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return False
+    if _VISION_IDIOM_RE.search(cleaned) and not _VISION_DESCRIBE_RE.search(
+        _VISION_IDIOM_RE.sub(" ", cleaned)
+    ):
+        return False
+    return bool(_VISION_DESCRIBE_RE.search(cleaned))
+
+
+def has_directed_look_evidence(text: str) -> bool:
+    """Deterministic check that an utterance is a physical look/gaze command."""
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return False
+    if _LOOK_IDIOM_RE.search(cleaned) and not _DIRECTED_LOOK_RE.search(
+        _LOOK_IDIOM_RE.sub(" ", cleaned)
+    ):
+        return False
+    return bool(_DIRECTED_LOOK_RE.search(cleaned))
 _WHO_SPEAKING_RE = re.compile(
     r"\b(?:who am i|who is speaking|who'?s speaking|do you recognize me|"
     r"do you know who i am|what(?:'s| is) my name|do you know my name|"
@@ -1170,7 +1253,9 @@ def missing_required_evidence_reason(
     if action == "status.uptime":
         return None if _UPTIME_QUERY_RE.search(cleaned) else "missing_uptime_query_evidence"
     if action == "vision.describe_scene":
-        return None if _VISION_DESCRIBE_RE.search(cleaned) else "missing_vision_query_evidence"
+        return None if has_vision_query_evidence(cleaned) else "missing_vision_query_evidence"
+    if action == "vision.directed_look":
+        return None if has_directed_look_evidence(cleaned) else "missing_directed_look_evidence"
     if action == "system.sleep":
         return (
             None
