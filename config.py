@@ -102,7 +102,7 @@ def _env_bool(name: str, default: bool) -> bool:
 # history accumulates distinctly (handy for comparing runs; clean old ones up
 # manually). When False, one shared logs/djr3x.log that size-rotates (10MB x 5) is
 # used instead.
-DEBUG_MODE = False
+DEBUG_MODE = True
 
 # conversation.log is written by a tiny custom logger rather than Python's
 # RotatingFileHandler. Keep recent lines only so debug sessions do not leave a
