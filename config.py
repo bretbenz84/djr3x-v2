@@ -3774,6 +3774,20 @@ STARTUP_AUDIO_FILES = [
     "assets/audio/startup/light_speed.mp3",
     "assets/audio/startup/Roger Control.mp3",
 ]
+# The startup "speech clip" slot above (Roger Control.mp3) is RANDOMIZED: main.py
+# plays one of these on each launch, cycling so it never repeats consecutively
+# (state in STARTUP_SPEECH_CLIP_STATE_PATH, under the gitignored assets/state/). Any
+# STARTUP_AUDIO_FILES entry whose filename matches one of these is swapped for a
+# cycled pick. All of these must also be in SPEECH_ANIMATED_AUDIO_FILES so they get
+# mouth animation. To add more, drop the mp3 in assets/audio/startup and list it here.
+STARTUP_SPEECH_CLIP_CHOICES = [
+    "assets/audio/startup/Roger Control.mp3",
+    "assets/audio/startup/Outer Rim.mp3",
+    "assets/audio/startup/This is your cap.mp3",
+]
+STARTUP_SPEECH_CLIP_STATE_PATH = str(
+    Path(__file__).resolve().parent / "assets" / "state" / "startup_speech_clip.json"
+)
 # The listening chime (LISTENING_CHIME_FILE) is deliberately NOT in the opening
 # burst above — main.py plays it at the END of startup, once all models are loaded
 # and Rex is listening, so the chime signals "done loading, go ahead". Gated by
@@ -3783,9 +3797,15 @@ STARTUP_AUDIO_FILES = [
 # the same mouth LED and speech-motion treatment as TTS.
 SPEECH_ANIMATED_AUDIO_FILES = [
     "Roger Control.mp3",
+    "Outer Rim.mp3",
+    "This is your cap.mp3",
 ]
+# Transcripts for the conversation log (what Rex "said"). The two new lines were
+# transcribed from the actual audio with the local Whisper model.
 SPEECH_ANIMATED_AUDIO_TRANSCRIPTS = {
     "Roger Control.mp3": "Roger control, all systems go!",
+    "Outer Rim.mp3": "You just joined us. Hello, I'm DJ Rex, taking you on a musical tour of the Outer Rim.",
+    "This is your cap.mp3": "Hi there! This is your cap— I mean, DJ.",
 }
 
 # Startup self-diagnostic banter for missing live input devices. These lines are

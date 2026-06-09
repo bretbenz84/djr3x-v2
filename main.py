@@ -917,14 +917,28 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         logger.info("Startup audio disabled by --noaudio")
     elif config.PLAY_STARTUP_AUDIO:
         def _play_startup_audio() -> None:
+            speech_choices = [
+                str(c).strip()
+                for c in (getattr(config, "STARTUP_SPEECH_CLIP_CHOICES", None) or [])
+                if str(c).strip()
+            ]
+            choice_names = {Path(c).name.lower() for c in speech_choices}
+            speech_state_path = str(getattr(config, "STARTUP_SPEECH_CLIP_STATE_PATH", "") or "")
             for audio_file in config.STARTUP_AUDIO_FILES:
-                logger.info("Playing startup audio: %s", audio_file)
+                play_file = audio_file
+                # If this slot is the randomizable speech clip, swap in one of the
+                # choices (random, never consecutive across launches) instead.
+                if speech_choices and Path(audio_file).name.lower() in choice_names:
+                    picked = phrase_cycler.select_cycling_line(speech_choices, speech_state_path)
+                    if picked:
+                        play_file = picked
+                logger.info("Playing startup audio: %s", play_file)
                 try:
-                    _play_audio_file(audio_file)
-                    if _is_listening_chime_audio_file(audio_file):
+                    _play_audio_file(play_file)
+                    if _is_listening_chime_audio_file(play_file):
                         speech_queue.mark_startup_chime_played()
                 except Exception as e:
-                    logger.warning("Could not play %s: %s", audio_file, e)
+                    logger.warning("Could not play %s: %s", play_file, e)
         startup_audio_thread = threading.Thread(
             target=_play_startup_audio,
             daemon=True,
