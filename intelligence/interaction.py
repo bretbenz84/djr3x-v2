@@ -12654,6 +12654,15 @@ def _maybe_capture_pending_qa(
     # leave the pending question open. Real conversations branch sometimes.
     if "?" in cleaned:
         return None
+    # A compliment ("you're a nice droid") is about Rex, not an answer to his
+    # question — don't swallow it as the pending Q&A answer, so the compliment
+    # reaction (proud body mood + chest white→blue flash) still fires downstream.
+    if personality.is_obvious_compliment(cleaned):
+        _log.info(
+            "[interaction] pending Q&A capture held — utterance is a compliment %r",
+            cleaned,
+        )
+        return None
     try:
         answered = rel_memory.answer_latest_pending_question(person_id, cleaned)
         if answered:

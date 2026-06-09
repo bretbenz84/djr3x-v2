@@ -171,5 +171,33 @@ class NameMergeConfirmationTest(unittest.TestCase):
         self.assertIsNotNone(interaction._pending_name_merge_confirmation)
 
 
+class PendingQAComplimentGuardTest(unittest.TestCase):
+    """A compliment must not be swallowed as the answer to Rex's pending question,
+    so the compliment reaction (proud mood + chest flash) still fires. Real answers
+    are still captured."""
+
+    def test_compliment_is_not_captured_as_pending_answer(self):
+        from intelligence import interaction
+        with mock.patch.object(
+            interaction.rel_memory,
+            "answer_latest_pending_question",
+            return_value={"question_key": "favorite_music"},
+        ) as ans:
+            result = interaction._maybe_capture_pending_qa(1, "You're a nice droid")
+        self.assertIsNone(result)
+        ans.assert_not_called()  # short-circuited before the capture
+
+    def test_real_answer_is_still_captured(self):
+        from intelligence import interaction
+        with mock.patch.object(
+            interaction.rel_memory,
+            "answer_latest_pending_question",
+            return_value={"question_key": "misc"},
+        ) as ans:
+            result = interaction._maybe_capture_pending_qa(1, "I like classical music")
+        self.assertIsNotNone(result)
+        ans.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
