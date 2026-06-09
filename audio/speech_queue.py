@@ -56,7 +56,10 @@ def _state_suppresses_output() -> bool:
     try:
         import state as state_module
         from state import State
-        return state_module.get_state() == State.SLEEP
+        # SHUTDOWN suppresses too, so a proactive/idle line that wins the race
+        # against the shutdown state-flip can't get enqueued and play during the
+        # power-down animation. The shutdown sign-off is spoken BEFORE the flip.
+        return state_module.get_state() in (State.SLEEP, State.SHUTDOWN)
     except Exception:
         return False
 

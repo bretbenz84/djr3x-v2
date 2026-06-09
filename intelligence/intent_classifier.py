@@ -123,11 +123,15 @@ _TIME_QUERY_RE = re.compile(
     re.IGNORECASE,
 )
 _DATE_QUERY_RE = re.compile(
-    r"\b(what(?:'s| is)?|tell me|give me|do you know)\b.{0,35}\b("
-    r"date|day|today|weekday"
-    r")\b|"
-    r"\bwhat day is it\b|"
-    r"\bwhat day\b.{0,35}\b(dealing with|today|is it|are we|we are)\b",
+    # Explicit date / day-of-week questions only. "today"/"day" must be the OBJECT
+    # of the question, never a time adverbial after an action verb — so
+    # "what are you doing today" / "what are you up to today" no longer match.
+    r"\bwhat(?:'s| is)?\s+(?:the\s+|today'?s\s+|current\s+|exact\s+)*date\b|"
+    r"\bwhat(?:'s| is)?\s+the\s+weekday\b|"
+    r"\bwhat\s+weekday\s+is\s+it\b|"
+    r"\bwhat\s+day\s+(?:of\s+the\s+week\s+)?(?:is\s+it|is\s+today|are\s+we\s+on)\b|"
+    r"\bwhat(?:'s| is)?\s+(?:the\s+)?day\s+of\s+the\s+week\b|"
+    r"\b(?:tell me|give me|do you know)\s+(?:the\s+|today'?s\s+)?(?:date|weekday|day\s+of\s+the\s+week)\b",
     re.IGNORECASE,
 )
 _NAMED_DAY_EXPLANATION_RE = re.compile(

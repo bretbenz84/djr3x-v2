@@ -2296,7 +2296,11 @@ def _format_current_date_response(now: Optional[datetime] = None) -> str:
 
 
 _DATE_QUERY_PAT = re.compile(
-    r"\b(date|today|today's|todays|day of week)\b|^\s*what\s+day\b",
+    # date-vs-time tiebreaker: explicit date words only (no bare "today", which
+    # also appears in time questions like "what time is it today").
+    r"\b(?:date|weekday|day\s+of\s+(?:the\s+)?week)\b|"
+    r"\bwhat(?:'s| is)?\s+today'?s\s+date\b|"
+    r"^\s*what\s+day\b",
     re.IGNORECASE,
 )
 
@@ -9147,6 +9151,10 @@ def _execute_command(
             )
         _speak_blocking(resp)
         state_module.set_state(State.SHUTDOWN)
+        # Drop any proactive/idle line (priority 0–1) that won the race against the
+        # state flip and is waiting in the queue, so nothing speaks over the
+        # power-down animation. The sign-off above already played (priority ≥2).
+        speech_queue.clear_below_priority(2)
         return resp
 
     # ── Memory ─────────────────────────────────────────────────────────────────

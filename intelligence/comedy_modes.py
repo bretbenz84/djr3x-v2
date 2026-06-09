@@ -362,7 +362,10 @@ def _recent_premise_summary() -> str:
 
 
 def _collapse_overexplained_joke(text: str) -> str:
-    text = re.sub(r"\s+(?:Get it|See|Because)[,]?.*$", "", text, flags=re.I)
+    # Only collapse a genuine joke-explainer clause that is SET OFF by a comma or
+    # dash ("..., see," / "... — because ..."), so ordinary verbs/conjunctions in a
+    # normal reply ("I can't see you.") are never truncated to a fragment.
+    text = re.sub(r"\s*[,—–-]\s*(?:get it|see|because)\b.*$", "", text, flags=re.I)
     text = re.sub(r"\s+Anyway[,]?.*$", "", text, flags=re.I)
     return text.strip()
 

@@ -126,6 +126,40 @@ _BAD_PHRASE_TOKENS = {
     "sit",
     "there",
 }
+# Sentence-initial discourse markers / fillers that get mistaken for a bare name
+# when an utterance opens with one and is split at the first comma
+# (e.g. "Also, what are you doing today?" -> "Also").
+_DISCOURSE_MARKERS = {
+    "also",
+    "so",
+    "well",
+    "anyway",
+    "anyways",
+    "anyhow",
+    "actually",
+    "basically",
+    "honestly",
+    "literally",
+    "alright",
+    "right",
+    "now",
+    "um",
+    "uh",
+    "oh",
+    "yeah",
+    "yes",
+    "but",
+    "and",
+    "or",
+    "then",
+    "plus",
+    "besides",
+    "however",
+    "though",
+    "like",
+    "incidentally",
+    "frankly",
+}
 
 
 def normalized_name_key(value: str) -> str:
@@ -180,10 +214,12 @@ def normalize_person_name(value: str, *, allow_single: bool = True) -> Optional[
     lowered = [token.lower() for token in tokens]
     if not tokens:
         return None
-    if len(tokens) == 1 and lowered[0] in _BAD_SINGLE_TOKENS:
+    if len(tokens) == 1 and (
+        lowered[0] in _BAD_SINGLE_TOKENS or lowered[0] in _DISCOURSE_MARKERS
+    ):
         return None
     if len(tokens) > 1:
-        if lowered[0] in _BAD_PHRASE_STARTS:
+        if lowered[0] in _BAD_PHRASE_STARTS or lowered[0] in _DISCOURSE_MARKERS:
             return None
         if any(token in _BAD_SINGLE_TOKENS or token in _BAD_PHRASE_TOKENS for token in lowered):
             return None
