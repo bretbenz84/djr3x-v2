@@ -619,8 +619,13 @@ def _shutdown() -> None:
     logger.info("Stopping audio.stream...")
     stream.stop()
 
-    # Fire shutdown audio first, then run servo animation simultaneously.
-    # Join the audio thread so the clip isn't cut short by shutdown teardown.
+    # Power-down theatrics fire TOGETHER so it reads as one motion: kick off the LED
+    # fade, the shutdown audio, and the servo droop at the same moment — not LED-fade
+    # first and the sound + servos 3-4s later. Join the audio thread so the clip isn't
+    # cut short by the hardware teardown below.
+    logger.info("Starting synchronized power-down (LED fade + audio + servo droop)...")
+    _turn_leds_off_for_shutdown()  # start the ~4s LED fade NOW, in lockstep with the rest
+
     _audio_thread = None
     if config.PLAY_SHUTDOWN_AUDIO:
         logger.info("Playing shutdown audio: %s", config.SHUTDOWN_AUDIO_FILE)
@@ -639,8 +644,6 @@ def _shutdown() -> None:
 
     if _audio_thread is not None:
         _audio_thread.join()
-
-    _turn_leds_off_for_shutdown()
 
     # Close hardware.
     logger.info("Closing hardware...")
@@ -891,7 +894,11 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         elif new == State.SLEEP:
             leds_chest.sleep()
         elif new == State.SHUTDOWN:
-            _turn_leds_off_for_shutdown()
+            # Don't fade here. The LED fade is fired in lockstep with the shutdown
+            # audio and servo droop inside _shutdown() so the power-down reads as one
+            # motion. Fading on the state flip ran the LEDs ~3-4s AHEAD of the sound
+            # and servos (those wait for the main-loop poll + service teardown first).
+            pass
     state.add_state_change_callback(_chest_state_callback)
 
     logger.info(

@@ -842,9 +842,10 @@ def shutdown() -> None:
     # close. Don't rely on the shutdown-audio join window (skipped when audio is
     # disabled), or a correct-speed droop could still be cut short.
     time.sleep(float(getattr(config, "SHUTDOWN_DROOP_SETTLE_SECS", 0.8)))
-    # Fade the LEDs out (lifelike power-down) rather than snapping them off. The
-    # state-change callback already kicked off the same fade when SHUTDOWN was set;
-    # FADEOFF is idempotent in firmware, so this is a harmless re-assert.
+    # Fade the LEDs out (lifelike power-down) rather than snapping them off. _shutdown()
+    # already kicked off this fade in lockstep with the audio + droop; FADEOFF is
+    # idempotent in firmware, so this is a harmless re-assert (and keeps shutdown()
+    # correct if it's ever called on its own).
     leds_head.fade_off()
     leds_chest.fade_off()
 

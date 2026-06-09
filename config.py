@@ -1148,6 +1148,11 @@ SERVO_SPEECH_TILT_WOBBLE_QUS = 120
 SERVO_SPEECH_ELBOW_INTERVAL_MIN_SECS = 0.35
 SERVO_SPEECH_ELBOW_INTERVAL_MAX_SECS = 0.75
 SERVO_SPEECH_HAND_DIVISOR = 3
+# Pokerarm sways back and forth while speaking on a SLOWER cadence than the hero arm
+# (which re-targets every update frame) — a slow, deliberate beat, yet far livelier
+# than the idle arm wander (which moves the pokerarm only every 4-9s).
+SERVO_SPEECH_POKER_INTERVAL_MIN_SECS = 0.9
+SERVO_SPEECH_POKER_INTERVAL_MAX_SECS = 1.7
 
 # Listening motion: gentle "I'm hearing you / thinking" body language that runs
 # from speech onset through transcription→LLM→TTS so Rex isn't frozen while he

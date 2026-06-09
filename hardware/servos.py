@@ -56,6 +56,10 @@ _speech_hand_counter = 0
 _speech_elbow_target: int | None = None
 _speech_elbow_direction = 1
 _next_speech_elbow_at = 0.0
+# Pokerarm sways back and forth while speaking on a slower cadence than the hero arm.
+_speech_poker_target: int | None = None
+_speech_poker_direction = -1
+_next_speech_poker_at = 0.0
 _speech_emotion_frame: dict = {}
 
 # Listening-motion state: gentle "I'm processing you" body language that runs
@@ -606,6 +610,7 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
     """Capture the current gaze/pose and prepare speech-reactive servo motion."""
     global _last_speech_move_at, _speech_hand_counter
     global _speech_elbow_target, _speech_elbow_direction, _next_speech_elbow_at
+    global _speech_poker_target, _speech_poker_direction, _next_speech_poker_at
     global _speech_emotion_frame
 
     if _program_servo_updates_blocked():
@@ -633,6 +638,9 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
         _speech_elbow_target = None
         _speech_elbow_direction = 1
         _next_speech_elbow_at = 0.0
+        _speech_poker_target = None
+        _speech_poker_direction = -1
+        _next_speech_poker_at = 0.0
     _speech_active.set()
     set_breathing_emotion(str(frame.get("led_style") or frame.get("affect") or "neutral"))
 
@@ -672,6 +680,7 @@ def end_speech_motion() -> None:
             baseline[_channel("visor")] = config.SERVO_CHANNELS["visor"]["neutral"]
             baseline[_channel("elbow")] = config.SERVO_CHANNELS["elbow"]["neutral"]
             baseline[_channel("hand")] = config.SERVO_CHANNELS["hand"]["neutral"]
+            baseline[_channel("pokerarm")] = config.SERVO_CHANNELS["pokerarm"]["neutral"]
             baseline[_channel("heroarm")] = config.SERVO_CHANNELS["heroarm"]["neutral"]
             set_servos(baseline)
         elif _gui_servo_sim_enabled():
@@ -679,6 +688,7 @@ def end_speech_motion() -> None:
             baseline[_channel("visor")] = config.SERVO_CHANNELS["visor"]["neutral"]
             baseline[_channel("elbow")] = config.SERVO_CHANNELS["elbow"]["neutral"]
             baseline[_channel("hand")] = config.SERVO_CHANNELS["hand"]["neutral"]
+            baseline[_channel("pokerarm")] = config.SERVO_CHANNELS["pokerarm"]["neutral"]
             baseline[_channel("heroarm")] = config.SERVO_CHANNELS["heroarm"]["neutral"]
             set_servos(baseline)
     finally:
@@ -696,6 +706,7 @@ def speech_reactive_move(intensity: float) -> None:
     """
     global _last_speech_move_at, _speech_hand_counter
     global _speech_elbow_target, _speech_elbow_direction, _next_speech_elbow_at
+    global _speech_poker_target, _speech_poker_direction, _next_speech_poker_at
 
     if _program_servo_updates_blocked():
         return
@@ -734,6 +745,7 @@ def speech_reactive_move(intensity: float) -> None:
     visor_ch = _channel("visor")
     elbow_ch = _channel("elbow")
     hand_ch = _channel("hand")
+    poker_ch = _channel("pokerarm")
     hero_ch = _channel("heroarm")
 
     with _lock:
@@ -799,6 +811,29 @@ def speech_reactive_move(intensity: float) -> None:
             _get_config_float("SERVO_SPEECH_ELBOW_INTERVAL_MAX_SECS", 0.75),
         )
     targets[elbow_ch] = _speech_elbow_target
+
+    # Pokerarm: a slow, deliberate back-and-forth sway — a slower cadence than the
+    # per-frame hero arm, and far livelier (more frequent + wider) than the idle arm
+    # wander, so it reads as "talking with the arm" without the hero arm's pace.
+    poker_cfg = config.SERVO_CHANNELS["pokerarm"]
+    if _speech_poker_target is None or now >= _next_speech_poker_at:
+        span = poker_cfg["max"] - poker_cfg["min"]
+        center = poker_cfg["neutral"]
+        amplitude = int(
+            span
+            * (0.14 + 0.16 * arm_intensity)
+            * _motion_float(motion, "poker_amp_mult", 1.0)
+        )
+        _speech_poker_target = _clamp(
+            poker_ch,
+            center + _speech_poker_direction * amplitude + random.randint(-30, 30),
+        )
+        _speech_poker_direction *= -1
+        _next_speech_poker_at = now + random.uniform(
+            _get_config_float("SERVO_SPEECH_POKER_INTERVAL_MIN_SECS", 0.9),
+            _get_config_float("SERVO_SPEECH_POKER_INTERVAL_MAX_SECS", 1.7),
+        )
+    targets[poker_ch] = _speech_poker_target
 
     _speech_hand_counter += 1
     hand_divisor = max(1, _get_config_int("SERVO_SPEECH_HAND_DIVISOR", 3))
