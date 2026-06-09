@@ -564,6 +564,44 @@ def _episodic_shutdown_summary() -> None:
 def _shutdown() -> None:
     logger.info("=== Shutdown sequence begin ===")
 
+    # ── Power-down theatrics FIRST, so they fire the INSTANT shutdown begins ─────
+    # The LED fade, shutdown sound, and servo droop all kick off right after Rex's
+    # sign-off. The session save + the rest of the service teardown then run WHILE
+    # these play out (none of them touch the LEDs / audio / servos), instead of
+    # making the user wait ~2-3s for the bookkeeping before anything happens.
+    # Hardware is closed only once the theatrics finish (below).
+    #
+    # Stop the head-driving loop first so face-tracking can't fight the droop — it's
+    # a fast stop (the loop waits on _stop_event, so it exits immediately). The arm
+    # wander already idles itself in SHUTDOWN; breathing stops inside
+    # animations.shutdown().
+    logger.info("Stopping intelligence.consciousness...")
+    try:
+        consciousness.stop()
+    except Exception as exc:
+        logger.warning("consciousness stop failed: %s", exc)
+
+    logger.info("Starting synchronized power-down (LED fade + audio + servo droop)...")
+    powerdown_started = time.monotonic()
+    _turn_leds_off_for_shutdown()  # start the ~4s LED fade NOW, in lockstep with the rest
+
+    _audio_thread = None
+    if config.PLAY_SHUTDOWN_AUDIO:
+        logger.info("Playing shutdown audio: %s", config.SHUTDOWN_AUDIO_FILE)
+        def _play_shutdown_audio() -> None:
+            try:
+                _play_audio_file(config.SHUTDOWN_AUDIO_FILE)
+            except Exception as e:
+                logger.warning("Could not play shutdown audio: %s", e)
+        _audio_thread = threading.Thread(target=_play_shutdown_audio, daemon=True, name="shutdown_audio")
+        _audio_thread.start()
+    else:
+        logger.info("Shutdown audio disabled by config.PLAY_SHUTDOWN_AUDIO")
+
+    logger.info("Playing shutdown animation...")
+    animations.shutdown()  # servo droop (~2s); the LED fade keeps ramping in firmware
+
+    # ── Session save + remaining teardown — runs WHILE the sound / LED fade finish ──
     # Save Rex's current preoccupation so it resumes next launch (best-effort).
     try:
         from intelligence import rex_pov
@@ -571,8 +609,8 @@ def _shutdown() -> None:
     except Exception as exc:
         logger.debug("rex_pov persist on shutdown failed: %s", exc)
 
-    # Episodic memory: summarize this session into rex.db (before interaction.stop()
-    # clears the transcript). Timeout-bounded so it can't hang shutdown.
+    # Episodic memory: summarize this session into rex.db BEFORE interaction.stop()
+    # clears the transcript. Timeout-bounded so it can't hang shutdown.
     _episodic_shutdown_summary()
 
     # Retention: cap the diary's scene episodes so they don't accumulate unbounded
@@ -585,12 +623,9 @@ def _shutdown() -> None:
     except Exception as exc:
         logger.debug("episodic prune on shutdown failed: %s", exc)
 
-    # Stop services in reverse startup order.
+    # Stop the remaining services in reverse startup order.
     logger.info("Stopping intelligence.interaction...")
     interaction.stop()  # also calls wake_word.stop() internally
-
-    logger.info("Stopping intelligence.consciousness...")
-    consciousness.stop()
 
     logger.info("Unloading local LLM...")
     local_llm.unload()
@@ -619,31 +654,16 @@ def _shutdown() -> None:
     logger.info("Stopping audio.stream...")
     stream.stop()
 
-    # Power-down theatrics fire TOGETHER so it reads as one motion: kick off the LED
-    # fade, the shutdown audio, and the servo droop at the same moment — not LED-fade
-    # first and the sound + servos 3-4s later. Join the audio thread so the clip isn't
-    # cut short by the hardware teardown below.
-    logger.info("Starting synchronized power-down (LED fade + audio + servo droop)...")
-    _turn_leds_off_for_shutdown()  # start the ~4s LED fade NOW, in lockstep with the rest
-
-    _audio_thread = None
-    if config.PLAY_SHUTDOWN_AUDIO:
-        logger.info("Playing shutdown audio: %s", config.SHUTDOWN_AUDIO_FILE)
-        def _play_shutdown_audio() -> None:
-            try:
-                _play_audio_file(config.SHUTDOWN_AUDIO_FILE)
-            except Exception as e:
-                logger.warning("Could not play shutdown audio: %s", e)
-        _audio_thread = threading.Thread(target=_play_shutdown_audio, daemon=True, name="shutdown_audio")
-        _audio_thread.start()
-    else:
-        logger.info("Shutdown audio disabled by config.PLAY_SHUTDOWN_AUDIO")
-
-    logger.info("Playing shutdown animation...")
-    animations.shutdown()
-
+    # Let the shutdown clip finish (its ~5s also covers the ~4s LED fade) before we
+    # close the serial ports, so neither the sound nor the fade is cut short. Even
+    # with no audio, hold for the remainder of the LED fade so it doesn't snap off.
     if _audio_thread is not None:
         _audio_thread.join()
+    fade_remaining = float(getattr(config, "SHUTDOWN_LED_FADE_SECS", 4.0)) - (
+        time.monotonic() - powerdown_started
+    )
+    if fade_remaining > 0:
+        time.sleep(fade_remaining)
 
     # Close hardware.
     logger.info("Closing hardware...")
@@ -1203,7 +1223,7 @@ def _wait_for_shutdown() -> None:
             if state.is_state(State.SHUTDOWN):
                 logger.info("SHUTDOWN state detected — beginning shutdown sequence.")
                 break
-            time.sleep(1.0)
+            time.sleep(0.1)  # tight poll so the power-down starts right after the sign-off
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received — initiating clean shutdown.")
         state.set_state(State.SHUTDOWN)
