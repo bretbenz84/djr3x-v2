@@ -16049,6 +16049,14 @@ def _handle_speech_segment(
                         except Exception as exc:
                             _log.debug("cached face mood lookup failed: %s", exc)
                             face_mood = None
+                    # A pending "how long ago was that?" probe from a prior
+                    # heavy disclosure: if this utterance carries a time
+                    # marker ("13 years ago", "last week"), persist it to the
+                    # stored event so check-in eligibility reflects reality.
+                    try:
+                        empathy.consume_recency_answer(person_id, text)
+                    except Exception as exc:
+                        _log.debug("recency answer consume failed: %s", exc)
                     result = empathy.classify_affect(
                         text,
                         prosody_features=prosody_features,
@@ -16087,6 +16095,10 @@ def _handle_speech_segment(
                         result, person=person_row, child_in_scene=child_in_scene,
                         person_id=person_id,
                     )
+                    # Heavy disclosure with no timeframe ("my mother passed
+                    # away"): have the acknowledgment tactfully ask how long
+                    # ago it was instead of assuming fresh grief.
+                    mode_pack = empathy.augment_mode_for_recency_probe(result, mode_pack)
                     empathy.record(person_id, result, mode_pack)
                     _prosody = result.get("prosody") or {}
                     _log.info(
@@ -16126,6 +16138,7 @@ def _handle_speech_segment(
                             )
                             return
                         try:
+                            ev_recency = str(ev.get("recency") or "unknown")
                             row_id = emotional_events.add_event(
                                 person_id,
                                 category=ev.get("category", "other"),
@@ -16135,14 +16148,24 @@ def _handle_speech_segment(
                                 loss_subject=ev.get("loss_subject"),
                                 loss_subject_kind=ev.get("loss_subject_kind"),
                                 loss_subject_name=ev.get("loss_subject_name"),
+                                recency=ev_recency,
                             )
                             if row_id:
                                 _log.info(
                                     "[empathy] stored emotional event id=%s "
-                                    "category=%s for person_id=%s: %s",
-                                    row_id, ev.get("category"), person_id,
-                                    ev.get("description"),
+                                    "category=%s recency=%s for person_id=%s: %s",
+                                    row_id, ev.get("category"), ev_recency,
+                                    person_id, ev.get("description"),
                                 )
+                                # No timeframe on a heavy disclosure: arm the
+                                # how-long-ago probe so the person's answer on
+                                # a following turn can settle check-in
+                                # eligibility (historical → never; recent → ok).
+                                if (
+                                    ev_recency == "unknown"
+                                    and emotional_events.is_heavy_event(ev)
+                                ):
+                                    empathy.note_recency_probe(person_id, row_id)
                         except Exception as exc:
                             _log.debug("emotional_events.add_event failed: %s", exc)
                 except Exception as exc:

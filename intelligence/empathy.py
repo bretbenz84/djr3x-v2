@@ -134,6 +134,208 @@ def _local_loss_subject(text: str) -> tuple[Optional[str], Optional[str]]:
     return subject, kind
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Event recency — WHEN did the disclosed event actually happen?
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# A disclosure like "my mother passed away" carries no timeframe. Treating it
+# as a fresh bereavement (the old behaviour — recency was implicitly "now")
+# made Rex open every session with a grief check-in for a loss that happened
+# 13 years ago. Recency is read DETERMINISTICALLY from explicit time markers
+# in the utterance; with no marker it is "unknown", and unknown/historical
+# events become biographical knowledge — never check-in fodder.
+
+_RECENCY_NUM_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "a": 1, "an": 1, "couple": 2, "few": 3, "several": 4, "many": 6,
+}
+_RECENCY_NUM_PAT = (
+    r"\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
+    r"|a|an|couple(?:\s+of)?|few|several|many"
+)
+
+_RECENCY_HISTORICAL_RE = re.compile(
+    r"\b(?:"
+    rf"(?:{_RECENCY_NUM_PAT})\s+years?\s+(?:ago|back)"
+    r"|years\s+(?:ago|back)"
+    r"|last\s+year"
+    r"|back\s+in\s+(?:19|20)\d{2}"
+    r"|when\s+i\s+was\s+(?:a\s+|an\s+)?"
+    r"(?:kid|child|teen(?:ager)?|young(?:er)?|little|baby|"
+    r"in\s+(?:school|college|high\s+school|the\s+(?:army|military|service)))"
+    r"|(?:a\s+)?long\s+time\s+ago"
+    r"|ages\s+ago"
+    r"|decades?\s+(?:ago|back)"
+    r"|growing\s+up"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_RECENCY_MONTHS_AGO_RE = re.compile(
+    rf"\b(?:({_RECENCY_NUM_PAT})\s+)?months?\s+ago\b",
+    re.IGNORECASE,
+)
+
+_RECENCY_RECENT_RE = re.compile(
+    r"\b(?:"
+    r"today|tonight|yesterday"
+    r"|this\s+(?:morning|afternoon|evening|week|weekend|month)"
+    r"|this\s+past\s+(?:week|weekend|month)"
+    r"|last\s+(?:night|week|weekend|month)"
+    r"|the\s+other\s+day"
+    r"|just\s+(?:passed|died|lost|happened|got|found\s+out|heard|learned)"
+    r"|recently"
+    rf"|(?:{_RECENCY_NUM_PAT})\s+(?:day|week)s?\s+ago"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _recency_num(token: Optional[str]) -> Optional[int]:
+    tok = " ".join((token or "").lower().split()).removesuffix(" of")
+    if not tok:
+        return None
+    if tok.isdigit():
+        return int(tok)
+    return _RECENCY_NUM_WORDS.get(tok)
+
+
+def event_recency_from_text(text: str) -> str:
+    """Classify WHEN a disclosed event happened from explicit time markers only.
+
+    Returns "recent" (roughly the past ~3 months: "yesterday", "last week",
+    "two months ago"), "historical" ("13 years ago", "when I was a kid",
+    "back in 2013"), or "unknown" when no timeframe is stated. Pure regex —
+    no model in the loop, so an LLM can never imagine an old loss is fresh.
+    """
+    cleaned = " ".join((text or "").lower().split())
+    if not cleaned:
+        return "unknown"
+    if _RECENCY_HISTORICAL_RE.search(cleaned):
+        return "historical"
+    months = _RECENCY_MONTHS_AGO_RE.search(cleaned)
+    if months:
+        n = _recency_num(months.group(1))
+        # "two months ago" is still tender; "eight months ago" (or a bare
+        # "months ago") is settled history for check-in purposes.
+        return "recent" if (n is not None and n <= 3) else "historical"
+    if _RECENCY_RECENT_RE.search(cleaned):
+        return "recent"
+    return "unknown"
+
+
+def resolve_event_recency(text: str, llm_recency: Optional[str] = None) -> str:
+    """Combine deterministic text markers with the LLM's read.
+
+    Text markers always win. With no marker, the LLM may only contribute
+    "historical" (it can catch subtle long-past phrasing); it may NEVER
+    upgrade to "recent" without textual evidence — that is exactly the
+    failure mode where an undated old loss gets greeted as fresh grief.
+    """
+    deterministic = event_recency_from_text(text)
+    if deterministic != "unknown":
+        return deterministic
+    if (llm_recency or "").strip().lower() == "historical":
+        return "historical"
+    return "unknown"
+
+
+# When a heavy event lands with recency "unknown", Rex may gently ask how long
+# ago it was; the next utterance from that person that carries a time marker
+# answers the probe and updates the stored row. One pending probe per person,
+# expiring after a short window so a stale probe never reinterprets later chat.
+_RECENCY_PROBE_WINDOW_SECS = 600.0
+_recency_probe_lock = threading.Lock()
+_pending_recency_probes: dict = {}  # person_id -> {"event_id": int, "at": float}
+
+
+def note_recency_probe(person_id: Optional[int], event_id: Optional[int]) -> None:
+    """Remember that we just stored an unknown-recency heavy event for someone."""
+    if person_id is None or not event_id:
+        return
+    with _recency_probe_lock:
+        _pending_recency_probes[int(person_id)] = {
+            "event_id": int(event_id),
+            "at": time.time(),
+        }
+
+
+def consume_recency_answer(person_id: Optional[int], text: str) -> Optional[str]:
+    """If this utterance answers a pending how-long-ago probe, persist it.
+
+    Returns the resolved recency ("recent"/"historical") when the text carries
+    a time marker and a probe was pending for this person; None otherwise. An
+    answer like "13 years ago" downgrades the stored event to historical so it
+    never drives greetings; "last week" confirms it as recent so check-ins may
+    proceed. A reply with no time marker leaves the probe pending until the
+    window lapses (the person may answer a beat later, or decline — and an
+    unanswered probe stays "unknown", which never checks in).
+    """
+    if person_id is None:
+        return None
+    now = time.time()
+    with _recency_probe_lock:
+        pending = _pending_recency_probes.get(int(person_id))
+        if not pending:
+            return None
+        if (now - float(pending.get("at") or 0.0)) > _RECENCY_PROBE_WINDOW_SECS:
+            _pending_recency_probes.pop(int(person_id), None)
+            return None
+    recency = event_recency_from_text(text)
+    if recency == "unknown":
+        return None
+    with _recency_probe_lock:
+        pending = _pending_recency_probes.pop(int(person_id), None)
+    if not pending:
+        return None
+    try:
+        from memory import emotional_events
+        emotional_events.update_recency(int(pending["event_id"]), recency)
+    except Exception as exc:
+        _log.debug("recency probe update failed: %s", exc)
+        return None
+    _log.info(
+        "[empathy] recency probe answered person_id=%s event_id=%s → %s (%r)",
+        person_id, pending.get("event_id"), recency, (text or "")[:80],
+    )
+    return recency
+
+
+def augment_mode_for_recency_probe(result: Optional[dict], mode_pack: dict) -> dict:
+    """Append a tactful how-long-ago ask when a heavy event has no timeframe.
+
+    "What's the most difficult thing you've been through?" often surfaces an
+    OLD loss with no date attached. Instead of assuming it is fresh, Rex's
+    acknowledgment gently asks when it happened — the answer (via
+    consume_recency_answer) decides whether emotional check-ins are warranted.
+    """
+    ev = (result or {}).get("event") or {}
+    if not ev:
+        return mode_pack
+    if (ev.get("recency") or "unknown") != "unknown":
+        return mode_pack
+    try:
+        from memory import emotional_events
+        if not emotional_events.is_heavy_event(ev):
+            return mode_pack
+    except Exception:
+        return mode_pack
+    if not (result or {}).get("invitation"):
+        return mode_pack
+    augmented = dict(mode_pack)
+    augmented["directive"] = (
+        (augmented.get("directive") or "").rstrip()
+        + " They shared this without saying when it happened — it may be long "
+        "past, not fresh. After your gentle acknowledgment, softly ask how "
+        "long ago it was and whether they want to talk about it (ONE "
+        "low-pressure question, e.g. 'How long ago was that — do you want to "
+        "talk about it?'). If they'd rather not, drop it instantly. Do not "
+        "assume the event is recent."
+    )
+    return augmented
+
+
 def classify_local_sensitivity(text: str) -> Optional[dict]:
     """Fast deterministic safety read used before the async empathy LLM returns.
 
@@ -188,6 +390,7 @@ def classify_local_sensitivity(text: str) -> Optional[dict]:
                 "loss_subject": subject,
                 "loss_subject_kind": subject_kind,
                 "loss_subject_name": None,
+                "recency": event_recency_from_text(cleaned),
             },
             "mood_mismatch": None,
             "prosody": None,
@@ -210,6 +413,7 @@ def classify_local_sensitivity(text: str) -> Optional[dict]:
                 "loss_subject": subject,
                 "loss_subject_kind": subject_kind,
                 "loss_subject_name": None,
+                "recency": event_recency_from_text(cleaned),
             },
             "mood_mismatch": None,
             "prosody": None,
@@ -236,6 +440,7 @@ def classify_local_sensitivity(text: str) -> Optional[dict]:
                 "loss_subject": None,
                 "loss_subject_kind": None,
                 "loss_subject_name": None,
+                "recency": event_recency_from_text(cleaned),
             },
             "mood_mismatch": None,
             "prosody": None,
@@ -328,7 +533,7 @@ _CLASSIFY_PROMPT = (
     "suicide ideation, or someone-in-immediate-danger language\n"
     '  "confidence": 0.0–1.0 — how confident you are overall\n'
     '  "event": null OR an object with keys category, valence, description, '
-    "loss_subject, loss_subject_kind, loss_subject_name.\n"
+    "loss_subject, loss_subject_kind, loss_subject_name, recency.\n"
     "    Set event when the utterance reveals a SPECIFIC emotional life event "
     "the robot should remember across sessions or check in on soon (e.g. "
     "someone died, lost a job, breakup, illness, big milestone like a wedding/"
@@ -350,6 +555,13 @@ _CLASSIFY_PROMPT = (
     "    loss_subject_name: the name of the deceased/affected person/pet IF "
     "explicitly mentioned in the utterance (e.g. \"my dog Buddy died\" → "
     '"Buddy"). Null otherwise — DO NOT guess.\n'
+    '    recency: one of "recent","historical","unknown" — WHEN the event '
+    "itself happened, judged ONLY from explicit time markers in the utterance. "
+    '"recent" = within roughly the last 3 months ("yesterday", "last week", '
+    '"two months ago"). "historical" = long past ("13 years ago", "when I was '
+    'a kid", "back in 2013"). "unknown" = NO time marker stated (e.g. "my '
+    'mother passed away" with no date — common when answering a question '
+    "about the past). NEVER answer recent without an explicit marker.\n"
     "Return ONLY the JSON object, no prose. Default to neutral / none / false "
     "/ event=null when unsure. Most utterances are neutral.\n\n"
     'Utterance: "{text}"'
@@ -461,6 +673,9 @@ def classify_affect(
                 "loss_subject": ev_subject,
                 "loss_subject_kind": ev_subject_kind,
                 "loss_subject_name": ev_subject_name,
+                # Deterministic text markers win; the LLM may only contribute
+                # "historical", never an evidence-free "recent".
+                "recency": resolve_event_recency(text, event.get("recency")),
             }
             if ev_desc else None
         )

@@ -215,6 +215,51 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         sleep.assert_called_once_with(1.25)
         speak.assert_called_once_with(line, "curious")
 
+    def test_startup_boot_tts_chains_behind_startup_audio_thread(self):
+        """The boot filler must follow the startup mp3s immediately: the worker
+        joins the startup-audio thread (released when the last clip ends), then
+        applies only the configured beat. Regression for the ~8s of dead air
+        when the filler was started after the blocking startup animation."""
+        import main
+        import threading
+
+        line = "Hang on folks while I'm booting up."
+        audio_done = threading.Event()
+        order: list[str] = []
+
+        def _fake_audio() -> None:
+            audio_done.wait(timeout=2.0)
+            order.append("audio_finished")
+
+        audio_thread = threading.Thread(target=_fake_audio, daemon=True)
+        audio_thread.start()
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(main.config, "NO_AUDIO_MODE", False))
+            stack.enter_context(mock.patch.object(main.config, "AUDIO_OUTPUT_SUPPRESSED", False))
+            stack.enter_context(mock.patch.object(main.config, "PLAY_STARTUP_BOOT_TTS", True))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_BOOT_TTS_LINES", [line]))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_BOOT_TTS_LINE", line))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_BOOT_TTS_DELAY_SECS", 0.0))
+            stack.enter_context(mock.patch.object(main.config, "STARTUP_BOOT_TTS_EMOTION", "curious"))
+            speak = stack.enter_context(
+                mock.patch.object(main.tts, "speak", side_effect=lambda *a, **k: order.append("boot_tts"))
+            )
+
+            thread = main._start_startup_boot_tts_thread(wait_for=audio_thread)
+            self.assertIsNotNone(thread)
+            # Boot line must NOT play while the startup audio is still going.
+            thread.join(timeout=0.3)
+            self.assertTrue(thread.is_alive())
+            speak.assert_not_called()
+            # The moment the audio finishes, the boot line follows.
+            audio_done.set()
+            thread.join(timeout=2.0)
+            self.assertFalse(thread.is_alive())
+
+        speak.assert_called_once_with(line, "curious")
+        self.assertEqual(order, ["audio_finished", "boot_tts"])
+
     def test_startup_boot_tts_skips_noaudio(self):
         import main
 

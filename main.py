@@ -754,7 +754,9 @@ def _select_startup_ready_tts_line() -> str:
     return _select_cycling_tts_line(getattr(config, "STARTUP_READY_TTS_LINES", None), state_path)
 
 
-def _start_startup_boot_tts_thread() -> threading.Thread | None:
+def _start_startup_boot_tts_thread(
+    wait_for: threading.Thread | None = None,
+) -> threading.Thread | None:
     if _audio_output_suppressed():
         logger.info("Startup boot TTS disabled by --noaudio")
         return None
@@ -785,6 +787,14 @@ def _start_startup_boot_tts_thread() -> threading.Thread | None:
                 tts.ensure_cached(line, emotion=emotion)
             except Exception as exc:
                 logger.debug("startup boot TTS pre-cache skipped: %s", exc)
+            # Chain straight onto the startup audio clips: the cache fetch above
+            # ran WHILE the mp3s played, and this join releases the moment the
+            # last clip finishes — so the boot line follows the spoken clip after
+            # only the configured beat, instead of sitting silent through the
+            # rest of the blocking startup servo animation + service starts
+            # (~8s of dead air in live runs).
+            if wait_for is not None and wait_for.is_alive():
+                wait_for.join()
             if delay_secs > 0.0:
                 time.sleep(delay_secs)
             if _audio_output_suppressed():
@@ -984,6 +994,14 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     else:
         logger.info("Startup audio disabled by config.PLAY_STARTUP_AUDIO")
 
+    # Kick off the boot filler line NOW, chained behind the startup audio thread:
+    # its worker pre-caches the TTS, waits for the last startup mp3 to finish, then
+    # speaks after the configured beat — all while the blocking servo animation
+    # below is still running. Starting it after the animation (the old order) left
+    # ~8s of dead air between the spoken startup clip and the filler. Playback
+    # needs no services: the mp3s already exercised the same audio output path.
+    startup_boot_tts_thread = _start_startup_boot_tts_thread(wait_for=startup_audio_thread)
+
     logger.info("Playing startup animation...")
     animations.startup()
     if startup_audio_thread is not None and startup_audio_thread.is_alive():
@@ -1025,12 +1043,12 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         )
         startup_scan_thread.start()
 
-    startup_boot_tts_thread = _start_startup_boot_tts_thread()
-    # Do NOT join here: the boot line ("hang on folks while I'm booting up") is meant to
-    # play WHILE the slow preloads below run, so it covers the model-load wait instead of
-    # finishing first and leaving dead silence during the load. Its audio is pre-cached
-    # (see _start_startup_boot_tts_thread) so playback is a cheap cache hit, and the
-    # look-around scan also keeps the head alive. We join it AFTER the preloads, below.
+    # The boot filler line thread was started BEFORE the startup animation (chained
+    # behind the startup audio clips) so it follows the spoken mp3 with no dead air;
+    # by now it is typically already playing. Do NOT join it here: it is meant to
+    # overlap the slow preloads below, covering the model-load wait. Its audio was
+    # pre-cached in the worker so playback is a cheap cache hit, and the look-around
+    # scan also keeps the head alive. We join it AFTER the preloads, below.
 
     if no_audio:
         logger.info("Skipping local Whisper preload (--noaudio)")

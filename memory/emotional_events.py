@@ -168,6 +168,9 @@ def decay_days_for_event(
     return decay_days_for(cat)
 
 
+_VALID_RECENCY = {"recent", "historical", "unknown"}
+
+
 def add_event(
     person_id: int,
     category: str,
@@ -178,11 +181,18 @@ def add_event(
     loss_subject: Optional[str] = None,
     loss_subject_kind: Optional[str] = None,
     loss_subject_name: Optional[str] = None,
+    recency: str = "unknown",
 ) -> Optional[int]:
     """Insert a new emotional event row. Returns lastrowid or None on failure.
 
     De-duplication: if a row already exists for this person with the same
     category and a near-duplicate description within the last 7 days, skip.
+
+    ``recency`` records WHEN the event itself happened ("recent" /
+    "historical" / "unknown"), distinct from ``mentioned_at`` (when it was
+    disclosed). Heavy events only drive greetings/check-ins when recency is
+    "recent" — an undated or long-past loss is biographical knowledge, not
+    fresh grief (see get_due_checkins / get_startup_checkins).
     """
     cat = (category or "other").strip().lower()
     desc = (description or "").strip()
@@ -191,6 +201,9 @@ def add_event(
     subject = (loss_subject or "").strip() or None
     subject_kind = (loss_subject_kind or "").strip().lower() or None
     subject_name = (loss_subject_name or "").strip() or None
+    rec = (recency or "unknown").strip().lower()
+    if rec not in _VALID_RECENCY:
+        rec = "unknown"
 
     existing = db.fetchall(
         "SELECT id, description FROM person_emotional_events "
@@ -218,8 +231,8 @@ def add_event(
         "INSERT INTO person_emotional_events "
         "(person_id, category, valence, description, "
         " loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
-        " sensitivity_decay_days, person_invited_topic) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)",
+        " sensitivity_decay_days, person_invited_topic, recency) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)",
         (
             person_id,
             cat,
@@ -230,7 +243,19 @@ def add_event(
             subject_name,
             decay,
             1 if person_invited_topic else 0,
+            rec,
         ),
+    )
+
+
+def update_recency(event_id: int, recency: str) -> None:
+    """Persist a recency answer for an existing event (how-long-ago probe)."""
+    rec = (recency or "").strip().lower()
+    if rec not in _VALID_RECENCY:
+        return
+    db.execute(
+        "UPDATE person_emotional_events SET recency = ? WHERE id = ?",
+        (rec, int(event_id)),
     )
 
 
@@ -241,7 +266,7 @@ def get_active_events(person_id: int, limit: int = 3) -> list[dict]:
         "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
         "       sensitivity_decay_days, "
-        "       person_invited_topic "
+        "       person_invited_topic, recency "
         "FROM person_emotional_events "
         "WHERE person_id = ? "
         "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
@@ -280,17 +305,25 @@ def get_due_checkins(
     Acknowledgment is persisted, but check-ins can repeat gently across days
     while the event remains active. This means a recent death can be surfaced
     on a later boot, while a bad day at work naturally expires after ~24h.
+
+    Recency gate: events only qualify when the event ITSELF was recent
+    (recency = 'recent'). A loss disclosed with no timeframe ("my mother
+    passed away" — could be 13 years ago) or an explicitly long-past one is
+    biographical knowledge, not check-in material. Mild same-day venting
+    categories are inherently about now and stay exempt.
     """
     rows = db.fetchall(
         "SELECT id, category, valence, description, "
         "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
         "       sensitivity_decay_days, "
-        "       person_invited_topic "
+        "       person_invited_topic, recency "
         "FROM person_emotional_events "
         "WHERE person_id = ? "
         "AND valence < 0 "
         "AND (person_invited_topic = 1 OR category IN ('bad_day', 'work_stress', 'stress')) "
+        "AND (COALESCE(recency, 'unknown') = 'recent' "
+        "     OR category IN ('bad_day', 'work_stress', 'stress')) "
         "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
         "AND checkins_muted_at IS NULL "
         "AND (last_acknowledged_at IS NULL "
@@ -312,7 +345,7 @@ def get_due_celebrations(
         "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
         "       sensitivity_decay_days, "
-        "       person_invited_topic "
+        "       person_invited_topic, recency "
         "FROM person_emotional_events "
         "WHERE person_id = ? "
         "AND valence > 0 "
@@ -338,6 +371,11 @@ def get_startup_checkins(
     in on a later boot while the event is active. Once startup fires and marks
     the event acknowledged again, this query stops returning it for the rest of
     the same process.
+
+    Recency gate (same as get_due_checkins): only events that actually
+    HAPPENED recently lead a greeting. This is the query behind the "Hey
+    Bret, how are you holding up?" opener — an undated or years-old loss
+    must never drive it.
     """
     if process_started_iso:
         ack_clause = (
@@ -353,11 +391,13 @@ def get_startup_checkins(
         "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
         "       sensitivity_decay_days, "
-        "       person_invited_topic "
+        "       person_invited_topic, recency "
         "FROM person_emotional_events "
         "WHERE person_id = ? "
         "AND valence < 0 "
         "AND (person_invited_topic = 1 OR category IN ('bad_day', 'work_stress', 'stress')) "
+        "AND (COALESCE(recency, 'unknown') = 'recent' "
+        "     OR category IN ('bad_day', 'work_stress', 'stress')) "
         "AND datetime(mentioned_at, '+' || sensitivity_decay_days || ' days') >= datetime('now') "
         "AND checkins_muted_at IS NULL "
         f"{ack_clause} "
@@ -400,7 +440,7 @@ def get_startup_celebrations(
         "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
         "       sensitivity_decay_days, "
-        "       person_invited_topic "
+        "       person_invited_topic, recency "
         "FROM person_emotional_events "
         "WHERE person_id = ? "
         "AND valence > 0 "
@@ -451,7 +491,7 @@ def mute_matching_positive_events(
         "SELECT id, category, valence, description, "
         "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
-        "       sensitivity_decay_days, person_invited_topic "
+        "       sensitivity_decay_days, person_invited_topic, recency "
         "FROM person_emotional_events "
         "WHERE person_id = ? "
         "AND valence > 0 "
@@ -490,7 +530,7 @@ def mute_recent_checkin_for_person(
         "SELECT id, category, valence, description, "
         "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
-        "       sensitivity_decay_days, person_invited_topic "
+        "       sensitivity_decay_days, person_invited_topic, recency "
         "FROM person_emotional_events "
         "WHERE person_id = ? "
         "AND valence < 0 "
@@ -517,7 +557,7 @@ def mute_latest_active_negative_for_person(
         "SELECT id, category, valence, description, "
         "       loss_subject, loss_subject_kind, loss_subject_name, mentioned_at, "
         "       last_acknowledged_at, checkins_muted_at, checkins_muted_reason, "
-        "       sensitivity_decay_days, person_invited_topic "
+        "       sensitivity_decay_days, person_invited_topic, recency "
         "FROM person_emotional_events "
         "WHERE person_id = ? "
         "AND valence < 0 "
@@ -584,7 +624,24 @@ def summarize_for_prompt(
         ack = ev.get("last_acknowledged_at")
         ack_clause = " (already acknowledged this session)" if ack else " (not yet acknowledged on this return)"
         tone = "celebration" if is_celebration_event(ev) else "sensitive"
+        # Recency label: keep biographical knowledge available to the LLM
+        # without letting it read an old/undated event as fresh news.
+        recency_clause = ""
+        if not is_celebration_event(ev):
+            recency = (ev.get("recency") or "unknown").strip().lower()
+            if recency == "historical":
+                recency_clause = (
+                    " [HISTORICAL — happened long ago; biographical context "
+                    "only, NOT fresh news; do not check in on it or treat it "
+                    "as recent]"
+                )
+            elif recency == "unknown":
+                recency_clause = (
+                    " [timeframe unknown — do NOT assume it is recent or "
+                    "lead with it; only engage if they bring it up]"
+                )
         lines.append(
-            f"- {tone}/{ev['category']}: {ev['description']} (mentioned {when}){ack_clause}"
+            f"- {tone}/{ev['category']}: {ev['description']} (mentioned {when})"
+            f"{ack_clause}{recency_clause}"
         )
     return "Recent emotional/social events for this person:\n" + "\n".join(lines)

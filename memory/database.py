@@ -244,6 +244,17 @@ def _run_migrations() -> None:
                     column,
                     definition,
                 )
+            # WHEN an emotional event itself happened ('recent' / 'historical'
+            # / 'unknown'), distinct from mentioned_at (when it was disclosed).
+            # Legacy rows default to 'unknown', which excludes them from
+            # greeting/check-in queries — an undated old loss must not be
+            # treated as fresh grief.
+            _ensure_column(
+                conn,
+                "person_emotional_events",
+                "recency",
+                "TEXT DEFAULT 'unknown'",
+            )
             conn.execute(
                 """UPDATE person_events
                    SET status = 'planned'
