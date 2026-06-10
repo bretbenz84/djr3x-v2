@@ -291,6 +291,15 @@ Do not treat every utterance as a permanent fact. Prefer explicit user statement
    it ("got some tea on Karen"). The label becomes the default classification.
 4. Invite details ("spill the beans on X"); if the teller stalls, ask pointed
    questions (gender → what to remember → how they know them → what X does).
+   Every detail ack carries a continuation cue ("Logged. Anything else about
+   X?") — a bare "Noted." reads as Rex going silent (live-tested).
+   If another Rex behavior barges in mid-briefing (smile reaction, greeting,
+   idle banter), the flow re-anchors right behind it: "Still telling me about
+   X, or have you moved on?" — yes resumes, no closes with "X's details
+   logged to my memory banks. I will use them wisely.", a detail-bearing
+   reply just keeps collecting, anything else releases the turn. Hook:
+   `consciousness.note_rex_utterance` → `interaction.tell_about_on_external_rex_line`
+   (the flow's own lines pass source="tell_about" and are exempt).
 5. Each volunteered detail is classified (small LLM call, heuristic fallback —
    `TELL_ABOUT_CLASSIFY_LLM_ENABLED`) as gossip/fact with a kindness score
    (-1 mean … +1 kind) and stored as a `person_facts` row on the SUBJECT with
@@ -496,7 +505,7 @@ venv/bin/python main.py
 - Tidy-up — episodic capture hooks → `intelligence/episodic_hooks.py` (leaf module; consciousness calls `episodic_hooks.<name>`).
 - Tidy-up — idle micro-behaviours → `intelligence/idle_behaviors.py` (dispatcher stays in consciousness and calls `idle_behaviors.do_<name>`; the behaviours reach consciousness's speak engine via a lazy `_c` proxy; `_do_small_talk_question` stayed, being mood-detection-coupled).
 - Tidy-up — proactive-speech ENGINE → `intelligence/speech_engine.py` (15 functions; consciousness re-exports each as a `_name` shim so call sites + test patches are unchanged; intra-engine calls route through the `_c` shims for full patch-transparency; `note_rex_utterance` + shared speech state stayed in consciousness; `tests/test_speech_engine.py`). The governor metadata key MUST stay `"can_proactive_speak"` (action_governor reads it).
-- "Tell me about someone" pre-briefing (`intelligence/tell_me_about.py`, `interaction._handle_tell_about_turn`/`_pending_tell_about`): pre-populates the person DB for someone who is NOT here — name → gossip-or-facts → details, stored as `secondhand` person_facts with `fact_kind`/`kindness`/`told_by` (new columns in `setup_assets.py` + `database._run_migrations`). Mean gossip is never recited to the subject (prompt hedging in `facts.format_fact_for_prompt`); secondhand never overwrites the person's own explicit facts. Escapable by design (live-tested): explicit exits (`is_exit` — "exit gossip mode"/"enough about X"/"stop") AND a subject-pivot guard (`looks_like_request_to_rex`) that releases requests aimed at Rex ("can you give me a recipe...") back to normal routing instead of filing them as gossip — the chicken-soup regression in `tests/test_tell_me_about.py`. See the Memory Model section.
+- "Tell me about someone" pre-briefing (`intelligence/tell_me_about.py`, `interaction._handle_tell_about_turn`/`_pending_tell_about`): pre-populates the person DB for someone who is NOT here — name → gossip-or-facts → details, stored as `secondhand` person_facts with `fact_kind`/`kindness`/`told_by` (new columns in `setup_assets.py` + `database._run_migrations`). Mean gossip is never recited to the subject (prompt hedging in `facts.format_fact_for_prompt`); secondhand never overwrites the person's own explicit facts. Escapable by design (live-tested): explicit exits (`is_exit` — "exit gossip mode"/"enough about X"/"stop") AND a subject-pivot guard (`looks_like_request_to_rex`) that releases requests aimed at Rex ("can you give me a recipe...") back to normal routing instead of filing them as gossip — the chicken-soup regression in `tests/test_tell_me_about.py`. Proactive barge-ins (smile reaction etc.) trigger a re-anchor question via the `note_rex_utterance` hook → `tell_about_on_external_rex_line`, and every ack invites more (no bare "Logged."). See the Memory Model section.
 
 ## Likely Future Work
 

@@ -7489,6 +7489,29 @@ def _advance_tell_about_flow(state: dict, text: str) -> Optional[str]:
             return tell_me_about.invite_line(subject_first, "fact")
         return "Gossip or boring facts? I need to label the folder."
 
+    if step == "reanchor":
+        # One of Rex's other behaviors barged in and we asked "still telling
+        # me about X, or have you moved on?" — route the answer.
+        if tell_me_about.mentions_subject(text, state.get("subject_name")):
+            # "Yeah, and he also plays drums" — they just kept going.
+            state["step"] = "collecting"
+            return _store_tell_about_detail(state, text)
+        if tell_me_about.is_affirmative(text):
+            prior = state.get("step_before_reanchor")
+            state["step"] = prior if prior in ("awaiting_tone", "collecting") else "collecting"
+            return tell_me_about.resume_line(subject_first)
+        if tell_me_about.is_negative(text):
+            _pending_tell_about = None
+            return tell_me_about.reanchor_close_line(subject_first)
+        # Neither a yes/no nor more material — they've moved on. Close the
+        # file and release the turn to normal routing.
+        _pending_tell_about = None
+        _log.info(
+            "[tell_about] reanchor unanswered — flow closed, turn released: %r",
+            text,
+        )
+        return None
+
     # collecting
     if tell_me_about.is_done(text, allow_bare_no=True):
         _pending_tell_about = None
@@ -7586,6 +7609,57 @@ def _store_tell_about_detail(state: dict, text: str) -> str:
         subject_first,
         state.get("default_kind") or "fact",
         count,
+    )
+
+
+def tell_about_on_external_rex_line(source: Optional[str]) -> None:
+    """A Rex line from another behavior landed during an active briefing.
+
+    Called from consciousness.note_rex_utterance for EVERY Rex utterance;
+    no-ops unless a tell-about flow is open and the line came from something
+    other than the flow itself (smile reaction, greeting, idle banter...).
+    Queues "Still telling me about X, or have you moved on?" right behind the
+    barging line so the teller knows the file is still open, and switches the
+    flow to the reanchor step so the next reply is routed as yes/no/more.
+    """
+    state = _pending_tell_about
+    if state is None:
+        return
+    if (source or "") == "tell_about":
+        return
+    if not tell_me_about.flow_fresh(state):
+        return
+    if state.get("step") == "reanchor":
+        return
+    if not state.get("subject_name"):
+        return
+
+    subject_first = _first_name_or(state.get("subject_name") or "", "them")
+    line = tell_me_about.reanchor_line(subject_first)
+    state["step_before_reanchor"] = state.get("step")
+    state["step"] = "reanchor"
+    state["asked_at"] = time.monotonic()
+    try:
+        # Priority 0: plays right after the barging line, never preempts it.
+        speech_queue.enqueue(line, "curious", priority=0, tag="tell_about:reanchor")
+        conv_memory.add_to_transcript("Rex", line)
+        conv_log.log_rex(line)
+    except Exception as exc:
+        _log.debug("[tell_about] reanchor speak failed: %s", exc)
+    try:
+        # Register the frame directly (NOT via note_rex_utterance — this hook
+        # is called from inside it).
+        dialogue_act.note_rex_turn(
+            line,
+            source="tell_about",
+            expected_reply_types=["answer"],
+        )
+    except Exception:
+        pass
+    _log.info(
+        "[tell_about] re-anchor queued after external Rex line (source=%r subject=%r)",
+        source,
+        state.get("subject_name"),
     )
 
 

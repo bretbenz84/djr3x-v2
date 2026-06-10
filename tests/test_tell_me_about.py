@@ -93,6 +93,32 @@ class ReplyParsingTests(unittest.TestCase):
         self.assertFalse(tell_me_about.is_done("nope", allow_bare_no=False))
         self.assertFalse(tell_me_about.is_done("he also plays drums"))
 
+    def test_acks_always_invite_more(self):
+        """A bare 'Logged.' reads as Rex going silent (live-tested) — every
+        ack must carry a continuation cue."""
+        from intelligence import tell_me_about
+
+        invite_tokens = ("?", "keep going", "continue", "what else", "you got")
+        for kind in ("fact", "gossip"):
+            for i in range(40):
+                line = tell_me_about.ack_line("Daniel", kind, i).lower()
+                self.assertTrue(
+                    any(tok in line for tok in invite_tokens),
+                    f"non-inviting ack: {line!r}",
+                )
+
+    def test_reanchor_parsing(self):
+        from intelligence import tell_me_about
+
+        self.assertTrue(tell_me_about.is_affirmative("yes"))
+        self.assertTrue(tell_me_about.is_affirmative("yeah, still going"))
+        self.assertTrue(tell_me_about.is_negative("nope"))
+        self.assertTrue(tell_me_about.is_negative("moved on"))
+        self.assertFalse(tell_me_about.is_affirmative("nope"))
+        self.assertTrue(tell_me_about.mentions_subject("he plays drums", "Daniel"))
+        self.assertTrue(tell_me_about.mentions_subject("Daniel hates jazz", "Daniel"))
+        self.assertFalse(tell_me_about.mentions_subject("I was smiling at the dog", "Daniel"))
+
     def test_blank_offer_and_gender(self):
         from intelligence import tell_me_about
 
@@ -351,6 +377,84 @@ class FlowIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(closed)
         self.assertIn("Joe", closed)
         self.assertIsNone(interaction._pending_tell_about)
+
+    def _open_collecting_flow(self, interaction):
+        interaction._handle_tell_about_turn(
+            "I'd like to tell you about my boss Daniel", self.teller_id, "Bret"
+        )
+        interaction._handle_tell_about_turn("just boring facts", self.teller_id, "Bret")
+        interaction._handle_tell_about_turn(
+            "Daniel is a supremely talented programmer", self.teller_id, "Bret"
+        )
+
+    def test_proactive_barge_triggers_reanchor_question(self):
+        """The smile-reaction regression: consciousness barging in mid-briefing
+        must be followed by 'still telling me about X?', and yes/no routes."""
+        from intelligence import interaction
+
+        self._open_collecting_flow(interaction)
+        with mock.patch.object(interaction.speech_queue, "enqueue") as enq:
+            interaction.tell_about_on_external_rex_line("smile_reaction")
+            self.assertTrue(enq.called)
+            spoken = enq.call_args.args[0]
+        self.assertIn("Daniel", spoken)
+        self.assertEqual(interaction._pending_tell_about["step"], "reanchor")
+
+        # A second barge while already re-anchored must not stack questions.
+        with mock.patch.object(interaction.speech_queue, "enqueue") as enq:
+            interaction.tell_about_on_external_rex_line("idle_banter")
+            self.assertFalse(enq.called)
+
+        # "yes" resumes collecting.
+        resumed = interaction._handle_tell_about_turn("yes", self.teller_id, "Bret")
+        self.assertIsNotNone(resumed)
+        self.assertEqual(interaction._pending_tell_about["step"], "collecting")
+
+    def test_reanchor_no_closes_with_memory_banks_line(self):
+        from intelligence import interaction
+
+        self._open_collecting_flow(interaction)
+        with mock.patch.object(interaction.speech_queue, "enqueue"):
+            interaction.tell_about_on_external_rex_line("smile_reaction")
+        closed = interaction._handle_tell_about_turn("nope", self.teller_id, "Bret")
+        self.assertIsNotNone(closed)
+        self.assertIn("memory banks", closed)
+        self.assertIn("Daniel", closed)
+        self.assertIsNone(interaction._pending_tell_about)
+
+    def test_reanchor_detail_reply_keeps_collecting(self):
+        from intelligence import interaction
+        from memory import facts as facts_memory
+        from memory import people as people_memory
+
+        self._open_collecting_flow(interaction)
+        with mock.patch.object(interaction.speech_queue, "enqueue"):
+            interaction.tell_about_on_external_rex_line("smile_reaction")
+        ack = interaction._handle_tell_about_turn(
+            "yeah and he also coaches little league", self.teller_id, "Bret"
+        )
+        self.assertIsNotNone(ack)
+        self.assertEqual(interaction._pending_tell_about["step"], "collecting")
+        daniel = people_memory.find_person_by_name("Daniel")
+        values = [f["value"] for f in facts_memory.get_facts(int(daniel["id"]))]
+        self.assertTrue(any("little league" in v for v in values))
+
+    def test_flow_own_lines_do_not_reanchor(self):
+        from intelligence import interaction
+
+        self._open_collecting_flow(interaction)
+        with mock.patch.object(interaction.speech_queue, "enqueue") as enq:
+            interaction.tell_about_on_external_rex_line("tell_about")
+            self.assertFalse(enq.called)
+        self.assertEqual(interaction._pending_tell_about["step"], "collecting")
+
+    def test_no_flow_external_line_is_noop(self):
+        from intelligence import interaction
+
+        interaction._pending_tell_about = None
+        with mock.patch.object(interaction.speech_queue, "enqueue") as enq:
+            interaction.tell_about_on_external_rex_line("smile_reaction")
+            self.assertFalse(enq.called)
 
     def test_told_about_teller_name_for_unmet_subject(self):
         from intelligence import interaction

@@ -416,12 +416,15 @@ _INVITES_FACTS = [
     "Fine, the responsible version. What should I know about {name}?",
 ]
 
-_ACKS_PLAIN = ["Noted.", "Filed.", "Logged.", "In the banks."]
-_ACKS_MORE = [
+# Every ack carries the conversation forward. A bare one-word "Logged." reads
+# as Rex going silent and the teller doesn't know whether to keep going
+# (live-tested failure mode).
+_ACKS = [
     "Got it. What else?",
     "Logged. Anything else about {name}?",
     "Filed. Keep going.",
     "Noted. What else should I know about {name}?",
+    "In the banks. What else you got?",
 ]
 _ACKS_GOSSIP_EXTRA = ["Juicy. Keep going.", "Scandalous. Continue."]
 
@@ -438,6 +441,35 @@ _CLOSERS = [
     "Dossier closed. {name} won't suspect a thing.",
     "All saved. I am now unsettlingly prepared for {name}.",
 ]
+
+# After one of Rex's OTHER behaviors barges into the briefing (smile reaction,
+# greeting, idle banter), the teller doesn't know if the file is still open —
+# re-anchor with a yes/no and route from there.
+_REANCHOR_LINES = [
+    "Still telling me about {name}, or have you moved on?",
+    "Wait — are we still on {name}, or is the file closed?",
+    "Anyway. Still briefing me on {name}, or did we move on?",
+]
+_RESUME_LINES = [
+    "Okay, tell me more.",
+    "Good. Back to {name} — go on.",
+    "Okay, tell me more about {name}.",
+]
+_REANCHOR_CLOSE = (
+    "Alright, {name}'s details logged to my memory banks. I will use them wisely."
+)
+
+_AFFIRM_PAT = re.compile(
+    r"^\s*(?:yes|yeah|yep|yup|sure|uh\s*huh|mhm+|of\s+course|absolutely|correct|"
+    r"still|still\s+(?:going|telling|on|am)|keep\s+going|more|not\s+done|"
+    r"we\s+are|i\s+am)\b",
+    re.IGNORECASE,
+)
+_NEGATIVE_PAT = re.compile(
+    r"^\s*(?:no|nope|nah|moved?\s+on|done|all\s+done|finished|"
+    r"i'?m\s+good|we'?re\s+good|new\s+topic)\b",
+    re.IGNORECASE,
+)
 
 
 def opener_with_name(name: str) -> str:
@@ -460,12 +492,11 @@ def invite_line(name: str, kind: str) -> str:
 
 
 def ack_line(name: str, kind: str, details_count: int) -> str:
-    if details_count % 2 == 1:
-        return random.choice(_ACKS_MORE).format(name=name)
-    bank = list(_ACKS_PLAIN)
+    del details_count
+    bank = list(_ACKS)
     if kind == "gossip":
         bank += _ACKS_GOSSIP_EXTRA
-    return random.choice(bank)
+    return random.choice(bank).format(name=name)
 
 
 def pointed_question(index: int, name: str, *, skip_relationship: bool) -> tuple[Optional[str], Optional[str]]:
@@ -488,6 +519,38 @@ def closer_line(name: str, details_count: int) -> str:
 
 def cancel_line() -> str:
     return "Fine. The file stays empty. Mysterious."
+
+
+def reanchor_line(name: str) -> str:
+    return random.choice(_REANCHOR_LINES).format(name=name)
+
+
+def resume_line(name: str) -> str:
+    return random.choice(_RESUME_LINES).format(name=name)
+
+
+def reanchor_close_line(name: str) -> str:
+    return _REANCHOR_CLOSE.format(name=name)
+
+
+def is_affirmative(text: str) -> bool:
+    return bool(_AFFIRM_PAT.match((text or "").strip()))
+
+
+def is_negative(text: str) -> bool:
+    return bool(_NEGATIVE_PAT.match((text or "").strip()))
+
+
+def mentions_subject(text: str, subject_name: Optional[str]) -> bool:
+    """True when the turn references the subject (name or third-person pronoun)."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if subject_name:
+        first = subject_name.split()[0]
+        if first and re.search(rf"\b{re.escape(first)}\b", cleaned, re.IGNORECASE):
+            return True
+    return bool(_THIRD_PERSON_REFERENT_RE.search(cleaned))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

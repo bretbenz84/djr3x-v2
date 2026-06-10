@@ -1074,6 +1074,15 @@ def note_rex_utterance(
         )
     except Exception:
         pass
+    # A Rex line from another behavior (smile reaction, greeting, idle banter)
+    # during an active "tell me about" briefing leaves the teller unsure
+    # whether the file is still open — let the flow queue its re-anchor
+    # question. Lazy import: interaction imports consciousness at module level.
+    try:
+        from intelligence import interaction as interaction_mod
+        interaction_mod.tell_about_on_external_rex_line(source)
+    except Exception:
+        pass
 
     with _turn_lock:
         _last_proactive_speech_at = now
