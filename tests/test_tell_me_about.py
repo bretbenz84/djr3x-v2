@@ -104,6 +104,64 @@ class ReplyParsingTests(unittest.TestCase):
         self.assertIsNone(tell_me_about.parse_gender("about forty years old"))
 
 
+class ExitAndPivotParsingTests(unittest.TestCase):
+    def test_explicit_exits(self):
+        from intelligence import tell_me_about
+
+        positives = [
+            "exit gossip mode",
+            "stop gossiping",
+            "enough about Joe",
+            "that's enough about him",
+            "we're done with Joe",
+            "let's talk about something else",
+            "change of subject",
+            "moving on",
+            "close the file",
+            "stop",
+        ]
+        for text in positives:
+            self.assertTrue(tell_me_about.is_exit(text), f"should exit: {text!r}")
+
+        negatives = [
+            "he wouldn't stop talking about volleyball",
+            "stop me if you've heard this one, he once",
+            "he quit his job at the file room",
+        ]
+        for text in negatives:
+            self.assertFalse(tell_me_about.is_exit(text), f"should NOT exit: {text!r}")
+
+    def test_request_to_rex_vs_detail(self):
+        from intelligence import tell_me_about
+
+        requests = [
+            "Can you give me a recipe for or something to make with chicken noodle soup.",
+            "what's the weather like today",
+            "play some music",
+            "hey rex, what time is it",
+            "tell me a joke",
+            "let's play jeopardy",
+        ]
+        for text in requests:
+            self.assertTrue(
+                tell_me_about.looks_like_request_to_rex(text, "Joe"),
+                f"should pivot: {text!r}",
+            )
+
+        details = [
+            "Can you believe he held a dildo out the car window",
+            "he likes volleyball",
+            "Joe is a 40 year old gay man",
+            "what's funny is he collects spoons",
+            "loves karaoke and hates jazz",
+        ]
+        for text in details:
+            self.assertFalse(
+                tell_me_about.looks_like_request_to_rex(text, "Joe"),
+                f"should stay a detail: {text!r}",
+            )
+
+
 class HeuristicClassifierTests(unittest.TestCase):
     def test_heuristic_when_llm_disabled(self):
         import config
@@ -247,6 +305,52 @@ class FlowIntegrationTests(unittest.TestCase):
             interaction._handle_tell_about_turn("juicy gossip", other_id, "Gloria")
         )
         self.assertEqual(interaction._pending_tell_about["step"], "awaiting_tone")
+
+    def test_rex_request_releases_turn_and_closes_flow(self):
+        """The chicken-soup regression: a request to Rex mid-collection must
+        fall through to normal routing, not get filed as gossip."""
+        from intelligence import interaction
+        from memory import facts as facts_memory
+        from memory import people as people_memory
+
+        interaction._handle_tell_about_turn(
+            "I'd like to tell you about my friend Joe", self.teller_id, "Bret"
+        )
+        interaction._handle_tell_about_turn("juicy gossip", self.teller_id, "Bret")
+        interaction._handle_tell_about_turn(
+            "he likes volleyball", self.teller_id, "Bret"
+        )
+
+        released = interaction._handle_tell_about_turn(
+            "Can you give me a recipe for or something to make with chicken noodle soup.",
+            self.teller_id,
+            "Bret",
+        )
+        self.assertIsNone(released)
+        self.assertIsNone(interaction._pending_tell_about)
+        joe = people_memory.find_person_by_name("Joe")
+        values = [f["value"] for f in facts_memory.get_facts(int(joe["id"]))]
+        self.assertFalse(
+            any("soup" in v for v in values),
+            f"soup request must not be filed as gossip: {values}",
+        )
+
+    def test_exit_gossip_mode_closes_flow(self):
+        from intelligence import interaction
+
+        interaction._handle_tell_about_turn(
+            "I'd like to tell you about my friend Joe", self.teller_id, "Bret"
+        )
+        interaction._handle_tell_about_turn("juicy gossip", self.teller_id, "Bret")
+        interaction._handle_tell_about_turn(
+            "he likes volleyball", self.teller_id, "Bret"
+        )
+        closed = interaction._handle_tell_about_turn(
+            "exit gossip mode", self.teller_id, "Bret"
+        )
+        self.assertIsNotNone(closed)
+        self.assertIn("Joe", closed)
+        self.assertIsNone(interaction._pending_tell_about)
 
     def test_told_about_teller_name_for_unmet_subject(self):
         from intelligence import interaction

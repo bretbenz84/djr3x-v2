@@ -148,6 +148,46 @@ _DONE_PAT = re.compile(
     re.IGNORECASE,
 )
 _BARE_NO_PAT = re.compile(r"^\s*(no|nope|nah|nada|not\s+really)[\s.,!]*$", re.IGNORECASE)
+# The obvious exits out of the flow, usable at ANY step: "exit gossip mode",
+# "enough about Joe", "moving on", "change of subject", bare "stop".
+_EXIT_PAT = re.compile(
+    r"\b(?:"
+    r"(?:exit|leave|end|stop|close|quit)\s+(?:the\s+)?(?:gossip|briefing|interview|file|dossier|tea)(?:\s+mode)?|"
+    r"gossip\s+mode\s+(?:off|over|done)|"
+    r"stop\s+gossiping|enough\s+(?:gossip|gossiping|tea)|"
+    r"(?:that'?s\s+)?enough\s+about\s+\w+|"
+    r"(?:i'?m|we'?re)\s+done\s+(?:with|talking\s+about)\s+\w+|"
+    r"moving\s+on|change\s+(?:of\s+)?subject|new\s+(?:topic|subject)|"
+    r"(?:let'?s\s+)?talk\s+about\s+something\s+else|"
+    r"close\s+(?:the\s+)?(?:file|dossier)"
+    r")\b",
+    re.IGNORECASE,
+)
+_BARE_STOP_PAT = re.compile(r"^\s*(?:ok(?:ay)?[\s,]+)?stop[\s.,!]*$", re.IGNORECASE)
+
+# A turn shaped like a request TO Rex rather than a detail ABOUT the subject
+# ("can you give me a recipe...", "what's the weather", "play some music").
+# High-precision guard: any third-person referent or the subject's name means
+# it's a detail, even if it starts request-shaped ("can you believe he...").
+_REX_VOCATIVE_RE = re.compile(
+    r"^\s*(?:hey|ok(?:ay)?|yo)?[\s,]*(?:rex|r3x|dj)\b", re.IGNORECASE
+)
+_REQUEST_START_RE = re.compile(
+    r"^\s*(?:um+|uh+|hmm+|well|actually|hey|ok(?:ay)?|so|wait|hold\s+on)?[\s,]*"
+    r"(?:"
+    r"(?:can|could|would|will)\s+you\b|"
+    r"(?:do|are|did|have)\s+you\b|"
+    r"(?:can|could|shall)\s+we\b|"
+    r"let'?s\b|"
+    r"(?:please\s+)?(?:play|put\s+on|sing|skip|pause|give\s+me|show\s+me|"
+    r"tell\s+me|find\s+me|get\s+me|make\s+me|help\s+me)\b|"
+    r"what(?:'?s)?\b|who(?:'?s)?\b|when(?:'?s)?\b|where(?:'?s)?\b|why\b|how\b"
+    r")",
+    re.IGNORECASE,
+)
+_THIRD_PERSON_REFERENT_RE = re.compile(
+    r"\b(he|she|they|him|her|them|his|hers|their|theirs)\b", re.IGNORECASE
+)
 _DONT_KNOW_PAT = re.compile(
     r"^\s*(?:um+|uh+|hmm+|well)?[\s,]*"
     r"(?:i\s+(?:don'?t|do\s+not)\s+know|not\s+sure|nothing|can'?t\s+think\s+of\s+anything|hmm+)"
@@ -301,6 +341,34 @@ def is_blank_offer(text: str) -> bool:
     return bool(_DONT_KNOW_PAT.match((text or "").strip()))
 
 
+def is_exit(text: str) -> bool:
+    """Explicit exit out of the flow at any step ('exit gossip mode', 'stop')."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    return bool(_EXIT_PAT.search(cleaned) or _BARE_STOP_PAT.match(cleaned))
+
+
+def looks_like_request_to_rex(text: str, subject_name: Optional[str] = None) -> bool:
+    """True when an in-flow turn is a request TO Rex, not about the subject.
+
+    Used to release the turn back to normal routing (weather, recipes, music)
+    instead of filing it as gossip. Any mention of the subject's name or a
+    third-person pronoun marks the turn as a detail — so "can you believe he
+    got arrested" stays in the file, while "can you give me a recipe" exits.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if subject_name:
+        first = subject_name.split()[0]
+        if first and re.search(rf"\b{re.escape(first)}\b", cleaned, re.IGNORECASE):
+            return False
+    if _THIRD_PERSON_REFERENT_RE.search(cleaned):
+        return False
+    return bool(_REX_VOCATIVE_RE.match(cleaned) or _REQUEST_START_RE.match(cleaned))
+
+
 def parse_gender(text: str) -> Optional[str]:
     m = _GENDER_WORD_RE.search(text or "")
     if not m:
@@ -385,8 +453,10 @@ def tone_question(name: str) -> str:
 
 
 def invite_line(name: str, kind: str) -> str:
-    bank = _INVITES_GOSSIP if kind == "gossip" else _INVITES_FACTS
-    return random.choice(bank).format(name=name)
+    # The exit hint keeps the flow escapable — without it, every following
+    # turn looks like more material and people get stuck in gossip mode.
+    line = random.choice(_INVITES_GOSSIP if kind == "gossip" else _INVITES_FACTS)
+    return line.format(name=name) + " Say 'that's it' when the file's complete."
 
 
 def ack_line(name: str, kind: str, details_count: int) -> str:

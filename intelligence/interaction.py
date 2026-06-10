@@ -7422,11 +7422,25 @@ def _advance_tell_about_flow(state: dict, text: str) -> Optional[str]:
     subject_first = _first_name_or(state.get("subject_name") or "", "them")
     state["asked_at"] = time.monotonic()
 
-    if tell_me_about.is_decline(text):
+    if tell_me_about.is_decline(text) or tell_me_about.is_exit(text):
         _pending_tell_about = None
         if state.get("details_count", 0) > 0:
             return tell_me_about.closer_line(subject_first, state["details_count"])
         return tell_me_about.cancel_line()
+
+    # A request aimed at Rex ("can you give me a recipe...", "what's the
+    # weather") is a subject change, not material for the file. Close the
+    # flow and release the turn back to normal routing.
+    if tell_me_about.looks_like_request_to_rex(text, state.get("subject_name")):
+        _pending_tell_about = None
+        _log.info(
+            "[tell_about] flow closed (subject pivot to a Rex request) "
+            "subject=%r details=%s text=%r",
+            state.get("subject_name"),
+            state.get("details_count"),
+            text,
+        )
+        return None
 
     if step == "awaiting_name":
         parsed = introductions.parse_pending_answer(

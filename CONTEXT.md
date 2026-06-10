@@ -295,7 +295,15 @@ Do not treat every utterance as a permanent fact. Prefer explicit user statement
    `TELL_ABOUT_CLASSIFY_LLM_ENABLED`) as gossip/fact with a kindness score
    (-1 mean … +1 kind) and stored as a `person_facts` row on the SUBJECT with
    `source='secondhand'`, `fact_kind`, `kindness`, and `told_by` (teller id).
-6. "That's it / never mind" closes the flow. Flow turns are consumed before
+6. Exits: "that's it / never mind" closes the flow, as do the explicit exits
+   ("exit gossip mode", "stop gossiping", "enough about Joe", "change of
+   subject", bare "stop" — `tell_me_about.is_exit`). The invite line tells the
+   teller the exit phrase. Additionally, a turn shaped like a request TO Rex
+   ("can you give me a recipe...", "what's the weather", "play some music") is
+   treated as a subject pivot: the flow closes and the turn is RELEASED to
+   normal routing instead of being filed (`looks_like_request_to_rex` — any
+   third-person pronoun or the subject's name marks it as a detail instead,
+   so "can you believe he..." still files). Flow turns are consumed before
    routers, so volunteered details never become facts about the TELLER.
 
 The subject's person row is created up front (`find_or_create_person`) with a
@@ -488,7 +496,7 @@ venv/bin/python main.py
 - Tidy-up — episodic capture hooks → `intelligence/episodic_hooks.py` (leaf module; consciousness calls `episodic_hooks.<name>`).
 - Tidy-up — idle micro-behaviours → `intelligence/idle_behaviors.py` (dispatcher stays in consciousness and calls `idle_behaviors.do_<name>`; the behaviours reach consciousness's speak engine via a lazy `_c` proxy; `_do_small_talk_question` stayed, being mood-detection-coupled).
 - Tidy-up — proactive-speech ENGINE → `intelligence/speech_engine.py` (15 functions; consciousness re-exports each as a `_name` shim so call sites + test patches are unchanged; intra-engine calls route through the `_c` shims for full patch-transparency; `note_rex_utterance` + shared speech state stayed in consciousness; `tests/test_speech_engine.py`). The governor metadata key MUST stay `"can_proactive_speak"` (action_governor reads it).
-- "Tell me about someone" pre-briefing (`intelligence/tell_me_about.py`, `interaction._handle_tell_about_turn`/`_pending_tell_about`): pre-populates the person DB for someone who is NOT here — name → gossip-or-facts → details, stored as `secondhand` person_facts with `fact_kind`/`kindness`/`told_by` (new columns in `setup_assets.py` + `database._run_migrations`). Mean gossip is never recited to the subject (prompt hedging in `facts.format_fact_for_prompt`); secondhand never overwrites the person's own explicit facts. See the Memory Model section.
+- "Tell me about someone" pre-briefing (`intelligence/tell_me_about.py`, `interaction._handle_tell_about_turn`/`_pending_tell_about`): pre-populates the person DB for someone who is NOT here — name → gossip-or-facts → details, stored as `secondhand` person_facts with `fact_kind`/`kindness`/`told_by` (new columns in `setup_assets.py` + `database._run_migrations`). Mean gossip is never recited to the subject (prompt hedging in `facts.format_fact_for_prompt`); secondhand never overwrites the person's own explicit facts. Escapable by design (live-tested): explicit exits (`is_exit` — "exit gossip mode"/"enough about X"/"stop") AND a subject-pivot guard (`looks_like_request_to_rex`) that releases requests aimed at Rex ("can you give me a recipe...") back to normal routing instead of filing them as gossip — the chicken-soup regression in `tests/test_tell_me_about.py`. See the Memory Model section.
 
 ## Likely Future Work
 
