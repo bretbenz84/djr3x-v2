@@ -8344,7 +8344,16 @@ def _candidate_matches_speaker_gaze(candidate: dict, intent: Optional[dict]) -> 
             return int(candidate.get("person_id")) == int(person_id)
         except Exception:
             return False
-    return bool(intent.get("unknown_voice") and candidate.get("person_id") is None)
+    if intent.get("unknown_voice"):
+        return candidate.get("person_id") is None
+    # "Find anyone" intent (startup / acquisition scan: no specific person, no
+    # unknown voice) — ANY visible face satisfies it. Without this, the startup
+    # room scan could never be marked acquired, so search_requested stayed armed
+    # for the full search window even after Rex locked onto and GREETED someone;
+    # the next ≥0.45s face-detection blip (routine for a seated person at the
+    # frame edge) relaunched full-room waypoint snaps mid-conversation — the
+    # "greets me, then immediately looks around wildly" live failure.
+    return True
 
 
 def _speaker_gaze_intent_needs_specific_target(intent: Optional[dict]) -> bool:
