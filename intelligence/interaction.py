@@ -53,6 +53,7 @@ from intelligence import question_budget
 from intelligence import repair_moves
 from intelligence import end_thread
 from intelligence import introductions
+from intelligence import tell_me_about
 from intelligence import memory_query
 from intelligence import social_frame
 from intelligence import comedy_modes
@@ -489,6 +490,16 @@ _pending_introduction: Optional[dict] = None
 _pending_intro_followup: Optional[dict] = None
 _pending_intro_voice_capture: Optional[dict] = None
 
+# "Tell me about someone" pre-briefing flow ("I'd like to tell you about my
+# coworker Daniel"). The subject is NOT present; Rex collects gossip/facts and
+# pre-populates the person DB so the dossier is warm before they ever visit.
+#   step: "awaiting_name" | "awaiting_tone" | "collecting"
+#   teller_id/teller_name: who is briefing Rex (told_by on stored facts)
+#   subject_id/subject_name: the absent person's DB row once the name is known
+#   default_kind: "gossip" | "fact" — the teller's own label for the briefing
+#   last_pointed: which pointed question was just asked (e.g. "gender")
+_pending_tell_about: Optional[dict] = None
+
 # Someone answered an identity/intro prompt with a very common first name only,
 # or a returning known person still only has that common first name on file.
 # Hold/enforce the last-name clarification so memory rows stay distinct.
@@ -909,6 +920,7 @@ def _action_router_context(
             "offscreen_identify": _pending_offscreen_identify is not None,
             "introduction": _pending_introduction is not None,
             "intro_followup": _pending_intro_followup is not None,
+            "tell_about": _pending_tell_about is not None,
             "prompted_name_confirmation": _pending_prompted_name_confirmation is not None,
         },
         "legacy": {
@@ -6770,6 +6782,16 @@ def _intro_ack_and_followup(
             f"{introducer_first} as if they are the newcomer, and do not ask how "
             f"they know each other yet."
         )
+    # If someone pre-briefed Rex on this person before they ever visited
+    # ("tell me about my coworker Daniel"), let the welcome acknowledge it.
+    heard_from = _told_about_teller_name(introduced_id)
+    if heard_from:
+        prompt += (
+            f" Important: you were already briefed about {introduced_first} by "
+            f"{heard_from} before this meeting. Work in ONE light "
+            f"'so you're the famous {introduced_first}' beat — but never reveal "
+            "specifics from the file and never anything unkind."
+        )
     try:
         text = llm.get_response(prompt) or ""
     except Exception as exc:
@@ -7236,6 +7258,351 @@ def _handle_introduction_parse(
         subject_kind=parsed.subject_kind,
         visible_newcomer=visible_newcomer,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# "Tell me about someone" pre-briefing flow
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _handle_tell_about_turn(
+    text: str,
+    teller_id: Optional[int],
+    teller_name: Optional[str],
+) -> Optional[str]:
+    """Consume a turn for the tell-about flow, or detect a new one starting.
+
+    Returns Rex's reply when this turn belongs to the flow, else None so the
+    turn falls through to normal handling. Returning here also keeps the
+    teller's volunteered details out of teller-side memory extraction.
+    """
+    global _pending_tell_about
+
+    if not getattr(config, "TELL_ABOUT_ENABLED", True):
+        return None
+
+    state = _pending_tell_about
+    if state is not None and not tell_me_about.flow_fresh(state):
+        _log.info("[tell_about] flow expired at step=%s", state.get("step"))
+        _pending_tell_about = None
+        state = None
+
+    if state is not None:
+        expected_id = state.get("teller_id")
+        if (
+            teller_id is not None
+            and expected_id is not None
+            and int(teller_id) != int(expected_id)
+        ):
+            return None
+        return _advance_tell_about_flow(state, text)
+
+    parsed = tell_me_about.detect(text)
+    if not parsed.is_tell_about:
+        return None
+    return _start_tell_about_flow(parsed, teller_id, teller_name)
+
+
+def _start_tell_about_flow(
+    parsed: "tell_me_about.TellAboutParse",
+    teller_id: Optional[int],
+    teller_name: Optional[str],
+) -> Optional[str]:
+    global _pending_tell_about
+
+    now = time.monotonic()
+    default_kind = None
+    if parsed.gossip_hint and not parsed.facts_hint:
+        default_kind = "gossip"
+    elif parsed.facts_hint and not parsed.gossip_hint:
+        default_kind = "fact"
+
+    state = {
+        "step": "awaiting_name",
+        "teller_id": int(teller_id) if teller_id is not None else None,
+        "teller_name": teller_name or "friend",
+        "subject_id": None,
+        "subject_name": None,
+        "relationship": parsed.relationship,
+        "default_kind": default_kind,
+        "details_count": 0,
+        "reask_count": 0,
+        "pointed_idx": 0,
+        "last_pointed": None,
+        "created_at": now,
+        "asked_at": now,
+    }
+
+    if parsed.name:
+        subject_id = _create_tell_about_subject(
+            parsed.name,
+            state["teller_id"],
+            state["teller_name"],
+            parsed.relationship,
+        )
+        if subject_id is None:
+            response = "I didn't catch a filable name there. What do they go by?"
+        else:
+            state["subject_id"] = subject_id
+            state["subject_name"] = parsed.name
+            first = _first_name_or(parsed.name, parsed.name)
+            if default_kind is not None:
+                # They already labeled it ("got some tea on Daniel") — don't
+                # ask gossip-or-facts, go straight to collecting.
+                state["step"] = "collecting"
+                response = tell_me_about.invite_line(first, default_kind)
+            else:
+                state["step"] = "awaiting_tone"
+                response = tell_me_about.opener_with_name(first)
+    else:
+        response = tell_me_about.opener_no_name()
+
+    _pending_tell_about = state
+    _log.info(
+        "[tell_about] flow opened by %s (person_id=%s) step=%s subject=%r relationship=%r kind=%r",
+        state["teller_name"],
+        state["teller_id"],
+        state["step"],
+        state["subject_name"],
+        state["relationship"],
+        state["default_kind"],
+    )
+    return response
+
+
+def _create_tell_about_subject(
+    name: str,
+    teller_id: Optional[int],
+    teller_name: str,
+    relationship: Optional[str],
+) -> Optional[int]:
+    """Find or pre-create the absent subject's person row and link the teller."""
+    try:
+        subject_id, created = people_memory.find_or_create_person(name)
+    except Exception as exc:
+        _log.warning("[tell_about] find_or_create_person failed: %s", exc)
+        return None
+    if subject_id is None:
+        return None
+
+    if teller_id is not None and int(teller_id) != int(subject_id):
+        _store_introduction_memories(
+            int(teller_id),
+            teller_name,
+            int(subject_id),
+            name,
+            relationship,
+        )
+    if created:
+        try:
+            facts_memory.add_fact(
+                int(subject_id),
+                "identity",
+                "pre_met_note",
+                f"{teller_name} told Rex about {name} before Rex ever met them",
+                "secondhand",
+                importance=0.4,
+                told_by=teller_id,
+            )
+        except Exception as exc:
+            _log.debug("[tell_about] pre_met_note save failed: %s", exc)
+    _log.info(
+        "[tell_about] subject %r ready (person_id=%s created=%s) told_by=%s",
+        name,
+        subject_id,
+        created,
+        teller_id,
+    )
+    return int(subject_id)
+
+
+def _advance_tell_about_flow(state: dict, text: str) -> Optional[str]:
+    global _pending_tell_about
+
+    step = state.get("step")
+    subject_first = _first_name_or(state.get("subject_name") or "", "them")
+    state["asked_at"] = time.monotonic()
+
+    if tell_me_about.is_decline(text):
+        _pending_tell_about = None
+        if state.get("details_count", 0) > 0:
+            return tell_me_about.closer_line(subject_first, state["details_count"])
+        return tell_me_about.cancel_line()
+
+    if step == "awaiting_name":
+        parsed = introductions.parse_pending_answer(
+            text,
+            default_relationship=state.get("relationship"),
+        )
+        if parsed.name:
+            subject_id = _create_tell_about_subject(
+                parsed.name,
+                state.get("teller_id"),
+                state.get("teller_name") or "friend",
+                parsed.relationship or state.get("relationship"),
+            )
+            if subject_id is not None:
+                state["subject_id"] = subject_id
+                state["subject_name"] = parsed.name
+                if parsed.relationship:
+                    state["relationship"] = parsed.relationship
+                first = _first_name_or(parsed.name, parsed.name)
+                if state.get("default_kind"):
+                    state["step"] = "collecting"
+                    return tell_me_about.invite_line(first, state["default_kind"])
+                state["step"] = "awaiting_tone"
+                return tell_me_about.tone_question(first)
+        state["reask_count"] = int(state.get("reask_count") or 0) + 1
+        if state["reask_count"] > 1:
+            _pending_tell_about = None
+            return "No name, no file. Tell me again when you remember what they're called."
+        return "I still need a name for the file. What do they go by?"
+
+    if step == "awaiting_tone":
+        tone = tell_me_about.parse_tone_reply(text)
+        if tone:
+            state["default_kind"] = tone
+            state["step"] = "collecting"
+            return tell_me_about.invite_line(subject_first, tone)
+        if len((text or "").split()) >= 6:
+            # They skipped the label and just started spilling — take it.
+            state["default_kind"] = state.get("default_kind") or "fact"
+            state["step"] = "collecting"
+            return _store_tell_about_detail(state, text)
+        state["reask_count"] = int(state.get("reask_count") or 0) + 1
+        if state["reask_count"] > 1:
+            state["default_kind"] = "fact"
+            state["step"] = "collecting"
+            return tell_me_about.invite_line(subject_first, "fact")
+        return "Gossip or boring facts? I need to label the folder."
+
+    # collecting
+    if tell_me_about.is_done(text, allow_bare_no=True):
+        _pending_tell_about = None
+        _log.info(
+            "[tell_about] flow closed for %r with %s detail(s)",
+            state.get("subject_name"),
+            state.get("details_count"),
+        )
+        return tell_me_about.closer_line(subject_first, int(state.get("details_count") or 0))
+
+    if state.get("last_pointed") == "gender":
+        gender = tell_me_about.parse_gender(text)
+        if gender is not None:
+            state["last_pointed"] = None
+            try:
+                facts_memory.add_fact(
+                    int(state["subject_id"]),
+                    "identity",
+                    "gender",
+                    gender,
+                    "secondhand",
+                    told_by=state.get("teller_id"),
+                )
+            except Exception as exc:
+                _log.debug("[tell_about] gender fact save failed: %s", exc)
+            state["details_count"] = int(state.get("details_count") or 0) + 1
+            return tell_me_about.ack_line(
+                subject_first,
+                state.get("default_kind") or "fact",
+                state["details_count"],
+            )
+
+    if tell_me_about.is_blank_offer(text) or len((text or "").split()) < 2:
+        key, question = tell_me_about.pointed_question(
+            int(state.get("pointed_idx") or 0),
+            subject_first,
+            skip_relationship=bool(state.get("relationship")),
+        )
+        if question is None:
+            _pending_tell_about = None
+            return tell_me_about.closer_line(
+                subject_first, int(state.get("details_count") or 0)
+            )
+        state["pointed_idx"] = int(state.get("pointed_idx") or 0) + 1
+        state["last_pointed"] = key
+        return question
+
+    state["last_pointed"] = None
+    return _store_tell_about_detail(state, text)
+
+
+def _store_tell_about_detail(state: dict, text: str) -> str:
+    subject_first = _first_name_or(state.get("subject_name") or "", "them")
+    detail = (text or "").strip()
+    try:
+        cls = tell_me_about.classify_detail(
+            detail,
+            state.get("subject_name") or "them",
+            state.get("default_kind"),
+        )
+    except Exception as exc:
+        _log.debug("[tell_about] classify_detail raised, using defaults: %s", exc)
+        cls = {"kind": state.get("default_kind") or "fact", "kindness": 0.0,
+               "category": "other", "key": None}
+
+    count = int(state.get("details_count") or 0) + 1
+    key = cls.get("key") or f"told_note_{count}"
+    kind = cls.get("kind") or "fact"
+    try:
+        facts_memory.add_fact(
+            int(state["subject_id"]),
+            cls.get("category") or "other",
+            key,
+            detail,
+            "secondhand",
+            confidence=0.5 if kind == "gossip" else None,
+            # Gossip ages out; it must never become a permanent "fact".
+            decay_rate="normal" if kind == "gossip" else None,
+            fact_kind=kind,
+            kindness=cls.get("kindness"),
+            told_by=state.get("teller_id"),
+        )
+        _log.info(
+            "[tell_about] stored %s about %r key=%r kindness=%.2f told_by=%s",
+            kind,
+            state.get("subject_name"),
+            key,
+            float(cls.get("kindness") or 0.0),
+            state.get("teller_id"),
+        )
+    except Exception as exc:
+        _log.warning("[tell_about] detail save failed: %s", exc)
+    state["details_count"] = count
+    return tell_me_about.ack_line(
+        subject_first,
+        state.get("default_kind") or "fact",
+        count,
+    )
+
+
+def _told_about_teller_name(introduced_id: Optional[int]) -> Optional[str]:
+    """Return who pre-briefed Rex on this person, if they were told-about
+    before ever actually visiting (visit_count still 0)."""
+    if introduced_id is None:
+        return None
+    try:
+        person = people_memory.get_person(int(introduced_id)) or {}
+        if int(person.get("visit_count") or 0) > 0:
+            return None
+        rows = facts_memory.get_facts(int(introduced_id))
+    except Exception:
+        return None
+    told = [
+        f for f in rows
+        if f.get("told_by") is not None or f.get("source") == "secondhand"
+    ]
+    if not told:
+        return None
+    teller_ids = {int(f["told_by"]) for f in told if f.get("told_by") is not None}
+    if len(teller_ids) == 1:
+        try:
+            teller = people_memory.get_person(next(iter(teller_ids))) or {}
+            name = _first_name_or(str(teller.get("name") or ""), "")
+            if name:
+                return name
+        except Exception:
+            pass
+    return "someone"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -14478,6 +14845,46 @@ def _handle_speech_segment(
                 conv_log.log_rex(ack_text)
                 _session_exchange_count += 1
                 _register_rex_utterance(ack_text)
+                return
+
+        # "Let me tell you about my coworker Daniel" — a pre-briefing about
+        # someone who is NOT here. Runs its own short flow (name → gossip-or-
+        # facts → details) and pre-populates the person DB so the dossier is
+        # warm before the subject ever shows up. Active-flow turns are consumed
+        # here so volunteered details never reach routers or get extracted as
+        # facts about the TELLER. Falls back to recent engagement for the
+        # teller identity, same as the introduction flow below.
+        if not game_conversation_lock:
+            tell_about_teller_id = person_id
+            tell_about_teller_name = person_name
+            if tell_about_teller_id is None and recent_engagement is not None:
+                recent_id = recent_engagement.get("person_id")
+                try:
+                    tell_about_teller_id = int(recent_id) if recent_id is not None else None
+                except (TypeError, ValueError):
+                    tell_about_teller_id = None
+                tell_about_teller_name = recent_engagement.get("name")
+            tell_about_response = _handle_tell_about_turn(
+                text,
+                tell_about_teller_id,
+                tell_about_teller_name,
+            )
+            if tell_about_response:
+                _record_heard_turn_once()
+                _speak_blocking(
+                    tell_about_response,
+                    emotion="happy",
+                    pre_beat_ms=100,
+                    post_beat_ms_override=200,
+                )
+                conv_memory.add_to_transcript("Rex", tell_about_response)
+                conv_log.log_rex(tell_about_response)
+                _session_exchange_count += 1
+                _register_rex_utterance(
+                    tell_about_response,
+                    source="tell_about",
+                    expected_reply_types=["answer", "statement"],
+                )
                 return
 
         # If the engaged person answers an unknown-face/off-camera moment with

@@ -226,6 +226,11 @@ def _run_migrations() -> None:
                 ("last_used_at", "DATETIME"),
                 ("stale_after_days", "INTEGER"),
                 ("corrected_at", "DATETIME"),
+                # "Tell me about someone" pre-briefings: gossip/fact label,
+                # mean↔kind score, and which person told Rex the detail.
+                ("fact_kind", "TEXT DEFAULT 'fact'"),
+                ("kindness", "REAL"),
+                ("told_by", "INTEGER"),
             ):
                 _ensure_column(
                     conn,

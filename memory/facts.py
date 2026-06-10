@@ -22,9 +22,14 @@ _SOURCE_DEFAULT_CONFIDENCE = {
     "corrected": 1.0,
     "inferred": 0.55,
     "observed": 0.75,
+    # Told to Rex by a third party about someone who wasn't there ("tell me
+    # about" pre-briefings, gossip). Ranks below explicit so the person's own
+    # firsthand statements always win on conflict.
+    "secondhand": 0.6,
 }
 _SOURCE_RANK = {
     "inferred": 1,
+    "secondhand": 1,
     "observed": 2,
     "explicit": 3,
     "corrected": 4,
@@ -79,6 +84,8 @@ def _normalize_source(source: str) -> str:
         return cleaned
     if any(token in cleaned for token in ("correct", "repair", "rename")):
         return "corrected"
+    if any(token in cleaned for token in ("secondhand", "told_about", "gossip", "hearsay")):
+        return "secondhand"
     if any(token in cleaned for token in ("observed", "vision", "appearance")):
         return "observed"
     if any(token in cleaned for token in ("infer", "thread", "pattern")):
@@ -204,6 +211,9 @@ def add_fact(
     importance: Optional[float] = None,
     decay_rate: Optional[str] = None,
     stale_after_days: Optional[int] = None,
+    fact_kind: Optional[str] = None,
+    kindness: Optional[float] = None,
+    told_by: Optional[int] = None,
 ) -> None:
     """
     Insert or update a fact.
@@ -211,9 +221,26 @@ def add_fact(
     Repeated matching evidence strengthens confidence and increments
     evidence_count. A changed value replaces the old value but starts a new
     evidence count so Rex treats the updated memory with appropriate caution.
+
+    fact_kind ('fact'|'gossip'), kindness (-1 mean .. +1 kind), and told_by
+    (person_id of the teller) classify secondhand "tell me about" material so
+    prompt formatting can hedge it and keep unkind gossip from being recited.
     """
     now = _now()
     normalized_source = _normalize_source(source)
+    fact_kind_value = fact_kind if fact_kind in ("fact", "gossip") else None
+    kindness_value = None
+    if kindness is not None:
+        try:
+            kindness_value = max(-1.0, min(1.0, float(kindness)))
+        except (TypeError, ValueError):
+            kindness_value = None
+    told_by_value = None
+    if told_by is not None:
+        try:
+            told_by_value = int(told_by)
+        except (TypeError, ValueError):
+            told_by_value = None
     confidence = _clamp_confidence(
         _default_confidence(normalized_source) if confidence is None else confidence
     )
@@ -263,7 +290,7 @@ def add_fact(
                SET category = ?, value = ?, source = ?, confidence = ?,
                    updated_at = ?, last_confirmed_at = ?, evidence_count = ?,
                    importance = ?, decay_rate = ?, stale_after_days = ?,
-                   corrected_at = ?
+                   corrected_at = ?, fact_kind = ?, kindness = ?, told_by = ?
                WHERE person_id = ? AND key = ?""",
             (
                 category,
@@ -277,6 +304,9 @@ def add_fact(
                 decay_value,
                 stale_days_value,
                 corrected_at,
+                fact_kind_value or row.get("fact_kind") or "fact",
+                kindness_value if kindness_value is not None else row.get("kindness"),
+                told_by_value if told_by_value is not None else row.get("told_by"),
                 person_id,
                 key,
             ),
@@ -286,8 +316,9 @@ def add_fact(
             """INSERT INTO person_facts
                (person_id, category, key, value, confidence, source,
                 created_at, updated_at, last_confirmed_at, evidence_count,
-                importance, decay_rate, stale_after_days, corrected_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                importance, decay_rate, stale_after_days, corrected_at,
+                fact_kind, kindness, told_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 person_id,
                 category,
@@ -303,6 +334,9 @@ def add_fact(
                 decay_value,
                 stale_days_value,
                 now if normalized_source == "corrected" else None,
+                fact_kind_value or "fact",
+                kindness_value,
+                told_by_value,
             ),
         )
 
@@ -388,6 +422,7 @@ def score_fact_for_prompt(fact: dict) -> float:
         "corrected": 0.15,
         "explicit": 0.08,
         "observed": 0.0,
+        "secondhand": -0.05,
         "inferred": -0.12,
     }.get(source, 0.0)
     permanence_bonus = 0.08 if fact.get("decay_rate") == "permanent" else 0.0
@@ -419,6 +454,21 @@ def format_fact_for_prompt(fact: dict) -> str:
         qualifiers.append("inferred; hedge this")
     elif source == "corrected":
         qualifiers.append("corrected by the person")
+    elif source == "secondhand":
+        qualifiers.append("secondhand; heard from someone else, hedge this")
+    if (fact.get("fact_kind") or "fact") == "gossip":
+        kindness = fact.get("kindness")
+        try:
+            kindness = float(kindness) if kindness is not None else 0.0
+        except (TypeError, ValueError):
+            kindness = 0.0
+        if kindness <= -0.25:
+            qualifiers.append(
+                "unkind gossip — NEVER repeat or hint at this to the person; "
+                "background context only"
+            )
+        else:
+            qualifiers.append("gossip; don't recite it back to them")
     if confidence_label != "high":
         qualifiers.append(f"{confidence_label} confidence")
     if freshness_label in {"aging", "stale", "unknown"}:
@@ -455,6 +505,12 @@ def _annotate_fact(fact: dict) -> dict:
     fact["last_used_age_days"] = _used_age_days(fact)
     fact["freshness_label"] = _freshness_label(age_days, stale_after_days, decay_rate)
     fact["evidence_count"] = int(fact.get("evidence_count") or 1)
+    fact["fact_kind"] = fact.get("fact_kind") or "fact"
+    if fact.get("kindness") is not None:
+        try:
+            fact["kindness"] = max(-1.0, min(1.0, float(fact["kindness"])))
+        except (TypeError, ValueError):
+            fact["kindness"] = None
     fact["prompt_score"] = score_fact_for_prompt(fact)
     fact["memory_quality"] = (
         f"{fact['confidence_label']} confidence, {fact['freshness_label']} freshness, "

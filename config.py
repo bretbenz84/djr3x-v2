@@ -3983,6 +3983,20 @@ BIRTHDAY_WINS_ON_DAY = True
 # Probability the holiday-plans question fires on any given eligible loop tick
 # for an engaged person who hasn't been asked about that holiday this year.
 HOLIDAY_PLANS_PROBABILITY = 0.25
+
+# ─── "Tell me about someone" pre-briefing flow ───────────────────────────────
+# "I'd like to tell you about my coworker Daniel" opens a short flow (name →
+# gossip-or-facts → details) that pre-populates the person DB before the
+# subject ever shows up. Each volunteered detail is stored as a secondhand
+# person_fact labeled gossip/fact with a mean↔kind score (intelligence/
+# tell_me_about.py + interaction._handle_tell_about_turn).
+TELL_ABOUT_ENABLED = True
+# How long a flow step stays open waiting for the teller's next line before
+# the whole flow silently expires.
+TELL_ABOUT_STEP_TTL_SECS = 240.0
+# Classify each volunteered detail (gossip/fact + kindness) with a small LLM
+# call; False uses the keyword heuristic only (no network).
+TELL_ABOUT_CLASSIFY_LLM_ENABLED = True
 HOLIDAY_PLANS_CHECK_INTERVAL_SECS = 30.0
 
 # Weekly small-talk (Fri-eve weekend plans, Sun-eve week ahead, Mon-morn recap).

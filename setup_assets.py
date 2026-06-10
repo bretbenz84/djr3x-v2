@@ -154,7 +154,10 @@ CREATE TABLE IF NOT EXISTS person_facts (
     decay_rate TEXT DEFAULT 'normal',
     last_used_at DATETIME,
     stale_after_days INTEGER,
-    corrected_at DATETIME
+    corrected_at DATETIME,
+    fact_kind   TEXT DEFAULT 'fact',
+    kindness    REAL,
+    told_by     INTEGER REFERENCES people(id)
 );
 
 CREATE TABLE IF NOT EXISTS person_qa (
