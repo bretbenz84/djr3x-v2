@@ -41,7 +41,15 @@ class FaceJumpRejectionTest(unittest.TestCase):
         last = {"key": "p1", "cx": 900, "cy": 540, "at": 100.0}
         accept, new_last, new_pend = self._eval(100, 1000, "p1", 100.05, last, None)  # ~923px > 727
         self.assertFalse(accept)
-        self.assertEqual(new_last, last)  # gaze reference unchanged
+        # Gaze reference keeps its POSITION but the timestamp refreshes: a
+        # rejection must not let the reference age past max_age, or the same
+        # spurious box would be auto-accepted via staleness a tick later
+        # (see test_face_jump_guard for the live-failure replay).
+        self.assertEqual(
+            (new_last["key"], new_last["cx"], new_last["cy"]),
+            (last["key"], last["cx"], last["cy"]),
+        )
+        self.assertEqual(float(new_last["at"]), 100.05)
         self.assertIsNotNone(new_pend)
         self.assertEqual((new_pend["cx"], new_pend["cy"]), (100, 1000))
 

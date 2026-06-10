@@ -8904,19 +8904,33 @@ def _record_face_tracking_state(
         _log.debug("face tracking state update failed: %s", exc)
 
 
-def _evaluate_face_jump(cx, cy, key, now, frame_w, frame_h, last_center, pending_center):
+def _evaluate_face_jump(
+    cx, cy, key, now, frame_w, frame_h, last_center, pending_center,
+    *, identified=False, live_tracked=False,
+):
     """Decide whether a freshly-detected face box is an implausible single-tick teleport
     (a spurious detector box) that should be ignored so the head holds its gaze.
 
+    The rule is "random UNKNOWN face detected far away = noise": a box that dlib
+    freshly identity-matched to a known enrolled person is accepted no matter how
+    far it jumped — clutter can't match a face encoding, and a seated/leaning person
+    legitimately appears anywhere in the frame (including the bottom edge). The
+    instant-accept does NOT apply to live_tracked boxes: those inherit their
+    person_id from an older recognition pass via the correlation tracker, so a
+    drifted tracker box is not identity evidence for THIS position.
+
     Pure/deterministic (reads config only) so it can be unit-tested. Returns
     (accept, last_center, pending_center): when ``accept`` is False the caller should
-    hold the current gaze this tick. A big jump is accepted only once the jumped-to
-    position has persisted for FACE_TRACKING_JUMP_CONFIRM_SECS (a genuine fast move)."""
+    hold the current gaze this tick. An unknown big jump is accepted only once the
+    jumped-to position has persisted for FACE_TRACKING_JUMP_CONFIRM_SECS (a genuine
+    fast move). A rejection refreshes the reference timestamp so the same spurious
+    box can't sneak in moments later through reference staleness — persistence (or
+    identity) is the only way in."""
     jump_frac = float(getattr(config, "FACE_TRACKING_MAX_JUMP_FRAC", 0.0) or 0.0)
     if jump_frac <= 0.0 or frame_w <= 0 or frame_h <= 0:
         return True, {"key": key, "cx": cx, "cy": cy, "at": now}, None
     max_jump = jump_frac * ((frame_w * frame_w + frame_h * frame_h) ** 0.5)
-    max_age = float(getattr(config, "FACE_TRACKING_JUMP_MAX_AGE_SECS", 0.5))
+    max_age = float(getattr(config, "FACE_TRACKING_JUMP_MAX_AGE_SECS", 5.0))
     fresh_same = (
         last_center is not None
         and last_center.get("key") == key
@@ -8930,7 +8944,12 @@ def _evaluate_face_jump(cx, cy, key, now, frame_w, frame_h, last_center, pending
     ) ** 0.5
     if jump_dist <= max_jump:
         return True, {"key": key, "cx": cx, "cy": cy, "at": now}, None
-    # Big jump — accept only if the jumped-to position has been holding (a real move).
+    # Big jump from a freshly identity-matched detection: it's really them (they sat
+    # down, leaned over, stood up) — follow immediately.
+    if identified and not live_tracked:
+        return True, {"key": key, "cx": cx, "cy": cy, "at": now}, None
+    # Unknown big jump — accept only if the jumped-to position has been holding
+    # (a genuine fast move / new arrival), never via reference staleness.
     confirm_secs = float(getattr(config, "FACE_TRACKING_JUMP_CONFIRM_SECS", 0.5))
     near_pending = pending_center is not None and (
         ((cx - float(pending_center["cx"])) ** 2 + (cy - float(pending_center["cy"])) ** 2) ** 0.5
@@ -8938,7 +8957,14 @@ def _evaluate_face_jump(cx, cy, key, now, frame_w, frame_h, last_center, pending
     if near_pending and (now - float(pending_center.get("since", now))) >= confirm_secs:
         return True, {"key": key, "cx": cx, "cy": cy, "at": now}, None
     new_pending = pending_center if near_pending else {"cx": cx, "cy": cy, "since": now}
-    return False, last_center, new_pending
+    # Keep the reference alive while rejecting: holding the gaze means the held
+    # position is still where we believe the person is. Without this, the reference
+    # aged past max_age within a tick or two and the SAME spurious box was accepted
+    # unconditionally (live failure: rejected (938,838) then accepted (937,835) 1s
+    # later, driving the lift servo to its rails chasing clutter).
+    refreshed_last = dict(last_center)
+    refreshed_last["at"] = now
+    return False, refreshed_last, new_pending
 
 
 def _maybe_log_face_jump_reject(cx, cy, now) -> None:
@@ -9179,10 +9205,14 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
 
         # Jump-rejection: a box that teleported across the frame this tick is almost
         # always a spurious detector box on clutter, not the person moving — hold the
-        # gaze instead of chasing it (unless the new spot persists; see the helper).
+        # gaze instead of chasing it. Exceptions: a box dlib freshly identified as a
+        # known person is always real (followed immediately, e.g. a seated person low
+        # in frame), and an unknown spot that persists gets confirmed (see helper).
         accept_box, _face_tracking_last_center, _face_tracking_pending_center = _evaluate_face_jump(
             cx, cy, candidate_key, now, frame_w, frame_h,
             _face_tracking_last_center, _face_tracking_pending_center,
+            identified=candidate.get("person_id") is not None,
+            live_tracked=bool(candidate.get("live_tracked")),
         )
         if not accept_box:
             _maybe_log_face_jump_reject(cx, cy, now)

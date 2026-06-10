@@ -8555,6 +8555,23 @@ def _execute_directed_look_command(
 
         actual_direction, frame = _move_and_capture_gaze(direction, target_hint=target_hint)
 
+        # Compound command: "look to your right and tell me what you see". The
+        # directional half parses with no target_hint (bare directional), but
+        # the utterance also carries an explicit vision question — answer it
+        # with a fresh directed view analysis instead of treating the turn as
+        # a silent gaze change. Without this, the face-greet branch below
+        # could swallow the question entirely (live failure: Rex turned right
+        # and just said "Oh hi, Bret").
+        if bare_directional and action_router.has_vision_query_evidence(raw_text):
+            return _analyze_directed_view_once(
+                frame=frame,
+                direction=actual_direction,
+                target_hint=target_hint,
+                raw_text=raw_text,
+                person_id=person_id,
+                person_name=person_name,
+            )
+
         if bare_directional:
             visible_face = _visible_known_face_candidate(person_name)
             if visible_face:

@@ -213,8 +213,14 @@ uint32_t     lastSpeakActivityMs = 0;         // millis() of last SPEAK/SPEAK_LE
 
 // FADEOFF: smooth shutdown fade — freeze the current frame (eyes) and ramp master
 // brightness to 0 over HEAD_FADEOFF_MS, then go dark. A lifelike "powering down".
+// headFadeLastBright throttles the fade's show() calls to actual brightness-byte
+// changes (255 steps over 4 s ≈ one change per 15.7 ms ≈ 64 fps — a steady,
+// regular cadence). With dithering disabled, frames between byte changes are
+// bit-identical, so pushing them would only hammer the WS2812B bus and drop
+// inbound serial bytes (show() disables interrupts) for zero visual gain.
 #define HEAD_FADEOFF_MS 4000
 bool         headFading         = false;
+uint8_t      headFadeLastBright = 255;
 uint32_t     headFadeStartMs     = 0;
 uint8_t      headFadeStartBright = 255;
 
@@ -508,9 +514,15 @@ void handleCommand(char *cmd) {
     // the eyes as-is and stops the mouth; the actual ramp runs in loop().
     if (strcmp(cmd, "FADEOFF") == 0) {
         if (!headFading) {
+            // Re-assert dither-off at fade start: nothing in this sketch
+            // re-enables dithering today, but the dim fade tail is exactly
+            // where stray dithering shows as flicker, so guarantee it here
+            // rather than trusting setup() alone.
+            FastLED.setDither(0);
             headFading          = true;
             headFadeStartMs     = millis();
             headFadeStartBright = FastLED.getBrightness();
+            headFadeLastBright  = headFadeStartBright;  // frame already shows at this level
             animMode            = ANIM_OFF;   // stop mouth; leave eyes lit to fade
         }
         return;
@@ -567,11 +579,30 @@ void handleCommand(char *cmd) {
 #define SPEAK_LEAD    0.30f
 #define SPEAK_WINDOW  1.70f
 
+// Speak-wave frame cap. Unthrottled, tickSpeak rendered + show()ed on EVERY
+// loop pass (~400 fps): back-to-back frames leave only FastLED's minimum
+// reset gap, which crowds the WS2812 latch window — and bright frames (mostly
+// 1-bits) have the thinnest analog margins, so pixels that miss the latch
+// reinterpret the next frame's leading bits as a continuation and flash wrong
+// hues (amber/yellow → blue/purple). It also kept interrupts disabled for
+// ~2.5 ms per show, >50 % of wall time, eating the host's SPEAK_LEVEL bytes.
+// 50 fps is far beyond smooth for a wave that moves ≤8 zones/s, leaves ≥17 ms
+// of latch headroom per frame, and frees the UART. The wave PHASE still
+// accumulates every tick (dt-based), so motion speed is unchanged — only the
+// render/show cadence is capped.
+#define SPEAK_FRAME_MS 20
+uint32_t lastSpeakFrameMs = 0;
+
 void tickSpeak(float dt) {
     // Wave speed: 1.5 zones/s at level 0 → 8.0 zones/s at level 255
     float speed = 1.5f + (speakLevel / 255.0f) * 6.5f;
     speakPhase += speed * dt;
     if (speakPhase >= (float)NUM_ZONES) speakPhase -= (float)NUM_ZONES;
+
+    // Frame-rate cap: skip the render + show until the next frame slot.
+    uint32_t now = millis();
+    if ((uint32_t)(now - lastSpeakFrameMs) < SPEAK_FRAME_MS) return;
+    lastSpeakFrameMs = now;
 
     // Peak brightness: 0.30 at level 0 → 1.00 at level 255
     float peak    = 0.30f + (speakLevel / 255.0f) * 0.70f;
@@ -781,6 +812,14 @@ void tickAnimation() {
 void setup() {
     FastLED.addLeds<WS2812B, DATA_PIN, RGB>(leds, NUM_LEDS);
     FastLED.setBrightness(255);
+    // Temporal dithering OFF. FastLED's binary dithering simulates extra
+    // brightness depth by alternating pixel values between frames, which only
+    // looks smooth with a very fast, steady show() cadence. This sketch
+    // deliberately throttles show() to value changes (glow ~8 fps, idle
+    // breathing ~45 fps, fade ~64 fps), so at low brightness the dither
+    // alternation is visible as flicker — worst in the dim tail of FADEOFF.
+    // With dithering off, dim levels quantize to steady values instead.
+    FastLED.setDither(0);
 
     // WS2812B pixels can latch random data on power-on before the first show().
     // A brief delay lets the supply voltage stabilise so the reset pulse is
@@ -831,6 +870,15 @@ void loop() {
         // Shutdown fade: freeze the current frame and ramp master brightness to 0
         // over HEAD_FADEOFF_MS, then go dark. Skip the normal ticks so nothing
         // redraws (or blinks) over the fading eyes.
+        //
+        // Non-blocking millis()-based step: nothing in this branch (or in the
+        // serial reader above it) blocks, so the refresh cadence stays steady.
+        // show() is pushed only when the computed brightness BYTE changes —
+        // the linear ramp makes those changes land every ~15.7 ms (≈64 fps),
+        // a tight, regular cadence. Re-showing bit-identical frames between
+        // steps (the old behaviour: show() every loop pass, ~400 fps) added
+        // nothing visually with dithering off and cost serial bytes, since
+        // every show() disables interrupts for ~2.5 ms.
         uint32_t elapsed = millis() - headFadeStartMs;
         if (elapsed >= HEAD_FADEOFF_MS) {
             headFading = false;
@@ -841,9 +889,13 @@ void loop() {
             FastLED.clear();
             FastLED.show();
         } else {
-            FastLED.setBrightness(
-                (uint8_t)((uint32_t)headFadeStartBright * (HEAD_FADEOFF_MS - elapsed) / HEAD_FADEOFF_MS));
-            FastLED.show();   // re-show the frozen leds[] at decreasing brightness
+            uint8_t b = (uint8_t)(
+                (uint32_t)headFadeStartBright * (HEAD_FADEOFF_MS - elapsed) / HEAD_FADEOFF_MS);
+            if (b != headFadeLastBright) {
+                headFadeLastBright = b;
+                FastLED.setBrightness(b);
+                FastLED.show();   // re-show the frozen leds[] at the new level
+            }
         }
         return;
     }

@@ -175,6 +175,89 @@ class DialogueBreakoutTests(unittest.TestCase):
         )
 
 
+class CompoundLookCommandTests(unittest.TestCase):
+    """'Look to your right and tell me what you see' describes the new view.
+
+    Live failure (logs/djr3x-2026-06-09-15-59-14.log): the directional half
+    parsed as a bare look, the head turned, and the face-greet branch answered
+    "Oh hi, Bret" — swallowing the vision question entirely.
+    """
+
+    def _fake_frame(self):
+        import numpy as np
+
+        return np.zeros((4, 4, 3), dtype=np.uint8)
+
+    def test_compound_look_runs_directed_view_analysis(self):
+        from intelligence import command_parser, interaction
+
+        text = "Look to your right and tell me what you see"
+        match = command_parser.parse(text)
+        self.assertEqual(match.command_key, "directed_look")
+
+        analysis = {
+            "target_summary": "A telescope on a tripod",
+            "target_visible": True,
+            "subject_type": "object",
+            "visible_people_count": 1,
+            "animals": [],
+            "notable_details": ["white 3D printed telescope"],
+            "roast_angle": "",
+            "confidence": "high",
+        }
+        with (
+            mock.patch.object(
+                interaction,
+                "_move_and_capture_gaze",
+                return_value=("right", self._fake_frame()),
+            ),
+            mock.patch(
+                "vision.scene.analyze_directed_attention", return_value=analysis
+            ) as ada,
+            mock.patch.object(
+                interaction, "_visible_known_face_candidate"
+            ) as face_check,
+            mock.patch.object(
+                interaction.llm, "get_response", return_value="One telescope."
+            ),
+            mock.patch.object(
+                interaction.llm, "clean_response_text", side_effect=lambda x: x
+            ),
+            mock.patch.object(interaction, "_speak_blocking"),
+        ):
+            resp = interaction._execute_directed_look_command(
+                match.args, 1, "Bret", text
+            )
+        self.assertFalse(face_check.called)
+        self.assertEqual(ada.call_args.kwargs.get("utterance"), text)
+        self.assertEqual(resp, "One telescope.")
+
+    def test_plain_directional_look_still_greets_visible_face(self):
+        from intelligence import command_parser, interaction
+
+        match = command_parser.parse("look to your right")
+        with (
+            mock.patch.object(
+                interaction,
+                "_move_and_capture_gaze",
+                return_value=("right", self._fake_frame()),
+            ),
+            mock.patch.object(
+                interaction,
+                "_visible_known_face_candidate",
+                return_value={"name": "Bret", "person_id": 1},
+            ),
+            mock.patch.object(
+                interaction, "_greet_directed_face_once", return_value="Oh hi, Bret."
+            ) as greet,
+        ):
+            resp = interaction._execute_directed_look_command(
+                match.args, 1, "Bret", "look to your right"
+            )
+        self.assertTrue(greet.called)
+        self.assertEqual(resp, "Oh hi, Bret.")
+
+
 class VisionQuestionAnswerTests(unittest.TestCase):
     """The vision answer path sends the user's question to the vision call."""
 
