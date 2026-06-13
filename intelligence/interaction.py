@@ -12627,7 +12627,9 @@ def _generate_repair_response(person_id: Optional[int], text: str, repair: dict)
     if not response:
         response = repair_moves.fallback_response(repair)
     if repair_moves.should_use_better_luck_line(repair):
-        response = repair_moves.add_better_luck_line(response)
+        response = repair_moves.add_better_luck_line(
+            response, repair.get("recovery_line")
+        )
     _play_event_body_beat("repair", repair_kind=str(repair.get("kind") or ""))
     _speak_blocking(
         response,

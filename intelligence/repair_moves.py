@@ -9,6 +9,7 @@ the normal roast/curiosity machinery treat it like ordinary banter.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import random
 import re
 import threading
 import time
@@ -116,7 +117,39 @@ _last_assistant_at: float = 0.0
 _last_repair_at: float = 0.0
 _last_tone_repair_at: float = 0.0
 
-BETTER_LUCK_NEXT_TIME = "I'm sure we'll have better luck next time!"
+# Recovery tags appended to "I misheard you" / bare-negation repairs. A single
+# fixed line got repeated on back-to-back repairs and a bystander noticed ("Is it
+# just gonna keep asking the same question?"). Rotate with anti-repeat so two
+# consecutive repairs never use the same tag.
+_RECOVERY_LINES = [
+    "I'm sure we'll have better luck next time!",
+    "We'll get there — recalibrating.",
+    "Noted. I'll route around that one.",
+    "Fair enough — let me reset and try that again.",
+    "Consider it logged. Onward.",
+    "My circuits and I will do better on the next pass.",
+]
+BETTER_LUCK_NEXT_TIME = _RECOVERY_LINES[0]  # back-compat alias
+_last_recovery_line: str = ""
+
+
+def pick_recovery_line() -> str:
+    """A recovery tag that differs from the one used on the previous repair."""
+    global _last_recovery_line
+    with _lock:
+        choices = [
+            line for line in _RECOVERY_LINES if line != _last_recovery_line
+        ] or list(_RECOVERY_LINES)
+        line = random.choice(choices)
+        _last_recovery_line = line
+        return line
+
+
+def _contains_recovery_line(text: str) -> bool:
+    low = (text or "").lower()
+    return any(line.lower() in low for line in _RECOVERY_LINES)
+
+
 _BETTER_LUCK_REPAIR_KINDS = {
     "misheard",
     "misunderstood",
@@ -327,6 +360,11 @@ def build_prompt(repair: dict) -> str:
         f"\nRex's immediately previous line was: {last_assistant!r}."
         if last_assistant else ""
     )
+    # Pick the recovery tag once and stash it on the repair so the post-generation
+    # add_better_luck_line() appends the SAME line the prompt asked for (no mismatch,
+    # no double tag), while consecutive repairs still vary.
+    recovery_line = repair.get("recovery_line") or pick_recovery_line()
+    repair["recovery_line"] = recovery_line
     return (
         "The human is correcting or repairing the conversation with Rex.\n"
         f"Repair type: {kind}.\n"
@@ -342,7 +380,7 @@ def build_prompt(repair: dict) -> str:
         "correction was supplied, accept it. Do not begin with 'Rex:' or any "
         "speaker label. For misheard, misunderstood, wrong-person, pronoun, "
         "factual, or bare-negation repairs, include this exact recovery line: "
-        f"{BETTER_LUCK_NEXT_TIME!r}"
+        f"{recovery_line!r}"
     )
 
 
@@ -378,15 +416,16 @@ def should_use_better_luck_line(repair: dict) -> bool:
     return kind in _BETTER_LUCK_REPAIR_KINDS
 
 
-def add_better_luck_line(text: str) -> str:
+def add_better_luck_line(text: str, line: Optional[str] = None) -> str:
+    line = line or pick_recovery_line()
     response = (text or "").strip()
     if not response:
-        return BETTER_LUCK_NEXT_TIME
-    if BETTER_LUCK_NEXT_TIME.lower() in response.lower():
+        return line
+    if _contains_recovery_line(response):
         return response
     if response[-1] not in ".!?":
         response += "."
-    return f"{response} {BETTER_LUCK_NEXT_TIME}"
+    return f"{response} {line}"
 
 
 def _extract_correction(text: str) -> str:

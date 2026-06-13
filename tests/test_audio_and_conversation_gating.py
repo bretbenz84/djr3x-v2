@@ -3164,6 +3164,10 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             mock.patch.object(interaction.people_memory, "find_person_by_name", return_value=None),
             mock.patch.object(interaction.people_memory, "rename_person", return_value=True) as rename,
             mock.patch.object(interaction, "_refresh_world_state_person_name") as refresh,
+            mock.patch.object(
+                interaction.repair_moves, "pick_recovery_line",
+                return_value="I'm sure we'll have better luck next time!",
+            ),
             mock.patch.object(interaction, "_speak_blocking") as speak,
         ):
             response = interaction._handle_name_update_request(
@@ -3246,6 +3250,10 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     interaction.llm,
                     "get_response",
                     return_value="Got it. I misunderstood the playlist request.",
+                ),
+                mock.patch.object(
+                    repair_moves, "pick_recovery_line",
+                    return_value="I'm sure we'll have better luck next time!",
                 ),
                 mock.patch.object(interaction, "_play_event_body_beat") as beat,
                 mock.patch.object(interaction, "_speak_blocking") as speak,
@@ -3635,6 +3643,10 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             mock.patch.object(interaction.people_memory, "rename_person", return_value=True) as rename,
             mock.patch.object(interaction.facts_memory, "apply_fact_correction") as correct,
             mock.patch.object(interaction, "_refresh_world_state_person_name") as refresh,
+            mock.patch.object(
+                interaction.repair_moves, "pick_recovery_line",
+                return_value="I'm sure we'll have better luck next time!",
+            ),
             mock.patch.object(interaction, "_speak_blocking") as speak,
         ):
             response = interaction._execute_command(match, 4, "Bret", "Actually, call me Bret Michael.")
