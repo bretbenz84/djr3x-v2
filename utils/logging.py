@@ -23,6 +23,8 @@ _MAX_BYTES = 10 * 1024 * 1024  # 10 MB per file
 _BACKUP_COUNT = 5
 
 _RUN_STAMP: "str | None" = None
+_ACTIVE_LOG_PATH: "Path | None" = None
+_GUI_LOG_HANDLER: "logging.Handler | None" = None
 
 
 def run_stamp() -> str:
@@ -52,10 +54,12 @@ def setup_logging(level: int = logging.INFO) -> None:
     console.setFormatter(formatter)
     console.setLevel(level)
 
+    global _ACTIVE_LOG_PATH
     file_handler: logging.Handler
     if getattr(config, "DEBUG_MODE", False):
         run_log_file = _LOG_DIR / f"djr3x-{run_stamp()}.log"
         file_handler = logging.FileHandler(run_log_file, encoding="utf-8")
+        _ACTIVE_LOG_PATH = run_log_file
     else:
         file_handler = logging.handlers.RotatingFileHandler(
             _LOG_FILE,
@@ -63,6 +67,7 @@ def setup_logging(level: int = logging.INFO) -> None:
             backupCount=_BACKUP_COUNT,
             encoding="utf-8",
         )
+        _ACTIVE_LOG_PATH = _LOG_FILE
     file_handler.setFormatter(formatter)
     file_handler.setLevel(level)
 
@@ -70,6 +75,47 @@ def setup_logging(level: int = logging.INFO) -> None:
     root.setLevel(level)
     root.addHandler(console)
     root.addHandler(file_handler)
+
+
+def active_log_path() -> Path:
+    """The file this run's app log is being written to (set by setup_logging).
+
+    DEBUG_MODE=True → logs/djr3x-<run stamp>.log; otherwise the shared
+    logs/djr3x.log. Falls back to the shared path if setup_logging hasn't run."""
+    return _ACTIVE_LOG_PATH or _LOG_FILE
+
+
+class _CallbackLogHandler(logging.Handler):
+    """Forwards formatted records to a plain callable (e.g. the GUI bridge).
+
+    The callback must be thread-safe and non-blocking — records arrive on
+    whatever thread emitted them. emit() never raises and never logs, so a
+    broken sink can't recurse into logging or take the app down."""
+
+    def __init__(self, callback) -> None:
+        super().__init__()
+        self._callback = callback
+
+    def emit(self, record: logging.LogRecord) -> None:  # noqa: D102
+        try:
+            self._callback(self.format(record))
+        except Exception:
+            pass
+
+
+def install_gui_log_handler(callback, level: int = logging.INFO) -> None:
+    """Mirror root-logger records (same format as the log file) into `callback`.
+
+    Idempotent: a second install replaces the previous handler."""
+    global _GUI_LOG_HANDLER
+    root = logging.getLogger()
+    if _GUI_LOG_HANDLER is not None:
+        root.removeHandler(_GUI_LOG_HANDLER)
+    handler = _CallbackLogHandler(callback)
+    handler.setFormatter(logging.Formatter(_FORMAT, datefmt=_DATE_FORMAT))
+    handler.setLevel(level)
+    root.addHandler(handler)
+    _GUI_LOG_HANDLER = handler
 
 
 def get_logger(name: str) -> logging.Logger:

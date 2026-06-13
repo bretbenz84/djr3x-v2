@@ -100,9 +100,17 @@ class RexAvatar(QWidget):
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             self.setAutoFillBackground(False)
         if self._show_background:
-            self.setMinimumSize(430, 400)
+            # Painting scales proportionally, so a soft minimum + preferred
+            # sizeHint lets tight layouts (e.g. with the system-log strip)
+            # shrink the avatar instead of clipping it.
+            self.setMinimumSize(280, 240)
         else:
             self.setMinimumSize(1, 1)
+
+    def sizeHint(self):  # noqa: N802 - Qt override
+        from PySide6.QtCore import QSize
+
+        return QSize(430, 400) if self._show_background else QSize(1, 1)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         ws = snapshot.get("world_state") or {}

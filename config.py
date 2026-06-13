@@ -125,6 +125,9 @@ GUI_CAMERA_PREVIEW_ENABLED = True
 GUI_SERVO_SIM_ENABLED = True
 GUI_CONVERSATION_LOG_MAX_LINES = 300
 GUI_AVATAR_SMOOTHING = 0.25
+# System-log console at the bottom of the dashboard: how many recent app-log
+# lines the GUI keeps/buffers (it mirrors the active logs/djr3x*.log file).
+GUI_LOG_PANEL_MAX_LINES = 600
 
 # Set at runtime by main.py --noaudio / -noaudio. In this mode the controller
 # skips microphone capture, wake-word listening, audio-scene analysis, audio

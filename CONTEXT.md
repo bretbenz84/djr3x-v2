@@ -380,6 +380,15 @@ Important GUI behavior:
 - It mirrors runtime state and conversation logs.
 - Its text input can submit turns through `interaction.submit_text(...)`.
 - With `--gui --noaudio`, the app becomes a text-only test interface for the full conversation/router/memory pipeline.
+- GUI-first startup: the window opens maximized within seconds (Qt owns the main
+  thread); controller startup runs on a background thread with cooperative
+  abort checkpoints (`main._abort_startup_if_shutdown`). The top bar shows
+  Booting…/Connected/Startup failed, text input is gated until services are up,
+  and a failed boot keeps the window open so the log panel stays readable.
+- A SYSTEM LOG strip at the bottom auto-scrolls the active app log
+  (`utils.logging.install_gui_log_handler` mirrors root-logger records into
+  `gui_bridge.add_log_line`; `GUI_LOG_PANEL_MAX_LINES`). With `DEBUG_MODE=True`
+  the active file is the per-run `logs/djr3x-<stamp>.log`, not `djr3x.log`.
 
 ## External Services
 
@@ -505,6 +514,7 @@ venv/bin/python main.py
 - Tidy-up — episodic capture hooks → `intelligence/episodic_hooks.py` (leaf module; consciousness calls `episodic_hooks.<name>`).
 - Tidy-up — idle micro-behaviours → `intelligence/idle_behaviors.py` (dispatcher stays in consciousness and calls `idle_behaviors.do_<name>`; the behaviours reach consciousness's speak engine via a lazy `_c` proxy; `_do_small_talk_question` stayed, being mood-detection-coupled).
 - Tidy-up — proactive-speech ENGINE → `intelligence/speech_engine.py` (15 functions; consciousness re-exports each as a `_name` shim so call sites + test patches are unchanged; intra-engine calls route through the `_c` shims for full patch-transparency; `note_rex_utterance` + shared speech state stayed in consciousness; `tests/test_speech_engine.py`). The governor metadata key MUST stay `"can_proactive_speak"` (action_governor reads it).
+- GUI-first startup (`main._run_gui_mode`): dashboard shows immediately (maximized), controller startup runs on the `controller-startup` thread with `_StartupAborted` checkpoints so window-close/Ctrl+C stops the boot at the next phase boundary; a second Ctrl+C during teardown is absorbed (SIGINT re-pointed in the finally) so `_shutdown()` always runs; fatal startup paths keep the window open on "failed" status and exit non-zero after teardown. System-log panel mirrors the root logger via `utils.logging.install_gui_log_handler` → `gui_bridge.add_log_line`.
 - "Tell me about someone" pre-briefing (`intelligence/tell_me_about.py`, `interaction._handle_tell_about_turn`/`_pending_tell_about`): pre-populates the person DB for someone who is NOT here — name → gossip-or-facts → details, stored as `secondhand` person_facts with `fact_kind`/`kindness`/`told_by` (new columns in `setup_assets.py` + `database._run_migrations`). Mean gossip is never recited to the subject (prompt hedging in `facts.format_fact_for_prompt`); secondhand never overwrites the person's own explicit facts. Escapable by design (live-tested): explicit exits (`is_exit` — "exit gossip mode"/"enough about X"/"stop") AND a subject-pivot guard (`looks_like_request_to_rex`) that releases requests aimed at Rex ("can you give me a recipe...") back to normal routing instead of filing them as gossip — the chicken-soup regression in `tests/test_tell_me_about.py`. Proactive barge-ins (smile reaction etc.) trigger a re-anchor question via the `note_rex_utterance` hook → `tell_about_on_external_rex_line`, and every ack invites more (no bare "Logged."). See the Memory Model section.
 
 ## Likely Future Work

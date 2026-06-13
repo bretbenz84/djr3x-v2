@@ -72,6 +72,7 @@ except RuntimeError as e:
 
 # All remaining imports after config is confirmed valid.
 import time
+import signal
 import threading
 import random
 
@@ -412,6 +413,22 @@ def _is_shutdown_state() -> bool:
         return state.is_state(State.SHUTDOWN)
     except Exception:
         return False
+
+
+class _StartupAborted(Exception):
+    """Shutdown was requested while controller startup was still running.
+
+    Raised at the cooperative checkpoints inside _run_controller_startup so a
+    GUI-mode boot (which runs on a background thread) stops at the next phase
+    boundary when the user closes the window or hits Ctrl+C, instead of
+    finishing the whole boot — audio lines, animations, service starts — with
+    no window on screen."""
+
+
+def _abort_startup_if_shutdown(stage: str) -> None:
+    if _is_shutdown_state():
+        logger.info("Shutdown requested during startup — aborting before %s.", stage)
+        raise _StartupAborted(stage)
 
 
 def _turn_leds_off_for_shutdown() -> None:
@@ -799,6 +816,9 @@ def _start_startup_boot_tts_thread(
                 time.sleep(delay_secs)
             if _audio_output_suppressed():
                 return
+            if _is_shutdown_state():
+                logger.info("Skipping startup boot TTS — shutdown requested mid-boot.")
+                return
             logger.info("Playing startup boot TTS after %.1fs delay: %s", delay_secs, line)
             tts.speak(line, emotion)
         except Exception as exc:
@@ -956,6 +976,8 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     # Step 5: animations module is ready — functions operate directly on the hardware
     # singletons initialized above. No AnimationPlayer class to instantiate.
 
+    _abort_startup_if_shutdown("startup audio/animation")
+
     # Steps 6 & 7: Fire startup audio first, then run servo animation simultaneously.
     # Audio plays in a background thread so the servo motion begins immediately after.
     startup_audio_thread: threading.Thread | None = None
@@ -1008,6 +1030,8 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         logger.info("Waiting for startup audio to finish before starting microphone services...")
         startup_audio_thread.join()
 
+    _abort_startup_if_shutdown("background services")
+
     # Step 8: Start background services in order.
     logger.info("=== Starting background services ===")
 
@@ -1050,6 +1074,7 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     # pre-cached in the worker so playback is a cheap cache hit, and the look-around
     # scan also keeps the head alive. We join it AFTER the preloads, below.
 
+    _abort_startup_if_shutdown("Whisper preload")
     if no_audio:
         logger.info("Skipping local Whisper preload (--noaudio)")
     elif bool(getattr(config, "WHISPER_PRELOAD_ON_STARTUP", True)):
@@ -1059,6 +1084,7 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     else:
         logger.info("Local Whisper preload disabled by config.WHISPER_PRELOAD_ON_STARTUP")
 
+    _abort_startup_if_shutdown("speaker ID preload")
     if no_audio:
         logger.info("Skipping speaker ID preload (--noaudio)")
     elif bool(getattr(config, "SPEAKER_ID_PRELOAD_ON_STARTUP", True)):
@@ -1068,6 +1094,7 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     else:
         logger.info("Speaker ID encoder preload disabled by config.SPEAKER_ID_PRELOAD_ON_STARTUP")
 
+    _abort_startup_if_shutdown("local LLM preload")
     logger.info("Pre-loading local LLM...")
     local_llm_ok = local_llm.preload()
     if not local_llm_ok and bool(getattr(config, "OLLAMA_PRELOAD_REQUIRED", True)):
@@ -1095,6 +1122,7 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         threading.Thread(target=_warm_openai, daemon=True, name="openai-warmup").start()
         logger.info("OpenAI connection warmup started in background")
 
+    _abort_startup_if_shutdown("animal detector preload")
     if bool(getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True)) and bool(
         getattr(config, "LOCAL_ANIMAL_DETECTION_PRELOAD_ON_STARTUP", True)
     ):
@@ -1115,6 +1143,8 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     if startup_scan_thread is not None:
         startup_scan_stop.set()
         startup_scan_thread.join(timeout=3.0)
+
+    _abort_startup_if_shutdown("sensor services")
 
     # audio.wake_word is started internally by intelligence.interaction.start() —
     # starting it separately would create a duplicate daemon thread.
@@ -1173,6 +1203,7 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     except Exception as exc:
         logger.debug("rex_pov load_persisted on startup failed: %s", exc)
 
+    _abort_startup_if_shutdown("consciousness/interaction")
     logger.info("Starting intelligence.consciousness...")
     consciousness.start()
 
@@ -1213,6 +1244,7 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     # suppresses the speech queue's duplicate listening chime is made earlier (before
     # the sensor-warning enqueue); the call below is a defensive, idempotent re-claim.
     # _play_audio_file is a no-op in --noaudio.
+    _abort_startup_if_shutdown("ready line")
     if not no_audio and bool(getattr(config, "PLAY_LISTENING_CHIME", True)):
         ready_line = _select_startup_ready_tts_line()
         try:
@@ -1229,6 +1261,7 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
             logger.warning("Could not play ready signal: %s", exc)
 
     if startup_jeopardy:
+        _abort_startup_if_shutdown("Jeopardy launch")
         _launch_startup_jeopardy()
 
     logger.info("=== DJ-R3X v2 is online ===")
@@ -1251,6 +1284,8 @@ def _run_headless(*, startup_jeopardy: bool = False) -> None:
     try:
         _run_controller_startup(startup_jeopardy=startup_jeopardy)
         _wait_for_shutdown()
+    except _StartupAborted:
+        pass  # shutdown already requested; fall through to teardown
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received during startup — initiating clean shutdown.")
         state.set_state(State.SHUTDOWN)
@@ -1379,10 +1414,22 @@ def _stop_gui_bridge_sync() -> None:
         _gui_bridge_thread.join(timeout=2.0)
 
 
-def _make_gui_text_submit_callback():
+def _make_gui_text_submit_callback(ready=None):
     def _submit(text: str) -> None:
         cleaned = (text or "").strip()
         if not cleaned:
+            return
+
+        # The dashboard now opens before interaction.start() — don't drive the
+        # turn pipeline while services are still booting.
+        if ready is not None and not ready():
+            try:
+                from utils import conv_log
+                conv_log.log_system(
+                    "Rex is still booting — the status turns Connected when he's ready."
+                )
+            except Exception:
+                pass
             return
 
         def _worker() -> None:
@@ -1408,10 +1455,84 @@ def _make_gui_text_submit_callback():
     return _submit
 
 
-def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
+def _install_gui_log_mirror() -> None:
+    """Mirror app-log records into the GUI bridge for the dashboard's system-log
+    panel. Installed before anything else in GUI mode so the panel captures the
+    whole startup sequence (the dashboard now opens while startup is running)."""
     try:
-        _run_controller_startup(startup_jeopardy=startup_jeopardy)
+        from gui.state_bridge import gui_bridge
+        from utils.logging import install_gui_log_handler
+
+        install_gui_log_handler(gui_bridge.add_log_line)
+    except Exception as exc:
+        logger.debug("GUI log mirror unavailable: %s", exc)
+
+
+def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
+    """GUI-first startup: show the dashboard immediately on the main thread (Qt
+    must own it on macOS) and run the heavy controller startup — hardware, audio,
+    model preloads, services — on a background thread. The window opens within a
+    couple of seconds instead of after the full boot; the top-bar status shows
+    'Booting…' until startup completes and the system-log panel streams progress."""
+    _install_gui_log_mirror()
+
+    startup_done = threading.Event()
+    controller_online = threading.Event()
+    startup_exit: dict[str, int] = {}
+
+    def _set_controller_status(status: str) -> None:
+        try:
+            from gui.state_bridge import gui_bridge
+            gui_bridge.update_controller_status(status)
+        except Exception:
+            pass
+
+    if startup_jeopardy:
+        # Tell the dashboard up front so it opens on the Jeopardy page during
+        # boot instead of showing the diagnostic dashboard to the audience.
+        try:
+            from gui.state_bridge import gui_bridge
+            gui_bridge.set_startup_game_intent("jeopardy")
+        except Exception:
+            pass
+
+    def _startup_worker() -> None:
+        try:
+            _run_controller_startup(startup_jeopardy=startup_jeopardy)
+            _set_controller_status("online")
+            controller_online.set()
+        except _StartupAborted as exc:
+            # User closed the window / hit Ctrl+C mid-boot; not a failure.
+            logger.info("Controller startup stopped at checkpoint: %s", exc)
+        except SystemExit as exc:
+            # The fatal startup paths call sys.exit(); in a thread that only
+            # raises SystemExit here — surface it and bring the whole app down.
+            # Mark "failed" BEFORE SHUTDOWN: the dashboard keeps the window open
+            # on failed status so the system-log panel stays readable.
+            code = exc.code if isinstance(exc.code, int) else 1
+            startup_exit["code"] = code or 1
+            logger.critical(
+                "Controller startup aborted (exit %s) — see the system log.", exc.code
+            )
+            _set_controller_status("failed")
+            state.set_state(State.SHUTDOWN)
+        except Exception:
+            startup_exit["code"] = 1
+            logger.exception("Controller startup failed — see the system log.")
+            _set_controller_status("failed")
+            state.set_state(State.SHUTDOWN)
+        finally:
+            startup_done.set()
+
+    startup_thread = threading.Thread(
+        target=_startup_worker,
+        daemon=True,
+        name="controller-startup",
+    )
+
+    try:
         _start_gui_bridge_sync()
+        startup_thread.start()
 
         def _request_shutdown() -> None:
             state.set_state(State.SHUTDOWN)
@@ -1419,7 +1540,9 @@ def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
         try:
             run_dashboard(
                 shutdown_callback=_request_shutdown,
-                text_submit_callback=_make_gui_text_submit_callback(),
+                text_submit_callback=_make_gui_text_submit_callback(
+                    ready=controller_online.is_set
+                ),
             )
         except Exception as exc:
             logger.warning("GUI failed at runtime; continuing headless: %s", exc)
@@ -1429,8 +1552,33 @@ def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
         state.set_state(State.SHUTDOWN)
     finally:
         state.set_state(State.SHUTDOWN)
+        # run_dashboard restored the default SIGINT handler on exit, so a second
+        # Ctrl+C here would raise INSIDE this finally block and abandon the rest
+        # of it — skipping _shutdown() (servo droop, LED off, session save).
+        # Teardown is already underway; absorb further Ctrl+C instead.
+        try:
+            signal.signal(
+                signal.SIGINT,
+                lambda *_: logger.info("Shutdown already in progress..."),
+            )
+        except (ValueError, OSError):
+            pass
+        # Let an in-flight startup finish before tearing services down —
+        # _shutdown() stopping modules mid-start is the racier path. The abort
+        # checkpoints in _run_controller_startup stop the boot at the next phase
+        # boundary, so this normally resolves in seconds; the bound is a backstop
+        # so a hung preload can never wedge shutdown.
+        if startup_thread.is_alive():
+            logger.info("Waiting for controller startup to stop before shutdown...")
+            if not startup_done.wait(timeout=120.0):
+                logger.warning("Controller startup still running after 120s — shutting down anyway.")
+        if startup_exit.get("code"):
+            # Failed boot: skip the power-down theatrics, just tear down quietly.
+            setattr(config, "PLAY_SHUTDOWN_AUDIO", False)
         _stop_gui_bridge_sync()
         _shutdown()
+        if startup_exit.get("code"):
+            sys.exit(startup_exit["code"])
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

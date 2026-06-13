@@ -42,6 +42,16 @@ class GUIDashboardBridge:
             maxlen=max(1, int(max_lines or getattr(config, "GUI_CONVERSATION_LOG_MAX_LINES", 300)))
         )
         self._line_seq = 0
+        self._log_lines: deque[dict[str, Any]] = deque(
+            maxlen=max(1, int(getattr(config, "GUI_LOG_PANEL_MAX_LINES", 600) or 600))
+        )
+        self._log_seq = 0
+        # "starting" until main.py flips it after controller startup finishes —
+        # the dashboard now opens BEFORE services/models load.
+        self._controller_status = "starting"
+        # Set before launch for --jeopardy so the dashboard opens on the game
+        # page during boot instead of the diagnostic dashboard.
+        self._startup_game_intent: Optional[str] = None
         self._updated_at = time.time()
 
     def update_frame(self, frame) -> None:
@@ -145,6 +155,32 @@ class GUIDashboardBridge:
             })
             self._updated_at = time.time()
 
+    def add_log_line(self, text: str) -> None:
+        """Buffer one formatted app-log line for the dashboard's system-log panel.
+
+        Called from the logging handler on arbitrary threads — must stay cheap
+        and must never log (that would recurse straight back here). Near-
+        simultaneous records from different threads may order slightly
+        differently here than in the log file (each logging handler serializes
+        independently); cosmetic only."""
+        text = str(text or "").rstrip()
+        if not text:
+            return
+        with self._lock:
+            self._log_seq += 1
+            self._log_lines.append({"seq": self._log_seq, "text": text})
+
+    def update_controller_status(self, status: str) -> None:
+        """Lifecycle hint for the top bar: 'starting' | 'online' | 'failed'."""
+        with self._lock:
+            self._controller_status = str(status or "").strip().lower() or "starting"
+            self._updated_at = time.time()
+
+    def set_startup_game_intent(self, game: Optional[str]) -> None:
+        with self._lock:
+            self._startup_game_intent = str(game).strip().lower() if game else None
+            self._updated_at = time.time()
+
     def set_scene_description(self, text: str) -> None:
         with self._lock:
             self._scene_description = (text or "").strip()
@@ -163,6 +199,9 @@ class GUIDashboardBridge:
                 "speech_state": copy.deepcopy(self._speech_state),
                 "scene_description": self._scene_description,
                 "conversation_lines": list(self._conversation_lines),
+                "log_lines": list(self._log_lines),
+                "controller_status": self._controller_status,
+                "startup_game_intent": self._startup_game_intent,
                 "updated_at": self._updated_at,
             }
 

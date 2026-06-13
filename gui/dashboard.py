@@ -38,6 +38,7 @@ import numpy as np
 import config
 from gui.conversation_panel import ConversationPanel
 from gui.jeopardy_panel import JeopardyPanel
+from gui.log_panel import LogPanel
 from gui.rex_avatar import RexAvatar, normalize_servo, servo_to_angle, servo_to_offset
 from gui.state_bridge import GUIDashboardBridge, gui_bridge
 from gui.vision_panel import VisionPanel
@@ -78,8 +79,10 @@ class DashboardWindow(QMainWindow):
                 lambda text: self._bridge.add_conversation_line("Human", text, "user")
             )
         self.jeopardy = JeopardyPanel()
-        self.connection = QLabel("●  Connected")
+        self.syslog = LogPanel()
+        self.connection = QLabel("●  Booting…")
         self.connection.setObjectName("connectionLabel")
+        self._last_status_text = ""
 
         root = QWidget()
         root.setObjectName("root")
@@ -130,8 +133,29 @@ class DashboardWindow(QMainWindow):
         columns.setColumnStretch(0, 11)
         columns.setColumnStretch(1, 10)
         columns.setColumnStretch(2, 17)
+        columns_box = QWidget()
+        columns_box.setLayout(columns)
+
+        log_title = "SYSTEM LOG"
+        try:
+            from utils.logging import active_log_path
+
+            log_title = f"SYSTEM LOG — {active_log_path().name}"
+        except Exception:
+            pass
+        syslog_panel = ChromePanel("≣", log_title, self.syslog)
+        # Min low enough that the strip yields to the 3-column grid on small
+        # windows instead of starving it (grid panels have their own minimums).
+        syslog_panel.setMinimumHeight(120)
+        syslog_panel.setMaximumHeight(280)
+
+        page = QVBoxLayout()
+        page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(12)
+        page.addWidget(columns_box, 1)
+        page.addWidget(syslog_panel, 0)
         dashboard_page = QWidget()
-        dashboard_page.setLayout(columns)
+        dashboard_page.setLayout(page)
 
         self._main_stack = QStackedWidget()
         self._main_stack.addWidget(dashboard_page)
@@ -191,19 +215,32 @@ class DashboardWindow(QMainWindow):
             self._demo_timer.stop()
 
     def _tick(self) -> None:
-        if not self._demo and self._runtime_shutdown_requested():
+        # Check SHUTDOWN before reading the snapshot: the startup worker marks
+        # the bridge "failed" strictly BEFORE setting SHUTDOWN, so when the
+        # check below is true a failed boot is already visible in the snapshot.
+        shutdown_requested = not self._demo and self._runtime_shutdown_requested()
+        snapshot = self._bridge.get_snapshot()
+        status = str(snapshot.get("controller_status") or "").strip().lower()
+        if shutdown_requested and status != "failed":
             self.close_from_shutdown()
             return
-
-        snapshot = self._bridge.get_snapshot()
+        # On a failed boot the window stays open so the red status and the
+        # system-log panel remain readable; closing it resumes teardown.
         self.vision.set_snapshot(snapshot)
         self.scene.set_snapshot(snapshot)
         self.avatar.set_snapshot(snapshot)
         self.servos.set_snapshot(snapshot)
         self.conversation.set_snapshot(snapshot)
+        self.syslog.set_snapshot(snapshot)
         self.jeopardy.set_snapshot(snapshot)
         game_state = snapshot.get("game_state") or {}
         jeopardy_active = game_state.get("active_game") == "jeopardy"
+        if not jeopardy_active and status == "starting":
+            # --jeopardy launch: open on the game page during boot rather than
+            # showing the diagnostic dashboard to the audience.
+            jeopardy_active = (
+                str(snapshot.get("startup_game_intent") or "") == "jeopardy"
+            )
         if jeopardy_active:
             self._main_stack.setCurrentWidget(self.jeopardy)
         else:
@@ -216,8 +253,18 @@ class DashboardWindow(QMainWindow):
             self._shell.setContentsMargins(14, 8, 14, 14)
             self._shell.setSpacing(12)
 
-        connected = "●  Connected" if snapshot.get("updated_at") else "●  Waiting"
-        self.connection.setText(connected)
+        if status == "starting":
+            text, color = "●  Booting…", "#f0c45a"
+        elif status == "failed":
+            text, color = "●  Startup failed — see system log", "#ff6b5e"
+        elif snapshot.get("updated_at"):
+            text, color = "●  Connected", "#45d85e"
+        else:
+            text, color = "●  Waiting", "#8d9aab"
+        if text != self._last_status_text:
+            self._last_status_text = text
+            self.connection.setText(text)
+            self.connection.setStyleSheet(f"color: {color}; font-size: 13px;")
 
     def _runtime_shutdown_requested(self) -> bool:
         try:
@@ -877,7 +924,9 @@ def run_dashboard(
         text_submit_callback=text_submit_callback,
         demo=demo,
     )
-    window.show()
+    # Fill the available desktop (normal zoomed window) — NOT macOS native
+    # full-screen, so the menu bar / other windows stay reachable.
+    window.showMaximized()
 
     def _sigint(_signum, _frame) -> None:
         QTimer.singleShot(0, window.request_shutdown)
@@ -981,8 +1030,16 @@ def _advance_demo(bridge: GUIDashboardBridge) -> None:
         _advance_demo._led_seeded = True  # type: ignore[attr-defined]
         bridge.update_head_led_state(mode="idle", eye_color=(45, 115, 255), eyes_active=True)
 
+    _advance_demo._log_n = getattr(_advance_demo, "_log_n", 0) + 1  # type: ignore[attr-defined]
+    if _advance_demo._log_n % 4 == 0:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        bridge.add_log_line(
+            f"{stamp} | demo.heartbeat                 | INFO     | demo tick {_advance_demo._log_n}"
+        )
+
     if getattr(_advance_demo, "_seeded", False) is False:
         _advance_demo._seeded = True  # type: ignore[attr-defined]
+        bridge.update_controller_status("online")
         samples = [
             ("Human", "Hey R3X, how are you doing today?", "user"),
             ("R3X", "I'm functioning within normal parameters! Systems nominal and ready to assist.", "rex"),
@@ -1106,6 +1163,12 @@ QTextBrowser#visionDescription {
     background: #07111a;
     color: #d9e3ee;
     border: none;
+}
+QPlainTextEdit#systemLog {
+    background: #050d14;
+    color: #9fb6cc;
+    border: none;
+    selection-background-color: #244f89;
 }
 QLineEdit#messageEntry {
     min-height: 40px;
