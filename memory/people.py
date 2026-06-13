@@ -469,6 +469,24 @@ def update_visit(person_id: int) -> None:
     update_familiarity(person_id, config.FAMILIARITY_INCREMENTS["return_visit"])
 
 
+def record_milestone_greeted(person_id: int, milestone: int) -> None:
+    """Remember the highest visit milestone Rex has announced for this person, so
+    a milestone greeting ("your 5th visit") fires once instead of every startup.
+
+    Monotonic: never lowers the stored value, so an out-of-order call can't
+    re-arm an already-acknowledged milestone."""
+    try:
+        pid = int(person_id)
+        n = int(milestone)
+    except (TypeError, ValueError):
+        return
+    db.execute(
+        "UPDATE people SET last_milestone_greeted = MAX(COALESCE(last_milestone_greeted, 0), ?) "
+        "WHERE id = ?",
+        (n, pid),
+    )
+
+
 def _local_date() -> str:
     """Today's calendar day in LOCAL time as 'YYYY-MM-DD'.
 

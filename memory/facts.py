@@ -4,6 +4,7 @@ memory/facts.py — Factual knowledge about a person (person_facts table).
 
 import logging
 import math
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +59,24 @@ _DECAY_DEFAULT_DAYS = {
     "normal": 365,
     "permanent": None,
 }
+
+
+# Relative-day phrases that pin a statement to the day it was captured. A fact
+# whose value contains one ("today is the speaker's birthday") was only true
+# then — recited as a standing memory it makes Rex think every day is that day
+# (e.g. wishing happy birthday a week later). Such statements belong in the
+# events table, not as durable person traits, so they're dropped from prompt
+# injection. Anchored to the canonical structured fact instead (e.g. the
+# 'birthday' MM-DD key, which the dedicated birthday-window path owns).
+_EPHEMERAL_TIME_RE = re.compile(
+    r"\b(today|tonight|tomorrow|yesterday|this (?:morning|afternoon|evening)|"
+    r"last night|right now)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_ephemeral_statement(fact: dict) -> bool:
+    return bool(_EPHEMERAL_TIME_RE.search(str(fact.get("value") or "")))
 
 
 def _now() -> str:
@@ -389,8 +408,15 @@ def get_prompt_facts(person_id: int, *, limit: int = 12) -> list[dict]:
 
 
 def get_prompt_worthy_facts(person_id: int, limit: int = 12) -> list[dict]:
-    """Return prompt-worthy facts ranked by importance, confidence, recency, and use."""
-    facts = [f for f in get_facts(person_id) if f.get("key") != "skin_color"]
+    """Return prompt-worthy facts ranked by importance, confidence, recency, and use.
+
+    Skips relative-day statements ("today is …") — see _is_ephemeral_statement —
+    so a one-day-true line isn't recited as a standing fact forever.
+    """
+    facts = [
+        f for f in get_facts(person_id)
+        if f.get("key") != "skin_color" and not _is_ephemeral_statement(f)
+    ]
     facts.sort(
         key=lambda f: -score_fact_for_prompt(f)
     )

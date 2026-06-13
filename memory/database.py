@@ -213,6 +213,9 @@ def _run_migrations() -> None:
                 # repeat-visit banter when summoned multiple times in one day.
                 ("greetings_today", "INTEGER DEFAULT 0"),
                 ("greetings_today_date", "TEXT"),
+                # Highest visit milestone Rex has already announced, so a
+                # milestone greeting ("your 5th visit") fires once, not every boot.
+                ("last_milestone_greeted", "INTEGER DEFAULT 0"),
             ):
                 _ensure_column(
                     conn,

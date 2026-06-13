@@ -3359,6 +3359,10 @@ def _pick_milestone(person_db_id: Optional[int]) -> Optional[int]:
     Return the visit number Rex should acknowledge as a milestone, or None.
     visit_count in the DB reflects PRIOR visits — update_visit fires at session
     end — so the incoming visit number is visit_count + 1.
+
+    Only fires once per milestone: last_milestone_greeted records the highest
+    milestone already announced, so Rex doesn't repeat "your 5th visit" every
+    startup while visit_count sits at the same value.
     """
     if not isinstance(person_db_id, int):
         return None
@@ -3369,7 +3373,11 @@ def _pick_milestone(person_db_id: Optional[int]) -> Optional[int]:
             return None
         incoming = int(person.get("visit_count", 0)) + 1
         milestones = getattr(config, "VISIT_MILESTONES", ())
-        return incoming if incoming in milestones else None
+        if incoming not in milestones:
+            return None
+        if incoming <= int(person.get("last_milestone_greeted") or 0):
+            return None
+        return incoming
     except Exception as exc:
         _log.debug("milestone lookup error: %s", exc)
         return None
@@ -6125,6 +6133,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 celebration_to_ack: Optional[dict] = None
                 followup_to_remove: Optional[tuple[Optional[int], object]] = None
                 anticipated_to_mark: Optional[tuple[Optional[int], object]] = None
+                milestone_to_mark: Optional[int] = None
                 profile_question_to_record: Optional[dict] = None
                 disposition_to_mark: Optional[int] = None
 
@@ -6201,6 +6210,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     milestone = _pick_milestone(person_db_id)
                     if milestone is not None:
                         prompt = _build_milestone_prompt(first_name, milestone)
+                        milestone_to_mark = milestone
                         label = f"startup milestone (#{milestone}) for {person_name}"
                         _log.info(
                             "consciousness: startup milestone for %s (visit #%d)",
@@ -6425,6 +6435,17 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         )
                     if anticipated_to_mark is not None:
                         _anticipated_events.add(anticipated_to_mark)
+                    if milestone_to_mark is not None:
+                        try:
+                            from memory import people as people_mod
+                            people_mod.record_milestone_greeted(
+                                person_db_id, milestone_to_mark
+                            )
+                        except Exception as exc:
+                            _log.debug(
+                                "milestone mark failed person_id=%s: %s",
+                                person_db_id, exc,
+                            )
                     if disposition_to_mark is not None:
                         try:
                             from memory import disposition as disposition_memory
