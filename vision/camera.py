@@ -36,6 +36,8 @@ _log = logging.getLogger(__name__)
 _cap = None          # cv2.VideoCapture — module-level singleton
 _frame: Optional[np.ndarray] = None
 _last_frame_at: Optional[float] = None
+_frame_seq = 0                          # increments on every captured frame
+_fps_ema: Optional[float] = None        # measured capture rate (EMA of intervals)
 _frame_lock = threading.Lock()
 _stop_event = threading.Event()
 _capture_thread: Optional[threading.Thread] = None
@@ -172,13 +174,14 @@ class _FFmpegCapture:
 
 def start() -> None:
     """Open the camera and start the background capture thread."""
-    global _capture_thread, _frame, _last_frame_at, _offline_since
+    global _capture_thread, _frame, _last_frame_at, _offline_since, _fps_ema
     if not CAMERA_ENABLED:
         _log.debug("CAMERA_ENABLED=False — camera start is a no-op")
         return
     with _frame_lock:
         _frame = None
         _last_frame_at = None
+        _fps_ema = None
     with _reconnect_lock:
         _offline_since = None
     _stop_event.clear()
@@ -223,6 +226,30 @@ def get_frame() -> Optional[np.ndarray]:
         if _frame is None:
             return None
         return _frame.copy()
+
+
+def frame_info() -> dict:
+    """Live capture telemetry for the GUI vision panel (no frame copy).
+
+    Returns the measured FPS (EMA, None until two frames seen), a monotonically
+    increasing frame counter, the last-frame monotonic timestamp (comparable in
+    any thread of this process), the frame resolution, and the camera label.
+    """
+    with _frame_lock:
+        resolution = None
+        if _frame is not None:
+            try:
+                h, w = _frame.shape[:2]
+                resolution = (int(w), int(h))
+            except Exception:
+                resolution = None
+        return {
+            "label": CAMERA_SELECTION_DESCRIPTION,
+            "fps": _fps_ema,
+            "seq": _frame_seq,
+            "last_frame_monotonic": _last_frame_at,
+            "resolution": resolution,
+        }
 
 
 def has_recent_frame(max_age_secs: float = 2.0) -> bool:
@@ -408,7 +435,7 @@ def _notify_camera_reconnected_if_needed() -> None:
 
 def _capture_loop() -> None:
     """Daemon thread: reads frames continuously and stores the latest in the shared buffer."""
-    global _frame, _last_frame_at
+    global _frame, _last_frame_at, _frame_seq, _fps_ema
 
     if not _open_camera():
         _mark_camera_offline()
@@ -441,9 +468,16 @@ def _capture_loop() -> None:
             _close_camera()
             continue
 
+        now = time.monotonic()
         with _frame_lock:
+            if _last_frame_at is not None:
+                dt = now - _last_frame_at
+                if dt > 0:
+                    inst = 1.0 / dt
+                    _fps_ema = inst if _fps_ema is None else (0.9 * _fps_ema + 0.1 * inst)
             _frame = frame
-            _last_frame_at = time.monotonic()
+            _last_frame_at = now
+            _frame_seq += 1
         _notify_camera_reconnected_if_needed()
 
     _close_camera()

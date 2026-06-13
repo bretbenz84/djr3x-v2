@@ -98,7 +98,12 @@ class _CallbackLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:  # noqa: D102
         try:
-            self._callback(self.format(record))
+            msg = self.format(record)
+            try:
+                self._callback(msg, record.levelname)
+            except TypeError:
+                # Tolerate a one-arg sink (no severity).
+                self._callback(msg)
         except Exception:
             pass
 

@@ -389,6 +389,12 @@ Important GUI behavior:
   (`utils.logging.install_gui_log_handler` mirrors root-logger records into
   `gui_bridge.add_log_line`; `GUI_LOG_PANEL_MAX_LINES`). With `DEBUG_MODE=True`
   the active file is the per-run `logs/djr3x-<stamp>.log`, not `djr3x.log`.
+  Lines are colored by level (WARNING amber, ERROR/CRITICAL red).
+- Top-bar state badge: the runtime `State` (IDLE/QUIET/ACTIVE/SLEEP/SHUTDOWN),
+  overlaid with SPEAKING from `speech_state.speaking` (`_state_badge_spec`).
+- The vision panel's camera meta line is truthful: measured FPS from
+  `camera.frame_info()` (EMA at capture), real resolution, and a "STALE Xs"
+  indicator + dimmed frame on dropout — no more hardcoded "30 FPS".
 
 ## External Services
 

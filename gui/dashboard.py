@@ -83,6 +83,10 @@ class DashboardWindow(QMainWindow):
         self.connection = QLabel("●  Booting…")
         self.connection.setObjectName("connectionLabel")
         self._last_status_text = ""
+        self.state_badge = QLabel("—")
+        self.state_badge.setObjectName("stateBadge")
+        self.state_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._last_badge_text = ""
 
         root = QWidget()
         root.setObjectName("root")
@@ -97,7 +101,10 @@ class DashboardWindow(QMainWindow):
         title = QLabel("DJ-R3X Controller")
         title.setObjectName("windowTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        top.addWidget(title, 1)
+        top.addWidget(self.state_badge)
+        top.addStretch(1)
+        top.addWidget(title)
+        top.addStretch(1)
         top.addWidget(self.connection)
         self._shell.addWidget(self._top_bar)
 
@@ -126,13 +133,17 @@ class DashboardWindow(QMainWindow):
         right.addWidget(servo_panel, 0)
         right_box = QWidget()
         right_box.setLayout(right)
+        # The avatar paints proportionally and the servo panel is fixed-width, so
+        # the right column never needs to be the widest. Cap it and hand the
+        # surplus to the conversation log (center), which was cramped before.
+        right_box.setMaximumWidth(640)
 
         columns.addWidget(left_box, 0, 0)
         columns.addWidget(center, 0, 1)
         columns.addWidget(right_box, 0, 2)
-        columns.setColumnStretch(0, 11)
-        columns.setColumnStretch(1, 10)
-        columns.setColumnStretch(2, 17)
+        columns.setColumnStretch(0, 12)
+        columns.setColumnStretch(1, 16)
+        columns.setColumnStretch(2, 12)
         columns_box = QWidget()
         columns_box.setLayout(columns)
 
@@ -266,6 +277,18 @@ class DashboardWindow(QMainWindow):
             self.connection.setText(text)
             self.connection.setStyleSheet(f"color: {color}; font-size: 13px;")
 
+        ws = snapshot.get("world_state") or {}
+        speaking = bool((snapshot.get("speech_state") or {}).get("speaking"))
+        badge_text, badge_color = _state_badge_spec(ws.get("state"), speaking)
+        if badge_text != self._last_badge_text:
+            self._last_badge_text = badge_text
+            self.state_badge.setText(badge_text)
+            self.state_badge.setStyleSheet(
+                f"color:{badge_color}; border:1px solid {badge_color};"
+                " border-radius:5px; padding:3px 13px;"
+                " font-size:14px; font-weight:900;"
+            )
+
     def _runtime_shutdown_requested(self) -> bool:
         try:
             import state as state_module
@@ -274,6 +297,27 @@ class DashboardWindow(QMainWindow):
             return bool(state_module.is_state(State.SHUTDOWN))
         except Exception:
             return False
+
+
+def _state_badge_spec(state_value: Any, speaking: bool) -> tuple[str, str]:
+    """Map the runtime State (+ live speech) to a top-bar badge label and color.
+
+    SPEAKING overlays whichever conversational state is active; SLEEP/SHUTDOWN
+    win over it. world_state['state'] is set by main's GUI bridge sync."""
+    s = str(state_value or "").strip().upper()
+    if s == "SHUTDOWN":
+        return "SHUTDOWN", "#ff6b5e"
+    if s == "SLEEP":
+        return "SLEEP", "#8d9aab"
+    if speaking:
+        return "SPEAKING", "#ff9b21"
+    if s == "ACTIVE":
+        return "ACTIVE", "#45d85e"
+    if s == "QUIET":
+        return "QUIET", "#f0c45a"
+    if s == "IDLE":
+        return "IDLE", "#5396ff"
+    return "—", "#5b6b7d"
 
 
 class ChromePanel(QFrame):
@@ -998,6 +1042,13 @@ def _advance_demo(bridge: GUIDashboardBridge) -> None:
         servo_positions[name] = int(cfg["min"] + (cfg["max"] - cfg["min"]) * norm)
 
     bridge.update_frame(frame)
+    bridge.update_camera_stats(
+        label="Demo Camera",
+        fps=24.0,
+        seq=int(now * 24),
+        last_frame_monotonic=now,
+        resolution=(820, 540),
+    )
     bridge.update_world_state_snapshot({
         "state": "IDLE",
         "people": people,
@@ -1128,6 +1179,14 @@ QLabel#windowTitle {
 QLabel#connectionLabel {
     color: #45d85e;
     font-size: 13px;
+}
+QLabel#stateBadge {
+    color: #5b6b7d;
+    border: 1px solid #2b4562;
+    border-radius: 5px;
+    padding: 3px 13px;
+    font-size: 14px;
+    font-weight: 900;
 }
 QFrame#chromePanel {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0b1824, stop:1 #08111a);

@@ -1351,6 +1351,10 @@ def _start_gui_bridge_sync() -> None:
             except Exception:
                 pass
             try:
+                gui_bridge.update_camera_stats(**camera.frame_info())
+            except Exception:
+                pass
+            try:
                 from world_state import world_state as _ws
                 snapshot = _ws.snapshot()
                 snapshot["state"] = state.get_state().value

@@ -12,6 +12,10 @@ from PySide6.QtWidgets import QWidget
 
 from gui.live_face_tracker import LiveFaceBoxTracker
 
+# Frames older than this read as a dropout: the meta line shows "STALE Xs" and
+# the held image is dimmed so a frozen frame isn't mistaken for a live one.
+_CAMERA_STALE_SECS = 2.0
+
 
 class VisionPanel(QWidget):
     def __init__(self, parent=None) -> None:
@@ -21,6 +25,7 @@ class VisionPanel(QWidget):
         self._animals: list[dict[str, Any]] = []
         self._scene_description = ""
         self._last_frame_at = 0.0
+        self._camera_stats: dict[str, Any] = {}
         self._face_tracker = LiveFaceBoxTracker()
         self.setMinimumSize(360, 260)
 
@@ -40,9 +45,17 @@ class VisionPanel(QWidget):
             or env.get("description")
             or ""
         )
+        self._camera_stats = snapshot.get("camera_stats") or {}
         if self._frame is not None:
             self._last_frame_at = time.monotonic()
         self.update()
+
+    def _camera_stale_secs(self) -> float | None:
+        """Seconds since the camera last captured a frame, or None if unknown."""
+        last_at = self._camera_stats.get("last_frame_monotonic")
+        if last_at is None:
+            return None
+        return max(0.0, time.monotonic() - float(last_at))
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)
@@ -64,6 +77,10 @@ class VisionPanel(QWidget):
                 painter.drawImage(image_rect, image)
                 self._draw_animals(painter, image_rect, image.width(), image.height())
                 self._draw_people(painter, image_rect, image.width(), image.height())
+                stale = self._camera_stale_secs()
+                if stale is not None and stale > _CAMERA_STALE_SECS:
+                    # Dim a frozen frame so it doesn't read as live video.
+                    painter.fillRect(image_rect, QColor(7, 17, 26, 150))
 
         self._draw_timestamp(painter, frame_rect)
         self._draw_camera_meta(painter, content)
@@ -202,12 +219,36 @@ class VisionPanel(QWidget):
         painter.setFont(font)
         y = content.bottom() - 10
         x = content.left() + 8
-        parts = [("Camera:", "#5396ff"), ("USB Camera", "#c5d0dc"), ("•", "#5396ff"), ("30 FPS", "#c5d0dc"), ("•", "#5396ff")]
+
+        stats = self._camera_stats or {}
+        label = str(stats.get("label") or "").strip() or "Camera"
+        accent = "#5396ff"
+        value = "#c5d0dc"
+        amber = "#f0c45a"
+
+        parts: list[tuple[str, str]] = [("Camera:", accent), (label, value), ("•", accent)]
+
+        # Freshness/rate: tell the truth instead of a hardcoded "30 FPS".
+        stale = self._camera_stale_secs()
+        if stale is None:
+            parts.append(("No Signal", amber))
+        elif stale > _CAMERA_STALE_SECS:
+            parts.append((f"STALE {stale:.1f}s", amber))
+        else:
+            fps = stats.get("fps")
+            parts.append((f"{float(fps):.0f} FPS" if fps else "— FPS", value))
+        parts.append(("•", accent))
+
+        # Resolution: prefer the live frame, fall back to the reported stat.
+        resolution = stats.get("resolution")
         if self._frame is not None:
             arr = np.asarray(self._frame)
-            parts.append((f"{arr.shape[1]}x{arr.shape[0]}", "#c5d0dc"))
+            parts.append((f"{arr.shape[1]}x{arr.shape[0]}", value))
+        elif isinstance(resolution, (list, tuple)) and len(resolution) == 2:
+            parts.append((f"{int(resolution[0])}x{int(resolution[1])}", value))
         else:
-            parts.append(("No Signal", "#c5d0dc"))
+            parts.append(("No Signal", value))
+
         for text, color in parts:
             painter.setPen(QColor(color))
             painter.drawText(QPointF(x, y), text)

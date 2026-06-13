@@ -37,6 +37,17 @@ class GUIDashboardBridge:
             "audio_path": None,
             "updated_at": time.time(),
         }
+        # Live camera telemetry for the vision panel's meta line (measured FPS +
+        # freshness), so it stops claiming a hardcoded rate. Monotonic clock is
+        # shared across this process's threads, so last_frame_monotonic is
+        # directly comparable in the GUI thread.
+        self._camera_stats: dict[str, Any] = {
+            "label": "",
+            "fps": None,
+            "seq": 0,
+            "last_frame_monotonic": None,
+            "resolution": None,
+        }
         self._scene_description: str = ""
         self._conversation_lines: deque[dict[str, Any]] = deque(
             maxlen=max(1, int(max_lines or getattr(config, "GUI_CONVERSATION_LOG_MAX_LINES", 300)))
@@ -155,7 +166,7 @@ class GUIDashboardBridge:
             })
             self._updated_at = time.time()
 
-    def add_log_line(self, text: str) -> None:
+    def add_log_line(self, text: str, level: str = "INFO") -> None:
         """Buffer one formatted app-log line for the dashboard's system-log panel.
 
         Called from the logging handler on arbitrary threads — must stay cheap
@@ -166,9 +177,10 @@ class GUIDashboardBridge:
         text = str(text or "").rstrip()
         if not text:
             return
+        level = str(level or "INFO").strip().upper() or "INFO"
         with self._lock:
             self._log_seq += 1
-            self._log_lines.append({"seq": self._log_seq, "text": text})
+            self._log_lines.append({"seq": self._log_seq, "text": text, "level": level})
 
     def update_controller_status(self, status: str) -> None:
         """Lifecycle hint for the top bar: 'starting' | 'online' | 'failed'."""
@@ -180,6 +192,28 @@ class GUIDashboardBridge:
         with self._lock:
             self._startup_game_intent = str(game).strip().lower() if game else None
             self._updated_at = time.time()
+
+    def update_camera_stats(
+        self,
+        *,
+        label: Optional[str] = None,
+        fps: Optional[float] = None,
+        seq: Optional[int] = None,
+        last_frame_monotonic: Optional[float] = None,
+        resolution: Optional[tuple[int, int]] = None,
+    ) -> None:
+        """Mirror camera capture telemetry for the vision panel's meta line."""
+        with self._lock:
+            if label is not None:
+                self._camera_stats["label"] = str(label)
+            if fps is not None:
+                self._camera_stats["fps"] = float(fps)
+            if seq is not None:
+                self._camera_stats["seq"] = int(seq)
+            if last_frame_monotonic is not None:
+                self._camera_stats["last_frame_monotonic"] = float(last_frame_monotonic)
+            if resolution is not None:
+                self._camera_stats["resolution"] = (int(resolution[0]), int(resolution[1]))
 
     def set_scene_description(self, text: str) -> None:
         with self._lock:
@@ -202,6 +236,7 @@ class GUIDashboardBridge:
                 "log_lines": list(self._log_lines),
                 "controller_status": self._controller_status,
                 "startup_game_intent": self._startup_game_intent,
+                "camera_stats": dict(self._camera_stats),
                 "updated_at": self._updated_at,
             }
 
