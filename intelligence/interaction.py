@@ -16964,19 +16964,35 @@ def _handle_speech_segment(
                         final_executed_path = f"intent_classifier.{intent}"
             if response_text is None:
                 if _empathy_thread is not None:
+                    # Deliberately tight TTFS budget: the affect classifier
+                    # (prosody + LLM) routinely does NOT finish in time, by design.
+                    # When it doesn't, this turn uses the synchronous local-
+                    # sensitivity read (regex crisis/grief/illness) or the prior
+                    # turn's cached mode, and the fresh read lands for the NEXT
+                    # turn. Default mirrors config so the real budget is visible.
                     _empathy_join_timeout = float(getattr(
-                        config, "EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS", 4.0,
+                        config, "EMPATHY_CLASSIFY_JOIN_TIMEOUT_SECS", 0.20,
                     ))
                     empathy_wait_started = time.monotonic()
                     _empathy_thread.join(timeout=_empathy_join_timeout)
                     _latency_log(turn_start, "empathy_join", empathy_wait_started)
                     if _empathy_thread.is_alive():
-                        _log.warning(
-                            "[empathy] classification thread did not finish "
-                            "within %.1fs — grief flow / mode directive may "
-                            "be missing from this turn",
-                            _empathy_join_timeout,
-                        )
+                        # Expected on most turns — not a warning. Only flag the
+                        # genuinely-blind case: no synchronous safety read AND no
+                        # cached mode to fall back on (cold cache, turn 1).
+                        have_same_turn_mode = local_sensitive_result is not None
+                        have_fallback_mode = empathy.peek(person_id) is not None
+                        if not have_same_turn_mode and not have_fallback_mode:
+                            _log.info(
+                                "[empathy] no same-turn affect (classifier still "
+                                "running, cold cache) — proceeding neutral"
+                            )
+                        else:
+                            _log.debug(
+                                "[empathy] classifier still running; using %s",
+                                "synchronous local read" if have_same_turn_mode
+                                else "prior cached mode",
+                            )
                 # Grief flow — intercept the LLM path with a structured
                 # condolence/consent/name walk when the empathy classifier
                 # has detected (or is mid-conversation about) a loss.
