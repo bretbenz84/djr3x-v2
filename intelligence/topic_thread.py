@@ -90,6 +90,16 @@ _STOPWORDS = {
     "here", "there", "actually", "still", "gonna", "wanna", "really",
 }
 
+# Bare interjections / vocal noise must never become a topic label. Whisper emits
+# these for throat-clears and filler ("ahem", "uh", "hmm"); without this, a lone
+# "ahem" became the pinned topic "ahem" and persisted across turns.
+_INTERJECTIONS = {
+    "ahem", "uh", "uhh", "um", "umm", "hmm", "hmmm", "huh", "uhuh",
+    "ha", "haha", "hah", "heh", "mm", "mmm", "mhm", "er", "erm",
+    "oh", "ooh", "ah", "aah", "ugh", "oof", "eh", "meh", "yo", "hey",
+    "wow", "oops", "ow", "ouch", "nope", "yep", "yup", "nah",
+}
+
 
 @dataclass
 class TopicThread:
@@ -344,7 +354,7 @@ def _keywords(text: str) -> list[str]:
     words = [
         w.lower()
         for w in re.findall(r"[A-Za-z][A-Za-z']{2,}", text)
-        if w.lower() not in _STOPWORDS
+        if w.lower() not in _STOPWORDS and w.lower() not in _INTERJECTIONS
     ]
     seen: set[str] = set()
     out: list[str] = []

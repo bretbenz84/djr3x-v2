@@ -220,6 +220,15 @@ def note_user_turn(
         clear(person_id)
         return None
 
+    # A compliment/affection statement ("I love you", "you're the best") is not an
+    # interest declaration. Without this, the interest regex captured "you now"
+    # from "I love you now" and persisted it as a steered interest at confidence
+    # 0.95. Mirror the guard the reply path already uses (interaction.py). Do NOT
+    # clear() — a warm aside shouldn't wipe a legitimate active topic.
+    from intelligence import personality
+    if personality.is_obvious_compliment(cleaned):
+        return None
+
     topic = detect_interest(cleaned)
     fresh = bool(topic)
     if topic:
@@ -510,6 +519,30 @@ def _topic_blocked(person_id: int, topic: str) -> bool:
         return False
 
 
+# Pronoun/function-word tokens that must never stand in for a real topic. The
+# interest regex ("i love (?P<topic>...)") can capture affection or filler
+# ("you now", "me too", "it now") — a real interest carries at least one content
+# word. Without this gate, "I love you now" minted the steered interest "you now".
+_TOPIC_FUNCTION_WORDS = {
+    "i", "you", "we", "they", "he", "she", "it", "me", "us", "him", "her",
+    "them", "that", "this", "these", "those", "my", "your", "our", "their",
+    "his", "its", "a", "an", "the", "to", "of", "and", "or",
+    "now", "then", "too", "also", "just", "really", "very", "here", "there",
+    "again", "still", "much", "more", "what", "when", "so", "yeah", "okay",
+}
+
+
+def _topic_is_substantive(topic: str) -> bool:
+    """Reject pure pronoun/function-word fragments the interest regex can capture
+    from affection or filler ('you now', 'me too', 'it now'). A real topic must
+    carry at least one token that is not a bare function word — short real nouns
+    ('art', 'tea', 'cars') still pass."""
+    tokens = re.findall(r"[A-Za-z][A-Za-z'+#-]*", topic.lower())
+    if not tokens:
+        return False
+    return any(t not in _TOPIC_FUNCTION_WORDS for t in tokens)
+
+
 def _clean_topic(topic: str) -> Optional[str]:
     cleaned = " ".join((topic or "").strip(" .?!,;:-").split())
     cleaned = re.sub(r"^(?:to|the|a|an)\s+", "", cleaned, flags=re.IGNORECASE)
@@ -518,6 +551,8 @@ def _clean_topic(topic: str) -> Optional[str]:
         return None
     lowered = cleaned.lower()
     if lowered in _BAD_TOPIC:
+        return None
+    if not _topic_is_substantive(cleaned):
         return None
     if len(cleaned) > _MAX_TOPIC_CHARS:
         cleaned = cleaned[:_MAX_TOPIC_CHARS].rsplit(" ", 1)[0].strip()
