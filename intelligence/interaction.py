@@ -3426,16 +3426,20 @@ def _maybe_idle_banter(
     attempt = _idle_banter_count % len(_IDLE_BANTER_DIRECTIVES)
     ask_user = attempt != 0
     directive = _IDLE_BANTER_DIRECTIVES[0 if ask_user else 1]
+    pov_volunteered = False
     if not ask_user:
         # Volunteer attempt: lead with Rex's SPECIFIC current preoccupation (rex_pov)
         # rather than a generic improvised opinion, so idle volunteering matches what
         # he's been bringing up in replies. Falls back to the generic volunteer
-        # directive when POV is disabled/empty.
+        # directive when POV is disabled/empty OR was just spoken — so the same
+        # preoccupation isn't volunteered twice near-verbatim within the cooldown
+        # (the live "organics power down... design flaw" double-utterance).
         try:
-            pov_text = rex_pov.active_pov_text()
+            pov_text = "" if rex_pov.pov_recently_spoken() else rex_pov.active_pov_text()
         except Exception:
             pov_text = ""
         if pov_text:
+            pov_volunteered = True
             directive = (
                 "Still quiet. Keep the room alive by VOLUNTEERING what's on your mind "
                 "right now — " + pov_text + " Say it like a passing thought you want "
@@ -3451,7 +3455,8 @@ def _maybe_idle_banter(
             line = llm.get_response(
                 "You are re-engaging after a quiet pause in an ongoing conversation. "
                 + directive
-                + " Keep it to one or two short sentences. Return only the line.",
+                + " Keep it to one or two short sentences. Vary your opener — never "
+                "open with 'Ah,', 'Oh,', 'Well, well', or 'You know,'. Return only the line.",
                 person_id,
             )
         except Exception as exc:
@@ -3497,6 +3502,13 @@ def _maybe_idle_banter(
             conv_memory.add_to_transcript("Rex", line)
             conv_log.log_rex(line)
             _register_rex_utterance(line)
+            if pov_volunteered:
+                # Mark the preoccupation as spoken so it isn't re-volunteered (idle
+                # banter OR reply path) until the cooldown elapses.
+                try:
+                    rex_pov.note_pov_spoken()
+                except Exception:
+                    pass
             _session_exchange_count += 1
         return completed
 

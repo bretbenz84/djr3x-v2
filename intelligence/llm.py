@@ -800,7 +800,13 @@ def assemble_system_prompt(
     # proactive/idle path calls get_response — those lines too. Deterministic; no call.
     try:
         from intelligence import rex_pov as _rex_pov
-        pov_directive = _rex_pov.current_pov_directive()
+        # If Rex just VOLUNTEERED the preoccupation out loud, don't immediately
+        # re-push the "volunteer it" directive into the next reply — that double
+        # surfacing is what produced the near-verbatim repeat within ~30s.
+        if _rex_pov.pov_recently_spoken():
+            pov_directive = ""
+        else:
+            pov_directive = _rex_pov.current_pov_directive()
         if pov_directive:
             sections.append(pov_directive)
     except Exception as exc:

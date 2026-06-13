@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -46,6 +47,7 @@ class _ActivePov:
     selected_at_exchange: int          # transcript length when chosen (the hold clock)
     context_sig: frozenset             # context signature at selection time
     surfaced: int = 0                  # times rendered into the prompt (telemetry only)
+    last_spoken_at: float = 0.0        # monotonic time the POV was actually UTTERED
 
 
 # Session-scoped state. Read from concurrent reply/proactive threads, mutated on
@@ -290,6 +292,30 @@ def active_seed_id() -> Optional[str]:
     """The active seed's id, or None. Pure read (no selection) - for tests/telemetry."""
     with _lock:
         return _active.seed_id if _active else None
+
+
+def note_pov_spoken() -> None:
+    """Record that the active preoccupation was just SPOKEN out loud (distinct from
+    `surfaced`, which only counts prompt renders). Used to suppress re-volunteering
+    the same POV near-verbatim within a cooldown — the live double-utterance bug
+    ('organics power down... design flaw' twice in ~33s)."""
+    with _lock:
+        if _active is not None:
+            _active.last_spoken_at = time.monotonic()
+
+
+def pov_recently_spoken(window_secs: Optional[float] = None) -> bool:
+    """True when the active POV was actually uttered within the cooldown window.
+    Callers use this to fall back to a generic volunteer / skip re-pushing the POV."""
+    if window_secs is not None:
+        window = float(window_secs)
+    else:
+        import config
+        window = float(getattr(config, "REX_POV_SPEAK_COOLDOWN_SECS", 180.0))
+    with _lock:
+        if _active is None or _active.last_spoken_at <= 0.0:
+            return False
+        return (time.monotonic() - _active.last_spoken_at) < window
 
 
 def clear() -> None:

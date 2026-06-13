@@ -3717,6 +3717,15 @@ REX_POV_MIN_HOLD_EXCHANGES = 4
 REX_POV_MAX_HOLD_EXCHANGES = 8   # was 14 — rotate preoccupations ~2x sooner so one
                                  # idea (e.g. astromechs) doesn't dominate a stretch
 
+# After Rex actually SAYS his preoccupation out loud (idle-banter volunteer), don't
+# re-volunteer the same one for this long. The hold window keeps the SEED active for
+# several exchanges (above), but without a spoken cooldown the idle-banter path could
+# voice the identical line twice in ~30s (the live "organics power down... design
+# flaw" double-utterance). 180s lets it surface again later in the conversation, not
+# back-to-back. The reply path also skips re-pushing the "VOLUNTEER it" directive
+# while this cooldown is active.
+REX_POV_SPEAK_COOLDOWN_SECS = 180.0
+
 # Cross-session persistence: save the active preoccupation + the within-session
 # anti-repeat set on session-end/shutdown and restore them on startup, so Rex
 # RESUMES the same preoccupation across visits (it carries) instead of re-rolling a
