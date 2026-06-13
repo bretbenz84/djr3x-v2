@@ -7971,6 +7971,17 @@ def _wake_from_sleep_if_transcribed(audio_segment: Optional[np.ndarray]) -> bool
 # LLM streaming to TTS
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _extract_primary_purpose(directive: str) -> str:
+    """Pull the single 'Primary purpose: …' line the agenda always emits, for the
+    Phase 1 slim contract. Returns '' when absent (render_slim_contract then supplies
+    a sensible default)."""
+    for line in (directive or "").split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("Primary purpose:"):
+            return stripped
+    return ""
+
+
 def _stream_llm_response(
     text: str,
     person_id: Optional[int],
@@ -8020,11 +8031,22 @@ def _stream_llm_response(
             frame=frame,
             agenda_directive=agenda_directive,
         )
-        agenda_directive = "\n".join([
-            agenda_directive,
-            social_frame.build_directive(frame),
-            comedy_modes.build_directive(comedy_mode),
-        ])
+        if getattr(config, "TURN_PLANNER_SLIM_CONTRACT", True):
+            # Phase 1 / "Bet 2": hand the LLM ONE compact contract instead of the
+            # ~40-segment stacked block. frame + comedy_mode were computed from the
+            # RICH directive above (so every regex-consumer still sees it); only the
+            # LLM-facing string shrinks. govern_response (post-gen) reads the
+            # structured frame, so the safety net is unchanged.
+            primary_purpose = _extract_primary_purpose(turn_plan.directive)
+            agenda_directive = social_frame.render_slim_contract(
+                frame, primary_purpose=primary_purpose
+            )
+        else:
+            agenda_directive = "\n".join([
+                agenda_directive,
+                social_frame.build_directive(frame),
+                comedy_modes.build_directive(comedy_mode),
+            ])
         _log.info("[agenda] %s", agenda_directive.replace("\n", " | "))
         if (
             getattr(config, "LLM_STREAMING_TTS_ENABLED", True)

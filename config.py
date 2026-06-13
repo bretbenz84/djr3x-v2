@@ -2388,6 +2388,16 @@ SOCIAL_FRAME_GOVERNOR_ENABLED = True
 SOCIAL_FRAME_ENFORCE_LENGTH_LIMITS = False
 TONE_REPAIR_NO_ROAST_SECS = 180.0
 
+# Phase 1 / "Bet 2": ship the LLM ONE compact per-turn contract (~130 words) built
+# from the structured SocialFrame, instead of the ~40-segment block that pipe-joined
+# a dozen governors' prose and contradicted its own "choose ONE purpose" preamble.
+# The structured governors (build_turn_plan, build_frame, comedy_modes.select_mode)
+# still run on the rich directive — only the LLM-facing string shrinks — and
+# govern_response stays the post-generation safety net. Static guardrails (character,
+# never-invent-a-prop, opener variety, pronoun/cast rules) live once in the persona.
+# Flip to False for byte-for-byte the old stacked contract (instant rollback).
+TURN_PLANNER_SLIM_CONTRACT = True
+
 # Let Rex use what he SEES (outfit, expression, the drink, the messy room) as
 # roast material on normal upbeat turns, not only when the human says "look at
 # this". The social-frame directive still scopes it to "when it fits," and the

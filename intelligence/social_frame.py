@@ -422,6 +422,82 @@ def build_directive(frame: SocialFrame) -> str:
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 1 / "Bet 2": the SLIM per-turn contract. The verbose build_directive above
+# (9 bullets) plus the agenda's stacked context prose plus the comedy block totaled
+# ~40 pipe-joined segments / 700-980 words that contradicted the "choose ONE
+# purpose" preamble and buried the live turn. render_slim_contract emits ONE compact
+# contract (~130 words) from the SAME structured SocialFrame fields, so no per-turn
+# decision is lost. Static guardrails (character, never-invent-a-prop, opener
+# variety, pronoun/cast rules) stay ONCE in the system persona, and govern_response
+# (below) remains the deterministic post-generation enforcer.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SLIM_JOKE_SAFETY = (
+    "no jokes about body, age, identity, health, money, grief, trauma, or private "
+    "facts; one joke shape, never stacked"
+)
+
+
+def _slim_question_rule(frame: SocialFrame) -> str:
+    if frame.purpose == "identity":
+        return (
+            "ask exactly ONE question to get the newcomer's name and their connection"
+            if frame.allow_question
+            else "do not ask a question unless identity safety requires it"
+        )
+    if frame.allow_question:
+        return "you may ask ONE question, and only if it directly serves that purpose"
+    return "do NOT ask a question — no tag question, no new prompt, no interview pivot"
+
+
+def _slim_roast_rule(frame: SocialFrame) -> str:
+    if frame.allow_roast == "normal" and frame.purpose in {"interest", "answer_ack"}:
+        return (
+            "lead with genuine, SPECIFIC curiosity about what they shared; a sharp "
+            "roast may ride on top, but never deflect a sincere share with a joke"
+        )
+    return {
+        "none": "no roasts or pointed teasing this turn",
+        "light": "at most a light, surface-level tap if you roast",
+        "normal": (
+            "land ONE sharp, specific jab only when you actually have an angle — not "
+            "every turn; a plain honest reaction can be the move"
+        ),
+    }.get(frame.allow_roast, "one sharp, specific, good-natured jab when it fits")
+
+
+def _slim_visual_rule(frame: SocialFrame) -> str:
+    if frame.allow_visual_comment:
+        return (
+            "you may name something you GENUINELY see if it fits — never invent a "
+            "detail to set up a joke"
+        )
+    return "do not mention what you see, the camera, the room, or their face"
+
+
+def render_slim_contract(frame: SocialFrame, primary_purpose: str = "") -> str:
+    """One compact per-turn contract built from the structured SocialFrame. The
+    caller passes the agenda's single 'Primary purpose: …' line; everything else is
+    derived from frame fields. Keeps the machine-readable ``max_words=N`` token so
+    llm._max_tokens_for_agenda can still size the generation budget."""
+    purpose = (primary_purpose or "").strip() or (
+        "Primary purpose: react to what they actually said with one specific, "
+        "in-character beat — no non-sequitur, no reflexive filler question"
+    )
+    return (
+        "This turn — do ONE thing, then stop:\n"
+        f"- {purpose}\n"
+        f"- Hard shape: max_words={frame.max_words}, "
+        f"max_sentences={frame.max_sentences}. Addressee: {frame.addressee}.\n"
+        f"- Questions: {_slim_question_rule(frame)}.\n"
+        f"- Roast: {_slim_roast_rule(frame)}.\n"
+        f"- Visual: {_slim_visual_rule(frame)}.\n"
+        f"- Jokes: {_SLIM_JOKE_SAFETY}.\n"
+        "- If this conflicts with the persona above, follow THIS contract."
+    )
+
+
 def govern_response(text: str, frame: SocialFrame) -> GovernResult:
     if not getattr(config, "SOCIAL_FRAME_GOVERNOR_ENABLED", True):
         return GovernResult((text or "").strip(), False, [])

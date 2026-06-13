@@ -350,9 +350,15 @@ def _max_tokens_for_agenda(agenda_directive: Optional[str]) -> int:
     if not agenda_directive:
         return default
     match = _RESPONSE_LENGTH_TARGET_PAT.search(agenda_directive)
-    if not match:
-        return default
-    return _RESPONSE_LENGTH_TOKEN_BUDGET.get(match.group(1).lower(), default)
+    if match:
+        return _RESPONSE_LENGTH_TOKEN_BUDGET.get(match.group(1).lower(), default)
+    # Slim-contract path (Phase 1): the verbose "Response length control / Target:"
+    # block is gone, but the contract still carries the hard "max_words=N" cap.
+    # Derive a comparable token budget from it (~1.7 tokens/word + headroom).
+    mw = re.search(r"max_words=(\d+)", agenda_directive)
+    if mw:
+        return max(35, min(default, int(int(mw.group(1)) * 1.7)))
+    return default
 
 
 # Stored conversation summaries sometimes bake in a self-directed imperative
