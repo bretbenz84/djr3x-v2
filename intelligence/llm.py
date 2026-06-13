@@ -355,6 +355,25 @@ def _max_tokens_for_agenda(agenda_directive: Optional[str]) -> int:
     return _RESPONSE_LENGTH_TOKEN_BUDGET.get(match.group(1).lower(), default)
 
 
+# Stored conversation summaries sometimes bake in a self-directed imperative
+# ("Rex should follow up on ... the ice cream"), which then gets injected as a
+# live command every turn and stitches a stale fact onto an unrelated topic (the
+# "did you score mint chocolate chip ice cream while camping?" defect). Strip any
+# such clause so the recap stays neutral reference data even for legacy summaries.
+_REX_DIRECTIVE_RE = re.compile(
+    r"(?is)\b(?:and\s+|so\s+)?Rex\s+(?:should|could|might|can|will|"
+    r"ought to|needs to|may want to|is to)\b[^.?!]*[.?!]?"
+)
+
+
+def _strip_rex_directives(summary: str) -> str:
+    if not summary:
+        return ""
+    cleaned = _REX_DIRECTIVE_RE.sub("", summary)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" .;,")
+    return cleaned
+
+
 def _build_person_context(person_id: int) -> str:
     person = people_db.get_person(person_id)
     if not person:
@@ -461,10 +480,14 @@ def _build_person_context(person_id: int) -> str:
 
     last_conv = conv_db.get_last_conversation(person_id)
     if last_conv:
-        lines.append(
-            f"Last conversation: {last_conv.get('summary', '')} "
-            f"(tone: {last_conv.get('emotion_tone', 'neutral')})."
-        )
+        _recap = _strip_rex_directives(last_conv.get('summary', ''))
+        if _recap:
+            lines.append(
+                f"Last time you talked: {_recap} "
+                f"(tone: {last_conv.get('emotion_tone', 'neutral')}). "
+                f"Background only — mention it only if it genuinely fits the "
+                f"current topic; do not open with it or steer the turn toward it."
+            )
 
     callback_hook_used = False
     try:
@@ -527,8 +550,10 @@ def _build_person_context(person_id: int) -> str:
     next_q = None if callback_hook_used else rel_db.get_next_question(person_id, tier)
     if next_q:
         lines.append(
-            f"Next unanswered question to weave in naturally: "
-            f"\"{next_q['text']}\" (depth {next_q['depth']})."
+            f"Optional profile question — do NOT force it: ONLY if the conversation "
+            f"genuinely lulls AND it fits what they just said may you ask "
+            f"\"{next_q['text']}\". Otherwise skip it entirely; never staple it onto "
+            f"an unrelated turn or use it to fill a pause you could leave open."
         )
         callback_hook_used = True
 
@@ -1067,7 +1092,10 @@ def generate_session_summary(person_id: int, transcript: list[dict]) -> str:
         "recall this conversation the NEXT time he talks with this person. Write a "
         "2–3 sentence summary in third person, focused on the PERSON: the real-world "
         "topics they discussed, what they shared about themselves, their mood, and "
-        "anything worth following up on next time. Capture substance, not performance "
+        "any open threads the PERSON left unfinished — stated as neutral facts. Write "
+        "ONLY a neutral factual recap: never write instructions to Rex or any "
+        "'Rex should …' / 'Rex could follow up on …' clause; record what the person "
+        "said and did, not what Rex ought to do next time. Capture substance, not performance "
         "— do NOT describe, quote, or praise Rex's own jokes, bits, or in-character "
         "flavor (his DJ shtick, his cantina/Batuu backstory, Star Wars references), "
         "and do not carry those into the summary unless the PERSON brought them up. "

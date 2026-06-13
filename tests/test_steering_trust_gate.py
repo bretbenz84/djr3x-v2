@@ -90,5 +90,29 @@ class TopicThreadInterjectionTest(unittest.TestCase):
         self.assertIn("astrophotography", tt._keywords("astrophotography is great"))
 
 
+class LastConversationDirectiveStripTest(unittest.TestCase):
+    """S3: a baked-in 'Rex should follow up on ... ice cream' imperative in a
+    stored summary must be stripped so it can't force an off-topic callback."""
+
+    def test_strips_rex_should_clause(self):
+        from intelligence import llm
+        summary = (
+            "Bret mentioned celebrating his birthday and described his surroundings "
+            "as chaotic. He suggested playing classical music. Rex should follow up "
+            "on how the birthday went and if he enjoyed ice cream amidst the chaos."
+        )
+        out = llm._strip_rex_directives(summary)
+        self.assertNotIn("Rex should", out)
+        self.assertNotIn("ice cream", out)
+        self.assertIn("birthday", out)
+
+    def test_leaves_neutral_recap_untouched(self):
+        from intelligence import llm
+        summary = "Bret talked about camping and his dog Max. He seemed relaxed."
+        out = llm._strip_rex_directives(summary)
+        self.assertIn("camping", out)
+        self.assertIn("Max", out)
+
+
 if __name__ == "__main__":
     unittest.main()
