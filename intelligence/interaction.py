@@ -226,6 +226,10 @@ _idle_banter_count: int = 0
 # Wall-clock of the last self-initiated (proactive) line of any kind. Used to
 # keep proactive lines from stacking back-to-back (see _proactive_line_recently_fired).
 _last_proactive_line_at: float = 0.0
+# Monotonic time the most recent user turn began processing. A proactive line is
+# decided on a silence timer, then spends ~1-2s in LLM+TTS before any sound; if a
+# user turn started in that gap, the line is stale and must yield at speak time.
+_last_user_turn_started_at: float = 0.0
 # Memory follow-up cadence — the moderate clamp so Rex doesn't run down a checklist
 # of remembered events turn-after-turn (see config.FOLLOWUP_MIN_GAP_EXCHANGES). Clocked
 # on transcript length (like rex_pov / the arc) so it self-resets at session boundaries
@@ -287,9 +291,11 @@ def _begin_user_turn() -> None:
     # clear the proactive-line gap so the next stretch isn't suppressed by a line
     # from the previous one.
     global _idle_banter_count, _last_proactive_line_at, _floor_held_until
+    global _last_user_turn_started_at
     _idle_banter_count = 0
     _last_proactive_line_at = 0.0
     _floor_held_until = 0.0
+    _last_user_turn_started_at = time.monotonic()
     try:
         _situation_assessor.set_interaction_busy(True)
     except Exception:
@@ -1856,6 +1862,7 @@ def _speak_proactive(
     pre_beat_ms: int = 0,
     post_beat_ms_override: int = 0,
     label: str = "proactive",
+    decided_at: Optional[float] = None,
 ) -> bool:
     """Speak a self-initiated line, but yield the floor if the user has started.
 
@@ -1869,6 +1876,19 @@ def _speak_proactive(
     speech when the guard is disabled or in text-only mode.
     """
     if not text or not text.strip():
+        return False
+    # Speak-time re-validation: if a user turn began AFTER this line was decided
+    # (during the LLM+TTS generation gap), the line is stale — drop it instead of
+    # talking over the turn the user just took. The audio-level check below only
+    # catches the user speaking at this exact instant, not a turn that already
+    # arrived and finished transcribing while Rex was generating.
+    if decided_at is not None and _last_user_turn_started_at > decided_at:
+        _log.info(
+            "[interaction] proactive line dropped — user turn started after it was "
+            "decided (%s): %r",
+            label,
+            text,
+        )
         return False
     if bool(getattr(config, "PROACTIVE_SPEECH_YIELD_ENABLED", True)) and not _text_only_mode:
         # Collapse the check->sound gap: get the audio ready first so the mic
@@ -3449,6 +3469,7 @@ def _maybe_idle_banter(
     # The generate + govern + speak + on-spoken bookkeeping, deferred so the action
     # governor can run it ONLY if idle banter wins the tick (enforce mode). Captures
     # `directive`/`ask_user`/`person_id` decided above.
+    banter_decided_at = time.monotonic()
     def _deliver() -> bool:
         global _session_exchange_count
         try:
@@ -3492,7 +3513,8 @@ def _maybe_idle_banter(
             _log.debug("idle banter govern failed: %s", exc)
 
         completed = _speak_proactive(
-            line, emotion="curious", priority=1, label="idle_banter"
+            line, emotion="curious", priority=1, label="idle_banter",
+            decided_at=banter_decided_at,
         )
         if completed:
             _log.info(

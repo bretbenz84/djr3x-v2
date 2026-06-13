@@ -2662,6 +2662,16 @@ ACTION_GOVERNOR_MIN_SCORE = 20
 # misbehaves; do NOT delete the redundant gates (step 5) until this proves out live.
 ACTION_GOVERNOR_ENFORCE = True
 
+# Cross-cycle proactive de-dup: once a proactive cue is SELECTED to speak, the same
+# topic_key (purpose:target:label, or an explicit dedupe_key) can't be re-selected
+# for this many seconds. _decide's per-tick seen_topics only collapses duplicates
+# within one cycle, so a flickering world cue (crowd label bouncing pair<->alone,
+# an animal/expression false-positive) used to re-fire the SAME line on consecutive
+# ticks — the live "now it's just us" line spoken twice in 7s. idle_monologue is
+# excluded (it varies its line and paces itself). 0 disables. 45s blocks flicker
+# repeats while still allowing a genuinely new cue minutes later.
+ACTION_GOVERNOR_REPEAT_COOLDOWN_SECS = 45.0
+
 # Higher-level user-turn action router.
 #
 # Execution is limited first by intelligence.action_router.EXECUTABLE_ACTIONS,
@@ -3876,6 +3886,12 @@ WORLD_SOUND_EVENT_REACTIONS_ENABLED = False
 WORLD_STARTLE_SOUND_EVENT_REACTIONS_ENABLED = True
 STARTLE_SOUND_EVENTS = {"scream", "sudden_loud_sound", "crash"}
 STARTLE_SOUND_EVENT_REACTION_COOLDOWN_SECS = 20
+
+# A new crowd-size label must PERSIST this long before Rex reacts to the change.
+# The camera crowd count flickers (a face lost for one frame reads pair->alone->pair);
+# without this settle window a one-frame drop fired a "now it's just us" line the same
+# second Rex greeted the pair, which read as a glitch. 0 disables the debounce.
+CROWD_CHANGE_SETTLE_SECS = 2.5
 
 STARTUP_AUDIO_FILES = [
     "assets/audio/startup/light_speed.mp3",

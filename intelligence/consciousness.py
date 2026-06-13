@@ -313,6 +313,15 @@ _animal_reacted_at: dict[str, float] = {}
 _pending_animal_arrivals: dict[str, dict] = {}
 _last_startle_sound_reaction_at: float = 0.0
 
+# Crowd-change reaction debounce. The camera crowd count flickers (a face lost for
+# one frame reads pair->alone->pair), and the raw "label changed" check fired a
+# "now it's just us" line the same second Rex greeted the pair — a bystander read
+# the contradiction + repeat as "your code glitched". We only react once a NEW
+# label has PERSISTED past CROWD_CHANGE_SETTLE_SECS.
+_crowd_change_reacted_label: str = ""
+_crowd_change_pending_label: str = ""
+_crowd_change_pending_since: float = 0.0
+
 # Engagement tracking: the person_db_id Rex is currently talking with, if any.
 # Presence reactions for this person are suppressed while the engagement is open.
 _engaged_lock = threading.Lock()
@@ -4104,6 +4113,34 @@ def _step_personal_space(snapshot: dict, profile: SituationProfile) -> None:
 # Step 8 — Proactive reactions
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _crowd_change_settled(curr_label: str) -> Optional[str]:
+    """Debounce crowd-count flicker. Returns the prior STABLE label when ``curr_label``
+    is a settled change (the same new label has persisted past CROWD_CHANGE_SETTLE_SECS),
+    else None. Silently adopts the first observed label as the baseline so startup
+    doesn't fire a spurious "crowd changed" line."""
+    global _crowd_change_reacted_label, _crowd_change_pending_label
+    global _crowd_change_pending_since
+    settle = float(getattr(config, "CROWD_CHANGE_SETTLE_SECS", 2.5))
+    now = time.monotonic()
+    baseline = _crowd_change_reacted_label
+    if not baseline:
+        _crowd_change_reacted_label = curr_label
+        _crowd_change_pending_label = ""
+        return None
+    if curr_label == baseline:
+        _crowd_change_pending_label = ""  # back to stable — cancel any pending change
+        return None
+    if curr_label != _crowd_change_pending_label:
+        _crowd_change_pending_label = curr_label
+        _crowd_change_pending_since = now
+        return None
+    if (now - _crowd_change_pending_since) >= settle:
+        _crowd_change_reacted_label = curr_label
+        _crowd_change_pending_label = ""
+        return baseline
+    return None
+
+
 def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None:
     """
     Compare current WorldState to _last_snapshot. For each notable change,
@@ -4205,16 +4242,19 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                 label="new person entered view",
             )
 
-        # Crowd size label changed significantly
-        prev_label = _last_snapshot.get("crowd", {}).get("count_label")
+        # Crowd size label changed significantly — debounced so a one-frame camera
+        # flicker (pair->alone->pair) can't fire a "now it's just us" line that
+        # contradicts the greeting Rex just gave the group.
         curr_label = snapshot.get("crowd", {}).get("count_label")
-        if curr_label and prev_label and curr_label != prev_label:
-            _add_trigger(
-                f"The crowd around you just shifted from '{prev_label}' to '{curr_label}'. "
-                "One short in-character observation about this change.",
-                "neutral",
-                label="crowd size changed",
-            )
+        if curr_label:
+            settled_prev = _crowd_change_settled(curr_label)
+            if settled_prev:
+                _add_trigger(
+                    f"The crowd around you just shifted from '{settled_prev}' to "
+                    f"'{curr_label}'. One short in-character observation about this change.",
+                    "neutral",
+                    label="crowd size changed",
+                )
 
         # Notable sound event
         prev_sound = _last_snapshot.get("audio_scene", {}).get("last_sound_event")

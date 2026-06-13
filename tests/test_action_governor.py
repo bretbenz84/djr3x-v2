@@ -2,6 +2,12 @@ import unittest
 
 
 class ActionGovernorScopeTests(unittest.TestCase):
+    def setUp(self):
+        # Cross-cycle de-dup state is module-level; reset it so a selection in one
+        # test doesn't put a topic_key on cooldown for the next test's candidate.
+        from intelligence import action_governor as ag
+        ag._recent_selected.clear()
+
     def test_governor_selects_proactive_candidate(self):
         from intelligence.action_governor import ActionGovernor, CandidateMove
 

@@ -35,6 +35,41 @@ _external_lock = threading.Lock()
 _external_candidates: list = []
 _EXTERNAL_CANDIDATE_TTL_SECS = 2.0
 
+# Cross-cycle de-dup: topic_key -> monotonic time it was last SELECTED to speak.
+# _decide's seen_topics only collapses duplicates WITHIN a single tick; without
+# this, a flickering world cue (the crowd label bouncing pair<->alone, an animal
+# false-positive, a smile detector) re-selects the SAME proactive line on
+# consecutive ticks — the live "now it's just us" line spoken twice in 7s, which a
+# bystander read as "your code glitched". Self-pruning via the cooldown window.
+# idle_monologue is EXCLUDED: it generates a fresh line each time and paces itself
+# via IDLE_BANTER_COOLDOWN_SECS, so a static-key cooldown would wrongly throttle it.
+_recent_selected_lock = threading.Lock()
+_recent_selected: dict[str, float] = {}
+_REPEAT_COOLDOWN_EXCLUDED_PURPOSES = {"idle_monologue"}
+
+
+def _repeat_cooldown_secs() -> float:
+    return float(getattr(config, "ACTION_GOVERNOR_REPEAT_COOLDOWN_SECS", 45.0) or 0.0)
+
+
+def _topic_recently_selected(topic_key: str, purpose: str) -> bool:
+    cooldown = _repeat_cooldown_secs()
+    if cooldown <= 0 or purpose in _REPEAT_COOLDOWN_EXCLUDED_PURPOSES:
+        return False
+    now = time.monotonic()
+    with _recent_selected_lock:
+        ts = _recent_selected.get(topic_key)
+        return ts is not None and (now - ts) < cooldown
+
+
+def _note_topic_selected(topic_key: str) -> None:
+    now = time.monotonic()
+    with _recent_selected_lock:
+        _recent_selected[topic_key] = now
+        cutoff = now - max(_repeat_cooldown_secs() * 2.0, 1.0)
+        for stale in [k for k, t in _recent_selected.items() if t < cutoff]:
+            _recent_selected.pop(stale, None)
+
 
 _PURPOSE_PRIORITIES: dict[str, int] = {
     "emotional_checkin": 100,
@@ -244,6 +279,13 @@ class ActionGovernor:
                 return None
             scored = [self._score(c, profile=cycle.get("profile")) for c in candidates]
             decision = self._decide(scored)
+            # Record the winner so the same proactive cue can't be re-selected on a
+            # later flickering tick (cross-cycle de-dup). Only the real cycle path
+            # records; standalone observe() logging does not.
+            if decision.action == "speak" and decision.selected is not None:
+                _note_topic_selected(
+                    self._candidate_topic_key(decision.selected.candidate)
+                )
             if self.log_candidates:
                 for item in scored:
                     self._log_candidate(item, cycle_id=cycle["id"])
@@ -409,6 +451,11 @@ class ActionGovernor:
                 item.rejected = True
                 item.reasons.append("duplicate_topic")
                 item.skip_reasons.append("duplicate_topic")
+                continue
+            if _topic_recently_selected(topic_key, item.candidate.purpose):
+                item.rejected = True
+                item.reasons.append("topic_repeat_cooldown")
+                item.skip_reasons.append("topic_repeat_cooldown")
                 continue
             seen_topics[topic_key] = item
 
