@@ -1780,9 +1780,27 @@ PERSONAL_SPACE_REACTION_MIN_ZONE = "intimate"
 
 # dlib face distance — lower is a better match; 0.6 is the standard threshold
 FACE_RECOGNITION_DISTANCE_THRESHOLD = 0.6
+# A face match must beat the NEXT-closest DIFFERENT person by at least this Euclidean
+# margin to be accepted; otherwise the frame is treated as ambiguous (no match) so the
+# overlay doesn't flip between two confusable faces (e.g. family members Bret/Wade whose
+# encodings both land under 0.6 of the live face). 0 disables the margin gate.
+FACE_RECOGNITION_MARGIN = 0.06
+# Temporal hysteresis: when a single visible face is already bound to one known person,
+# require this many consecutive recognition ticks agreeing on a DIFFERENT person before
+# the world-state/overlay identity switches. Damps known<->known flicker. 1 disables.
+FACE_IDENTITY_SWITCH_CONFIRM_FRAMES = 2
 
-# Resemblyzer cosine similarity — higher is a better match
-SPEAKER_ID_SIMILARITY_THRESHOLD = 0.75
+# Resemblyzer cosine similarity — higher is a better match. Real cross-session
+# same-speaker scores in a live room cluster ~0.45-0.65 (a person's own voice measured
+# at ~0.55 against their own enrolled prints), so 0.75 rejected every returning user.
+# 0.50 hard-accepts, paired with a margin guard in the resolution layer to avoid
+# false-matching a different known voice.
+SPEAKER_ID_SIMILARITY_THRESHOLD = 0.50
+# A voice match below the hard threshold may still be accepted as a KNOWN speaker (even
+# off-camera / not the engaged person) when it clears this floor AND beats the next
+# different person by SPEAKER_ID_KNOWN_MARGIN. Bret's 0.55-vs-0.45 (margin 0.10) passes.
+SPEAKER_ID_KNOWN_SPEAKER_FLOOR = 0.45
+SPEAKER_ID_KNOWN_MARGIN = 0.07
 
 # Load the Resemblyzer encoder during startup so the first live spoken turn
 # does not pay the model load cost.

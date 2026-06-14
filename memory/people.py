@@ -110,26 +110,46 @@ def find_by_face(encoding: np.ndarray) -> Optional[dict]:
     """
     Return the best-matching person record for a 128-dim dlib face encoding, or None.
 
-    Uses Euclidean distance. Match is accepted only if distance is strictly below
-    FACE_RECOGNITION_DISTANCE_THRESHOLD (default 0.6 — the dlib standard).
+    Uses Euclidean distance. A person's MULTIPLE stored encodings are aggregated to
+    that person's CLOSEST one (so extra reference photos help recall instead of
+    competing as separate candidates). The winner is accepted only if its distance is
+    below FACE_RECOGNITION_DISTANCE_THRESHOLD (default 0.6) AND it beats the next-closest
+    DIFFERENT person by at least FACE_RECOGNITION_MARGIN — otherwise the frame is treated
+    as ambiguous (returns None) so the identity does not flip between two confusable
+    faces (e.g. family members whose encodings both fall under 0.6 of the live face).
     """
+    query = encoding.astype(np.float32)
     rows = db.fetchall(
         "SELECT person_id, encoding FROM biometrics WHERE type = 'face'"
     )
-    best_id, best_dist = None, float("inf")
+    per_person_best: dict[int, float] = {}
     for row in rows:
         stored = _from_blob(bytes(row["encoding"]))
-        if stored.shape != encoding.shape:
-            _log.warning("face encoding shape mismatch: stored %s vs query %s", stored.shape, encoding.shape)
+        if stored.shape != query.shape:
+            _log.warning("face encoding shape mismatch: stored %s vs query %s", stored.shape, query.shape)
             continue
-        dist = float(np.linalg.norm(stored - encoding.astype(np.float32)))
-        if dist < best_dist:
-            best_dist = dist
-            best_id = row["person_id"]
+        dist = float(np.linalg.norm(stored - query))
+        pid = row["person_id"]
+        if dist < per_person_best.get(pid, float("inf")):
+            per_person_best[pid] = dist
 
-    if best_id is not None and best_dist < config.FACE_RECOGNITION_DISTANCE_THRESHOLD:
-        return get_person(best_id)
-    return None
+    if not per_person_best:
+        return None
+
+    ranked = sorted(per_person_best.items(), key=lambda kv: kv[1])  # (person_id, dist) asc
+    best_id, best_dist = ranked[0]
+    second_dist = ranked[1][1] if len(ranked) > 1 else float("inf")
+
+    if best_dist >= config.FACE_RECOGNITION_DISTANCE_THRESHOLD:
+        return None
+    margin = float(getattr(config, "FACE_RECOGNITION_MARGIN", 0.0) or 0.0)
+    if (second_dist - best_dist) < margin:
+        _log.info(
+            "face match ambiguous: best=id%s d=%.3f vs next d=%.3f (margin %.3f < %.2f) — no match",
+            best_id, best_dist, second_dist, second_dist - best_dist, margin,
+        )
+        return None
+    return get_person(best_id)
 
 
 def find_by_voice(embedding: np.ndarray) -> Optional[dict]:

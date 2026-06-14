@@ -71,31 +71,31 @@ def get_embedding(audio_array: np.ndarray) -> Optional[np.ndarray]:
         return None
 
 
-def identify_speaker_raw(
-    audio_array: np.ndarray,
-) -> Tuple[Optional[int], Optional[str], float]:
-    """Return the TOP voice match without applying a threshold filter.
+def rank_speakers(audio_array: np.ndarray) -> list[tuple[int, str, float]]:
+    """Return [(person_id, name, similarity), ...] sorted by similarity desc, ONE entry
+    per person, scoring the query against that person's CENTROID (mean of all their
+    enrolled voice embeddings, renormalized).
 
-    Returns (best_id, best_name, best_sim). Returns (None, None, 0.0) only if
-    Resemblyzer is unavailable, the embedding couldn't be computed, or there
-    are no voice biometrics enrolled yet.
-
-    This is the low-level primitive. Callers apply their own acceptance logic
-    (e.g. hard threshold vs. session-sticky soft threshold).
+    Per-person centroids fix two problems with the old max-over-rows approach: (1) a
+    person no longer appears multiple times in the candidate list (a weak duplicate row
+    could outrank a different person), and (2) averaging several clips is a higher-SNR,
+    better-generalizing speaker representation than any single noisy clip — which raises
+    true-speaker scores. Returns [] if the embedding can't be computed or nothing is
+    enrolled.
     """
     embedding = get_embedding(audio_array)
     if embedding is None:
-        return (None, None, 0.0)
+        return []
     rows = db.fetchall(
         "SELECT person_id, encoding FROM biometrics WHERE type = 'voice'"
     )
     if not rows:
-        return (None, None, 0.0)
+        return []
 
     query = embedding.astype(np.float32)
     query_norm = query / (np.linalg.norm(query) + 1e-10)
 
-    scored: list[tuple[int, float]] = []
+    per_person: dict[int, list[np.ndarray]] = {}
     for row in rows:
         stored = np.frombuffer(bytes(row["encoding"]), dtype=np.float32)
         if stored.shape != query.shape:
@@ -105,47 +105,71 @@ def identify_speaker_raw(
             )
             continue
         stored_norm = stored / (np.linalg.norm(stored) + 1e-10)
-        sim = float(np.dot(stored_norm, query_norm))
-        scored.append((row["person_id"], sim))
+        per_person.setdefault(row["person_id"], []).append(stored_norm)
 
-    if not scored:
-        return (None, None, 0.0)
-    scored.sort(key=lambda t: t[1], reverse=True)
-
-    # Emit the diagnostic scoreboard line — same format as before so tooling
-    # and test_voice_id.py both read cleanly.
-    top_summary_parts = []
-    for pid, sim in scored[:3]:
+    scored: list[tuple[int, str, float]] = []
+    for pid, vecs in per_person.items():
+        centroid = np.mean(np.stack(vecs), axis=0)
+        centroid = centroid / (np.linalg.norm(centroid) + 1e-10)
+        sim = float(np.dot(centroid, query_norm))
         person = people.get_person(pid)
         nm = (person.get("name") if person else None) or "?"
-        top_summary_parts.append(f"{nm}#{pid}={sim:.3f}")
+        scored.append((pid, nm, sim))
+
+    scored.sort(key=lambda t: t[2], reverse=True)
+    return scored
+
+
+def _log_scoreboard(scored: list[tuple[int, str, float]]) -> None:
+    # Same "Name#id=score" format tooling/test_voice_id.py read (now one row per person).
+    parts = [f"{nm}#{pid}={sim:.3f}" for pid, nm, sim in scored[:3]]
     logger.info(
         "[speaker_id] scan — threshold=%.3f, candidates: %s",
         config.SPEAKER_ID_SIMILARITY_THRESHOLD,
-        ", ".join(top_summary_parts),
+        ", ".join(parts),
     )
 
-    best_id, best_sim = scored[0]
-    person = people.get_person(best_id)
-    name = person.get("name") if person else None
+
+def identify_speaker_raw(
+    audio_array: np.ndarray,
+) -> Tuple[Optional[int], Optional[str], float]:
+    """Return the TOP per-person centroid voice match without a threshold filter.
+
+    Returns (best_id, best_name, best_sim), or (None, None, 0.0) if no match could be
+    computed. The low-level primitive — callers apply their own acceptance logic.
+    """
+    scored = rank_speakers(audio_array)
+    if not scored:
+        return (None, None, 0.0)
+    _log_scoreboard(scored)
+    best_id, name, best_sim = scored[0]
     return (best_id, name, float(best_sim))
 
 
 def identify_speaker(
     audio_array: np.ndarray,
 ) -> Tuple[Optional[int], Optional[str], float]:
-    """Return (person_id, name, score) for the best voice match above threshold.
+    """Return (person_id, name, score) for a confident voice match, else (None, None, 0.0).
 
-    Returns (None, None, 0.0) if Resemblyzer is unavailable, no biometrics are
-    stored, or the best match falls below SPEAKER_ID_SIMILARITY_THRESHOLD.
-
-    Thin wrapper over identify_speaker_raw — adds the hard-threshold filter
-    and the low-/high-confidence warning/info log.
+    Accepts the top centroid match only when it clears SPEAKER_ID_SIMILARITY_THRESHOLD
+    AND beats the next-closest DIFFERENT person by SPEAKER_ID_KNOWN_MARGIN. The margin
+    guard lets the threshold sit low (0.50, where a real returning speaker actually
+    scores) without false-matching a different known voice when two candidates are close.
     """
-    best_id, name, best_sim = identify_speaker_raw(audio_array)
-    if best_id is None:
+    scored = rank_speakers(audio_array)
+    if not scored:
         return (None, None, 0.0)
+    _log_scoreboard(scored)
+    best_id, name, best_sim = scored[0]
     if best_sim < config.SPEAKER_ID_SIMILARITY_THRESHOLD:
+        return (None, None, 0.0)
+    second = scored[1][2] if len(scored) > 1 else -1.0
+    margin = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.0) or 0.0)
+    if (best_sim - second) < margin:
+        logger.info(
+            "[speaker_id] ambiguous: %s#%s=%.3f vs next=%.3f (margin %.3f < %.2f) — no match",
+            name, best_id, best_sim, second, best_sim - second, margin,
+        )
         return (None, None, 0.0)
     if best_sim < 0.80:
         logger.warning(

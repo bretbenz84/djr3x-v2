@@ -262,6 +262,11 @@ _last_seen: dict = {}
 # identified a second ago, carry the last identity forward for this many seconds.
 _last_solo_identity: Optional[tuple[int, str, float, tuple[float, float, float, float] | None]] = None
 _SOLO_IDENTITY_STICKY_SECS = 5.0
+# Temporal hysteresis for a single visible face: (candidate_person_id, consecutive_count)
+# of recognition ticks that disagree with the currently-held identity. The bound
+# identity only switches once a NEW person is seen for FACE_IDENTITY_SWITCH_CONFIRM_FRAMES
+# consecutive ticks — damps the known<->known HOG flicker (Bret<->Wade).
+_pending_solo_switch: Optional[tuple[int, int]] = None
 
 # Per-person monotonic timestamp of the last departure/return reaction fired.
 _last_departure_reaction_at: dict = {}
@@ -2796,6 +2801,46 @@ def _face_boxes_sticky_compatible(
     return size_ratio <= 4.0
 
 
+def _apply_solo_switch_hysteresis(
+    person_record: Optional[dict],
+    box: tuple | list | None,
+    frame_w: int,
+    frame_h: int,
+) -> Optional[dict]:
+    """For a SINGLE visible face, resist switching the bound identity to a different
+    known person until it has been seen for FACE_IDENTITY_SWITCH_CONFIRM_FRAMES
+    consecutive ticks. Returns the identity to use THIS tick (the held one while a switch
+    is still pending). Only holds against a recent, box-compatible prior identity, so a
+    genuinely new person / new position still resolves promptly."""
+    global _pending_solo_switch
+    confirm = int(getattr(config, "FACE_IDENTITY_SWITCH_CONFIRM_FRAMES", 2) or 1)
+    if confirm <= 1 or person_record is None or _last_solo_identity is None:
+        _pending_solo_switch = None
+        return person_record
+    prev_id, prev_name, prev_ts = _last_solo_identity[0], _last_solo_identity[1], _last_solo_identity[2]
+    prev_box = _last_solo_identity[3] if len(_last_solo_identity) >= 4 else None
+    if (time.monotonic() - prev_ts) > _SOLO_IDENTITY_STICKY_SECS:
+        _pending_solo_switch = None
+        return person_record
+    cand_id = person_record.get("id")
+    if cand_id == prev_id:
+        _pending_solo_switch = None
+        return person_record
+    if not _face_boxes_sticky_compatible(box, prev_box, frame_w=frame_w, frame_h=frame_h):
+        _pending_solo_switch = None  # new position — treat as a real new face
+        return person_record
+    count = (_pending_solo_switch[1] + 1) if (_pending_solo_switch and _pending_solo_switch[0] == cand_id) else 1
+    if count >= confirm:
+        _pending_solo_switch = None
+        return person_record  # confirmed across enough ticks — accept the switch
+    _pending_solo_switch = (cand_id, count)
+    _log.info(
+        "consciousness: face identity switch held %s -> %s (%d/%d ticks)",
+        prev_name, person_record.get("name"), count, confirm,
+    )
+    return {"id": prev_id, "name": prev_name}
+
+
 def _step_person_recognition(frame) -> None:
     """
     Detect visible faces, resolve known identities via DB lookup, and update
@@ -2806,6 +2851,7 @@ def _step_person_recognition(frame) -> None:
     drive unknown-person onboarding prompts.
     """
     global _last_face_feedback_signature, _last_identity_prompt_at, _last_solo_identity
+    global _pending_solo_switch
     global _last_face_seen_at
     try:
         from vision import face as face_mod
@@ -2909,6 +2955,12 @@ def _step_person_recognition(frame) -> None:
                 # Carry forward last solo identity through a single-face miss.
                 sticky_id, sticky_name, _, _ = sticky_identity
                 person_record = {"id": sticky_id, "name": sticky_name}
+            if len(detected) == 1:
+                # Damp known<->known flicker: hold the current identity until a different
+                # person has been seen for FACE_IDENTITY_SWITCH_CONFIRM_FRAMES ticks.
+                person_record = _apply_solo_switch_hysteresis(
+                    person_record, det.get("bounding_box"), frame_width, frame_height
+                )
             target_slot = people[idx] if idx < len(people) else None
             if person_record is not None:
                 any_identified_this_tick = True
@@ -2926,6 +2978,12 @@ def _step_person_recognition(frame) -> None:
                         if ws_person.get("face_id") is None:
                             target_slot = ws_person
                             break
+                if target_slot is None and len(detected) == len(people):
+                    # A positive re-ID must claim a slot even when every slot is already
+                    # bound to a DIFFERENT known person — otherwise the overlay stays stuck
+                    # on the stale identity (symptom B: turning the camera back to Bret
+                    # never updated because the slot kept face_id='Bro'/'Broski').
+                    target_slot = people[idx] if idx < len(people) else None
             else:
                 unknown_count += 1
 
@@ -3054,6 +3112,7 @@ def _step_person_recognition(frame) -> None:
         elif len(detected) != 1:
             # Multiple or zero faces — stickiness no longer applies.
             _last_solo_identity = None
+            _pending_solo_switch = None
     except Exception as exc:
         _log.debug("person recognition step error: %s", exc)
 

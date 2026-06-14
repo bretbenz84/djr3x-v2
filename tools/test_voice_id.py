@@ -66,49 +66,36 @@ def _record(seconds: float) -> np.ndarray:
 
 
 def _scan_once(audio: np.ndarray) -> None:
-    embedding = speaker_id.get_embedding(audio)
-    if embedding is None:
-        print("  ERROR: could not compute embedding (Resemblyzer unavailable?).")
+    # Use the SAME production matcher (per-person centroid, one entry per person).
+    results = speaker_id.rank_speakers(audio)  # [(person_id, name, sim)] sorted desc
+    if not results:
+        print("  No voice prints enrolled / embedding failed. Use --enroll <Name>.")
         return
-
-    rows = db.fetchall("SELECT person_id, encoding FROM biometrics WHERE type = 'voice'")
-    if not rows:
-        print("  No voice prints enrolled. Use --enroll <Name> to create one.")
-        return
-
-    query = embedding.astype(np.float32)
-    query = query / (np.linalg.norm(query) + 1e-10)
-
-    results = []
-    for row in rows:
-        stored = np.frombuffer(bytes(row["encoding"]), dtype=np.float32)
-        if stored.shape != query.shape:
-            continue
-        stored = stored / (np.linalg.norm(stored) + 1e-10)
-        sim = float(np.dot(stored, query))
-        person = people_mod.get_person(row["person_id"])
-        name = (person.get("name") if person else None) or "?"
-        results.append((sim, row["person_id"], name))
-
-    results.sort(reverse=True)
 
     threshold = config.SPEAKER_ID_SIMILARITY_THRESHOLD
-    print(f"\n  Ranking (threshold={threshold:.2f}):")
-    print(f"  {'score':>7}  {'id':>4}  verdict  name")
-    print(f"  {'-----':>7}  {'--':>4}  -------  ----")
-    for sim, pid, name in results:
+    margin = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.0) or 0.0)
+    print(f"\n  Ranking (centroid; threshold={threshold:.2f}, margin={margin:.2f}):")
+    print(f"  {'score':>7}  {'id':>4}  verdict   name")
+    print(f"  {'-----':>7}  {'--':>4}  -------   ----")
+    for pid, name, sim in results:
         if sim >= 0.80:
-            verdict = "HIGH   "
+            verdict = "HIGH    "
         elif sim >= threshold:
             verdict = "LOW-CONF"
         else:
-            verdict = "REJECT "
+            verdict = "REJECT  "
         print(f"  {sim:>7.3f}  {pid:>4}  {verdict}  {name}")
-    top = results[0]
-    if top[0] >= threshold:
-        print(f"\n  → would be identified as {top[2]} (person_id={top[1]}, score={top[0]:.3f})")
+
+    best_pid, best_name, best_sim = results[0]
+    second = results[1][2] if len(results) > 1 else -1.0
+    if best_sim >= threshold and (best_sim - second) >= margin:
+        print(f"\n  → would be identified as {best_name} "
+              f"(person_id={best_pid}, score={best_sim:.3f}, margin={best_sim - second:.3f})")
+    elif best_sim >= threshold:
+        print(f"\n  → AMBIGUOUS: best {best_name}={best_sim:.3f} but only "
+              f"{best_sim - second:.3f} over the next person (< {margin:.2f} margin)")
     else:
-        print(f"\n  → would NOT be identified (best score {top[0]:.3f} < threshold {threshold:.2f})")
+        print(f"\n  → would NOT be identified (best {best_sim:.3f} < threshold {threshold:.2f})")
 
 
 def _find_person_id(name: str) -> int | None:
