@@ -10471,7 +10471,8 @@ def _post_response(
                 if not pre_classified_insult:
                     personality.increment_anger(person_id)
                     if person_id is not None:
-                        people_memory.apply_relationship_increment(person_id, "insult_mild")
+                        # P3: a jab from a warm friend reads as banter, not antagonism.
+                        people_memory.apply_jab(person_id, "insult_mild")
                     _set_body_mood("offended", source="layer2_insult")
 
             elif sentiment.get("is_apology"):
@@ -17050,7 +17051,8 @@ def _handle_speech_segment(
             except Exception as exc:
                 _log.debug("[interaction] insult body beat skipped: %s", exc)
             if person_id is not None:
-                people_memory.apply_relationship_increment(person_id, "insult_mild")
+                # P3: a jab from a warm friend reads as banter, not antagonism.
+                people_memory.apply_jab(person_id, "insult_mild")
             _log.info(
                 "[interaction] layer-1 insult detected — anger now %d", new_level,
             )

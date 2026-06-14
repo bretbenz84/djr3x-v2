@@ -84,13 +84,24 @@ def _person_aliases_available() -> bool:
     return bool(row)
 
 
-def _compute_tier(familiarity: float, antagonism: float) -> str:
-    """Derive friendship_tier from familiarity score, then apply any antagonism cap."""
+def _compute_tier(familiarity: float, antagonism: float, warmth: float = 0.0) -> str:
+    """Derive friendship_tier from familiarity score, then apply any antagonism cap.
+
+    P3: a genuinely warm relationship isn't antagonistic — logged "insults" from a
+    high-warmth friend are almost always affectionate ribbing. So once warmth reaches
+    ANTAGONISM_CAP_WARMTH_RELIEF, the antagonism tier cap is LIFTED, letting a warm,
+    heavily-roasted friend climb to close_friend / best_friend instead of being pinned
+    at "friend" by their own banter.
+    """
     tier = "stranger"
     for name, (low, high) in config.FAMILIARITY_TIERS.items():
         if low <= familiarity < high:
             tier = name
             break
+
+    relief = float(getattr(config, "ANTAGONISM_CAP_WARMTH_RELIEF", 1.01) or 1.01)
+    if warmth >= relief:
+        return tier  # warm enough that roast-antagonism no longer caps the tier
 
     # ANTAGONISM_TIER_CAPS is already highest-threshold-first; first match wins.
     for threshold, cap in sorted(config.ANTAGONISM_TIER_CAPS, reverse=True):
@@ -577,13 +588,13 @@ def greetings_today_count(person_id: int) -> int:
 def update_familiarity(person_id: int, increment: float) -> None:
     """Add increment to familiarity_score (clamped to 1.0) and recalculate friendship_tier."""
     row = db.fetchone(
-        "SELECT familiarity_score, antagonism_score FROM people WHERE id = ?",
+        "SELECT familiarity_score, antagonism_score, warmth_score FROM people WHERE id = ?",
         (person_id,),
     )
     if row is None:
         return
     new_score = min(1.0, row["familiarity_score"] + increment)
-    new_tier = _compute_tier(new_score, row["antagonism_score"])
+    new_tier = _compute_tier(new_score, row["antagonism_score"], row["warmth_score"])
     db.execute(
         "UPDATE people SET familiarity_score = ?, friendship_tier = ? WHERE id = ?",
         (new_score, new_tier, person_id),
@@ -626,7 +637,7 @@ def update_relationship_scores(person_id: int, **kwargs: float) -> None:
     trust       = _apply("trust",       row["trust_score"])
 
     net = min(1.0, max(-1.0, warmth - antagonism))
-    new_tier = _compute_tier(row["familiarity_score"], antagonism)
+    new_tier = _compute_tier(row["familiarity_score"], antagonism, warmth)
 
     db.execute(
         """UPDATE people
@@ -653,6 +664,57 @@ def apply_relationship_increment(person_id: Optional[int], kind: str) -> None:
         _log.debug("unknown relationship increment kind: %s", kind)
         return
     update_relationship_scores(person_id, **{dimension: float(delta)})
+
+
+def apply_jab(person_id: Optional[int], kind: str = "insult_mild") -> None:
+    """Apply an insult/jab, but read it as affectionate BANTER when warmth is established.
+
+    P3: in a warm, mutual-roast relationship a jab-back isn't a real insult. Below
+    ``BANTER_WARMTH_THRESHOLD`` warmth (a cold or new relationship) the jab lands as full
+    antagonism, exactly like before. At/above it, the antagonism is discounted in
+    proportion to how warm the relationship is — up to ``BANTER_ANTAGONISM_DISCOUNT`` at
+    warmth 1.0 — and ``BANTER_PLAYFULNESS_SHARE`` of the waived amount is re-routed to
+    playfulness, so ribbing a close friend makes Rex playful rather than resentful.
+    Unknown / non-antagonism kinds fall back to a plain increment.
+    """
+    if person_id is None:
+        return
+    try:
+        dimension, delta = config.RELATIONSHIP_INCREMENTS[kind]
+    except (KeyError, TypeError, ValueError):
+        _log.debug("unknown jab kind: %s", kind)
+        return
+    delta = float(delta)
+    if dimension != "antagonism":
+        update_relationship_scores(person_id, **{dimension: delta})
+        return
+
+    row = db.fetchone("SELECT warmth_score FROM people WHERE id = ?", (person_id,))
+    warmth = float(row["warmth_score"]) if row and row["warmth_score"] is not None else 0.0
+
+    threshold = float(getattr(config, "BANTER_WARMTH_THRESHOLD", 0.30) or 0.0)
+    if warmth < threshold:
+        update_relationship_scores(person_id, antagonism=delta)
+        return
+
+    # Scale the discount by how far warmth runs from the banter threshold up to 1.0.
+    span = max(1e-6, 1.0 - threshold)
+    frac = min(1.0, max(0.0, (warmth - threshold) / span))
+    max_discount = float(getattr(config, "BANTER_ANTAGONISM_DISCOUNT", 0.75) or 0.0)
+    discount = max_discount * frac
+    waived = delta * discount
+    kept_antagonism = delta - waived
+    playful_share = float(getattr(config, "BANTER_PLAYFULNESS_SHARE", 0.5) or 0.0)
+    playfulness = waived * playful_share
+
+    update_relationship_scores(
+        person_id, antagonism=kept_antagonism, playfulness=playfulness
+    )
+    _log.info(
+        "[people] jab read as banter for person_id=%s (warmth=%.2f): "
+        "antagonism +%.4f (of %.4f), playfulness +%.4f",
+        person_id, warmth, kept_antagonism, delta, playfulness,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

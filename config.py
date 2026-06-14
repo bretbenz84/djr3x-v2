@@ -2283,6 +2283,20 @@ ANTAGONISM_TIER_CAPS = [
     (0.20, "friend"),       # antagonism >= 0.20 → capped at friend
 ]
 
+# P3 — affectionate banter is not antagonism. In a warm, mutual-roast relationship a
+# playful jab-back ("you overgrown trash compactor") isn't a real insult. Once warmth
+# is established, a jab's antagonism is DISCOUNTED by how warm the relationship is and
+# part of the waived amount is RE-ROUTED to playfulness — so ribbing a friend you love
+# makes Rex playful, not resentful. (see memory.people.apply_jab)
+BANTER_WARMTH_THRESHOLD = 0.30      # at/above this warmth, an "insult" reads as banter
+BANTER_ANTAGONISM_DISCOUNT = 0.75   # max fraction of a jab's antagonism waived (at warmth=1.0)
+BANTER_PLAYFULNESS_SHARE = 0.5      # fraction of the waived antagonism re-routed to playfulness
+
+# A genuinely warm friend isn't antagonistic, so roast-driven antagonism should stop
+# capping their tier: at/above this warmth, the ANTAGONISM_TIER_CAPS are lifted, which
+# unblocks close_friend / best_friend for high-warmth, heavily-ribbed relationships.
+ANTAGONISM_CAP_WARMTH_RELIEF = 0.45
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ANGER ESCALATION SYSTEM
 # ─────────────────────────────────────────────────────────────────────────────
