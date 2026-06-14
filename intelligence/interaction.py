@@ -3377,11 +3377,14 @@ _IDLE_BANTER_DIRECTIVES = (
     "know of them (their day, their work, their dog, what they're into), or riff "
     "a question off something you can see. Light and inviting, one or two "
     "sentences. Do not sign off and do not announce the silence.",
-    # Odd attempts: Rex volunteers something of his own.
-    "Still quiet. Keep the room alive by VOLUNTEERING something of your own, in "
-    "character — a strong Rex opinion, a music take, a preference, a memory, or a "
-    "dry observation about the room. Give them something worth reacting to. Do "
-    "NOT ask a question this time, and do not sign off or announce the silence.",
+    # Odd attempts: Rex volunteers a take — but ON the live topic, not a generic bit.
+    "Still quiet, but you two were mid-conversation. Stay ON the subject you were just "
+    "discussing (see 'Session so far' and the conversation arc above) and VOLUNTEER a "
+    "specific opinion, hot take, reaction, or observation about THAT — a real angle "
+    "they'll want to push back on or laugh at. Do NOT change the subject to a generic "
+    "music/DJ/silence/dead-air bit or an unrelated 'thing on your mind'; react to what "
+    "was actually being said. Do NOT ask a question this time, and do not sign off or "
+    "announce the silence.",
 )
 
 
@@ -3394,6 +3397,43 @@ def _governor_enforcing() -> bool:
         return bool(governor.enforcing)
     except Exception:
         return False
+
+
+def _idle_has_live_topic() -> bool:
+    """True when the session already has a real exchange to riff on (so an idle
+    volunteer should stay ON that topic rather than pull out Rex's own preoccupation)."""
+    try:
+        return sum(
+            1 for t in conv_memory.get_session_transcript()
+            if (t.get("text") or "").strip()
+        ) >= 2
+    except Exception:
+        return False
+
+
+def _idle_banter_directive(
+    ask_user: bool, has_live_topic: bool, pov_text: str
+) -> tuple[str, bool]:
+    """Choose the idle-banter directive and whether Rex's preoccupation was volunteered.
+
+    - ask_user → turn the spotlight on the user (a question).
+    - otherwise VOLUNTEER a take, but ON the live topic — the assembled prompt already
+      carries the recent transcript + arc, so the model can react to what was actually
+      said. Rex's own preoccupation (rex_pov) is a deliberately OFF-topic "thing on his
+      mind"; mid-conversation it reads as a non-sequitur ("ranking organic snacks" while
+      the user talks camping), so it's used ONLY as a cold-open fallback when there's no
+      real exchange yet. The POV still surfaces in the reply path regardless.
+    """
+    if ask_user:
+        return _IDLE_BANTER_DIRECTIVES[0], False
+    if not has_live_topic and pov_text:
+        return (
+            "It's quiet and nothing's really been said yet. Keep the room alive by "
+            "VOLUNTEERING what's on your mind right now — " + pov_text + " Say it like a "
+            "passing thought you want them to react to. Do NOT ask a question this time, "
+            "and do not sign off or announce the silence."
+        ), True
+    return _IDLE_BANTER_DIRECTIVES[1], False
 
 
 def _maybe_idle_banter(
@@ -3467,27 +3507,17 @@ def _maybe_idle_banter(
     # where Rex brings his own thing.
     attempt = _idle_banter_count % len(_IDLE_BANTER_DIRECTIVES)
     ask_user = attempt != 0
-    directive = _IDLE_BANTER_DIRECTIVES[0 if ask_user else 1]
-    pov_volunteered = False
-    if not ask_user:
-        # Volunteer attempt: lead with Rex's SPECIFIC current preoccupation (rex_pov)
-        # rather than a generic improvised opinion, so idle volunteering matches what
-        # he's been bringing up in replies. Falls back to the generic volunteer
-        # directive when POV is disabled/empty OR was just spoken — so the same
-        # preoccupation isn't volunteered twice near-verbatim within the cooldown
-        # (the live "organics power down... design flaw" double-utterance).
+    # Riff on the LIVE topic by default; only fall back to Rex's own (off-topic)
+    # preoccupation when there's no real exchange to build on yet. See
+    # _idle_banter_directive for the rationale.
+    has_live_topic = (not ask_user) and _idle_has_live_topic()
+    pov_text = ""
+    if not ask_user and not has_live_topic:
         try:
             pov_text = "" if rex_pov.pov_recently_spoken() else rex_pov.active_pov_text()
         except Exception:
             pov_text = ""
-        if pov_text:
-            pov_volunteered = True
-            directive = (
-                "Still quiet. Keep the room alive by VOLUNTEERING what's on your mind "
-                "right now — " + pov_text + " Say it like a passing thought you want "
-                "them to react to. Do NOT ask a question this time, and do not sign off "
-                "or announce the silence."
-            )
+    directive, pov_volunteered = _idle_banter_directive(ask_user, has_live_topic, pov_text)
     # The generate + govern + speak + on-spoken bookkeeping, deferred so the action
     # governor can run it ONLY if idle banter wins the tick (enforce mode). Captures
     # `directive`/`ask_user`/`person_id` decided above.
@@ -3518,8 +3548,8 @@ def _maybe_idle_banter(
                     "conversation alive. "
                     + ("Ask one short, genuine question about the user."
                        if ask_user else
-                       "Volunteer one specific Rex opinion, preference, or observation; "
-                       "do not ask a question.")
+                       "Volunteer one specific Rex opinion or reaction about what you were "
+                       "JUST talking about; stay on that topic; do not ask a question.")
                 ),
             )
             # Asking IS the point of an "ask the user" nudge — force the question
