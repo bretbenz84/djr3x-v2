@@ -3552,19 +3552,50 @@ def _greeting_profile(person_db_id: Optional[int]) -> tuple[str, bool]:
     return ("You barely know them — a polite, friendly hello.", False)
 
 
-def _build_simple_greeting_prompt(first_name: str, tone: str, *, note: str = "") -> str:
+# Short, warm "hello" openers rotated for REPEAT greetings within the day / an ~8h
+# window, so seeing Bret a second/third time isn't always "how are you, Bret?". All are
+# question-style so they fit the "ends in a question mark" instruction. The default
+# ("how are you") is reserved for a FIRST greeting; repeats rotate through the rest.
+_GREETING_OPENERS = (
+    "how are you",        # default — first greeting of the window
+    "what's up",
+    "what's new",
+    "how's it going",
+    "how've you been",
+    "what's good",
+    "how's your day going",
+)
+
+
+def _repeat_greeting_opener(greeting_ordinal: int) -> Optional[str]:
+    """Pick a rotated short opener for a REPEAT greeting so a same-day / within-window
+    return varies instead of always "how are you". ``greeting_ordinal`` is 1-based (1 =
+    first greeting of the window). Rotation is keyed on that count, which persists in the
+    DB (greetings_today), so even restarting the program within the window cycles the
+    opener. Returns None for the first greeting (use the default warm "how are you")."""
+    variants = _GREETING_OPENERS[1:]
+    if greeting_ordinal <= 1 or not variants:
+        return None
+    return variants[(greeting_ordinal - 2) % len(variants)]
+
+
+def _build_simple_greeting_prompt(
+    first_name: str, tone: str, *, note: str = "", opener: Optional[str] = None,
+) -> str:
     """A plain, warm, human greeting — the way a real friend says hello. No roast, no
-    clever theme, no interest hook; just a friendly 'how are you?'. `note` optionally
-    sets the situation (seen earlier today, been a while) so it lands naturally."""
+    clever theme, no interest hook; just a friendly hello. `note` optionally sets the
+    situation (seen earlier today, been a while) so it lands naturally. `opener` sets the
+    hello STYLE (e.g. "what's up") for repeat-visit variety; defaults to "how are you"."""
     note_clause = (note.strip() + " ") if note else ""
+    opener = (opener or "how are you").strip()
     return (
         f"You see {first_name}. {note_clause}{tone} Give a simple, natural, warm hello "
-        f"and ask how they are — exactly how a real friend greets you (e.g. 'Hey "
-        f"{first_name}, how are you?' or 'Good to see you, {first_name} — how've you "
-        f"been?'). Keep it to ONE short, genuine line. NO roast, NO 'oh it's you again', "
-        f"NO clever bit or Star Wars one-liner, NO 'what do you need / what are you up to "
-        f"/ working on / tinkering with', and NO interest callbacks — just a warm hello "
-        f"by name that ends in a question mark."
+        f"that opens with a \"{opener}\"-style greeting — exactly how a real friend says "
+        f"hello (e.g. 'Hey {first_name}, {opener}?', or a close, natural variant of that). "
+        f"Keep it to ONE short, genuine line. NO roast, NO 'oh it's you again', NO clever "
+        f"bit or Star Wars one-liner, NO 'what do you need / what are you up to / working "
+        f"on / tinkering with', and NO interest callbacks — just a warm hello by name that "
+        f"ends in a question mark."
     )
 
 
@@ -3582,7 +3613,9 @@ def _build_long_absence_prompt(first_name: str, days: float, *, tone: str = "") 
     )
 
 
-def _build_recent_return_prompt(first_name: str, hours: float, *, tone: str = "") -> str:
+def _build_recent_return_prompt(
+    first_name: str, hours: float, *, tone: str = "", opener: Optional[str] = None,
+) -> str:
     if hours < 1.5:
         span = "a little while ago"
     elif hours < 24:
@@ -3590,7 +3623,7 @@ def _build_recent_return_prompt(first_name: str, hours: float, *, tone: str = ""
     else:
         span = "yesterday"
     return _build_simple_greeting_prompt(
-        first_name, tone, note=f"You last saw {first_name} {span}.",
+        first_name, tone, note=f"You last saw {first_name} {span}.", opener=opener,
     )
 
 
@@ -3619,10 +3652,12 @@ def _same_day_return_count(person_db_id: Optional[int]) -> int:
 
 def _build_same_day_return_prompt(
     first_name: str, prior_greetings_today: int, *, tone: str = "",
+    opener: Optional[str] = None,
 ) -> str:
     """A warm, simple 'good to see you back' for a same-day repeat activation —
     NOT a roast. `prior_greetings_today` is how many times Rex already greeted them
-    earlier today (>=1 here)."""
+    earlier today (>=1 here). `opener` varies the hello style so repeat visits in the
+    same window don't all sound like 'how are you?'."""
     if prior_greetings_today >= 2:
         note = (
             f"You've already seen {first_name} a couple of times today — you're glad "
@@ -3630,7 +3665,7 @@ def _build_same_day_return_prompt(
         )
     else:
         note = f"You saw {first_name} earlier today and here they are again — nice."
-    return _build_simple_greeting_prompt(first_name, tone, note=note)
+    return _build_simple_greeting_prompt(first_name, tone, note=note, opener=opener)
 
 
 def _build_anticipation_prompt(
@@ -6439,13 +6474,21 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 # return greetings AND the simple warm default below.
                 greeting_tone, greeting_warm_default = _greeting_profile(person_db_id)
 
+                # Repeat-visit opener variety: rotate a short hello ("what's up?",
+                # "what's new?") for a same-day / within-window return so it isn't always
+                # "how are you?". Keyed on greetings_today (persists across runs), so even
+                # restarting the program within the window cycles the opener. None on the
+                # first greeting → the default warm "how are you".
+                prior_today = _same_day_return_count(person_db_id)
+                greeting_opener = _repeat_greeting_opener(prior_today + 1)
+
                 # Priority 3.5 — same-day repeat activation. A warm "good to see you back",
                 # NOT a roast, keyed on Rex's recorded greetings_today_count.
                 if prompt is None:
-                    prior_today = _same_day_return_count(person_db_id)
                     if prior_today >= 1:
                         prompt = _build_same_day_return_prompt(
-                            first_name, prior_today, tone=greeting_tone)
+                            first_name, prior_today, tone=greeting_tone,
+                            opener=greeting_opener)
                         label = f"startup same-day return (#{prior_today + 1}) for {person_name}"
                         emotion = "happy"
                         _log.info(
@@ -6479,7 +6522,8 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         and process_uptime >= startup_recent_grace
                     ):
                         prompt = _build_recent_return_prompt(
-                            first_name, absence[1], tone=greeting_tone)
+                            first_name, absence[1], tone=greeting_tone,
+                            opener=(greeting_opener if absence[1] <= 8.0 else None))
                         label = f"startup recent-return for {person_name}"
                         emotion = "happy"
                         _log.info(
@@ -6494,7 +6538,8 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 # per Bret's feedback that a greeting should just be a friendly hello, not
                 # a themed hook or a roast.
                 if prompt is None and greeting_warm_default:
-                    prompt = _build_simple_greeting_prompt(first_name, greeting_tone)
+                    prompt = _build_simple_greeting_prompt(
+                        first_name, greeting_tone, opener=greeting_opener)
                     label = f"first-sight warm greeting for {person_name}"
                     emotion = "happy"
                     _log.info(

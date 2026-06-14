@@ -59,5 +59,27 @@ class GreetingPromptTest(unittest.TestCase):
             self.assertNotIn("accusatory", p)
 
 
+class RepeatGreetingOpenerTest(unittest.TestCase):
+    """Repeat visits in the same window vary the opener instead of always 'how are you'."""
+
+    def test_first_greeting_uses_default(self):
+        self.assertIsNone(c._repeat_greeting_opener(1))  # None -> default "how are you"
+
+    def test_repeats_rotate_and_skip_the_default(self):
+        openers = [c._repeat_greeting_opener(n) for n in range(2, 8)]
+        self.assertTrue(all(o for o in openers))           # all non-None
+        self.assertNotIn("how are you", openers)           # never the default on a repeat
+        self.assertEqual(len(set(openers)), len(openers))  # all distinct within one cycle
+
+    def test_rotation_wraps(self):
+        # Cycles back to the first variant after exhausting the pool.
+        self.assertEqual(c._repeat_greeting_opener(2), c._repeat_greeting_opener(2 + len(c._GREETING_OPENERS) - 1))
+
+    def test_same_day_return_prompt_honors_opener(self):
+        p = c._build_same_day_return_prompt("Bret", 1, tone="t.", opener="what's up")
+        self.assertIn("what's up", p.lower())
+        self.assertNotIn("how are you", p.lower())  # the rotated opener replaces the default
+
+
 if __name__ == "__main__":
     unittest.main()
