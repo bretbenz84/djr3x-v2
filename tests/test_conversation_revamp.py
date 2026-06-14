@@ -756,13 +756,26 @@ class SubjectPivotTest(unittest.TestCase):
     """When a subject stops engaging the user, Rex pivots to a related/new one
     instead of probing a dead topic."""
 
-    def setUp(self):
-        from intelligence import conversation_steering
+    def _reset_pipeline_state(self):
+        # build_turn_directive() / build_frame() read several module-global states.
+        # A PRIOR test can leave e.g. user_energy in a low-energy mode (sizing
+        # "I guess" as micro -> allow_question forced False) or topic_thread on a
+        # stale thread. Reset the whole pipeline so this test is order-independent.
+        from intelligence import (
+            conversation_steering, user_energy, question_budget, topic_thread,
+            comedy_modes,
+        )
         conversation_steering.clear()
+        user_energy.clear()
+        question_budget.clear()
+        topic_thread.clear()
+        comedy_modes.reset_recent_state()
+
+    def setUp(self):
+        self._reset_pipeline_state()
 
     def tearDown(self):
-        from intelligence import conversation_steering
-        conversation_steering.clear()
+        self._reset_pipeline_state()
 
     def _steer(self, *turns):
         from intelligence import conversation_steering as cs

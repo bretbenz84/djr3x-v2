@@ -6526,6 +6526,8 @@ _INTRO_INVERSE_RELATIONSHIP = {
     "mom": "child",
     "aunt": "niece_or_nephew",
     "uncle": "niece_or_nephew",
+    "nephew": "aunt_or_uncle",
+    "niece": "aunt_or_uncle",
     "boss": "employee",
     "supervisor": "employee",
     "manager": "employee",
@@ -6540,7 +6542,8 @@ _INTRO_SYMMETRIC_RELATIONSHIPS = {
 }
 _INTRO_SELF_EXPLANATORY_RELATIONSHIPS = {
     "father", "mother", "parent", "dad", "mom", "son", "daughter", "child",
-    "aunt", "uncle", "grandfather", "grandmother", "grandparent",
+    "aunt", "uncle", "niece", "nephew", "cousin",
+    "grandfather", "grandmother", "grandparent",
     "brother", "sister", "sibling", "wife", "husband", "spouse",
     "partner", "girlfriend", "boyfriend", "fiance", "fiancee",
 }
@@ -6556,31 +6559,15 @@ def _intro_relationship_question_instruction(
     introducer_first: str,
     introduced_first: str,
 ) -> str:
-    rel = (relationship or "").strip().lower().replace(" ", "_")
-    if rel in {"father", "mother", "parent", "dad", "mom"}:
-        return (
-            f"Then ask {introduced_first} exactly one easy, playful question "
-            f"about {introducer_first}'s origin story or what {introducer_first} "
-            f"was like before the current firmware."
-        )
-    if rel in {"partner", "girlfriend", "boyfriend", "fiance", "fiancee", "wife", "husband", "spouse"}:
-        return (
-            f"Then ask {introduced_first} exactly one easy, playful question "
-            f"about what it is like being in {introducer_first}'s orbit."
-        )
-    if rel in {"brother", "sister", "sibling"}:
-        return (
-            f"Then ask {introduced_first} exactly one easy, playful question "
-            f"about shared family lore or what {introducer_first} was like growing up."
-        )
-    if rel in {"aunt", "uncle", "grandfather", "grandmother", "grandparent"}:
-        return (
-            f"Then ask {introduced_first} exactly one easy question about family "
-            f"lore or what {introducer_first} was like from their angle."
-        )
+    # Curiosity goes to the NEWCOMER about THEMSELVES. Rex is meeting a new person and
+    # is supposed to get to know THEM — not interview the introducer by proxy (the
+    # live "ask about Bret's origin story / cool-uncle-award" miss where Rex never got
+    # curious about the nephew). `relationship`/`introducer_first` are kept in the
+    # signature for callers but no longer steer the question toward the introducer.
     return (
-        f"Then ask {introduced_first} exactly one easy question that fits their "
-        f"relationship to {introducer_first}."
+        f"Then turn genuine curiosity on {introduced_first} and ask THEM exactly one "
+        f"easy get-to-know-you question about themselves — what they do, where "
+        f"they're from, or what they're into. Make {introduced_first} the subject."
     )
 
 
@@ -6777,9 +6764,10 @@ def _intro_ack_and_followup(
         prompt = (
             f"{introducer_first} just explicitly introduced {introduced_first} "
             f"as their {rel_clause}. {special_context} In ONE short "
-            f"in-character Rex line, {special_quip_instruction} Then ask how "
-            f"{introduced_first} and {introducer_first} know each other. Address {introduced_first}, "
-            f"not just {introducer_first}."
+            f"in-character Rex line, {special_quip_instruction} Then turn curiosity "
+            f"on {introduced_first} and ask THEM one easy get-to-know-you question "
+            f"about themselves (what they do, where they're from, or what they're "
+            f"into). Address {introduced_first} directly, not {introducer_first}."
         )
     elif visible_newcomer and self_explanatory_relationship:
         question_instruction = _intro_relationship_question_instruction(
@@ -6798,13 +6786,15 @@ def _intro_ack_and_followup(
         )
     elif visible_newcomer:
         prompt = (
-            f"{introducer_first} just explicitly introduced {introduced_first} "
-            f"as their {rel_clause}. This is a social introduction with at least "
-            f"three participants. In ONE short in-character Rex line, acknowledge "
-            f"{introduced_first} by name with a funny but friendly quip, then ask "
-            f"one natural question about how {introduced_first} and {introducer_first} "
-            f"know each other or what story Rex is missing. Address {introduced_first}, "
-            f"not just {introducer_first}. Keep it warm, conversational, and not mean."
+            f"{introducer_first} just introduced {introduced_first} as their "
+            f"{rel_clause} — someone you are meeting for the FIRST time. You want to "
+            f"get to know {introduced_first}. In one or two short in-character Rex "
+            f"sentences: greet {introduced_first} by name with a warm, funny beat, "
+            f"THEN ask {introduced_first} ONE easy get-to-know-you question about "
+            f"THEMSELVES — what they do, where they're from, or what they're into. "
+            f"Address {introduced_first} directly. Do NOT make this about Rex, do NOT "
+            f"ask a rhetorical question about {introducer_first}, and do NOT merely "
+            f"ask how they know each other. Warm and conversational, not mean."
         )
     else:
         prompt = (
@@ -6827,29 +6817,28 @@ def _intro_ack_and_followup(
             "specifics from the file and never anything unkind."
         )
     try:
-        text = llm.get_response(prompt) or ""
+        # Generate AS the newcomer's turn (person_id=introduced_id) so the system
+        # prompt frames Wade as the person Rex is meeting and getting to know, rather
+        # than person_id=None (which gave a Bret-only cast and a Rex-centric drift).
+        text = llm.get_response(prompt, introduced_id) or ""
     except Exception as exc:
         _log.debug("intro ack generation failed: %s", exc)
         text = ""
     if not text:
         special_ack = person_specials.special_intro_ack(introduced_name)
-        if special_ack and self_explanatory_relationship:
-            text = (
-                f"{special_ack} What should I know about {introducer_first} "
-                "from your side of the evidence locker?"
-            )
-        elif special_ack:
-            text = (
-                f"{special_ack} How did you end up in {introducer_first}'s orbit?"
-            )
+        if special_ack:
+            text = f"{special_ack} So what's your story — what do you do?"
         elif self_explanatory_relationship:
             text = (
                 f"{introduced_first}, welcome. So you're {introducer_first}'s "
-                f"{rel_clause}; suddenly several mysteries have useful context. "
-                f"What should I know about {introducer_first} from your side of the evidence locker?"
+                f"{rel_clause} — that explains a few things. What's your story; "
+                f"what do you do when you're not being introduced to droids?"
             )
         else:
-            text = f"{introduced_first}, welcome to the frequency. How did you end up in {introducer_first}'s orbit?"
+            text = (
+                f"{introduced_first}, welcome to the frequency. So what's your "
+                f"deal — what are you into?"
+            )
     if not visible_newcomer and not text.lower().startswith("nice to meet you"):
         text = (
             f"Nice to meet you, {introduced_first}. Give me a quick hello so "

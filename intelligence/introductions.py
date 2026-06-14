@@ -21,7 +21,7 @@ INTRO_FOLLOWUP_TTL_SECS = 90.0
 
 _REL_WORDS = (
     "friend|best friend|father|dad|mother|mom|parent|coworker|co-worker|"
-    "colleague|boss|supervisor|manager|aunt|uncle|partner|girlfriend|"
+    "colleague|boss|supervisor|manager|aunt|uncle|nephew|niece|partner|girlfriend|"
     "boyfriend|fiancee|fiance|wife|husband|spouse|sister|brother|sibling|cousin|"
     "roommate|neighbor|neighbour|dog|cat|pet"
 )
