@@ -422,7 +422,7 @@ def _is_polar_or_tag_question(question: str) -> bool:
 #
 # Backend (config.CONVERSATION_ARC_BACKEND): "openai" (default) summarizes with
 # gpt-4o-mini via the existing OpenAI client for a rich 5-field schema (Topics /
-# Shared / Mood / Landed-flopped / Open threads); "local" uses the qwen2.5:1.5b
+# Shared / Mood / Used-up / Open threads); "local" uses the qwen2.5:1.5b
 # sidecar with a 3-field factual-only schema. The cloud call is fine here because
 # the refresh is off the speech path and Rex's replies already depend on OpenAI.
 #
@@ -569,7 +569,7 @@ def arc_reads_flat() -> bool:
     """True when the arc's Mood read says the conversation is falling flat.
 
     Drives the 'ease off the roast' behavior (`social_frame._roast_level`). Keyed
-    on Mood (the reliable 'read the room' field) rather than Landed/flopped, which
+    on Mood (the reliable 'read the room' field) rather than Used up/flopped, which
     usually mentions some flop every turn. Empty/positive arc → False.
     """
     return bool(_ARC_FLAT_MOOD_RE.search(_arc_field(arc_summary(), "Mood")))
@@ -593,10 +593,12 @@ def build_arc_directive() -> str:
     if not summary:
         return ""
     return (
-        "Conversation arc — your running memory of THIS conversation. Lean on it: "
-        "don't re-ask questions or reuse jokes/roasts you've already used, and you "
-        "MAY call back to an open thread when it fits naturally. Never force a "
-        "callback, read these notes aloud, or recite them verbatim.\n" + summary
+        "Conversation arc — your running memory of THIS conversation. Use it to AVOID "
+        "repeating yourself: don't re-ask questions, and don't reuse any joke, premise, "
+        "roast, or angle you've already used — the 'Used up' line lists what you've spent, "
+        "so steer clear of it even reworded (a premise that landed is SPENT, not a cue to "
+        "do it again). You MAY call back to an Open thread when it genuinely fits. Never "
+        "force a callback, read these notes aloud, or recite them verbatim.\n" + summary
     )
 
 
@@ -788,7 +790,9 @@ def _build_arc_prompt(transcript_rendered: str, *, rich: bool = True) -> str:
             "Topics: <subjects discussed>\n"
             "Shared: <concrete facts the user revealed about themselves>\n"
             "Mood: <the user's current mood and energy>\n"
-            "Landed/flopped: <what amused or engaged them; what fell flat or they dodged>\n"
+            "Used up (do NOT reuse): <jokes, premises, roasts, or comedic angles Rex has "
+            "ALREADY used this conversation, plus anything that fell flat or they dodged — "
+            "all of it to AVOID next, not repeat>\n"
             "Open threads: <specific things Rex could follow up on later>"
         )
     # Local 1.5B sidecar — three factual fields only (it can't judge affect).

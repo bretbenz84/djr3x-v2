@@ -55,7 +55,7 @@ class ArcRefreshTest(_ArcTestBase):
             "Topics: astrophotography\n"
             "Shared: shoots deep-sky from his backyard\n"
             "Mood: relaxed, enthusiastic\n"
-            "Landed/flopped: deep-sky imaging landed; small talk flopped\n"
+            "Used up (do NOT reuse): deep-sky imaging bit; small talk flopped\n"
             "Open threads: which galaxy he shoots next"
         )
         ran, gen = self._run_refresh(
@@ -185,7 +185,7 @@ class ArcSchemaAndRenderTest(_ArcTestBase):
         rich = tt._build_arc_prompt("User: hi", rich=True)
         local = tt._build_arc_prompt("User: hi", rich=False)
         self.assertIn("Mood:", rich)
-        self.assertIn("Landed/flopped:", rich)
+        self.assertIn("Used up", rich)              # the spent-bits / don't-reuse field
         self.assertNotIn("Mood:", local)
         self.assertIn("Topics:", local)
 
@@ -295,7 +295,7 @@ class ArcPersistenceTest(_ArcTestBase):
                 "Topics: astrophotography, weekend\n"
                 "Shared: shoots from his backyard\n"
                 "Mood: relaxed, enthusiastic\n"
-                "Landed/flopped: deep-sky landed\n"
+                "Used up (do NOT reuse): deep-sky bit\n"
                 "Open threads: which galaxy next"
             ),
         )
