@@ -416,6 +416,9 @@ def _next_useful_question(person_id: int) -> Optional[dict]:
 def _friendship_question_allowed(text: str, person_id: Optional[int]) -> bool:
     if person_id is None:
         return False
+    from intelligence import profile_questions
+    if profile_questions.person_is_minor(person_id):
+        return False  # don't run the reactive friendship interview on a child/teen
     if _looks_like_user_question(text):
         return False
     if _PLAN_STATEMENT_PAT.search(text or ""):

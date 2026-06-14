@@ -100,13 +100,41 @@ def question_blocked_by_boundary(person_id: Optional[int], question: dict) -> bo
         return False
 
 
+_MINOR_AGE_VALUES = {"child", "teen", "minor"}
+
+
+def person_is_minor(person_id: int, *, person: Optional[dict] = None) -> bool:
+    """True when the person is a child/teen. Used to skip the profile-question
+    interview — a 10-12 year old should not be asked job / values / regret / travel
+    questions, and a shy kid shouldn't be interviewed at all."""
+    try:
+        if person is None:
+            person = people_memory.get_person(person_id)
+        if person and str(person.get("age_category") or "").lower() in _MINOR_AGE_VALUES:
+            return True
+        for fact in facts_memory.get_facts(person_id):
+            if (
+                str(fact.get("key") or "").lower() == "age_category"
+                and str(fact.get("value") or "").lower() in _MINOR_AGE_VALUES
+            ):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def next_profile_question(person_id: int) -> Optional[dict]:
     """
     Return the next tier-appropriate QUESTION_POOL item this person has not
     answered, been asked, covered with a profile fact, or blocked by boundary.
+
+    Returns None for a child/teen — Rex does not run the get-to-know-you interview
+    (job, hometown, values, travel) on a minor.
     """
     try:
         person = people_memory.get_person(person_id)
+        if person_is_minor(person_id, person=person):
+            return None
         tier = person.get("friendship_tier", "stranger") if person else "stranger"
         max_depth = config.TIER_MAX_DEPTH.get(tier, 1)
         asked = rel_memory.get_asked_question_keys(person_id)

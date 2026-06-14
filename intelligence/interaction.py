@@ -3296,6 +3296,19 @@ def _maybe_low_memory_idle_question(
     person_id = _primary_session_person_id()
     if person_id is None or person_id in _low_memory_idle_questions_spoken:
         return False
+    # Don't cold-open a get-to-know-you interview on a disengaged / quiet speaker
+    # (Tier 2 — a shy person giving one-word answers). The child case is handled by
+    # _next_profile_question() returning None, but back off on low energy too.
+    try:
+        _energy = user_energy.snapshot() or {}
+        if (
+            str(_energy.get("engagement") or "").lower() == "low"
+            or str(_energy.get("mode") or "").lower() == "quiet"
+            or str(_energy.get("question_appetite") or "").lower() == "low"
+        ):
+            return False
+    except Exception:
+        pass
     max_facts = int(getattr(config, "LOW_MEMORY_PROFILE_MAX_FACTS", 4) or 4)
     if _profile_fact_count(person_id) > max_facts:
         return False

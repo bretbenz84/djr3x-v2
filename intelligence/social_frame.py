@@ -256,6 +256,17 @@ def build_frame(
     elif budget_allows and plan.target not in {"micro"}:
         allow_question = False
 
+    # Hard low-engagement gate (Tier 2): a shy or disengaged speaker — a child giving
+    # one-word answers, or a "quiet"/"low" energy read — should NOT be interviewed.
+    # user_energy "low" used to be advisory prose only; make it an actual gate. An
+    # urgent identity ask (re-enabled just below) still overrides it.
+    if allow_question:
+        appetite = str((energy or {}).get("question_appetite") or "").lower()
+        engagement = str((energy or {}).get("engagement") or "").lower()
+        energy_mode = str((energy or {}).get("mode") or "").lower()
+        if appetite == "low" or engagement == "low" or energy_mode == "quiet":
+            allow_question = False
+
     if plan.max_words <= 12 or plan.target == "micro":
         allow_question = False
     if urgent_identity and unknown_count:
