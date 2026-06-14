@@ -3890,21 +3890,21 @@ PLAY_STARTUP_BOOT_TTS = True
 # STARTUP_BOOT_TTS_STATE_PATH). Keep them as fixed strings so each one caches in
 # the ElevenLabs TTS cache after its first play and stays free thereafter.
 STARTUP_BOOT_TTS_LINES = [
-    "Hang on folks while I'm booting up. I'm still getting used to my programming!",
+    "Hang on folks while I'm loading up. I'm still getting used to my programming!",
     "Welcome aboard! This is Captain Rex from the cockpit. I know this is probably "
-    "your first flight, and it's… mine, too! Ha ha.",
+    "your first flight, and it's… mine, too!",
     "Just a moment, folks — running through my pre-flight checklist. Let's see… "
     "thrusters, navi-computer, personality core… ah, there it is!",
     "Hang tight while I finish warming up the old circuits. They told me this droid "
-    "was fully tested. They lied! Ha ha — kidding. Mostly.",
+    "was fully tested. They lied!",
     "Almost ready, everybody! Just topping off the enthusiasm tanks and "
-    "double-checking my sense of humor. Both at full capacity!",
+    "double-checking my sense of humor. Both at full capacity.",
     "Give me a second here, folks — my systems are still coming online. You know how "
     "it is. You spend forty years in storage, you forget where everything is!",
     "Sit back and relax while I get my bearings. First time flying this thing, but "
-    "how hard can it be? Don't answer that!",
-    "Powering up, powering up… reflexes, check. Charm, check. Flight experience… "
-    "we'll circle back to that one. Ha ha!",
+    "how hard can it be?",
+    "Powering up… reflexes, check. Charm, check. Flight experience… "
+    "we'll circle back to that one.",
 ]
 # Backward-compatible single line (first list entry). Some tests/configs still
 # reference STARTUP_BOOT_TTS_LINE directly; main.py falls back to it when the
