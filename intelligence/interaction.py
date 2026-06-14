@@ -6394,22 +6394,31 @@ def _maybe_auto_refresh_voice(
     person_id: int,
     voice_score: float,
     audio_array: np.ndarray,
+    *,
+    face_confirmed: bool = False,
 ) -> None:
     """
-    On high-confidence face+voice agreement, append the current audio as an
-    additional voice biometric row for this person, up to a per-person cap.
+    Append the current audio as an additional voice biometric row for this person,
+    up to a per-person cap, so the voiceprint improves over time without manual
+    re-enrollment.
 
-    Runs asynchronously so the enrollment (which recomputes an embedding via
-    Resemblyzer) doesn't delay Rex's response. Rate-limited to one refresh per
-    person per session.
+    Fires on EITHER a high voice score OR a confident FACE confirmation. The
+    face-confirmed path is the important one: a returning user's voice scores low
+    (~0.55), so the old "voice >= 0.90" gate never captured the exact hard samples
+    that would improve the print. When the face is the ground truth, capture the
+    sample even at a low voice score.
+
+    Runs asynchronously so re-embedding doesn't delay Rex's response. One refresh
+    per person per session.
     """
     if person_id is None:
         return
     if person_id in _voice_refreshed_this_session:
         return
-    min_score = float(getattr(config, "AUTO_VOICE_REFRESH_MIN_SCORE", 0.90))
-    if voice_score < min_score:
-        return
+    if not face_confirmed:
+        min_score = float(getattr(config, "AUTO_VOICE_REFRESH_MIN_SCORE", 0.90))
+        if voice_score < min_score:
+            return
     max_samples = int(getattr(config, "AUTO_VOICE_REFRESH_MAX_SAMPLES", 5))
     current = people_memory.count_biometrics(person_id, "voice")
     if current >= max_samples:
@@ -7722,26 +7731,33 @@ def _told_about_teller_name(introduced_id: Optional[int]) -> Optional[str]:
 
 def _process_audio(
     audio_array: np.ndarray,
-) -> tuple[str, Optional[int], Optional[str], float]:
+) -> tuple[str, Optional[int], Optional[str], float, float]:
     """
     Run transcription and speaker ID simultaneously in two threads.
 
-    Returns (transcribed_text, raw_best_id, raw_best_name, raw_best_score).
-    The speaker values are the RAW top voice-ID candidate — NOT threshold-
-    filtered. Callers apply hard/soft thresholds themselves so they can also
-    consult session context (recent engagement) for identity continuity.
+    Returns (transcribed_text, raw_best_id, raw_best_name, raw_best_score,
+    raw_best_margin). The speaker values are the RAW top per-person centroid
+    candidate — NOT threshold-filtered. raw_best_margin is the gap to the next
+    DIFFERENT person (large when only one person is enrolled), so callers can
+    accept a low score only when the winner is unambiguous.
     """
     text_box: list[str] = [""]
-    speaker_box: list = [None, None, 0.0]  # [person_id, name, score]
+    speaker_box: list = [None, None, 0.0, 0.0]  # [person_id, name, score, margin]
 
     def _transcribe() -> None:
         text_box[0] = transcription.transcribe(audio_array)
 
     def _identify() -> None:
-        pid, name, score = speaker_id.identify_speaker_raw(audio_array)
+        ranked = speaker_id.rank_speakers(audio_array)
+        if not ranked:
+            return
+        speaker_id._log_scoreboard(ranked)
+        pid, name, score = ranked[0]
+        second = ranked[1][2] if len(ranked) > 1 else -1.0
         speaker_box[0] = pid
         speaker_box[1] = name
-        speaker_box[2] = score
+        speaker_box[2] = float(score)
+        speaker_box[3] = float(score - second)
 
     t1 = threading.Thread(target=_transcribe, daemon=True, name="transcription")
     t2 = threading.Thread(target=_identify, daemon=True, name="speaker-id")
@@ -7750,7 +7766,7 @@ def _process_audio(
     t1.join()
     t2.join()
 
-    return text_box[0] or "", speaker_box[0], speaker_box[1], speaker_box[2]
+    return text_box[0] or "", speaker_box[0], speaker_box[1], speaker_box[2], speaker_box[3]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -13986,10 +14002,11 @@ def _handle_speech_segment(
             raw_best_id = raw_best_id_override
             raw_best_name = raw_best_name_override
             speaker_score = float(speaker_score_override or 0.0)
+            speaker_margin = 1.0  # explicit override — not a voice scoreboard, trust it
             transcript_ready_at = time.monotonic()
             _latency_log(turn_start, "text_input", process_started)
         else:
-            text, raw_best_id, raw_best_name, speaker_score = _process_audio(audio_array)
+            text, raw_best_id, raw_best_name, speaker_score, speaker_margin = _process_audio(audio_array)
             transcript_ready_at = time.monotonic()
             _latency_log(turn_start, "transcribe_and_speaker_id", process_started)
 
@@ -14115,6 +14132,8 @@ def _handle_speech_segment(
         # their voice won't match the engaged person.
         hard_threshold = float(config.SPEAKER_ID_SIMILARITY_THRESHOLD)
         soft_threshold = float(getattr(config, "SPEAKER_ID_SOFT_THRESHOLD", 0.60))
+        known_floor = float(getattr(config, "SPEAKER_ID_KNOWN_SPEAKER_FLOOR", 0.45))
+        known_margin = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.07))
         try:
             _recent_engaged = consciousness.get_recent_engagement()
         except Exception:
@@ -14124,15 +14143,41 @@ def _handle_speech_segment(
         person_name: Optional[str] = None
         sticky_accepted = False
         identity_resolution_override: Optional[str] = None
-        if raw_best_id is not None and speaker_score >= hard_threshold:
+        if (
+            raw_best_id is not None
+            and speaker_score >= hard_threshold
+            and speaker_margin >= known_margin
+        ):
+            # Hard accept, margin-guarded: the threshold sits low (0.50, where a real
+            # returning speaker actually scores), so require the winner to clearly beat
+            # the next different person before trusting voice alone.
             person_id = raw_best_id
             person_name = raw_best_name
+        elif (
+            raw_best_id is not None
+            and speaker_score >= known_floor
+            and speaker_margin >= known_margin
+        ):
+            # Engagement-FREE known-speaker soft-accept: a returning known person who
+            # just started speaking — even off-camera / not the engaged person — is
+            # recognized by voice when their match is unambiguous (clears the floor AND
+            # beats the runner-up by the margin). This is what lets the off-camera
+            # "what can you tell about me?" identify Bret without him saying his name.
+            person_id = raw_best_id
+            person_name = raw_best_name
+            _log.info(
+                "[interaction] voice known-speaker soft-accept — person_id=%s name=%r "
+                "score=%.3f margin=%.3f (floor=%.2f, margin>=%.2f)",
+                person_id, person_name, speaker_score, speaker_margin, known_floor, known_margin,
+            )
         elif (
             raw_best_id is not None
             and speaker_score >= soft_threshold
             and _recent_engaged is not None
             and raw_best_id == _recent_engaged.get("person_id")
         ):
+            # Legacy session-sticky continuity for the engaged person (no margin needed —
+            # face/engagement context backs it).
             person_id = raw_best_id
             person_name = raw_best_name or _recent_engaged.get("name")
             sticky_accepted = True
@@ -14302,69 +14347,35 @@ def _handle_speech_segment(
                     and not unknown_visible
                     and not _other_known_visible_recently(ws_pid)
                 ):
-                    single_visible_continuity_floor = (
-                        _single_visible_engaged_continuity_floor(
-                            ws_pid=ws_pid,
-                            raw_best_id=raw_best_id,
-                        )
-                    )
-                    if (
-                        len(visible_known_by_id) == 1
-                        # Only attribute to the engaged person if the top voice
-                        # candidate is actually them. Otherwise a second person
-                        # speaking in a one-on-one frame gets their words pinned
-                        # on the engaged person at a sub-threshold score.
-                        and _safe_int(raw_best_id) == _safe_int(ws_pid)
-                        and speaker_score >= single_visible_continuity_floor
-                    ):
+                    # Exactly one known face visible, nobody unknown around, and no
+                    # other known person recently in frame: the visible person IS the
+                    # speaker. Trust the FACE regardless of voice score — a returning
+                    # user's voiceprint frequently misses the threshold, and disowning
+                    # the single on-camera person as an "off-camera ghost" every turn
+                    # was the core mis-attribution (symptoms A/B/C). A confident face is
+                    # also ground truth for refreshing the (weak) voiceprint. Cross-talk
+                    # from a genuinely off-camera voice is a separate, confidence-gated
+                    # concern handled in Tier 2.
+                    if len(visible_known_by_id) == 1:
                         person_id = ws_pid
                         person_name = ws_name
                         _log.info(
-                            "[interaction] person resolution: single visible engaged "
-                            "continuity — person_id=%s name=%r voice_score=%.3f "
-                            "(floor=%.2f, raw_best=%s)",
-                            person_id,
-                            person_name,
-                            speaker_score,
-                            single_visible_continuity_floor,
-                            raw_best_id,
+                            "[interaction] person resolution: single visible known face "
+                            "%r — attributing regardless of voice (voice_score=%.3f, "
+                            "raw_best=%s)",
+                            ws_name, speaker_score, raw_best_id,
                         )
-                    # Grief-flow override: Rex just asked this engaged person
-                    # a direct question and is awaiting their reply. Voice-ID
-                    # can score just below the engaged-visible floor on short
-                    # utterances (a single name like "Joe", or noisy audio),
-                    # but face match + top-candidate match is plenty of
-                    # evidence in this context. Don't divert to off-camera
-                    # handling and lose the grief flow's turn.
-                    elif _grief_flow_active(ws_pid) and (
-                        raw_best_id == ws_pid
-                    ):
-                        grief_floor = float(
-                            getattr(config, "SPEAKER_ID_GRIEF_FLOW_FLOOR", 0.30)
-                        )
-                        if speaker_score >= grief_floor:
-                            person_id = ws_pid
-                            person_name = ws_name
-                            _log.info(
-                                "[interaction] person resolution: grief flow active for "
-                                "engaged+visible person %r — attributing despite voice "
-                                "score %.3f below engaged+visible floor (grief floor=%.2f)",
-                                ws_name, speaker_score, grief_floor,
+                        try:
+                            _maybe_auto_refresh_voice(
+                                person_id, speaker_score, audio_array, face_confirmed=True
                             )
-                        else:
-                            off_camera_unknown = True
-                            _log.info(
-                                "[interaction] person resolution: speaker-ID missed while engaged "
-                                "person %r is visible and no recent unknown face — treating as off-camera "
-                                "unknown voice",
-                                ws_name,
-                            )
+                        except Exception as exc:
+                            _log.debug("auto voice-refresh skip: %s", exc)
                     else:
                         off_camera_unknown = True
                         _log.info(
-                            "[interaction] person resolution: speaker-ID missed while engaged "
-                            "person %r is visible and no recent unknown face — treating as off-camera "
-                            "unknown voice",
+                            "[interaction] person resolution: engaged person %r visible "
+                            "but the scene is ambiguous — leaving speaker unknown",
                             ws_name,
                         )
                 elif engaged_is_visible and unknown_visible:
@@ -14386,13 +14397,15 @@ def _handle_speech_segment(
                     "[interaction] person resolution: both agreed — person_id=%s name=%r score=%.3f",
                     person_id, person_name, speaker_score,
                 )
-                # Auto-refresh voice biometric: when face AND voice both confirm
-                # the same person with HIGH voice confidence, append this audio
-                # as an additional voice-print row (up to a per-person cap). Over
-                # time this builds a more robust multi-sample representation
-                # without manual re-enrollment.
+                # Auto-refresh voice biometric: face AND voice agree on the same
+                # person, so the FACE confirms the identity — append this audio as an
+                # additional voice-print row (up to a per-person cap) EVEN at a low
+                # voice score. Capturing low-score, face-confirmed samples is exactly
+                # what improves a weak returning-user print over time.
                 try:
-                    _maybe_auto_refresh_voice(person_id, speaker_score, audio_array)
+                    _maybe_auto_refresh_voice(
+                        person_id, speaker_score, audio_array, face_confirmed=True
+                    )
                 except Exception as exc:
                     _log.debug("auto voice-refresh skip: %s", exc)
             else:
