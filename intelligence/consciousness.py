@@ -3781,6 +3781,28 @@ def _cold_open_lead_score(cand: dict) -> float:
 # Interests proper come from the interests table, not here.
 _COLD_OPEN_FACT_CATEGORIES = {"hobby", "project", "activity"}
 
+# An interest is mis-stored as a "hobby" all the time ("mint chocolate chip ice cream",
+# "my clothes", "you now"). Those read absurd as a greeting opener ("what's the latest
+# scoop on your ice cream adventures?"), so they're excluded from cold-open LEADS. A
+# consumable/static favorite is a preference, not an activity to ask "how's it going?".
+_COLD_OPEN_INTEREST_EXCLUDE_RE = re.compile(
+    r"\bice\s?cream\b|\bchocolate\b|\bcandy\b|\bcookies?\b|\bsnacks?\b|\bpizza\b|"
+    r"\bburgers?\b|\bcoffee\b|\bsoda\b|\bdessert\b|"
+    r"\bfavou?rite\s+(?:food|colou?r|snack|drink|flavou?r)\b"
+    r"|\b(?:my|your)\s+(?:clothes|bed|outfit|stuff|hair)\b"
+    r"|\b(?:hang(?:ing)?\s+out|in\s+(?:my|the)\s+bed|be\s+in\s+there|you\s+now)\b",
+    re.IGNORECASE,
+)
+
+
+def _cold_open_interest_worthy(name: str) -> bool:
+    """True when an interest is substantive enough to LEAD a greeting (an activity/
+    fandom/skill), not a static favorite or junk fragment."""
+    cleaned = (name or "").strip()
+    if len(re.findall(r"[A-Za-z']+", cleaned)) < 1:
+        return False
+    return _COLD_OPEN_INTEREST_EXCLUDE_RE.search(cleaned) is None
+
 
 def _cold_open_callback_candidates(person_db_id: int) -> list[dict]:
     """Gather interest-hook + warm-fact candidates worth OPENING a greeting with,
@@ -3789,9 +3811,9 @@ def _cold_open_callback_candidates(person_db_id: int) -> list[dict]:
     cands: list[dict] = []
     try:
         from memory import interests as interests_mem
-        for hook in (interests_mem.get_interest_hooks(person_db_id) or [])[:6]:
+        for hook in (interests_mem.get_interest_hooks(person_db_id) or [])[:8]:
             name = str(hook.get("name") or "").strip()
-            if not name:
+            if not name or not _cold_open_interest_worthy(name):
                 continue
             cands.append({
                 "kind": "interest",
@@ -6462,6 +6484,21 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                             "consciousness: first-sight interest cold-open for %s — %s:%r",
                             person_name, callback.get("kind"), callback.get("topic"),
                         )
+                        # Anti-repeat: mark the interest asked so the cold-open ROTATES
+                        # instead of re-leading with the same one every startup (the
+                        # reactive path already marks; the cold-open never did, so the
+                        # top interest — e.g. ice cream — opened forever).
+                        if callback.get("kind") == "interest" and callback.get("topic"):
+                            try:
+                                from memory import interests as interests_mem
+                                interests_mem.mark_interest_asked(
+                                    person_db_id,
+                                    str(callback["topic"]),
+                                    cooldown_days=int(getattr(
+                                        config, "COLD_OPEN_INTEREST_COOLDOWN_DAYS", 21)),
+                                )
+                            except Exception as exc:
+                                _log.debug("cold-open interest cooldown mark failed: %s", exc)
 
                 if prompt is None:
                     profile_question = _pick_startup_profile_question(person_db_id)

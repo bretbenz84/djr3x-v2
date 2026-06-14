@@ -3499,6 +3499,11 @@ PRESENCE_CELEBRATION_W_CONCRETE = 0.3
 # lead-score as celebrations — instead of falling straight to a generic profile
 # question. Set False to keep the old generic-greeting fallback.
 COLD_OPEN_INTEREST_RANK_ENABLED = True
+# After Rex opens a greeting with an interest, put that interest on a follow-up
+# cooldown so the cold-open ROTATES instead of re-leading with the same one every
+# startup (the reactive question path already does this; the cold-open never did, so
+# the top-ranked interest — e.g. "mint chocolate chip ice cream" — opened forever).
+COLD_OPEN_INTEREST_COOLDOWN_DAYS = 21
 
 # How long (seconds) a queued celebrity-style special greeting stays pending
 # before it goes stale and is dropped (consciousness person-specials greeting).
