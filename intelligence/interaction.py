@@ -57,6 +57,7 @@ from intelligence import tell_me_about
 from intelligence import memory_query
 from intelligence import social_frame
 from intelligence import comedy_modes
+from intelligence import premise_memory
 from intelligence import turn_completion
 from intelligence import friendship_patterns
 from intelligence import conversation_steering
@@ -3074,6 +3075,10 @@ def _register_rex_utterance(
         pass
     try:
         comedy_modes.note_spoken_line(text)
+    except Exception:
+        pass
+    try:
+        premise_memory.note_line(text)
     except Exception:
         pass
     try:
@@ -11174,6 +11179,10 @@ def _end_session() -> None:
         except Exception:
             pass
         try:
+            premise_memory.clear()
+        except Exception:
+            pass
+        try:
             # Persist the preoccupation (+ anti-repeat set) BEFORE wiping it, so it
             # carries across visits; the next session restores it via load_persisted().
             rex_pov.persist()
@@ -11421,6 +11430,10 @@ def _end_session() -> None:
     _idle_outro_spoken = False
     try:
         topic_thread.clear()
+    except Exception:
+        pass
+    try:
+        premise_memory.clear()
     except Exception:
         pass
     try:
@@ -12725,6 +12738,10 @@ def _apply_topic_boundary_side_effects(person_id: Optional[int], text: str) -> N
         topic_thread.clear()
     except Exception as exc:
         _log.debug("clear topic thread after boundary failed: %s", exc)
+    try:
+        premise_memory.clear()
+    except Exception as exc:
+        _log.debug("clear premise memory after boundary failed: %s", exc)
     try:
         end_thread.note_user_turn(text, person_id)
     except Exception as exc:
@@ -17945,6 +17962,7 @@ def start(*, text_only: bool = False) -> None:
     _clear_pending_memory_wipe()
     _common_first_name_prompted_this_session.clear()
     topic_thread.clear()
+    premise_memory.clear()
     dialogue_act.clear()
     user_energy.clear()
     question_budget.clear()
@@ -18025,6 +18043,7 @@ def stop() -> None:
     _recent_voice_turns.clear()
     _clear_anonymous_speaker_slots()
     topic_thread.clear()
+    premise_memory.clear()
     user_energy.clear()
     question_budget.clear()
     repair_moves.clear()

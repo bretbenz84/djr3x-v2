@@ -2297,6 +2297,15 @@ BANTER_PLAYFULNESS_SHARE = 0.5      # fraction of the waived antagonism re-route
 # unblocks close_friend / best_friend for high-warmth, heavily-ribbed relationships.
 ANTAGONISM_CAP_WARMTH_RELIEF = 0.45
 
+# PREMISE ANTI-REPEAT (intelligence/premise_memory) — the main conversational reply
+# path only ever guarded VERBATIM repeats, so Rex could land the same comedic premise
+# three times in one chat in different words ("nature reminds you convenience is
+# overrated" / "nature reminds us who's in charge" / "who's boss"). This tracks the
+# salient content of his recent lines and tells the model which premises it has spent.
+PREMISE_ANTIREPEAT_ENABLED = True
+PREMISE_ANTIREPEAT_MIN_LINES = 2    # need at least this many prior Rex lines before nudging
+PREMISE_ANTIREPEAT_MAX_KEYWORDS = 8 # cap the avoid-list so the prompt line stays tight
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ANGER ESCALATION SYSTEM
 # ─────────────────────────────────────────────────────────────────────────────

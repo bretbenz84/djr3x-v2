@@ -799,6 +799,18 @@ def assemble_system_prompt(
     except Exception as exc:
         _log.debug("conversation arc injection skipped: %s", exc)
 
+    # 6b-ii. Premise anti-repeat — names the comedic premises/angles Rex has already
+    # spent this conversation so he doesn't land the same bit reworded (the arc above
+    # tracks topics/what-landed but, on its own, can read as "do more of that"). Pure
+    # heuristic, no call. Placed right after the arc so they reinforce each other.
+    try:
+        from intelligence import premise_memory as _premise_memory
+        premise_directive = _premise_memory.build_avoid_directive()
+        if premise_directive:
+            sections.append(premise_directive)
+    except Exception as exc:
+        _log.debug("premise anti-repeat injection skipped: %s", exc)
+
     # 6c. Rex's current preoccupation — his persistent point of view (rex_pov). Gives
     # him his OWN thing to volunteer so he leads with substance instead of only
     # react→roast→question. Injected here (downstream of the agenda/social-frame
