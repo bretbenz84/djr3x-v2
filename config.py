@@ -149,6 +149,20 @@ WHISPER_CONDITION_ON_PREVIOUS_TEXT = False
 LLM_MODEL             = "gpt-4o-mini"  # Streaming chat completions
 VISION_MODEL          = "gpt-4o-mini"  # All image and scene analysis queries
 
+# OpenAI client timeouts. The SDK default is 600s, which means a single STALLED
+# streaming reply (200 OK received, then the token stream goes silent on a half-open
+# connection) can block the turn for TEN MINUTES — and because the turn handler holds
+# AEC mic-suppression until the reply finishes, Rex goes deaf AND mute the whole time
+# (observed 2026-06-14: one hung turn froze him until a force-quit). These bound it:
+#   - LLM_REQUEST_TIMEOUT_SECS: client-wide default for every OpenAI call.
+#   - LLM_STREAM_TIMEOUT_SECS: tighter per-read timeout on the streaming reply — the
+#     max gap between tokens before it raises (tokens normally arrive many/second, so
+#     a multi-second gap only happens on a stall). On timeout the stream raises, the
+#     handler yields a fallback line, the turn COMPLETES, and mic suppression releases.
+LLM_REQUEST_TIMEOUT_SECS = 30.0
+LLM_STREAM_TIMEOUT_SECS  = 18.0
+LLM_MAX_RETRIES          = 2
+
 # Fire a tiny throwaway OpenAI completion at startup (in a background thread) so
 # the first real turn doesn't pay cold TLS / HTTP-connection setup on the OpenAI
 # clients used by the answer LLM and the action router (separate clients, each

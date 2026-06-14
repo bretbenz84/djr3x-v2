@@ -33,7 +33,14 @@ from openai import OpenAI
 
 _log = logging.getLogger(__name__)
 
-_client = OpenAI(api_key=apikeys.OPENAI_API_KEY)
+# A client-wide default timeout (the SDK default is 600s) so NO OpenAI call can hang
+# the process for minutes; the streaming reply additionally passes a tighter per-read
+# timeout (see stream_response). max_retries keeps a transient blip from surfacing.
+_client = OpenAI(
+    api_key=apikeys.OPENAI_API_KEY,
+    timeout=float(getattr(config, "LLM_REQUEST_TIMEOUT_SECS", 30.0)),
+    max_retries=int(getattr(config, "LLM_MAX_RETRIES", 2)),
+)
 
 _ASSISTANT_LABEL_RE = re.compile(
     r"^\s*(?:\[(?:rex|dj[- ]?r3x)\]|(?:rex|dj[- ]?r3x))\s*[:\-–—]\s*",
@@ -983,13 +990,18 @@ def stream_response(
             ],
             stream=True,
             max_tokens=_max_tokens_for_agenda(agenda_directive),
+            # Per-read timeout: if the token stream goes silent for this long (a
+            # stalled / half-open connection), raise instead of blocking the turn —
+            # and the mic — indefinitely. The except below yields a fallback so the
+            # turn still completes and AEC suppression is released. See config note.
+            timeout=float(getattr(config, "LLM_STREAM_TIMEOUT_SECS", 18.0)),
         )
         for chunk in stream:
             delta = chunk.choices[0].delta
             if delta.content:
                 yield delta.content
     except Exception as exc:
-        _log.error("stream_response failed: %s", exc)
+        _log.error("stream_response failed (%s): %s", type(exc).__name__, exc)
         yield "...my circuits are experiencing some turbulence. Try again."
 
 
