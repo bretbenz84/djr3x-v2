@@ -2972,6 +2972,11 @@ OFFSCREEN_IDENTIFY_WINDOW_SECS = 30.0
 IDENTITY_PROMPT_DEFER_ON_DIRECT_TURN = True
 IDENTITY_PROMPT_ALLOW_PROACTIVE_ACTIVE = False
 
+# Minimum gap between CANONICAL renames of the same person. A joking child renamed
+# himself Wade->Bro->Broski with each obeyed instantly; this makes the second rename
+# within the window get a "you just changed your name" deferral instead. 0 disables.
+IDENTITY_RENAME_COOLDOWN_SECS = 120.0
+
 # Face detection can flicker off for a second while a newcomer is still present.
 # During this grace window, do not treat an unmatched voice as off-camera.
 UNKNOWN_FACE_RECENT_GRACE_SECS = 6.0

@@ -4506,6 +4506,37 @@ def _handle_pending_memory_wipe_confirmation(
     return resp
 
 
+# Slang vocatives / non-names a joking speaker offers as a "name" ("call me bro",
+# "my last name is Broski"). Renaming the canonical record to these churns identity.
+_NON_NAME_TOKENS = {
+    "bro", "broski", "bruh", "brah", "dude", "man", "dawg", "fam", "homie",
+    "homeboy", "bud", "buddy", "pal", "mate", "chief", "boss", "captain", "cap",
+    "king", "queen", "legend", "sir", "maam", "madam", "yo", "hey", "nope",
+    "nah", "idk", "dunno", "nobody", "nothing", "robot", "droid", "dj", "rex",
+}
+
+# Per-person time of the last CANONICAL rename — gate rapid churn (Wade->Bro->Broski).
+_canonical_rename_at: dict[int, float] = {}
+
+
+def _looks_like_non_name(name: str) -> bool:
+    cleaned = (name or "").strip().lower()
+    if not cleaned:
+        return True
+    tokens = re.findall(r"[a-z']+", cleaned)
+    return bool(tokens) and all(t in _NON_NAME_TOKENS for t in tokens)
+
+
+def _rename_recently(person_id: Optional[int]) -> bool:
+    if person_id is None:
+        return False
+    cooldown = float(getattr(config, "IDENTITY_RENAME_COOLDOWN_SECS", 120.0) or 0.0)
+    if cooldown <= 0:
+        return False
+    ts = _canonical_rename_at.get(int(person_id))
+    return ts is not None and (time.monotonic() - ts) < cooldown
+
+
 def _handle_name_update_request(
     text: str,
     person_id: Optional[int],
@@ -4515,6 +4546,14 @@ def _handle_name_update_request(
     new_name = _extract_name_update(text)
     if not new_name:
         return None
+
+    # Tier 2: resist identity churn. A joking child renamed himself Wade->Bro->Broski
+    # with each obeyed instantly. Reject obvious non-names, and require a cooldown
+    # between canonical renames so a rapid joke chain can't keep mutating the record.
+    if _looks_like_non_name(new_name):
+        response = f"Nice try — '{new_name}' isn't going in the name field. What's your actual name?"
+        _speak_blocking(response)
+        return response
 
     target_id, old_name = _resolve_name_update_target(person_id, person_name)
     old_clean = (old_name or "").strip()
@@ -4559,11 +4598,23 @@ def _handle_name_update_request(
         _speak_blocking(response)
         return response
 
+    if _rename_recently(target_id):
+        response = (
+            f"Easy — you just changed your name. I'll keep you as "
+            f"{old_clean or 'you are'} for now; tell me again in a bit if you mean it."
+        )
+        _speak_blocking(response)
+        return response
+
     if not people_memory.rename_person(target_id, new_name):
         response = f"I couldn't safely rename that memory to {new_name}."
         _speak_blocking(response)
         return response
 
+    try:
+        _canonical_rename_at[int(target_id)] = time.monotonic()
+    except Exception:
+        pass
     _refresh_world_state_person_name(target_id, new_name)
     _log.info(
         "[identity] renamed person_id=%s old=%r new=%r text=%r",
@@ -10165,6 +10216,17 @@ def _post_response(
     """
     # ── Follow-up delivery (sync — spoken as part of this turn) ───────────────
     global _awaiting_followup_event
+
+    # Tier 2: do not build a profile on a child. A 10-12yo's noisy joke answers
+    # ("China", "kebabs") were being stored as permanent facts. Both the direct and
+    # background learning paths below honor suppress_memory_learning, so set it.
+    if person_id is not None and not suppress_memory_learning:
+        try:
+            from intelligence import profile_questions
+            if profile_questions.person_is_minor(person_id):
+                suppress_memory_learning = True
+        except Exception:
+            pass
 
     if _game_suppresses_conversation():
         try:

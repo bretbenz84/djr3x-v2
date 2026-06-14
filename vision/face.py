@@ -355,8 +355,16 @@ def update_appearance(person_id: int, frame: np.ndarray) -> None:
             _log.error("update_appearance: JSON parse error: %s", exc)
             return
 
+    # Tier 2: don't build a physical-appearance dossier on a child/teen. Keep only the
+    # coarse age markers (so family-safe mode + child question-suppression engage); skip
+    # build / hair / height / notable_features for a minor.
+    is_minor = str(data.get("age_category") or "").strip().lower() in {"child", "teen"}
+    _MINOR_ALLOWED_KEYS = {"age_category", "age_range"}
+
     for key, value in data.items():
         if value is None:
+            continue
+        if is_minor and key not in _MINOR_ALLOWED_KEYS:
             continue
         str_value = json.dumps(value) if isinstance(value, list) else str(value)
         if not str_value or str_value == "[]":
@@ -372,7 +380,10 @@ def update_appearance(person_id: int, frame: np.ndarray) -> None:
         if key not in _SILENT_KEYS:
             _log.debug("update_appearance: stored %s for person_id=%d", key, person_id)
 
-    _log.info("update_appearance: appearance profile updated for person_id=%d", person_id)
+    _log.info(
+        "update_appearance: appearance profile updated for person_id=%d%s",
+        person_id, " (minor — age only)" if is_minor else "",
+    )
 
 
 def detect_mood(frame: np.ndarray) -> Optional[dict]:
