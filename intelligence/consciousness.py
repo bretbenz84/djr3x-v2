@@ -3517,7 +3517,58 @@ def _build_milestone_prompt(first_name: str, visit_number: int) -> str:
     )
 
 
-def _build_long_absence_prompt(first_name: str, days: float) -> str:
+def _greeting_profile(person_db_id: Optional[int]) -> tuple[str, bool]:
+    """Return (tone_instruction, warm_default) for a greeting, based on the relationship.
+
+    A greeting should sound like how that relationship would ACTUALLY greet you — warm
+    and simple for a close friend or Rex's creator, friendlier-but-reserved for an
+    acquaintance. warm_default=True means a plain "how are you?" hello is the right
+    opener (no getting-to-know-you hook needed)."""
+    person = None
+    try:
+        if person_db_id is not None:
+            from memory import people as people_mod
+            person = people_mod.get_person(int(person_db_id))
+    except Exception:
+        person = None
+    name = str((person or {}).get("name") or "")
+    tier = str((person or {}).get("friendship_tier") or "stranger").lower()
+    try:
+        is_creator = bool(name and person_specials.is_rex_creator(name))
+    except Exception:
+        is_creator = False
+    if is_creator:
+        return (
+            "This is your MAKER — greet them with genuine warmth and familiarity, glad "
+            "to see them, the way you'd greet the person you trust and care about most.",
+            True,
+        )
+    if tier in {"best_friend", "close_friend"}:
+        return ("This is a close friend — warm and familiar, genuinely glad to see them.", True)
+    if tier == "friend":
+        return ("This is a friend — warm and friendly, happy to see them.", True)
+    if tier == "acquaintance":
+        return ("You know them a little — friendly and easygoing, not too familiar yet.", False)
+    return ("You barely know them — a polite, friendly hello.", False)
+
+
+def _build_simple_greeting_prompt(first_name: str, tone: str, *, note: str = "") -> str:
+    """A plain, warm, human greeting — the way a real friend says hello. No roast, no
+    clever theme, no interest hook; just a friendly 'how are you?'. `note` optionally
+    sets the situation (seen earlier today, been a while) so it lands naturally."""
+    note_clause = (note.strip() + " ") if note else ""
+    return (
+        f"You see {first_name}. {note_clause}{tone} Give a simple, natural, warm hello "
+        f"and ask how they are — exactly how a real friend greets you (e.g. 'Hey "
+        f"{first_name}, how are you?' or 'Good to see you, {first_name} — how've you "
+        f"been?'). Keep it to ONE short, genuine line. NO roast, NO 'oh it's you again', "
+        f"NO clever bit or Star Wars one-liner, NO 'what do you need / what are you up to "
+        f"/ working on / tinkering with', and NO interest callbacks — just a warm hello "
+        f"by name that ends in a question mark."
+    )
+
+
+def _build_long_absence_prompt(first_name: str, days: float, *, tone: str = "") -> str:
     days_int = int(round(days))
     if days_int >= 365:
         span = f"about {days_int // 365} year(s)"
@@ -3525,28 +3576,21 @@ def _build_long_absence_prompt(first_name: str, days: float) -> str:
         span = f"about {days_int // 30} months"
     else:
         span = f"{days_int} days"
-    return (
-        f"You see '{first_name}', someone you know — but it's been {span} since their "
-        f"last visit. Open with one short dry, faintly accusatory Rex line about the "
-        f"absence, then ask a curious small-talk question — where they've been, what "
-        f"they've been doing, anything that gets them talking. Address {first_name} "
-        f"by name. Two short sentences max — the second must end in a question mark."
+    return _build_simple_greeting_prompt(
+        first_name, tone,
+        note=f"You haven't seen {first_name} in {span} — it's good to have them back.",
     )
 
 
-def _build_recent_return_prompt(first_name: str, hours: float) -> str:
+def _build_recent_return_prompt(first_name: str, hours: float, *, tone: str = "") -> str:
     if hours < 1.5:
-        span = "less than an hour ago"
+        span = "a little while ago"
     elif hours < 24:
         span = f"about {int(round(hours))} hours ago"
     else:
         span = "yesterday"
-    return (
-        f"You see '{first_name}' again — they were just here {span}. Open with one "
-        f"short Rex line teasing the quick return, then ask a small-talk question "
-        f"inviting them to share what brought them back or what's on their mind. "
-        f"Address {first_name} by name. Two short sentences max — the second must "
-        f"end in a question mark."
+    return _build_simple_greeting_prompt(
+        first_name, tone, note=f"You last saw {first_name} {span}.",
     )
 
 
@@ -3573,30 +3617,20 @@ def _same_day_return_count(person_db_id: Optional[int]) -> int:
         return 0
 
 
-def _build_same_day_return_prompt(first_name: str, prior_greetings_today: int) -> str:
-    """Roast-style 'oh, it's you again' opener for a same-day repeat activation.
-
-    `prior_greetings_today` is how many times Rex already greeted them earlier
-    today (>=1 here), so this activation is the (prior+1)th of the day.
-    """
-    nth = _ordinal(prior_greetings_today + 1)
+def _build_same_day_return_prompt(
+    first_name: str, prior_greetings_today: int, *, tone: str = "",
+) -> str:
+    """A warm, simple 'good to see you back' for a same-day repeat activation —
+    NOT a roast. `prior_greetings_today` is how many times Rex already greeted them
+    earlier today (>=1 here)."""
     if prior_greetings_today >= 2:
-        tally = (
-            f"'{first_name}' has now powered you up for the {nth} time today — they "
-            f"will not leave you alone"
+        note = (
+            f"You've already seen {first_name} a couple of times today — you're glad "
+            f"they keep coming back, not annoyed by it."
         )
     else:
-        tally = (
-            f"You already greeted '{first_name}' earlier today, and here they are AGAIN"
-        )
-    return (
-        f"{tally}. Open with a sharp, funny 'oh, it's you again' roast about how they "
-        f"keep summoning you today — punch up, commit to the bit, keep it affectionate, "
-        f"not mean. Then drop straight into normal conversation with ONE short question "
-        f"about what they need this time. Address {first_name} by name. Two short "
-        f"sentences max — the second must end in a question mark. Do NOT re-introduce "
-        f"yourself or act like you haven't seen them today."
-    )
+        note = f"You saw {first_name} earlier today and here they are again — nice."
+    return _build_simple_greeting_prompt(first_name, tone, note=note)
 
 
 def _build_anticipation_prompt(
@@ -6400,18 +6434,20 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                                 person_name, anticipated.get("event_name"),
                             )
 
-                # Priority 3.5 — same-day repeat activation ("oh, it's you again").
-                # More specific than the generic recent-return banter below: if Rex
-                # already greeted this person earlier TODAY, open with a short roast
-                # about the repeat visit, then move into conversation. Keyed on Rex's
-                # own recorded greetings (memory.people.greetings_today_count), so it
-                # only counts real prior greetings, not camera re-sightings.
+                # Relationship-aware greeting tone: warm/familiar for a close friend or
+                # Rex's creator, friendlier-but-reserved for an acquaintance. Drives the
+                # return greetings AND the simple warm default below.
+                greeting_tone, greeting_warm_default = _greeting_profile(person_db_id)
+
+                # Priority 3.5 — same-day repeat activation. A warm "good to see you back",
+                # NOT a roast, keyed on Rex's recorded greetings_today_count.
                 if prompt is None:
                     prior_today = _same_day_return_count(person_db_id)
                     if prior_today >= 1:
-                        prompt = _build_same_day_return_prompt(first_name, prior_today)
+                        prompt = _build_same_day_return_prompt(
+                            first_name, prior_today, tone=greeting_tone)
                         label = f"startup same-day return (#{prior_today + 1}) for {person_name}"
-                        emotion = "excited"
+                        emotion = "happy"
                         _log.info(
                             "consciousness: startup same-day return for %s (greeting #%d today)",
                             person_name, prior_today + 1,
@@ -6429,9 +6465,10 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         else startup_recent_grace
                     )
                     if absence and absence[0] == "long_absence":
-                        prompt = _build_long_absence_prompt(first_name, absence[1])
+                        prompt = _build_long_absence_prompt(
+                            first_name, absence[1], tone=greeting_tone)
                         label = f"startup long-absence for {person_name}"
-                        emotion = "curious"
+                        emotion = "happy"
                         _log.info(
                             "consciousness: startup long-absence for %s (%.1f days)",
                             person_name, absence[1],
@@ -6441,13 +6478,29 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         and absence[0] == "recent_return"
                         and process_uptime >= startup_recent_grace
                     ):
-                        prompt = _build_recent_return_prompt(first_name, absence[1])
+                        prompt = _build_recent_return_prompt(
+                            first_name, absence[1], tone=greeting_tone)
                         label = f"startup recent-return for {person_name}"
-                        emotion = "curious"
+                        emotion = "happy"
                         _log.info(
                             "consciousness: startup recent-return for %s (%.1f hrs)",
                             person_name, absence[1],
                         )
+
+                # Priority 4.5 — default warm greeting for known friends/creator: a plain
+                # "how are you?", scaled by relationship. This takes priority over the
+                # disposition roast / interest cold-open / profile question below, which
+                # are reserved for people Rex is still getting to know (acquaintances) —
+                # per Bret's feedback that a greeting should just be a friendly hello, not
+                # a themed hook or a roast.
+                if prompt is None and greeting_warm_default:
+                    prompt = _build_simple_greeting_prompt(first_name, greeting_tone)
+                    label = f"first-sight warm greeting for {person_name}"
+                    emotion = "happy"
+                    _log.info(
+                        "consciousness: first-sight warm greeting for %s (friend/creator)",
+                        person_name,
+                    )
 
                 # Fallback — profile-building greeting for sparse known people,
                 # then generic greeting.

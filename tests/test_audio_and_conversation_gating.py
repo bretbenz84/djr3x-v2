@@ -4525,6 +4525,11 @@ class ConversationGatingTest(unittest.TestCase):
                 # test asserts the profile-question fallback, so neutralize it like the
                 # other higher tiers above.
                 mock.patch.object(consciousness, "_pick_cold_open_callback", return_value=None),
+                # The profile question is for people Rex is still getting to know; the new
+                # warm-greeting default outranks it for friends/creator. Force the
+                # not-yet-a-friend path so this test still exercises the question fallback.
+                mock.patch.object(consciousness, "_greeting_profile",
+                                  return_value=("You know them a little.", False)),
                 mock.patch.object(consciousness, "_pick_startup_profile_question", return_value=question),
                 mock.patch.object(
                     consciousness,
