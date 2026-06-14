@@ -135,6 +135,12 @@ _UNKNOWN_WITH_ENGAGED_CONFIRM_SECS = 5.0
 _asked_relationship_slots: set[str] = set()
 # Track first-seen time of each unknown slot (while any engaged conversation is open).
 _unknown_first_seen_at: dict[str, float] = {}
+# Monotonic time a SOLO unknown face (no known person in frame) first appeared, for the
+# identity-prompt grace window. A known face reads as "unknown" for the tick or two it
+# takes recognition to resolve at startup; without a grace period Rex fired "I don't
+# know you yet" one tick before recognizing Bret. Reset whenever the scene is no longer
+# solo-unknown (a known face resolved, or the unknown left).
+_solo_unknown_since: float = 0.0
 
 # Conversation turn-taking guard: when Rex asks a question, proactive speech
 # pauses briefly so people can answer without being talked over.
@@ -3130,11 +3136,23 @@ def _maybe_prompt_unknown_identity(
     mixed known+unknown scenes; this prompt is for fresh databases / solo
     unknown visitors.
     """
-    global _last_identity_prompt_at, _identity_prompt_reply_until
+    global _last_identity_prompt_at, _identity_prompt_reply_until, _solo_unknown_since
 
     if unknown_count <= 0 or known_unique:
+        _solo_unknown_since = 0.0  # not a solo-unknown scene — reset the grace timer
         return
     if _pending_identity_prompt.is_set() or _identity_prompt_in_flight.is_set():
+        return
+
+    # Grace: require the solo-unknown face to PERSIST before concluding it's truly a
+    # stranger. A KNOWN face takes a tick or two to resolve (detect -> encode -> DB
+    # match) and reads as "unknown" until then; without this, Rex asked "what's your
+    # name?" one tick before recognizing a known person (the GUI already showed Bret).
+    now_grace = time.monotonic()
+    grace_secs = float(getattr(config, "IDENTITY_PROMPT_UNKNOWN_GRACE_SECS", 2.5) or 0.0)
+    if _solo_unknown_since <= 0.0:
+        _solo_unknown_since = now_grace
+    if (now_grace - _solo_unknown_since) < grace_secs:
         return
 
     current_state = state_module.get_state()
@@ -9747,7 +9765,7 @@ def start() -> None:
     global _process_started_iso, _process_started_mono
     global _startup_group_signature, _startup_group_seen_at, _startup_solo_seen_at
     global _startup_camera_first_frame_at, _startup_presence_evidence_at
-    global _startup_presence_evidence_reason
+    global _startup_presence_evidence_reason, _solo_unknown_since
     global _last_pose_analysis_at
     global _last_weather_reaction_at
     global _face_tracking_last_error_key, _face_tracking_last_error_x
@@ -9770,6 +9788,7 @@ def start() -> None:
     _pending_relationship_context.clear()
     _asked_relationship_slots.clear()
     _unknown_first_seen_at.clear()
+    _solo_unknown_since = 0.0
     _proactive_speech_pending.clear()
     _greeted_this_session.clear()
     _jeff_celebrity_greeted_this_session.clear()

@@ -7241,12 +7241,17 @@ class ConversationGatingTest(unittest.TestCase):
         old_signature = consciousness._last_face_feedback_signature
         old_last_identity = consciousness._last_identity_prompt_at
         old_reply_until = consciousness._identity_prompt_reply_until
+        old_solo_unknown = consciousness._solo_unknown_since
         try:
             consciousness.world_state.update("people", [])
             consciousness._last_face_feedback_signature = None
             consciousness._last_identity_prompt_at = 0.0
             consciousness._pending_identity_prompt.clear()
             consciousness._identity_prompt_in_flight.clear()
+            # The unknown face has already persisted past the grace window (monotonic
+            # is mocked to 100.0 below); this test exercises ACTIVE-fallback gating,
+            # not the startup grace itself.
+            consciousness._solo_unknown_since = 1.0
             frame = np.zeros((720, 1280, 3), dtype=np.uint8)
 
             with (
@@ -7274,6 +7279,7 @@ class ConversationGatingTest(unittest.TestCase):
             consciousness._pending_identity_prompt.clear()
             consciousness._identity_prompt_in_flight.clear()
             consciousness._identity_prompt_reply_until = old_reply_until
+            consciousness._solo_unknown_since = old_solo_unknown
 
     def test_identity_prompt_reply_window_consumes_or_expires(self):
         from intelligence import consciousness

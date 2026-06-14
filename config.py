@@ -2981,6 +2981,12 @@ IDENTITY_RENAME_COOLDOWN_SECS = 120.0
 # During this grace window, do not treat an unmatched voice as off-camera.
 UNKNOWN_FACE_RECENT_GRACE_SECS = 6.0
 
+# A solo unknown face must PERSIST this long before Rex asks "what's your name?". A
+# known face reads as unknown for the tick or two recognition needs to resolve at
+# startup; this grace stops the premature "I don't know you yet" the instant before a
+# known person is recognized. 0 disables (prompt on the first unknown tick).
+IDENTITY_PROMPT_UNKNOWN_GRACE_SECS = 2.5
+
 # Minimum voice-match similarity score required before Rex will fire a
 # face-reveal confirmation question ("is this what you look like?"). Below this
 # threshold the voice match is too uncertain to risk even asking.
