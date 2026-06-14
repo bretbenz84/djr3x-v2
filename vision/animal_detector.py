@@ -211,22 +211,39 @@ def _is_furred(species: str) -> bool:
     return species.strip().lower() in {str(item).strip().lower() for item in furry}
 
 
+def _accept_threshold_for(species: str) -> float:
+    """Per-species acceptance bar. Likely indoor companions (dog/cat) keep the lenient
+    base threshold; every other species must clear a higher 'exotic' bar, because
+    indoors those are almost always object misclassifications (a lamp read as a 'bird'),
+    not real animals."""
+    base = float(getattr(config, "LOCAL_ANIMAL_DETECTION_SCORE_THRESHOLD", 0.30))
+    companions = {
+        str(s).strip().lower()
+        for s in (getattr(config, "LOCAL_ANIMAL_COMPANION_SPECIES", {"dog", "cat"}) or set())
+    }
+    if species.strip().lower() in companions:
+        return base
+    exotic = float(getattr(config, "LOCAL_ANIMAL_EXOTIC_SCORE_THRESHOLD", base))
+    return max(base, exotic)
+
+
 def _records_from_detections(detections, frame_shape, *, now: Optional[float] = None) -> list[dict]:
     timestamp = time.time() if now is None else now
     records: list[dict] = []
     seen: set[tuple[str, str]] = set()
-    accept = float(getattr(config, "LOCAL_ANIMAL_DETECTION_SCORE_THRESHOLD", 0.30))
 
     for detection in detections or []:
         best = _best_animal_category(detection)
         if best is None:
             continue
         species, score = best
+        accept = _accept_threshold_for(species)
         if score < accept:
             # Below acceptance but above the model floor — log it so a near-miss
             # (e.g. a dog held close that scores low) is visible for tuning instead
-            # of silently dropped. Lower LOCAL_ANIMAL_DETECTION_SCORE_THRESHOLD if
-            # these are real animals you want Rex to react to.
+            # of silently dropped. Lower LOCAL_ANIMAL_DETECTION_SCORE_THRESHOLD (or
+            # LOCAL_ANIMAL_EXOTIC_SCORE_THRESHOLD) if these are real animals you want
+            # Rex to react to.
             _log.info(
                 "animal candidate below accept threshold: %s score=%.3f (accept=%.2f)",
                 species, score, accept,

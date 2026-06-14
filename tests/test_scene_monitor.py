@@ -69,8 +69,14 @@ class SceneMonitorTests(unittest.TestCase):
             "source": "mediapipe_object_detector",
         }]
 
+        # Persistence debounce: a species must be seen ANIMAL_ARRIVAL_CONFIRM_SCANS
+        # consecutive scans before it's confirmed into world_state (so a flickering
+        # lamp-as-bird can't fire an arrival). Drive enough scans to confirm.
+        scene._animal_confirm_streak.clear()
+        need = int(getattr(scene.config, "ANIMAL_ARRIVAL_CONFIRM_SCANS", 1))
         with mock.patch.object(scene.local_animal_detector, "detect_animals", return_value=local_animals):
-            animals = scene.detect_animals_local(object())
+            for _ in range(need):
+                animals = scene.detect_animals_local(object())
 
         self.assertEqual(animals, local_animals)
         self.assertEqual(world_state.get("animals"), local_animals)

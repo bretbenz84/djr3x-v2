@@ -2899,6 +2899,28 @@ LOCAL_ANIMAL_DETECTION_MAX_RESULTS = _env_int(
     min_value=1,
     max_value=25,
 )
+# Species-tiered acceptance. EfficientDet-Lite0 cheerfully misreads household objects
+# as exotic animals indoors — a LAMP scored as a "bird" ≥0.45 for ~19s straight on
+# 2026-06-14 and made Rex announce a "creature cameo" that wasn't there. The likely
+# indoor companions (dog/cat) keep the lenient base threshold (a dog held close to a
+# wide lens scores low); every OTHER species must clear a higher bar before it counts,
+# since indoors those are almost always object misclassifications, not real animals.
+LOCAL_ANIMAL_COMPANION_SPECIES = {"dog", "cat"}
+LOCAL_ANIMAL_EXOTIC_SCORE_THRESHOLD = _env_float(
+    "LOCAL_ANIMAL_EXOTIC_SCORE_THRESHOLD",
+    0.60,
+    min_value=0.05,
+    max_value=0.95,
+)
+# Arrival debounce: an animal must be detected in this many CONSECUTIVE scene scans
+# before Rex reacts to its "arrival", so a flickering misdetection can't fire (or churn
+# the governor for ~100s as the lamp did). A real pet that walks in stays detected.
+ANIMAL_ARRIVAL_CONFIRM_SCANS = _env_int(
+    "ANIMAL_ARRIVAL_CONFIRM_SCANS",
+    2,
+    min_value=1,
+    max_value=10,
+)
 LOCAL_ANIMAL_DETECTION_SPECIES = {
     "bird",
     "cat",
@@ -2977,7 +2999,9 @@ PRESENCE_PER_PERSON_COOLDOWN_SECS = 120
 # even begin staging a departure. Guards against frame-level face-detection
 # flicker, especially FaceTime/HOG runs where a stationary face can disappear
 # for several seconds and then reappear.
-PRESENCE_DEPARTURE_CONFIRM_SECS = 20.0
+PRESENCE_DEPARTURE_CONFIRM_SECS = 40.0  # was 20.0 — fired while a distracted user who'd
+                                        # turned the camera away was still present; a
+                                        # departure isn't urgent, so wait longer
 
 # When Rex is actively engaged with someone, acknowledge that person leaving
 # frame much faster than a passive bystander. Still paired with VAD/audio

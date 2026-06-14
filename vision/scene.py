@@ -465,6 +465,7 @@ def detect_animals_local(frame) -> list[dict]:
     if animals is None:
         return world_state.get("animals") or []
 
+    animals = _confirm_persistent_animals(animals)
     world_state.update("animals", animals)
     if animals:
         _log.info(
@@ -475,6 +476,30 @@ def detect_animals_local(frame) -> list[dict]:
     else:
         _log.debug("detect_animals_local: no animals detected")
     return animals
+
+
+# Per-species consecutive-scan streak so a flickering misdetection (a lamp the model
+# waffles on as a "bird") must persist before it's treated as really present.
+_animal_confirm_streak: dict[str, int] = {}
+
+
+def _confirm_persistent_animals(animals: list[dict]) -> list[dict]:
+    """Keep only animals seen in ANIMAL_ARRIVAL_CONFIRM_SCANS consecutive scans. A real
+    pet stays detected; a single-scan/oscillating misdetection never confirms (and so
+    can't fire an arrival or churn the governor)."""
+    need = int(getattr(config, "ANIMAL_ARRIVAL_CONFIRM_SCANS", 1))
+    if need <= 1:
+        return animals
+    seen = {str(a.get("species") or "").strip().lower() for a in animals if a.get("species")}
+    for sp in list(_animal_confirm_streak):
+        if sp not in seen:
+            del _animal_confirm_streak[sp]  # missed this scan → streak broken
+    for sp in seen:
+        _animal_confirm_streak[sp] = _animal_confirm_streak.get(sp, 0) + 1
+    return [
+        a for a in animals
+        if _animal_confirm_streak.get(str(a.get("species") or "").strip().lower(), 0) >= need
+    ]
 
 
 def detect_lifeforms(frame) -> dict:

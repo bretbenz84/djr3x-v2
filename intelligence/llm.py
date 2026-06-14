@@ -42,6 +42,31 @@ _client = OpenAI(
     max_retries=int(getattr(config, "LLM_MAX_RETRIES", 2)),
 )
 
+def _lenient_json_object(raw: str):
+    """Parse a JSON object from a model reply, tolerating ```json fences and prose
+    around it. Returns the dict, or None if no object can be recovered."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError):
+        pass
+    # Strip a ```json … ``` fence if present, then grab the first {...} block.
+    fenced = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
+    try:
+        return json.loads(fenced)
+    except (ValueError, TypeError):
+        pass
+    match = re.search(r"\{.*\}", fenced, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
 _ASSISTANT_LABEL_RE = re.compile(
     r"^\s*(?:\[(?:rex|dj[- ]?r3x)\]|(?:rex|dj[- ]?r3x))\s*[:\-–—]\s*",
     re.IGNORECASE,
@@ -1078,8 +1103,17 @@ def analyze_sentiment(text: str) -> dict:
             model=config.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
+            max_tokens=80,
+            # Force a JSON body so an empty/prose reply can't blow up json.loads
+            # ("Expecting value: line 1 column 1" — a real failure seen 2026-06-14
+            # that silently dropped the turn's sentiment + relationship signal).
+            response_format={"type": "json_object"},
         )
-        result = json.loads(resp.choices[0].message.content.strip())
+        raw = (resp.choices[0].message.content or "").strip()
+        result = _lenient_json_object(raw)
+        if not isinstance(result, dict):
+            _log.error("analyze_sentiment: non-JSON reply %.80r — using defaults", raw)
+            return dict(_defaults)
         for k, v in _defaults.items():
             result.setdefault(k, v)
         return result

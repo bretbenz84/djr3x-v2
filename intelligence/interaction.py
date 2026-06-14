@@ -4772,7 +4772,9 @@ _IDLE_DIRECT_MUSIC_RE = re.compile(
 )
 _BACKGROUND_CROSSTALK_RE = re.compile(
     r"\b(?:"
-    r"came\s+out|powered\s+off|channels?|camera|the\s+other\s+one|"
+    # NOTE: 'came out' was here but is a false-positive magnet — "it came out so good"
+    # (about a photo, said TO Rex) is normal conversation, not crosstalk. Removed.
+    r"powered\s+off|channels?|camera|the\s+other\s+one|"
     r"when\s+you(?:'re|\s+are)\s+talking\s+to\s+it|"
     r"he\s+(?:is|was|has|had|knows)|she\s+(?:is|was|has|had|knows)|"
     r"they\s+(?:are|were|have|had|know)|"
@@ -4848,6 +4850,28 @@ def _looks_like_background_crosstalk(text: str) -> bool:
     if len(words) >= 10 and not re.search(r"\b(?:i|me|my|you|your|rex|r3x)\b", cleaned, re.I):
         return True
     return False
+
+
+def _is_engaged_partner_turn(person_id: Optional[int], speaker_score: float) -> bool:
+    """True when this utterance is from the confidently voice-matched person Rex is
+    ALREADY in a 1-on-1 conversation with. Their lines must not be discarded as
+    'background crosstalk' mid-exchange — that's how a real on-topic continuation
+    ("it came out so good") got dropped. Crosstalk filtering still applies to
+    unattributed / low-confidence / non-partner voices."""
+    if person_id is None:
+        return False
+    try:
+        if person_id != _primary_session_person_id():
+            return False
+    except Exception:
+        return False
+    if _session_exchange_count < 1:
+        return False  # no active conversation yet — keep the crosstalk guard strict
+    try:
+        threshold = float(getattr(config, "SPEAKER_ID_SIMILARITY_THRESHOLD", 0.50))
+    except (TypeError, ValueError):
+        threshold = 0.50
+    return float(speaker_score or 0.0) >= threshold
 
 
 def _looks_like_direct_question_to_rex(text: str) -> bool:
@@ -16685,6 +16709,7 @@ def _handle_speech_segment(
             _looks_like_background_crosstalk(text)
             and not identity_prompt_active
             and _pending_offscreen_identify is None
+            and not _is_engaged_partner_turn(person_id, speaker_score)
         ):
             _log.info(
                 "[interaction] ignoring background cross-talk — text=%r "
