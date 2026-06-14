@@ -480,13 +480,23 @@ def update_visit(person_id: int) -> None:
     """
     Increment visit_count, update last_seen, apply the return-visit familiarity increment.
 
+    A genuine RETURN (someone Rex has met before coming back) also earns a small
+    warmth + trust bump — friendship should reflect showing up again over time, not
+    only explicit praise. The first-ever sighting (prior_visits == 0) gets only the
+    familiarity increment, since there's no relationship to "return" to yet.
+
     days_known is derived at runtime (today − first_seen) and is not stored.
     """
+    row = db.fetchone("SELECT visit_count FROM people WHERE id = ?", (person_id,))
+    prior_visits = int(row["visit_count"]) if row and row["visit_count"] is not None else 0
     db.execute(
         "UPDATE people SET visit_count = visit_count + 1, last_seen = ? WHERE id = ?",
         (_now(), person_id),
     )
     update_familiarity(person_id, config.FAMILIARITY_INCREMENTS["return_visit"])
+    if prior_visits >= 1:
+        apply_relationship_increment(person_id, "consistent_return_visit")  # trust
+        apply_relationship_increment(person_id, "return_visit_warmth")      # warmth
 
 
 def record_milestone_greeted(person_id: int, milestone: int) -> None:

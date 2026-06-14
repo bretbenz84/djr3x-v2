@@ -2252,6 +2252,8 @@ QUESTION_POOL = [
 RELATIONSHIP_INCREMENTS = {
     "compliment":                  ("warmth",      +0.02),
     "genuine_laughter":            ("warmth",      +0.01),
+    "engaged_turn":                ("warmth",      +0.004),
+    "return_visit_warmth":         ("warmth",      +0.008),
     "insult_mild":                 ("antagonism",  +0.03),
     "insult_severe":               ("antagonism",  +0.06),
     "insult_repeated_same_session":("antagonism",  +0.04),
@@ -2263,6 +2265,15 @@ RELATIONSHIP_INCREMENTS = {
     "false_name_given":            ("trust",       -0.03),
     "consistent_return_visit":     ("trust",       +0.01),
 }
+
+# WARMTH FROM TALKING (P2) — warmth should grow with time spent together, not only
+# from explicit praise. Each conversation, Rex accrues a small, CAPPED warmth bump
+# from engaged/positive turns and shared laughter, applied once at session end so a
+# long chat can't runaway-inflate the score. A genuine return visit also warms him
+# up (see RELATIONSHIP_INCREMENTS["return_visit_warmth"] + consistent_return_visit).
+WARMTH_FROM_TALKING_MIN_WORDS = 4              # a turn this long counts as "engaged"
+WARMTH_FROM_TALKING_MAX_ENGAGED_PER_SESSION = 5  # caps engaged-turn warmth at +0.020/session
+WARMTH_FROM_TALKING_MAX_LAUGHS_PER_SESSION = 3   # caps shared-laughter warmth at +0.030/session
 
 # Antagonism score thresholds that cap friendship tier regardless of familiarity
 # Listed in ascending order; the highest threshold met determines the cap.

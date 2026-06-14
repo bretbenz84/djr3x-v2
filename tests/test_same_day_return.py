@@ -98,21 +98,26 @@ class SameDayReturnPromptTests(unittest.TestCase):
         ):
             self.assertEqual(consciousness._same_day_return_count(1), 0)
 
-    def test_prompt_is_roast_style_and_uses_name(self):
+    def test_prompt_is_warm_and_uses_name(self):
+        """P1: a same-day return is a warm hello, no longer a roast."""
         from intelligence import consciousness
 
         prompt = consciousness._build_same_day_return_prompt("Bret", 1)
         self.assertIn("Bret", prompt)
-        self.assertIn("it's you again", prompt.lower())
-        self.assertIn("roast", prompt.lower())
+        self.assertIn("how are you", prompt.lower())
         # Drops into conversation, ends as a question.
         self.assertIn("question", prompt.lower())
+        # The old roast escalation ("punch up the bit", ordinal tally) is gone.
+        self.assertNotIn("punch up", prompt.lower())
+        self.assertNotIn("3rd time today", prompt)
 
-    def test_prompt_escalates_with_count(self):
+    def test_prompt_no_longer_escalates_with_an_ordinal_tally(self):
+        """P1: it softens ('glad they keep coming back'), never tallies '3rd time today'."""
         from intelligence import consciousness
 
         third = consciousness._build_same_day_return_prompt("Bret", 2)
-        self.assertIn("3rd time today", third)
+        self.assertNotIn("3rd time today", third)
+        self.assertIn("how are you", third.lower())
 
     def test_ordinal_helper(self):
         from intelligence import consciousness

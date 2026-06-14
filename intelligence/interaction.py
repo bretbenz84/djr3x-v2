@@ -211,6 +211,10 @@ _interrupted = threading.Event()
 # Session tracking ────────────────────────────────────────────────────────────
 _session_person_ids: set[int] = set()
 _session_person_turn_counts: dict[int, int] = {}
+# P2 — warmth from talking: per-person tally of engaged turns + shared laughter this
+# session, converted to a small CAPPED warmth bump once at session end (see
+# _note_warmth_from_talking / _award_warmth_from_talking).
+_session_warmth_signals: dict[int, dict[str, int]] = {}
 _session_exchange_count: int = 0
 _last_speech_at: float = 0.0  # monotonic timestamp of most recent speech chunk
 _session_forget_terms: dict[int, set[str]] = {}
@@ -4351,6 +4355,7 @@ def _clear_deleted_person_session_state(person_id: int) -> None:
     pid = int(person_id)
     _session_person_ids.discard(pid)
     _session_person_turn_counts.pop(pid, None)
+    _session_warmth_signals.pop(pid, None)
     _session_forget_terms.pop(pid, None)
     _session_router_control_topics.pop(pid, None)
     _grief_flow_state.pop(pid, None)
@@ -4476,6 +4481,7 @@ def _handle_pending_memory_wipe_confirmation(
             people_memory.delete_all_people()
             _session_person_ids.clear()
             _session_person_turn_counts.clear()
+            _session_warmth_signals.clear()
             _session_forget_terms.clear()
             _session_router_control_topics.clear()
             _clear_anonymous_speaker_slots()
@@ -6075,6 +6081,86 @@ def _note_session_person_turn(person_id: Optional[int]) -> None:
     if pid is None:
         return
     _session_person_turn_counts[pid] = _session_person_turn_counts.get(pid, 0) + 1
+
+
+# P2 — warmth from talking ─────────────────────────────────────────────────────
+# Genuine laughter in TEXT (transcribed "haha", "lol", "that's funny", 😂). Kept as a
+# text heuristic so it needs no extra LLM call on the speech path; the layer-2 sentiment
+# pass stays focused on insult/apology/compliment.
+_LAUGHTER_RE = re.compile(
+    r"(?:^|\b)(?:ha(?:ha)+h?|hah|heh(?:eh)+|hehe|lol|lmao|lmfao|rofl)\b|😂|🤣",
+    re.IGNORECASE,
+)
+_LAUGHTER_PHRASES = (
+    "that's funny", "thats funny", "so funny", "too funny", "hilarious",
+    "you're funny", "youre funny", "good one", "made me laugh", "cracking me up",
+    "cracking up", "you got me",
+)
+
+
+def _text_is_genuine_laughter(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    if _LAUGHTER_RE.search(t):
+        return True
+    low = t.lower()
+    return any(p in low for p in _LAUGHTER_PHRASES)
+
+
+def _text_is_engaged_turn(text: str) -> bool:
+    """A substantive user turn (not a one-word ack) — the unit of 'time spent talking'."""
+    words = re.findall(r"\w+", text or "")
+    return len(words) >= int(getattr(config, "WARMTH_FROM_TALKING_MIN_WORDS", 4))
+
+
+def _note_warmth_from_talking(
+    person_id: Optional[int],
+    user_text: str,
+    *,
+    pre_classified_insult: bool = False,
+) -> None:
+    """Tally engaged turns + shared laughter for a small, capped session-end warmth bump.
+
+    Counting (not awarding) here keeps it cheap and lets _award_warmth_from_talking cap
+    the total per session so a long chat can't runaway-inflate warmth. Insulting turns
+    don't count as engaged; laughter still counts (you can laugh and rib Rex at once).
+    """
+    pid = _safe_int(person_id)
+    if pid is None:
+        return
+    sig = _session_warmth_signals.setdefault(pid, {"engaged": 0, "laughs": 0})
+    if _text_is_genuine_laughter(user_text):
+        sig["laughs"] += 1
+    if not pre_classified_insult and _text_is_engaged_turn(user_text):
+        sig["engaged"] += 1
+
+
+def _award_warmth_from_talking(person_id: Optional[int]) -> None:
+    """Convert this session's engaged-turn + laughter tally into a capped warmth bump."""
+    pid = _safe_int(person_id)
+    if pid is None:
+        return
+    sig = _session_warmth_signals.get(pid)
+    if not sig:
+        return
+    engaged = int(sig.get("engaged", 0))
+    laughs = int(sig.get("laughs", 0))
+    total = 0.0
+    if engaged > 0:
+        per = float(config.RELATIONSHIP_INCREMENTS["engaged_turn"][1])
+        cap = int(getattr(config, "WARMTH_FROM_TALKING_MAX_ENGAGED_PER_SESSION", 5))
+        total += per * min(engaged, cap)
+    if laughs > 0:
+        per = float(config.RELATIONSHIP_INCREMENTS["genuine_laughter"][1])
+        cap = int(getattr(config, "WARMTH_FROM_TALKING_MAX_LAUGHS_PER_SESSION", 3))
+        total += per * min(laughs, cap)
+    if total > 0:
+        people_memory.update_relationship_scores(pid, warmth=total)
+        _log.info(
+            "[interaction] warmth-from-talking +%.3f for person_id=%s (engaged=%d laughs=%d)",
+            total, pid, engaged, laughs,
+        )
 
 
 def _last_name_prompt_min_person_turns() -> int:
@@ -10235,6 +10321,17 @@ def _post_response(
             _log.debug("post_response interoception error: %s", exc)
         return
 
+    # P2 — warmth grows from talking: tally engaged turns + shared laughter so the
+    # relationship deepens with time spent, not only with explicit compliments. Skip
+    # for minors (suppress_memory_learning) so a child's chatter doesn't build a bond.
+    if person_id is not None and not suppress_memory_learning:
+        try:
+            _note_warmth_from_talking(
+                person_id, user_text, pre_classified_insult=pre_classified_insult
+            )
+        except Exception as exc:
+            _log.debug("post_response warmth-from-talking error: %s", exc)
+
     suppress_stale_followup = False
     try:
         suppress_stale_followup = events_memory.looks_like_cancellation(user_text)
@@ -11063,6 +11160,7 @@ def _end_session() -> None:
         _session_exchange_count = 0
         _session_person_ids.clear()
         _session_person_turn_counts.clear()
+        _session_warmth_signals.clear()
         _session_forget_terms.clear()
         _session_router_control_topics.clear()
         _interest_idle_followups_spoken.clear()
@@ -11305,6 +11403,10 @@ def _end_session() -> None:
                     person_id,
                     config.FAMILIARITY_INCREMENTS.get("long_conversation", 0.02),
                 )
+
+            # P2: warmth from talking — convert this session's engaged-turn + shared-
+            # laughter tally into a small, capped warmth bump for this person.
+            _award_warmth_from_talking(person_id)
         except Exception as exc:
             _log.error("session end error for person_id=%s: %s", person_id, exc)
 
@@ -11347,6 +11449,7 @@ def _end_session() -> None:
     _session_exchange_count = 0
     _session_person_ids.clear()
     _session_person_turn_counts.clear()
+    _session_warmth_signals.clear()
     _identity_prompt_until = 0.0
     _awaiting_followup_event = None
     _pending_introduction = None
@@ -17823,6 +17926,7 @@ def start(*, text_only: bool = False) -> None:
     _interrupted.clear()
     _session_person_ids.clear()
     _session_person_turn_counts.clear()
+    _session_warmth_signals.clear()
     _session_router_control_topics.clear()
     _clear_anonymous_speaker_slots()
     _interest_idle_followups_spoken.clear()
@@ -17905,6 +18009,7 @@ def stop() -> None:
     _listen_capture_floor_at = 0.0
     _post_tts_flush_needed = False
     _session_person_turn_counts.clear()
+    _session_warmth_signals.clear()
     _pending_introduction = None
     _pending_intro_followup = None
     _pending_intro_voice_capture = None
