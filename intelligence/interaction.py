@@ -4689,6 +4689,23 @@ _BACKGROUND_CROSSTALK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Device / UI / tech readouts someone reads aloud near the mic ("that's definitely
+# 30 FPS", "1080p", "frame rate", "the latency") — not conversation aimed at Rex.
+_DEVICE_READOUT_RE = re.compile(
+    r"\b\d+\s*(?:fps|hz|hertz|ms|mhz|ghz|gb|mb|kb|fps|frames?|pixels?|nits|"
+    r"degrees?|percent|dpi|ppi)\b"
+    r"|\b\d{3,4}\s*[pk]\b"  # 1080p, 4k, 720p
+    r"|\b(?:fps|resolution|frame\s?rate|refresh\s?rate|firmware|render(?:ing)?|"
+    r"latency|buffer|codec|bitrate|aspect\s?ratio)\b",
+    re.IGNORECASE,
+)
+# First/second-person pronouns — their presence means the line is plausibly a
+# personal statement TO Rex, so a device-term match should NOT mark it as chatter.
+_PERSONAL_PRONOUN_RE = re.compile(
+    r"\b(?:i|i'?m|me|my|mine|myself|you|your|yours|we|our|rex|r3x|dj|droid)\b",
+    re.IGNORECASE,
+)
+
 
 def _speech_is_directed_to_rex(text: str) -> bool:
     cleaned = (text or "").strip()
@@ -4724,6 +4741,10 @@ def _looks_like_background_crosstalk(text: str) -> bool:
         return False
     if _extract_introduced_name(cleaned, allow_bare_name=False):
         return False
+    # Device / UI / tech readout with no first/second-person address — someone
+    # narrating the screen ("that's definitely 30 FPS"), not talking to Rex.
+    if _DEVICE_READOUT_RE.search(cleaned) and not _PERSONAL_PRONOUN_RE.search(cleaned):
+        return True
     if "?" in cleaned:
         # Questions can be addressed to Rex without a wake word in an active
         # exchange. Keep them in the conversation path unless they are strongly
@@ -16439,6 +16460,27 @@ def _handle_speech_segment(
                     except Exception as exc:
                         _log.debug("face-reveal ask error: %s", exc)
                         _pending_face_reveal_confirm = None
+
+        # Background cross-talk gate (Tier 2): even when a person was ATTRIBUTED (e.g.
+        # by the single-visible face from Tier 1), clear non-Rex chatter — a device/UI
+        # readout ("that's definitely 30 FPS"), a line aimed at someone else — must NOT
+        # be answered or profiled. High precision: _looks_like_background_crosstalk
+        # already returns False for commands, Rex-directed speech, and self/intro names,
+        # so plausibly-directed speech still gets a normal turn. Don't fire mid identity
+        # prompt or while an offscreen-identify reply is pending.
+        if (
+            _looks_like_background_crosstalk(text)
+            and not identity_prompt_active
+            and _pending_offscreen_identify is None
+        ):
+            _log.info(
+                "[interaction] ignoring background cross-talk — text=%r "
+                "(attributed person_id=%s, voice_score=%.3f)",
+                text, person_id, speaker_score,
+            )
+            final_executed_path = "ignored.background_crosstalk"
+            completed = False
+            return
 
         # Off-camera unknown voice: if the person-resolution pass flagged this
         # utterance as coming from someone we can neither see nor voice-ID, fire
