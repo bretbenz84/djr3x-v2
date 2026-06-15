@@ -402,7 +402,7 @@ else
         cp "$ENV_SRC" "$ENV_DST"
         INSTALLED_ITEMS+=(".env (copied from template)")
         ok ".env created from .env.example."
-        MANUAL_ATTENTION+=("If using physical hardware, update MAESTRO_PORT / ARDUINO_*_PORT in: $ENV_DST")
+        MANUAL_ATTENTION+=("If using physical hardware, update MAESTRO_PORT / ARDUINO_*_PORT / MOTION_ESP32_PORT in: $ENV_DST")
     else
         warn ".env.example not found — cannot create .env."
         MANUAL_ATTENTION+=("Create .env manually (template .env.example is missing)")
@@ -668,6 +668,7 @@ _env_value_is_template_placeholder() {
         "MAESTRO_PORT:/dev/tty.usbmodem00000000") return 0 ;;
         "ARDUINO_HEAD_PORT:/dev/tty.usbmodem00000001") return 0 ;;
         "ARDUINO_CHEST_PORT:/dev/tty.usbserial-00000000") return 0 ;;
+        "MOTION_ESP32_PORT:/dev/cu.usbserial-0000") return 0 ;;
     esac
     return 1
 }
@@ -771,6 +772,10 @@ _rank_serial_candidates() {
             maestro:cu.usbserial*|maestro:cu.wchusbserial*|maestro:cu.SLAB_USBtoUART*) score=30 ;;
             head:tty.usbserial*|head:tty.wchusbserial*|head:tty.SLAB_USBtoUART*) score=31 ;;
             maestro:tty.usbserial*|maestro:tty.wchusbserial*|maestro:tty.SLAB_USBtoUART*) score=31 ;;
+            motion:cu.usbserial*|motion:cu.SLAB_USBtoUART*|motion:cu.wchusbserial*) score=10 ;;
+            motion:tty.usbserial*|motion:tty.SLAB_USBtoUART*|motion:tty.wchusbserial*) score=11 ;;
+            motion:cu.usbmodem*) score=30 ;;
+            motion:tty.usbmodem*) score=31 ;;
             *:cu.usb*) score=50 ;;
             *:tty.usb*) score=51 ;;
         esac
@@ -1338,6 +1343,201 @@ _guided_arduino_device_setup() {
     rm -f "$after_file" "$candidate_file"
 }
 
+# Find the ESP32 motion controller. The definitive signal is the PROTOCOL PROBE:
+# open each USB-serial port at 115200, send the motion `hello`, and watch for the
+# firmware's hello reply — only our ESP32 answers it. (Chip-ID can't be trusted:
+# this board's USB bridge is a CH340, the same chip as the chest Arduino, so the
+# probe is the only reliable discriminator once the firmware is flashed.)
+# Echoes "<method>\t<port-or-list>"  method = probe | single | multi | none
+#   probe  = a board answered the motion protocol (flashed ESP32 — definitive)
+#   single = exactly one USB-serial device, none answered (likely an unflashed ESP32)
+#   multi  = several USB-serial devices, none answered (can't auto-pick)
+_find_esp32_port() {
+    "$VENV_PYTHON" - <<'PY'
+import json, sys, time
+try:
+    import serial
+    from serial.tools import list_ports
+except Exception:
+    print("none\t"); sys.exit(0)
+
+def is_usb_serial(dev):
+    d = dev.lower()
+    # USB-serial bridges only — excludes cu.debug-console / cu.Bluetooth-* etc.
+    return any(k in d for k in ("usbserial", "usbmodem", "wchusbserial", "slab_usbtouart"))
+
+cands = [p.device for p in list_ports.comports() if is_usb_serial(p.device)]
+
+def probe(dev):
+    try:
+        s = serial.Serial(dev, 115200, timeout=0.2)
+    except Exception:
+        return False
+    try:
+        time.sleep(0.4)                      # let an auto-reset boot settle
+        try: s.reset_input_buffer()
+        except Exception: pass
+        s.write(b'{"v":1,"cmd":"hello","host":"setup","proto":1}\n')
+        end = time.time() + 1.6
+        buf = b""
+        while time.time() < end:
+            buf += s.read(128)
+            for line in buf.split(b"\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line.decode("utf-8", "replace"))
+                except Exception:
+                    continue
+                if isinstance(msg, dict) and msg.get("type") == "hello" and msg.get("proto") == 1:
+                    return True
+        return False
+    finally:
+        try: s.close()
+        except Exception: pass
+
+for dev in cands:
+    if probe(dev):
+        print("probe\t%s" % dev); sys.exit(0)
+
+if len(cands) == 1:
+    print("single\t%s" % cands[0])
+elif len(cands) > 1:
+    print("multi\t%s" % ",".join(cands))
+else:
+    print("none\t")
+PY
+}
+
+_ensure_esp32_toolchain() {
+    command -v arduino-cli &>/dev/null || { warn "arduino-cli not available — cannot flash the ESP32."; return 1; }
+    arduino-cli config init >/dev/null 2>&1 || true
+    arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json >/dev/null 2>&1 \
+        || arduino-cli config set board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json >/dev/null 2>&1 || true
+    if arduino-cli core list 2>/dev/null | grep -q '^esp32:esp32[[:space:]]'; then
+        ok "ESP32 board core already installed."
+    else
+        log "Installing the ESP32 board core (large download, one-time)..."
+        arduino-cli core update-index >/dev/null 2>&1 || true
+        if arduino-cli core install esp32:esp32 >/dev/null 2>&1; then
+            INSTALLED_ITEMS+=("ESP32 board core"); ok "ESP32 board core installed."
+        else
+            warn "Could not install the ESP32 core."
+            MANUAL_ATTENTION+=("Install ESP32 core: arduino-cli core install esp32:esp32"); return 1
+        fi
+    fi
+    if arduino-cli lib list 2>/dev/null | grep -qi '^ArduinoJson[[:space:]]'; then
+        ok "ArduinoJson library already installed."
+    elif arduino-cli lib install ArduinoJson >/dev/null 2>&1; then
+        INSTALLED_ITEMS+=("Arduino library: ArduinoJson"); ok "ArduinoJson installed."
+    else
+        warn "Could not install ArduinoJson."
+        MANUAL_ATTENTION+=("Install ArduinoJson: arduino-cli lib install ArduinoJson"); return 1
+    fi
+    return 0
+}
+
+_compile_and_upload_motion_firmware() {
+    local port="$1"
+    local sketch_dir="$PROJECT_DIR/firmware/djr3x_motion"
+    # 921600 is unreliable on this CP2102 board; 115200 flashes reliably.
+    local fqbn="esp32:esp32:esp32:UploadSpeed=115200"
+    if [[ ! -d "$sketch_dir" ]]; then
+        warn "Motion firmware sketch missing: $sketch_dir"
+        MANUAL_ATTENTION+=("Motion firmware sketch missing: $sketch_dir"); return 1
+    fi
+    _ensure_esp32_toolchain || return 1
+    log "Compiling motion firmware ($fqbn)..."
+    if ! arduino-cli compile --fqbn "$fqbn" "$sketch_dir"; then
+        warn "Motion firmware compile failed."
+        MANUAL_ATTENTION+=("Motion firmware compile failed; see firmware/djr3x_motion/README.md"); return 1
+    fi
+    ok "Motion firmware compiled."
+    log "Uploading motion firmware to $port at 115200..."
+    if arduino-cli upload -p "$port" --fqbn "$fqbn" "$sketch_dir"; then
+        INSTALLED_ITEMS+=("Motion firmware uploaded to $port"); ok "Motion firmware uploaded."; return 0
+    fi
+    warn "Motion firmware upload failed."
+    MANUAL_ATTENTION+=("Upload manually: arduino-cli upload -p $port --fqbn $fqbn firmware/djr3x_motion"); return 1
+}
+
+_guided_motion_setup() {
+    echo ""
+    echo -e "${BOLD}ESP32 motion base (drive platform)${NC}"
+    echo "The drive base runs on an ESP32 — the only ESP32 in the build — so setup can"
+    echo "find it automatically (by talking to its firmware, or by its CP2102 chip)."
+    echo ""
+    echo "Connect the ESP32 by USB now. Keep motor power disconnected."
+    _prompt_continue "Press Enter once the ESP32 is connected..."
+
+    log "Looking for the ESP32..."
+    local result method port
+    result="$(_find_esp32_port)"
+    method="${result%%$'\t'*}"
+    port="${result#*$'\t'}"
+
+    case "$method" in
+        probe)
+            ok "Found the ESP32 running the motion firmware on $port."
+            _set_env_value "MOTION_ESP32_PORT" "$port"
+            INSTALLED_ITEMS+=(".env MOTION_ESP32_PORT=$port")
+            if _prompt_yes_no "Re-flash the latest motion firmware now? [y/N] " "n"; then
+                _compile_and_upload_motion_firmware "$port" || true
+            fi
+            return
+            ;;
+        single)
+            ok "One USB-serial device is attached ($port) and it isn't running the"
+            echo "motion firmware yet — almost certainly the ESP32 (unflashed)."
+            _set_env_value "MOTION_ESP32_PORT" "$port"
+            INSTALLED_ITEMS+=(".env MOTION_ESP32_PORT=$port")
+            if _prompt_yes_no "Flash the motion firmware to it now? [Y/n] " "y"; then
+                _flash_and_confirm_motion "$port"
+            else
+                MANUAL_ATTENTION+=("Flash motion firmware later: see firmware/djr3x_motion/README.md")
+            fi
+            return
+            ;;
+        multi)
+            warn "Several USB-serial devices are attached and none are running the motion firmware:"
+            echo "  ${port//,/$'\n'  }"
+            echo "The ESP32 may share a USB chip (CH340) with the chest Arduino, so it can't be"
+            echo "auto-picked while unflashed. Choose it below — once flashed it self-identifies."
+            ;;
+        *)
+            warn "No USB-serial device detected."
+            echo "If the ESP32 is plugged in but not showing up, its USB-serial driver may be missing."
+            _maybe_open_usb_driver_links
+            ;;
+    esac
+
+    # Fallback: choose from the attached serial devices, then optionally flash.
+    local candidate_file=""
+    candidate_file="$(mktemp)"
+    _all_serial_candidates > "$candidate_file" 2>/dev/null || true
+    _select_serial_port_for_env "ESP32 motion base" "MOTION_ESP32_PORT" "motion" "$candidate_file"
+    rm -f "$candidate_file"
+    if [[ -n "$SELECTED_DEVICE_PORT" ]] && _prompt_yes_no "Flash the motion firmware to $SELECTED_DEVICE_PORT now? [y/N] " "n"; then
+        _flash_and_confirm_motion "$SELECTED_DEVICE_PORT"
+    fi
+}
+
+# Flash, then re-probe to confirm the board now answers the motion protocol.
+_flash_and_confirm_motion() {
+    local port="$1"
+    _compile_and_upload_motion_firmware "$port" || return 1
+    local result method
+    result="$(_find_esp32_port)"
+    method="${result%%$'\t'*}"
+    if [[ "$method" == "probe" ]]; then
+        ok "Confirmed: the ESP32 is now answering the motion protocol on ${result#*$'\t'}."
+    else
+        warn "Flashed, but the board did not answer the motion protocol on re-probe."
+        MANUAL_ATTENTION+=("Verify the motion link: venv/bin/python firmware/tools/motion_serial_smoketest.py --port $port")
+    fi
+}
+
 _guided_maestro_setup() {
     echo ""
     echo -e "${BOLD}Pololu Maestro servo controller${NC}"
@@ -1388,14 +1588,18 @@ _configure_droid_hardware_interactive() {
 
     local setup_leds=0
     local setup_servos=0
+    local setup_motion=0
     if _prompt_yes_no "Set up Arduino LED controllers now? [Y/n] " "y"; then
         setup_leds=1
     fi
     if _prompt_yes_no "Set up a Pololu Maestro servo controller now? [y/N] " "n"; then
         setup_servos=1
     fi
+    if _prompt_yes_no "Set up the ESP32 motion base (drive platform) now? [y/N] " "n"; then
+        setup_motion=1
+    fi
 
-    if [[ "$setup_leds" -eq 0 && "$setup_servos" -eq 0 ]]; then
+    if [[ "$setup_leds" -eq 0 && "$setup_servos" -eq 0 && "$setup_motion" -eq 0 ]]; then
         warn "No physical hardware component selected — skipping droid hardware setup."
         return
     fi
@@ -1451,6 +1655,18 @@ _configure_droid_hardware_interactive() {
             INSTALLED_ITEMS+=(".env MAESTRO_PORT disabled")
         fi
         ok "Pololu Maestro setup skipped."
+    fi
+
+    if [[ "$setup_motion" -eq 1 ]]; then
+        _guided_motion_setup
+    else
+        local current_motion_port=""
+        current_motion_port="$(_env_current_value "MOTION_ESP32_PORT")"
+        if [[ -z "$current_motion_port" ]] || _env_value_is_template_placeholder "MOTION_ESP32_PORT" "$current_motion_port"; then
+            _set_env_value "MOTION_ESP32_PORT" ""
+            INSTALLED_ITEMS+=(".env MOTION_ESP32_PORT disabled")
+        fi
+        ok "ESP32 motion base setup skipped."
     fi
 
     rm -f "$HARDWARE_BASELINE_FILE"

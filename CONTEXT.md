@@ -108,6 +108,7 @@ intelligence/
   empathy.py             Affect classification and emotional event handling.
   social_frame.py        Response shape/governance cleanup.
   tell_me_about.py       "Tell me about someone" pre-briefing parsing/lines/classifier.
+  motion_controller.py   High-level drive-base API: turn/move/come/stop + heartbeat + safety gates.
 
 memory/
   database.py            SQLite connection, schema, migrations.
@@ -137,6 +138,11 @@ hardware/
   servos.py              Pololu Maestro and servo behaviors.
   leds_head.py           Head LED Arduino.
   leds_chest.py          Chest LED Arduino.
+  motion.py              ESP32 motion-base serial transport (handshake, telemetry, send).
+
+firmware/
+  djr3x_motion/          ESP32 motion-controller firmware (Arduino sketch, FreeRTOS).
+  tools/                 Host-side serial tools (motion protocol smoke test).
 ```
 
 ## Runtime Architecture
@@ -392,6 +398,52 @@ Optional hardware:
 
 Missing serial ports are warnings, not fatal errors, unless a feature explicitly requires hardware safety validation. Servo min/max overrides belong in `.env`, using microsecond values from the Maestro Control Center. Do not connect live servos until safe travel limits are configured.
 
+## Motion System (drive base)
+
+An optional ESP32-controlled differential-drive base lets Rex physically move around a
+room on spoken command while avoiding obstacles with Time-of-Flight sensors. Two brains:
+the **ESP32 owns the reflexes** (real-time motor PID, ToF safety stop, heartbeat
+watchdog — it can stop the base without the Mac) and the **Mac owns the intent**
+(speech → high-level command over USB serial). Full design: `docs/motion_system.md`.
+
+- **Wire contract:** `docs/motion_protocol.md` (v1, locked) — handshake, 20 Hz telemetry,
+  commands (`drive`/`turn`/`move`/`come`/`stop`/`estop`/`clear`/`config`), `ack`/`done`/
+  `event`, heartbeat watchdog (500 ms) + drive deadman (300 ms), clamping, enums. If code
+  and that doc disagree, the doc wins. Sign convention is REP-103: **+linear = forward,
+  +angle/+deg = LEFT/CCW** everywhere (`drive.ang` rad/s, `turn.deg` degrees, `odom.theta` rad).
+- **Firmware:** `firmware/djr3x_motion/` (ESP32, Arduino/arduino-cli, FreeRTOS). Phase 0
+  build runs the full protocol against a **stubbed hardware layer** (`MOTION_HW_PRESENT=0`
+  in `hal.h`): a plant model synthesizes odometry and ToF reads clear, so it runs on a
+  bare ESP32 with nothing wired. Flashes reliably at **115200** (default 921600 fails on
+  the CH340 bridge). Bench test: `firmware/tools/motion_serial_smoketest.py`.
+- **Mac transport:** `hardware/motion.py` mirrors `servos.py` — `connect()` runs the
+  `hello` handshake (version-gates motion on/off), a background reader keeps a thread-safe
+  telemetry/ack/done snapshot. `connected()` is the availability signal.
+- **Mac controller:** `intelligence/motion_controller.py` — `turn/move/come/stop/drive` +
+  voice verbs, speed-cap clamping, the heartbeat thread, and the **autonomous gate**:
+  suppressed while `config.INTERACTION_PAUSED` or while a gamepad owns the base
+  (`owner == "manual"` in telemetry); `stop`/`estop` always pass. Sends a `config` command
+  with the Mac's caps/zones at connect. **`available()` is False when no base is
+  connected, so the conversation pipeline is unchanged unless `MOTION_ESP32_PORT` is set.**
+- **Routing:** `action_router` has `motion.turn/move/come/stop` action specs and
+  `classify_explicit_motion` (deterministic, high-precision — no LLM). `interaction.py`
+  dispatches them via `_handle_router_motion_action` and runs the classifier in the fast
+  local takeover (gated on `motion_controller.available()`). Bare "stop" routes to the
+  base **only while it is moving**, so it never steals stop-music/stop-game/stop-talking.
+- **Config:** `MOTION_*` tunables in `config.py`; `MOTION_ESP32_PORT` in `.env` (loaded as
+  `MOTION_PORT_SET`). `main.py` Step-4 connects it and logs `Motion base: enabled/disabled`
+  like the other hardware; shutdown stops the heartbeat and leaves the base stopped.
+- **Setup:** `setup_macos.sh` (under "physical droid" → "motion base") **auto-detects the
+  ESP32 by protocol probe** — it opens each USB-serial port and looks for the firmware's
+  `hello` reply. This is the only reliable discriminator because the board's USB bridge is
+  a CH340, the same chip as the chest Arduino (chip-ID can't tell them apart). It can also
+  install the ESP32 core + ArduinoJson and flash the firmware.
+- **Tests:** `tests/test_motion.py` (fake-ESP32 serial; transport, controller gates,
+  clamping, classifier).
+
+Manual control (a Bluetooth gamepad paired directly to the ESP32) and the real
+motor/encoder/ToF drivers are Phase 1 — see `docs/motion_system.md` §11, §17.
+
 ## GUI
 
 The PySide6 dashboard is optional and launched with `--gui`.
@@ -549,8 +601,11 @@ venv/bin/python main.py
 - Named vision descriptions (fold dlib identity into GPT-4o vision): `vision.face.visible_known_names()` resolves currently-visible recognized people (world_state.people `person_db_id` → name) and is woven into the GPT-4o prompts so a known person is named ("Bret is at his desk") instead of anonymized ("a man at a desk"). `vision.scene.analyze_environment(..., known_names=None)` (the GUI's visual description + LLM world-context, auto-resolves) and `analyze_directed_attention(..., known_names=None)` (the "what do you see?" path — its blanket "do not identify anyone" rule is lifted ONLY for people Rex already recognizes; all other identity/age/health guessing stays banned). The naming directive rides in the directed-attention prompt BODY (not just the safety footer) so `target_summary` itself is named. No extra vision spend — same image, slightly longer text prompt. `intelligence/episodic_hooks._known_visible_names` now delegates to the same resolver. The GUI's visual-description panel reads `world_state.environment["description"]`, which previously only refreshed on the slow periodic scan — so a "what do you see?" query looked frozen; `interaction._update_scene_description` now writes the fresh directed-look summary back into that field so the panel updates on demand. Tests: `tests/test_vision_named_people.py`.
 - Callback humor (design: `docs/callback_humor_design.md`): Rex banks durable, light, SELF-volunteered "fun facts" per person (`person_callback_material` in people.db via `memory/callbacks.py`; banker = local qwen labelled-lines + heuristic fallback in `intelligence/callback_engine.py`, run from `_post_response`'s background thread) and resurfaces ONE later — reactively when the background relevance judge connects a stored premise to the live topic (claim seam in `interaction._stream_llm_response` between `select_mode` and the directive join; the claim rides as the `callback_banked` comedy mode and `llm._build_person_context`'s hook chain stands down via `callback_engine.turn_claim_active`), or in a mid-conversation lull (`consciousness._step_lull_callback`, governor purpose `lull_callback` priority 58). Sensitivity is classified at CAPTURE with a deterministic protected-category wall (health/grief/body/orientation/finances/religion-politics/family-conflict/addiction-legal) the model can only move material TOWARD 'excluded' on, never toward 'safe'; only `sensitivity='safe'` rows can ever fire and `active_pool` hard-filters. Spend-at-SPEAK (settle echo-check on the reply path, `on_spoke` on the lull path), per-premise reuse cooldown + use-count decay, per-session no-repeat + volume ledger (cleared for real in `_end_session`), 30-min sober-room window after any heavy-sensitivity turn (`note_heavy_moment` from the sensitive prepass), boundary→retire hook in `boundaries.apply_detected_boundary`, forget-flow deletion in `forgetting.py`, crowd/tier/`callback_style`-restraint gates. Flags: `CALLBACK_BANK_ENABLED` / `CALLBACK_HUMOR_ENABLED` (env-overridable A/B pair) + `CALLBACK_*` tunables. Tests: `tests/test_callback_humor.py`.
 
+- Motion system (drive base): wire contract `docs/motion_protocol.md` (v1, locked) + Phase 0 ESP32 firmware (`firmware/djr3x_motion`, full protocol over a stubbed HAL; flashed + 27/27 smoke test) + Mac side (`hardware/motion.py` transport, `intelligence/motion_controller.py` controller, `action_router` motion.* specs + `classify_explicit_motion`, `interaction` dispatch/fast-path, `MOTION_*` config, `MOTION_ESP32_PORT`, `main.py` Step-4 wiring). Gated on `motion_controller.available()` so it's a NO-OP for the whole pipeline unless a base is connected; `stop`/`estop` always pass and bare "stop" only routes to the base while moving. Flash at 115200 (921600 fails on the CH340 bridge); `setup_macos.sh` auto-detects the ESP32 by protocol probe (chip-ID can't — it shares a CH340 with the chest Arduino). Sign convention REP-103. Tests: `tests/test_motion.py`. See the Motion System section above.
+
 ## Likely Future Work
 
+- Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.
 - Decide whether the streaming answer path is sufficient latency cover on its own, or whether to re-enable (and tune) the slow-path ack / latency filler for the slowest paths.
 - Deeper conversation steering: detect a topic shift semantically (not just explicit "I like / I'm building X") and update/expire the active interest accordingly; today a new subject the user is clearly engaged in but doesn't name in an interest form is not picked up.
 - Add directional audio support for stereo ReSpeaker Lite input.

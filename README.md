@@ -18,6 +18,7 @@ The project is built for live, in-room use: Rex can recognize people, remember d
 - A wandering attention of his own — when the conversation lulls he'll stop staring, glance around the room, then look back and sometimes re-greet, so he doesn't feel locked to a fixed stare
 - Bored environmental snark — left idle, he looks around and invents in-character jabs about the room he actually sees: complaints about how dull it is, faux-clueless questions about objects ("what's that black chair for?"), digs at the clutter, snobby art opinions, or pleas to be taken somewhere with more life forms
 - Servo and LED hardware hooks for a physical droid body
+- Voice-driven motion — an optional ESP32 drive base lets Rex physically roll around the room on command ("turn left", "back up", "come here", "halt"), avoiding obstacles and people with onboard sensors; the ESP32 owns the real-time, fail-safe motor loop while the Mac sends high-level commands
 - Music controls and verbal games: I Spy, 20 Questions, themed five-question Trivia rounds, Jeopardy, and Word Association
 
 See [CONTEXT.md](CONTEXT.md) for more detailed project features, architecture notes, hardware mappings, and behavior design.
@@ -33,6 +34,7 @@ See [CONTEXT.md](CONTEXT.md) for more detailed project features, architecture no
 - Optional hardware:
   - Pololu Maestro servo controller
   - Head and chest LED controllers using Arduino Nano or Arduino Uno variants
+  - ESP32 motion controller (drive base) with motor driver, encoders, and Time-of-Flight sensors
   - Camera and microphone
 
 The macOS setup script installs Homebrew dependencies, Ollama, pyenv, Python 3.11.9, the virtual environment, Python packages, config templates, assets, models, and database setup.
@@ -63,8 +65,9 @@ The setup script creates local config files from templates and prompts for local
 - `apikeys.py` for OpenAI and ElevenLabs credentials
 - `.env` for machine-specific camera, audio, and hardware device paths
 - Optional replacement of `ELEVENLABS_VOICE_ID` in `config.py`
-- Optional guided droid hardware setup for the chest Arduino, head LED Arduino, and Pololu Maestro
+- Optional guided droid hardware setup for the chest Arduino, head LED Arduino, Pololu Maestro, and ESP32 motion base
 - Arduino CLI, Arduino AVR core, and FastLED setup for uploading the included LED firmware
+- For the motion base: auto-detects the ESP32 (by talking to its firmware over USB), installs the ESP32 core + ArduinoJson on demand, and can flash the motion firmware for you
 - Ollama plus `qwen2.5:1.5b` for local low-latency classifier/shaping work
 
 You can leave a prompt blank to keep the current value, or edit the generated files manually later.
@@ -138,15 +141,27 @@ Servo limits in `.env` use the Maestro app's microsecond values, such as `496 - 
 
 Connecting the Maestro before limits are programmed can drive a servo past its safe travel range and damage the mechanism.
 
+## Motion Base (optional)
+
+An optional ESP32-controlled drive base lets Rex physically move around a room on spoken command while avoiding obstacles. The ESP32 runs a real-time, fail-safe motor loop (PID speed control, Time-of-Flight obstacle/cliff stop, heartbeat watchdog) and the Mac sends high-level commands (`turn`, `move`, `come`, `stop`) over USB serial. Spoken intents like "turn left", "back up", "come here", and "halt" route through the normal conversation pipeline to the base; "stop" only steers the base while it is actually moving, so it never hijacks stop-music/stop-game.
+
+- **Wire contract:** [docs/motion_protocol.md](docs/motion_protocol.md). **Feature spec & wiring:** [docs/motion_system.md](docs/motion_system.md).
+- **Firmware:** [firmware/djr3x_motion](firmware/djr3x_motion/) (Arduino sketch for the ESP32). The current Phase 0 build runs the full protocol against a stubbed hardware layer, so it works on a bare ESP32 with nothing wired — flip `MOTION_HW_PRESENT` in `hal.h` to `1` as motors, encoders, and sensors are added.
+- **Enable it:** set `MOTION_ESP32_PORT` in `.env` (the setup script can auto-detect and set this). Motion is fully disabled — with zero change to the rest of Rex's behavior — until that port is set.
+- **Bring-up test:** `venv/bin/python firmware/tools/motion_serial_smoketest.py` exercises the whole protocol against a connected board.
+
+> Safety: the ESP32 stops the base on its own (obstacle/cliff/lost-comms) independent of the Mac. Do not attach motor power until the base has been bench-tested with wheels off the ground.
+
 ## Project Layout
 
 ```text
 audio/          Speech input, VAD, transcription, TTS, playback, and audio scene logic
 awareness/      Time, holidays, interoception, and background awareness systems
 features/       Games, music, commandable behaviors, and interactive features
-hardware/       Servo and LED integrations
-intelligence/   Conversation, memory, LLM prompting, empathy, and social behavior layers
+hardware/       Servo, LED, and motion-base serial integrations
+intelligence/   Conversation, memory, LLM prompting, empathy, social behavior, and motion control
 vision/         Camera, face recognition, scene analysis, and image utilities
+firmware/       ESP32 motion-controller firmware (Arduino sketch) + host serial tools
 assets/         Models, audio, game assets, memory database, and cached generated assets
 logs/           Runtime logs
 ```
