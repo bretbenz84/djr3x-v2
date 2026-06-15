@@ -46,6 +46,54 @@ _slow_count           = 0
 _SILENT_KEYS = frozenset({"skin_color"})
 
 
+# ── Recognized-identity helper ────────────────────────────────────────────────
+
+def visible_known_names(snapshot=None) -> list[str]:
+    """Names of recognized people currently visible to the camera.
+
+    Reads ``world_state.people`` (or a provided snapshot), keeps only faces that
+    are actually visible, and resolves each ``person_db_id`` to the stored person
+    name via the people DB. This is the bridge that folds dlib face-recognition
+    identity into the GPT-4o vision descriptions, so Rex can say "Bret is at his
+    desk" instead of "a man is at a desk".
+
+    Returns an order-preserving, de-duplicated list of names. Unknown faces (no
+    ``person_db_id``) are skipped. Never raises — returns [] on any failure.
+    """
+    try:
+        if snapshot is not None:
+            entries = (snapshot or {}).get("people") or []
+        else:
+            from world_state import world_state
+            entries = world_state.get("people") or []
+    except Exception:
+        return []
+
+    names: list[str] = []
+    seen_ids: set[int] = set()
+    for person in entries:
+        if not isinstance(person, dict):
+            continue
+        if person.get("face_visible") is False or person.get("face_missing"):
+            continue
+        pid = person.get("person_db_id")
+        try:
+            pid = int(pid) if pid is not None else None
+        except (TypeError, ValueError):
+            pid = None
+        if pid is None or pid in seen_ids:
+            continue
+        seen_ids.add(pid)
+        try:
+            row = people.get_person(pid)
+        except Exception:
+            row = None
+        name = (row or {}).get("name")
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 # ── Model loading ─────────────────────────────────────────────────────────────
 
 def _load_models() -> bool:

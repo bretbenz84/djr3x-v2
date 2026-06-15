@@ -51,40 +51,13 @@ _last_scene_episode_sig = None
 
 def _known_visible_names(snapshot: Optional[dict] = None) -> list[str]:
     """Names of recognized people currently visible, so a scene memory records WHO was
-    there ('Bret at his desk') instead of 'a man at a desk'. Reads from the given
-    snapshot's people (or world_state), resolving each person_db_id to a name."""
+    there ('Bret at his desk') instead of 'a man at a desk'. Thin wrapper over the
+    canonical vision-layer resolver (`vision.face.visible_known_names`)."""
     try:
-        if snapshot is not None:
-            people = (snapshot or {}).get("people") or []
-        else:
-            from world_state import world_state
-            people = world_state.get("people") or []
+        from vision import face
+        return face.visible_known_names(snapshot)
     except Exception:
         return []
-    names: list[str] = []
-    seen: set[int] = set()
-    for person in people:
-        if not isinstance(person, dict):
-            continue
-        if person.get("face_visible") is False or person.get("face_missing"):
-            continue
-        pid = person.get("person_db_id")
-        try:
-            pid = int(pid) if pid is not None else None
-        except (TypeError, ValueError):
-            pid = None
-        if pid is None or pid in seen:
-            continue
-        seen.add(pid)
-        try:
-            from memory import people as people_mem
-            row = people_mem.get_person(pid)
-        except Exception:
-            row = None
-        name = (row or {}).get("name")
-        if name and name not in names:
-            names.append(name)
-    return names
 
 
 def _join_names(names: list[str]) -> str:

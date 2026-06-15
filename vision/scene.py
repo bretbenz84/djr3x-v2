@@ -297,6 +297,37 @@ def _ground_environment_with_local_telemetry(result: dict) -> dict:
     return grounded
 
 
+def _resolve_known_names(known_names) -> list[str]:
+    """Names of recognized visible people to fold into a vision prompt.
+
+    Pass an explicit list to override; None auto-resolves from world_state via
+    dlib face recognition (`vision.face.visible_known_names`). This is what lets
+    the GPT-4o descriptions say "Bret" instead of "a man" — the identity comes
+    from local face recognition, not from the vision model guessing.
+    """
+    if known_names is not None:
+        return [str(n).strip() for n in known_names if str(n).strip()]
+    try:
+        from vision import face
+        return face.visible_known_names()
+    except Exception:
+        return []
+
+
+def _known_people_clause(names: list[str]) -> str:
+    """Prompt fragment instructing the vision model to use recognized names."""
+    if not names:
+        return ""
+    return (
+        " The following people in view are KNOWN to you by name: "
+        + ", ".join(names)
+        + '. When you describe a visible person who is clearly one of them, refer '
+        'to them BY NAME instead of "a man", "a woman", "a person", or "someone". '
+        "If several people are visible and you cannot tell which name belongs to "
+        "which, describe them generically rather than guessing."
+    )
+
+
 def _world_state_has_visible_people() -> bool:
     try:
         people = world_state.get("people") or []
@@ -314,7 +345,7 @@ def _world_state_has_visible_people() -> bool:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def analyze_environment(frame, force: bool = False) -> dict:
+def analyze_environment(frame, force: bool = False, known_names=None) -> dict:
     """
     Analyze the scene in frame using GPT-4o vision (config detail: "scene_analysis").
 
@@ -327,6 +358,12 @@ def analyze_environment(frame, force: bool = False) -> dict:
 
     Set force=True to bypass the cache and always make a fresh API call (e.g. when
     the user explicitly asks "what do you see?").
+
+    ``known_names`` folds dlib face-recognition identity into the description so a
+    recognized person is named ("Bret is at his desk") instead of anonymized
+    ("a man at a desk"). None auto-resolves the currently-visible recognized
+    people from world_state; pass an explicit list to override. Naming costs no
+    extra vision spend — it's the same image with a slightly longer text prompt.
 
     Returns the cached dict (or {}) without an API call on frame=None or on failure.
     """
@@ -367,6 +404,7 @@ def analyze_environment(frame, force: bool = False) -> dict:
         '  "description": one concise sentence describing the scene.\n'
         "Return ONLY the JSON object — no preamble, no explanation, no markdown fences."
     )
+    prompt += _known_people_clause(_resolve_known_names(known_names))
 
     raw = _call_gpt4o(frame, prompt, "scene_analysis")
     if raw is None:
@@ -861,6 +899,7 @@ def analyze_directed_attention(
     direction: str = "current",
     utterance: str = "",
     target_hint: str = "",
+    known_names=None,
 ) -> dict:
     """
     Analyze the view Rex was explicitly asked to look at.
@@ -868,9 +907,24 @@ def analyze_directed_attention(
     Used after the head/neck servos move for commands such as "look left" or
     "look at this". The output is structured so the dialogue layer can turn it
     into a short roast-style observation without inventing visual details.
+
+    ``known_names`` lets Rex name people he already recognizes via dlib face
+    recognition (so "what do you see?" answers "you, at your desk" instead of "a
+    person at a desk"). None auto-resolves the currently-visible recognized
+    people; pass a list to override. Other identity guessing stays disabled.
     """
     if frame is None:
         return {}
+
+    names = _resolve_known_names(known_names)
+    identity_rule = (
+        "You MAY name these specific people, whom you already recognize: "
+        + ", ".join(names)
+        + " — refer to a visible person who is clearly one of them by name. Do "
+        "NOT guess the identity of anyone else. "
+        if names
+        else "Do not identify anyone. "
+    )
 
     direction = (direction or "current").strip().lower()
     direction_note = {
@@ -902,7 +956,7 @@ def analyze_directed_attention(
         '  "roast_angle": one friendly roast/opinion based only on visible '
         "non-sensitive details,\n"
         '  "confidence": "low", "medium", or "high".\n'
-        "Safety rules: do not identify anyone. Do not infer or mention race, "
+        f"Safety rules: {identity_rule}Do not infer or mention race, "
         "ethnicity, religion, politics, disability, health, attractiveness, body "
         "size, or socioeconomic status. Do not read private text on documents or "
         "screens. Keep the roast about objects, decor, staging, droid-level taste, "
