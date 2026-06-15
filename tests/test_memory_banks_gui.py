@@ -111,7 +111,7 @@ class MemoryBanksWindowSmokeTest(unittest.TestCase):
         facts = admin.get_person_detail(1)["facts"]
         self.assertEqual([f["value"] for f in facts], ["cyan"])
 
-    def test_category_is_a_dropdown_and_drives_saved_value(self):
+    def test_category_and_key_are_dropdowns_and_drive_saved_values(self):
         from PySide6.QtWidgets import QComboBox
         from memory import admin
         w = MemoryBanksWindow()
@@ -119,21 +119,41 @@ class MemoryBanksWindowSmokeTest(unittest.TestCase):
             w._select_person_in_list(1)
             w._add_fact_row()  # new blank row, category defaults to "preference"
             row = w.facts_table.rowCount() - 1
-            combo = w.facts_table.cellWidget(row, 0)
-            self.assertIsInstance(combo, QComboBox)
-            # The dropdown is populated with the recognized categories.
-            options = [combo.itemText(i) for i in range(combo.count())]
-            self.assertEqual(options, admin.FACT_CATEGORIES)
-            self.assertEqual(combo.currentText(), "preference")
-            # Pick a category + fill key/value, then save — the chosen category persists.
-            combo.setCurrentText("family")
-            w.facts_table.item(row, 1).setText("nephew")
+            cat = w.facts_table.cellWidget(row, 0)
+            key = w.facts_table.cellWidget(row, 1)
+            self.assertIsInstance(cat, QComboBox)
+            self.assertIsInstance(key, QComboBox)
+            # Category dropdown is the recognized categories.
+            self.assertEqual([cat.itemText(i) for i in range(cat.count())], admin.FACT_CATEGORIES)
+            self.assertEqual(cat.currentText(), "preference")
+            # Pick category=family, then fill key/value, then save.
+            cat.setCurrentText("family")
+            key.setCurrentText("nephew")
             w.facts_table.item(row, 2).setText("Wade")
             w._save_facts()
         finally:
             w.close()
         facts = {f["key"]: f["category"] for f in admin.get_person_detail(1)["facts"]}
         self.assertEqual(facts.get("nephew"), "family")
+
+    def test_key_menu_follows_the_category(self):
+        # The user's report: choosing "relationship" left the key a blank box. The key
+        # menu must now offer the relationship keys (boss, coworker, …).
+        from PySide6.QtWidgets import QComboBox
+        from memory import admin
+        w = MemoryBanksWindow()
+        try:
+            w._select_person_in_list(1)
+            w._add_fact_row()
+            row = w.facts_table.rowCount() - 1
+            cat = w.facts_table.cellWidget(row, 0)
+            key = w.facts_table.cellWidget(row, 1)
+            cat.setCurrentText("relationship")  # triggers the key menu to repopulate
+            key_options = [key.itemText(i) for i in range(key.count())]
+            self.assertEqual(key_options, admin.suggested_keys_for_category("relationship"))
+            self.assertIn("boss", key_options)
+        finally:
+            w.close()
 
 
 if __name__ == "__main__":

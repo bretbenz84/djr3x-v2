@@ -52,6 +52,43 @@ COMMON_FACT_KEYS = [
     "pet_name", "spouse", "child", "sibling", "nephew", "niece", "parent",
 ]
 
+# Per-category key suggestions, so picking a category like "relationship" shows the
+# conventional keys (boss, coworker, mentor, …) instead of a blank box. The KEY is the
+# kind of thing; the VALUE is the specifics — e.g. category=relationship, key=boss,
+# value="Daniel"; category=family, key=nephew, value="Wade"; category=preference,
+# key=favorite_music, value="classical". Keys stay free text — these are just the menu.
+FACT_KEYS_BY_CATEGORY = {
+    "preference": [
+        "favorite_music", "favorite_food", "favorite_movie", "favorite_show",
+        "favorite_color", "favorite_band", "favorite_drink", "favorite_team",
+        "favorite_book", "favorite_game", "favorite_place",
+    ],
+    "family": [
+        "spouse", "partner", "child", "son", "daughter", "sibling", "brother",
+        "sister", "mother", "father", "parent", "nephew", "niece",
+        "grandparent", "grandchild", "cousin", "in_law",
+    ],
+    "relationship": [
+        "boss", "manager", "coworker", "colleague", "mentor", "mentee",
+        "friend", "best_friend", "neighbor", "roommate", "teammate",
+        "classmate", "ex", "rival", "acquaintance",
+    ],
+    "pet": ["pet_name", "pet_type", "pet_breed"],
+    "job": ["job_title", "employer", "industry", "workplace"],
+    "hometown": ["hometown", "current_city", "country"],
+    "birthday": ["birthday", "birth_year"],
+    "identity": ["pronouns", "full_name", "age", "nationality"],
+    "worldview": ["worldview", "religion", "politics", "values"],
+    "belief": ["belief", "opinion", "value"],
+    "inside_joke": ["inside_joke"],
+    "other": [],
+}
+
+
+def suggested_keys_for_category(category: str) -> list[str]:
+    """Conventional key suggestions for a fact category (empty list = free text)."""
+    return list(FACT_KEYS_BY_CATEGORY.get((category or "").strip().lower(), []))
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Rex's own memories (rex.db → rex_episodes)
