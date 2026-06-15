@@ -1,0 +1,390 @@
+# DJ-R3X Motion System — Feature Spec
+
+Status: **Draft / proposed** · Owner: Bret · Last updated: 2026-06-14
+
+A self-contained drive base that lets DJ-R3X move around a room on spoken command
+("turn left", "come here", "move back") while autonomously avoiding obstacles and
+people with Time-of-Flight sensors. An ESP32 owns the real-time motor + sensor loop;
+the Mac (the existing DJ-R3X brain) sends high-level commands over USB serial.
+
+---
+
+## 1. Goals & non-goals
+
+**Goals**
+- Drive the robot with a 2-wheel **differential drive** (2 powered wheels + 2 omni
+  caster wheels for support).
+- Execute high-level spoken intents autonomously: `turn left/right`, `move
+  forward/back`, `come here`, `stop`.
+- **Never drive into an obstacle or person** in the direction of travel — ToF sensors
+  gate all motion; the base slows in a near zone and hard-stops in a danger zone.
+- Closed-loop motion (Hall encoders) so "turn 90°" and "back up 30 cm" are repeatable.
+- Fail safe by default: lose comms, lose a heartbeat, or hit a fault → motors stop.
+- Plug into the existing hardware pattern (config-gated, disabled cleanly when the
+  ESP32 isn't connected — exactly like servos/LEDs today).
+
+**Non-goals (this version)**
+- **No camera-based navigation.** The USB camera is *not* part of the motion control
+  loop. Obstacle/person avoidance is ToF-only. (The camera may later supply a *heading
+  hint* for "come here" — see §9 — but never drives obstacle avoidance.)
+- No SLAM, mapping, or waypoint navigation. This is reactive local motion, not global
+  path planning.
+- No autonomous roaming/patrol. The robot moves only in response to a command.
+
+---
+
+## 2. Bill of materials
+
+| Qty | Part | Role |
+| --- | --- | --- |
+| 2 | JGB37-520 12V gear motor, 176:1, ~25 kg·cm, **Hall quadrature encoder** | Powered drive wheels |
+| 2 | Omni / caster wheels | Passive support (front+back or side balance) |
+| 2 | BTS7960 43A motor driver module (full H-bridge) | One per drive motor |
+| 5 | VL53L0X ToF laser ranging sensor (GY-VL53L0XV2, I²C, 940 nm) | Obstacle/person/cliff sensing |
+| 1 | ESP32 dev board | Real-time motion controller ("the base brain") |
+| 1 | 12 V battery / supply + 5 V buck converter | Motor power + ESP32/sensor logic power |
+| — | USB cable ESP32 → Mac | Command + telemetry link |
+
+---
+
+## 3. System architecture
+
+```
+  ┌─────────────────────────────┐         USB serial         ┌────────────────────────────┐
+  │  Mac  (DJ-R3X brain)         │  commands  ───────────────▶│  ESP32  (motion controller) │
+  │  - speech → action_router    │  telemetry ◀───────────────│  - command parser           │
+  │  - hardware/motion.py        │   (JSON lines, 115200+)    │  - PID speed loop (50–100 Hz)│
+  │  - heartbeat + safety caps   │                            │  - 5× VL53L0X read loop     │
+  └─────────────────────────────┘                            │  - safety supervisor        │
+                                                              └───────┬──────────┬──────────┘
+                                                            PWM/EN    │          │  I²C
+                                                          ┌───────────▼──┐   ┌───▼──────────┐
+                                                          │ 2× BTS7960   │   │ 5× VL53L0X   │
+                                                          └──┬────────┬──┘   └──────────────┘
+                                                          M1 │        │ M2
+                                                        ┌────▼──┐  ┌──▼────┐
+                                                        │wheel L│  │wheel R│  (+ encoders A/B)
+                                                        └───────┘  └───────┘
+```
+
+**Division of responsibility**
+- **ESP32 = the reflexes.** Hard real-time: motor PWM, encoder PID, ToF reads, and the
+  safety stop. It must be able to stop the robot *without the Mac* (its own ToF gate +
+  watchdog). The Mac going away never leaves the robot driving.
+- **Mac = the intent.** Turns speech/decisions into high-level commands, enforces
+  policy (speed caps, "is motion allowed right now"), logs, and shows telemetry. It
+  does **not** do real-time control.
+
+---
+
+## 4. Drive geometry (differential drive)
+
+- Two powered wheels on a shared axle; two omni wheels for balance. Steering is by
+  **wheel-speed difference** (skid/diff drive): both forward = straight; equal and
+  opposite = spin in place; one faster = arc.
+- Kinematics (ESP32):
+  - `v_left  = v_linear − ω · (track_width / 2)`
+  - `v_right = v_linear + ω · (track_width / 2)`
+  - where `v_linear` is m/s and `ω` is rad/s.
+- Odometry (per control tick) from encoder deltas:
+  - `d_left/right = counts_delta / COUNTS_PER_METER`
+  - `d_center = (d_left + d_right)/2`; `dθ = (d_right − d_left)/track_width`
+  - integrate `x, y, θ` for distance-/angle-terminated commands.
+- **Calibration constants** (measured, stored in firmware/config):
+  `WHEEL_DIAMETER_MM`, `TRACK_WIDTH_MM`, `COUNTS_PER_REV`, `COUNTS_PER_METER`.
+  - Encoder math: Hall ≈ 11 pulses/motor-rev/channel × **176:1** gear × 4 (quadrature)
+    ≈ **7744 counts/output-rev**; verify empirically (drive 1 m / spin 360° and read).
+
+---
+
+## 5. Motor subsystem (BTS7960 ×2)
+
+Each BTS7960 is a full H-bridge driving **one** motor bidirectionally.
+
+| BTS7960 pin | Connect to | Notes |
+| --- | --- | --- |
+| RPWM | ESP32 PWM (LEDC) | forward duty |
+| LPWM | ESP32 PWM (LEDC) | reverse duty |
+| R_EN / L_EN | ESP32 GPIO (may tie together per driver) | enable; pull low to coast/disable |
+| VCC | 3.3 V (logic) | from ESP32/buck — **common ground required** |
+| B+ / B− | 12 V battery | motor power rail |
+| M+ / M− | motor leads | — |
+| R_IS / L_IS | (optional) ESP32 ADC | current sense for stall/overcurrent detection |
+
+- Drive a wheel by PWM-ing **one** of RPWM/LPWM (the other at 0). Never both high.
+- Per-wheel **PID** on encoder-measured speed → PWM duty (closed loop), so both wheels
+  track the commanded speed despite friction/load differences (keeps "straight" straight).
+- 43 A capacity is far above the JGB37-520's running draw; size the 12 V supply/fuse to
+  the motors, not the driver max. Add a per-motor fuse.
+
+---
+
+## 6. Sensor subsystem (VL53L0X ×5)
+
+### 6.1 The I²C addressing gotcha (must-handle)
+**Every VL53L0X powers up at the same I²C address (0x29).** Five on one bus collide.
+Two supported options:
+
+1. **XSHUT sequencing (recommended).** Wire each sensor's `XSHUT` to its own ESP32
+   GPIO. At boot: hold all XSHUT low (all asleep), then bring up one at a time and
+   reassign it a unique address (0x30, 0x31, …) before enabling the next. Costs 5 GPIO.
+2. **TCA9548A I²C multiplexer.** All sensors keep 0x29; select one channel at a time.
+   Costs 1 extra board but 0 addressing logic and frees the XSHUT GPIOs.
+
+### 6.2 Placement (5 sensors) — default proposal (configurable)
+ToF is a narrow (~25°) cone, ~3 cm–1.2 m reliable. Cover the travel directions:
+
+| # | Mount | Covers |
+| --- | --- | --- |
+| 1 | Front-left ≈ −30° | forward arc, left |
+| 2 | Front-center 0° | straight ahead |
+| 3 | Front-right ≈ +30° | forward arc, right |
+| 4 | Rear-center 180° | reversing ("move back") |
+| 5 | **Down-facing front edge** | **cliff / stair drop-off** (strongly recommended) |
+
+> Trade-off: a 4th horizontal sensor improves side coverage during spins, but a
+> downward cliff sensor prevents driving off a step/stair — a much bigger safety win
+> indoors. Make the 5th sensor's role a config choice.
+
+### 6.3 Coverage limits (call out honestly)
+- **Blind spots between cones** — thin/low/narrow obstacles (chair legs, pet, cable)
+  can pass between sensor cones and be missed. Keep speeds low; don't claim full coverage.
+- **Range ~1.2 m** caps safe lookahead → **cap max speed** so stopping distance < min
+  reliable range.
+- **ToF can't classify** — it reports distance, not "person vs wall." "Avoid people" is
+  really "avoid anything in the path." A person stepping in front = an obstacle that
+  triggers slow/stop. That is sufficient for the goal, but state it plainly.
+
+---
+
+## 7. ESP32 firmware
+
+FreeRTOS tasks (suggested):
+
+| Task | Rate | Job |
+| --- | --- | --- |
+| **Control loop** | 50–100 Hz | encoder read → PID per wheel → PWM; integrate odometry; enforce distance/angle targets |
+| **Sensor loop** | 20–50 Hz | read 5 ToF (continuous mode); maintain latest distances + zone flags |
+| **Safety supervisor** | every control tick | gate motion on ToF zones + watchdog + faults; can force STOP independent of the Mac |
+| **Serial RX** | event | parse incoming commands; update setpoints/targets; reset watchdog |
+| **Serial TX (telemetry)** | 10–20 Hz | stream odometry, ToF distances, status/faults, heartbeat |
+
+**Sample ESP32 pin budget** (illustrative; finalize on the board):
+- 4 × LEDC PWM (RPWM/LPWM ×2 motors), 2–4 × GPIO enables
+- 4 × encoder inputs (A/B ×2) on interrupt-capable pins (external pull-ups if using
+  input-only 34–39)
+- I²C SDA/SCL (2) + 5 × XSHUT (or 1 × TCA9548A on the same I²C bus)
+- Optional: 2 × ADC for BTS7960 current sense; 1 × GPIO for a hardware e-stop input
+ESP32 has enough usable GPIO for this; lay out PWM and interrupt pins first.
+
+---
+
+## 8. Communication protocol (Mac ↔ ESP32, USB serial)
+
+- **Transport:** USB serial, **115200** baud (bump to 921600 if telemetry needs it),
+  newline-delimited **JSON** objects (one per line), UTF-8. JSON keeps it debuggable
+  and trivial to parse in Python.
+- **Versioned:** every message carries `"v": 1`.
+
+### 8.1 Mac → ESP32 (commands)
+| Command | Example | Meaning |
+| --- | --- | --- |
+| heartbeat | `{"v":1,"cmd":"ping","seq":42}` | keep-alive (≥ 2× per watchdog window) |
+| drive | `{"v":1,"cmd":"drive","lin":0.15,"ang":0.0}` | continuous velocity (m/s, rad/s) until changed/expired |
+| turn | `{"v":1,"cmd":"turn","deg":-90,"rate":40}` | rotate in place N° (closed loop), ± = L/R |
+| move | `{"v":1,"cmd":"move","dist":0.3,"speed":0.15}` | drive a fixed distance (m), ± = fwd/back |
+| come | `{"v":1,"cmd":"come","heading":0,"stop_at":0.6}` | advance toward heading, stop `stop_at` m from nearest obstacle |
+| stop | `{"v":1,"cmd":"stop"}` | immediate controlled stop |
+| estop | `{"v":1,"cmd":"estop"}` | hard disable until explicit `clear` |
+| config | `{"v":1,"cmd":"config","max_lin":0.25,...}` | set caps/zones at runtime |
+
+- **Every motion command carries an implicit deadman:** `drive` setpoints **expire**
+  (e.g. 300 ms) unless refreshed; `turn`/`move`/`come` run to their target then stop.
+  The robot is never "left driving."
+
+### 8.2 ESP32 → Mac (telemetry, 10–20 Hz)
+```json
+{"v":1,"t":12834,"state":"moving","fault":null,
+ "odom":{"x":0.42,"y":0.01,"theta":-1.57,"lin":0.15,"ang":0.0},
+ "tof_mm":{"fl":820,"fc":410,"fr":900,"rear":1100,"down":60},
+ "zone":"slow","blocked_dir":"front","cmd_seq":42,"batt_mv":11820}
+```
+- `state`: `idle|moving|blocked|estop|fault`
+- `fault`: `null | encoder_stall | overcurrent | tof_error | low_batt`
+- `zone`: aggregate of the worst sensor in the direction of travel.
+
+---
+
+## 9. Command semantics & behaviors
+
+| Spoken intent | Base behavior |
+| --- | --- |
+| **"turn left/right"** | Spin in place a default step (e.g. 45–90°, configurable) or a stated angle; closed-loop on encoders; abort if the swing path is blocked. |
+| **"move back"** | Reverse a default/stated distance; **gated by the rear ToF** — slow then stop if something's behind. |
+| **"move forward"/"go"** | Drive forward a default/stated distance; front ToF gated. |
+| **"stop"** | Immediate controlled stop (always honored, highest priority). |
+| **"come here"** | Turn toward a heading, then advance until the nearest forward obstacle is at the social-distance stop (`stop_at`, e.g. 0.6 m), then stop. |
+
+**"Come here" heading — open design point.** With no camera navigation, "here" has no
+spatial target. Options, in order of preference:
+1. **One-shot heading hint** from the existing system (the speaker's face bearing /
+   `speaker_gaze`, or mic-array sound-source direction if available) — used *only* to
+   point the base before it advances. Obstacle avoidance stays 100% ToF. (This uses the
+   camera to *orient*, not to *navigate* — consistent with the non-goal.)
+2. **No heading** → just advance forward and stop at `stop_at` (assumes the caller is
+   roughly ahead). Simplest; fine for v1.
+3. Defer "come here" to a later phase; ship turn/move/stop first.
+
+---
+
+## 10. Obstacle & person avoidance
+
+Direction-aware **safety zones**, evaluated on the ESP32 every control tick using the
+sensors facing the travel direction (front sensors when moving forward; rear when
+reversing; the swing side when spinning):
+
+| Zone | Distance (tunable) | Action |
+| --- | --- | --- |
+| CLEAR | > 0.6 m | full commanded speed |
+| SLOW | 0.25–0.6 m | scale speed down toward the limit |
+| STOP | < 0.25 m | halt; report `blocked`; refuse further motion *in that direction* |
+| CLIFF | down sensor > floor + margin | halt immediately (drop-off ahead) |
+
+- A STOP/CLIFF condition **overrides any command** — the Mac cannot override the ESP32's
+  reflex stop (only `stop`/`estop`/re-clear, never "drive into the wall anyway").
+- The robot may still move *away* from a blockage (e.g. blocked in front → reverse/turn
+  still allowed if those directions are clear).
+- Zone thresholds and max speed are co-tuned so **stopping distance < min reliable ToF
+  range** at full speed.
+
+---
+
+## 11. Safety model
+
+Layered, defense-in-depth:
+1. **ESP32 reflex stop** — ToF zones + cliff, independent of the Mac.
+2. **Heartbeat watchdog** — no `ping` from the Mac within the window (e.g. 500 ms) →
+   stop motors. Covers Mac crash, USB unplug, app exit.
+3. **Command deadman** — `drive` setpoints expire; finite commands self-terminate.
+4. **Speed caps** — hard max linear/angular in firmware (not just policy).
+5. **Fault stop** — encoder stall (commanded but not moving → likely jammed/lifted),
+   overcurrent (BTS7960 IS), low battery → stop + report.
+6. **E-stop** — software `estop` command and (recommended) a **physical button** that
+   cuts the 12 V motor rail. Recovery requires an explicit clear.
+7. **Mac-side policy gates** — motion is **suppressed** when the conversation is paused
+   (`INTERACTION_PAUSED`, e.g. Memory Banks open), during family-safe/sensitive moments,
+   or when the operator disables it. (Mirror the existing audio-suppression pattern.)
+8. **Start-up safe** — boots to `idle`, motors disabled, until an explicit command.
+
+---
+
+## 12. Integration with the existing codebase
+
+Follow the established hardware pattern (servos/LEDs are config-gated and degrade
+cleanly when unplugged):
+
+- **Config (`config.py`)** — add `MOTION_ESP32_PORT` (serial device path). Motion is
+  **disabled unless the port is set**, exactly like `MAESTRO_PORT` / `ARDUINO_HEAD_PORT`.
+  Plus tunables: `MOTION_MAX_LINEAR_MS`, `MOTION_MAX_ANGULAR_DEG_S`, `MOTION_STOP_ZONE_M`,
+  `MOTION_SLOW_ZONE_M`, `MOTION_DEFAULT_TURN_DEG`, `MOTION_COME_STOP_AT_M`,
+  `MOTION_HEARTBEAT_MS`, `MOTION_ENABLED` master switch.
+- **`hardware/motion.py`** — mirror `hardware/servos.py`: `connect()` (open serial,
+  handshake/version-check), `send(cmd)`, a background reader thread for telemetry, and a
+  thread-safe latest-telemetry snapshot. Returns connected/not so `main.py` can log
+  `Motion base: enabled/disabled` in its Step-4 hardware block.
+- **`intelligence/motion_controller.py`** (new) — the high-level API the rest of the app
+  calls: `turn(deg)`, `move(dist)`, `come_here(...)`, `stop()`, plus Mac-side safety
+  (heartbeat thread, speed caps, the `INTERACTION_PAUSED`/family-safe gate, debouncing).
+- **`intelligence/action_router.py`** — add motion intents so spoken commands route to
+  the controller: `motion.turn`, `motion.move`, `motion.come`, `motion.stop`. Classify
+  "turn left/right", "move/back up/come forward", "come here", "stop"/"halt"/"freeze".
+  `stop` must be high-priority and always executable.
+- **GUI (`gui/dashboard.py`)** — optional MOTION panel: live ToF distances (a small
+  radar/bar view), odometry/heading, current state, and a prominent **E-STOP button**.
+- **Telemetry → memory/log** — motion events ("I rolled over to Bret", "backed away
+  from an obstacle") can optionally feed the existing episodic memory for flavor.
+
+---
+
+## 13. Calibration & tuning
+
+1. **Encoder counts/rev** — spin one output rev by hand / under power; confirm count.
+2. **Counts per meter & track width** — drive a measured 1 m straight; spin a measured
+   360°; solve for `COUNTS_PER_METER` and `TRACK_WIDTH_MM` from odometry error.
+3. **Per-wheel PID** — tune so a "straight" command tracks straight and speed is steady
+   under load; minimize wheel mismatch.
+4. **ToF zones** — measure actual stopping distance at max speed; set STOP zone above
+   it with margin; set SLOW so deceleration is smooth.
+5. **Turn accuracy** — command 90°, measure actual; trim `TRACK_WIDTH_MM`.
+
+---
+
+## 14. Test plan & acceptance criteria
+
+**Bench (wheels off the ground)**
+- [ ] Each motor spins both directions under PWM; enables gate correctly.
+- [ ] Both encoders count, correct sign; PID holds a commanded speed.
+- [ ] All 5 ToF return distinct, sane distances (addressing works).
+- [ ] Serial command/telemetry round-trips; version handshake works.
+- [ ] Watchdog: stop sending `ping` → motors stop within the window.
+
+**Floor**
+- [ ] `move 1 m` lands within ±5 cm; `turn 90°` within ±5°.
+- [ ] Straight command drives straight (no consistent drift).
+- [ ] Forward into a wall: SLOW then STOP before contact; reports `blocked`.
+- [ ] Person steps in front while moving → stops before contact.
+- [ ] `move back` stops for an obstacle behind.
+- [ ] Cliff sensor halts at a table edge / top of a step.
+- [ ] USB unplug mid-move → robot stops (watchdog).
+- [ ] `stop`/e-stop halts immediately from any state.
+- [ ] Spoken "turn left", "move back", "stop" produce the right motion via the router.
+
+**Acceptance:** all floor items pass; no contact with a wall/person in 20 consecutive
+mixed commands; clean enable/disable when the ESP32 is unplugged (no crashes, logged
+like servos).
+
+---
+
+## 15. Risks, limitations & open questions
+
+- **ToF blind spots / range** — narrow cones miss thin/low obstacles; ~1.2 m range caps
+  speed. Mitigation: low speed, conservative zones, more/angled sensors later. *Accept
+  that coverage is not complete and tune speed accordingly.*
+- **No classification** — can't tell a person from furniture; "avoid people" = avoid
+  obstacles. Acceptable for the goal; documented.
+- **Odometry drift** — wheel slip / carpet vs hard floor degrades distance/angle
+  accuracy over time. Fine for short reactive moves; not for long navigation.
+- **"Come here" target** — needs a heading source without camera navigation (see §9).
+- **Cliff/stairs** — only covered if the 5th sensor is down-facing; otherwise a real
+  fall risk. *Recommend the downward sensor.*
+- **Power/EMI** — motor noise on the logic rail; keep ESP32 on a clean 5 V buck (or USB)
+  with common ground and decoupling; fuse the motor rail.
+- **Tip-over** — a tall robot accelerating/stopping hard on 2 driven + 2 omni wheels can
+  rock; keep accel limits gentle and the center of mass low.
+- **Two-way authority** — confirm the ESP32 reflex stop can *always* override a Mac
+  command (it must).
+
+---
+
+## 16. Phased roadmap
+
+- **Phase 0 — bring-up:** wiring, ESP32 firmware skeleton, motors spin, encoders read,
+  5 ToF addressed & reading, serial echo + version handshake. (Bench only.)
+- **Phase 1 — closed-loop base:** PID speed control, odometry, `move`/`turn`/`stop`
+  with ToF STOP/SLOW gating + watchdog. Drive from a laptop terminal.
+- **Phase 2 — Mac integration:** `MOTION_ESP32_PORT` config, `hardware/motion.py`,
+  `motion_controller.py`, `action_router` intents → spoken "turn/move/back/stop" work.
+  Heartbeat + pause/family-safe gating.
+- **Phase 3 — "come here" + polish:** heading hint, smoother avoidance, GUI motion panel
+  with ToF view + E-STOP, optional episodic flavor lines.
+
+---
+
+## 17. Glossary
+
+- **Differential drive** — steering by left/right wheel-speed difference.
+- **ToF** — Time-of-Flight distance sensor (VL53L0X), reports range in mm.
+- **Deadman / watchdog** — auto-stop when commands/heartbeats stop arriving.
+- **Zone** — distance band (CLEAR/SLOW/STOP/CLIFF) that gates speed in the travel
+  direction.
+- **Odometry** — position/heading estimate integrated from encoder counts.
