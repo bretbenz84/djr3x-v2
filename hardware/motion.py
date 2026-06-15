@@ -38,6 +38,7 @@ _seq_lock = threading.Lock()
 _seq = 0
 
 _connected = False
+_last_port: "str | None" = None     # remembered for auto-reconnect after a drop
 _hello: "dict | None" = None
 _latest_telemetry: "dict | None" = None
 _acks: "dict[int, dict]" = {}
@@ -60,9 +61,12 @@ def _get_float(name: str, default: float) -> float:
 
 # ── Serial connection ───────────────────────────────────────────────────────────
 
-def _open_serial_with_retries(port: str, *, log_errors: bool = True) -> "serial.Serial | None":
-    attempts = max(1, _get_int("MOTION_CONNECT_RETRY_ATTEMPTS", 3))
-    delay = max(0.0, _get_float("MOTION_CONNECT_RETRY_DELAY_SECS", 1.0))
+def _open_serial_with_retries(
+    port: str, *, log_errors: bool = True,
+    attempts: "int | None" = None, delay: "float | None" = None,
+) -> "serial.Serial | None":
+    attempts = max(1, attempts if attempts is not None else _get_int("MOTION_CONNECT_RETRY_ATTEMPTS", 3))
+    delay = max(0.0, delay if delay is not None else _get_float("MOTION_CONNECT_RETRY_DELAY_SECS", 1.0))
     timeout = max(0.01, _get_float("MOTION_SERIAL_TIMEOUT_SECS", 0.1))
     baud = _get_int("MOTION_BAUD", 115200)
 
@@ -87,19 +91,24 @@ def _open_serial_with_retries(port: str, *, log_errors: bool = True) -> "serial.
 
 
 def _close_serial_locked() -> None:
-    global _ser
+    global _ser, _connected
     if _ser is not None:
         try:
             _ser.close()
         except Exception:
             pass
     _ser = None
+    _connected = False   # a closed link is never "connected" (incl. during a reconnect handshake)
 
 
-def connect(port: "str | None" = None) -> bool:
+def connect(
+    port: "str | None" = None, *,
+    attempts: "int | None" = None, delay: "float | None" = None, log_errors: bool = True,
+) -> bool:
     """Open the link and run the handshake. Returns True only on a clean
-    handshake with a protocol-compatible firmware."""
-    global _ser, _connected, _hello
+    handshake with a protocol-compatible firmware. `attempts`/`delay`/`log_errors`
+    let reconnect() retry fast and quietly."""
+    global _ser, _connected, _hello, _last_port
 
     if not bool(getattr(config, "MOTION_ENABLED", True)):
         _log.debug("MOTION_ENABLED=False — skipping motion connect")
@@ -108,8 +117,9 @@ def connect(port: "str | None" = None) -> bool:
     if not port:
         _log.debug("MOTION_ESP32_PORT not set — skipping motion connect")
         return False
+    _last_port = port
 
-    ser = _open_serial_with_retries(port)
+    ser = _open_serial_with_retries(port, log_errors=log_errors, attempts=attempts, delay=delay)
     if ser is None:
         return False
 
@@ -139,16 +149,18 @@ def connect(port: "str | None" = None) -> bool:
         time.sleep(0.02)
 
     if hello is None:
-        _log.warning("Motion base: no hello reply within handshake timeout — disabling")
+        if log_errors:
+            _log.warning("Motion base: no hello reply within handshake timeout — disabling")
         disconnect()
         return False
 
     proto = hello.get("proto")
     if proto != _PROTO_VERSION:
-        _log.warning(
-            "Motion base: incompatible firmware proto=%s (need %d) — disabling",
-            proto, _PROTO_VERSION,
-        )
+        if log_errors:
+            _log.warning(
+                "Motion base: incompatible firmware proto=%s (need %d) — disabling",
+                proto, _PROTO_VERSION,
+            )
         disconnect()
         return False
 
@@ -158,6 +170,16 @@ def connect(port: "str | None" = None) -> bool:
         hello.get("fw"), hello.get("caps"), hello.get("boot_id"),
     )
     return True
+
+
+def reconnect() -> bool:
+    """Re-open the last-used port with a single fast, quiet attempt + handshake.
+    Used by the controller's link manager to heal after an unplug/replug (the
+    device usually reappears on the same /dev path). Returns True on success."""
+    port = _last_port or MOTION_ESP32_PORT
+    if not port:
+        return False
+    return connect(port, attempts=1, delay=0.0, log_errors=False)
 
 
 def disconnect() -> None:

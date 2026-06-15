@@ -148,6 +148,38 @@ class TransportTest(_MotionTestBase):
         self.assertEqual(tel["owner"], "auto")
         self.assertIn("odom", tel)
 
+    def test_reconnect_after_drop(self):
+        # Fresh fake on each open so a reconnect gets a working port.
+        fakes = []
+
+        def factory(*a, **k):
+            f = FakeESP32Serial()
+            fakes.append(f)
+            return f
+
+        motion.serial.Serial = factory
+        self.assertTrue(motion.connect(port="FAKE"))   # no manager thread (direct)
+        self.assertTrue(motion.connected())
+        # Simulate an unplug detected by a failed write: close the link.
+        with motion._write_lock:
+            motion._close_serial_locked()
+        self.assertFalse(motion.connected())
+        # Auto-reconnect heals it (reopens + re-handshakes on a fresh port).
+        self.assertTrue(motion.reconnect())
+        self.assertTrue(motion.connected())
+        self.assertGreaterEqual(len(fakes), 2)
+        motion.disconnect()
+
+    def test_reconnect_bogus_port_fails_fast(self):
+        # No device at the remembered port -> reconnect returns False, stays down.
+        def factory(*a, **k):
+            raise __import__("serial").SerialException("no such device")
+
+        motion.serial.Serial = factory
+        motion._last_port = "/dev/cu.does-not-exist"
+        self.assertFalse(motion.reconnect())
+        self.assertFalse(motion.connected())
+
 
 class ControllerTest(_MotionTestBase):
     def test_turn_left_right_defaults(self):

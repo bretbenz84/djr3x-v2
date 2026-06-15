@@ -82,10 +82,27 @@ def _start_heartbeat() -> None:
 
 
 def _heartbeat_loop() -> None:
+    """Link manager: ping while connected; auto-reconnect (throttled) after a drop
+    so an unplug/replug of the ESP32 heals on its own without restarting Rex."""
     period = max(0.02, _get_int("MOTION_HEARTBEAT_MS", 150) / 1000.0)
+    reconnect_interval = max(0.5, _get_float("MOTION_RECONNECT_INTERVAL_SECS", 2.0))
+    last_reconnect = 0.0
     while not _stop.is_set():
         if motion.connected():
             motion.ping()
+        else:
+            now = time.monotonic()
+            if now - last_reconnect >= reconnect_interval:
+                last_reconnect = now
+                try:
+                    if motion.reconnect():
+                        _log.info("Motion base reconnected")
+                        try:
+                            _push_config()
+                        except Exception:
+                            _log.debug("motion config push after reconnect failed", exc_info=True)
+                except Exception:
+                    _log.debug("motion reconnect attempt failed", exc_info=True)
         _stop.wait(period)
 
 

@@ -4430,6 +4430,7 @@ MOTION_HEARTBEAT_MS = 150             # Mac ping cadence (<= 1/3 of watchdog)
 MOTION_WATCHDOG_MS = 500              # firmware stops motors if no Mac line in this window
 MOTION_DRIVE_EXPIRY_MS = 300          # continuous drive setpoint deadman
 MOTION_HANDSHAKE_TIMEOUT_MS = 1500    # wait for the ESP32 `hello` reply at connect
+MOTION_RECONNECT_INTERVAL_SECS = 2.0  # auto-reconnect cadence after an unplug/drop
 
 # Manual gamepad override (ESP32-side; the Mac only observes it via telemetry).
 MOTION_MANUAL_IDLE_RETURN_SECS = 4
