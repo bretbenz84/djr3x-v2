@@ -195,12 +195,29 @@ def get_person_detail(person_id: int) -> Optional[dict]:
         "SELECT * FROM person_preferences WHERE person_id = ? ORDER BY domain, key",
         (int(person_id),),
     )]
+    biometrics = {
+        "face": people_mem.count_biometrics(int(person_id), "face"),
+        "voice": people_mem.count_biometrics(int(person_id), "voice"),
+    }
     return {
         "person": person,
         "facts": facts,
         "interests": interests,
         "preferences": preferences,
+        "biometrics": biometrics,
     }
+
+
+def clear_biometrics(person_id: int, kind: str) -> bool:
+    """Delete a person's stored face encodings or voiceprints (kind: 'face'|'voice').
+    Useful to wipe a mis-enrolled biometric that's causing wrong recognition."""
+    if kind not in ("face", "voice"):
+        return False
+    db.execute(
+        "DELETE FROM biometrics WHERE person_id = ? AND type = ?",
+        (int(person_id), kind),
+    )
+    return True
 
 
 def update_person_fields(person_id: int, *, name: Optional[str] = None, **fields) -> bool:

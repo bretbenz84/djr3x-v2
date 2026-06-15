@@ -127,6 +127,38 @@ class FactAdminTest(_TempDbs):
         self.assertEqual(list(rows), [])
 
 
+class BiometricsAdminTest(_TempDbs):
+    def setUp(self):
+        super().setUp()
+        self.pid = admin.create_person("Jordan Vega")
+
+    def _add_biometric(self, kind):
+        db.execute(
+            "INSERT INTO biometrics (person_id, type, encoding, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (self.pid, kind, b"\x00\x01", "2026-06-14 10:00:00"),
+        )
+
+    def test_detail_reports_biometric_counts(self):
+        detail = admin.get_person_detail(self.pid)
+        self.assertEqual(detail["biometrics"], {"face": 0, "voice": 0})
+        self._add_biometric("face")
+        self._add_biometric("face")
+        self._add_biometric("voice")
+        detail = admin.get_person_detail(self.pid)
+        self.assertEqual(detail["biometrics"], {"face": 2, "voice": 1})
+
+    def test_clear_biometrics_removes_only_that_kind(self):
+        self._add_biometric("face")
+        self._add_biometric("voice")
+        self.assertTrue(admin.clear_biometrics(self.pid, "face"))
+        bio = admin.get_person_detail(self.pid)["biometrics"]
+        self.assertEqual(bio, {"face": 0, "voice": 1})
+
+    def test_clear_biometrics_rejects_bad_kind(self):
+        self.assertFalse(admin.clear_biometrics(self.pid, "fingerprint"))
+
+
 class RelationshipKeysTest(unittest.TestCase):
     def test_romantic_partners_offered_in_relationship_menu(self):
         keys = admin.suggested_keys_for_category("relationship")

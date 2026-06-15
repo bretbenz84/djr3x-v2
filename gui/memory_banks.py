@@ -361,6 +361,23 @@ class MemoryBanksWindow(QMainWindow):
 
         v.addWidget(_hline())
 
+        # Biometrics — does Rex have a face ID / voiceprint for this person?
+        v.addWidget(_section_label("BIOMETRICS"))
+        self.bio_label = QLabel("")
+        self.bio_label.setObjectName("memMeta")
+        v.addWidget(self.bio_label)
+        bio_btns = QHBoxLayout()
+        self.clear_face_btn = _danger_button("Clear Face Data")
+        self.clear_face_btn.clicked.connect(lambda: self._clear_biometric("face"))
+        self.clear_voice_btn = _danger_button("Clear Voiceprint")
+        self.clear_voice_btn.clicked.connect(lambda: self._clear_biometric("voice"))
+        bio_btns.addWidget(self.clear_face_btn)
+        bio_btns.addWidget(self.clear_voice_btn)
+        bio_btns.addStretch(1)
+        v.addLayout(bio_btns)
+
+        v.addWidget(_hline())
+
         # Facts table (full CRUD)
         v.addWidget(_section_label("FACTS"))
         self.facts_table = QTableWidget(0, 4)
@@ -536,6 +553,17 @@ class MemoryBanksWindow(QMainWindow):
             f"antagonism {float(person.get('antagonism_score') or 0):.2f}  ·  "
             f"{person.get('visit_count') or 0} visit(s)"
         )
+
+        # Biometrics — can Rex recognize this person by face / voice?
+        bio = detail.get("biometrics") or {}
+        face_n = int(bio.get("face") or 0)
+        voice_n = int(bio.get("voice") or 0)
+        self.bio_label.setText(
+            f"Face ID: {'✓ ' + str(face_n) + ' stored' if face_n else '✗ none'}"
+            f"        Voiceprint: {'✓ ' + str(voice_n) + ' stored' if voice_n else '✗ none'}"
+        )
+        self.clear_face_btn.setEnabled(face_n > 0)
+        self.clear_voice_btn.setEnabled(voice_n > 0)
 
         # Facts table
         self.facts_table.setRowCount(0)
@@ -734,6 +762,21 @@ class MemoryBanksWindow(QMainWindow):
         self._current_person_id = None
         self.detail.setCurrentIndex(0)
         self.reload_people()
+
+    def _clear_biometric(self, kind: str) -> None:
+        if self._current_person_id is None:
+            return
+        label = "face data" if kind == "face" else "voiceprint"
+        if not self._confirm(
+            f"Clear {label}?",
+            f"This deletes the stored {label} for this person — Rex will no longer "
+            f"recognize them by {'face' if kind == 'face' else 'voice'} until it is "
+            "re-learned. Useful if it was enrolled wrong.",
+        ):
+            return
+        admin.clear_biometrics(self._current_person_id, kind)
+        self._load_person(self._current_person_id)
+        self._toast(f"Cleared {label}.")
 
     # ── Helpers ──────────────────────────────────────────────────────────────
     def _confirm(self, title: str, body: str) -> bool:

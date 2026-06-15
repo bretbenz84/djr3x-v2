@@ -136,6 +136,26 @@ class MemoryBanksWindowSmokeTest(unittest.TestCase):
         facts = {f["key"]: f["category"] for f in admin.get_person_detail(1)["facts"]}
         self.assertEqual(facts.get("nephew"), "family")
 
+    def test_biometrics_status_is_shown(self):
+        from memory import database as db
+        # Give person 1 a face encoding (no voiceprint).
+        db.execute(
+            "INSERT INTO biometrics (person_id, type, encoding, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (1, "face", b"\x00\x01", "2026-06-14 10:00:00"),
+        )
+        w = MemoryBanksWindow()
+        try:
+            w._select_person_in_list(1)
+            text = w.bio_label.text()
+            self.assertIn("Face ID", text)
+            self.assertIn("Voiceprint", text)
+            self.assertIn("1 stored", text)              # the face encoding
+            self.assertTrue(w.clear_face_btn.isEnabled())   # has face → enabled
+            self.assertFalse(w.clear_voice_btn.isEnabled()) # no voiceprint → disabled
+        finally:
+            w.close()
+
     def test_key_menu_follows_the_category(self):
         # The user's report: choosing "relationship" left the key a blank box. The key
         # menu must now offer the relationship keys (boss, coworker, …).
