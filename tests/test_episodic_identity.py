@@ -111,7 +111,15 @@ class SceneryChangeRemarkTest(unittest.TestCase):
 
 
 class SceneryRemarkQueueTest(unittest.TestCase):
+    def setUp(self):
+        import config
+        # The feature ships OFF by default (too noisy); enable it for the behavior tests.
+        self._prior = getattr(config, "SCENERY_CHANGE_REMARK_ENABLED", False)
+        config.SCENERY_CHANGE_REMARK_ENABLED = True
+
     def tearDown(self):
+        import config
+        config.SCENERY_CHANGE_REMARK_ENABLED = self._prior
         episodic_hooks._pending_scenery_remark = None
 
     def test_queues_when_place_changed(self):

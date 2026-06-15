@@ -3948,7 +3948,13 @@ PLAY_SHUTDOWN_AUDIO = True
 # and, if it's a clearly DIFFERENT place (new room, indoors↔outdoors, new venue), have
 # him remark on the change of scenery. One cheap text LLM call per run (piggybacks on
 # the startup image caption); no-op on the very first run / when nothing changed.
-SCENERY_CHANGE_REMARK_ENABLED = True
+#
+# OFF by default: comparing two short image *captions* is too noisy — run-to-run wording
+# drift (lighting/clutter/angle) made Rex announce a "new room" when the room hadn't
+# changed (2026-06-14: "swapped the disco for a cozy nap zone" in the same room). Bret
+# prefers a greeting over room commentary, and the greeting should own the startup line.
+# Re-enable only with a more reliable detector (e.g. an image-embedding fingerprint).
+SCENERY_CHANGE_REMARK_ENABLED = False
 
 PLAY_STARTUP_BOOT_TTS = True
 # Star Tours-style "still getting ready" filler lines spoken over the boot
