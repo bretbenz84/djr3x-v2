@@ -49,24 +49,105 @@ _log = logging.getLogger(__name__)
 _ROLE_ID = Qt.ItemDataRole.UserRole
 
 
+# Matches the main dashboard's palette/typography (gui/dashboard.py _STYLE): deep-navy
+# ground, gradient panels, accent-blue headers, Apple system font.
+_MEMORY_BANKS_STYLE = """
+QMainWindow { background: #07111a; }
+QWidget#memBankRoot {
+    background: #07111a;
+    color: #d9e3ee;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 13px;
+}
+QLabel { color: #d9e3ee; }
+QLabel#memSection {
+    color: #4e94ff;
+    font-size: 13px;
+    font-weight: 900;
+    letter-spacing: 1px;
+    padding: 8px 2px 4px 2px;
+}
+QLabel#memMeta { color: #7c8a99; font-size: 12px; }
+QLabel#memBanner {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0b1824, stop:1 #08111a);
+    color: #ffd479;
+    border: 1px solid #6b5a1f;
+    border-radius: 7px;
+    padding: 7px 12px;
+    font-weight: 700;
+}
+QListWidget, QTableWidget, QPlainTextEdit {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0b1824, stop:1 #08111a);
+    color: #d9e3ee;
+    border: 1px solid #255484;
+    border-radius: 7px;
+    selection-background-color: #244f89;
+    selection-color: #ffffff;
+}
+QListWidget::item { padding: 5px 6px; }
+QListWidget::item:selected, QTableWidget::item:selected { background: #244f89; color: #ffffff; }
+QTableWidget { gridline-color: #173049; }
+QTableView { background: #0b1824; }
+QHeaderView { background: #0e1d2b; border: none; }
+QHeaderView::section {
+    background: #0e1d2b;
+    color: #9fb6cc;
+    border: none;
+    border-right: 1px solid #1c3247;
+    border-bottom: 1px solid #255484;
+    padding: 5px 8px;
+    font-weight: 700;
+}
+QTableCornerButton::section { background: #0e1d2b; border: none; }
+QLineEdit, QDoubleSpinBox {
+    min-height: 28px;
+    padding: 2px 10px;
+    background: #111b27;
+    color: #e0e9f2;
+    border: 1px solid #2b4562;
+    border-radius: 5px;
+}
+QLineEdit:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus { border: 1px solid #65a2ff; }
+QPushButton {
+    min-height: 30px;
+    padding: 4px 14px;
+    background: #15212f;
+    color: #dbe7f3;
+    border: 1px solid #2b4562;
+    border-radius: 5px;
+    font-weight: 700;
+}
+QPushButton:hover { background: #1d2f44; border: 1px solid #65a2ff; }
+QPushButton:pressed { background: #244f89; }
+QPushButton#primary { background: #326bbe; color: #ffffff; border: 1px solid #4e8be4; }
+QPushButton#primary:hover { background: #3b7fd9; border: 1px solid #65a2ff; }
+QScrollBar:vertical { background: #07111a; width: 12px; margin: 0; }
+QScrollBar::handle:vertical { background: #244f89; border-radius: 5px; min-height: 24px; }
+QScrollBar:horizontal { background: #07111a; height: 12px; margin: 0; }
+QScrollBar::handle:horizontal { background: #244f89; border-radius: 5px; min-width: 24px; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
+QStatusBar { color: #9fb6cc; background: #07111a; }
+"""
+
+
 def _section_label(text: str) -> QLabel:
     lab = QLabel(text)
-    lab.setStyleSheet("font-weight:700; letter-spacing:1px; color:#7fd3ff; padding:6px 2px;")
+    lab.setObjectName("memSection")
     return lab
 
 
 def _hline() -> QFrame:
     line = QFrame()
     line.setFrameShape(QFrame.Shape.HLine)
-    line.setStyleSheet("color:#2a3a4a;")
+    line.setStyleSheet("color: #1c3247;")
     return line
 
 
 # Bold-red styling for destructive actions — the pale text-only red read as greyed-out.
 _DANGER_QSS = (
     "QPushButton {"
-    " background:#c62828; color:#ffffff; font-weight:800;"
-    " border:1px solid #ff5252; border-radius:5px; padding:5px 12px; }"
+    " min-height:30px; padding:4px 14px; background:#c62828; color:#ffffff;"
+    " font-weight:800; border:1px solid #ff5252; border-radius:5px; }"
     "QPushButton:hover { background:#e53935; border:1px solid #ff8a80; }"
     "QPushButton:pressed { background:#8e0000; }"
 )
@@ -101,15 +182,13 @@ class MemoryBanksWindow(QMainWindow):
     # ── UI construction ──────────────────────────────────────────────────────
     def _build_ui(self) -> None:
         root = QWidget()
+        root.setObjectName("memBankRoot")
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(12, 10, 12, 12)
-        outer.setSpacing(8)
+        outer.setContentsMargins(14, 10, 14, 12)
+        outer.setSpacing(10)
 
         banner = QLabel("⏸  Robot output is PAUSED while the Memory Banks are open.")
-        banner.setStyleSheet(
-            "background:#3a2e12; color:#ffd479; border:1px solid #6b5a1f; "
-            "border-radius:6px; padding:6px 10px; font-weight:600;"
-        )
+        banner.setObjectName("memBanner")
         outer.addWidget(banner)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -127,6 +206,8 @@ class MemoryBanksWindow(QMainWindow):
         outer.addLayout(bottom)
 
         self.setCentralWidget(root)
+        self.setStyleSheet(_MEMORY_BANKS_STYLE)
+        self.statusBar()  # create the status bar so toasts share the themed styling
 
     def _build_left_panel(self) -> QWidget:
         panel = QWidget()
@@ -170,8 +251,8 @@ class MemoryBanksWindow(QMainWindow):
 
         # 0 — placeholder
         placeholder = QLabel("Select a memory or a person on the left to view and edit it.")
+        placeholder.setObjectName("memMeta")
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder.setStyleSheet("color:#7c8a99;")
         self.detail.addWidget(placeholder)
 
         self.detail.addWidget(self._build_rex_editor())
@@ -183,7 +264,7 @@ class MemoryBanksWindow(QMainWindow):
         v = QVBoxLayout(w)
         v.addWidget(_section_label("EDIT MEMORY"))
         self.rex_meta = QLabel("")
-        self.rex_meta.setStyleSheet("color:#7c8a99;")
+        self.rex_meta.setObjectName("memMeta")
         v.addWidget(self.rex_meta)
         v.addWidget(QLabel("Kind:"))
         self.rex_kind = QLineEdit()
@@ -201,6 +282,7 @@ class MemoryBanksWindow(QMainWindow):
         v.addLayout(sal_row)
         btns = QHBoxLayout()
         save = QPushButton("Save Memory")
+        save.setObjectName("primary")
         save.clicked.connect(self._save_rex_memory)
         delete = _danger_button("Delete Memory")
         delete.clicked.connect(self._delete_rex_memory)
@@ -226,11 +308,12 @@ class MemoryBanksWindow(QMainWindow):
         v.addLayout(name_row)
 
         self.p_meta = QLabel("")
-        self.p_meta.setStyleSheet("color:#7c8a99;")
+        self.p_meta.setObjectName("memMeta")
         v.addWidget(self.p_meta)
 
         person_btns = QHBoxLayout()
         save_person = QPushButton("Save Person")
+        save_person.setObjectName("primary")
         save_person.clicked.connect(self._save_person)
         del_person = _danger_button("Delete Person")
         del_person.clicked.connect(self._delete_person)
@@ -259,6 +342,7 @@ class MemoryBanksWindow(QMainWindow):
         del_fact = _danger_button("Delete Selected Fact")
         del_fact.clicked.connect(self._delete_selected_fact)
         save_facts = QPushButton("Save Facts")
+        save_facts.setObjectName("primary")
         save_facts.clicked.connect(self._save_facts)
         fact_btns.addWidget(add_fact)
         fact_btns.addWidget(del_fact)
