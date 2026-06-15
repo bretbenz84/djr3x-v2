@@ -13,10 +13,11 @@ import time
 from typing import Any, Callable, Optional
 
 try:
-    from PySide6.QtCore import QTimer, Qt
-    from PySide6.QtGui import QColor, QFont, QPainter, QPen
+    from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, Signal
+    from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QRadialGradient
     from PySide6.QtWidgets import (
         QApplication,
+        QDialog,
         QFrame,
         QGridLayout,
         QHBoxLayout,
@@ -133,8 +134,8 @@ class DashboardWindow(QMainWindow):
         right.setSpacing(12)
         avatar_panel = ChromePanel("3", "R3X AVATAR", self.avatar)
         servo_panel = ChromePanel("", "SERVO POSITIONS", self.servos)
-        servo_panel.setMinimumHeight(350)
-        servo_panel.setMaximumHeight(380)
+        servo_panel.setMinimumHeight(410)
+        servo_panel.setMaximumHeight(470)
         right.addWidget(avatar_panel, 1)
         right.addWidget(servo_panel, 0)
         right_box = QWidget()
@@ -865,9 +866,9 @@ class ServoPositionsPanel(QWidget):
         self._updating_snapshot = False
 
         layout = QGridLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setContentsMargins(16, 14, 16, 14)
         layout.setHorizontalSpacing(12)
-        layout.setVerticalSpacing(11)
+        layout.setVerticalSpacing(9)
 
         visual_row = 0
         self._override_button = QPushButton("Manual Servo Override")
@@ -879,6 +880,16 @@ class ServoPositionsPanel(QWidget):
         self._override_button.toggled.connect(self._set_manual_override)
         layout.addWidget(self._override_button, visual_row, 0, 1, 4)
         visual_row += 1
+
+        self._motivator_button = QPushButton("🕹  Motivator Control")
+        self._motivator_button.setObjectName("servoOverrideButton")
+        self._motivator_button.setToolTip(
+            "Open a joystick console to drive the motion base (motivator) by hand."
+        )
+        self._motivator_button.clicked.connect(self._open_motivator)
+        layout.addWidget(self._motivator_button, visual_row, 0, 1, 4)
+        visual_row += 1
+        self._motivator_dialog: Optional["MotivatorControlDialog"] = None
 
         for row, name in enumerate(self._ORDER):
             if row == 4:
@@ -917,7 +928,7 @@ class ServoPositionsPanel(QWidget):
             visual_row += 1
 
         layout.setColumnStretch(1, 1)
-        self.setMinimumHeight(285)
+        self.setMinimumHeight(360)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         ws = snapshot.get("world_state") or {}
@@ -980,6 +991,334 @@ class ServoPositionsPanel(QWidget):
             servos.set_manual_servo(int(cfg["ch"]), raw)
         except Exception as exc:
             _log.warning("Manual servo slider update failed for %s: %s", name, exc)
+
+    def _open_motivator(self) -> None:
+        if self._motivator_dialog is None:
+            self._motivator_dialog = MotivatorControlDialog(self)
+        dlg = self._motivator_dialog
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+
+class JoystickWidget(QWidget):
+    """Self-centering analog stick drawn like a game-controller thumbstick.
+
+    Emits normalized coordinates in [-1, 1]: x right-positive, y UP-positive
+    (screen Y is inverted internally). Magnitude (distance from center) ramps the
+    speed: 0 at center, 1.0 at the edge. Snaps back to center on release."""
+
+    moved = Signal(float, float)
+    released = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setMinimumSize(240, 240)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._kx = 0.0   # knob pixel offset from center
+        self._ky = 0.0
+        self._x = 0.0    # normalized value
+        self._y = 0.0
+        self._dragging = False
+
+    def value(self) -> "tuple[float, float]":
+        return (self._x, self._y)
+
+    def _geom(self) -> "tuple[float, float, float, float, float]":
+        size = float(min(self.width(), self.height()))
+        R = size / 2.0 - 8.0
+        rk = R * 0.34
+        travel = max(1.0, R - rk)
+        return self.width() / 2.0, self.height() / 2.0, R, rk, travel
+
+    def _set_from_point(self, px: float, py: float) -> None:
+        cx, cy, _R, _rk, travel = self._geom()
+        dx, dy = px - cx, py - cy
+        d = math.hypot(dx, dy)
+        if d > travel and d > 0:
+            dx *= travel / d
+            dy *= travel / d
+        self._kx, self._ky = dx, dy
+        self._x = dx / travel
+        self._y = -dy / travel        # invert: up is positive
+        self.update()
+        self.moved.emit(self._x, self._y)
+
+    def _recenter(self) -> None:
+        self._kx = self._ky = 0.0
+        self._x = self._y = 0.0
+        self.update()
+        self.moved.emit(0.0, 0.0)
+
+    def mousePressEvent(self, e) -> None:
+        self._dragging = True
+        self._set_from_point(e.position().x(), e.position().y())
+
+    def mouseMoveEvent(self, e) -> None:
+        if self._dragging:
+            self._set_from_point(e.position().x(), e.position().y())
+
+    def mouseReleaseEvent(self, e) -> None:
+        self._dragging = False
+        self._recenter()
+        self.released.emit()
+
+    def paintEvent(self, _e) -> None:
+        cx, cy, R, rk, _travel = self._geom()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        # Base bezel.
+        p.setPen(QPen(QColor(70, 80, 95), 2))
+        p.setBrush(QBrush(QColor(28, 33, 41)))
+        p.drawEllipse(QRectF(cx - R, cy - R, 2 * R, 2 * R))
+        # Inner well.
+        well = R * 0.82
+        p.setPen(QPen(QColor(48, 56, 68), 1))
+        p.setBrush(QBrush(QColor(18, 22, 28)))
+        p.drawEllipse(QRectF(cx - well, cy - well, 2 * well, 2 * well))
+
+        # Direction ticks (N/E/S/W).
+        p.setPen(QPen(QColor(90, 150, 200, 160), 2))
+        for ang in (0, 90, 180, 270):
+            a = math.radians(ang)
+            x1, y1 = cx + R * 0.70 * math.cos(a), cy + R * 0.70 * math.sin(a)
+            x2, y2 = cx + R * 0.90 * math.cos(a), cy + R * 0.90 * math.sin(a)
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+        # F / B / L / R labels.
+        p.setPen(QColor(150, 175, 200))
+        f = p.font(); f.setPointSize(8); f.setBold(True); p.setFont(f)
+        ac = Qt.AlignmentFlag.AlignCenter
+        p.drawText(QRectF(cx - 16, cy - R * 0.92 - 9, 32, 18), ac, "FWD")
+        p.drawText(QRectF(cx - 16, cy + R * 0.92 - 9, 32, 18), ac, "BACK")
+        p.drawText(QRectF(cx - R * 0.92 - 16, cy - 9, 32, 18), ac, "L")
+        p.drawText(QRectF(cx + R * 0.92 - 16, cy - 9, 32, 18), ac, "R")
+
+        # Knob with a 3D radial gradient.
+        kx, ky = cx + self._kx, cy + self._ky
+        grad = QRadialGradient(kx - rk * 0.3, ky - rk * 0.35, rk * 1.5)
+        grad.setColorAt(0.0, QColor(130, 215, 255))
+        grad.setColorAt(1.0, QColor(36, 86, 134))
+        p.setBrush(QBrush(grad))
+        p.setPen(QPen(QColor(190, 235, 255), 2))
+        p.drawEllipse(QRectF(kx - rk, ky - rk, 2 * rk, 2 * rk))
+        # Specular highlight.
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 70))
+        p.drawEllipse(QRectF(kx - rk * 0.45, ky - rk * 0.6, rk * 0.5, rk * 0.38))
+        p.end()
+
+
+class MotivatorControlDialog(QDialog):
+    """Joystick console to drive the motion base by hand, with live ESP32 readout.
+
+    Mixing (arcade): forward = stick-up, turn = stick-right.
+      left motor  = forward + turn      right motor = forward - turn
+    so UP = both forward, DOWN = both back, LEFT = left back/right forward,
+    RIGHT = left forward/right back. Sent as a `drive` command (lin m/s, ang rad/s)
+    that the ESP32 mixes to the wheels; refreshed at 10 Hz so the deadman stays fed."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Motivator Control")
+        self.setObjectName("motivatorDialog")
+        self.setModal(False)
+        # A top-level QDialog doesn't inherit the main window's stylesheet, so apply
+        # the dashboard theme (_STYLE) plus the Motivator-specific rules here.
+        self.setStyleSheet(_STYLE + _MOTIVATOR_EXTRA)
+        self.resize(380, 640)
+        self._x = 0.0
+        self._y = 0.0
+        self._engaged = False     # only drive after the operator has touched the stick
+        self._was_driving = False  # tracks displaced->centered so release sends one stop
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
+
+        self._conn = QLabel("…")
+        self._conn.setObjectName("motivatorConn")
+        self._conn.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._conn.setWordWrap(True)
+        root.addWidget(self._conn)
+
+        self.joystick = JoystickWidget()
+        self.joystick.moved.connect(self._on_move)
+        self.joystick.released.connect(self._on_release)
+        root.addWidget(self.joystick, 1)
+
+        cmd = self._section("COMMANDED (this console)")
+        self._lbl_left = self._row(cmd, "Left motor")
+        self._lbl_right = self._row(cmd, "Right motor")
+        self._lbl_lin = self._row(cmd, "Linear")
+        self._lbl_ang = self._row(cmd, "Angular")
+        root.addWidget(cmd["frame"])
+
+        fb = self._section("ESP32 FEEDBACK")
+        self._fb_state = self._row(fb, "State")
+        self._fb_owner = self._row(fb, "Owner / gamepad")
+        self._fb_zone = self._row(fb, "Zone / blocked")
+        self._fb_odom = self._row(fb, "Odom lin / ang")
+        self._fb_pose = self._row(fb, "Pose x / y / θ")
+        self._fb_tof = self._row(fb, "ToF FL/FC/FR")
+        self._fb_tof2 = self._row(fb, "ToF rear / down")
+        self._fb_batt = self._row(fb, "Battery")
+        self._fb_fault = self._row(fb, "Fault / errs")
+        root.addWidget(fb["frame"])
+
+        self._stop_btn = QPushButton("■  STOP")
+        self._stop_btn.setObjectName("motivatorStop")
+        self._stop_btn.clicked.connect(self._stop)
+        root.addWidget(self._stop_btn)
+
+        self._send_timer = QTimer(self)
+        self._send_timer.timeout.connect(self._tick_send)
+        self._tel_timer = QTimer(self)
+        self._tel_timer.timeout.connect(self._tick_telemetry)
+
+    # ---- small builders ----
+    def _section(self, title: str) -> dict:
+        frame = QFrame()
+        frame.setObjectName("chromePanel")
+        lay = QGridLayout(frame)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setVerticalSpacing(4)
+        lay.setHorizontalSpacing(10)
+        head = QLabel(title)
+        head.setObjectName("panelTitle")
+        lay.addWidget(head, 0, 0, 1, 2)
+        return {"lay": lay, "frame": frame, "row": 1}
+
+    def _row(self, section: dict, label: str) -> QLabel:
+        lay = section["lay"]
+        r = section["row"]
+        section["row"] = r + 1
+        name = QLabel(label)
+        name.setObjectName("servoName")
+        val = QLabel("—")
+        val.setObjectName("servoValue")
+        val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(name, r, 0)
+        lay.addWidget(val, r, 1)
+        lay.setColumnStretch(0, 1)
+        return val
+
+    # ---- mixing ----
+    def _mix(self) -> "tuple[float, float, float, float]":
+        fwd, turn = self._y, self._x
+        left = max(-1.0, min(1.0, fwd + turn))
+        right = max(-1.0, min(1.0, fwd - turn))
+        max_lin = float(getattr(config, "MOTION_MAX_LINEAR_MS", 0.25))
+        max_ang = math.radians(float(getattr(config, "MOTION_MAX_ANGULAR_DEG_S", 60.0)))
+        lin = fwd * max_lin
+        ang = -turn * max_ang      # stick-left (x<0) -> +ang = CCW/left turn (REP-103)
+        return left, right, lin, ang
+
+    def _on_move(self, x: float, y: float) -> None:
+        if x != 0.0 or y != 0.0:
+            self._engaged = True
+        self._x, self._y = x, y
+        left, right, lin, ang = self._mix()
+        self._lbl_left.setText(f"{left * 100:+.0f}%")
+        self._lbl_right.setText(f"{right * 100:+.0f}%")
+        self._lbl_lin.setText(f"{lin:+.2f} m/s")
+        self._lbl_ang.setText(f"{math.degrees(ang):+.0f}°/s")
+
+    def _on_release(self) -> None:
+        self._on_move(0.0, 0.0)
+
+    # ---- timers ----
+    def _tick_send(self) -> None:
+        try:
+            from intelligence import motion_controller as mc
+            if not mc.available():
+                return
+            mag = math.hypot(self._x, self._y)
+            if mag > 0.02:
+                _l, _r, lin, ang = self._mix()
+                mc.drive_manual(lin, ang)      # refresh at 10 Hz feeds the deadman
+                self._was_driving = True
+            elif self._was_driving:
+                mc.stop()                      # released -> one controlled stop -> idle
+                self._was_driving = False
+        except Exception:
+            pass
+
+    def _tick_telemetry(self) -> None:
+        try:
+            from hardware import motion
+            connected = motion.connected()
+            tel = motion.telemetry() if connected else None
+        except Exception:
+            connected, tel = False, None
+
+        if connected:
+            self._conn.setText("ESP32 connected — this console holds manual control while open")
+        else:
+            self._conn.setText("ESP32 disconnected — set MOTION_ESP32_PORT and run main.py --gui")
+        self._conn.setProperty("ok", bool(connected))
+        self._conn.style().unpolish(self._conn)
+        self._conn.style().polish(self._conn)
+
+        if not tel:
+            for lbl in (self._fb_state, self._fb_owner, self._fb_zone, self._fb_odom,
+                        self._fb_pose, self._fb_tof, self._fb_tof2, self._fb_batt, self._fb_fault):
+                lbl.setText("—")
+            return
+
+        odom = tel.get("odom") or {}
+        tof = tel.get("tof_mm") or {}
+
+        def g(d, k, default=0.0):
+            try:
+                return float(d.get(k, default))
+            except (TypeError, ValueError):
+                return default
+
+        self._fb_state.setText(str(tel.get("state", "—")))
+        self._fb_owner.setText(f"{tel.get('owner', '—')} / {tel.get('gamepad', '—')}")
+        self._fb_zone.setText(f"{tel.get('zone', '—')} / {tel.get('blocked_dir', '—')}")
+        self._fb_odom.setText(f"{g(odom, 'lin'):+.2f} m/s / {math.degrees(g(odom, 'ang')):+.0f}°/s")
+        self._fb_pose.setText(
+            f"{g(odom, 'x'):+.2f} / {g(odom, 'y'):+.2f} / {math.degrees(g(odom, 'theta')):+.0f}°"
+        )
+        self._fb_tof.setText(f"{tof.get('fl', '—')} / {tof.get('fc', '—')} / {tof.get('fr', '—')} mm")
+        self._fb_tof2.setText(f"{tof.get('rear', '—')} / {tof.get('down', '—')} mm")
+        self._fb_batt.setText(f"{g(tel, 'batt_mv') / 1000.0:.2f} V")
+        self._fb_fault.setText(f"{tel.get('fault') or 'none'} / errs {tel.get('errs', 0)}")
+
+    def _stop(self) -> None:
+        self.joystick._recenter()
+        self._on_release()
+        try:
+            from intelligence import motion_controller as mc
+            mc.stop()
+        except Exception:
+            pass
+
+    # ---- lifecycle ----
+    def showEvent(self, e) -> None:
+        self._engaged = False
+        self._was_driving = False
+        self._x = self._y = 0.0
+        self._on_move(0.0, 0.0)
+        if not self._send_timer.isActive():
+            self._send_timer.start(100)
+        if not self._tel_timer.isActive():
+            self._tel_timer.start(150)
+        self._tick_telemetry()
+        super().showEvent(e)
+
+    def closeEvent(self, e) -> None:
+        self._send_timer.stop()
+        self._tel_timer.stop()
+        try:
+            from intelligence import motion_controller as mc
+            mc.stop()
+        except Exception:
+            pass
+        super().closeEvent(e)
 
 
 def run_dashboard(
@@ -1347,6 +1686,38 @@ QScrollBar::handle:vertical {
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0;
+}
+"""
+
+
+# Motivator Control dialog theme — extends _STYLE (a top-level QDialog does not
+# inherit the main window's stylesheet) with the dialog background + its widgets.
+_MOTIVATOR_EXTRA = """
+QDialog#motivatorDialog {
+    background: #07111a;
+    color: #d9e3ee;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+QLabel#motivatorConn {
+    color: #8aa0b6;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 2px;
+}
+QLabel#motivatorConn[ok="true"] { color: #45d85e; }
+QLabel#motivatorConn[ok="false"] { color: #e0a23a; }
+QPushButton#motivatorStop {
+    min-height: 38px;
+    background: #7a1f1f;
+    color: #ffffff;
+    border: 1px solid #a23a3a;
+    border-radius: 6px;
+    font-weight: 900;
+    font-size: 14px;
+}
+QPushButton#motivatorStop:hover {
+    background: #9a2a2a;
+    border: 1px solid #d05a5a;
 }
 """
 

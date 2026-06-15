@@ -185,6 +185,22 @@ def drive(lin: float, ang: float) -> "int | None":
     })
 
 
+def drive_manual(lin: float, ang: float) -> "int | None":
+    """Operator-console teleop (e.g. the GUI joystick). Like drive() but bypasses
+    the INTERACTION_PAUSED gate — the operator is explicitly in control. Still
+    clamps to caps and requires a connected base; the firmware ignores it anyway
+    while a gamepad owns the base."""
+    if not motion.connected():
+        return None
+    max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.25)
+    max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0))
+    return motion.send({
+        "cmd": "drive",
+        "lin": _clampf(lin, -max_lin, max_lin),
+        "ang": _clampf(ang, -max_ang, max_ang),
+    })
+
+
 def stop() -> "int | None":
     """Controlled stop. Always honored while connected (bypasses the gate)."""
     if not motion.connected():
