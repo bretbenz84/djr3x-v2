@@ -111,6 +111,30 @@ class MemoryBanksWindowSmokeTest(unittest.TestCase):
         facts = admin.get_person_detail(1)["facts"]
         self.assertEqual([f["value"] for f in facts], ["cyan"])
 
+    def test_category_is_a_dropdown_and_drives_saved_value(self):
+        from PySide6.QtWidgets import QComboBox
+        from memory import admin
+        w = MemoryBanksWindow()
+        try:
+            w._select_person_in_list(1)
+            w._add_fact_row()  # new blank row, category defaults to "preference"
+            row = w.facts_table.rowCount() - 1
+            combo = w.facts_table.cellWidget(row, 0)
+            self.assertIsInstance(combo, QComboBox)
+            # The dropdown is populated with the recognized categories.
+            options = [combo.itemText(i) for i in range(combo.count())]
+            self.assertEqual(options, admin.FACT_CATEGORIES)
+            self.assertEqual(combo.currentText(), "preference")
+            # Pick a category + fill key/value, then save — the chosen category persists.
+            combo.setCurrentText("family")
+            w.facts_table.item(row, 1).setText("nephew")
+            w.facts_table.item(row, 2).setText("Wade")
+            w._save_facts()
+        finally:
+            w.close()
+        facts = {f["key"]: f["category"] for f in admin.get_person_detail(1)["facts"]}
+        self.assertEqual(facts.get("nephew"), "family")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,6 +22,37 @@ from memory import facts as facts_mem
 _log = logging.getLogger(__name__)
 
 
+# Fact categories Rex's memory actually recognizes. Category is NOT free-form: it drives
+# how a fact decays and how important it is (memory/facts.py) — e.g. birthday / identity /
+# relationship never decay, and family / pet / preference / belief / worldview are
+# high-importance. This is the union of the extractor's enum and the special-behavior
+# categories in facts.py, ordered most-common-first. The GUI offers these in a dropdown
+# (still editable, so a custom category is possible — it just won't get special handling).
+FACT_CATEGORIES = [
+    "preference",
+    "family",
+    "pet",
+    "job",
+    "hometown",
+    "birthday",
+    "relationship",
+    "belief",
+    "worldview",
+    "identity",
+    "inside_joke",
+    "other",
+]
+
+# Keys are free-form snake_case labels (favorite_<x>, nephew, …), so these are only
+# SUGGESTIONS offered as autocomplete — the user can still type anything.
+COMMON_FACT_KEYS = [
+    "birthday", "pronouns", "hometown", "job_title", "worldview",
+    "favorite_music", "favorite_food", "favorite_movie", "favorite_color",
+    "favorite_band", "favorite_drink", "favorite_team",
+    "pet_name", "spouse", "child", "sibling", "nephew", "niece", "parent",
+]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Rex's own memories (rex.db → rex_episodes)
 # ─────────────────────────────────────────────────────────────────────────────

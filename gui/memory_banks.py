@@ -20,6 +20,8 @@ import logging
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
+    QCompleter,
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
@@ -35,6 +37,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QStackedWidget,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -108,6 +111,22 @@ QLineEdit, QDoubleSpinBox {
     border-radius: 5px;
 }
 QLineEdit:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus { border: 1px solid #65a2ff; }
+QComboBox {
+    min-height: 24px;
+    padding: 1px 6px;
+    background: #111b27;
+    color: #e0e9f2;
+    border: 1px solid #2b4562;
+    border-radius: 4px;
+}
+QComboBox:focus { border: 1px solid #65a2ff; }
+QComboBox QAbstractItemView {
+    background: #0e1d2b;
+    color: #d9e3ee;
+    border: 1px solid #255484;
+    selection-background-color: #244f89;
+    selection-color: #ffffff;
+}
 QPushButton {
     min-height: 30px;
     padding: 4px 14px;
@@ -157,6 +176,23 @@ def _danger_button(text: str) -> QPushButton:
     btn = QPushButton(text)
     btn.setStyleSheet(_DANGER_QSS)
     return btn
+
+
+class _CompleterDelegate(QStyledItemDelegate):
+    """A normal text cell editor with an autocomplete popup of common values. Free text
+    is still allowed — the suggestions just help when you don't know the conventions."""
+
+    def __init__(self, suggestions, parent=None) -> None:
+        super().__init__(parent)
+        self._suggestions = list(suggestions)
+
+    def createEditor(self, parent, option, index):  # noqa: N802 - Qt override
+        editor = QLineEdit(parent)
+        completer = QCompleter(self._suggestions, editor)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        editor.setCompleter(completer)
+        return editor
 
 
 class MemoryBanksWindow(QMainWindow):
@@ -344,6 +380,20 @@ class MemoryBanksWindow(QMainWindow):
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.SelectedClicked
         )
+        # Category is a guided dropdown (it drives how a fact decays / how important it
+        # is); Key is free text but offers autocomplete of common keys; Value is free.
+        self.facts_table.setItemDelegateForColumn(
+            1, _CompleterDelegate(admin.COMMON_FACT_KEYS, self.facts_table)
+        )
+        self.facts_table.horizontalHeaderItem(0).setToolTip(
+            "Category controls how the fact is remembered (e.g. birthday/identity/"
+            "relationship never fade; family/pet/preference are high-importance). Pick "
+            "from the list, or type a custom one."
+        )
+        self.facts_table.horizontalHeaderItem(1).setToolTip(
+            "A short snake_case label, e.g. favorite_music, hometown, nephew. Free text — "
+            "the list is just common suggestions."
+        )
         v.addWidget(self.facts_table, 3)
         fact_btns = QHBoxLayout()
         add_fact = QPushButton("Add Fact")
@@ -525,25 +575,46 @@ class MemoryBanksWindow(QMainWindow):
 
         self.detail.setCurrentIndex(2)
 
+    def _make_category_combo(self, category: str) -> QComboBox:
+        combo = QComboBox()
+        combo.setEditable(True)  # editable so a custom category is still possible
+        combo.addItems(admin.FACT_CATEGORIES)
+        cat = (category or "preference").strip()
+        idx = combo.findText(cat)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        else:
+            combo.setEditText(cat)
+        return combo
+
     def _append_fact_row(self, *, fact_id, category, key, value, importance) -> None:
         row = self.facts_table.rowCount()
         self.facts_table.insertRow(row)
-        cat_item = QTableWidgetItem(category)
-        cat_item.setData(_ROLE_ID, fact_id)  # None for a new, unsaved row
-        self.facts_table.setItem(row, 0, cat_item)
-        self.facts_table.setItem(row, 1, QTableWidgetItem(key))
+        # Category is a dropdown cell widget; the fact id rides on the Key item instead.
+        self.facts_table.setCellWidget(row, 0, self._make_category_combo(category))
+        key_item = QTableWidgetItem(key)
+        key_item.setData(_ROLE_ID, fact_id)  # None for a new, unsaved row
+        self.facts_table.setItem(row, 1, key_item)
         self.facts_table.setItem(row, 2, QTableWidgetItem(value))
         self.facts_table.setItem(row, 3, QTableWidgetItem(f"{importance:.2f}"))
 
     def _add_fact_row(self) -> None:
         if self._current_person_id is None:
             return
-        self._append_fact_row(fact_id=None, category="other", key="", value="", importance=0.5)
+        self._append_fact_row(fact_id=None, category="preference", key="", value="", importance=0.5)
         self.facts_table.editItem(self.facts_table.item(self.facts_table.rowCount() - 1, 1))
 
     def _cell(self, row: int, col: int) -> str:
         item = self.facts_table.item(row, col)
         return item.text().strip() if item else ""
+
+    def _category_text(self, row: int) -> str:
+        widget = self.facts_table.cellWidget(row, 0)
+        return widget.currentText().strip() if isinstance(widget, QComboBox) else ""
+
+    def _fact_id(self, row: int):
+        key_item = self.facts_table.item(row, 1)
+        return key_item.data(_ROLE_ID) if key_item else None
 
     def _commit_open_cell_editor(self) -> None:
         """Commit an in-progress fact-cell edit before reading the table. On macOS a
@@ -566,9 +637,8 @@ class MemoryBanksWindow(QMainWindow):
             return
         self._commit_open_cell_editor()
         for row in range(self.facts_table.rowCount()):
-            cat_item = self.facts_table.item(row, 0)
-            fact_id = cat_item.data(_ROLE_ID) if cat_item else None
-            category = self._cell(row, 0) or "other"
+            fact_id = self._fact_id(row)
+            category = self._category_text(row) or "other"
             key = self._cell(row, 1)
             value = self._cell(row, 2)
             try:
@@ -592,8 +662,7 @@ class MemoryBanksWindow(QMainWindow):
         row = self.facts_table.currentRow()
         if row < 0:
             return
-        cat_item = self.facts_table.item(row, 0)
-        fact_id = cat_item.data(_ROLE_ID) if cat_item else None
+        fact_id = self._fact_id(row)
         if fact_id is not None:
             admin.delete_fact(int(fact_id))
         self.facts_table.removeRow(row)
