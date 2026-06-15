@@ -102,11 +102,17 @@ class DashboardWindow(QMainWindow):
         title.setObjectName("windowTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         top.addWidget(self.state_badge)
+        self.memory_banks_btn = QPushButton("🧠  Memory Banks")
+        self.memory_banks_btn.setObjectName("memoryBanksButton")
+        self.memory_banks_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.memory_banks_btn.clicked.connect(self._open_memory_banks)
+        top.addWidget(self.memory_banks_btn)
         top.addStretch(1)
         top.addWidget(title)
         top.addStretch(1)
         top.addWidget(self.connection)
         self._shell.addWidget(self._top_bar)
+        self._memory_banks_window = None
 
         columns = QGridLayout()
         columns.setContentsMargins(0, 0, 0, 0)
@@ -188,8 +194,30 @@ class DashboardWindow(QMainWindow):
         else:
             self._demo_timer = None
 
+    def _open_memory_banks(self) -> None:
+        """Open the Memory Banks editor in its own window. Pauses robot audio output
+        while open (handled by the window); closing it leaves the program running."""
+        try:
+            existing = self._memory_banks_window
+            if existing is not None and existing.isVisible():
+                existing.raise_()
+                existing.activateWindow()
+                return
+            from gui.memory_banks import MemoryBanksWindow
+            self._memory_banks_window = MemoryBanksWindow(self)
+            self._memory_banks_window.show()
+            self._memory_banks_window.raise_()
+            self._memory_banks_window.activateWindow()
+        except Exception as exc:
+            _log.warning("failed to open Memory Banks window: %s", exc)
+
     def close_from_shutdown(self) -> None:
         self._closing_from_shutdown = True
+        try:
+            if self._memory_banks_window is not None:
+                self._memory_banks_window.close()
+        except Exception:
+            pass
         self._stop_timers()
         self.close()
 
@@ -1255,6 +1283,20 @@ QPushButton#servoOverrideButton {
     border: 1px solid #2b4562;
     border-radius: 5px;
     font-weight: 800;
+}
+QPushButton#memoryBanksButton {
+    min-height: 30px;
+    padding: 0 14px;
+    margin-left: 10px;
+    background: #15212f;
+    color: #aee0ff;
+    border: 1px solid #2b4562;
+    border-radius: 5px;
+    font-weight: 700;
+}
+QPushButton#memoryBanksButton:hover {
+    background: #1d2f44;
+    border: 1px solid #65a2ff;
 }
 QPushButton#servoOverrideButton[active="true"] {
     background: #244f89;
