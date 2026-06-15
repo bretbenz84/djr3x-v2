@@ -936,6 +936,15 @@ def analyze_directed_attention(
         "current": "Rex is inspecting the current view; the user may be pointing or showing something nearby.",
     }.get(direction, "Rex is inspecting the current view.")
 
+    name_directive = ""
+    if names:
+        name_directive = (
+            " If a visible person is clearly one of these people you recognize — "
+            + ", ".join(names)
+            + ' — refer to them BY NAME in "target_summary" and "notable_details" '
+            'instead of "a person", "a man", or "a woman".'
+        )
+
     prompt = (
         "You are analyzing an image from DJ-R3X's camera after a person told him "
         f"to look somewhere. {direction_note}\n"
@@ -943,7 +952,8 @@ def analyze_directed_attention(
         f"Target hint extracted from the request: {target_hint!r}\n\n"
         "Decide what the person most likely wants Rex to notice. Prioritize "
         "salient objects, room features, people at the edge of view, children "
-        "low in the frame, pets, or something being held/shown to the camera. Return a "
+        "low in the frame, pets, or something being held/shown to the camera."
+        f"{name_directive} Return a "
         "JSON object with exactly these keys:\n"
         '  "target_summary": one concise sentence describing the likely target,\n'
         '  "target_visible": boolean — true if the requested target/hint is '

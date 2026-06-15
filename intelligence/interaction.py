@@ -14000,6 +14000,30 @@ def _vision_question_target_hint(text: str) -> str:
     return ""
 
 
+def _update_scene_description(text: Optional[str]) -> None:
+    """Write a fresh visual observation into world_state.environment["description"]
+    so the GUI's vision panel reflects what Rex just looked at.
+
+    The GUI reads its scene description from world_state.environment, which is
+    otherwise only refreshed by the slow periodic environment scan. A user asking
+    "what do you see?" triggers a fresh directed look that never touched that
+    field — so the panel appeared frozen. This bridges that gap. No-op on blank
+    text; never raises.
+    """
+    summary = str(text or "").strip()
+    if not summary:
+        return
+    try:
+        def _set_desc(env):
+            env = dict(env or {})
+            env["description"] = summary
+            env["last_updated"] = time.time()
+            return env
+        world_state.mutate("environment", _set_desc)
+    except Exception as exc:
+        _log.debug("scene-description update failed: %s", exc)
+
+
 def _vision_question_answer_prompt(raw_text: str) -> str:
     """Take a fresh camera look at the user's visual question and build a
     grounded LLM prompt for the in-character answer.
@@ -14037,6 +14061,10 @@ def _vision_question_answer_prompt(raw_text: str) -> str:
             analysis.get("subject_type"),
             (analysis.get("target_summary") or "")[:120],
         )
+        # Push the fresh look into the shared scene description so the GUI's vision
+        # panel reflects what Rex just looked at — otherwise the panel only ever
+        # updates on the slow periodic environment scan, never when asked.
+        _update_scene_description(analysis.get("target_summary"))
         return (
             f"The user asked a visual question: {raw_text!r}. You took a fresh "
             f"look through your camera and got this vision analysis:\n"

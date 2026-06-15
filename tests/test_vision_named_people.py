@@ -93,10 +93,54 @@ class AnalyzeDirectedAttentionNamesTest(unittest.TestCase):
         # The blanket "do not identify anyone" ban is lifted when we know who it is.
         self.assertNotIn("Do not identify anyone.", prompt)
 
+    def test_name_directive_in_main_body_so_summary_is_named(self):
+        # The naming instruction must reach the target_summary task, not just the
+        # safety section — otherwise the summary stays "a person".
+        prompt = self._prompt_for(["Bret"])
+        self.assertIn("refer to them BY NAME", prompt)
+        self.assertIn('"target_summary"', prompt)
+
     def test_no_known_people_keeps_identity_ban(self):
         prompt = self._prompt_for([])
         self.assertIn("Do not identify anyone.", prompt)
         self.assertNotIn("You MAY name", prompt)
+
+
+class VisionQueryUpdatesGuiDescriptionTest(unittest.TestCase):
+    """Asking "what do you see?" must refresh the GUI's visual description, which
+    reads world_state.environment["description"]. The fresh directed look used to
+    never touch that field, so the panel appeared frozen."""
+
+    def test_fresh_look_writes_scene_description(self):
+        import numpy as np
+        from intelligence import interaction
+        from world_state import world_state
+
+        world_state.update("environment", {"description": "stale room from last scan"})
+        analysis = {
+            "target_summary": "Bret is focused on his phone.",
+            "target_visible": True, "subject_type": "person",
+            "visible_people_count": 1, "animals": [], "notable_details": [],
+            "roast_angle": "", "confidence": "high",
+        }
+        frame = np.zeros((4, 4, 3), dtype=np.uint8)
+        with mock.patch("vision.camera.get_frame", return_value=frame), \
+             mock.patch("vision.scene.analyze_directed_attention", return_value=analysis):
+            interaction._vision_question_answer_prompt("what do you see")
+
+        self.assertEqual(
+            world_state.get("environment")["description"],
+            "Bret is focused on his phone.",
+        )
+
+    def test_blank_summary_leaves_description_untouched(self):
+        from intelligence import interaction
+        from world_state import world_state
+
+        world_state.update("environment", {"description": "keep me"})
+        interaction._update_scene_description("")
+        interaction._update_scene_description(None)
+        self.assertEqual(world_state.get("environment")["description"], "keep me")
 
 
 if __name__ == "__main__":
