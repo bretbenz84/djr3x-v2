@@ -127,6 +127,23 @@ class FactAdminTest(_TempDbs):
         self.assertEqual(list(rows), [])
 
 
+class RelationshipKeysTest(unittest.TestCase):
+    def test_romantic_partners_offered_in_relationship_menu(self):
+        keys = admin.suggested_keys_for_category("relationship")
+        for k in ("partner", "boyfriend", "girlfriend", "husband", "wife",
+                  "spouse", "fiance", "fiancee"):
+            self.assertIn(k, keys)
+
+    def test_offered_romantic_keys_are_ones_the_program_mirrors(self):
+        # The romantic relationship keys the GUI suggests must be ones the social graph
+        # actually recognizes (auto-mirrors), so they aren't dead-end labels.
+        from memory import social
+        offered = set(admin.suggested_keys_for_category("relationship"))
+        for k in ("partner", "boyfriend", "girlfriend", "husband", "wife", "spouse"):
+            self.assertIn(k, offered)
+            self.assertIn(k, social._SYMMETRIC_LABELS)
+
+
 class InteractionPauseGateTest(unittest.TestCase):
     """INTERACTION_PAUSED must block all proactive speech (the Memory Banks pause)."""
 

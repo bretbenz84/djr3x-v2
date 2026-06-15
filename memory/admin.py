@@ -69,6 +69,11 @@ FACT_KEYS_BY_CATEGORY = {
         "grandparent", "grandchild", "cousin", "in_law",
     ],
     "relationship": [
+        # Romantic / partner (the program mirrors these symmetrically — see
+        # memory/social._SYMMETRIC_LABELS — and resolves them as synonyms in queries).
+        "partner", "boyfriend", "girlfriend", "husband", "wife", "spouse",
+        "fiance", "fiancee", "significant_other",
+        # Social / professional
         "boss", "manager", "coworker", "colleague", "mentor", "mentee",
         "friend", "best_friend", "neighbor", "roommate", "teammate",
         "classmate", "ex", "rival", "acquaintance",
