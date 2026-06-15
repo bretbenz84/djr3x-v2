@@ -234,6 +234,30 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         executable=True,
     ),
     ActionSpec(
+        "motion.turn",
+        "motion",
+        "User asks Rex to physically rotate the drive base in place — turn/spin/pivot left or right, or turn around. Not for head/look gestures.",
+        executable=True,
+    ),
+    ActionSpec(
+        "motion.move",
+        "motion",
+        "User asks Rex to physically drive the base forward or backward — move forward, back up, reverse, roll ahead. Not for head/look gestures.",
+        executable=True,
+    ),
+    ActionSpec(
+        "motion.come",
+        "motion",
+        "User asks Rex to physically come to them / roll over here / come closer (drive base).",
+        executable=True,
+    ),
+    ActionSpec(
+        "motion.stop",
+        "motion",
+        "User asks Rex to stop moving / halt / freeze the drive base while it is driving.",
+        executable=True,
+    ),
+    ActionSpec(
         "system.sleep",
         "system",
         "User asks Rex to sleep, wake, quiet down, mute, shut down, or power off.",
@@ -1065,6 +1089,122 @@ def classify_explicit_control(text: str) -> ActionDecision | None:
             args={"scope": "current_view"},
             requires_confirmation=True,
             reason="privacy-sensitive request to remember current view",
+        )
+
+    return None
+
+
+# Drive-base motion (deterministic; only acted on when a base is connected — the
+# interaction layer gates these on motion_controller.available()).
+_MOTION_COME_RE = re.compile(
+    r"\b(come\s+(?:here|over\s+here|to\s+me|closer|on\s+over)|over\s+here|"
+    r"roll\s+over\s+here|get\s+over\s+here|come\s+to\s+(?:me|daddy))\b",
+    re.I,
+)
+_MOTION_FWD_RE = re.compile(
+    r"\b(?:move|go|roll|drive|scoot|head|creep|come)\s+(?:forward|forwards|ahead)\b", re.I
+)
+_MOTION_BACK_RE = re.compile(
+    r"\b(?:back\s*up|backup|move\s*back(?:ward|wards)?|go\s*back(?:ward|wards)?|"
+    r"reverse|roll\s*back(?:ward|wards)?|scoot\s*back)\b",
+    re.I,
+)
+_MOTION_TURN_RE = re.compile(
+    r"\b(?:turn|rotate|spin|pivot|swing|face)\b.{0,20}?\b"
+    r"(?P<dir>left|right|around|clockwise|counter[-\s]?clockwise)\b",
+    re.I,
+)
+_MOTION_STOP_RE = re.compile(
+    r"\b(halt|freeze|stop\s+(?:moving|driving|rolling)|"
+    r"stop\s+the\s+(?:robot|base|droid|wheels|car)|hold\s+still|don'?t\s+move|"
+    r"quit\s+moving|stay\s+(?:there|put))\b",
+    re.I,
+)
+_MOTION_DEG_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:deg|degree|degrees|°)", re.I)
+_MOTION_DIST_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(cm|centimet(?:er|re)s?|mm|millimet(?:er|re)s?|"
+    r"m|met(?:er|re)s?|ft|foot|feet|in|inch|inches)\b",
+    re.I,
+)
+
+
+def _motion_dist_to_m(text: str) -> "float | None":
+    m = _MOTION_DIST_RE.search(text)
+    if not m:
+        return None
+    val = float(m.group(1))
+    unit = m.group(2).lower()
+    if unit.startswith("mm") or unit.startswith("millim"):
+        return val / 1000.0
+    if unit.startswith("cm") or unit.startswith("centim"):
+        return val / 100.0
+    if unit in ("ft", "foot", "feet"):
+        return val * 0.3048
+    if unit in ("in", "inch", "inches"):
+        return val * 0.0254
+    return val  # metres
+
+
+def classify_explicit_motion(text: str) -> ActionDecision | None:
+    """Classify explicit drive-base motion commands without an LLM call.
+
+    Conservative/high-precision: only clear directional phrases. Bare 'stop' is
+    intentionally NOT claimed here (the interaction layer routes it to the base
+    only while it is actually moving, so 'stop' still means stop-music/game/talk
+    otherwise)."""
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return None
+
+    if _MOTION_COME_RE.search(cleaned):
+        return ActionDecision(
+            action="motion.come", confidence=0.95, args={},
+            reason="explicit come-here request",
+        )
+
+    if _MOTION_FWD_RE.search(cleaned):
+        args: dict[str, Any] = {"direction": "forward"}
+        dist = _motion_dist_to_m(cleaned)
+        if dist is not None:
+            args["dist_m"] = dist
+        return ActionDecision(
+            action="motion.move", confidence=0.95, args=args,
+            reason="explicit move-forward request",
+        )
+
+    if _MOTION_BACK_RE.search(cleaned):
+        args = {"direction": "back"}
+        dist = _motion_dist_to_m(cleaned)
+        if dist is not None:
+            args["dist_m"] = dist
+        return ActionDecision(
+            action="motion.move", confidence=0.95, args=args,
+            reason="explicit move-back request",
+        )
+
+    turn = _MOTION_TURN_RE.search(cleaned)
+    if turn:
+        direction = turn.group("dir").lower().replace(" ", "").replace("-", "")
+        args = {}
+        if direction == "around":
+            args["direction"] = "around"
+            args["deg"] = 180.0
+        elif direction in ("right", "clockwise"):
+            args["direction"] = "right"
+        else:  # left / counterclockwise
+            args["direction"] = "left"
+        deg = _MOTION_DEG_RE.search(cleaned)
+        if deg is not None:
+            args["deg"] = float(deg.group(1))
+        return ActionDecision(
+            action="motion.turn", confidence=0.95, args=args,
+            reason="explicit turn request",
+        )
+
+    if _MOTION_STOP_RE.search(cleaned):
+        return ActionDecision(
+            action="motion.stop", confidence=0.97, args={},
+            reason="explicit motion-stop request",
         )
 
     return None

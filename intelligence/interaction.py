@@ -37,7 +37,7 @@ from audio import echo_cancel
 from audio import hardware_aec
 from audio import barge_guard
 from audio import prosody
-from intelligence import action_router, command_parser, llm, personality, rex_preferences
+from intelligence import action_router, command_parser, llm, motion_controller, personality, rex_preferences
 from intelligence import rex_pov
 from intelligence import body_mood
 from intelligence import performance_output
@@ -12253,6 +12253,67 @@ def _handle_router_identity_name_correction(
     return resp
 
 
+_MOTION_ACTIONS = {"motion.turn", "motion.move", "motion.come", "motion.stop"}
+# Bare standalone "stop" only counts as a drive-base stop while the base is moving.
+_BARE_MOTION_STOP_RE = re.compile(
+    r"^\s*(?:stop|halt|freeze|whoa|hold on|hold up|wait|stop it)\s*[.!]*\s*$", re.I
+)
+
+
+def _handle_router_motion_action(
+    decision: Optional[action_router.ActionDecision],
+) -> Optional[str]:
+    """Drive the base for a motion.* decision; returns a short spoken line or None.
+
+    Fire-and-forget: the command is sent and a brief confirmation returned; the
+    ESP32 reports completion (`done`) asynchronously. No-op (None) when no base is
+    connected or the command was suppressed (paused / manual override)."""
+    if decision is None or not motion_controller.available():
+        return None
+    action = decision.action
+    args = decision.args or {}
+
+    if action == "motion.stop":
+        motion_controller.stop()
+        return "Stopping."
+
+    if action == "motion.come":
+        return "On my way." if motion_controller.come_here() is not None else None
+
+    def _f(key: str) -> Optional[float]:
+        try:
+            return float(args[key]) if args.get(key) is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    if action == "motion.turn":
+        direction = str(args.get("direction") or "left").lower()
+        deg = _f("deg")
+        if direction == "around":
+            seq = motion_controller.turn(180.0 if deg is None else deg)
+            line = "Spinning around."
+        elif direction == "right":
+            seq = motion_controller.turn_right(deg)
+            line = "Turning right."
+        else:
+            seq = motion_controller.turn_left(deg)
+            line = "Turning left."
+        return line if seq is not None else None
+
+    if action == "motion.move":
+        direction = str(args.get("direction") or "forward").lower()
+        dist = _f("dist_m")
+        if direction == "back":
+            seq = motion_controller.move_back(dist)
+            line = "Backing up."
+        else:
+            seq = motion_controller.move_forward(dist)
+            line = "Rolling forward."
+        return line if seq is not None else None
+
+    return None
+
+
 def _handle_router_takeover_action(
     decision: Optional[action_router.ActionDecision],
     text: str,
@@ -12576,6 +12637,13 @@ def _handle_router_takeover_action(
             text,
         )
 
+    if action in _MOTION_ACTIONS:
+        _log.info(
+            "[action_router] executing %s person_id=%s args=%s text=%r",
+            action, person_id, decision.args, text,
+        )
+        return _handle_router_motion_action(decision)
+
     return None
 
 
@@ -12609,6 +12677,28 @@ def _handle_fast_local_takeover(
             person_id,
             router_audit=router_audit,
         )
+
+    # Drive-base motion — only when a base is connected, so behavior is unchanged
+    # otherwise. Bare "stop" routes to the base only while it is actually moving.
+    if motion_controller.available():
+        motion_decision = action_router.classify_explicit_motion(text)
+        if (
+            motion_decision is None
+            and motion_controller.is_moving()
+            and _BARE_MOTION_STOP_RE.match(text or "")
+        ):
+            motion_decision = action_router.ActionDecision(
+                action="motion.stop", confidence=0.95, args={},
+                reason="bare stop while base moving",
+            )
+        if motion_decision is not None:
+            _router_audit_note_decision(router_audit, motion_decision)
+            result = _handle_router_motion_action(motion_decision)
+            if result is not None:
+                _router_audit_note_fast_local_action(
+                    router_audit, motion_decision.action, reason=motion_decision.reason
+                )
+                return result
 
     directed_followup = _pending_directed_search_reply(
         text,

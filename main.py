@@ -83,11 +83,12 @@ import soundfile as sf
 import config
 import state
 from state import State
-from hardware import servos, leds_head, leds_chest
+from hardware import servos, leds_head, leds_chest, motion
 from utils.config_loader import (
     SERVOS_ENABLED,
     HEAD_LEDS_ENABLED,
     CHEST_LEDS_ENABLED,
+    MOTION_PORT_SET,
     CAMERA_ENABLED,
     CAMERA_SELECTION_DESCRIPTION,
     AUDIO_ENABLED,
@@ -107,7 +108,7 @@ from audio import (
 )
 from vision import camera, scene as vision_scene, face_expression, animal_detector
 from awareness import chronoception, interoception
-from intelligence import consciousness, emotion_orchestrator, interaction, local_llm
+from intelligence import consciousness, emotion_orchestrator, interaction, local_llm, motion_controller
 
 
 def _verify_local_whisper_model() -> None:
@@ -687,6 +688,7 @@ def _shutdown() -> None:
     servos.shutdown()
     leds_head.disconnect()
     leds_chest.disconnect()
+    motion_controller.disconnect()   # stops heartbeat + leaves the base stopped
 
     # Release the single-instance lock so the always-on supervisor can relaunch
     # on the next "wake up rex". (The OS would also free it on process exit.)
@@ -942,6 +944,17 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         logger.warning("Chest LEDs: disabled (ARDUINO_CHEST_PORT set but connection failed)")
     else:
         logger.info("Chest LEDs: disabled (ARDUINO_CHEST_PORT not set)")
+
+    motion_master = bool(getattr(config, "MOTION_ENABLED", True))
+    motion_ok = motion_controller.connect()
+    if motion_ok:
+        logger.info("Motion base: enabled (ESP32 connected)")
+    elif not motion_master:
+        logger.info("Motion base: disabled (config.MOTION_ENABLED is False)")
+    elif MOTION_PORT_SET:
+        logger.warning("Motion base: disabled (MOTION_ESP32_PORT set but connection/handshake failed)")
+    else:
+        logger.info("Motion base: disabled (MOTION_ESP32_PORT not set)")
 
     # Wire chest LEDs to state transitions so they stay in sync without
     # scattering leds_chest calls across every module.

@@ -4404,3 +4404,39 @@ RADIO_STATIONS = [
         "vibes": ["spy", "lounge", "cool", "retro", "mysterious", "cantina", "cocktail"],
     },
 ]
+
+# ── Motion base (ESP32 drive controller) ────────────────────────────────────────
+# High-level config for the differential-drive base. The serial device path is
+# MOTION_ESP32_PORT in .env (disabled cleanly when unset, like MAESTRO_PORT). The
+# wire contract is docs/motion_protocol.md; the firmware is firmware/djr3x_motion.
+# These caps mirror the firmware defaults (the Mac clamps too, defense-in-depth)
+# and are sent to the ESP32 once via a `config` command at connect.
+MOTION_ENABLED = True                 # master switch; also needs MOTION_ESP32_PORT set
+MOTION_BAUD = 115200
+MOTION_PROTO_VERSION = 1
+
+# Speed / geometry caps and zones (units per docs/motion_protocol.md §4,§10).
+MOTION_MAX_LINEAR_MS = 0.25           # m/s
+MOTION_MAX_ANGULAR_DEG_S = 60.0       # deg/s (converted to rad/s on the wire)
+MOTION_STOP_ZONE_M = 0.25
+MOTION_SLOW_ZONE_M = 0.60
+MOTION_COME_STOP_AT_M = 0.60
+MOTION_DEFAULT_TURN_DEG = 90.0        # "turn left/right" with no stated angle
+MOTION_DEFAULT_TURN_RATE = 40.0       # deg/s
+MOTION_DEFAULT_MOVE_DIST_M = 0.30     # "move forward/back" with no stated distance
+
+# Timing (must agree with the firmware; see docs/motion_protocol.md §7).
+MOTION_HEARTBEAT_MS = 150             # Mac ping cadence (<= 1/3 of watchdog)
+MOTION_WATCHDOG_MS = 500              # firmware stops motors if no Mac line in this window
+MOTION_DRIVE_EXPIRY_MS = 300          # continuous drive setpoint deadman
+MOTION_HANDSHAKE_TIMEOUT_MS = 1500    # wait for the ESP32 `hello` reply at connect
+
+# Manual gamepad override (ESP32-side; the Mac only observes it via telemetry).
+MOTION_MANUAL_IDLE_RETURN_SECS = 4
+MOTION_MANUAL_AUTORETURN = False
+
+# Serial connection retry (mirrors the servo connect pattern).
+MOTION_SERIAL_TIMEOUT_SECS = 0.1
+MOTION_CONNECT_RETRY_ATTEMPTS = 3
+MOTION_CONNECT_RETRY_DELAY_SECS = 1.0
+MOTION_ACK_TIMEOUT_SECS = 0.5         # how long send-and-confirm waits for an ack

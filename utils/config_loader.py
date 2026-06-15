@@ -233,6 +233,7 @@ AUDIO_DEVICE_INDEX, AUDIO_DEVICE_NAME, AUDIO_SELECTION_DESCRIPTION = _load_audio
 MAESTRO_PORT: "str | None" = _require_port("MAESTRO_PORT", "servo controller")
 ARDUINO_HEAD_PORT: "str | None" = _require_port("ARDUINO_HEAD_PORT", "head LEDs")
 ARDUINO_CHEST_PORT: "str | None" = _require_port("ARDUINO_CHEST_PORT", "chest LEDs")
+MOTION_ESP32_PORT: "str | None" = _require_port("MOTION_ESP32_PORT", "motion base")
 
 if CAMERA_DEVICE_NAME:
     CAMERA_SELECTION_DESCRIPTION = f'device name match "{CAMERA_DEVICE_NAME}"'
@@ -246,3 +247,6 @@ AUDIO_ENABLED: bool = AUDIO_DEVICE_INDEX is not None
 SERVOS_ENABLED: bool = MAESTRO_PORT is not None
 HEAD_LEDS_ENABLED: bool = ARDUINO_HEAD_PORT is not None
 CHEST_LEDS_ENABLED: bool = ARDUINO_CHEST_PORT is not None
+# Motion base is enabled when its port is set AND the master switch (config.MOTION_ENABLED)
+# is on; the master-switch check lives in hardware.motion.connect() like servos.
+MOTION_PORT_SET: bool = MOTION_ESP32_PORT is not None
