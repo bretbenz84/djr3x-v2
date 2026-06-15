@@ -49,6 +49,54 @@ def animal(species, position=None) -> None:
 _last_scene_episode_sig = None
 
 
+def _known_visible_names(snapshot: Optional[dict] = None) -> list[str]:
+    """Names of recognized people currently visible, so a scene memory records WHO was
+    there ('Bret at his desk') instead of 'a man at a desk'. Reads from the given
+    snapshot's people (or world_state), resolving each person_db_id to a name."""
+    try:
+        if snapshot is not None:
+            people = (snapshot or {}).get("people") or []
+        else:
+            from world_state import world_state
+            people = world_state.get("people") or []
+    except Exception:
+        return []
+    names: list[str] = []
+    seen: set[int] = set()
+    for person in people:
+        if not isinstance(person, dict):
+            continue
+        if person.get("face_visible") is False or person.get("face_missing"):
+            continue
+        pid = person.get("person_db_id")
+        try:
+            pid = int(pid) if pid is not None else None
+        except (TypeError, ValueError):
+            pid = None
+        if pid is None or pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            from memory import people as people_mem
+            row = people_mem.get_person(pid)
+        except Exception:
+            row = None
+        name = (row or {}).get("name")
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _join_names(names: list[str]) -> str:
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+
 def scene_changed(snapshot: dict) -> None:
     """Log a 'scene' episode when the observed environment MATERIALLY changes (deduped
     on a signature, so it captures 'the room got cluttered/crowded' transitions, not
@@ -77,6 +125,14 @@ def scene_changed(snapshot: dict) -> None:
             if not parts:
                 return
             summary = "The room was " + ", ".join(parts) + "."
+        # Name who was there (the room description is generic and doesn't identify
+        # recognized people), unless their name is already in the text.
+        names = [n for n in _known_visible_names(snapshot)
+                 if n.lower() not in summary.lower()]
+        if names:
+            who = _join_names(names)
+            verb = "was" if len(names) == 1 else "were"
+            summary = summary.rstrip(" .") + f". {who} {verb} there."
         from memory import episodes
         episodes.record_scene(
             summary,
@@ -113,7 +169,11 @@ def startup_image(frame) -> None:
     def _work(frame=frame) -> None:
         try:
             from vision import scene as _scene
-            caption = _scene.quick_caption(frame)
+            # Resolve names here (not at call time): startup_image latches on the first
+            # frame, BEFORE that tick's person-recognition runs, so reading world_state
+            # now — just before the captioning GPT call — picks up who was identified.
+            known = _known_visible_names()
+            caption = _scene.quick_caption(frame, known_people=known)
             if caption:
                 from memory import episodes
                 episodes.record_episode(

@@ -760,12 +760,16 @@ def describe_scene() -> str:
     return ". ".join(parts) + "." if parts else "Nothing notable right now."
 
 
-def quick_caption(frame=None) -> str:
+def quick_caption(frame=None, known_people=None) -> str:
     """ONE cheap GPT-4o-mini vision call: a short plain caption of what's in front of
     Rex right now ("a cluttered workshop, dim light, one person at a desk"). Used for
     the once-per-run startup snapshot logged to episodic memory. Low detail + tiny
     token budget = minimal cost. Returns "" on any failure (no frame, no camera, API
-    error) — never raises."""
+    error) — never raises.
+
+    ``known_people`` is a list of names of recognized people in view; when given, the
+    caption refers to them BY NAME instead of "a man / a person", so Rex's first-person
+    memory records WHO was there ("Bret at his desk") rather than a faceless stranger."""
     try:
         if frame is None:
             from vision import camera
@@ -777,6 +781,13 @@ def quick_caption(frame=None) -> str:
             "space it is, the lighting, how cluttered or tidy it looks, and roughly "
             "how many people (if any) are visible. Just the description, no preamble."
         )
+        names = [str(n).strip() for n in (known_people or []) if str(n).strip()]
+        if names:
+            prompt += (
+                " The following people in view are KNOWN to you — refer to each of them "
+                "BY NAME, never as 'a man', 'a woman', 'a person', or 'someone': "
+                + ", ".join(names) + "."
+            )
         raw = _call_gpt4o(frame, prompt, "scene_analysis", max_tokens=120)
         return (raw or "").strip()
     except Exception as exc:
