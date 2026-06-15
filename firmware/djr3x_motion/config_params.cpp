@@ -1,0 +1,49 @@
+#include "config_params.h"
+
+// Read one float key; if present, clamp to [lo,hi] and report whether clamped.
+static bool take_f(JsonObjectConst c, const char* key, float lo, float hi, float& dst) {
+  if (!c[key].is<float>() && !c[key].is<int>()) return false;
+  float raw = c[key].as<float>();
+  float cl  = clampf(raw, lo, hi);
+  dst = cl;
+  return cl != raw;  // true => was clamped
+}
+static bool take_u(JsonObjectConst c, const char* key, uint32_t lo, uint32_t hi, uint32_t& dst) {
+  if (!c[key].is<unsigned>() && !c[key].is<int>()) return false;
+  long raw = c[key].as<long>();
+  uint32_t v = raw < 0 ? 0u : (uint32_t)raw;
+  uint32_t cl = clampu(v, lo, hi);
+  dst = cl;
+  return cl != (uint32_t)raw;
+}
+
+bool apply_config(JsonObjectConst cmd, MotionParams& out) {
+  // Work on a local copy seeded from current params, then commit under lock.
+  MotionParams p;
+  LOCK_STATE();
+  p = g_ctx.params;
+  UNLOCK_STATE();
+
+  bool clamped = false;
+  // Caps clamp against the compile-time hard ceilings (config can only tighten).
+  clamped |= take_f(cmd, "max_lin",        0.0f, HARDCAP_MAX_LINEAR_MS,     p.max_lin);
+  clamped |= take_f(cmd, "max_ang",        0.0f, HARDCAP_MAX_ANGULAR_RAD_S, p.max_ang);  // rad/s on the wire
+  clamped |= take_f(cmd, "slow_zone_m",    0.0f, 5.0f,                      p.slow_zone_m);
+  clamped |= take_f(cmd, "stop_zone_m",    0.0f, 5.0f,                      p.stop_zone_m);
+  clamped |= take_f(cmd, "come_stop_at_m", 0.0f, 5.0f,                      p.come_stop_at_m);
+  clamped |= take_f(cmd, "default_turn_deg",  0.0f, 360.0f,                 p.default_turn_deg);
+  clamped |= take_f(cmd, "default_turn_rate", 0.0f, HARDCAP_MAX_TURN_RATE_DPS, p.default_turn_rate);
+  clamped |= take_u(cmd, "watchdog_ms",     50u, HARDCAP_WATCHDOG_MS,       p.watchdog_ms);
+  clamped |= take_u(cmd, "drive_expiry_ms", 50u, HARDCAP_DRIVE_EXPIRY_MS,   p.drive_expiry_ms);
+  clamped |= take_u(cmd, "manual_idle_return_secs", 0u, 60u,               p.manual_idle_return_secs);
+  if (cmd["manual_autoreturn"].is<bool>()) p.manual_autoreturn = cmd["manual_autoreturn"].as<bool>();
+
+  // Keep zones sane: stop_zone must be < slow_zone.
+  if (p.stop_zone_m >= p.slow_zone_m) { p.stop_zone_m = p.slow_zone_m * 0.5f; clamped = true; }
+
+  LOCK_STATE();
+  g_ctx.params = p;
+  UNLOCK_STATE();
+  out = p;
+  return clamped;
+}

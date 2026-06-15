@@ -184,6 +184,11 @@ ESP32 has enough usable GPIO for this; lay out PWM and interrupt pins first.
 
 ## 8. Communication protocol (Mac ↔ ESP32, USB serial)
 
+> **The authoritative wire contract is [motion_protocol.md](motion_protocol.md)** (v1,
+> locked). This section is a summary; if the two disagree, the protocol doc wins. It
+> resolves the open conventions (sign/units, heartbeat/deadman timing, ack/`done`/`event`
+> semantics, error/clamp behavior) into concrete decisions both sides build against.
+
 - **Transport:** USB serial, **115200** baud (bump to 921600 if telemetry needs it),
   newline-delimited **JSON** objects (one per line), UTF-8. JSON keeps it debuggable
   and trivial to parse in Python.
