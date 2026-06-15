@@ -62,6 +62,22 @@ def _hline() -> QFrame:
     return line
 
 
+# Bold-red styling for destructive actions — the pale text-only red read as greyed-out.
+_DANGER_QSS = (
+    "QPushButton {"
+    " background:#c62828; color:#ffffff; font-weight:800;"
+    " border:1px solid #ff5252; border-radius:5px; padding:5px 12px; }"
+    "QPushButton:hover { background:#e53935; border:1px solid #ff8a80; }"
+    "QPushButton:pressed { background:#8e0000; }"
+)
+
+
+def _danger_button(text: str) -> QPushButton:
+    btn = QPushButton(text)
+    btn.setStyleSheet(_DANGER_QSS)
+    return btn
+
+
 class MemoryBanksWindow(QMainWindow):
     """Memory browser/editor. Pauses robot audio output while open."""
 
@@ -186,8 +202,7 @@ class MemoryBanksWindow(QMainWindow):
         btns = QHBoxLayout()
         save = QPushButton("Save Memory")
         save.clicked.connect(self._save_rex_memory)
-        delete = QPushButton("Delete Memory")
-        delete.setStyleSheet("color:#ff9b9b;")
+        delete = _danger_button("Delete Memory")
         delete.clicked.connect(self._delete_rex_memory)
         btns.addWidget(save)
         btns.addWidget(delete)
@@ -217,8 +232,7 @@ class MemoryBanksWindow(QMainWindow):
         person_btns = QHBoxLayout()
         save_person = QPushButton("Save Person")
         save_person.clicked.connect(self._save_person)
-        del_person = QPushButton("Delete Person")
-        del_person.setStyleSheet("color:#ff9b9b;")
+        del_person = _danger_button("Delete Person")
         del_person.clicked.connect(self._delete_person)
         person_btns.addWidget(save_person)
         person_btns.addWidget(del_person)
@@ -242,7 +256,7 @@ class MemoryBanksWindow(QMainWindow):
         fact_btns = QHBoxLayout()
         add_fact = QPushButton("Add Fact")
         add_fact.clicked.connect(self._add_fact_row)
-        del_fact = QPushButton("Delete Selected Fact")
+        del_fact = _danger_button("Delete Selected Fact")
         del_fact.clicked.connect(self._delete_selected_fact)
         save_facts = QPushButton("Save Facts")
         save_facts.clicked.connect(self._save_facts)
@@ -260,7 +274,7 @@ class MemoryBanksWindow(QMainWindow):
         int_col.addWidget(_section_label("INTERESTS"))
         self.interests_list = QListWidget()
         int_col.addWidget(self.interests_list)
-        del_int = QPushButton("Delete Selected Interest")
+        del_int = _danger_button("Delete Selected Interest")
         del_int.clicked.connect(self._delete_selected_interest)
         int_col.addWidget(del_int)
         lists_row.addLayout(int_col)
@@ -269,7 +283,7 @@ class MemoryBanksWindow(QMainWindow):
         pref_col.addWidget(_section_label("PREFERENCES"))
         self.prefs_list = QListWidget()
         pref_col.addWidget(self.prefs_list)
-        del_pref = QPushButton("Delete Selected Preference")
+        del_pref = _danger_button("Delete Selected Preference")
         del_pref.clicked.connect(self._delete_selected_preference)
         pref_col.addWidget(del_pref)
         lists_row.addLayout(pref_col)
@@ -438,9 +452,26 @@ class MemoryBanksWindow(QMainWindow):
         item = self.facts_table.item(row, col)
         return item.text().strip() if item else ""
 
+    def _commit_open_cell_editor(self) -> None:
+        """Commit an in-progress fact-cell edit before reading the table. On macOS a
+        push-button doesn't take focus on click, so clicking "Save Facts" leaves the
+        cell editor open and uncommitted — the value would be read stale otherwise."""
+        table = self.facts_table
+        if table.state() != QAbstractItemView.State.EditingState:
+            return
+        editor = table.focusWidget()
+        if editor is None or editor in (table, table.viewport()):
+            editor = table.viewport().findChild(QLineEdit)
+        if editor is not None:
+            try:
+                table.itemDelegate().commitData.emit(editor)
+            except Exception:
+                pass
+
     def _save_facts(self) -> None:
         if self._current_person_id is None:
             return
+        self._commit_open_cell_editor()
         for row in range(self.facts_table.rowCount()):
             cat_item = self.facts_table.item(row, 0)
             fact_id = cat_item.data(_ROLE_ID) if cat_item else None

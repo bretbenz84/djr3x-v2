@@ -79,6 +79,31 @@ class MemoryBanksWindowSmokeTest(unittest.TestCase):
         w.close()
         self.assertTrue(config.AUDIO_OUTPUT_SUPPRESSED)       # left as it was, not forced off
 
+    def test_save_facts_commits_an_open_cell_edit(self):
+        # The reported bug: editing a fact cell and clicking Save Facts without first
+        # clicking elsewhere lost the edit (the cell editor hadn't committed).
+        from PySide6.QtWidgets import QAbstractItemView, QLineEdit
+        from memory import admin
+        admin.add_person_fact(1, "preference", "favorite_color", "teal")
+        w = MemoryBanksWindow()
+        try:
+            w._select_person_in_list(1)
+            # Find the Value cell for the fact and open its editor (as a double-click would).
+            self.assertEqual(w.facts_table.rowCount(), 1)
+            index = w.facts_table.model().index(0, 2)  # column 2 = Value
+            w.facts_table.edit(index)
+            self.assertEqual(
+                w.facts_table.state(), QAbstractItemView.State.EditingState
+            )
+            editor = w.facts_table.viewport().findChild(QLineEdit)
+            editor.setText("cyan")
+            # Save WITHOUT clicking out first — the fix must commit the editor.
+            w._save_facts()
+        finally:
+            w.close()
+        facts = admin.get_person_detail(1)["facts"]
+        self.assertEqual([f["value"] for f in facts], ["cyan"])
+
 
 if __name__ == "__main__":
     unittest.main()
