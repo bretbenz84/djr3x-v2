@@ -54,15 +54,22 @@ class DashboardWindow(QMainWindow):
         *,
         shutdown_callback: Optional[Callable[[], None]] = None,
         text_submit_callback: Optional[Callable[[str], None]] = None,
+        sleep_callback: Optional[Callable[[], None]] = None,
+        wake_callback: Optional[Callable[[], None]] = None,
         demo: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._bridge = bridge
         self._shutdown_callback = shutdown_callback
+        self._sleep_callback = sleep_callback
+        self._wake_callback = wake_callback
         self._demo = demo
         self._closing_from_shutdown = False
         self._shutdown_requested = False
+        self._is_asleep = False
+        self._last_pause_glyph = None
+        self._last_sleep_label = None
 
         self.setWindowTitle(getattr(config, "GUI_WINDOW_TITLE", "DJ-R3X Controller"))
         self.resize(1280, 840)
@@ -108,6 +115,32 @@ class DashboardWindow(QMainWindow):
         self.memory_banks_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.memory_banks_btn.clicked.connect(self._open_memory_banks)
         top.addWidget(self.memory_banks_btn)
+
+        # Play/Pause — shows the pause glyph while running (click to pause). Uses the
+        # same INTERACTION_PAUSED mechanism the Memory Banks editor uses.
+        self._pause_btn = QPushButton("⏸")
+        self._pause_btn.setObjectName("topControlButton")
+        self._pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pause_btn.setToolTip("Pause the robot")
+        self._pause_btn.clicked.connect(self._toggle_pause)
+        top.addWidget(self._pause_btn)
+
+        # Sleep / Wake — label flips with the runtime state.
+        self._sleep_btn = QPushButton("Sleep R3X")
+        self._sleep_btn.setObjectName("topControlButton")
+        self._sleep_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sleep_btn.setToolTip("Put DJ-R3X to sleep")
+        self._sleep_btn.clicked.connect(self._toggle_sleep)
+        top.addWidget(self._sleep_btn)
+
+        # Shut Down — confirmed, then exits the program.
+        self._shutdown_btn = QPushButton("⏻  Shut Down")
+        self._shutdown_btn.setObjectName("topShutdownButton")
+        self._shutdown_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._shutdown_btn.setToolTip("Shut down the program")
+        self._shutdown_btn.clicked.connect(self._confirm_shutdown)
+        top.addWidget(self._shutdown_btn)
+
         top.addStretch(1)
         top.addWidget(title)
         top.addStretch(1)
@@ -212,6 +245,69 @@ class DashboardWindow(QMainWindow):
         except Exception as exc:
             _log.warning("failed to open Memory Banks window: %s", exc)
 
+    # ── Top-bar robot controls ────────────────────────────────────────────────
+    def _sync_top_controls(self, paused: bool, asleep: bool) -> None:
+        """Reflect the live pause/sleep state on the play-pause and sleep buttons,
+        so they stay correct even when changed by voice or the Memory Banks editor."""
+        glyph = "▶" if paused else "⏸"
+        if glyph != self._last_pause_glyph:
+            self._last_pause_glyph = glyph
+            self._pause_btn.setText(glyph)
+            self._pause_btn.setToolTip("Resume the robot" if paused else "Pause the robot")
+        label = "Wake R3X" if asleep else "Sleep R3X"
+        if label != self._last_sleep_label:
+            self._last_sleep_label = label
+            self._sleep_btn.setText(label)
+            self._sleep_btn.setToolTip("Wake DJ-R3X" if asleep else "Put DJ-R3X to sleep")
+
+    def _toggle_pause(self) -> None:
+        paused = not bool(getattr(config, "INTERACTION_PAUSED", False))
+        config.INTERACTION_PAUSED = paused
+        _log.info("[dashboard] interaction %s via pause button", "paused" if paused else "resumed")
+        self._sync_top_controls(paused, self._is_asleep)   # immediate feedback
+
+    def _toggle_sleep(self) -> None:
+        if self._is_asleep:
+            if self._wake_callback is not None:
+                self._wake_callback()
+        else:
+            if self._sleep_callback is not None:
+                self._sleep_callback()
+        # The button label follows the real runtime state via _tick.
+
+    def _confirm_shutdown(self) -> None:
+        dlg = QDialog(self)
+        dlg.setObjectName("confirmDialog")
+        dlg.setWindowTitle("Shut Down DJ-R3X")
+        dlg.setModal(True)
+        dlg.setStyleSheet(_STYLE + _CONFIRM_EXTRA)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(24, 22, 24, 18)
+        lay.setSpacing(18)
+        msg = QLabel("Shut down DJ-R3X?\nThis will stop the program.")
+        msg.setObjectName("confirmText")
+        msg.setWordWrap(True)
+        msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(msg)
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        no_btn = QPushButton("No")
+        no_btn.setObjectName("confirmNo")
+        no_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        no_btn.clicked.connect(dlg.reject)
+        yes_btn = QPushButton("Yes, shut down")
+        yes_btn.setObjectName("confirmYes")
+        yes_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        yes_btn.clicked.connect(dlg.accept)
+        row.addStretch(1)
+        row.addWidget(no_btn)
+        row.addWidget(yes_btn)
+        lay.addLayout(row)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            _log.info("[dashboard] shutdown confirmed via top-bar button")
+            if self._shutdown_callback is not None:
+                self._shutdown_callback()
+
     def close_from_shutdown(self) -> None:
         self._closing_from_shutdown = True
         try:
@@ -308,7 +404,10 @@ class DashboardWindow(QMainWindow):
 
         ws = snapshot.get("world_state") or {}
         speaking = bool((snapshot.get("speech_state") or {}).get("speaking"))
-        badge_text, badge_color = _state_badge_spec(ws.get("state"), speaking)
+        paused = bool(getattr(config, "INTERACTION_PAUSED", False))
+        self._is_asleep = str(ws.get("state") or "").strip().upper() == "SLEEP"
+        self._sync_top_controls(paused, self._is_asleep)
+        badge_text, badge_color = _state_badge_spec(ws.get("state"), speaking, paused)
         if badge_text != self._last_badge_text:
             self._last_badge_text = badge_text
             self.state_badge.setText(badge_text)
@@ -328,16 +427,20 @@ class DashboardWindow(QMainWindow):
             return False
 
 
-def _state_badge_spec(state_value: Any, speaking: bool) -> tuple[str, str]:
-    """Map the runtime State (+ live speech) to a top-bar badge label and color.
+def _state_badge_spec(state_value: Any, speaking: bool, paused: bool = False) -> tuple[str, str]:
+    """Map the runtime State (+ live speech / pause) to a top-bar badge label and color.
 
-    SPEAKING overlays whichever conversational state is active; SLEEP/SHUTDOWN
-    win over it. world_state['state'] is set by main's GUI bridge sync."""
+    SPEAKING overlays whichever conversational state is active; PAUSE wins over it;
+    SLEEP/SHUTDOWN win over PAUSE. world_state['state'] is set by main's GUI bridge
+    sync; `paused` reflects config.INTERACTION_PAUSED (the Memory Banks / pause-button
+    mechanism)."""
     s = str(state_value or "").strip().upper()
     if s == "SHUTDOWN":
         return "SHUTDOWN", "#ff6b5e"
     if s == "SLEEP":
         return "SLEEP", "#8d9aab"
+    if paused:
+        return "PAUSE", "#e8a13c"
     if speaking:
         return "SPEAKING", "#ff9b21"
     if s == "ACTIVE":
@@ -1326,6 +1429,8 @@ def run_dashboard(
     *,
     shutdown_callback: Optional[Callable[[], None]] = None,
     text_submit_callback: Optional[Callable[[str], None]] = None,
+    sleep_callback: Optional[Callable[[], None]] = None,
+    wake_callback: Optional[Callable[[], None]] = None,
     demo: bool = False,
 ) -> int:
     app = QApplication.instance() or QApplication(sys.argv[:1])
@@ -1333,6 +1438,8 @@ def run_dashboard(
         bridge,
         shutdown_callback=shutdown_callback,
         text_submit_callback=text_submit_callback,
+        sleep_callback=sleep_callback,
+        wake_callback=wake_callback,
         demo=demo,
     )
     # Fill the available desktop (normal zoomed window) — NOT macOS native
@@ -1637,6 +1744,35 @@ QPushButton#memoryBanksButton:hover {
     background: #1d2f44;
     border: 1px solid #65a2ff;
 }
+QPushButton#topControlButton {
+    min-height: 30px;
+    padding: 0 14px;
+    margin-left: 8px;
+    background: #15212f;
+    color: #aee0ff;
+    border: 1px solid #2b4562;
+    border-radius: 5px;
+    font-weight: 700;
+}
+QPushButton#topControlButton:hover {
+    background: #1d2f44;
+    border: 1px solid #65a2ff;
+}
+QPushButton#topShutdownButton {
+    min-height: 30px;
+    padding: 0 14px;
+    margin-left: 8px;
+    background: #2a1416;
+    color: #ffb3ab;
+    border: 1px solid #5e2a2a;
+    border-radius: 5px;
+    font-weight: 700;
+}
+QPushButton#topShutdownButton:hover {
+    background: #4a1d1d;
+    border: 1px solid #d05a5a;
+    color: #ffffff;
+}
 QPushButton#servoOverrideButton[active="true"] {
     background: #244f89;
     color: #ffffff;
@@ -1716,6 +1852,48 @@ QPushButton#motivatorStop {
     font-size: 14px;
 }
 QPushButton#motivatorStop:hover {
+    background: #9a2a2a;
+    border: 1px solid #d05a5a;
+}
+"""
+
+
+# Shutdown confirmation dialog — dashboard-themed yes/no.
+_CONFIRM_EXTRA = """
+QDialog#confirmDialog {
+    background: #0b1824;
+    color: #d9e3ee;
+    border: 1px solid #255484;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+QLabel#confirmText {
+    color: #dbe7f3;
+    font-size: 15px;
+    font-weight: 700;
+}
+QPushButton#confirmNo {
+    min-height: 34px;
+    padding: 0 20px;
+    background: #15212f;
+    color: #aee0ff;
+    border: 1px solid #2b4562;
+    border-radius: 5px;
+    font-weight: 700;
+}
+QPushButton#confirmNo:hover {
+    background: #1d2f44;
+    border: 1px solid #65a2ff;
+}
+QPushButton#confirmYes {
+    min-height: 34px;
+    padding: 0 20px;
+    background: #7a1f1f;
+    color: #ffffff;
+    border: 1px solid #a23a3a;
+    border-radius: 5px;
+    font-weight: 800;
+}
+QPushButton#confirmYes:hover {
     background: #9a2a2a;
     border: 1px solid #d05a5a;
 }

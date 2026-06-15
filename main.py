@@ -1554,12 +1554,41 @@ def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
         def _request_shutdown() -> None:
             state.set_state(State.SHUTDOWN)
 
+        # Sleep/wake block on speech, so run them off the Qt thread. Guarded so a
+        # stray click can't double-fire. These are the same entry points the spoken
+        # "go to sleep" command and the wake word use.
+        def _request_sleep() -> None:
+            if state.is_state(State.SLEEP):
+                return
+
+            def _run() -> None:
+                try:
+                    interaction._enter_sleep_mode()
+                except Exception as exc:
+                    logger.warning("GUI sleep request failed: %s", exc)
+
+            threading.Thread(target=_run, daemon=True, name="gui-sleep").start()
+
+        def _request_wake() -> None:
+            if not state.is_state(State.SLEEP):
+                return
+
+            def _run() -> None:
+                try:
+                    interaction._wake_from_sleep()
+                except Exception as exc:
+                    logger.warning("GUI wake request failed: %s", exc)
+
+            threading.Thread(target=_run, daemon=True, name="gui-wake").start()
+
         try:
             run_dashboard(
                 shutdown_callback=_request_shutdown,
                 text_submit_callback=_make_gui_text_submit_callback(
                     ready=controller_online.is_set
                 ),
+                sleep_callback=_request_sleep,
+                wake_callback=_request_wake,
             )
         except Exception as exc:
             logger.warning("GUI failed at runtime; continuing headless: %s", exc)
