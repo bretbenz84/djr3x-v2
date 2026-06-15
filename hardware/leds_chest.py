@@ -112,6 +112,12 @@ def disconnect() -> None:
         _ser = None
 
 
+def connected() -> bool:
+    """True when the chest-LED Arduino serial link is open (live status)."""
+    ser = _ser
+    return ser is not None and bool(getattr(ser, "is_open", False))
+
+
 # ── Transport ──────────────────────────────────────────────────────────────────
 
 def send_command(cmd: str) -> None:

@@ -402,6 +402,12 @@ def disconnect() -> None:
         _close_serial_locked()
 
 
+def connected() -> bool:
+    """True when the Maestro serial link is currently open (live status)."""
+    ser = _ser
+    return ser is not None and bool(getattr(ser, "is_open", False))
+
+
 # ── Core command primitives ────────────────────────────────────────────────────
 
 def _send_set_target(channel: int, position: int) -> None:

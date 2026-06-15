@@ -221,6 +221,11 @@ def _serial_online() -> bool:
         return _serial_online_locked()
 
 
+def connected() -> bool:
+    """True when the head-LED Arduino serial link is open (live status)."""
+    return _serial_online()
+
+
 # ── Transport ──────────────────────────────────────────────────────────────────
 
 def send_command(cmd: str) -> None:

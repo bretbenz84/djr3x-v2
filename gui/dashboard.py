@@ -46,6 +46,22 @@ from gui.vision_panel import VisionPanel
 
 _log = logging.getLogger(__name__)
 
+# Live hardware-connection indicators shown in the top bar (key, label, tooltip).
+_DEVICE_SPECS = (
+    ("chest", "Chest LEDs", "Chest LEDs — Arduino Nano (ARDUINO_CHEST_PORT)"),
+    ("head", "Head LEDs", "Head LEDs — Arduino Uno (ARDUINO_HEAD_PORT)"),
+    ("maestro", "Maestro", "Pololu Maestro servo controller (MAESTRO_PORT)"),
+    ("motor", "ESP32 Motor", "ESP32 motor controller — drive base (MOTION_ESP32_PORT)"),
+)
+
+
+def _device_status_color(enabled: bool, connected: bool) -> str:
+    if not enabled:
+        return "#5b6b7d"   # gray  — not configured / disabled
+    if connected:
+        return "#45d85e"   # green — connected
+    return "#ff6b5e"       # red   — configured but offline
+
 
 class DashboardWindow(QMainWindow):
     def __init__(
@@ -103,18 +119,23 @@ class DashboardWindow(QMainWindow):
         self._shell.setSpacing(12)
 
         self._top_bar = QWidget()
-        top = QHBoxLayout()
+        # 3-column grid so the title can be centered against the FULL window width
+        # (it spans all columns), independent of how wide the left controls or the
+        # right connection label are.
+        top = QGridLayout(self._top_bar)
         top.setContentsMargins(0, 0, 0, 0)
-        self._top_bar.setLayout(top)
-        title = QLabel("DJ-R3X Controller")
-        title.setObjectName("windowTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        top.addWidget(self.state_badge)
+
+        # Left cluster: state badge + control buttons, hugging the left edge.
+        left_cluster = QWidget()
+        cluster = QHBoxLayout(left_cluster)
+        cluster.setContentsMargins(0, 0, 0, 0)
+        cluster.setSpacing(0)
+        cluster.addWidget(self.state_badge)
         self.memory_banks_btn = QPushButton("🧠  Memory Banks")
         self.memory_banks_btn.setObjectName("memoryBanksButton")
         self.memory_banks_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.memory_banks_btn.clicked.connect(self._open_memory_banks)
-        top.addWidget(self.memory_banks_btn)
+        cluster.addWidget(self.memory_banks_btn)
 
         # Play/Pause — shows the pause glyph while running (click to pause). Uses the
         # same INTERACTION_PAUSED mechanism the Memory Banks editor uses.
@@ -123,7 +144,7 @@ class DashboardWindow(QMainWindow):
         self._pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._pause_btn.setToolTip("Pause the robot")
         self._pause_btn.clicked.connect(self._toggle_pause)
-        top.addWidget(self._pause_btn)
+        cluster.addWidget(self._pause_btn)
 
         # Sleep / Wake — label flips with the runtime state.
         self._sleep_btn = QPushButton("Sleep R3X")
@@ -131,7 +152,7 @@ class DashboardWindow(QMainWindow):
         self._sleep_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._sleep_btn.setToolTip("Put DJ-R3X to sleep")
         self._sleep_btn.clicked.connect(self._toggle_sleep)
-        top.addWidget(self._sleep_btn)
+        cluster.addWidget(self._sleep_btn)
 
         # Shut Down — confirmed, then exits the program.
         self._shutdown_btn = QPushButton("⏻  Shut Down")
@@ -139,12 +160,42 @@ class DashboardWindow(QMainWindow):
         self._shutdown_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._shutdown_btn.setToolTip("Shut down the program")
         self._shutdown_btn.clicked.connect(self._confirm_shutdown)
-        top.addWidget(self._shutdown_btn)
+        cluster.addWidget(self._shutdown_btn)
 
-        top.addStretch(1)
-        top.addWidget(title)
-        top.addStretch(1)
-        top.addWidget(self.connection)
+        title = QLabel("DJ-R3X Controller")
+        title.setObjectName("windowTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Spans the whole bar on top of the side groups; let clicks fall through to
+        # the buttons beneath it.
+        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        # Right cluster: live device-connection indicators, then the overall
+        # connection status — hugging the right edge (after the centered title,
+        # before "Booting…"). Colors update live in _tick.
+        right_cluster = QWidget()
+        rc = QHBoxLayout(right_cluster)
+        rc.setContentsMargins(0, 0, 0, 0)
+        rc.setSpacing(14)
+        self._device_status: dict[str, QLabel] = {}
+        self._last_device_color: dict[str, str] = {}
+        for key, label_text, tip in _DEVICE_SPECS:
+            lbl = QLabel()
+            lbl.setObjectName("deviceStatus")
+            lbl.setTextFormat(Qt.TextFormat.RichText)
+            lbl.setToolTip(tip)
+            lbl.setText(f'<span style="color:#5b6b7d;">●</span>&nbsp;{label_text}')
+            rc.addWidget(lbl)
+            self._device_status[key] = lbl
+        rc.addWidget(self.connection)
+
+        top.addWidget(left_cluster, 0, 0,
+                      Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        top.addWidget(right_cluster, 0, 2,
+                      Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        top.addWidget(title, 0, 0, 1, 3, Qt.AlignmentFlag.AlignCenter)
+        top.setColumnStretch(0, 0)
+        top.setColumnStretch(1, 1)
+        top.setColumnStretch(2, 0)
         self._shell.addWidget(self._top_bar)
         self._memory_banks_window = None
 
@@ -308,6 +359,45 @@ class DashboardWindow(QMainWindow):
             if self._shutdown_callback is not None:
                 self._shutdown_callback()
 
+    def _device_states(self) -> "dict[str, tuple[bool, bool]]":
+        """Live (enabled, connected) per device. Read directly from the hardware
+        modules each tick so the indicators reflect connect/disconnect."""
+        states = {k: (False, False) for k, _l, _t in _DEVICE_SPECS}
+        try:
+            from utils.config_loader import (
+                SERVOS_ENABLED, HEAD_LEDS_ENABLED, CHEST_LEDS_ENABLED, MOTION_PORT_SET,
+            )
+            from hardware import servos, leds_head, leds_chest, motion
+
+            def _ok(fn) -> bool:
+                try:
+                    return bool(fn())
+                except Exception:
+                    return False
+
+            states["chest"] = (bool(CHEST_LEDS_ENABLED), _ok(leds_chest.connected))
+            states["head"] = (bool(HEAD_LEDS_ENABLED), _ok(leds_head.connected))
+            states["maestro"] = (bool(SERVOS_ENABLED), _ok(servos.connected))
+            states["motor"] = (
+                bool(MOTION_PORT_SET and getattr(config, "MOTION_ENABLED", True)),
+                _ok(motion.connected),
+            )
+        except Exception:
+            pass
+        return states
+
+    def _update_device_status(self) -> None:
+        states = self._device_states()
+        for key, label_text, _tip in _DEVICE_SPECS:
+            enabled, conn = states.get(key, (False, False))
+            color = _device_status_color(enabled, conn)
+            if self._last_device_color.get(key) == color:
+                continue
+            self._last_device_color[key] = color
+            lbl = self._device_status.get(key)
+            if lbl is not None:
+                lbl.setText(f'<span style="color:{color};">●</span>&nbsp;{label_text}')
+
     def close_from_shutdown(self) -> None:
         self._closing_from_shutdown = True
         try:
@@ -401,6 +491,8 @@ class DashboardWindow(QMainWindow):
             self._last_status_text = text
             self.connection.setText(text)
             self.connection.setStyleSheet(f"color: {color}; font-size: 13px;")
+
+        self._update_device_status()
 
         ws = snapshot.get("world_state") or {}
         speaking = bool((snapshot.get("speech_state") or {}).get("speaking"))
@@ -1653,6 +1745,11 @@ QLabel#windowTitle {
 QLabel#connectionLabel {
     color: #45d85e;
     font-size: 13px;
+}
+QLabel#deviceStatus {
+    color: #9fb6cc;
+    font-size: 12px;
+    font-weight: 700;
 }
 QLabel#stateBadge {
     color: #5b6b7d;
