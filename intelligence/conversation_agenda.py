@@ -622,6 +622,25 @@ def build_turn_plan(
         plan.purpose = "closure"
         return _finish(plan, lines)
 
+    if _looks_like_phatic_answer(text):
+        # A short, friendly throwaway ("good", "I've been good", "it's going good").
+        # Rex kept turning these into a clever bit — roasting the BREVITY ("the classic
+        # response", "droid-approved script") or dragging in a remembered detail
+        # ("…those piles of boxes"). Match their easy energy with a brief, warm beat.
+        lines.append(
+            "Primary purpose: the human gave a short, friendly throwaway answer about "
+            "how they're doing ('good', 'I've been good', 'it's going good'). Match "
+            "their easy energy with ONE brief, warm, natural beat — and if they asked "
+            "how YOU are, answer that lightly. Do NOT analyze, roast, or make a bit out "
+            "of the fact that the answer was short or generic (no 'the classic "
+            "response', 'droid-approved script', 'that's code for…'), do NOT drag in a "
+            "remembered fact or their surroundings to pad it, and do NOT interrogate "
+            "them. A short genuine reply — optionally one light, open question like "
+            "'what's good with you?' — is the whole move."
+        )
+        plan.purpose = "small_talk"
+        return _finish(plan, lines)
+
     unknown_context = social_scene.unknown_group_context(
         ws,
         current_person_id=person_id,
@@ -864,3 +883,39 @@ def _looks_like_health_resolved(text: str) -> bool:
 
 def _looks_like_reassurance(text: str) -> bool:
     return bool(_REASSURANCE_PAT.search(text or ""))
+
+
+# A short, friendly throwaway answer to "how are you / how's it going" — "good",
+# "I've been good", "it's going good", "doing well", "can't complain". The WHOLE
+# utterance must be phatic (no real content), so "good, just back from camping" does
+# NOT match (that has substance to engage). A trailing reciprocal "you?" is allowed.
+_PHATIC_ANSWER_PAT = re.compile(
+    r"^(?:"
+    r"(?:i'?m|i am|i'?ve|i have|things?(?:'re| are)?|everything(?:'s| is)?|it'?s|it is)\s+"
+    r"(?:been\s+|going\s+|doing\s+)?"
+    r"|just\s+|doing\s+|going\s+|been\s+|pretty\s+|really\s+|so\s+|all\s+|quite\s+"
+    r")*"
+    r"(?:good|great|fine|okay|ok|alright|well|chill|cool|grand|decent|"
+    r"not\s+bad|not\s+much|nothing\s+much|can'?t\s+complain|same\s+(?:old(?:\s+same\s+old)?|as\s+usual)|"
+    r"hanging\s+in\s+there|making\s+it|surviving)"
+    r"[.!,]*$",
+    re.IGNORECASE,
+)
+# Strip a tacked-on reciprocal ("…, you?", "how about you?", "and yourself?") before matching.
+_RECIPROCAL_TAIL_PAT = re.compile(
+    r"[,]?\s*(?:how\s+about\s+you|what\s+about\s+you|and\s+you|and\s+yourself|"
+    r"you|yourself|hbu|wbu)\s*\??$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_phatic_answer(text: str) -> bool:
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return False
+    core = _RECIPROCAL_TAIL_PAT.sub("", cleaned).strip()
+    if not core:
+        return False
+    if len(re.findall(r"[A-Za-z']+", core)) > 6:
+        return False
+    return bool(_PHATIC_ANSWER_PAT.match(core))

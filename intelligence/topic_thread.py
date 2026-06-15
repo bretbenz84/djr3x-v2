@@ -788,7 +788,9 @@ def _build_arc_prompt(transcript_rendered: str, *, rich: bool = True) -> str:
         # Cloud model — the full "feels alive" schema (mood, landed-vs-flopped).
         return instructions + (
             "Topics: <subjects discussed>\n"
-            "Shared: <concrete facts the user revealed about themselves>\n"
+            "Shared: <DURABLE facts the user revealed about themselves — interests, "
+            "plans, work, life events, relationships; NOT transient surroundings like the "
+            "room/clutter/boxes, temperature, background noise, or weather>\n"
             "Mood: <the user's current mood and energy>\n"
             "Used up (do NOT reuse): <jokes, premises, roasts, or comedic angles Rex has "
             "ALREADY used this conversation, plus anything that fell flat or they dodged — "

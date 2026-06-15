@@ -1169,7 +1169,13 @@ def generate_session_summary(person_id: int, transcript: list[dict]) -> str:
         "— do NOT describe, quote, or praise Rex's own jokes, bits, or in-character "
         "flavor (his DJ shtick, his cantina/Batuu backstory, Star Wars references), "
         "and do not carry those into the summary unless the PERSON brought them up. "
-        "Be concise and factual.\n\n"
+        "Record only DURABLE things worth recalling later — their interests, plans, work, "
+        "life events, relationships, and how they're doing. Do NOT record transient, "
+        "one-time situational details that won't be true next time and aren't worth "
+        "bringing up in a future conversation: the specific room or place they're in, "
+        "clutter or boxes around them, the temperature or how hot/cold it is, background "
+        "noise, what's physically near them right now, or the weather. Leave those out "
+        "entirely. Be concise and factual.\n\n"
         f"Transcript:\n{_format_transcript(transcript)}"
     )
     try:
