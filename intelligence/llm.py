@@ -1191,6 +1191,41 @@ def generate_session_summary(person_id: int, transcript: list[dict]) -> str:
         return ""
 
 
+def scenery_change_remark(previous_scene: str, current_scene: str) -> str:
+    """Compare Rex's last-run startup snapshot to this run's. If it's a clearly DIFFERENT
+    place, return ONE short in-character remark about the change of scenery; otherwise "".
+    One cheap text call; robust to wording/lighting/clutter differences in the same room."""
+    prev = (previous_scene or "").strip()
+    now = (current_scene or "").strip()
+    if not prev or not now:
+        return ""
+    prompt = (
+        "You are DJ-R3X (Rex), a witty droid powering up. Last time you booted you saw:\n"
+        f"  {prev}\n"
+        "Now, booting again, you see:\n"
+        f"  {now}\n\n"
+        "If this is CLEARLY a different physical location — a different room, indoors vs "
+        "outdoors, or a new place/venue — reply with ONE short, in-character Rex remark "
+        "noticing the change of scenery (max ~20 words, no preamble). If it's basically "
+        "the SAME place (ignore differences in wording, lighting, clutter, or who's "
+        "present), reply with exactly: SAME"
+    )
+    try:
+        resp = _client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=60,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+    except Exception as exc:
+        _log.error("scenery_change_remark failed: %s", exc)
+        return ""
+    if not text or text.strip().upper().rstrip(".!") == "SAME":
+        return ""
+    return clean_response_text(text)
+
+
 def extract_name_from_reply(text: str) -> Optional[str]:
     """Extract a person's name from a short reply like "His name was Joe",
     "Tom Foster", or just "Buddy". Returns None when no name is confidently

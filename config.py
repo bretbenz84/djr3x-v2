@@ -3891,6 +3891,12 @@ PLAY_SHUTDOWN_AUDIO = True
 # should cover the load, not follow it. Keep the delay small: it's now just the
 # beat between the startup clip ending and this line starting, not dead space in
 # front of all the loading.
+# When Rex powers up, compare what he sees now to the previous run's startup snapshot
+# and, if it's a clearly DIFFERENT place (new room, indoors↔outdoors, new venue), have
+# him remark on the change of scenery. One cheap text LLM call per run (piggybacks on
+# the startup image caption); no-op on the very first run / when nothing changed.
+SCENERY_CHANGE_REMARK_ENABLED = True
+
 PLAY_STARTUP_BOOT_TTS = True
 # Star Tours-style "still getting ready" filler lines spoken over the boot
 # preloads. main.py cycles through these, avoiding repeats between launches (see

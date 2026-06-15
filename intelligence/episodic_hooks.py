@@ -176,15 +176,82 @@ def startup_image(frame) -> None:
             caption = _scene.quick_caption(frame, known_people=known)
             if caption:
                 from memory import episodes
+                # Before recording THIS run's snapshot, compare it to the PREVIOUS run's
+                # so Rex can remark on a change of scenery (a different room, outdoors, a
+                # new place). Queued for consciousness to speak; no-op if unchanged.
+                _maybe_queue_scenery_remark(caption)
                 episodes.record_episode(
                     "scene", f"When I powered up, I saw: {caption}",
-                    detail={"source": "startup_image_caption"}, salience=0.55,
+                    detail={"source": "startup_image_caption", "caption": caption},
+                    salience=0.55,
                 )
                 _log.info("episodic: startup image caption logged")
         except Exception as exc:
             _log.debug("startup image caption failed: %s", exc)
 
     threading.Thread(target=_work, daemon=True, name="startup-image-caption").start()
+
+
+# Set by the startup-image worker when this run's scene differs from the previous run's;
+# consciousness pops it via take_scenery_remark() and speaks it once.
+_pending_scenery_remark = None
+
+
+def _previous_startup_caption() -> str:
+    """The caption Rex stored on his PREVIOUS run's power-up (or '' if none)."""
+    try:
+        import json as _json
+        from memory import episodes, rex_db
+        row = rex_db.fetchone(
+            "SELECT summary, detail FROM rex_episodes WHERE kind = 'scene' "
+            "AND detail LIKE '%startup_image_caption%' AND session_id != ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (episodes._session(),),
+        )
+        if not row:
+            return ""
+        detail = row["detail"]
+        if detail:
+            try:
+                cap = (_json.loads(detail) or {}).get("caption")
+                if cap:
+                    return str(cap).strip()
+            except Exception:
+                pass
+        # Fallback for episodes written before the caption was stored in detail:
+        # strip the "When I powered up, I saw: " prefix off the summary.
+        summary = str(row["summary"] or "")
+        marker = "I saw: "
+        return summary.split(marker, 1)[1].strip() if marker in summary else ""
+    except Exception as exc:
+        _log.debug("previous startup caption lookup failed: %s", exc)
+        return ""
+
+
+def _maybe_queue_scenery_remark(current_caption: str) -> None:
+    global _pending_scenery_remark
+    if not bool(getattr(config, "SCENERY_CHANGE_REMARK_ENABLED", True)):
+        return
+    prev = _previous_startup_caption()
+    if not prev:
+        return  # first run (or no prior snapshot) — nothing to compare against
+    try:
+        from intelligence import llm
+        remark = llm.scenery_change_remark(prev, current_caption)
+    except Exception as exc:
+        _log.debug("scenery_change_remark failed: %s", exc)
+        return
+    if remark:
+        _pending_scenery_remark = remark
+        _log.info("episodic: scenery-change remark queued: %r", remark)
+
+
+def take_scenery_remark():
+    """Pop the queued scenery-change remark (consciousness speaks it once), or None."""
+    global _pending_scenery_remark
+    remark = _pending_scenery_remark
+    _pending_scenery_remark = None
+    return remark
 
 
 def visit_departure(person_id, name, arrival_secs, departure_secs) -> None:

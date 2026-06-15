@@ -86,5 +86,62 @@ class SceneChangedNamesWhoTest(unittest.TestCase):
         self.assertNotIn("was there", recorded["summary"])
 
 
+class SceneryChangeRemarkTest(unittest.TestCase):
+    def _llm_returns(self, content):
+        fake = mock.Mock()
+        fake.choices = [mock.Mock(message=mock.Mock(content=content))]
+        from intelligence import llm
+        return mock.patch.object(llm._client.chat.completions, "create", return_value=fake)
+
+    def test_same_place_returns_empty(self):
+        from intelligence import llm
+        with self._llm_returns("SAME"):
+            self.assertEqual(llm.scenery_change_remark("a workshop", "a cluttered workshop"), "")
+
+    def test_different_place_returns_remark(self):
+        from intelligence import llm
+        with self._llm_returns("New room since last boot — did we relocate?"):
+            r = llm.scenery_change_remark("a workshop", "a sunny backyard")
+        self.assertIn("New room", r)
+
+    def test_empty_inputs_skip_the_call(self):
+        from intelligence import llm
+        self.assertEqual(llm.scenery_change_remark("", "a room"), "")
+        self.assertEqual(llm.scenery_change_remark("a room", ""), "")
+
+
+class SceneryRemarkQueueTest(unittest.TestCase):
+    def tearDown(self):
+        episodic_hooks._pending_scenery_remark = None
+
+    def test_queues_when_place_changed(self):
+        with mock.patch.object(episodic_hooks, "_previous_startup_caption", return_value="a workshop"), \
+             mock.patch("intelligence.llm.scenery_change_remark", return_value="Are we outside now?"):
+            episodic_hooks._maybe_queue_scenery_remark("a backyard")
+        self.assertEqual(episodic_hooks.take_scenery_remark(), "Are we outside now?")
+        # take_* clears it.
+        self.assertIsNone(episodic_hooks.take_scenery_remark())
+
+    def test_no_remark_when_no_previous_run(self):
+        with mock.patch.object(episodic_hooks, "_previous_startup_caption", return_value=""), \
+             mock.patch("intelligence.llm.scenery_change_remark", return_value="x") as llm_fn:
+            episodic_hooks._maybe_queue_scenery_remark("a backyard")
+        llm_fn.assert_not_called()
+        self.assertIsNone(episodic_hooks.take_scenery_remark())
+
+    def test_disabled_flag_skips(self):
+        import config
+        prior = config.SCENERY_CHANGE_REMARK_ENABLED
+        try:
+            config.SCENERY_CHANGE_REMARK_ENABLED = False
+            with mock.patch.object(episodic_hooks, "_previous_startup_caption",
+                                   return_value="a workshop") as prev:
+                episodic_hooks._maybe_queue_scenery_remark("a backyard")
+            prev.assert_not_called()
+        finally:
+            config.SCENERY_CHANGE_REMARK_ENABLED = prior
+        self.assertIsNone(episodic_hooks.take_scenery_remark())
+
+
 if __name__ == "__main__":
     unittest.main()

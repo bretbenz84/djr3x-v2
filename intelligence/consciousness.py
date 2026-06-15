@@ -1915,6 +1915,40 @@ def _fire_pending_animal_arrival_reaction() -> bool:
     return False
 
 
+# Scenery-change remark: a one-line "did we move?" when this run's startup scene differs
+# from the last run's. episodic_hooks computes the remark (off the tick, after captioning);
+# this speaks it once when Rex can.
+_scenery_remark_pending = None
+
+
+def _step_scenery_change() -> None:
+    """Speak the queued change-of-scenery remark once, if there is one and Rex can talk."""
+    global _scenery_remark_pending
+    if _scenery_remark_pending is None:
+        try:
+            taken = episodic_hooks.take_scenery_remark()
+        except Exception:
+            taken = None
+        if not taken:
+            return
+        _scenery_remark_pending = taken
+    remark = _scenery_remark_pending
+
+    def _on_spoke(remark=remark) -> None:
+        global _scenery_remark_pending
+        _scenery_remark_pending = None
+        _log.info("consciousness: scenery-change remark spoken: %r", remark)
+
+    _speak_async(
+        remark,
+        "curious",
+        purpose="world.scenery_change",
+        label="scenery change",
+        on_spoke=_on_spoke,
+        force_salient=True,
+    )
+
+
 def _visible_face_people(snapshot: dict) -> list[dict]:
     people = snapshot.get("people") if isinstance(snapshot, dict) else []
     if not isinstance(people, list):
@@ -9770,6 +9804,10 @@ def _loop() -> None:
             # Episodic memory: log a scene observation when the room materially changes
             # (deduped). Capture only; nothing reads it back yet.
             episodic_hooks.scene_changed(snapshot)
+
+            # Change-of-scenery remark: if this run's startup scene differs from the last
+            # run's (different room / outdoors / new place), say so once.
+            _step_scenery_change()
 
             # 5c. Celebrity overrides. These own the first conversational beat
             # before ordinary greetings or ambient remarks.
