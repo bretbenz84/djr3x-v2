@@ -366,6 +366,19 @@ def apply_detected_boundary(person_id: int, detected: dict) -> Optional[dict]:
                     )
             except Exception as exc:
                 _log.debug("[boundaries] event-mute on boundary failed: %s", exc)
+        # Any consent boundary also retires matching banked callback-humor
+        # premises — "stop asking about my job" makes a job joke tone-deaf
+        # too, so all three behaviors retire. Retire, not delete: the memory
+        # itself stays; not config-gated because consent isn't a tunable.
+        # (Boundaries from PRIOR sessions are enforced read-side: the engine
+        # re-checks is_blocked per premise at fire time.)
+        try:
+            from memory import callbacks as _callbacks
+            _callbacks.retire_matching_topic(
+                person_id, topic, reason=f"boundary: {behavior} {topic}"
+            )
+        except Exception as exc:
+            _log.debug("[boundaries] callback retire on boundary failed: %s", exc)
         _record_boundary_episode(person_id, behavior, topic, "add")
         return {"action": "add", "id": row_id, "behavior": behavior, "topic": topic}
     return None

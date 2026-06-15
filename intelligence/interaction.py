@@ -7526,6 +7526,69 @@ def _handle_introduction_parse(
 # "Tell me about someone" pre-briefing flow
 # ─────────────────────────────────────────────────────────────────────────────
 
+def tell_about_flow_active() -> bool:
+    """True while a 'tell me about someone' briefing is open and fresh.
+
+    speech_engine.can_proactive_speak consults this so NO proactive line —
+    salient or not — can barge into an active briefing (live-logged failure:
+    idle banter hijacked the flow mid-collection and the re-anchor question
+    had to clean up). The re-anchor hook stays as the backstop for reactive
+    lines that aren't proactive speech."""
+    state = _pending_tell_about
+    if state is None:
+        return False
+    try:
+        return tell_me_about.flow_fresh(state)
+    except Exception:
+        return False
+
+
+def _maybe_tell_about_timeout() -> bool:
+    """Close a stalled briefing OUT LOUD instead of letting it linger.
+
+    If the teller gives no input for TELL_ABOUT_INACTIVITY_TIMEOUT_SECS while
+    a briefing is open, Rex says the file is logged and exits the mode (it
+    previously sat silent until the 240s step TTL ate the flow — with all
+    idle filler now suppressed during the flow, nothing else would break the
+    silence). Returns True when it closed the flow and queued the line."""
+    global _pending_tell_about
+    state = _pending_tell_about
+    if state is None:
+        return False
+    timeout = float(getattr(config, "TELL_ABOUT_INACTIVITY_TIMEOUT_SECS", 30.0))
+    if timeout <= 0:
+        return False
+    last = float(state.get("asked_at") or state.get("created_at") or 0.0)
+    if last <= 0 or (time.monotonic() - last) < timeout:
+        return False
+    try:
+        # Don't time the teller out while Rex himself still holds the floor.
+        if speech_queue.is_speaking() or output_gate.is_busy():
+            return False
+    except Exception:
+        pass
+
+    subject_first = _first_name_or(state.get("subject_name") or "", "them")
+    details = int(state.get("details_count") or 0)
+    _pending_tell_about = None
+    if state.get("subject_name"):
+        line = tell_me_about.closer_line(subject_first, details)
+    else:
+        line = tell_me_about.cancel_line()
+    _log.info(
+        "[tell_about] inactivity timeout (%.0fs) — flow closed out loud "
+        "subject=%r details=%s",
+        timeout, state.get("subject_name"), details,
+    )
+    try:
+        speech_queue.enqueue(line, "neutral", priority=0, tag="tell_about:timeout")
+        conv_memory.add_to_transcript("Rex", line)
+        conv_log.log_rex(line)
+    except Exception as exc:
+        _log.debug("[tell_about] timeout close speak failed: %s", exc)
+    return True
+
+
 def _handle_tell_about_turn(
     text: str,
     teller_id: Optional[int],
@@ -8267,6 +8330,8 @@ def _stream_llm_response(
     )
     surprise_thread.start()
 
+    cb_claim = None
+    cb_settled = False
     filler_stop = _start_latency_filler_timer()
     try:
         turn_plan = conversation_agenda.build_turn_plan(
@@ -8288,6 +8353,30 @@ def _stream_llm_response(
             frame=frame,
             agenda_directive=agenda_directive,
         )
+        # Banked-callback claim: if every tone/pacing gate clears AND the
+        # background relevance judge connected a stored premise to the live
+        # topic, this turn's single callback slot is claimed and the premise
+        # rides in as the comedy stance (callback_banked mode). Must run BEFORE
+        # the directive is rendered. llm._build_person_context sees the claim
+        # (callback_engine.turn_claim_active) and stands down its own hook chain
+        # (one callback per reply).
+        try:
+            from intelligence import callback_engine as _cb_engine
+            cb_claim = _cb_engine.maybe_claim_reactive(
+                person_id,
+                text,
+                frame=frame,
+                comedy_mode=comedy_mode,
+                turn_plan=turn_plan,
+            )
+            if cb_claim is not None:
+                comedy_mode = comedy_modes.with_banked_premise(
+                    comedy_mode,
+                    _cb_engine.build_callback_directive(cb_claim),
+                )
+        except Exception as exc:
+            cb_claim = None
+            _log.debug("[callback_engine] reactive claim failed: %s", exc)
         if getattr(config, "TURN_PLANNER_SLIM_CONTRACT", True):
             # Phase 1 / "Bet 2": hand the LLM ONE compact contract instead of the
             # ~40-segment stacked block. frame + comedy_mode were computed from the
@@ -8298,6 +8387,14 @@ def _stream_llm_response(
             agenda_directive = social_frame.render_slim_contract(
                 frame, primary_purpose=primary_purpose
             )
+            # The slim contract intentionally drops the rich comedy block, but a
+            # CLAIMED banked callback is a deliberate one-per-reply injection that
+            # must still reach the LLM — append it explicitly (it's the only path
+            # the premise text takes; comedy_mode is otherwise post-gen polish).
+            if cb_claim is not None:
+                callback_directive = comedy_modes.build_directive(comedy_mode)
+                if callback_directive:
+                    agenda_directive = "\n".join([agenda_directive, callback_directive])
         else:
             agenda_directive = "\n".join([
                 agenda_directive,
@@ -8313,7 +8410,7 @@ def _stream_llm_response(
             )
             and not _interrupted.is_set()
         ):
-            return _stream_and_speak_sentences(
+            spoken = _stream_and_speak_sentences(
                 text,
                 person_id,
                 frame,
@@ -8323,6 +8420,10 @@ def _stream_llm_response(
                 turn_start,
                 filler_stop,
             )
+            if cb_claim is not None:
+                cb_settled = True
+                _settle_callback_claim(spoken)
+            return spoken
         llm_started = time.monotonic()
         full_text = llm.get_response(
             text,
@@ -8331,6 +8432,13 @@ def _stream_llm_response(
         )
         if turn_start is not None:
             _latency_log(turn_start, "llm_response", llm_started)
+    except BaseException:
+        # An exception mid-generation must not leak the claim into later turns
+        # (turn_claim_active would mute llm.py's hook chain for up to 60s).
+        if cb_claim is not None and not cb_settled:
+            cb_settled = True
+            _settle_callback_claim("")
+        raise
     finally:
         filler_stop.set()
 
@@ -8409,7 +8517,22 @@ def _stream_llm_response(
                 person_id,
                 source="agenda_llm_identity",
             )
+    if cb_claim is not None and not cb_settled:
+        cb_settled = True
+        _settle_callback_claim(
+            full_text if (full_text or "").strip() and not _interrupted.is_set() else ""
+        )
     return full_text
+
+
+def _settle_callback_claim(spoken_text: str) -> None:
+    """Spend-or-release the turn's banked-callback claim against what Rex
+    actually said (spend-at-speak — never spend at injection)."""
+    try:
+        from intelligence import callback_engine as _cb_engine
+        _cb_engine.settle_turn(spoken_text or "")
+    except Exception as exc:
+        _log.debug("[callback_engine] settle failed: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -10726,6 +10849,30 @@ def _post_response(
             except Exception as exc:
                 _log.debug("post_response event extraction error: %s", exc)
 
+        # Callback humor: bank a candidate premise from this turn (gated like
+        # the extractors above — suppress_memory_learning empties the
+        # transcript snapshot, and a turn scrubbed by the forgotten-terms
+        # filter must not be banked), then re-judge which banked premise (if
+        # any) connects to the live topic so the NEXT reply can claim it.
+        if person_id is not None:
+            if memory_recent_transcript:
+                try:
+                    from intelligence import callback_engine as _cb_engine
+                    turn_survived_filter = any(
+                        str(entry.get("speaker") or "").lower() != "rex"
+                        and str(entry.get("text") or "") == (user_text or "")
+                        for entry in memory_recent_transcript
+                    )
+                    if turn_survived_filter:
+                        _cb_engine.bank_from_turn(person_id, user_text)
+                except Exception as exc:
+                    _log.debug("post_response callback banking error: %s", exc)
+            try:
+                from intelligence import callback_engine as _cb_engine
+                _cb_engine.refresh_relevance(person_id)
+            except Exception as exc:
+                _log.debug("post_response callback relevance error: %s", exc)
+
     threading.Thread(target=_background, daemon=True, name="post-response-bg").start()
 
 
@@ -11237,6 +11384,12 @@ def _end_session() -> None:
         except Exception:
             pass
         try:
+            # New session token + per-session no-repeat set + volume ledger.
+            from intelligence import callback_engine as _cb_engine
+            _cb_engine.clear_session()
+        except Exception:
+            pass
+        try:
             # Persist the preoccupation (+ anti-repeat set) BEFORE wiping it, so it
             # carries across visits; the next session restores it via load_persisted().
             rex_pov.persist()
@@ -11488,6 +11641,11 @@ def _end_session() -> None:
         pass
     try:
         premise_memory.clear()
+    except Exception:
+        pass
+    try:
+        from intelligence import callback_engine as _cb_engine
+        _cb_engine.clear_session()
     except Exception:
         pass
     try:
@@ -12997,6 +13155,16 @@ def _apply_local_sensitive_topic_prepass(
     result = empathy.classify_local_sensitivity(text)
     if not result:
         return None
+
+    # Arm the callback engine's sober-room window: after a heavy disclosure,
+    # banked-callback humor stays off for CALLBACK_SUPPRESS_AFTER_HEAVY_SECS —
+    # this hook runs on every turn (including grief-flow turns that never
+    # reach the callback claim seam).
+    try:
+        from intelligence import callback_engine as _cb_engine
+        _cb_engine.note_heavy_moment()
+    except Exception:
+        pass
 
     person_row = None
     if person_id is not None:
@@ -17837,21 +18005,27 @@ def _loop() -> None:
         except Exception:
             pass
         idle_for = time.monotonic() - _last_speech_at
-        if _maybe_interest_idle_followup(
-            idle_for=idle_for,
-            effective_idle_timeout=effective_idle_timeout,
-        ):
+        # An open "tell me about someone" briefing owns the floor: time it out
+        # politely after 30s of silence, and never run idle filler over it
+        # (live-logged: idle banter hijacked a briefing mid-collection).
+        if _maybe_tell_about_timeout():
             continue
-        if _maybe_low_memory_idle_question(
-            idle_for=idle_for,
-            effective_idle_timeout=effective_idle_timeout,
-        ):
-            continue
-        if _maybe_idle_banter(
-            idle_for=idle_for,
-            effective_idle_timeout=effective_idle_timeout,
-        ):
-            continue
+        if not tell_about_flow_active():
+            if _maybe_interest_idle_followup(
+                idle_for=idle_for,
+                effective_idle_timeout=effective_idle_timeout,
+            ):
+                continue
+            if _maybe_low_memory_idle_question(
+                idle_for=idle_for,
+                effective_idle_timeout=effective_idle_timeout,
+            ):
+                continue
+            if _maybe_idle_banter(
+                idle_for=idle_for,
+                effective_idle_timeout=effective_idle_timeout,
+            ):
+                continue
 
         if time.monotonic() < _listen_resume_at:
             _situation_assessor.set_vad_active(False)
@@ -18031,6 +18205,11 @@ def start(*, text_only: bool = False) -> None:
     user_energy.clear()
     question_budget.clear()
     repair_moves.clear()
+    try:
+        from intelligence import callback_engine as _cb_engine
+        _cb_engine.clear_session()
+    except Exception:
+        pass
     end_thread.clear()
     try:
         consciousness.clear_response_wait()

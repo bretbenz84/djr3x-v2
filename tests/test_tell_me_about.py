@@ -579,5 +579,122 @@ class MigrationTests(unittest.TestCase):
             self.assertIn(col, cols)
 
 
+class RequestPivotTests(unittest.TestCase):
+    """The subject-pivot release must only fire on actual REQUESTS to Rex.
+
+    Live-logged regression: "Rex is a very close friend of mine" — a statement
+    ABOUT Rex offered as a detail — matched the bare vocative and closed the
+    flow with zero details filed."""
+
+    def test_statement_about_rex_is_not_a_pivot(self):
+        from intelligence import tell_me_about
+
+        for text in (
+            "Rex is a very close friend of mine",
+            "Rex really made Joy laugh last week",
+            "rex would get along with Joy",
+            "Rex",  # bare address: ambiguous — stay in the flow
+        ):
+            self.assertFalse(
+                tell_me_about.looks_like_request_to_rex(text, "Karen"), text
+            )
+
+    def test_requests_still_pivot(self):
+        from intelligence import tell_me_about
+
+        for text in (
+            "Rex, play some music",
+            "hey rex what's the weather like",
+            "can you give me a recipe for chicken soup",
+            "rex can you play some jazz",
+            "okay rex tell me a joke",
+        ):
+            self.assertTrue(
+                tell_me_about.looks_like_request_to_rex(text, "Karen"), text
+            )
+
+    def test_subject_or_pronoun_marks_detail_even_in_request_shape(self):
+        from intelligence import tell_me_about
+
+        for text in (
+            "can you believe he got arrested",
+            "what's Karen's deal with karaoke",
+        ):
+            self.assertFalse(
+                tell_me_about.looks_like_request_to_rex(text, "Karen"), text
+            )
+
+
+class FlowGuardTests(unittest.TestCase):
+    """Proactive-speech suppression + the 30s spoken inactivity timeout."""
+
+    def setUp(self):
+        import time
+        from intelligence import interaction
+
+        self.time = time
+        self.interaction = interaction
+        interaction._pending_tell_about = None
+
+    def tearDown(self):
+        self.interaction._pending_tell_about = None
+
+    def _open_flow(self, *, age_secs=0.0, subject="Joy", details=1):
+        now = self.time.monotonic() - age_secs
+        self.interaction._pending_tell_about = {
+            "step": "collecting",
+            "teller_id": 1,
+            "teller_name": "Bret",
+            "subject_id": 5,
+            "subject_name": subject,
+            "details_count": details,
+            "created_at": now,
+            "asked_at": now,
+        }
+
+    def test_flow_active_tracks_state_and_ttl(self):
+        self.assertFalse(self.interaction.tell_about_flow_active())
+        self._open_flow()
+        self.assertTrue(self.interaction.tell_about_flow_active())
+        self._open_flow(age_secs=9999)  # past TELL_ABOUT_STEP_TTL_SECS
+        self.assertFalse(self.interaction.tell_about_flow_active())
+
+    def test_proactive_speech_blocked_while_flow_open(self):
+        from intelligence import speech_engine
+
+        self._open_flow()
+        with mock.patch("intelligence.consciousness._can_speak", return_value=True):
+            self.assertFalse(speech_engine.can_proactive_speak())
+            self.assertFalse(speech_engine.can_proactive_speak(salient=True))
+
+    def test_timeout_closes_flow_out_loud(self):
+        self._open_flow(age_secs=31.0)
+        with (
+            mock.patch.object(self.interaction.speech_queue, "is_speaking", return_value=False),
+            mock.patch.object(self.interaction.output_gate, "is_busy", return_value=False),
+            mock.patch.object(self.interaction.speech_queue, "enqueue") as enqueue,
+            mock.patch.object(self.interaction.conv_memory, "add_to_transcript"),
+            mock.patch.object(self.interaction.conv_log, "log_rex"),
+        ):
+            self.assertTrue(self.interaction._maybe_tell_about_timeout())
+        self.assertIsNone(self.interaction._pending_tell_about)
+        enqueue.assert_called_once()
+        spoken_line = enqueue.call_args.args[0]
+        self.assertIn("Joy", spoken_line)
+
+    def test_timeout_waits_while_fresh_or_rex_speaking(self):
+        # Fresh flow: nothing happens.
+        self._open_flow(age_secs=5.0)
+        self.assertFalse(self.interaction._maybe_tell_about_timeout())
+        self.assertIsNotNone(self.interaction._pending_tell_about)
+        # Stale, but Rex still holds the floor: hold off, keep the flow.
+        self._open_flow(age_secs=31.0)
+        with mock.patch.object(
+            self.interaction.speech_queue, "is_speaking", return_value=True
+        ):
+            self.assertFalse(self.interaction._maybe_tell_about_timeout())
+        self.assertIsNotNone(self.interaction._pending_tell_about)
+
+
 if __name__ == "__main__":
     unittest.main()

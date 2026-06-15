@@ -175,16 +175,46 @@ def select_mode(
     return _remember_mode(_MODES[chosen])
 
 
+def with_banked_premise(mode: ComedyMode, premise_directive: str) -> ComedyMode:
+    """Upgrade this turn's comedy stance to a banked-premise callback
+    (intelligence/callback_engine claimed the turn). The premise instruction
+    rides INSIDE the comedy directive so downstream sees one coherent stance
+    instead of a competing prompt section. Only reachable when the engine's
+    gates cleared — it refuses to claim when mode.allow_callback is False, so
+    the straight/sensitive overrides upstream still always win."""
+    del mode  # the claimed callback replaces whatever shape was rolled
+    return _remember_mode(ComedyMode(
+        "callback_banked",
+        "banked callback",
+        "Comedy mode: callback. " + (premise_directive or "").strip(),
+    ))
+
+
 def build_directive(mode: ComedyMode) -> str:
     """Return prompt text for the selected mode."""
     if mode.key == "straight":
         directive = mode.directive
     else:
+        # The standing ban covers private-fact jokes; a banked-premise callback
+        # carves out exactly the ONE volunteered fact it supplies (still no
+        # body/health/etc. angles on it), so the model isn't handed two
+        # contradictory instructions in the same prompt.
+        if mode.key == "callback_banked":
+            content_ban = (
+                "no body, age, identity, health, money, grief, or trauma jokes; "
+                "the supplied callback fact was volunteered by the person and is "
+                "fair game — every OTHER private fact stays off limits. "
+            )
+        else:
+            content_ban = (
+                "no body, age, identity, health, money, grief, trauma, or "
+                "private-fact jokes. "
+            )
         directive = (
             mode.directive
-            + "\nComedy guardrails: one joke shape only; no stacked punchlines; no "
-            "body, age, identity, health, money, grief, trauma, or private-fact jokes. "
-            "If the useful answer is already funny enough, stop there."
+            + "\nComedy guardrails: one joke shape only; no stacked punchlines; "
+            + content_ban
+            + "If the useful answer is already funny enough, stop there."
             + "\nAnti-repeat: avoid reusing recent premises: "
             + (_recent_premise_summary() or "none yet")
             + "."

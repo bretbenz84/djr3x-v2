@@ -527,22 +527,18 @@ def _build_person_context(person_id: int) -> str:
                 f"current topic; do not open with it or steer the turn toward it."
             )
 
-    callback_hook_used = False
+    # One-callback-per-reply budget. Claim order: an unacknowledged emotional
+    # event first (sincerity always outranks every callback shape — the
+    # acknowledgment itself is injected by the emotional-events section below),
+    # then a banked-callback claim from intelligence/callback_engine (set
+    # earlier on this same reply turn, riding in the comedy directive), then
+    # the hook chain below. The event check lives in the engine so the chain
+    # and the engine's own gates run ONE implementation of it.
     try:
-        from memory import emotional_events as _emo_events_for_hooks
-        ws_now = world_state.snapshot()
-        crowd_count_for_hooks = int((ws_now.get("crowd") or {}).get("count", 1) or 1)
-        suppress_in_crowd = bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True))
-        callback_hook_used = any(
-            not ev.get("last_acknowledged_at")
-            and _emo_events_for_hooks.can_surface_event(ev)
-            and not (
-                suppress_in_crowd
-                and crowd_count_for_hooks > 1
-                and _emo_events_for_hooks.is_heavy_event(ev)
-            )
-            for ev in _emo_events_for_hooks.get_active_events(person_id, limit=3)
-        )
+        from intelligence import callback_engine as _callback_engine
+        callback_hook_used = _callback_engine.unacked_emotional_event_pending(person_id)
+        if not callback_hook_used and _callback_engine.turn_claim_active(person_id):
+            callback_hook_used = True
     except Exception:
         callback_hook_used = False
 

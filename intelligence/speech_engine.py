@@ -62,6 +62,18 @@ def can_proactive_speak(*, salient: bool = False) -> bool:
     if not _c._can_speak():
         return False
 
+    # An open "tell me about someone" briefing owns the floor outright —
+    # nothing proactive (salient or not) may barge in until the flow exits.
+    # Live-logged failure: idle banter won a governor cycle mid-briefing and
+    # derailed the collection; the flow's re-anchor question is the backstop,
+    # not the norm. Checked before the salient bypasses on purpose.
+    try:
+        from intelligence import interaction as _interaction
+        if _interaction.tell_about_flow_active():
+            return False
+    except Exception:
+        pass
+
     try:
         from features import dj as dj_mod
         if (
@@ -470,6 +482,7 @@ def generate_and_speak(
     label: str = "",
     metadata: Optional[dict] = None,
     on_spoke: Optional[Callable[[], None]] = None,
+    pre_speak_check: Optional[Callable[[], bool]] = None,
 ) -> bool:
     # `on_spoke` runs only when this line ACTUALLY speaks (inside the task, after a
     # successful enqueue) — NOT when it's merely queued/submitted. So a caller's
@@ -477,12 +490,24 @@ def generate_and_speak(
     # belongs here, not on the return: under ENFORCE a losing candidate never speaks
     # and so never marks itself done. (Legacy: the held purpose-claim blocks a
     # re-fire until the task finishes, so there is no double-fire window.)
+    #
+    # `pre_speak_check` re-runs the CALLER's own gates at speak time, for
+    # candidates whose suitability can change between submit and the governor
+    # win (e.g. the lull callback's empathy/sober-room gates after a heavy
+    # disclosure lands mid-tick). Returning False (or raising) drops the line.
     def _task(token):
         try:
             if token is not None and not _c._proactive_purpose_current(token):
                 return
             if not _c._can_proactive_speak():
                 return
+            if pre_speak_check is not None:
+                try:
+                    if not pre_speak_check():
+                        return
+                except Exception as exc:
+                    _log.debug("pre_speak_check failed — dropping line: %s", exc)
+                    return
             from intelligence.llm import get_response
             text = get_response(_c._apply_proactive_directive(prompt, purpose))
             if text and (token is None or _c._proactive_purpose_current(token)):

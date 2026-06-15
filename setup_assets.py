@@ -316,6 +316,30 @@ CREATE TABLE IF NOT EXISTS person_disposition_stats (
 
 CREATE INDEX IF NOT EXISTS idx_disposition_label
     ON person_disposition_stats(disposition_label);
+
+CREATE TABLE IF NOT EXISTS person_callback_material (
+    id              INTEGER PRIMARY KEY,
+    person_id       INTEGER REFERENCES people(id),
+    premise         TEXT,
+    category        TEXT,
+    topic_slug      TEXT,
+    sensitivity     TEXT DEFAULT 'guarded',
+    source          TEXT,
+    source_quote    TEXT,
+    source_fact_id  INTEGER,
+    volunteered_playfully INTEGER DEFAULT 0,
+    session_id      TEXT,
+    created_at      DATETIME,
+    updated_at      DATETIME,
+    last_used_at    DATETIME,
+    use_count       INTEGER DEFAULT 0,
+    retired_at      DATETIME,
+    retired_reason  TEXT,
+    UNIQUE(person_id, topic_slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_callback_person
+    ON person_callback_material(person_id);
 """
 
 

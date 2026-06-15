@@ -127,6 +127,12 @@ _PROACTIVE_RULES: dict[str, tuple[int, str]] = {
         "ask one question based on the visible scene only. Do not also bring up "
         "memory, holidays, or emotional check-ins.",
     ),
+    "lull_callback": (
+        58,
+        "resurface the one supplied banked fact as a single dry, affectionate "
+        "callback line only. No question, no second topic, no other memories, "
+        "and nothing sensitive.",
+    ),
     "small_talk": (
         45,
         "ask one small-talk question only. Do not stack a second prompt.",
@@ -170,6 +176,7 @@ _GRACE_SUPPRESSED_PROACTIVE_PURPOSES = {
     "celebration_checkin",
     "memory_followup",
     "visual_curiosity",
+    "lull_callback",
     "small_talk",
     "group_turn_invite",
     "startup_empty_room",

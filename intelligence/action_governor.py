@@ -84,6 +84,10 @@ _PURPOSE_PRIORITIES: dict[str, int] = {
     "memory_followup": 65,
     "celebration_checkin": 64,
     "startup_empty_room": 60,
+    # Banked-callback humor in a mid-conversation lull: above visual_curiosity
+    # (a callback referencing THEM beats commenting on the room), below every
+    # sincerity flow (celebration 64 / memory_followup 65 / checkin 100).
+    "lull_callback": 58,
     "visual_curiosity": 55,
     "small_talk": 45,
     "world.animal_arrival": 85,

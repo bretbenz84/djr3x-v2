@@ -37,6 +37,7 @@ _EXPECTED_TABLES = frozenset({
     "person_preferences",
     "person_interests",
     "person_disposition_stats",
+    "person_callback_material",
 })
 
 # Inline migrations for schema additions introduced after initial deploy.
@@ -167,6 +168,30 @@ _MIGRATIONS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_alias_person ON person_aliases(person_id)",
+    # Callback humor: banked per-person "fun fact" premises (memory/callbacks.py).
+    """
+    CREATE TABLE IF NOT EXISTS person_callback_material (
+        id              INTEGER PRIMARY KEY,
+        person_id       INTEGER REFERENCES people(id),
+        premise         TEXT,
+        category        TEXT,
+        topic_slug      TEXT,
+        sensitivity     TEXT DEFAULT 'guarded',
+        source          TEXT,
+        source_quote    TEXT,
+        source_fact_id  INTEGER,
+        volunteered_playfully INTEGER DEFAULT 0,
+        session_id      TEXT,
+        created_at      DATETIME,
+        updated_at      DATETIME,
+        last_used_at    DATETIME,
+        use_count       INTEGER DEFAULT 0,
+        retired_at      DATETIME,
+        retired_reason  TEXT,
+        UNIQUE(person_id, topic_slug)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_callback_person ON person_callback_material(person_id)",
 ]
 
 

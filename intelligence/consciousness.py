@@ -113,6 +113,11 @@ _visual_curiosity_by_person: dict[int, float] = {}
 _visual_curiosity_in_flight: bool = False
 _visual_curiosity_lock = threading.Lock()
 
+# Lull callback: after a back-and-forth goes quiet, resurface one banked
+# "fun fact" premise about the engaged person (intelligence/callback_engine).
+_last_lull_callback_at: float = 0.0
+_lull_callback_by_person: dict[int, float] = {}
+
 # Pending follow-up events per DB person_id: {db_id: [event_dict, ...]}
 _pending_followups: dict[int, list[dict]] = {}
 _followup_lock = threading.Lock()
@@ -5828,6 +5833,101 @@ def _visual_curiosity_blocked_by_interest_thread(person_id: Optional[int]) -> bo
     return True
 
 
+def _step_lull_callback(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    Banked-callback humor in a mid-conversation lull: after a real
+    back-and-forth goes quiet, resurface ONE stored "fun fact" premise about
+    the engaged person as a dry callback line — the "counting ceiling panels
+    again, fewer than the stars you pretend to photograph" slot.
+
+    The tone/consent gating lives in callback_engine.lull_gates_clear (empathy,
+    sober-room, unacked events, boundaries, tier, crowd, the shared pacing
+    ledger); this step owns the lull envelope and its own trigger cooldowns,
+    then hands composition+arbitration to the proactive speech engine
+    (purpose="lull_callback", priority 58 — above visual_curiosity, below all
+    sincerity flows). Trigger cooldowns are armed AT SUBMIT (anti-resubmit; a
+    governor loss costs only the cooldown); the premise itself is spent ONLY in
+    on_spoke, after the line actually played.
+    """
+    global _last_lull_callback_at
+
+    if profile.suppress_proactive or profile.user_mid_sentence or profile.interaction_busy:
+        return
+    if not profile.conversation_active:
+        return
+    if is_waiting_for_response() or not _can_proactive_speak():
+        return
+
+    now = time.monotonic()
+    min_silence = float(getattr(config, "CALLBACK_LULL_MIN_SILENCE_SECS", 12.0))
+    active_window = float(getattr(config, "CALLBACK_LULL_ACTIVE_WINDOW_SECS", 60.0))
+    global_cooldown = float(getattr(config, "CALLBACK_LULL_COOLDOWN_SECS", 600.0))
+    person_cooldown = float(getattr(config, "CALLBACK_LULL_PERSON_COOLDOWN_SECS", 900.0))
+    if (now - _last_lull_callback_at) < global_cooldown:
+        return
+
+    with _engaged_lock:
+        engaged_id = _engaged_person_id
+        engaged_touch = _engaged_last_touch_at
+    if engaged_id is None:
+        return
+    quiet_for = now - engaged_touch
+    if quiet_for < min_silence or quiet_for > active_window:
+        return
+    if (now - _lull_callback_by_person.get(engaged_id, 0.0)) < person_cooldown:
+        return
+
+    # Only after a REAL exchange — a lull presumes there was conversation.
+    try:
+        turn_window = float(getattr(config, "VISUAL_CURIOSITY_TURN_WINDOW_SECS", 45.0))
+        if _situation_assessor.recent_speech_turn_count(turn_window) < 2:
+            return
+    except Exception:
+        if not profile.rapid_exchange:
+            return
+
+    try:
+        from intelligence import callback_engine
+        if not callback_engine.lull_gates_clear(engaged_id):
+            return
+        premise = callback_engine.pick_lull_premise(engaged_id)
+    except Exception as exc:
+        _log.debug("lull callback step error: %s", exc)
+        return
+    if not premise:
+        return
+
+    _last_lull_callback_at = now
+    _lull_callback_by_person[engaged_id] = now
+
+    first_name = "there"
+    try:
+        from memory import people as people_mod
+        person = people_mod.get_person(engaged_id) or {}
+        first_name = _first_name(person.get("name"), "there")
+    except Exception:
+        pass
+
+    prompt = callback_engine.build_lull_prompt(first_name, premise)
+    _log.info(
+        "consciousness: lull callback candidate for person_id=%s after %.1fs quiet "
+        "(premise id=%s)",
+        engaged_id, quiet_for, premise.get("id"),
+    )
+    _generate_and_speak(
+        prompt,
+        emotion="amused",
+        purpose="lull_callback",
+        priority=int(getattr(config, "CALLBACK_LULL_PRIORITY", 58)),
+        label=f"lull callback for {engaged_id}",
+        metadata={"topic_key": f"callback:{engaged_id}:{premise.get('id')}"},
+        on_spoke=lambda: callback_engine.spend_lull_premise(premise),
+        # Tone state can shift between submit and the governor win (a heavy
+        # disclosure mid-tick); re-run the engine gates right before composing.
+        pre_speak_check=lambda: callback_engine.lull_gates_clear(engaged_id),
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 10 — Presence tracking (departure / return reactions)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -9891,6 +9991,10 @@ def _loop() -> None:
             # 10d4. Visual curiosity — when conversation goes quiet, look once
             # and ask a concrete question about a visible non-sensitive detail.
             _step_visual_curiosity(snapshot, profile)
+
+            # 10d5. Lull callback — when conversation goes quiet, resurface one
+            # banked fun-fact premise about the engaged person (callback humor).
+            _step_lull_callback(snapshot, profile)
 
             # 10e. Overheard chime-in — react when someone talks ABOUT Rex
             _step_overheard_chime_in(snapshot, profile)

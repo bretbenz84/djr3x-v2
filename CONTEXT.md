@@ -325,8 +325,29 @@ explicit statements (`_SOURCE_RANK`). The introduction welcome also adds one
 "so you're the famous X" beat via `interaction._told_about_teller_name` when
 the person was pre-briefed and has never visited.
 
+Stability hardening (live-logged failures from 2026-06-10):
+
+- **Proactive speech is fully suppressed while a briefing is open**:
+  `speech_engine.can_proactive_speak` consults
+  `interaction.tell_about_flow_active()` (before the salient bypasses, so even
+  animal arrivals wait), and the interaction loop skips its three idle-filler
+  paths while the flow is fresh. Idle banter had won a governor cycle
+  mid-briefing and derailed the collection; the re-anchor hook remains as the
+  backstop, not the norm.
+- **30s spoken inactivity timeout** (`TELL_ABOUT_INACTIVITY_TIMEOUT_SECS`):
+  with idle filler suppressed, nothing else breaks a stalled briefing's
+  silence — so `interaction._maybe_tell_about_timeout` (called each loop pass)
+  closes the flow OUT LOUD ("X's details logged to my memory banks") after 30s
+  with no teller input, holding off while Rex himself is speaking. The silent
+  240s step TTL remains as the deep fallback.
+- **A statement ABOUT Rex is not a pivot**: `looks_like_request_to_rex` only
+  releases the turn when the Rex-vocative is followed by request-shaped text —
+  "Rex is a very close friend of mine" stays in the file as a detail (it
+  previously closed the flow with zero details filed).
+
 Config: `TELL_ABOUT_ENABLED`, `TELL_ABOUT_STEP_TTL_SECS`,
-`TELL_ABOUT_CLASSIFY_LLM_ENABLED`. Tests: `tests/test_tell_me_about.py`.
+`TELL_ABOUT_INACTIVITY_TIMEOUT_SECS`, `TELL_ABOUT_CLASSIFY_LLM_ENABLED`.
+Tests: `tests/test_tell_me_about.py`.
 
 ## Proactive Behavior
 
@@ -524,6 +545,8 @@ venv/bin/python main.py
 - Tidy-up — proactive-speech ENGINE → `intelligence/speech_engine.py` (15 functions; consciousness re-exports each as a `_name` shim so call sites + test patches are unchanged; intra-engine calls route through the `_c` shims for full patch-transparency; `note_rex_utterance` + shared speech state stayed in consciousness; `tests/test_speech_engine.py`). The governor metadata key MUST stay `"can_proactive_speak"` (action_governor reads it).
 - GUI-first startup (`main._run_gui_mode`): dashboard shows immediately (maximized), controller startup runs on the `controller-startup` thread with `_StartupAborted` checkpoints so window-close/Ctrl+C stops the boot at the next phase boundary; a second Ctrl+C during teardown is absorbed (SIGINT re-pointed in the finally) so `_shutdown()` always runs; fatal startup paths keep the window open on "failed" status and exit non-zero after teardown. System-log panel mirrors the root logger via `utils.logging.install_gui_log_handler` → `gui_bridge.add_log_line`.
 - "Tell me about someone" pre-briefing (`intelligence/tell_me_about.py`, `interaction._handle_tell_about_turn`/`_pending_tell_about`): pre-populates the person DB for someone who is NOT here — name → gossip-or-facts → details, stored as `secondhand` person_facts with `fact_kind`/`kindness`/`told_by` (new columns in `setup_assets.py` + `database._run_migrations`). Mean gossip is never recited to the subject (prompt hedging in `facts.format_fact_for_prompt`); secondhand never overwrites the person's own explicit facts. Escapable by design (live-tested): explicit exits (`is_exit` — "exit gossip mode"/"enough about X"/"stop") AND a subject-pivot guard (`looks_like_request_to_rex`) that releases requests aimed at Rex ("can you give me a recipe...") back to normal routing instead of filing them as gossip — the chicken-soup regression in `tests/test_tell_me_about.py`. Proactive barge-ins (smile reaction etc.) trigger a re-anchor question via the `note_rex_utterance` hook → `tell_about_on_external_rex_line`, and every ack invites more (no bare "Logged."). See the Memory Model section.
+
+- Callback humor (design: `docs/callback_humor_design.md`): Rex banks durable, light, SELF-volunteered "fun facts" per person (`person_callback_material` in people.db via `memory/callbacks.py`; banker = local qwen labelled-lines + heuristic fallback in `intelligence/callback_engine.py`, run from `_post_response`'s background thread) and resurfaces ONE later — reactively when the background relevance judge connects a stored premise to the live topic (claim seam in `interaction._stream_llm_response` between `select_mode` and the directive join; the claim rides as the `callback_banked` comedy mode and `llm._build_person_context`'s hook chain stands down via `callback_engine.turn_claim_active`), or in a mid-conversation lull (`consciousness._step_lull_callback`, governor purpose `lull_callback` priority 58). Sensitivity is classified at CAPTURE with a deterministic protected-category wall (health/grief/body/orientation/finances/religion-politics/family-conflict/addiction-legal) the model can only move material TOWARD 'excluded' on, never toward 'safe'; only `sensitivity='safe'` rows can ever fire and `active_pool` hard-filters. Spend-at-SPEAK (settle echo-check on the reply path, `on_spoke` on the lull path), per-premise reuse cooldown + use-count decay, per-session no-repeat + volume ledger (cleared for real in `_end_session`), 30-min sober-room window after any heavy-sensitivity turn (`note_heavy_moment` from the sensitive prepass), boundary→retire hook in `boundaries.apply_detected_boundary`, forget-flow deletion in `forgetting.py`, crowd/tier/`callback_style`-restraint gates. Flags: `CALLBACK_BANK_ENABLED` / `CALLBACK_HUMOR_ENABLED` (env-overridable A/B pair) + `CALLBACK_*` tunables. Tests: `tests/test_callback_humor.py`.
 
 ## Likely Future Work
 

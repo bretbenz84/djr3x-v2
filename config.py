@@ -706,6 +706,59 @@ EPISODIC_RECALL_PERSON_CALLBACK_PROBABILITY = 0.25
 # pruned at shutdown (they accrue ~15/run and are only ever clustered to a vibe).
 EPISODIC_RECALL_SCENE_RETENTION = 40
 
+# ── Callback humor (people.db person_callback_material + intelligence/callback_engine)
+# Bank durable, light, SELF-volunteered "fun facts" per person (passions, hobbies,
+# quirky admissions, strong trivial opinions) and resurface one later as a timed
+# callback — on a topical connection in conversation, or in a lull. Sensitivity is
+# classified at capture (safe/guarded/excluded) with a deterministic protected-
+# category wall (health, grief, body, orientation, money, …) the model cannot
+# override; only 'safe' material can ever fire. Design: docs/callback_humor_design.md.
+# Capture and firing have SEPARATE kill switches (the EPISODIC_MEMORY_ENABLED /
+# EPISODIC_RECALL_ENABLED pattern) so the pool can build silently for A/B runs.
+CALLBACK_BANK_ENABLED = _env_bool("CALLBACK_BANK_ENABLED", True)    # capture → DB writes
+CALLBACK_HUMOR_ENABLED = _env_bool("CALLBACK_HUMOR_ENABLED", True)  # firing → callbacks speak
+# Banker backend: "local" = qwen2.5:1.5b sidecar (free, default); "openai" = a
+# gpt-4o-mini call per turn (better recall — explicit opt-in spend).
+CALLBACK_BANK_BACKEND = "local"
+# Active 'safe' premises kept per person; beyond this the least-used/oldest are
+# retired (roast material is a small curated pool, not an archive).
+CALLBACK_BANK_MAX_PER_PERSON = 12
+# A premise that actually FIRED is spent for this many days (cross-process,
+# modeled on PRESENCE_CELEBRATION_RELEAD_COOLDOWN_DAYS).
+CALLBACK_REUSE_COOLDOWN_DAYS = 7
+# Decaying reuse: a premise's selection weight halves every N fires.
+CALLBACK_USE_DECAY_HALFLIFE_USES = 3
+# Volume/pacing across BOTH paths (reactive + lull), one shared ledger:
+CALLBACK_MAX_PER_SESSION = 2
+CALLBACK_MIN_GAP_EXCHANGES = 8      # transcript lines between fires
+CALLBACK_COOLDOWN_SECS = 240.0      # wall-clock between fires
+# When every gate passes, still only fire this often — never metronomic.
+CALLBACK_FIRE_PROBABILITY = 0.6
+# Reactive fires require frame.allow_roast == 'normal'; True also allows 'light'
+# frames (the directive then asks for an affectionate, no-edge phrasing).
+CALLBACK_ALLOW_LIGHT_ROAST_FRAME = False
+# You don't roast strangers on banked facts.
+CALLBACK_ELIGIBLE_TIERS = ("acquaintance", "friend", "close_friend", "best_friend")
+# Personal-material discretion: never fire with more than this many people around.
+CALLBACK_MAX_CROWD = 2
+# Sober-room rule: after any heavy-sensitivity turn or emotional-event capture,
+# no humor callbacks for this long — outlasts the 5-min empathy cache on purpose.
+CALLBACK_SUPPRESS_AFTER_HEAVY_SECS = 1800.0
+# Background relevance judge (qwen labelled-lines): minimum stash score to fire,
+# and how stale the stash may be (transcript lines since judged).
+CALLBACK_RELEVANCE_MIN_SCORE = 0.5
+CALLBACK_RELEVANCE_MAX_STALE_EXCHANGES = 4
+# Lull path: a quiet moment mid-conversation is the marquee callback slot
+# ("counting ceiling panels again…"). Governor purpose 'lull_callback'.
+CALLBACK_LULL_ENABLED = _env_bool("CALLBACK_LULL_ENABLED", True)
+CALLBACK_LULL_MIN_SILENCE_SECS = 12.0   # let the lull breathe — the pause is part of the joke
+CALLBACK_LULL_ACTIVE_WINDOW_SECS = 60.0
+CALLBACK_LULL_COOLDOWN_SECS = 600.0
+CALLBACK_LULL_PERSON_COOLDOWN_SECS = 900.0
+CALLBACK_LULL_PRIORITY = 58   # > visual_curiosity 55, < celebration 64 / followup 65 / checkin 100
+# Score boost for premises banked THIS session ("earlier tonight you said…").
+CALLBACK_LULL_W_SAME_SESSION = 0.3
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TTS — ELEVENLABS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4149,6 +4202,11 @@ HOLIDAY_PLANS_PROBABILITY = 0.25
 # person_fact labeled gossip/fact with a mean↔kind score (intelligence/
 # tell_me_about.py + interaction._handle_tell_about_turn).
 TELL_ABOUT_ENABLED = True
+# A briefing with no teller input for this long closes OUT LOUD ("X's details
+# logged to my memory banks") and exits the mode — proactive speech is fully
+# suppressed while the flow is open, so nothing else would break the silence.
+# 0 disables the spoken timeout (the silent step TTL below still applies).
+TELL_ABOUT_INACTIVITY_TIMEOUT_SECS = 30.0
 # How long a flow step stays open waiting for the teller's next line before
 # the whole flow silently expires.
 TELL_ABOUT_STEP_TTL_SECS = 240.0

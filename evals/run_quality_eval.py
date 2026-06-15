@@ -65,6 +65,11 @@ def _reset_session() -> None:
     except Exception:
         pass
     try:
+        from intelligence import callback_engine
+        callback_engine.reset_state_for_tests()
+    except Exception:
+        pass
+    try:
         conv.clear_transcript()
     except Exception:
         pass
@@ -124,6 +129,19 @@ def generate_spoken(scenario: dict) -> str:
     except Exception:
         mode = None
 
+    # Banked-callback claim seam — mirrors interaction._stream_llm_response.
+    # No-ops unless a scenario seeds premises + a relevance stash; kept here so
+    # the eval path stays faithful to the live one.
+    try:
+        from intelligence import callback_engine
+        cb_claim = callback_engine.maybe_claim_reactive(
+            person_id, utterance, frame=frame, comedy_mode=mode, turn_plan=plan)
+        if cb_claim is not None:
+            mode = comedy_modes.with_banked_premise(
+                mode, callback_engine.build_callback_directive(cb_claim))
+    except Exception:
+        cb_claim = None
+
     spoken: list[str] = []
     state = {"spoke_question": False}
 
@@ -178,6 +196,14 @@ def generate_spoken(scenario: dict) -> str:
         trimmed = I._complete_sentence_prefix(result)
         if trimmed:
             result = trimmed
+    # Settle the callback claim like the live path does — an unsettled claim
+    # would mute llm.py's hook chain for later generations in this process.
+    if cb_claim is not None:
+        try:
+            from intelligence import callback_engine
+            callback_engine.settle_turn(result)
+        except Exception:
+            pass
     return result
 
 

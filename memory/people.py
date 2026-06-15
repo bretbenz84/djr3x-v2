@@ -42,6 +42,7 @@ _PERSON_TABLES = [
     "person_preferences",
     "person_interests",
     "person_disposition_stats",
+    "person_callback_material",
 ]
 
 # person_relationships uses from_person_id/to_person_id rather than person_id,

@@ -177,6 +177,12 @@ def forget_specific_memory(person_id: int, target: str) -> ForgetResult:
         ),
         terms,
     )
+    result.deleted["callbacks"] = _delete_matching(
+        "person_callback_material",
+        person_id,
+        ("premise", "topic_slug", "category", "source_quote"),
+        terms,
+    )
     return result
 
 
@@ -211,6 +217,12 @@ def forget_memory_detail(person_id: int, target: str) -> ForgetResult:
             "associated_people",
             "associated_stories",
         ),
+        terms,
+    )
+    result.deleted["callbacks"] = _delete_matching(
+        "person_callback_material",
+        person_id,
+        ("premise", "topic_slug", "category", "source_quote"),
         terms,
     )
     return result

@@ -356,6 +356,11 @@ def looks_like_request_to_rex(text: str, subject_name: Optional[str] = None) -> 
     instead of filing it as gossip. Any mention of the subject's name or a
     third-person pronoun marks the turn as a detail — so "can you believe he
     got arrested" stays in the file, while "can you give me a recipe" exits.
+
+    A vocative alone is NOT enough: "Rex is a very close friend of mine" is a
+    STATEMENT about Rex (live-logged misfire — it closed the flow with zero
+    details filed). Only an address followed by a request shape pivots; a
+    declarative mentioning Rex stays in the file as a detail.
     """
     cleaned = (text or "").strip()
     if not cleaned:
@@ -366,7 +371,11 @@ def looks_like_request_to_rex(text: str, subject_name: Optional[str] = None) -> 
             return False
     if _THIRD_PERSON_REFERENT_RE.search(cleaned):
         return False
-    return bool(_REX_VOCATIVE_RE.match(cleaned) or _REQUEST_START_RE.match(cleaned))
+    vocative = _REX_VOCATIVE_RE.match(cleaned)
+    if vocative:
+        rest = cleaned[vocative.end():].lstrip(" ,!.?—–-")
+        return bool(_REQUEST_START_RE.match(rest))
+    return bool(_REQUEST_START_RE.match(cleaned))
 
 
 def parse_gender(text: str) -> Optional[str]:
