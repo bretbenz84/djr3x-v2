@@ -170,10 +170,16 @@ class MemoryBanksWindow(QMainWindow):
         # Independent top-level window: closing it must NOT close the dashboard/app.
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
 
-        # ── Pause robot audio output while editing ───────────────────────────
+        # ── Pause the robot while editing ────────────────────────────────────
+        # INTERACTION_PAUSED is the TRUE pause: it halts the conversation engine (no
+        # transcription, responses, idle banter, or "are you there?" reactions — so no
+        # wasted LLM calls). AUDIO_OUTPUT_SUPPRESSED additionally mutes any already-queued
+        # audio. Both are restored to their prior values on close.
         self._prior_output_suppressed = bool(getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False))
+        self._prior_interaction_paused = bool(getattr(config, "INTERACTION_PAUSED", False))
+        config.INTERACTION_PAUSED = True
         config.AUDIO_OUTPUT_SUPPRESSED = True
-        _log.info("[memory_banks] opened — robot audio output paused")
+        _log.info("[memory_banks] opened — conversation engine paused")
 
         self._current_person_id = None
         self._build_ui()
@@ -187,7 +193,10 @@ class MemoryBanksWindow(QMainWindow):
         outer.setContentsMargins(14, 10, 14, 12)
         outer.setSpacing(10)
 
-        banner = QLabel("⏸  Robot output is PAUSED while the Memory Banks are open.")
+        banner = QLabel(
+            "⏸  Conversation PAUSED while the Memory Banks are open — Rex won't listen, "
+            "respond, or speak until you close this."
+        )
         banner.setObjectName("memBanner")
         outer.addWidget(banner)
 
@@ -649,7 +658,8 @@ class MemoryBanksWindow(QMainWindow):
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
-        # Restore the robot's audio output to whatever it was before we paused it.
+        # Restore the robot to whatever pause/mute state it was in before we opened.
         config.AUDIO_OUTPUT_SUPPRESSED = self._prior_output_suppressed
-        _log.info("[memory_banks] closed — robot audio output restored")
+        config.INTERACTION_PAUSED = self._prior_interaction_paused
+        _log.info("[memory_banks] closed — conversation engine resumed")
         super().closeEvent(event)

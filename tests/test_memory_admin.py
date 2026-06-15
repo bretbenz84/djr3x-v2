@@ -127,5 +127,25 @@ class FactAdminTest(_TempDbs):
         self.assertEqual(list(rows), [])
 
 
+class InteractionPauseGateTest(unittest.TestCase):
+    """INTERACTION_PAUSED must block all proactive speech (the Memory Banks pause)."""
+
+    def setUp(self):
+        self._prior = getattr(config, "INTERACTION_PAUSED", False)
+
+    def tearDown(self):
+        config.INTERACTION_PAUSED = self._prior
+
+    def test_pause_blocks_can_speak_and_proactive(self):
+        from intelligence import consciousness, speech_engine
+        config.INTERACTION_PAUSED = False
+        # Not asserting True here (state may vary); only that pausing forces False.
+        config.INTERACTION_PAUSED = True
+        self.assertFalse(consciousness._can_speak())
+        # can_proactive_speak() calls _can_speak() first, so it is gated too.
+        self.assertFalse(speech_engine.can_proactive_speak())
+        self.assertFalse(speech_engine.can_proactive_speak(salient=True))
+
+
 if __name__ == "__main__":
     unittest.main()

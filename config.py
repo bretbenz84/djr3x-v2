@@ -136,6 +136,13 @@ GUI_LOG_PANEL_MAX_LINES = 600
 NO_AUDIO_MODE = _env_flag("DJR3X_NO_AUDIO_MODE")
 AUDIO_OUTPUT_SUPPRESSED = NO_AUDIO_MODE
 
+# Runtime "true pause" — flipped on by the Memory Banks editor while it is open. Unlike
+# AUDIO_OUTPUT_SUPPRESSED (which only mutes the speaker), this HALTS the conversation
+# engine: the interaction loop skips capture/transcription/response and all proactive
+# paths, and consciousness._can_speak() returns False, so Rex makes no LLM calls and no
+# "are you still there?" reactions while you edit. Restored when the editor closes.
+INTERACTION_PAUSED = False
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AI MODELS
 # ─────────────────────────────────────────────────────────────────────────────

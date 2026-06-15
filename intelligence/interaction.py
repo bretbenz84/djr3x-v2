@@ -17654,6 +17654,15 @@ def _loop() -> None:
         if current_state == State.SHUTDOWN:
             break
 
+        # ── PAUSED — Memory Banks editor is open. Halt the whole conversation
+        # engine: no audio capture, no transcription, no responses, no idle/proactive
+        # re-engagement. Keep the idle clock fresh so resuming doesn't immediately fire
+        # an "are you there?" line. (consciousness._can_speak() blocks proactive too.)
+        if getattr(config, "INTERACTION_PAUSED", False):
+            _last_speech_at = time.monotonic()
+            _stop_event.wait(0.2)
+            continue
+
         # ── QUIET — stay silent until an explicit wake word exits quiet mode ───
         if current_state == State.QUIET:
             if _wake_word_fired.is_set():

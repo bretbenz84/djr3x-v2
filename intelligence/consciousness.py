@@ -1221,6 +1221,11 @@ def _end_thread_grace_active() -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _can_speak() -> bool:
+    # INTERACTION_PAUSED (Memory Banks editor open) halts ALL proactive speech: this is
+    # the gate every proactive path checks, and speech_engine.can_proactive_speak() calls
+    # it too — so no presence/idle/curiosity LLM calls fire while editing.
+    if getattr(config, "INTERACTION_PAUSED", False):
+        return False
     return state_module.get_state() not in (State.QUIET, State.SLEEP, State.SHUTDOWN)
 
 

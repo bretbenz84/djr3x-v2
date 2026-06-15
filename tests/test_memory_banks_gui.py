@@ -51,18 +51,22 @@ class MemoryBanksWindowSmokeTest(unittest.TestCase):
             ("2026-06-14 10:00:00", "animal", "I saw a dog.", 0.5, "r1"),
         )
         self._prior = getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+        self._prior_pause = getattr(config, "INTERACTION_PAUSED", False)
 
     def tearDown(self):
         config.AUDIO_OUTPUT_SUPPRESSED = self._prior
+        config.INTERACTION_PAUSED = self._prior_pause
         self._p_rex.stop()
         self._p_people.stop()
         self._tmp.cleanup()
 
-    def test_window_builds_pauses_output_and_lists_both_dbs(self):
+    def test_window_builds_pauses_engine_and_lists_both_dbs(self):
         config.AUDIO_OUTPUT_SUPPRESSED = False
+        config.INTERACTION_PAUSED = False
         w = MemoryBanksWindow()
         try:
-            self.assertTrue(config.AUDIO_OUTPUT_SUPPRESSED)  # paused while open
+            self.assertTrue(config.INTERACTION_PAUSED)       # conversation engine paused
+            self.assertTrue(config.AUDIO_OUTPUT_SUPPRESSED)  # audio muted too
             self.assertEqual(w.rex_list.count(), 1)          # Rex memory listed
             self.assertEqual(w.people_list.count(), 1)       # person listed
             w._select_person_in_list(1)
@@ -70,14 +74,17 @@ class MemoryBanksWindowSmokeTest(unittest.TestCase):
             self.assertEqual(w.detail.currentIndex(), 2)     # person editor shown
         finally:
             w.close()
-        self.assertFalse(config.AUDIO_OUTPUT_SUPPRESSED)      # restored on close
+        self.assertFalse(config.INTERACTION_PAUSED)          # resumed on close
+        self.assertFalse(config.AUDIO_OUTPUT_SUPPRESSED)
 
-    def test_close_restores_prior_suppressed_state(self):
-        config.AUDIO_OUTPUT_SUPPRESSED = True  # already suppressed before opening
+    def test_close_restores_prior_paused_state(self):
+        config.INTERACTION_PAUSED = True  # already paused before opening
+        config.AUDIO_OUTPUT_SUPPRESSED = True
         w = MemoryBanksWindow()
-        self.assertTrue(config.AUDIO_OUTPUT_SUPPRESSED)
+        self.assertTrue(config.INTERACTION_PAUSED)
         w.close()
-        self.assertTrue(config.AUDIO_OUTPUT_SUPPRESSED)       # left as it was, not forced off
+        self.assertTrue(config.INTERACTION_PAUSED)           # left as it was, not forced off
+        self.assertTrue(config.AUDIO_OUTPUT_SUPPRESSED)
 
     def test_save_facts_commits_an_open_cell_edit(self):
         # The reported bug: editing a fact cell and clicking Save Facts without first
