@@ -20,6 +20,8 @@ the Mac (the existing DJ-R3X brain) sends high-level commands over USB serial.
   gate all motion; the base slows in a near zone and hard-stops in a danger zone.
 - Closed-loop motion (Hall encoders) so "turn 90°" and "back up 30 cm" are repeatable.
 - Fail safe by default: lose comms, lose a heartbeat, or hit a fault → motors stop.
+- **Manual override** — a Bluetooth gamepad paired directly to the ESP32 can take over
+  and drive the robot by hand at any time, overriding autonomous/voice motion (see §11).
 - Plug into the existing hardware pattern (config-gated, disabled cleanly when the
   ESP32 isn't connected — exactly like servos/LEDs today).
 
@@ -44,6 +46,7 @@ the Mac (the existing DJ-R3X brain) sends high-level commands over USB serial.
 | 1 | ESP32 dev board | Real-time motion controller ("the base brain") |
 | 1 | 12 V battery / supply + 5 V buck converter | Motor power + ESP32/sensor logic power |
 | — | USB cable ESP32 → Mac | Command + telemetry link |
+| 1 | **Bluetooth gamepad — TBD** (Bluepad32-compatible: Xbox / PS4 / PS5 / 8BitDo / Switch Pro) | Manual override input, paired to the ESP32 (§11) |
 
 ---
 
@@ -55,8 +58,8 @@ the Mac (the existing DJ-R3X brain) sends high-level commands over USB serial.
   │  - speech → action_router    │  telemetry ◀───────────────│  - command parser           │
   │  - hardware/motion.py        │   (JSON lines, 115200+)    │  - PID speed loop (50–100 Hz)│
   │  - heartbeat + safety caps   │                            │  - 5× VL53L0X read loop     │
-  └─────────────────────────────┘                            │  - safety supervisor        │
-                                                              └───────┬──────────┬──────────┘
+  └─────────────────────────────┘   BT gamepad ──(BLE)──────▶ │  - control arbiter + safety │
+                                     (manual override, §11)    └───────┬──────────┬──────────┘
                                                             PWM/EN    │          │  I²C
                                                           ┌───────────▼──┐   ┌───▼──────────┐
                                                           │ 2× BTS7960   │   │ 5× VL53L0X   │
@@ -205,11 +208,14 @@ ESP32 has enough usable GPIO for this; lay out PWM and interrupt pins first.
 ### 8.2 ESP32 → Mac (telemetry, 10–20 Hz)
 ```json
 {"v":1,"t":12834,"state":"moving","fault":null,
+ "owner":"auto","gamepad":"none",
  "odom":{"x":0.42,"y":0.01,"theta":-1.57,"lin":0.15,"ang":0.0},
  "tof_mm":{"fl":820,"fc":410,"fr":900,"rear":1100,"down":60},
  "zone":"slow","blocked_dir":"front","cmd_seq":42,"batt_mv":11820}
 ```
 - `state`: `idle|moving|blocked|estop|fault`
+- `owner`: `auto|manual` — who is currently driving (manual = gamepad override, §11).
+- `gamepad`: `none|connected` — paired-controller link status.
 - `fault`: `null | encoder_stall | overcurrent | tof_error | low_batt`
 - `zone`: aggregate of the worst sensor in the direction of travel.
 
@@ -259,7 +265,85 @@ reversing; the swing side when spinning):
 
 ---
 
-## 11. Safety model
+## 11. Manual control & Bluetooth gamepad override
+
+A Bluetooth gamepad **paired directly to the ESP32** (not the Mac) lets you grab the
+wheel and drive the robot by hand, overriding autonomous/voice motion. Pairing at the
+ESP32 layer keeps manual control the lowest-latency, most authoritative input — it works
+even if the Mac or the USB link is down, which is exactly what you want from an override
+and for recovering the robot.
+
+### 11.1 Controller support (none chosen yet)
+Use **Bluepad32** on the ESP32 (Arduino/ESP-IDF). It normalizes a wide range of
+controllers — Xbox Wireless (BLE), PS4 DualShock4, PS5 DualSense, Switch Pro, 8BitDo,
+many generic HID pads — into one API, so the firmware's input layer is
+**controller-agnostic** and the final mapping can be decided once a pad is in hand.
+
+- **Recommended when you buy one** (good BLE support): Xbox Wireless Controller (recent
+  BLE models), PS4/PS5, 8BitDo Pro 2 / SN30 Pro, Switch Pro. Avoid no-name clones
+  (flaky pairing/latency).
+- **Pairing UX:** ESP32 enters pairing/scan on boot or via a button; put the pad in
+  pairing mode; Bluepad32 stores the bond and auto-reconnects next time. Connection
+  status is reported in telemetry (`gamepad`).
+
+### 11.2 Control mapping (abstract — finalize with the chosen pad)
+| Input | Action |
+| --- | --- |
+| Left stick Y | linear velocity (forward/back) |
+| Left stick X *or* right stick X | angular velocity (turn) — single- or twin-stick, configurable |
+| Trigger / shoulder | speed scale ("boost"/"creep") |
+| Face button (e.g. B) | **E-stop** (immediate stop) |
+| Start / Menu | clear e-stop / return to AUTO |
+| Toggle button | latch MANUAL on/off |
+| Held "full-override" button | temporarily bypass ToF gating (see §11.4) |
+
+Sticks have a deadzone so resting drift doesn't count as input.
+
+### 11.3 Mode arbitration (the override)
+Control `owner` is **AUTO** (Mac/voice) or **MANUAL** (gamepad):
+- **Any meaningful gamepad input** (stick past deadzone, drive button) → switch to
+  **MANUAL**. While MANUAL, the ESP32 **ignores** Mac drive/turn/move/come commands (it
+  still accepts `stop`, `estop`, `config`, `ping`).
+- **Return to AUTO:** explicit toggle button, **or** after a manual-idle timeout
+  (`MOTION_MANUAL_IDLE_RETURN_SECS`, e.g. 3–5 s) if `MOTION_MANUAL_AUTORETURN` is on.
+  *Open choice:* some operators prefer **explicit-only** return so the robot never
+  "resumes itself" — default to explicit toggle, make auto-return opt-in.
+- The ESP32 reports `owner` in telemetry so the Mac/GUI shows who's driving and the Mac
+  **yields** (pauses sending autonomous commands; a voice "come here" is ignored or
+  queued while MANUAL).
+
+### 11.4 Safety interaction (key decision)
+- **Default = MANUAL-ASSISTED:** the gamepad drives, but the ToF safety zones + cliff
+  stop (§10) **still apply** — you can't manually drive into a wall, person, or edge.
+  Recommended default.
+- **Optional FULL-OVERRIDE (held button):** while a dedicated button is held, ToF gating
+  is bypassed for nudging through tight spots / recovery. Re-enables on release. The
+  operator takes responsibility; use sparingly.
+- **E-stop is always honored**, in any mode.
+- **Disconnect failsafe:** if the paired pad drops while MANUAL, motors **stop
+  immediately** (never hold the last stick value) and the base goes to safe idle; AUTO
+  resumes only on an explicit command. Mirrors the Mac heartbeat watchdog.
+
+### 11.5 Precedence (highest first)
+1. **E-stop** (button or `estop` command)
+2. **ESP32 reflex safety stop** (ToF STOP / CLIFF) — *except* while FULL-OVERRIDE is held
+3. **MANUAL gamepad input**
+4. **AUTO commands** from the Mac (voice / autonomous)
+5. Idle (stopped)
+
+So the controller is a true override of autonomous motion, while the non-negotiable
+safety stop stays above it (unless the operator deliberately takes full control).
+
+### 11.6 Notes for the Mac side
+The gamepad is entirely an ESP32-side concern — the Mac needs **no driver**, just
+*awareness*: read `owner`/`gamepad` from telemetry, stop issuing autonomous commands
+while `owner == manual`, and surface "MANUAL (gamepad)" + controller status in the GUI.
+Config knobs: `MOTION_MANUAL_IDLE_RETURN_SECS`, `MOTION_MANUAL_AUTORETURN`; deadzone and
+speed-scale live in ESP32 firmware config.
+
+---
+
+## 12. Safety model
 
 Layered, defense-in-depth:
 1. **ESP32 reflex stop** — ToF zones + cliff, independent of the Mac.
@@ -271,14 +355,21 @@ Layered, defense-in-depth:
    overcurrent (BTS7960 IS), low battery → stop + report.
 6. **E-stop** — software `estop` command and (recommended) a **physical button** that
    cuts the 12 V motor rail. Recovery requires an explicit clear.
-7. **Mac-side policy gates** — motion is **suppressed** when the conversation is paused
-   (`INTERACTION_PAUSED`, e.g. Memory Banks open), during family-safe/sensitive moments,
-   or when the operator disables it. (Mirror the existing audio-suppression pattern.)
-8. **Start-up safe** — boots to `idle`, motors disabled, until an explicit command.
+7. **Mac-side policy gates** — autonomous motion is **suppressed** when the conversation
+   is paused (`INTERACTION_PAUSED`, e.g. Memory Banks open), during family-safe/sensitive
+   moments, or when the operator disables it. (Mirror the existing audio-suppression
+   pattern.) Note: the **manual gamepad override is not** subject to these Mac-side gates
+   — it lives on the ESP32 and stays available even when autonomous motion is paused.
+8. **Gamepad disconnect failsafe** — if the paired controller drops while driving
+   MANUAL, motors stop immediately (see §11.4).
+9. **Manual override precedence** — manual driving overrides AUTO commands, but the
+   reflex/e-stop layers stay above it (full precedence list in §11.5).
+10. **Start-up safe** — boots to `idle`, motors disabled, owner = AUTO, until an
+    explicit command or gamepad input.
 
 ---
 
-## 12. Integration with the existing codebase
+## 13. Integration with the existing codebase
 
 Follow the established hardware pattern (servos/LEDs are config-gated and degrade
 cleanly when unplugged):
@@ -306,7 +397,7 @@ cleanly when unplugged):
 
 ---
 
-## 13. Calibration & tuning
+## 14. Calibration & tuning
 
 1. **Encoder counts/rev** — spin one output rev by hand / under power; confirm count.
 2. **Counts per meter & track width** — drive a measured 1 m straight; spin a measured
@@ -319,7 +410,7 @@ cleanly when unplugged):
 
 ---
 
-## 14. Test plan & acceptance criteria
+## 15. Test plan & acceptance criteria
 
 **Bench (wheels off the ground)**
 - [ ] Each motor spins both directions under PWM; enables gate correctly.
@@ -345,7 +436,7 @@ like servos).
 
 ---
 
-## 15. Risks, limitations & open questions
+## 16. Risks, limitations & open questions
 
 - **ToF blind spots / range** — narrow cones miss thin/low obstacles; ~1.2 m range caps
   speed. Mitigation: low speed, conservative zones, more/angled sensors later. *Accept
@@ -363,15 +454,25 @@ like servos).
   rock; keep accel limits gentle and the center of mass low.
 - **Two-way authority** — confirm the ESP32 reflex stop can *always* override a Mac
   command (it must).
+- **Gamepad selection (none chosen yet)** — pick a Bluepad32-supported BLE pad and
+  verify pairing reliability + latency before committing; avoid no-name clones.
+- **Does manual override bypass ToF safety?** Default is MANUAL-ASSISTED (ToF still
+  protects); FULL-OVERRIDE is behind a held button. Confirm this is the behavior you
+  want (§11.4).
+- **Auto-return to AUTO vs explicit toggle** — decide whether the robot resumes
+  autonomous mode after a manual-idle timeout or only on an explicit toggle (§11.3).
 
 ---
 
-## 16. Phased roadmap
+## 17. Phased roadmap
 
 - **Phase 0 — bring-up:** wiring, ESP32 firmware skeleton, motors spin, encoders read,
   5 ToF addressed & reading, serial echo + version handshake. (Bench only.)
 - **Phase 1 — closed-loop base:** PID speed control, odometry, `move`/`turn`/`stop`
   with ToF STOP/SLOW gating + watchdog. Drive from a laptop terminal.
+- **Phase 1.5 — manual override (great test tool):** pair a BT gamepad via Bluepad32,
+  MANUAL-ASSISTED driving with ToF gating + disconnect failsafe + e-stop button.
+  Invaluable for shaking down the mechanics by hand before voice autonomy is solid.
 - **Phase 2 — Mac integration:** `MOTION_ESP32_PORT` config, `hardware/motion.py`,
   `motion_controller.py`, `action_router` intents → spoken "turn/move/back/stop" work.
   Heartbeat + pause/family-safe gating.
@@ -380,7 +481,7 @@ like servos).
 
 ---
 
-## 17. Glossary
+## 18. Glossary
 
 - **Differential drive** — steering by left/right wheel-speed difference.
 - **ToF** — Time-of-Flight distance sensor (VL53L0X), reports range in mm.
