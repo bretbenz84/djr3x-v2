@@ -212,5 +212,30 @@ class IntroVoiceCaptureEnrollTest(unittest.TestCase):
         self.assertFalse(enroll.called)
 
 
+class IntroCaptureWindowGateTest(unittest.TestCase):
+    """Fix #4: the gate that suppresses sticky/visible-face attribution while Rex
+    is waiting for a just-introduced newcomer to speak."""
+
+    def test_open_only_for_a_fresh_voice_capture(self):
+        from intelligence import interaction as I
+
+        fresh = {"introduced_id": 5, "asked_at": time.monotonic()}
+        with mock.patch.object(I, "_pending_intro_voice_capture", fresh):
+            self.assertTrue(I._intro_capture_window_open())
+
+    def test_closed_when_no_window(self):
+        from intelligence import interaction as I
+
+        with mock.patch.object(I, "_pending_intro_voice_capture", None):
+            self.assertFalse(I._intro_capture_window_open())
+
+    def test_closed_when_window_is_stale(self):
+        from intelligence import interaction as I
+
+        stale = {"introduced_id": 5, "asked_at": time.monotonic() - 10_000.0}
+        with mock.patch.object(I, "_pending_intro_voice_capture", stale):
+            self.assertFalse(I._intro_capture_window_open())
+
+
 if __name__ == "__main__":
     unittest.main()

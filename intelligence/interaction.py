@@ -7126,6 +7126,17 @@ def _intro_voice_capture_fresh(ctx: Optional[dict]) -> bool:
     return (time.monotonic() - float(ctx.get("asked_at") or 0.0)) <= ttl
 
 
+def _intro_capture_window_open() -> bool:
+    """True while Rex is actively waiting for a just-introduced NEWCOMER to speak.
+
+    During this window Rex literally asked the new person to say hello, so the
+    next voice is expected to be them — NOT the introducer, even if the
+    introducer's face is still (or recently) on camera. Callers use this to stop
+    a sticky/visible introducer face from capturing the newcomer's turn.
+    """
+    return _intro_voice_capture_fresh(_pending_intro_voice_capture)
+
+
 def _intro_voice_text_sounds_like_newcomer(text: str, name: str) -> bool:
     cleaned = (text or "").strip().lower()
     if not cleaned:
@@ -14784,6 +14795,24 @@ def _handle_speech_segment(
             ws_person = ws_identified[0] if len(ws_identified) == 1 else None
         except Exception:
             ws_identified = []
+            ws_person = None
+
+        # While an introduction is actively expecting the newcomer to speak, do
+        # NOT let the introducer's still-visible / recently-seen face drive
+        # attribution or refresh their voiceprint. The single-visible-face rule
+        # ("a visible face wins regardless of voice") is correct in normal turns,
+        # but here Rex just asked a NEW person to say hello — the camera may even
+        # have been turned to them — so the introducer's lingering face must not
+        # capture the newcomer's first words (which also got their audio appended
+        # to the introducer's print). Attribution falls to voice + the intro
+        # voice-capture handler instead. Live-logged 2026-06-15 (Exudica run).
+        if ws_person is not None and _intro_capture_window_open():
+            _log.info(
+                "[interaction] person resolution: introduction in progress — "
+                "suppressing sticky/visible face %r so the newcomer's turn isn't "
+                "bound to (or refreshing) the introducer",
+                ws_person.get("face_id") or ws_person.get("voice_id"),
+            )
             ws_person = None
 
         # Detect "off-camera unknown voice": speaker-ID found no match AND nobody
