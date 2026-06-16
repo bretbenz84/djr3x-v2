@@ -3291,6 +3291,18 @@ SPEAKER_ID_MAYBE_FLOOR = 0.50
 # a more robust multi-sample voice print over time without manual re-enrollment.
 AUTO_VOICE_REFRESH_MIN_SCORE = 0.90
 AUTO_VOICE_REFRESH_MAX_SAMPLES = 5
+# Anti-poisoning gate for the FACE-CONFIRMED refresh path: a visible face is NOT
+# proof that this person is the one SPEAKING. A 3rd-party voice (a TTS/AI voice
+# like ChatGPT, a TV, or another person off-camera) that merely scores onto a
+# visible person's print would otherwise be appended, re-broadening it. When True,
+# a face-confirmed refresh additionally requires the visual active-speaker latch to
+# positively confirm THIS person is the one talking on camera (else the turn is
+# skipped — refresh is opportunistic, so a missed refresh is harmless but a poisoned
+# print is not). Set False to restore the old face-only behavior (e.g. if the
+# active-speaker detector is disabled and you accept the poisoning risk).
+AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER = _env_bool(
+    "AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER", True
+)
 
 # Voice enrollment samples should be long enough to represent a voice, not just
 # a one-word name or noisy aside. The person row/face can still be saved; the

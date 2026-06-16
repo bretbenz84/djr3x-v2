@@ -6815,6 +6815,7 @@ def _maybe_auto_refresh_voice(
     *,
     face_confirmed: bool = False,
     raw_best_id: Optional[int] = None,
+    visual_speaker_pid: Optional[int] = None,
 ) -> None:
     """
     Append the current audio as an additional voice biometric row for this person,
@@ -6827,13 +6828,21 @@ def _maybe_auto_refresh_voice(
     that would improve the print. When the face is the ground truth, capture the
     sample even at a low voice score.
 
-    CRITICAL anti-pollution guard: the face-confirmed path only refreshes when the
-    VOICE's own best candidate already IS this person (raw_best_id == person_id).
-    A visible face is NOT proof that this person is the one speaking — when someone
-    off-camera (or a not-yet-enrolled newcomer) talks while a known face is in
-    frame, their audio would otherwise be appended to the visible person's print,
-    corrupting it. Only strengthen a print with audio the voice itself attributes
-    to that person.
+    TWO anti-pollution guards protect the face-confirmed path (a visible face is NOT
+    proof this person is the one SPEAKING):
+      1. The VOICE's own best candidate must already BE this person
+         (``raw_best_id == person_id``). When someone off-camera or a not-yet-enrolled
+         newcomer talks while a known face is in frame, their audio is rejected.
+      2. The visual active-speaker latch must positively confirm this person is the
+         one talking on camera (``visual_speaker_pid == person_id``), gated by
+         ``AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER``. This is what stops a 3rd-party
+         voice (a TTS/AI voice like ChatGPT, a TV, another person) that merely *scores*
+         onto a visible person's print — passing guard 1 because it lands on that
+         person — from re-broadening the print. Refresh is opportunistic, so when the
+         camera cannot confirm the speaker the turn is simply skipped (a missed refresh
+         is harmless; a poisoned print is not).
+    Only strengthen a print with audio that BOTH the voice attributes to that person
+    AND the camera confirms that person actually spoke.
 
     Runs asynchronously so re-embedding doesn't delay Rex's response. One refresh
     per person per session.
@@ -6843,10 +6852,23 @@ def _maybe_auto_refresh_voice(
     if person_id in _voice_refreshed_this_session:
         return
     if face_confirmed:
-        # Face confirms identity, but only trust the SAMPLE if the voice already
-        # points at this person — otherwise we'd be teaching their print someone
-        # else's voice (see docstring).
+        # Guard 1 — only trust the SAMPLE if the voice already points at this person,
+        # otherwise we'd be teaching their print someone else's voice (see docstring).
         if raw_best_id is not None and _safe_int(raw_best_id) != _safe_int(person_id):
+            return
+        # Guard 2 — the visible face is not proof of SPEAKING. Require the camera to
+        # confirm this person is the active on-camera talker, else a 3rd-party/AI
+        # voice that merely scores onto their print would poison it.
+        require_visual = bool(
+            getattr(config, "AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER", True)
+        )
+        if require_visual and _safe_int(visual_speaker_pid) != _safe_int(person_id):
+            _log.debug(
+                "[interaction] auto-refresh skipped: visual active-speaker did not "
+                "confirm person_id=%s is the on-camera talker (visual_speaker=%s, "
+                "score=%.3f) — not strengthening the print with unconfirmed audio",
+                person_id, visual_speaker_pid, voice_score,
+            )
             return
     else:
         min_score = float(getattr(config, "AUTO_VOICE_REFRESH_MIN_SCORE", 0.90))
@@ -15201,6 +15223,7 @@ def _handle_speech_segment(
                     _maybe_auto_refresh_voice(
                         person_id, speaker_score, audio_array,
                         face_confirmed=True, raw_best_id=raw_best_id,
+                        visual_speaker_pid=_voice_dec_visual_pid,
                     )
                 except Exception as exc:
                     _log.debug("auto voice-refresh skip: %s", exc)
@@ -15248,6 +15271,7 @@ def _handle_speech_segment(
                     _maybe_auto_refresh_voice(
                         person_id, speaker_score, audio_array,
                         face_confirmed=True, raw_best_id=raw_best_id,
+                        visual_speaker_pid=_voice_dec_visual_pid,
                     )
                 except Exception as exc:
                     _log.debug("auto voice-refresh skip: %s", exc)

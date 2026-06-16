@@ -139,32 +139,75 @@ class VoicePrimaryFaceDecisionTest(unittest.TestCase):
 
 
 class VoiceprintPollutionGuardTest(unittest.TestCase):
-    """A face-confirmed refresh must only append audio the VOICE attributes to that
-    person — never a different/unknown voice that merely spoke while they were on
-    camera. count_biometrics is only reached past the guards."""
+    """A face-confirmed refresh must only append audio that BOTH the VOICE attributes
+    to that person AND the camera confirms that person actually spoke. Two guards:
+    (1) the voice's best candidate must be this person; (2) the visual active-speaker
+    latch must confirm this person is the on-camera talker. count_biometrics is only
+    reached past both guards. A visible face is NOT proof of speaking — a 3rd-party/AI
+    voice (ChatGPT, TV, off-camera person) that scores onto a visible person's print
+    must not poison it."""
 
     def setUp(self):
         I._voice_refreshed_this_session.clear()
 
     def test_face_confirmed_refresh_skipped_when_voice_points_elsewhere(self):
+        # Guard 1: the voice's best candidate is someone else.
         audio = np.zeros(16000, dtype=np.float32)
         with mock.patch.object(I.people_memory, "count_biometrics") as count:
-            I._maybe_auto_refresh_voice(1, 0.40, audio, face_confirmed=True, raw_best_id=2)
+            I._maybe_auto_refresh_voice(
+                1, 0.40, audio, face_confirmed=True, raw_best_id=2, visual_speaker_pid=1
+            )
         self.assertFalse(count.called)  # bailed before touching the print
 
-    def test_face_confirmed_refresh_runs_when_voice_agrees(self):
+    def test_face_confirmed_refresh_skipped_when_visual_speaker_unconfirmed(self):
+        # Guard 2 — THE POISONING FIX: voice agrees (raw_best == person) and the
+        # face is visible, but the camera does NOT confirm this person is talking
+        # (empty/unavailable latch). This is the ChatGPT-voice-scores-onto-Bret case.
+        audio = np.zeros(16000, dtype=np.float32)
+        with mock.patch.object(I.people_memory, "count_biometrics") as count:
+            I._maybe_auto_refresh_voice(
+                1, 0.72, audio, face_confirmed=True, raw_best_id=1, visual_speaker_pid=None
+            )
+        self.assertFalse(count.called)
+
+    def test_face_confirmed_refresh_skipped_when_visual_speaker_is_other_person(self):
+        # Guard 2: the camera shows a DIFFERENT person is the on-camera talker.
+        audio = np.zeros(16000, dtype=np.float32)
+        with mock.patch.object(I.people_memory, "count_biometrics") as count:
+            I._maybe_auto_refresh_voice(
+                1, 0.72, audio, face_confirmed=True, raw_best_id=1, visual_speaker_pid=2
+            )
+        self.assertFalse(count.called)
+
+    def test_face_confirmed_refresh_runs_when_voice_agrees_and_camera_confirms(self):
+        # Both guards pass: voice agrees AND the camera confirms this person is talking.
         audio = np.zeros(16000, dtype=np.float32)
         with mock.patch.object(I.people_memory, "count_biometrics", return_value=0) as count, \
              mock.patch.object(I, "_safe_enroll_voice", return_value=True):
-            I._maybe_auto_refresh_voice(1, 0.40, audio, face_confirmed=True, raw_best_id=1)
+            I._maybe_auto_refresh_voice(
+                1, 0.40, audio, face_confirmed=True, raw_best_id=1, visual_speaker_pid=1
+            )
         self.assertTrue(count.called)
 
-    def test_face_confirmed_refresh_runs_when_no_voice_candidate(self):
-        # raw_best_id None == no contradicting candidate; allowed.
+    def test_face_confirmed_refresh_runs_when_no_voice_candidate_and_camera_confirms(self):
+        # raw_best_id None == no contradicting candidate (guard 1 ok); camera confirms.
         audio = np.zeros(16000, dtype=np.float32)
         with mock.patch.object(I.people_memory, "count_biometrics", return_value=0) as count, \
              mock.patch.object(I, "_safe_enroll_voice", return_value=True):
-            I._maybe_auto_refresh_voice(1, 0.40, audio, face_confirmed=True, raw_best_id=None)
+            I._maybe_auto_refresh_voice(
+                1, 0.40, audio, face_confirmed=True, raw_best_id=None, visual_speaker_pid=1
+            )
+        self.assertTrue(count.called)
+
+    def test_high_voice_score_path_unaffected_by_visual_gate(self):
+        # The non-face-confirmed high-score (>=0.90) path is for off-camera speakers
+        # and must NOT require visual confirmation.
+        audio = np.zeros(16000, dtype=np.float32)
+        with mock.patch.object(I.people_memory, "count_biometrics", return_value=0) as count, \
+             mock.patch.object(I, "_safe_enroll_voice", return_value=True):
+            I._maybe_auto_refresh_voice(
+                1, 0.95, audio, face_confirmed=False, raw_best_id=1, visual_speaker_pid=None
+            )
         self.assertTrue(count.called)
 
 
