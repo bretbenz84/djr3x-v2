@@ -4937,6 +4937,19 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
     global _pending_intro_followup, _pending_intro_voice_capture
     global _pending_name_merge_confirmation
 
+    # A fresh intro voice-capture window is a passive listening slot, not a
+    # question being deferred. When Rex just said "say hi so I can learn your
+    # voice," the newcomer's first reply ("hi, what's your name?") looks like a
+    # direct turn to Rex — but that reply IS the voice sample we want to enroll.
+    # Preserve the window across the direct-turn deferral so the downstream
+    # _handle_intro_voice_capture can still grab the print; it has its own TTL
+    # and newcomer-vs-introducer gating and releases the turn if it isn't them.
+    # Without this, a newcomer introduced off-camera never got a voice print and
+    # their hello was misattributed to the introducer (live-logged 2026-06-15).
+    preserve_intro_voice = reason == "direct_turn" and _intro_voice_capture_fresh(
+        _pending_intro_voice_capture
+    )
+
     changed = any(
         item is not None
         for item in (
@@ -4949,7 +4962,7 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
             _pending_prompted_name_confirmation,
             _pending_introduction,
             _pending_intro_followup,
-            _pending_intro_voice_capture,
+            None if preserve_intro_voice else _pending_intro_voice_capture,
         )
     ) or _identity_prompt_until > 0.0
 
@@ -4964,7 +4977,8 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
     _pending_prompted_name_confirmation = None
     _pending_introduction = None
     _pending_intro_followup = None
-    _pending_intro_voice_capture = None
+    if not preserve_intro_voice:
+        _pending_intro_voice_capture = None
     try:
         changed = consciousness.clear_pending_identity_prompts(reason=reason) or changed
     except Exception as exc:
@@ -6291,7 +6305,7 @@ def _maybe_ask_identity_match_confirmation(
     except Exception as exc:
         _log.debug("identity match lookup failed for %r: %s", candidate_name, exc)
         return False
-    if not match or match.get("match_type") not in {"first_name", "fuzzy"}:
+    if not match or match.get("match_type") not in {"first_name", "fuzzy", "fuzzy_first_name"}:
         return False
 
     person = match.get("person") or {}
@@ -7185,13 +7199,25 @@ def _handle_intro_voice_capture(
         _pending_intro_followup = followup
         return None
 
-    hard_threshold = float(config.SPEAKER_ID_SIMILARITY_THRESHOLD)
+    # Rex just invited the NEWCOMER to speak ("say hi so I can learn your
+    # voice"), so the next short hello is overwhelmingly likely to be them — not
+    # the introducer. Speaker-ID, hearing an unfamiliar voice with no print yet,
+    # tends to land it on the nearest known print (the introducer) at a mediocre
+    # score. Only a CONFIDENT introducer match should be believed over the
+    # window's expectation; below that, treat the reply as the newcomer and
+    # enroll it. Using the bare similarity floor (0.50) here made the window
+    # useless — the off-camera newcomer scored ~0.59–0.64 as the introducer and
+    # was never enrolled (live-logged 2026-06-15: "hi what's your name" credited
+    # to the introducer, who then introduced himself to his own guest).
+    confident_introducer_threshold = float(
+        getattr(config, "INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD", 0.75)
+    )
     looks_like_newcomer = _intro_voice_text_sounds_like_newcomer(text, introduced_name)
     accepted_unknown = person_id is None
     weak_introducer_match = (
         person_id == introducer_id
         and raw_best_id == introducer_id
-        and speaker_score < hard_threshold
+        and speaker_score < confident_introducer_threshold
         and looks_like_newcomer
     )
     if not accepted_unknown and not weak_introducer_match:

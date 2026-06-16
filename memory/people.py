@@ -352,6 +352,29 @@ def find_potential_person_match(name: str) -> Optional[dict]:
                 "candidate_name": clean,
             }
 
+        # Misheard first name vs a stored FULL name: a single spoken token that
+        # closely matches the first name of exactly one stored full-name person
+        # (e.g. "Exutica" vs "Exudica Royale"). The generic full-name fuzzy tier
+        # below misses this — the trailing surname tokens drag the whole-string
+        # ratio under threshold — so compare the spoken token against each stored
+        # FIRST token directly. Uniqueness keeps it from guessing among several.
+        if not first_matches:
+            fuzzy_first = [
+                person
+                for person in candidates
+                if len(_normalize_name(person.get("name") or "").split()) >= 2
+                and names_are_similar(
+                    query_tokens[0],
+                    _normalize_name(person.get("name") or "").split()[0],
+                )
+            ]
+            if len(fuzzy_first) == 1:
+                return {
+                    "match_type": "fuzzy_first_name",
+                    "person": fuzzy_first[0],
+                    "candidate_name": clean,
+                }
+
     fuzzy = [
         person
         for person in candidates
@@ -423,6 +446,16 @@ def find_or_create_person(name: str) -> tuple[Optional[int], bool]:
             if match_type == "first_name":
                 add_alias(person_id, clean, source="first_name_match")
             return person_id, False
+        if match_type == "fuzzy_first_name":
+            # A single spoken token that closely matches the unique existing
+            # full-name person's first name — reuse that row instead of forking a
+            # near-duplicate. Do NOT persist the mishearing as an alias.
+            _log.info(
+                "find_or_create_person linked fuzzy first-name candidate=%r existing=%r",
+                clean,
+                person.get("name"),
+            )
+            return int(person["id"]), False
         if match_type == "fuzzy":
             _log.info(
                 "find_or_create_person refused fuzzy duplicate candidate=%r existing=%r",

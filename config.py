@@ -982,11 +982,13 @@ WHISPER_CORRECTIONS = {
     "breath":  "Bret",
     "brett":   "Bret",
     "rex's":   "Rex",
-    # Exudica Royale — Whisper hears the soft 'd' as a 't'/'g'. Without this the
-    # spoken name never first-token-matches the stored "Exudica Royale" record,
-    # so an introduction silently forks a duplicate person instead of linking her.
+    # Exudica Royale — Whisper hears the soft 'd' as a 't'/'g' (and sometimes as
+    # the real word "exotica"). Without this the spoken name never first-token-
+    # matches the stored "Exudica Royale" record, so an introduction silently
+    # forks a duplicate person instead of linking her.
     "exutica": "Exudica",
     "exutiga": "Exudica",
+    "exotica": "Exudica",
 }
 
 # Repetition filter: flag a transcript as a loop artifact only when one word both
@@ -1888,6 +1890,16 @@ SPEAKER_ID_PRELOAD_ON_STARTUP = True
 # How long (seconds) a pending introduction stays open to capture the new
 # person's voice sample after their name is given (interaction intro handling).
 INTRO_VOICE_CAPTURE_WINDOW_SECS = 45.0
+
+# While that capture window is open, Rex has just asked the NEWCOMER to speak,
+# so a short hello is far more likely to be them than the introducer. An
+# unenrolled voice tends to score as the nearest known print (the introducer) at
+# a mediocre similarity. Only an introducer match at or above this confident
+# threshold is believed over the window's expectation; below it, the reply is
+# treated as the newcomer and their voice is enrolled. Set high enough to clear
+# the off-camera-newcomer-as-introducer band (~0.59–0.64 observed) while still
+# trusting a genuinely confident introducer re-take.
+INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD = 0.75
 
 # VAD (Silero) — probability threshold above which speech is considered detected
 VAD_THRESHOLD = 0.5
