@@ -18,11 +18,9 @@
 #include <math.h>
 #include <ESP32Encoder.h>
 
-// LEDC PWM channels (one per half-bridge input).
-static const int LEDC_L_RPWM = 0;
-static const int LEDC_L_LPWM = 1;
-static const int LEDC_R_RPWM = 2;
-static const int LEDC_R_LPWM = 3;
+// LEDC PWM is driven through the core-3.x pin-based API: ledcAttach() allocates a
+// channel per pin under the hood, and duty is written by GPIO (ledcWrite(pin,duty)).
+// (Arduino-ESP32 3.x removed the old channel-based ledcSetup/ledcAttachPin.)
 
 static ESP32Encoder encL, encR;
 
@@ -44,9 +42,9 @@ static inline void motors_enable(bool en) {
 
 // Apply a signed duty (-MAX..+MAX) to one wheel by PWM-ing exactly one half of
 // its H-bridge (the other at 0). Forward = RPWM, reverse = LPWM; never both.
-static inline void apply_wheel_duty(int rpwm_ch, int lpwm_ch, int duty) {
-  if (duty >= 0) { ledcWrite(rpwm_ch, duty);  ledcWrite(lpwm_ch, 0); }
-  else           { ledcWrite(rpwm_ch, 0);     ledcWrite(lpwm_ch, -duty); }
+static inline void apply_wheel_duty(int rpwm_pin, int lpwm_pin, int duty) {
+  if (duty >= 0) { ledcWrite(rpwm_pin, duty);  ledcWrite(lpwm_pin, 0); }
+  else           { ledcWrite(rpwm_pin, 0);     ledcWrite(lpwm_pin, -duty); }
 }
 
 static void reset_pid() {
@@ -63,13 +61,14 @@ void hal_init() {
   digitalWrite(PIN_R_EN, LOW);
   s_motors_enabled = false;
 
-  // LEDC PWM for the four half-bridge inputs; all at 0 duty.
-  ledcSetup(LEDC_L_RPWM, PWM_FREQ_HZ, PWM_RES_BITS); ledcAttachPin(PIN_L_RPWM, LEDC_L_RPWM);
-  ledcSetup(LEDC_L_LPWM, PWM_FREQ_HZ, PWM_RES_BITS); ledcAttachPin(PIN_L_LPWM, LEDC_L_LPWM);
-  ledcSetup(LEDC_R_RPWM, PWM_FREQ_HZ, PWM_RES_BITS); ledcAttachPin(PIN_R_RPWM, LEDC_R_RPWM);
-  ledcSetup(LEDC_R_LPWM, PWM_FREQ_HZ, PWM_RES_BITS); ledcAttachPin(PIN_R_LPWM, LEDC_R_LPWM);
-  ledcWrite(LEDC_L_RPWM, 0); ledcWrite(LEDC_L_LPWM, 0);
-  ledcWrite(LEDC_R_RPWM, 0); ledcWrite(LEDC_R_LPWM, 0);
+  // LEDC PWM for the four half-bridge inputs; all at 0 duty. ledcAttach (core 3.x)
+  // allocates a channel per pin at the given freq/resolution.
+  ledcAttach(PIN_L_RPWM, PWM_FREQ_HZ, PWM_RES_BITS);
+  ledcAttach(PIN_L_LPWM, PWM_FREQ_HZ, PWM_RES_BITS);
+  ledcAttach(PIN_R_RPWM, PWM_FREQ_HZ, PWM_RES_BITS);
+  ledcAttach(PIN_R_LPWM, PWM_FREQ_HZ, PWM_RES_BITS);
+  ledcWrite(PIN_L_RPWM, 0); ledcWrite(PIN_L_LPWM, 0);
+  ledcWrite(PIN_R_RPWM, 0); ledcWrite(PIN_R_LPWM, 0);
 
   // Encoders: full quadrature (x4). Internal weak pull-ups so a disconnected or
   // floating input doesn't generate phantom counts during incremental bring-up.
@@ -152,13 +151,13 @@ void hal_drive_velocity(float lin, float ang, float dt) {
   motors_enable(true);
   const int duty_l = wheel_pid(v_l, s_vmeas_l, s_i_l, s_eprev_l, dt, kp, ki, kd);
   const int duty_r = wheel_pid(v_r, s_vmeas_r, s_i_r, s_eprev_r, dt, kp, ki, kd);
-  apply_wheel_duty(LEDC_L_RPWM, LEDC_L_LPWM, duty_l);
-  apply_wheel_duty(LEDC_R_RPWM, LEDC_R_LPWM, duty_r);
+  apply_wheel_duty(PIN_L_RPWM, PIN_L_LPWM, duty_l);
+  apply_wheel_duty(PIN_R_RPWM, PIN_R_LPWM, duty_r);
 }
 
 void hal_motors_off() {
-  ledcWrite(LEDC_L_RPWM, 0); ledcWrite(LEDC_L_LPWM, 0);
-  ledcWrite(LEDC_R_RPWM, 0); ledcWrite(LEDC_R_LPWM, 0);
+  ledcWrite(PIN_L_RPWM, 0); ledcWrite(PIN_L_LPWM, 0);
+  ledcWrite(PIN_R_RPWM, 0); ledcWrite(PIN_R_LPWM, 0);
   motors_enable(false);
   reset_pid();
 }

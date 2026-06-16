@@ -34,14 +34,17 @@ typically on `/dev/cu.usbserial-10`.
 ## Toolchain (already installed on this machine)
 
 ```bash
-arduino-cli core install esp32:esp32      # Espressif core (2.0.17 on this machine)
+arduino-cli core install esp32:esp32      # Espressif core (3.3.10 on this machine)
 arduino-cli lib install ArduinoJson       # JSON (7.4.3)
 arduino-cli lib install ESP32Encoder      # Hall quadrature decode (0.12.0) — live build only
 ```
 
-> **Core version matters.** This machine has Arduino-ESP32 **2.0.17**. The LEDC and
-> PCNT APIs differ in core 3.x, so the Phase-1 HAL is written against 2.0.x. The
-> `setup_macos.sh` toolchain step installs all three deps automatically.
+> **Core version.** `setup_macos.sh` installs `esp32:esp32` **unpinned**, so this
+> machine tracks the current Arduino-ESP32 core (**3.3.10**). The Phase-1 HAL targets
+> the **core-3.x** pin-based LEDC API (`ledcAttach` / `ledcWrite(pin, duty)` — the old
+> channel-based `ledcSetup`/`ledcAttachPin` was removed in 3.x); `ESP32Encoder` 0.12.0
+> handles the PCNT API change. The `setup_macos.sh` toolchain step installs all three
+> deps automatically.
 
 ## Build / upload / monitor
 
@@ -73,7 +76,7 @@ arduino-cli compile --fqbn esp32:esp32:esp32 \
 # Flash live (115200 — 921600 is unreliable on this USB bridge)
 arduino-cli upload --fqbn esp32:esp32:esp32:UploadSpeed=115200 \
   --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1" \
-  -p /dev/cu.usbserial-3110 firmware/djr3x_motion
+  -p /dev/cu.usbserial-10 firmware/djr3x_motion
 ```
 
 The live build boots to **idle with the motors disabled** — nothing moves until an
@@ -87,7 +90,7 @@ schema, `turn`/`move` completion, the drive deadman, the heartbeat watchdog +
 recovery, estop/clear precedence, error handling, and clamping:
 
 ```bash
-venv/bin/python firmware/tools/motion_serial_smoketest.py --port /dev/cu.usbserial-3110
+venv/bin/python firmware/tools/motion_serial_smoketest.py --port /dev/cu.usbserial-10
 ```
 
 Exit code 0 = every check passed. This is the evidence that the firmware speaks

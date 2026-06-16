@@ -17,11 +17,11 @@
 // ---- Drive motors: 2× BTS7960 full H-bridge, one per wheel ----------------
 // Drive a wheel by PWM-ing exactly one of RPWM/LPWM (the other at 0); never both.
 // R_EN+L_EN of each driver are tied together to a single enable GPIO (pull LOW to
-// coast/disable). LEDC PWM channels are allocated in hal.cpp.
-#define PIN_L_RPWM   16   // left  motor, forward duty  (LEDC ch 0)
-#define PIN_L_LPWM   17   // left  motor, reverse duty  (LEDC ch 1)
-#define PIN_R_RPWM   18   // right motor, forward duty  (LEDC ch 2)
-#define PIN_R_LPWM   19   // right motor, reverse duty  (LEDC ch 3)
+// coast/disable). ledcAttach() in hal.cpp allocates an LEDC channel per pin.
+#define PIN_L_RPWM   16   // left  motor, forward duty (RPWM)
+#define PIN_L_LPWM   17   // left  motor, reverse duty (LPWM)
+#define PIN_R_RPWM   18   // right motor, forward duty (RPWM)
+#define PIN_R_LPWM   19   // right motor, reverse duty (LPWM)
 #define PIN_L_EN     23   // left  driver enable (R_EN+L_EN tied)
 #define PIN_R_EN     27   // right driver enable (R_EN+L_EN tied)
 
