@@ -18,3 +18,11 @@ void ctl_come (float heading_deg, float stop_at, uint32_t seq);
 void ctl_stop (uint32_t seq);                                // controlled stop
 void ctl_estop(uint32_t seq);                                // hard latch
 bool ctl_clear(uint32_t seq);                                // false => nothing to clear
+
+// Manual (gamepad) control — owner becomes MANUAL; the Mac's drive/turn/move/come are
+// gated off (proto_io motion_gate) while stop/estop/config/ping still work (docs §11).
+void ctl_manual_drive(float lin, float ang);   // m/s, rad/s — gamepad teleop setpoint
+void ctl_manual_stop();                         // stop but STAY manual (disconnect failsafe)
+void ctl_manual_release();                      // stop and hand control back to AUTO
+void ctl_set_full_override(bool on);            // gamepad bypasses ToF gating while held
+void ctl_set_gamepad(bool connected);           // telemetry: paired-pad link status

@@ -109,6 +109,61 @@ hardware-validated**. Before trusting avoidance, bench-check the addressing sequ
 the sensor→field order, the timing budget, and the down-sensor cliff calibration
 (`CLIFF_FLOOR_MM`/`CLIFF_MARGIN_MM` in `safety.cpp`) — docs §6, §14.
 
+### Manual gamepad override (Bluepad32) — Phase 1.5
+
+A Bluetooth gamepad paired **directly to the ESP32** (not the Mac) can grab the wheel
+and override autonomous/voice motion — it works even with the USB link down (docs §11).
+Off by default; the feature is `gamepad.cpp` behind `MOTION_GAMEPAD_PRESENT`.
+
+**This build needs a different toolchain.** Bluepad32 replaces the Bluetooth stack, so
+it ships as its own ESP32 board package, *not* a library on `esp32:esp32`. Install it
+once, then build with that FQBN:
+
+```bash
+arduino-cli config add board_manager.additional_urls \
+  https://raw.githubusercontent.com/ricardoquesada/esp32-arduino-lib-builder/master/bluepad32_files/package_esp32_bluepad32_index.json
+arduino-cli core update-index
+arduino-cli core install esp32_bluepad32:esp32
+
+# Live drive base + gamepad (combine with -DMOTION_TOF_PRESENT=1 if ToF is wired):
+arduino-cli compile --fqbn esp32_bluepad32:esp32:esp32 \
+  --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_GAMEPAD_PRESENT=1" \
+  firmware/djr3x_motion
+arduino-cli upload --fqbn esp32_bluepad32:esp32:esp32:UploadSpeed=115200 \
+  --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_GAMEPAD_PRESENT=1" \
+  -p "$PORT" firmware/djr3x_motion
+```
+
+The dual-version LEDC guard in `hal.cpp` means the motor code builds on the Bluepad32
+core whether it tracks ESP32 2.x or 3.x.
+
+**8BitDo Pro 2 — pairing.** Power it in a Bluepad32-friendly mode (hold **START + A**
+for the Android/"D" profile; if pairing is flaky try **START + X** for X-input), then
+hold the top pair button until the LEDs sweep. Bluepad32 accepts the new connection and
+remembers the bond for next time.
+
+**Controls** (`gamepad.cpp`, tunables in `calib.h`):
+
+| Input | Action |
+| --- | --- |
+| Left stick | arcade drive — Y forward/back, X turn |
+| L1 / R1 | creep / boost speed scale |
+| **B** | **E-STOP** (always honored) |
+| Start | clear e-stop + return control to AUTO |
+| Hold **both** triggers (L2+R2) | FULL-OVERRIDE: bypass ToF gating (nudge through tight spots) |
+
+Any meaningful stick push switches `owner` to **MANUAL** — the Mac's drive/turn/move/come
+are then refused (`stop`/`estop`/`config`/`ping` still work) and the GUI shows
+`owner: manual`. Default is **MANUAL-ASSISTED** (ToF still protects you); FULL-OVERRIDE
+is the only way past it and only while held. If the pad drops, the base stops immediately
+and stays MANUAL until `MOTION_MANUAL_AUTORETURN`'s idle timeout hands back to AUTO (or
+you reconnect and press Start).
+
+> **Scaffold:** the arbitration (owner switching, full-override, disconnect failsafe,
+> watchdog-bypass-while-manual) is compiled and verified in the stock build, but the
+> Bluepad32 I/O itself is **not yet hardware-validated** — verify the button map and
+> pairing on the real pad. Builds only with the `esp32_bluepad32` core above.
+
 ## Protocol smoke test (the bring-up acceptance test)
 
 With the board flashed and connected, run the host-side test. It opens the serial
@@ -143,6 +198,7 @@ the contract correctly.
 | `safety.{h,cpp}` | Watchdog, ToF zones + reflex stop, comms-loss handling |
 | `hal.{h,cpp}` | Hardware abstraction — motor/encoder stubs vs real drivers behind `MOTION_HW_PRESENT` |
 | `tof.cpp` | ToF (VL53L0X ×5) driver — clear-room stub vs XSHUT/mux real driver behind `MOTION_TOF_PRESENT` |
+| `gamepad.cpp` | Bluetooth gamepad manual override (Bluepad32) behind `MOTION_GAMEPAD_PRESENT` |
 
 ## Concurrency model
 

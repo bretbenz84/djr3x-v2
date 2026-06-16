@@ -100,6 +100,10 @@ struct MotionContext {
   FiniteCmd finite;       // active finite command (kind==CMD_NONE if none)
   CmdKind   cmd_mode = CMD_NONE;  // what's currently driving motion
 
+  // Manual (gamepad) override (docs §11). owner/gamepad above; these two below.
+  bool      full_override = false;     // gamepad bypasses ToF zone/cliff gating (held)
+  uint32_t  last_manual_input_ms = 0;  // last meaningful gamepad input (idle-autoreturn)
+
   uint32_t  cmd_seq   = 0;        // last applied command seq (telemetry)
   uint32_t  seq_alloc = 0;        // (unused on fw side; Mac allocates)
   uint32_t  errs      = 0;        // parse/framing error counter

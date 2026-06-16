@@ -21,6 +21,7 @@
 #include "proto_io.h"
 #include "control.h"
 #include "safety.h"
+#include "gamepad.h"
 
 // ---- Globals (declared extern in context.h) ------------------------------
 MotionContext     g_ctx;
@@ -81,6 +82,7 @@ void setup() {
   proto_init();
   control_init();
   safety_init();
+  gamepad_init();
 
   emit_event_boot(g_ctx.boot_id);         // announce reset (carries boot_id + fw)
 
@@ -92,6 +94,9 @@ void setup() {
 }
 
 void loop() {
-  // All work runs in the tasks above; keep the Arduino loop idle.
-  vTaskDelay(pdMS_TO_TICKS(1000));
+  // The control/serial/sensor/telemetry work runs in the tasks above. The Arduino
+  // loopTask polls the Bluetooth gamepad here (BP32.update needs frequent calls); with
+  // the gamepad feature off, gamepad_tick() is a no-op and this idles slowly.
+  gamepad_tick();
+  vTaskDelay(pdMS_TO_TICKS(GAMEPAD_POLL_MS));
 }

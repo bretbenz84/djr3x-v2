@@ -69,3 +69,13 @@
 #define TOF_OUT_OF_RANGE_MM   8000      // VL53L0X returns ~8190 mm when nothing is in range
 #define TOF_MUX_ADDR          0x70      // TCA9548A I²C address (only when MOTION_TOF_USE_MUX==1)
 #define TOF_BOOT_SETTLE_MS    10        // settle time after raising each sensor's XSHUT
+
+// ---- Bluetooth gamepad (Bluepad32) — only when MOTION_GAMEPAD_PRESENT==1 ----
+// Left stick = arcade drive (Y forward, X turn); L1 creep / R1 boost; B = e-stop;
+// Start = clear + return to AUTO; hold BOTH analog triggers = full-override (docs §11).
+#define GAMEPAD_DEADZONE       0.12f    // stick fraction ignored around center
+#define GAMEPAD_SCALE_CRUISE   0.65f    // default speed as a fraction of the caps
+#define GAMEPAD_SCALE_CREEP    0.35f    // L1 held
+#define GAMEPAD_SCALE_BOOST    1.00f    // R1 held
+#define GAMEPAD_TRIGGER_MAX    1023.0f  // Bluepad32 analog trigger full-scale
+#define GAMEPAD_FULL_OVERRIDE_FRAC 0.85f // both triggers past this fraction = bypass ToF

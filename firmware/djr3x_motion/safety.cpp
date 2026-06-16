@@ -54,7 +54,10 @@ void safety_tick() {
   MotionContext& c = g_ctx;
 
   // ---- Heartbeat watchdog (estop outranks comms_lost) ----
-  if (c.seen_mac && c.state != ST_ESTOP && c.state != ST_COMMS_LOST &&
+  // Only guards AUTONOMOUS motion: while a gamepad owns the base (OWNER_MANUAL) the
+  // Mac link is irrelevant — manual control must survive a USB unplug (docs §11). The
+  // gamepad's own disconnect failsafe covers liveness there.
+  if (c.seen_mac && c.owner == OWNER_AUTO && c.state != ST_ESTOP && c.state != ST_COMMS_LOST &&
       (uint32_t)(now - c.last_mac_ms) > c.params.watchdog_ms) {
     c.state = ST_COMMS_LOST;
     c.fault = F_COMMS_LOST;
@@ -94,12 +97,15 @@ void safety_tick() {
   c.blocked_dir = (z == Z_STOP || z == Z_CLIFF) ? (cliff ? DIR_FRONT : travel) : DIR_NONE;
 
   // ---- Reflex stop: only toggles within the IDLE/MOVING/BLOCKED group ----
-  if (c.state == ST_IDLE || c.state == ST_MOVING) {
+  // A gamepad operator holding full-override (docs §11.4) deliberately bypasses the
+  // zone/cliff reflex — don't enter (and release any) BLOCKED while it's held. The
+  // zone is still reported in telemetry so the operator sees what they're overriding.
+  if ((c.state == ST_IDLE || c.state == ST_MOVING) && !c.full_override) {
     if (z == Z_STOP || z == Z_CLIFF) {
       c.state = ST_BLOCKED;
     }
   } else if (c.state == ST_BLOCKED) {
-    if (z == Z_CLEAR) c.state = ST_IDLE;   // control_tick re-promotes to MOVING if still commanded
+    if (z == Z_CLEAR || c.full_override) c.state = ST_IDLE;   // control_tick re-promotes to MOVING if still commanded
   }
 
   // Edge-detect a new block for the event stream.

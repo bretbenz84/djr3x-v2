@@ -97,8 +97,11 @@ void control_tick(float dt) {
     }
   }
 
-  // Reflex gating: if blocked in the travel direction, zero that component.
-  if (c.state == ST_BLOCKED) {
+  // Reflex gating: if blocked in the travel direction, zero that component — UNLESS
+  // a gamepad operator is holding full-override (docs §11.4), which deliberately
+  // bypasses ToF for nudging through tight spots. estop/fault/comms-loss halts above
+  // are NOT bypassed by full_override.
+  if (c.state == ST_BLOCKED && !c.full_override) {
     if (c.blocked_dir == DIR_FRONT && lin_t > 0) lin_t = 0;
     if (c.blocked_dir == DIR_REAR  && lin_t < 0) lin_t = 0;
   }
@@ -301,4 +304,55 @@ bool ctl_clear(uint32_t seq) {
   UNLOCK_STATE();
   if (cleared && ev) emit_event(ev);
   return cleared;
+}
+
+// ---- Manual (gamepad) control (docs §11) ---------------------------------
+// Driven from gamepad.cpp on the ESP32 — entirely independent of the Mac link, so
+// it works even with the USB unplugged. owner=MANUAL makes proto_io's motion_gate
+// reject Mac drive/turn/move/come; stop/estop/config/ping still pass.
+
+void ctl_manual_drive(float lin, float ang) {
+  // Refreshed every gamepad poll; the drive deadman stops the base if polls stall.
+  bool sup = false; uint32_t sseq = 0; Odom sodom;
+  LOCK_STATE();
+  // Don't punch through a hard latch — estop/fault must be cleared first.
+  if (g_ctx.state == ST_ESTOP || g_ctx.state == ST_FAULT) { UNLOCK_STATE(); return; }
+  sup = begin_finite_locked(sseq, sodom);   // taking over from an autonomous finite cmd
+  g_ctx.owner = OWNER_MANUAL;
+  g_ctx.finite = FiniteCmd();
+  g_ctx.setpoint.lin = lin; g_ctx.setpoint.ang = ang;
+  g_ctx.cmd_mode = CMD_DRIVE;
+  g_ctx.drive_set_ms = millis();
+  if (fabsf(lin) > 0.01f || fabsf(ang) > 0.01f) g_ctx.last_manual_input_ms = millis();
+  if (g_ctx.state == ST_IDLE) g_ctx.state = ST_MOVING;
+  UNLOCK_STATE();
+  if (sup) emit_done(sseq, DONE_SUPERSEDED, sodom);
+}
+
+void ctl_manual_stop() {
+  // Disconnect failsafe: stop NOW but keep MANUAL ownership, so AUTO doesn't silently
+  // resume on a dropped pad (docs §11.4). Auto-return (if enabled) handles the handoff.
+  LOCK_STATE();
+  g_ctx.setpoint.lin = 0; g_ctx.setpoint.ang = 0;
+  if (g_ctx.cmd_mode == CMD_DRIVE) g_ctx.cmd_mode = CMD_NONE;
+  g_ctx.full_override = false;
+  UNLOCK_STATE();
+}
+
+void ctl_manual_release() {
+  // Explicit (Start button) or idle-timeout return of control to AUTO.
+  LOCK_STATE();
+  g_ctx.setpoint.lin = 0; g_ctx.setpoint.ang = 0;
+  if (g_ctx.cmd_mode == CMD_DRIVE) g_ctx.cmd_mode = CMD_NONE;
+  g_ctx.full_override = false;
+  g_ctx.owner = OWNER_AUTO;
+  UNLOCK_STATE();
+}
+
+void ctl_set_full_override(bool on) {
+  LOCK_STATE(); g_ctx.full_override = on; UNLOCK_STATE();
+}
+
+void ctl_set_gamepad(bool connected) {
+  LOCK_STATE(); g_ctx.gamepad = connected ? GP_CONNECTED : GP_NONE; UNLOCK_STATE();
 }
