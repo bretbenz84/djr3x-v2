@@ -43,9 +43,48 @@ class VoicePrimaryFaceDecisionTest(unittest.TestCase):
         self.assertEqual(self._decide(person_id=1, raw_best_id=1, speaker_score=0.72), "voice_agrees")
 
     def test_voice_matched_someone_else_wins_over_face(self):
-        # Voice confidently matched person 2 (off-camera); person 1 is the visible
-        # face. Voice is primary — keep person 2.
+        # Voice CONFIDENTLY matched person 2 (off-camera); person 1 is the visible
+        # face. Confident voice is primary — keep person 2.
         self.assertEqual(self._decide(person_id=2, raw_best_id=2, speaker_score=0.78), "voice_over_face")
+
+    def test_confident_voice_over_face_boundary(self):
+        # Exactly at the confident threshold (0.70) the voice still wins.
+        self.assertEqual(self._decide(person_id=2, raw_best_id=2, speaker_score=0.70), "voice_over_face")
+
+    def test_marginal_voice_elsewhere_no_visual_signal_keeps_face(self):
+        # THE BUG: a marginal (<0.70) match to an off-camera person while a known
+        # face is visible and the active-speaker latch is empty/unavailable
+        # (visual_speaker_pid=None) must NOT override the visible face. This is the
+        # logged failure: Bret's deleted print landed his voice on Wade at ~0.55.
+        self.assertEqual(
+            self._decide(person_id=2, raw_best_id=2, speaker_score=0.55, visual_speaker_pid=None),
+            "voice_weak_face_wins",
+        )
+
+    def test_marginal_voice_elsewhere_camera_confirms_visible_face_keeps_face(self):
+        # Camera shows the VISIBLE face (ws=1) is the one talking — a marginal
+        # match to person 2 is a near-neighbor artifact, the face anchors identity.
+        self.assertEqual(
+            self._decide(person_id=2, raw_best_id=2, speaker_score=0.55, visual_speaker_pid=1),
+            "voice_weak_face_wins",
+        )
+
+    def test_marginal_voice_elsewhere_camera_shows_other_talker_keeps_voice(self):
+        # Camera's recent on-camera talker is NOT the visible known face (it is the
+        # matched person 2, who was just on camera) — the visible face is not the
+        # source, so trust the off-camera voice even at a marginal score.
+        self.assertEqual(
+            self._decide(person_id=2, raw_best_id=2, speaker_score=0.55, visual_speaker_pid=2),
+            "voice_over_face",
+        )
+
+    def test_marginal_voice_elsewhere_camera_shows_third_party_keeps_voice(self):
+        # Camera's recent talker (person 3) is neither the visible face nor the
+        # matched person — the visible face is still not the source; trust voice.
+        self.assertEqual(
+            self._decide(person_id=2, raw_best_id=2, speaker_score=0.55, visual_speaker_pid=3),
+            "voice_over_face",
+        )
 
     def test_weak_voice_leaning_to_visible_is_corroborated(self):
         # Voice gave no accepted match (person_id None) but its best candidate is

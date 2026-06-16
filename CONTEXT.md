@@ -257,10 +257,18 @@ single-visible-face decision is the pure, unit-tested `_voice_primary_face_decis
 1. **Confident voice wins outright** — a margin-guarded voice match at/above
    `SPEAKER_ID_CONFIDENT_THRESHOLD` (0.70) is trusted regardless of whose face is on
    camera. This is what lets Rex name an off-camera or group speaker.
-2. **Accepted voice wins** — the existing margin-guarded accept tiers (hard 0.50,
-   known floor 0.45, session-sticky 0.60) resolve a person; that result stands even
-   if a *different* known face is the only one visible (the visible person is simply
-   also present). The voice is never overridden by the camera.
+2. **Accepted-but-not-confident voice does NOT override a visible known face** — the
+   margin-guarded accept tiers (hard 0.50, known floor 0.45, session-sticky 0.60)
+   resolve a person, but a match *below* the confident threshold (0.45–0.70) that
+   points at someone OTHER than the single visible known face does **not** override
+   that face: the present, clearly-visible known person anchors identity
+   (`voice_weak_face_wins`). A sub-confident match is exactly where an absent/poor
+   voiceprint lands a voice on its nearest neighbor (the logged Bret→Wade failure),
+   so it must not beat a face the camera shows is the one talking. The only exception
+   is when the visual active-speaker latch positively names a *different* on-camera
+   talker than the visible face — then the camera agrees the face is not the source,
+   and the off-camera voice is kept. Confident matches (≥0.70, tier 1) still win
+   outright, which is what preserves genuine off-camera/group recognition.
 3. **Weak/absent voice → the face only CORROBORATES** — if the voice did not reach an
    accept tier, Rex attributes the turn to the single visible person **only when the
    voice still leans toward them** (`raw_best_id == that person`), or when there is no
@@ -588,7 +596,7 @@ venv/bin/python main.py
 - WorldState lost-update fix: `world_state.mutate(field, fn)` does the read-modify-write under the lock; every `people` writer uses it (not `get()`+`update()`).
 - OpenAI warmup: `llm.warmup()` + `action_router.warmup()` run in a background thread (`OPENAI_WARMUP_ON_STARTUP`) so the first turn skips cold TLS/HTTP.
 - Stale-event-cancel guard: `memory.events.looks_like_cancellation` requires a cancellation phrase AND no false-positive idiom ("not going to lie", etc.).
-- **Voice-primary identity** (`VOICE_PRIMARY_IDENTITY_ENABLED`, default on): WHO is speaking is decided by the VOICE, not the visible face — see the "Identity And Multiple Speakers" section. A confident/accepted voice match wins regardless of who's on camera; a weak/absent match lets the visible face only CORROBORATE (when `raw_best_id == that person`) and otherwise resolves off-screen/unknown; voiceprint auto-refresh is gated on `raw_best_id == person_id` so a different voice can't pollute a print. The old "single visible face wins regardless of voice" rule is retained only behind the flag (`_single_visible_face_voice_override`). Decision logic is the pure, unit-tested `_voice_primary_face_decision`; `tests/test_voice_primary_identity.py`. (Earlier note, now superseded: "sub-0.75 floors require raw_best_id == person, so a 2nd speaker in a 1:1 is treated as off-camera" — the corroboration rule generalizes this to all frames.)
+- **Voice-primary identity** (`VOICE_PRIMARY_IDENTITY_ENABLED`, default on): WHO is speaking is decided by the VOICE, not the visible face — see the "Identity And Multiple Speakers" section. A *confident* voice match (≥`SPEAKER_ID_CONFIDENT_THRESHOLD` 0.70) wins regardless of who's on camera, but an *accepted-but-not-confident* match (0.45–0.70) pointing at someone OTHER than the single visible known face does NOT override that face — the present known person anchors identity (`voice_weak_face_wins`), since a sub-confident score is exactly where an absent/poor print lands a voice on its nearest neighbor (the Bret→Wade failure); the off-camera voice is kept only if the active-speaker latch names a *different* on-camera talker. A weak/absent match lets the visible face only CORROBORATE (when `raw_best_id == that person`) and otherwise resolves off-screen/unknown; voiceprint auto-refresh is gated on `raw_best_id == person_id` so a different voice can't pollute a print. The old "single visible face wins regardless of voice" rule is retained only behind the flag (`_single_visible_face_voice_override`). Decision logic is the pure, unit-tested `_voice_primary_face_decision`; `tests/test_voice_primary_identity.py`. (Earlier note, now superseded: "sub-0.75 floors require raw_best_id == person, so a 2nd speaker in a 1:1 is treated as off-camera" — the corroboration rule generalizes this to all frames.)
 - Bug fixes to keep: `SCENE_MUSIC_BAND_ENERGY_MIN=2e-6` (was a typo making music always "detected"); dead `GUI_SHOW_FPS` removed; `social_frame` optional-lookup excepts log at debug.
 - Event follow-up resolution: a reply that an event never happened (`interaction._followup_event_did_not_happen`) resolves a pending follow-up instead of re-asking (kills the "how was the concert?" loop).
 - The "one sec" fillers (slow-path ack + latency filler) are disabled by default and `SILENCE_TIMEOUT_SECS=0.6` — see Latency And Telemetry. Don't re-enable without reason.

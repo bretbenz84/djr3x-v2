@@ -1609,15 +1609,27 @@ def _voice_primary_face_decision(
     engaged_is_visible: bool,
     unknown_visible: bool,
     other_known_recently: bool,
+    visual_speaker_pid: Optional[int] = None,
 ) -> str:
     """Voice-primary attribution decision when exactly one known face (``ws_pid``)
     is visible. Pure (no side effects) so it is directly unit-testable.
 
-    WHO is speaking is decided by the VOICE; the visible face only corroborates a
-    weak/absent voice match and never overrides a voice that points elsewhere.
+    WHO is speaking is decided by the VOICE — but a voice match only OVERRIDES a
+    present, known visible face when the voice is genuinely *confident* (off-camera
+    speaker really there), or when the camera positively shows that the visible
+    face is *not* the one talking. A marginal off-camera near-neighbor match (the
+    0.45-0.70 band — exactly where an absent/poor print lands a voice on the wrong
+    person) must NOT override a clearly-visible known face. ``visual_speaker_pid``
+    is the latched recent visual active-speaker (``person_db_id`` or ``None`` when
+    the detector is disabled / its latch is empty or expired).
+
     Returns one of:
       ``voice_agrees``         voice matched the visible face — attribute + refresh
-      ``voice_over_face``      voice matched someone ELSE — keep the voice result
+      ``voice_over_face``      voice CONFIDENTLY matched someone else, or the camera
+                               shows the visible face is not the talker — keep voice
+      ``voice_weak_face_wins`` voice marginally matched someone else while a known
+                               face is visible and the camera does not contradict it
+                               — the present face anchors identity, no refresh
       ``corroborate``          voice weakly leans toward the visible face — attribute + refresh
       ``face_only_continuity`` no voice signal at all in a clean 1:1 — attribute, no refresh
       ``unknown_intro_path``   voice unrecognized while an unknown face is present — leave
@@ -1627,10 +1639,25 @@ def _voice_primary_face_decision(
     pid = _safe_int(person_id)
     raw_id = _safe_int(raw_best_id)
     ws = _safe_int(ws_pid)
+    vis = _safe_int(visual_speaker_pid)
     if pid is not None and pid == ws:
         return "voice_agrees"
     if pid is not None:
-        return "voice_over_face"
+        # Accepted voice match points at someone OTHER than the visible known face.
+        confident = float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70))
+        if speaker_score >= confident:
+            return "voice_over_face"            # confident → a real off-camera speaker
+        if vis is not None and vis != ws:
+            # The camera's recent on-camera talker is NOT the visible known face
+            # (it is the matched person, or a third person who was just on camera)
+            # — so the visible face is not the source; trust the off-camera voice.
+            return "voice_over_face"
+        # Marginal (<confident) off-camera match while a known face is visible and
+        # the camera either confirms that face is talking (vis == ws) or gives no
+        # usable speaker signal (disabled / empty / expired latch → vis is None).
+        # The present known face anchors identity; the near-neighbor match is most
+        # likely an absent/poor-print artifact, not a genuine off-camera speaker.
+        return "voice_weak_face_wins"
     # person_id is None — the voice was uninformative (below the known floor or
     # ambiguous). Corroborate, don't override.
     if unknown_visible:
@@ -15141,6 +15168,16 @@ def _handle_speech_segment(
         if ws_person is not None and voice_primary:
             ws_pid = _safe_int(ws_person.get("person_db_id"))
             ws_name = ws_person.get("face_id") or ws_person.get("voice_id")
+            # Latched recent visual active-speaker (the live is_speaking has already
+            # cleared by the time a turn resolves — see active_speaker docs). Used
+            # only to let the camera VETO a marginal off-camera voice match against
+            # the visible face, or confirm the visible face is not the talker.
+            _voice_dec_visual_pid = None
+            try:
+                from vision import active_speaker as _asp
+                _voice_dec_visual_pid = (_asp.recent_visual_speaker() or {}).get("person_db_id")
+            except Exception as exc:
+                _log.debug("active-speaker recent lookup (single-visible) failed: %s", exc)
             decision = _voice_primary_face_decision(
                 person_id=person_id,
                 raw_best_id=raw_best_id,
@@ -15153,6 +15190,7 @@ def _handle_speech_segment(
                 ),
                 unknown_visible=_has_unknown_visible_or_recent(),
                 other_known_recently=_other_known_visible_recently(ws_pid),
+                visual_speaker_pid=_voice_dec_visual_pid,
             )
             if decision == "voice_agrees":
                 _log.info(
@@ -15175,6 +15213,26 @@ def _handle_speech_segment(
                     "[interaction] person resolution: voice over visible face — "
                     "person_id=%s name=%r (visible ws_pid=%s) score=%.3f",
                     person_id, person_name, ws_pid, speaker_score,
+                )
+            elif decision == "voice_weak_face_wins":
+                # A marginal (<confident) voice match pointed at someone OTHER than
+                # the visible known face, and the camera did not contradict the face
+                # (it confirmed the face is talking, or had no usable speaker signal).
+                # The present, clearly-visible known face anchors identity — a
+                # near-neighbor acoustic match (typical of an absent/poor voiceprint)
+                # must not override it. Do NOT refresh the print: the voice did not
+                # actually agree, so the audio would pollute it.
+                voice_lost_name = person_name
+                voice_lost_pid = person_id
+                person_id = ws_pid
+                person_name = ws_name
+                identity_resolution_override = "voice_weak_face_wins"
+                _log.info(
+                    "[interaction] person resolution: marginal off-camera voice (%.3f) "
+                    "did NOT override visible known face — person_id=%s name=%r "
+                    "(rejected voice match=%s/%r, visual_speaker=%s)",
+                    speaker_score, person_id, person_name,
+                    voice_lost_pid, voice_lost_name, _voice_dec_visual_pid,
                 )
             elif decision == "corroborate":
                 # Voice weakly leans toward the one visible person — their own
