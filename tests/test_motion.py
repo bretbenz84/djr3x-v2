@@ -296,5 +296,37 @@ class ClassifierTest(unittest.TestCase):
             self.assertIsNone(self._act(t), f"{t!r} should not classify as motion")
 
 
+class RampTowardTest(unittest.TestCase):
+    """The GUI joystick's asymmetric slew (gentle accel, faster non-abrupt decel)."""
+
+    def test_accel_step_speeding_up_from_zero(self):
+        self.assertAlmostEqual(mc.ramp_toward(0.0, 1.0, 0.1, 0.3), 0.1)
+
+    def test_decel_step_slowing_toward_zero(self):
+        # Releasing the stick (target 0) uses the faster decel step, not accel.
+        self.assertAlmostEqual(mc.ramp_toward(1.0, 0.0, 0.1, 0.3), 0.7)
+
+    def test_no_overshoot_and_equal(self):
+        self.assertEqual(mc.ramp_toward(0.95, 1.0, 0.1, 0.3), 1.0)   # accel within a step
+        self.assertEqual(mc.ramp_toward(0.2, 0.0, 0.1, 0.3), 0.0)    # decel within a step
+        self.assertEqual(mc.ramp_toward(0.5, 0.5, 0.1, 0.3), 0.5)    # already there
+
+    def test_decel_reaches_zero_in_fewer_ticks_than_accel(self):
+        def ticks(cur, tgt):
+            n = 0
+            while abs(cur - tgt) > 1e-9 and n < 1000:
+                cur = mc.ramp_toward(cur, tgt, 0.1, 0.25)
+                n += 1
+            return n
+        self.assertLess(ticks(1.0, 0.0), ticks(0.0, 1.0))           # down faster than up
+
+    def test_reversal_decelerates_through_zero_first(self):
+        # +0.2 heading to -1.0: shrink the current magnitude (decel) before reversing.
+        self.assertAlmostEqual(mc.ramp_toward(0.2, -1.0, 0.1, 0.3), -0.1)
+
+    def test_nonpositive_step_jumps_to_target(self):
+        self.assertEqual(mc.ramp_toward(0.0, 1.0, 0.0, 0.0), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

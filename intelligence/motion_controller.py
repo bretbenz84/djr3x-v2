@@ -37,6 +37,29 @@ def _clampf(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else (hi if v > hi else v)
 
 
+def ramp_toward(current: float, target: float, accel_step: float, decel_step: float) -> float:
+    """Slew `current` one step toward `target`, capped per call by `accel_step` when
+    the speed magnitude is growing and `decel_step` when it is shrinking toward zero.
+
+    Lets manual teleop (the GUI joystick) ramp up gently but brake faster — without the
+    abrupt stop that can topple a tall base. Asymmetric by design: pick decel_step >
+    accel_step for a quick-but-smooth release. A reversal decelerates through zero
+    first (uses decel_step until the sign flips). A non-positive step jumps straight to
+    the target. Call repeatedly at a fixed cadence; step = rate * dt."""
+    if target == current:
+        return target
+    speeding_up = abs(target) > abs(current) and (current == 0.0 or (target > 0.0) == (current > 0.0))
+    step = accel_step if speeding_up else decel_step
+    if step <= 0.0:
+        return target
+    delta = target - current
+    if delta > step:
+        return current + step
+    if delta < -step:
+        return current - step
+    return target
+
+
 # ── Lifecycle ───────────────────────────────────────────────────────────────────
 
 def connect(port: "str | None" = None) -> bool:

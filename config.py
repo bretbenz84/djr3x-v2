@@ -4447,6 +4447,16 @@ MOTION_RECONNECT_INTERVAL_SECS = 2.0  # auto-reconnect cadence after an unplug/d
 MOTION_MANUAL_IDLE_RETURN_SECS = 4
 MOTION_MANUAL_AUTORETURN = False
 
+# GUI joystick (Motivator Control) command ramping. The console slews its drive
+# command toward the stick position instead of jumping to it: gentle on the way up,
+# faster but never abrupt on the way down — a tall base can topple if it stops dead.
+# These are seconds from a standstill to full speed (up) and from full speed back to
+# a standstill (down) at full scale; down should be < up but > 0 (never instant). The
+# GUI STOP button and closing the console still stop immediately — this only shapes
+# the joystick's own ramp.
+MOTION_MANUAL_RAMP_UP_SECS = 1.2
+MOTION_MANUAL_RAMP_DOWN_SECS = 0.5
+
 # Serial connection retry (mirrors the servo connect pattern).
 MOTION_SERIAL_TIMEOUT_SECS = 0.1
 MOTION_CONNECT_RETRY_ATTEMPTS = 3

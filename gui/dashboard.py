@@ -1327,6 +1327,8 @@ class MotivatorControlDialog(QDialog):
         self._y = 0.0
         self._engaged = False     # only drive after the operator has touched the stick
         self._was_driving = False  # tracks displaced->centered so release sends one stop
+        self._cmd_lin = 0.0       # ramped command actually sent — slews toward the stick
+        self._cmd_ang = 0.0       # so a release eases to a stop instead of braking hard
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
@@ -1429,13 +1431,34 @@ class MotivatorControlDialog(QDialog):
             from intelligence import motion_controller as mc
             if not mc.available():
                 return
-            mag = math.hypot(self._x, self._y)
-            if mag > 0.02:
-                _l, _r, lin, ang = self._mix()
-                mc.drive_manual(lin, ang)      # refresh at 10 Hz feeds the deadman
+            # Target velocity from the current stick position (0 when centered/released).
+            if math.hypot(self._x, self._y) > 0.02:    # deadzone — ignore resting jitter
+                _l, _r, lin_t, ang_t = self._mix()
+            else:
+                lin_t = ang_t = 0.0
+            # Slew the commanded velocity toward the target: gentle on the way up, faster
+            # but never abrupt on the way down, so releasing the stick eases to a stop
+            # instead of braking hard enough to topple a tall base. (The STOP button and
+            # closing the console still stop immediately — they zero the ramp directly.)
+            dt = (self._send_timer.interval() / 1000.0) or 0.1
+            max_lin = float(getattr(config, "MOTION_MAX_LINEAR_MS", 0.25))
+            max_ang = math.radians(float(getattr(config, "MOTION_MAX_ANGULAR_DEG_S", 60.0)))
+            up = max(0.05, float(getattr(config, "MOTION_MANUAL_RAMP_UP_SECS", 1.2)))
+            down = max(0.05, float(getattr(config, "MOTION_MANUAL_RAMP_DOWN_SECS", 0.5)))
+            self._cmd_lin = mc.ramp_toward(self._cmd_lin, lin_t, max_lin * dt / up, max_lin * dt / down)
+            self._cmd_ang = mc.ramp_toward(self._cmd_ang, ang_t, max_ang * dt / up, max_ang * dt / down)
+            # Readout reflects what's actually commanded (the ramped value), incl. the
+            # smooth ramp-down after release.
+            self._lbl_lin.setText(f"{self._cmd_lin:+.2f} m/s")
+            self._lbl_ang.setText(f"{math.degrees(self._cmd_ang):+.0f}°/s")
+
+            moving = abs(self._cmd_lin) > 1e-3 or abs(self._cmd_ang) > 1e-3
+            target_active = abs(lin_t) > 1e-3 or abs(ang_t) > 1e-3
+            if moving or target_active:
+                mc.drive_manual(self._cmd_lin, self._cmd_ang)   # 10 Hz refresh feeds the deadman
                 self._was_driving = True
             elif self._was_driving:
-                mc.stop()                      # released -> one controlled stop -> idle
+                mc.stop()                      # fully ramped down -> one clean idle
                 self._was_driving = False
         except Exception:
             pass
@@ -1484,8 +1507,13 @@ class MotivatorControlDialog(QDialog):
         self._fb_fault.setText(f"{tel.get('fault') or 'none'} / errs {tel.get('errs', 0)}")
 
     def _stop(self) -> None:
+        # Immediate stop (unlike releasing the stick, which ramps down): zero the ramp
+        # state directly so the next tick sends nothing, then command a controlled stop.
         self.joystick._recenter()
-        self._on_release()
+        self._x = self._y = 0.0
+        self._cmd_lin = self._cmd_ang = 0.0
+        self._was_driving = False
+        self._on_move(0.0, 0.0)
         try:
             from intelligence import motion_controller as mc
             mc.stop()
@@ -1496,6 +1524,7 @@ class MotivatorControlDialog(QDialog):
     def showEvent(self, e) -> None:
         self._engaged = False
         self._was_driving = False
+        self._cmd_lin = self._cmd_ang = 0.0
         self._x = self._y = 0.0
         self._on_move(0.0, 0.0)
         if not self._send_timer.isActive():
