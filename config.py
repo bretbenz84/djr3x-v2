@@ -3154,6 +3154,29 @@ FACE_REVEAL_CONFIRM_WINDOW_SECS = 30.0
 # won't match the engaged person.
 SPEAKER_ID_SOFT_THRESHOLD = 0.60
 
+# ─────────────────────────────────────────────────────────────────────────────
+# VOICE-PRIMARY IDENTITY — who is speaking is decided by the VOICE, not the camera
+# ─────────────────────────────────────────────────────────────────────────────
+# Rex must know who is talking to him even when he cannot see them: off-camera,
+# in a group, in a crowded room. So identity resolution treats the VOICE as the
+# primary signal. A voice match that cleared the accept tiers above (hard/known/
+# sticky, all margin-guarded) WINS regardless of whose face is on camera. The
+# visible face only CORROBORATES a weak or absent voice match — it never OVERRIDES
+# a voice that points at someone else, and it never captures the turn for a person
+# the voice does not actually point at. An unrecognized voice is tracked as its
+# own off-screen / anonymous identity instead of being pinned on whoever is in
+# frame. Flip to False to restore the legacy "visible face wins" behavior.
+VOICE_PRIMARY_IDENTITY_ENABLED = True
+
+# A voice match at or above this similarity (and clearing the margin guard) is
+# CONFIDENT — strong enough to contradict the camera and to be trusted for
+# refreshing a print. Set above the "stranger who merely sounds like a known
+# person" / off-camera-newcomer band (~0.59–0.64) so a passing resemblance can't
+# confidently steal a known identity, while a genuine returning speaker clears it.
+# Below this a voice match still wins under voice-primary (margin-guarded), but is
+# labelled provisional and won't trigger a face-confirmed voiceprint refresh.
+SPEAKER_ID_CONFIDENT_THRESHOLD = 0.70
+
 # Engaged-and-visible attribution floor: when the best voice candidate IS the
 # engaged person AND that engaged person is currently visible on camera, the
 # face presence + voice candidacy together are sufficient evidence even at

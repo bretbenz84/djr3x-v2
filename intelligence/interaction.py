@@ -1522,18 +1522,25 @@ def _infer_identity_resolution_strategy(
     if person_id is None:
         return "off_camera_unknown" if off_camera_unknown else "unresolved"
     if sticky_accepted:
-        return "voice_soft_session_sticky"
+        return "voice_session_sticky"
 
     resolved_id = _safe_int(person_id)
     raw_id = _safe_int(raw_best_id)
     score = float(speaker_score or 0.0)
+    confident_threshold = float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70))
     if raw_id is not None and resolved_id == raw_id:
+        # Voice's own best candidate IS the resolved person — a voice-led match.
+        # Tiers by descending score (confident > hard accept > corroborated).
+        if score >= confident_threshold:
+            return "voice_confident"  # wins regardless of camera
         if score >= hard_threshold:
-            return "voice_hard_match"
-        if score >= soft_threshold:
-            return "voice_soft_contextual_match"
-        return "voice_face_contextual_match"
+            return "voice_match"
+        # Below the accept threshold: voice still leans toward this person and a
+        # visible face corroborated it (the weak-voice-corroborated branch).
+        return "voice_corroborated_by_face"
 
+    # Resolved to someone the voice did NOT point at — only reachable via the
+    # face-only 1:1 continuity fallback (no voice signal at all).
     try:
         visible_ids = {
             int(p.get("person_db_id"))
@@ -1543,12 +1550,65 @@ def _infer_identity_resolution_strategy(
     except Exception:
         visible_ids = set()
     if resolved_id in visible_ids:
-        return "visible_worldstate_context"
+        return "face_only_continuity"
 
     recent_id = _safe_int((recent_engagement or {}).get("person_id"))
     if recent_id is not None and recent_id == resolved_id:
         return "recent_engagement_context"
     return "resolved"
+
+
+def _voice_primary_face_decision(
+    *,
+    person_id: Optional[int],
+    raw_best_id: Optional[int],
+    speaker_score: float,
+    ws_pid: Optional[int],
+    single_visible: bool,
+    engaged_is_visible: bool,
+    unknown_visible: bool,
+    other_known_recently: bool,
+) -> str:
+    """Voice-primary attribution decision when exactly one known face (``ws_pid``)
+    is visible. Pure (no side effects) so it is directly unit-testable.
+
+    WHO is speaking is decided by the VOICE; the visible face only corroborates a
+    weak/absent voice match and never overrides a voice that points elsewhere.
+    Returns one of:
+      ``voice_agrees``         voice matched the visible face — attribute + refresh
+      ``voice_over_face``      voice matched someone ELSE — keep the voice result
+      ``corroborate``          voice weakly leans toward the visible face — attribute + refresh
+      ``face_only_continuity`` no voice signal at all in a clean 1:1 — attribute, no refresh
+      ``unknown_intro_path``   voice unrecognized while an unknown face is present — leave
+                               person unresolved for the intro/identify path (not off-screen)
+      ``off_screen_unknown``   voice points away / scene ambiguous — off-screen unknown voice
+    """
+    pid = _safe_int(person_id)
+    raw_id = _safe_int(raw_best_id)
+    ws = _safe_int(ws_pid)
+    if pid is not None and pid == ws:
+        return "voice_agrees"
+    if pid is not None:
+        return "voice_over_face"
+    # person_id is None — the voice was uninformative (below the known floor or
+    # ambiguous). Corroborate, don't override.
+    if unknown_visible:
+        return "unknown_intro_path"
+    eng_visible_floor = float(getattr(config, "SPEAKER_ID_ENGAGED_VISIBLE_FLOOR", 0.50))
+    match_floor = float(getattr(config, "SPEAKER_ID_SINGLE_VISIBLE_MATCH_FLOOR", 0.35))
+    voice_leans_visible = (
+        raw_id is not None
+        and raw_id == ws
+        and (
+            (engaged_is_visible and speaker_score >= match_floor)
+            or speaker_score >= eng_visible_floor
+        )
+    )
+    if voice_leans_visible and single_visible and not other_known_recently:
+        return "corroborate"
+    if raw_id is None and single_visible and engaged_is_visible and not other_known_recently:
+        return "face_only_continuity"
+    return "off_screen_unknown"
 
 
 def _single_visible_face_voice_override(
@@ -6640,6 +6700,7 @@ def _maybe_auto_refresh_voice(
     audio_array: np.ndarray,
     *,
     face_confirmed: bool = False,
+    raw_best_id: Optional[int] = None,
 ) -> None:
     """
     Append the current audio as an additional voice biometric row for this person,
@@ -6652,6 +6713,14 @@ def _maybe_auto_refresh_voice(
     that would improve the print. When the face is the ground truth, capture the
     sample even at a low voice score.
 
+    CRITICAL anti-pollution guard: the face-confirmed path only refreshes when the
+    VOICE's own best candidate already IS this person (raw_best_id == person_id).
+    A visible face is NOT proof that this person is the one speaking — when someone
+    off-camera (or a not-yet-enrolled newcomer) talks while a known face is in
+    frame, their audio would otherwise be appended to the visible person's print,
+    corrupting it. Only strengthen a print with audio the voice itself attributes
+    to that person.
+
     Runs asynchronously so re-embedding doesn't delay Rex's response. One refresh
     per person per session.
     """
@@ -6659,7 +6728,13 @@ def _maybe_auto_refresh_voice(
         return
     if person_id in _voice_refreshed_this_session:
         return
-    if not face_confirmed:
+    if face_confirmed:
+        # Face confirms identity, but only trust the SAMPLE if the voice already
+        # points at this person — otherwise we'd be teaching their print someone
+        # else's voice (see docstring).
+        if raw_best_id is not None and _safe_int(raw_best_id) != _safe_int(person_id):
+            return
+    else:
         min_score = float(getattr(config, "AUTO_VOICE_REFRESH_MIN_SCORE", 0.90))
         if voice_score < min_score:
             return
@@ -14920,109 +14995,102 @@ def _handle_speech_segment(
                         person_id, person_name, speaker_score, recent_floor, raw_best_id,
                     )
 
-        if ws_person is not None:
-            ws_pid = ws_person.get("person_db_id")
+        # ── Voice-primary attribution ───────────────────────────────────────
+        # WHO is speaking is decided by the VOICE. The accept tiers above already
+        # produced a voice-led person_id (all margin-guarded). Here the visible
+        # face only CORROBORATES a weak/absent voice match — it never OVERRIDES a
+        # voice that points elsewhere, and never captures the turn for a person the
+        # voice does not point at. An unrecognized voice becomes an off-screen /
+        # anonymous identity, not "whoever is on camera." Set
+        # VOICE_PRIMARY_IDENTITY_ENABLED=False to restore the legacy face-wins path.
+        voice_primary = bool(getattr(config, "VOICE_PRIMARY_IDENTITY_ENABLED", True))
+        if ws_person is not None and voice_primary:
+            ws_pid = _safe_int(ws_person.get("person_db_id"))
             ws_name = ws_person.get("face_id") or ws_person.get("voice_id")
-            if person_id is None:
-                unknown_visible = _has_unknown_visible_or_recent()
-                # Speaker-ID missed. Only fall back to ws_person if they are NOT
-                # the engaged person — otherwise we'd be claiming the engaged
-                # person spoke when the voice didn't actually match them. That
-                # scenario is exactly the off-camera unknown case.
-                engaged_is_visible = (
+            decision = _voice_primary_face_decision(
+                person_id=person_id,
+                raw_best_id=raw_best_id,
+                speaker_score=speaker_score,
+                ws_pid=ws_pid,
+                single_visible=(len(visible_known_by_id) == 1),
+                engaged_is_visible=(
                     recent_engagement is not None
-                    and recent_engagement.get("person_id") == ws_pid
-                )
-                # Engaged-and-visible attribution: if the best voice candidate
-                # IS the engaged + visible person, even at sub-soft-threshold
-                # score, attribute to them. Face presence + soft voice match
-                # stack together: each is a weak signal alone, both together
-                # are stronger than the soft threshold on voice alone. This
-                # prevents "off-camera unknown" misfires when a known speaker's
-                # voice happens to score just under the soft floor on a noisy
-                # utterance.
-                eng_visible_floor = float(
-                    getattr(config, "SPEAKER_ID_ENGAGED_VISIBLE_FLOOR", 0.50)
-                )
-                if (
-                    engaged_is_visible
-                    and raw_best_id == ws_pid
-                    and speaker_score >= eng_visible_floor
-                ):
-                    person_id = ws_pid
-                    person_name = ws_name
-                    _log.info(
-                        "[interaction] person resolution: engaged+visible attribution — "
-                        "person_id=%s name=%r voice_score=%.3f (floor=%.2f)",
-                        person_id, person_name, speaker_score, eng_visible_floor,
-                    )
-                elif (
-                    engaged_is_visible
-                    and not unknown_visible
-                    and not _other_known_visible_recently(ws_pid)
-                ):
-                    # Exactly one known face visible, nobody unknown around, and no
-                    # other known person recently in frame: the visible person IS the
-                    # speaker. Trust the FACE regardless of voice score — a returning
-                    # user's voiceprint frequently misses the threshold, and disowning
-                    # the single on-camera person as an "off-camera ghost" every turn
-                    # was the core mis-attribution (symptoms A/B/C). A confident face is
-                    # also ground truth for refreshing the (weak) voiceprint. Cross-talk
-                    # from a genuinely off-camera voice is a separate, confidence-gated
-                    # concern handled in Tier 2.
-                    if len(visible_known_by_id) == 1:
-                        person_id = ws_pid
-                        person_name = ws_name
-                        _log.info(
-                            "[interaction] person resolution: single visible known face "
-                            "%r — attributing regardless of voice (voice_score=%.3f, "
-                            "raw_best=%s)",
-                            ws_name, speaker_score, raw_best_id,
-                        )
-                        try:
-                            _maybe_auto_refresh_voice(
-                                person_id, speaker_score, audio_array, face_confirmed=True
-                            )
-                        except Exception as exc:
-                            _log.debug("auto voice-refresh skip: %s", exc)
-                    else:
-                        off_camera_unknown = True
-                        _log.info(
-                            "[interaction] person resolution: engaged person %r visible "
-                            "but the scene is ambiguous — leaving speaker unknown",
-                            ws_name,
-                        )
-                elif engaged_is_visible and unknown_visible:
-                    _log.info(
-                        "[interaction] person resolution: speaker-ID missed while engaged "
-                        "person %r is visible but a newcomer is/was recently visible — "
-                        "leaving speaker unknown",
-                        ws_name,
-                    )
-                else:
-                    person_id = ws_pid
-                    person_name = ws_name
-                    _log.info(
-                        "[interaction] person resolution: worldstate match — person_id=%s name=%r",
-                        person_id, person_name,
-                    )
-            elif person_id == ws_pid:
+                    and _safe_int(recent_engagement.get("person_id")) == ws_pid
+                ),
+                unknown_visible=_has_unknown_visible_or_recent(),
+                other_known_recently=_other_known_visible_recently(ws_pid),
+            )
+            if decision == "voice_agrees":
                 _log.info(
-                    "[interaction] person resolution: both agreed — person_id=%s name=%r score=%.3f",
+                    "[interaction] person resolution: voice+face agree — person_id=%s name=%r score=%.3f",
                     person_id, person_name, speaker_score,
                 )
-                # Auto-refresh voice biometric: face AND voice agree on the same
-                # person, so the FACE confirms the identity — append this audio as an
-                # additional voice-print row (up to a per-person cap) EVEN at a low
-                # voice score. Capturing low-score, face-confirmed samples is exactly
-                # what improves a weak returning-user print over time.
                 try:
                     _maybe_auto_refresh_voice(
-                        person_id, speaker_score, audio_array, face_confirmed=True
+                        person_id, speaker_score, audio_array,
+                        face_confirmed=True, raw_best_id=raw_best_id,
                     )
                 except Exception as exc:
                     _log.debug("auto voice-refresh skip: %s", exc)
-            else:
+            elif decision == "voice_over_face":
+                # Voice matched someone OTHER than the visible face. Voice is
+                # primary: keep the voice result — the visible person is simply
+                # also present, and the speaker the voice matched is talking off
+                # the one identified face (beside/behind the camera, across a room).
+                _log.info(
+                    "[interaction] person resolution: voice over visible face — "
+                    "person_id=%s name=%r (visible ws_pid=%s) score=%.3f",
+                    person_id, person_name, ws_pid, speaker_score,
+                )
+            elif decision == "corroborate":
+                # Voice weakly leans toward the one visible person — their own
+                # (weak) print, corroborated by their face.
+                person_id = ws_pid
+                person_name = ws_name
+                _log.info(
+                    "[interaction] person resolution: weak voice corroborated by visible "
+                    "face — person_id=%s name=%r score=%.3f",
+                    person_id, person_name, speaker_score,
+                )
+                try:
+                    _maybe_auto_refresh_voice(
+                        person_id, speaker_score, audio_array,
+                        face_confirmed=True, raw_best_id=raw_best_id,
+                    )
+                except Exception as exc:
+                    _log.debug("auto voice-refresh skip: %s", exc)
+            elif decision == "face_only_continuity":
+                # No voice candidate at all (no enrolled prints / clip too short to
+                # score) in a clean 1:1 with the engaged person on camera and nobody
+                # else around — last-resort continuity. Do NOT refresh (no voice).
+                person_id = ws_pid
+                person_name = ws_name
+                _log.info(
+                    "[interaction] person resolution: no voice signal, single engaged "
+                    "face — person_id=%s name=%r (face-only continuity)",
+                    person_id, person_name,
+                )
+            elif decision == "unknown_intro_path":
+                # Voice unrecognized while an unknown face is/was visible — leave the
+                # speaker unresolved for the intro/identify path (NOT off-screen).
+                _log.info(
+                    "[interaction] person resolution: voice unrecognized while an unknown "
+                    "face is/was visible — leaving speaker unknown (intro/identify path)",
+                )
+            else:  # off_screen_unknown
+                off_camera_unknown = True
+                _log.info(
+                    "[interaction] person resolution: voice points away from visible face "
+                    "%r (raw_best=%s score=%.3f) — off-screen/unknown speaker",
+                    ws_name, raw_best_id, speaker_score,
+                )
+        elif ws_person is not None:
+            # Legacy face-wins path (voice-primary disabled).
+            ws_pid = _safe_int(ws_person.get("person_db_id"))
+            ws_name = ws_person.get("face_id") or ws_person.get("voice_id")
+            if person_id is None:
+                person_id, person_name = ws_pid, ws_name
+            elif person_id != ws_pid:
                 face_override = _single_visible_face_voice_override(
                     resolved_person_id=person_id,
                     ws_person=ws_person,
@@ -15032,54 +15100,26 @@ def _handle_speech_segment(
                     hard_threshold=hard_threshold,
                 )
                 if face_override is not None:
-                    prior_person_id = person_id
-                    prior_person_name = person_name
                     person_id, person_name = face_override
                     sticky_accepted = False
                     identity_resolution_override = "visible_face_over_voice_conflict"
-                    _log.info(
-                        "[interaction] person resolution: single visible face overrides "
-                        "conflicting voice-ID — person_id=%s name=%r raw_voice=%s/%r "
-                        "score=%.3f",
-                        person_id,
-                        person_name,
-                        prior_person_id,
-                        prior_person_name,
-                        speaker_score,
-                    )
-                else:
-                    _log.info(
-                        "[interaction] person resolution: speaker_id match (score=%.3f) vs worldstate "
-                        "(ws_pid=%s) — keeping speaker_id result person_id=%s name=%r",
-                        speaker_score, ws_pid, person_id, person_name,
-                    )
         elif person_id is not None:
             _log.info(
-                "[interaction] person resolution: speaker_id match — person_id=%s name=%r score=%.3f",
+                "[interaction] person resolution: voice match — person_id=%s name=%r score=%.3f",
                 person_id, person_name, speaker_score,
             )
         else:
-            # Neither face-ID nor speaker-ID matched anyone. If a known person
-            # was engaged recently but isn't visible right now, and no unknown
-            # face is visible either, this is still an off-camera unknown voice.
-            if (
-                recent_engagement
-                and not _has_unknown_visible_or_recent()
-                and not _other_known_visible_recently((recent_engagement or {}).get("person_id"))
-                and len(ws_identified) < 2
-            ):
-                off_camera_unknown = True
-                _log.info(
-                    "[interaction] person resolution: no face, no voice match, "
-                    "but %r was engaged recently — off-camera unknown voice",
-                    recent_engagement.get("name"),
-                )
-            elif recent_engagement and len(ws_identified) >= 2:
-                _log.info(
-                    "[interaction] person resolution: ambiguous low-score voice "
-                    "while multiple known faces visible — not treating as off-camera unknown"
-                )
-            # Else: falls through to normal enrollment logic below
+            # No single identified face and no voice match. Track as an off-screen
+            # / unknown voice so group and crowded-room speakers are NOT dropped —
+            # we do NOT require that nobody else is visible (the old rule suppressed
+            # unknown voices in groups, the exact case we need to get right). The
+            # anonymous speaker slot below gives this voice session continuity.
+            off_camera_unknown = True
+            _log.info(
+                "[interaction] person resolution: no voice match, no single visible face — "
+                "off-screen/unknown voice (recent=%r, visible_known=%d)",
+                (recent_engagement or {}).get("name"), len(visible_known_by_id),
+            )
 
         pending_last_name_target = _pending_existing_common_first_name_reply_target(text)
         if pending_last_name_target is not None:

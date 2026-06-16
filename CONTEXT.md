@@ -238,21 +238,52 @@ When assessing responsiveness, prefer TTFS/audio-start timings over total turn d
 
 ## Identity And Multiple Speakers
 
+**Voice is the primary signal for WHO is speaking** (`VOICE_PRIMARY_IDENTITY_ENABLED`).
+Rex must know who is talking to him even when he can't see them — off-camera, in a
+group, in a crowded room. So identity resolution is voice-led; the camera no longer
+decides who spoke.
+
 Identity combines:
 
+- Voice embeddings from `audio.speaker_id` (Resemblyzer per-person centroid, cosine).
 - Face recognition from `vision.face`.
-- Voice embeddings from `audio.speaker_id`.
 - Current visible people from `world_state`.
 - Recent engaged speaker/session continuity.
 - Conservative fallbacks when ambiguity is high.
 
+Resolution hierarchy (`intelligence/interaction.py` `_handle_speech_segment`; the
+single-visible-face decision is the pure, unit-tested `_voice_primary_face_decision`):
+
+1. **Confident voice wins outright** — a margin-guarded voice match at/above
+   `SPEAKER_ID_CONFIDENT_THRESHOLD` (0.70) is trusted regardless of whose face is on
+   camera. This is what lets Rex name an off-camera or group speaker.
+2. **Accepted voice wins** — the existing margin-guarded accept tiers (hard 0.50,
+   known floor 0.45, session-sticky 0.60) resolve a person; that result stands even
+   if a *different* known face is the only one visible (the visible person is simply
+   also present). The voice is never overridden by the camera.
+3. **Weak/absent voice → the face only CORROBORATES** — if the voice did not reach an
+   accept tier, Rex attributes the turn to the single visible person **only when the
+   voice still leans toward them** (`raw_best_id == that person`), or when there is no
+   voice candidate at all in a clean 1:1 with the engaged person on camera. If the
+   voice leans toward someone *else*, or the scene is ambiguous, the speaker is treated
+   as **off-screen / unknown** — never pinned on whoever happens to be in frame.
+4. **Voiceprint refresh is voice-gated** — `_maybe_auto_refresh_voice` only appends a
+   face-confirmed sample when the voice's own best candidate already IS that person, so
+   an off-camera or not-yet-enrolled speaker can never corrupt a visible person's print.
+
 Important behavior:
 
-- A hard voice threshold prevents casual misidentification.
-- A softer session-sticky threshold can keep continuity during an active exchange.
-- If only one known person is visibly engaged, world-state continuity may override weak voice scores.
-- If multiple known faces are visible and voice confidence is low, the system can create an anonymous voice label like `unknown_voice_1` instead of forcing a person match.
-- Unknown voices can be tracked within the session even before a name is known.
+- The margin guard (`SPEAKER_ID_KNOWN_MARGIN`) is the real protection against a stranger
+  who merely *sounds* like a known person: a confident-looking score with no clear lead
+  over the runner-up is rejected as ambiguous. Voice scoring is purely relative (an
+  unenrolled voice lands on the nearest print at ~0.55–0.65), so there is no absolute
+  "is this really X" confidence — margin + threshold together stand in for it.
+- An unrecognized voice is tracked within the session as an anonymous label
+  (`unknown_voice_1`, …) with its own embedding, in groups and crowds too — it is not
+  forced onto a visible person and not dropped.
+- Legacy behavior — "a single visible face wins regardless of voice" — is retained only
+  behind `VOICE_PRIMARY_IDENTITY_ENABLED=False` (the `_single_visible_face_voice_override`
+  path) as a rollback.
 - Directional audio intelligence is a future design target, not currently implemented.
 
 Recent introduction repair:
@@ -531,7 +562,7 @@ venv/bin/python main.py
 - WorldState lost-update fix: `world_state.mutate(field, fn)` does the read-modify-write under the lock; every `people` writer uses it (not `get()`+`update()`).
 - OpenAI warmup: `llm.warmup()` + `action_router.warmup()` run in a background thread (`OPENAI_WARMUP_ON_STARTUP`) so the first turn skips cold TLS/HTTP.
 - Stale-event-cancel guard: `memory.events.looks_like_cancellation` requires a cancellation phrase AND no false-positive idiom ("not going to lie", etc.).
-- Identity sub-0.75 floors require `raw_best_id == person` (the continuity/recent floors), so a 2nd speaker in a 1:1 frame is treated as off-camera.
+- **Voice-primary identity** (`VOICE_PRIMARY_IDENTITY_ENABLED`, default on): WHO is speaking is decided by the VOICE, not the visible face — see the "Identity And Multiple Speakers" section. A confident/accepted voice match wins regardless of who's on camera; a weak/absent match lets the visible face only CORROBORATE (when `raw_best_id == that person`) and otherwise resolves off-screen/unknown; voiceprint auto-refresh is gated on `raw_best_id == person_id` so a different voice can't pollute a print. The old "single visible face wins regardless of voice" rule is retained only behind the flag (`_single_visible_face_voice_override`). Decision logic is the pure, unit-tested `_voice_primary_face_decision`; `tests/test_voice_primary_identity.py`. (Earlier note, now superseded: "sub-0.75 floors require raw_best_id == person, so a 2nd speaker in a 1:1 is treated as off-camera" — the corroboration rule generalizes this to all frames.)
 - Bug fixes to keep: `SCENE_MUSIC_BAND_ENERGY_MIN=2e-6` (was a typo making music always "detected"); dead `GUI_SHOW_FPS` removed; `social_frame` optional-lookup excepts log at debug.
 - Event follow-up resolution: a reply that an event never happened (`interaction._followup_event_did_not_happen`) resolves a pending follow-up instead of re-asking (kills the "how was the concert?" loop).
 - The "one sec" fillers (slow-path ack + latency filler) are disabled by default and `SILENCE_TIMEOUT_SECS=0.6` — see Latency And Telemetry. Don't re-enable without reason.
