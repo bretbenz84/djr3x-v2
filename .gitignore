@@ -243,6 +243,10 @@ assets/memory/rex.db-shm
 assets/memory/rex.db-wal
 assets/memory/rex.db.bak-*
 
+# Rex's persistent POV/preoccupation state — local runtime artifact, rewritten
+# every run; never commit.
+assets/memory/rex_pov_state.json
+
 
 # Startup boot-line rotation state — local runtime bookkeeping
 assets/state/
