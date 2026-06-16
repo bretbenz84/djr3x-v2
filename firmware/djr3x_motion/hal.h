@@ -23,11 +23,14 @@
 #ifndef MOTION_TOF_PRESENT
 #define MOTION_TOF_PRESENT 0   // override per-build: -DMOTION_TOF_PRESENT=1
 #endif
-// Addressing scheme for the 5 sensors on one I²C bus (docs §6.1). 0 = XSHUT
-// sequencing (5 GPIOs, each sensor reassigned a unique address); 1 = TCA9548A
-// I²C multiplexer (all stay 0x29, select one channel at a time — frees the GPIOs).
+// Addressing scheme for the 5 sensors on one I²C bus (docs §6.1). 1 = TCA9548A
+// I²C multiplexer (all sensors stay at 0x29; the mux selects one channel at a time —
+// uses NO extra GPIOs); 0 = XSHUT sequencing (one GPIO per sensor, each reassigned a
+// unique address). Default is the mux: it's the chosen design for this base (the
+// ESP32 is out of spare clean GPIOs) and the hardware is on hand. Build the XSHUT
+// variant with -DMOTION_TOF_USE_MUX=0.
 #ifndef MOTION_TOF_USE_MUX
-#define MOTION_TOF_USE_MUX 0   // override per-build: -DMOTION_TOF_USE_MUX=1
+#define MOTION_TOF_USE_MUX 1   // override per-build: -DMOTION_TOF_USE_MUX=0 (XSHUT)
 #endif
 
 void hal_init();

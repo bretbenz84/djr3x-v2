@@ -44,13 +44,14 @@
 #define PIN_I2C_SDA  21
 #define PIN_I2C_SCL  22
 
-// ---- ToF XSHUT lines (only when MOTION_TOF_USE_MUX==0) --------------------
-// One GPIO per sensor so tof.cpp can bring them up one at a time and reassign each
-// a unique I²C address (the 5 sensors all power up at 0x29 and would collide). The
-// TCA9548A mux scheme needs ZERO of these (it selects a channel on the I²C bus
-// instead) — prefer it if GPIOs get tight. NOTE: GPIO15 is a strapping pin (its only
-// effect when high at boot is to silence the boot log — harmless here); 0/2/12 are
-// avoided as they affect boot/flash. Adjust to your wiring. Order = TofMm fields.
+// ---- ToF XSHUT lines (ONLY used when MOTION_TOF_USE_MUX==0) ----------------
+// NOT used in the default build: this base uses the TCA9548A mux (MOTION_TOF_USE_MUX==1),
+// which needs ZERO XSHUT GPIOs — so 4/5/13/14/15 below are FREE for other use. These
+// defines exist only for the XSHUT-sequencing variant (one GPIO per sensor, to bring
+// them up one at a time and reassign each a unique I²C address; the 5 all power up at
+// 0x29 and would otherwise collide). NOTE for that variant: GPIO5 and GPIO15 are
+// strapping pins (OK here — driven low only after boot); 0/2/12 are avoided as they
+// affect boot/flash. Adjust to your wiring. Order = TofMm fields.
 #define PIN_TOF_XSHUT_FL    4    // front-left  (~-30°)
 #define PIN_TOF_XSHUT_FC    5    // front-center (0°)
 #define PIN_TOF_XSHUT_FR    13   // front-right (~+30°)

@@ -95,12 +95,13 @@ Off by default even in the live build (`hal_read_tof` reports a clear room). Ena
 once the 5× VL53L0X are on the I²C bus — combine the flags:
 
 ```bash
-# Live drive base + ToF (XSHUT sequencing — the default addressing; needs 5 GPIOs):
+# Live drive base + ToF. Default addressing is the TCA9548A I²C multiplexer (all five
+# sensors stay at 0x29; the mux selects one channel at a time — zero XSHUT GPIOs):
 arduino-cli compile --fqbn esp32:esp32:esp32 \
   --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_TOF_PRESENT=1" \
   firmware/djr3x_motion
-# …or with a TCA9548A I²C multiplexer instead (frees the XSHUT GPIOs): add
-#   -DMOTION_TOF_USE_MUX=1
+# …or XSHUT sequencing instead (one GPIO per sensor — pins.h 4/5/13/14/15): add
+#   -DMOTION_TOF_USE_MUX=0
 ```
 
 `tof.cpp` is a **scaffold**: it compiles in both addressing modes but is **not yet
