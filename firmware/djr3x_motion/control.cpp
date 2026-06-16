@@ -13,7 +13,7 @@
 #define PLANT_ACCEL_ANG 3.0f    // rad/s^2
 #define MOTION_EPS      0.005f
 
-static float wrap_pi(float a) {
+static inline float wrap_pi(float a) {
   while (a > (float)M_PI)  a -= 2.0f * (float)M_PI;
   while (a <= -(float)M_PI) a += 2.0f * (float)M_PI;
   return a;
@@ -107,14 +107,20 @@ void control_tick(float dt) {
   lin_t = clampf(lin_t, -c.params.max_lin, c.params.max_lin);
   ang_t = clampf(ang_t, -c.params.max_ang, c.params.max_ang);
 
-  // Plant: ramp actual velocity toward target (accel-limited).
+#if MOTION_HW_PRESENT
+  // Real base: odometry comes from the wheel encoders (sense before act). dt is
+  // the fixed control period; lin_t/ang_t drive the wheels below.
+  hal_read_odom(c.odom, dt);
+#else
+  // Stub plant: ramp actual velocity toward target (accel-limited)...
   c.odom.lin += clampf(lin_t - c.odom.lin, -PLANT_ACCEL_LIN * dt, PLANT_ACCEL_LIN * dt);
   c.odom.ang += clampf(ang_t - c.odom.ang, -PLANT_ACCEL_ANG * dt, PLANT_ACCEL_ANG * dt);
 
-  // Integrate odometry (simple Euler; good enough for the stub).
+  // ...and integrate odometry (simple Euler; good enough for the stub).
   c.odom.theta = wrap_pi(c.odom.theta + c.odom.ang * dt);
   c.odom.x += c.odom.lin * cosf(c.odom.theta) * dt;
   c.odom.y += c.odom.lin * sinf(c.odom.theta) * dt;
+#endif
 
   // Finite-command progress.
   if (!halted && !emitDone && c.finite.kind != CMD_NONE) {
@@ -158,8 +164,15 @@ void control_tick(float dt) {
     c.state = moving ? ST_MOVING : ST_IDLE;
   }
 
+#if MOTION_HW_PRESENT
+  // Act: drive the wheels toward the (reflex-gated, clamped) target velocity, or
+  // cut the motors entirely on any halt (estop / fault / comms-lost).
+  if (halted) hal_motors_off();
+  else        hal_drive_velocity(lin_t, ang_t, dt);
+#else
   // Push velocity to the motor HAL (stub: no-op until wheels are wired).
   hal_apply_velocity(c.odom.lin, c.odom.ang);
+#endif
 
   UNLOCK_STATE();
 

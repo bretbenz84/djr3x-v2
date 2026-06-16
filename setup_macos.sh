@@ -1435,6 +1435,17 @@ _ensure_esp32_toolchain() {
         warn "Could not install ArduinoJson."
         MANUAL_ATTENTION+=("Install ArduinoJson: arduino-cli lib install ArduinoJson"); return 1
     fi
+    # ESP32Encoder: Hall quadrature decode via the PCNT peripheral (Phase-1 real
+    # drive base). Only needed for the -DMOTION_HW_PRESENT=1 build, but install it
+    # up front so a live build never fails on a missing dependency.
+    if arduino-cli lib list 2>/dev/null | grep -qi '^ESP32Encoder[[:space:]]'; then
+        ok "ESP32Encoder library already installed."
+    elif arduino-cli lib install ESP32Encoder >/dev/null 2>&1; then
+        INSTALLED_ITEMS+=("Arduino library: ESP32Encoder"); ok "ESP32Encoder installed."
+    else
+        warn "Could not install ESP32Encoder."
+        MANUAL_ATTENTION+=("Install ESP32Encoder: arduino-cli lib install ESP32Encoder"); return 1
+    fi
     return 0
 }
 
