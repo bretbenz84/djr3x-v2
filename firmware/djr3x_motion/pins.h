@@ -17,7 +17,8 @@
 // ---- Drive motors: 2× BTS7960 full H-bridge, one per wheel ----------------
 // Drive a wheel by PWM-ing exactly one of RPWM/LPWM (the other at 0); never both.
 // R_EN+L_EN of each driver are tied together to a single enable GPIO (pull LOW to
-// coast/disable). ledcAttach() in hal.cpp allocates an LEDC channel per pin.
+// coast/disable). hal.cpp drives these via LEDC PWM (the channel mapping is handled
+// there for both Arduino-ESP32 core 2.x and 3.x).
 #define PIN_L_RPWM   16   // left  motor, forward duty (RPWM)
 #define PIN_L_LPWM   17   // left  motor, reverse duty (LPWM)
 #define PIN_R_RPWM   18   // right motor, forward duty (RPWM)

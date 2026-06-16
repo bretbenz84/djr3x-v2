@@ -18,9 +18,29 @@
 #include <math.h>
 #include <ESP32Encoder.h>
 
-// LEDC PWM is driven through the core-3.x pin-based API: ledcAttach() allocates a
-// channel per pin under the hood, and duty is written by GPIO (ledcWrite(pin,duty)).
-// (Arduino-ESP32 3.x removed the old channel-based ledcSetup/ledcAttachPin.)
+// LEDC PWM helpers — one pin-based interface across Arduino-ESP32 core versions.
+// Core 3.x replaced the channel-based LEDC API (ledcSetup / ledcAttachPin / ledcWrite
+// by channel) with a pin-based one (ledcAttach / ledcWrite by pin). We support BOTH so
+// the firmware builds whether a machine has the legacy 2.x core or the current 3.x core
+// — the rest of this file only ever calls pwm_attach(pin) / pwm_write(pin, duty).
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+static inline void pwm_attach(int pin) { ledcAttach(pin, PWM_FREQ_HZ, PWM_RES_BITS); }
+static inline void pwm_write(int pin, int duty) { ledcWrite(pin, duty); }
+#else
+// 2.x: each PWM pin maps to a fixed LEDC channel; attach + write go through the channel.
+static int pwm_chan(int pin) {
+  if (pin == PIN_L_RPWM) return 0;
+  if (pin == PIN_L_LPWM) return 1;
+  if (pin == PIN_R_RPWM) return 2;
+  return 3;                                  // PIN_R_LPWM
+}
+static inline void pwm_attach(int pin) {
+  const int ch = pwm_chan(pin);
+  ledcSetup(ch, PWM_FREQ_HZ, PWM_RES_BITS);
+  ledcAttachPin(pin, ch);
+}
+static inline void pwm_write(int pin, int duty) { ledcWrite(pwm_chan(pin), duty); }
+#endif
 
 static ESP32Encoder encL, encR;
 
@@ -43,8 +63,8 @@ static inline void motors_enable(bool en) {
 // Apply a signed duty (-MAX..+MAX) to one wheel by PWM-ing exactly one half of
 // its H-bridge (the other at 0). Forward = RPWM, reverse = LPWM; never both.
 static inline void apply_wheel_duty(int rpwm_pin, int lpwm_pin, int duty) {
-  if (duty >= 0) { ledcWrite(rpwm_pin, duty);  ledcWrite(lpwm_pin, 0); }
-  else           { ledcWrite(rpwm_pin, 0);     ledcWrite(lpwm_pin, -duty); }
+  if (duty >= 0) { pwm_write(rpwm_pin, duty);  pwm_write(lpwm_pin, 0); }
+  else           { pwm_write(rpwm_pin, 0);     pwm_write(lpwm_pin, -duty); }
 }
 
 static void reset_pid() {
@@ -61,14 +81,14 @@ void hal_init() {
   digitalWrite(PIN_R_EN, LOW);
   s_motors_enabled = false;
 
-  // LEDC PWM for the four half-bridge inputs; all at 0 duty. ledcAttach (core 3.x)
-  // allocates a channel per pin at the given freq/resolution.
-  ledcAttach(PIN_L_RPWM, PWM_FREQ_HZ, PWM_RES_BITS);
-  ledcAttach(PIN_L_LPWM, PWM_FREQ_HZ, PWM_RES_BITS);
-  ledcAttach(PIN_R_RPWM, PWM_FREQ_HZ, PWM_RES_BITS);
-  ledcAttach(PIN_R_LPWM, PWM_FREQ_HZ, PWM_RES_BITS);
-  ledcWrite(PIN_L_RPWM, 0); ledcWrite(PIN_L_LPWM, 0);
-  ledcWrite(PIN_R_RPWM, 0); ledcWrite(PIN_R_LPWM, 0);
+  // LEDC PWM for the four half-bridge inputs; attach each at the configured
+  // freq/resolution, all starting at 0 duty.
+  pwm_attach(PIN_L_RPWM);
+  pwm_attach(PIN_L_LPWM);
+  pwm_attach(PIN_R_RPWM);
+  pwm_attach(PIN_R_LPWM);
+  pwm_write(PIN_L_RPWM, 0); pwm_write(PIN_L_LPWM, 0);
+  pwm_write(PIN_R_RPWM, 0); pwm_write(PIN_R_LPWM, 0);
 
   // Encoders: full quadrature (x4). Internal weak pull-ups so a disconnected or
   // floating input doesn't generate phantom counts during incremental bring-up.
@@ -156,8 +176,8 @@ void hal_drive_velocity(float lin, float ang, float dt) {
 }
 
 void hal_motors_off() {
-  ledcWrite(PIN_L_RPWM, 0); ledcWrite(PIN_L_LPWM, 0);
-  ledcWrite(PIN_R_RPWM, 0); ledcWrite(PIN_R_LPWM, 0);
+  pwm_write(PIN_L_RPWM, 0); pwm_write(PIN_L_LPWM, 0);
+  pwm_write(PIN_R_RPWM, 0); pwm_write(PIN_R_LPWM, 0);
   motors_enable(false);
   reset_pid();
 }

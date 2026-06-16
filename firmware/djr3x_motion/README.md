@@ -28,8 +28,13 @@ the marked driver sections — nothing above the HAL changes.
 
 ## Board
 
-Classic ESP32-WROOM-32 (Elegoo DevKit, CP2102 USB bridge). FQBN `esp32:esp32:esp32`,
-typically on `/dev/cu.usbserial-10`.
+Classic ESP32-WROOM-32 (Elegoo DevKit, CP2102 USB bridge). FQBN `esp32:esp32:esp32`.
+The serial-port path varies per machine — find it with `arduino-cli board list` (it is
+the same path you set as `MOTION_ESP32_PORT` in `.env`). The commands below use `$PORT`:
+
+```bash
+export PORT=/dev/cu.usbserial-XXXX   # YOUR board's port — see `arduino-cli board list`
+```
 
 ## Toolchain (already installed on this machine)
 
@@ -39,12 +44,13 @@ arduino-cli lib install ArduinoJson       # JSON (7.4.3)
 arduino-cli lib install ESP32Encoder      # Hall quadrature decode (0.12.0) — live build only
 ```
 
-> **Core version.** `setup_macos.sh` installs `esp32:esp32` **unpinned**, so this
-> machine tracks the current Arduino-ESP32 core (**3.3.10**). The Phase-1 HAL targets
-> the **core-3.x** pin-based LEDC API (`ledcAttach` / `ledcWrite(pin, duty)` — the old
-> channel-based `ledcSetup`/`ledcAttachPin` was removed in 3.x); `ESP32Encoder` 0.12.0
-> handles the PCNT API change. The `setup_macos.sh` toolchain step installs all three
-> deps automatically.
+> **Core version (2.x and 3.x both supported).** `setup_macos.sh` installs
+> `esp32:esp32` **unpinned**, so a machine gets whatever core is current — older installs
+> may be on the legacy **2.x** core, newer ones on **3.x** (e.g. 3.3.10). The live HAL
+> builds on **both**: the LEDC API moved from channel-based (2.x: `ledcSetup` /
+> `ledcAttachPin`) to pin-based (3.x: `ledcAttach`), and `hal.cpp` picks the right one
+> via an `ESP_ARDUINO_VERSION` guard. `ESP32Encoder` 0.12.0 covers the matching PCNT
+> change. The `setup_macos.sh` toolchain step installs all three deps automatically.
 
 ## Build / upload / monitor
 
@@ -53,10 +59,10 @@ arduino-cli lib install ESP32Encoder      # Hall quadrature decode (0.12.0) — 
 arduino-cli compile --fqbn esp32:esp32:esp32 firmware/djr3x_motion
 
 # Flash the connected board
-arduino-cli upload  --fqbn esp32:esp32:esp32 -p /dev/cu.usbserial-10 firmware/djr3x_motion
+arduino-cli upload  --fqbn esp32:esp32:esp32 -p "$PORT" firmware/djr3x_motion
 
 # Watch the raw NDJSON telemetry stream (Ctrl-A k to quit `screen`)
-arduino-cli monitor -p /dev/cu.usbserial-10 -c baudrate=115200
+arduino-cli monitor -p "$PORT" -c baudrate=115200
 ```
 
 ## Build modes
@@ -76,7 +82,7 @@ arduino-cli compile --fqbn esp32:esp32:esp32 \
 # Flash live (115200 — 921600 is unreliable on this USB bridge)
 arduino-cli upload --fqbn esp32:esp32:esp32:UploadSpeed=115200 \
   --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1" \
-  -p /dev/cu.usbserial-10 firmware/djr3x_motion
+  -p "$PORT" firmware/djr3x_motion
 ```
 
 The live build boots to **idle with the motors disabled** — nothing moves until an
@@ -90,7 +96,7 @@ schema, `turn`/`move` completion, the drive deadman, the heartbeat watchdog +
 recovery, estop/clear precedence, error handling, and clamping:
 
 ```bash
-venv/bin/python firmware/tools/motion_serial_smoketest.py --port /dev/cu.usbserial-10
+venv/bin/python firmware/tools/motion_serial_smoketest.py --port "$PORT"
 ```
 
 Exit code 0 = every check passed. This is the evidence that the firmware speaks
