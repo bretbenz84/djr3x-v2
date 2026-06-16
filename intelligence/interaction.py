@@ -1568,6 +1568,37 @@ def _infer_identity_resolution_strategy(
     return "resolved"
 
 
+def _visual_corroborated_speaker(
+    *,
+    raw_best_id: Optional[int],
+    speaker_score: float,
+    visible_known_ids,
+    visual_speaker_pid: Optional[int],
+    floor: float,
+) -> Optional[int]:
+    """Multi-visible tie-breaker (voice + visual active-speaker). Returns the
+    person_id to attribute, or None.
+
+    Fires only when the weak voice candidate IS a visible known person AND the
+    camera saw exactly that person speaking near end-of-turn
+    (``active_speaker.recent_visual_speaker``). Vision only CONFIRMS the person the
+    voice already leans toward — it never promotes someone the voice doesn't point
+    at, and a confident voice never reaches this path (caller gates on
+    ``person_id is None``). Pure, so it is directly unit-testable.
+    """
+    raw_id = _safe_int(raw_best_id)
+    vis_pid = _safe_int(visual_speaker_pid)
+    if raw_id is None or vis_pid is None:
+        return None
+    if raw_id not in (visible_known_ids or set()):
+        return None
+    if vis_pid != raw_id:  # the one visual speaker must be the voice-leaned-to person
+        return None
+    if float(speaker_score or 0.0) < float(floor):
+        return None
+    return raw_id
+
+
 def _voice_primary_face_decision(
     *,
     person_id: Optional[int],
@@ -15038,6 +15069,23 @@ def _handle_speech_segment(
         if person_id is None and len(visible_known_by_id) >= 2:
             multi_floor = float(getattr(config, "SPEAKER_ID_MULTI_VISIBLE_FLOOR", 0.50))
             recent_floor = float(getattr(config, "SPEAKER_ID_MULTI_VISIBLE_RECENT_FLOOR", 0.45))
+            speaking_floor = float(getattr(config, "SPEAKER_ID_MULTI_VISIBLE_SPEAKING_FLOOR", 0.35))
+            # Visual active-speaker corroboration: the LATCHED recent speaker
+            # (the live is_speaking has already cleared by the time a turn is
+            # resolved — see active_speaker.recent_visual_speaker docs).
+            _visual_pid = None
+            try:
+                from vision import active_speaker as _asp
+                _visual_pid = (_asp.recent_visual_speaker() or {}).get("person_db_id")
+            except Exception as exc:
+                _log.debug("active-speaker recent lookup failed: %s", exc)
+            _visual_corroborated = _visual_corroborated_speaker(
+                raw_best_id=raw_best_id,
+                speaker_score=speaker_score,
+                visible_known_ids=set(visible_known_by_id.keys()),
+                visual_speaker_pid=_visual_pid,
+                floor=speaking_floor,
+            )
             if raw_best_id in visible_known_by_id and speaker_score >= multi_floor:
                 vis = visible_known_by_id[int(raw_best_id)]
                 person_id = int(raw_best_id)
@@ -15046,6 +15094,16 @@ def _handle_speech_segment(
                     "[interaction] person resolution: multi-visible voice+face attribution — "
                     "person_id=%s name=%r voice_score=%.3f (floor=%.2f)",
                     person_id, person_name, speaker_score, multi_floor,
+                )
+            elif _visual_corroborated is not None:
+                vis = visible_known_by_id[int(_visual_corroborated)]
+                person_id = int(_visual_corroborated)
+                person_name = raw_best_name or vis.get("face_id") or vis.get("voice_id")
+                identity_resolution_override = "voice_corroborated_by_visual_speaker"
+                _log.info(
+                    "[interaction] person resolution: multi-visible weak voice (%.3f) confirmed "
+                    "by active-speaker visual — person_id=%s name=%r (floor=%.2f)",
+                    speaker_score, person_id, person_name, speaking_floor,
                 )
             else:
                 recent_id = (recent_engagement or {}).get("person_id")

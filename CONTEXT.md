@@ -295,6 +295,21 @@ Important behavior:
 - Legacy behavior — "a single visible face wins regardless of voice" — is retained only
   behind `VOICE_PRIMARY_IDENTITY_ENABLED=False` (the `_single_visible_face_voice_override`
   path) as a rollback.
+- **Visual active-speaker corroboration** (`vision/active_speaker.py`,
+  `docs/active_speaker_detection.md`): when 2+ people are in frame, per-face lip-motion
+  energy (jawOpen variance, gated on head yaw + the live VAD flag) decides WHICH visible
+  mouth is moving and publishes `is_speaking`/`speaking_confidence`/`speaking_updated_at`
+  on `world_state.people`. It composes with voice resolution as a TIE-BREAKER only: in the
+  multi-visible branch, a weak voice that leans toward a visible person is accepted at the
+  lower `SPEAKER_ID_MULTI_VISIBLE_SPEAKING_FLOOR` when the camera saw exactly that person
+  speaking. Vision only CONFIRMS the voice's lean (`_visual_corroborated_speaker`), never
+  overrides a confident voice nor invents an off-screen speaker. Because voice resolution
+  runs AFTER a turn ends (the live `is_speaking` has cleared by then), it reads the decaying
+  latch `active_speaker.recent_visual_speaker()`, not the instantaneous field. Lip energy
+  alone can't tell speech from chewing/yawning (chewing reads higher) — the VAD gate makes
+  it speech-conditional. Thresholds calibrated on-device (`tools/test_active_speaker.py`,
+  `ACTIVE_SPEAKER_LOG_SCOREBOARD`). Tests: `tests/test_active_speaker.py`,
+  `tests/test_voice_primary_identity.py`.
 - Directional audio intelligence is a future design target, not currently implemented.
 
 Recent introduction repair:

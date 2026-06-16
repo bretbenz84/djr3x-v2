@@ -173,5 +173,43 @@ class IdentityResolutionStrategyTest(unittest.TestCase):
         )
 
 
+class VisualCorroborationTest(unittest.TestCase):
+    """Commit 7: the multi-visible tie-breaker. A weak voice that leans toward a
+    visible known person is accepted at a lower floor ONLY when the camera saw
+    exactly that person speaking. Vision confirms; it never overrides or invents."""
+
+    VISIBLE = {1, 2}
+
+    def _decide(self, **kw):
+        base = dict(
+            raw_best_id=1,
+            speaker_score=0.40,
+            visible_known_ids=self.VISIBLE,
+            visual_speaker_pid=1,
+            floor=0.35,
+        )
+        base.update(kw)
+        return I._visual_corroborated_speaker(**base)
+
+    def test_voice_and_visual_agree_on_visible_person(self):
+        self.assertEqual(self._decide(), 1)
+
+    def test_visual_speaker_is_a_different_person_abstains(self):
+        # Voice leans toward 1 but the camera saw 2 speaking — disagree → no attribution.
+        self.assertIsNone(self._decide(raw_best_id=1, visual_speaker_pid=2))
+
+    def test_no_visual_speaker_abstains(self):
+        self.assertIsNone(self._decide(visual_speaker_pid=None))
+
+    def test_voice_leans_to_someone_not_visible_abstains(self):
+        self.assertIsNone(self._decide(raw_best_id=3, visual_speaker_pid=3))
+
+    def test_below_floor_abstains(self):
+        self.assertIsNone(self._decide(speaker_score=0.30))
+
+    def test_no_voice_candidate_abstains(self):
+        self.assertIsNone(self._decide(raw_best_id=None, visual_speaker_pid=None))
+
+
 if __name__ == "__main__":
     unittest.main()

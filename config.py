@@ -480,8 +480,12 @@ FACING_YAW_MAX_DEG = _env_float("FACING_YAW_MAX_DEG", 30.0, min_value=0.0, max_v
 
 # Layer 2 — lip-motion energy (rolling jawOpen variance per person).
 LIPSYNC_WINDOW_SECS = _env_float("LIPSYNC_WINDOW_SECS", 1.0, min_value=0.25, max_value=5.0)
-# Variance of jawOpen over the window; PLACEHOLDER — calibrate on-device (commit 6).
-LIPSYNC_ENERGY_THRESHOLD = _env_float("LIPSYNC_ENERGY_THRESHOLD", 0.0025, min_value=0.0, max_value=1.0)
+# Variance of jawOpen over the window. Calibrated on-device (M5 Pro, FaceTime cam,
+# 2026-06-16): still/listening ≤ ~0.0007, talking-active ≈ 0.003–0.008. 0.002 sits
+# cleanly between the two. NOTE: chewing/yawning reads MUCH higher (~0.01–0.045) —
+# lip energy alone cannot tell speech from chewing; the VAD gate (Layer 3) does
+# that, confirmed in the same run. So this threshold's only job is talk-vs-still.
+LIPSYNC_ENERGY_THRESHOLD = _env_float("LIPSYNC_ENERGY_THRESHOLD", 0.002, min_value=0.0, max_value=1.0)
 # Drop a person's motion buffer after this long unseen (handles leave/return).
 LIPSYNC_STALE_SECS = _env_float("LIPSYNC_STALE_SECS", 2.0, min_value=0.5, max_value=30.0)
 
@@ -3258,6 +3262,14 @@ SPEAKER_ID_PENDING_QA_RECENT_FLOOR = 0.35
 # a visible person when the voice model is noisy.
 SPEAKER_ID_MULTI_VISIBLE_FLOOR = 0.50
 SPEAKER_ID_MULTI_VISIBLE_RECENT_FLOOR = 0.45
+
+# Visual active-speaker corroboration floor (multi-person frame). When the weak
+# voice candidate IS one of the visible known people AND the camera saw exactly
+# that person speaking near end-of-turn (vision/active_speaker.recent_visual_speaker),
+# accept at this lower floor instead of SPEAKER_ID_MULTI_VISIBLE_FLOOR. Vision only
+# CONFIRMS a person the voice already leans toward — it never pulls the turn toward
+# someone the voice doesn't point at, and a confident voice never reaches here.
+SPEAKER_ID_MULTI_VISIBLE_SPEAKING_FLOOR = 0.35
 
 # Grief-flow attribution floor: when the structured loss/grief flow has an
 # active step awaiting THIS engaged-and-visible person's reply (Rex just asked
