@@ -433,6 +433,14 @@ watchdog — it can stop the base without the Mac) and the **Mac owns the intent
 - **Config:** `MOTION_*` tunables in `config.py`; `MOTION_ESP32_PORT` in `.env` (loaded as
   `MOTION_PORT_SET`). `main.py` Step-4 connects it and logs `Motion base: enabled/disabled`
   like the other hardware; shutdown stops the heartbeat and leaves the base stopped.
+- **Runtime tuning (Phase 1):** PID gains + calibration geometry (`counts_per_meter`,
+  `track_width_m`, `kp/ki/kd`) are runtime-tunable via the `config` command — calibrate +
+  tune the real base live without reflashing each iteration (`firmware/tools/motion_bench.py
+  set/show/straight/turn`). `calib.h` holds the firmware boot defaults; the Mac pushes
+  overrides only when the matching `MOTION_WHEEL_*`/`MOTION_COUNTS_PER_METER`/
+  `MOTION_TRACK_WIDTH_M` key is set (opt-in, so a connect never clobbers a bench-tuned
+  value). Wire contract: `docs/motion_protocol.md` §10. ToF is still a stub (avoidance
+  inactive); the right motor is hardware-confirmed, left + calibration are next.
 - **Setup:** `setup_macos.sh` (under "physical droid" → "motion base") **auto-detects the
   ESP32 by protocol probe** — it opens each USB-serial port and looks for the firmware's
   `hello` reply. This is the only reliable discriminator because the board's USB bridge is

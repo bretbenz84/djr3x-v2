@@ -106,10 +106,22 @@ def _heartbeat_loop() -> None:
         _stop.wait(period)
 
 
+_TUNING_KEYS = (
+    ("kp", "MOTION_WHEEL_KP"),
+    ("ki", "MOTION_WHEEL_KI"),
+    ("kd", "MOTION_WHEEL_KD"),
+    ("counts_per_meter", "MOTION_COUNTS_PER_METER"),
+    ("track_width_m", "MOTION_TRACK_WIDTH_M"),
+)
+
+
 def _push_config() -> None:
-    """Send the Mac's caps/zones/timing to the ESP32 once (it clamps to its hard
-    caps). max_ang is converted deg/s -> rad/s for the wire."""
-    motion.send({
+    """Send the Mac's caps/zones/timing to the ESP32 (it clamps to its hard caps).
+    max_ang is converted deg/s -> rad/s for the wire. The drive-tuning keys (PID gains
+    + calibration geometry) are added ONLY when explicitly set in config.py/.env — when
+    None the firmware keeps its calib.h boot defaults, so a (re)connect never clobbers a
+    bench-tuned value with a placeholder. See docs/motion_protocol.md §10."""
+    cfg = {
         "cmd": "config",
         "max_lin": _get_float("MOTION_MAX_LINEAR_MS", 0.25),
         "max_ang": math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0)),
@@ -122,7 +134,12 @@ def _push_config() -> None:
         "drive_expiry_ms": _get_int("MOTION_DRIVE_EXPIRY_MS", 300),
         "manual_idle_return_secs": _get_int("MOTION_MANUAL_IDLE_RETURN_SECS", 4),
         "manual_autoreturn": bool(getattr(config, "MOTION_MANUAL_AUTORETURN", False)),
-    })
+    }
+    for wire_key, cfg_key in _TUNING_KEYS:
+        val = getattr(config, cfg_key, None)
+        if val is not None:
+            cfg[wire_key] = float(val)
+    motion.send(cfg)
 
 
 # ── Policy gate ─────────────────────────────────────────────────────────────────

@@ -4425,6 +4425,17 @@ MOTION_DEFAULT_TURN_DEG = 90.0        # "turn left/right" with no stated angle
 MOTION_DEFAULT_TURN_RATE = 40.0       # deg/s
 MOTION_DEFAULT_MOVE_DIST_M = 0.30     # "move forward/back" with no stated distance
 
+# Drive tuning (real-HW per-wheel PID + calibration). Pushed to the ESP32 on connect
+# ONLY when set — None means the firmware's calib.h boot defaults stand, so Rex never
+# silently overwrites a bench-tuned value with a placeholder. Bench-tune live with
+# firmware/tools/motion_bench.py, then record the winning numbers here (or in .env) so
+# Rex restores them on every connect — no firmware reflash needed (docs §10).
+MOTION_WHEEL_KP = None                 # per-wheel velocity PID gain (duty per m/s of error)
+MOTION_WHEEL_KI = None
+MOTION_WHEEL_KD = None
+MOTION_COUNTS_PER_METER = None         # encoder counts per metre of wheel travel (distance cal)
+MOTION_TRACK_WIDTH_M = None            # distance between the drive wheels, m (turn cal)
+
 # Timing (must agree with the firmware; see docs/motion_protocol.md §7).
 MOTION_HEARTBEAT_MS = 150             # Mac ping cadence (<= 1/3 of watchdog)
 MOTION_WATCHDOG_MS = 500              # firmware stops motors if no Mac line in this window

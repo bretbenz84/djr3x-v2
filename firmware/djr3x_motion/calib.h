@@ -8,6 +8,12 @@
 //   3. Spin a measured 360°; scale TRACK_WIDTH_M by the error.
 // None of these affect safety (motion still needs an explicit command and the
 // caps/watchdog/estop are independent) — only how far/how accurately it moves.
+//
+// The geometry values + the PID gains below are the BOOT DEFAULTS: they seed
+// MotionParams and are runtime-overridable via the `config` command
+// (counts_per_meter, track_width_m, kp/ki/kd), so you can calibrate + tune live with
+// firmware/tools/motion_bench.py WITHOUT reflashing each iteration. Bake the winning
+// values back here (or push them from config.py / .env) once you're happy.
 #pragma once
 #include <math.h>
 

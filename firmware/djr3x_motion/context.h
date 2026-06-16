@@ -7,6 +7,7 @@
 #pragma once
 #include <Arduino.h>
 #include "protocol.h"
+#include "calib.h"   // boot defaults for the runtime-tunable drive params below
 
 // ===== Small numeric helpers (shared) ======================================
 inline float clampf(float v, float lo, float hi) {
@@ -38,6 +39,14 @@ struct MotionParams {
   uint32_t drive_expiry_ms   = 300;
   uint32_t manual_idle_return_secs = 4;
   bool     manual_autoreturn = false;
+
+  // Drive tuning (real HW only) — runtime-overridable via `config` for live
+  // calibration + PID tuning without reflashing. Boot defaults from calib.h.
+  float    kp = WHEEL_PID_KP;
+  float    ki = WHEEL_PID_KI;
+  float    kd = WHEEL_PID_KD;
+  float    counts_per_meter = COUNTS_PER_METER;
+  float    track_width_m    = TRACK_WIDTH_M;
 };
 
 // ===== Active finite command (turn / move / come) ===========================

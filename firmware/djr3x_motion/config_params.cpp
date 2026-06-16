@@ -38,6 +38,18 @@ bool apply_config(JsonObjectConst cmd, MotionParams& out) {
   clamped |= take_u(cmd, "manual_idle_return_secs", 0u, 60u,               p.manual_idle_return_secs);
   if (cmd["manual_autoreturn"].is<bool>()) p.manual_autoreturn = cmd["manual_autoreturn"].as<bool>();
 
+  // Drive tuning (real HW): per-wheel PID gains + calibration geometry. Clamped to
+  // safe, physically-plausible ranges so a bad push can't divide-by-zero, invert the
+  // loop (negative gains), or scale odometry into nonsense. Absent keys keep their
+  // current value. NB: a geometry change takes effect immediately and re-scales an
+  // in-flight finite command's progress — change geometry at IDLE (the bench tool
+  // refuses calibration edits unless the base is idle).
+  clamped |= take_f(cmd, "kp", 0.0f, 100000.0f, p.kp);
+  clamped |= take_f(cmd, "ki", 0.0f, 100000.0f, p.ki);
+  clamped |= take_f(cmd, "kd", 0.0f, 100000.0f, p.kd);
+  clamped |= take_f(cmd, "counts_per_meter", 1000.0f, 1.0e6f, p.counts_per_meter);
+  clamped |= take_f(cmd, "track_width_m",    0.05f,   2.0f,   p.track_width_m);
+
   // Keep zones sane: stop_zone must be < slow_zone.
   if (p.stop_zone_m >= p.slow_zone_m) { p.stop_zone_m = p.slow_zone_m * 0.5f; clamped = true; }
 

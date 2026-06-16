@@ -224,6 +224,47 @@ class ControllerTest(_MotionTestBase):
         self.assertIsNone(mc.turn_left())
 
 
+class ConfigPushTest(_MotionTestBase):
+    """_push_config sends caps/zones on connect, and the drive-tuning keys only when
+    the matching config.py value is set (opt-in, so a connect never clobbers a
+    bench-tuned value with a placeholder)."""
+
+    def setUp(self):
+        super().setUp()
+        self._orig_tuning = {k: getattr(config, k, None) for k in (
+            "MOTION_WHEEL_KP", "MOTION_WHEEL_KI", "MOTION_WHEEL_KD",
+            "MOTION_COUNTS_PER_METER", "MOTION_TRACK_WIDTH_M")}
+
+    def tearDown(self):
+        for k, v in self._orig_tuning.items():
+            setattr(config, k, v)
+        super().tearDown()
+
+    def test_push_includes_caps(self):
+        self._connect()
+        cfg = self._last("config")
+        self.assertIsNotNone(cfg)
+        self.assertAlmostEqual(cfg["max_lin"], config.MOTION_MAX_LINEAR_MS)
+        self.assertIn("stop_zone_m", cfg)
+
+    def test_tuning_keys_omitted_when_unset(self):
+        config.MOTION_WHEEL_KP = None
+        config.MOTION_COUNTS_PER_METER = None
+        self._connect()
+        cfg = self._last("config")
+        self.assertNotIn("kp", cfg)
+        self.assertNotIn("counts_per_meter", cfg)
+
+    def test_tuning_keys_pushed_when_set(self):
+        config.MOTION_WHEEL_KP = 2200.0
+        config.MOTION_COUNTS_PER_METER = 31000.0
+        self._connect()
+        cfg = self._last("config")
+        self.assertAlmostEqual(cfg["kp"], 2200.0)
+        self.assertAlmostEqual(cfg["counts_per_meter"], 31000.0)
+        self.assertNotIn("ki", cfg)   # still opt-in per key
+
+
 class ClassifierTest(unittest.TestCase):
     def _act(self, text):
         d = ar.classify_explicit_motion(text)

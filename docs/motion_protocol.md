@@ -418,14 +418,29 @@ each; `config` can tighten but never exceed it.** The ack echoes effective value
 | `drive_expiry_ms` | `MOTION_DRIVE_EXPIRY_MS` | ms | 300 | firmware-owned |
 | `manual_idle_return_secs` | `MOTION_MANUAL_IDLE_RETURN_SECS` | s | 4 | — |
 | `manual_autoreturn` | `MOTION_MANUAL_AUTORETURN` | bool | false | — |
+| `kp` | `MOTION_WHEEL_KP` | duty per m/s | calib.h | 1e5 |
+| `ki` | `MOTION_WHEEL_KI` | duty·s per m/s | calib.h | 1e5 |
+| `kd` | `MOTION_WHEEL_KD` | duty·s² per m/s | calib.h | 1e5 |
+| `counts_per_meter` | `MOTION_COUNTS_PER_METER` | counts/m | calib.h | 1e3–1e6 |
+| `track_width_m` | `MOTION_TRACK_WIDTH_M` | m | calib.h | 0.05–2.0 |
 
 Mac-only keys (never sent over the wire): `MOTION_ENABLED` (master switch),
 `MOTION_ESP32_PORT` (serial device path — **motion is disabled unless set**, mirroring
 `MAESTRO_PORT`), `MOTION_HANDSHAKE_TIMEOUT_MS` (default 1500).
 
-Calibration constants (`WHEEL_DIAMETER_MM`, `TRACK_WIDTH_MM`, `COUNTS_PER_REV`,
-`COUNTS_PER_METER`) live **only in firmware** — they are physical truths the Mac never
-needs. Not part of this protocol.
+The **drive-tuning keys** (`kp`/`ki`/`kd`, `counts_per_meter`, `track_width_m`) are
+runtime-tunable so the base can be calibrated + PID-tuned **live, without a reflash per
+iteration** (real-HW build only). The firmware's `calib.h` holds the cold-boot defaults;
+the Mac pushes an override **only when the matching `config.py` key is set** (else the
+firmware default stands, so a connect never clobbers a bench-tuned value). The config
+ack echoes the effective (post-clamp) values. Firmware-only calibration that is *not*
+tuned over the wire: `WHEEL_DIAMETER_MM`, `COUNTS_PER_REV`, and the per-wheel
+`ENC_SIGN_*` (a one-time wiring fact).
+
+> **Tune geometry at idle.** `kp`/`ki`/`kd` are safe to change while moving (live PID
+> tuning). The geometry keys (`counts_per_meter`, `track_width_m`) re-scale odometry
+> immediately, so changing them mid-`move`/`turn` re-scales that command's progress —
+> change them only when the base is idle. The bench tool enforces this client-side.
 
 ---
 

@@ -84,11 +84,16 @@ void hal_init() {
 }
 
 void hal_read_odom(Odom& out, float dt) {
+  // Caller (control_tick) holds the state lock, so reading the runtime-tunable
+  // params here is a consistent snapshot. apply_config clamps both > 0, so the
+  // divides below are safe.
+  const float cpm   = g_ctx.params.counts_per_meter;
+  const float track = g_ctx.params.track_width_m;
   const int64_t cl = encL.getCount();
   const int64_t cr = encR.getCount();
   // Signed wheel travel (metres) since the previous tick.
-  const float d_l = ENC_SIGN_L * (float)(cl - s_prev_l) / COUNTS_PER_METER;
-  const float d_r = ENC_SIGN_R * (float)(cr - s_prev_r) / COUNTS_PER_METER;
+  const float d_l = ENC_SIGN_L * (float)(cl - s_prev_l) / cpm;
+  const float d_r = ENC_SIGN_R * (float)(cr - s_prev_r) / cpm;
   s_prev_l = cl;
   s_prev_r = cr;
 
@@ -101,7 +106,7 @@ void hal_read_odom(Odom& out, float dt) {
   s_vmeas_r = d_r * inv_dt;
 
   const float d_center = 0.5f * (d_l + d_r);
-  const float d_theta  = (d_r - d_l) / TRACK_WIDTH_M;   // +d_theta = CCW (REP-103)
+  const float d_theta  = (d_r - d_l) / track;           // +d_theta = CCW (REP-103)
 
   out.theta += d_theta;
   while (out.theta >  (float)M_PI)  out.theta -= 2.0f * (float)M_PI;
@@ -112,25 +117,30 @@ void hal_read_odom(Odom& out, float dt) {
   out.ang = d_theta  * inv_dt;
 }
 
-// One wheel's velocity PID: target m/s -> signed duty. Updates integ/eprev.
-static int wheel_pid(float target, float meas, float& integ, float& eprev, float dt) {
+// One wheel's velocity PID: target m/s -> signed duty. Gains are runtime-tunable
+// (g_ctx.params); i_clamp stays a compile-time safety bound. Updates integ/eprev.
+static int wheel_pid(float target, float meas, float& integ, float& eprev, float dt,
+                     float kp, float ki, float kd) {
   if (fabsf(target) < WHEEL_STOP_EPS_MS) {
     integ = 0; eprev = 0;            // commanded stop: don't chase, drop windup
     return 0;
   }
   const float err = target - meas;
-  integ += WHEEL_PID_KI * err * dt;
+  integ += ki * err * dt;
   integ = clampf(integ, -WHEEL_PID_I_CLAMP, WHEEL_PID_I_CLAMP);   // anti-windup
   const float deriv = (dt > 1e-4f) ? (err - eprev) / dt : 0.0f;
   eprev = err;
-  const float u = WHEEL_PID_KP * err + integ + WHEEL_PID_KD * deriv;
+  const float u = kp * err + integ + kd * deriv;
   return (int)clampf(u, -(float)PWM_DUTY_MAX, (float)PWM_DUTY_MAX);
 }
 
 void hal_drive_velocity(float lin, float ang, float dt) {
+  // Caller holds the state lock — read the runtime params as a consistent snapshot.
+  const float track = g_ctx.params.track_width_m;
+  const float kp = g_ctx.params.kp, ki = g_ctx.params.ki, kd = g_ctx.params.kd;
   // Differential-drive kinematics (REP-103: +lin forward, +ang CCW/left).
-  const float v_l = lin - ang * (TRACK_WIDTH_M * 0.5f);
-  const float v_r = lin + ang * (TRACK_WIDTH_M * 0.5f);
+  const float v_l = lin - ang * (track * 0.5f);
+  const float v_r = lin + ang * (track * 0.5f);
 
   // Energize only when something should move (commanded OR still rolling, so we
   // actively brake a coasting wheel to a stop before disabling it).
@@ -140,8 +150,8 @@ void hal_drive_velocity(float lin, float ang, float dt) {
   if (!want_move) { hal_motors_off(); return; }
 
   motors_enable(true);
-  const int duty_l = wheel_pid(v_l, s_vmeas_l, s_i_l, s_eprev_l, dt);
-  const int duty_r = wheel_pid(v_r, s_vmeas_r, s_i_r, s_eprev_r, dt);
+  const int duty_l = wheel_pid(v_l, s_vmeas_l, s_i_l, s_eprev_l, dt, kp, ki, kd);
+  const int duty_r = wheel_pid(v_r, s_vmeas_r, s_i_r, s_eprev_r, dt, kp, ki, kd);
   apply_wheel_duty(LEDC_L_RPWM, LEDC_L_LPWM, duty_l);
   apply_wheel_duty(LEDC_R_RPWM, LEDC_R_LPWM, duty_r);
 }
