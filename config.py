@@ -499,6 +499,11 @@ ACTIVE_SPEAKER_STALE_SECS = _env_float("ACTIVE_SPEAKER_STALE_SECS", 1.0, min_val
 # voice tie-breaker reads this decaying latch instead. Must cover that latency.
 ACTIVE_SPEAKER_LATCH_SECS = _env_float("ACTIVE_SPEAKER_LATCH_SECS", 3.0, min_value=0.5, max_value=15.0)
 
+# Per-cycle scoreboard logging (vad/facing/energy/winner) for on-device threshold
+# calibration. Off in normal runs (4 Hz INFO spam); tools/test_active_speaker.py
+# turns it on.
+ACTIVE_SPEAKER_LOG_SCOREBOARD = _env_bool("ACTIVE_SPEAKER_LOG_SCOREBOARD", False)
+
 # Smile reaction: after Rex delivers a short joke/snarky line, consciousness can
 # watch for a visible person's expression shifting into a smile and answer it.
 SMILE_REACTION_ENABLED = _env_bool("SMILE_REACTION_ENABLED", True)

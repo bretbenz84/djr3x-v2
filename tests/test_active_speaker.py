@@ -166,5 +166,116 @@ class DisabledFlagTest(_WorldStateFixture):
         self.assertNotIn("is_speaking", {k for s in world_state.get("people") for k in s if s.get(k)})
 
 
+import math
+
+import numpy as np
+
+
+def _roty(deg):
+    """4x4 homogeneous matrix for a rotation of `deg` about the vertical (Y) axis."""
+    t = math.radians(deg)
+    m = np.eye(4)
+    m[0, 0] = math.cos(t); m[0, 2] = math.sin(t)
+    m[2, 0] = -math.sin(t); m[2, 2] = math.cos(t)
+    return m
+
+
+class YawFromMatrixTest(unittest.TestCase):
+    def test_identity_is_zero(self):
+        self.assertAlmostEqual(A.yaw_from_transform_matrix(np.eye(4)), 0.0, places=3)
+
+    def test_thirty_degree_y_rotation(self):
+        self.assertAlmostEqual(A.yaw_from_transform_matrix(_roty(30)), 30.0, places=2)
+        self.assertAlmostEqual(A.yaw_from_transform_matrix(_roty(-45)), -45.0, places=2)
+
+    def test_malformed_returns_none(self):
+        self.assertIsNone(A.yaw_from_transform_matrix(None))
+        self.assertIsNone(A.yaw_from_transform_matrix([1, 2, 3]))
+
+
+class VarianceTest(unittest.TestCase):
+    def test_constant_series_is_zero(self):
+        self.assertAlmostEqual(A._variance([0.4, 0.4, 0.4]), 0.0, places=12)
+
+    def test_oscillating_series_is_high(self):
+        self.assertGreater(A._variance([0.0, 0.6, 0.0, 0.6]), 0.05)
+
+
+class ArbitrationTest(unittest.TestCase):
+    """Drives the pure _decide() with scripted per-face signals over several
+    cycles (variance needs a filled window). Faces: pid 1 = slot 0, pid 2 = slot 1."""
+
+    def setUp(self):
+        A.reset()
+
+    def tearDown(self):
+        A.reset()
+
+    def _feed(self, faces_fn, vad, cycles=6, dt=0.25, t0=1000.0):
+        res = None
+        for i in range(cycles):
+            now = t0 + i * dt
+            sigs = [dict(s, ts=now) for s in faces_fn(i)]
+            res = A._decide(sigs, vad, now)
+        return res
+
+    def test_single_talker_wins(self):
+        def faces(i):
+            return [{"slot_idx": 0, "person_db_id": 1,
+                     "jaw_open": 0.6 if i % 2 else 0.0, "yaw": 0.0}]
+        res = self._feed(faces, vad=True)
+        self.assertIsNotNone(res)
+        self.assertEqual(res[0], 1)        # winner person_db_id
+        self.assertGreater(res[2], 0.0)    # confidence
+
+    def test_higher_energy_mouth_wins_among_two(self):
+        def faces(i):
+            return [
+                {"slot_idx": 0, "person_db_id": 1, "jaw_open": 0.7 if i % 2 else 0.0, "yaw": 0.0},
+                {"slot_idx": 1, "person_db_id": 2, "jaw_open": 0.5, "yaw": 0.0},  # still
+            ]
+        res = self._feed(faces, vad=True)
+        self.assertEqual(res[0], 1)
+
+    def test_vad_off_means_no_speaker(self):
+        def faces(i):
+            return [{"slot_idx": 0, "person_db_id": 1,
+                     "jaw_open": 0.6 if i % 2 else 0.0, "yaw": 0.0}]
+        self.assertIsNone(self._feed(faces, vad=False))
+
+    def test_speech_but_no_moving_mouth_is_off_screen(self):
+        # VAD on, but the only visible face's mouth is still → no visible speaker
+        # (the correct off-screen signal: returns None, is_speaking stays empty).
+        def faces(i):
+            return [{"slot_idx": 0, "person_db_id": 1, "jaw_open": 0.4, "yaw": 0.0}]
+        self.assertIsNone(self._feed(faces, vad=True))
+
+    def test_turned_away_face_excluded_when_a_facing_one_speaks(self):
+        # pid 2 is turned away (yaw 60°) and animated; pid 1 faces camera and talks.
+        def faces(i):
+            return [
+                {"slot_idx": 0, "person_db_id": 1, "jaw_open": 0.6 if i % 2 else 0.0, "yaw": 0.0},
+                {"slot_idx": 1, "person_db_id": 2, "jaw_open": 0.9 if i % 2 else 0.0, "yaw": 60.0},
+            ]
+        res = self._feed(faces, vad=True)
+        self.assertEqual(res[0], 1)   # the facing talker wins despite lower energy
+
+    def test_hysteresis_holds_incumbent_against_small_challenger(self):
+        # Establish pid 1 as speaker, then pid 2 leads by a hair (< switch margin):
+        # incumbent must hold.
+        def phase_a(i):
+            return [{"slot_idx": 0, "person_db_id": 1, "jaw_open": 0.6 if i % 2 else 0.0, "yaw": 0.0}]
+        self._feed(phase_a, vad=True)
+        self.assertEqual(A._current_speaker_key, ("pid", 1))
+
+        def both(i):
+            return [
+                {"slot_idx": 0, "person_db_id": 1, "jaw_open": 0.6 if i % 2 else 0.0, "yaw": 0.0},
+                {"slot_idx": 1, "person_db_id": 2, "jaw_open": 0.61 if i % 2 else 0.0, "yaw": 0.0},
+            ]
+        res = self._feed(both, vad=True, t0=2000.0)
+        self.assertEqual(res[0], 1)   # still pid 1 (challenger didn't clear switch margin)
+
+
 if __name__ == "__main__":
     unittest.main()

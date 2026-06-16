@@ -92,6 +92,9 @@ def _load_model() -> bool:
                 getattr(config, "FACE_EXPRESSION_MIN_TRACKING_CONFIDENCE", 0.5)
             ),
             output_face_blendshapes=True,
+            # Free per-face 4x4 head-pose matrix (already computed internally) —
+            # vision/active_speaker.py reads yaw from it for its facing gate.
+            output_facial_transformation_matrixes=True,
         )
         _landmarker = FaceLandmarker.create_from_options(options)
         _mp = mp
@@ -219,6 +222,7 @@ def _face_box_from_landmarks(landmarks, frame_shape) -> Optional[tuple[int, int,
 def _result_to_expressions(result, frame_shape) -> list[dict]:
     blendshapes = list(getattr(result, "face_blendshapes", None) or [])
     landmarks = list(getattr(result, "face_landmarks", None) or [])
+    matrices = list(getattr(result, "facial_transformation_matrixes", None) or [])
     expressions: list[dict] = []
     for idx, categories in enumerate(blendshapes):
         scores = _blendshape_scores(categories)
@@ -237,6 +241,12 @@ def _result_to_expressions(result, frame_shape) -> list[dict]:
                 for key in _BLENDSHAPE_KEYS
                 if key in scores
             },
+            # Active-speaker inputs (vision/active_speaker.py): RAW jawOpen (not the
+            # 4-decimal-rounded blendshapes map above — its quantum swamps the
+            # variance signal) + the per-face head-pose matrix and landmarks.
+            "jaw_open": _score(scores, "jawOpen"),
+            "transform_matrix": (matrices[idx] if idx < len(matrices) else None),
+            "landmarks": (landmarks[idx] if idx < len(landmarks) else None),
         })
     return expressions
 
@@ -335,8 +345,16 @@ def _expression_payload(expression: dict) -> tuple[dict, dict, str]:
     return face_mood, face_expression, mood
 
 
-def merge_expressions_into_world_state(expressions: list[dict]) -> int:
-    """Attach expression readings to existing visible people slots."""
+def merge_expressions_into_world_state(
+    expressions: list[dict],
+    collect_matches: Optional[list] = None,
+) -> int:
+    """Attach expression readings to existing visible people slots.
+
+    If ``collect_matches`` is provided, it is filled with ``(expr_index, slot_idx,
+    person_db_id)`` tuples for each matched expression — reusing the SAME IoU
+    association so the active-speaker hook never re-associates faces (spec §2).
+    """
     if not expressions:
         return 0
 
@@ -349,11 +367,13 @@ def merge_expressions_into_world_state(expressions: list[dict]) -> int:
         updated = list(people)
         visible_indices = _visible_person_indices(updated)
         used_indices: set[int] = set()
-        for expression in expressions:
+        for expr_i, expression in enumerate(expressions):
             idx = _match_expression_to_people(expression, updated, visible_indices, used_indices)
             if idx is None:
                 continue
             used_indices.add(idx)
+            if collect_matches is not None:
+                collect_matches.append((expr_i, idx, updated[idx].get("person_db_id")))
             face_mood, face_expression, label = _expression_payload(expression)
             person = dict(updated[idx])
             person["face_mood"] = face_mood
@@ -370,9 +390,43 @@ def merge_expressions_into_world_state(expressions: list[dict]) -> int:
     return result["changed"]
 
 
+def _run_active_speaker(expressions: list[dict], matches: list) -> None:
+    """Feed per-face lip/pose signals to the active-speaker detector, reusing the
+    expression→slot matches just computed by the IoU association (no re-detect, no
+    re-associate). Best-effort: never let it disturb the expression pipeline."""
+    try:
+        from vision import active_speaker
+        from awareness.situation import assessor
+    except Exception:
+        return
+    if not active_speaker.enabled():
+        return
+    try:
+        now = time.time()
+        by_expr = {expr_i: (slot_idx, pid) for (expr_i, slot_idx, pid) in matches}
+        signals = []
+        for expr_i, expr in enumerate(expressions):
+            if expr_i not in by_expr:
+                continue
+            slot_idx, pid = by_expr[expr_i]
+            signals.append({
+                "slot_idx": slot_idx,
+                "person_db_id": pid,
+                "jaw_open": float(expr.get("jaw_open") or 0.0),
+                "yaw": active_speaker.yaw_from_transform_matrix(expr.get("transform_matrix")),
+                "ts": now,
+            })
+        active_speaker.update(signals, vad_active=assessor.is_user_speaking())
+    except Exception as exc:
+        _log.debug("active-speaker update failed: %s", exc)
+
+
 def process_frame(frame) -> list[dict]:
     expressions = detect_expressions(frame)
-    merge_expressions_into_world_state(expressions)
+    matches: list = []
+    merge_expressions_into_world_state(expressions, collect_matches=matches)
+    if expressions and bool(getattr(config, "ACTIVE_SPEAKER_ENABLED", True)):
+        _run_active_speaker(expressions, matches)
     return expressions
 
 
@@ -418,6 +472,11 @@ def stop() -> None:
     if _thread is not None and _thread.is_alive():
         _thread.join(timeout=2.0)
     _thread = None
+    try:
+        from vision import active_speaker
+        active_speaker.reset()
+    except Exception:
+        pass
     with _model_lock:
         if _landmarker is not None:
             try:

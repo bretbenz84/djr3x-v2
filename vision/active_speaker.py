@@ -24,9 +24,13 @@ before while this is built up.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
+from collections import deque
 from typing import Optional
+
+import numpy as np
 
 import config
 
@@ -72,17 +76,245 @@ def update(face_signals: list[dict], vad_active: bool) -> None:
     ``{"slot_idx": int, "person_db_id": Optional[int], "jaw_open": float,
     "yaw": Optional[float], "ts": float}``.
 
-    COMMIT 1: no-op stub. Layer 1 (head-pose gate), Layer 2 (lip-motion energy),
-    and Layer 3 (arbitration + hysteresis) are added in commits 2–5; until then
-    this writes nothing and the rest of Rex is unchanged.
+    Layer 2 (lip-motion energy), Layer 1 (head-pose gate), Layer 3 (VAD gate +
+    margin winner + hysteresis) run here under ``_lock``; the world-state write +
+    latch happen AFTER the lock is released (``_publish_speaker`` takes its own
+    locks — calling it while holding ``_lock`` would deadlock).
     """
     if not enabled():
         return
-    # TODO(commit 2): buffer jaw_open per key, compute lip_energy/lip_active.
-    # TODO(commit 3): facing_camera gate from yaw.
-    # TODO(commit 5): VAD gate, candidate set, margin winner, hysteresis, then
-    #   _publish_speaker(winner_pid=..., winner_slot=..., confidence=...).
-    return
+    now = time.time()
+    decision = _decide(face_signals, bool(vad_active), now)
+    if decision is None:
+        # No winner this cycle (VAD silent, no articulating mouth, or off-screen
+        # speech): clear the live is_speaking on all slots; leave the latch to
+        # decay. This empty result during speech is the correct off-screen signal.
+        _publish_speaker(winner_pid=None, winner_slot=None, confidence=0.0, now=now)
+    else:
+        pid, slot, conf = decision
+        _publish_speaker(winner_pid=pid, winner_slot=slot, confidence=conf, now=now)
+
+
+def _decide(face_signals, vad_active, now):
+    """Pure-ish arbitration over one cycle's per-face signals. Mutates the module
+    buffers + hysteresis state under ``_lock`` and returns the winner as
+    ``(person_db_id, slot_idx, confidence)`` or None (no live speaker). Separated
+    from the world-state write so it can be unit-tested directly."""
+    global _current_speaker_key, _switch_candidate_key, _switch_since, _last_vad_active_at
+
+    window = float(getattr(config, "LIPSYNC_WINDOW_SECS", 1.0))
+    stale = float(getattr(config, "LIPSYNC_STALE_SECS", 2.0))
+    energy_threshold = float(getattr(config, "LIPSYNC_ENERGY_THRESHOLD", 0.0025))
+    facing_max = float(getattr(config, "FACING_YAW_MAX_DEG", 30.0))
+    margin = float(getattr(config, "SPEAKER_MARGIN", 0.0015))
+    switch_margin = float(getattr(config, "SPEAKER_SWITCH_MARGIN", 0.0030))
+    switch_secs = float(getattr(config, "SPEAKER_SWITCH_SECS", 0.4))
+    release_secs = float(getattr(config, "SPEAKER_RELEASE_SECS", 0.6))
+
+    with _lock:
+        # ── Layer 3a: VAD gate. No human speech → nobody is the active speaker. ──
+        if vad_active:
+            _last_vad_active_at = now
+        speaking_now = vad_active or (now - _last_vad_active_at) <= release_secs
+
+        # ── Layer 2: per-person lip-motion energy from rolling jawOpen buffers. ──
+        candidates: list[dict] = []
+        seen_keys = set()
+        for sig in face_signals or []:
+            slot_idx = sig.get("slot_idx")
+            pid = _safe_int(sig.get("person_db_id"))
+            # Key by stable identity when known, else the in-frame slot index. No
+            # mid-stream re-keying: if identity resolves, the old slot buffer ages
+            # out and a fresh pid buffer fills within one window (~4 samples).
+            key = ("pid", pid) if pid is not None else ("slot", slot_idx)
+            seen_keys.add(key)
+            ts = float(sig.get("ts") or now)
+            jaw = float(sig.get("jaw_open") or 0.0)
+            buf = _buffers.setdefault(key, deque())
+            buf.append((ts, jaw))
+            while buf and (ts - buf[0][0]) > window:
+                buf.popleft()
+            energy = _variance([v for (_, v) in buf])
+            yaw = sig.get("yaw")
+            facing = (yaw is None) or (abs(float(yaw)) <= facing_max)  # Layer 1 gate
+            candidates.append({
+                "key": key, "pid": pid, "slot_idx": slot_idx,
+                "energy": energy, "lip_active": energy >= energy_threshold,
+                "facing": facing,
+            })
+
+        # Age out buffers for faces not seen this cycle (leave/return).
+        for key in list(_buffers.keys()):
+            if key in seen_keys:
+                continue
+            buf = _buffers[key]
+            if not buf or (now - buf[-1][0]) > stale:
+                del _buffers[key]
+
+        # ── Layer 3b: arbitration. ──
+        if not speaking_now:
+            _current_speaker_key = None
+            _switch_candidate_key = None
+            _switch_since = 0.0
+            return None
+
+        # Candidate set: faces turned toward Rex; fall back to all if that empties
+        # (everyone slightly turned during real speech — still attribute someone).
+        facing_pool = [c for c in candidates if c["facing"]]
+        pool = facing_pool if facing_pool else candidates
+        active = [c for c in pool if c["lip_active"]]
+        by_key = {c["key"]: c for c in candidates}
+
+        final_key = _arbitrate(active, now, margin, switch_margin, switch_secs)
+        if getattr(config, "ACTIVE_SPEAKER_LOG_SCOREBOARD", False):
+            _log_scoreboard(candidates, final_key, vad_active=True)
+        if final_key is None or final_key not in by_key:
+            return None
+        win = by_key[final_key]
+        confidence = _confidence(win["energy"], energy_threshold)
+        return (win["pid"], win["slot_idx"], confidence)
+
+
+def _arbitrate(active, now, margin, switch_margin, switch_secs):
+    """Pick the winning buffer key with hysteresis. Assumes ``_lock`` is held."""
+    global _current_speaker_key, _switch_candidate_key, _switch_since
+
+    active_sorted = sorted(active, key=lambda c: c["energy"], reverse=True)
+    cur_key = _current_speaker_key
+    cur = next((c for c in active_sorted if c["key"] == cur_key), None)
+
+    if not active_sorted:
+        # Nobody articulating this instant (e.g. a mid-sentence closed-mouth gap
+        # while VAD is still on). Hold the current speaker through the gap; the
+        # VAD release in _decide is what ultimately clears them.
+        return cur_key
+
+    top = active_sorted[0]
+    runner = active_sorted[1]["energy"] if len(active_sorted) > 1 else None
+
+    if cur is None:
+        # No (articulating) current speaker — take the top only if it clearly
+        # beats the runner-up; single articulating face wins outright (runner None).
+        if runner is None or (top["energy"] - runner) >= margin:
+            _current_speaker_key = top["key"]
+            _switch_candidate_key = None
+            _switch_since = 0.0
+            return top["key"]
+        return cur_key  # ambiguous pair — don't (re)assign; hold whatever we had
+
+    if top["key"] == cur["key"]:
+        _switch_candidate_key = None
+        _switch_since = 0.0
+        return cur["key"]
+
+    # A challenger leads the current speaker — must beat them by the (higher)
+    # switch margin, sustained for switch_secs, before stealing the floor.
+    if (top["energy"] - cur["energy"]) >= switch_margin:
+        if _switch_candidate_key == top["key"]:
+            if (now - _switch_since) >= switch_secs:
+                _current_speaker_key = top["key"]
+                _switch_candidate_key = None
+                _switch_since = 0.0
+                return top["key"]
+        else:
+            _switch_candidate_key = top["key"]
+            _switch_since = now
+        return cur["key"]  # hold incumbent during the switch window
+
+    _switch_candidate_key = None
+    _switch_since = 0.0
+    return cur["key"]
+
+
+def _key_label(c: dict) -> str:
+    kind, val = c["key"]
+    return f"{'pid' if kind == 'pid' else 'slot'}:{val}"
+
+
+def _log_scoreboard(candidates, final_key, *, vad_active: bool) -> None:
+    """Calibration log, mirroring speaker_id._log_scoreboard. Off by default
+    (ACTIVE_SPEAKER_LOG_SCOREBOARD); the calibration tool turns it on."""
+    facing = ",".join(_key_label(c) for c in candidates if c["facing"]) or "-"
+    energy = " ".join(
+        f"{_key_label(c)}={c['energy']:.4f}{'*' if c['lip_active'] else ''}"
+        for c in sorted(candidates, key=lambda c: c["energy"], reverse=True)
+    ) or "-"
+    win = "none"
+    if final_key is not None:
+        win = next((_key_label(c) for c in candidates if c["key"] == final_key), str(final_key))
+    _log.info(
+        "[active_speaker] vad=%s facing={%s} energy: %s -> speaking=%s",
+        "on" if vad_active else "off", facing, energy, win,
+    )
+
+
+def _variance(values) -> float:
+    n = len(values)
+    if n < 2:
+        return 0.0
+    mean = sum(values) / n
+    return sum((v - mean) ** 2 for v in values) / n
+
+
+def _confidence(energy: float, threshold: float) -> float:
+    """Map lip-motion energy to a 0..1 confidence. Placeholder scaling — the
+    absolute energy scale is calibrated on-device (commit 6)."""
+    if threshold <= 0:
+        return 1.0 if energy > 0 else 0.0
+    return max(0.0, min(1.0, energy / (threshold * 4.0)))
+
+
+# ── Layer 1: head-pose yaw ─────────────────────────────────────────────────────
+
+def yaw_from_transform_matrix(matrix) -> Optional[float]:
+    """Head yaw in DEGREES from MediaPipe's 4×4 facial transformation matrix
+    (free — already computed when ``output_facial_transformation_matrixes`` is on).
+    Pure numpy, no cv2. 0° = facing the camera; sign/axis convention is confirmed
+    on-device in commit 6 (the calibration tool logs this alongside the landmark
+    fallback). Returns None if the matrix is missing/malformed.
+    """
+    if matrix is None:
+        return None
+    try:
+        m = np.asarray(matrix, dtype=np.float64)
+        if m.size < 12:
+            return None
+        m = m.reshape(4, 4) if m.size == 16 else m.reshape(m.shape)
+        r = m[:3, :3]
+        # Yaw about the vertical axis; verified to give ~30° for a 30° Y-rotation.
+        return float(math.degrees(math.atan2(-r[2, 0], math.hypot(r[0, 0], r[1, 0]))))
+    except Exception:
+        return None
+
+
+# MediaPipe FaceMesh canonical indices for the asymmetry fallback.
+_NOSE_TIP = 1
+_LEFT_EYE_OUTER = 33
+_RIGHT_EYE_OUTER = 263
+
+
+def _yaw_from_landmarks(landmarks) -> Optional[float]:
+    """FALLBACK head-pose estimate (spec Option A): horizontal nose/eye asymmetry.
+
+    NOT wired by default — the transformation-matrix method above is primary. This
+    returns a NORMALIZED skew in roughly [-1, +1] (not degrees), so adopting it
+    means re-tuning the facing gate against a normalized threshold. Kept so the
+    calibration tool can log it next to the matrix yaw for comparison (commit 6).
+    """
+    try:
+        nose = landmarks[_NOSE_TIP]
+        le = landmarks[_LEFT_EYE_OUTER]
+        re = landmarks[_RIGHT_EYE_OUTER]
+        nx = float(getattr(nose, "x", nose[0] if not hasattr(nose, "x") else 0.0))
+        lx = float(getattr(le, "x", le[0] if not hasattr(le, "x") else 0.0))
+        rx = float(getattr(re, "x", re[0] if not hasattr(re, "x") else 0.0))
+        interocular = abs(rx - lx)
+        if interocular <= 1e-6:
+            return None
+        # (nose→left) vs (right→nose): symmetric ⇒ 0; skewed ⇒ turned.
+        return float(((nx - lx) - (rx - nx)) / interocular)
+    except Exception:
+        return None
 
 
 # ── World-state write contract (implemented + tested in commit 1) ──────────────
