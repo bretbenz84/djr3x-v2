@@ -2879,6 +2879,16 @@ ANONYMOUS_SPEAKER_SLOT_MATCH_THRESHOLD = 0.74
 ANONYMOUS_SPEAKER_SLOT_STICKY_THRESHOLD = 0.70
 ANONYMOUS_SPEAKER_SLOT_MAX = 8
 
+# Cross-session memory for recurring UNKNOWN voices (memory/voice_signatures.py).
+# Persist an anonymous voice's embedding so Rex recognizes it in a LATER session
+# ("I've heard your voice before"), and so its samples attach to a person the
+# moment they're finally named. A signature is persisted only after a session
+# slot has recurred at least MIN_TURNS times — one-off unknown utterances are not
+# remembered. No nameless person row is ever created. Flip to False to disable.
+VOICE_SIGNATURE_PERSIST_ENABLED = True
+VOICE_SIGNATURE_MATCH_THRESHOLD = 0.74       # cosine to call it the same voice
+VOICE_SIGNATURE_PERSIST_MIN_TURNS = 2        # session recurrences before persisting
+
 # Log coarse timings for the live speech-response path. These are intentionally
 # INFO-level because latency tuning is only useful when it is visible in normal
 # debug runs.

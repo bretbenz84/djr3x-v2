@@ -340,6 +340,22 @@ CREATE TABLE IF NOT EXISTS person_callback_material (
 
 CREATE INDEX IF NOT EXISTS idx_callback_person
     ON person_callback_material(person_id);
+
+-- Voice-primary identity: cross-session memory for recurring UNKNOWN voices.
+-- One persisted voice embedding Rex has heard but has no name for yet; person_id
+-- stays NULL until the voice is named (memory/voice_signatures.py).
+CREATE TABLE IF NOT EXISTS voice_signatures (
+    id            INTEGER PRIMARY KEY,
+    embedding     BLOB NOT NULL,
+    turns         INTEGER DEFAULT 1,
+    person_id     INTEGER REFERENCES people(id),
+    label         TEXT,
+    created_at    DATETIME,
+    last_seen_at  DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_voice_sig_person
+    ON voice_signatures(person_id);
 """
 
 

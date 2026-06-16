@@ -73,6 +73,7 @@ from memory import relationships as rel_memory
 from memory import emotional_events
 from memory import boundaries as boundary_memory
 from memory import forgetting
+from memory import voice_signatures
 from memory import person_summary
 from memory import social as social_memory
 from memory import episodes as episodes_memory
@@ -182,6 +183,11 @@ class _AnonymousSpeakerSlot:
     raw_best_id: Optional[int] = None
     raw_best_name: Optional[str] = None
     raw_best_score: Optional[float] = None
+    # Cross-session persistence (memory/voice_signatures.py): the persisted
+    # signature row backing this voice, and whether it was recognized from a
+    # previous session the moment it first spoke this session.
+    signature_id: Optional[int] = None
+    recognized_across_sessions: bool = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,6 +269,10 @@ _last_vad_barge_in_suppressed_log_at: float = 0.0
 _recent_voice_turns = deque()
 _anonymous_speaker_slots: list[_AnonymousSpeakerSlot] = []
 _anonymous_speaker_next_id: int = 1
+# Snapshot of the CURRENT turn's anonymous-speaker state, so the "who's speaking?"
+# handler can acknowledge a recurring / previously-heard unknown voice without
+# threading the slot through every call site. {label, turns, recognized}.
+_current_turn_anonymous: Optional[dict] = None
 
 # Monotonic deadline before which VAD speech-onset detections are discarded.
 # Set at the end of each TTS utterance; prevents Rex's own voice tail from
@@ -2276,6 +2286,18 @@ def _retire_anonymous_speaker_slot(
 ) -> None:
     if not label:
         return
+    # Promotion: when this anonymous voice is finally identified, link its
+    # persisted signature to the now-known person so the cross-session voice
+    # memory belongs to them (their next-session match goes straight to the
+    # person; the caller also enrolls the audio as a real voice biometric).
+    retired = [slot for slot in _anonymous_speaker_slots if slot.label == label]
+    if person_id is not None:
+        for slot in retired:
+            if slot.signature_id is not None:
+                try:
+                    voice_signatures.attach_person(slot.signature_id, int(person_id))
+                except Exception as exc:
+                    _log.debug("[anonymous_speaker] signature promotion failed: %s", exc)
     before = len(_anonymous_speaker_slots)
     _anonymous_speaker_slots[:] = [
         slot for slot in _anonymous_speaker_slots if slot.label != label
@@ -2352,6 +2374,18 @@ def _resolve_anonymous_speaker_slot(
         best_slot.raw_best_id = _safe_int(raw_best_id)
         best_slot.raw_best_name = raw_best_name
         best_slot.raw_best_score = _safe_round_score(raw_best_score)
+        # Cross-session persistence: keep this voice's signature fresh once it has
+        # recurred enough to be worth remembering across sessions.
+        try:
+            persist_min = int(getattr(config, "VOICE_SIGNATURE_PERSIST_MIN_TURNS", 2))
+            if best_slot.signature_id is not None:
+                voice_signatures.bump(best_slot.signature_id, embedding)
+            elif best_slot.turns >= persist_min:
+                best_slot.signature_id = voice_signatures.record(
+                    embedding, label=best_slot.label
+                )
+        except Exception as exc:
+            _log.debug("[anonymous_speaker] signature persist (match) failed: %s", exc)
         score_out = _safe_round_score(best_score)
         _log.info(
             "[anonymous_speaker] matched label=%s score=%.3f turns=%d raw_candidate=%s/%r raw_score=%.3f reason=%s",
@@ -2378,6 +2412,25 @@ def _resolve_anonymous_speaker_slot(
 
     label = f"unknown_voice_{_anonymous_speaker_next_id}"
     _anonymous_speaker_next_id += 1
+    # Cross-session recognition: does this voice match one Rex persisted in a
+    # PRIOR session? If so, carry the signature so it keeps accruing and so
+    # "who's speaking?" can say he's heard them before.
+    signature_id: Optional[int] = None
+    recognized = False
+    try:
+        prior = voice_signatures.match(embedding)
+        if prior is not None:
+            signature_id = prior.get("id")
+            recognized = True
+            voice_signatures.bump(signature_id, embedding)
+            _log.info(
+                "[anonymous_speaker] %s matches a voice from a previous session "
+                "(signature id=%s score=%.3f turns=%s person_id=%s)",
+                label, signature_id, float(prior.get("score") or 0.0),
+                prior.get("turns"), prior.get("person_id"),
+            )
+    except Exception as exc:
+        _log.debug("[anonymous_speaker] signature match (new) failed: %s", exc)
     _anonymous_speaker_slots.append(
         _AnonymousSpeakerSlot(
             label=label,
@@ -2387,15 +2440,18 @@ def _resolve_anonymous_speaker_slot(
             raw_best_id=_safe_int(raw_best_id),
             raw_best_name=raw_best_name,
             raw_best_score=_safe_round_score(raw_best_score),
+            signature_id=signature_id,
+            recognized_across_sessions=recognized,
         )
     )
     _log.info(
-        "[anonymous_speaker] created label=%s raw_candidate=%s/%r raw_score=%.3f best_existing=%s",
+        "[anonymous_speaker] created label=%s raw_candidate=%s/%r raw_score=%.3f best_existing=%s recognized=%s",
         label,
         raw_best_id,
         raw_best_name,
         float(raw_best_score or 0.0),
         f"{best_score:.3f}" if best_score is not None else None,
+        recognized,
     )
     return label, None
 
@@ -14542,6 +14598,26 @@ def _handle_classified_intent(
                 f"'pretty sure but my sensors aren't certain'. One line only."
             )
 
+        # No name, but Rex may still recognize the VOICE as one he's heard before —
+        # either recurring in this conversation or persisted from a past session.
+        anon = _current_turn_anonymous or {}
+        if anon.get("recognized"):
+            return _say(
+                "Someone asked who's speaking. You don't have their NAME, but their "
+                "voice matches one your memory banks logged in an EARLIER session — "
+                "you've heard this person before, just never got a name. In ONE short "
+                "in-character Rex line, say exactly that: familiar voice, no name on "
+                "file yet, and ask who they are. One line only."
+            )
+        if int(anon.get("turns") or 0) >= 2:
+            return _say(
+                "Someone asked who's speaking. You don't recognize them as anyone "
+                "named, but it's the SAME unknown voice you've heard a few times "
+                "already this conversation. In ONE short in-character Rex line, say "
+                "you keep hearing this voice but still don't have a name for it, and "
+                "ask who they are. One line only."
+            )
+
         # Nothing plausible — honest unknown.
         return _say(
             f"Someone asked who's speaking but no voice print matched (top "
@@ -15245,6 +15321,8 @@ def _handle_speech_segment(
             except Exception as exc:
                 _log.debug("speaker gaze intent note failed: %s", exc)
 
+        global _current_turn_anonymous
+        _current_turn_anonymous = None
         anonymous_speaker_label, anonymous_speaker_match_score = _resolve_anonymous_speaker_slot(
             audio_array,
             person_id=person_id,
@@ -15253,6 +15331,15 @@ def _handle_speech_segment(
             raw_best_score=speaker_score,
         )
         if anonymous_speaker_label:
+            slot = next(
+                (s for s in _anonymous_speaker_slots if s.label == anonymous_speaker_label),
+                None,
+            )
+            _current_turn_anonymous = {
+                "label": anonymous_speaker_label,
+                "turns": int(getattr(slot, "turns", 1) or 1),
+                "recognized": bool(getattr(slot, "recognized_across_sessions", False)),
+            }
             speaker_label_for_turn = anonymous_speaker_label
             _character_loop_note_speaker(
                 character_trace,

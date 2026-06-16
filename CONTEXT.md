@@ -280,7 +280,18 @@ Important behavior:
   "is this really X" confidence — margin + threshold together stand in for it.
 - An unrecognized voice is tracked within the session as an anonymous label
   (`unknown_voice_1`, …) with its own embedding, in groups and crowds too — it is not
-  forced onto a visible person and not dropped.
+  forced onto a visible person and not dropped. Distinct unknown voices get distinct
+  slots, so per-turn attribution works across multiple unnamed speakers.
+- **Cross-session voice memory** (`memory/voice_signatures.py`, `voice_signatures` table,
+  `VOICE_SIGNATURE_PERSIST_ENABLED`): once an anonymous voice recurs within a session
+  (`VOICE_SIGNATURE_PERSIST_MIN_TURNS`) its embedding is persisted, so Rex recognizes it
+  in a LATER session ("I've heard your voice before") — without ever creating a nameless
+  person row. The moment that voice is finally named (off-screen identify / self-intro),
+  `_retire_anonymous_speaker_slot` links the signature to the new person via
+  `voice_signatures.attach_person`, so future sessions resolve straight to them. The
+  "who's speaking?" handler acknowledges a recurring (this session) or previously-heard
+  (prior session) voice instead of a flat "no idea." Writes are suppressed under the test
+  runner on the default DB path (temp-DB fixtures opt back in).
 - Legacy behavior — "a single visible face wins regardless of voice" — is retained only
   behind `VOICE_PRIMARY_IDENTITY_ENABLED=False` (the `_single_visible_face_voice_override`
   path) as a rollback.
