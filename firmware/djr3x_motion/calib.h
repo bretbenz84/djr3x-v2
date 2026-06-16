@@ -58,3 +58,14 @@
 // A wheel target below this (m/s magnitude) counts as "stopped" → the wheel is
 // braked to zero and its integrator reset rather than chasing micro-setpoints.
 #define WHEEL_STOP_EPS_MS  0.01f
+
+// ---- ToF subsystem (5× VL53L0X) — only used when MOTION_TOF_PRESENT==1 ----
+// Scaffold defaults; validate on hardware. The cliff floor/margin live in
+// safety.cpp (the firmware only needs distances in mm here). docs §6.
+#define TOF_COUNT             5
+#define TOF_ADDR_BASE         0x30      // XSHUT sequencing assigns 0x30, 0x31, … in order
+#define TOF_TIMEOUT_MS        50        // per-read I²C timeout
+#define TOF_TIMING_BUDGET_US  33000     // 33 ms measurement budget (speed vs accuracy)
+#define TOF_OUT_OF_RANGE_MM   8000      // VL53L0X returns ~8190 mm when nothing is in range
+#define TOF_MUX_ADDR          0x70      // TCA9548A I²C address (only when MOTION_TOF_USE_MUX==1)
+#define TOF_BOOT_SETTLE_MS    10        // settle time after raising each sensor's XSHUT

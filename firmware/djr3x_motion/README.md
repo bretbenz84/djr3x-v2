@@ -10,11 +10,11 @@ v1) and has **two build modes** (see "Build modes" below):
   "clear".
 - **Live (`-DMOTION_HW_PRESENT=1`)** — the **Phase 1 real drive base**: BTS7960 PWM,
   Hall quadrature encoders (PCNT/ESP32Encoder), per-wheel velocity PID, and odometry
-  integrated from encoder deltas. **ToF is still a safe "clear" stub** (the 5×
-  VL53L0X subsystem + its addressing scheme are a later step), so **obstacle
-  avoidance is inactive in this build.** Pins live in `pins.h`, measured/tuned
-  constants in `calib.h` (the geometry values there are **placeholders — measure
-  them on the real base**, docs §14).
+  integrated from encoder deltas. **ToF defaults to a safe "clear" stub** here, so
+  **obstacle avoidance is inactive** — add `-DMOTION_TOF_PRESENT=1` once the 5× VL53L0X
+  sensors are wired (driver scaffold in `tof.cpp`; XSHUT or mux addressing — see "Build
+  modes"). Pins live in `pins.h`, measured/tuned constants in `calib.h` (the geometry
+  values there are **placeholders — measure them on the real base**, docs §14).
 
 - The plant model in `control.cpp` synthesizes odometry from commanded velocity,
   so `turn`/`move`/`come` actually run to completion and emit `done`.
@@ -42,6 +42,7 @@ export PORT=/dev/cu.usbserial-XXXX   # YOUR board's port — see `arduino-cli bo
 arduino-cli core install esp32:esp32      # Espressif core (3.3.10 on this machine)
 arduino-cli lib install ArduinoJson       # JSON (7.4.3)
 arduino-cli lib install ESP32Encoder      # Hall quadrature decode (0.12.0) — live build only
+arduino-cli lib install VL53L0X           # Pololu ToF lib (1.3.1) — ToF build only (-DMOTION_TOF_PRESENT=1)
 ```
 
 > **Core version (2.x and 3.x both supported).** `setup_macos.sh` installs
@@ -88,6 +89,25 @@ arduino-cli upload --fqbn esp32:esp32:esp32:UploadSpeed=115200 \
 The live build boots to **idle with the motors disabled** — nothing moves until an
 explicit command energizes them.
 
+### ToF obstacle avoidance (sensors wired)
+
+Off by default even in the live build (`hal_read_tof` reports a clear room). Enable it
+once the 5× VL53L0X are on the I²C bus — combine the flags:
+
+```bash
+# Live drive base + ToF (XSHUT sequencing — the default addressing; needs 5 GPIOs):
+arduino-cli compile --fqbn esp32:esp32:esp32 \
+  --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_TOF_PRESENT=1" \
+  firmware/djr3x_motion
+# …or with a TCA9548A I²C multiplexer instead (frees the XSHUT GPIOs): add
+#   -DMOTION_TOF_USE_MUX=1
+```
+
+`tof.cpp` is a **scaffold**: it compiles in both addressing modes but is **not yet
+hardware-validated**. Before trusting avoidance, bench-check the addressing sequence,
+the sensor→field order, the timing budget, and the down-sensor cliff calibration
+(`CLIFF_FLOOR_MM`/`CLIFF_MARGIN_MM` in `safety.cpp`) — docs §6, §14.
+
 ## Protocol smoke test (the bring-up acceptance test)
 
 With the board flashed and connected, run the host-side test. It opens the serial
@@ -120,7 +140,8 @@ the contract correctly.
 | `proto_io.{h,cpp}` | NDJSON framing, parse + dispatch, all emitters |
 | `control.{h,cpp}` | Stub plant + odometry, finite-command lifecycle |
 | `safety.{h,cpp}` | Watchdog, ToF zones + reflex stop, comms-loss handling |
-| `hal.{h,cpp}` | Hardware abstraction — stubs today, real drivers behind `MOTION_HW_PRESENT` |
+| `hal.{h,cpp}` | Hardware abstraction — motor/encoder stubs vs real drivers behind `MOTION_HW_PRESENT` |
+| `tof.cpp` | ToF (VL53L0X ×5) driver — clear-room stub vs XSHUT/mux real driver behind `MOTION_TOF_PRESENT` |
 
 ## Concurrency model
 

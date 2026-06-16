@@ -38,8 +38,21 @@
 #define PIN_ENC_R_A  25   // right encoder channel A (C1)
 #define PIN_ENC_R_B  26   // right encoder channel B (C2)
 
-// ---- I2C (reserved for the VL53L0X ToF bus, Phase-1 ToF subsystem) --------
-// Not used by the current build (ToF is a safe stub until the sensors + their
-// addressing scheme — XSHUT sequencing vs TCA9548A mux — are chosen, docs §6.1).
+// ---- I2C — the VL53L0X ToF bus (Phase-1 ToF subsystem, docs §6) -----------
+// Only consulted when MOTION_TOF_PRESENT==1 (tof.cpp). Both addressing schemes
+// share this one bus.
 #define PIN_I2C_SDA  21
 #define PIN_I2C_SCL  22
+
+// ---- ToF XSHUT lines (only when MOTION_TOF_USE_MUX==0) --------------------
+// One GPIO per sensor so tof.cpp can bring them up one at a time and reassign each
+// a unique I²C address (the 5 sensors all power up at 0x29 and would collide). The
+// TCA9548A mux scheme needs ZERO of these (it selects a channel on the I²C bus
+// instead) — prefer it if GPIOs get tight. NOTE: GPIO15 is a strapping pin (its only
+// effect when high at boot is to silence the boot log — harmless here); 0/2/12 are
+// avoided as they affect boot/flash. Adjust to your wiring. Order = TofMm fields.
+#define PIN_TOF_XSHUT_FL    4    // front-left  (~-30°)
+#define PIN_TOF_XSHUT_FC    5    // front-center (0°)
+#define PIN_TOF_XSHUT_FR    13   // front-right (~+30°)
+#define PIN_TOF_XSHUT_REAR  14   // rear-center (180°, reversing)
+#define PIN_TOF_XSHUT_DOWN  15   // down-facing front edge (cliff/stair drop-off)

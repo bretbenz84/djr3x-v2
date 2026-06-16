@@ -14,7 +14,24 @@
 #define MOTION_HW_PRESENT 0    // override per-build: -DMOTION_HW_PRESENT=1
 #endif
 
+// MOTION_TOF_PRESENT gates the 5× VL53L0X ToF subsystem SEPARATELY from the drive
+// motors, because the base can have working motors/encoders while the ToF sensors
+// are still unwired. While it is 0 the ToF read returns "all clear" (obstacle
+// avoidance inactive); the live drive build (MOTION_HW_PRESENT=1) ships this way
+// today. Build with -DMOTION_TOF_PRESENT=1 once the sensors are wired. The real
+// driver + its addressing scheme live in tof.cpp (docs/motion_system.md §6).
+#ifndef MOTION_TOF_PRESENT
+#define MOTION_TOF_PRESENT 0   // override per-build: -DMOTION_TOF_PRESENT=1
+#endif
+// Addressing scheme for the 5 sensors on one I²C bus (docs §6.1). 0 = XSHUT
+// sequencing (5 GPIOs, each sensor reassigned a unique address); 1 = TCA9548A
+// I²C multiplexer (all stay 0x29, select one channel at a time — frees the GPIOs).
+#ifndef MOTION_TOF_USE_MUX
+#define MOTION_TOF_USE_MUX 0   // override per-build: -DMOTION_TOF_USE_MUX=1
+#endif
+
 void hal_init();
+void hal_tof_init();                             // bring up the ToF subsystem (no-op in the stub)
 void hal_read_tof(TofMm& out);                   // latest ToF distances (mm; -1 = error)
 
 #if MOTION_HW_PRESENT

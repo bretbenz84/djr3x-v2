@@ -77,6 +77,7 @@ void setup() {
   g_ctx.seen_mac    = false;              // watchdog stays disarmed until first Mac line
 
   hal_init();
+  hal_tof_init();
   proto_init();
   control_init();
   safety_init();

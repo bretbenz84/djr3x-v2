@@ -182,14 +182,8 @@ void hal_motors_off() {
   reset_pid();
 }
 
-void hal_read_tof(TofMm& out) {
-  // Phase-1 ToF (5× VL53L0X) is not wired/implemented yet, so report a clear
-  // room and let the reflex/zone logic run. OBSTACLE AVOIDANCE IS INACTIVE until
-  // the real driver lands (XSHUT sequencing or TCA9548A mux — docs §6.1).
-  // down=60 mm => floor present, well under the cliff threshold (no false cliff).
-  out.fl = out.fc = out.fr = out.rear = 1500;
-  out.down = 60;
-}
+// hal_read_tof()/hal_tof_init() live in tof.cpp — they are gated by MOTION_TOF_PRESENT
+// independently of the motor drivers (the base can drive before the ToF is wired).
 
 #else
 // ===========================================================================
@@ -204,13 +198,5 @@ void hal_init() {
 void hal_apply_velocity(float lin, float ang) {
   (void)lin;
   (void)ang;   // no motors wired; the plant model integrates these in control.cpp
-}
-
-void hal_read_tof(TofMm& out) {
-  out.fl   = 1500;
-  out.fc   = 1500;
-  out.fr   = 1500;
-  out.rear = 1500;
-  out.down = 60;     // floor present (~60 mm), well under the cliff threshold
 }
 #endif
