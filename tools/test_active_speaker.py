@@ -96,17 +96,24 @@ def _mic_vad_thread(stop_event: threading.Event) -> None:
         return
 
     sr = config.AUDIO_SAMPLE_RATE
-    block = int(sr * 0.1)
+    # Silero VAD requires EXACTLY 512 samples at 16 kHz (256 at 8 kHz) per call —
+    # feed it fixed frames, not arbitrary block sizes (1600 errored every chunk).
+    frame = 512 if sr == 16000 else 256
+    vad_mod.reset_state()
+    hang = 0.3  # keep VAD "active" briefly after speech so gating isn't choppy
+    last_speech_at = 0.0
     with sd.InputStream(samplerate=sr, channels=1, dtype="float32",
-                        device=AUDIO_DEVICE_INDEX, blocksize=block) as stream:
+                        device=AUDIO_DEVICE_INDEX, blocksize=frame) as stream:
         while not stop_event.is_set():
-            chunk, _ = stream.read(block)
+            chunk, _ = stream.read(frame)
             mono = chunk[:, 0] if chunk.ndim > 1 else chunk
-            try:
-                speech = bool(vad_mod.is_speech(mono))
-            except Exception:
-                speech = True
-            assessor.set_vad_active(speech)
+            if len(mono) != frame:
+                continue
+            speech = bool(vad_mod.is_speech(mono))
+            now = time.monotonic()
+            if speech:
+                last_speech_at = now
+            assessor.set_vad_active(speech or (now - last_speech_at) <= hang)
 
 
 def main() -> int:

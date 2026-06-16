@@ -152,27 +152,35 @@ def _decide(face_signals, vad_active, now):
                 del _buffers[key]
 
         # ── Layer 3b: arbitration. ──
+        by_key = {c["key"]: c for c in candidates}
         if not speaking_now:
+            # No human speech: nobody is the active speaker. (Buffers above still
+            # updated so energy history stays continuous for the next utterance.)
             _current_speaker_key = None
             _switch_candidate_key = None
             _switch_since = 0.0
-            return None
+            final_key = None
+            result = None
+        else:
+            # Candidate set: faces turned toward Rex; fall back to all if that
+            # empties (everyone slightly turned during real speech — still
+            # attribute someone).
+            facing_pool = [c for c in candidates if c["facing"]]
+            pool = facing_pool if facing_pool else candidates
+            active = [c for c in pool if c["lip_active"]]
+            final_key = _arbitrate(active, now, margin, switch_margin, switch_secs)
+            if final_key is not None and final_key in by_key:
+                win = by_key[final_key]
+                result = (win["pid"], win["slot_idx"], _confidence(win["energy"], energy_threshold))
+            else:
+                final_key = None
+                result = None
 
-        # Candidate set: faces turned toward Rex; fall back to all if that empties
-        # (everyone slightly turned during real speech — still attribute someone).
-        facing_pool = [c for c in candidates if c["facing"]]
-        pool = facing_pool if facing_pool else candidates
-        active = [c for c in pool if c["lip_active"]]
-        by_key = {c["key"]: c for c in candidates}
-
-        final_key = _arbitrate(active, now, margin, switch_margin, switch_secs)
-        if getattr(config, "ACTIVE_SPEAKER_LOG_SCOREBOARD", False):
-            _log_scoreboard(candidates, final_key, vad_active=True)
-        if final_key is None or final_key not in by_key:
-            return None
-        win = by_key[final_key]
-        confidence = _confidence(win["energy"], energy_threshold)
-        return (win["pid"], win["slot_idx"], confidence)
+        # Calibration scoreboard: log every cycle that has a visible face, so lip
+        # energy is observable during BOTH speech and silence (off by default).
+        if candidates and getattr(config, "ACTIVE_SPEAKER_LOG_SCOREBOARD", False):
+            _log_scoreboard(candidates, final_key, vad_active=vad_active)
+        return result
 
 
 def _arbitrate(active, now, margin, switch_margin, switch_secs):
