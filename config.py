@@ -464,6 +464,41 @@ FACE_EXPRESSION_BROW_FURROW_THRESHOLD = _env_float(
     max_value=1.0,
 )
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ACTIVE-SPEAKER DETECTION (visual) — vision/active_speaker.py
+# ─────────────────────────────────────────────────────────────────────────────
+# When 2+ people are in frame, decide WHICH visible person is talking by reading
+# per-face lip motion (jawOpen variance) gated on head orientation (yaw) and the
+# live VAD "is human speech happening" flag. Piggybacks on the Face Landmarker
+# data face_expression.py already computes — no extra inference. Writes a per-slot
+# is_speaking signal to world_state.people. See docs/active_speaker_detection.md.
+ACTIVE_SPEAKER_ENABLED = _env_bool("ACTIVE_SPEAKER_ENABLED", True)
+
+# Layer 1 — head-pose gate. Yaw is derived from MediaPipe's facial transformation
+# matrix (degrees), so the gate is in DEGREES (not the spec's old normalized 0.45).
+FACING_YAW_MAX_DEG = _env_float("FACING_YAW_MAX_DEG", 30.0, min_value=0.0, max_value=90.0)
+
+# Layer 2 — lip-motion energy (rolling jawOpen variance per person).
+LIPSYNC_WINDOW_SECS = _env_float("LIPSYNC_WINDOW_SECS", 1.0, min_value=0.25, max_value=5.0)
+# Variance of jawOpen over the window; PLACEHOLDER — calibrate on-device (commit 6).
+LIPSYNC_ENERGY_THRESHOLD = _env_float("LIPSYNC_ENERGY_THRESHOLD", 0.0025, min_value=0.0, max_value=1.0)
+# Drop a person's motion buffer after this long unseen (handles leave/return).
+LIPSYNC_STALE_SECS = _env_float("LIPSYNC_STALE_SECS", 2.0, min_value=0.5, max_value=30.0)
+
+# Layer 3 — arbitration (winner selection + hysteresis + release). PLACEHOLDERS.
+SPEAKER_MARGIN = _env_float("SPEAKER_MARGIN", 0.0015, min_value=0.0, max_value=1.0)
+SPEAKER_SWITCH_MARGIN = _env_float("SPEAKER_SWITCH_MARGIN", 0.0030, min_value=0.0, max_value=1.0)
+SPEAKER_SWITCH_SECS = _env_float("SPEAKER_SWITCH_SECS", 0.4, min_value=0.0, max_value=5.0)
+SPEAKER_RELEASE_SECS = _env_float("SPEAKER_RELEASE_SECS", 0.6, min_value=0.0, max_value=5.0)
+
+# Live consumers (e.g. face-tracking) ignore an is_speaking flag older than this.
+ACTIVE_SPEAKER_STALE_SECS = _env_float("ACTIVE_SPEAKER_STALE_SECS", 1.0, min_value=0.2, max_value=10.0)
+# The latched "who was visually speaking near end-of-turn" used by VOICE identity
+# resolution. Voice attribution runs AFTER the turn ends (past SILENCE_TIMEOUT +
+# transcription), by which time the live is_speaking is already cleared — so the
+# voice tie-breaker reads this decaying latch instead. Must cover that latency.
+ACTIVE_SPEAKER_LATCH_SECS = _env_float("ACTIVE_SPEAKER_LATCH_SECS", 3.0, min_value=0.5, max_value=15.0)
+
 # Smile reaction: after Rex delivers a short joke/snarky line, consciousness can
 # watch for a visible person's expression shifting into a smile and answer it.
 SMILE_REACTION_ENABLED = _env_bool("SMILE_REACTION_ENABLED", True)

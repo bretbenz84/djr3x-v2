@@ -2982,6 +2982,12 @@ def _step_person_recognition(frame) -> None:
                     "face_missing": base.get("face_missing"),
                     "face_last_seen_at": base.get("face_last_seen_at"),
                     "face_last_seen_age_secs": base.get("face_last_seen_age_secs"),
+                    # Visual active-speaker signal (vision/active_speaker.py).
+                    # Written by a separate module under the same world_state lock;
+                    # carried forward here so a slot resize doesn't drop it.
+                    "is_speaking": base.get("is_speaking"),
+                    "speaking_confidence": base.get("speaking_confidence"),
+                    "speaking_updated_at": base.get("speaking_updated_at"),
                 })
             people = resized
             changed = True
@@ -3131,6 +3137,13 @@ def _step_person_recognition(frame) -> None:
                 decor = (
                     "pose", "gesture", "engagement", "age_estimate",
                     "face_mood", "face_expression", "facial_expression", "expression",
+                    # Active-speaker fields (vision/active_speaker.py) — overlay a
+                    # fresh speaker write so a concurrent identity re-bind on this
+                    # slow-path tick doesn't drop it. NOTE: this overlay is
+                    # positional; active_speaker keys its WRITES by person_db_id
+                    # (stable across a slot resize) so a mis-aligned index here can
+                    # only carry a stale value forward, never mis-attribute.
+                    "is_speaking", "speaking_confidence", "speaking_updated_at",
                 )
                 ident = ("person_db_id", "face_id", "voice_id")
                 for i, slot in enumerate(people):

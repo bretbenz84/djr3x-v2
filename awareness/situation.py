@@ -120,6 +120,16 @@ class SituationAssessor:
         with self._lock:
             return self._interaction_busy
 
+    def is_user_speaking(self) -> bool:
+        """Per-instant VAD state: is human (mic-side) speech active right now.
+
+        Cheap, lock-guarded read for the vision active-speaker poll — does NOT go
+        through the heavier evaluate(). Reflects only mic-input VAD, so it never
+        fires on Rex's own TTS playback (that is tracked separately via
+        set_rex_speaking)."""
+        with self._lock:
+            return self._vad_active
+
     def recent_speech_turn_count(self, window_secs: float = 30.0) -> int:
         """Return the number of user speech onsets within the recent window."""
         cutoff = time.monotonic() - max(0.0, float(window_secs))
