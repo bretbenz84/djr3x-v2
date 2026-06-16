@@ -5,6 +5,9 @@ Talks the Mac<->ESP32 wire protocol (docs/motion_protocol.md v1) to a board runn
 the LIVE firmware (built with -DMOTION_HW_PRESENT=1). Run the subcommands roughly in
 this order as you wire and verify the base. Reuses the smoke-test serial client.
 
+  bringup            Guided run of all four stages below in order, with a safety gate
+                     before each — the easiest way to bring up a fresh base.
+
   encoder            Motors stay OFF. Streams odometry so you HAND-TURN a wheel and
                      confirm the encoder reads + which way it counts (per wheel:
                      ENC_SIGN_L / ENC_SIGN_R in calib.h). Safe any time.
@@ -28,13 +31,28 @@ Then rebuild + reflash the live firmware.
 """
 import argparse
 import math
+import os
 import sys
 import time
 
-sys.path.insert(0, "/Users/bbenziger/djr3x-v2/firmware/tools")
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(os.path.dirname(_TOOLS_DIR))
+sys.path.insert(0, _TOOLS_DIR)
 from motion_serial_smoketest import MotionClient  # noqa: E402
 
-DEFAULT_PORT = "/dev/cu.usbserial-3110"
+
+def _default_port() -> "str | None":
+    """The board's port from .env (MOTION_ESP32_PORT) — the same source main.py uses,
+    so the bench tool needs no --port on a configured machine. Override with --port."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(_REPO_ROOT, ".env"))
+    except Exception:
+        pass
+    return os.getenv("MOTION_ESP32_PORT", "").strip() or None
+
+
+DEFAULT_PORT = _default_port()
 
 
 def odom_line(t):
@@ -204,15 +222,56 @@ def cmd_set(c, args):
     print("        MOTION_TRACK_WIDTH_M) or bake them into firmware/djr3x_motion/calib.h.")
 
 
+def cmd_bringup(c, args):
+    """Guided one-shot bring-up + calibration: encoder -> spin -> straight -> turn,
+    with a safety gate before each stage so the base can be repositioned. Ctrl-C aborts
+    (the base is stopped in main's finally). Each stage reuses the standalone subcommand."""
+    print("=" * 72)
+    print("GUIDED DRIVE-BASE BRING-UP — stages in order (docs/motion_system.md §14,§15).")
+    print("Reposition the base when prompted; Ctrl-C aborts and stops the base.")
+    print("=" * 72)
+
+    print("\n[1/4] ENCODER DIRECTION — motors stay OFF (safe any time).")
+    if confirm("Start the encoder hand-roll check?", args.yes):
+        cmd_encoder(c, args)            # loops until Ctrl-C, then returns
+    print("  -> If a wheel counted the WRONG way rolling forward, flip its ENC_SIGN_* in")
+    print("     calib.h (or push live) BEFORE the powered stages.")
+
+    print("\n[2/4] SPIN UNDER PID — wheels must be OFF THE GROUND (on a stand).")
+    if confirm("Wheels off the ground and ready to drive the motors?", False):
+        cmd_spin(c, args)
+    else:
+        print("  skipped.")
+
+    print(f"\n[3/4] STRAIGHT — place the base ON THE FLOOR, ~{args.dist} m clear ahead.")
+    cmd_straight(c, args)               # has its own ready? prompt
+
+    print(f"\n[4/4] TURN — clear space to spin {args.deg}° in place on the floor.")
+    cmd_turn(c, args)                   # has its own ready? prompt
+
+    print("\n" + "=" * 72)
+    print("BRING-UP DONE. To make calibration survive an ESP32 reboot, take the scale")
+    print("factors printed above and either:")
+    print("  - push live + record in .env / config.py: MOTION_COUNTS_PER_METER,")
+    print("    MOTION_TRACK_WIDTH_M, MOTION_WHEEL_KP/KI/KD (Rex re-pushes on connect), or")
+    print("  - bake them into firmware/djr3x_motion/calib.h and reflash.")
+    print(f"  Read the live effective values any time:  motion_bench.py show")
+    print("=" * 72)
+
+
 def main():
     ap = argparse.ArgumentParser(description="DJ-R3X motion bench / calibration tool")
-    ap.add_argument("--port", default=DEFAULT_PORT)
+    ap.add_argument("--port", default=DEFAULT_PORT,
+                    help="serial device (default: MOTION_ESP32_PORT from .env)")
     ap.add_argument("--yes", action="store_true", help="skip the floor-test confirmation prompt")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("encoder")
     sub.add_parser("spin")
     sp = sub.add_parser("straight"); sp.add_argument("--dist", type=float, default=1.0)
     tp = sub.add_parser("turn"); tp.add_argument("--deg", type=float, default=360.0)
+    bp = sub.add_parser("bringup")
+    bp.add_argument("--dist", type=float, default=1.0)
+    bp.add_argument("--deg", type=float, default=360.0)
     sub.add_parser("show")
     st = sub.add_parser("set")
     st.add_argument("--kp", type=float); st.add_argument("--ki", type=float)
@@ -222,7 +281,10 @@ def main():
     args = ap.parse_args()
 
     handlers = {"encoder": cmd_encoder, "spin": cmd_spin, "straight": cmd_straight,
-                "turn": cmd_turn, "show": cmd_show, "set": cmd_set}
+                "turn": cmd_turn, "bringup": cmd_bringup, "show": cmd_show, "set": cmd_set}
+    if not args.port:
+        ap.error("no serial port — set MOTION_ESP32_PORT in .env or pass --port "
+                 "(find it with `arduino-cli board list`)")
     print(f"Opening {args.port} …")
     c = MotionClient(args.port)
     time.sleep(1.7)  # board auto-resets on port open; let it boot
