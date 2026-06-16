@@ -1305,6 +1305,161 @@ class JoystickWidget(QWidget):
         p.end()
 
 
+class DistancePhotoreceptorsWidget(QWidget):
+    """Top-down 'radar' of the drive base's five VL53L0X distance photoreceptors.
+
+    Front is up. Three forward cones (FL / FC / FR), a rear cone, and a down-facing
+    cliff pip. Each cone's reach scales with the measured distance and is colored by
+    zone — green clear, amber slow (< MOTION_SLOW_ZONE_M), red stop (< MOTION_STOP_ZONE_M)
+    — with dashed reference rings at those thresholds. A -1 reading (sensor error / no
+    return) draws a faint stub. Read-only: call set_readings() from the telemetry tick.
+
+    NOTE: while the ToF subsystem is still a firmware stub (MOTION_TOF_PRESENT=0) every
+    sensor reads a constant 'clear' (1500 mm, floor at 60 mm); the panel shows that
+    honestly until real sensors are wired and the firmware is built with ToF on."""
+
+    _FOV_DEG = 25.0                       # VL53L0X cone is ~25°
+    _CLIFF_FLOOR_MM = 60                  # mirrors safety.cpp CLIFF_FLOOR_MM
+    _CLIFF_MARGIN_MM = 80                 # mirrors safety.cpp CLIFF_MARGIN_MM
+    # (bearing°, telemetry key, label) — screen convention: 0 = 3 o'clock, CCW+, front = up = 90°.
+    _BEAMS = ((120.0, "fl", "FL"), (90.0, "fc", "FC"), (60.0, "fr", "FR"), (270.0, "rear", "RR"))
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setMinimumSize(260, 280)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._tof: dict = {}
+        self._zone = None
+        self._blocked = None
+        self._live = False
+        self._stop_m = float(getattr(config, "MOTION_STOP_ZONE_M", 0.25))
+        self._slow_m = float(getattr(config, "MOTION_SLOW_ZONE_M", 0.60))
+        self._max_m = max(self._slow_m * 1.5, 1.2)        # display reach (m)
+
+    def set_readings(self, tof_mm, zone=None, blocked=None) -> None:
+        self._tof = dict(tof_mm or {})
+        self._zone = (str(zone).lower() if zone else None)
+        self._blocked = (str(blocked).lower() if blocked else None)
+        self._live = True
+        self.update()
+
+    def clear(self) -> None:
+        self._tof = {}
+        self._zone = self._blocked = None
+        self._live = False
+        self.update()
+
+    def _mm(self, key):
+        try:
+            v = self._tof.get(key)
+            return None if v is None else int(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _beam_color(self, mm, alpha=255):
+        if mm is None or mm < 0:
+            return QColor(95, 105, 120, alpha)                  # error / no data
+        d = mm / 1000.0
+        if d <= self._stop_m:  return QColor(235, 70, 60, alpha)    # STOP
+        if d <= self._slow_m:  return QColor(240, 180, 60, alpha)   # SLOW
+        return QColor(70, 200, 130, alpha)                          # CLEAR
+
+    def paintEvent(self, _e) -> None:
+        w, h = float(self.width()), float(self.height())
+        band = 46.0                                   # bottom band: the down/cliff pip
+        top_h = h - band
+        cx = w / 2.0
+        cy = top_h / 2.0 + 6.0
+        maxR = min(w, top_h) / 2.0 - 16.0
+        if maxR < 24:
+            return
+        body_r = maxR * 0.20
+        reach = maxR - body_r
+        dim = 1.0 if self._live else 0.35
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        def pt(bearing_deg, r):
+            a = math.radians(bearing_deg)
+            return QPointF(cx + r * math.cos(a), cy - r * math.sin(a))
+
+        def radius_for(mm):
+            if mm is None or mm < 0:
+                return body_r + reach * 0.12
+            d = max(0.0, min(mm / 1000.0, self._max_m))
+            return body_r + (d / self._max_m) * reach
+
+        # Cones (filled translucent wedges from the body outward).
+        f = p.font(); f.setPointSize(8); f.setBold(True); p.setFont(f)
+        for bearing, key, label in self._BEAMS:
+            mm = self._mm(key)
+            r = radius_for(mm)
+            p.setBrush(QBrush(self._beam_color(mm, int(150 * dim))))
+            p.setPen(QPen(self._beam_color(mm, int(255 * dim)), 1))
+            p.drawPie(QRectF(cx - r, cy - r, 2 * r, 2 * r),
+                      int((bearing - self._FOV_DEG / 2.0) * 16), int(self._FOV_DEG * 16))
+            txt = "—" if mm is None else ("err" if mm < 0
+                  else (f"{mm}" if mm < 1000 else f"{mm / 1000.0:.1f}m"))
+            lp = pt(bearing, r + 15)
+            p.setPen(QColor(185, 205, 225, int(255 * dim)))
+            p.drawText(QRectF(lp.x() - 28, lp.y() - 9, 56, 18),
+                       Qt.AlignmentFlag.AlignCenter, f"{label} {txt}")
+
+        # Reference rings (over the cones): max range + slow + stop thresholds.
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for val_m, col in ((self._max_m, QColor(70, 80, 95)),
+                           (self._slow_m, QColor(150, 120, 50)),
+                           (self._stop_m, QColor(150, 60, 55))):
+            rr = body_r + (min(val_m, self._max_m) / self._max_m) * reach
+            p.setPen(QPen(col, 1, Qt.PenStyle.DashLine))
+            p.drawEllipse(QRectF(cx - rr, cy - rr, 2 * rr, 2 * rr))
+
+        # Robot body + forward chevron (points up).
+        p.setPen(QPen(QColor(120, 140, 165, int(255 * dim)), 2))
+        p.setBrush(QBrush(QColor(30, 36, 46, int(255 * dim))))
+        p.drawEllipse(QRectF(cx - body_r, cy - body_r, 2 * body_r, 2 * body_r))
+        p.setPen(QPen(QColor(130, 215, 255, int(255 * dim)), 2))
+        p.drawLine(QPointF(cx - body_r * 0.45, cy), QPointF(cx, cy - body_r * 0.55))
+        p.drawLine(QPointF(cx, cy - body_r * 0.55), QPointF(cx + body_r * 0.45, cy))
+
+        # Zone badge (top-left chip).
+        zone = self._zone or ("clear" if self._live else "—")
+        zcol = {"clear": QColor(70, 200, 130), "slow": QColor(240, 180, 60),
+                "stop": QColor(235, 70, 60), "cliff": QColor(235, 70, 60)}.get(
+                    zone, QColor(120, 130, 145))
+        ztxt = f"ZONE {zone.upper()}"
+        if self._blocked and self._blocked not in ("none", "—"):
+            ztxt += f" · blk {self._blocked}"
+        f.setPointSize(8); f.setBold(True); p.setFont(f)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(zcol.red(), zcol.green(), zcol.blue(), int(55 * dim)))
+        p.drawRoundedRect(QRectF(6, 6, 158, 19), 4, 4)
+        p.setPen(zcol)
+        p.drawText(QRectF(6, 6, 158, 19), Qt.AlignmentFlag.AlignCenter, ztxt)
+
+        # Down / cliff pip (bottom band).
+        down = self._mm("down")
+        if down is None:                                              dcol, dtxt = QColor(95, 105, 120), "—"
+        elif down < 0:                                               dcol, dtxt = QColor(95, 105, 120), "error"
+        elif down > self._CLIFF_FLOOR_MM + self._CLIFF_MARGIN_MM:    dcol, dtxt = QColor(235, 70, 60), f"DROP-OFF {down}mm"
+        else:                                                        dcol, dtxt = QColor(70, 200, 130), f"floor {down}mm"
+        by = top_h + 6
+        p.setPen(QPen(QColor(dcol.red(), dcol.green(), dcol.blue(), int(255 * dim)), 1))
+        p.setBrush(QColor(dcol.red(), dcol.green(), dcol.blue(), int(45 * dim)))
+        p.drawRoundedRect(QRectF(8, by, w - 16, band - 12), 5, 5)
+        p.setPen(QColor(210, 225, 235, int(255 * dim)))
+        f.setPointSize(9); p.setFont(f)
+        p.drawText(QRectF(8, by, w - 16, band - 12), Qt.AlignmentFlag.AlignCenter,
+                   f"▼ CLIFF SENSOR:  {dtxt}")
+
+        if not self._live:
+            p.setPen(QColor(150, 165, 185))
+            f.setPointSize(10); f.setBold(True); p.setFont(f)
+            p.drawText(QRectF(0, cy - 12, w, 24), Qt.AlignmentFlag.AlignCenter, "no link")
+        p.end()
+
+
 class MotivatorControlDialog(QDialog):
     """Joystick console to drive the motion base by hand, with live ESP32 readout.
 
@@ -1322,7 +1477,7 @@ class MotivatorControlDialog(QDialog):
         # A top-level QDialog doesn't inherit the main window's stylesheet, so apply
         # the dashboard theme (_STYLE) plus the Motivator-specific rules here.
         self.setStyleSheet(_STYLE + _MOTIVATOR_EXTRA)
-        self.resize(380, 640)
+        self.resize(760, 700)
         self._x = 0.0
         self._y = 0.0
         self._engaged = False     # only drive after the operator has touched the stick
@@ -1340,17 +1495,39 @@ class MotivatorControlDialog(QDialog):
         self._conn.setWordWrap(True)
         root.addWidget(self._conn)
 
+        # Two columns: drive controls on the left, sensing + telemetry on the right.
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        root.addLayout(body, 1)
+
+        left = QVBoxLayout()
+        left.setSpacing(12)
         self.joystick = JoystickWidget()
         self.joystick.moved.connect(self._on_move)
         self.joystick.released.connect(self._on_release)
-        root.addWidget(self.joystick, 1)
+        left.addWidget(self.joystick, 1)
 
         cmd = self._section("COMMANDED (this console)")
         self._lbl_left = self._row(cmd, "Left motor")
         self._lbl_right = self._row(cmd, "Right motor")
         self._lbl_lin = self._row(cmd, "Linear")
         self._lbl_ang = self._row(cmd, "Angular")
-        root.addWidget(cmd["frame"])
+        left.addWidget(cmd["frame"])
+        body.addLayout(left, 1)
+
+        right = QVBoxLayout()
+        right.setSpacing(12)
+        photo = QFrame()
+        photo.setObjectName("chromePanel")
+        photo_lay = QVBoxLayout(photo)
+        photo_lay.setContentsMargins(12, 10, 12, 10)
+        photo_lay.setSpacing(8)
+        photo_title = QLabel("DISTANCE PHOTORECEPTORS")
+        photo_title.setObjectName("panelTitle")
+        photo_lay.addWidget(photo_title)
+        self._photoreceptors = DistancePhotoreceptorsWidget()
+        photo_lay.addWidget(self._photoreceptors, 1)
+        right.addWidget(photo, 1)
 
         fb = self._section("ESP32 FEEDBACK")
         self._fb_state = self._row(fb, "State")
@@ -1362,7 +1539,8 @@ class MotivatorControlDialog(QDialog):
         self._fb_tof2 = self._row(fb, "ToF rear / down")
         self._fb_batt = self._row(fb, "Battery")
         self._fb_fault = self._row(fb, "Fault / errs")
-        root.addWidget(fb["frame"])
+        right.addWidget(fb["frame"])
+        body.addLayout(right, 1)
 
         self._stop_btn = QPushButton("■  STOP")
         self._stop_btn.setObjectName("motivatorStop")
@@ -1483,6 +1661,7 @@ class MotivatorControlDialog(QDialog):
             for lbl in (self._fb_state, self._fb_owner, self._fb_zone, self._fb_odom,
                         self._fb_pose, self._fb_tof, self._fb_tof2, self._fb_batt, self._fb_fault):
                 lbl.setText("—")
+            self._photoreceptors.clear()
             return
 
         odom = tel.get("odom") or {}
@@ -1505,6 +1684,7 @@ class MotivatorControlDialog(QDialog):
         self._fb_tof2.setText(f"{tof.get('rear', '—')} / {tof.get('down', '—')} mm")
         self._fb_batt.setText(f"{g(tel, 'batt_mv') / 1000.0:.2f} V")
         self._fb_fault.setText(f"{tel.get('fault') or 'none'} / errs {tel.get('errs', 0)}")
+        self._photoreceptors.set_readings(tof, tel.get("zone"), tel.get("blocked_dir"))
 
     def _stop(self) -> None:
         # Immediate stop (unlike releasing the stick, which ramps down): zero the ramp
