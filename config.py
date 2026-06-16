@@ -978,10 +978,15 @@ WHISPER_INITIAL_PROMPT = "Bret, DJ-R3X, Rex, Batuu, Star Wars, cantina, droid"
 # Applied after transcription and before the command parser.
 # Keys are lowercased misreadings; values are the correct replacements.
 WHISPER_CORRECTIONS = {
-    "bread":  "Bret",
-    "breath": "Bret",
-    "brett":  "Bret",
-    "rex's":  "Rex",
+    "bread":   "Bret",
+    "breath":  "Bret",
+    "brett":   "Bret",
+    "rex's":   "Rex",
+    # Exudica Royale — Whisper hears the soft 'd' as a 't'/'g'. Without this the
+    # spoken name never first-token-matches the stored "Exudica Royale" record,
+    # so an introduction silently forks a duplicate person instead of linking her.
+    "exutica": "Exudica",
+    "exutiga": "Exudica",
 }
 
 # Repetition filter: flag a transcript as a loop artifact only when one word both
