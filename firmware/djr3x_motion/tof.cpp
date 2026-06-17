@@ -93,7 +93,8 @@ static inline int read_mm(int i) {
   if (!s_ok[i]) return -1;                      // dead sensor: skip the blocking I²C wait
   mux_select(TOF_MUX_CH[i]);
   const int mm = s_tof[i].readRangeContinuousMillimeters();
-  if (s_tof[i].timeoutOccurred() || mm >= TOF_OUT_OF_RANGE_MM) return -1;
+  if (s_tof[i].timeoutOccurred()) return -1;    // -1 == genuine read error / no comms ONLY
+  if (mm >= TOF_OUT_OF_RANGE_MM) return TOF_OUT_OF_RANGE_MM;  // nothing in range = far/clear, NOT an error
   return mm;
 }
 
@@ -135,7 +136,8 @@ void hal_tof_init() {
 static inline int read_mm(int i) {
   if (!s_ok[i]) return -1;                      // dead sensor: skip the blocking I²C wait
   const int mm = s_tof[i].readRangeContinuousMillimeters();
-  if (s_tof[i].timeoutOccurred() || mm >= TOF_OUT_OF_RANGE_MM) return -1;
+  if (s_tof[i].timeoutOccurred()) return -1;    // -1 == genuine read error / no comms ONLY
+  if (mm >= TOF_OUT_OF_RANGE_MM) return TOF_OUT_OF_RANGE_MM;  // nothing in range = far/clear, NOT an error
   return mm;
 }
 #endif  // MOTION_TOF_USE_MUX
