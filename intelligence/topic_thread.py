@@ -597,8 +597,13 @@ def build_arc_directive() -> str:
         "repeating yourself: don't re-ask questions, and don't reuse any joke, premise, "
         "roast, or angle you've already used — the 'Used up' line lists what you've spent, "
         "so steer clear of it even reworded (a premise that landed is SPENT, not a cue to "
-        "do it again). You MAY call back to an Open thread when it genuinely fits. Never "
-        "force a callback, read these notes aloud, or recite them verbatim.\n" + summary
+        "do it again). 'Topics' and 'Open threads' are LIGHT context, not a script: a "
+        "casual one-off mention (a snack they're eating, an offhand remark) is NOT a thread "
+        "to keep returning to — touch it once and move on. Looping the SAME topic into "
+        "reply after reply (working pizza into every line because they mentioned it once) is "
+        "exactly the repetitive feel to avoid; follow where THEY take the conversation. You "
+        "MAY call back to an Open thread when it genuinely fits, but never force it, read "
+        "these notes aloud, or recite them verbatim.\n" + summary
     )
 
 

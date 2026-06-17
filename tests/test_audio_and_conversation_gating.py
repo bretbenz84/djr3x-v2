@@ -10020,6 +10020,47 @@ class IdleBanterTest(unittest.TestCase):
         interaction._last_proactive_line_at = 0.0
         consciousness.clear_response_wait()
 
+    def test_idle_plans_pivot_does_not_repeat_a_holiday(self):
+        from intelligence import interaction, consciousness
+        from awareness import holidays
+        interaction._idle_plans_asked.clear()
+        consciousness._holiday_plans_asked.clear()
+        holiday = {
+            "name": "Juneteenth National Independence Day", "when": "this Friday",
+            "date": "2026-06-19", "days_until": 2, "window": "minor",
+        }
+        with mock.patch.object(holidays, "next_relevant_holiday", return_value=holiday):
+            d1, m1 = interaction._idle_plans_directive(person_id=1)
+            self.assertIn("Juneteenth", d1)
+            interaction._mark_idle_plans_asked(m1)  # simulate the line actually speaking
+            # Second pivot must NOT ask Juneteenth again — falls back to generic plans.
+            d2, m2 = interaction._idle_plans_directive(person_id=1)
+            self.assertNotIn("Juneteenth", d2)
+            self.assertTrue((m2 or {}).get("generic"))
+            interaction._mark_idle_plans_asked(m2)
+            # Third pivot is exhausted -> empty so the caller keeps deepening the topic.
+            d3, m3 = interaction._idle_plans_directive(person_id=1)
+            self.assertEqual(d3, "")
+            self.assertIsNone(m3)
+        # Cross-path: the consciousness holiday step won't re-ask it either.
+        self.assertIn((1, "2026-06-19"), consciousness._holiday_plans_asked)
+        interaction._idle_plans_asked.clear()
+        consciousness._holiday_plans_asked.clear()
+
+    def test_unspoken_plans_pivot_does_not_burn_the_holiday(self):
+        # The marker is recorded only when the line speaks; selecting a directive that
+        # never speaks must not mark the holiday asked.
+        from intelligence import interaction
+        from awareness import holidays
+        interaction._idle_plans_asked.clear()
+        holiday = {"name": "Juneteenth National Independence Day", "when": "this Friday",
+                   "date": "2026-06-19", "days_until": 2, "window": "minor"}
+        with mock.patch.object(holidays, "next_relevant_holiday", return_value=holiday):
+            interaction._idle_plans_directive(person_id=1)  # selected, but NOT marked
+            d2, _ = interaction._idle_plans_directive(person_id=1)
+            self.assertIn("Juneteenth", d2)  # still available — wasn't burned
+        interaction._idle_plans_asked.clear()
+
     def test_banter_fires_after_silence_and_drives_conversation(self):
         from intelligence import interaction
         with (

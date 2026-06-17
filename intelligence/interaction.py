@@ -239,6 +239,11 @@ _idle_banter_count: int = 0
 # IDLE_BANTER_MAX_SECS] and reset when the user re-engages, so the first re-engagement
 # of each silent stretch lands at a natural, non-metronomic moment.
 _idle_banter_threshold: Optional[float] = None
+# Plans/holiday topics the idle pivot has ALREADY raised this SESSION (holiday names +
+# "generic"), so it never asks "any plans for Juneteenth?" twice. Persists across silent
+# stretches within a session; cleared on session reset. Live failure 2026-06-17: the
+# Juneteenth plans question fired in two separate stretches.
+_idle_plans_asked: set[str] = set()
 # Wall-clock of the last self-initiated (proactive) line of any kind. Used to
 # keep proactive lines from stacking back-to-back (see _proactive_line_recently_fired).
 _last_proactive_line_at: float = 0.0
@@ -3613,29 +3618,77 @@ _IDLE_BANTER_LIVE_TOPIC_ASK = (
 )
 
 
-def _idle_plans_directive() -> str:
+def _idle_plans_already_asked_holiday(person_id: Optional[int], holiday: dict) -> bool:
+    """True if this holiday was already raised this session — by the idle pivot OR the
+    consciousness holiday-plans step (shared dedup so the two paths don't double-ask)."""
+    if holiday.get("name") in _idle_plans_asked:
+        return True
+    if person_id is None:
+        return False
+    try:
+        from intelligence import consciousness as _c
+        return (int(person_id), holiday.get("date", "")) in _c._holiday_plans_asked
+    except Exception:
+        return False
+
+
+def _mark_idle_plans_asked(marker: Optional[dict]) -> None:
+    """Record (on actual speak) that a plans/holiday question was asked, so it isn't
+    repeated. Records into the consciousness holiday set too for cross-path dedup."""
+    if not marker:
+        return
+    name = marker.get("holiday_name")
+    if name:
+        _idle_plans_asked.add(name)
+        person_id = marker.get("person_id")
+        date = marker.get("holiday_date")
+        if person_id is not None and date:
+            try:
+                from intelligence import consciousness as _c
+                _c._holiday_plans_asked.add((int(person_id), date))
+            except Exception:
+                pass
+    elif marker.get("generic"):
+        _idle_plans_asked.add("generic")
+
+
+def _idle_plans_directive(person_id: Optional[int] = None) -> tuple[str, Optional[dict]]:
     """An idle re-engagement that pivots OFF the current topic to ask about the user's
-    upcoming plans — an approaching holiday if one is in window, otherwise the weekend /
-    what they've got coming up. Holiday awareness is real (awareness.holidays), not
-    hardcoded; best-effort so a feed failure just falls back to the generic plans ask."""
+    upcoming plans — an approaching holiday if one is in window and NOT already raised
+    this session, otherwise the weekend / what they've got coming up (also once-only).
+
+    Returns (directive, marker). The marker is recorded by the caller ONLY when the line
+    actually speaks (_mark_idle_plans_asked), so a candidate that loses the governor tick
+    doesn't burn the topic. Returns ("", None) when there's nothing fresh to ask — the
+    caller then keeps the normal topic-deepening directive instead of repeating itself."""
     holiday = None
     try:
         from awareness import holidays as _holidays
         holiday = _holidays.next_relevant_holiday()
     except Exception:
         holiday = None
-    if holiday:
-        return (
+    if holiday and not _idle_plans_already_asked_holiday(person_id, holiday):
+        directive = (
             f"The conversation has gone quiet. {holiday['name']} is coming up "
             f"({holiday['when']}). Ask, in ONE short curious in-character line, whether "
             "they've got any plans for it. Don't lecture about the holiday — just ask. "
             "Do not sign off or announce the silence."
         )
-    return (
+        return directive, {
+            "holiday_name": holiday.get("name"),
+            "holiday_date": holiday.get("date"),
+            "person_id": person_id,
+        }
+    if "generic" in _idle_plans_asked:
+        # Already asked about upcoming plans this session — don't loop it; let idle
+        # banter go back to deepening the live topic instead.
+        return "", None
+    directive = (
         "The conversation has gone quiet. Pivot off the current topic and ask, in ONE "
         "short curious in-character line, what they've got coming up — plans this weekend, "
         "a trip, anything they're looking forward to. Do not sign off or announce the silence."
     )
+    return directive, {"generic": True}
 
 
 def _governor_enforcing() -> bool:
@@ -3797,10 +3850,11 @@ def _maybe_idle_banter(
     # OUTSIDE this conversation — upcoming plans, the weekend, or an approaching holiday.
     # A real conversationalist doesn't loop one topic to death; "any plans this weekend?"
     # is how a lull turns into genuine connection (and is what the user asked for).
+    plans_marker = None  # recorded only if a plans pivot actually speaks (no repeats)
     if ask_user and random.random() < float(
         getattr(config, "IDLE_PLANS_QUESTION_PROBABILITY", 0.35)
     ):
-        plans_directive = _idle_plans_directive()
+        plans_directive, plans_marker = _idle_plans_directive(person_id)
         if plans_directive:
             directive = plans_directive
             pov_volunteered = False
@@ -3873,6 +3927,7 @@ def _maybe_idle_banter(
             conv_memory.add_to_transcript("Rex", line)
             conv_log.log_rex(line)
             _register_rex_utterance(line)
+            _mark_idle_plans_asked(plans_marker)
             if pov_volunteered:
                 # Mark the preoccupation as spoken so it isn't re-volunteered (idle
                 # banter OR reply path) until the cooldown elapses.
@@ -12040,6 +12095,7 @@ def _end_session() -> None:
         _session_router_control_topics.clear()
         _interest_idle_followups_spoken.clear()
         _low_memory_idle_questions_spoken.clear()
+        _idle_plans_asked.clear()
         _close_onboarding("session reset")
         _recent_memory_candidates.clear()
         _clear_anonymous_speaker_slots()
@@ -12361,6 +12417,7 @@ def _end_session() -> None:
     _voice_refreshed_this_session.clear()
     _face_reveal_declined.clear()
     _grief_flow_state.clear()
+    _idle_plans_asked.clear()
     try:
         consciousness.clear_response_wait()
         consciousness.clear_engagement()
