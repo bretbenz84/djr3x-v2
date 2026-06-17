@@ -8518,6 +8518,7 @@ def _handle_onboarding_turn(text: str, speaker_id: Optional[int]) -> Optional[st
         person_id,
         asked_keys=state["asked_keys"],
         last_answer=answered,
+        last_question=str((state.get("pending_question") or {}).get("text") or ""),
         allow_depth=not soft,
     )
     if not next_q:

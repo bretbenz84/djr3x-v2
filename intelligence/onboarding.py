@@ -38,6 +38,19 @@ from memory import relationships as rel_memory
 
 _log = logging.getLogger(__name__)
 
+_client = None
+
+
+def _openai_client():
+    """Lazy OpenAI client for the (off-by-default) authored-question rephrase.
+    The depth follow-up itself goes through llm.generate_curiosity_question."""
+    global _client
+    if _client is None:
+        import apikeys
+        from openai import OpenAI
+        _client = OpenAI(api_key=apikeys.OPENAI_API_KEY)
+    return _client
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Flags / eligibility
@@ -110,6 +123,7 @@ def next_question(
     *,
     asked_keys: Optional[set[str]] = None,
     last_answer: Optional[str] = None,
+    last_question: Optional[str] = None,
     allow_depth: bool = True,
 ) -> Optional[dict]:
     """Return the next eligible baseline question as a resolved dict, or None.
@@ -139,7 +153,7 @@ def next_question(
                 continue
         except Exception:
             pass
-        text = _resolve_text(entry, last_answer)
+        text = _resolve_text(entry, last_answer, last_question, person_id)
         if not text:
             continue
         resolved = dict(entry)
@@ -148,13 +162,18 @@ def next_question(
     return None
 
 
-def _resolve_text(entry: dict, last_answer: Optional[str]) -> Optional[str]:
+def _resolve_text(
+    entry: dict,
+    last_answer: Optional[str],
+    last_question: Optional[str],
+    person_id: Optional[int],
+) -> Optional[str]:
     text = entry.get("text")
     if text is None:
         # LLM-generated depth follow-up — needs a prior answer to dig into.
         if not (last_answer or "").strip():
             return None
-        return generate_followup(last_answer)
+        return generate_followup(last_answer, person_id=person_id, prev_question=last_question)
     if bool(getattr(config, "ONBOARDING_LLM_REPHRASE_ENABLED", False)):
         return _maybe_rephrase(str(text))
     return str(text)
@@ -164,12 +183,21 @@ def _resolve_text(entry: dict, last_answer: Optional[str]) -> Optional[str]:
 # LLM depth follow-up (local qwen sidecar; templated fallback)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def generate_followup(prev_answer: Optional[str]) -> Optional[str]:
+def generate_followup(
+    prev_answer: Optional[str],
+    *,
+    person_id: Optional[int] = None,
+    prev_question: Optional[str] = None,
+) -> Optional[str]:
     """One short, curious follow-up question that digs into the last answer.
 
-    Uses the local LLM sidecar when available; otherwise a templated
-    "how'd you get into <topic>?" fallback. Returns None only if there is
-    nothing to follow up on.
+    Quality-critical and in-character, so it runs on the main OpenAI model via
+    llm.generate_curiosity_question (the same brain as the rest of Rex's
+    conversation, with built-in grief/heavy-topic restraint and known-interest
+    awareness) — NOT the local qwen classifier sidecar. When the LLM follow-up
+    is disabled (offline / tests) it falls back to a validated
+    "how'd you get into <topic>?" template. Returns None when there is nothing
+    safe/useful to ask, so selection falls through to an authored Tier-C question.
     """
     answer = (prev_answer or "").strip()
     if not answer:
@@ -177,22 +205,18 @@ def generate_followup(prev_answer: Optional[str]) -> Optional[str]:
 
     if bool(getattr(config, "ONBOARDING_LLM_FOLLOWUP_ENABLED", True)):
         try:
-            from intelligence import local_llm
+            from intelligence import llm
 
-            out = local_llm.generate(
-                f'A new person just told a witty, curious DJ droid: "{answer}". '
-                "Write ONE short follow-up question (max 14 words) that digs into "
-                "what they just said. Output only the question, no preamble.",
-                system="You are Rex, a witty but genuinely curious droid. Output only the question.",
-                temperature=0.4,
-                max_tokens=40,
-                timeout_secs=1.2,
+            out = llm.generate_curiosity_question(
+                prev_question or "So, tell me about yourself.",
+                answer,
+                person_id=person_id,
             )
-            question = _first_question(out)
-            if question:
-                return question
+            # An empty return is deliberate (e.g. a heavy/sensitive answer) —
+            # do NOT template over it; skip the depth probe entirely.
+            return _first_question(out) or None
         except Exception as exc:
-            _log.debug("[onboarding] LLM follow-up failed, using template: %s", exc)
+            _log.debug("[onboarding] OpenAI follow-up failed, using template: %s", exc)
 
     topic = _topic_from_answer(answer)
     # Only build the template when the topic reads like a thing you can "get into"
@@ -203,22 +227,25 @@ def generate_followup(prev_answer: Optional[str]) -> Optional[str]:
 
 
 def _maybe_rephrase(text: str) -> str:
-    """Optional cosmetic rephrase of an authored question in Rex's voice."""
+    """Optional cosmetic rephrase of an authored question in Rex's voice
+    (OpenAI, off by default). Falls back to the verbatim authored question."""
     base = (text or "").strip()
     if not base:
         return base
     try:
-        from intelligence import local_llm
-
-        out = local_llm.generate(
-            f'Rephrase this question in a witty, casual droid voice, same meaning, '
-            f'max 16 words, keep it a single question: "{base}"',
-            system="You are Rex. Output only the rephrased question.",
+        resp = _openai_client().chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[
+                {"role": "system",
+                 "content": "You are Rex, a witty droid. Output ONLY the rephrased question."},
+                {"role": "user",
+                 "content": f"Rephrase in a casual, witty droid voice, same meaning, "
+                            f"one question, max 16 words: \"{base}\""},
+            ],
             temperature=0.5,
             max_tokens=40,
-            timeout_secs=1.0,
         )
-        rephrased = _first_question(out)
+        rephrased = _first_question((resp.choices[0].message.content or ""))
         if rephrased:
             return rephrased
     except Exception as exc:

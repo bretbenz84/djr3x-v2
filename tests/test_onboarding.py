@@ -143,6 +143,27 @@ class FollowupTemplateTests(unittest.TestCase):
             self.assertIsNone(onboarding.generate_followup("it's going great, better than I hoped"))
         self.assertIsNone(onboarding.generate_followup(""))
 
+    def test_openai_path_used_when_enabled(self):
+        from intelligence import onboarding
+
+        with mock.patch.object(config, "ONBOARDING_LLM_FOLLOWUP_ENABLED", True, create=True), \
+                mock.patch("intelligence.llm.generate_curiosity_question",
+                           return_value="Sure! What got you hooked on climbing?") as gen:
+            q = onboarding.generate_followup(
+                "rock climbing", person_id=7, prev_question="What are you into?"
+            )
+        gen.assert_called_once()
+        self.assertEqual(q, "What got you hooked on climbing?")
+
+    def test_openai_empty_skips_without_template(self):
+        from intelligence import onboarding
+
+        # An empty LLM return (e.g. a heavy/sensitive answer, where the curiosity
+        # generator deliberately stays quiet) must NOT fall back to the template.
+        with mock.patch.object(config, "ONBOARDING_LLM_FOLLOWUP_ENABLED", True, create=True), \
+                mock.patch("intelligence.llm.generate_curiosity_question", return_value=""):
+            self.assertIsNone(onboarding.generate_followup("my mom just passed away", person_id=7))
+
     def test_first_question_extraction(self):
         from intelligence import onboarding
 

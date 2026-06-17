@@ -451,9 +451,11 @@ until proven on-device.
   Ignores `TIER_MAX_DEPTH` (the whole point) but reuses `QUESTION_POOL` keys so
   the asked/answered de-dup (`memory.relationships`) and `QUESTION_BOUNDARY_TOPICS`
   apply for free. Tier-C `origin_followup` is LLM-generated against the live
-  answer (local qwen sidecar, templated "how'd you get into X?" fallback); the
-  rest are authored. Optional `ONBOARDING_LLM_REPHRASE_ENABLED` re-voices authored
-  questions.
+  answer via `llm.generate_curiosity_question` (the main OpenAI model
+  `config.LLM_MODEL` — same brain as the rest of the conversation, with built-in
+  grief/heavy-topic restraint; a validated "how'd you get into X?" template
+  covers the offline/disabled case); the rest are authored. Optional
+  `ONBOARDING_LLM_REPHRASE_ENABLED` re-voices authored questions (also OpenAI).
 - **Budget:** rides the `newcomer_baseline` urgent bypass in
   `intelligence/question_budget._URGENT_KINDS`, so it is never blocked by the
   global cap; bounded instead by its own `ONBOARDING_MIN/MAX_QUESTIONS` (4/8).
@@ -741,7 +743,7 @@ venv/bin/python main.py
 
 - Motion system (drive base): wire contract `docs/motion_protocol.md` (v1, locked) + Phase 0 ESP32 firmware (`firmware/djr3x_motion`, full protocol over a stubbed HAL; flashed + 27/27 smoke test) + Mac side (`hardware/motion.py` transport, `intelligence/motion_controller.py` controller, `action_router` motion.* specs + `classify_explicit_motion`, `interaction` dispatch/fast-path, `MOTION_*` config, `MOTION_ESP32_PORT`, `main.py` Step-4 wiring). Gated on `motion_controller.available()` so it's a NO-OP for the whole pipeline unless a base is connected; `stop`/`estop` always pass and bare "stop" only routes to the base while moving. Flash at 115200 (921600 fails on the CH340 bridge); `setup_macos.sh` auto-detects the ESP32 by protocol probe (chip-ID can't — it shares a CH340 with the chest Arduino). Sign convention REP-103. Tests: `tests/test_motion.py`. See the Motion System section above.
 
-- First-meeting onboarding (`intelligence/onboarding.py` + `interaction._pending_onboarding`/`_handle_onboarding_turn`/`_maybe_begin_onboarding`/`_maybe_onboarding_question`/`_maybe_onboarding_timeout`): a scoped, stranger-only baseline-gathering burst armed at `_enroll_new_person` for a brand-new, non-minor, near-empty profile. Asks a research-backed Tier A→B→C ladder (`config.ONBOARDING_QUESTION_POOL`, ignores `TIER_MAX_DEPTH`, reuses `QUESTION_POOL` keys for de-dup/boundaries), leads each answer with a warm 2-5 word retort (no "?", `COMEDY_LINE_BANKS["onboarding_retort_*"]`) + a periodic self-reveal, writes a tidied baseline (`answer_latest_pending_question` familiarity bump + `add_fact`/`upsert_interest`), and exits on hard-decline/pivot/wind-down-after-MIN/MAX/silence. Rides the `newcomer_baseline` question-budget urgent bypass (does NOT loosen the friend cap); bounded by `ONBOARDING_MIN/MAX_QUESTIONS` (4/8). Tier-C `origin_followup` is LLM-generated (local qwen, templated fallback). Suppresses proactive speech while open (`speech_engine.can_proactive_speak` → `onboarding_flow_active()`). **Master flag `ONBOARDING_ENABLED` defaults OFF** until proven on-device. See the "First-meeting onboarding" subsection above. Tests: `tests/test_onboarding.py`.
+- First-meeting onboarding (`intelligence/onboarding.py` + `interaction._pending_onboarding`/`_handle_onboarding_turn`/`_maybe_begin_onboarding`/`_maybe_onboarding_question`/`_maybe_onboarding_timeout`): a scoped, stranger-only baseline-gathering burst armed at `_enroll_new_person` for a brand-new, non-minor, near-empty profile. Asks a research-backed Tier A→B→C ladder (`config.ONBOARDING_QUESTION_POOL`, ignores `TIER_MAX_DEPTH`, reuses `QUESTION_POOL` keys for de-dup/boundaries), leads each answer with a warm 2-5 word retort (no "?", `COMEDY_LINE_BANKS["onboarding_retort_*"]`) + a periodic self-reveal, writes a tidied baseline (`answer_latest_pending_question` familiarity bump + `add_fact`/`upsert_interest`), and exits on hard-decline/pivot/wind-down-after-MIN/MAX/silence. Rides the `newcomer_baseline` question-budget urgent bypass (does NOT loosen the friend cap); bounded by `ONBOARDING_MIN/MAX_QUESTIONS` (4/8). Tier-C `origin_followup` is LLM-generated via `llm.generate_curiosity_question` (main OpenAI model, validated template fallback). Suppresses proactive speech while open (`speech_engine.can_proactive_speak` → `onboarding_flow_active()`). **Master flag `ONBOARDING_ENABLED` defaults OFF** until proven on-device. See the "First-meeting onboarding" subsection above. Tests: `tests/test_onboarding.py`.
 
 ## Likely Future Work
 

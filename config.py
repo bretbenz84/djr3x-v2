@@ -2839,8 +2839,11 @@ ONBOARDING_SOFT_DISENGAGE_LIMIT = 2        # lukewarm answers in a row (past MIN
 ONBOARDING_REVEAL_EVERY = 3                # inject a Rex self-reveal ~every N questions (0 = off)
 
 # Use the LLM to (a) generate the Tier-C depth follow-up against the live answer
-# and (b) lightly rephrase authored questions in Rex's voice. Local qwen sidecar,
-# with a verbatim/templated fallback when it is unavailable. Generation is the
+# and (b) lightly rephrase authored questions in Rex's voice. Both run on the
+# main OpenAI model (config.LLM_MODEL, gpt-4o-mini) — the follow-up is a
+# quality-critical, in-character generation, so it uses the same brain as the
+# rest of the conversation (not the local qwen classifier sidecar). A validated
+# templated fallback covers the LLM-disabled / offline case. Generation is the
 # point of the follow-up; rephrasing is cosmetic and off by default.
 ONBOARDING_LLM_FOLLOWUP_ENABLED = True
 ONBOARDING_LLM_REPHRASE_ENABLED = False
