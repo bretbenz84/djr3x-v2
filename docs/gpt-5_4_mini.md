@@ -14,9 +14,10 @@ surface area: **37 `chat.completions.create` call sites across 14 files**.
 - `gpt-5.4-mini` is a **hybrid model** — non-reasoning by default, with optional
   reasoning via `reasoning_effort`. Two hard API breakages vs `gpt-4o-mini`:
   1. `max_tokens` is rejected (when reasoning engaged) → must send `max_completion_tokens`.
-  2. A non-default `temperature` is rejected (HTTP 400) on reasoning models — *maybe*
-     accepted when `reasoning_effort="none"` (more likely than first assumed, since the
-     model is non-reasoning by default), but still **unconfirmed for `gpt-5.4-mini`**.
+  2. A non-default `temperature` is rejected (HTTP 400) when reasoning is engaged — but
+     **accepted at `reasoning_effort="none"`** (confirmed by live smoke test 2026-06-17;
+     see "Settle the temperature question"). The conversation hot path runs at `none`, so
+     it can keep deterministic/explicit temperatures.
 - A **compatibility shim** (`intelligence/llm_compat.py`) translates these in ONE place
   and is a **no-op for `gpt-4o-mini`**, so wiring call sites through it changed nothing.
 - **Hybrid rollout**: flip only the **user-facing conversation** to `gpt-5.4-mini`; keep
@@ -78,21 +79,23 @@ on our own traffic with the existing `[ttfs]` logs.
 1. **`max_tokens` → `max_completion_tokens`.** The shim renames it automatically for any
    reasoning model. (Affects 36/37 call sites — every call passes `max_tokens`.)
 
-2. **`temperature`.** Reasoning models historically 400 on non-default temperature
-   (`"Unsupported parameter: 'temperature' is not supported with this model."`).
-   `gpt-5.1+` added `reasoning_effort="none"` under which temperature *may* be accepted,
-   but this is **unconfirmed for `gpt-5.4-mini`** — and stays unconfirmed after a docs
-   sweep (2026-06-17): OpenAI's docs are silent/contradictory on this exact combination.
-   Two signals make acceptance **more likely** than first assumed, though: (a) OpenAI's
-   own model page tags 5.4-mini as *not* a reasoning model (reasoning-token support only),
-   and (b) `reasoning_effort="none"` "operates like a standard fast model." Neither is a
-   guarantee. The shim's default is to **drop** `temperature` for GPT-5 models, gated on
-   `LLM_GPT5_PASS_TEMPERATURE`. **The live smoke test is the only definitive answer** —
-   run it before trusting either behavior.
+2. **`temperature`.** ✅ **SETTLED by live smoke test (2026-06-17)** — see results below.
+   Temperature support is **gated on `reasoning_effort`, not on the model**:
+   - `reasoning_effort="none"` → `temperature=0` is **ACCEPTED** (non-reasoning mode behaves
+     like a standard model). So on the conversation hot path (which runs at `none`) we can
+     forward temperature: `LLM_GPT5_PASS_TEMPERATURE=True` is safe.
+   - `reasoning_effort="medium"` (or any reasoning-engaged level) → `temperature=0` is
+     **REJECTED, HTTP 400**: *"Unsupported value: 'temperature' does not support 0.0 with
+     this model. Only the default (1) value is supported."*
+
+   The shim's default is still to **drop** `temperature` for GPT-5 models, gated on
+   `LLM_GPT5_PASS_TEMPERATURE`; flip that flag to forward it **only while everything wired
+   runs at `effort="none"`**.
 
    - 16 of our calls use `temperature=0` for determinism (routers/classifiers/JSON).
-     **These are exactly why the hybrid rollout leaves them on `gpt-4o-mini` for now** —
-     losing `temperature=0` on a router/classifier is riskier than on chat.
+     The hybrid rollout still leaves them on `gpt-4o-mini` for now. When migrated, they
+     **must run at `effort="none"`** to keep `temperature=0` — any reasoning-engaged level
+     will 400 on `temperature=0`.
 
 Also worth a real test when you migrate those paths: GPT-5 is **stricter about JSON
 schemas** (7 `response_format={"type":"json_object"}` calls) and vision detail handling
@@ -113,6 +116,25 @@ venv/bin/python tools/gpt5_smoke_test.py --model gpt-5.4-mini --effort none --pa
   accepts temperature → you may later keep deterministic temps. If it 400s, leave temp
   dropped.
 - Note the per-shape **seconds** (especially `streaming`) — that's your latency budget.
+
+#### Results (run 2026-06-17, `gpt-5.4-mini`)
+
+| Run | Outcome |
+|---|---|
+| `--effort none` (temp dropped) | **4/4 PASS** — plain, streaming, temperature=0, JSON |
+| `--effort none --pass-temp` | **4/4 PASS** — `temperature=0` **FORWARDED and accepted** |
+| `--effort none --pass-temp --vision` | **5/5 PASS** — vision (`image_url`) returns `'Blue'` |
+| `--effort medium --pass-temp` | **temperature=0 → HTTP 400** (only default temp allowed when reasoning is engaged) |
+
+- **Temperature question: answered** — accepted at `effort="none"`, rejected once reasoning
+  is engaged. Set `LLM_GPT5_PASS_TEMPERATURE=True` *if* you keep the hot path at `none`.
+- **Latency: great for voice** — every shape < 2s; `streaming` ~0.4–0.6s to first content.
+- **JSON + vision both work** out of the box on the conversation-class shapes.
+- ⚠️ **Gotcha: reasoning eats the output budget.** At `effort="medium"`, `plain`/`streaming`
+  returned **empty strings** — the small `max_completion_tokens` (20) was consumed by hidden
+  reasoning tokens before any visible text. If you ever raise `reasoning_effort` above
+  `none`, **raise `max_completion_tokens`** or replies will truncate to nothing. This is a
+  strong reason to keep the conversation path at `none`.
 
 Then set in `config.py` (or `.env`):
 - `LLM_REASONING_EFFORT = "none"` for the hot path (`"minimal"` appears dropped for 5.4 —
@@ -195,7 +217,7 @@ Each of these constructs its own `OpenAI(...)` client; pass that client to
 LLM_CONVERSATION_MODEL    = LLM_MODEL   # set "gpt-5.4-mini" to flip the conversation path
 LLM_REASONING_EFFORT      = None        # "none" | "low" | "medium" | "high" | "xhigh"  ("minimal" appears dropped for 5.4)
 LLM_VERBOSITY             = None        # "low" | "medium" | "high"
-LLM_GPT5_PASS_TEMPERATURE = False       # True only after the smoke test confirms temp is accepted
+LLM_GPT5_PASS_TEMPERATURE = False       # smoke-confirmed: True is safe IF the routed path stays at effort="none"
 ```
 
 `reasoning_effort`/`verbosity`/temperature-handling apply **only** to reasoning models;

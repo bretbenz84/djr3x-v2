@@ -172,11 +172,11 @@ LLM_CONVERSATION_MODEL = LLM_MODEL
 #   verbosity: low|medium|high.
 LLM_REASONING_EFFORT  = None
 LLM_VERBOSITY         = None
-# GPT-5 reasoning models historically REJECT a non-default temperature (400 error);
-# newer ones may accept it when reasoning_effort is "none"/omitted, but that is
-# UNCONFIRMED for gpt-5.4-mini and must be smoke-tested (tools/gpt5_smoke_test.py).
-# False (safe default) = llm_compat DROPS temperature for GPT-5 models. Flip True only
-# after the smoke test confirms the model accepts it.
+# GPT-5 reasoning models REJECT a non-default temperature (400) WHEN reasoning is engaged.
+# Smoke test (2026-06-17, tools/gpt5_smoke_test.py) CONFIRMED gpt-5.4-mini ACCEPTS
+# temperature at reasoning_effort="none" and 400s at "medium". So this is safe to flip
+# True as long as the routed path stays at effort="none" (which the conversation path is).
+# False (safe default) = llm_compat DROPS temperature for GPT-5 models.
 LLM_GPT5_PASS_TEMPERATURE = False
 
 # OpenAI client timeouts. The SDK default is 600s, which means a single STALLED
