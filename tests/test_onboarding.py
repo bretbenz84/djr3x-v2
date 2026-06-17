@@ -239,14 +239,6 @@ class OnboardingDBTests(unittest.TestCase):
         facts_memory.add_fact(self.person_id, "identity", "age_category", "child", "explicit")
         self.assertFalse(onboarding.eligible(self.person_id))
 
-    def test_special_person_skipped(self):
-        from intelligence import onboarding
-
-        # The creator / known VIPs shouldn't be interrogated like a stranger.
-        with mock.patch("intelligence.person_specials.special_intro_ack",
-                        return_value="Creator identified."):
-            self.assertFalse(onboarding.eligible(self.person_id))
-
     # ── selection ────────────────────────────────────────────────────────────
     def test_selection_tier_order(self):
         from intelligence import onboarding

@@ -30,7 +30,6 @@ from typing import Optional
 
 import config
 from intelligence import comedy_modes
-from intelligence import person_specials
 from intelligence import profile_questions
 from memory import facts as facts_memory
 from memory import interests as interests_memory
@@ -82,11 +81,6 @@ def eligible(person_id: Optional[int], *, person: Optional[dict] = None) -> bool
         if person is None:
             person = people_memory.get_person(person_id)
         if profile_questions.person_is_minor(person_id, person=person):
-            return False
-        # Don't interrogate a VIP/known-special person (the creator, etc.) like a
-        # stranger — Rex already "knows" them via person_specials.
-        name = str((person or {}).get("name") or "")
-        if name and person_specials.special_intro_ack(name):
             return False
         visit_count = int((person or {}).get("visit_count") or 0)
         if visit_count > int(getattr(config, "ONBOARDING_MAX_VISITS", 1)):
