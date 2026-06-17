@@ -166,8 +166,9 @@ VISION_MODEL          = "gpt-4o-mini"  # All image and scene analysis queries
 LLM_CONVERSATION_MODEL = LLM_MODEL
 # GPT-5-only knobs, applied by llm_compat ONLY when the model is a GPT-5/o-series
 # reasoning model (ignored for gpt-4o-mini). None = don't send the param.
-#   reasoning_effort: none|minimal|low|medium|high|xhigh — "none"/"minimal" keep
-#   time-to-first-token low (critical for the real-time voice loop); raise for depth.
+#   reasoning_effort: none|low|medium|high|xhigh — "none" keeps time-to-first-token
+#   low (critical for the real-time voice loop); raise for depth. (NB: "minimal", a
+#   GPT-5/5.1-era value, appears DROPPED for 5.4 — every current source omits it.)
 #   verbosity: low|medium|high.
 LLM_REASONING_EFFORT  = None
 LLM_VERBOSITY         = None

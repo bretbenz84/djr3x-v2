@@ -4,17 +4,19 @@
 nothing changes until you flip one config value. This document is the handoff so the
 work can be picked up later (by a person or a fresh Claude Code session).
 
-Researched 2026-06-17. Audited surface area: **37 `chat.completions.create` call sites
-across 14 files**.
+Researched 2026-06-17 (model facts re-verified against OpenAI docs same day). Audited
+surface area: **37 `chat.completions.create` call sites across 14 files**.
 
 ---
 
 ## TL;DR
 
-- `gpt-5.4-mini` is a **reasoning model**. Two hard API breakages vs `gpt-4o-mini`:
-  1. `max_tokens` is rejected → must send `max_completion_tokens`.
+- `gpt-5.4-mini` is a **hybrid model** — non-reasoning by default, with optional
+  reasoning via `reasoning_effort`. Two hard API breakages vs `gpt-4o-mini`:
+  1. `max_tokens` is rejected (when reasoning engaged) → must send `max_completion_tokens`.
   2. A non-default `temperature` is rejected (HTTP 400) on reasoning models — *maybe*
-     accepted when `reasoning_effort="none"`, but **unconfirmed for `gpt-5.4-mini`**.
+     accepted when `reasoning_effort="none"` (more likely than first assumed, since the
+     model is non-reasoning by default), but still **unconfirmed for `gpt-5.4-mini`**.
 - A **compatibility shim** (`intelligence/llm_compat.py`) translates these in ONE place
   and is a **no-op for `gpt-4o-mini`**, so wiring call sites through it changed nothing.
 - **Hybrid rollout**: flip only the **user-facing conversation** to `gpt-5.4-mini`; keep
@@ -48,13 +50,14 @@ and stay on `gpt-4o-mini`. They are listed under "Full migration" below.
 
 | Property | Value |
 |---|---|
-| Model ID | `gpt-5.4-mini` |
-| Type | **Reasoning model** (emits hidden reasoning tokens before the answer) |
+| Model ID | `gpt-5.4-mini` (snapshot `gpt-5.4-mini-2026-03-17`) |
+| Type | **Hybrid** — OpenAI's model page tags it *"not a reasoning model, though it supports reasoning token support."* Runs **non-reasoning by default**; engages reasoning via `reasoning_effort`. (Artificial Analysis lists separate `-non-reasoning` and `-medium` variants.) |
 | APIs | Chat Completions **and** Responses (we stay on Chat Completions) |
 | Context / output | 400K context / 128K max output |
-| Pricing | **$0.75/M input, $4.50/M output**, $0.075/M cached input |
-| Capabilities | vision, streaming, JSON/structured outputs, tool calling |
-| `reasoning_effort` | `none | minimal | low | medium | high | xhigh` — `none`/`minimal` keep time-to-first-token low |
+| Pricing | **$0.75/M input, $4.50/M output**, $0.075/M cached input (+10% on regional data-residency endpoints) |
+| Knowledge cutoff | **August 31, 2025** |
+| Capabilities | vision (input), streaming, JSON/structured outputs, tool calling |
+| `reasoning_effort` | `none | low | medium | high | xhigh` — `none` keeps time-to-first-token low. **NOTE:** `minimal` (a GPT-5/5.1-era value) appears to be **dropped** for 5.4 — every current source omits it. Don't rely on it without confirming. |
 | `verbosity` | `low | medium | high` |
 
 **Cost vs `gpt-4o-mini`** (~$0.15/$0.60 per M): roughly **5× input / 7.5× output**,
@@ -62,8 +65,11 @@ and stay on `gpt-4o-mini`. They are listed under "Full migration" below.
 nothing — keep `reasoning_effort` low on the hot path.
 
 **Latency is the real concern** for a real-time voice robot. Reasoning raises
-time-to-first-token. Mitigate with `reasoning_effort="none"` (or `"minimal"`) on the
-conversation path. Measure with the existing `[ttfs]` logs.
+time-to-first-token. Mitigate with `reasoning_effort="none"` on the conversation path —
+the **non-reasoning** mode benchmarks at ~**0.67s TTFT** and ~150 tok/s output on
+OpenAI's endpoint, which is in the right ballpark for voice. (There's now a body of
+"GPT-5.4-mini for voice AI" writeups recommending exactly this `none` approach.) Verify
+on our own traffic with the existing `[ttfs]` logs.
 
 ---
 
@@ -72,11 +78,17 @@ conversation path. Measure with the existing `[ttfs]` logs.
 1. **`max_tokens` → `max_completion_tokens`.** The shim renames it automatically for any
    reasoning model. (Affects 36/37 call sites — every call passes `max_tokens`.)
 
-2. **`temperature`.** Reasoning models historically 400 on non-default temperature.
+2. **`temperature`.** Reasoning models historically 400 on non-default temperature
+   (`"Unsupported parameter: 'temperature' is not supported with this model."`).
    `gpt-5.1+` added `reasoning_effort="none"` under which temperature *may* be accepted,
-   but this is **unconfirmed for `gpt-5.4-mini`** (docs silent; client libraries have
-   been buggy). The shim's default is to **drop** `temperature` for GPT-5 models, gated
-   on `LLM_GPT5_PASS_TEMPERATURE`. The smoke test tells you which way to set it.
+   but this is **unconfirmed for `gpt-5.4-mini`** — and stays unconfirmed after a docs
+   sweep (2026-06-17): OpenAI's docs are silent/contradictory on this exact combination.
+   Two signals make acceptance **more likely** than first assumed, though: (a) OpenAI's
+   own model page tags 5.4-mini as *not* a reasoning model (reasoning-token support only),
+   and (b) `reasoning_effort="none"` "operates like a standard fast model." Neither is a
+   guarantee. The shim's default is to **drop** `temperature` for GPT-5 models, gated on
+   `LLM_GPT5_PASS_TEMPERATURE`. **The live smoke test is the only definitive answer** —
+   run it before trusting either behavior.
 
    - 16 of our calls use `temperature=0` for determinism (routers/classifiers/JSON).
      **These are exactly why the hybrid rollout leaves them on `gpt-4o-mini` for now** —
@@ -103,7 +115,8 @@ venv/bin/python tools/gpt5_smoke_test.py --model gpt-5.4-mini --effort none --pa
 - Note the per-shape **seconds** (especially `streaming`) — that's your latency budget.
 
 Then set in `config.py` (or `.env`):
-- `LLM_REASONING_EFFORT = "none"` (or `"minimal"`) for the hot path.
+- `LLM_REASONING_EFFORT = "none"` for the hot path (`"minimal"` appears dropped for 5.4 —
+  see model facts; use `"low"` if you want a touch more reasoning).
 - `LLM_GPT5_PASS_TEMPERATURE = True` **only if** the smoke test confirmed it.
 
 ### Step 2 — Flip ONLY the conversation model and A/B it
@@ -180,7 +193,7 @@ Each of these constructs its own `OpenAI(...)` client; pass that client to
 ```python
 # config.py — all default to current gpt-4o-mini behavior (migration OFF)
 LLM_CONVERSATION_MODEL    = LLM_MODEL   # set "gpt-5.4-mini" to flip the conversation path
-LLM_REASONING_EFFORT      = None        # "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+LLM_REASONING_EFFORT      = None        # "none" | "low" | "medium" | "high" | "xhigh"  ("minimal" appears dropped for 5.4)
 LLM_VERBOSITY             = None        # "low" | "medium" | "high"
 LLM_GPT5_PASS_TEMPERATURE = False       # True only after the smoke test confirms temp is accepted
 ```
