@@ -130,6 +130,35 @@ def upcoming_holidays(today: Optional[date] = None) -> list[dict]:
     return upcoming
 
 
+def _holiday_when_phrase(days_until: int, today: Optional[date] = None) -> str:
+    """Human phrase for how far off a holiday is: 'today', 'tomorrow', 'this Friday'
+    (within the coming week), else 'in N days'."""
+    if days_until <= 0:
+        return "today"
+    if days_until == 1:
+        return "tomorrow"
+    today = today or date.today()
+    if days_until <= 6:
+        return f"this {(today + timedelta(days=days_until)).strftime('%A')}"
+    return f"in {days_until} days"
+
+
+def next_relevant_holiday(today: Optional[date] = None) -> Optional[dict]:
+    """The soonest upcoming holiday Rex should be AWARE of, respecting the major/minor
+    toggle (HOLIDAY_PLANS_INCLUDE_MINOR), or None. Adds a 'when' phrase ('this Friday').
+
+    Single source of truth for "is a holiday coming up" — used both to surface
+    awareness in the conversation prompt and to let an idle lull pivot to asking about
+    holiday plans. Network-backed but cached; callers wrap in try/except.
+    """
+    include_minor = bool(getattr(config, "HOLIDAY_PLANS_INCLUDE_MINOR", False))
+    for holiday in upcoming_holidays(today):
+        if holiday.get("window") == "minor" and not include_minor:
+            continue
+        return {**holiday, "when": _holiday_when_phrase(int(holiday.get("days_until", 0)), today)}
+    return None
+
+
 def days_until_birthday(birthday_md: str, today: Optional[date] = None) -> Optional[int]:
     """
     Given a birthday stored as 'MM-DD' (or any string starting with MM-DD),

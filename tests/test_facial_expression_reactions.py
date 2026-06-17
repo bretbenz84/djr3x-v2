@@ -28,9 +28,18 @@ class FacialExpressionReactionTests(unittest.TestCase):
         consciousness._facial_expression_reacted_at.clear()
         consciousness._last_facial_expression_reaction_at = 0.0
         consciousness._last_expression_reaction_line_by_kind.clear()
+        # The reaction-mechanics tests assert on the authored bank (e.g. a surprise line
+        # ends with "?"); keep the conversation-aware LLM path out of them so they're
+        # deterministic and never hit the network. test_contextual_reaction_is_preferred
+        # exercises the LLM branch explicitly.
+        self._ctx_patch = mock.patch.object(
+            consciousness, "_generate_contextual_expression_reaction", return_value=""
+        )
+        self._ctx_patch.start()
 
     def tearDown(self):
         c = self.c
+        self._ctx_patch.stop()
         c.world_state.update("people", self.old_people)
         c._facial_expression_observed.clear()
         c._facial_expression_observed.update(self.old_observed)
@@ -90,6 +99,31 @@ class FacialExpressionReactionTests(unittest.TestCase):
         kind, text = speak.call_args.args
         self.assertEqual(kind, "surprise")
         self.assertIn("?", text)
+
+    def test_contextual_reaction_is_preferred_over_bank(self):
+        # When the conversation-aware LLM path returns a line, it wins over the authored
+        # bank — that's how a surprised face gets read in context.
+        c = self.c
+        c.world_state.update("people", [
+            self._person(
+                "surprise", "surprised", 0.84,
+                {"eyeWideLeft": 0.82, "eyeWideRight": 0.80, "jawOpen": 0.74},
+            )
+        ])
+        with (
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_SURPRISE_SUSTAIN_SECS", 0.0),
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_GLOBAL_COOLDOWN_SECS", 0.0),
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_COOLDOWN_SECS", 0.0),
+            mock.patch.object(
+                c, "_generate_contextual_expression_reaction",
+                return_value="Whoa — what did I miss?",
+            ) as gen,
+            mock.patch.object(c, "_speak_facial_expression_reaction", return_value=True) as speak,
+        ):
+            c._step_facial_expression_reactions(c.world_state.snapshot(), mock.Mock())
+        gen.assert_called_once()
+        speak.assert_called_once()
+        self.assertEqual(speak.call_args.args[1], "Whoa — what did I miss?")
 
     def test_neutral_expression_is_ignored(self):
         c = self.c

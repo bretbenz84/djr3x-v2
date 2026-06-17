@@ -432,6 +432,20 @@ class OnboardingFlowTests(unittest.TestCase):
         self.assertTrue(resp.startswith("Wait, you BUILT me?"), resp)
         self.assertIn("?", resp)  # still carries the next question
 
+    def test_reaction_without_punctuation_does_not_run_into_question(self):
+        # A reaction that comes back with no terminal mark ("A DJ-R3X droid") must get
+        # one before the next question, or TTS reads "...droid And how'd you..." as one
+        # nonsense run-on (live failure 2026-06-16).
+        from intelligence import llm as llm_module
+        with mock.patch.object(config, "ONBOARDING_LLM_REACT_ENABLED", True), \
+            mock.patch.object(
+                llm_module, "generate_onboarding_reaction", return_value="A DJ-R3X droid",
+            ):
+            self._arm_awaiting("job")
+            resp = self.interaction._handle_onboarding_turn("I build droids", self.person_id)
+        self.assertIn("A DJ-R3X droid.", resp)  # terminal period inserted before the question
+        self.assertNotIn("droid And", resp)
+
     def test_hard_decline_backs_off_and_closes(self):
         self._arm_awaiting("job")
         resp = self.interaction._handle_onboarding_turn("I'd rather not say", self.person_id)

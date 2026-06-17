@@ -597,6 +597,18 @@ FACIAL_EXPRESSION_REACTION_BROW_FURROW_MIN_CONFIDENCE = _env_float(
     min_value=0.0,
     max_value=1.0,
 )
+FACIAL_EXPRESSION_REACTION_SURPRISE_MIN_CONFIDENCE = _env_float(
+    # Slightly below the 0.55 generic floor: a real, intentional surprise is obvious
+    # but brief, and was being missed. Still well above incidental jaw/eye motion.
+    "FACIAL_EXPRESSION_REACTION_SURPRISE_MIN_CONFIDENCE",
+    0.50,
+    min_value=0.0,
+    max_value=1.0,
+)
+# Generate facial-expression reactions with the main LLM (conversation-aware: judges
+# surprise against what Rex just said; never narrates the camera). False => use the
+# authored fallback bank only.
+FACIAL_EXPRESSION_REACTION_LLM_ENABLED = True
 FACIAL_EXPRESSION_REACTION_SMILE_SUSTAIN_SECS = _env_float(
     "FACIAL_EXPRESSION_REACTION_SMILE_SUSTAIN_SECS",
     1.0,
@@ -610,8 +622,11 @@ FACIAL_EXPRESSION_REACTION_BROW_FURROW_SUSTAIN_SECS = _env_float(
     max_value=15.0,
 )
 FACIAL_EXPRESSION_REACTION_SURPRISE_SUSTAIN_SECS = _env_float(
+    # Was 0.50 — a deliberate, clear surprise still flashes faster than that and was
+    # silently dropped (the live "I showed surprise and got nothing" report). Surprise
+    # is brief by nature; 0.30 catches it without reacting to a single blink.
     "FACIAL_EXPRESSION_REACTION_SURPRISE_SUSTAIN_SECS",
-    0.50,
+    0.30,
     min_value=0.0,
     max_value=10.0,
 )
@@ -2786,6 +2801,11 @@ IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up (was
 # Priority idle banter competes with under ACTION_GOVERNOR_ENFORCE (proactive-layer
 # consolidation). Moderate — above ambient idle_monologue (15), below the check-ins.
 IDLE_BANTER_GOVERNOR_PRIORITY = 50
+# Chance an idle re-engagement pivots OFF the current topic to ask about upcoming plans
+# (weekend / a trip / an approaching holiday) instead of deepening the live thread, so
+# Rex doesn't loop one subject to death and surfaces real "what's going on in your life"
+# connection. Only applies when the nudge is already a question to the user.
+IDLE_PLANS_QUESTION_PROBABILITY = 0.35
 
 # When an ACTIVE conversation expires from silence, let Rex make one tiny
 # closing remark instead of silently snapping back to IDLE.
@@ -4456,10 +4476,13 @@ HOLIDAY_MAJOR_WINDOW_DAYS = 30
 # asking about plans if HOLIDAY_PLANS_INCLUDE_MINOR is enabled.
 HOLIDAY_MINOR_WINDOW_DAYS = 7
 
-# By default Rex only proactively asks about major holidays. Public-holiday
-# feeds include many regional or observance dates that people may not recognize;
-# those are better answered when the user asks than brought up as small talk.
-HOLIDAY_PLANS_INCLUDE_MINOR = False
+# Whether Rex proactively asks about MINOR public holidays (Juneteenth, Labor Day,
+# MLK Day, etc.) in addition to the majors. Enabled: a state/observance holiday a few
+# days out is exactly the kind of "any plans?" small talk that makes Rex feel present
+# and aware of the calendar (requested live re: Juneteenth). The minor window is short
+# (HOLIDAY_MINOR_WINDOW_DAYS) and the per-session "already asked" guard keeps it from
+# nagging.
+HOLIDAY_PLANS_INCLUDE_MINOR = True
 
 # Days around an upcoming birthday Rex will mention it preemptively in the
 # greeting (matches the anticipation pipeline). 0 = day-of only; 7 = up to a

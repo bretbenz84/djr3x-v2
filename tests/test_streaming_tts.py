@@ -28,6 +28,29 @@ def _frame(allow_question=True, allow_visual_comment=True, allow_roast="normal",
     )
 
 
+class CleanResponseTextTest(unittest.TestCase):
+    def test_strips_just_remember_opener(self):
+        from intelligence import llm
+        # Leading.
+        self.assertEqual(
+            llm.clean_response_text("Just remember, you owe me a tune."),
+            "You owe me a tune.",
+        )
+        # Mid-reply sentence opener (the live "Nice to meet you... Just remember, I'm..." case).
+        self.assertEqual(
+            llm.clean_response_text("Nice to meet you, Bret. Just remember, I'm not just a pretty interface."),
+            "Nice to meet you, Bret. I'm not just a pretty interface.",
+        )
+
+    def test_leaves_legitimate_remember_intact(self):
+        from intelligence import llm
+        # "just remember" not used as a sentence-opening crutch is untouched.
+        self.assertEqual(
+            llm.clean_response_text("I just remember the old days fondly."),
+            "I just remember the old days fondly.",
+        )
+
+
 class SplitStreamSentencesTest(unittest.TestCase):
     def test_emits_completed_sentence_keeps_remainder(self):
         ready, rest = I._split_stream_sentences("First full sentence. Second", 12)
@@ -63,6 +86,18 @@ class SplitStreamSentencesTest(unittest.TestCase):
         self.assertEqual(ready, ["Are you serious right now?"])
         ready, _ = I._split_stream_sentences("Wait... what is happening here? More", 12)
         self.assertEqual(ready, ["Wait... what is happening here?"])
+
+    def test_abbreviation_is_not_a_sentence_boundary(self):
+        # "Mrs. Doubtfire" must NOT split at the period in "Mrs." — that truncated the
+        # title and TTS read a mangled run-on (live failure 2026-06-16).
+        ready, rest = I._split_stream_sentences(
+            "I love Mrs. Doubtfire. Such a classic. Next", 12
+        )
+        self.assertEqual(ready, ["I love Mrs. Doubtfire.", "Such a classic."])
+        self.assertEqual(rest, "Next")
+        # Dr./St./U.S. likewise stay intact.
+        ready, _ = I._split_stream_sentences("Dr. Aphra is back. Good", 12)
+        self.assertEqual(ready, ["Dr. Aphra is back."])
 
 
 class TailIsSpeakableTest(unittest.TestCase):

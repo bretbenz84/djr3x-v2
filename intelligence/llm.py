@@ -73,19 +73,31 @@ _ASSISTANT_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The "Just remember, ..." lecture preface — at the start of a reply OR opening a
+# later sentence ("Nice to meet you. Just remember, I'm not just a pretty
+# interface..."). gpt-4o-mini reaches for it as a reflex despite the persona
+# explicitly forbidding it, and the user finds the phrasing awkward. Strip the
+# lead-in and re-capitalize the word that followed.
+_CRUTCH_OPENER_RE = re.compile(
+    r"(^|[.!?]\s+)just remember(?:\s+that)?\s*[,:]?\s+([A-Za-z])",
+    re.IGNORECASE,
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 def clean_response_text(text: str) -> str:
-    """Remove accidental spoken speaker labels from assistant replies."""
+    """Remove accidental spoken speaker labels and the awkward 'Just remember,'
+    lecture preface from assistant replies."""
     cleaned = (text or "").strip()
     while cleaned:
         updated = _ASSISTANT_LABEL_RE.sub("", cleaned, count=1).strip()
         if updated == cleaned:
             break
         cleaned = updated
+    cleaned = _CRUTCH_OPENER_RE.sub(lambda m: m.group(1) + m.group(2).upper(), cleaned).strip()
     return cleaned
 
 
@@ -155,6 +167,20 @@ def _expression_context_cue(person: dict, now: float) -> str:
             return ""
         return phrase
     except Exception:
+        return ""
+
+
+def _upcoming_holiday_clause() -> str:
+    """Surface an approaching holiday in the world context so Rex is calendar-aware
+    (can bring up Juneteenth / a long weekend naturally). Cached + best-effort."""
+    try:
+        from awareness import holidays as _holidays
+        holiday = _holidays.next_relevant_holiday()
+        if not holiday:
+            return ""
+        return f"Upcoming holiday: {holiday['name']} ({holiday['when']})."
+    except Exception as exc:
+        _log.debug("upcoming holiday clause skipped: %s", exc)
         return ""
 
 
@@ -238,6 +264,9 @@ def _summarize_world_state(ws: dict) -> str:
         time_line += f" Season: {time_s['season']}."
     if time_s.get("notable_date"):
         time_line += f" Notable date: {time_s['notable_date']}."
+    holiday_clause = _upcoming_holiday_clause()
+    if holiday_clause:
+        time_line += " " + holiday_clause
     parts.append(time_line)
 
     weather = ws.get("weather", {}) or {}
@@ -1437,9 +1466,93 @@ def generate_onboarding_reaction(
         words = out.split()
         if len(words) > cap + 4:
             out = " ".join(words[: cap + 4]).rstrip(" ,.;:") + "."
+        # Guarantee terminal punctuation so the reaction never runs into the next
+        # question when the two are joined ("...droid And how'd you...").
+        if out and out[-1] not in ".!?…":
+            out += "."
         return out
     except Exception as exc:
         _log.debug("generate_onboarding_reaction failed: %s", exc)
+        return ""
+
+
+_EXPRESSION_REACTION_PHRASE = {
+    "smile": "a smile / clear amusement",
+    "surprise": "a surprised, wide-eyed look",
+    "frown": "a frown / looking unhappy",
+    "brow_furrow": "a furrowed brow (focused or skeptical)",
+}
+
+
+def generate_expression_reaction(kind: str, person_id: Optional[int] = None) -> str:
+    """One short, in-character reaction to a person's CURRENT facial expression that
+    is AWARE of what Rex just said, so it lands in context.
+
+    The fix for "surprise wasn't intelligently wrapped into the conversation": a real
+    person reads a face IN CONTEXT. A surprised look right after Rex said something
+    provocative gets OWNED (lean in, don't act shocked they're shocked); a surprised
+    look out of nowhere gets a genuine "what? you good?". Never narrates the camera.
+    Returns "" so the caller falls back to the authored bank (offline/disabled)."""
+    phrase = _EXPRESSION_REACTION_PHRASE.get(kind)
+    if not phrase:
+        return ""
+    if not bool(getattr(config, "FACIAL_EXPRESSION_REACTION_LLM_ENABLED", True)):
+        return ""
+    try:
+        transcript = conv_db.get_session_transcript() or []
+    except Exception:
+        transcript = []
+    rex_last = ""
+    for entry in reversed(transcript):
+        if str(entry.get("speaker", "")).strip().lower().startswith(("rex", "dj")):
+            rex_last = str(entry.get("text") or "").strip()
+            break
+    recent = _format_transcript(transcript[-6:]) if transcript else ""
+    who = "they"
+    if person_id is not None:
+        try:
+            person = people_db.get_person(person_id)
+            first = (person.get("name") or "").split() if person else []
+            who = first[0] if first else "they"
+        except Exception:
+            who = "they"
+    instr = (
+        f"You are Rex. Right now you can see {who}'s face showing {phrase}.\n"
+        + (f'Your own last line was: "{rex_last}"\n' if rex_last else "")
+        + (f"Recent exchange:\n{recent}\n" if recent else "")
+        + "\nReact in ONE short, in-character line, like a person who just clocked their "
+        "expression change. "
+    )
+    if kind == "surprise":
+        instr += (
+            "Read the context: if YOUR last line was provocative, blunt, a bold claim, or "
+            "a roast, OWN it — lean in, do NOT act surprised that they're surprised. If the "
+            "surprise came out of nowhere (nothing you said would cause it), check in like a "
+            "real person would — a quick 'what?', 'you good?', or 'did I miss something?'. "
+        )
+    elif kind == "frown":
+        instr += (
+            "If something you just said might have landed wrong, check in warmly instead of "
+            "joking. "
+        )
+    instr += (
+        "Never say a camera, sensor, or diagnostic told you, and never narrate that an "
+        "expression was 'detected'. Return only the line."
+    )
+    try:
+        resp = _client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": instr}],
+            temperature=0.8,
+            max_tokens=50,
+        )
+        out = clean_response_text((resp.choices[0].message.content or "").strip())
+        words = out.split()
+        if len(words) > 30:
+            out = " ".join(words[:30]).rstrip(" ,.;:") + "."
+        return out
+    except Exception as exc:
+        _log.debug("generate_expression_reaction failed: %s", exc)
         return ""
 
 

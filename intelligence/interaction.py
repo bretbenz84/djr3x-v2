@@ -3608,6 +3608,31 @@ _IDLE_BANTER_LIVE_TOPIC_ASK = (
 )
 
 
+def _idle_plans_directive() -> str:
+    """An idle re-engagement that pivots OFF the current topic to ask about the user's
+    upcoming plans — an approaching holiday if one is in window, otherwise the weekend /
+    what they've got coming up. Holiday awareness is real (awareness.holidays), not
+    hardcoded; best-effort so a feed failure just falls back to the generic plans ask."""
+    holiday = None
+    try:
+        from awareness import holidays as _holidays
+        holiday = _holidays.next_relevant_holiday()
+    except Exception:
+        holiday = None
+    if holiday:
+        return (
+            f"The conversation has gone quiet. {holiday['name']} is coming up "
+            f"({holiday['when']}). Ask, in ONE short curious in-character line, whether "
+            "they've got any plans for it. Don't lecture about the holiday — just ask. "
+            "Do not sign off or announce the silence."
+        )
+    return (
+        "The conversation has gone quiet. Pivot off the current topic and ask, in ONE "
+        "short curious in-character line, what they've got coming up — plans this weekend, "
+        "a trip, anything they're looking forward to. Do not sign off or announce the silence."
+    )
+
+
 def _governor_enforcing() -> bool:
     """True when the action governor is the single decider for proactive speech
     (ACTION_GOVERNOR_ENFORCE). Interaction-thread proactive paths then SUBMIT a
@@ -3754,6 +3779,18 @@ def _maybe_idle_banter(
     # True only when we're turning the spotlight on the user MID-topic — the agenda
     # below then anchors the question to the live thread instead of a fresh interview.
     ask_on_topic = ask_user and live_topic
+    # Sometimes, instead of deepening the current thread, pivot to the user's life
+    # OUTSIDE this conversation — upcoming plans, the weekend, or an approaching holiday.
+    # A real conversationalist doesn't loop one topic to death; "any plans this weekend?"
+    # is how a lull turns into genuine connection (and is what the user asked for).
+    if ask_user and random.random() < float(
+        getattr(config, "IDLE_PLANS_QUESTION_PROBABILITY", 0.35)
+    ):
+        plans_directive = _idle_plans_directive()
+        if plans_directive:
+            directive = plans_directive
+            pov_volunteered = False
+            ask_on_topic = False  # deliberately off the current topic
     # The generate + govern + speak + on-spoken bookkeeping, deferred so the action
     # governor can run it ONLY if idle banter wins the tick (enforce mode). Captures
     # `directive`/`ask_user`/`person_id` decided above.
@@ -8580,11 +8617,19 @@ def _handle_onboarding_turn(text: str, speaker_id: Optional[int]) -> Optional[st
 
 
 def _join_onboarding_line(*parts: str) -> str:
-    """Join retort / reveal / question into one tidy spoken line."""
+    """Join retort / reveal / question into one tidy spoken line.
+
+    Each part is forced to end with terminal punctuation before joining, so a
+    reaction that came back without a period ("A DJ-R3X droid") doesn't run
+    straight into the next question ("...droid And how'd you...") and get read by
+    TTS as one nonsense run-on sentence.
+    """
     chunks = []
     for part in parts:
         cleaned = (part or "").strip()
         if cleaned:
+            if cleaned[-1] not in ".!?…":
+                cleaned += "."
             chunks.append(cleaned)
     return " ".join(chunks).strip()
 
@@ -9187,15 +9232,24 @@ def _split_stream_sentences(buffer: str, min_chars: int) -> tuple[list[str], str
     initials, abbreviations, and decimals (e.g. "Dr.", "3.") from splitting into
     choppy one-word bursts.
     """
+    # Protect abbreviations (Mrs./Dr./St./e.g./U.S.) so the period inside one is not
+    # read as a sentence boundary — that split "Mrs. Doubtfire" into "Mrs." + a
+    # mangled tail and TTS dropped the title. Reuses social_frame's abbreviation
+    # table; offsets are taken against the protected text and restored on the way out.
+    protected, replacements = social_frame._protect_abbreviations(buffer or "")
     sentences: list[str] = []
     pending_start = 0
     floor = max(1, int(min_chars or 1))
-    for match in _STREAM_SENTENCE_BOUNDARY_RE.finditer(buffer):
-        candidate = buffer[pending_start:match.end()].strip()
+    for match in _STREAM_SENTENCE_BOUNDARY_RE.finditer(protected):
+        candidate = protected[pending_start:match.end()].strip()
         if len(candidate) >= floor:
             sentences.append(candidate)
             pending_start = match.end()
-    return sentences, buffer[pending_start:]
+    restore = social_frame._restore_abbreviations
+    return (
+        [restore(s, replacements) for s in sentences],
+        restore(protected[pending_start:], replacements),
+    )
 
 
 def _complete_sentence_prefix(text: str) -> str:

@@ -1298,33 +1298,36 @@ _SMILE_REACTION_SERIOUS_MARKERS = (
     "anxious",
     "trauma",
 )
+# Authored fallbacks used when the context-aware LLM reaction is unavailable. They
+# must NOT narrate the camera ("Smile detected", "logged", "detected") — that breaks
+# the illusion; Rex reacts to the face like a person would, never announcing a sensor.
 _FACIAL_EXPRESSION_REACTION_LINES = {
     "smile": (
         "There it is. A smile. I knew the diagnostics would eventually find joy.",
-        "Smile detected. Careful, optimism is how droids get assigned extra duties.",
-        "Ah, the lifeform is smiling. Marking this under rare but encouraging anomalies.",
+        "Careful — that kind of optimism is how droids get assigned extra duties.",
+        "There's the grin. I'll file it under rare but encouraging anomalies.",
         "Look at that, actual visible morale. I will pretend I had nothing to do with it.",
     ),
     "surprise": (
         "That was a full photoreceptor-wide shock face. What did the galaxy do now?",
         "You just looked like the hyperdrive coughed up a receipt. What happened?",
-        "Wide eyes detected. Was it my charm, or did reality file another complaint?",
+        "Whoa, the wide eyes. Was it my charm, or did reality file another complaint?",
         "That expression says someone moved your starship. Care to brief the droid?",
-        "Shock face logged. Did I say something brilliant, or did the universe get rude?",
+        "Did I say something brilliant, or did the universe just get rude?",
     ),
     "frown": (
         "That frown has its own gravity well. Want to vent before it starts charging rent?",
         "You look displeased. If it helps, I also disapprove of most things.",
-        "Downturned mouth detected. Organic morale appears to be under warranty review.",
+        "Organic morale appears to be under warranty review. What's the damage?",
         "That expression is doing sad trombone without the trombone. What's up?",
         "Your face just filed a complaint. Need a soundtrack, or a target?",
     ),
     "brow_furrow": (
         "That is a serious thinking face. Either a breakthrough, or math has betrayed you.",
-        "Eyebrow committee detected. They appear focused and underfunded.",
+        "The eyebrows have formed a committee. Focused and underfunded, by the look of it.",
         "I see the concentration squint. Want a droid to blame, or are we staying productive?",
         "That forehead is running extra diagnostics. Need a sounding board?",
-        "Deep thought detected. I will lower the alarm level from doom to paperwork.",
+        "Deep thought, by the look of it. I'll lower the alarm level from doom to paperwork.",
     ),
 }
 _FACIAL_EXPRESSION_REACTION_LABELS = {
@@ -2109,6 +2112,10 @@ def _facial_expression_reaction_min_confidence(kind: str) -> float:
         return _safe_confidence(
             getattr(config, "FACIAL_EXPRESSION_REACTION_BROW_FURROW_MIN_CONFIDENCE", 0.78)
         )
+    if kind == "surprise":
+        return _safe_confidence(
+            getattr(config, "FACIAL_EXPRESSION_REACTION_SURPRISE_MIN_CONFIDENCE", 0.50)
+        )
     return _safe_confidence(
         getattr(config, "FACIAL_EXPRESSION_REACTION_MIN_CONFIDENCE", 0.55)
     )
@@ -2625,6 +2632,22 @@ def _speak_facial_expression_reaction(
     )
 
 
+def _generate_contextual_expression_reaction(
+    kind: str, person_id: Optional[int]
+) -> str:
+    """A conversation-aware facial-expression reaction via the main LLM, or "" to
+    fall back to the authored bank. Lazy import to avoid a consciousness->llm import
+    cycle; any failure is swallowed so the bank still fires."""
+    if not bool(getattr(config, "FACIAL_EXPRESSION_REACTION_LLM_ENABLED", True)):
+        return ""
+    try:
+        from intelligence import llm
+        return llm.generate_expression_reaction(kind, person_id=person_id)
+    except Exception as exc:
+        _log.debug("contextual expression reaction failed: %s", exc)
+        return ""
+
+
 def _step_facial_expression_reactions(snapshot: dict, profile: SituationProfile) -> None:
     del profile
     global _last_facial_expression_reaction_at
@@ -2649,8 +2672,13 @@ def _step_facial_expression_reactions(snapshot: dict, profile: SituationProfile)
     if _facial_expression_reaction_on_cooldown(person_key, kind, now):
         return
 
-    lines = _FACIAL_EXPRESSION_REACTION_LINES.get(kind) or ()
-    line = _choose_expression_reaction_line(kind, lines)
+    # Prefer a context-aware, conversation-grounded reaction (judges surprise vs.
+    # whether Rex just said something provocative; never narrates the camera). Fall
+    # back to the authored bank when the LLM path is disabled or returns nothing.
+    line = _generate_contextual_expression_reaction(kind, _person_db_id(person))
+    if not line:
+        lines = _FACIAL_EXPRESSION_REACTION_LINES.get(kind) or ()
+        line = _choose_expression_reaction_line(kind, lines)
     if not line:
         return
     def _on_spoke() -> None:
