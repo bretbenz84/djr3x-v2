@@ -62,6 +62,7 @@ from intelligence import turn_completion
 from intelligence import friendship_patterns
 from intelligence import conversation_steering
 from intelligence import profile_questions
+from intelligence import onboarding
 from intelligence import person_specials
 from memory import facts as facts_memory
 from memory import preferences as preferences_memory
@@ -520,6 +521,20 @@ _pending_intro_voice_capture: Optional[dict] = None
 #   default_kind: "gossip" | "fact" — the teller's own label for the briefing
 #   last_pointed: which pointed question was just asked (e.g. "gender")
 _pending_tell_about: Optional[dict] = None
+
+# New-person onboarding burst (intelligence/onboarding.py). Opened right after a
+# brand-new person is enrolled; sequences retort->question and writes a baseline
+# to memory, then exits the moment momentum dies. Shape:
+#   person_id/name: the newly-met person
+#   step: "kickoff" (Q1 not yet asked) | "awaiting_answer" | "closed"
+#   pending_question: the resolved question dict awaiting an answer
+#   asked_keys: question keys already asked this burst (in-burst de-dup)
+#   asked_count/answered_count: bound the burst against MIN/MAX
+#   soft_streak: consecutive lukewarm answers (wind-down trigger past MIN)
+#   since_reveal: questions since Rex last revealed a sliver about himself
+#   last_answer: the previous answer (feeds the LLM depth follow-up)
+#   created_at/asked_at: TTL + kickoff-beat + inactivity-timeout clocks
+_pending_onboarding: Optional[dict] = None
 
 # Someone answered an identity/intro prompt with a very common first name only,
 # or a returning known person still only has that common first name on file.
@@ -7016,6 +7031,13 @@ def _enroll_new_person(
     _bind_world_state_identity(person_id, name)
     _log.info("[interaction] enrolled new person: %s (person_id=%s)", name, person_id)
     _episodic_person_enrolled(person_id, name, created=created)
+    # Arm the first-meeting baseline burst (no-op unless ONBOARDING_ENABLED and
+    # the person is a brand-new, non-minor, near-empty profile). The opener fires
+    # from the idle loop a beat after the enrollment ack.
+    try:
+        _maybe_begin_onboarding(person_id, name)
+    except Exception as exc:
+        _log.debug("[onboarding] begin failed: %s", exc)
     return person_id
 
 
@@ -8301,6 +8323,263 @@ def _told_about_teller_name(introduced_id: Optional[int]) -> Optional[str]:
         except Exception:
             pass
     return "someone"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# New-person onboarding burst (intelligence/onboarding.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def onboarding_flow_active() -> bool:
+    """True while a first-meeting onboarding burst is open and fresh.
+
+    speech_engine.can_proactive_speak and the idle-filler loop consult this so
+    nothing proactive (idle banter, smile reactions) barges into the burst — the
+    same protection the 'tell me about someone' briefing gets."""
+    state = _pending_onboarding
+    if state is None:
+        return False
+    ttl = float(getattr(config, "ONBOARDING_STEP_TTL_SECS", 240.0))
+    return (time.monotonic() - float(state.get("created_at") or 0.0)) <= ttl
+
+
+def _close_onboarding(reason: str) -> None:
+    global _pending_onboarding
+    state = _pending_onboarding
+    _pending_onboarding = None
+    if state is not None:
+        _log.info(
+            "[onboarding] flow closed (%s) person_id=%s asked=%s answered=%s",
+            reason,
+            state.get("person_id"),
+            state.get("asked_count"),
+            state.get("answered_count"),
+        )
+
+
+def _maybe_begin_onboarding(person_id: Optional[int], name: Optional[str]) -> None:
+    """Open an onboarding burst for a freshly-enrolled, eligible newcomer.
+
+    Called at the end of _enroll_new_person (the single enrollment choke point).
+    Just arms the state; the first question fires from the idle loop a beat after
+    the enrollment ack (_maybe_onboarding_question), and answers drive the rest.
+    """
+    global _pending_onboarding
+    if not onboarding.enabled() or person_id is None:
+        return
+    if _pending_onboarding is not None:
+        return
+    try:
+        if not onboarding.eligible(int(person_id)):
+            return
+        # Don't open a flow we can't fill (e.g. everything already answered).
+        if onboarding.next_question(int(person_id), asked_keys=set(), allow_depth=False) is None:
+            return
+    except Exception as exc:
+        _log.debug("[onboarding] begin check failed: %s", exc)
+        return
+
+    now = time.monotonic()
+    _pending_onboarding = {
+        "person_id": int(person_id),
+        "name": name or "there",
+        "step": "kickoff",
+        "pending_question": None,
+        "asked_keys": set(),
+        "asked_count": 0,
+        "answered_count": 0,
+        "soft_streak": 0,
+        "since_reveal": 0,
+        "last_answer": None,
+        "created_at": now,
+        "asked_at": now,
+    }
+    _log.info("[onboarding] flow armed for %s (person_id=%s)", name, person_id)
+
+
+def _maybe_onboarding_question() -> bool:
+    """Fire the first onboarding question a beat after enrollment (kickoff).
+
+    Q2..QN come back as direct replies to each answer (_handle_onboarding_turn);
+    only the opener is proactively kicked off here, mirroring the low-memory idle
+    question's emission path."""
+    global _pending_onboarding
+    state = _pending_onboarding
+    if state is None or state.get("step") != "kickoff":
+        return False
+    if not onboarding.enabled():
+        _close_onboarding("disabled")
+        return False
+    if (time.monotonic() - float(state.get("asked_at") or 0.0)) < float(
+        getattr(config, "ONBOARDING_KICKOFF_SECS", 1.2)
+    ):
+        return False
+    if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
+        return False
+    if _interrupted.is_set():
+        return False
+    try:
+        if end_thread.is_grace_active():
+            return False
+    except Exception:
+        pass
+
+    person_id = int(state["person_id"])
+    question = onboarding.next_question(
+        person_id, asked_keys=state["asked_keys"], last_answer=None, allow_depth=False
+    )
+    if not question:
+        _close_onboarding("no opener")
+        return False
+    text = str(question.get("text") or "").strip()
+    if not text:
+        _close_onboarding("empty opener")
+        return False
+
+    spoke = _speak_proactive(text, emotion="curious", priority=1, label="onboarding_question")
+    if not spoke:
+        return False
+    onboarding.note_question_asked(person_id, question)
+    state["pending_question"] = question
+    state["asked_keys"].add(question.get("key"))
+    state["asked_count"] += 1
+    state["since_reveal"] += 1
+    state["step"] = "awaiting_answer"
+    state["asked_at"] = time.monotonic()
+    conv_memory.add_to_transcript("Rex", text)
+    conv_log.log_rex(text)
+    _register_rex_utterance(text, source="onboarding", expected_reply_types=["answer"])
+    _log.info(
+        "[onboarding] asked opener key=%r person_id=%s text=%r",
+        question.get("key"), person_id, text,
+    )
+    return True
+
+
+def _handle_onboarding_turn(text: str, speaker_id: Optional[int]) -> Optional[str]:
+    """Consume an answer to the pending onboarding question.
+
+    Returns Rex's next line (retort + next question, or a closer) when the turn
+    belongs to the burst, or None to release the turn to normal routing (a pivot
+    to Rex, a speaker mismatch, or the opener not yet asked).
+    """
+    global _pending_onboarding
+    state = _pending_onboarding
+    if state is None or not onboarding.enabled():
+        return None
+    if not onboarding_flow_active():
+        _close_onboarding("ttl")
+        return None
+    # Another voice cut in — let normal handling deal with it, keep the burst open.
+    if (
+        speaker_id is not None
+        and state.get("person_id") is not None
+        and int(speaker_id) != int(state["person_id"])
+    ):
+        return None
+    if state.get("step") != "awaiting_answer" or not state.get("pending_question"):
+        # The opener hasn't fired yet (kickoff). Don't treat this turn as an
+        # answer; let it route normally and the kickoff retries.
+        return None
+
+    person_id = int(state["person_id"])
+    answered = (text or "").strip()
+
+    # HARD exits — abort immediately, even before the MIN floor.
+    if onboarding.is_hard_decline(answered):
+        onboarding.decline_pending(person_id)
+        _close_onboarding("hard decline")
+        return onboarding.backoff_line()
+    if onboarding.is_pivot(answered):
+        # A request/question aimed at Rex — close and release so Rex just answers.
+        onboarding.decline_pending(person_id)
+        _close_onboarding("pivot")
+        return None
+
+    # Record the answer (familiarity bump + tidy fact/interest).
+    onboarding.record_answer(person_id, state["pending_question"], answered)
+    state["answered_count"] += 1
+    state["last_answer"] = answered
+    soft = onboarding.is_soft_disengage(answered)
+    state["soft_streak"] = state["soft_streak"] + 1 if soft else 0
+
+    retort = onboarding.retort_for(answered)
+
+    reached_max = state["asked_count"] >= onboarding.max_questions()
+    reached_min = state["answered_count"] >= onboarding.min_questions()
+    wind_down = reached_min and state["soft_streak"] >= int(
+        getattr(config, "ONBOARDING_SOFT_DISENGAGE_LIMIT", 2)
+    )
+    if reached_max or wind_down:
+        _close_onboarding("reached max" if reached_max else "wound down")
+        return _join_onboarding_line(retort, "", onboarding.closer_line(state["answered_count"]))
+
+    # Only go a notch deeper when the last answer carried real momentum.
+    next_q = onboarding.next_question(
+        person_id,
+        asked_keys=state["asked_keys"],
+        last_answer=answered,
+        allow_depth=not soft,
+    )
+    if not next_q:
+        _close_onboarding("out of questions")
+        return _join_onboarding_line(retort, "", onboarding.closer_line(state["answered_count"]))
+
+    reveal = ""
+    every = int(getattr(config, "ONBOARDING_REVEAL_EVERY", 3))
+    if every > 0 and state["since_reveal"] >= every:
+        reveal = onboarding.reveal_line()
+        state["since_reveal"] = 0
+
+    onboarding.note_question_asked(person_id, next_q)
+    state["pending_question"] = next_q
+    state["asked_keys"].add(next_q.get("key"))
+    state["asked_count"] += 1
+    state["since_reveal"] += 1
+    state["asked_at"] = time.monotonic()
+    _log.info(
+        "[onboarding] answered -> next key=%r person_id=%s soft=%s",
+        next_q.get("key"), person_id, soft,
+    )
+    return _join_onboarding_line(retort, reveal, str(next_q.get("text") or ""))
+
+
+def _join_onboarding_line(*parts: str) -> str:
+    """Join retort / reveal / question into one tidy spoken line."""
+    chunks = []
+    for part in parts:
+        cleaned = (part or "").strip()
+        if cleaned:
+            chunks.append(cleaned)
+    return " ".join(chunks).strip()
+
+
+def _maybe_onboarding_timeout() -> bool:
+    """Close a stalled burst out loud after sustained silence; expire stale flows."""
+    state = _pending_onboarding
+    if state is None:
+        return False
+    if not onboarding_flow_active():
+        _close_onboarding("ttl")
+        return False
+    if state.get("step") != "awaiting_answer":
+        return False
+    timeout = float(getattr(config, "ONBOARDING_INACTIVITY_TIMEOUT_SECS", 30.0))
+    if (time.monotonic() - float(state.get("asked_at") or 0.0)) < timeout:
+        return False
+    if speech_queue.is_speaking():
+        return False
+    answered_count = int(state.get("answered_count") or 0)
+    _close_onboarding("inactivity timeout")
+    line = onboarding.closer_line(answered_count)
+    try:
+        completed = _speak_proactive(line, emotion="neutral", priority=1, label="onboarding_timeout")
+        if completed:
+            conv_memory.add_to_transcript("Rex", line)
+            conv_log.log_rex(line)
+            _register_rex_utterance(line, source="onboarding")
+    except Exception as exc:
+        _log.debug("[onboarding] timeout close speak failed: %s", exc)
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -11657,6 +11936,7 @@ def _end_session() -> None:
         _session_router_control_topics.clear()
         _interest_idle_followups_spoken.clear()
         _low_memory_idle_questions_spoken.clear()
+        _close_onboarding("session reset")
         _recent_memory_candidates.clear()
         _clear_anonymous_speaker_slots()
         _idle_outro_spoken = False
@@ -11917,6 +12197,7 @@ def _end_session() -> None:
     _session_router_control_topics.clear()
     _interest_idle_followups_spoken.clear()
     _low_memory_idle_questions_spoken.clear()
+    _close_onboarding("session end")
     _recent_memory_candidates.clear()
     _clear_anonymous_speaker_slots()
     _idle_outro_spoken = False
@@ -15913,6 +16194,31 @@ def _handle_speech_segment(
                 _register_rex_utterance(ack_text)
                 return
 
+        # First-meeting onboarding burst: while a freshly-enrolled newcomer's
+        # baseline burst is open, their turn is the answer to Rex's last
+        # question. Consume it here (before routers) so the answer drives the
+        # retort->next-question loop and is written as a baseline fact instead of
+        # being misrouted. A pivot/decline returns None and releases the turn.
+        if not game_conversation_lock and onboarding_flow_active():
+            onboarding_response = _handle_onboarding_turn(text, person_id)
+            if onboarding_response:
+                _record_heard_turn_once()
+                _speak_blocking(
+                    onboarding_response,
+                    emotion="curious",
+                    pre_beat_ms=100,
+                    post_beat_ms_override=200,
+                )
+                conv_memory.add_to_transcript("Rex", onboarding_response)
+                conv_log.log_rex(onboarding_response)
+                _session_exchange_count += 1
+                _register_rex_utterance(
+                    onboarding_response,
+                    source="onboarding",
+                    expected_reply_types=["answer", "statement"],
+                )
+                return
+
         # "Let me tell you about my coworker Daniel" — a pre-briefing about
         # someone who is NOT here. Runs its own short flow (name → gossip-or-
         # facts → details) and pre-populates the person DB so the dossier is
@@ -18489,7 +18795,13 @@ def _loop() -> None:
         # (live-logged: idle banter hijacked a briefing mid-collection).
         if _maybe_tell_about_timeout():
             continue
-        if not tell_about_flow_active():
+        # A first-meeting onboarding burst owns the floor like a briefing: fire
+        # its opener / time it out, and never run idle filler over it.
+        if _maybe_onboarding_timeout():
+            continue
+        if _maybe_onboarding_question():
+            continue
+        if not tell_about_flow_active() and not onboarding_flow_active():
             if _maybe_interest_idle_followup(
                 idle_for=idle_for,
                 effective_idle_timeout=effective_idle_timeout,

@@ -71,6 +71,10 @@ def can_proactive_speak(*, salient: bool = False) -> bool:
         from intelligence import interaction as _interaction
         if _interaction.tell_about_flow_active():
             return False
+        # A first-meeting onboarding burst likewise owns the floor — no idle
+        # banter / smile reaction may barge in until the burst exits.
+        if _interaction.onboarding_flow_active():
+            return False
     except Exception:
         pass
 

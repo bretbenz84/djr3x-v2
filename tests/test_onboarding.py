@@ -289,5 +289,157 @@ class OnboardingDBTests(unittest.TestCase):
         self.assertTrue(any("jazz" in n for n in names), names)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Flow wiring — interaction.py state machine
+# ─────────────────────────────────────────────────────────────────────────────
+
+class OnboardingFlowTests(unittest.TestCase):
+    def setUp(self):
+        from memory import database as db
+
+        self._tmp = tempfile.TemporaryDirectory()
+        db_path = Path(self._tmp.name) / "people.db"
+        _make_db(db_path)
+        self._patches = [
+            mock.patch.object(db, "_DB_FILE", db_path),
+            mock.patch.object(config, "ONBOARDING_ENABLED", True, create=True),
+            mock.patch.object(config, "ONBOARDING_LLM_FOLLOWUP_ENABLED", False, create=True),
+        ]
+        for p in self._patches:
+            p.start()
+
+        import intelligence.interaction as interaction
+        from intelligence import onboarding
+        from memory import people as people_memory
+
+        self.interaction = interaction
+        self.onboarding = onboarding
+        self.people = people_memory
+        interaction._pending_onboarding = None
+        self.person_id, _ = people_memory.find_or_create_person("Sarah")
+
+    def tearDown(self):
+        self.interaction._pending_onboarding = None
+        for p in self._patches:
+            p.stop()
+        self._tmp.cleanup()
+
+    def _arm_awaiting(self, question_key="job"):
+        import time
+
+        q = dict(next(e for e in config.ONBOARDING_QUESTION_POOL if e["key"] == question_key))
+        self.onboarding.note_question_asked(self.person_id, q)
+        self.interaction._pending_onboarding = {
+            "person_id": self.person_id, "name": "Sarah", "step": "awaiting_answer",
+            "pending_question": q, "asked_keys": {question_key}, "asked_count": 1,
+            "answered_count": 0, "soft_streak": 0, "since_reveal": 1,
+            "last_answer": None, "created_at": time.monotonic(), "asked_at": time.monotonic(),
+        }
+
+    # ── begin / active ───────────────────────────────────────────────────────
+    def test_begin_arms_flow(self):
+        self.interaction._maybe_begin_onboarding(self.person_id, "Sarah")
+        self.assertTrue(self.interaction.onboarding_flow_active())
+        self.assertEqual(self.interaction._pending_onboarding["step"], "kickoff")
+
+    def test_begin_noop_when_disabled(self):
+        with mock.patch.object(config, "ONBOARDING_ENABLED", False):
+            self.interaction._maybe_begin_onboarding(self.person_id, "Sarah")
+        self.assertFalse(self.interaction.onboarding_flow_active())
+
+    # ── answer loop ──────────────────────────────────────────────────────────
+    def test_answer_writes_fact_and_advances(self):
+        from memory import facts as facts_memory
+
+        self._arm_awaiting("job")
+        resp = self.interaction._handle_onboarding_turn("I'm a paramedic", self.person_id)
+        self.assertIsNotNone(resp)
+        self.assertIn("?", resp)  # carries the next question
+        facts = {f["key"]: f["value"] for f in facts_memory.get_facts(self.person_id)}
+        self.assertIn("job", facts)
+        state = self.interaction._pending_onboarding
+        self.assertEqual(state["answered_count"], 1)
+        self.assertEqual(state["asked_count"], 2)
+        self.assertEqual(state["step"], "awaiting_answer")
+
+    def test_retort_leads_the_reply(self):
+        with mock.patch.object(
+            config, "COMEDY_LINE_BANKS",
+            {"onboarding_retort_neutral": ["Noted."], "onboarding_retort_positive": ["Noted."],
+             "onboarding_retort_warm": ["Noted."], "onboarding_retort_surprise": ["Noted."]},
+        ):
+            self._arm_awaiting("job")
+            resp = self.interaction._handle_onboarding_turn("an accountant", self.person_id)
+        self.assertTrue(resp.startswith("Noted."), resp)
+
+    def test_hard_decline_backs_off_and_closes(self):
+        self._arm_awaiting("job")
+        resp = self.interaction._handle_onboarding_turn("I'd rather not say", self.person_id)
+        self.assertIsNotNone(resp)
+        self.assertNotIn("?", resp)
+        self.assertIsNone(self.interaction._pending_onboarding)
+
+    def test_pivot_releases_turn_and_closes(self):
+        self._arm_awaiting("job")
+        resp = self.interaction._handle_onboarding_turn("can you play some music?", self.person_id)
+        self.assertIsNone(resp)  # released to normal routing
+        self.assertIsNone(self.interaction._pending_onboarding)
+
+    def test_speaker_mismatch_keeps_flow_open(self):
+        self._arm_awaiting("job")
+        resp = self.interaction._handle_onboarding_turn("hello", 99999)
+        self.assertIsNone(resp)
+        self.assertIsNotNone(self.interaction._pending_onboarding)
+
+    def test_reaches_max_closes_without_question(self):
+        self._arm_awaiting("job")
+        state = self.interaction._pending_onboarding
+        state["asked_count"] = self.onboarding.max_questions()
+        state["answered_count"] = self.onboarding.max_questions() - 1
+        resp = self.interaction._handle_onboarding_turn("I'm an engineer", self.person_id)
+        self.assertIsNotNone(resp)
+        self.assertNotIn("?", resp)
+        self.assertIsNone(self.interaction._pending_onboarding)
+
+    def test_soft_answers_do_not_abort_before_min(self):
+        self._arm_awaiting("job")
+        resp = self.interaction._handle_onboarding_turn("dunno", self.person_id)
+        # below MIN: keep going, do not close
+        self.assertIsNotNone(resp)
+        self.assertIsNotNone(self.interaction._pending_onboarding)
+
+    def test_wind_down_after_min_on_soft_streak(self):
+        self._arm_awaiting("job")
+        state = self.interaction._pending_onboarding
+        state["answered_count"] = self.onboarding.min_questions()
+        state["soft_streak"] = int(getattr(config, "ONBOARDING_SOFT_DISENGAGE_LIMIT", 2)) - 1
+        resp = self.interaction._handle_onboarding_turn("meh", self.person_id)
+        self.assertIsNotNone(resp)
+        self.assertNotIn("?", resp)  # winds down with a closer, no further question
+        self.assertIsNone(self.interaction._pending_onboarding)
+
+    # ── kickoff ──────────────────────────────────────────────────────────────
+    def test_kickoff_fires_opener(self):
+        import time
+
+        self.interaction._maybe_begin_onboarding(self.person_id, "Sarah")
+        self.interaction._pending_onboarding["asked_at"] = time.monotonic() - 5.0
+        with mock.patch.object(self.interaction, "_speak_proactive", return_value=True) as sp, \
+                mock.patch.object(self.interaction.speech_queue, "is_speaking", return_value=False), \
+                mock.patch.object(self.interaction.output_gate, "is_busy", return_value=False), \
+                mock.patch.object(self.interaction.echo_cancel, "is_suppressed", return_value=False), \
+                mock.patch.object(self.interaction.end_thread, "is_grace_active", return_value=False), \
+                mock.patch.object(self.interaction.conv_memory, "add_to_transcript"), \
+                mock.patch.object(self.interaction.conv_log, "log_rex"), \
+                mock.patch.object(self.interaction, "_register_rex_utterance"):
+            fired = self.interaction._maybe_onboarding_question()
+        self.assertTrue(fired)
+        sp.assert_called_once()
+        state = self.interaction._pending_onboarding
+        self.assertEqual(state["step"], "awaiting_answer")
+        self.assertEqual(state["asked_count"], 1)
+        self.assertIsNotNone(state["pending_question"])
+
+
 if __name__ == "__main__":
     unittest.main()
