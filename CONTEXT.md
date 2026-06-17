@@ -420,6 +420,70 @@ Config: `TELL_ABOUT_ENABLED`, `TELL_ABOUT_STEP_TTL_SECS`,
 `TELL_ABOUT_INACTIVITY_TIMEOUT_SECS`, `TELL_ABOUT_CLASSIFY_LLM_ENABLED`.
 Tests: `tests/test_tell_me_about.py`.
 
+### First-meeting onboarding (gathering a baseline on NEW people)
+
+When Rex meets someone brand new, a scoped, stranger-only "onboarding" burst
+gathers a useful baseline of facts before free-form conversation — a short
+ladder of research-backed first-meeting questions, NOT an interview.
+`intelligence/onboarding.py` owns the pure pieces; the multi-turn flow STATE
+lives in `interaction.py` (`_pending_onboarding`), mirroring the introduction /
+"tell me about someone" flows. **Off by default** behind `ONBOARDING_ENABLED`
+until proven on-device.
+
+- **Why it exists:** three gates clamped strangers hardest — the first-meeting
+  path ended at the enrollment ack with no question stage; `TIER_MAX_DEPTH
+  ["stranger"]=1` locked them to depth-1 questions; and the global question
+  budget (`QUESTION_BUDGET_MAX_QUESTIONS=3`/90s) is tier-blind. The fix does NOT
+  loosen the deliberately-tight friend-protecting budget — it carves new people
+  out of it.
+- **Trigger:** armed at the `_enroll_new_person` choke point via
+  `_maybe_begin_onboarding` for an eligible newcomer (`onboarding.eligible`:
+  `visit_count <= ONBOARDING_MAX_VISITS`, `profile_fact_count <=
+  ONBOARDING_FACT_FLOOR`, never a minor — shares `profile_questions.person_is_minor`).
+- **Loop:** the opener fires a beat after the ack from the idle loop
+  (`_maybe_onboarding_question`); each subsequent answer is consumed before
+  routers (`_handle_onboarding_turn`) and answered with a short, warm retort
+  (2-5 words, no "?" so it never costs a budget slot) + the next tier-appropriate
+  question, with a Rex self-reveal woven in ~every `ONBOARDING_REVEAL_EVERY`
+  questions (reciprocity — keeps it an exchange, not an intake form).
+- **Question ladder:** `config.ONBOARDING_QUESTION_POOL`, Tier A (essential
+  baseline facts) → B (interests/energy) → C (earned depth, only with momentum).
+  Ignores `TIER_MAX_DEPTH` (the whole point) but reuses `QUESTION_POOL` keys so
+  the asked/answered de-dup (`memory.relationships`) and `QUESTION_BOUNDARY_TOPICS`
+  apply for free. Tier-C `origin_followup` is LLM-generated against the live
+  answer (local qwen sidecar, templated "how'd you get into X?" fallback); the
+  rest are authored. Optional `ONBOARDING_LLM_REPHRASE_ENABLED` re-voices authored
+  questions.
+- **Budget:** rides the `newcomer_baseline` urgent bypass in
+  `intelligence/question_budget._URGENT_KINDS`, so it is never blocked by the
+  global cap; bounded instead by its own `ONBOARDING_MIN/MAX_QUESTIONS` (4/8).
+  The burst's questions still register in the global window, so right AFTER it
+  Rex naturally backs off normal questioning.
+- **Exits (what keeps it from being an interview):** hard decline / boundary →
+  back off out loud (`ONBOARDING_BACKOFF_LINES`); a request or question aimed at
+  Rex (pivot) → close and RELEASE the turn to normal routing; soft/flat answers
+  do NOT abort before the `ONBOARDING_MIN_QUESTIONS` floor but wind down after it
+  (`ONBOARDING_SOFT_DISENGAGE_LIMIT` in a row); reaching MAX closes with a
+  closer; sustained silence closes via `_maybe_onboarding_timeout`. Cleared on
+  session reset/end.
+- **Memory:** each answer calls `rel_memory.answer_latest_pending_question`
+  (familiarity bump via `qa_depth_N`) plus a heuristically-tidied
+  `facts.add_fact` (`store="fact"`) / `interests.upsert_interest`
+  (`store="interest"`) so the baseline feeds prompt injection for the rest of the
+  session.
+- Proactive speech is suppressed while the burst is open
+  (`speech_engine.can_proactive_speak` consults `onboarding_flow_active()`), like
+  a tell-about briefing.
+
+Config: `ONBOARDING_ENABLED`, `ONBOARDING_MIN/MAX_QUESTIONS`,
+`ONBOARDING_MAX_VISITS`, `ONBOARDING_FACT_FLOOR`, `ONBOARDING_KICKOFF_SECS`,
+`ONBOARDING_INACTIVITY_TIMEOUT_SECS`, `ONBOARDING_STEP_TTL_SECS`,
+`ONBOARDING_SOFT_DISENGAGE_LIMIT`, `ONBOARDING_REVEAL_EVERY`,
+`ONBOARDING_LLM_FOLLOWUP_ENABLED`, `ONBOARDING_LLM_REPHRASE_ENABLED`,
+`ONBOARDING_QUESTION_POOL`, `ONBOARDING_REVEAL_LINES`, `ONBOARDING_CLOSERS`,
+`ONBOARDING_BACKOFF_LINES`, `COMEDY_LINE_BANKS["onboarding_retort_*"]`.
+Tests: `tests/test_onboarding.py`.
+
 ## Proactive Behavior
 
 `intelligence/consciousness.py` runs background awareness and proactive behavior.
@@ -676,6 +740,8 @@ venv/bin/python main.py
 - Callback humor (design: `docs/callback_humor_design.md`): Rex banks durable, light, SELF-volunteered "fun facts" per person (`person_callback_material` in people.db via `memory/callbacks.py`; banker = local qwen labelled-lines + heuristic fallback in `intelligence/callback_engine.py`, run from `_post_response`'s background thread) and resurfaces ONE later — reactively when the background relevance judge connects a stored premise to the live topic (claim seam in `interaction._stream_llm_response` between `select_mode` and the directive join; the claim rides as the `callback_banked` comedy mode and `llm._build_person_context`'s hook chain stands down via `callback_engine.turn_claim_active`), or in a mid-conversation lull (`consciousness._step_lull_callback`, governor purpose `lull_callback` priority 58). Sensitivity is classified at CAPTURE with a deterministic protected-category wall (health/grief/body/orientation/finances/religion-politics/family-conflict/addiction-legal) the model can only move material TOWARD 'excluded' on, never toward 'safe'; only `sensitivity='safe'` rows can ever fire and `active_pool` hard-filters. Spend-at-SPEAK (settle echo-check on the reply path, `on_spoke` on the lull path), per-premise reuse cooldown + use-count decay, per-session no-repeat + volume ledger (cleared for real in `_end_session`), 30-min sober-room window after any heavy-sensitivity turn (`note_heavy_moment` from the sensitive prepass), boundary→retire hook in `boundaries.apply_detected_boundary`, forget-flow deletion in `forgetting.py`, crowd/tier/`callback_style`-restraint gates. Flags: `CALLBACK_BANK_ENABLED` / `CALLBACK_HUMOR_ENABLED` (env-overridable A/B pair) + `CALLBACK_*` tunables. Tests: `tests/test_callback_humor.py`.
 
 - Motion system (drive base): wire contract `docs/motion_protocol.md` (v1, locked) + Phase 0 ESP32 firmware (`firmware/djr3x_motion`, full protocol over a stubbed HAL; flashed + 27/27 smoke test) + Mac side (`hardware/motion.py` transport, `intelligence/motion_controller.py` controller, `action_router` motion.* specs + `classify_explicit_motion`, `interaction` dispatch/fast-path, `MOTION_*` config, `MOTION_ESP32_PORT`, `main.py` Step-4 wiring). Gated on `motion_controller.available()` so it's a NO-OP for the whole pipeline unless a base is connected; `stop`/`estop` always pass and bare "stop" only routes to the base while moving. Flash at 115200 (921600 fails on the CH340 bridge); `setup_macos.sh` auto-detects the ESP32 by protocol probe (chip-ID can't — it shares a CH340 with the chest Arduino). Sign convention REP-103. Tests: `tests/test_motion.py`. See the Motion System section above.
+
+- First-meeting onboarding (`intelligence/onboarding.py` + `interaction._pending_onboarding`/`_handle_onboarding_turn`/`_maybe_begin_onboarding`/`_maybe_onboarding_question`/`_maybe_onboarding_timeout`): a scoped, stranger-only baseline-gathering burst armed at `_enroll_new_person` for a brand-new, non-minor, near-empty profile. Asks a research-backed Tier A→B→C ladder (`config.ONBOARDING_QUESTION_POOL`, ignores `TIER_MAX_DEPTH`, reuses `QUESTION_POOL` keys for de-dup/boundaries), leads each answer with a warm 2-5 word retort (no "?", `COMEDY_LINE_BANKS["onboarding_retort_*"]`) + a periodic self-reveal, writes a tidied baseline (`answer_latest_pending_question` familiarity bump + `add_fact`/`upsert_interest`), and exits on hard-decline/pivot/wind-down-after-MIN/MAX/silence. Rides the `newcomer_baseline` question-budget urgent bypass (does NOT loosen the friend cap); bounded by `ONBOARDING_MIN/MAX_QUESTIONS` (4/8). Tier-C `origin_followup` is LLM-generated (local qwen, templated fallback). Suppresses proactive speech while open (`speech_engine.can_proactive_speak` → `onboarding_flow_active()`). **Master flag `ONBOARDING_ENABLED` defaults OFF** until proven on-device. See the "First-meeting onboarding" subsection above. Tests: `tests/test_onboarding.py`.
 
 ## Likely Future Work
 
