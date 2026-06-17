@@ -239,6 +239,14 @@ class OnboardingDBTests(unittest.TestCase):
         facts_memory.add_fact(self.person_id, "identity", "age_category", "child", "explicit")
         self.assertFalse(onboarding.eligible(self.person_id))
 
+    def test_special_person_skipped(self):
+        from intelligence import onboarding
+
+        # The creator / known VIPs shouldn't be interrogated like a stranger.
+        with mock.patch("intelligence.person_specials.special_intro_ack",
+                        return_value="Creator identified."):
+            self.assertFalse(onboarding.eligible(self.person_id))
+
     # ── selection ────────────────────────────────────────────────────────────
     def test_selection_tier_order(self):
         from intelligence import onboarding
@@ -362,6 +370,7 @@ class OnboardingFlowTests(unittest.TestCase):
 
     def tearDown(self):
         self.interaction._pending_onboarding = None
+        self.interaction._low_memory_idle_questions_spoken.discard(self.person_id)
         for p in self._patches:
             p.stop()
         self._tmp.cleanup()
@@ -459,6 +468,29 @@ class OnboardingFlowTests(unittest.TestCase):
         self.assertIsNotNone(resp)
         self.assertNotIn("?", resp)  # winds down with a closer, no further question
         self.assertIsNone(self.interaction._pending_onboarding)
+
+    def test_close_suppresses_low_memory_question(self):
+        I = self.interaction
+        I._low_memory_idle_questions_spoken.discard(self.person_id)
+        self._arm_awaiting("job")
+        state = I._pending_onboarding
+        state["asked_count"] = self.onboarding.max_questions()
+        state["answered_count"] = self.onboarding.max_questions() - 1
+        I._handle_onboarding_turn("an engineer", self.person_id)
+        self.assertIsNone(I._pending_onboarding)
+        # The separate low-memory idle profile question must not pile on this session.
+        self.assertIn(self.person_id, I._low_memory_idle_questions_spoken)
+
+    def test_intro_answer_gate(self):
+        I = self.interaction
+        with mock.patch.object(I, "_response_wait_active", return_value=True):
+            # No newcomer + awaiting an answer => "this is X" is the ANSWER.
+            self.assertTrue(I._intro_is_answer_to_rex_question(False))
+            # A genuinely present newcomer still introduces fine.
+            self.assertFalse(I._intro_is_answer_to_rex_question(True))
+        with mock.patch.object(I, "_response_wait_active", return_value=False):
+            # Not awaiting a reply => normal introduction path (off-camera intro).
+            self.assertFalse(I._intro_is_answer_to_rex_question(False))
 
     # ── kickoff ──────────────────────────────────────────────────────────────
     def test_kickoff_fires_opener(self):

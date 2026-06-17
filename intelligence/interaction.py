@@ -2711,6 +2711,20 @@ def _response_wait_active() -> bool:
         return False
 
 
+def _intro_is_answer_to_rex_question(has_unknown_newcomer: bool) -> bool:
+    """True when a 'this is X' line is really the ANSWER to a question Rex just
+    asked, not an introduction.
+
+    Live-logged misfire: Rex asked "What's your favorite movie?", the reply
+    "Mrs. Doubtfire" was transcribed "This is Doubtfire", and that name-bearing
+    "this is X" was promoted to introducing a person named Doubtfire — even
+    though nobody new was present. A name/relationship-only introduction with NO
+    visible newcomer, arriving while Rex is awaiting a reply to his own question,
+    is the answer. (A genuinely present newcomer still introduces fine.)
+    """
+    return (not has_unknown_newcomer) and _response_wait_active()
+
+
 def _should_play_active_wake_ack() -> bool:
     if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
         return False
@@ -8347,6 +8361,16 @@ def _close_onboarding(reason: str) -> None:
     state = _pending_onboarding
     _pending_onboarding = None
     if state is not None:
+        # Don't pile the separate low-memory idle profile question on right after
+        # the burst — onboarding already gathered the baseline (its facts live
+        # under categories profile_fact_count excludes, so that path would
+        # otherwise re-fire immediately and over-question; live-logged).
+        pid = state.get("person_id")
+        if pid is not None:
+            try:
+                _low_memory_idle_questions_spoken.add(int(pid))
+            except Exception:
+                pass
         _log.info(
             "[onboarding] flow closed (%s) person_id=%s asked=%s answered=%s",
             reason,
@@ -16282,8 +16306,10 @@ def _handle_speech_segment(
             if parsed_intro.is_introduction and (
                 parsed_intro.subject_kind == "pet"
                 or has_unknown_for_intro
-                or bool(parsed_intro.name)
-                or bool(parsed_intro.relationship)
+                or (
+                    (bool(parsed_intro.name) or bool(parsed_intro.relationship))
+                    and not _intro_is_answer_to_rex_question(has_unknown_for_intro)
+                )
             ):
                 intro_response = _handle_introduction_parse(
                     parsed_intro,
@@ -16415,8 +16441,10 @@ def _handle_speech_segment(
             if parsed_intro.is_introduction and (
                 parsed_intro.subject_kind == "pet"
                 or has_unknown_for_intro
-                or bool(parsed_intro.name)
-                or bool(parsed_intro.relationship)
+                or (
+                    (bool(parsed_intro.name) or bool(parsed_intro.relationship))
+                    and not _intro_is_answer_to_rex_question(has_unknown_for_intro)
+                )
             ):
                 intro_response = _handle_introduction_parse(
                     parsed_intro,

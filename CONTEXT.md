@@ -439,7 +439,14 @@ False to fully disable the burst.
 - **Trigger:** armed at the `_enroll_new_person` choke point via
   `_maybe_begin_onboarding` for an eligible newcomer (`onboarding.eligible`:
   `visit_count <= ONBOARDING_MAX_VISITS`, `profile_fact_count <=
-  ONBOARDING_FACT_FLOOR`, never a minor — shares `profile_questions.person_is_minor`).
+  ONBOARDING_FACT_FLOOR`, never a minor — shares `profile_questions.person_is_minor` —
+  and never a `person_specials` VIP, so the creator isn't interrogated like a
+  stranger).
+- **No pile-on:** on close, the person is added to
+  `_low_memory_idle_questions_spoken` so the *separate* low-memory idle profile
+  question doesn't immediately re-fire (onboarding's facts live under categories
+  `profile_fact_count` excludes, so that path would otherwise over-question —
+  live-logged: "What's your favorite movie?" right after an 8-question burst).
 - **Loop:** the opener fires a beat after the ack from the idle loop
   (`_maybe_onboarding_question`); each subsequent answer is consumed before
   routers (`_handle_onboarding_turn`) and answered with a short, warm retort
@@ -458,7 +465,8 @@ False to fully disable the burst.
   `ONBOARDING_LLM_REPHRASE_ENABLED` re-voices authored questions (also OpenAI).
 - **Budget:** rides the `newcomer_baseline` urgent bypass in
   `intelligence/question_budget._URGENT_KINDS`, so it is never blocked by the
-  global cap; bounded instead by its own `ONBOARDING_MIN/MAX_QUESTIONS` (4/8).
+  global cap; bounded instead by its own `ONBOARDING_MIN/MAX_QUESTIONS` (3/5 —
+  pulled back from 4/8 after a live run felt like an interview).
   The burst's questions still register in the global window, so right AFTER it
   Rex naturally backs off normal questioning.
 - **Exits (what keeps it from being an interview):** hard decline / boundary →
@@ -743,7 +751,7 @@ venv/bin/python main.py
 
 - Motion system (drive base): wire contract `docs/motion_protocol.md` (v1, locked) + Phase 0 ESP32 firmware (`firmware/djr3x_motion`, full protocol over a stubbed HAL; flashed + 27/27 smoke test) + Mac side (`hardware/motion.py` transport, `intelligence/motion_controller.py` controller, `action_router` motion.* specs + `classify_explicit_motion`, `interaction` dispatch/fast-path, `MOTION_*` config, `MOTION_ESP32_PORT`, `main.py` Step-4 wiring). Gated on `motion_controller.available()` so it's a NO-OP for the whole pipeline unless a base is connected; `stop`/`estop` always pass and bare "stop" only routes to the base while moving. Flash at 115200 (921600 fails on the CH340 bridge); `setup_macos.sh` auto-detects the ESP32 by protocol probe (chip-ID can't — it shares a CH340 with the chest Arduino). Sign convention REP-103. Tests: `tests/test_motion.py`. See the Motion System section above.
 
-- First-meeting onboarding (`intelligence/onboarding.py` + `interaction._pending_onboarding`/`_handle_onboarding_turn`/`_maybe_begin_onboarding`/`_maybe_onboarding_question`/`_maybe_onboarding_timeout`): a scoped, stranger-only baseline-gathering burst armed at `_enroll_new_person` for a brand-new, non-minor, near-empty profile. Asks a research-backed Tier A→B→C ladder (`config.ONBOARDING_QUESTION_POOL`, ignores `TIER_MAX_DEPTH`, reuses `QUESTION_POOL` keys for de-dup/boundaries), leads each answer with a warm 2-5 word retort (no "?", `COMEDY_LINE_BANKS["onboarding_retort_*"]`) + a periodic self-reveal, writes a tidied baseline (`answer_latest_pending_question` familiarity bump + `add_fact`/`upsert_interest`), and exits on hard-decline/pivot/wind-down-after-MIN/MAX/silence. Rides the `newcomer_baseline` question-budget urgent bypass (does NOT loosen the friend cap); bounded by `ONBOARDING_MIN/MAX_QUESTIONS` (4/8). Tier-C `origin_followup` is LLM-generated via `llm.generate_curiosity_question` (main OpenAI model, validated template fallback). Suppresses proactive speech while open (`speech_engine.can_proactive_speak` → `onboarding_flow_active()`). **Master flag `ONBOARDING_ENABLED` is ON** (set False to disable). See the "First-meeting onboarding" subsection above. Tests: `tests/test_onboarding.py`.
+- First-meeting onboarding (`intelligence/onboarding.py` + `interaction._pending_onboarding`/`_handle_onboarding_turn`/`_maybe_begin_onboarding`/`_maybe_onboarding_question`/`_maybe_onboarding_timeout`): a scoped, stranger-only baseline-gathering burst armed at `_enroll_new_person` for a brand-new, non-minor, near-empty profile. Asks a research-backed Tier A→B→C ladder (`config.ONBOARDING_QUESTION_POOL`, ignores `TIER_MAX_DEPTH`, reuses `QUESTION_POOL` keys for de-dup/boundaries), leads each answer with a warm 2-5 word retort (no "?", `COMEDY_LINE_BANKS["onboarding_retort_*"]`) + a periodic self-reveal, writes a tidied baseline (`answer_latest_pending_question` familiarity bump + `add_fact`/`upsert_interest`), and exits on hard-decline/pivot/wind-down-after-MIN/MAX/silence. Rides the `newcomer_baseline` question-budget urgent bypass (does NOT loosen the friend cap); bounded by `ONBOARDING_MIN/MAX_QUESTIONS` (3/5). Skips `person_specials` VIPs (the creator). On close, adds the person to `_low_memory_idle_questions_spoken` so the separate low-memory profile question doesn't pile on. Tier-C `origin_followup` is LLM-generated via `llm.generate_curiosity_question` (main OpenAI model, validated template fallback). Suppresses proactive speech while open (`speech_engine.can_proactive_speak` → `onboarding_flow_active()`). **Master flag `ONBOARDING_ENABLED` is ON** (set False to disable). Related fix: a name-only "this is X" arriving while Rex awaits an answer to his own question (no visible newcomer) is treated as the ANSWER, not an introduction (`_intro_is_answer_to_rex_question`) — the Doubtfire-as-favorite-movie misfire. See the "First-meeting onboarding" subsection above. Tests: `tests/test_onboarding.py`.
 
 ## Likely Future Work
 

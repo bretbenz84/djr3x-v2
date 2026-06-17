@@ -2823,9 +2823,11 @@ ONBOARDING_ENABLED = True  # master flag (live; set False to fully disable the b
 
 # Burst size. MIN is the floor Rex tries to reach even on lukewarm engagement (a
 # hard disengage / boundary / pivot still exits earlier); MAX is the hard ceiling
-# so the burst can never become an interrogation.
-ONBOARDING_MIN_QUESTIONS = 4
-ONBOARDING_MAX_QUESTIONS = 8
+# so the burst can never become an interrogation. Pulled back from 4/8 after a
+# live run felt like an interview — 3 (Tier-A baseline) to 5 (plus an interest
+# or two) is a useful baseline without the slog.
+ONBOARDING_MIN_QUESTIONS = 3
+ONBOARDING_MAX_QUESTIONS = 5
 
 # Eligibility: only brand-new people (low visit count) with a near-empty profile.
 ONBOARDING_MAX_VISITS = 1
