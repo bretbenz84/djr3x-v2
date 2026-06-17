@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Callable, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -62,11 +63,32 @@ class ConversationPanel(QWidget):
             return
 
         scrollbar = self._log.verticalScrollBar()
+        # Capture intent BEFORE the re-render: was the view pinned to the newest
+        # line, and where was the reader otherwise? setHtml resets the scrollbar
+        # to the top, so these must be read first.
         at_bottom = scrollbar.value() >= scrollbar.maximum() - 6
+        prev_value = scrollbar.value()
+
         self._log.setHtml(_format_lines(lines))
         self._last_seq = last_seq
+
         if at_bottom:
-            scrollbar.setValue(scrollbar.maximum())
+            # Keep the latest text anchored to the bottom and let older lines
+            # scroll up out of view. setHtml relays the document out lazily, so
+            # the scrollbar's maximum can still be stale on this pass — pin once
+            # now and again after layout settles, otherwise the newest line ends
+            # up below the fold (the "I have to scroll down to see it" bug).
+            self._scroll_to_bottom()
+            QTimer.singleShot(0, self._scroll_to_bottom)
+        else:
+            # Reader has scrolled up through history — only new lines were
+            # appended below, so hold their position across the full re-render
+            # instead of snapping them back to the top.
+            scrollbar.setValue(min(prev_value, scrollbar.maximum()))
+
+    def _scroll_to_bottom(self) -> None:
+        scrollbar = self._log.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
     def _submit(self) -> None:
         text = self._entry.text().strip()
@@ -156,7 +178,12 @@ def _format_line(line: dict[str, Any]) -> str:
     kind = str(line.get("kind") or "").strip().lower()
     if kind not in {"user", "rex", "system"}:
         kind = "rex" if speaker.lower() in {"rex", "r3x"} else "system"
-    label = "Human" if kind == "user" else ("R3X" if kind == "rex" else speaker)
+    if kind == "user":
+        label = _user_label(speaker)
+    elif kind == "rex":
+        label = "R3X"
+    else:
+        label = speaker
     return f"""
     <div class="entry">
         <table class="meta"><tr>
@@ -166,6 +193,28 @@ def _format_line(line: dict[str, Any]) -> str:
         <div class="text">{text}</div>
     </div>
     """
+
+
+_GENERIC_USER_LABELS = {"", "human", "user", "unknown", "unknown speaker"}
+_ANON_VOICE_RE = re.compile(r"unknown[_ ]voice[_ ]?(\d+)$")
+
+
+def _user_label(speaker: str) -> str:
+    """Display name for a human turn.
+
+    The identity pipeline already resolves WHO spoke and passes that name into
+    the conversation bridge, so show it: Rex's best guess at the person he is
+    talking to (e.g. "Bret Benziger", "JT"). A distinct-but-unidentified voice
+    slot (``unknown_voice_2``) becomes a friendly ``Guest 2``; a turn with no
+    identity at all falls back to the generic "Human"."""
+    s = (speaker or "").strip()
+    low = s.lower()
+    if low in _GENERIC_USER_LABELS:
+        return "Human"
+    m = _ANON_VOICE_RE.match(low)
+    if m:
+        return f"Guest {m.group(1)}"
+    return s
 
 
 def _escape(text: str) -> str:
