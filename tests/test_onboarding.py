@@ -116,6 +116,19 @@ class TidyValueTests(unittest.TestCase):
         long_answer = "I do a whole bunch of different unrelated random things every single day honestly"
         self.assertLessEqual(len(onboarding.tidy_value(long_answer, "fact").split()), 10)
 
+    def test_clause_trim_and_bad_lead_guard(self):
+        from intelligence import onboarding
+
+        # Em-dash aside is trimmed; a comma value ("Austin, Texas") survives.
+        self.assertEqual(
+            onboarding.tidy_value("rock climbing — I'm obsessed", "interest").lower(),
+            "rock climbing",
+        )
+        self.assertEqual(onboarding.tidy_value("Austin, Texas", "fact"), "Austin, Texas")
+        # Non-noun answers are dropped rather than filed as junk.
+        self.assertEqual(onboarding.tidy_value("going great, better than I hoped", "interest"), "")
+        self.assertEqual(onboarding.tidy_value("nothing in particular", "interest"), "")
+
 
 class FollowupTemplateTests(unittest.TestCase):
     def test_template_fallback_when_llm_disabled(self):
@@ -125,6 +138,9 @@ class FollowupTemplateTests(unittest.TestCase):
             q = onboarding.generate_followup("rock climbing every weekend")
             self.assertTrue(q.endswith("?"))
             self.assertIn("get into", q.lower())
+            # A vague (non-topic) answer yields no template question, so selection
+            # falls through to an authored Tier-C question instead of garbling.
+            self.assertIsNone(onboarding.generate_followup("it's going great, better than I hoped"))
         self.assertIsNone(onboarding.generate_followup(""))
 
     def test_first_question_extraction(self):

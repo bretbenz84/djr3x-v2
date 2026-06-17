@@ -195,7 +195,11 @@ def generate_followup(prev_answer: Optional[str]) -> Optional[str]:
             _log.debug("[onboarding] LLM follow-up failed, using template: %s", exc)
 
     topic = _topic_from_answer(answer)
-    return f"How'd you get into {topic}?" if topic else "How'd you get into that?"
+    # Only build the template when the topic reads like a thing you can "get into"
+    # (a short noun-ish phrase). A vague answer ("it's going great") would make
+    # "How'd you get into going great?" — better to skip and let selection fall
+    # through to an authored Tier-C question.
+    return f"How'd you get into {topic}?" if _looks_like_topic(topic) else None
 
 
 def _maybe_rephrase(text: str) -> str:
@@ -388,6 +392,14 @@ _INTEREST_LEAD = re.compile(
     r"^(?:i (?:like|love|enjoy|listen to|am into|'?m into)|into|mostly|a lot of|lots of)[\s,]+",
     re.IGNORECASE,
 )
+# A tidied value that still STARTS with one of these isn't a clean noun topic
+# ("going great...", "it's complicated", "nothing really") — drop it rather than
+# file junk. The structured person_qa row still records the full answer.
+_BAD_VALUE_LEAD = {
+    "it", "its", "i", "we", "they", "he", "she", "just", "really", "very",
+    "kind", "sort", "not", "no", "nothing", "maybe", "probably", "going",
+    "doing", "getting", "having", "idk", "dunno", "stuff", "things", "whatever",
+}
 
 
 def tidy_value(answer: str, store: str) -> str:
@@ -401,6 +413,10 @@ def tidy_value(answer: str, store: str) -> str:
     text = (answer or "").strip().rstrip(" .!?,")
     if not text or _DUNNO_PAT.match(text):
         return ""
+    # Keep only the first clause — an em-dash/semicolon usually introduces an
+    # aside ("rock climbing — I'm obsessed" -> "rock climbing"). Commas are kept
+    # so "Austin, Texas" survives.
+    text = re.split(r"\s*[—–;]\s*", text)[0].strip()
     prev = None
     while prev != text:
         prev = text
@@ -413,11 +429,22 @@ def tidy_value(answer: str, store: str) -> str:
     words = text.split()
     if len(words) > 10:
         text = " ".join(words[:10])
-    return text.strip(" ,.!?")
+    result = text.strip(" ,.!?")
+    if result and result.split()[0].lower().strip(".,!?'") in _BAD_VALUE_LEAD:
+        return ""
+    return result
 
 
 def _topic_from_answer(answer: str) -> str:
     return tidy_value(answer, "interest")
+
+
+def _looks_like_topic(topic: str) -> bool:
+    """True when a phrase reads like a short noun topic you could 'get into'."""
+    words = (topic or "").split()
+    if not (1 <= len(words) <= 4):
+        return False
+    return words[0].lower().strip(".,!?'") not in _BAD_VALUE_LEAD
 
 
 def note_question_asked(person_id: int, question: dict) -> None:
