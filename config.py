@@ -2819,7 +2819,7 @@ QUESTION_BUDGET_ENGAGED_EXTRA = 1
 # It rides the question-budget urgent bypass ("newcomer_baseline") so it never
 # loosens the friend-protecting global cap; its own MIN/MAX bound the burst.
 # Full design: intelligence/onboarding.py + interaction._handle_onboarding_turn.
-ONBOARDING_ENABLED = False  # master flag; flip on once the loop is proven on-device
+ONBOARDING_ENABLED = True  # master flag (live; set False to fully disable the burst)
 
 # Burst size. MIN is the floor Rex tries to reach even on lukewarm engagement (a
 # hard disengage / boundary / pivot still exits earlier); MAX is the hard ceiling
