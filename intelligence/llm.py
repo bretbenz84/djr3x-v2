@@ -17,6 +17,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 import config
 import apikeys
+from intelligence import llm_compat
 from intelligence import person_specials
 from intelligence import social_scene
 from world_state import world_state
@@ -1075,8 +1076,9 @@ def warmup() -> bool:
     TLS / HTTP setup. Fires one tiny throwaway completion; errors are swallowed.
     """
     try:
-        _client.chat.completions.create(
-            model=config.LLM_MODEL,
+        llm_compat.create(
+            _client,
+            model=llm_compat.conversation_model(),
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=1,
         )
@@ -1095,8 +1097,12 @@ def stream_response(
     """Assemble the system prompt and stream GPT-4o-mini response chunks."""
     system_prompt = assemble_system_prompt(person_id, agenda_directive=agenda_directive)
     try:
-        stream = _client.chat.completions.create(
-            model=config.LLM_MODEL,
+        # Routed through llm_compat so a GPT-5-class conversation model gets the right
+        # param contract (max_completion_tokens, reasoning_effort, temperature handling).
+        # Behavior-neutral while LLM_CONVERSATION_MODEL is gpt-4o-mini. See docs.
+        stream = llm_compat.create(
+            _client,
+            model=llm_compat.conversation_model(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text},
@@ -1299,8 +1305,9 @@ def scenery_change_remark(previous_scene: str, current_scene: str) -> str:
         "present), reply with exactly: SAME"
     )
     try:
-        resp = _client.chat.completions.create(
-            model=config.LLM_MODEL,
+        resp = llm_compat.create(
+            _client,
+            model=llm_compat.conversation_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
             max_tokens=60,
@@ -1406,8 +1413,9 @@ def generate_curiosity_question(
         f"{interest_clause}"
     )
     try:
-        resp = _client.chat.completions.create(
-            model=config.LLM_MODEL,
+        resp = llm_compat.create(
+            _client,
+            model=llm_compat.conversation_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.8,
             max_tokens=60,
@@ -1450,8 +1458,9 @@ def generate_onboarding_reaction(
         "wit and respond with one short, warm acknowledgment instead."
     )
     try:
-        resp = _client.chat.completions.create(
-            model=config.LLM_MODEL,
+        resp = llm_compat.create(
+            _client,
+            model=llm_compat.conversation_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.8,
             max_tokens=40,
@@ -1540,8 +1549,9 @@ def generate_expression_reaction(kind: str, person_id: Optional[int] = None) -> 
         "expression was 'detected'. Return only the line."
     )
     try:
-        resp = _client.chat.completions.create(
-            model=config.LLM_MODEL,
+        resp = llm_compat.create(
+            _client,
+            model=llm_compat.conversation_model(),
             messages=[{"role": "user", "content": instr}],
             temperature=0.8,
             max_tokens=50,

@@ -156,6 +156,28 @@ WHISPER_CONDITION_ON_PREVIOUS_TEXT = False
 LLM_MODEL             = "gpt-4o-mini"  # Streaming chat completions
 VISION_MODEL          = "gpt-4o-mini"  # All image and scene analysis queries
 
+# ── GPT-5-class migration scaffolding (OFF by default — see docs/gpt-5_4_mini.md) ──
+# The model for Rex's USER-FACING in-character generation (the streaming reply + the
+# short curiosity/onboarding/expression/scenery generators). Defaults to LLM_MODEL so
+# behavior is unchanged. To A/B a GPT-5-class model on JUST the conversation, set this
+# to e.g. "gpt-5.4-mini" — the classifiers/routers/JSON/vision calls keep using
+# LLM_MODEL (hybrid rollout). Routed through intelligence/llm_compat, which translates
+# the GPT-5 param differences in ONE place.
+LLM_CONVERSATION_MODEL = LLM_MODEL
+# GPT-5-only knobs, applied by llm_compat ONLY when the model is a GPT-5/o-series
+# reasoning model (ignored for gpt-4o-mini). None = don't send the param.
+#   reasoning_effort: none|minimal|low|medium|high|xhigh — "none"/"minimal" keep
+#   time-to-first-token low (critical for the real-time voice loop); raise for depth.
+#   verbosity: low|medium|high.
+LLM_REASONING_EFFORT  = None
+LLM_VERBOSITY         = None
+# GPT-5 reasoning models historically REJECT a non-default temperature (400 error);
+# newer ones may accept it when reasoning_effort is "none"/omitted, but that is
+# UNCONFIRMED for gpt-5.4-mini and must be smoke-tested (tools/gpt5_smoke_test.py).
+# False (safe default) = llm_compat DROPS temperature for GPT-5 models. Flip True only
+# after the smoke test confirms the model accepts it.
+LLM_GPT5_PASS_TEMPERATURE = False
+
 # OpenAI client timeouts. The SDK default is 600s, which means a single STALLED
 # streaming reply (200 OK received, then the token stream goes silent on a half-open
 # connection) can block the turn for TEN MINUTES — and because the turn handler holds
