@@ -10048,7 +10048,7 @@ class IdleBanterTest(unittest.TestCase):
             # (submit-a-candidate, deferred speak) is covered by the test below.
             mock.patch.object(interaction, "_governor_enforcing", return_value=False),
         ):
-            fired = interaction._maybe_idle_banter(idle_for=12.0, effective_idle_timeout=45.0)
+            fired = interaction._maybe_idle_banter(idle_for=interaction.config.IDLE_BANTER_SECS + 5.0, effective_idle_timeout=45.0)
         self.assertTrue(fired)
         speak.assert_called_once()
         self.assertEqual(interaction._idle_banter_count, 1)
@@ -10088,7 +10088,7 @@ class IdleBanterTest(unittest.TestCase):
             mock.patch.object(interaction, "_governor_enforcing", return_value=True),
             mock.patch.object(governor, "submit_external", side_effect=lambda c: submitted.append(c)),
         ):
-            fired = interaction._maybe_idle_banter(idle_for=12.0, effective_idle_timeout=45.0)
+            fired = interaction._maybe_idle_banter(idle_for=interaction.config.IDLE_BANTER_SECS + 5.0, effective_idle_timeout=45.0)
             # Submitted a candidate; did NOT speak inline; armed the cooldown on submit.
             self.assertTrue(fired)
             speak.assert_not_called()
@@ -10127,7 +10127,7 @@ class IdleBanterTest(unittest.TestCase):
             mock.patch.object(interaction, "_game_suppresses_conversation", return_value=False),
             mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
         ):
-            fired = interaction._maybe_idle_banter(idle_for=12.0, effective_idle_timeout=45.0)
+            fired = interaction._maybe_idle_banter(idle_for=interaction.config.IDLE_BANTER_SECS + 5.0, effective_idle_timeout=45.0)
         self.assertFalse(fired)
         speak.assert_not_called()
 
@@ -10141,7 +10141,7 @@ class IdleBanterTest(unittest.TestCase):
             mock.patch.object(interaction, "_game_suppresses_conversation", return_value=False),
             mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
         ):
-            fired = interaction._maybe_idle_banter(idle_for=12.0, effective_idle_timeout=45.0)
+            fired = interaction._maybe_idle_banter(idle_for=interaction.config.IDLE_BANTER_SECS + 5.0, effective_idle_timeout=45.0)
         self.assertFalse(fired)
         speak.assert_not_called()
 
@@ -10157,7 +10157,7 @@ class IdleBanterTest(unittest.TestCase):
             mock.patch.object(interaction.end_thread, "is_grace_active", return_value=False),
             mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
         ):
-            fired = interaction._maybe_idle_banter(idle_for=12.0, effective_idle_timeout=45.0)
+            fired = interaction._maybe_idle_banter(idle_for=interaction.config.IDLE_BANTER_SECS + 5.0, effective_idle_timeout=45.0)
         self.assertFalse(fired)
         speak.assert_not_called()
 
@@ -10173,7 +10173,7 @@ class IdleBanterTest(unittest.TestCase):
             mock.patch.object(interaction.end_thread, "is_grace_active", return_value=True),
             mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
         ):
-            fired = interaction._maybe_idle_banter(idle_for=12.0, effective_idle_timeout=45.0)
+            fired = interaction._maybe_idle_banter(idle_for=interaction.config.IDLE_BANTER_SECS + 5.0, effective_idle_timeout=45.0)
         self.assertFalse(fired)
         speak.assert_not_called()
 

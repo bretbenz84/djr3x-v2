@@ -406,14 +406,31 @@ class OnboardingFlowTests(unittest.TestCase):
         self.assertEqual(state["step"], "awaiting_answer")
 
     def test_retort_leads_the_reply(self):
-        with mock.patch.object(
-            config, "COMEDY_LINE_BANKS",
-            {"onboarding_retort_neutral": ["Noted."], "onboarding_retort_positive": ["Noted."],
-             "onboarding_retort_warm": ["Noted."], "onboarding_retort_surprise": ["Noted."]},
-        ):
+        # Bank-fallback path (answer-aware reaction disabled): the authored retort
+        # still leads the reply, ahead of the next question.
+        with mock.patch.object(config, "ONBOARDING_LLM_REACT_ENABLED", False), \
+            mock.patch.object(
+                config, "COMEDY_LINE_BANKS",
+                {"onboarding_retort_neutral": ["Noted."], "onboarding_retort_positive": ["Noted."],
+                 "onboarding_retort_warm": ["Noted."], "onboarding_retort_surprise": ["Noted."]},
+            ):
             self._arm_awaiting("job")
             resp = self.interaction._handle_onboarding_turn("an accountant", self.person_id)
         self.assertTrue(resp.startswith("Noted."), resp)
+
+    def test_answer_aware_reaction_leads_the_reply(self):
+        # Answer-aware path: the genuine, content-reflecting reaction (not a flat bank
+        # pick) leads the reply, ahead of the next question — the "I created you" fix.
+        from intelligence import llm as llm_module
+        with mock.patch.object(config, "ONBOARDING_LLM_REACT_ENABLED", True), \
+            mock.patch.object(
+                llm_module, "generate_onboarding_reaction",
+                return_value="Wait, you BUILT me?",
+            ):
+            self._arm_awaiting("job")
+            resp = self.interaction._handle_onboarding_turn("I created you", self.person_id)
+        self.assertTrue(resp.startswith("Wait, you BUILT me?"), resp)
+        self.assertIn("?", resp)  # still carries the next question
 
     def test_hard_decline_backs_off_and_closes(self):
         self._arm_awaiting("job")

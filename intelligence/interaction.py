@@ -3730,14 +3730,20 @@ def _maybe_idle_banter(
     # ask-first default buried the POV every turn (it never surfaced live). The
     # reply path already carries curiosity about the user; idle banter is the slot
     # where Rex brings his own thing.
-    attempt = _idle_banter_count % len(_IDLE_BANTER_DIRECTIVES)
-    ask_user = attempt != 0
-    # Riff on / deepen the LIVE topic by default; only fall back to Rex's own (off-topic)
-    # preoccupation when there's no real exchange to build on yet. Computed independently
-    # of ask_user so the ask-user slot is ALSO topic-aware: once a topic is open, even a
-    # "spotlight on the user" question must deepen that thread instead of re-asking what
-    # they just told Rex. See _idle_banter_directive for the rationale.
+    # Mid-conversation, a re-engagement should ENGAGE THE SPEAKER about what you were
+    # just discussing (a genuine new follow-up) — NOT volunteer an unprompted Rex opinion.
+    # A surprise "hot take" dropped into a lull reads as barging in with a random idea,
+    # even when it's on-topic; what keeps the conversation alive is drawing the person
+    # back out about the thing THEY were talking about. So whenever there's a live thread,
+    # turn the spotlight on the user. Rex only brings his own (possibly off-topic)
+    # observation when there's no real exchange to build on yet — a cold open / near-empty
+    # room — where alternating keeps it from being a wall of questions. (Truly long idle
+    # is owned by the session timeout + outro, not by piling on more banter.)
     live_topic = _idle_has_live_topic()
+    if live_topic:
+        ask_user = True
+    else:
+        ask_user = (_idle_banter_count % len(_IDLE_BANTER_DIRECTIVES)) != 0
     pov_text = ""
     if not ask_user and not live_topic:
         try:
@@ -4269,7 +4275,7 @@ def _format_common_first_name_last_name_prompt(first_name: str) -> str:
     prompts = list(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_PROMPTS", []) or [])
     if not prompts:
         prompts = [
-            "{first}, how original. Last name too, please, so the memory banks don't get confused."
+            "{first}, huh? Last name too, please, so I keep you straight."
         ]
     try:
         template = random.choice(prompts)
@@ -6186,9 +6192,9 @@ def _handle_common_first_name_last_name_reply(
             "[identity] last-name request declined for %r; filing first name only",
             first_name,
         )
-        response = f"Fine. Filed as {first_name}. The memory banks will squint and cope."
+        response = f"Fine, {first_name} it is. First name only — I'll cope."
     else:
-        response = f"Filed as {full_name}. The memory banks have stopped panicking."
+        response = f"Got it — {full_name}. Good to actually know you."
     return response, enrolled_id, full_name
 
 
@@ -6304,7 +6310,7 @@ def _handle_existing_common_first_name_last_name_reply(text: str) -> Optional[st
         first_name,
         full_name,
     )
-    return f"Updated: {full_name}. The memory banks have unclenched."
+    return f"There we go — {full_name}. Now I've got the whole picture."
 
 
 def _should_defer_existing_common_first_name_prompt(text: str) -> bool:
@@ -8526,7 +8532,12 @@ def _handle_onboarding_turn(text: str, speaker_id: Optional[int]) -> Optional[st
     soft = onboarding.is_soft_disengage(answered)
     state["soft_streak"] = state["soft_streak"] + 1 if soft else 0
 
-    retort = onboarding.retort_for(answered)
+    # Answer-aware reaction: reflect what they ACTUALLY said (real surprise at a
+    # remarkable answer, a warm beat at an ordinary one) instead of a flat random
+    # bank pick. This is the core fix for the "I created you" -> "Filed away." failure.
+    retort = onboarding.react_to_answer(
+        answered, question=state["pending_question"], person_id=person_id
+    )
 
     reached_max = state["asked_count"] >= onboarding.max_questions()
     reached_min = state["answered_count"] >= onboarding.min_questions()

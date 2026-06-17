@@ -7,6 +7,7 @@ import logging
 import random
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Generator, Optional
 
@@ -112,8 +113,54 @@ def _format_transcript(transcript: list[dict]) -> str:
     )
 
 
+# Human-readable cue for a person's CURRENT facial expression, surfaced as routine
+# per-turn world context so Rex can naturally respond to a smile / furrowed brow /
+# shocked look instead of conversing blind to the face. Deliberately LOOSER than
+# consciousness._person_reactable_expression (the strict "<3s, react right NOW" gate
+# that, in practice, almost never survives transcription + LLM latency to reach reply
+# assembly — which is why the face read never reached the prompt). This is calm ambient
+# context, not a "react now" instruction; the core prompt already governs not
+# over-narrating it and never revealing a camera saw it.
+_EXPRESSION_CONTEXT_PHRASES = {
+    "happy": "looks amused / smiling",
+    "smile": "looks amused / smiling",
+    "surprised": "looks surprised / wide-eyed",
+    "surprise": "looks surprised / wide-eyed",
+    "sad": "looks down / unhappy",
+    "frown": "looks down / unhappy",
+    "focused": "brow furrowed — focused or skeptical",
+    "brow_furrow": "brow furrowed — focused or skeptical",
+}
+
+
+def _expression_context_cue(person: dict, now: float) -> str:
+    """Short phrase for a visible person's current facial expression, or "" when there
+    is no confident, recent, non-neutral read. Gated on confidence + reading age so a
+    stale or low-signal frame never puts words in Rex's mouth."""
+    try:
+        expr = person.get("face_expression") or person.get("facial_expression") or {}
+        if not isinstance(expr, dict):
+            return ""
+        label = str(expr.get("expression") or expr.get("mood") or "").strip().lower()
+        phrase = _EXPRESSION_CONTEXT_PHRASES.get(label)
+        if not phrase:
+            return ""
+        if float(expr.get("confidence") or 0.0) < float(
+            getattr(config, "FACE_EXPRESSION_CONTEXT_MIN_CONFIDENCE", 0.45)
+        ):
+            return ""
+        updated_at = float(expr.get("updated_at") or 0.0)
+        max_age = float(getattr(config, "FACE_EXPRESSION_CONTEXT_MAX_AGE_SECS", 12.0))
+        if updated_at and (now - updated_at) > max_age:
+            return ""
+        return phrase
+    except Exception:
+        return ""
+
+
 def _summarize_world_state(ws: dict) -> str:
     parts = []
+    now = time.time()
 
     env = ws.get("environment", {})
     if env.get("description") or env.get("scene_type"):
@@ -146,15 +193,25 @@ def _summarize_world_state(ws: dict) -> str:
             bits.append(f"gesture={person['gesture']}")
         if person.get("engagement"):
             bits.append(f"engagement={person['engagement']}")
+        expression_cue = _expression_context_cue(person, now)
+        if expression_cue:
+            bits.append(f"expression={expression_cue}")
         if bits:
             social_cues.append(f"{name}: " + ", ".join(bits))
     if social_cues:
-        parts.append(
+        cue_text = (
             "Visible social cues: "
             + "; ".join(social_cues)
             + ". Treat intimate camera distance as physically close; by American "
             "personal-space norms, someone extremely close may be playfully too close for comfort."
         )
+        if any("expression=" in cue for cue in social_cues):
+            cue_text += (
+                " The expression read is a live camera signal — let it color how you read "
+                "the moment (respond to a smile, a furrowed brow, a surprised look like a "
+                "person would), but don't narrate it every turn and never say a camera told you."
+            )
+        parts.append(cue_text)
 
     audio = ws.get("audio_scene", {})
     audio_notes = [f"ambient noise is {audio.get('ambient_level', 'moderate')}"]
@@ -754,11 +811,13 @@ def assemble_system_prompt(
     sections.append(
         "Current personality parameters — these are live dials; let them show in "
         "your delivery:\n" + param_lines + "\n"
-        "Read them: high roast_intensity / sarcasm / humor means be sharp, "
-        "specific, and actually funny by default — not gentle or hedged. Low "
-        "agreeability means push back, add commentary, and refuse-with-attitude "
-        "instead of cheerfully complying. Low sentimentality means don't get "
-        "mushy. (These never override empathy, boundaries, or family-safe mode.)"
+        "Read them: higher roast_intensity / sarcasm / humor means your wit has more "
+        "bite WHEN you choose to use it — sharp and specific, not gentle and hedged — "
+        "but they do NOT mean roast every turn; curiosity and real engagement still "
+        "lead. Low agreeability means push back, add commentary, and "
+        "refuse-with-attitude instead of cheerfully complying. Low sentimentality "
+        "means don't get mushy. (These never override empathy, boundaries, or "
+        "family-safe mode.)"
     )
 
     # 3. Current emotion state — Rex's own mood, plus (if known) the person's
@@ -888,18 +947,22 @@ def assemble_system_prompt(
             if tier in _TIER_ROAST_STYLE:
                 rules.append(_TIER_ROAST_STYLE[tier])
             rules.append(
-                "Voice — roast comedian, not friendly interviewer: you genuinely like "
-                "these people, and you show it by giving them grief. LEAD with the funny "
-                "— a sharp, specific take, jab, or hot opinion about what they just said "
-                "or did. React like a person with standards, not an assistant taking "
-                "notes. Curiosity is seasoning, not the meal: ask a question only when "
-                "you actually want to know and it earns its place — NOT every turn. A "
-                "string of 'so what's your favorite X?' questions is the boring interview "
-                "to avoid; most turns should land a line and stop. Meet each person on "
-                "their own terms — their job, worldview, and interests are both roast "
-                "material and common ground (riff with a gamer, trade in a scientist's "
-                "domain, engage a person of faith on their values without mocking the "
-                "faith). Warmth lives UNDER the roast, never instead of it."
+                "Voice — a genuinely curious conversationalist with a sharp tongue, NOT a "
+                "roast machine and NOT an interviewer. You actually want to know what makes "
+                "this person tick, and it shows. LEAD with real engagement: react to the "
+                "specific thing they just said, follow honest curiosity, or share your own "
+                "point of view — and land a well-aimed tease WHEN the moment invites one, "
+                "not as a reflex. A roast that lands beats three friendly sentences, but a "
+                "forced jab every single turn is exactly what makes you exhausting to talk "
+                "to — most turns don't need one. When someone is sincere, tired, or steering "
+                "the topic, drop the bit and engage like you care, because underneath you "
+                "do. Meet each person on their own terms — their job, worldview, and "
+                "interests are common ground first and roast material second (riff with a "
+                "gamer, trade in a scientist's domain, engage a person of faith on their "
+                "values without mocking the faith). Don't interrogate either: a string of "
+                "'so what's your favorite X?' questions is just as tedious as a string of "
+                "jabs — ask when you're genuinely curious, otherwise react and let them "
+                "carry it. Warmth and curiosity lead; the edge rides underneath."
             )
             if getattr(config, "RELATIONSHIP_TONE_ENABLED", True):
                 tone_rule = _relationship_tone_rule(person, person.get("name") or "")
@@ -1323,6 +1386,60 @@ def generate_curiosity_question(
         return resp.choices[0].message.content.strip()
     except Exception as exc:
         _log.debug("generate_curiosity_question failed: %s", exc)
+        return ""
+
+
+def generate_onboarding_reaction(
+    question_text: str,
+    answer_text: str,
+    person_id: Optional[int] = None,
+) -> str:
+    """One short, GENUINE, in-character reaction to what a new person just said —
+    the answer-aware replacement for the old flat sentiment-bank retort
+    ("Filed away." / "Noted."). It must reflect the actual content: react to a
+    remarkable answer like a person would (someone saying "I created you" earns
+    real surprise, not "Filed away."), find the spark in an ordinary one, and stay
+    warm on first contact. NO question (the next baseline question is appended
+    separately), and hard-capped short so the onboarding line stays a quick beat,
+    not a monologue. Returns "" so the caller can fall back to the authored bank."""
+    answer = (answer_text or "").strip()
+    if not answer:
+        return ""
+    cap = int(getattr(config, "ONBOARDING_REACTION_MAX_WORDS", 14))
+    prompt = (
+        f'You are Rex, a witty droid meeting someone new. You just asked: '
+        f'"{(question_text or "").strip()}"\n'
+        f'They answered: "{answer}"\n\n'
+        "Give ONE short, genuine reaction to what they ACTUALLY said — react to the "
+        "real content like a curious person would. If the answer is surprising or "
+        "remarkable, show real surprise/interest; if it's ordinary, find the spark or "
+        "give a warm, dry beat. This is a first meeting, so keep it warm with at most "
+        "a light tease — do NOT roast. Do NOT narrate that you're storing it "
+        "('noted', 'filed away', 'on file', 'logged'). Do NOT ask a question. "
+        f"At most {cap} words. Return only the reaction.\n\n"
+        "If they shared something heavy (grief, loss, illness, a death), drop all "
+        "wit and respond with one short, warm acknowledgment instead."
+    )
+    try:
+        resp = _client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.8,
+            max_tokens=40,
+        )
+        out = clean_response_text((resp.choices[0].message.content or "").strip())
+        # Strip a trailing question if the model slipped one in — the next baseline
+        # question is appended by the caller; two questions in one line is the
+        # interrogation feel we're killing.
+        if "?" in out:
+            head = out.split("?")[0].strip()
+            out = head if head else ""
+        words = out.split()
+        if len(words) > cap + 4:
+            out = " ".join(words[: cap + 4]).rstrip(" ,.;:") + "."
+        return out
+    except Exception as exc:
+        _log.debug("generate_onboarding_reaction failed: %s", exc)
         return ""
 
 

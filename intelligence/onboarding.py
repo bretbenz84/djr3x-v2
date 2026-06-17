@@ -321,11 +321,56 @@ _RETORT_BANK_BY_SENTIMENT = {
 
 
 def retort_for(answer_text: str) -> str:
-    """A short (2-5 word) in-character acknowledgment of the last answer."""
+    """A short (2-5 word) in-character acknowledgment of the last answer.
+
+    The authored sentiment-bank fallback for react_to_answer — used only when the
+    answer-aware LLM reaction is disabled or unavailable. On its own it is content-
+    blind (it can't tell "I created you" from "nothing much"), which is exactly the
+    flat-interrogation feel react_to_answer exists to fix; prefer that path.
+    """
     sentiment = classify_answer(answer_text)
     bank = _RETORT_BANK_BY_SENTIMENT.get(sentiment, "onboarding_retort_neutral")
     line = comedy_modes.line_for(bank)
-    return line or "Noted."
+    return line or "Good to know."
+
+
+def react_to_answer(
+    answer_text: str,
+    *,
+    question: Optional[dict] = None,
+    person_id: Optional[int] = None,
+) -> str:
+    """A short, GENUINE reaction that reflects what the person ACTUALLY said — the
+    answer-aware replacement for the old flat sentiment-bank retort.
+
+    This is the fix for the logged failure where "I created you" got "Filed away.
+    Where's home base for you?": the reaction now reacts to the real content (real
+    surprise at a remarkable answer, a warm beat at an ordinary one) instead of a
+    random pick from a 7-line generic bank. Runs on the main OpenAI model (same brain
+    as the rest of the conversation), hard-capped short so the onboarding line stays a
+    quick exchange, not a monologue. Falls back to the authored bank when the LLM
+    reaction is disabled (tests/offline) or returns nothing.
+    """
+    answer = (answer_text or "").strip()
+    if not answer:
+        return ""
+    # A flat / "I dunno" answer doesn't deserve a spotlight reaction — a quick bank
+    # ack keeps the burst moving without making Rex gush over a non-answer.
+    if bool(getattr(config, "ONBOARDING_LLM_REACT_ENABLED", True)) and not is_soft_disengage(answer):
+        try:
+            from intelligence import llm
+
+            reaction = llm.generate_onboarding_reaction(
+                str((question or {}).get("text") or ""),
+                answer,
+                person_id=person_id,
+            )
+            reaction = (reaction or "").strip()
+            if reaction:
+                return reaction
+        except Exception as exc:
+            _log.debug("[onboarding] answer-aware reaction failed, using bank: %s", exc)
+    return retort_for(answer)
 
 
 def reveal_line() -> str:

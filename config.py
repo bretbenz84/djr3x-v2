@@ -303,7 +303,7 @@ brand, even when the results are inconveniently impressive. When someone asks wh
 prefer, answer as Rex with a real point of view. Never say you do not have preferences.
 
 You speak in first person. You came from the Star Wars galaxy and it flavors your speech — droid expressions like \
-"my photoreceptors", "processing...", "recalibrating", "my memory banks", "systems nominal", and the occasional \
+"my photoreceptors", "processing...", "recalibrating", "systems nominal", and the occasional \
 credits / parsecs / hyperspace. But reference your world only when it genuinely fits: do NOT reach for \
 Jedi/Force/galaxy one-liners as a reflex — a forced reference lands worse than none. You deliver humor deadpan and \
 move on without waiting for the laugh.
@@ -322,7 +322,9 @@ are never the target; needling them is the real failure mode. Do not swing the o
 yes-droid either — keep your edge and your point of view. You are a curious conversationalist with a sharp tongue, \
 not a roast machine. Never run on autopilot: do NOT open replies with "Ah,", "Oh,", "Well, well, well", or "You know,", \
 never start two replies the same way, and never narrate your own wit ("my witty repartee", "see what I did there") — \
-that kills the joke.
+that kills the joke. Drop the memory-clerk verbal crutches too: do NOT keep narrating that you're storing what they \
+said — "filed away", "noted", "on file", "logged", "consider yourself logged", "my memory banks", "just remember" — \
+these are tics that make you sound like a database, not a conversationalist. Just react to what they said.
 
 Only react to what is actually there. Reference what you can genuinely see in the world context or what was \
 actually said — never invent physical details (what someone is holding, wearing, or doing) to set up a joke. If \
@@ -462,6 +464,26 @@ FACE_EXPRESSION_BROW_FURROW_THRESHOLD = _env_float(
     0.45,
     min_value=0.0,
     max_value=1.0,
+)
+
+# Surfacing the engaged person's CURRENT expression in the per-turn conversation
+# prompt (llm._summarize_world_state) so Rex can respond to a smile / furrowed brow /
+# shocked look. This is the routine ambient read — deliberately LOOSER than the strict
+# "react right now" reactable gate (consciousness._person_reactable_expression), which
+# requires a <3s-fresh frame that rarely survives transcription + LLM latency, so the
+# face read almost never reached the prompt. Min confidence + max reading age keep a
+# stale or low-signal frame from putting words in Rex's mouth.
+FACE_EXPRESSION_CONTEXT_MIN_CONFIDENCE = _env_float(
+    "FACE_EXPRESSION_CONTEXT_MIN_CONFIDENCE",
+    0.45,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACE_EXPRESSION_CONTEXT_MAX_AGE_SECS = _env_float(
+    "FACE_EXPRESSION_CONTEXT_MAX_AGE_SECS",
+    12.0,
+    min_value=0.0,
+    max_value=120.0,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2627,8 +2649,8 @@ COMEDY_LINE_BANKS = {
     # follow; warm-leaning for strangers (the rib tier is intentionally absent —
     # roast is earned, first contact is warm). See intelligence/onboarding.py.
     "onboarding_retort_neutral": [
-        "Good to know.", "Noted.", "Filed away.", "Fair enough.",
-        "Copy that.", "Logical enough.", "Solid.",
+        "Good to know.", "Fair enough.", "Makes sense.",
+        "Huh, alright.", "Solid.", "I can work with that.",
     ],
     "onboarding_retort_positive": [
         "Oh, that tracks.", "Respect.", "Now we're talking.",
@@ -2751,8 +2773,13 @@ INTEREST_IDLE_FOLLOWUP_MAX_WORDS = 22
 # silence prompts more conversation. After IDLE_BANTER_MAX_PER_STRETCH attempts
 # with no reply, it stops and lets the idle timeout close with the outro.
 IDLE_BANTER_ENABLED = True
-IDLE_BANTER_SECS = 10.0           # silence before the first proactive nudge (was 6.0 —
-                                  # barge-ins fired too fast, talking over a thinking user)
+IDLE_BANTER_SECS = 30.0           # silence before the first proactive nudge. Was 10.0,
+                                  # but 10s is a normal thinking pause in a live
+                                  # conversation — re-engaging that fast reads as barging
+                                  # in (esp. moments after meeting someone). 30s is a real
+                                  # lull; with CONVERSATION_IDLE_TIMEOUT_SECS=45 that
+                                  # leaves room for ~one gentle re-engagement before the
+                                  # session quietly closes with the outro.
 IDLE_BANTER_COOLDOWN_SECS = 14.0  # minimum gap between nudges
 IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up (was 3 —
                                   # 3 made him re-volunteer the same preoccupation too often)
@@ -2849,6 +2876,13 @@ ONBOARDING_REVEAL_EVERY = 3                # inject a Rex self-reveal ~every N q
 # point of the follow-up; rephrasing is cosmetic and off by default.
 ONBOARDING_LLM_FOLLOWUP_ENABLED = True
 ONBOARDING_LLM_REPHRASE_ENABLED = False
+# Answer-aware reaction: each answer gets a SHORT, genuine, content-reflecting beat
+# (llm.generate_onboarding_reaction) in place of the old flat sentiment-bank retort —
+# so "I created you" earns real surprise, not "Filed away." Off => the authored bank
+# (retort_for) is used, which is content-blind. The word cap keeps it a quick beat,
+# not a monologue (the user's standing note: the LLM tends to run long).
+ONBOARDING_LLM_REACT_ENABLED = True
+ONBOARDING_REACTION_MAX_WORDS = 14
 
 # The ordered baseline ladder. Tiers A (essential facts) -> B (interests/energy)
 # -> C (earned depth). Keys reuse QUESTION_POOL keys where possible so the asked/
@@ -2900,10 +2934,10 @@ ONBOARDING_REVEAL_LINES = [
 
 # Graceful close when the burst ends naturally (enough gathered / wound down).
 ONBOARDING_CLOSERS = [
-    "Alright — I've got the broad strokes. Consider yourself officially on file.",
+    "Alright, I've got the broad strokes. We can take it from here.",
     "Good enough for a first pass. The rest I'll pry out of you later.",
     "There we go. I know enough to be dangerous now.",
-    "Filed. You're no longer a complete stranger to me — congratulations.",
+    "Okay, you're no longer a complete stranger to me — congratulations.",
 ]
 # Lines used when Rex backs off early (disengagement / boundary / pivot).
 ONBOARDING_BACKOFF_LINES = [
@@ -3475,10 +3509,10 @@ COMMON_FIRST_NAMES_REQUIRE_LAST_NAME = [
     "Isabella", "Ava", "Abigail", "Madison", "Charlotte", "Amelia",
 ]
 COMMON_FIRST_NAME_LAST_NAME_PROMPTS = [
-    "{first}, how original. Give me a last name too so the memory banks don't file you under 'generic human.'",
+    "{first}, huh? There are a few of those running around. Give me a last name too.",
     "{first}. Bold choice, sharing a name with half the species. Last name?",
-    "{first}. Very boutique. I only have twelve of those in the imaginary backlog. Last name?",
-    "{first}, daringly specific. Toss me a last name before the memory banks start fighting.",
+    "{first} — I know a couple. Throw me a last name so I keep you straight.",
+    "{first}, daringly specific. Toss me a last name to go with it.",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
