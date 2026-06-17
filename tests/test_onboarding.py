@@ -1,0 +1,293 @@
+"""Tests for the new-person onboarding burst (intelligence/onboarding.py).
+
+Covers the pure logic (answer sentiment -> retort bank, exit/disengagement
+detection, value tidying, the templated depth follow-up) and the DB-backed
+pieces against a temp people.db (eligibility gating, tier-ordered question
+selection with asked/answered/known-fact/boundary skips, and the answer ->
+memory writes with the familiarity bump).
+"""
+
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import config
+
+
+def _make_db(path: Path) -> None:
+    from setup_assets import DB_SCHEMA
+
+    with sqlite3.connect(path) as conn:
+        conn.executescript(DB_SCHEMA)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pure logic — no DB
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SentimentRetortTests(unittest.TestCase):
+    def test_classify_answer_sentiments(self):
+        from intelligence import onboarding
+
+        self.assertEqual(onboarding.classify_answer("I don't know"), "flat")
+        self.assertEqual(onboarding.classify_answer("nope"), "flat")
+        self.assertEqual(
+            onboarding.classify_answer("Because it honestly means a lot to me"), "warm"
+        )
+        self.assertEqual(
+            onboarding.classify_answer("I absolutely love rock climbing!"), "positive"
+        )
+        self.assertEqual(
+            onboarding.classify_answer("Actually I've been a pilot for twenty years"),
+            "surprise",
+        )
+        self.assertEqual(onboarding.classify_answer("I'm an accountant"), "neutral")
+
+    def test_retort_is_short_and_not_a_question(self):
+        from intelligence import onboarding
+
+        for answer in ("I'm an accountant", "I don't know", "I love climbing!",
+                       "It means a lot", "Actually, never"):
+            retort = onboarding.retort_for(answer)
+            self.assertTrue(retort, "retort should be non-empty")
+            self.assertNotIn("?", retort, f"retort must not be a question: {retort!r}")
+            self.assertLessEqual(len(retort.split()), 5, f"retort too long: {retort!r}")
+
+    def test_warm_answer_draws_from_warm_bank(self):
+        from intelligence import onboarding
+
+        with mock.patch.object(
+            config, "COMEDY_LINE_BANKS",
+            {"onboarding_retort_warm": ["WARMONLY"],
+             "onboarding_retort_neutral": ["NEUTRALONLY"]},
+        ):
+            self.assertEqual(
+                onboarding.retort_for("Honestly, because my family means everything"),
+                "WARMONLY",
+            )
+            self.assertEqual(onboarding.retort_for("an accountant"), "NEUTRALONLY")
+
+
+class ExitDetectionTests(unittest.TestCase):
+    def test_hard_decline(self):
+        from intelligence import onboarding
+
+        for text in ("I'd rather not say", "stop asking me questions",
+                     "none of your business", "change the subject"):
+            self.assertTrue(onboarding.is_hard_decline(text), text)
+        self.assertFalse(onboarding.is_hard_decline("I'm a teacher from Ohio"))
+
+    def test_pivot(self):
+        from intelligence import onboarding
+
+        for text in ("can you play some music?", "what's the weather?",
+                     "what about you?", "let's play a game"):
+            self.assertTrue(onboarding.is_pivot(text), text)
+        self.assertFalse(onboarding.is_pivot("I work in finance"))
+        self.assertFalse(onboarding.is_pivot("I grew up in Texas"))
+
+    def test_soft_disengage(self):
+        from intelligence import onboarding
+
+        for text in ("", "meh", "dunno", "I don't know", "stuff"):
+            self.assertTrue(onboarding.is_soft_disengage(text), repr(text))
+        self.assertFalse(onboarding.is_soft_disengage("I'm a software engineer"))
+
+
+class TidyValueTests(unittest.TestCase):
+    def test_strips_filler_and_framing(self):
+        from intelligence import onboarding
+
+        self.assertEqual(
+            onboarding.tidy_value("um, I'm a paramedic actually", "fact").lower(),
+            "paramedic actually",
+        )
+        self.assertEqual(
+            onboarding.tidy_value("I love jazz mostly", "interest").lower(), "jazz mostly"
+        )
+        self.assertEqual(onboarding.tidy_value("I don't know", "fact"), "")
+        self.assertEqual(onboarding.tidy_value("", "interest"), "")
+
+    def test_caps_length(self):
+        from intelligence import onboarding
+
+        long_answer = "I do a whole bunch of different unrelated random things every single day honestly"
+        self.assertLessEqual(len(onboarding.tidy_value(long_answer, "fact").split()), 10)
+
+
+class FollowupTemplateTests(unittest.TestCase):
+    def test_template_fallback_when_llm_disabled(self):
+        from intelligence import onboarding
+
+        with mock.patch.object(config, "ONBOARDING_LLM_FOLLOWUP_ENABLED", False, create=True):
+            q = onboarding.generate_followup("rock climbing every weekend")
+            self.assertTrue(q.endswith("?"))
+            self.assertIn("get into", q.lower())
+        self.assertIsNone(onboarding.generate_followup(""))
+
+    def test_first_question_extraction(self):
+        from intelligence import onboarding
+
+        self.assertEqual(
+            onboarding._first_question('Sure! How long have you climbed? And more.'),
+            "How long have you climbed?",
+        )
+        self.assertEqual(onboarding._first_question("What got you started"), "What got you started?")
+        # Runaway output is rejected so the caller falls back to the template.
+        self.assertEqual(onboarding._first_question(" ".join(["word"] * 25) + "?"), "")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DB-backed — temp people.db
+# ─────────────────────────────────────────────────────────────────────────────
+
+class OnboardingDBTests(unittest.TestCase):
+    def setUp(self):
+        from memory import database as db
+
+        self._tmp = tempfile.TemporaryDirectory()
+        db_path = Path(self._tmp.name) / "people.db"
+        _make_db(db_path)
+        self._patches = [
+            mock.patch.object(db, "_DB_FILE", db_path),
+            mock.patch.object(config, "ONBOARDING_ENABLED", True, create=True),
+        ]
+        for p in self._patches:
+            p.start()
+
+        from memory import people as people_memory
+
+        self.people = people_memory
+        self.person_id, _ = people_memory.find_or_create_person("Sarah")
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        self._tmp.cleanup()
+
+    # ── eligibility ──────────────────────────────────────────────────────────
+    def test_eligible_fresh_person(self):
+        from intelligence import onboarding
+
+        self.assertTrue(onboarding.eligible(self.person_id))
+
+    def test_disabled_flag_blocks(self):
+        from intelligence import onboarding
+
+        with mock.patch.object(config, "ONBOARDING_ENABLED", False):
+            self.assertFalse(onboarding.eligible(self.person_id))
+
+    def test_too_many_facts_blocks(self):
+        from intelligence import onboarding
+        from memory import facts as facts_memory
+
+        # profile_fact_count excludes identity/appearance/boundary/relationship,
+        # so eligibility is tripped by substantive (preference/interest) facts.
+        for i in range(4):
+            facts_memory.add_fact(self.person_id, "preference", f"pref_{i}", "x", "explicit")
+        with mock.patch.object(config, "ONBOARDING_FACT_FLOOR", 3):
+            self.assertFalse(onboarding.eligible(self.person_id))
+
+    def test_minor_blocked(self):
+        from intelligence import onboarding
+        from memory import facts as facts_memory
+
+        facts_memory.add_fact(self.person_id, "identity", "age_category", "child", "explicit")
+        self.assertFalse(onboarding.eligible(self.person_id))
+
+    # ── selection ────────────────────────────────────────────────────────────
+    def test_selection_tier_order(self):
+        from intelligence import onboarding
+
+        first = onboarding.next_question(self.person_id, asked_keys=set())
+        self.assertEqual(first["key"], "job")
+        self.assertEqual(first["tier"], "A")
+
+        nxt = onboarding.next_question(
+            self.person_id, asked_keys={"job", "how_found_rex", "hometown"}
+        )
+        self.assertEqual(nxt["tier"], "B")
+
+    def test_known_fact_key_skipped(self):
+        from intelligence import onboarding
+        from memory import facts as facts_memory
+
+        facts_memory.add_fact(self.person_id, "identity", "job", "teacher", "explicit")
+        q = onboarding.next_question(self.person_id, asked_keys=set())
+        self.assertNotEqual(q["key"], "job")
+
+    def test_answered_question_skipped(self):
+        from intelligence import onboarding
+        from memory import relationships as rel_memory
+
+        rel_memory.save_qa(self.person_id, "job", "what do you do?", "engineer", 1)
+        q = onboarding.next_question(self.person_id, asked_keys=set())
+        self.assertNotEqual(q["key"], "job")
+
+    def test_depth_gated(self):
+        from intelligence import onboarding
+
+        all_ab = {e["key"] for e in config.ONBOARDING_QUESTION_POOL if e["tier"] in ("A", "B")}
+        # With depth disallowed and only Tier-C left, nothing should come back.
+        self.assertIsNone(
+            onboarding.next_question(self.person_id, asked_keys=all_ab, allow_depth=False)
+        )
+        # With depth allowed and a prior answer, a Tier-C question appears.
+        with mock.patch.object(config, "ONBOARDING_LLM_FOLLOWUP_ENABLED", False):
+            q = onboarding.next_question(
+                self.person_id, asked_keys=all_ab, allow_depth=True,
+                last_answer="competitive chess",
+            )
+        self.assertIsNotNone(q)
+        self.assertEqual(q["tier"], "C")
+
+    def test_followup_needs_prior_answer(self):
+        from intelligence import onboarding
+
+        # origin_followup (text=None) must be skipped when there is no last answer;
+        # selection should fall through to an authored Tier-C question.
+        all_ab = {e["key"] for e in config.ONBOARDING_QUESTION_POOL if e["tier"] in ("A", "B")}
+        q = onboarding.next_question(
+            self.person_id, asked_keys=all_ab, allow_depth=True, last_answer=None
+        )
+        self.assertIsNotNone(q)
+        self.assertNotEqual(q["key"], "origin_followup")
+        self.assertIsNotNone(q["text"])
+
+    # ── answer -> memory ─────────────────────────────────────────────────────
+    def test_record_answer_writes_fact_and_bumps_familiarity(self):
+        from intelligence import onboarding
+        from memory import facts as facts_memory
+        from memory import relationships as rel_memory
+
+        before = self.people.get_person(self.person_id)["familiarity_score"]
+        jobq = next(e for e in config.ONBOARDING_QUESTION_POOL if e["key"] == "job")
+        onboarding.note_question_asked(self.person_id, {**jobq, "text": jobq["text"]})
+        onboarding.record_answer(self.person_id, jobq, "um, I'm a paramedic actually")
+
+        facts = {f["key"]: f["value"] for f in facts_memory.get_facts(self.person_id)}
+        self.assertIn("job", facts)
+        self.assertIn("paramedic", facts["job"].lower())
+
+        answered = rel_memory.get_answered_question_keys(self.person_id)
+        self.assertIn("job", answered)
+
+        after = self.people.get_person(self.person_id)["familiarity_score"]
+        self.assertGreater(after, before)
+
+    def test_record_answer_writes_interest(self):
+        from intelligence import onboarding
+        from memory import interests as interests_memory
+
+        musicq = next(e for e in config.ONBOARDING_QUESTION_POOL if e["key"] == "favorite_music")
+        onboarding.note_question_asked(self.person_id, {**musicq, "text": musicq["text"]})
+        onboarding.record_answer(self.person_id, musicq, "mostly jazz and funk")
+
+        names = [i["name"].lower() for i in interests_memory.get_interests_for_prompt(self.person_id)]
+        self.assertTrue(any("jazz" in n for n in names), names)
+
+
+if __name__ == "__main__":
+    unittest.main()

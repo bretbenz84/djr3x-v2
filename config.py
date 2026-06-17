@@ -2622,6 +2622,26 @@ COMEDY_LINE_BANKS = {
         "I've heard worse ideas. Usually from me, mid-set.",
         "DJ note: terrible premise, workable beat.",
     ],
+    # New-person onboarding retorts — 2-5 words, NO question mark (a "?" would
+    # burn a question-budget slot). Grouped by the sentiment of the answer they
+    # follow; warm-leaning for strangers (the rib tier is intentionally absent —
+    # roast is earned, first contact is warm). See intelligence/onboarding.py.
+    "onboarding_retort_neutral": [
+        "Good to know.", "Noted.", "Filed away.", "Fair enough.",
+        "Copy that.", "Logical enough.", "Solid.",
+    ],
+    "onboarding_retort_positive": [
+        "Oh, that tracks.", "Respect.", "Now we're talking.",
+        "I like it.", "Strong choice.", "Love that.",
+    ],
+    "onboarding_retort_surprise": [
+        "No way.", "Didn't see that coming.", "Huh, plot twist.",
+        "That's wild.", "Color me surprised.", "Well, that's new.",
+    ],
+    "onboarding_retort_warm": [
+        "That's a real one.", "Okay, I like you.", "Respect that.",
+        "Genuinely cool.", "That one lands.",
+    ],
 }
 
 # If True, Rex will begin processing normal speech from IDLE without requiring
@@ -2784,6 +2804,108 @@ QUESTION_BUDGET_WINDOW_SECS = 90.0
 QUESTION_BUDGET_MAX_QUESTIONS = 3
 QUESTION_BUDGET_ENGAGED_GRACE_SECS = 45.0
 QUESTION_BUDGET_ENGAGED_EXTRA = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW-PERSON ONBOARDING  (first-meeting baseline-gathering burst)
+# ─────────────────────────────────────────────────────────────────────────────
+# When Rex meets someone brand new, the normal question budget (3/90s) plus the
+# stranger depth-1 tier lock leave him barely able to ask anything — so he learns
+# nothing about the person he's actively talking to. This is a SCOPED, stranger-
+# only "onboarding" burst that runs right after enrollment: Rex asks a short
+# research-backed ladder of baseline questions (de-trapped "what do you do",
+# connection-to-the-room, hometown, a passion or two, one earned follow-up),
+# reacts to each answer with a brief retort, occasionally reveals a sliver about
+# himself, writes a real baseline to memory, and EXITS the moment momentum dies.
+# It rides the question-budget urgent bypass ("newcomer_baseline") so it never
+# loosens the friend-protecting global cap; its own MIN/MAX bound the burst.
+# Full design: intelligence/onboarding.py + interaction._handle_onboarding_turn.
+ONBOARDING_ENABLED = False  # master flag; flip on once the loop is proven on-device
+
+# Burst size. MIN is the floor Rex tries to reach even on lukewarm engagement (a
+# hard disengage / boundary / pivot still exits earlier); MAX is the hard ceiling
+# so the burst can never become an interrogation.
+ONBOARDING_MIN_QUESTIONS = 4
+ONBOARDING_MAX_QUESTIONS = 8
+
+# Eligibility: only brand-new people (low visit count) with a near-empty profile.
+ONBOARDING_MAX_VISITS = 1
+ONBOARDING_FACT_FLOOR = 3        # skip onboarding if they already have > this many profile facts
+
+# Pacing.
+ONBOARDING_KICKOFF_SECS = 1.2              # beat after the enrollment ack before the first question
+ONBOARDING_INACTIVITY_TIMEOUT_SECS = 30.0  # close the burst out loud after this much silence
+ONBOARDING_STEP_TTL_SECS = 240.0           # deep fallback: a stale flow self-expires
+ONBOARDING_SOFT_DISENGAGE_LIMIT = 2        # lukewarm answers in a row (past MIN) -> wind down
+ONBOARDING_REVEAL_EVERY = 3                # inject a Rex self-reveal ~every N questions (0 = off)
+
+# Use the LLM to (a) generate the Tier-C depth follow-up against the live answer
+# and (b) lightly rephrase authored questions in Rex's voice. Local qwen sidecar,
+# with a verbatim/templated fallback when it is unavailable. Generation is the
+# point of the follow-up; rephrasing is cosmetic and off by default.
+ONBOARDING_LLM_FOLLOWUP_ENABLED = True
+ONBOARDING_LLM_REPHRASE_ENABLED = False
+
+# The ordered baseline ladder. Tiers A (essential facts) -> B (interests/energy)
+# -> C (earned depth). Keys reuse QUESTION_POOL keys where possible so the asked/
+# answered de-dup (memory.relationships) and boundary topics
+# (profile_questions.QUESTION_BOUNDARY_TOPICS) apply for free. Each entry:
+#   key       canonical id (dedup + boundary lookup)
+#   tier      "A" | "B" | "C"  (selection order; C only fires with momentum)
+#   depth     1-3, drives the familiarity increment on answer (qa_depth_N)
+#   text      authored question (None => LLM-generated follow-up; needs a prior answer)
+#   store     "fact" | "interest" — how a tidied answer is written to memory
+#   category  person_facts category (store="fact") or interest category (store="interest")
+ONBOARDING_QUESTION_POOL = [
+    # Tier A — essential baseline facts (the floor)
+    {"key": "job",             "tier": "A", "depth": 1, "store": "fact",     "category": "identity",
+     "text": "So what's eating up your days right now — work, or something more interesting?"},
+    {"key": "how_found_rex",   "tier": "A", "depth": 1, "store": "fact",     "category": "identity",
+     "text": "And how'd you wind up in a room with me? Who do I have to thank?"},
+    {"key": "hometown",        "tier": "A", "depth": 1, "store": "fact",     "category": "identity",
+     "text": "Where's home base for you?"},
+    # Tier B — what they actually care about
+    {"key": "obsession",       "tier": "B", "depth": 2, "store": "interest", "category": "hobby",
+     "text": "What's the thing you could talk my circuits off about?"},
+    {"key": "current_project", "tier": "B", "depth": 2, "store": "interest", "category": "project",
+     "text": "Working on anything you're actually excited about right now?"},
+    {"key": "favorite_music",  "tier": "B", "depth": 1, "store": "interest", "category": "music",
+     "text": "What's been on repeat for you lately?"},
+    {"key": "hobbies",         "tier": "B", "depth": 2, "store": "interest", "category": "hobby",
+     "text": "What's your idea of a Saturday well spent?"},
+    # Tier C — earned depth (only with momentum). origin_followup (text=None) is
+    # LLM-generated against the previous answer; the others are authored fallbacks.
+    {"key": "origin_followup", "tier": "C", "depth": 2, "store": "fact",     "category": "story",
+     "text": None},
+    {"key": "proudest_moment", "tier": "C", "depth": 2, "store": "fact",     "category": "identity",
+     "text": "What's something you pulled off that you're quietly proud of?"},
+    {"key": "trajectory",      "tier": "C", "depth": 2, "store": "fact",     "category": "preference",
+     "text": "Is that going how you hoped, or has it thrown you a curveball?"},
+]
+
+# Self-reveal one-liners (reciprocity). Venue-neutral — Rex is usually NOT in a
+# cantina. Injected ahead of a question ~every ONBOARDING_REVEAL_EVERY turns so
+# the burst feels like an exchange, not an intake form.
+ONBOARDING_REVEAL_LINES = [
+    "I'd tell you mine, but I'm mostly wires and strong opinions.",
+    "For the record, I'd probably pick the same.",
+    "I respect a clear answer — I give terrible ones.",
+    "Me, I spin tracks and judge people. Mostly the second one.",
+    "I'd answer that myself, but my origin story is mostly a wiring diagram.",
+]
+
+# Graceful close when the burst ends naturally (enough gathered / wound down).
+ONBOARDING_CLOSERS = [
+    "Alright — I've got the broad strokes. Consider yourself officially on file.",
+    "Good enough for a first pass. The rest I'll pry out of you later.",
+    "There we go. I know enough to be dangerous now.",
+    "Filed. You're no longer a complete stranger to me — congratulations.",
+]
+# Lines used when Rex backs off early (disengagement / boundary / pivot).
+ONBOARDING_BACKOFF_LINES = [
+    "Fair — I'll quit the quiz. Good to meet you.",
+    "Noted, no more questions. We can just talk.",
+    "Okay, easing off the interrogation lamp. Carry on.",
+]
 
 # Longer wait window for unknown-person onboarding prompts ("who are you?").
 IDENTITY_RESPONSE_WAIT_SECS = 20.0

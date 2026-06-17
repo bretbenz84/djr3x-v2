@@ -37,6 +37,10 @@ _URGENT_KINDS = {
     "off_camera_identity",
     "face_reveal",
     "newcomer_identity",
+    # First-meeting onboarding burst rides its own private MIN/MAX cap
+    # (intelligence/onboarding.py), so it must bypass the global pacing budget
+    # rather than be muzzled by the deliberately-tight friend-protecting cap.
+    "newcomer_baseline",
 }
 
 
