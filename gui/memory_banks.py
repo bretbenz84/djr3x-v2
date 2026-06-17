@@ -145,6 +145,16 @@ QScrollBar:horizontal { background: #07111a; height: 12px; margin: 0; }
 QScrollBar::handle:horizontal { background: #244f89; border-radius: 5px; min-width: 24px; }
 QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
 QStatusBar { color: #9fb6cc; background: #07111a; }
+/* Pop-up dialogs (confirm/prompt/warning) are top-level windows that do NOT inherit
+   this window's stylesheet, so they render with the white OS default unless this sheet
+   is applied to them directly — see _themed_messagebox / the New Person prompt. */
+QMessageBox, QInputDialog, QDialog {
+    background: #0b1824;
+    color: #d9e3ee;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 13px;
+}
+QMessageBox QLabel, QInputDialog QLabel { color: #d9e3ee; }
 """
 
 
@@ -516,12 +526,20 @@ class MemoryBanksWindow(QMainWindow):
 
     # ── Person editing ───────────────────────────────────────────────────────
     def _create_person(self) -> None:
-        name, ok = QInputDialog.getText(self, "New Person", "Name:")
-        if not ok or not name.strip():
+        # Build the prompt by hand (not QInputDialog.getText) so the dashboard theme
+        # applies — the static helper spawns an unstyled white dialog.
+        dlg = QInputDialog(self)
+        dlg.setWindowTitle("New Person")
+        dlg.setLabelText("Name:")
+        dlg.setStyleSheet(_MEMORY_BANKS_STYLE)
+        if not dlg.exec():
+            return
+        name = dlg.textValue()
+        if not name.strip():
             return
         new_id = admin.create_person(name.strip())
         if new_id is None:
-            QMessageBox.warning(self, "New Person", "That name was rejected. Try a real name.")
+            self._warn("New Person", "That name was rejected. Try a real name.")
             return
         self.reload_people()
         self._select_person_in_list(new_id)
@@ -779,15 +797,30 @@ class MemoryBanksWindow(QMainWindow):
         self._toast(f"Cleared {label}.")
 
     # ── Helpers ──────────────────────────────────────────────────────────────
+    def _themed_messagebox(self, icon: "QMessageBox.Icon", title: str, body: str) -> QMessageBox:
+        """A QMessageBox carrying this window's dark theme. The native
+        QMessageBox.question/.warning helpers spawn an unstyled top-level dialog
+        that renders white and doesn't match the dashboard, so build it by hand
+        and apply _MEMORY_BANKS_STYLE."""
+        box = QMessageBox(self)
+        box.setIcon(icon)
+        box.setWindowTitle(title)
+        box.setText(body)
+        box.setStyleSheet(_MEMORY_BANKS_STYLE)
+        return box
+
     def _confirm(self, title: str, body: str) -> bool:
-        return (
-            QMessageBox.question(
-                self, title, body,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
+        box = self._themed_messagebox(QMessageBox.Icon.Question, title, body)
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        return box.exec() == QMessageBox.StandardButton.Yes
+
+    def _warn(self, title: str, body: str) -> None:
+        box = self._themed_messagebox(QMessageBox.Icon.Warning, title, body)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
 
     def _toast(self, msg: str) -> None:
         try:
