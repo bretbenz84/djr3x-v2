@@ -56,6 +56,18 @@ _VISUAL_PAT = re.compile(
     r"on the bed|in bed|the room looks|dimly lit|camera)\b",
     re.IGNORECASE,
 )
+# A sentence opening with a demonstrative/pronoun that points BACK at a previous
+# clause ("That's like adding a bass drop...", "It's...", "Those..."). Dropping the
+# clause it refers to strands it as a non-sequitur (live: a leading question got
+# removed and left "That's like adding a bass drop to a quiet track" with no referent).
+_BACKREFERENCE_START_PAT = re.compile(
+    r"^(?:that(?:'s|'ll|'d)?|those|these|this|it(?:'s|'ll|'d)?|same|which)\b",
+    re.IGNORECASE,
+)
+
+
+def _starts_with_backreference(sentence: str) -> bool:
+    return bool(_BACKREFERENCE_START_PAT.match((sentence or "").lstrip(" \"'“”‘’—–-")))
 _ROAST_PAT = re.compile(
     r"\b(pathetic|pitiful|sad excuse|glorified|not-so-mighty|mediocrity|"
     r"blunder|organic thoughts|exhaust ports|can't handle the truth|"
@@ -523,8 +535,16 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
     dropped_questions: list[str] = []
     if not frame.allow_question:
         kept = []
-        for sentence in sentences:
+        for idx, sentence in enumerate(sentences):
             if not _has_unquoted_question(sentence):
+                kept.append(sentence)
+                continue
+            # Dropping a question that ANCHORS the next sentence's back-reference
+            # ("A sassy robot? That's like adding a bass drop...") orphans it into a
+            # non-sequitur ("That's like adding a bass drop..."). Keep the question so
+            # the comparison still has its referent.
+            nxt = sentences[idx + 1] if idx + 1 < len(sentences) else ""
+            if _starts_with_backreference(nxt):
                 kept.append(sentence)
                 continue
             dropped_questions.append(sentence)

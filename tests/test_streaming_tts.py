@@ -28,6 +28,32 @@ def _frame(allow_question=True, allow_visual_comment=True, allow_roast="normal",
     )
 
 
+class GovernBackReferenceTest(unittest.TestCase):
+    def _frame_noq(self):
+        return types.SimpleNamespace(
+            allow_question=False, allow_visual_comment=True, allow_roast="normal",
+            purpose="interest", max_sentences=4, max_words=80, reason="test",
+        )
+
+    def test_keeps_question_that_anchors_a_back_reference(self):
+        # Dropping the leading question would orphan "That's like..." into a
+        # non-sequitur (live: the "bass drop" line). Keep the anchor.
+        out = SF.govern_response(
+            "A sassy personality for your robot? That's like adding a bass drop.",
+            self._frame_noq(),
+        )
+        self.assertIn("sassy personality", out.text)
+        self.assertIn("bass drop", out.text)
+
+    def test_still_strips_a_disallowed_question_with_no_back_reference(self):
+        out = SF.govern_response(
+            "What's your favorite color? I like blue myself.",
+            self._frame_noq(),
+        )
+        self.assertNotIn("?", out.text)
+        self.assertIn("blue", out.text)
+
+
 class CleanResponseTextTest(unittest.TestCase):
     def test_strips_just_remember_opener(self):
         from intelligence import llm

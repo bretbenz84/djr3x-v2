@@ -235,6 +235,10 @@ _idle_outro_spoken: bool = False
 # when the user speaks again, so each silent stretch gets a fresh attempt budget.
 _last_idle_banter_at: float = 0.0
 _idle_banter_count: int = 0
+# Random per-stretch nudge delay (seconds), rolled lazily in [IDLE_BANTER_MIN_SECS,
+# IDLE_BANTER_MAX_SECS] and reset when the user re-engages, so the first re-engagement
+# of each silent stretch lands at a natural, non-metronomic moment.
+_idle_banter_threshold: Optional[float] = None
 # Wall-clock of the last self-initiated (proactive) line of any kind. Used to
 # keep proactive lines from stacking back-to-back (see _proactive_line_recently_fired).
 _last_proactive_line_at: float = 0.0
@@ -307,8 +311,9 @@ def _begin_user_turn() -> None:
     # clear the proactive-line gap so the next stretch isn't suppressed by a line
     # from the previous one.
     global _idle_banter_count, _last_proactive_line_at, _floor_held_until
-    global _last_user_turn_started_at
+    global _last_user_turn_started_at, _idle_banter_threshold
     _idle_banter_count = 0
+    _idle_banter_threshold = None  # roll a fresh random nudge delay for the next stretch
     _last_proactive_line_at = 0.0
     _floor_held_until = 0.0
     _last_user_turn_started_at = time.monotonic()
@@ -3697,13 +3702,22 @@ def _maybe_idle_banter(
     to IDLE_BANTER_MAX_PER_STRETCH times per silent stretch. Unlike the interest /
     low-memory idle paths, this also fires for well-known, fully-profiled people."""
     global _last_idle_banter_at, _idle_banter_count, _session_exchange_count
+    global _idle_banter_threshold
     if not bool(getattr(config, "IDLE_BANTER_ENABLED", True)):
         return False
     if _game_suppresses_conversation():
         return False
     if _directed_context_fresh():
         return False
-    threshold = max(2.0, float(getattr(config, "IDLE_BANTER_SECS", 8.0) or 8.0))
+    # Roll a fresh random nudge delay once per silent stretch (reset on re-engagement),
+    # so the first re-engagement lands at a natural, non-metronomic moment in [MIN, MAX].
+    if _idle_banter_threshold is None:
+        lo = float(getattr(config, "IDLE_BANTER_MIN_SECS", 6.0) or 6.0)
+        hi = float(getattr(config, "IDLE_BANTER_MAX_SECS", 10.0) or 10.0)
+        if hi < lo:
+            lo, hi = hi, lo
+        _idle_banter_threshold = random.uniform(lo, hi)
+    threshold = max(2.0, _idle_banter_threshold)
     if idle_for < threshold:
         return False
     # Rex just asked a real question — hold the floor so the user can actually

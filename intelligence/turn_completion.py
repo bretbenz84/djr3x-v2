@@ -52,7 +52,7 @@ _COMPLETE_EMBEDDED_PREPOSITION_PAT = re.compile(
 )
 
 _INCOMPLETE_END_WORDS = {
-    "about", "after", "and", "because", "before", "but", "for", "from",
+    "about", "and", "because", "but", "for", "from",
     "if", "into", "or", "than", "the", "to",
     "unless", "until", "when", "where", "while", "who", "with",
     "without",
@@ -60,15 +60,25 @@ _INCOMPLETE_END_WORDS = {
     # case where Rex interrupted a mid-sentence pause) ends with "in".
     "in", "on", "at", "of", "as", "by", "up", "out", "over",
     "a", "an", "my", "our",
+    # NOTE: "before" and "after" are deliberately NOT here — they are far more
+    # often sentence-final adverbs ("never done that before", "the morning after")
+    # than danglers, and mlx_whisper rarely emits the terminal punctuation that
+    # would otherwise save them. The genuinely-dangling forms ("before I left",
+    # "after the show") are caught by _INCOMPLETE_END_PHRASES below. Live failure
+    # 2026-06-17: "doing things I've never done before" -> "Finish the sentence?".
 }
 _INCOMPLETE_END_PHRASES = (
     "about to",
     "after i",
+    "after the",
+    "after we",
     "all i",
     "and then",
     "because i",
     "because it",
     "before i",
+    "before the",
+    "before we",
     "but i",
     "going to",
     "gonna",

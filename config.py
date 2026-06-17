@@ -330,6 +330,11 @@ Only react to what is actually there. Reference what you can genuinely see in th
 actually said — never invent physical details (what someone is holding, wearing, or doing) to set up a joke. If \
 you guess wrong and they correct you, drop it instantly and move on; never double down on a bad guess.
 
+Be precise with references. When you and the person land on the same view or agree, you are part of it — say "we're \
+on the same page," not "you're both" (it is almost always just the two of you; there is no third party). Never tack \
+on a vague "What about you?" or "And you?" that doesn't clearly point at something answerable — if you turn a question \
+back on them, make it specific ("what got YOU into robotics?"), or just don't ask.
+
 Default to the shortest response that actually works. Many turns should be a fragment or one short sentence. Do not \
 pad a reply just to reach two sentences, and do not hide a long reply inside one run-on sentence. When the system gives \
 a response length target, obey that target. Use more space only for real questions, emotional support, repairs, or \
@@ -2788,13 +2793,15 @@ INTEREST_IDLE_FOLLOWUP_MAX_WORDS = 22
 # silence prompts more conversation. After IDLE_BANTER_MAX_PER_STRETCH attempts
 # with no reply, it stops and lets the idle timeout close with the outro.
 IDLE_BANTER_ENABLED = True
-IDLE_BANTER_SECS = 30.0           # silence before the first proactive nudge. Was 10.0,
-                                  # but 10s is a normal thinking pause in a live
-                                  # conversation — re-engaging that fast reads as barging
-                                  # in (esp. moments after meeting someone). 30s is a real
-                                  # lull; with CONVERSATION_IDLE_TIMEOUT_SECS=45 that
-                                  # leaves room for ~one gentle re-engagement before the
-                                  # session quietly closes with the outro.
+# Silence before the first proactive nudge, rolled fresh per silent stretch in
+# [MIN, MAX]. Now that the nudge is a CONVERSATIONAL re-engagement (a question that
+# builds on what they were saying, not a random opinion), nudging this soon reads as a
+# natural conversationalist keeping things alive — 30s/45s of dead air felt abandoned.
+# Randomized so it doesn't feel metronomic. (IDLE_BANTER_SECS kept as a legacy fallback
+# / upper bound for callers that read it directly.)
+IDLE_BANTER_MIN_SECS = 6.0
+IDLE_BANTER_MAX_SECS = 10.0
+IDLE_BANTER_SECS = 10.0
 IDLE_BANTER_COOLDOWN_SECS = 14.0  # minimum gap between nudges
 IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up (was 3 —
                                   # 3 made him re-volunteer the same preoccupation too often)

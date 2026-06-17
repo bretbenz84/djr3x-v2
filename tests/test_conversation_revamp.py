@@ -542,6 +542,22 @@ class TurnTakingTest(unittest.TestCase):
                 turn_completion.classify(complete), f"falsely held: {complete!r}"
             )
 
+    def test_sentence_final_adverbs_are_not_dangling(self):
+        from intelligence import turn_completion
+        # "before"/"after" are sentence-final adverbs here, not danglers (live failure:
+        # "doing things I've never done before" -> "Finish the sentence?").
+        for complete in (
+            "doing things I've never done before",
+            "I have seen this movie before",
+            "the morning after",
+        ):
+            self.assertIsNone(
+                turn_completion.classify(complete), f"falsely held: {complete!r}"
+            )
+        # The genuinely-dangling subordinating-conjunction forms are still held.
+        self.assertIsNotNone(turn_completion.classify("I have to leave before we"))
+        self.assertIsNotNone(turn_completion.classify("let's grab food after the"))
+
     def test_rhetorical_reformulation_does_not_expect_a_response(self):
         from intelligence import interaction
         # "So what you're saying is …?" restates the human's point — it must not
