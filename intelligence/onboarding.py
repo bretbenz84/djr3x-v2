@@ -265,7 +265,9 @@ def _first_question(text: str) -> str:
     if not candidate:
         return ""
     if not candidate.endswith("?"):
-        candidate += "?"
+        # Strip a trailing terminal mark first so a statement doesn't become
+        # "...every other mile.?".
+        candidate = candidate.rstrip(" .!,;:") + "?"
     # Reject runaway / multi-sentence output — fall back to the template instead.
     if len(candidate.split()) > 18:
         return ""

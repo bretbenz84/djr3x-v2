@@ -172,6 +172,11 @@ class FollowupTemplateTests(unittest.TestCase):
             "How long have you climbed?",
         )
         self.assertEqual(onboarding._first_question("What got you started"), "What got you started?")
+        # A statement gets normalized to a question without a stray ".?".
+        self.assertEqual(
+            onboarding._first_question("That bus breaks down every other mile."),
+            "That bus breaks down every other mile?",
+        )
         # Runaway output is rejected so the caller falls back to the template.
         self.assertEqual(onboarding._first_question(" ".join(["word"] * 25) + "?"), "")
 
