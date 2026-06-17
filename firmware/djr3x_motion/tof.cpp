@@ -10,6 +10,9 @@
 //   addressing sequence, sensor→field mapping, timing budget, and the down-sensor
 //   cliff calibration (CLIFF_FLOOR_MM/CLIFF_MARGIN_MM in safety.cpp) all need
 //   bench checking once the sensors are physically on the bus. See docs §6, §14.
+//   Bring-up aid: hal_tof_init() emits one `log` line per sensor (OK/FAIL) plus a
+//   tally over the wire protocol, so wiring the bus is observable in the serial
+//   monitor / Mac logs ([motion_fw] tof[…]) instead of failing silently.
 //
 // Two addressing schemes share one I²C bus (docs §6.1), picked at build time:
 //   MOTION_TOF_USE_MUX==0  XSHUT sequencing — every sensor powers up at 0x29, so we
@@ -25,13 +28,28 @@
 // ===========================================================================
 #include "pins.h"
 #include "calib.h"
+#include "proto_io.h"       // emit_log — per-sensor bring-up diagnostics
 #include <Arduino.h>
 #include <Wire.h>
 #include <VL53L0X.h>
 
-static VL53L0X s_tof[TOF_COUNT];   // index order == placement order == TofMm fields
+static VL53L0X s_tof[TOF_COUNT];          // index order == placement order == TofMm fields
+static bool    s_ok[TOF_COUNT] = {false}; // did this sensor init? gates reads (skip dead ones)
+
+// Placement labels, index order == TofMm fields, for human-readable bring-up logs.
+static const char* const TOF_LABEL[TOF_COUNT] = {"fl", "fc", "fr", "rear", "down"};
 
 static inline int read_mm(int i);  // forward decl (defined per addressing scheme)
+
+// Final "N/5 up" tally after init — warn (not info) if any sensor is missing so a
+// half-wired bus is obvious at a glance.
+static void tof_report_tally() {
+  int up = 0;
+  for (int i = 0; i < TOF_COUNT; i++) up += s_ok[i] ? 1 : 0;
+  char buf[48];
+  snprintf(buf, sizeof(buf), "tof: %d/%d sensors up", up, TOF_COUNT);
+  emit_log(up == TOF_COUNT ? "info" : "warn", buf);
+}
 
 #if MOTION_TOF_USE_MUX
 // ---- TCA9548A multiplexer ----
@@ -45,16 +63,34 @@ static void mux_select(uint8_t ch) {
 
 void hal_tof_init() {
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+
+  // Probe the mux first: if it doesn't ACK, every sensor below will "fail" — say so
+  // once, pointing at the real culprit (mux address / SDA-SCL / power) not 5 sensors.
+  Wire.beginTransmission(TOF_MUX_ADDR);
+  if (Wire.endTransmission() != 0) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "tof: TCA9548A mux not found at 0x%02X", TOF_MUX_ADDR);
+    emit_log("error", buf);
+  }
+
   for (int i = 0; i < TOF_COUNT; i++) {
     mux_select(TOF_MUX_CH[i]);                 // only this sensor is on the bus now
     s_tof[i].setTimeout(TOF_TIMEOUT_MS);
-    s_tof[i].init();                           // each keeps the default 0x29 behind the mux
-    s_tof[i].setMeasurementTimingBudget(TOF_TIMING_BUDGET_US);
-    s_tof[i].startContinuous();
+    s_ok[i] = s_tof[i].init();                 // each keeps the default 0x29 behind the mux
+    if (s_ok[i]) {
+      s_tof[i].setMeasurementTimingBudget(TOF_TIMING_BUDGET_US);
+      s_tof[i].startContinuous();
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "tof[%d] %-4s ch%u: %s",
+             i, TOF_LABEL[i], TOF_MUX_CH[i], s_ok[i] ? "OK" : "FAIL");
+    emit_log(s_ok[i] ? "info" : "warn", buf);
   }
+  tof_report_tally();
 }
 
 static inline int read_mm(int i) {
+  if (!s_ok[i]) return -1;                      // dead sensor: skip the blocking I²C wait
   mux_select(TOF_MUX_CH[i]);
   const int mm = s_tof[i].readRangeContinuousMillimeters();
   if (s_tof[i].timeoutOccurred() || mm >= TOF_OUT_OF_RANGE_MM) return -1;
@@ -83,13 +119,21 @@ void hal_tof_init() {
     delay(TOF_BOOT_SETTLE_MS);
     s_tof[i].setTimeout(TOF_TIMEOUT_MS);
     s_tof[i].setAddress(TOF_ADDR_BASE + i);
-    s_tof[i].init();
-    s_tof[i].setMeasurementTimingBudget(TOF_TIMING_BUDGET_US);
-    s_tof[i].startContinuous();
+    s_ok[i] = s_tof[i].init();
+    if (s_ok[i]) {
+      s_tof[i].setMeasurementTimingBudget(TOF_TIMING_BUDGET_US);
+      s_tof[i].startContinuous();
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "tof[%d] %-4s gpio%d addr0x%02X: %s",
+             i, TOF_LABEL[i], XSHUT[i], TOF_ADDR_BASE + i, s_ok[i] ? "OK" : "FAIL");
+    emit_log(s_ok[i] ? "info" : "warn", buf);
   }
+  tof_report_tally();
 }
 
 static inline int read_mm(int i) {
+  if (!s_ok[i]) return -1;                      // dead sensor: skip the blocking I²C wait
   const int mm = s_tof[i].readRangeContinuousMillimeters();
   if (s_tof[i].timeoutOccurred() || mm >= TOF_OUT_OF_RANGE_MM) return -1;
   return mm;
