@@ -21,6 +21,20 @@ class IdleBanterDirectiveTest(unittest.TestCase):
         self.assertIs(directive, ix._IDLE_BANTER_DIRECTIVES[0])
         self.assertFalse(pov)
 
+    def test_ask_user_with_live_topic_deepens_thread_not_generic_interview(self):
+        # Field log 2026-06-16: the user said "I'm working on your time-of-flight
+        # sensors" and ~50s later idle banter asked "What's the latest project you're
+        # diving into?" → "I just told you." Once a topic is open, the "spotlight on
+        # the user" slot must DEEPEN that thread, never reset to the generic interview
+        # directive that re-asks what they just said.
+        directive, pov = ix._idle_banter_directive(True, True, "ranking organic snacks")
+        self.assertFalse(pov)
+        self.assertIs(directive, ix._IDLE_BANTER_LIVE_TOPIC_ASK)
+        self.assertIsNot(directive, ix._IDLE_BANTER_DIRECTIVES[0])
+        self.assertIn("STAY ON", directive)
+        self.assertIn("NEVER re-ask", directive)
+        self.assertNotIn("organic snacks", directive)  # off-topic POV not dumped
+
     def test_volunteer_with_live_topic_stays_on_topic_and_skips_pov(self):
         directive, pov = ix._idle_banter_directive(False, True, "ranking organic snacks")
         self.assertFalse(pov)                         # preoccupation NOT dumped

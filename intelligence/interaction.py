@@ -3561,6 +3561,23 @@ _IDLE_BANTER_DIRECTIVES = (
     "announce the silence.",
 )
 
+# ask_user slot, but the user already opened a real topic this session. Do NOT fall
+# back to the generic "what are you up to?" interview — that re-asks what they just
+# told you and reads as Rex not listening. Field log 2026-06-16: the user said "I'm
+# working on your time-of-flight sensors" and ~50s later idle banter asked "What's the
+# latest project you're diving into?" → "I just told you." Deepen the SAME thread with
+# a genuinely new follow-up, or stay a volunteer.
+_IDLE_BANTER_LIVE_TOPIC_ASK = (
+    "Still quiet, but you two were mid-conversation. STAY ON the exact thing you were "
+    "just discussing (see 'Session so far' and the conversation arc above). If you have "
+    "a genuinely NEW, specific follow-up question that builds on what they just told "
+    "you, ask that ONE question. NEVER re-ask something they already answered — do NOT "
+    "ask what they're working on, what they're up to, or what their latest project is; "
+    "they just told you, and asking again breaks the conversation. If you don't have a "
+    "real new question, volunteer a short, specific take on that same topic instead. Do "
+    "not sign off or announce the silence."
+)
+
 
 def _governor_enforcing() -> bool:
     """True when the action governor is the single decider for proactive speech
@@ -3590,7 +3607,10 @@ def _idle_banter_directive(
 ) -> tuple[str, bool]:
     """Choose the idle-banter directive and whether Rex's preoccupation was volunteered.
 
-    - ask_user → turn the spotlight on the user (a question).
+    - ask_user → turn the spotlight on the user (a question). But once the user has
+      opened a real topic this session (has_live_topic), the question must DEEPEN that
+      thread, never reset to a generic "what are you up to?" interview — that re-asks
+      what they just said.
     - otherwise VOLUNTEER a take, but ON the live topic — the assembled prompt already
       carries the recent transcript + arc, so the model can react to what was actually
       said. Rex's own preoccupation (rex_pov) is a deliberately OFF-topic "thing on his
@@ -3599,6 +3619,8 @@ def _idle_banter_directive(
       real exchange yet. The POV still surfaces in the reply path regardless.
     """
     if ask_user:
+        if has_live_topic:
+            return _IDLE_BANTER_LIVE_TOPIC_ASK, False
         return _IDLE_BANTER_DIRECTIVES[0], False
     if not has_live_topic and pov_text:
         return (
@@ -3681,17 +3703,22 @@ def _maybe_idle_banter(
     # where Rex brings his own thing.
     attempt = _idle_banter_count % len(_IDLE_BANTER_DIRECTIVES)
     ask_user = attempt != 0
-    # Riff on the LIVE topic by default; only fall back to Rex's own (off-topic)
-    # preoccupation when there's no real exchange to build on yet. See
-    # _idle_banter_directive for the rationale.
-    has_live_topic = (not ask_user) and _idle_has_live_topic()
+    # Riff on / deepen the LIVE topic by default; only fall back to Rex's own (off-topic)
+    # preoccupation when there's no real exchange to build on yet. Computed independently
+    # of ask_user so the ask-user slot is ALSO topic-aware: once a topic is open, even a
+    # "spotlight on the user" question must deepen that thread instead of re-asking what
+    # they just told Rex. See _idle_banter_directive for the rationale.
+    live_topic = _idle_has_live_topic()
     pov_text = ""
-    if not ask_user and not has_live_topic:
+    if not ask_user and not live_topic:
         try:
             pov_text = "" if rex_pov.pov_recently_spoken() else rex_pov.active_pov_text()
         except Exception:
             pov_text = ""
-    directive, pov_volunteered = _idle_banter_directive(ask_user, has_live_topic, pov_text)
+    directive, pov_volunteered = _idle_banter_directive(ask_user, live_topic, pov_text)
+    # True only when we're turning the spotlight on the user MID-topic — the agenda
+    # below then anchors the question to the live thread instead of a fresh interview.
+    ask_on_topic = ask_user and live_topic
     # The generate + govern + speak + on-spoken bookkeeping, deferred so the action
     # governor can run it ONLY if idle banter wins the tick (enforce mode). Captures
     # `directive`/`ask_user`/`person_id` decided above.
@@ -3714,16 +3741,26 @@ def _maybe_idle_banter(
         if not line:
             return False
         try:
+            if ask_on_topic:
+                _purpose = (
+                    "Ask ONE genuinely new, specific follow-up question that builds on "
+                    "the topic you were just discussing; never re-ask what they already "
+                    "told you (not 'what are you working on'). If you have no real new "
+                    "question, volunteer a short take on that same topic instead."
+                )
+            elif ask_user:
+                _purpose = "Ask one short, genuine question about the user."
+            else:
+                _purpose = (
+                    "Volunteer one specific Rex opinion or reaction about what you were "
+                    "JUST talking about; stay on that topic; do not ask a question."
+                )
             frame = social_frame.build_frame(
                 "(the user has gone quiet)",
                 person_id,
                 agenda_directive=(
                     "Primary purpose: after a quiet pause, proactively keep the "
-                    "conversation alive. "
-                    + ("Ask one short, genuine question about the user."
-                       if ask_user else
-                       "Volunteer one specific Rex opinion or reaction about what you were "
-                       "JUST talking about; stay on that topic; do not ask a question.")
+                    "conversation alive. " + _purpose
                 ),
             )
             # Asking IS the point of an "ask the user" nudge — force the question
