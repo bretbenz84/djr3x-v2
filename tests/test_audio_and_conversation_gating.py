@@ -10143,6 +10143,37 @@ class IdleBanterTest(unittest.TestCase):
             self.assertTrue(candidate.speak_fn())
             speak.assert_called_once()
 
+    def test_banter_submit_arms_proactive_gap_so_inline_paths_back_off(self):
+        """Live bug 2026-06-17: under ENFORCE, idle banter is LLM-generated and doesn't
+        speak for several seconds; in that window the inline low-memory profile question
+        stacked a SECOND question. Submitting the candidate must arm the SHARED proactive
+        gap immediately, so _proactive_line_recently_fired() blocks the inline paths."""
+        from intelligence import interaction
+        from intelligence.action_governor import governor
+        interaction._idle_banter_count = 0
+        interaction._last_idle_banter_at = 0.0
+        interaction._last_proactive_line_at = 0.0
+        with (
+            mock.patch.object(interaction, "_primary_session_person_id", return_value=1),
+            mock.patch.object(interaction, "_directed_context_fresh", return_value=False),
+            mock.patch.object(interaction, "_game_suppresses_conversation", return_value=False),
+            mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+            mock.patch.object(interaction.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch.object(interaction.end_thread, "is_grace_active", return_value=False),
+            mock.patch.object(interaction, "_governor_enforcing", return_value=True),
+            mock.patch.object(governor, "submit_external", side_effect=lambda c: None),
+        ):
+            # Before: gap not armed.
+            self.assertFalse(interaction._proactive_line_recently_fired())
+            fired = interaction._maybe_idle_banter(
+                idle_for=interaction.config.IDLE_BANTER_SECS + 5.0, effective_idle_timeout=45.0)
+            self.assertTrue(fired)
+            # After submit (BEFORE the deferred line speaks): the shared gap is armed, so
+            # an inline proactive path would back off instead of stacking a 2nd question.
+            self.assertTrue(interaction._proactive_line_recently_fired())
+        interaction._last_proactive_line_at = 0.0
+
     def test_banter_holds_until_threshold(self):
         from intelligence import interaction
         with (

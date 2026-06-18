@@ -3755,7 +3755,7 @@ def _maybe_idle_banter(
     to IDLE_BANTER_MAX_PER_STRETCH times per silent stretch. Unlike the interest /
     low-memory idle paths, this also fires for well-known, fully-profiled people."""
     global _last_idle_banter_at, _idle_banter_count, _session_exchange_count
-    global _idle_banter_threshold
+    global _idle_banter_threshold, _last_proactive_line_at
     if not bool(getattr(config, "IDLE_BANTER_ENABLED", True)):
         return False
     if _game_suppresses_conversation():
@@ -3944,6 +3944,14 @@ def _maybe_idle_banter(
         # carrying the deferred speak work — only the tick's winner runs; if a
         # higher-priority proactive wins, idle banter quietly yields.
         _last_idle_banter_at = time.monotonic()
+        # Also arm the SHARED proactive-line gap on COMMIT, not just on speak. The
+        # idle-banter line is LLM-generated, so it doesn't actually speak for several
+        # seconds — and in that window an inline proactive path (the low-memory profile
+        # question / interest follow-up) checked _proactive_line_recently_fired(), saw
+        # nothing fired yet, and stacked a SECOND question on top (live 2026-06-17: the
+        # profile question + the idle dog-followup, 4s apart). Marking the gap at submit
+        # makes those inline paths back off the moment a proactive line is in flight.
+        _last_proactive_line_at = time.monotonic()
         _idle_banter_count += 1
         try:
             from intelligence.action_governor import CandidateMove, governor
