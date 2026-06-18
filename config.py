@@ -4428,12 +4428,21 @@ STARTUP_AUDIO_FILES = [
     "assets/audio/startup/light_speed.mp3",
     "assets/audio/startup/Roger Control.mp3",
 ]
+# Master toggle for the spoken startup INTRO clip — the randomized line cycled from
+# STARTUP_SPEECH_CLIP_CHOICES below ("Roger control, all systems go!", "...Outer
+# Rim", "This is your cap— I mean, DJ"). Set False to boot WITHOUT a spoken intro;
+# the non-speech startup sound effects (e.g. light_speed.mp3) still play. This is
+# narrower than PLAY_STARTUP_AUDIO, which gates the ENTIRE startup audio burst.
+# Env-overridable: PLAY_STARTUP_SPEECH_CLIP=1 to re-enable without editing config.
+PLAY_STARTUP_SPEECH_CLIP = _env_bool("PLAY_STARTUP_SPEECH_CLIP", False)
+
 # The startup "speech clip" slot above (Roger Control.mp3) is RANDOMIZED: main.py
 # plays one of these on each launch, cycling so it never repeats consecutively
 # (state in STARTUP_SPEECH_CLIP_STATE_PATH, under the gitignored assets/state/). Any
 # STARTUP_AUDIO_FILES entry whose filename matches one of these is swapped for a
-# cycled pick. All of these must also be in SPEECH_ANIMATED_AUDIO_FILES so they get
-# mouth animation. To add more, drop the mp3 in assets/audio/startup and list it here.
+# cycled pick (or skipped entirely when PLAY_STARTUP_SPEECH_CLIP is False). All of
+# these must also be in SPEECH_ANIMATED_AUDIO_FILES so they get mouth animation.
+# To add more, drop the mp3 in assets/audio/startup and list it here.
 STARTUP_SPEECH_CLIP_CHOICES = [
     "assets/audio/startup/Roger Control.mp3",
     "assets/audio/startup/Outer Rim.mp3",

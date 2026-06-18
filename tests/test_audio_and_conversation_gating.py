@@ -47,6 +47,30 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         # The chime file is still configured; it's just played later, at end-of-load.
         self.assertEqual(Path(config.LISTENING_CHIME_FILE).name, "startup_chime.mp3")
 
+    def test_startup_speech_clip_toggle_contract(self):
+        """The spoken startup intro has an easy on/off toggle (default OFF). main.py's
+        skip logic keys off STARTUP_AUDIO_FILES slots whose name is in
+        STARTUP_SPEECH_CLIP_CHOICES, so that wiring must hold."""
+        import config
+
+        # The toggle exists, is a bool, and ships OFF (the requested default).
+        self.assertIsInstance(config.PLAY_STARTUP_SPEECH_CLIP, bool)
+        self.assertFalse(config.PLAY_STARTUP_SPEECH_CLIP)
+
+        # The randomized intro clips are exactly the ones the user named.
+        choice_names = {Path(c).name for c in config.STARTUP_SPEECH_CLIP_CHOICES}
+        self.assertEqual(
+            choice_names,
+            {"Roger Control.mp3", "Outer Rim.mp3", "This is your cap.mp3"},
+        )
+
+        # At least one STARTUP_AUDIO_FILES slot is a speech clip (so the toggle has
+        # something to skip), and at least one is NOT (so the boot SFX still plays
+        # when the intro is off).
+        burst = {Path(p).name for p in config.STARTUP_AUDIO_FILES}
+        self.assertTrue(burst & choice_names, "no speech-clip slot to toggle off")
+        self.assertTrue(burst - choice_names, "no non-speech SFX would survive the toggle")
+
     def test_direct_startup_clip_arms_aec_and_limits_level(self):
         import numpy as np
         import main

@@ -1005,11 +1005,19 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
             ]
             choice_names = {Path(c).name.lower() for c in speech_choices}
             speech_state_path = str(getattr(config, "STARTUP_SPEECH_CLIP_STATE_PATH", "") or "")
+            play_speech_clip = bool(getattr(config, "PLAY_STARTUP_SPEECH_CLIP", True))
             for audio_file in config.STARTUP_AUDIO_FILES:
                 play_file = audio_file
-                # If this slot is the randomizable speech clip, swap in one of the
-                # choices (random, never consecutive across launches) instead.
+                # The randomizable speech-clip slot: skip it entirely when the spoken
+                # intro is disabled, otherwise swap in one of the choices (random,
+                # never consecutive across launches).
                 if speech_choices and Path(audio_file).name.lower() in choice_names:
+                    if not play_speech_clip:
+                        logger.info(
+                            "Skipping startup speech clip %s (PLAY_STARTUP_SPEECH_CLIP=False)",
+                            audio_file,
+                        )
+                        continue
                     picked = phrase_cycler.select_cycling_line(speech_choices, speech_state_path)
                     if picked:
                         play_file = picked
