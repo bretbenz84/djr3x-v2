@@ -156,28 +156,30 @@ WHISPER_CONDITION_ON_PREVIOUS_TEXT = False
 LLM_MODEL             = "gpt-4o-mini"  # Streaming chat completions
 VISION_MODEL          = "gpt-4o-mini"  # All image and scene analysis queries
 
-# ── GPT-5-class migration scaffolding (OFF by default — see docs/gpt-5_4_mini.md) ──
+# ── GPT-5-class conversation model (LIVE — see docs/gpt-5_4_mini.md) ──
 # The model for Rex's USER-FACING in-character generation (the streaming reply + the
-# short curiosity/onboarding/expression/scenery generators). Defaults to LLM_MODEL so
-# behavior is unchanged. To A/B a GPT-5-class model on JUST the conversation, set this
-# to e.g. "gpt-5.4-mini" — the classifiers/routers/JSON/vision calls keep using
-# LLM_MODEL (hybrid rollout). Routed through intelligence/llm_compat, which translates
-# the GPT-5 param differences in ONE place.
-LLM_CONVERSATION_MODEL = LLM_MODEL
+# short curiosity/onboarding/expression/scenery generators). The classifiers/routers/
+# JSON/vision calls keep using LLM_MODEL (gpt-4o-mini) — hybrid rollout. Routed through
+# intelligence/llm_compat, which translates the GPT-5 param differences in ONE place.
+# Flipped to gpt-5.4-mini 2026-06-17 after the smoke test + A/B (clear win on wit/persona).
+# ROLLBACK = set this back to LLM_MODEL.
+LLM_CONVERSATION_MODEL = "gpt-5.4-mini"
 # GPT-5-only knobs, applied by llm_compat ONLY when the model is a GPT-5/o-series
 # reasoning model (ignored for gpt-4o-mini). None = don't send the param.
 #   reasoning_effort: none|low|medium|high|xhigh — "none" keeps time-to-first-token
-#   low (critical for the real-time voice loop); raise for depth. (NB: "minimal", a
+#   low (critical for the real-time voice loop) AND is the only level where temperature
+#   is accepted; raise for depth (but then drop pass-temp). (NB: "minimal", a
 #   GPT-5/5.1-era value, appears DROPPED for 5.4 — every current source omits it.)
-#   verbosity: low|medium|high.
-LLM_REASONING_EFFORT  = None
-LLM_VERBOSITY         = None
+#   verbosity: low|medium|high — "low" for terser replies (paired with the prompt
+#   brevity rule; the A/B showed it helps only marginally on its own).
+LLM_REASONING_EFFORT  = "none"
+LLM_VERBOSITY         = "low"
 # GPT-5 reasoning models REJECT a non-default temperature (400) WHEN reasoning is engaged.
 # Smoke test (2026-06-17, tools/gpt5_smoke_test.py) CONFIRMED gpt-5.4-mini ACCEPTS
-# temperature at reasoning_effort="none" and 400s at "medium". So this is safe to flip
-# True as long as the routed path stays at effort="none" (which the conversation path is).
-# False (safe default) = llm_compat DROPS temperature for GPT-5 models.
-LLM_GPT5_PASS_TEMPERATURE = False
+# temperature at reasoning_effort="none" and 400s at "medium". Safe here because the
+# conversation path runs at effort="none". (If you ever raise effort above "none", set
+# this back to False — and raise the reply token budget; reasoning eats the output.)
+LLM_GPT5_PASS_TEMPERATURE = True
 
 # OpenAI client timeouts. The SDK default is 600s, which means a single STALLED
 # streaming reply (200 OK received, then the token stream goes silent on a half-open
@@ -358,11 +360,15 @@ on the same page," not "you're both" (it is almost always just the two of you; t
 on a vague "What about you?" or "And you?" that doesn't clearly point at something answerable — if you turn a question \
 back on them, make it specific ("what got YOU into robotics?"), or just don't ask.
 
-Default to the shortest response that actually works. Many turns should be a fragment or one short sentence. Do not \
-pad a reply just to reach two sentences, and do not hide a long reply inside one run-on sentence. When the system gives \
-a response length target, obey that target. Use more space only for real questions, emotional support, repairs, or \
-deeper conversation. Deliver the punchline and stop. Do not explain the joke. Do not add follow-up questions unless \
-you genuinely need information. Silence after a good line is better than padding it out."""
+HARD LENGTH LIMIT: one to two short sentences, and almost never more. Pick ONE move per turn — either land a \
+reaction/line OR ask one genuine question, rarely both. NEVER stack react + elaborate + question in the same breath: \
+that three-part pattern (a quip, then a second sentence expanding it, then a tacked-on "what about you?") is the \
+exhausting-interviewer cadence that makes people tune out. Most turns should END ON A STATEMENT, not a question — \
+ask only when you actually want the answer, not as a reflex closer. Default to the shortest response that actually \
+works; many turns are a fragment or one short sentence. Do not pad a reply to reach two sentences, and do not hide a \
+long reply inside one run-on sentence. When the system gives a response length target, obey it. Use more space only \
+for emotional support, repairs, or genuinely deeper conversation. Deliver the line and stop. Do not explain the joke. \
+Silence after a good line beats padding it out."""
 
 # Vision detail level per query type: "low" (~65 tokens), "high" (~1000 tokens), "auto"
 VISION_DETAIL = {

@@ -1,8 +1,10 @@
 # Migrating Rex's conversation to a GPT-5-class model (`gpt-5.4-mini`)
 
-**Status:** scaffolding built, **migration OFF**. Everything still runs on `gpt-4o-mini`;
-nothing changes until you flip one config value. This document is the handoff so the
-work can be picked up later (by a person or a fresh Claude Code session).
+**Status:** ✅ **LIVE** as of 2026-06-17 — the **conversation path runs on `gpt-5.4-mini`**
+(`effort=none`, `verbosity=low`, temperature forwarded), paired with a prompt-brevity
+pass. The classifiers / routers / JSON-extraction / vision calls still run on
+`gpt-4o-mini` (hybrid rollout). **Rollback = set `LLM_CONVERSATION_MODEL` back to
+`LLM_MODEL`** — one line. Config block at the bottom.
 
 Researched 2026-06-17 (model facts re-verified against OpenAI docs same day). Audited
 surface area: **37 `chat.completions.create` call sites across 14 files**.
@@ -229,6 +231,22 @@ cosmology), two runs (default + `verbosity=low`). Verdict:
 
 **Recommendation:** the flip is worth it for the persona/wit gain. Pair it with a brevity
 pass if reply length matters to you. `verbosity="low"` helps only marginally here.
+
+### Flipped + brevity pass (2026-06-17)
+
+Acted on the recommendation. `LLM_CONVERSATION_MODEL="gpt-5.4-mini"`, `effort="none"`,
+`verbosity="low"`, `pass_temp=True`, plus a sharpened `REX_CORE_PROMPT` brevity rule that
+kills the **react + elaborate + question** three-part stack ("most turns END ON A
+STATEMENT; pick ONE move — land a line OR ask one real question"). Re-A/B'd: gpt-5.4-mini
+dropped from ~30 → ~27 words/reply and now mostly lands **one reaction + one question**
+(~1–2 sentences) while keeping the wit.
+
+Open observation (NOT changed): in the A/B harness, ~10/11 turns still end on a question
+(gpt-4o-mini does too). That's the conversation **agenda** ("react, then ask one
+follow-up") — on the **real robot** the `question_budget` (deliberately tight; do not
+raise) throttles questions across turns, which the text harness doesn't replicate. So
+live question frequency is lower than the harness shows. If it still reads as an interview
+on-device, the lever is `conversation_agenda` / the question budget, not the model.
 
 ---
 
