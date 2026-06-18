@@ -38,6 +38,7 @@ surface area: **37 `chat.completions.create` call sites across 14 files**.
 | Wired conversation calls | `intelligence/llm.py` | 6 user-facing generators routed through the shim via `llm_compat.conversation_model()`: `warmup`, `stream_response` (main path), `scenery_change_remark`, `generate_curiosity_question`, `generate_onboarding_reaction`, `generate_expression_reaction`. |
 | Mock tests | `tests/test_llm_compat.py` | 17 tests locking the param-translation contract (no network). |
 | Live smoke test | `tools/gpt5_smoke_test.py` | One real API call per shape; settles the temperature question. Not in CI. |
+| A/B runner | `tools/gpt5_ab_test.py` | Runs a fixed corpus through both models (real pipeline), writes a side-by-side. Not in CI. See "A/B results" below. |
 
 The other ~31 call sites (action router, intent/empathy/address classifiers, memory
 extraction, session summary, vision, games, trivia) **still call the client directly**
@@ -187,6 +188,47 @@ and writes a side-by-side.
 
 > ⚠️ The unittest suite **mocks the LLM**. It will pass green on `gpt-5.4-mini` and prove
 > nothing about real behavior. The smoke test + harness A/B are the real evaluation.
+
+### A/B runner
+
+`tools/gpt5_ab_test.py` runs a fixed corpus through the REAL pipeline once per model
+(clean reset between), captures Rex's reply + per-turn wall time, and writes a
+side-by-side `.md`/`.jsonl` to `logs/gpt5_ab/` (gitignored). Live API; not in CI.
+```bash
+venv/bin/python tools/gpt5_ab_test.py                          # baseline vs gpt-5.4-mini@none
+venv/bin/python tools/gpt5_ab_test.py --candidate-verbosity low
+venv/bin/python tools/gpt5_ab_test.py --file corpus.txt --candidate-effort low
+```
+
+### A/B results (run 2026-06-17, `gpt-5.4-mini` @ `effort=none`, `pass_temp=true`)
+
+12-turn corpus (pizza one-off → robot progress → low-energy answers → music decline →
+cosmology), two runs (default + `verbosity=low`). Verdict:
+
+- **Quality: clear win for `gpt-5.4-mini`.** Sharper, more specific, more in-character —
+  consistent across both runs. Representative:
+  - *"Motor control is where the robot stops being a glorified paperweight and starts earning its keep."*
+  - *"A robot without attitude is just a broom with ambitions."*
+  - *"A good challenge is just a problem with better posture."*
+  - vs gpt-4o-mini's more generic *"That's awesome! I bet it's feeling good to see your hard work come together."*
+- **Length: a real tradeoff.** `gpt-5.4-mini` averaged **~30 words/reply vs gpt-4o-mini's ~22**,
+  *even at `verbosity=low`* (which barely moved it). It reliably lands 2–3 sentences **+ a
+  question** every turn. NOTE: gpt-4o-mini also over-runs the persona's "one short sentence"
+  rule — **brevity is a shared PROMPT problem the model swap does not fix (and slightly
+  worsens).** If "too long / too many questions" still grates after the flip, that's
+  separate prompt-brevity work (tighten the brevity directive / `_max_tokens_for_agenda`),
+  not a model issue.
+- **Latency: fine for voice.** Full-reply wall-time was ~+2–3s (baseline avg 9.6s vs
+  candidate 11.8s), but that's *complete-reply* time incl. constant pipeline overhead and
+  longer replies. Real user-facing TTFS is ~0.5s (smoke test) because the path streams
+  sentence-by-sentence. gpt-5.4-mini just *talks a little longer*. Verify on-device with
+  `[ttfs]`.
+- **Model-independent quirk seen:** the turn "no thank you" (after "I like classical
+  music") routed both models to *"I heard the correction, but I need one clear fact to
+  update."* — a pipeline routing issue, identical for both, unrelated to the model choice.
+
+**Recommendation:** the flip is worth it for the persona/wit gain. Pair it with a brevity
+pass if reply length matters to you. `verbosity="low"` helps only marginally here.
 
 ---
 
