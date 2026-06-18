@@ -141,6 +141,17 @@ def get_pending_followups(person_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def mark_anticipated(event_id: int) -> None:
+    """Refresh mentioned_at so the same upcoming event isn't proactively anticipated on
+    every launch — the cross-session throttle behind ANTICIPATION_REPEAT_COOLDOWN_HOURS
+    (the 'Juneteenth every launch' fix). Deliberately does NOT touch followed_up, so the
+    post-event follow-up still fires after the date passes."""
+    db.execute(
+        "UPDATE person_events SET mentioned_at = ?, updated_at = ? WHERE id = ?",
+        (_now(), _now(), event_id),
+    )
+
+
 def mark_followed_up(event_id: int, outcome: str) -> None:
     """Set followed_up to TRUE and record the outcome and follow_up_at timestamp."""
     db.execute(

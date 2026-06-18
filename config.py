@@ -4010,6 +4010,10 @@ FOLLOWUP_SUPPRESS_WHEN_FLAT = True
 ANTICIPATION_PROBABILITY = 0.85
 # Only events occurring within this many days qualify — distant events feel forced.
 ANTICIPATION_LOOKAHEAD_DAYS = 30
+# Don't re-anticipate the SAME upcoming event more often than this (cross-session, via
+# person_events.mentioned_at). Was effectively "every launch" — Rex greeted with the
+# same Juneteenth plan on every startup, which got old fast. ~20h ≈ at most once a day.
+ANTICIPATION_REPEAT_COOLDOWN_HOURS = 20
 
 # Visit count milestones Rex acknowledges in character
 VISIT_MILESTONES = [5, 10, 25, 50, 100]

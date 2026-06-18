@@ -3461,17 +3461,33 @@ def _pick_anticipated_event(person_db_id: Optional[int]) -> Optional[dict]:
     if not isinstance(person_db_id, int):
         return None
     try:
-        from datetime import date, datetime, timedelta
+        from datetime import date, datetime, timedelta, timezone
         from memory import events as events_mod
         upcoming = events_mod.get_upcoming_events(person_db_id)
         if not upcoming:
             return None
         lookahead_days = getattr(config, "ANTICIPATION_LOOKAHEAD_DAYS", 30)
         cutoff = date.today() + timedelta(days=lookahead_days)
+        cooldown_hours = float(getattr(config, "ANTICIPATION_REPEAT_COOLDOWN_HOURS", 20) or 0.0)
+        now_utc = datetime.now(timezone.utc)
         for ev in upcoming:
             ev_id = ev.get("id")
             if ev_id is None or (person_db_id, ev_id) in _anticipated_events:
                 continue
+            # Cross-session throttle: don't re-anticipate the same event on every launch.
+            # mentioned_at is refreshed on each anticipation (events.mark_anticipated) AND
+            # set when the user first mentions the plan, so this naturally caps it to ~once
+            # a day instead of once per startup (the 'Juneteenth every launch' fix).
+            mentioned_at = ev.get("mentioned_at")
+            if mentioned_at and cooldown_hours > 0:
+                try:
+                    m_dt = datetime.fromisoformat(str(mentioned_at))
+                    if m_dt.tzinfo is None:
+                        m_dt = m_dt.replace(tzinfo=timezone.utc)
+                    if (now_utc - m_dt) < timedelta(hours=cooldown_hours):
+                        continue
+                except (ValueError, TypeError):
+                    pass
             ev_date_str = ev.get("event_date")
             if ev_date_str:
                 try:
@@ -6867,6 +6883,11 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         )
                     if anticipated_to_mark is not None:
                         _anticipated_events.add(anticipated_to_mark)
+                        try:
+                            from memory import events as _events_mod
+                            _events_mod.mark_anticipated(int(anticipated_to_mark[1]))
+                        except Exception:
+                            pass
                     if milestone_to_mark is not None:
                         try:
                             from memory import people as people_mod
@@ -6970,6 +6991,11 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
             )
             if anticipation_prompt:
                 _anticipated_events.add((person_db_id, anticipated["id"]))
+                try:
+                    from memory import events as _events_mod
+                    _events_mod.mark_anticipated(int(anticipated["id"]))
+                except Exception:
+                    pass
                 _log.info(
                     "consciousness: return anticipation for %s (event=%s)",
                     person_name, anticipated.get("event_name"),

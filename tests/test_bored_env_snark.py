@@ -34,6 +34,20 @@ class ModePickTest(unittest.TestCase):
         # All object-dependent modes should be reachable when there are objects.
         self.assertTrue({"naive_question", "clutter", "art_opinion"} <= seen)
 
+    def test_relocate_dropped_when_a_person_is_present(self):
+        # "wheel me somewhere with actual life forms" is tone-deaf when someone's here.
+        seen = {ib._pick_bored_env_snark_mode(["a chair"], present_name="Bret") for _ in range(200)}
+        self.assertNotIn("relocate", seen)
+        seen_alone = {ib._pick_bored_env_snark_mode(["a chair"]) for _ in range(200)}
+        self.assertIn("relocate", seen_alone)
+
+    def test_present_name_read_from_snapshot(self):
+        present = {"people": [{"person_db_id": 1, "name": "Bret Benziger", "face_visible": True}]}
+        self.assertEqual(ib._bored_snark_present_name(present), "Bret")
+        self.assertIsNone(ib._bored_snark_present_name({"people": []}))
+        # An unknown (no person_db_id) face doesn't count as a known present person.
+        self.assertIsNone(ib._bored_snark_present_name({"people": [{"person_db_id": None}]}))
+
 
 class PromptTest(unittest.TestCase):
     def test_prompt_includes_scene_and_objects_and_is_one_line(self):
@@ -54,6 +68,13 @@ class PromptTest(unittest.TestCase):
         self.assertIn("art", prompts["art_opinion"].lower())
         self.assertIn("life forms", prompts["relocate"].lower())
         self.assertEqual(len(set(prompts.values())), 5)  # all distinct
+
+    def test_present_prompt_forbids_empty_room_framing(self):
+        p = ib._bored_env_snark_prompt("complaint", "a tidy room", ["a chair"], present_name="Bret")
+        self.assertIn("Bret", p)
+        self.assertIn("do NOT claim the room is empty", p)
+        # The phrase appears only inside the FORBID instruction, never as an ask.
+        self.assertIn("never ask to be taken somewhere with 'life forms'", p)
 
 
 class FireTest(unittest.TestCase):

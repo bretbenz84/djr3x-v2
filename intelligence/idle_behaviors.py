@@ -343,25 +343,63 @@ def do_live_vision_comment(snapshot: dict) -> None:
     threading.Thread(target=_task, daemon=True, name="live-vision-comment").start()
 
 
-def _pick_bored_env_snark_mode(notable: list) -> str:
+def _bored_snark_present_name(snapshot: dict) -> Optional[str]:
+    """First name of a KNOWN person currently in frame (so bored-room snark doesn't claim
+    the room is empty while someone's there), or None when Rex is genuinely alone."""
+    try:
+        for person in (snapshot or {}).get("people", []) or []:
+            if not isinstance(person, dict):
+                continue
+            if person.get("person_db_id") is None:
+                continue
+            if person.get("face_visible") is False:
+                continue
+            name = (person.get("name") or person.get("face_id") or "").strip()
+            if name:
+                return name.split()[0]
+    except Exception:
+        pass
+    return None
+
+
+def _pick_bored_env_snark_mode(notable: list, present_name: Optional[str] = None) -> str:
     """Pick a boredom riff. Object-dependent modes (clueless question, clutter jab, art
-    opinion) only join the pool when there are concrete objects to riff on."""
-    modes = ["complaint", "relocate"]
-    weights = [3, 2]
+    opinion) only join the pool when there are concrete objects to riff on. When a known
+    person IS in the room (present_name), the "relocate" mode is dropped — asking to be
+    wheeled "somewhere with actual life forms" is tone-deaf when you have company."""
+    modes = ["complaint"]
+    weights = [3]
+    if not present_name:
+        modes += ["relocate"]
+        weights += [2]
     if notable:
         modes += ["naive_question", "clutter", "art_opinion"]
         weights += [3, 2, 2]
     return random.choices(modes, weights=weights, k=1)[0]
 
 
-def _bored_env_snark_prompt(mode: str, summary: str, notable: list) -> str:
+def _bored_env_snark_prompt(
+    mode: str, summary: str, notable: list, present_name: Optional[str] = None
+) -> str:
     detail_bits = "; ".join(str(d) for d in notable[:6]) if notable else ""
-    base = (
-        "You are DJ-R3X, stuck stationary in this same room with nothing happening for a "
-        "while, and you are genuinely BORED. You just looked around the space. What you "
-        f"actually see: {summary or 'a dull, quiet room'}"
-        f"{('. Notable things in view: ' + detail_bits) if detail_bits else ''}. "
-    )
+    if present_name:
+        # Someone IS here — it's just gone quiet. Never frame the room as empty/dead.
+        base = (
+            f"You are DJ-R3X. {present_name} is right here in the room with you, but it's "
+            "gone quiet for a while and you're a little bored and restless. You just "
+            f"looked around the space. What you actually see: {summary or 'a quiet room'}"
+            f"{('. Notable things in view: ' + detail_bits) if detail_bits else ''}. "
+            f"IMPORTANT: {present_name} is present — do NOT claim the room is empty, dead, "
+            "or lifeless, and never ask to be taken somewhere with 'life forms'. You have "
+            "company; you're just both quiet. "
+        )
+    else:
+        base = (
+            "You are DJ-R3X, stuck stationary in this same room with nothing happening for a "
+            "while, and you are genuinely BORED. You just looked around the space. What you "
+            f"actually see: {summary or 'a dull, quiet room'}"
+            f"{('. Notable things in view: ' + detail_bits) if detail_bits else ''}. "
+        )
     if mode == "naive_question":
         ask = (
             "Pick ONE concrete object you can see and ask about it as if you genuinely "
@@ -369,11 +407,16 @@ def _bored_env_snark_prompt(mode: str, summary: str, notable: list) -> str:
             "judgmental, e.g. \"What's that black chair even for?\". Ask ONE short question."
         )
     elif mode == "clutter":
+        sterile_fallback = (
+            "If it actually looks tidy or sterile, make a dry remark about the bare, "
+            "over-organized space instead."
+            if present_name
+            else "If it actually looks tidy or sterile, mock how lifeless and empty it is instead."
+        )
         ask = (
             "If the space looks messy or cluttered, roast the tidiness — needling, not "
             "cruel, e.g. \"Why are there so many empty boxes? Did nobody teach you to tidy "
-            "up?\". If it actually looks tidy or sterile, mock how lifeless and empty it is "
-            "instead. ONE short line."
+            f"up?\". {sterile_fallback} ONE short line."
         )
     elif mode == "art_opinion":
         ask = (
@@ -389,7 +432,14 @@ def _bored_env_snark_prompt(mode: str, summary: str, notable: list) -> str:
             "somewhere with actual life forms? This room has the ambiance of a "
             "screensaver.\" ONE short line."
         )
-    else:  # complaint
+    elif mode == "complaint" and present_name:
+        ask = (
+            f"It's gone quiet and you're restless. Gently poke {present_name} about the "
+            "lull or make ONE dry remark tying the boredom to a specific thing you can see "
+            f"— e.g. \"You've gone quiet on me, {present_name}; even that [thing] looks "
+            "bored.\" ONE short line. Do not ask a real question."
+        )
+    else:  # complaint (alone)
         ask = (
             "Gripe that it's boring in here, tying the complaint to ONE specific thing you "
             "actually see, e.g. \"It's so dead in here even that [thing] looks like it gave "
@@ -438,9 +488,14 @@ def do_bored_environment_snark(snapshot: dict) -> None:
                 and not _c._face_tracking_has_fresh_lock(time.monotonic())
             ):
                 do_ambient_scan()
-            mode = _pick_bored_env_snark_mode(notable)
+            # If a known person is engaged/in-frame, the empty-room framing is tone-deaf
+            # (live: "wheel me somewhere with actual life forms" while Bret was right
+            # there). Reframe the snark to acknowledge them and never claim the room is
+            # empty/dead. Presence is read from the snapshot's people list.
+            present_name = _bored_snark_present_name(snapshot)
+            mode = _pick_bored_env_snark_mode(notable, present_name=present_name)
             _c._generate_and_speak(
-                _bored_env_snark_prompt(mode, summary, notable),
+                _bored_env_snark_prompt(mode, summary, notable, present_name=present_name),
                 emotion=("neutral" if mode in ("complaint", "relocate") else "curious"),
                 purpose="visual_curiosity",
                 label=f"bored env snark ({mode})",
