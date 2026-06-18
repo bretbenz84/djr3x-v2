@@ -61,7 +61,8 @@ It skips Whisper verification, audio stream startup, wake word listening, audio 
 
 Tracked configuration:
 
-- `config.py`: tunable defaults, model names, thresholds, feature flags, servo defaults, latency settings.
+- `config.py`: tunable defaults, model names, thresholds, feature flags, servo defaults, latency settings. Source of truth for all defaults.
+- `user_config.example.py`: heavily commented template of the ~45 user-facing overrides (AI models, personality dials + base prompt, location/venue, feature toggles, key timeouts), grouped by topic. Every setting shown commented-out at its current default.
 - `.env.example`: host-specific config template.
 - `apikeys.example.py`: API key template.
 
@@ -69,11 +70,14 @@ Untracked local/runtime files:
 
 - `.env`: machine-specific camera, microphone, hardware ports, servo limit overrides.
 - `apikeys.py`: OpenAI and ElevenLabs keys.
+- `user_config.py`: user-facing overrides, copied from `user_config.example.py` by `setup_macos.sh`. `config.py` imports it LAST (`from user_config import *`, wrapped in try/except ImportError) so its values win over defaults; a missing file is harmless. Uncomment a line to override, re-comment to revert.
 - `assets/memory/people.db`: local person database.
 - `assets/audio/tts_cache/`: generated ElevenLabs cache.
 - downloaded model assets.
 
 Never commit real secrets, local databases, generated TTS cache, local music, or downloaded model files.
+
+`config.py` ends with the `from user_config import *` override import followed by a re-derive tail that recomputes values built from a base the user may have overridden (`ACTION_ROUTER_MODEL = LLM_MODEL`, `STARTUP_BOOT_TTS_LINE`), so overriding the base propagates. Computed `Path(__file__)` state-paths and `.env`-only serial ports are deliberately NOT exposed in `user_config`. Deeper internal tuning (CV/audio thresholds, cooldowns, scoring weights, prompt fragments) stays in `config.py`.
 
 ## Repository Map
 
@@ -665,6 +669,7 @@ venv/bin/python main.py
 - Minor public holiday proactive questions are gated behind `HOLIDAY_PLANS_INCLUDE_MINOR`.
 - Introduction handling that links known visible/recent people instead of renaming the current speaker.
 - README startup flag documentation.
+- User-facing override layer: `config.py` ends with `from user_config import *` (try/except ImportError) so `user_config.py` — gitignored, copied from the committed `user_config.example.py` template by `setup_macos.sh` — overrides defaults without editing `config.py`. Defaults stay in `config.py` (source of truth); `from config import X` is unaffected since the change is purely an additive tail. A re-derive tail after the import recomputes `ACTION_ROUTER_MODEL` (= `LLM_MODEL`) and `STARTUP_BOOT_TTS_LINE` so overriding their base propagates. Scope is ~45 essentials (models, personality dials + base prompt, location, feature toggles, timeouts); each ships commented-out at its current default. See the Configuration And Secrets section.
 
 - Expressive TTS voice: `tts.speak()` derives ElevenLabs `voice_settings` from the turn's emotion frame (`emotion_orchestrator.voice_settings_for_emotion`) when the caller passes no override; `TTS_MODEL_ID=eleven_multilingual_v2` (honors `style`); voice settings + model_id are in the TTS cache key and `is_cached()/ensure_cached()` take `emotion`. Don't send `voice_settings=None` on normal turns; empathy/grief overrides win. Knobs: `TTS_VOICE_SETTINGS_*`, `TTS_EXPRESSIVE_VOICE_ENABLED`.
 - Streaming answer→TTS: audio turns stream sentence-by-sentence (`interaction._stream_and_speak_sentences`) — first sentence speaks ASAP, the rest queue through the single one-at-a-time speech queue (no overlap).

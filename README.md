@@ -65,6 +65,7 @@ The setup script creates local config files from templates and prompts for local
 
 - `apikeys.py` for OpenAI and ElevenLabs credentials
 - `.env` for machine-specific camera, audio, and hardware device paths
+- `user_config.py` for user-facing overrides (AI models, personality, location, feature toggles, timeouts), copied from `user_config.example.py`
 - Optional replacement of `ELEVENLABS_VOICE_ID` in `config.py`
 - Optional guided droid hardware setup for the chest Arduino, head LED Arduino, Pololu Maestro, and ESP32 motion base
 - Arduino CLI, Arduino AVR core, and FastLED setup for uploading the included LED firmware
@@ -124,6 +125,8 @@ Instead of starting `main.py` by hand, you can have macOS stay quietly ready and
 ## Configuration
 
 User-tunable defaults live in [config.py](config.py). API keys should stay in `apikeys.py`, and host-specific hardware paths plus build-specific servo limit overrides should stay in `.env`; both are intentionally excluded from git.
+
+The settings most people actually want to change — AI model selection, Rex's personality dials and base prompt, location/venue, feature on/off switches, and key timeouts — are surfaced in [user_config.example.py](user_config.example.py), a heavily commented template grouped by topic. The setup script copies it to `user_config.py` (gitignored), which `config.py` imports last so its values win over the defaults. Every setting ships commented out at its current default: uncomment a line to override it, or re-comment/delete it to fall back to the `config.py` default. A missing `user_config.py` is harmless — `config.py`'s defaults are used unchanged, so `from config import X` keeps working everywhere. Values computed from a base (e.g. `ACTION_ROUTER_MODEL` follows `LLM_MODEL`) are re-derived after the override so changing the base propagates. Deeper internal tuning (CV thresholds, cooldowns, scoring) intentionally stays in `config.py`.
 
 Useful setup checks:
 
