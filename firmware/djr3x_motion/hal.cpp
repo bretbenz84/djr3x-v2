@@ -8,9 +8,9 @@
 //   - Differential-drive kinematics + per-wheel velocity PID on encoder speed.
 //   - Odometry integrated from encoder deltas.
 // Pins in pins.h, measured/tuned constants in calib.h.
-// ToF (5× VL53L0X) is NOT here yet — see hal_read_tof() — so obstacle avoidance
-// is inactive until that subsystem is wired and its addressing scheme is chosen
-// (docs/motion_system.md §6).
+// ToF (8 radial sensors: 4× VL53L0X + 4× VL53L1X) lives in tof.cpp — see
+// hal_read_tof() — gated by MOTION_TOF_PRESENT; obstacle avoidance is inactive until
+// that subsystem is wired and the build enables it (docs/motion_system.md §6).
 // ===========================================================================
 #include "pins.h"
 #include "calib.h"

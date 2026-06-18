@@ -42,7 +42,9 @@ the Mac (the existing DJ-R3X brain) sends high-level commands over USB serial.
 | 2 | JGB37-520 12V gear motor, 176:1, ~25 kg·cm, **Hall quadrature encoder** | Powered drive wheels |
 | 2 | Omni / caster wheels | Passive support (front+back or side balance) |
 | 2 | BTS7960 43A motor driver module (full H-bridge) | One per drive motor |
-| 5 | VL53L0X ToF laser ranging sensor (GY-VL53L0XV2, I²C, 940 nm) | Obstacle/person/cliff sensing |
+| 4 | VL53L0X ToF sensor (short range ~1.2 m, I²C, 940 nm) | Close obstacle sensing — 45° diagonals |
+| 4 | VL53L1X ToF sensor (long range ~4 m, I²C) | Room-scale spatial sensing — cardinals (F/B/L/R) |
+| 1 | TCA9548A I²C multiplexer | Puts all 8 ToF sensors (each at 0x29) on one I²C bus |
 | 1 | ESP32 dev board | Real-time motion controller ("the base brain") |
 | 1 | 12 V battery / supply + 5 V buck converter | Motor power + ESP32/sensor logic power |
 | — | USB cable ESP32 → Mac | Command + telemetry link |
@@ -57,12 +59,12 @@ the Mac (the existing DJ-R3X brain) sends high-level commands over USB serial.
   │  Mac  (DJ-R3X brain)         │  commands  ───────────────▶│  ESP32  (motion controller) │
   │  - speech → action_router    │  telemetry ◀───────────────│  - command parser           │
   │  - hardware/motion.py        │   (JSON lines, 115200+)    │  - PID speed loop (50–100 Hz)│
-  │  - heartbeat + safety caps   │                            │  - 5× VL53L0X read loop     │
+  │  - heartbeat + safety caps   │                            │  - 8× ToF read loop (mux)       │
   └─────────────────────────────┘   BT gamepad ──(BLE)──────▶ │  - control arbiter + safety │
                                      (manual override, §11)    └───────┬──────────┬──────────┘
                                                             PWM/EN    │          │  I²C
                                                           ┌───────────▼──┐   ┌───▼──────────┐
-                                                          │ 2× BTS7960   │   │ 5× VL53L0X   │
+                                                          │ 2× BTS7960   │   │ 8× ToF (mux) │
                                                           └──┬────────┬──┘   └──────────────┘
                                                           M1 │        │ M2
                                                         ┌────▼──┐  ┌──▼────┐
@@ -122,32 +124,36 @@ Each BTS7960 is a full H-bridge driving **one** motor bidirectionally.
 
 ---
 
-## 6. Sensor subsystem (VL53L0X ×5)
+## 6. Sensor subsystem (8 radial ToF: 4× VL53L0X + 4× VL53L1X)
 
 ### 6.1 The I²C addressing gotcha (must-handle)
-**Every VL53L0X powers up at the same I²C address (0x29).** Five on one bus collide.
-Two supported options:
+**Every VL53L0X *and* VL53L1X powers up at the same I²C address (0x29),** so 8 on one
+bus collide. This base uses a **TCA9548A I²C multiplexer**: all 8 keep 0x29 and the mux
+selects one channel at a time — 0 addressing logic, 0 XSHUT GPIOs. (XSHUT sequencing,
+one GPIO per sensor, is not viable here — 8 sensors exceed the ESP32's free GPIOs, so
+the firmware `#error`s on the XSHUT build for this layout.) Mux channel map: **ch 0-3 =
+short VL53L0X, ch 4-7 = long VL53L1X.**
 
-1. **XSHUT sequencing (recommended).** Wire each sensor's `XSHUT` to its own ESP32
-   GPIO. At boot: hold all XSHUT low (all asleep), then bring up one at a time and
-   reassign it a unique address (0x30, 0x31, …) before enabling the next. Costs 5 GPIO.
-2. **TCA9548A I²C multiplexer.** All sensors keep 0x29; select one channel at a time.
-   Costs 1 extra board but 0 addressing logic and frees the XSHUT GPIOs.
+### 6.2 Placement (8 sensors, radial) — for spatial awareness
+8 sensors every 45°, so R3X senses the room all around (not just the travel arc). The 4
+long-range VL53L1X (cardinals) give room-scale distance; the 4 short-range VL53L0X (45°
+diagonals) fill the gaps for close-in coverage. Bearings are robot-frame (REP-103:
+front 0°, +left/CCW):
 
-### 6.2 Placement (5 sensors) — default proposal (configurable)
-ToF is a narrow (~25°) cone, ~3 cm–1.2 m reliable. Cover the travel directions:
+| Mux ch | Sensor | Bearing | `tof_mm` field | Role |
+| --- | --- | --- | --- | --- |
+| 4 | VL53L1X (long ~4 m) | front 0° | `front` | room distance ahead |
+| 5 | VL53L1X (long ~4 m) | left +90° | `left` | room distance left |
+| 6 | VL53L1X (long ~4 m) | rear 180° | `rear` | room distance behind |
+| 7 | VL53L1X (long ~4 m) | right −90° | `right` | room distance right |
+| 0 | VL53L0X (short ~1.2 m) | front-left +45° | `fl` | close obstacle |
+| 1 | VL53L0X (short ~1.2 m) | front-right −45° | `fr` | close obstacle |
+| 2 | VL53L0X (short ~1.2 m) | rear-left +135° | `rl` | close obstacle |
+| 3 | VL53L0X (short ~1.2 m) | rear-right −135° | `rr` | close obstacle |
 
-| # | Mount | Covers |
-| --- | --- | --- |
-| 1 | Front-left ≈ −30° | forward arc, left |
-| 2 | Front-center 0° | straight ahead |
-| 3 | Front-right ≈ +30° | forward arc, right |
-| 4 | Rear-center 180° | reversing ("move back") |
-| 5 | **Down-facing front edge** | **cliff / stair drop-off** (strongly recommended) |
-
-> Trade-off: a 4th horizontal sensor improves side coverage during spins, but a
-> downward cliff sensor prevents driving off a step/stair — a much bigger safety win
-> indoors. Make the 5th sensor's role a config choice.
+> **No down-facing cliff sensor** in this layout — so there is **no cliff / stair-drop
+> protection** (a deliberate trade for all-around spatial awareness; revisit if indoor
+> drop-offs are a risk). The reflex/zone logic is obstacle-only.
 
 ### 6.3 Coverage limits (call out honestly)
 - **Blind spots between cones** — thin/low/narrow obstacles (chair legs, pet, cable)

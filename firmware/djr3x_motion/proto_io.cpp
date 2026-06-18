@@ -64,7 +64,8 @@ void emit_telemetry() {
   JsonObject o = doc["odom"].to<JsonObject>();
   o["x"] = od.x; o["y"] = od.y; o["theta"] = od.theta; o["lin"] = od.lin; o["ang"] = od.ang;
   JsonObject t = doc["tof_mm"].to<JsonObject>();
-  t["fl"] = tf.fl; t["fc"] = tf.fc; t["fr"] = tf.fr; t["rear"] = tf.rear; t["down"] = tf.down;
+  t["front"] = tf.front; t["rear"] = tf.rear; t["left"] = tf.left; t["right"] = tf.right;
+  t["fl"] = tf.fl; t["fr"] = tf.fr; t["rl"] = tf.rl; t["rr"] = tf.rr;
   doc["batt_mv"] = bm;
   doc["errs"] = errs;
   tx_line(doc);

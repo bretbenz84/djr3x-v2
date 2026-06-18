@@ -11,10 +11,11 @@ v1) and has **two build modes** (see "Build modes" below):
 - **Live (`-DMOTION_HW_PRESENT=1`)** — the **Phase 1 real drive base**: BTS7960 PWM,
   Hall quadrature encoders (PCNT/ESP32Encoder), per-wheel velocity PID, and odometry
   integrated from encoder deltas. **ToF defaults to a safe "clear" stub** here, so
-  **obstacle avoidance is inactive** — add `-DMOTION_TOF_PRESENT=1` once the 5× VL53L0X
-  sensors are wired (driver scaffold in `tof.cpp`; XSHUT or mux addressing — see "Build
-  modes"). Pins live in `pins.h`, measured/tuned constants in `calib.h` (the geometry
-  values there are **placeholders — measure them on the real base**, docs §14).
+  **obstacle avoidance is inactive** — add `-DMOTION_TOF_PRESENT=1` once the 8 ToF
+  sensors (4× VL53L0X + 4× VL53L1X) are wired (driver in `tof.cpp`; TCA9548A mux
+  addressing — see "Build modes"). Pins live in `pins.h`, measured/tuned constants in
+  `calib.h` (the geometry values there are **placeholders — measure them on the real
+  base**, docs §14).
 
 - The plant model in `control.cpp` synthesizes odometry from commanded velocity,
   so `turn`/`move`/`come` actually run to completion and emit `done`.
@@ -42,7 +43,8 @@ export PORT=/dev/cu.usbserial-XXXX   # YOUR board's port — see `arduino-cli bo
 arduino-cli core install esp32:esp32      # Espressif core (3.3.10 on this machine)
 arduino-cli lib install ArduinoJson       # JSON (7.4.3)
 arduino-cli lib install ESP32Encoder      # Hall quadrature decode (0.12.0) — live build only
-arduino-cli lib install VL53L0X           # Pololu ToF lib (1.3.1) — ToF build only (-DMOTION_TOF_PRESENT=1)
+arduino-cli lib install VL53L0X           # Pololu short-range ToF (1.3.1) — ToF build (-DMOTION_TOF_PRESENT=1)
+arduino-cli lib install VL53L1X           # Pololu long-range ToF (1.3.1)  — ToF build (-DMOTION_TOF_PRESENT=1)
 ```
 
 > **Core version (2.x and 3.x both supported).** `setup_macos.sh` installs
@@ -92,22 +94,23 @@ explicit command energizes them.
 ### ToF obstacle avoidance (sensors wired)
 
 Off by default even in the live build (`hal_read_tof` reports a clear room). Enable it
-once the 5× VL53L0X are on the I²C bus — combine the flags:
+once the 8 ToF sensors are on the I²C mux — combine the flags. The layout is **8 radial
+sensors** for spatial awareness: 4 short-range **VL53L0X** on mux ch 0-3 at the 45°
+diagonals (`fl,fr,rl,rr`) + 4 long-range **VL53L1X** on mux ch 4-7 at the cardinals
+(`front,left,rear,right`). All stay at 0x29; the TCA9548A mux selects one channel at a
+time (zero XSHUT GPIOs). There is **no down/cliff sensor** in this layout, so cliff/
+drop-off detection is unavailable.
 
 ```bash
-# Live drive base + ToF. Default addressing is the TCA9548A I²C multiplexer (all five
-# sensors stay at 0x29; the mux selects one channel at a time — zero XSHUT GPIOs):
 arduino-cli compile --fqbn esp32:esp32:esp32 \
   --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_TOF_PRESENT=1" \
   firmware/djr3x_motion
-# …or XSHUT sequencing instead (one GPIO per sensor — pins.h 4/5/13/14/15): add
-#   -DMOTION_TOF_USE_MUX=0
 ```
 
-`tof.cpp` is a **scaffold**: it compiles in both addressing modes but is **not yet
-hardware-validated**. Before trusting avoidance, bench-check the addressing sequence,
-the sensor→field order, the timing budget, and the down-sensor cliff calibration
-(`CLIFF_FLOOR_MM`/`CLIFF_MARGIN_MM` in `safety.cpp`) — docs §6, §14.
+The mux is **required** for this layout (8 sensors exceed the ESP32's free XSHUT GPIOs;
+the `-DMOTION_TOF_USE_MUX=0` path `#error`s). `tof.cpp` is still a **scaffold** — not yet
+fully hardware-validated; bench-check the channel→field order and timing budgets (docs §6).
+Bring-up emits one `[motion_fw] tof[…]` log per sensor (OK/FAIL) + an `N/8 up` tally.
 
 ### Manual gamepad override (Bluepad32) — Phase 1.5
 

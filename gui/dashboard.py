@@ -1306,23 +1306,32 @@ class JoystickWidget(QWidget):
 
 
 class DistancePhotoreceptorsWidget(QWidget):
-    """Top-down 'radar' of the drive base's five VL53L0X distance photoreceptors.
+    """Top-down 'radar' of the drive base's 8 radial distance photoreceptors.
 
-    Front is up. Three forward cones (FL / FC / FR), a rear cone, and a down-facing
-    cliff pip. Each cone's reach scales with the measured distance and is colored by
+    Front is up. Four long-range VL53L1X at the cardinals (F / B / L / R) plus four
+    short-range VL53L0X at the 45° diagonals (FL / FR / RL / RR) — a spatial sense of
+    the room. Each cone's reach scales with the measured distance and is colored by
     zone — green clear, amber slow (< MOTION_SLOW_ZONE_M), red stop (< MOTION_STOP_ZONE_M)
     — with dashed reference rings at those thresholds. A -1 reading (sensor error / no
     return) draws a faint stub. Read-only: call set_readings() from the telemetry tick.
 
-    NOTE: while the ToF subsystem is still a firmware stub (MOTION_TOF_PRESENT=0) every
-    sensor reads a constant 'clear' (1500 mm, floor at 60 mm); the panel shows that
-    honestly until real sensors are wired and the firmware is built with ToF on."""
+    NOTE: while the ToF subsystem is a firmware stub (MOTION_TOF_PRESENT=0) every sensor
+    reads a constant 'clear'; the panel shows that honestly until the sensors are wired
+    and the firmware is built with ToF on. There is no down/cliff sensor in this layout."""
 
-    _FOV_DEG = 25.0                       # VL53L0X cone is ~25°
-    _CLIFF_FLOOR_MM = 60                  # mirrors safety.cpp CLIFF_FLOOR_MM
-    _CLIFF_MARGIN_MM = 80                 # mirrors safety.cpp CLIFF_MARGIN_MM
+    _FOV_DEG = 25.0                       # ToF cone ~25° (VL53L0X / VL53L1X similar)
     # (bearing°, telemetry key, label) — screen convention: 0 = 3 o'clock, CCW+, front = up = 90°.
-    _BEAMS = ((120.0, "fl", "FL"), (90.0, "fc", "FC"), (60.0, "fr", "FR"), (270.0, "rear", "RR"))
+    # 8 sensors at 45° steps: cardinals are long-range VL53L1X, diagonals short VL53L0X.
+    _BEAMS = (
+        (90.0,  "front", "F"),
+        (135.0, "fl",    "FL"),
+        (180.0, "left",  "L"),
+        (225.0, "rl",    "RL"),
+        (270.0, "rear",  "B"),
+        (315.0, "rr",    "RR"),
+        (0.0,   "right", "R"),
+        (45.0,  "fr",    "FR"),
+    )
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1334,7 +1343,7 @@ class DistancePhotoreceptorsWidget(QWidget):
         self._live = False
         self._stop_m = float(getattr(config, "MOTION_STOP_ZONE_M", 0.25))
         self._slow_m = float(getattr(config, "MOTION_SLOW_ZONE_M", 0.60))
-        self._max_m = max(self._slow_m * 1.5, 1.2)        # display reach (m)
+        self._max_m = max(self._slow_m * 1.5, 4.0)        # display reach (m) — VL53L1X room scale
 
     def set_readings(self, tof_mm, zone=None, blocked=None) -> None:
         self._tof = dict(tof_mm or {})
@@ -1366,7 +1375,7 @@ class DistancePhotoreceptorsWidget(QWidget):
 
     def paintEvent(self, _e) -> None:
         w, h = float(self.width()), float(self.height())
-        band = 46.0                                   # bottom band: the down/cliff pip
+        band = 0.0                                    # no down/cliff sensor in this layout
         top_h = h - band
         cx = w / 2.0
         cy = top_h / 2.0 + 6.0
@@ -1437,21 +1446,6 @@ class DistancePhotoreceptorsWidget(QWidget):
         p.drawRoundedRect(QRectF(6, 6, 158, 19), 4, 4)
         p.setPen(zcol)
         p.drawText(QRectF(6, 6, 158, 19), Qt.AlignmentFlag.AlignCenter, ztxt)
-
-        # Down / cliff pip (bottom band).
-        down = self._mm("down")
-        if down is None:                                              dcol, dtxt = QColor(95, 105, 120), "—"
-        elif down < 0:                                               dcol, dtxt = QColor(95, 105, 120), "error"
-        elif down > self._CLIFF_FLOOR_MM + self._CLIFF_MARGIN_MM:    dcol, dtxt = QColor(235, 70, 60), f"DROP-OFF {down}mm"
-        else:                                                        dcol, dtxt = QColor(70, 200, 130), f"floor {down}mm"
-        by = top_h + 6
-        p.setPen(QPen(QColor(dcol.red(), dcol.green(), dcol.blue(), int(255 * dim)), 1))
-        p.setBrush(QColor(dcol.red(), dcol.green(), dcol.blue(), int(45 * dim)))
-        p.drawRoundedRect(QRectF(8, by, w - 16, band - 12), 5, 5)
-        p.setPen(QColor(210, 225, 235, int(255 * dim)))
-        f.setPointSize(9); p.setFont(f)
-        p.drawText(QRectF(8, by, w - 16, band - 12), Qt.AlignmentFlag.AlignCenter,
-                   f"▼ CLIFF SENSOR:  {dtxt}")
 
         if not self._live:
             p.setPen(QColor(150, 165, 185))
@@ -1535,8 +1529,8 @@ class MotivatorControlDialog(QDialog):
         self._fb_zone = self._row(fb, "Zone / blocked")
         self._fb_odom = self._row(fb, "Odom lin / ang")
         self._fb_pose = self._row(fb, "Pose x / y / θ")
-        self._fb_tof = self._row(fb, "ToF FL/FC/FR")
-        self._fb_tof2 = self._row(fb, "ToF rear / down")
+        self._fb_tof = self._row(fb, "ToF F/B/L/R")
+        self._fb_tof2 = self._row(fb, "ToF FL/FR/RL/RR")
         self._fb_batt = self._row(fb, "Battery")
         self._fb_fault = self._row(fb, "Fault / errs")
         right.addWidget(fb["frame"])
@@ -1680,8 +1674,10 @@ class MotivatorControlDialog(QDialog):
         self._fb_pose.setText(
             f"{g(odom, 'x'):+.2f} / {g(odom, 'y'):+.2f} / {math.degrees(g(odom, 'theta')):+.0f}°"
         )
-        self._fb_tof.setText(f"{tof.get('fl', '—')} / {tof.get('fc', '—')} / {tof.get('fr', '—')} mm")
-        self._fb_tof2.setText(f"{tof.get('rear', '—')} / {tof.get('down', '—')} mm")
+        self._fb_tof.setText(
+            f"{tof.get('front', '—')} / {tof.get('rear', '—')} / {tof.get('left', '—')} / {tof.get('right', '—')} mm")
+        self._fb_tof2.setText(
+            f"{tof.get('fl', '—')} / {tof.get('fr', '—')} / {tof.get('rl', '—')} / {tof.get('rr', '—')} mm")
         self._fb_batt.setText(f"{g(tel, 'batt_mv') / 1000.0:.2f} V")
         self._fb_fault.setText(f"{tel.get('fault') or 'none'} / errs {tel.get('errs', 0)}")
         self._photoreceptors.set_readings(tof, tel.get("zone"), tel.get("blocked_dir"))

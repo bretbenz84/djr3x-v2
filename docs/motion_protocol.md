@@ -234,7 +234,7 @@ Distinguished by `type`. `telemetry` is periodic; the rest are event-driven.
 {"v":1,"type":"telemetry","t":12834,"state":"moving","owner":"auto","gamepad":"none",
  "fault":null,"zone":"slow","blocked_dir":"front","cmd_seq":42,
  "odom":{"x":0.42,"y":0.01,"theta":-1.57,"lin":0.15,"ang":0.0},
- "tof_mm":{"fl":820,"fc":410,"fr":900,"rear":1100,"down":60},
+ "tof_mm":{"front":1100,"rear":1400,"left":2600,"right":900,"fl":820,"fr":410,"rl":2000,"rr":1500},
  "batt_mv":11820,"errs":0}
 ```
 | Field | Type | Meaning |
@@ -248,7 +248,7 @@ Distinguished by `type`. `telemetry` is periodic; the rest are event-driven.
 | `blocked_dir` | enum | `none` \| `front` \| `rear` \| `left` \| `right`. |
 | `cmd_seq` | int | `seq` of the most recently **applied** command (heartbeat liveness + ack matching aid). |
 | `odom` | object | `{x,y}` m, `theta` rad (−π,π], `lin` m/s, `ang` rad/s. Reset to 0 on `boot_id` change / explicit `config` reset. |
-| `tof_mm` | object | Per-sensor distance in mm. Keys: `fl,fc,fr,rear,down` (5-sensor default layout). A sensor in error reports `-1`. |
+| `tof_mm` | object | Per-sensor distance in mm — **8 radial sensors** (§6): long-range cardinals `front,rear,left,right` (VL53L1X) + short-range 45° diagonals `fl,fr,rl,rr` (VL53L0X). A sensor in error reports `-1`; a large value (per-type out-of-range cap) means nothing in range = clear. No down/cliff sensor in this layout. |
 | `batt_mv` | int | Pack voltage, millivolts. |
 | `errs` | int | Cumulative parse/framing error count (for link-health monitoring). |
 
@@ -390,12 +390,13 @@ commands motion, not the safety state machine (§12).
 | `ack.reason` | `null` `clamped` `manual_override` `estop` `fault` `unknown_cmd` `bad_field` `bad_version` `nothing_to_clear` `unsupported_cap` |
 | `done.result` | `completed` `blocked` `aborted` `superseded` `estopped` |
 | `event.event` | `boot` `owner_change` `gamepad` `zone_block` `cliff` `fault` `fault_clear` `estop` `estop_clear` `comms_lost` `comms_restored` |
-| `tof_mm` keys | `fl` `fc` `fr` `rear` `down` (sensor in error → value `-1`) |
+| `tof_mm` keys | `front` `rear` `left` `right` (long VL53L1X) · `fl` `fr` `rl` `rr` (short VL53L0X) — sensor in error → value `-1` |
 | `log.lvl` | `debug` `info` `warn` `error` |
 
 **Zone semantics** (firmware evaluates per control tick on the sensors facing travel):
 `clear` > slow_zone · `slow` = stop_zone…slow_zone (scale speed) · `stop` < stop_zone
-(halt + refuse that direction) · `cliff` = down-sensor reads beyond floor+margin (halt).
+(halt + refuse that direction) · `cliff` = down-sensor drop-off (the zone enum remains, but
+the current 8-sensor radial layout has NO down sensor, so `cliff` is never produced).
 
 ---
 
@@ -512,9 +513,11 @@ flag them as decisions still owed:
    idle-timeout resume.
 3. **Telemetry rate** (10 vs 20 Hz) and **baud** (115200 vs 921600) — start at 20 Hz /
    115200; raise only if the GUI radar view or link health needs it.
-4. **`tof_mm` layout** — the `down` (cliff) vs a 4th horizontal sensor trade (§6.2 of the
-   spec). The protocol fixes the *keys* (`fl,fc,fr,rear,down`); reassigning the 5th
-   sensor's physical role is a firmware mount/config choice, key stays `down`.
+4. **`tof_mm` layout** — RESOLVED to an 8-sensor radial array for spatial awareness:
+   4 long-range VL53L1X at the cardinals (`front,rear,left,right`) + 4 short-range VL53L0X
+   at the 45° diagonals (`fl,fr,rl,rr`), all on a TCA9548A mux (ch 0-3 short, 4-7 long).
+   This dropped the down-facing cliff sensor — **cliff/drop-off detection is no longer
+   available** (the `cliff` zone/event remain in the enum but are never produced).
 
 ---
 
@@ -584,7 +587,7 @@ DONE_RESULTS   = ("completed","blocked","aborted","superseded","estopped")
 Mac  → {"v":1,"cmd":"hello","seq":1,"host":"djr3x","proto":1}
 ESP32→ {"v":1,"type":"hello","proto":1,"fw":"0.3.1","caps":["drive","turn","move","stop"],"boot_id":7741}
 ESP32→ {"v":1,"type":"event","t":12,"event":"boot","boot_id":7741,"fw":"0.3.1"}
-ESP32→ {"v":1,"type":"telemetry","t":50,"state":"idle","owner":"auto","gamepad":"none","fault":null,"zone":"clear","blocked_dir":"none","cmd_seq":1,"odom":{"x":0,"y":0,"theta":0,"lin":0,"ang":0},"tof_mm":{"fl":1100,"fc":1200,"fr":1150,"rear":900,"down":55},"batt_mv":12010,"errs":0}
+ESP32→ {"v":1,"type":"telemetry","t":50,"state":"idle","owner":"auto","gamepad":"none","fault":null,"zone":"clear","blocked_dir":"none","cmd_seq":1,"odom":{"x":0,"y":0,"theta":0,"lin":0,"ang":0},"tof_mm":{"front":1200,"rear":900,"left":2000,"right":1500,"fl":1100,"fr":1150,"rl":1800,"rr":1600},"batt_mv":12010,"errs":0}
 
 # spoken "turn left" → 90° CCW
 Mac  → {"v":1,"cmd":"turn","seq":2,"deg":90,"rate":40}

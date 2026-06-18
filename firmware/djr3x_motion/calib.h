@@ -59,16 +59,30 @@
 // braked to zero and its integrator reset rather than chasing micro-setpoints.
 #define WHEEL_STOP_EPS_MS  0.01f
 
-// ---- ToF subsystem (5× VL53L0X) — only used when MOTION_TOF_PRESENT==1 ----
-// Scaffold defaults; validate on hardware. The cliff floor/margin live in
-// safety.cpp (the firmware only needs distances in mm here). docs §6.
-#define TOF_COUNT             5
-#define TOF_ADDR_BASE         0x30      // XSHUT sequencing assigns 0x30, 0x31, … in order
-#define TOF_TIMEOUT_MS        50        // per-read I²C timeout
-#define TOF_TIMING_BUDGET_US  33000     // 33 ms measurement budget (speed vs accuracy)
-#define TOF_OUT_OF_RANGE_MM   8000      // VL53L0X returns ~8190 mm when nothing is in range
-#define TOF_MUX_ADDR          0x70      // TCA9548A I²C address (only when MOTION_TOF_USE_MUX==1)
-#define TOF_BOOT_SETTLE_MS    10        // settle time after raising each sensor's XSHUT
+// ---- ToF subsystem (8 radial sensors) — only used when MOTION_TOF_PRESENT==1 -
+// 4× short-range VL53L0X on mux ch 0-3 (45° diagonals) + 4× long-range VL53L1X on
+// mux ch 4-7 (cardinals). Requires the TCA9548A mux (8 sensors > free XSHUT GPIOs).
+// Scaffold defaults; validate on hardware. docs §6.
+#define TOF_SHORT_COUNT       4         // VL53L0X (short), mux ch 0..3 — 45° diagonals
+#define TOF_LONG_COUNT        4         // VL53L1X (long),  mux ch 4..7 — cardinals
+#define TOF_COUNT             (TOF_SHORT_COUNT + TOF_LONG_COUNT)   // 8 total
+#define TOF_MUX_ADDR          0x70      // TCA9548A I²C address (mux selects one ch at a time)
+// Per-read wait for a fresh continuous sample. MUST exceed the slowest sensor's
+// inter-measurement period (L1X, below) or a live-but-slow sensor reads as -1 while
+// we wait for its next sample. Dead sensors are skipped (s_ok), so this only bounds
+// a genuinely stuck live sensor.
+#define TOF_TIMEOUT_MS        100
+
+// VL53L0X (short range, ~1.2 m reliable):
+#define TOF_L0X_TIMING_BUDGET_US  33000 // 33 ms measurement budget (speed vs accuracy)
+#define TOF_L0X_OUT_OF_RANGE_MM   2000  // clamp "nothing in range" to a far/clear value
+
+// VL53L1X (long range): Long mode reaches ~4 m; needs a larger timing budget than L0X.
+// The inter-measurement period must be >= the timing budget (+overhead), else the
+// sensor won't produce readings (datasheet); 60 ms > 50 ms budget satisfies that.
+#define TOF_L1X_TIMING_BUDGET_US  50000 // 50 ms budget (Long mode wants >= ~33 ms)
+#define TOF_L1X_INTERMEASUREMENT_MS 60  // continuous-mode period (> timing budget)
+#define TOF_L1X_OUT_OF_RANGE_MM   4000  // clamp "nothing in range" to a far/clear value
 
 // ---- Bluetooth gamepad (Bluepad32) — only when MOTION_GAMEPAD_PRESENT==1 ----
 // Left stick = arcade drive (Y forward, X turn); L1 creep / R1 boost; B = e-stop;

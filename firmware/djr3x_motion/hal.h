@@ -14,23 +14,22 @@
 #define MOTION_HW_PRESENT 0    // override per-build: -DMOTION_HW_PRESENT=1
 #endif
 
-// MOTION_TOF_PRESENT gates the 5× VL53L0X ToF subsystem SEPARATELY from the drive
-// motors, because the base can have working motors/encoders while the ToF sensors
-// are still unwired. While it is 0 the ToF read returns "all clear" (obstacle
-// avoidance inactive); the live drive build (MOTION_HW_PRESENT=1) ships this way
-// today. Build with -DMOTION_TOF_PRESENT=1 once the sensors are wired. The real
-// driver + its addressing scheme live in tof.cpp (docs/motion_system.md §6).
+// MOTION_TOF_PRESENT gates the 8-sensor ToF subsystem (4× short VL53L0X at the 45°
+// diagonals + 4× long VL53L1X at the cardinals) SEPARATELY from the drive motors,
+// because the base can have working motors/encoders while the ToF sensors are still
+// unwired. While it is 0 the ToF read returns "all clear" (obstacle avoidance
+// inactive); the live drive build (MOTION_HW_PRESENT=1) ships this way today. Build
+// with -DMOTION_TOF_PRESENT=1 once the sensors are wired. The real driver lives in
+// tof.cpp (docs/motion_system.md §6).
 #ifndef MOTION_TOF_PRESENT
 #define MOTION_TOF_PRESENT 0   // override per-build: -DMOTION_TOF_PRESENT=1
 #endif
-// Addressing scheme for the 5 sensors on one I²C bus (docs §6.1). 1 = TCA9548A
-// I²C multiplexer (all sensors stay at 0x29; the mux selects one channel at a time —
-// uses NO extra GPIOs); 0 = XSHUT sequencing (one GPIO per sensor, each reassigned a
-// unique address). Default is the mux: it's the chosen design for this base (the
-// ESP32 is out of spare clean GPIOs) and the hardware is on hand. Build the XSHUT
-// variant with -DMOTION_TOF_USE_MUX=0.
+// Addressing scheme for the 8 sensors on one I²C bus (docs §6.1). 1 = TCA9548A I²C
+// multiplexer (all sensors stay at 0x29; the mux selects one channel at a time — uses
+// NO extra GPIOs). The mux is REQUIRED for this layout: 8 sensors exceed the ESP32's
+// free GPIOs for XSHUT sequencing (the -DMOTION_TOF_USE_MUX=0 path #errors in tof.cpp).
 #ifndef MOTION_TOF_USE_MUX
-#define MOTION_TOF_USE_MUX 1   // override per-build: -DMOTION_TOF_USE_MUX=0 (XSHUT)
+#define MOTION_TOF_USE_MUX 1   // override per-build: -DMOTION_TOF_USE_MUX=0 (unsupported: 8>GPIOs)
 #endif
 
 void hal_init();

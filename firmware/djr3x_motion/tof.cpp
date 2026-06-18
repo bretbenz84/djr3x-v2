@@ -1,47 +1,78 @@
-// tof.cpp — ToF (Time-of-Flight) distance subsystem: 5× VL53L0X.
+// tof.cpp — ToF (Time-of-Flight) distance subsystem: 8 radial sensors.
+//
+// Layout for spatial awareness (docs/motion_protocol.md §6):
+//   - 4× SHORT-range VL53L0X on mux channels 0..3, at the 45° DIAGONALS (fl/fr/rl/rr)
+//   - 4× LONG-range  VL53L1X on mux channels 4..7, at the CARDINALS (front/left/rear/right)
+// The long-range sensors give R3X a sense of where the walls are (room-scale); the
+// short diagonals fill the gaps between them for close-in obstacle coverage.
 //
 // Owns hal_read_tof() / hal_tof_init() for ALL builds, gated by MOTION_TOF_PRESENT
 // (hal.h) independently of the motor drivers — the base can drive on real motors +
 // encoders while the ToF sensors are still unwired. Until they are wired, the stub
-// reports a clear room (obstacle avoidance inactive); safety.cpp's zone/cliff reflex
-// runs against whatever this returns.
+// reports a clear room (obstacle avoidance inactive); safety.cpp's zone reflex runs
+// against whatever this returns.
 //
-// ⚠ SCAFFOLD — the real-sensor paths below are NOT yet hardware-validated. The
-//   addressing sequence, sensor→field mapping, timing budget, and the down-sensor
-//   cliff calibration (CLIFF_FLOOR_MM/CLIFF_MARGIN_MM in safety.cpp) all need
-//   bench checking once the sensors are physically on the bus. See docs §6, §14.
-//   Bring-up aid: hal_tof_init() emits one `log` line per sensor (OK/FAIL) plus a
-//   tally over the wire protocol, so wiring the bus is observable in the serial
-//   monitor / Mac logs ([motion_fw] tof[…]) instead of failing silently.
+// ⚠ SCAFFOLD — validate on hardware. The addressing sequence, timing budgets, and the
+//   sensor→field mapping all need a bench check. Bring-up aid: hal_tof_init() emits one
+//   `log` line per sensor (OK/FAIL) + a tally over the wire, so wiring the bus is
+//   observable in the serial monitor / Mac logs ([motion_fw] tof[…]) not silent.
 //
-// Two addressing schemes share one I²C bus (docs §6.1), picked at build time:
-//   MOTION_TOF_USE_MUX==0  XSHUT sequencing — every sensor powers up at 0x29, so we
-//                          hold all in reset, then bring each up alone and reassign it
-//                          0x30, 0x31, … (one XSHUT GPIO per sensor, pins.h).
-//   MOTION_TOF_USE_MUX==1  TCA9548A mux — all sensors keep 0x29; select one channel at
-//                          a time (no XSHUT GPIOs). Uses the Pololu VL53L0X lib.
+// Addressing: TCA9548A I²C mux ONLY. All 8 sensors keep the default 0x29 and the mux
+// selects one channel at a time (zero XSHUT GPIOs). 8 sensors exceed the ESP32's free
+// GPIOs for XSHUT sequencing, so that scheme is unsupported for this layout (#error).
 #include "hal.h"            // MOTION_TOF_PRESENT / MOTION_TOF_USE_MUX + TofMm (via context.h)
 
 #if MOTION_TOF_PRESENT
-// ===========================================================================
-// REAL SENSORS — VL53L0X ×5 (Pololu vl53l0x-arduino: supports setAddress()).
-// ===========================================================================
 #include "pins.h"
 #include "calib.h"
 #include "proto_io.h"       // emit_log — per-sensor bring-up diagnostics
 #include <Arduino.h>
 #include <Wire.h>
-#include <VL53L0X.h>
+#include <VL53L0X.h>        // Pololu vl53l0x-arduino (short-range diagonals)
+#include <VL53L1X.h>        // Pololu vl53l1x-arduino (long-range cardinals)
 
-static VL53L0X s_tof[TOF_COUNT];          // index order == placement order == TofMm fields
-static bool    s_ok[TOF_COUNT] = {false}; // did this sensor init? gates reads (skip dead ones)
+#if !MOTION_TOF_USE_MUX
+#error "The 8-sensor ToF layout (4x VL53L0X + 4x VL53L1X) requires the TCA9548A mux: \
+8 sensors exceed the ESP32's free XSHUT GPIOs. Build with -DMOTION_TOF_USE_MUX=1 (default)."
+#endif
 
-// Placement labels, index order == TofMm fields, for human-readable bring-up logs.
-static const char* const TOF_LABEL[TOF_COUNT] = {"fl", "fc", "fr", "rear", "down"};
+// Index order == read order == TofMm field order. First TOF_SHORT_COUNT are the
+// short VL53L0X (mux 0..3); the rest are the long VL53L1X (mux 4..7). The mux channel
+// for index i is simply i. EDIT THIS TABLE (and hal_read_tof below) to match wiring.
+//   idx mux type     field   placement (screen bearing; front = up)
+//   0   0   VL53L0X  fl      front-left   (135°)
+//   1   1   VL53L0X  fr      front-right  ( 45°)
+//   2   2   VL53L0X  rl      rear-left    (225°)
+//   3   3   VL53L0X  rr      rear-right   (315°)
+//   4   4   VL53L1X  front   front        ( 90°)
+//   5   5   VL53L1X  left    left         (180°)
+//   6   6   VL53L1X  rear    rear         (270°)
+//   7   7   VL53L1X  right   right        (  0°)
+static const char* const TOF_LABEL[TOF_COUNT] = {
+  "fl", "fr", "rl", "rr", "front", "left", "rear", "right",
+};
 
-static inline int read_mm(int i);  // forward decl (defined per addressing scheme)
+static VL53L0X s_short[TOF_SHORT_COUNT];   // index i in [0, TOF_SHORT_COUNT)
+static VL53L1X s_long[TOF_LONG_COUNT];     // index i - TOF_SHORT_COUNT in [0, TOF_LONG_COUNT)
+static bool    s_ok[TOF_COUNT] = {false};  // did this sensor init? gates reads (skip dead ones)
 
-// Final "N/5 up" tally after init — warn (not info) if any sensor is missing so a
+// Latest distance per sensor (persists across calls). hal_read_tof reads ONE sensor
+// per call (round-robin) so a blocking continuous read never stalls the loop; the rest
+// keep their last value. -1 = error / not present.
+static int16_t s_dist[TOF_COUNT] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+static int     s_next = 0;                  // round-robin cursor
+
+static inline uint8_t mux_ch(int i) { return (uint8_t)i; }   // sensor index -> mux channel
+
+// Select a mux channel; returns false if the mux did not ACK (so we don't trust a read
+// of a possibly-still-old channel).
+static bool mux_select(uint8_t ch) {
+  Wire.beginTransmission(TOF_MUX_ADDR);
+  Wire.write(1 << ch);
+  return Wire.endTransmission() == 0;
+}
+
+// Final "N/8 up" tally after init — warn (not info) if any sensor is missing so a
 // half-wired bus is obvious at a glance.
 static void tof_report_tally() {
   int up = 0;
@@ -51,21 +82,11 @@ static void tof_report_tally() {
   emit_log(up == TOF_COUNT ? "info" : "warn", buf);
 }
 
-#if MOTION_TOF_USE_MUX
-// ---- TCA9548A multiplexer ----
-static const uint8_t TOF_MUX_CH[TOF_COUNT] = {0, 1, 2, 3, 4};  // sensor i -> mux channel
-
-static void mux_select(uint8_t ch) {
-  Wire.beginTransmission(TOF_MUX_ADDR);
-  Wire.write(1 << ch);
-  Wire.endTransmission();
-}
-
 void hal_tof_init() {
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
 
   // Probe the mux first: if it doesn't ACK, every sensor below will "fail" — say so
-  // once, pointing at the real culprit (mux address / SDA-SCL / power) not 5 sensors.
+  // once, pointing at the real culprit (mux address / SDA-SCL / power) not 8 sensors.
   Wire.beginTransmission(TOF_MUX_ADDR);
   if (Wire.endTransmission() != 0) {
     char buf[64];
@@ -73,93 +94,100 @@ void hal_tof_init() {
     emit_log("error", buf);
   }
 
-  for (int i = 0; i < TOF_COUNT; i++) {
-    mux_select(TOF_MUX_CH[i]);                 // only this sensor is on the bus now
-    s_tof[i].setTimeout(TOF_TIMEOUT_MS);
-    s_ok[i] = s_tof[i].init();                 // each keeps the default 0x29 behind the mux
+  // ---- Short-range VL53L0X on mux 0..3 ----
+  for (int i = 0; i < TOF_SHORT_COUNT; i++) {
+    mux_select(mux_ch(i));                       // only this sensor is on the bus now
+    s_short[i].setTimeout(TOF_TIMEOUT_MS);
+    s_ok[i] = s_short[i].init();                 // each keeps the default 0x29 behind the mux
     if (s_ok[i]) {
-      s_tof[i].setMeasurementTimingBudget(TOF_TIMING_BUDGET_US);
-      s_tof[i].startContinuous();
+      s_short[i].setMeasurementTimingBudget(TOF_L0X_TIMING_BUDGET_US);
+      s_short[i].startContinuous();
     }
-    char buf[64];
-    snprintf(buf, sizeof(buf), "tof[%d] %-4s ch%u: %s",
-             i, TOF_LABEL[i], TOF_MUX_CH[i], s_ok[i] ? "OK" : "FAIL");
+    char buf[72];
+    snprintf(buf, sizeof(buf), "tof[%d] %-5s ch%u VL53L0X: %s",
+             i, TOF_LABEL[i], mux_ch(i), s_ok[i] ? "OK" : "FAIL");
     emit_log(s_ok[i] ? "info" : "warn", buf);
   }
+
+  // ---- Long-range VL53L1X on mux 4..7 ----
+  for (int j = 0; j < TOF_LONG_COUNT; j++) {
+    const int i = TOF_SHORT_COUNT + j;
+    mux_select(mux_ch(i));
+    s_long[j].setTimeout(TOF_TIMEOUT_MS);
+    s_ok[i] = s_long[j].init();
+    if (s_ok[i]) {
+      s_long[j].setDistanceMode(VL53L1X::Long);
+      s_long[j].setMeasurementTimingBudget(TOF_L1X_TIMING_BUDGET_US);
+      s_long[j].startContinuous(TOF_L1X_INTERMEASUREMENT_MS);
+    }
+    char buf[72];
+    snprintf(buf, sizeof(buf), "tof[%d] %-5s ch%u VL53L1X: %s",
+             i, TOF_LABEL[i], mux_ch(i), s_ok[i] ? "OK" : "FAIL");
+    emit_log(s_ok[i] ? "info" : "warn", buf);
+  }
+
   tof_report_tally();
 }
 
-static inline int read_mm(int i) {
-  if (!s_ok[i]) return -1;                      // dead sensor: skip the blocking I²C wait
-  mux_select(TOF_MUX_CH[i]);
-  const int mm = s_tof[i].readRangeContinuousMillimeters();
-  if (s_tof[i].timeoutOccurred()) return -1;    // -1 == genuine read error / no comms ONLY
-  if (mm >= TOF_OUT_OF_RANGE_MM) return TOF_OUT_OF_RANGE_MM;  // nothing in range = far/clear, NOT an error
+// Read one sensor by index. Returns mm, or -1 on a genuine read error / no comms.
+// A value at/over the per-type out-of-range cap means "nothing in range = clear".
+static int read_mm(int i) {
+  if (!s_ok[i]) return -1;                        // dead sensor: skip the blocking I²C wait
+  if (!mux_select(mux_ch(i))) return -1;           // mux NACK: channel didn't switch — don't trust it
+
+  if (i < TOF_SHORT_COUNT) {                       // VL53L0X
+    const int mm = s_short[i].readRangeContinuousMillimeters();
+    if (s_short[i].timeoutOccurred()) return -1;
+    if (mm >= TOF_L0X_OUT_OF_RANGE_MM) return TOF_L0X_OUT_OF_RANGE_MM;
+    return mm;
+  }
+
+  VL53L1X& s = s_long[i - TOF_SHORT_COUNT];        // VL53L1X
+  const int mm = (int)s.read();                    // blocking read of the continuous result
+  if (s.timeoutOccurred()) return -1;
+  // The whole "RangeValid family" carries a usable distance (Pololu enum): plain valid,
+  // min-range-clipped, and no-wrap-check-fail (the latter is common on the first sample).
+  // Only a hard-fail status (sigma/signal/out-of-bounds/hardware) means no real return.
+  const VL53L1X::RangeStatus rs = s.ranging_data.range_status;
+  const bool valid = (rs == VL53L1X::RangeValid ||
+                      rs == VL53L1X::RangeValidMinRangeClipped ||
+                      rs == VL53L1X::RangeValidNoWrapCheckFail);
+  if (!valid || mm >= TOF_L1X_OUT_OF_RANGE_MM) return TOF_L1X_OUT_OF_RANGE_MM;
   return mm;
 }
-
-#else
-// ---- XSHUT sequencing (one GPIO per sensor) ----
-static const int XSHUT[TOF_COUNT] = {
-  PIN_TOF_XSHUT_FL, PIN_TOF_XSHUT_FC, PIN_TOF_XSHUT_FR, PIN_TOF_XSHUT_REAR, PIN_TOF_XSHUT_DOWN,
-};
-
-void hal_tof_init() {
-  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-  // Hold every sensor in reset so the bus starts with nothing at 0x29.
-  for (int i = 0; i < TOF_COUNT; i++) {
-    pinMode(XSHUT[i], OUTPUT);
-    digitalWrite(XSHUT[i], LOW);
-  }
-  delay(TOF_BOOT_SETTLE_MS);
-  // Bring up one at a time; while a sensor is the only one at 0x29, move it to a
-  // unique address so the rest can join without colliding. (Pololu multi-sensor
-  // pattern: setAddress() writes via the current 0x29, then init() uses the new one.)
-  for (int i = 0; i < TOF_COUNT; i++) {
-    digitalWrite(XSHUT[i], HIGH);
-    delay(TOF_BOOT_SETTLE_MS);
-    s_tof[i].setTimeout(TOF_TIMEOUT_MS);
-    s_tof[i].setAddress(TOF_ADDR_BASE + i);
-    s_ok[i] = s_tof[i].init();
-    if (s_ok[i]) {
-      s_tof[i].setMeasurementTimingBudget(TOF_TIMING_BUDGET_US);
-      s_tof[i].startContinuous();
-    }
-    char buf[64];
-    snprintf(buf, sizeof(buf), "tof[%d] %-4s gpio%d addr0x%02X: %s",
-             i, TOF_LABEL[i], XSHUT[i], TOF_ADDR_BASE + i, s_ok[i] ? "OK" : "FAIL");
-    emit_log(s_ok[i] ? "info" : "warn", buf);
-  }
-  tof_report_tally();
-}
-
-static inline int read_mm(int i) {
-  if (!s_ok[i]) return -1;                      // dead sensor: skip the blocking I²C wait
-  const int mm = s_tof[i].readRangeContinuousMillimeters();
-  if (s_tof[i].timeoutOccurred()) return -1;    // -1 == genuine read error / no comms ONLY
-  if (mm >= TOF_OUT_OF_RANGE_MM) return TOF_OUT_OF_RANGE_MM;  // nothing in range = far/clear, NOT an error
-  return mm;
-}
-#endif  // MOTION_TOF_USE_MUX
 
 void hal_read_tof(TofMm& out) {
-  out.fl   = (int16_t)read_mm(0);
-  out.fc   = (int16_t)read_mm(1);
-  out.fr   = (int16_t)read_mm(2);
-  out.rear = (int16_t)read_mm(3);
-  out.down = (int16_t)read_mm(4);
+  // Round-robin: read ONE sensor per call. Each continuous sensor produces a sample
+  // every ~33-60 ms; by the time the cursor revisits a sensor its sample is ready, so
+  // the blocking read returns immediately instead of stalling the loop on every pass.
+  const int i = s_next;
+  s_next = (s_next + 1) % TOF_COUNT;
+  if (!s_ok[i]) {
+    s_dist[i] = -1;                               // not present -> honest error/no-data
+  } else {
+    const int mm = read_mm(i);
+    if (mm >= 0) s_dist[i] = (int16_t)mm;          // transient -1 keeps the last good value
+  }
+
+  out.fl    = s_dist[0];   // short, mux 0
+  out.fr    = s_dist[1];   // short, mux 1
+  out.rl    = s_dist[2];   // short, mux 2
+  out.rr    = s_dist[3];   // short, mux 3
+  out.front = s_dist[4];   // long,  mux 4
+  out.left  = s_dist[5];   // long,  mux 5
+  out.rear  = s_dist[6];   // long,  mux 6
+  out.right = s_dist[7];   // long,  mux 7
 }
 
 #else
 // ===========================================================================
 // STUB — no ToF sensors wired. Report a clear room so the reflex/zone logic stays
-// in CLEAR; down=60 mm (floor present, under the cliff threshold). OBSTACLE
-// AVOIDANCE IS INACTIVE in this build.
+// in CLEAR. OBSTACLE AVOIDANCE IS INACTIVE in this build.
 // ===========================================================================
 void hal_tof_init() {}
 
 void hal_read_tof(TofMm& out) {
-  out.fl = out.fc = out.fr = out.rear = 1500;
-  out.down = 60;
+  out.front = out.rear = out.left = out.right = 2000;
+  out.fl = out.fr = out.rl = out.rr = 1500;
 }
 #endif  // MOTION_TOF_PRESENT

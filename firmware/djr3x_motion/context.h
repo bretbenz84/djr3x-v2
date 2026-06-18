@@ -79,8 +79,14 @@ struct Setpoint {
 };
 
 // ===== ToF distances (mm; -1 = sensor error) ==============================
+// 8 radial sensors for spatial awareness (docs/motion_protocol.md §6):
+//   - 4 long-range VL53L1X at the CARDINALS: front / rear / left / right
+//   - 4 short-range VL53L0X at the 45° DIAGONALS: fl / fr / rl / rr
+// No down/cliff sensor in this layout. A reading is mm, -1 = sensor error, and a
+// large value (per-type out-of-range cap) means "nothing in range = clear".
 struct TofMm {
-  int16_t fl = 1500, fc = 1500, fr = 1500, rear = 1500, down = 60;
+  int16_t front = 2000, rear = 2000, left = 2000, right = 2000;  // long-range (VL53L1X)
+  int16_t fl = 1500, fr = 1500, rl = 1500, rr = 1500;            // short-range (VL53L0X)
 };
 
 // ===== The whole shared state =============================================

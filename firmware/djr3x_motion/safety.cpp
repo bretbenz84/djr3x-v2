@@ -3,8 +3,14 @@
 #include <math.h>
 
 #define SAFETY_EPS       0.005f
-#define CLIFF_FLOOR_MM   60      // expected floor distance for the down sensor
-#define CLIFF_MARGIN_MM  80      // drop beyond floor+margin => cliff
+// NOTE: this radial ToF layout (8 horizontal sensors) has NO down-facing cliff
+// sensor, so cliff/stair-edge detection is NOT available — the base will drive off
+// a drop-off. Reflex protection here is obstacle-only (front/rear zones).
+// FAIL-OPEN: if every sensor in the travel direction reads -1 (all errored / unwired),
+// min3_valid yields 32767 and the zone is CLEAR — the base is NOT stopped. tof.cpp
+// holds each sensor's last-good value through a transient -1, so this only bites when
+// a whole direction is genuinely dead/unwired (acceptable during bring-up; revisit to
+// fail-safe — treat persistent all-error as STOP — before trusting autonomy).
 
 // Edge-trigger memory (only this task touches these).
 static bool       s_prev_blocked = false;
@@ -78,23 +84,22 @@ void safety_tick() {
   MotionDir travel = (lin > SAFETY_EPS) ? DIR_FRONT
                    : (lin < -SAFETY_EPS) ? DIR_REAR : DIR_NONE;
 
+  // Nearest obstacle in the travel direction: the cardinal sensor + the two
+  // diagonals flanking it (front -> front + fl + fr; rear -> rear + rl + rr).
   int16_t d_mm = 32767;
-  bool cliff = false;
   if (travel == DIR_FRONT) {
-    d_mm = min3_valid(c.tof.fl, c.tof.fc, c.tof.fr);
-    if (c.tof.down >= 0 && c.tof.down > (CLIFF_FLOOR_MM + CLIFF_MARGIN_MM)) cliff = true;
+    d_mm = min3_valid(c.tof.front, c.tof.fl, c.tof.fr);
   } else if (travel == DIR_REAR) {
-    d_mm = (c.tof.rear >= 0) ? c.tof.rear : 32767;
+    d_mm = min3_valid(c.tof.rear, c.tof.rl, c.tof.rr);
   }
 
   MotionZone z;
-  if (cliff)                                       z = Z_CLIFF;
-  else if (d_mm < (int)(c.params.stop_zone_m * 1000.0f)) z = Z_STOP;
+  if      (d_mm < (int)(c.params.stop_zone_m * 1000.0f)) z = Z_STOP;
   else if (d_mm < (int)(c.params.slow_zone_m * 1000.0f)) z = Z_SLOW;
-  else                                              z = Z_CLEAR;
+  else                                                   z = Z_CLEAR;
 
   c.zone = z;
-  c.blocked_dir = (z == Z_STOP || z == Z_CLIFF) ? (cliff ? DIR_FRONT : travel) : DIR_NONE;
+  c.blocked_dir = (z == Z_STOP) ? travel : DIR_NONE;
 
   // ---- Reflex stop: only toggles within the IDLE/MOVING/BLOCKED group ----
   // A gamepad operator holding full-override (docs §11.4) deliberately bypasses the
