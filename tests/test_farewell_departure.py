@@ -29,12 +29,26 @@ class FarewellDepartureTests(unittest.TestCase):
         self.assertTrue(end_thread.recent_farewell())
         self.assertTrue(end_thread.note_farewell_departure())
         self.assertTrue(end_thread.is_conversation_closed())
-        # Every inline proactive path backs off on this flag.
+        # The conversation re-engagement paths back off on this flag.
         self.assertTrue(end_thread.is_grace_active())
-        # While closed nobody's there — allow nothing, not even check-ins.
-        self.assertFalse(end_thread.can_proactive_purpose("idle_monologue"))
-        self.assertFalse(end_thread.can_proactive_purpose("presence_reaction"))
+        # Person- / conversation-facing proactive purposes are blocked: no
+        # re-engaging the person who left or rehashing the chat.
+        self.assertFalse(end_thread.can_proactive_purpose("visual_curiosity"))
+        self.assertFalse(end_thread.can_proactive_purpose("small_talk"))
         self.assertFalse(end_thread.can_proactive_purpose("emotional_checkin"))
+
+    def test_closed_conversation_still_allows_bored_empty_room_commentary(self):
+        # The user liked the "bored in an empty room → doze off to sleep" behavior:
+        # after a goodbye + departure, room/bored commentary must SURVIVE the latch
+        # (it never references the conversation), even though re-engagement does not.
+        end_thread.note_user_turn("nice talking to you, gotta go")
+        end_thread.note_farewell_departure()
+        self.assertTrue(end_thread.is_conversation_closed())
+        for purpose in ("idle_monologue", "ambient_observation", "startup_empty_room"):
+            self.assertTrue(
+                end_thread.can_proactive_purpose(purpose),
+                f"{purpose} should survive the farewell latch",
+            )
 
     def test_topic_closure_does_not_arm_latch(self):
         # A topic landing ("never mind") is a soft close, not a goodbye — stepping

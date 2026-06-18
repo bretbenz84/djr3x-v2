@@ -67,6 +67,19 @@ _SWITCH_PAT = re.compile(
     re.IGNORECASE,
 )
 
+# Proactive purposes that are about the empty ROOM or Rex HIMSELF — bored grumbles,
+# empty-room riffs, ambient observations — as opposed to re-engaging the person or
+# rehashing the conversation. These are the only things allowed to run once a
+# farewell has closed the conversation: they keep Rex company in an empty room and
+# carry him into the doze-off-to-sleep flow, without ever continuing the chat the
+# person just ended. (idle_monologue is shared with the person-facing idle banter,
+# but that path self-suppresses on is_grace_active() before it ever reaches here.)
+_EMPTY_ROOM_PURPOSES = frozenset({
+    "idle_monologue",
+    "ambient_observation",
+    "startup_empty_room",
+})
+
 
 @dataclass
 class EndThreadState:
@@ -224,9 +237,13 @@ def is_grace_active() -> bool:
 
 
 def can_proactive_purpose(purpose: str) -> bool:
-    # Conversation closed → nobody's there; allow nothing, not even check-ins.
+    # Conversation closed (they said bye and left): no re-engaging the person or
+    # rehashing the chat — but Rex may still keep himself company with the
+    # empty-room / bored commentary that eventually dozes him off to sleep. Those
+    # purposes are about the room or Rex himself, never the person who left, so
+    # they survive the latch; everything person- or conversation-facing does not.
     if is_conversation_closed():
-        return False
+        return purpose in _EMPTY_ROOM_PURPOSES
     if not is_grace_active():
         return True
     return purpose in {"emotional_checkin", "identity_prompt", "relationship_inquiry"}
