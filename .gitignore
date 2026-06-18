@@ -215,6 +215,9 @@ __marimo__/
 # API credentials
 apikeys.py
 
+# User-facing config overrides (copied from user_config.example.py by setup)
+user_config.py
+
 # AI models — most are downloaded by setup_assets.py and too large for git.
 # Keep wake-word ONNX assets tracked so fresh installs can interrupt/listen.
 assets/models/*

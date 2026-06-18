@@ -409,6 +409,22 @@ else
     fi
 fi
 
+# user_config.py
+USER_CONFIG_SRC="$PROJECT_DIR/user_config.example.py"
+USER_CONFIG_DST="$PROJECT_DIR/user_config.py"
+if [[ -f "$USER_CONFIG_DST" ]]; then
+    ok "user_config.py already exists — not overwritten."
+else
+    if [[ -f "$USER_CONFIG_SRC" ]]; then
+        cp "$USER_CONFIG_SRC" "$USER_CONFIG_DST"
+        INSTALLED_ITEMS+=("user_config.py (copied from template)")
+        ok "user_config.py created from user_config.example.py."
+    else
+        warn "user_config.example.py not found — cannot create user_config.py."
+        MANUAL_ATTENTION+=("Create user_config.py manually (template user_config.example.py is missing)")
+    fi
+fi
+
 # ── 8. Interactive local configuration ────────────────────────────────────────
 _set_env_value() {
     local key="$1"

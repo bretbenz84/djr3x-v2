@@ -4826,3 +4826,25 @@ MOTION_SERIAL_TIMEOUT_SECS = 0.1
 MOTION_CONNECT_RETRY_ATTEMPTS = 3
 MOTION_CONNECT_RETRY_DELAY_SECS = 1.0
 MOTION_ACK_TIMEOUT_SECS = 0.5         # how long send-and-confirm waits for an ack
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# USER OVERRIDES
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-deployment overrides live in user_config.py (gitignored; copied from
+# user_config.example.py by setup_macos.sh). It is imported LAST so its values win
+# over every default defined above. If the file is missing or empty, the defaults
+# above are used unchanged.
+try:
+    from user_config import *  # noqa: F401,F403  (intentional override layer)
+except ImportError:
+    pass
+
+# Re-derive values that were computed from a base the user may have overridden in
+# user_config.py. These aliases were evaluated at definition time (far above),
+# BEFORE the import, so without this an override of e.g. LLM_MODEL would never
+# reach them. (AUDIO_OUTPUT_SUPPRESSED ← NO_AUDIO_MODE and
+# COMMON_FIRST_NAME_LAST_NAME_MIN_PERSON_TURNS ← LONG_CONVERSATION_MIN_EXCHANGES
+# track bases that are intentionally NOT exposed in user_config, so they stay.)
+ACTION_ROUTER_MODEL = LLM_MODEL
+STARTUP_BOOT_TTS_LINE = STARTUP_BOOT_TTS_LINES[0]
