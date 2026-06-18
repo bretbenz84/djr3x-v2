@@ -2808,6 +2808,13 @@ POST_TTS_CAPTURE_PREROLL_GRACE_SECS_AEC = 0.5
 CONVERSATION_IDLE_TIMEOUT_SECS = 45.0
 ACTIVE_GAME_IDLE_TIMEOUT_SECS = 180.0
 
+# Start (and wake) Rex in ACTIVE, not IDLE — booting/waking him IS activating him, so
+# the conversation loop (incl. the short re-engagement of a present-but-quiet person)
+# runs from the start instead of waiting for a wake word. Empty-room startup self-
+# corrects: re-engagement no-ops with no one present, and the session idle-times out
+# back to IDLE. Set False to restore the old wake-word-gated IDLE startup.
+STARTUP_STATE_ACTIVE = True
+
 # If a person has just volunteered a favorite thing or interest, give Rex one
 # topic-aware chance to keep the thread alive before the normal idle timeout.
 INTEREST_IDLE_FOLLOWUP_ENABLED = True
@@ -2828,10 +2835,10 @@ IDLE_BANTER_ENABLED = True
 # natural conversationalist keeping things alive — 30s/45s of dead air felt abandoned.
 # Randomized so it doesn't feel metronomic. (IDLE_BANTER_SECS kept as a legacy fallback
 # / upper bound for callers that read it directly.)
-IDLE_BANTER_MIN_SECS = 6.0
-IDLE_BANTER_MAX_SECS = 10.0
-IDLE_BANTER_SECS = 10.0
-IDLE_BANTER_COOLDOWN_SECS = 14.0  # minimum gap between nudges
+IDLE_BANTER_MIN_SECS = 5.0
+IDLE_BANTER_MAX_SECS = 8.0
+IDLE_BANTER_SECS = 8.0
+IDLE_BANTER_COOLDOWN_SECS = 10.0  # minimum gap between nudges
 IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up (was 3 —
                                   # 3 made him re-volunteer the same preoccupation too often)
 # Priority idle banter competes with under ACTION_GOVERNOR_ENFORCE (proactive-layer

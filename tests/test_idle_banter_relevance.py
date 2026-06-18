@@ -79,6 +79,15 @@ class IdleHasLiveTopicTest(unittest.TestCase):
         ]):
             self.assertTrue(ix._idle_has_live_topic())
 
+    def test_only_rex_spoke_is_not_live(self):
+        # A present-but-silent person Rex only greeted has no topic to deepen — so
+        # re-engagement asks a getting-to-know-you question, not a fake topic follow-up.
+        with self._patch_transcript([
+            {"speaker": "Rex", "text": "Hey Bret, good to see you!"},
+            {"speaker": "Rex", "text": "Juneteenth at home, nice."},
+        ]):
+            self.assertFalse(ix._idle_has_live_topic())
+
     def test_blank_text_entries_do_not_count(self):
         with self._patch_transcript([
             {"speaker": "Bret", "text": "   "},

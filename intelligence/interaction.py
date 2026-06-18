@@ -3703,13 +3703,22 @@ def _governor_enforcing() -> bool:
 
 
 def _idle_has_live_topic() -> bool:
-    """True when the session already has a real exchange to riff on (so an idle
-    volunteer should stay ON that topic rather than pull out Rex's own preoccupation)."""
+    """True when the USER has actually contributed something to riff on — so an idle
+    re-engagement deepens that thread. Requires a real USER turn, NOT just Rex talking:
+    a present-but-silent person Rex only greeted has no live topic, so re-engaging them
+    should ask a getting-to-know-you question, not 'follow up' on a thread they never
+    started."""
     try:
-        return sum(
-            1 for t in conv_memory.get_session_transcript()
+        entries = [
+            t for t in conv_memory.get_session_transcript()
             if (t.get("text") or "").strip()
-        ) >= 2
+        ]
+        if len(entries) < 2:
+            return False
+        return any(
+            str(t.get("speaker") or "").strip().lower() not in ("rex", "dj-r3x", "dj rex")
+            for t in entries
+        )
     except Exception:
         return False
 
@@ -3832,16 +3841,13 @@ def _maybe_idle_banter(
     # room — where alternating keeps it from being a wall of questions. (Truly long idle
     # is owned by the session timeout + outro, not by piling on more banter.)
     live_topic = _idle_has_live_topic()
-    if live_topic:
-        ask_user = True
-    else:
-        ask_user = (_idle_banter_count % len(_IDLE_BANTER_DIRECTIVES)) != 0
+    # Re-engaging a quiet person should ALWAYS draw THEM out with a question — deepen the
+    # live thread if the user actually started one, otherwise a getting-to-know-you
+    # question (the user's ask: "ask questions so R3X can continue to get to know the
+    # person"). Rex's own off-topic opinions still surface in the reply path; idle banter
+    # is for engaging the speaker, not monologuing at a silent one.
+    ask_user = True
     pov_text = ""
-    if not ask_user and not live_topic:
-        try:
-            pov_text = "" if rex_pov.pov_recently_spoken() else rex_pov.active_pov_text()
-        except Exception:
-            pov_text = ""
     directive, pov_volunteered = _idle_banter_directive(ask_user, live_topic, pov_text)
     # True only when we're turning the spotlight on the user MID-topic — the agenda
     # below then anchors the question to the live thread instead of a fresh interview.
@@ -3983,6 +3989,11 @@ def _maybe_idle_outro() -> bool:
     if _idle_outro_spoken:
         return False
     if not bool(getattr(config, "IDLE_OUTRO_ENABLED", True)):
+        return False
+    # Don't say a goodbye to an empty room: with STARTUP_STATE_ACTIVE, an empty-room
+    # boot starts ACTIVE and times out here with no conversation ever having happened.
+    # Only outro if there was a real exchange OR someone is still present.
+    if _session_exchange_count <= 0 and _primary_session_person_id() is None:
         return False
     if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
         return False
@@ -19135,7 +19146,7 @@ def start(*, text_only: bool = False) -> None:
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_prompted_name_confirmation
-    global _text_only_mode
+    global _text_only_mode, _last_speech_at
 
     if _thread and _thread.is_alive():
         _log.warning("[interaction] already running")
@@ -19202,6 +19213,16 @@ def start(*, text_only: bool = False) -> None:
         )
         if state_module.get_state() == State.IDLE:
             state_module.set_state(State.ACTIVE)
+
+    # Starting (or waking) Rex IS activating him — begin in ACTIVE so the conversation
+    # loop, and its short re-engagement of a present-but-quiet person, runs from the
+    # start instead of sitting in IDLE waiting for a wake word. Empty-room startup
+    # self-corrects: with no one present the re-engagement no-ops and the session times
+    # out back to IDLE. Seed _last_speech_at so the idle timer starts fresh (no nudge at
+    # t=0). Toggle with STARTUP_STATE_ACTIVE.
+    if bool(getattr(config, "STARTUP_STATE_ACTIVE", True)) and state_module.get_state() == State.IDLE:
+        state_module.set_state(State.ACTIVE)
+    _last_speech_at = time.monotonic()
 
     _thread = threading.Thread(
         target=_loop, daemon=True, name="interaction-loop"
