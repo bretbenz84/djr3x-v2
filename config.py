@@ -2137,11 +2137,15 @@ POST_QUESTION_FLUSH_AUDIO_BUFFER = False
 # just as fast as a question gets answered). The old statement handoff used the
 # full 0.5s attenuation tail AND flushed the buffer, so a reply that began as Rex
 # finished a statement lost its front ("there's much more to Sacramento than
-# politics" → "to Sacramento than politics"). These give statements the same
-# responsive treatment questions already get: a short tail and no destructive
-# flush. The capture floor + preroll grace (below) recover the front from the
-# raw (un-attenuated) buffer. Words spoken *over* Rex still need hardware AEC.
-POST_SPEECH_PLAYBACK_SUPPRESSION_SECS = 0.25
+# politics" → "to Sacramento than politics"). Now set EQUAL to the question tail
+# (POST_QUESTION_PLAYBACK_SUPPRESSION_SECS): a reply landing right after a
+# statement was still losing its opening words at 0.25s while questions captured
+# the full reply at 0.12s (live 2026-06-18: "I can't eat until tonight" clipped to
+# a trailing "can't eat until tonight" fragment). Statements get the identical
+# responsive treatment questions already get. The capture floor + preroll grace
+# (below) recover the front from the raw (un-attenuated) buffer; words spoken
+# *over* Rex still need hardware AEC.
+POST_SPEECH_PLAYBACK_SUPPRESSION_SECS = 0.12  # match POST_QUESTION_PLAYBACK_SUPPRESSION_SECS
 POST_SPEECH_FLUSH_AUDIO_BUFFER = False
 
 # ElevenLabs clips can contain trailing near-silence. Humans naturally answer
@@ -2765,10 +2769,11 @@ INCOMPLETE_TURN_HOLD_SECS = 4.0
 INCOMPLETE_TURN_PROMPT_REPLY_WINDOW_SECS = 10.0
 
 # Seconds after a Rex statement completes before VAD detections are accepted —
-# just long enough for room echo of his own voice to decay. Lowered 0.35 → 0.2 so
-# a reply that starts right as Rex finishes a statement is detected sooner (the
+# just long enough for room echo of his own voice to decay. Lowered 0.35 → 0.2 →
+# 0.12 to MATCH POST_QUESTION_LISTEN_DELAY_SECS so a reply starting right as Rex
+# finishes a statement is detected just as promptly as a reply to a question (the
 # buffer is no longer flushed, so the front is preserved and recovered via preroll).
-POST_SPEECH_LISTEN_DELAY_SECS = 0.2
+POST_SPEECH_LISTEN_DELAY_SECS = 0.12  # match POST_QUESTION_LISTEN_DELAY_SECS
 
 # When Rex just asked a direct question, resume quickly while giving the local
 # output/mic path a small moment to settle.

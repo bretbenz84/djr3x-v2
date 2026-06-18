@@ -9846,8 +9846,25 @@ class HardwareAecBoundaryTest(unittest.TestCase):
     def test_tail_unchanged_when_aec_inactive(self):
         from intelligence import interaction
         with mock.patch("audio.hardware_aec.is_active", return_value=False):
+            # Statements (False) now use the same short tail as questions (True) so a
+            # reply landing right after a statement isn't clipped (live 2026-06-18).
             self.assertEqual(interaction._reply_playback_tail_secs(True), 0.12)
-            self.assertEqual(interaction._reply_playback_tail_secs(False), 0.25)
+            self.assertEqual(interaction._reply_playback_tail_secs(False), 0.12)
+
+    def test_statement_handoff_matches_question_suppression(self):
+        """Statements get the identical whisper-suppression handoff as questions:
+        same post-playback attenuation tail AND the same listen-resume delay, so a
+        reply spoken right after a statement keeps its opening words."""
+        from intelligence import interaction
+        with mock.patch("audio.hardware_aec.is_active", return_value=False):
+            self.assertEqual(
+                interaction._reply_playback_tail_secs(False),   # statement
+                interaction._reply_playback_tail_secs(True),    # question
+            )
+        statement = interaction._post_tts_handoff_policy("Classic choice.")
+        question = interaction._post_tts_handoff_policy("What's your favorite movie?")
+        self.assertEqual(statement.listen_delay_secs, question.listen_delay_secs)
+        self.assertEqual(statement.flush_buffer, question.flush_buffer)
 
     def test_handoff_resumes_fast_and_reaches_back_when_aec_active(self):
         from intelligence import interaction
