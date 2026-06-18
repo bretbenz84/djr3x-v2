@@ -3913,6 +3913,16 @@ MEMORY_CONSOLIDATION_TIMEOUT_SECS = 12.0
 # optional proactive chatter stays quiet this long so the thread can land.
 END_OF_THREAD_GRACE_SECS = 35.0
 
+# Explicit-goodbye exit. When the user says a genuine sign-off ("gotta go", "nice
+# talking", "bye") AND then leaves the camera view, the conversation is over: Rex
+# skips the departure quip and goes dormant (no idle banter / monologue /
+# re-engagement) until they come back. FAREWELL_DEPART_WINDOW_SECS is how recent
+# the verbal goodbye must be for a subsequent camera departure to count as "they
+# said bye and left." FAREWELL_CLOSED_MAX_SECS caps the dormant latch so it can
+# never wedge Rex silent forever if a return is somehow missed.
+FAREWELL_DEPART_WINDOW_SECS = 120.0
+FAREWELL_CLOSED_MAX_SECS = 600.0
+
 # If a person hasn't visited in this many days Rex comments on the long absence
 LONG_ABSENCE_THRESHOLD_DAYS = 60
 

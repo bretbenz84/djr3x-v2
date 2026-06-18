@@ -42,6 +42,20 @@ _SHORT_ACK_PAT = re.compile(
     r"^\s*(ok|okay|cool|nice|yeah|yep|alright|right|gotcha|thanks|thank you)\s*[.!]?\s*$",
     re.IGNORECASE,
 )
+# Genuine sign-offs — "I'm leaving / signing off" cues, a deliberately narrower
+# subset of _CLOSURE_PAT. Only these arm the farewell-departure latch: a topic
+# closure like "moving on" or "that's all" should NOT make Rex go dormant if the
+# person then steps off-camera, but an actual goodbye should.
+_FAREWELL_PAT = re.compile(
+    r"\b(bye|goodbye|good-bye|see you|see ya|"
+    r"talk to you later|talk later|catch you later|"
+    r"nice (?:talking|chatting|speaking)|"
+    r"i'?m\s+(?:gonna|going to)\s+(?:go|head out|take off|get going)|"
+    r"i\s+(?:gotta|have to|need to|hafta)\s+(?:go|head out|take off|get going|run)|"
+    r"gotta\s+go|heading\s+out|i'?m\s+off|i'?m\s+out|i'?m\s+leaving|"
+    r"take care)\b",
+    re.IGNORECASE,
+)
 _THANKS_FOR_ASKING_PAT = re.compile(r"\bthanks?(?:\s+you)?\s+for\s+asking\b", re.IGNORECASE)
 _QUESTION_START = re.compile(
     r"^\s*(who|what|when|where|why|how|can|could|would|will|do|does|did|"
@@ -66,13 +80,21 @@ class EndThreadState:
 _lock = threading.Lock()
 _state: Optional[EndThreadState] = None
 _last_assistant_had_question: bool = False
+# Monotonic time of the last explicit verbal farewell, and the latch set once that
+# farewell is followed by the person leaving the camera view. While the latch is
+# live, Rex treats the conversation as fully closed — no proactive re-engagement —
+# until they come back (a new turn or a presence return) or the safety cap lapses.
+_farewell_at: Optional[float] = None
+_conversation_closed_at: Optional[float] = None
 
 
 def clear() -> None:
-    global _state, _last_assistant_had_question
+    global _state, _last_assistant_had_question, _farewell_at, _conversation_closed_at
     with _lock:
         _state = None
         _last_assistant_had_question = False
+        _farewell_at = None
+        _conversation_closed_at = None
 
 
 def note_assistant_turn(text: str) -> None:
@@ -114,9 +136,12 @@ def note_user_turn(
         quiet_until=now + _grace_secs(),
         detected_at=now,
     )
-    global _state
+    is_farewell = bool(_FAREWELL_PAT.search(cleaned))
+    global _state, _farewell_at
     with _lock:
         _state = state
+        if is_farewell:
+            _farewell_at = now
     return asdict(state)
 
 
@@ -144,12 +169,64 @@ def pending_closure() -> Optional[dict]:
         return asdict(_state)
 
 
+def recent_farewell(within_secs: Optional[float] = None) -> bool:
+    """True when the user gave an explicit verbal goodbye recently enough that a
+    camera departure now should be read as 'they said bye and left.'"""
+    window = _farewell_window_secs() if within_secs is None else float(within_secs)
+    with _lock:
+        if _farewell_at is None:
+            return False
+        return (time.monotonic() - _farewell_at) <= window
+
+
+def note_farewell_departure() -> bool:
+    """Latch the conversation closed: the person left the camera view shortly after
+    an explicit goodbye. Keeps Rex from re-engaging an empty room until they come
+    back. Returns True if it latched (i.e. a recent farewell was on record)."""
+    now = time.monotonic()
+    global _conversation_closed_at
+    with _lock:
+        if _farewell_at is None or (now - _farewell_at) > _farewell_window_secs():
+            return False
+        _conversation_closed_at = now
+        return True
+
+
+def note_presence_return() -> None:
+    """A departed person came back into view — a clean slate. The prior thread is
+    over and Rex re-greets fresh (the return reaction handles that), so drop both
+    the farewell dormancy AND any lingering end-of-thread grace from the goodbye
+    so normal proactive life resumes once he's said hello."""
+    clear()
+
+
+def is_conversation_closed() -> bool:
+    """True while a farewell-then-departure has Rex dormant. Self-expires after the
+    safety cap so a missed return can never wedge him permanently silent."""
+    global _conversation_closed_at
+    with _lock:
+        if _conversation_closed_at is None:
+            return False
+        if (time.monotonic() - _conversation_closed_at) > _farewell_closed_max_secs():
+            _conversation_closed_at = None
+            return False
+        return True
+
+
 def is_grace_active() -> bool:
+    # A closed conversation (explicit goodbye + left view) is a hard, longer-lived
+    # form of grace: every inline proactive path already backs off on this flag, so
+    # folding it in here muzzles idle banter / monologue / re-engagement for free.
+    if is_conversation_closed():
+        return True
     with _lock:
         return _state is not None and time.monotonic() < _state.quiet_until
 
 
 def can_proactive_purpose(purpose: str) -> bool:
+    # Conversation closed → nobody's there; allow nothing, not even check-ins.
+    if is_conversation_closed():
+        return False
     if not is_grace_active():
         return True
     return purpose in {"emotional_checkin", "identity_prompt", "relationship_inquiry"}
@@ -170,6 +247,14 @@ def build_directive() -> str:
 
 def _grace_secs() -> float:
     return max(5.0, float(getattr(config, "END_OF_THREAD_GRACE_SECS", 35.0)))
+
+
+def _farewell_window_secs() -> float:
+    return max(5.0, float(getattr(config, "FAREWELL_DEPART_WINDOW_SECS", 120.0)))
+
+
+def _farewell_closed_max_secs() -> float:
+    return max(30.0, float(getattr(config, "FAREWELL_CLOSED_MAX_SECS", 600.0)))
 
 
 def _starts_new_thread(text: str) -> bool:

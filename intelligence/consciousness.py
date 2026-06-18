@@ -6430,6 +6430,35 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
 
         is_known = isinstance(key, int) and person_name
 
+        # Explicit goodbye + now leaving the camera view = the conversation is
+        # genuinely over. Rex already answered the sign-off ("Catch you later!"),
+        # so a departure quip on top reads as if he never heard it — and it kicks
+        # off the idle-banter cascade that leaves him talking to an empty room.
+        # Suppress the quip, latch "conversation closed" (idle banter / monologue /
+        # re-engagement stay quiet until they come back), but still log the visit.
+        try:
+            from intelligence import end_thread
+            if end_thread.recent_farewell():
+                end_thread.note_farewell_departure()
+                if is_known:
+                    _log.info(
+                        "consciousness: %s left after an explicit goodbye — "
+                        "conversation closed, suppressing departure quip",
+                        person_name,
+                    )
+                    episodic_hooks.visit_departure(
+                        person_db_id, person_name, _visit_arrival, departed_at,
+                    )
+                else:
+                    _log.info(
+                        "consciousness: unknown (key=%s) left after a goodbye — "
+                        "conversation closed, suppressing departure quip",
+                        key,
+                    )
+                continue
+        except Exception:
+            _log.debug("farewell-departure check failed", exc_info=True)
+
         if is_known:
             first_name = _first_name(person_name, "there")
             _log.info("consciousness: departure reaction firing for %s", person_name)
@@ -6941,6 +6970,13 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
 
         _last_return_reaction_at[key] = now
         _confirmed_absent_at.pop(key, None)
+        # Back in frame — lift any "conversation closed after goodbye" dormancy so
+        # the welcome-back below (and normal proactive life) can resume.
+        try:
+            from intelligence import end_thread
+            end_thread.note_presence_return()
+        except Exception:
+            _log.debug("presence-return latch clear failed", exc_info=True)
         is_known = isinstance(key, int) and person_name
 
         if is_known:
