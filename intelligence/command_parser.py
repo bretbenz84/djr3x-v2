@@ -129,27 +129,75 @@ _SHUTDOWN_COMMAND_SUFFIXES = (
     " please",
     " now",
 )
+# Split an utterance into candidate clauses so an embedded "shut down" is found
+# even when it trails frustration ("shut up, shut down") or another clause
+# ("stop talking and shut down").
+_SHUTDOWN_CLAUSE_SPLIT_RE = re.compile(
+    r"[,.;:!?]|\b(?:and|then|but|so|or)\b", re.IGNORECASE
+)
+# A clause that is negated, hypothetical, or interrogative is NOT a command — a
+# destructive kill-switch must never fire on "don't shut down" / "why would I
+# shut down" / "should I shut down" / "can you shut down the music".
+_SHUTDOWN_NEGATION_GUARD_RE = re.compile(
+    r"\b(?:don'?t|do not|never|can'?t|cannot|won'?t|will not|"
+    r"why|how|when|whether|would|could|should|if|whenever|"
+    r"can you|could you|would you|do you)\b",
+    re.IGNORECASE,
+)
+# Per-clause leaders peeled in ADDITION to the polite prefixes, so a comma-less
+# "shut up shut down" or "please just shut down" reduces to the bare core.
+_SHUTDOWN_CLAUSE_LEADERS = (
+    "shut up ",
+    "stop talking ",
+    "no wait ",
+    "wait ",
+    "stop ",
+    "fine ",
+    "alright ",
+    "well ",
+    "hey ",
+    "oh ",
+    "just ",
+)
 
 
-def is_standalone_shutdown_command(text: str) -> bool:
-    """True only for short, direct full-shutdown commands, not embedded narration."""
-    clean = _plain(text)
-    if not clean:
-        return False
-
+def _reduce_shutdown_clause(clean: str) -> str:
+    """Peel polite prefixes/leaders and suffixes from one normalized clause."""
+    value = clean.strip()
     changed = True
     while changed:
         changed = False
-        for prefix in _SHUTDOWN_COMMAND_PREFIXES:
-            if clean.startswith(prefix):
-                clean = clean[len(prefix):].strip()
+        for prefix in _SHUTDOWN_COMMAND_PREFIXES + _SHUTDOWN_CLAUSE_LEADERS:
+            if value.startswith(prefix):
+                value = value[len(prefix):].strip()
                 changed = True
         for suffix in _SHUTDOWN_COMMAND_SUFFIXES:
-            if clean.endswith(suffix):
-                clean = clean[: -len(suffix)].strip()
+            if value.endswith(suffix):
+                value = value[: -len(suffix)].strip()
                 changed = True
+    return value
 
-    return clean in _SHUTDOWN_COMMAND_CORES
+
+def is_standalone_shutdown_command(text: str) -> bool:
+    """True when any clause of the utterance is a direct full-shutdown command.
+
+    Clause-aware so "shut up, shut down" still triggers, but a clause that is
+    object-scoped ("shut down the music"), narrated ("I had to shut down my
+    server"), negated ("don't shut down"), or interrogative ("why would I shut
+    down") never reduces to a bare core and so is rejected — preserving the
+    destructive-action safety of the original whole-string match.
+    """
+    if not text or not text.strip():
+        return False
+    for clause in _SHUTDOWN_CLAUSE_SPLIT_RE.split(text.lower()):
+        clean = _plain(clause)
+        if not clean:
+            continue
+        if _SHUTDOWN_NEGATION_GUARD_RE.search(clean):
+            continue
+        if _reduce_shutdown_clause(clean) in _SHUTDOWN_COMMAND_CORES:
+            return True
+    return False
 
 
 _GENERIC_VISUAL_TARGET_WORDS = {

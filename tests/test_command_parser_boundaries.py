@@ -102,6 +102,42 @@ class ShutdownVsSleepSplitTests(unittest.TestCase):
                 match = cp.parse(text)
                 self.assertFalse(match is not None and match.command_key == "shutdown")
 
+    def test_embedded_and_prefixed_shutdown_phrases(self):
+        from intelligence import command_parser as cp
+
+        # A direct "shut down" clause should fire even when trailing frustration
+        # or another clause ("Shut up, Shut down" — the live-logged failure).
+        for text in (
+            "Shut up, Shut down",
+            "shut up shut down",
+            "wait, shut down",
+            "stop talking and shut down",
+            "okay shut down",
+            "please just shut down",
+            "shut up, shut down now",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(cp.is_standalone_shutdown_command(text))
+                match = cp.parse(text)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.command_key, "shutdown")
+
+    def test_negated_and_interrogative_shutdown_phrases_do_not_trigger(self):
+        from intelligence import command_parser as cp
+
+        # Destructive action: negations/questions/hypotheticals must never fire.
+        for text in (
+            "don't shut down",
+            "no don't shut down",
+            "why would I shut you down",
+            "why would I shut down rex",
+            "should I shut down",
+            "shut up",
+            "wait",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(cp.is_standalone_shutdown_command(text))
+
 
 if __name__ == "__main__":
     unittest.main()

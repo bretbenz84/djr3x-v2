@@ -211,6 +211,109 @@ class IntroVoiceCaptureEnrollTest(unittest.TestCase):
         self.assertIsNone(resp)
         self.assertFalse(enroll.called)
 
+    def test_confident_identity_introducer_does_not_enroll_in_band(self):
+        # BUG-2: the [SPEAKER_ID_CONFIDENT_THRESHOLD=0.70, 0.75) band — identity
+        # said "confidently the introducer" yet the 0.75 intro bar called it
+        # "weak" and enrolled Bret's correction onto phantom "Leaf".
+        from intelligence import interaction as I
+
+        audio = np.zeros(16000, dtype=np.float32)
+        with mock.patch.object(I, "_pending_intro_voice_capture", self._ctx()), \
+             mock.patch.object(I, "_safe_enroll_voice", return_value=True) as enroll:
+            resp = I._handle_intro_voice_capture(
+                "I was answering your question",
+                audio,
+                person_id=1,
+                raw_best_id=1,
+                speaker_score=0.707,  # >= 0.70 confident, < 0.75 old intro bar
+            )
+        self.assertIsNone(resp)
+        self.assertFalse(enroll.called)
+
+
+class IntroAnswerGateTest(unittest.TestCase):
+    """BUG-2: a name-shaped answer to Rex's own question must not be promoted
+    into an introduction; minting a brand-new person from one utterance by a
+    confident known speaker with nobody new present is blocked."""
+
+    def tearDown(self):
+        from intelligence import dialogue_act
+        dialogue_act.clear()
+
+    def test_intro_is_answer_via_frame_even_after_wait_expired(self):
+        from intelligence import interaction as I
+        from intelligence import dialogue_act
+
+        dialogue_act.clear()
+        dialogue_act.note_rex_turn(
+            "What do you need most: sleep, solitude, or the excuse to disappear?",
+            source="idle_banter",
+            target_person_id=1,
+            expected_reply_types=["answer", "statement"],
+        )
+        with mock.patch.object(
+            I.consciousness, "is_waiting_for_response", return_value=False
+        ):
+            # No visible newcomer; the short 7s wait has expired — the durable
+            # frame still marks this turn as an answer.
+            self.assertTrue(
+                I._intro_is_answer_to_rex_question(False, person_id=1)
+            )
+
+    def test_mint_guard_blocks_name_only_from_confident_speaker(self):
+        from types import SimpleNamespace
+        from intelligence import interaction as I
+
+        parsed = SimpleNamespace(name="Leaf", relationship=None, subject_kind="person")
+        with mock.patch.object(I.people_memory, "find_person_by_name", return_value=None):
+            self.assertTrue(
+                I._intro_would_mint_unknown_name(
+                    parsed, person_id=1, off_camera_unknown=False,
+                    has_unknown_for_intro=False,
+                )
+            )
+
+    def test_mint_guard_allows_relationship_intro(self):
+        from types import SimpleNamespace
+        from intelligence import interaction as I
+
+        parsed = SimpleNamespace(name="Wade", relationship="brother", subject_kind="person")
+        with mock.patch.object(I.people_memory, "find_person_by_name", return_value=None):
+            self.assertFalse(
+                I._intro_would_mint_unknown_name(
+                    parsed, person_id=1, off_camera_unknown=False,
+                    has_unknown_for_intro=False,
+                )
+            )
+
+    def test_mint_guard_allows_genuine_newcomer(self):
+        from types import SimpleNamespace
+        from intelligence import interaction as I
+
+        parsed = SimpleNamespace(name="Leaf", relationship=None, subject_kind="person")
+        with mock.patch.object(I.people_memory, "find_person_by_name", return_value=None):
+            self.assertFalse(
+                I._intro_would_mint_unknown_name(
+                    parsed, person_id=1, off_camera_unknown=False,
+                    has_unknown_for_intro=True,  # a real newcomer is present
+                )
+            )
+
+    def test_mint_guard_allows_known_name_link(self):
+        from types import SimpleNamespace
+        from intelligence import interaction as I
+
+        parsed = SimpleNamespace(name="Sarah", relationship=None, subject_kind="person")
+        with mock.patch.object(
+            I.people_memory, "find_person_by_name", return_value={"id": 9, "name": "Sarah"}
+        ):
+            self.assertFalse(
+                I._intro_would_mint_unknown_name(
+                    parsed, person_id=1, off_camera_unknown=False,
+                    has_unknown_for_intro=False,
+                )
+            )
+
 
 class IntroCaptureWindowGateTest(unittest.TestCase):
     """Fix #4: the gate that suppresses sticky/visible-face attribution while Rex

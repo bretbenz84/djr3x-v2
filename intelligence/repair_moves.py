@@ -58,11 +58,29 @@ _INTERRUPT_PAT = re.compile(
     r"wouldn'?t let me (?:answer|respond|finish|reply|speak|talk))\b",
     re.IGNORECASE,
 )
+# The proper-name alternatives are matched CASE-SENSITIVELY via a scoped
+# (?-i:...) group so IGNORECASE does not let [A-Z][a-z]+ match any lowercase
+# word — that bug made "you mean my telescope" parse as a person correction and
+# drove Rex to defend the bad guess ("Your telescope, not mine") instead of
+# dropping it. An object/detail correction now falls through to grounding/factual.
 _WRONG_PERSON_PAT = re.compile(
     r"\b(wrong person|not me|that wasn'?t me|that was not me|"
-    r"you mean (him|her|them|[A-Z][A-Za-z]+)|"
+    r"you mean (him|her|them|(?-i:[A-Z][a-z'\-]+))|"
     r"you'?re talking to (him|her|them|the wrong person)|"
-    r"that was (him|her|them|[A-Z][A-Za-z]+))\b",
+    r"that was (him|her|them|(?-i:[A-Z][a-z'\-]+)))\b",
+    re.IGNORECASE,
+)
+# "Rex invented/assumed a detail" corrections + the natural "that makes no
+# sense" rejection. Routed to the existing 'factual' frame (remove the invented
+# detail, do not defend it). Gated on Rex having spoken recently so a bare "makes
+# no sense" about a third-party topic is not swept up.
+_GROUNDING_CORRECTION_PAT = re.compile(
+    r"\b((that|this|it) (makes no sense|doesn'?t make (any |much )?sense|"
+    r"made no sense|makes zero sense)|"
+    r"none of (that|this) (makes sense|is right)|"
+    r"you'?re (just )?making (that|this|it|stuff) up|"
+    r"you (just )?(invented|assumed|made (?:that|this|it|the|a)? ?up|made up)\b|"
+    r"i never said (that|this)|i didn'?t mention|where are you getting (that|this))\b",
     re.IGNORECASE,
 )
 # "(No,) I didn't say that" on its own disagrees with what Rex just CLAIMED — it
@@ -198,6 +216,7 @@ def detect(user_text: str) -> Optional[dict]:
     lowered = cleaned.lower()
     kind = ""
     severity = "medium"
+    requires_recent = False
 
     # A bare "I didn't say that" is a content disagreement, not a repair — hand
     # it to normal conversation so Rex can engage instead of derailing.
@@ -231,6 +250,13 @@ def detect(user_text: str) -> Optional[dict]:
     elif _FACTUAL_PAT.search(cleaned):
         kind = "factual"
         severity = "high"
+    elif _GROUNDING_CORRECTION_PAT.search(cleaned):
+        # "That makes no sense" / "you invented that" — Rex guessed/invented a
+        # detail. Route to the factual frame (drop the invented thread). Gated on
+        # Rex having spoken recently.
+        kind = "factual"
+        severity = "high"
+        requires_recent = True
     elif _MISUNDERSTOOD_PAT.search(cleaned):
         kind = "misunderstood"
         severity = "medium"
@@ -249,7 +275,7 @@ def detect(user_text: str) -> Optional[dict]:
         last_assistant_at = _last_assistant_at
         last_repair_at = _last_repair_at
     recent_assistant = last_assistant_at > 0.0 and (now - last_assistant_at) <= 120.0
-    if kind in {"repeat", "clarify", "bare_negation"} and not recent_assistant:
+    if (kind in {"repeat", "clarify", "bare_negation"} or requires_recent) and not recent_assistant:
         return None
     if kind == "bare_negation" and "?" not in last_assistant:
         return None
@@ -308,7 +334,9 @@ def build_prompt(repair: dict) -> str:
         ),
         "misunderstood": (
             "Rex misunderstood the intent. Own the miss, restate the corrected "
-            "understanding if possible, and do not defend the old answer."
+            "understanding if possible, and do not defend the old answer. Do NOT "
+            "re-explain or justify how you arrived at the wrong read, and do NOT "
+            "re-ask the question you built on it."
         ),
         "tone": (
             "Rex's tone landed badly. Drop roasts completely. Give a concise, "
@@ -317,7 +345,8 @@ def build_prompt(repair: dict) -> str:
         "wrong_person": (
             "Rex attributed speech, identity, or intent to the wrong person. "
             "Correct the referent, do not argue, and do not keep addressing the "
-            "wrong person."
+            "wrong person. Do NOT re-explain your reasoning or re-ask the question "
+            "built on the wrong referent."
         ),
         "pronoun": (
             "Rex used or implied the wrong pronouns. Accept the correction, use "
@@ -325,8 +354,12 @@ def build_prompt(repair: dict) -> str:
             "into a joke."
         ),
         "factual": (
-            "Rex asserted something unsupported or false. Own the overreach, "
-            "remove the invented detail, and continue from only what is known."
+            "Rex asserted, guessed, or invented something the human is now "
+            "correcting. Own the overreach in ONE short beat, remove the invented "
+            "detail, and drop that thread entirely. Do NOT re-explain or defend "
+            "how you arrived at the wrong detail, do NOT restate your reasoning, "
+            "and do NOT re-ask the question you built on the invented detail. One "
+            "acknowledgement, then move on from only what is actually known."
         ),
         "pacing": (
             "Rex is asking too much or moving too fast. Back off, give space, "
@@ -376,7 +409,9 @@ def build_prompt(repair: dict) -> str:
         "Write ONE short in-character Rex reply. Requirements: acknowledge the "
         "miss without groveling, do not roast the human, do not add a new topic, "
         "do not punish the human for correcting you, and do not ask a question "
-        "unless the repair cannot continue without a single clarification. If a "
+        "unless the repair cannot continue without a single clarification. Never "
+        "re-state or justify the reasoning behind the thing you got wrong — "
+        "acknowledging the miss and dropping it is the entire move. If a "
         "correction was supplied, accept it. Do not begin with 'Rex:' or any "
         "speaker label. For misheard, misunderstood, wrong-person, pronoun, "
         "factual, or bare-negation repairs, include this exact recovery line: "

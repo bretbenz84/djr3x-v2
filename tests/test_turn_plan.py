@@ -126,6 +126,25 @@ class AgendaPopulatesPlanTest(unittest.TestCase):
         self.assertTrue(plan.explicit_followup)  # earned on-thread follow-up offered
         self.assertIn("just answered a question", plan.directive)
 
+    def test_grounding_correction_branch(self):
+        from intelligence import conversation_agenda as ca
+        with self._agenda_mocks():
+            for text in ("What? That makes no sense", "You mean my telescope?"):
+                with self.subTest(text=text):
+                    plan = ca.build_turn_plan(text, 1)
+                    self.assertEqual(plan.purpose, "grounding_repair")
+                    low = plan.directive.lower()
+                    self.assertIn("drop that thread", low)
+                    self.assertIn("do not re-explain", low)
+
+    def test_grounding_correction_precedes_user_question(self):
+        # A correction that is also question-shaped resolves to grounding_repair,
+        # not the generic "answer the human's question" purpose.
+        from intelligence import conversation_agenda as ca
+        with self._agenda_mocks():
+            plan = ca.build_turn_plan("What? That makes no sense", 1)
+        self.assertEqual(plan.purpose, "grounding_repair")
+
     def test_build_turn_directive_wrapper_equals_plan_directive(self):
         from intelligence import conversation_agenda as ca
         with self._agenda_mocks():

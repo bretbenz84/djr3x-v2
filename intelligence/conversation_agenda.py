@@ -708,6 +708,23 @@ def build_turn_plan(
         )
         return _finish(plan, lines)
 
+    if _looks_like_grounding_correction(text):
+        # Safety net for corrections that reach llm.stream instead of the
+        # deterministic repair path: make the "drop the bad guess, don't
+        # re-litigate" contract reach the LLM. Must sit ABOVE the
+        # _looks_like_user_question branch so "What? That makes no sense" is
+        # caught here, not answered as a generic question.
+        lines.append(
+            "Primary purpose: you guessed or invented a detail and the human is "
+            "correcting you. Acknowledge the miss in ONE short beat and drop that "
+            "thread entirely. Do NOT re-explain or defend how you got there, do "
+            "NOT restate your reasoning, and do NOT re-ask the question you built "
+            "on the wrong detail. No new question. Then continue only from what "
+            "they actually said."
+        )
+        plan.purpose = "grounding_repair"
+        return _finish(plan, lines)
+
     if _looks_like_health_resolved(text):
         lines.append(
             "Primary purpose: acknowledge relief that the health issue or pain has "
@@ -1021,8 +1038,28 @@ _REASSURANCE_PAT = re.compile(
 )
 
 
+_GROUNDING_CORRECTION_PAT = re.compile(
+    r"\b("
+    r"(?:that|this|it)\s+(?:makes no sense|doesn'?t make (?:any |much )?sense|"
+    r"made no sense|makes zero sense)|"
+    r"none of (?:that|this) (?:makes sense|is right)|"
+    r"you'?re (?:just )?making (?:that|this|it|stuff) up|"
+    r"you (?:just )?(?:invented|assumed|made (?:that|this|it|the|a)? ?up|made up)\b|"
+    r"i never said (?:that|this)|i didn'?t (?:say|mention)|"
+    r"where are you getting (?:that|this)|"
+    r"you mean my \w+\s*\??$|"
+    r"that'?s not what i (?:was |said i was )?(?:building|doing|making|talking about)"
+    r")",
+    re.IGNORECASE,
+)
+
+
 def _looks_like_offscreen_correction(text: str) -> bool:
     return bool(_OFFSCREEN_CORRECTION_PAT.search(text or ""))
+
+
+def _looks_like_grounding_correction(text: str) -> bool:
+    return bool(_GROUNDING_CORRECTION_PAT.search(text or ""))
 
 
 def _looks_like_health_resolved(text: str) -> bool:

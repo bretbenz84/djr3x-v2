@@ -231,6 +231,18 @@ _interest_idle_followups_spoken: set[tuple[Optional[int], str]] = set()
 _low_memory_idle_questions_spoken: set[int] = set()
 _recent_memory_candidates = deque(maxlen=12)
 _idle_outro_spoken: bool = False
+# Topics the human just asked to drop ("change the subject"). Session-local with
+# a cooldown so the proactive/idle layer (and the LLM prompt) stop re-raising the
+# banned topic for a window — the boundary acknowledgment was being undone by an
+# idle line that revisited the topic ~20s later (live-logged 2026-06-18).
+# [{topic, tokens, banned_until}]; cleared on session reset.
+_recently_banned_topics: list[dict] = []
+
+# Recent questions Rex actually asked this session ([{tokens, at}]) so a proactive
+# idle line never re-asks a question Rex already asked (the duplicate camping
+# question ~39s apart, live-logged 2026-06-18). Cleared on session reset.
+_recent_rex_questions: list[dict] = []
+
 # Proactive idle-banter pacing. _idle_banter_count resets in _begin_user_turn
 # when the user speaks again, so each silent stretch gets a fresh attempt budget.
 _last_idle_banter_at: float = 0.0
@@ -559,6 +571,10 @@ _pending_onboarding: Optional[dict] = None
 _pending_common_first_name_identity: Optional[dict] = None
 _pending_common_first_name_introduction: Optional[dict] = None
 _pending_existing_common_first_name: Optional[dict] = None
+# {person_id, first_name, last_name, asked_at} — a heard-but-unusual surname
+# awaiting a yes/no confirm before a durable rename (so one garbled token like
+# "Bat-tigger" can't overwrite the canonical name).
+_pending_last_name_confirm: Optional[dict] = None
 _pending_identity_match_confirmation: Optional[dict] = None
 # Set when a voice/face-matched speaker says their name is a DIFFERENT existing
 # person (i.e. they're the same human split across two rows). Holds the survivor +
@@ -2726,18 +2742,89 @@ def _response_wait_active() -> bool:
         return False
 
 
-def _intro_is_answer_to_rex_question(has_unknown_newcomer: bool) -> bool:
+def _rex_frame_expects_reply(
+    person_id: Optional[int], *, max_age_secs: float = 30.0
+) -> bool:
+    """True when Rex has a recent open turn-frame still awaiting a reply.
+
+    The dialogue_act frame is the DURABLE "Rex is waiting for an answer" signal:
+    unlike the short consciousness response-wait window (~7s, which expires while
+    ElevenLabs is still speaking and the human is still thinking), the frame
+    persists with the question. This is the robust gate that keeps a name-shaped
+    answer to Rex's own question ("This is leaf" = the user's mistranscribed
+    "sleep") from being promoted into an introduction.
+
+    Only consulted for an IDENTIFIED speaker: an unidentified (person_id=None)
+    speaker must keep the normal introduction path, and shouldn't be matched
+    against a generic untargeted frame.
+    """
+    if person_id is None:
+        return False
+    try:
+        frame = dialogue_act.active_frame(
+            person_id=person_id, max_age_secs=max_age_secs
+        )
+        return bool(frame is not None and frame.expected_reply_types)
+    except Exception as exc:
+        _log.debug("[identity] rex-frame expects-reply check failed: %s", exc)
+        return False
+
+
+def _intro_is_answer_to_rex_question(
+    has_unknown_newcomer: bool, *, person_id: Optional[int] = None
+) -> bool:
     """True when a 'this is X' line is really the ANSWER to a question Rex just
     asked, not an introduction.
 
     Live-logged misfire: Rex asked "What's your favorite movie?", the reply
     "Mrs. Doubtfire" was transcribed "This is Doubtfire", and that name-bearing
     "this is X" was promoted to introducing a person named Doubtfire — even
-    though nobody new was present. A name/relationship-only introduction with NO
-    visible newcomer, arriving while Rex is awaiting a reply to his own question,
-    is the answer. (A genuinely present newcomer still introduces fine.)
+    though nobody new was present. A second live failure (2026-06-18): an
+    idle-banter question's answer "sleep" transcribed "This is leaf" minted a
+    phantom person AFTER the 7s response-wait expired — so we also consult the
+    durable dialogue_act frame, not just the short wait window. A name/
+    relationship-only introduction with NO visible newcomer, arriving while Rex
+    is awaiting a reply to his own question, is the answer. (A genuinely present
+    newcomer still introduces fine.)
     """
-    return (not has_unknown_newcomer) and _response_wait_active()
+    return (not has_unknown_newcomer) and (
+        _response_wait_active() or _rex_frame_expects_reply(person_id)
+    )
+
+
+def _intro_would_mint_unknown_name(
+    parsed_intro,
+    *,
+    person_id: Optional[int],
+    off_camera_unknown: bool,
+    has_unknown_for_intro: bool,
+) -> bool:
+    """Belt-and-suspenders: a bare NAME-ONLY 'this is X' from a confidently
+    identified known speaker, with nobody new present and X matching no known
+    person, would MINT a brand-new person from one short utterance — the exact
+    'normal reply becomes a durable action' failure. Treat it as an answer
+    instead. A relationship intro ('this is my brother Wade') still opens a slot
+    off-camera, and a genuine visible/off-screen newcomer still introduces.
+    """
+    if has_unknown_for_intro or off_camera_unknown:
+        return False
+    if getattr(parsed_intro, "subject_kind", "person") == "pet":
+        return False
+    if getattr(parsed_intro, "relationship", None):
+        return False
+    name = (getattr(parsed_intro, "name", "") or "").strip()
+    if not name:
+        return False
+    # Only fire for a confident on-camera/known live speaker (not an unknown voice).
+    if person_id is None:
+        return False
+    try:
+        if people_memory.find_person_by_name(name):
+            return False  # links to an existing person — that path is fine
+    except Exception as exc:
+        _log.debug("[identity] mint-guard name lookup failed: %s", exc)
+        return False
+    return True
 
 
 def _should_play_active_wake_ack() -> bool:
@@ -3210,8 +3297,12 @@ def _arm_no_response_recovery(
     # Hold the floor: Rex asked a real question, so give the user an actual window
     # to answer before idle banter jumps in with a new prompt.
     global _floor_held_until
-    _floor_held_until = asked_at + float(
-        getattr(config, "POST_QUESTION_FLOOR_HOLD_SECS", 10.0) or 0.0
+    # max() so a longer hold already armed by _register_rex_utterance
+    # (POST_REPLY_QUESTION_WAIT_SECS) for a question-bearing reply is not
+    # shortened back down to the 10s recovery floor.
+    _floor_held_until = max(
+        _floor_held_until,
+        asked_at + float(getattr(config, "POST_QUESTION_FLOOR_HOLD_SECS", 10.0) or 0.0),
     )
     with _no_response_recovery_lock:
         _no_response_recovery_token += 1
@@ -3274,6 +3365,52 @@ def _arm_no_response_recovery(
     ).start()
 
 
+def _note_rex_question(text: str) -> None:
+    """Record a question Rex asked so idle banter doesn't re-ask it later."""
+    if "?" not in (text or ""):
+        return
+    toks = _topic_ban_tokens(text)
+    if not toks:
+        return
+    _recent_rex_questions.append({"tokens": toks, "at": time.monotonic()})
+    # Keep it bounded.
+    if len(_recent_rex_questions) > 24:
+        del _recent_rex_questions[:-24]
+
+
+def _line_duplicates_recent_question(line: str) -> bool:
+    """True when a proposed proactive question substantially re-asks a question
+    Rex already asked within IDLE_BANTER_RECENT_QUESTION_DEDUP_SECS."""
+    if "?" not in (line or ""):
+        return False
+    toks = _topic_ban_tokens(line)
+    if not toks:
+        return False
+    window = float(getattr(config, "IDLE_BANTER_RECENT_QUESTION_DEDUP_SECS", 120.0) or 0.0)
+    if window <= 0.0:
+        return False
+    now = time.monotonic()
+    for q in _recent_rex_questions:
+        if (now - q.get("at", 0.0)) > window:
+            continue
+        prior = q.get("tokens") or set()
+        if not prior:
+            continue
+        overlap = toks & prior
+        # A near-duplicate re-ask: two+ shared content words, OR (for questions
+        # with at least 3 content words each) the shared words cover at least half
+        # the smaller set. The min-length-3 guard stops a single incidental shared
+        # word between two 2-token questions ("favorite movie" vs "favorite food")
+        # from false-flagging.
+        if not overlap:
+            continue
+        if len(overlap) >= 2:
+            return True
+        if min(len(toks), len(prior)) >= 3 and 2 * len(overlap) >= min(len(toks), len(prior)):
+            return True
+    return False
+
+
 def _register_rex_utterance(
     text: str,
     wait_secs: Optional[float] = None,
@@ -3285,8 +3422,21 @@ def _register_rex_utterance(
     expected_reply_types: Optional[list[str]] = None,
     blocked_actions: Optional[list[str]] = None,
 ) -> None:
+    global _floor_held_until
     if not text or not text.strip():
         return
+    try:
+        _note_rex_question(text)
+        # When Rex's line asks a question, hard-hold the floor so idle filler
+        # doesn't pile a fresh prompt on top before the user can answer — even
+        # when the text has no literal '?'-punctuated proactive arming. Fixes the
+        # duplicate camping question that re-asked ~39s later.
+        if "?" in text:
+            hold = float(getattr(config, "POST_REPLY_QUESTION_WAIT_SECS", 18.0) or 0.0)
+            if hold > 0.0:
+                _floor_held_until = max(_floor_held_until, time.monotonic() + hold)
+    except Exception:
+        pass
     try:
         repair_moves.note_assistant_turn(text)
     except Exception:
@@ -3792,9 +3942,21 @@ def _maybe_idle_banter(
         return False
     # Roll a fresh random nudge delay once per silent stretch (reset on re-engagement),
     # so the first re-engagement lands at a natural, non-metronomic moment in [MIN, MAX].
+    # MID-CONVERSATION use a much longer floor: an engaged human pauses far longer than
+    # the cold-room 5-8s, and Rex's own ~3-4s reply latency eats into that — the short
+    # window was the over-talk engine (live-logged 2026-06-18).
+    try:
+        _profile = _situation_assessor.evaluate()
+        _conv_active = bool(_profile.conversation_active or _profile.rapid_exchange)
+    except Exception:
+        _conv_active = False
     if _idle_banter_threshold is None:
-        lo = float(getattr(config, "IDLE_BANTER_MIN_SECS", 6.0) or 6.0)
-        hi = float(getattr(config, "IDLE_BANTER_MAX_SECS", 10.0) or 10.0)
+        if _conv_active:
+            lo = float(getattr(config, "IDLE_BANTER_ACTIVE_MIN_SECS", 22.0) or 22.0)
+            hi = float(getattr(config, "IDLE_BANTER_ACTIVE_MAX_SECS", 30.0) or 30.0)
+        else:
+            lo = float(getattr(config, "IDLE_BANTER_MIN_SECS", 6.0) or 6.0)
+            hi = float(getattr(config, "IDLE_BANTER_MAX_SECS", 10.0) or 10.0)
         if hi < lo:
             lo, hi = hi, lo
         _idle_banter_threshold = random.uniform(lo, hi)
@@ -3871,6 +4033,22 @@ def _maybe_idle_banter(
     # room — where alternating keeps it from being a wall of questions. (Truly long idle
     # is owned by the session timeout + outro, not by piling on more banter.)
     live_topic = _idle_has_live_topic()
+    # If the human just asked to change the subject, the live thread is BANNED —
+    # don't deepen it. Pivot OFF it (a getting-to-know-you / plans question) so the
+    # boundary acknowledgment isn't undone by an idle line revisiting the topic
+    # (live-logged 2026-06-18: "Festival people-watching, then…" fired ~20s after
+    # the user declined it). The LLM prompt also carries an explicit ban.
+    if live_topic and bool(getattr(config, "TOPIC_BAN_PROACTIVE_SUPPRESS", True)):
+        try:
+            # Match the ban against the actual live-topic LABEL, not the whole
+            # session transcript (which still contains the banned word and would
+            # over-suppress).
+            _live_label = _boundary_fallback_topic() or ""
+        except Exception:
+            _live_label = ""
+        if _live_label and _topic_is_recently_banned(_live_label):
+            _log.info("[topic_ban] idle banter pivoting OFF a recently-banned topic")
+            live_topic = False
     # Re-engaging a quiet person should ALWAYS draw THEM out with a question — deepen the
     # live thread if the user actually started one, otherwise a getting-to-know-you
     # question (the user's ask: "ask questions so R3X can continue to get to know the
@@ -3915,6 +4093,14 @@ def _maybe_idle_banter(
 
         line = llm.clean_response_text(line or "")
         if not line:
+            return False
+        # Never re-ask a question Rex already asked recently (the duplicate camping
+        # question, ~39s apart). Drop and yield the tick.
+        if _line_duplicates_recent_question(line):
+            _log.info(
+                "[interaction] idle banter dropped — re-asks a recent Rex question: %r",
+                line,
+            )
             return False
         try:
             if ask_on_topic:
@@ -3962,7 +4148,18 @@ def _maybe_idle_banter(
             )
             conv_memory.add_to_transcript("Rex", line)
             conv_log.log_rex(line)
-            _register_rex_utterance(line)
+            # Anchor the dialogue frame to the engaged person with an explicit
+            # expected-reply type (not bare '?'-inference) so a name-shaped answer
+            # to this question ("This is leaf" = "sleep") binds as an answer and is
+            # not promoted into an introduction (BUG-2).
+            _register_rex_utterance(
+                line,
+                source="idle_banter",
+                target_person_id=person_id,
+                expected_reply_types=(
+                    ["answer", "statement"] if (ask_user or ask_on_topic) else None
+                ),
+            )
             _mark_idle_plans_asked(plans_marker)
             if pov_volunteered:
                 # Mark the preoccupation as spoken so it isn't re-volunteered (idle
@@ -4492,6 +4689,52 @@ def _extract_last_name_reply(text: str, first_name: str) -> Optional[str]:
     return None
 
 
+_EXPLICIT_LAST_NAME_LEADIN_RE = re.compile(
+    r"\b(?:my\s+(?:last\s+name|surname)\s+is|last\s+name(?:'s| is)|"
+    r"surname(?:'s| is))\b",
+    re.IGNORECASE,
+)
+
+
+def _last_name_reply_was_explicit(text: str, first_name: str) -> bool:
+    """True when the human clearly phrased the surname ('my last name is X',
+    'Bret Benziger') rather than dropping a single bare token."""
+    t = (text or "").strip()
+    if _EXPLICIT_LAST_NAME_LEADIN_RE.search(t):
+        return True
+    parts = (_normalize_name(t) or "").split()
+    return len(parts) >= 2 and parts[0].lower() == (first_name or "").lower()
+
+
+def _last_name_token_is_unusual(token: str) -> bool:
+    """A low-confidence-looking surname token — likely an ASR mangling
+    ('Bat-tigger') that should be confirmed before a durable rename. A normal
+    double-barrelled surname ('Smith-Jones') is NOT flagged; only a malformed
+    hyphenation (a part that is too short or vowel-less, like 'Bat-tigger' whose
+    'tigger' is fine but the join is implausible) or a vowel-less/too-short token
+    is. 'y' counts as a vowel so 'Wynn'/'Lynch' pass."""
+    t = (token or "").strip()
+    if not t:
+        return False
+    vowels = "aeiouyAEIOUY"
+    if len(t) < 2:
+        return True
+    if "-" in t.strip("-"):
+        # Double-barrelled is fine only if every part is a plausible name part.
+        parts = [p for p in t.split("-") if p]
+        for p in parts:
+            if len(p) < 2 or not any(c in vowels for c in p):
+                return True
+        # Two well-formed parts ("Smith-Jones") — not unusual; but ASR manglings
+        # like "Bat-tigger" pass this check too, so also confirm any hyphenated
+        # surname that wasn't explicitly phrased. Keep flagging hyphenated tokens
+        # as worth a quick confirm (a one-beat check on a hyphen is harmless).
+        return True
+    if not any(c in vowels for c in t):
+        return True
+    return False
+
+
 _LAST_NAME_REFUSAL_RE = re.compile(
     r"\b(?:"
     r"(?:i\s+)?(?:would\s+)?rather\s+not\s+(?:say|tell|share)|"
@@ -4829,6 +5072,7 @@ def _clear_memory_related_pending_state() -> None:
     global _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_last_name_confirm
     global _pending_prompted_name_confirmation
     global _identity_prompt_until
 
@@ -4842,6 +5086,7 @@ def _clear_memory_related_pending_state() -> None:
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
+    _pending_last_name_confirm = None
     _pending_identity_match_confirmation = None
     _pending_prompted_name_confirmation = None
     _identity_prompt_until = 0.0
@@ -5357,6 +5602,7 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
     global _identity_prompt_until, _pending_offscreen_identify, _pending_face_reveal_confirm
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_last_name_confirm
     global _pending_prompted_name_confirmation, _pending_introduction
     global _pending_intro_followup, _pending_intro_voice_capture
     global _pending_name_merge_confirmation, _identity_reask_count
@@ -5397,6 +5643,7 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
+    _pending_last_name_confirm = None
     _pending_identity_match_confirmation = None
     _pending_name_merge_confirmation = None
     _pending_prompted_name_confirmation = None
@@ -6443,6 +6690,7 @@ def _handle_common_first_name_intro_last_name_reply(text: str) -> Optional[str]:
 def _handle_existing_common_first_name_last_name_reply(text: str) -> Optional[str]:
     """Complete a last-name prompt for a returning person already in memory."""
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_last_name_confirm
 
     ctx = _pending_existing_common_first_name
     if not _common_first_name_context_fresh(ctx):
@@ -6473,6 +6721,29 @@ def _handle_existing_common_first_name_last_name_reply(text: str) -> Optional[st
         )
         return f"Fine. I'll keep you as {first_name}. The filing cabinet is judging both of us."
 
+    # Don't durably rename on a single unusual/low-confidence token (a Whisper
+    # mangling like "Bat-tigger"). Confirm it first so one garbled word can't
+    # overwrite the canonical name. A clearly-phrased reply ("my last name is
+    # Benziger", "Bret Benziger") commits directly.
+    if (
+        bool(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_REQUIRE_CONFIRM_UNUSUAL", True))
+        and _last_name_token_is_unusual(last_name)
+        and not _last_name_reply_was_explicit(text, first_name)
+    ):
+        global _pending_last_name_confirm
+        _pending_last_name_confirm = {
+            "person_id": person_id,
+            "first_name": first_name,
+            "last_name": last_name,
+            "asked_at": time.monotonic(),
+        }
+        _log.info(
+            "[identity] unusual surname %r for person_id=%s — confirming before rename",
+            last_name,
+            person_id,
+        )
+        return _format_last_name_confirm_prompt(f"{first_name} {last_name}")
+
     full_name = f"{first_name} {last_name}"
     if not people_memory.rename_person(person_id, full_name):
         _log.info(
@@ -6492,8 +6763,121 @@ def _handle_existing_common_first_name_last_name_reply(text: str) -> Optional[st
     return f"There we go — {full_name}. Now I've got the whole picture."
 
 
-def _should_defer_existing_common_first_name_prompt(text: str) -> bool:
-    """Do not hijack a clear command just to ask a known person's last name."""
+def _format_last_name_confirm_prompt(full_name: str) -> str:
+    prompts = list(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_CONFIRM_PROMPTS", []) or [])
+    if not prompts:
+        prompts = ["{full} — that right?"]
+    try:
+        return random.choice(prompts).format(full=full_name)
+    except Exception:
+        return f"{full_name} — that right?"
+
+
+_LAST_NAME_CONFIRM_NO_RE = re.compile(
+    r"^\s*(?:no+|nope|nah|naw|not quite|that'?s not it|wrong|incorrect)\b",
+    re.IGNORECASE,
+)
+# Affirmations a person uses to confirm a name — broader than _AFFIRM_PAT, which
+# doesn't cover "correct" / "that's right". Deliberately NO bare "right" (it
+# matches inside "that's not right"); use "that's right" instead.
+_CONFIRM_YES_RE = re.compile(
+    r"\b(?:correct|that'?s (?:right|it|correct)|you got it|got it right|"
+    r"exactly|yep|yeah|yes|yup|sure|spot on|nailed it|that works)\b",
+    re.IGNORECASE,
+)
+# Affirmation/negation/filler words that must NEVER be mistaken for a surname
+# during a confirm ("yep"/"correct"/"no" are not last names).
+_CONFIRM_NON_SURNAME_WORDS = {
+    "yes", "yeah", "yep", "yup", "yah", "correct", "right", "sure", "ok", "okay",
+    "exactly", "indeed", "totally", "absolutely", "no", "nope", "nah", "naw",
+    "not", "wrong", "incorrect", "that", "this", "it", "is", "my", "name",
+    "last", "surname",
+}
+_CONFIRM_LEADIN_SURNAME_RE = re.compile(
+    r"\b(?:it'?s|my\s+last\s+name\s+is|last\s+name\s+is|surname\s+is)\s+"
+    r"([A-Za-z][A-Za-z'\-]+)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_confirm_surname_correction(text: str, first_name: str) -> Optional[str]:
+    """A surname offered while CONFIRMING a misheard one — only an explicit
+    correction, never an affirmation/filler word."""
+    cleaned = re.sub(r"^\s*(?:no+|nope|nah|naw)[,\s]+", "", (text or "").strip(), flags=re.I)
+    m = _CONFIRM_LEADIN_SURNAME_RE.search(cleaned)
+    if m:
+        cand = _normalize_name(m.group(1))
+    else:
+        parts = (_normalize_name(cleaned) or "").split()
+        cand = parts[0] if len(parts) == 1 else None  # a single bare token only
+    if not cand:
+        return None
+    low = cand.lower()
+    if low in _CONFIRM_NON_SURNAME_WORDS or low == (first_name or "").lower():
+        return None
+    return cand
+
+
+def _handle_last_name_confirm_reply(text: str) -> Optional[str]:
+    """Resolve a 'Bret Bat-tigger — that right?' confirmation before renaming."""
+    global _pending_last_name_confirm
+
+    ctx = _pending_last_name_confirm
+    if not _common_first_name_context_fresh(ctx):
+        _pending_last_name_confirm = None
+        return None
+
+    person_id = int(ctx["person_id"])
+    first_name = str(ctx.get("first_name") or "").strip()
+    last_name = str(ctx.get("last_name") or "").strip()
+    cleaned = (text or "").strip()
+
+    def _commit(surname: str) -> Optional[str]:
+        full = f"{first_name} {surname}".strip()
+        if not people_memory.rename_person(person_id, full):
+            return f"I couldn't safely rename that memory to {full}."
+        _refresh_world_state_person_name(person_id, full)
+        _common_first_name_prompted_this_session.add(person_id)
+        _log.info(
+            "[identity] confirmed surname — person_id=%s %r -> %r",
+            person_id, first_name, full,
+        )
+        return f"There we go — {full}. Now I've got the whole picture."
+
+    # A correction that EXPLICITLY supplies a different surname ("no, it's
+    # Benziger" / "Benziger") overrides the misheard one. Checked before the
+    # bare affirmation so a real correction wins, but it must be an explicit
+    # surname — never an affirmation/filler word ("yep"/"correct" are NOT
+    # surnames, or we'd rename to "Bret Yep").
+    corrected = _extract_confirm_surname_correction(cleaned, first_name)
+    if corrected and corrected.lower() != last_name.lower():
+        _pending_last_name_confirm = None
+        return _commit(corrected)
+
+    if _AFFIRM_PAT.search(cleaned) or _CONFIRM_YES_RE.search(cleaned):
+        _pending_last_name_confirm = None
+        return _commit(last_name)
+
+    if _LAST_NAME_CONFIRM_NO_RE.search(cleaned) or _is_last_name_refusal(cleaned, first_name):
+        _pending_last_name_confirm = None
+        _log.info(
+            "[identity] surname confirm declined for person_id=%s — keeping %r",
+            person_id, first_name,
+        )
+        return f"My mistake — sticking with {first_name} then."
+
+    # Unrelated turn: drop the confirm and let normal routing take it.
+    _pending_last_name_confirm = None
+    return None
+
+
+def _should_defer_existing_common_first_name_prompt(
+    text: str, *, person_id: Optional[int] = None
+) -> bool:
+    """Do not hijack a clear command — OR a substantive mid-conversation turn —
+    just to ask a known person's last name. The ask belongs at a natural, low-
+    content moment (a short reply, a greeting, a lull), never in the middle of a
+    real answer like 'It's vodka and orange juice' (live-logged 2026-06-18)."""
     cleaned = (text or "").strip()
     if not cleaned:
         return False
@@ -6507,7 +6891,20 @@ def _should_defer_existing_common_first_name_prompt(text: str) -> bool:
         intent = intent_classifier._deterministic_label(cleaned)
     except Exception:
         intent = "general"
-    return intent != "general"
+    if intent != "general":
+        return True
+    if bool(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_NATURAL_MOMENT_ONLY", True)):
+        # Only a short, topic-neutral turn (greeting / ack / brief reply) is a
+        # natural place to slip the ask in. A longer utterance is substantive
+        # conversational content — don't interrupt it. And if the person is
+        # answering a question Rex just asked on another topic, that turn belongs
+        # to that thread, not an identity interrogation.
+        max_words = int(getattr(config, "COMMON_FIRST_NAME_LAST_NAME_MAX_TURN_WORDS", 4))
+        if _word_count(cleaned) > max_words:
+            return True
+        if person_id is not None and _rex_frame_expects_reply(person_id):
+            return True
+    return False
 
 
 def _maybe_prompt_existing_common_first_name(
@@ -6517,12 +6914,14 @@ def _maybe_prompt_existing_common_first_name(
 ) -> Optional[str]:
     """Ask returning single-name-only people for a last name once per session."""
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_last_name_confirm
 
     if not _known_person_needs_last_name(person_id, person_name):
         return None
-    if _should_defer_existing_common_first_name_prompt(current_text):
+    if _should_defer_existing_common_first_name_prompt(current_text, person_id=person_id):
         _log.info(
-            "[identity] deferred last-name prompt for person_id=%s name=%r due to command text=%r",
+            "[identity] deferred last-name prompt for person_id=%s name=%r "
+            "(command/substantive turn) text=%r",
             person_id,
             person_name,
             current_text,
@@ -7677,6 +8076,32 @@ def _handle_intro_voice_capture(
         followup["followup_kind"] = followup_kind
         followup["asked_at"] = time.monotonic()
         _pending_intro_followup = followup
+        return None
+
+    # If the live speaker CONFIDENTLY resolves to the INTRODUCER, this utterance
+    # cannot be the newcomer's voice sample — never enroll it onto the newcomer.
+    # This closes the [SPEAKER_ID_CONFIDENT_THRESHOLD,
+    # INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD) band where identity said
+    # "confidently the introducer" (e.g. 0.707 >= 0.70) yet the intro gate's 0.75
+    # bar still called it "weak" and enrolled the introducer's voice onto a
+    # phantom newcomer (live-logged 2026-06-18: Bret's correction enrolled onto
+    # phantom "Leaf"). NOTE: keep INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD >=
+    # SPEAKER_ID_CONFIDENT_THRESHOLD or this band reopens.
+    confident_id_threshold = float(
+        getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70)
+    )
+    if (
+        introducer_id is not None
+        and person_id == introducer_id
+        and raw_best_id == introducer_id
+        and float(speaker_score or 0.0) >= confident_id_threshold
+    ):
+        _log.info(
+            "[introduction] intro voice-capture: live speaker is confidently the "
+            "introducer (score=%.3f) — not enrolling onto newcomer %s",
+            float(speaker_score or 0.0),
+            introduced_name,
+        )
         return None
 
     # Rex just invited the NEWCOMER to speak ("say hi so I can learn your
@@ -12239,6 +12664,7 @@ def _end_session() -> None:
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_last_name_confirm
     global _pending_prompted_name_confirmation
 
     transcript = conv_memory.get_session_transcript()
@@ -12252,6 +12678,8 @@ def _end_session() -> None:
         _interest_idle_followups_spoken.clear()
         _low_memory_idle_questions_spoken.clear()
         _idle_plans_asked.clear()
+        _recently_banned_topics.clear()
+        _recent_rex_questions.clear()
         _close_onboarding("session reset")
         _recent_memory_candidates.clear()
         _clear_anonymous_speaker_slots()
@@ -12566,6 +12994,7 @@ def _end_session() -> None:
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
+    _pending_last_name_confirm = None
     _pending_identity_match_confirmation = None
     _pending_prompted_name_confirmation = None
     _clear_pending_memory_wipe()
@@ -12574,6 +13003,8 @@ def _end_session() -> None:
     _face_reveal_declined.clear()
     _grief_flow_state.clear()
     _idle_plans_asked.clear()
+    _recently_banned_topics.clear()
+    _recent_rex_questions.clear()
     try:
         consciousness.clear_response_wait()
         consciousness.clear_engagement()
@@ -13924,7 +14355,7 @@ def _handle_conversation_boundary(
         behavior = applied.get("behavior") or "mention"
         if action == "clear":
             return f"Got it. {topic_phrase} is back on the table, cautiously."
-        _apply_topic_boundary_side_effects(person_id, text)
+        _apply_topic_boundary_side_effects(person_id, text, banned_topic=topic)
         if behavior == "roast":
             return f"Noted. I won't roast you about {topic_phrase}."
         if behavior == "ask":
@@ -13935,8 +14366,88 @@ def _handle_conversation_boundary(
         return None
 
 
-def _apply_topic_boundary_side_effects(person_id: Optional[int], text: str) -> None:
+_TOPIC_BAN_STOPWORDS = {
+    # articles / preps / conjunctions
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "at", "for", "with",
+    "from", "into", "about", "but", "so", "as", "by",
+    # pronouns / possessives
+    "my", "your", "you", "yours", "me", "we", "us", "our", "they", "them",
+    "their", "he", "she", "him", "her", "his", "its", "i",
+    # question / aux / filler words
+    "what", "who", "whom", "whose", "when", "where", "why", "how", "which",
+    "is", "are", "am", "was", "were", "be", "been", "being", "do", "does",
+    "did", "can", "could", "would", "will", "shall", "should", "have", "has",
+    "had", "get", "got", "want", "like", "really", "just", "one", "some",
+    "any", "thing", "things", "stuff", "topic", "subject", "current", "exchange",
+    "that", "this", "it", "there", "here", "right", "now", "yeah", "okay",
+}
+
+
+def _topic_ban_tokens(topic) -> set[str]:
+    # Coerce defensively: callers may hand us a transcript list[dict] or other
+    # non-string. Pull text out rather than crashing the turn.
+    if isinstance(topic, (list, tuple)):
+        topic = " ".join(
+            str(e.get("text", "") if isinstance(e, dict) else e) for e in topic
+        )
+    elif not isinstance(topic, str):
+        topic = str(topic or "")
+    return {
+        w
+        for w in re.findall(r"[a-z]+", topic.lower())
+        if len(w) > 2 and w not in _TOPIC_BAN_STOPWORDS
+    }
+
+
+def _record_banned_topic(topic: Optional[str]) -> None:
+    """Mark a just-dropped topic so proactive lines stop re-raising it."""
+    if not topic:
+        return
+    label = str(topic).strip()
+    tokens = _topic_ban_tokens(label)
+    if not tokens:
+        return  # generic 'that'/'this' carries nothing to match against
+    cooldown = float(getattr(config, "TOPIC_BAN_COOLDOWN_SECS", 90.0) or 0.0)
+    now = time.monotonic()
+    # Prune expired entries here (write side) so the cross-thread read stays a
+    # pure filter, and keep the list bounded.
+    fresh = [b for b in _recently_banned_topics if b.get("banned_until", 0.0) > now]
+    fresh.append({"topic": label, "tokens": tokens, "banned_until": now + cooldown})
+    _recently_banned_topics[:] = fresh[-8:]
+    _log.info("[topic_ban] %r banned from proactive for %.0fs", label, cooldown)
+
+
+def recently_banned_topics() -> list[dict]:
+    """Active topic bans (filters out expired entries). Read by the proactive/idle
+    layer AND the LLM prompt assembly (another thread), so this is a pure read —
+    no slice-assign back — to avoid a read-modify-write race. Pruning happens at
+    write time in _record_banned_topic and on session reset."""
+    now = time.monotonic()
+    return [b for b in list(_recently_banned_topics) if b.get("banned_until", 0.0) > now]
+
+
+def _topic_is_recently_banned(text: str) -> bool:
+    """True when the given text/topic overlaps an active proactive topic ban."""
+    bans = recently_banned_topics()
+    if not bans:
+        return False
+    toks = _topic_ban_tokens(text or "")
+    if not toks:
+        return False
+    return any(toks & b.get("tokens", set()) for b in bans)
+
+
+def _apply_topic_boundary_side_effects(
+    person_id: Optional[int], text: str, *, banned_topic: Optional[str] = None
+) -> None:
     """Stop proactive continuation when the human closes or rejects a topic."""
+    # Capture the live topic BEFORE clearing so the ban carries the real subject.
+    if banned_topic is None:
+        try:
+            banned_topic = _boundary_fallback_topic()
+        except Exception:
+            banned_topic = None
+    _record_banned_topic(banned_topic)
     try:
         conversation_steering.clear(person_id)
     except Exception as exc:
@@ -13980,8 +14491,17 @@ def _boundary_fallback_topic() -> Optional[str]:
         pass
     try:
         thread = topic_thread.snapshot() or {}
-        if thread.get("label"):
-            return thread.get("label")
+        label = str(thread.get("label") or "").strip()
+        if label and label.lower() not in {
+            "current exchange", "current topic", "the current exchange",
+        }:
+            return label
+    except Exception:
+        pass
+    try:
+        toks = topic_thread.topic_tokens()
+        if toks:
+            return max(toks, key=len)  # best-effort topic word
     except Exception:
         pass
     return None
@@ -13993,6 +14513,7 @@ def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> N
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_last_name_confirm
     global _pending_prompted_name_confirmation
 
     if person_id is not None:
@@ -15436,6 +15957,7 @@ def _handle_speech_segment(
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_last_name_confirm
     global _pending_offscreen_identify, _pending_face_reveal_confirm
     global _identity_reask_count
 
@@ -16368,6 +16890,27 @@ def _handle_speech_segment(
             _register_rex_utterance(common_intro_response)
             return
 
+        last_name_confirm_response = (
+            _handle_last_name_confirm_reply(text)
+            if (not game_conversation_lock and _pending_last_name_confirm is not None)
+            else None
+        )
+        if last_name_confirm_response:
+            _record_heard_turn_once()
+            response_text = last_name_confirm_response
+            final_executed_path = "identity.last_name_confirm"
+            _speak_blocking(
+                last_name_confirm_response,
+                emotion="happy",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            conv_memory.add_to_transcript("Rex", last_name_confirm_response)
+            conv_log.log_rex(last_name_confirm_response)
+            _session_exchange_count += 1
+            _register_rex_utterance(last_name_confirm_response)
+            return
+
         existing_common_name_response = (
             _handle_existing_common_first_name_last_name_reply(text)
             if not game_conversation_lock
@@ -16621,9 +17164,21 @@ def _handle_speech_segment(
             if parsed_intro.is_introduction and (
                 parsed_intro.subject_kind == "pet"
                 or has_unknown_for_intro
+                # A relationship intro ("this is my brother Wade") is always an
+                # introduction, never an answer — don't let a stale dialogue frame
+                # suppress it. Only NAME-ONLY intros get the answer/mint check.
+                or bool(parsed_intro.relationship)
                 or (
-                    (bool(parsed_intro.name) or bool(parsed_intro.relationship))
-                    and not _intro_is_answer_to_rex_question(has_unknown_for_intro)
+                    bool(parsed_intro.name)
+                    and not _intro_is_answer_to_rex_question(
+                        has_unknown_for_intro, person_id=intro_introducer_id
+                    )
+                    and not _intro_would_mint_unknown_name(
+                        parsed_intro,
+                        person_id=intro_introducer_id,
+                        off_camera_unknown=off_camera_unknown,
+                        has_unknown_for_intro=has_unknown_for_intro,
+                    )
                 )
             ):
                 intro_response = _handle_introduction_parse(
@@ -16701,7 +17256,15 @@ def _handle_speech_segment(
             _register_rex_utterance(intro_voice_response)
             return
 
-        intro_followup_response = _handle_intro_followup_answer(text)
+        # A standalone shutdown/sleep command outranks an opportunistic
+        # intro-followup capture — should_capture_followup() would otherwise eat
+        # "shut up, shut down" as a relationship story before the command lane.
+        if command_parser.is_standalone_shutdown_command(text) or (
+            command_parser.is_standalone_sleep_command(text)
+        ):
+            intro_followup_response = None
+        else:
+            intro_followup_response = _handle_intro_followup_answer(text)
         if intro_followup_response:
             _record_heard_turn_once()
             _speak_blocking(
@@ -16716,7 +17279,13 @@ def _handle_speech_segment(
             _register_rex_utterance(intro_followup_response)
             return
 
-        if _pending_introduction is not None:
+        if (
+            _pending_introduction is not None
+            # A standalone system command (shutdown/sleep) outranks a pending
+            # introduction answer — never let "shut up, shut down" be eaten as
+            # an introduction reply.
+            and command_parser.parse(text) is None
+        ):
             if introductions.context_fresh(_pending_introduction):
                 expected_id = _pending_introduction.get("introducer_id")
                 if person_id is None or expected_id is None or person_id == expected_id:
@@ -16756,9 +17325,19 @@ def _handle_speech_segment(
             if parsed_intro.is_introduction and (
                 parsed_intro.subject_kind == "pet"
                 or has_unknown_for_intro
+                # Relationship intros always introduce (see the other gate site).
+                or bool(parsed_intro.relationship)
                 or (
-                    (bool(parsed_intro.name) or bool(parsed_intro.relationship))
-                    and not _intro_is_answer_to_rex_question(has_unknown_for_intro)
+                    bool(parsed_intro.name)
+                    and not _intro_is_answer_to_rex_question(
+                        has_unknown_for_intro, person_id=person_id
+                    )
+                    and not _intro_would_mint_unknown_name(
+                        parsed_intro,
+                        person_id=person_id,
+                        off_camera_unknown=off_camera_unknown,
+                        has_unknown_for_intro=has_unknown_for_intro,
+                    )
                 )
             ):
                 intro_response = _handle_introduction_parse(
@@ -19359,6 +19938,7 @@ def start(*, text_only: bool = False) -> None:
     global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_last_name_confirm
     global _pending_prompted_name_confirmation
     global _text_only_mode, _last_speech_at, _identity_reask_count
 
@@ -19376,6 +19956,8 @@ def start(*, text_only: bool = False) -> None:
     _session_router_control_topics.clear()
     _clear_anonymous_speaker_slots()
     _interest_idle_followups_spoken.clear()
+    _recently_banned_topics.clear()
+    _recent_rex_questions.clear()
     _identity_prompt_until = 0.0
     _identity_reask_count = 0
     _listen_resume_at = 0.0
@@ -19385,6 +19967,7 @@ def start(*, text_only: bool = False) -> None:
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
+    _pending_last_name_confirm = None
     _pending_identity_match_confirmation = None
     _pending_prompted_name_confirmation = None
     _clear_pending_memory_wipe()
@@ -19457,6 +20040,7 @@ def stop() -> None:
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
+    global _pending_last_name_confirm
     global _pending_prompted_name_confirmation
     global _text_only_mode, _identity_reask_count
 
@@ -19478,12 +20062,15 @@ def stop() -> None:
     _post_tts_flush_needed = False
     _session_person_turn_counts.clear()
     _session_warmth_signals.clear()
+    _recently_banned_topics.clear()
+    _recent_rex_questions.clear()
     _pending_introduction = None
     _pending_intro_followup = None
     _pending_intro_voice_capture = None
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
     _pending_existing_common_first_name = None
+    _pending_last_name_confirm = None
     _pending_identity_match_confirmation = None
     _pending_prompted_name_confirmation = None
     _clear_pending_memory_wipe()

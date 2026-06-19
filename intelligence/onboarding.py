@@ -30,6 +30,7 @@ from typing import Optional
 
 import config
 from intelligence import comedy_modes
+from intelligence import person_specials
 from intelligence import profile_questions
 from memory import facts as facts_memory
 from memory import interests as interests_memory
@@ -82,6 +83,17 @@ def eligible(person_id: Optional[int], *, person: Optional[dict] = None) -> bool
             person = people_memory.get_person(person_id)
         if profile_questions.person_is_minor(person_id, person=person):
             return False
+        # Rex already knows his creator and the VIP bits on sight — never run
+        # the stranger interrogation burst on them. ONBOARDING_INCLUDE_VIPS=True
+        # forces it back on (fresh-DB testing of the feature on the creator).
+        if not bool(getattr(config, "ONBOARDING_INCLUDE_VIPS", False)):
+            name = (person or {}).get("name")
+            if name and person_specials.is_special_person(name):
+                _log.debug(
+                    "[onboarding] skipping VIP/creator %r (ONBOARDING_INCLUDE_VIPS=False)",
+                    name,
+                )
+                return False
         visit_count = int((person or {}).get("visit_count") or 0)
         if visit_count > int(getattr(config, "ONBOARDING_MAX_VISITS", 1)):
             return False

@@ -267,8 +267,13 @@ class RegreetSpeechTest(_WanderBase):
     def test_fires_a_presence_reaction_with_name(self):
         c._face_tracking_lock = {"key": 1, "person_id": 1, "last_seen_at": 1999.0}
         snap = {"people": [{"person_db_id": 1, "face_id": "Bret"}]}
+        # An IDLE re-greet: the conversation is NOT active (the spoken re-greet is
+        # now suppressed mid-conversation — see WanderRegreetSuppressionTest).
+        idle = mock.Mock(
+            suppress_proactive=False, conversation_active=False, rapid_exchange=False
+        )
         with mock.patch.object(c, "_generate_and_speak_presence", return_value=True) as gs:
-            c._maybe_fire_wander_regreet(snap, mock.Mock(suppress_proactive=False))
+            c._maybe_fire_wander_regreet(snap, idle)
         gs.assert_called_once()
         self.assertEqual(gs.call_args.kwargs.get("purpose"), "presence_reaction")
 

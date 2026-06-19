@@ -992,6 +992,22 @@ def assemble_system_prompt(
     except Exception as exc:
         _log.debug("conversation arc injection skipped: %s", exc)
 
+    # 6b-i-b. Topic ban — the human just asked to change the subject. Override the
+    # arc's "open threads" (which still names the dropped topic until it refreshes)
+    # so neither replies nor proactive lines reopen it for the cooldown window.
+    try:
+        from intelligence import interaction as _interaction
+        bans = _interaction.recently_banned_topics()
+        if bans:
+            topics = ", ".join(sorted({str(b.get("topic") or "").strip() for b in bans if b.get("topic")}))
+            if topics:
+                sections.append(
+                    "The human just asked to change the subject. Do NOT raise or "
+                    f"deepen: {topics}. Follow them to a new subject instead."
+                )
+    except Exception as exc:
+        _log.debug("topic-ban injection skipped: %s", exc)
+
     # 6b-ii. Premise anti-repeat — names the comedic premises/angles Rex has already
     # spent this conversation so he doesn't land the same bit reworded (the arc above
     # tracks topics/what-landed but, on its own, can read as "do more of that"). Pure

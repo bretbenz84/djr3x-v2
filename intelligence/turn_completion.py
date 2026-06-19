@@ -31,6 +31,20 @@ _CANCEL_PAT = re.compile(
 )
 _TERMINAL_PUNCT_PAT = re.compile(r"[.!?]\s*$")
 _TERMINAL_QUESTION_PAT = re.compile(r"\?\s*$")
+# A follower that OPENS a brand-new wh/aux question ("What do you see?") must not
+# be glued onto a held fragment — it is its own turn.
+_WH_START_PAT = re.compile(
+    r"^\s*(?:who|what|when|where|why|how|which|whose|whom|"
+    r"do|does|did|are|is|am|can|could|would|will|should)\b",
+    re.IGNORECASE,
+)
+# Lowercase tokens that grammatically attach a follower to the prefix — a real
+# continuation ("...to" + "the store", "...and then" + "we left"). A follower
+# that begins with one of these is treated as a continuation, never distinct.
+_CONTINUATION_OPENERS = frozenset({
+    "and", "but", "so", "or", "because", "then", "to", "the", "a", "an",
+    "with", "about", "for", "of", "at", "in", "on", "that", "which",
+})
 _COMPLETE_PREPOSITION_QUESTION_PAT = re.compile(
     r"^\s*(?:who|what|when|where|why|how|which|whose|whom|"
     r"can|could|would|will|do|does|did|is|are|am|should)\b"
@@ -212,6 +226,68 @@ def classify(text: str) -> Optional[IncompleteSignal]:
     return None
 
 
+def _starts_with_continuation_opener(text: str) -> bool:
+    m = re.match(r"\s*([A-Za-z']+)", text or "")
+    return bool(m and m.group(1).lower() in _CONTINUATION_OPENERS)
+
+
+# Verb-completion danglers: a prefix ending here grammatically DEMANDS the
+# follower as its object ("I was going to" + "go to the store") — so even a
+# punctuated follower should still chain. NOTE this excludes exclamation stems
+# like "What the" (ends "the"), which is NOT a verb-completion dangler.
+_VERB_DANGLER_ENDINGS = frozenset({"to", "gonna", "into", "onto", "wanna", "gotta"})
+
+
+def _prefix_demands_continuation(prefix_text: str) -> bool:
+    toks = re.findall(r"[a-z']+", (prefix_text or "").lower())
+    return bool(toks and toks[-1] in _VERB_DANGLER_ENDINGS)
+
+
+def _wh_word(text: str) -> str:
+    m = re.match(r"\s*([A-Za-z]+)", text or "")
+    w = (m.group(1).lower() if m else "")
+    return w if w in {"who", "what", "when", "where", "why", "how", "which", "whose"} else ""
+
+
+def _is_distinct_new_thought(prefix_text: str, follower_text: str) -> bool:
+    """True when the follower is its OWN complete thought, not a continuation.
+
+    Guards the merge so a held fragment ("What the...") is not glued onto an
+    unrelated complete sentence or new question ("What do you see?"). A follower
+    that is itself a dangling fragment, or that grammatically attaches to the
+    prefix (opens with a connective, or completes a verb-dangler prefix), is NOT
+    distinct and still chains.
+    """
+    follower = (follower_text or "").strip()
+    if not follower:
+        return False
+    # The follower is itself incomplete -> it should chain, not stand alone.
+    if classify(follower) is not None:
+        return False
+    # Opens with a connective/article -> grammatical continuation of the prefix.
+    if _starts_with_continuation_opener(follower):
+        return False
+    words = _words(follower)
+    if len(words) < 3:
+        return False
+    # (1) A new wh/aux QUESTION is its own turn (the logged "What do you see?"),
+    # even when ASR drops the terminal '?'. A 4+ word wh/aux-led clause, or one
+    # that RESTARTS with the same wh-word the held fragment began with ("What the"
+    # -> "What do you see"), is a fresh question, not a short continuation.
+    if _WH_START_PAT.match(follower):
+        if (
+            _TERMINAL_QUESTION_PAT.search(follower)
+            or len(words) >= 4
+            or (_wh_word(follower) and _wh_word(follower) == _wh_word(prefix_text))
+        ):
+            return True
+    # (2) ASR marked it a full sentence AND the prefix doesn't grammatically
+    # demand it as a verb object -> a distinct declarative.
+    if _TERMINAL_PUNCT_PAT.search(follower) and not _prefix_demands_continuation(prefix_text):
+        return True
+    return False
+
+
 def hold(
     *,
     text: str,
@@ -282,6 +358,22 @@ def consume_continuation(
             _log.info(
                 "[turn_completion] pending fragment stale before continuation: %s",
                 pending.to_log_dict(),
+            )
+            return None
+
+        if bool(
+            getattr(config, "INCOMPLETE_TURN_MERGE_REJECT_DISTINCT", True)
+        ) and _is_distinct_new_thought(pending.text, cleaned):
+            # The follower is its own complete utterance (e.g. a new question),
+            # not a continuation of the held fragment. Drop the stale fragment
+            # and let this turn be processed standalone instead of merging into
+            # garble like "What the What do you see?".
+            _pending = None
+            _log.info(
+                "[turn_completion] follower is a distinct new utterance, not "
+                "merging: pending=%r follower=%r",
+                pending.text,
+                cleaned,
             )
             return None
 

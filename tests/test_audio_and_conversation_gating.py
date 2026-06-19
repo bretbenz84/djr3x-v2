@@ -3114,6 +3114,112 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             interaction._common_first_name_prompted_this_session.clear()
             interaction._session_person_turn_counts.clear()
 
+    def test_last_name_ask_deferred_during_conversational_turn(self):
+        # BUG-4: the ask must not barge into a substantive answer (the logged
+        # "It's vodka and orange juice" hijack).
+        from intelligence import interaction
+
+        interaction._pending_existing_common_first_name = None
+        interaction._common_first_name_prompted_this_session.clear()
+        interaction._session_person_turn_counts.clear()
+        try:
+            interaction._session_person_turn_counts[7] = (
+                interaction._last_name_prompt_min_person_turns()
+            )
+            with mock.patch.object(interaction, "_has_declined_last_name", return_value=False):
+                response = interaction._maybe_prompt_existing_common_first_name(
+                    7, "Bret", current_text="It's vodka and orange juice",
+                )
+            self.assertIsNone(response)
+            self.assertIsNone(interaction._pending_existing_common_first_name)
+        finally:
+            interaction._pending_existing_common_first_name = None
+            interaction._common_first_name_prompted_this_session.clear()
+            interaction._session_person_turn_counts.clear()
+
+    def test_unusual_last_name_requires_confirmation_before_rename(self):
+        from intelligence import interaction
+
+        interaction._pending_existing_common_first_name = {
+            "person_id": 7, "first_name": "Bret", "asked_at": interaction.time.monotonic(),
+        }
+        interaction._pending_last_name_confirm = None
+        try:
+            with mock.patch.object(interaction.people_memory, "rename_person") as rename:
+                response = interaction._handle_existing_common_first_name_last_name_reply(
+                    "Bat-tigger"
+                )
+            rename.assert_not_called()
+            self.assertIsNotNone(interaction._pending_last_name_confirm)
+            self.assertEqual(interaction._pending_last_name_confirm["last_name"], "Bat-tigger")
+            self.assertIn("Bat-tigger", response)
+        finally:
+            interaction._pending_existing_common_first_name = None
+            interaction._pending_last_name_confirm = None
+
+    def test_clear_last_name_phrase_still_renames_directly(self):
+        from intelligence import interaction
+
+        interaction._pending_existing_common_first_name = {
+            "person_id": 7, "first_name": "Bret", "asked_at": interaction.time.monotonic(),
+        }
+        interaction._pending_last_name_confirm = None
+        try:
+            with mock.patch.object(
+                interaction.people_memory, "rename_person", return_value=True
+            ) as rename, mock.patch.object(interaction, "_refresh_world_state_person_name"):
+                response = interaction._handle_existing_common_first_name_last_name_reply(
+                    "my last name is Benziger"
+                )
+            rename.assert_called_once()
+            self.assertEqual(rename.call_args.args[1], "Bret Benziger")
+            self.assertIn("Benziger", response)
+            self.assertIsNone(interaction._pending_last_name_confirm)
+        finally:
+            interaction._pending_existing_common_first_name = None
+            interaction._pending_last_name_confirm = None
+
+    def test_unusual_last_name_confirmed_then_renames(self):
+        from intelligence import interaction
+
+        # Bare affirmations ('yep'/'correct'/'sure') must commit the PENDING
+        # surname, never become the surname themselves (was 'Bret Yep').
+        for reply in ("yes that's right", "yep", "correct", "sure"):
+            interaction._pending_last_name_confirm = {
+                "person_id": 7, "first_name": "Bret", "last_name": "Bat-tigger",
+                "asked_at": interaction.time.monotonic(),
+            }
+            try:
+                with mock.patch.object(
+                    interaction.people_memory, "rename_person", return_value=True
+                ) as rename, mock.patch.object(interaction, "_refresh_world_state_person_name"):
+                    interaction._handle_last_name_confirm_reply(reply)
+                rename.assert_called_once()
+                self.assertEqual(rename.call_args.args[1], "Bret Bat-tigger", reply)
+                self.assertIsNone(interaction._pending_last_name_confirm)
+            finally:
+                interaction._pending_last_name_confirm = None
+
+    def test_last_name_confirm_correction_renames_to_corrected(self):
+        from intelligence import interaction
+
+        interaction._pending_last_name_confirm = {
+            "person_id": 7, "first_name": "Bret", "last_name": "Bat-tigger",
+            "asked_at": interaction.time.monotonic(),
+        }
+        try:
+            with mock.patch.object(
+                interaction.people_memory, "rename_person", return_value=True
+            ) as rename, mock.patch.object(interaction, "_refresh_world_state_person_name"):
+                response = interaction._handle_last_name_confirm_reply(
+                    "no, my last name is Benziger"
+                )
+            rename.assert_called_once()
+            self.assertEqual(rename.call_args.args[1], "Bret Benziger")
+            self.assertIsNone(interaction._pending_last_name_confirm)
+        finally:
+            interaction._pending_last_name_confirm = None
+
     def test_first_name_match_asks_before_aliasing_existing_person(self):
         from intelligence import interaction
         import numpy as np
@@ -4282,6 +4388,77 @@ class TurnCompletionTest(unittest.TestCase):
             with self.subTest(text=text):
                 signal = turn_completion.classify(text)
                 self.assertIsNotNone(signal)
+
+    def _hold(self, text):
+        import numpy as np
+        from intelligence import turn_completion as tc
+
+        signal = tc.classify(text)
+        self.assertIsNotNone(signal, f"expected {text!r} to classify incomplete")
+        return tc.hold(
+            text=text,
+            audio_array=np.ones(16, dtype="float32"),
+            raw_best_id=None,
+            raw_best_name=None,
+            raw_best_score=0.0,
+            signal=signal,
+        )
+
+    def _consume(self, text):
+        import numpy as np
+        from intelligence import turn_completion as tc
+
+        return tc.consume_continuation(
+            text=text,
+            audio_array=np.ones(16, dtype="float32"),
+            raw_best_id=None,
+            raw_best_name=None,
+            raw_best_score=0.0,
+        )
+
+    def test_distinct_question_follower_not_merged(self):
+        # The live repro: "What the..." held, then a separate complete question.
+        from intelligence import turn_completion as tc
+
+        self._hold("What the...")
+        result = self._consume("What do you see?")
+        self.assertTrue(result is None or result.get("action") != "merge")
+        self.assertIsNone(tc.pending_snapshot())  # stale fragment dropped
+
+    def test_distinct_statement_follower_not_merged(self):
+        from intelligence import turn_completion as tc
+
+        self._hold("What the...")
+        result = self._consume("I already ate dinner.")
+        self.assertTrue(result is None or result.get("action") != "merge")
+        self.assertIsNone(tc.pending_snapshot())
+
+    def test_genuine_continuation_still_merges(self):
+        self._hold("I was going to")
+        result = self._consume("the store")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.get("action"), "merge")
+        self.assertEqual(result.get("text"), "I was going to the store")
+
+    def test_connective_follower_still_merges(self):
+        # A follower that opens with a connective is a continuation, not distinct.
+        self._hold("I need to")
+        result = self._consume("and then go home")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.get("action"), "merge")
+
+    def test_fragment_follower_still_chains(self):
+        self._hold("I need to")
+        result = self._consume("go to the")  # itself incomplete -> chains
+        self.assertIsNotNone(result)
+        self.assertEqual(result.get("action"), "merge")
+
+    def test_is_distinct_new_thought_contract(self):
+        from intelligence import turn_completion as tc
+
+        self.assertTrue(tc._is_distinct_new_thought("What the", "What do you see?"))
+        self.assertFalse(tc._is_distinct_new_thought("I was going to", "the store"))
+        self.assertFalse(tc._is_distinct_new_thought("I need to", "go to the"))
 
 
 class ConversationGatingTest(unittest.TestCase):
@@ -10246,6 +10423,10 @@ class IdleBanterTest(unittest.TestCase):
         # seconds, or while Rex is awaiting an answer — clear the leaked globals so a
         # prior test can't suppress banter.
         interaction._last_proactive_line_at = 0.0
+        interaction._floor_held_until = 0.0  # any prior question-bearing Rex line arms this
+        interaction._idle_banter_threshold = None
+        interaction._recently_banned_topics.clear()
+        interaction._recent_rex_questions.clear()
         consciousness.clear_response_wait()
         # Proactive speech is now also suppressed during the "give space after a heavy
         # moment" sober window + an open grief flow. Another test may have armed those
@@ -10269,6 +10450,10 @@ class IdleBanterTest(unittest.TestCase):
         interaction._idle_banter_count = 0
         interaction._last_idle_banter_at = 0.0
         interaction._last_proactive_line_at = 0.0
+        interaction._floor_held_until = 0.0
+        interaction._idle_banter_threshold = None
+        interaction._recently_banned_topics.clear()
+        interaction._recent_rex_questions.clear()
         consciousness.clear_response_wait()
         callback_engine.reset_state_for_tests()
         interaction._grief_flow_state.clear()

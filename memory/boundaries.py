@@ -119,6 +119,26 @@ _GENERIC_BOUNDARY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"stop teasing me about (?:that|this|it))\b",
         re.IGNORECASE,
     )),
+    # "Change the subject" family: a request to drop the CURRENT topic. Anchored
+    # on a steering verb/lead-in + the subject/topic nouns (or "something else")
+    # so embedded mentions ("the new subject I'm studying", "a change of subject
+    # in my thesis", "let's talk about astronomy") do NOT false-trigger.
+    # detect_boundary resolves the banned topic from the fallback (the live thread).
+    ("mention", re.compile(
+        # lead-in + verb + subject/topic
+        r"\b(?:let'?s|lets|can we|could we|how about we|why don'?t we|shall we|"
+        r"please can we)\s+(?:choose|pick|change|switch|move on to|talk about)\s+"
+        r"(?:to\s+)?(?:a\s+|an\s+|the\s+)?(?:different|new|another)?\s*(?:subject|topic)\b|"
+        # bare imperative verb + a/the different|new subject/topic
+        r"\b(?:choose|pick|change|switch)\s+(?:to\s+)?(?:a\s+|an\s+|the\s+)?"
+        r"(?:different|new|another)\s+(?:subject|topic)\b|"
+        r"\bchange the subject\b|"
+        r"\btalk about something else\b|\bcan we talk about something else\b|"
+        r"\bsomething else please\b|"
+        # standalone "new subject" / "different topic" only at the START
+        r"^\s*(?:new|different|another)\s+(?:subject|topic)\b",
+        re.IGNORECASE,
+    )),
 ]
 
 _CLEAR_PAT = re.compile(

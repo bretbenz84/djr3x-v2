@@ -85,6 +85,20 @@ def is_galactic_hair_stylist(name: object) -> bool:
     }
 
 
+def is_special_person(name: object) -> bool:
+    """True for anyone Rex already treats specially (creator + the VIP bits).
+
+    A single 'is this someone Rex knows on sight' predicate so new specials are
+    automatically covered everywhere this is consulted (e.g. onboarding skips
+    interrogating the creator/VIPs).
+    """
+    return bool(
+        is_rex_creator(name)
+        or is_jt_volleyball_celebrity(name)
+        or is_galactic_hair_stylist(name)
+    )
+
+
 def jt_volleyball_line(*, returning: bool = False) -> str:
     lines = JT_VOLLEYBALL_RETURN_LINES if returning else JT_VOLLEYBALL_LINES
     return random.choice(lines)

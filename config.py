@@ -2852,6 +2852,12 @@ POST_QUESTION_CAPTURE_PREROLL_GRACE_SECS = 0.12
 INCOMPLETE_TURN_ENABLED = True
 INCOMPLETE_TURN_HOLD_SECS = 4.0
 INCOMPLETE_TURN_PROMPT_REPLY_WINDOW_SECS = 10.0
+# When True, a held fragment is NOT merged with a follower that parses as a
+# complete, semantically-distinct sentence or a new wh/aux question (e.g. "What
+# do you see?"); the follower is processed as its own turn instead of producing
+# garble like "What the What do you see?". Set False to restore unconditional
+# merge-within-window.
+INCOMPLETE_TURN_MERGE_REJECT_DISTINCT = True
 
 # Seconds after a Rex statement completes before VAD detections are accepted —
 # just long enough for room echo of his own voice to decay. Lowered 0.35 → 0.2 →
@@ -2931,6 +2937,27 @@ IDLE_BANTER_SECS = 8.0
 IDLE_BANTER_COOLDOWN_SECS = 10.0  # minimum gap between nudges
 IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up (was 3 —
                                   # 3 made him re-volunteer the same preoccupation too often)
+# MID-CONVERSATION the human is engaged but may pause far longer than the cold-room
+# 5-8s while composing a reply — and Rex's own ~3-4s reply latency eats into that.
+# A 22-30s floor while a conversation is active matches a human waiting for a slow
+# speaker, instead of piling a fresh proactive line on top every 8s (the over-talk
+# engine, live-logged 2026-06-18). The short window above still keeps a cold/empty
+# room lively.
+IDLE_BANTER_ACTIVE_MIN_SECS = 22.0
+IDLE_BANTER_ACTIVE_MAX_SECS = 30.0
+# After a normal REPLY that asked a question (even one without a literal '?'),
+# hard-suppress idle filler this long so the user gets a real window to answer
+# before Rex re-asks. Fixes the duplicate camping question (~39s apart) where the
+# only hard suppressor expired after ~7s.
+POST_REPLY_QUESTION_WAIT_SECS = 18.0
+# Drop a proposed idle-banter question if it re-asks a question Rex already asked
+# within this window (keyword/topic overlap) — never become a broken record.
+IDLE_BANTER_RECENT_QUESTION_DEDUP_SECS = 120.0
+# A 'change the subject' boundary suppresses the just-dropped topic from the
+# proactive/idle layer AND the LLM prompt for this long, so the boundary
+# acknowledgment isn't undone by an idle line revisiting the topic ~20s later.
+TOPIC_BAN_COOLDOWN_SECS = 90.0
+TOPIC_BAN_PROACTIVE_SUPPRESS = True
 # Priority idle banter competes with under ACTION_GOVERNOR_ENFORCE (proactive-layer
 # consolidation). Moderate — above ambient idle_monologue (15), below the check-ins.
 IDLE_BANTER_GOVERNOR_PRIORITY = 50
@@ -3012,6 +3039,12 @@ ONBOARDING_MAX_QUESTIONS = 5
 # Eligibility: only brand-new people (low visit count) with a near-empty profile.
 ONBOARDING_MAX_VISITS = 1
 ONBOARDING_FACT_FLOOR = 3        # skip onboarding if they already have > this many profile facts
+# Run the onboarding burst on known special people (the creator Bret Benziger
+# and the person_specials VIPs)? False (default) means Rex never interrogates his
+# own maker — he already knows them on sight. Set True to force the burst on the
+# creator/VIPs for fresh-DB testing of the onboarding feature.
+# See intelligence/onboarding.eligible + intelligence/person_specials.is_special_person.
+ONBOARDING_INCLUDE_VIPS = False
 
 # Pacing.
 ONBOARDING_KICKOFF_SECS = 1.2              # beat after the enrollment ack before the first question
@@ -3683,6 +3716,23 @@ COMMON_FIRST_NAME_LAST_NAME_PROMPTS = [
     "{first}. Bold choice, sharing a name with half the species. Last name?",
     "{first} — I know a couple. Throw me a last name so I keep you straight.",
     "{first}, daringly specific. Toss me a last name to go with it.",
+]
+# Only ask a returning person's last name at a NATURAL moment — a short, topic-
+# neutral turn (greeting / ack / brief reply) or a lull — never mid-answer like
+# "It's vodka and orange juice" (live-logged 2026-06-18). A turn longer than
+# COMMON_FIRST_NAME_LAST_NAME_MAX_TURN_WORDS words, or one that answers a question
+# Rex just asked on another topic, is deferred.
+COMMON_FIRST_NAME_LAST_NAME_NATURAL_MOMENT_ONLY = True
+COMMON_FIRST_NAME_LAST_NAME_MAX_TURN_WORDS = 4
+# Confirm an unusual/low-confidence surname token (a Whisper mangling like
+# "Bat-tigger") with a quick "that right?" before a durable rename, so one
+# garbled word can't overwrite the canonical name. A clearly-phrased reply ("my
+# last name is Benziger", "Bret Benziger") still commits directly.
+COMMON_FIRST_NAME_LAST_NAME_REQUIRE_CONFIRM_UNUSUAL = True
+COMMON_FIRST_NAME_LAST_NAME_CONFIRM_PROMPTS = [
+    "{full} — that right?",
+    "Let me get this straight: {full}?",
+    "{full}, did I hear that correctly?",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -8836,6 +8836,14 @@ def _maybe_fire_wander_regreet(snapshot: dict, profile: "SituationProfile") -> N
     acknowledging he drifted off and noticed them again. Respects proactive suppression."""
     if getattr(profile, "suppress_proactive", False):
         return
+    # The physical look-around is fine mid-conversation, but the SPOKEN "Oh—still
+    # here" re-greet during a live exchange is an interruption (it fired twice
+    # mid-conversation, live-logged 2026-06-18). Suppress only the spoken line
+    # while a conversation is active; the silent wander motion still happens.
+    if getattr(profile, "conversation_active", False) or getattr(
+        profile, "rapid_exchange", False
+    ):
+        return
     name = _locked_person_name(snapshot)
     first = _first_name(name, "there")
     pid = _face_tracking_lock.get("person_id")
