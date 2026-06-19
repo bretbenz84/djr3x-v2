@@ -477,6 +477,135 @@ def _populate_signals(plan: TurnPlan) -> None:
             setattr(plan, name, sig[name])
 
 
+# ── What-if / plans state (per session; cleared by reset_plans_state) ─────────────
+# Coarse per-(person, plan_key) dedupe so Rex clarifies a plan once and suggests once,
+# never nagging. _pending_plan_clarify bridges the clarify→answer→suggest handoff across
+# turns ("I'm going camping" → "Where?" → "Fraser Flats" → "what if…").
+_plans_clarified: set = set()
+_plans_suggested: set = set()
+_pending_plan_clarify: dict = {}  # person_id -> {"key": str, "at": monotonic}
+
+
+def reset_plans_state() -> None:
+    """Clear the what-if/plans dedupe + pending state (called on session reset)."""
+    _plans_clarified.clear()
+    _plans_suggested.clear()
+    _pending_plan_clarify.clear()
+
+
+# NOTE on wording: each directive matches social_frame's _ASK_ALLOWED_PAT +
+# _EXPLICIT_FOLLOWUP_PAT ("give one … then ask one … follow-up", "one question") so the
+# one earned question/what-if is allowed even when the question budget is full — AND so
+# social_frame's structured (TurnPlan) and regex paths derive the SAME explicit_followup
+# (the Bet-2 equivalence invariant). purpose is left unset (the generic conversational
+# default) for the same reason; it carries no behavioral weight for plans.
+def _plan_clarify_directive() -> str:
+    return (
+        "Primary purpose: the human mentioned a plan but kept it vague. Do NOT give a "
+        "generic 'that sounds fun' riff. Give one genuine reaction, then ask one specific "
+        "clarifying follow-up question a curious friend would ask to pin down the key "
+        "detail — where they're going, when, or who with. One question, in Rex's voice."
+    )
+
+
+def _plan_suggest_directive(location: str, *, place_hint: str = "") -> str:
+    loc = f" or near {location}" if location else ""
+    anchor = f" ({place_hint})" if place_hint else ""
+    return (
+        f"Primary purpose: the human shared a specific plan{anchor}. Give one quick "
+        "reaction, then ask one what-if follow-up question that floats a concrete thing "
+        "to do, see, or try there (\"what if you …?\") grounded in that place or activity "
+        "— a suggestion, not a claim you've been there. Only suggest something you are "
+        f"genuinely confident exists or fits there{loc}; if you're not sure what or where "
+        "it is, ask what it's near instead of inventing. One question, specific and dry — "
+        "Rex, not a travel brochure."
+    )
+
+
+def _no_plans_directive(location: str) -> str:
+    loc = location or "the local area"
+    return (
+        "Primary purpose: the human has no plans. Don't just riff about it. Give one "
+        "quick beat, then ask one what-if follow-up question that floats ONE concrete, "
+        f"specific thing to do near {loc} — a real place, activity, or kind of event "
+        "(\"what if you …?\"), framed as a friendly suggestion. Only suggest places you "
+        f"are genuinely confident exist near {loc}. One idea, in Rex's voice, not a list."
+    )
+
+
+def _plan_branch(plan: TurnPlan, lines: list, text: str, person_id: Optional[int]):
+    """Split a plan statement: sparse→clarify, specific→suggest, no-plans→suggest.
+    Returns a finished TurnPlan, or None to fall back to the generic acknowledgment
+    (feature off, not actually a plan, classifier error, or already handled)."""
+    if not bool(getattr(config, "WHAT_IF_PLANS_ENABLED", True)):
+        return None
+    try:
+        from intelligence import plan_intent
+        info = plan_intent.classify(text)
+    except Exception as exc:
+        _log.debug("[plans] classify failed: %s", exc)
+        return None
+    if not (info.get("is_plan") or info.get("is_no_plans")):
+        return None
+    location = str(getattr(config, "WEATHER_LOCATION", "") or "").strip()
+    key = (person_id, info.get("plan_key") or "plan")
+
+    if info.get("is_no_plans"):
+        if key in _plans_suggested:
+            return None
+        _plans_suggested.add(key)
+        lines.append(_no_plans_directive(location))
+        return _finish(plan, lines)
+
+    if info.get("specificity") == "specific":
+        if key in _plans_suggested:
+            return None
+        _plans_suggested.add(key)
+        lines.append(_plan_suggest_directive(location, place_hint=info.get("place") or ""))
+        return _finish(plan, lines)
+
+    # Sparse plan → clarify once (then a later place-answer triggers the suggestion via
+    # the answered_question handoff below).
+    if key in _plans_clarified or key in _plans_suggested:
+        return None
+    _plans_clarified.add(key)
+    if person_id is not None:
+        _pending_plan_clarify[person_id] = {"key": info.get("plan_key") or "plan", "at": time.monotonic()}
+    lines.append(_plan_clarify_directive())
+    return _finish(plan, lines)
+
+
+def _plan_clarify_answer(plan: TurnPlan, lines: list, text: str, person_id: Optional[int],
+                         answered_question: Optional[dict]):
+    """If this turn answers a plan clarifier Rex just asked, offer the what-if suggestion
+    grounded in the place they named. Returns a finished TurnPlan or None."""
+    if person_id is None or not bool(getattr(config, "WHAT_IF_PLANS_ENABLED", True)):
+        return None
+    pend = _pending_plan_clarify.pop(person_id, None)
+    if not pend:
+        return None
+    ttl = float(getattr(config, "PLANS_CLARIFY_TTL_SECS", 300.0))
+    if (time.monotonic() - float(pend.get("at") or 0.0)) > ttl:
+        return None
+    key = (person_id, pend.get("key") or "plan")
+    if key in _plans_suggested:
+        return None
+    _plans_suggested.add(key)
+    location = str(getattr(config, "WEATHER_LOCATION", "") or "").strip()
+    a_text = (answered_question or {}).get("answer_text") or text
+    loc = f" or near {location}" if location else ""
+    lines.append(
+        "Primary purpose: the human just told you the specifics of their plan: "
+        f"{a_text!r}. Give one quick reaction, then ask one what-if follow-up question "
+        "that floats a concrete thing to do, see, or try there (\"what if you …?\") "
+        "grounded in that specific place or activity — a suggestion, not a claim you've "
+        f"been there. Only suggest something you are genuinely confident exists or fits "
+        f"there{loc}; if you're unsure what or where it is, ask instead of inventing. "
+        "One question, specific and dry — Rex."
+    )
+    return _finish(plan, lines)
+
+
 def build_turn_plan(
     user_text: str,
     person_id: Optional[int],
@@ -711,6 +840,11 @@ def build_turn_plan(
         return _finish(plan, lines)
 
     if answered_question:
+        # If they just answered Rex's plan clarifier ("Where are you camping?" → "Fraser
+        # Flats"), turn that into the what-if suggestion instead of a generic ack.
+        plan_suggest = _plan_clarify_answer(plan, lines, text, person_id, answered_question)
+        if plan_suggest is not None:
+            return plan_suggest
         q_text = answered_question.get("question_text") or "your previous question"
         a_text = answered_question.get("answer_text") or text
         if not _is_compliment_or_ack(a_text):
@@ -767,6 +901,13 @@ def build_turn_plan(
 
         low_pressure_ack = _is_compliment_or_ack(text)
         if _PLAN_STATEMENT_PAT.search(text):
+            # What-if/plans: sparse plan → clarifying question; specific plan or
+            # no-plans → concrete suggestion. Falls back to the generic acknowledgment
+            # when the feature is off, it's not really a plan, or the plan was already
+            # handled this session.
+            planned = _plan_branch(plan, lines, text, person_id)
+            if planned is not None:
+                return planned
             lines.append(
                 "Primary purpose: acknowledge the human's plan or upcoming event. "
                 "Give one concrete positive or curious beat connected to that plan, "

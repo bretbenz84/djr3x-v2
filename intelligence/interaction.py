@@ -19271,6 +19271,10 @@ def start(*, text_only: bool = False) -> None:
     question_budget.clear()
     repair_moves.clear()
     try:
+        conversation_agenda.reset_plans_state()
+    except Exception:
+        pass
+    try:
         from intelligence import callback_engine as _cb_engine
         _cb_engine.clear_session()
     except Exception:

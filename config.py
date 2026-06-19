@@ -4651,6 +4651,27 @@ TELL_ABOUT_STEP_TTL_SECS = 240.0
 TELL_ABOUT_CLASSIFY_LLM_ENABLED = True
 HOLIDAY_PLANS_CHECK_INTERVAL_SECS = 30.0
 
+# ── What-if / plans: context-aware curiosity + suggestions ───────────────────────
+# When the user states a plan/activity, Rex stops giving a generic "that sounds fun"
+# riff. If details are SPARSE ("I'm going camping") he asks ONE clarifying question
+# ("Where are you headed?"); once a SPECIFIC place is known (same turn or after the
+# clarify) he offers ONE concrete "what if you did X there?" suggestion; and for NO
+# plans he suggests something to do near WEATHER_LOCATION. Generalizes the holiday-
+# plans proactivity to everyday plans. Reactive only (v1); LLM-only suggestion source
+# (no web search) — see plan_intent.py / conversation_agenda plan branch.
+WHAT_IF_PLANS_ENABLED = True
+# Refine sparse-vs-specific with the local qwen sidecar when the regex is unsure
+# (catches lowercase / unusual place names). Failure-safe: error → 'sparse' → clarify.
+PLAN_INTENT_QWEN_CONFIRM_ENABLED = True
+PLAN_INTENT_QWEN_TIMEOUT_SECS = 0.9
+# How long after Rex asks a plan clarifier his answer still triggers the suggestion
+# (the "I'm going camping" → "Where?" → "Fraser Flats" → "what if…" handoff window).
+PLANS_CLARIFY_TTL_SECS = 300.0
+# v2 upgrade path (NOT built): set True + add a search provider (awareness/places.py,
+# mirroring the wttr.in fetch) to let Rex research obscure specific places. LLM-only
+# today, so obscure spots get a "where's that near?" clarify instead of a guess.
+PLAN_SUGGESTION_WEB_SEARCH_ENABLED = False
+
 # Weekly small-talk (Fri-eve weekend plans, Sun-eve week ahead, Mon-morn recap).
 # Per (person, ISO-week, slot) — fires at most once per slot per week.
 WEEKLY_SMALLTALK_PROBABILITY = 0.6

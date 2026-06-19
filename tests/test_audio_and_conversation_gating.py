@@ -8469,7 +8469,9 @@ class PendingMusicPreferenceTest(unittest.TestCase):
                 1,
             )
 
-        self.assertIn("upcoming event", directive)
+        # A specific plan is now handled by the what-if/plans branch (a concrete
+        # suggestion), NOT a generic friendship-interview question.
+        self.assertIn("plan", directive.lower())
         self.assertNotIn("How did you end up talking to a droid DJ?", directive)
 
     def test_agenda_injects_friendship_question_into_reactive_turns(self):
