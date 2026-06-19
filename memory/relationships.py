@@ -23,6 +23,40 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ── Proactive-topic dedupe (cross-session) ──────────────────────────────────────
+# Separate from person_qa so a proactive marker never shows up as a "pending question."
+# Used for date-bound proactive asks (holiday plans, etc.) that must not repeat between
+# runs. Failure-safe: a DB hiccup degrades to "not asked" (re-ask) rather than crashing.
+
+def mark_proactive_asked(person_id: int, topic_key: str) -> None:
+    """Record that Rex proactively asked this person about topic_key (idempotent)."""
+    if person_id is None or not topic_key:
+        return
+    try:
+        db.execute(
+            "INSERT OR IGNORE INTO proactive_topics_asked "
+            "(person_id, topic_key, asked_at, answered) VALUES (?, ?, ?, 0)",
+            (int(person_id), str(topic_key), _now()),
+        )
+    except Exception as exc:
+        _log.debug("mark_proactive_asked failed: %s", exc)
+
+
+def was_proactive_asked(person_id: int, topic_key: str) -> bool:
+    """True if Rex has proactively asked this person about topic_key (any prior run)."""
+    if person_id is None or not topic_key:
+        return False
+    try:
+        row = db.fetchone(
+            "SELECT 1 FROM proactive_topics_asked WHERE person_id = ? AND topic_key = ?",
+            (int(person_id), str(topic_key)),
+        )
+        return row is not None
+    except Exception as exc:
+        _log.debug("was_proactive_asked failed: %s", exc)
+        return False
+
+
 def get_qa_history(person_id: int) -> list[dict]:
     """Return all Q&A pairs for a person, ordered by asked_at."""
     rows = db.fetchall(

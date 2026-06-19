@@ -180,6 +180,16 @@ CREATE TABLE IF NOT EXISTS conversations (
     topics          TEXT
 );
 
+-- Cross-session dedupe for proactive topic asks (e.g. holiday-plans questions), so a
+-- date-bound question Rex already raised in a prior run isn't repeated.
+CREATE TABLE IF NOT EXISTS proactive_topics_asked (
+    person_id   INTEGER NOT NULL,
+    topic_key   TEXT NOT NULL,
+    asked_at    DATETIME,
+    answered    INTEGER DEFAULT 0,
+    PRIMARY KEY (person_id, topic_key)
+);
+
 CREATE TABLE IF NOT EXISTS person_events (
     id              INTEGER PRIMARY KEY,
     person_id       INTEGER REFERENCES people(id),

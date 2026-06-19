@@ -3625,9 +3625,17 @@ def _idle_plans_already_asked_holiday(person_id: Optional[int], holiday: dict) -
         return True
     if person_id is None:
         return False
+    date = holiday.get("date", "")
+    # Persistent cross-run dedupe: don't re-raise a holiday already asked in a PRIOR run.
+    try:
+        from memory import relationships as rel_memory
+        if date and rel_memory.was_proactive_asked(int(person_id), f"holiday_plans:{date}"):
+            return True
+    except Exception:
+        pass
     try:
         from intelligence import consciousness as _c
-        return (int(person_id), holiday.get("date", "")) in _c._holiday_plans_asked
+        return (int(person_id), date) in _c._holiday_plans_asked
     except Exception:
         return False
 
@@ -3646,6 +3654,12 @@ def _mark_idle_plans_asked(marker: Optional[dict]) -> None:
             try:
                 from intelligence import consciousness as _c
                 _c._holiday_plans_asked.add((int(person_id), date))
+            except Exception:
+                pass
+            # Persist so the holiday isn't re-asked in a future run.
+            try:
+                from memory import relationships as rel_memory
+                rel_memory.mark_proactive_asked(int(person_id), f"holiday_plans:{date}")
             except Exception:
                 pass
     elif marker.get("generic"):

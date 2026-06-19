@@ -462,6 +462,23 @@ _SLIM_JOKE_SAFETY = (
 )
 
 
+def _slim_length_rule(frame: SocialFrame) -> str:
+    """Length guidance as a CEILING, not a target. max_sentences is still enforced by
+    the governor; this wording stops the model from reflexively padding to the limit, so
+    Rex's statements vary (often one sentence) instead of always landing exactly two."""
+    n = max(1, int(frame.max_sentences or 1))
+    sent = "sentence" if n == 1 else "sentences"
+    if frame.allow_question:
+        # A reaction beat plus the one allowed question naturally wants ~2.
+        return f"a brief beat, then your one question — up to {n} {sent}, no padding"
+    if n <= 1:
+        return f"one {sent}. Land it and stop"
+    return (
+        f"one sentence is usually the stronger move — add a second only if it genuinely "
+        f"earns its place; at most {n} {sent}, and never pad to fill the limit"
+    )
+
+
 def _slim_question_rule(frame: SocialFrame) -> str:
     if frame.purpose == "identity":
         return (
@@ -511,8 +528,8 @@ def render_slim_contract(frame: SocialFrame, primary_purpose: str = "") -> str:
     return (
         "This turn — do ONE thing, then stop:\n"
         f"- {purpose}\n"
-        f"- Hard shape: max_words={frame.max_words}, "
-        f"max_sentences={frame.max_sentences}. Addressee: {frame.addressee}.\n"
+        f"- Length: {_slim_length_rule(frame)} (max_words={frame.max_words}). "
+        f"Addressee: {frame.addressee}.\n"
         f"- Questions: {_slim_question_rule(frame)}.\n"
         f"- Roast: {_slim_roast_rule(frame)}.\n"
         f"- Visual: {_slim_visual_rule(frame)}.\n"

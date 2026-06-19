@@ -7678,19 +7678,25 @@ def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
     try:
         from awareness.holidays import upcoming_holidays
         from memory import people as people_mod
+        from memory import relationships as rel_memory
 
         holidays = upcoming_holidays()
         if not holidays:
             return
 
-        # Find the soonest holiday Rex hasn't asked this person about yet.
+        # Find the soonest holiday Rex hasn't asked this person about yet — in this
+        # session (in-memory set) OR a PRIOR run (persistent proactive-asked store), so a
+        # holiday-plans question already answered before isn't repeated between runs.
         target = None
         for h in holidays:
             if not _holiday_plans_allowed(h):
                 continue
-            if (engaged_id, h["date"]) not in _holiday_plans_asked:
-                target = h
-                break
+            if (engaged_id, h["date"]) in _holiday_plans_asked:
+                continue
+            if rel_memory.was_proactive_asked(engaged_id, f"holiday_plans:{h['date']}"):
+                continue
+            target = h
+            break
         if target is None:
             return
 
@@ -7728,8 +7734,13 @@ def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
         )
 
         def _on_spoke() -> None:
-            # Mark this holiday's plans question asked only on an actual spoken turn.
+            # Mark this holiday's plans question asked only on an actual spoken turn —
+            # both in-session (set) and persistently (so it won't repeat next run).
             _holiday_plans_asked.add((engaged_id, target["date"]))
+            try:
+                rel_memory.mark_proactive_asked(engaged_id, f"holiday_plans:{target['date']}")
+            except Exception as exc:
+                _log.debug("persist holiday plans asked failed: %s", exc)
             _log.info(
                 "consciousness: holiday plans question for person_id=%s — %s (T-%dd, %s)",
                 engaged_id, target["name"], days_until, target["window"],

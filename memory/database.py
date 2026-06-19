@@ -211,6 +211,19 @@ _MIGRATIONS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_voice_sig_person ON voice_signatures(person_id)",
+    # Cross-session dedupe for PROACTIVE topic asks (e.g. "got Juneteenth plans?"), so a
+    # date-bound question Rex already raised in a PRIOR run isn't repeated. topic_key is
+    # caller-defined (e.g. "holiday_plans:2026-06-19" — the date makes next year a fresh
+    # key). Kept separate from person_qa so it never pollutes the pending-question logic.
+    """
+    CREATE TABLE IF NOT EXISTS proactive_topics_asked (
+        person_id   INTEGER NOT NULL,
+        topic_key   TEXT NOT NULL,
+        asked_at    DATETIME,
+        answered    INTEGER DEFAULT 0,
+        PRIMARY KEY (person_id, topic_key)
+    )
+    """,
 ]
 
 
