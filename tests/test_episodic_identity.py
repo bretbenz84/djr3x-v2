@@ -67,10 +67,14 @@ class SceneChangedNamesWhoTest(unittest.TestCase):
         recorded = {}
         with mock.patch("memory.people.get_person", return_value={"name": "Bret"}), \
              mock.patch("memory.episodes.record_scene",
-                        side_effect=lambda summary, detail=None: recorded.update(summary=summary)):
+                        side_effect=lambda summary, *, detail=None, person_id=None, person_name=None:
+                        recorded.update(summary=summary, person_id=person_id, person_name=person_name)):
             episodic_hooks.scene_changed(snapshot)
         self.assertIn("cluttered workshop", recorded["summary"])
         self.assertIn("Bret was there", recorded["summary"])
+        # The scene is now ATTRIBUTED to the single recognized person (face match).
+        self.assertEqual(recorded["person_id"], 1)
+        self.assertEqual(recorded["person_name"], "Bret")
 
     def test_no_known_people_leaves_summary_generic(self):
         episodic_hooks._last_scene_episode_sig = None
@@ -80,10 +84,12 @@ class SceneChangedNamesWhoTest(unittest.TestCase):
         }
         recorded = {}
         with mock.patch("memory.episodes.record_scene",
-                        side_effect=lambda summary, detail=None: recorded.update(summary=summary)):
+                        side_effect=lambda summary, *, detail=None, person_id=None, person_name=None:
+                        recorded.update(summary=summary, person_id=person_id)):
             episodic_hooks.scene_changed(snapshot)
         self.assertIn("empty room", recorded["summary"])
         self.assertNotIn("was there", recorded["summary"])
+        self.assertIsNone(recorded["person_id"])  # no recognized person → unattributed
 
 
 class SceneryChangeRemarkTest(unittest.TestCase):

@@ -48,17 +48,16 @@ _SILENT_KEYS = frozenset({"skin_color"})
 
 # ── Recognized-identity helper ────────────────────────────────────────────────
 
-def visible_known_names(snapshot=None) -> list[str]:
-    """Names of recognized people currently visible to the camera.
+def visible_known_people(snapshot=None) -> list[tuple[int, str]]:
+    """``(person_db_id, name)`` for each recognized, currently-visible person.
 
-    Reads ``world_state.people`` (or a provided snapshot), keeps only faces that
-    are actually visible, and resolves each ``person_db_id`` to the stored person
-    name via the people DB. This is the bridge that folds dlib face-recognition
-    identity into the GPT-4o vision descriptions, so Rex can say "Bret is at his
-    desk" instead of "a man is at a desk".
+    The id-bearing companion to :func:`visible_known_names`. Use this when a memory
+    needs to be ATTRIBUTED to the person (stored against their ``person_id``), not
+    just name them in prose — e.g. an episodic scene "Bret was at his desk" that can
+    later be recalled as part of Rex's history WITH Bret.
 
-    Returns an order-preserving, de-duplicated list of names. Unknown faces (no
-    ``person_db_id``) are skipped. Never raises — returns [] on any failure.
+    Order-preserving, de-duplicated by id. Unknown faces (no ``person_db_id``) are
+    skipped. Never raises — returns [] on any failure.
     """
     try:
         if snapshot is not None:
@@ -69,7 +68,7 @@ def visible_known_names(snapshot=None) -> list[str]:
     except Exception:
         return []
 
-    names: list[str] = []
+    out: list[tuple[int, str]] = []
     seen_ids: set[int] = set()
     for person in entries:
         if not isinstance(person, dict):
@@ -89,6 +88,20 @@ def visible_known_names(snapshot=None) -> list[str]:
         except Exception:
             row = None
         name = (row or {}).get("name")
+        if name:
+            out.append((pid, name))
+    return out
+
+
+def visible_known_names(snapshot=None) -> list[str]:
+    """Names of recognized people currently visible to the camera.
+
+    The bridge that folds dlib face-recognition identity into the GPT-4o vision
+    descriptions, so Rex can say "Bret is at his desk" instead of "a man is at a
+    desk". Order-preserving, de-duplicated; unknown faces are skipped. Never raises.
+    """
+    names: list[str] = []
+    for _pid, name in visible_known_people(snapshot):
         if name and name not in names:
             names.append(name)
     return names

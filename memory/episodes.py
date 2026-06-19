@@ -146,13 +146,22 @@ def record_person_seen(person_id: Optional[int], name: Optional[str]) -> Optiona
     )
 
 
-def record_made_laugh(person_id: Optional[int], name: Optional[str], *, kind: str = "smile") -> Optional[int]:
+def record_made_laugh(
+    person_id: Optional[int], name: Optional[str], *, kind: str = "smile",
+    topic: Optional[str] = None,
+) -> Optional[int]:
     label = (name or "them").strip() or "them"
     verb = "laugh" if kind in ("laugh", "laughing") else "smile"
+    # A topic ("their fantasy team") makes the most-fired shared moment specific and
+    # recall-worthy instead of a vague "I made Bret smile."
+    about = ""
+    topic = (topic or "").strip()
+    if topic and topic.lower() not in {"current exchange", "conversation"}:
+        about = f" about {topic}"
     return record_episode(
-        "made_laugh", f"I made {label} {verb}.",
+        "made_laugh", f"I made {label} {verb}{about}.",
         person_id=person_id, person_name=name,
-        detail={"expression": kind}, salience=0.7,
+        detail={"expression": kind, "topic": topic or None}, salience=0.7,
     )
 
 
@@ -165,8 +174,17 @@ def record_animal(species: Optional[str], *, position: Optional[str] = None) -> 
     )
 
 
-def record_scene(summary: str, *, detail: Optional[dict] = None) -> Optional[int]:
-    return record_episode("scene", summary, detail=detail, salience=0.4)
+def record_scene(
+    summary: str, *, detail: Optional[dict] = None,
+    person_id: Optional[int] = None, person_name: Optional[str] = None,
+) -> Optional[int]:
+    # A scene with a recognized person present is attributed to them (face match), so
+    # it joins Rex's history WITH that person; an anonymous room scan stays unattributed.
+    salience = 0.5 if isinstance(person_id, int) else 0.4
+    return record_episode(
+        "scene", summary, detail=detail,
+        person_id=person_id, person_name=person_name, salience=salience,
+    )
 
 
 def record_conversation_summary(

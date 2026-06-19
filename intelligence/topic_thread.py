@@ -134,6 +134,20 @@ def snapshot() -> Optional[dict]:
     return data
 
 
+def topic_tokens() -> set[str]:
+    """Significant word tokens for the live topic — the user's latest text plus the
+    topic label — so memory can be relevance-ranked against what was JUST said. Empty
+    when there's no thread or only the generic 'current exchange' placeholder, which
+    makes topic-relevant retrieval fall back to the static importance ranking."""
+    if _current is None:
+        return set()
+    label = (_current.label or "").strip().lower()
+    if label in ("current exchange", "conversation"):
+        label = ""
+    text = f"{_current.last_user_text or ''} {label}"
+    return set(_keywords(text))
+
+
 def note_assistant_turn(text: str) -> None:
     """Remember Rex's latest question so the next user turn can answer it."""
     global _current

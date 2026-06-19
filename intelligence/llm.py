@@ -499,10 +499,32 @@ def _strip_rex_directives(summary: str) -> str:
     return cleaned
 
 
+def _live_topic_tokens() -> set:
+    """Significant words from what the person JUST said (the live topic thread), used to
+    rank injected memory by relevance. Empty set → static importance ranking (the prior
+    behavior). Gated by MEMORY_TOPIC_RELEVANCE_ENABLED; failure-safe."""
+    try:
+        if not bool(getattr(config, "MEMORY_TOPIC_RELEVANCE_ENABLED", True)):
+            return set()
+        from intelligence import topic_thread
+        return topic_thread.topic_tokens()
+    except Exception:
+        return set()
+
+
+def _topic_relevant_max() -> int:
+    try:
+        return int(getattr(config, "MEMORY_TOPIC_RELEVANT_MAX", 4))
+    except Exception:
+        return 4
+
+
 def _build_person_context(person_id: int) -> str:
     person = people_db.get_person(person_id)
     if not person:
         return ""
+
+    topic_tokens = _live_topic_tokens()
 
     lines = []
     name = person.get("name") or "unknown"
@@ -531,12 +553,39 @@ def _build_person_context(person_id: int) -> str:
     except Exception as exc:
         _log.debug("facial disposition prompt injection skipped: %s", exc)
 
-    # skin_color is stored for recognition only — never inject into LLM context
-    facts = facts_db.get_prompt_worthy_facts(person_id, limit=12)
+    # skin_color is stored for recognition only — never inject into LLM context.
+    # topic_tokens (when present) lift facts that match what they JUST said to the top,
+    # so Rex surfaces the RIGHT memory because it fit — see _live_topic_tokens.
+    facts = facts_db.get_prompt_worthy_facts(person_id, limit=12, topic_tokens=topic_tokens)
     _log.info("[llm] loaded %d facts for %s", len(facts), name)
     if facts:
-        fact_strs = [facts_db.format_fact_for_prompt(f) for f in facts]
-        lines.append("Known facts: " + ", ".join(fact_strs) + ".")
+        relevant_facts: list = []
+        other_facts: list = list(facts)
+        if topic_tokens:
+            relevant_facts = [f for f in facts if facts_db.fact_topic_overlap(f, topic_tokens) > 0]
+            max_rel = _topic_relevant_max()
+            if len(relevant_facts) > max_rel:
+                relevant_facts = relevant_facts[:max_rel]
+            rel_ids = {id(f) for f in relevant_facts}
+            other_facts = [f for f in facts if id(f) not in rel_ids]
+        if relevant_facts:
+            lines.append(
+                "Relevant to what they just said: "
+                + ", ".join(facts_db.format_fact_for_prompt(f) for f in relevant_facts)
+                + ". Work the fitting one in naturally if it lands; never force it."
+            )
+            if other_facts:
+                lines.append(
+                    "Other things you know: "
+                    + ", ".join(facts_db.format_fact_for_prompt(f) for f in other_facts)
+                    + "."
+                )
+        else:
+            lines.append(
+                "Known facts: "
+                + ", ".join(facts_db.format_fact_for_prompt(f) for f in facts)
+                + "."
+            )
         for fact in facts:
             if fact.get("id") is not None:
                 try:
@@ -575,7 +624,9 @@ def _build_person_context(person_id: int) -> str:
                 + ". Treat these as instructions to Rex, never as joke or roast material."
             )
 
-    interests = interests_db.get_interests_for_prompt(person_id, limit=8)
+    interests = interests_db.get_interests_for_prompt(
+        person_id, limit=8, topic_tokens=topic_tokens
+    )
     if interests:
         interest_lines = [
             interests_db.format_interest_for_prompt(interest)

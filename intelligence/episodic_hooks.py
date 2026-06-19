@@ -13,11 +13,24 @@ just add convenience, a scene-change dedupe, and the once-per-run startup image 
 from __future__ import annotations
 
 import logging
+import re
 import threading
 
 import config
 
 _log = logging.getLogger(__name__)
+
+# Low-signal words ignored when comparing two scene captions for "is this a new scene?"
+_CAPTION_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "with", "this", "that",
+    "room", "scene", "space", "area", "shows", "show", "appears", "there", "image",
+    "view", "looks", "seen", "visible", "some", "front", "while", "into", "from",
+})
+
+
+# (session_id, person_id) pairs already logged as "I saw X", so a person seen across a
+# whole session yields ONE record, not one per detection tick ("I saw Bret" ×39).
+_person_seen_this_session: set = set()
 
 
 def person_seen(person_id, name) -> None:
@@ -25,15 +38,22 @@ def person_seen(person_id, name) -> None:
         return
     try:
         from memory import episodes
+        key = (episodes._session(), person_id)
+        if key in _person_seen_this_session:
+            return
+        _person_seen_this_session.add(key)
         episodes.record_person_seen(person_id, name)
     except Exception as exc:
         _log.debug("episodic person_seen failed: %s", exc)
 
 
-def made_laugh(person_id, name, kind: str = "smile") -> None:
+def made_laugh(person_id, name, kind: str = "smile", topic=None) -> None:
     try:
         from memory import episodes
-        episodes.record_made_laugh(person_id if isinstance(person_id, int) else None, name, kind=kind)
+        episodes.record_made_laugh(
+            person_id if isinstance(person_id, int) else None, name,
+            kind=kind, topic=topic,
+        )
     except Exception as exc:
         _log.debug("episodic made_laugh failed: %s", exc)
 
@@ -58,6 +78,45 @@ def _known_visible_names(snapshot: Optional[dict] = None) -> list[str]:
         return face.visible_known_names(snapshot)
     except Exception:
         return []
+
+
+def _visible_known_people(snapshot=None) -> list:
+    """(person_id, name) pairs for recognized people present — for ATTRIBUTING a scene
+    to a person (face match), not just naming them in prose."""
+    try:
+        from vision import face
+        return list(face.visible_known_people(snapshot))
+    except Exception:
+        return []
+
+
+def _sole_known_person(snapshot=None):
+    """(id, name) of the single recognized person present, or (None, None) when zero or
+    more than one — a scene is attributed only when there is no ambiguity about who."""
+    people = _visible_known_people(snapshot)
+    if len(people) == 1:
+        return people[0]
+    return (None, None)
+
+
+def _caption_tokens(text: str) -> set:
+    return {
+        w for w in re.findall(r"[a-z]+", (text or "").lower())
+        if len(w) > 3 and w not in _CAPTION_STOPWORDS
+    }
+
+
+def _caption_materially_differs(prev: str, current: str) -> bool:
+    """True when two scene captions describe a meaningfully different scene (token
+    overlap below SCENE_CAPTURE_SIMILARITY_THRESHOLD). No prior caption → treat as
+    notable (the first look is always worth keeping)."""
+    if not (prev or "").strip():
+        return True
+    a, b = _caption_tokens(prev), _caption_tokens(current)
+    if not a or not b:
+        return True
+    overlap = len(a & b) / float(len(a | b))
+    return overlap < float(getattr(config, "SCENE_CAPTURE_SIMILARITY_THRESHOLD", 0.55))
 
 
 def _join_names(names: list[str]) -> str:
@@ -100,17 +159,21 @@ def scene_changed(snapshot: dict) -> None:
             summary = "The room was " + ", ".join(parts) + "."
         # Name who was there (the room description is generic and doesn't identify
         # recognized people), unless their name is already in the text.
-        names = [n for n in _known_visible_names(snapshot)
-                 if n.lower() not in summary.lower()]
+        known = _visible_known_people(snapshot)
+        names = [n for _pid, n in known if n.lower() not in summary.lower()]
         if names:
             who = _join_names(names)
             verb = "was" if len(names) == 1 else "were"
             summary = summary.rstrip(" .") + f". {who} {verb} there."
+        # Attribute to the single recognized person present (face match) so the scene
+        # joins Rex's history WITH them; ambiguous/empty stays unattributed.
+        pid, pname = (known[0] if len(known) == 1 else (None, None))
         from memory import episodes
         episodes.record_scene(
             summary,
             detail={"scene_type": scene_type, "lighting": lighting,
                     "crowd_density": crowd, "description": desc},
+            person_id=pid, person_name=pname,
         )
     except Exception as exc:
         _log.debug("episodic scene failed: %s", exc)
@@ -145,7 +208,8 @@ def startup_image(frame) -> None:
             # Resolve names here (not at call time): startup_image latches on the first
             # frame, BEFORE that tick's person-recognition runs, so reading world_state
             # now — just before the captioning GPT call — picks up who was identified.
-            known = _known_visible_names()
+            known_people = _visible_known_people()
+            known = [n for _pid, n in known_people]
             caption = _scene.quick_caption(frame, known_people=known)
             if caption:
                 from memory import episodes
@@ -153,12 +217,24 @@ def startup_image(frame) -> None:
                 # so Rex can remark on a change of scenery (a different room, outdoors, a
                 # new place). Queued for consciousness to speak; no-op if unchanged.
                 _maybe_queue_scenery_remark(caption)
-                episodes.record_episode(
-                    "scene", f"When I powered up, I saw: {caption}",
+                # Keep only a notable or person-present startup scene — otherwise it's
+                # generic boilerplate ("a tidy room with white walls") that repeats every
+                # boot and drags down recall quality.
+                require = bool(getattr(config, "SCENE_CAPTURE_REQUIRE_PERSON_OR_CHANGE", True))
+                notable = _caption_materially_differs(_previous_startup_caption(), caption)
+                if require and not known_people and not notable:
+                    _log.info("episodic: startup scene skipped (no person present, unchanged)")
+                    return
+                pid, pname = (known_people[0] if len(known_people) == 1 else (None, None))
+                episodes.record_scene(
+                    f"When I powered up, I saw: {caption}",
                     detail={"source": "startup_image_caption", "caption": caption},
-                    salience=0.55,
+                    person_id=pid, person_name=pname,
                 )
-                _log.info("episodic: startup image caption logged")
+                _log.info(
+                    "episodic: startup image caption logged (person=%s notable=%s)",
+                    pname or "none", notable,
+                )
         except Exception as exc:
             _log.debug("startup image caption failed: %s", exc)
 

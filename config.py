@@ -787,6 +787,31 @@ EPISODIC_SHUTDOWN_SUMMARY_TIMEOUT_SECS = 12.0
 # (background thread), gated like all episodic writes.
 EPISODIC_STARTUP_IMAGE_ENABLED = True
 
+# Only KEEP a scene episode when it's worth remembering: a recognized person is present
+# (then it's attributed to them by face match — part of Rex's history WITH that person)
+# OR the scene materially changed from the last one. Without this, Rex's diary fills with
+# near-identical anonymous "a tidy room with white walls" boilerplate every boot, which
+# drags down retrieval quality. The spoken scenery-change remark is unaffected.
+SCENE_CAPTURE_REQUIRE_PERSON_OR_CHANGE = True
+# Token-overlap (Jaccard) at/above which two scene captions count as "the same scene"
+# (so an unattended, unchanged room scan is dropped). 0..1; higher = stricter dedup.
+SCENE_CAPTURE_SIMILARITY_THRESHOLD = 0.55
+
+# ── Topic-relevant memory injection ──────────────────────────────────────────────
+# Rank a person's injected facts/interests against what they JUST said (the live topic
+# thread), not only by static importance — so Rex surfaces the RIGHT memory because it
+# fit, e.g. they mention a trip and he recalls "you were saving for Japan." The reply
+# prompt splits memory into "Relevant to what they just said" (boosted, first) and the
+# usual top-N. Off → the prior static importance-only dump.
+MEMORY_TOPIC_RELEVANCE_ENABLED = True
+# Score bonus added per matching topic word (capped) when ranking facts/interests; large
+# enough that a clearly on-topic fact outranks a higher-importance but off-topic one.
+MEMORY_TOPIC_RELEVANCE_BOOST = 0.5
+# Max topic-word matches that count toward the boost (avoids a long match dominating).
+MEMORY_TOPIC_RELEVANCE_MAX_MATCHES = 3
+# Cap on how many facts/interests go in the "Relevant to what they just said" block.
+MEMORY_TOPIC_RELEVANT_MAX = 4
+
 # ── PHASE 2: episodic RECALL (reading the diary back into behavior) ──────────────
 # SEPARATE kill switch from capture (EPISODIC_MEMORY_ENABLED). Off → recall is inert:
 # rex.db is still written, but nothing is ever surfaced. Env override: EPISODIC_RECALL_ENABLED.

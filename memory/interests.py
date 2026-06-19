@@ -160,8 +160,28 @@ def upsert_interest(
     )
 
 
-def get_interests_for_prompt(person_id: int, limit: int = 8) -> list[dict]:
-    """Return highest-signal interests for prompt injection."""
+def interest_topic_overlap(interest: dict, topic_tokens) -> int:
+    """How many live-topic words this interest's name/category/notes mention — the
+    relevance signal for topic-aware retrieval. 0 when no tokens / no match."""
+    if not topic_tokens:
+        return 0
+    text = " ".join(
+        str(interest.get(k) or "") for k in ("name", "category", "notes")
+    ).lower()
+    words = set(re.findall(r"[a-z0-9]+", text))
+    return len(words & set(topic_tokens))
+
+
+def get_interests_for_prompt(person_id: int, limit: int = 8, *, topic_tokens=None) -> list[dict]:
+    """Return highest-signal interests for prompt injection.
+
+    When `topic_tokens` is given, interests that match what the person JUST said are
+    surfaced first (so Rex deepens the live thread instead of a generic top-N). With no
+    tokens this is the original strength/confidence/recency ranking, unchanged.
+    """
+    # Pull a wider candidate pool when ranking by topic, so an on-topic interest below
+    # the static top-N can still surface.
+    fetch = max(int(limit), int(limit) * 4) if topic_tokens else int(limit)
     rows = db.fetchall(
         """SELECT * FROM person_interests
            WHERE person_id = ?
@@ -170,9 +190,24 @@ def get_interests_for_prompt(person_id: int, limit: int = 8) -> list[dict]:
              confidence DESC,
              COALESCE(last_mentioned_at, first_mentioned_at) DESC
            LIMIT ?""",
-        (int(person_id), max(0, int(limit))),
+        (int(person_id), max(0, fetch)),
     )
-    return [_annotate(dict(row)) for row in rows]
+    interests = [_annotate(dict(row)) for row in rows]
+    if topic_tokens:
+        try:
+            import config
+            cap = int(getattr(config, "MEMORY_TOPIC_RELEVANCE_MAX_MATCHES", 3))
+        except Exception:
+            cap = 3
+        strength_rank = {"high": 3, "medium": 2, "low": 1}
+        interests.sort(
+            key=lambda it: (
+                min(interest_topic_overlap(it, topic_tokens), cap),
+                strength_rank.get((it.get("interest_strength") or "low"), 1),
+            ),
+            reverse=True,
+        )
+    return interests[: max(0, int(limit))]
 
 
 def get_interest_hooks(person_id: int) -> list[dict]:

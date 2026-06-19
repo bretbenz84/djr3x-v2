@@ -407,8 +407,25 @@ def get_prompt_facts(person_id: int, *, limit: int = 12) -> list[dict]:
     return get_prompt_worthy_facts(person_id, limit=limit)
 
 
-def get_prompt_worthy_facts(person_id: int, limit: int = 12) -> list[dict]:
+def fact_topic_overlap(fact: dict, topic_tokens) -> int:
+    """How many live-topic words this fact's key/value/category mention — the cheap
+    relevance signal for topic-aware retrieval. 0 when no tokens / no match."""
+    if not topic_tokens:
+        return 0
+    text = " ".join(
+        str(fact.get(k) or "") for k in ("key", "value", "category")
+    ).lower()
+    words = set(re.findall(r"[a-z0-9]+", text))
+    return len(words & set(topic_tokens))
+
+
+def get_prompt_worthy_facts(person_id: int, limit: int = 12, *, topic_tokens=None) -> list[dict]:
     """Return prompt-worthy facts ranked by importance, confidence, recency, and use.
+
+    When `topic_tokens` is given, a relevance bonus lifts facts that mention what the
+    person JUST said, so an on-topic fact outranks a higher-importance but off-topic
+    one (and can make the cut it otherwise wouldn't). With no tokens this is the
+    original static importance ranking, unchanged.
 
     Skips relative-day statements ("today is …") — see _is_ephemeral_statement —
     so a one-day-true line isn't recited as a standing fact forever.
@@ -417,10 +434,33 @@ def get_prompt_worthy_facts(person_id: int, limit: int = 12) -> list[dict]:
         f for f in get_facts(person_id)
         if f.get("key") != "skin_color" and not _is_ephemeral_statement(f)
     ]
-    facts.sort(
-        key=lambda f: -score_fact_for_prompt(f)
-    )
+    boost = float(_relevance_boost()) if topic_tokens else 0.0
+    cap = int(_relevance_max_matches())
+
+    def _rank(f: dict) -> float:
+        score = score_fact_for_prompt(f)
+        if topic_tokens:
+            score += boost * min(fact_topic_overlap(f, topic_tokens), cap)
+        return score
+
+    facts.sort(key=lambda f: -_rank(f))
     return facts[: max(0, int(limit))]
+
+
+def _relevance_boost() -> float:
+    try:
+        import config
+        return float(getattr(config, "MEMORY_TOPIC_RELEVANCE_BOOST", 0.5))
+    except Exception:
+        return 0.5
+
+
+def _relevance_max_matches() -> int:
+    try:
+        import config
+        return int(getattr(config, "MEMORY_TOPIC_RELEVANCE_MAX_MATCHES", 3))
+    except Exception:
+        return 3
 
 
 def score_fact_for_prompt(fact: dict) -> float:

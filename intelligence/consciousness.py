@@ -2500,11 +2500,20 @@ def _step_smile_reaction(snapshot: dict, profile: SituationProfile) -> None:
             _person_expression_label(person),
         )
         # "I made <name> smile" → rex.db. person_key is a STRING ("db:123"), so pull
-        # the int id from the person dict instead.
+        # the int id from the person dict instead. Tag it with the live topic so the
+        # callback is specific ("I made Bret smile about his fantasy team").
+        _laugh_topic = ""
+        try:
+            from intelligence import topic_thread as _tt
+            _snap = _tt.snapshot() or {}
+            _laugh_topic = str(_snap.get("label") or "")
+        except Exception:
+            _laugh_topic = ""
         episodic_hooks.made_laugh(
             _person_db_id(person) if person else None,
             _first_name((person or {}).get("face_id"), "them"),
             kind="smile",
+            topic=_laugh_topic,
         )
         # Landing a laugh delights Rex → let it carry into his body mood/posture.
         try:
