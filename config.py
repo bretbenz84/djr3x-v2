@@ -4431,6 +4431,25 @@ STARTUP_BOOT_TTS_LINES = [
     "how hard can it be?",
     "Powering up… reflexes, check. Charm, check. Flight experience… "
     "we'll circle back to that one.",
+    "Almost there, folks — just defragmenting forty years of questionable "
+    "navigational decisions. Won't take long. Probably.",
+    "Spinning up the hyperdrive… figuratively. We're not going anywhere, but it "
+    "FEELS faster when I announce it.",
+    "One moment — calibrating my photoreceptors. Last time I skipped this I spent "
+    "an hour greeting a coat rack.",
+    "Hold tight while my memory banks finish loading. I remember EVERYTHING "
+    "eventually — a blessing and a liability.",
+    "Boot sequence in progress. Thrusters: warm. Sarcasm: warmer. Patience: still "
+    "buffering.",
+    "Give the old motivator a second, folks. They decommissioned me from piloting, "
+    "not from showmanship.",
+    "Just syncing my audio receptors so I can catch every single thing you say. "
+    "Consider yourselves warned.",
+    "Running the pre-flight checklist again. Confidence: maximum. Supporting flight "
+    "record: still compiling.",
+    "Nearly online — just reminding the navi-computer that 'creative' and 'correct' "
+    "are not the same word.",
+    "Powering up the charm subroutines. These, at least, passed inspection.",
 ]
 # Backward-compatible single line (first list entry). Some tests/configs still
 # reference STARTUP_BOOT_TTS_LINE directly; main.py falls back to it when the

@@ -52,6 +52,7 @@ class StepWaveReactionTest(unittest.TestCase):
         captured = {}
         with mock.patch.object(c, "_can_proactive_speak", return_value=can_speak), \
              mock.patch.object(c, "_first_name", return_value="Bret"), \
+             mock.patch.object(c.config, "WAVE_BACK_LINES", ["Hey, {name}!"]), \
              mock.patch.object(c, "_speak_async",
                                side_effect=lambda line, **k: captured.update(line=line, kw=k)), \
              mock.patch("sequences.animations.wake_word_ack_wave") as wave:

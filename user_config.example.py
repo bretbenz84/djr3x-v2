@@ -165,6 +165,32 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # for emotional support, repairs, or genuinely deeper conversation. Deliver the line and stop. Do not explain the joke. \
 # Silence after a good line beats padding it out."""
 
+# Startup "still getting ready" boot lines — the Star Tours-style filler Rex cycles
+# through (no repeats between launches) while the heavy models preload at boot. Keep them
+# as fixed strings so each caches in the ElevenLabs TTS cache after its first play and
+# stays free thereafter. Uncomment + edit the whole list to change what he says while
+# loading (the value below mirrors the current config.py default).
+# STARTUP_BOOT_TTS_LINES = [
+#     "Hang on folks while I'm loading up. I'm still getting used to my programming!",
+#     "Welcome aboard! This is Captain Rex from the cockpit. I know this is probably your first flight, and it's… mine, too!",
+#     "Just a moment, folks — running through my pre-flight checklist. Let's see… thrusters, navi-computer, personality core… ah, there it is!",
+#     "Hang tight while I finish warming up the old circuits. They told me this droid was fully tested. They lied!",
+#     "Almost ready, everybody! Just topping off the enthusiasm tanks and double-checking my sense of humor. Both at full capacity.",
+#     "Give me a second here, folks — my systems are still coming online. You know how it is. You spend forty years in storage, you forget where everything is!",
+#     "Sit back and relax while I get my bearings. First time flying this thing, but how hard can it be?",
+#     "Powering up… reflexes, check. Charm, check. Flight experience… we'll circle back to that one.",
+#     "Almost there, folks — just defragmenting forty years of questionable navigational decisions. Won't take long. Probably.",
+#     "Spinning up the hyperdrive… figuratively. We're not going anywhere, but it FEELS faster when I announce it.",
+#     "One moment — calibrating my photoreceptors. Last time I skipped this I spent an hour greeting a coat rack.",
+#     "Hold tight while my memory banks finish loading. I remember EVERYTHING eventually — a blessing and a liability.",
+#     "Boot sequence in progress. Thrusters: warm. Sarcasm: warmer. Patience: still buffering.",
+#     "Give the old motivator a second, folks. They decommissioned me from piloting, not from showmanship.",
+#     "Just syncing my audio receptors so I can catch every single thing you say. Consider yourselves warned.",
+#     "Running the pre-flight checklist again. Confidence: maximum. Supporting flight record: still compiling.",
+#     "Nearly online — just reminding the navi-computer that 'creative' and 'correct' are not the same word.",
+#     "Powering up the charm subroutines. These, at least, passed inspection.",
+# ]
+
 # ═════════════════════════════════════════════════════════════════════════════
 # 3. LOCATION & WORLD
 # ═════════════════════════════════════════════════════════════════════════════
