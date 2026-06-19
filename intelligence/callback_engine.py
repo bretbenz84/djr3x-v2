@@ -229,6 +229,14 @@ def _heavy_recently() -> bool:
     return last > 0.0 and (time.monotonic() - last) < window
 
 
+def recently_heavy() -> bool:
+    """Public sober-window accessor: True within the window after a heavy disclosure.
+    Proactive-speech gates use this to GIVE SPACE after grief/heavy topics — Rex should
+    not proactively pipe up (idle banter, plans, snark) right after someone shares
+    something heavy; he still responds when spoken to."""
+    return _heavy_recently()
+
+
 def unacked_emotional_event_pending(person_id: Optional[int]) -> bool:
     """A surfaceable, not-yet-acknowledged emotional event exists for this
     person — sincerity claims the turn's callback budget before any humor.

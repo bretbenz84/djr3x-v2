@@ -78,6 +78,19 @@ def can_proactive_speak(*, salient: bool = False) -> bool:
     except Exception:
         pass
 
+    # GIVE SPACE after a heavy/grief disclosure: suppress NON-salient proactive speech
+    # (idle banter, holiday/plans, environment snark, small talk) for the sober window,
+    # so Rex doesn't proactively re-open or probe a heavy topic the user stepped back
+    # from. Genuinely reactive salient events (e.g. an animal arriving) still pass, and
+    # Rex always still RESPONDS when spoken to — this only gates volunteering.
+    if not salient:
+        try:
+            from intelligence import callback_engine as _cb_engine
+            if _cb_engine.recently_heavy():
+                return False
+        except Exception:
+            pass
+
     try:
         from features import dj as dj_mod
         if (

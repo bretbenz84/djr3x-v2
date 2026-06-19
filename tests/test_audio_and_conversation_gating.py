@@ -10047,7 +10047,7 @@ class EndThreadClosureNarrowingTest(unittest.TestCase):
 
 class IdleBanterTest(unittest.TestCase):
     def setUp(self):
-        from intelligence import interaction, consciousness
+        from intelligence import interaction, consciousness, callback_engine
         interaction._idle_banter_count = 0
         interaction._last_idle_banter_at = 0.0
         # Proactive paths hold off if another proactive line fired in the last few
@@ -10055,13 +10055,31 @@ class IdleBanterTest(unittest.TestCase):
         # prior test can't suppress banter.
         interaction._last_proactive_line_at = 0.0
         consciousness.clear_response_wait()
+        # Proactive speech is now also suppressed during the "give space after a heavy
+        # moment" sober window + an open grief flow. Another test may have armed those
+        # globals, so clear them here (these tests are about banter, not grief).
+        callback_engine.reset_state_for_tests()
+        interaction._grief_flow_state.clear()
+        # Isolate the in-session plans/holiday dedup from the PERSISTENT (real-DB) store:
+        # these tests exercise the per-session logic and must not depend on, or write to,
+        # assets/memory/people.db.
+        self._plan_patches = [
+            mock.patch("memory.relationships.was_proactive_asked", return_value=False),
+            mock.patch("memory.relationships.mark_proactive_asked"),
+        ]
+        for p in self._plan_patches:
+            p.start()
 
     def tearDown(self):
-        from intelligence import interaction, consciousness
+        from intelligence import interaction, consciousness, callback_engine
+        for p in getattr(self, "_plan_patches", []):
+            p.stop()
         interaction._idle_banter_count = 0
         interaction._last_idle_banter_at = 0.0
         interaction._last_proactive_line_at = 0.0
         consciousness.clear_response_wait()
+        callback_engine.reset_state_for_tests()
+        interaction._grief_flow_state.clear()
 
     def test_idle_plans_pivot_does_not_repeat_a_holiday(self):
         from intelligence import interaction, consciousness

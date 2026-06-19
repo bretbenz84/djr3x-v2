@@ -3837,6 +3837,17 @@ def _maybe_idle_banter(
     if person_id is None:
         return False
 
+    # GIVE SPACE after a heavy/grief moment. A user going quiet after sharing something
+    # heavy — or after DECLINING to — is not an invitation to fill the silence. Proactive
+    # re-engagement here risks re-probing the very topic they stepped back from
+    # (live-logged 2026-06-18: after the user named a late parent and declined, idle
+    # banter piped up ~30s later with "what's one thing about your mother you still
+    # hear?", violating the just-set boundary). Rex still RESPONDS when spoken to; he
+    # just doesn't proactively pipe up during the sober window or an open grief flow.
+    if _suppress_proactive_after_heavy(person_id):
+        _log.debug("[interaction] idle banter suppressed — giving space after heavy/grief moment")
+        return False
+
     # Lead with SUBSTANCE, not an interview: the first re-engagement after a pause
     # VOLUNTEERS Rex's own current preoccupation (rex_pov); only a later banter in
     # the same silent stretch turns the spotlight back on the user. This is the
@@ -12634,6 +12645,21 @@ def _grief_flow_active(person_id: Optional[int]) -> bool:
         _grief_flow_state.pop(person_id, None)
         return False
     return True
+
+
+def _suppress_proactive_after_heavy(person_id: Optional[int]) -> bool:
+    """Give space after a heavy/grief moment: True while a grief flow is active for this
+    person OR within the sober window after ANY heavy disclosure. Proactive re-engagement
+    (idle banter, etc.) checks this so Rex doesn't pipe up and re-probe a topic the user
+    just stepped back from. Rex still RESPONDS when spoken to — this only gates
+    volunteering. Failure-safe: returns False on any error (don't wrongly mute Rex)."""
+    try:
+        if _grief_flow_active(person_id):
+            return True
+        from intelligence import callback_engine as _cb_engine
+        return bool(_cb_engine.recently_heavy())
+    except Exception:
+        return False
 
 
 def _grief_flow_clear(person_id: Optional[int]) -> None:
