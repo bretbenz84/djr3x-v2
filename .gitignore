@@ -234,21 +234,11 @@ assets/audio/tts_cache/
 # Local music files — user-supplied, not part of the project
 assets/music/
 
-# Person database — local runtime data, never commit
-assets/memory/people.db
-assets/memory/people.db-shm
-assets/memory/people.db-wal
-assets/memory/people.db.bak-*
-
-# Rex's episodic memory ("his diary") — local runtime data, never commit
-assets/memory/rex.db
-assets/memory/rex.db-shm
-assets/memory/rex.db-wal
-assets/memory/rex.db.bak-*
-
-# Rex's persistent POV/preoccupation state — local runtime artifact, rewritten
-# every run; never commit.
-assets/memory/rex_pov_state.json
+# Local runtime memory — person DB (people.db), Rex's episodic diary (rex.db),
+# POV state, their -shm/-wal/.bak siblings, and any manual copies/backups.
+# All of it is local runtime data; never commit. setup_assets.py recreates the
+# folder at runtime, so ignoring the whole thing is safe.
+assets/memory/
 
 
 # Startup boot-line rotation state — local runtime bookkeeping
