@@ -95,6 +95,9 @@ _last_snapshot: dict = {}
 _acknowledged_dates: set[str] = set()
 _acknowledged_weather_signatures: set[str] = set()
 _last_weather_reaction_at: float = 0.0
+# Parts of day (morning/afternoon/evening/night/late_night) Rex has already remarked on
+# this session, so a transition fires at most once.
+_acknowledged_tod: set[str] = set()
 
 # Monotonic timestamp of the last idle micro-behavior
 _last_micro_behavior_at: float = 0.0
@@ -4415,7 +4418,7 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
     Compare current WorldState to _last_snapshot. For each notable change,
     generate and speak a short in-character reaction. Never fires in QUIET/SHUTDOWN.
     """
-    global _acknowledged_dates, _last_weather_reaction_at, _last_startle_sound_reaction_at
+    global _acknowledged_dates, _acknowledged_tod, _last_weather_reaction_at, _last_startle_sound_reaction_at
 
     if _last_snapshot:
         _stage_animal_arrivals(snapshot)
@@ -4568,6 +4571,29 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                 "excited",
                 label=f"notable date: {notable_date}",
             )
+
+        # Part of day rolled over (morning → afternoon → evening → night). The hour
+        # bucket is computed every tick but was only ever passive prompt context, so
+        # Rex never NOTICED the day turning over. Fire once per transition per session,
+        # mirroring the weather/notable-date change blocks. The line is LLM-generated
+        # (via _generate_and_speak below) so it varies run to run.
+        if bool(getattr(config, "TIME_OF_DAY_REACTIONS_ENABLED", True)):
+            curr_tod = (snapshot.get("time", {}) or {}).get("time_of_day")
+            prev_tod = (_last_snapshot.get("time", {}) or {}).get("time_of_day")
+            if (
+                curr_tod
+                and prev_tod
+                and curr_tod != prev_tod
+                and curr_tod not in _acknowledged_tod
+            ):
+                _acknowledged_tod.add(curr_tod)
+                _add_trigger(
+                    f"The time of day just rolled over to {str(curr_tod).replace('_', ' ')}. "
+                    "Make one short, spontaneous in-character remark as if you just "
+                    "noticed the hour/light shifting. Don't recite the literal clock time.",
+                    "curious",
+                    label=f"time of day: {curr_tod}",
+                )
 
         # Notable weather change. Weather comes from the network feed, not body
         # sensors, so prompts keep Rex honest about how he knows it.
@@ -10205,6 +10231,7 @@ def start() -> None:
     _pending_animal_arrivals.clear()
     _last_startle_sound_reaction_at = 0.0
     _acknowledged_weather_signatures.clear()
+    _acknowledged_tod.clear()
     _last_weather_reaction_at = 0.0
     _emotional_checkin_fired.clear()
     _emotional_checkin_fired_at.clear()

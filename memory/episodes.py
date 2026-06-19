@@ -1,11 +1,18 @@
 """
 episodes.py — Rex's first-person episodic memory (his "diary").
 
-PHASE 1 (this module): CAPTURE ONLY. The capture hooks log salient world events to
-rex.db with timestamps — people seen, things he did ("I made Bret laugh", "I saw a
-dog"), scenes ("the room was cluttered"), and a session summary on shutdown. NOTHING
-reads these back into Rex's behavior yet; the point is to accumulate a populated DB
-across many runs so Phase 2 can scan it for useful ways to surface memories.
+CAPTURE (this module): the capture hooks log salient world events to rex.db with
+timestamps — people seen, things he did ("I made Bret laugh", "I saw a dog"), scenes
+("the room was cluttered"), and a session summary on shutdown. Capture is gated by
+`config.EPISODIC_MEMORY_ENABLED`.
+
+RECALL (Phase 2 — IMPLEMENTED + ENABLED): `memory/episodic_recall.py` reads these
+rows back into Rex's behavior, gated by the SEPARATE `config.EPISODIC_RECALL_ENABLED`
+switch (default on). It feeds (a) the per-person SHARED-MEMORY hook in the reply
+prompt (`intelligence/llm.py` `_pick_episodic_callback` → "I made you laugh", "we
+played trivia") and (b) the idle "memory musing" behavior (`intelligence/
+idle_behaviors.py`). Keep capture and recall as two independent kill switches so the
+pool can build silently for A/B runs.
 
 Every public writer is GATED:
   • `config.EPISODIC_MEMORY_ENABLED` kill switch, and

@@ -275,6 +275,19 @@ ARC_EASES_ROAST_ON_FLOP = True
 # gates. Kill switch: set False to disable.
 RELATIONSHIP_TONE_ENABLED = True
 
+# Friendship TIER → a warmth-score FLOOR for the relationship-tone rule. The
+# friendship tier climbs from real shared time, but the raw warmth_score lags far
+# behind it (engaged-turn warmth is capped at +0.02/session), so Rex's actual close
+# friends would otherwise get the flat, no-warmth tone for a long time. Flooring the
+# warmth by tier lets the bond he has genuinely earned drive the voice. The warm tone
+# fires at effective_warmth >= 0.5, so "friend" just crosses it and closer tiers push
+# higher. Tiers not listed (stranger/acquaintance) get no floor.
+RELATIONSHIP_TIER_WARMTH_FLOOR = {
+    "friend": 0.50,
+    "close_friend": 0.70,
+    "best_friend": 0.90,
+}
+
 # Verbose diagnostic: log the FULL assembled system prompt (every section,
 # including the conversation-arc block) at INFO each turn, so you can confirm
 # what the main LLM actually sees. Noisy — flip to False when done inspecting.
@@ -2615,6 +2628,21 @@ JOKE_SETUP_PUNCHLINE_PAUSE_MS = 700
 SURPRISE_PAUSE_MS_MIN = 200
 SURPRISE_PAUSE_MS_MAX = 500
 
+# Self-emotion classifier: read the emotional tone of REX'S OWN reply (excited /
+# happy / curious / neutral) so the body actually expresses it — eye colour, speech
+# servo motion, expressive voice on the reply, plus a short body-mood afterglow
+# (posture / breathing / idle gesture) in the lull that follows. Without it the common
+# reply ships emotion="neutral" and the whole expressive stack stays inert. Runs on the
+# LOCAL qwen sidecar (cheap classifier; per project policy the cloud model is reserved
+# for in-character text) with a keyword fallback, so it never adds cloud latency/cost.
+# Surprise and empathy delivery overrides still win. Kill switch: set False.
+SELF_EMOTION_CLASSIFY_ENABLED = True
+# Body-mood afterglow intensity when the reply classifies non-neutral (decays over the
+# normal BODY_MOOD_DEFAULT_TTL_SECS so posture relaxes back to neutral after the reply).
+SELF_EMOTION_BODY_MOOD_INTENSITY = 0.6
+# Hard cap on the sidecar classify call so it can't stall a turn.
+SELF_EMOTION_CLASSIFY_TIMEOUT_SECS = 1.2
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SITUATION ASSESSMENT
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4530,6 +4558,14 @@ WEATHER_UPDATE_INTERVAL_SECS = 600  # refresh world_state.weather every 10 minut
 # condition/temperature changes.
 WEATHER_PROACTIVE_REACTIONS_ENABLED = True
 WEATHER_PROACTIVE_REACTION_COOLDOWN_SECS = 1800.0
+
+# Let the part of day rolling over (morning → afternoon → evening → night →
+# late_night) become a small spontaneous Rex remark, like the weather/notable-date
+# reactions. The hour bucket is already computed every tick (awareness/chronoception);
+# this just lets Rex NOTICE the day turning over instead of only carrying it as silent
+# prompt context. Fires at most once per transition per session; the line is LLM-
+# generated so it varies. Gated by the same proactive-speech rules.
+TIME_OF_DAY_REACTIONS_ENABLED = True
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RECURRING EVENTS — birthdays & holidays

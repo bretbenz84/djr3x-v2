@@ -230,6 +230,41 @@ def build_directive(mode: ComedyMode) -> str:
     return directive
 
 
+# One-clause stance per mode for the SLIM prompt path — the compact equivalent of
+# each mode's full `directive`, kept to a few words so the whole slim contract stays
+# small. "straight" is intentionally absent (it returns "" — no humor steer on care
+# turns).
+_SLIM_STANCE: dict[str, str] = {
+    "dry_ack": "one tiny deadpan button, fragments over explanation",
+    "friendly_roast": "one affectionate, public, surface-level jab",
+    "fake_system_error": "frame the joke as a harmless droid glitch or sensor complaint",
+    "dj_flair": "a small showbiz-DJ flourish, about the music/show not a place",
+    "self_own": "blame your own programming or questionable career arc",
+    "callback": "echo a recent harmless bit instead of inventing a new premise",
+}
+
+
+def build_slim_directive(mode: ComedyMode) -> str:
+    """Compact one-line comedy stance for the SLIM-contract prompt path.
+
+    The slim contract drops the full build_directive() block to keep the LLM-facing
+    prompt small — but the per-turn comedic STANCE and the recent-premise avoid-list
+    still have to reach the model, or premise rotation, the self-own lanes, and the
+    comedy line banks are all dead text (the model just improvises a comedic shape
+    blind every turn). This emits ≤ ~1 line. Returns "" for the straight stance, so
+    sensitive / closure / repair / care turns (which select_mode resolves to
+    "straight") get no humor steer at all. A claimed banked callback takes the richer
+    build_directive() path instead and never reaches here."""
+    stance = _SLIM_STANCE.get(mode.key, "")
+    if not stance:
+        return ""
+    parts = [f"Comedy: {stance}; no body/health/identity/private-fact jokes."]
+    avoid = _recent_premise_summary()
+    if avoid:
+        parts.append(f"Avoid reusing recent bits: {avoid}.")
+    return " ".join(parts)
+
+
 def polish_response(text: str, mode: ComedyMode, *, allow_roast: str = "normal") -> str:
     """Deterministic post-generation polish; no network calls."""
     cleaned = " ".join(str(text or "").strip().split())

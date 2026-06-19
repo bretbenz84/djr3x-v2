@@ -235,6 +235,32 @@ class ComedyModesNoCantinaBleedTests(unittest.TestCase):
         self.assertIn("dj_flair", comedy_modes._MODES)
         self.assertNotIn("cantina_color", comedy_modes._MODES)
 
+    # ── Slim-contract comedy directive: the per-turn stance must reach the LLM on the
+    # default (slim) path, or every humor mechanism downstream is dead text. ──
+
+    def test_build_slim_directive_carries_stance_for_humor_modes(self):
+        from intelligence import comedy_modes
+        for key in ("dry_ack", "friendly_roast", "self_own", "dj_flair",
+                    "fake_system_error", "callback"):
+            out = comedy_modes.build_slim_directive(comedy_modes._MODES[key])
+            self.assertTrue(out, f"{key} produced no slim directive")
+            self.assertIn("comedy", out.lower())
+            self.assertLessEqual(len(out.split()), 40)  # stays compact
+
+    def test_build_slim_directive_empty_for_straight_care_turn(self):
+        from intelligence import comedy_modes
+        self.assertEqual(
+            comedy_modes.build_slim_directive(comedy_modes._MODES["straight"]), ""
+        )
+
+    def test_slim_directive_includes_recent_premise_avoid_list(self):
+        from intelligence import comedy_modes
+        comedy_modes._remember_line(
+            "Blame my programming again.", comedy_modes._MODES["self_own"]
+        )
+        out = comedy_modes.build_slim_directive(comedy_modes._MODES["dry_ack"])
+        self.assertIn("avoid reusing recent", out.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

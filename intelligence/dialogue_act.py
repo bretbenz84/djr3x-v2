@@ -232,7 +232,7 @@ def classify(
     context = context or {}
     pending = context.get("pending") or {}
     frame = active_frame(person_id=person_id)
-    direct_kind = _direct_control_kind(cleaned)
+    direct_kind = _direct_control_kind(cleaned, frame)
 
     if pending.get("identity_prompt_active") or pending.get("prompted_name_confirmation"):
         if direct_kind in {"identity_control", "memory_control"}:
@@ -288,7 +288,14 @@ def _answer_decision(
     )
 
 
-def _direct_control_kind(text: str) -> Optional[str]:
+def _frame_expects_reply(frame: Optional["RexTurnFrame"]) -> bool:
+    """True when Rex just took a turn that is waiting on a reply from this person."""
+    return bool(frame is not None and frame.expected_reply_types)
+
+
+def _direct_control_kind(
+    text: str, frame: Optional["RexTurnFrame"] = None
+) -> Optional[str]:
     if _IDENTITY_CONTROL_RE.search(text):
         return "identity_control"
     if _MEMORY_CONTROL_RE.search(text):
@@ -298,6 +305,16 @@ def _direct_control_kind(text: str) -> Optional[str]:
     if _EXPLICIT_COMMAND_RE.search(text):
         return "new_command"
     if "?" in text and _QUESTION_START_RE.match(text):
+        # A bare wh/aux question is normally a new command ("what time is it?").
+        # But when Rex just asked something and is waiting on a reply, the user
+        # countering with their OWN question ("why do you ask?", "what about you?")
+        # is part of THAT exchange — keep it contextual instead of promoting it to a
+        # command (which dropped the answer frame AND fired a blocking action-router
+        # call on the hot path). Explicit commands above still win, so a real command
+        # phrased as a question ("what time is it?", "can you play music?") still
+        # routes, even mid-frame.
+        if _frame_expects_reply(frame):
+            return None
         return "new_command"
     return None
 
@@ -309,18 +326,22 @@ def _explicit_game_or_music_stop(text: str) -> bool:
 def _looks_like_contextual_reply(text: str, frame: Optional[RexTurnFrame]) -> bool:
     if not text:
         return False
-    if _direct_control_kind(text) is not None:
-        return False
-    if "?" in text and _QUESTION_START_RE.match(text):
+    if _direct_control_kind(text, frame) is not None:
         return False
     words = re.findall(r"[A-Za-z0-9']+", text)
+    frame_expects = _frame_expects_reply(frame)
+    is_wh_question = bool("?" in text and _QUESTION_START_RE.match(text))
+    if is_wh_question:
+        # A short counter-question to an open Rex question stays in-frame (it's an
+        # engaged back-and-forth); a wh-question with no active reply frame was
+        # already routed as a command by _direct_control_kind above.
+        return bool(frame_expects and len(words) <= 12)
     if _YES_NO_RE.match(text) or _TERSE_REPLY_RE.match(text):
         return True
     if _STATUS_RETRACTION_RE.search(text):
         return True
-    if frame is not None and frame.expected_reply_types:
-        if len(words) <= 12 and not _QUESTION_START_RE.match(text):
-            return True
+    if frame_expects and len(words) <= 12 and not _QUESTION_START_RE.match(text):
+        return True
     return False
 
 

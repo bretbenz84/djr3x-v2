@@ -9120,14 +9120,21 @@ def _stream_llm_response(
             agenda_directive = social_frame.render_slim_contract(
                 frame, primary_purpose=primary_purpose
             )
-            # The slim contract intentionally drops the rich comedy block, but a
-            # CLAIMED banked callback is a deliberate one-per-reply injection that
-            # must still reach the LLM — append it explicitly (it's the only path
-            # the premise text takes; comedy_mode is otherwise post-gen polish).
+            # The slim contract drops the rich comedy block, but the per-turn comedic
+            # STANCE still has to reach the LLM or the whole humor stack (premise
+            # rotation, self-own lanes, line banks) is dead text. A CLAIMED banked
+            # callback takes the richer build_directive() path (it carries the premise
+            # text — the only path it travels); every other humor-eligible turn gets
+            # the compact build_slim_directive() stance instead. "straight" (care)
+            # turns yield "" from both, so they stay clean.
             if cb_claim is not None:
                 callback_directive = comedy_modes.build_directive(comedy_mode)
                 if callback_directive:
                     agenda_directive = "\n".join([agenda_directive, callback_directive])
+            else:
+                slim_comedy = comedy_modes.build_slim_directive(comedy_mode)
+                if slim_comedy:
+                    agenda_directive = "\n".join([agenda_directive, slim_comedy])
         else:
             agenda_directive = "\n".join([
                 agenda_directive,
@@ -9234,6 +9241,31 @@ def _stream_llm_response(
                 pre_beat_ms, delivery_post_beat_ms,
                 delivery_voice_settings if delivery_voice_settings else "default",
             )
+
+        # Non-streaming path: the whole reply is in hand, so classify Rex's own tone
+        # directly and let it drive the delivery emotion (eyes/voice/motion) + a body-
+        # mood afterglow. Surprise/empathy keep priority. Skipped with audio suppressed
+        # (no speech/LEDs to express, so the local call would be wasted work).
+        if (
+            delivery_emotion == "neutral"
+            and not surprise_result["value"]
+            and not bool(
+                getattr(config, "NO_AUDIO_MODE", False)
+                or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
+            )
+        ):
+            try:
+                self_emotion = llm.classify_self_emotion(full_text)
+            except Exception as exc:
+                _log.debug("[interaction] self-emotion classify error: %s", exc)
+                self_emotion = "neutral"
+            if self_emotion and self_emotion != "neutral":
+                delivery_emotion = self_emotion
+                _set_body_mood(
+                    self_emotion,
+                    source="self_emotion",
+                    intensity=float(getattr(config, "SELF_EMOTION_BODY_MOOD_INTENSITY", 0.6)),
+                )
 
         speak_started = time.monotonic()
         completed = _speak_blocking(
@@ -9470,6 +9502,30 @@ def _stream_and_speak_sentences(
     state = {"first": True, "spoke_question": False, "emotion": delivery_emotion}
     llm_started = time.monotonic()
 
+    # Classify Rex's OWN reply tone (excited/happy/curious) so the body expresses it.
+    # Kicked off on the first sentence and run in the background, so it never delays the
+    # first word; the result flows into the REST of the reply (voice/eyes/motion) and a
+    # short post-reply body-mood afterglow. Surprise/empathy delivery emotions keep
+    # priority — this only fills in when delivery is still "neutral".
+    self_emo: dict = {"value": None, "started": False, "thread": None}
+
+    def _start_self_emotion_classify(first_sentence: str) -> None:
+        if self_emo["started"] or state["emotion"] != "neutral":
+            return
+        if not bool(getattr(config, "SELF_EMOTION_CLASSIFY_ENABLED", True)):
+            return
+        self_emo["started"] = True
+
+        def _run() -> None:
+            try:
+                self_emo["value"] = llm.classify_self_emotion(first_sentence)
+            except Exception as exc:
+                _log.debug("[interaction] self-emotion classify error: %s", exc)
+
+        thread = threading.Thread(target=_run, daemon=True, name="self-emotion-classify")
+        self_emo["thread"] = thread
+        thread.start()
+
     def _consume(raw_sentence: str) -> None:
         prepared = _prepare_stream_sentence(raw_sentence, frame, comedy_mode)
         if not prepared:
@@ -9479,6 +9535,14 @@ def _stream_and_speak_sentences(
             if state["spoke_question"]:
                 return
             state["spoke_question"] = True
+
+        # Once the self-emotion read is in, let the rest of the reply carry it.
+        if (
+            state["emotion"] == "neutral"
+            and self_emo["value"]
+            and self_emo["value"] != "neutral"
+        ):
+            state["emotion"] = self_emo["value"]
 
         pre_beat_ms = empathy_pre_beat_ms
         on_start = None
@@ -9492,6 +9556,7 @@ def _stream_and_speak_sentences(
                         _play_event_body_beat("emotion.surprise")
                     except Exception as exc:
                         _log.debug("[interaction] surprise beat skipped: %s", exc)
+            _start_self_emotion_classify(prepared)
             _mark_first_response_queued(trace, text=prepared, priority=priority)
             if trace is not None:
                 on_start = lambda: _mark_first_response_audio_started(trace)
@@ -9602,6 +9667,24 @@ def _stream_and_speak_sentences(
         ):
             _arm_visible_unknown_identity_followup(
                 person_id, source="agenda_llm_identity"
+            )
+
+    # Carry Rex's own reply mood into the post-reply lull (posture / breathing / idle
+    # gesture). Only when the self-emotion classifier owned this turn — surprise and
+    # empathy run their own delivery shaping and keep priority. The classifier was
+    # kicked off on the first sentence; speech playback above almost always outlasts
+    # it, but join briefly so a fast single-sentence reply still gets its mood.
+    override_active = (delivery_emotion != "neutral") or bool(surprise_result.get("value"))
+    if full_text and not override_active:
+        thread = self_emo.get("thread")
+        if thread is not None:
+            thread.join(timeout=0.4)
+        mood = self_emo.get("value")
+        if mood and mood != "neutral":
+            _set_body_mood(
+                mood,
+                source="self_emotion",
+                intensity=float(getattr(config, "SELF_EMOTION_BODY_MOOD_INTENSITY", 0.6)),
             )
 
     return full_text
@@ -12816,11 +12899,18 @@ def _play_event_body_beat(event: str, **context) -> Optional[str]:
     return beat
 
 
-def _set_body_mood(mood: str, *, source: str = "") -> None:
+def _set_body_mood(
+    mood: str, *, source: str = "", intensity: Optional[float] = None
+) -> None:
     """Set Rex's sustained body mood (drives his posture/visor between turns). Gated +
-    failure-safe; no-op if the body-mood feature is disabled."""
+    failure-safe; no-op if the body-mood feature is disabled. `intensity` defaults to
+    body_mood's own default (a full-strength event mood); pass a smaller value for a
+    gentler afterglow (e.g. the per-reply self-emotion mood)."""
     try:
-        body_mood.set_mood(mood, source=source)
+        if intensity is None:
+            body_mood.set_mood(mood, source=source)
+        else:
+            body_mood.set_mood(mood, intensity=intensity, source=source)
     except Exception as exc:
         _log.debug("[interaction] set_body_mood(%s) failed: %s", mood, exc)
 

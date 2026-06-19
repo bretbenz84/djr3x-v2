@@ -75,6 +75,56 @@ class DialogueActReplayTests(unittest.TestCase):
         self.assertEqual(decision.label, "new_command")
         self.assertFalse(decision.skip_action_router)
 
+    def test_counter_question_to_rex_keeps_answer_frame(self):
+        # Rex asked something and is waiting on a reply; the user counters with their
+        # OWN short question. It must stay an in-frame reply (no router hijack), not be
+        # promoted to a new command.
+        from intelligence import dialogue_act
+
+        dialogue_act.note_rex_turn(
+            "What got you into woodworking?",
+            source="assistant_turn",
+            target_person_id=3,
+            expected_reply_types=["answer", "dismissal"],
+        )
+        decision = dialogue_act.classify(
+            "Why do you ask?",
+            {"pending": {}, "active_game": False},
+            person_id=3,
+        )
+        self.assertEqual(decision.label, "answer_to_rex")
+        self.assertTrue(decision.skip_action_router)
+
+    def test_explicit_command_question_still_routes_mid_frame(self):
+        # A real command phrased as a question ("what time is it?") must still break the
+        # frame and route, even while Rex is awaiting a reply.
+        from intelligence import dialogue_act
+
+        dialogue_act.note_rex_turn(
+            "How's the project going?",
+            source="assistant_turn",
+            target_person_id=3,
+            expected_reply_types=["answer"],
+        )
+        decision = dialogue_act.classify(
+            "What time is it?",
+            {"pending": {}, "active_game": False},
+            person_id=3,
+        )
+        self.assertEqual(decision.label, "new_command")
+        self.assertFalse(decision.skip_action_router)
+
+    def test_counter_question_with_no_open_frame_is_command(self):
+        # No active Rex question → a wh-question is a fresh command (router runs).
+        from intelligence import dialogue_act
+
+        decision = dialogue_act.classify(
+            "What can you do?",
+            {"pending": {}, "active_game": False},
+            person_id=3,
+        )
+        self.assertEqual(decision.label, "new_command")
+
     def test_direct_sleep_command_breaks_reply_frame(self):
         from intelligence import dialogue_act
 

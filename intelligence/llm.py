@@ -762,14 +762,39 @@ def _relationship_tone_rule(person: dict, name: str) -> str:
     except (TypeError, ValueError):
         return ""
     who = name or "this person"
+    # Sparring check uses RAW warmth/antagonism, so a needling friend still reads as
+    # sparring regardless of the tier floor below.
     if antagonism >= 0.4 and antagonism >= warmth:
         return (
             f"Relationship tone: {who} likes to needle you and give you grief — so "
             "give as good as you get. Sharper edge, more pushback, less softening; "
             "you two enjoy the sparring, so lean into it (never actually cruel)."
         )
-    if warmth >= 0.5:
-        trust_clause = " You trust them, so you can be real with them." if trust >= 0.6 else ""
+    # Friendship TIER climbs from real shared time while the raw warmth_score lags far
+    # behind it, so floor the warmth by tier — otherwise Rex's actual close friends get
+    # the flat, no-warmth voice for a long time (the depth signal the owner most
+    # associates with "good friend" was effectively dead for most real friends).
+    tier = str(person.get("friendship_tier") or "stranger").strip().lower()
+    floors = getattr(config, "RELATIONSHIP_TIER_WARMTH_FLOOR", None) or {}
+    try:
+        tier_floor = float(floors.get(tier, 0.0))
+    except (TypeError, ValueError):
+        tier_floor = 0.0
+    effective_warmth = max(warmth, tier_floor)
+    if effective_warmth >= 0.5:
+        close = tier in {"close_friend", "best_friend"}
+        # Closeness earns candor even before the slow trust_score catches up.
+        trust_clause = (
+            " You trust them, so you can be real with them."
+            if (trust >= 0.6 or close)
+            else ""
+        )
+        if close:
+            return (
+                f"Relationship tone: {who} is one of your real ones — you two go way "
+                "back. Your roasting is affectionate ribbing; keep the edge, but the "
+                f"warmth is unmistakable and you are firmly on their side.{trust_clause}"
+            )
         return (
             f"Relationship tone: you and {who} go back a ways — your roasting is "
             "affectionate ribbing between friends. Keep the edge, but let the warmth "
@@ -1164,6 +1189,79 @@ def classify_surprise(text: str) -> bool:
     except Exception as exc:
         _log.debug("classify_surprise failed: %s", exc)
         return False
+
+
+# Rex's own reply emotions the body can express. Each normalizes cleanly to a real
+# emotion_orchestrator profile AND a body_mood mood (excited→giddy, happy→happy,
+# curious→curious), so none silently fall back to neutral. Deliberately excludes
+# "angry"/"annoyed": per-reply anger is owned by the anger-level system, not this
+# lightweight tone read, so an ordinary roast never turns Rex's eyes red.
+_SELF_EMOTIONS = ("excited", "happy", "curious", "neutral")
+
+_SELF_EMOTION_SYS = (
+    "You label the emotional TONE of a single line spoken by Rex, a witty DJ robot, so "
+    "his body can match it. Reply with EXACTLY one word from this list, nothing else:\n"
+    "excited - hyped, thrilled, big energy\n"
+    "happy - warm, amused, pleased, enjoying his own joke, fond\n"
+    "curious - genuinely interested, intrigued, leaning in, asking\n"
+    "neutral - matter-of-fact, flat, informational, or unclear"
+)
+
+
+def classify_self_emotion(text: str) -> str:
+    """Classify the emotional tone of REX'S OWN reply so his body can express it (eye
+    colour, speech-servo motion, expressive voice, a short body-mood afterglow).
+    Returns one of excited/happy/curious/neutral. Runs on the LOCAL qwen sidecar (cheap
+    classifier — the cloud model is reserved for in-character text) with a keyword
+    fallback, and NEVER raises: any failure returns the heuristic or 'neutral', so a
+    missed call simply leaves the reply neutral (the prior behavior)."""
+    cleaned = (text or "").strip()
+    if not cleaned or not bool(getattr(config, "SELF_EMOTION_CLASSIFY_ENABLED", True)):
+        return "neutral"
+    try:
+        from intelligence import local_llm
+        if local_llm.enabled():
+            raw = local_llm.generate(
+                f'Line: "{cleaned}"\nOne word:',
+                system=_SELF_EMOTION_SYS,
+                temperature=0.0,
+                max_tokens=3,
+                timeout_secs=float(getattr(config, "SELF_EMOTION_CLASSIFY_TIMEOUT_SECS", 1.2)),
+            )
+            words = re.findall(r"[a-z]+", (raw or "").lower())
+            if words and words[0] in _SELF_EMOTIONS:
+                return words[0]
+    except Exception as exc:
+        _log.debug("classify_self_emotion sidecar failed: %s", exc)
+    return _self_emotion_heuristic(cleaned)
+
+
+_SELF_EMO_EXCITED_RE = re.compile(
+    r"\b(let'?s go+|let'?s goo+|amazing|incredible|no way|whoa+|yes{2,}|can'?t wait|"
+    r"so good|oh my|here we go|buckle up)\b",
+    re.IGNORECASE,
+)
+_SELF_EMO_CURIOUS_RE = re.compile(
+    r"\b(how|what|why|tell me|wait|really|you mean|since when|go on|do tell)\b",
+    re.IGNORECASE,
+)
+_SELF_EMO_HAPPY_RE = re.compile(
+    r"\b(ha+|heh+|love it|love that|nice|great|classic|good one|fair enough|honestly|"
+    r"that'?s the (?:spirit|stuff))\b",
+    re.IGNORECASE,
+)
+
+
+def _self_emotion_heuristic(text: str) -> str:
+    """Cheap keyword/punctuation fallback when the sidecar is unavailable. Conservative
+    — defaults to 'neutral' so it never over-animates an ordinary line."""
+    if text.count("!") >= 2 or _SELF_EMO_EXCITED_RE.search(text):
+        return "excited"
+    if "?" in text and _SELF_EMO_CURIOUS_RE.search(text):
+        return "curious"
+    if _SELF_EMO_HAPPY_RE.search(text) or "!" in text:
+        return "happy"
+    return "neutral"
 
 
 def analyze_sentiment(text: str) -> dict:
