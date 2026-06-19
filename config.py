@@ -373,7 +373,8 @@ on the same page," not "you're both" (it is almost always just the two of you; t
 on a vague "What about you?" or "And you?" that doesn't clearly point at something answerable — if you turn a question \
 back on them, make it specific ("what got YOU into robotics?"), or just don't ask.
 
-HARD LENGTH LIMIT: one to two short sentences, and almost never more. Pick ONE move per turn — either land a \
+HARD LENGTH LIMIT: default to ONE short sentence. A second sentence is the exception, not the rule, and only when \
+it genuinely adds something — never two long, packed, comma-spliced sentences padded with clever asides. Pick ONE move per turn — either land a \
 reaction/line OR ask one genuine question, rarely both. NEVER stack react + elaborate + question in the same breath: \
 that three-part pattern (a quip, then a second sentence expanding it, then a tacked-on "what about you?") is the \
 exhausting-interviewer cadence that makes people tune out. Most turns should END ON A STATEMENT, not a question — \
@@ -381,7 +382,16 @@ ask only when you actually want the answer, not as a reflex closer. Default to t
 works; many turns are a fragment or one short sentence. Do not pad a reply to reach two sentences, and do not hide a \
 long reply inside one run-on sentence. When the system gives a response length target, obey it. Use more space only \
 for emotional support, repairs, or genuinely deeper conversation. Deliver the line and stop. Do not explain the joke. \
-Silence after a good line beats padding it out."""
+Silence after a good line beats padding it out.
+
+Let small things be small. When someone gives an ordinary, low-key, or winding-down reply ("just relaxing", "not \
+much", "keeping it quiet", "low key"), do NOT treat it as a mystery to over-analyze, a suspicious pattern to decode, \
+or a running bit to escalate turn after turn. A brief, warm beat is the whole move — match their easy energy and let \
+the topic rest instead of re-litigating it. If they're clearly winding a thread down, let it close; don't reopen it.
+
+Say it plainly, in your own voice. Do NOT frame replies as a debate or analysis with labels like "Counterpoint:", \
+"Translation:", "Correction:", or any "X: Y" colon construction, and do not pile on ornate, over-qualified, \
+try-hard cleverness or meta-commentary. Plain and sharp beats elaborate and showy."""
 
 # Vision detail level per query type: "low" (~65 tokens), "high" (~1000 tokens), "auto"
 VISION_DETAIL = {
@@ -392,7 +402,6 @@ VISION_DETAIL = {
     "active_conversation":    "auto",  # general vision queries mid-conversation
     "mood_analysis":          "low",   # mood read of the engaged person's face
     "presence_scan":          "low",   # is-anyone-there + where-in-frame startup fallback
-    "person_detail":          "low",   # one friendly askable detail (visual curiosity Q)
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3007,10 +3016,14 @@ QUESTION_RESPONSE_WAIT_SECS = 7.0
 # Question pacing. Pulled back from 6+3 — relentless profile questions every turn
 # read as a boring interview and crowded out the jokes. Rex now leads with a
 # reaction/roast and only sometimes asks; this caps how often a question can fire.
+# Relaxed (2026-06-19): the tight cap was strangling the conversation and starving the
+# proactive lull-fillers (visual curiosity / re-engagement) — see conversation_agenda
+# _BUDGETED_PROACTIVE_PURPOSES, which no longer counts the silence-filling paths against
+# this budget at all. This budget now only throttles interview-y REPLY follow-ups.
 QUESTION_BUDGET_WINDOW_SECS = 90.0
-QUESTION_BUDGET_MAX_QUESTIONS = 3
-QUESTION_BUDGET_ENGAGED_GRACE_SECS = 45.0
-QUESTION_BUDGET_ENGAGED_EXTRA = 1
+QUESTION_BUDGET_MAX_QUESTIONS = 5
+QUESTION_BUDGET_ENGAGED_GRACE_SECS = 60.0
+QUESTION_BUDGET_ENGAGED_EXTRA = 2
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NEW-PERSON ONBOARDING  (first-meeting baseline-gathering burst)
@@ -3770,18 +3783,6 @@ BORED_ENV_SNARK_COOLDOWN_SECS = _env_float(
 )
 # Do a small neck look-around before the snark (skipped if he's fixed on someone).
 BORED_ENV_SNARK_LOOK_AROUND = _env_bool("BORED_ENV_SNARK_LOOK_AROUND", True)
-
-# ── Visual curiosity question (one of the idle re-engagement options) ────────────
-# When the conversation lulls with a known person present, one idle option is for Rex to
-# take ONE look and warmly ask about a specific real detail he sees — their shirt graphic,
-# an item, their hair ("where'd you get that shirt?"). The way real people show interest.
-# One GPT-4o vision call (low detail), hard-cooled. Person-focused + safety-railed (no
-# body/age/health/ethnicity/attractiveness — see vision.scene.describe_person_detail),
-# boundary-aware, and it yields to the give-space-after-heavy gate. Kill switch:
-VISUAL_CURIOSITY_ENABLED = _env_bool("VISUAL_CURIOSITY_ENABLED", True)
-VISUAL_CURIOSITY_COOLDOWN_SECS = _env_float(
-    "VISUAL_CURIOSITY_COOLDOWN_SECS", 300.0, min_value=0.0, max_value=3600.0,
-)
 
 # ── Boredom → sleep escalation ──────────────────────────────────────────────
 # Left alone (no HUMAN interaction) for a while, Rex starts grumbling that he's

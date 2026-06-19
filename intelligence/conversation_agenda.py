@@ -165,11 +165,14 @@ _PROACTIVE_RULES: dict[str, tuple[int, str]] = {
         "say one idle/private line only. Do not pull in another topic.",
     ),
 }
+# Proactive purposes still throttled by the question budget. The silence-FILLING
+# re-engagement paths (visual_curiosity, small_talk) are deliberately NOT here: they
+# fire only when the conversation has gone quiet, so asking then is re-engagement, not
+# interviewing — the budget would otherwise leave dead air after a few turns (live-logged
+# 2026-06-19: visual curiosity rejected as "question_budget_exhausted" every lull).
 _BUDGETED_PROACTIVE_PURPOSES = {
     "celebration_checkin",
     "memory_followup",
-    "visual_curiosity",
-    "small_talk",
     "group_turn_invite",
 }
 _GRACE_SUPPRESSED_PROACTIVE_PURPOSES = {

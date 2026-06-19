@@ -405,9 +405,14 @@ class ProactiveGateExtractionTests(unittest.TestCase):
         # idle_monologue is grace-suppressed but NOT budgeted → budget never blocks it.
         self.assertFalse(ca.proactive_budget_blocks("idle_monologue"))
         with mock.patch("intelligence.question_budget.can_ask", return_value=False):
-            self.assertTrue(ca.proactive_budget_blocks("small_talk"))
-        with mock.patch("intelligence.question_budget.can_ask", return_value=True):
+            # The silence-FILLING re-engagement paths are exempt from the budget (they
+            # fire only in a lull), so an exhausted budget never leaves dead air.
             self.assertFalse(ca.proactive_budget_blocks("small_talk"))
+            self.assertFalse(ca.proactive_budget_blocks("visual_curiosity"))
+            # A still-budgeted, interview-y proactive purpose IS blocked when exhausted.
+            self.assertTrue(ca.proactive_budget_blocks("memory_followup"))
+        with mock.patch("intelligence.question_budget.can_ask", return_value=True):
+            self.assertFalse(ca.proactive_budget_blocks("memory_followup"))
 
 
 if __name__ == "__main__":

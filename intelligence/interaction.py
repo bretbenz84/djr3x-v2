@@ -4083,8 +4083,11 @@ def _maybe_idle_banter(
             line = llm.get_response(
                 "You are re-engaging after a quiet pause in an ongoing conversation. "
                 + directive
-                + " Keep it to one or two short sentences. Vary your opener — never "
-                "open with 'Ah,', 'Oh,', 'Well, well', or 'You know,'. Return only the line.",
+                + " CRITICAL: keep it to ONE short, casual line — a quick natural nudge "
+                "like a friend breaking a brief silence, about 8 to 14 words. NOT a "
+                "monologue, not a clever multi-clause paragraph, no 'Counterpoint:'-style "
+                "framing. Vary your opener — never open with 'Ah,', 'Oh,', 'Well, well', "
+                "or 'You know,'. Return only the line.",
                 person_id,
             )
         except Exception as exc:

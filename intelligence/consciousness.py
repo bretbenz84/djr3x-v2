@@ -4864,9 +4864,6 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
     elif behavior == "appearance_riff":
         if not profile.suppress_proactive:
             idle_behaviors.do_appearance_riff(snapshot)
-    elif behavior == "visual_curiosity_question":
-        if not profile.suppress_proactive:
-            idle_behaviors.do_visual_curiosity_question(snapshot)
     elif behavior == "people_roast":
         if not profile.suppress_proactive:
             idle_behaviors.do_people_roast(snapshot)
@@ -5112,7 +5109,6 @@ def _idle_micro_behavior_choices(snapshot: dict) -> tuple[list[str], list[int]]:
             [
                 "people_roast",
                 "appearance_riff",
-                "visual_curiosity_question",
                 "small_talk_question",
                 "ambient_observation",
                 "live_vision_comment",
@@ -5125,9 +5121,7 @@ def _idle_micro_behavior_choices(snapshot: dict) -> tuple[list[str], list[int]]:
             # Room/environment commentary (ambient_observation 1->3,
             # live_vision_comment 1->2, bored_env_snark 2->3) gets more share so
             # Rex riffs on the room, not just on the person, when idle.
-            # visual_curiosity_question (snap a pic + warmly ask about a real personal
-            # detail) gets a solid share — it's a genuine "show interest in YOU" beat.
-            [4, 3, 3, 2, 3, 2, 1, 1, 1, 1, 3],
+            [4, 3, 2, 3, 2, 1, 1, 1, 1, 3],
         )
     return (
         [
