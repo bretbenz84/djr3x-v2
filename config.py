@@ -392,6 +392,7 @@ VISION_DETAIL = {
     "active_conversation":    "auto",  # general vision queries mid-conversation
     "mood_analysis":          "low",   # mood read of the engaged person's face
     "presence_scan":          "low",   # is-anyone-there + where-in-frame startup fallback
+    "person_detail":          "low",   # one friendly askable detail (visual curiosity Q)
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3671,6 +3672,18 @@ BORED_ENV_SNARK_COOLDOWN_SECS = _env_float(
 )
 # Do a small neck look-around before the snark (skipped if he's fixed on someone).
 BORED_ENV_SNARK_LOOK_AROUND = _env_bool("BORED_ENV_SNARK_LOOK_AROUND", True)
+
+# ── Visual curiosity question (one of the idle re-engagement options) ────────────
+# When the conversation lulls with a known person present, one idle option is for Rex to
+# take ONE look and warmly ask about a specific real detail he sees — their shirt graphic,
+# an item, their hair ("where'd you get that shirt?"). The way real people show interest.
+# One GPT-4o vision call (low detail), hard-cooled. Person-focused + safety-railed (no
+# body/age/health/ethnicity/attractiveness — see vision.scene.describe_person_detail),
+# boundary-aware, and it yields to the give-space-after-heavy gate. Kill switch:
+VISUAL_CURIOSITY_ENABLED = _env_bool("VISUAL_CURIOSITY_ENABLED", True)
+VISUAL_CURIOSITY_COOLDOWN_SECS = _env_float(
+    "VISUAL_CURIOSITY_COOLDOWN_SECS", 300.0, min_value=0.0, max_value=3600.0,
+)
 
 # ── Boredom → sleep escalation ──────────────────────────────────────────────
 # Left alone (no HUMAN interaction) for a while, Rex starts grumbling that he's

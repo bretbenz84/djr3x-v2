@@ -893,6 +893,55 @@ def describe_scene_detailed(frame) -> dict:
     }
 
 
+# Backstop keyword filter: the model is told these are off-limits, but if it returns one
+# anyway, we drop the detail rather than ask about it. Tight enough not to false-positive
+# on ordinary clothing/hair details ("blue jacket", "blonde hair").
+_PERSON_DETAIL_BANNED = (
+    "overweight", "obese", "fat", "skinny", "chubby", "body shape", "figure",
+    "weight", "wrinkl", "elderly", "ethnic", "race", "racial", "skin tone",
+    "skin color", "skin colour", "complexion", "attractive", "unattractive",
+    "ugly", "gorgeous", "sexy", "disab", "pregnan",
+)
+
+
+def describe_person_detail(frame, name: Optional[str] = None) -> str:
+    """ONE friendly, ASKABLE detail about the most prominent visible person — the kind of
+    thing a warm acquaintance would ask them about: text/graphics or a logo on their
+    clothing, an item they're holding or have nearby, an accessory (hat, headphones,
+    jewelry), or their hairstyle/hair colour.
+
+    Deliberately neutral and positive: NEVER body shape/size, weight, age, health,
+    perceived race/ethnicity, disability, or attractiveness — both in the prompt and via a
+    backstop keyword filter. Returns a short phrase ("a band tee with white lettering",
+    "blonde hair", "a mug with a cartoon on it"), or "" when nothing friendly stands out
+    or on any error. One GPT-4o vision call (low detail)."""
+    if frame is None:
+        return ""
+    who = (str(name or "").strip() or "the main person")
+    prompt = (
+        f"Look at {who} in this image. Name ONE specific, friendly, NEUTRAL detail a warm "
+        "acquaintance might ask them about — something they chose, are wearing, or have "
+        "with them: text/graphics/a logo on their clothing, an item in their hand or right "
+        "next to them, an accessory (hat, headphones, jewelry, glasses), or their "
+        "hairstyle or hair colour. STRICT RULES: never comment on body shape or size, "
+        "weight, age, health, skin, perceived race/ethnicity, disability, or "
+        "attractiveness. If nothing friendly and specific stands out, reply with exactly "
+        "NONE. Otherwise reply with ONLY the short detail (a few words) — no sentence, no "
+        "preamble, no quotes."
+    )
+    try:
+        raw = _call_gpt4o(frame, prompt, "person_detail", max_tokens=30)
+    except Exception as exc:
+        _log.debug("describe_person_detail error: %s", exc)
+        return ""
+    detail = (raw or "").strip().strip('"').strip()
+    if not detail or detail.upper().startswith("NONE"):
+        return ""
+    if any(word in detail.lower() for word in _PERSON_DETAIL_BANNED):
+        return ""
+    return detail[:120]
+
+
 def analyze_directed_attention(
     frame,
     *,

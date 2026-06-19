@@ -31,6 +31,7 @@ _log = logging.getLogger(__name__)
 # ── Cooldown / dedupe state (moved with the behaviours) ──────────────────────
 _last_live_vision_comment_at: float = 0.0
 _last_bored_env_snark_at: float = 0.0
+_last_visual_curiosity_at: float = 0.0
 _last_aspiration: Optional[str] = None
 
 
@@ -504,6 +505,89 @@ def do_bored_environment_snark(snapshot: dict) -> None:
             _log.debug("bored env snark error: %s", exc)
 
     threading.Thread(target=_task, daemon=True, name="bored-env-snark").start()
+
+
+def _visual_curiosity_target(snapshot: dict):
+    """Pick the present, visible, KNOWN person to ask about — prefer the engaged partner,
+    else the single visible known person (no guessing across a crowd). Returns
+    (person_id, first_name), or (None, None) when there's no clear single target."""
+    people = [p for p in (snapshot.get("people") or []) if isinstance(p, dict)]
+    known = [
+        p for p in people
+        if p.get("person_db_id") is not None and p.get("face_visible") is not False
+    ]
+    if not known:
+        return (None, None)
+    engaged = [p for p in known if _c.is_engaged_with(p.get("person_db_id"))]
+    if engaged:
+        target = engaged[0]
+    elif len(known) == 1:
+        target = known[0]
+    else:
+        return (None, None)  # ambiguous crowd → don't single anyone out
+    pid = target.get("person_db_id")
+    return (pid, _c._first_name(target.get("face_id"), "there"))
+
+
+def do_visual_curiosity_question(snapshot: dict) -> None:
+    """When the conversation lulls, take ONE genuine look and ask a warm, specific question
+    about a detail Rex actually sees on the present person — the graphic on their shirt, an
+    item they have, their hair. The way real people show interest ("where'd you get that
+    shirt?"). One GPT-4o vision call, hard-cooldowned, run off-tick so it never blocks the
+    loop. Person-focused and safety-railed (no body/age/health/etc. — see
+    scene.describe_person_detail), boundary-aware, and it yields to the
+    give-space-after-heavy gate via _can_proactive_speak."""
+    global _last_visual_curiosity_at
+    if not bool(getattr(config, "VISUAL_CURIOSITY_ENABLED", True)):
+        return
+    now = time.monotonic()
+    cooldown = float(getattr(config, "VISUAL_CURIOSITY_COOLDOWN_SECS", 300.0))
+    if (now - _last_visual_curiosity_at) < cooldown:
+        return
+    pid, first_name = _visual_curiosity_target(snapshot)
+    if pid is None:
+        return
+    # Respect an appearance/clothing boundary the person has set.
+    try:
+        from memory import boundaries as _boundaries
+        if (
+            _boundaries.is_blocked(pid, "mention", "appearance")
+            or _boundaries.is_blocked(pid, "mention", "clothing")
+        ):
+            return
+    except Exception:
+        pass
+    _last_visual_curiosity_at = now
+
+    def _task():
+        try:
+            if not _c._can_proactive_speak():
+                return
+            from vision import camera as _cam
+            from vision import scene as _scene
+            frame = _cam.get_frame()
+            if frame is None:
+                return
+            detail = _scene.describe_person_detail(frame, name=first_name)
+            if not detail:
+                return
+            _c._generate_and_speak(
+                f"It's gone a little quiet. You just took a genuine look at {first_name} "
+                f"and actually noticed: {detail}. Ask ONE warm, specific, curious question "
+                "about it — the way a friendly person shows interest, e.g. \"Where'd you "
+                "get that shirt?\" or \"Which side of the family does the blonde hair come "
+                "from?\". Reference ONLY what you actually saw; never invent or embellish a "
+                "detail. Genuinely interested and a touch warm — NOT a roast, not "
+                f"backhanded, no comment on their body/age/looks. Address {first_name} by "
+                "name. One short question.",
+                emotion="curious",
+                purpose="visual_curiosity",
+                label="visual curiosity question",
+            )
+        except Exception as exc:
+            _log.debug("visual curiosity question error: %s", exc)
+
+    threading.Thread(target=_task, daemon=True, name="visual-curiosity").start()
 
 
 def do_idle_clip() -> None:
