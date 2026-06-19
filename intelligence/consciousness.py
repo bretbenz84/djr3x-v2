@@ -263,6 +263,10 @@ _smile_reaction_lock = threading.Lock()
 _smile_reaction_watch: Optional[dict] = None
 _last_smile_reaction_at: float = 0.0
 _facial_expression_observed: dict[str, dict] = {}
+# Wave-back: last time Rex waved back (global) + per-person last-reacted (debounce so a
+# single wave fires one reaction, and the same person isn't re-waved-at for a cooldown).
+_last_wave_reaction_at: float = 0.0
+_wave_reacted_keys: dict[str, float] = {}
 _facial_expression_reacted_at: dict[tuple[str, str], float] = {}
 _last_facial_expression_reaction_at: float = 0.0
 _last_expression_reaction_line_by_kind: dict[str, str] = {}
@@ -2446,6 +2450,82 @@ def _speak_smile_reaction(text: str) -> bool:
         _proactive_speech_pending.clear()
         _log.debug("smile reaction speech failed: %s", exc)
         return False
+
+
+def _wave_person_key(person: dict) -> str:
+    """Stable-ish key for wave-back debounce: the db id when known, else the world_state
+    slot id, else a generic unknown bucket."""
+    pid = person.get("person_db_id")
+    if pid is not None:
+        return f"db:{pid}"
+    slot = person.get("id")
+    return f"slot:{slot}" if slot else "unknown"
+
+
+def _wave_back_line(first_name: str) -> str:
+    """A short warm wave-back line, with the person's name woven in when known."""
+    name = (first_name or "").strip()
+    if name:
+        pool = list(getattr(config, "WAVE_BACK_LINES", []) or [])
+        line = random.choice(pool) if pool else "Hey, {name}!"
+        return line.replace("{name}", name)
+    pool = list(getattr(config, "WAVE_BACK_LINES_NO_NAME", []) or [])
+    return random.choice(pool) if pool else "Hey there!"
+
+
+def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
+    """If a visible person is waving, wave back (+ one short warm line) — the way you'd
+    return a wave from across a room. The pose pipeline already classifies 'waving' onto
+    world_state.people; this reacts to it, debounced per person + globally so a single
+    wave fires one reaction. Reactive embodiment, not a probe — but still respects the
+    proactive gates (DJ/game/awaiting-reply/give-space) via _can_proactive_speak."""
+    global _last_wave_reaction_at
+    if not bool(getattr(config, "WAVE_BACK_ENABLED", True)):
+        return
+    if profile.suppress_proactive:
+        return
+    now = time.monotonic()
+    if (now - _last_wave_reaction_at) < float(getattr(config, "WAVE_BACK_MIN_GAP_SECS", 8.0)):
+        return
+
+    per_person_cd = float(getattr(config, "WAVE_BACK_PER_PERSON_COOLDOWN_SECS", 25.0))
+    target = None
+    target_key = None
+    for person in snapshot.get("people", []) or []:
+        if not isinstance(person, dict):
+            continue
+        if person.get("face_visible") is False:
+            continue
+        if (person.get("gesture") or "") != "waving":
+            continue
+        key = _wave_person_key(person)
+        if (now - float(_wave_reacted_keys.get(key, 0.0))) < per_person_cd:
+            continue
+        target, target_key = person, key
+        break
+    if target is None:
+        return
+    if not _can_proactive_speak():
+        return
+
+    _wave_reacted_keys[target_key] = now
+    _last_wave_reaction_at = now
+    first_name = _first_name(target.get("face_id") or target.get("name"), "")
+
+    # Wave the arm (non-blocking) and say one short warm line. The wave animation is
+    # failure-safe / no-ops without servos, exactly like the wake-word ack wave.
+    try:
+        from sequences import animations
+        animations.wake_word_ack_wave()
+    except Exception as exc:
+        _log.debug("wave-back animation skipped: %s", exc)
+    _log.info("consciousness: wave-back fired for %s", target_key)
+    _speak_async(
+        _wave_back_line(first_name),
+        emotion="happy",
+        purpose="wave_back",
+        label="wave back",
+    )
 
 
 def _step_smile_reaction(snapshot: dict, profile: SituationProfile) -> None:
@@ -10162,6 +10242,10 @@ def _loop() -> None:
             # MediaPipe expression stream at a low rate for known people.
             _step_disposition_memory(snapshot)
 
+            # 10f-b. Wave back — if a visible person waves, return the wave (+ a short
+            # warm line), the way you'd wave back across a room.
+            _step_wave_reaction(snapshot, profile)
+
             # 10g. Smile reaction — after Rex lands a joke/snarky aside, notice
             # if the target visibly cracks a smile and answer it once.
             _step_smile_reaction(snapshot, profile)
@@ -10300,6 +10384,7 @@ def start() -> None:
     _last_smile_reaction_at = 0.0
     _facial_expression_observed.clear()
     _facial_expression_reacted_at.clear()
+    _wave_reacted_keys.clear()
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()
     _disposition_sampled_at.clear()
@@ -10412,6 +10497,7 @@ def stop() -> None:
         _smile_reaction_watch = None
     _facial_expression_observed.clear()
     _facial_expression_reacted_at.clear()
+    _wave_reacted_keys.clear()
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()
     _disposition_sampled_at.clear()

@@ -2002,6 +2002,37 @@ PROXEMICS_SOCIAL_MIN_FRACTION   = 0.30  # above this → social zone; below → 
 # rate. Set to 0 to attempt pose analysis every consciousness tick.
 POSE_ANALYSIS_INTERVAL_SECS = 2.0
 
+# Wave back when a visible person waves at Rex. The pose pipeline already classifies a
+# "waving" gesture onto world_state.people (every POSE_ANALYSIS_INTERVAL_SECS); this fires
+# Rex's wave-back animation + one short warm line, debounced so it reacts once per wave.
+# Requires MediaPipe pose (installed) to detect the wave; degrades to nothing if absent.
+WAVE_BACK_ENABLED = _env_bool("WAVE_BACK_ENABLED", True)
+# Don't wave back at the SAME person again for this long (one wave-back per greeting).
+WAVE_BACK_PER_PERSON_COOLDOWN_SECS = _env_float(
+    "WAVE_BACK_PER_PERSON_COOLDOWN_SECS", 25.0, min_value=0.0, max_value=3600.0,
+)
+# Global minimum gap between any two wave-backs (so a crowd of wavers doesn't spam).
+WAVE_BACK_MIN_GAP_SECS = _env_float(
+    "WAVE_BACK_MIN_GAP_SECS", 8.0, min_value=0.0, max_value=600.0,
+)
+# Short, warm wave-back lines (canned for immediacy — a wave-back shouldn't wait on an
+# LLM call). "{name}" is filled with the person's first name when known, else dropped.
+WAVE_BACK_LINES = [
+    "Hey, {name}!",
+    "{name}! Good to see you.",
+    "There they are.",
+    "Hello yourself.",
+    "I see that wave — hi back.",
+    "Hey, {name} — waving detected, waving returned.",
+]
+WAVE_BACK_LINES_NO_NAME = [
+    "Hey there!",
+    "There they are.",
+    "Hello yourself.",
+    "I see that wave — hi back.",
+    "Waving detected, waving returned.",
+]
+
 # Personal-space reaction for camera proxemics. "Intimate" means the face fills
 # enough of the frame that, by American conversational norms, Rex can treat the
 # person as comically too close.
