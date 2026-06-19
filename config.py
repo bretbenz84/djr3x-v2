@@ -3490,6 +3490,23 @@ OFFSCREEN_IDENTIFY_WINDOW_SECS = 30.0
 IDENTITY_PROMPT_DEFER_ON_DIRECT_TURN = True
 IDENTITY_PROMPT_ALLOW_PROACTIVE_ACTIVE = False
 
+# When Rex has just asked an unidentified speaker for their name and they reply
+# with something he can't parse into a usable name — typically because his own
+# question tail bled into the mic ("...save for you?" → transcript "for you,
+# Bret.") — he gently re-asks instead of routing the turn to the open-ended LLM.
+# Without this, the LLM was handed BOTH the name-bearing transcript AND the
+# "ask for their name" directive, producing the contradictory "Bret, got it…
+# what do I call you?" (live-logged 2026-06-18). Bounded so a run of garbled
+# replies can't loop: after this many re-asks Rex drops it and the turn flows
+# normally.
+IDENTITY_PROMPT_REASK_MAX = 2
+IDENTITY_PROMPT_REASK_LINES = [
+    "Static on my end — say just the name one more time?",
+    "My audio receptors garbled that. What's the name?",
+    "Didn't quite catch that. Just your name — go again?",
+    "Run that back for me — what should I call you?",
+]
+
 # Minimum gap between CANONICAL renames of the same person. A joking child renamed
 # himself Wade->Bro->Broski with each obeyed instantly; this makes the second rename
 # within the window get a "you just changed your name" deferral instead. 0 disables.

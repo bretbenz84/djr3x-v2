@@ -306,6 +306,11 @@ _last_fast_handoff_at: float = 0.0
 # Time window (set by consciousness) where a short bare-name reply is accepted.
 _identity_prompt_until: float = 0.0
 
+# How many times we've gently re-asked an unidentified speaker for their name
+# after a reply Rex couldn't parse into one. Bounds the re-ask loop so a string
+# of garbled transcripts can't turn Rex into a broken record.
+_identity_reask_count: int = 0
+
 _IDENTITY_REPLY_WINDOW_SECS = 45.0
 
 
@@ -4133,6 +4138,14 @@ def _identity_enrollment_ack(name: str) -> str:
     return f"Got it, {name}. Nice to meet you."
 
 
+def _identity_reask_line() -> str:
+    """A short in-character 'didn't catch the name, say it again' line."""
+    lines = list(getattr(config, "IDENTITY_PROMPT_REASK_LINES", []) or [])
+    if not lines:
+        lines = ["Didn't catch that — just your name, one more time?"]
+    return random.choice(lines)
+
+
 def _special_intro_prompt(name: str) -> Optional[str]:
     special_context = person_specials.special_prompt_context(name)
     if not special_context:
@@ -4288,6 +4301,14 @@ _IDENTITY_PROMPT_ECHO_RE = re.compile(
 )
 
 
+def _looks_like_name_chunk(chunk: str) -> bool:
+    """True when chunk is 1-3 plain alphabetic name tokens (after trimming punct)."""
+    tokens = (chunk or "").strip(" .!?").split()
+    return bool(tokens) and len(tokens) <= 3 and all(
+        re.fullmatch(r"[A-Za-z][A-Za-z'\-]*", t) for t in tokens
+    )
+
+
 def _prompted_bare_name_text(text: str) -> str:
     """
     Clean a bare reply to Rex's identity prompt.
@@ -4305,9 +4326,16 @@ def _prompted_bare_name_text(text: str) -> str:
         if tail:
             cleaned = tail
     if "," in cleaned:
-        parts = [part.strip() for part in cleaned.split(",") if part.strip()]
-        if 1 < len(parts) <= 3 and all(re.fullmatch(r"[A-Za-z][A-Za-z'\-]*", p) for p in parts):
+        parts = [p.strip(" .!?") for p in cleaned.split(",") if p.strip(" .!?")]
+        name_token = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+        if 1 < len(parts) <= 3 and all(name_token.fullmatch(p) for p in parts):
+            # Comma split inside a multi-token name (e.g. "Mary, Jane").
             cleaned = " ".join(parts)
+        elif len(parts) >= 2 and _looks_like_name_chunk(parts[-1]):
+            # Leading echo/filler ahead of the real answer — e.g. Rex's own
+            # "...save for you?" question tail bleeding into the mic as
+            # "for you, Bret." Keep just the trailing name chunk.
+            cleaned = parts[-1]
     return cleaned
 
 
@@ -5331,7 +5359,7 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_prompted_name_confirmation, _pending_introduction
     global _pending_intro_followup, _pending_intro_voice_capture
-    global _pending_name_merge_confirmation
+    global _pending_name_merge_confirmation, _identity_reask_count
 
     # A fresh intro voice-capture window is a passive listening slot, not a
     # question being deferred. When Rex just said "say hi so I can learn your
@@ -5363,6 +5391,7 @@ def _clear_pending_identity_prompts(reason: str) -> bool:
     ) or _identity_prompt_until > 0.0
 
     _identity_prompt_until = 0.0
+    _identity_reask_count = 0
     _pending_offscreen_identify = None
     _pending_face_reveal_confirm = None
     _pending_common_first_name_identity = None
@@ -15408,6 +15437,7 @@ def _handle_speech_segment(
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_offscreen_identify, _pending_face_reveal_confirm
+    global _identity_reask_count
 
     turn_start = time.monotonic()
     answered_question: Optional[dict] = None
@@ -17130,6 +17160,7 @@ def _handle_speech_segment(
                             has_unknown_visible_or_recent=has_unknown_visible_or_recent,
                         )
                         _identity_prompt_until = 0.0
+                        _identity_reask_count = 0
                         prompted_identity_ack_text = _identity_enrollment_ack(intro_name)
 
                         # Chain into a relationship follow-up if we were just
@@ -17143,6 +17174,59 @@ def _handle_speech_segment(
                                 "newcomer_name": intro_name,
                             }
                         _mark_single_name_for_later_last_name(enrolled_id, intro_name)
+            else:
+                # Rex had just asked an unidentified speaker their name
+                # (identity_prompt_active; the direct-turn deferral above already
+                # let this through as a name reply), but the transcript yielded no
+                # usable name — typically Rex's own question tail bleeding into the
+                # mic ("...save for you?" → "for you, Bret."). Gently re-ask instead
+                # of routing to the open-ended LLM, which would otherwise be handed
+                # BOTH this name-bearing transcript AND the "ask their name" agenda
+                # and answer with the contradictory "Bret, got it… what do I call
+                # you?" (live-logged 2026-06-18). Bounded so garble can't loop.
+                reask_cap = int(getattr(config, "IDENTITY_PROMPT_REASK_MAX", 2))
+                if (
+                    identity_prompt_active
+                    and person_id is None
+                    and command_parser.parse(text) is None
+                    and _identity_reask_count < reask_cap
+                ):
+                    _identity_reask_count += 1
+                    reask_text = _identity_reask_line()
+                    _record_heard_turn_once()
+                    _speak_blocking(
+                        reask_text,
+                        emotion="neutral",
+                        pre_beat_ms=100,
+                        post_beat_ms_override=200,
+                    )
+                    conv_memory.add_to_transcript("Rex", reask_text)
+                    conv_log.log_rex(reask_text)
+                    _session_exchange_count += 1
+                    _register_rex_utterance(reask_text)
+                    # Keep the bare-name window open for their next try; do NOT
+                    # re-arm a proactive consciousness prompt — that, with the
+                    # counter, is what bounds the loop.
+                    _identity_prompt_until = time.monotonic() + _IDENTITY_REPLY_WINDOW_SECS
+                    final_executed_path = "identity_prompt.reask_unparsed"
+                    _log.info(
+                        "[interaction] identity prompt reply unparsable — gently "
+                        "re-asking (attempt %d/%d) text=%r",
+                        _identity_reask_count,
+                        reask_cap,
+                        text,
+                    )
+                    return
+                if identity_prompt_active and _identity_reask_count >= reask_cap:
+                    # Tried enough times; stop badgering and let the turn flow
+                    # normally so Rex doesn't become a broken record.
+                    _identity_prompt_until = 0.0
+                    _identity_reask_count = 0
+                    _log.info(
+                        "[interaction] identity prompt re-ask cap reached — "
+                        "dropping prompt, turn flows normally text=%r",
+                        text,
+                    )
 
         # If Rex had an outstanding event follow-up question, treat this utterance
         # as the outcome and close the loop in memory.
@@ -19276,7 +19360,7 @@ def start(*, text_only: bool = False) -> None:
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_prompted_name_confirmation
-    global _text_only_mode, _last_speech_at
+    global _text_only_mode, _last_speech_at, _identity_reask_count
 
     if _thread and _thread.is_alive():
         _log.warning("[interaction] already running")
@@ -19293,6 +19377,7 @@ def start(*, text_only: bool = False) -> None:
     _clear_anonymous_speaker_slots()
     _interest_idle_followups_spoken.clear()
     _identity_prompt_until = 0.0
+    _identity_reask_count = 0
     _listen_resume_at = 0.0
     _listen_capture_floor_at = 0.0
     _post_tts_flush_needed = False
@@ -19373,7 +19458,7 @@ def stop() -> None:
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_prompted_name_confirmation
-    global _text_only_mode
+    global _text_only_mode, _identity_reask_count
 
     _stop_event.set()
     if not _text_only_mode:
@@ -19387,6 +19472,7 @@ def stop() -> None:
 
     _awaiting_followup_event = None
     _identity_prompt_until = 0.0
+    _identity_reask_count = 0
     _listen_resume_at = 0.0
     _listen_capture_floor_at = 0.0
     _post_tts_flush_needed = False

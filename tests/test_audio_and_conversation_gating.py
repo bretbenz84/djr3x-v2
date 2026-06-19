@@ -1772,6 +1772,32 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             "Bret",
         )
 
+    def test_bare_identity_name_strips_echoed_question_tail(self):
+        """Rex's own '...save for you?' tail can bleed into the mic ahead of the
+        answer ('for you, Bret.'). The bare-name path must still recover 'Bret'
+        instead of dropping it — the failure that produced the contradictory
+        'Bret, got it… what do I call you?' (live-logged 2026-06-18)."""
+        from intelligence import interaction
+
+        for garbled in ("for you, Bret.", "for you, Bret", "for you, Mary Jane"):
+            extracted = interaction._extract_introduced_name(
+                garbled, allow_bare_name=True
+            )
+            self.assertIsNotNone(extracted, garbled)
+        self.assertEqual(
+            interaction._extract_introduced_name("for you, Bret.", allow_bare_name=True),
+            "Bret",
+        )
+        # A genuine comma-split two-token name is still joined, not truncated.
+        self.assertEqual(
+            interaction._extract_introduced_name("Mary, Jane", allow_bare_name=True),
+            "Mary Jane",
+        )
+        self.assertEqual(
+            interaction._extract_introduced_name("Mary, Jane.", allow_bare_name=True),
+            "Mary Jane",
+        )
+
     def test_first_name_helper_handles_missing_or_blank_names(self):
         from intelligence import interaction
 
@@ -1965,6 +1991,172 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             interaction.world_state.update("people", old_people)
             interaction._identity_prompt_until = old_until
             interaction._session_exchange_count = old_exchange_count
+            interaction._pending_offscreen_identify = old_pending_offscreen
+            interaction._pending_face_reveal_confirm = old_pending_face_reveal
+            interaction._pending_post_greet_relationship[0] = old_pending_relationship
+
+    def test_identity_prompt_unparsable_reply_reasks_instead_of_contradicting(self):
+        """When Rex just asked an unknown person their name and the reply has no
+        usable name in it (e.g. only his own '...for you?' tail bled into the
+        mic), he should gently RE-ASK — not route the turn to the LLM, which was
+        handed both the transcript and the 'ask their name' agenda and answered
+        'Bret, got it… what do I call you?' (live-logged 2026-06-18)."""
+        from contextlib import ExitStack
+        import numpy as np
+        from intelligence import interaction
+
+        old_people = interaction.world_state.get("people")
+        old_until = interaction._identity_prompt_until
+        old_exchange_count = interaction._session_exchange_count
+        old_reask = interaction._identity_reask_count
+        old_pending_offscreen = interaction._pending_offscreen_identify
+        old_pending_face_reveal = interaction._pending_face_reveal_confirm
+        old_pending_relationship = interaction._pending_post_greet_relationship[0]
+        try:
+            interaction.world_state.update(
+                "people",
+                [{
+                    "id": "slot:person_1",
+                    "face_id": None,
+                    "voice_id": None,
+                    "person_db_id": None,
+                    "face_visible": True,
+                }],
+            )
+            interaction._identity_prompt_until = interaction.time.monotonic() + 30.0
+            interaction._identity_reask_count = 0
+            interaction._pending_offscreen_identify = None
+            interaction._pending_face_reveal_confirm = None
+            interaction._pending_post_greet_relationship[0] = None
+
+            with ExitStack() as stack:
+                stack.enter_context(
+                    mock.patch.object(interaction.random, "randint", return_value=0)
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_process_audio",
+                        return_value=("for you", None, None, 0.0, 0.0),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction,
+                        "_game_suppresses_conversation",
+                        return_value=False,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.turn_completion, "consume_continuation",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.turn_completion, "classify", return_value=None,
+                    )
+                )
+                stack.enter_context(mock.patch.object(interaction.echo_cancel, "start_sequence"))
+                stack.enter_context(mock.patch.object(interaction.echo_cancel, "end_sequence"))
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.consciousness, "get_recent_engagement",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.consciousness, "consume_identity_prompt_request",
+                        return_value=False,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction.consciousness, "consume_relationship_prompt_request",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(mock.patch.object(interaction.consciousness, "mark_engagement"))
+                stack.enter_context(mock.patch.object(interaction.consciousness, "note_person_spoke"))
+                stack.enter_context(mock.patch.object(interaction.consciousness, "clear_response_wait"))
+                stack.enter_context(mock.patch.object(interaction.speech_queue, "drop_by_tag"))
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction, "_note_voice_turn_for_group_chatter",
+                        return_value=False,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction, "_audio_group_chatter_active", return_value=False,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction, "_resolve_anonymous_speaker_slot",
+                        return_value=("unknown_voice_1", None),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction, "_handle_common_first_name_last_name_reply",
+                        return_value=(None, None, None),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction, "_handle_common_first_name_intro_last_name_reply",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch.object(
+                        interaction, "_handle_existing_common_first_name_last_name_reply",
+                        return_value=None,
+                    )
+                )
+                enroll = stack.enter_context(
+                    mock.patch.object(interaction, "_enroll_new_person", return_value=2)
+                )
+                stack.enter_context(
+                    mock.patch.object(interaction, "_dismiss_pending_consent_prompts")
+                )
+                speak = stack.enter_context(
+                    mock.patch.object(interaction, "_speak_blocking", return_value=True)
+                )
+                stack.enter_context(
+                    mock.patch.object(interaction.conv_memory, "add_to_transcript")
+                )
+                stack.enter_context(mock.patch.object(interaction.conv_log, "log_heard"))
+                log_rex = stack.enter_context(
+                    mock.patch.object(interaction.conv_log, "log_rex")
+                )
+                register = stack.enter_context(
+                    mock.patch.object(interaction, "_register_rex_utterance")
+                )
+                decide = stack.enter_context(
+                    mock.patch.object(interaction.action_router, "decide")
+                )
+                interaction._handle_speech_segment(np.ones(16, dtype=np.float32))
+
+            # No name was captured, so we must NOT enroll a bogus person and must
+            # NOT fall through to the router/LLM (the contradictory path).
+            enroll.assert_not_called()
+            decide.assert_not_called()
+            # Instead Rex re-asks with one of the canned re-ask lines, once.
+            speak.assert_called_once()
+            spoken = speak.call_args.args[0]
+            self.assertIn(spoken, interaction.config.IDENTITY_PROMPT_REASK_LINES)
+            log_rex.assert_called_once_with(spoken)
+            register.assert_called_once_with(spoken)
+            self.assertEqual(interaction._identity_reask_count, 1)
+        finally:
+            interaction.world_state.update("people", old_people)
+            interaction._identity_prompt_until = old_until
+            interaction._session_exchange_count = old_exchange_count
+            interaction._identity_reask_count = old_reask
             interaction._pending_offscreen_identify = old_pending_offscreen
             interaction._pending_face_reveal_confirm = old_pending_face_reveal
             interaction._pending_post_greet_relationship[0] = old_pending_relationship
