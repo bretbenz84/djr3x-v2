@@ -1859,6 +1859,82 @@ FACE_TRACKING_REST_SERVO_ACCELERATION = _env_int(
     max_value=255,
 )
 
+# ── Human-like gaze engine (intelligence/gaze_engine.py) ─────────────────────
+# A stochastic two-state (ON-target / OFF-target) eye-contact rhythm layered on top
+# of the closed-loop face-tracking above. Simulates eye contact through head pose on
+# a static-face droid: ON-target = the existing centering points the head at the
+# active partner; OFF-target = a deliberate look-away (yaw to the side, PITCH up to
+# "visualize" / down to "internalize", POLE height for engagement). The brain is
+# pure + seedable (gaze_engine.GazeConfig mirrors these knobs); the live actuation
+# rides _step_face_tracking, never a second servo writer. Master flag ships ON with a
+# one-line kill switch.
+GAZE_ENGINE_ENABLED = _env_bool("GAZE_ENGINE_ENABLED", True)
+# Duty cycles = P(ON-target) by role (the 50/70 rule).
+GAZE_DUTY_SPEAKING = _env_float("GAZE_DUTY_SPEAKING", 0.50, min_value=0.05, max_value=0.95)
+GAZE_DUTY_LISTENING = _env_float("GAZE_DUTY_LISTENING", 0.70, min_value=0.05, max_value=0.95)
+GAZE_DUTY_OPENING = _env_float("GAZE_DUTY_OPENING", 0.85, min_value=0.05, max_value=0.99)
+GAZE_DUTY_CLOSING = _env_float("GAZE_DUTY_CLOSING", 0.30, min_value=0.0, max_value=0.95)
+# Dwell distributions (seconds), sampled per segment so gaze never looks metronomic.
+GAZE_ON_DWELL_SD = _env_float("GAZE_ON_DWELL_SD", 0.8, min_value=0.0, max_value=3.0)
+GAZE_ON_DWELL_MIN = _env_float("GAZE_ON_DWELL_MIN", 1.0, min_value=0.1, max_value=5.0)
+GAZE_ON_HARD_CAP_SECS = _env_float("GAZE_ON_HARD_CAP_SECS", 5.0, min_value=1.0, max_value=12.0)
+GAZE_OFF_DWELL_MEAN = _env_float("GAZE_OFF_DWELL_MEAN", 1.2, min_value=0.2, max_value=5.0)
+GAZE_OFF_DWELL_SD = _env_float("GAZE_OFF_DWELL_SD", 0.5, min_value=0.0, max_value=3.0)
+GAZE_OFF_DWELL_MIN = _env_float("GAZE_OFF_DWELL_MIN", 0.4, min_value=0.1, max_value=3.0)
+GAZE_OFF_DWELL_MAX = _env_float("GAZE_OFF_DWELL_MAX", 2.5, min_value=0.4, max_value=8.0)
+# Phase durations (seconds).
+GAZE_OPENING_SECS = _env_float("GAZE_OPENING_SECS", 3.0, min_value=0.0, max_value=15.0)
+GAZE_CLOSING_SECS = _env_float("GAZE_CLOSING_SECS", 2.5, min_value=0.0, max_value=15.0)
+GAZE_YIELD_SECS = _env_float("GAZE_YIELD_SECS", 0.5, min_value=0.0, max_value=3.0)
+GAZE_INTERNALIZE_MIN_SECS = _env_float("GAZE_INTERNALIZE_MIN_SECS", 0.4, min_value=0.0, max_value=2.0)
+GAZE_INTERNALIZE_MAX_SECS = _env_float("GAZE_INTERNALIZE_MAX_SECS", 0.9, min_value=0.1, max_value=2.0)
+GAZE_INCLUDE_SWEEP_SECS = _env_float("GAZE_INCLUDE_SWEEP_SECS", 1.5, min_value=0.3, max_value=5.0)
+# Complexity-scaled pre-turn aversion (just before R3X speaks).
+GAZE_PRE_AVERSION_MIN_SECS = _env_float("GAZE_PRE_AVERSION_MIN_SECS", 0.4, min_value=0.0, max_value=3.0)
+GAZE_PRE_AVERSION_MAX_SECS = _env_float("GAZE_PRE_AVERSION_MAX_SECS", 1.4, min_value=0.1, max_value=4.0)
+GAZE_PRE_AVERSION_VISUALIZE_THRESHOLD = _env_float(
+    "GAZE_PRE_AVERSION_VISUALIZE_THRESHOLD", 0.5, min_value=0.0, max_value=1.0
+)
+# Aversion offset ranges (degrees) + on-target jitter.
+GAZE_SIDE_YAW_MIN_DEG = _env_float("GAZE_SIDE_YAW_MIN_DEG", 15.0, min_value=0.0, max_value=70.0)
+GAZE_SIDE_YAW_MAX_DEG = _env_float("GAZE_SIDE_YAW_MAX_DEG", 25.0, min_value=0.0, max_value=70.0)
+GAZE_SIDE_PITCH_JITTER_DEG = _env_float("GAZE_SIDE_PITCH_JITTER_DEG", 3.0, min_value=0.0, max_value=20.0)
+GAZE_VISUALIZE_PITCH_MIN_DEG = _env_float("GAZE_VISUALIZE_PITCH_MIN_DEG", 10.0, min_value=0.0, max_value=25.0)
+GAZE_VISUALIZE_PITCH_MAX_DEG = _env_float("GAZE_VISUALIZE_PITCH_MAX_DEG", 20.0, min_value=0.0, max_value=25.0)
+GAZE_VISUALIZE_YAW_MIN_DEG = _env_float("GAZE_VISUALIZE_YAW_MIN_DEG", 5.0, min_value=0.0, max_value=40.0)
+GAZE_VISUALIZE_YAW_MAX_DEG = _env_float("GAZE_VISUALIZE_YAW_MAX_DEG", 12.0, min_value=0.0, max_value=40.0)
+GAZE_INTERNALIZE_PITCH_MIN_DEG = _env_float("GAZE_INTERNALIZE_PITCH_MIN_DEG", 8.0, min_value=0.0, max_value=20.0)
+GAZE_INTERNALIZE_PITCH_MAX_DEG = _env_float("GAZE_INTERNALIZE_PITCH_MAX_DEG", 15.0, min_value=0.0, max_value=20.0)
+GAZE_ON_TARGET_JITTER_DEG = _env_float("GAZE_ON_TARGET_JITTER_DEG", 2.5, min_value=0.0, max_value=10.0)
+# Engagement (POLE / head-height) by phase (mm).
+GAZE_POLE_REST_MM = _env_float("GAZE_POLE_REST_MM", 20.0, min_value=0.0, max_value=60.0)
+GAZE_POLE_LEAN_IN_MM = _env_float("GAZE_POLE_LEAN_IN_MM", 45.0, min_value=0.0, max_value=60.0)
+GAZE_POLE_SETTLE_MM = _env_float("GAZE_POLE_SETTLE_MM", 5.0, min_value=0.0, max_value=60.0)
+# Multi-person.
+GAZE_INCLUDE_SWEEP_PROB = _env_float("GAZE_INCLUDE_SWEEP_PROB", 0.20, min_value=0.0, max_value=1.0)
+GAZE_ORIENT_GLANCE_SECS = _env_float("GAZE_ORIENT_GLANCE_SECS", 0.6, min_value=0.0, max_value=3.0)
+# Conversation-activity threshold.
+GAZE_CLOSE_AFTER_IDLE_SECS = _env_float("GAZE_CLOSE_AFTER_IDLE_SECS", 12.0, min_value=1.0, max_value=120.0)
+# Velocities for the offline sim / open-loop RealHead (deg/s, mm/s). The live closed
+# loop uses the existing FACE_TRACKING_*_MAX_STEP_QUS slew caps instead.
+GAZE_SACCADE_VEL_DPS = _env_float("GAZE_SACCADE_VEL_DPS", 320.0, min_value=10.0, max_value=2000.0)
+GAZE_SMOOTH_VEL_DPS = _env_float("GAZE_SMOOTH_VEL_DPS", 90.0, min_value=5.0, max_value=1000.0)
+GAZE_POLE_VEL_MMS = _env_float("GAZE_POLE_VEL_MMS", 25.0, min_value=1.0, max_value=500.0)
+# DOF limits used by the deg/mm <-> qus mapping (mechanical stops live in SERVO_CHANNELS).
+GAZE_YAW_LIMIT_DEG = _env_float("GAZE_YAW_LIMIT_DEG", 70.0, min_value=5.0, max_value=120.0)
+GAZE_PITCH_UP_LIMIT_DEG = _env_float("GAZE_PITCH_UP_LIMIT_DEG", 25.0, min_value=1.0, max_value=60.0)
+GAZE_PITCH_DOWN_LIMIT_DEG = _env_float("GAZE_PITCH_DOWN_LIMIT_DEG", 20.0, min_value=1.0, max_value=60.0)
+GAZE_POLE_MIN_MM = _env_float("GAZE_POLE_MIN_MM", 0.0, min_value=0.0, max_value=60.0)
+GAZE_POLE_MAX_MM = _env_float("GAZE_POLE_MAX_MM", 60.0, min_value=1.0, max_value=200.0)
+GAZE_POLE_GAIN_QUS_PER_MM = _env_float("GAZE_POLE_GAIN_QUS_PER_MM", 22.0, min_value=1.0, max_value=100.0)
+# Live actuation: cap the aversion step so an OFF-target look-away is a fast saccade
+# but still slew-limited; POLE bias is applied gently (posture is slow).
+GAZE_AVERSION_NECK_MAX_STEP_QUS = _env_int("GAZE_AVERSION_NECK_MAX_STEP_QUS", 520, min_value=20, max_value=4000)
+GAZE_AVERSION_TILT_MAX_STEP_QUS = _env_int("GAZE_AVERSION_TILT_MAX_STEP_QUS", 200, min_value=10, max_value=1600)
+GAZE_AVERSION_LIFT_MAX_STEP_QUS = _env_int("GAZE_AVERSION_LIFT_MAX_STEP_QUS", 90, min_value=5, max_value=1700)
+GAZE_AVERSION_SERVO_SPEED = _env_int("GAZE_AVERSION_SERVO_SPEED", 180, min_value=1, max_value=255)
+GAZE_AVERSION_SERVO_ACCELERATION = _env_int("GAZE_AVERSION_SERVO_ACCELERATION", 20, min_value=0, max_value=255)
+
 # Speaker-gaze intent makes head tracking social: when someone talks, prefer
 # that person's face if visible; if no face is visible, run a short down-biased
 # search so seated people are discoverable.

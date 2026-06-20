@@ -31,6 +31,7 @@ from world_state import world_state
 from awareness.situation import assessor as _situation_assessor, SituationProfile
 from intelligence import emotion_orchestrator
 from intelligence import episodic_hooks
+from intelligence import gaze_engine
 from intelligence import person_specials
 from intelligence import profile_questions
 from intelligence import speech_engine
@@ -9646,6 +9647,211 @@ def _maybe_log_face_jump_reject(cx, cy, now) -> None:
         )
 
 
+# ── Human-like gaze rhythm (intelligence/gaze_engine.py) ─────────────────────
+# A stochastic ON-target / OFF-target eye-contact duty cycle (the 50/70 rule)
+# layered on top of the closed-loop face-centering below. Because the camera is on
+# the head, an OFF-target "look-away" carries the face out of frame, so — exactly
+# like the idle head-wander — the gaze layer drives the head AWAY to an aversion
+# pose and then back to a captured anchor, after which face-centering re-acquires.
+# The brain (gaze_engine) is pure; this is its only live actuator, and it routes
+# through the same single servo writer (no second thread fighting the head).
+_gaze_drive: dict = {"phase": "idle"}  # phase: idle | away | returning
+
+
+def _capture_gaze_anchor(decision) -> None:
+    """Remember where the head was looking (the on-target face gaze) before averting,
+    so the return lands back on the partner and centering can re-lock."""
+    _gaze_drive["phase"] = "away"
+    _gaze_drive["anchor"] = (
+        _current_servo_position("neck"),
+        _current_servo_position("headlift"),
+        _current_servo_position("headtilt"),
+    )
+    _gaze_drive["return_since"] = 0.0
+    _gaze_drive["segment"] = getattr(decision, "segment_id", None)
+
+
+def _gaze_release() -> None:
+    if _gaze_drive.get("phase") != "idle":
+        _gaze_drive["phase"] = "idle"
+        _gaze_drive["return_since"] = 0.0
+
+
+def _drive_gaze_aversion(servo_mod, now: float, decision, anchor: tuple) -> None:
+    """Drive the head to the engine's aversion pose: a relative YAW offset from the
+    captured gaze anchor, an absolute PITCH (up=visualizing / down=internalizing) and
+    a POLE (head-height) engagement bias. Fast but slew-clamped; mirrors the wander
+    driver so it shares the proven single-writer + baseline-update pattern."""
+    try:
+        cfg = gaze_engine.get_engine().cfg
+    except Exception:
+        return
+    neck_ch = int(config.SERVO_CHANNELS["neck"]["ch"])
+    lift_ch = int(config.SERVO_CHANNELS["headlift"]["ch"])
+    tilt_ch = int(config.SERVO_CHANNELS["headtilt"]["ch"])
+    anchor_neck, anchor_lift, _anchor_tilt = anchor
+
+    neck_off = cfg.yaw_deg_to_neck_qus(decision.yaw_offset_deg) - cfg.neck_neutral
+    target_neck = _clamp_servo("neck", anchor_neck + neck_off)
+    target_tilt = _clamp_servo("headtilt", cfg.pitch_deg_to_tilt_qus(decision.pitch_offset_deg))
+    target_lift = _clamp_servo("headlift", anchor_lift + cfg.pole_bias_qus(decision.pole_mm))
+
+    _step_gaze_targets(
+        servo_mod, target_neck, target_lift, target_tilt,
+        neck_step=int(getattr(config, "GAZE_AVERSION_NECK_MAX_STEP_QUS", 520)),
+        lift_step=int(getattr(config, "GAZE_AVERSION_LIFT_MAX_STEP_QUS", 90)),
+        tilt_step=int(getattr(config, "GAZE_AVERSION_TILT_MAX_STEP_QUS", 200)),
+    )
+    _record_face_tracking_state(locked=False, visible=False)
+
+
+def _drive_gaze_return(servo_mod, now: float) -> bool:
+    """Step the head back toward the captured anchor (where the partner is). Returns
+    True when home (within tolerance) or after a stall deadline, so the head can never
+    get stuck looking away; face-centering then takes over the fine correction."""
+    anchor = _gaze_drive.get("anchor")
+    if not anchor:
+        return True
+    if not _gaze_drive.get("return_since"):
+        _gaze_drive["return_since"] = now
+    target_neck, target_lift, target_tilt = anchor
+    reached = _step_gaze_targets(
+        servo_mod, int(target_neck), int(target_lift), int(target_tilt),
+        neck_step=int(getattr(config, "GAZE_AVERSION_NECK_MAX_STEP_QUS", 520)),
+        lift_step=int(getattr(config, "GAZE_AVERSION_LIFT_MAX_STEP_QUS", 90)),
+        tilt_step=int(getattr(config, "GAZE_AVERSION_TILT_MAX_STEP_QUS", 200)),
+        tolerance=int(getattr(config, "FACE_TRACKING_NECK_MAX_STEP_QUS", 420)),
+    )
+    _record_face_tracking_state(locked=False, visible=False)
+    stalled = (now - float(_gaze_drive.get("return_since") or now)) >= 1.2
+    return bool(reached or stalled)
+
+
+def _step_gaze_targets(
+    servo_mod, target_neck: int, target_lift: int, target_tilt: int,
+    *, neck_step: int, lift_step: int, tilt_step: int, tolerance: int = 0,
+) -> bool:
+    """Slew the three head channels one tick toward the targets; return True when all
+    are within ``tolerance`` of target. Updates the gaze baseline so breathing orbits
+    the new pose (matches the wander/rest drivers)."""
+    cur_neck = _current_servo_position("neck")
+    cur_lift = _current_servo_position("headlift")
+    cur_tilt = _current_servo_position("headtilt")
+    next_neck = _limited_tracking_step("neck", cur_neck, target_neck, neck_step)
+    next_lift = _limited_tracking_step("headlift", cur_lift, target_lift, lift_step)
+    next_tilt = _limited_tracking_step("headtilt", cur_tilt, target_tilt, tilt_step)
+    updates: dict[int, int] = {}
+    if abs(next_neck - cur_neck) >= 2:
+        updates[int(config.SERVO_CHANNELS["neck"]["ch"])] = next_neck
+    if abs(next_lift - cur_lift) >= 2:
+        updates[int(config.SERVO_CHANNELS["headlift"]["ch"])] = next_lift
+    if abs(next_tilt - cur_tilt) >= 2:
+        updates[int(config.SERVO_CHANNELS["headtilt"]["ch"])] = next_tilt
+    if updates:
+        try:
+            servo_mod.set_motion_profile(
+                list(updates.keys()),
+                speed=int(getattr(config, "GAZE_AVERSION_SERVO_SPEED", 180)),
+                acceleration=int(getattr(config, "GAZE_AVERSION_SERVO_ACCELERATION", 20)),
+            )
+        except Exception:
+            pass
+        servo_mod.set_servos(updates)
+        try:
+            servo_mod.set_face_tracking_baseline(neck=next_neck, lift=next_lift, tilt=next_tilt)
+        except Exception:
+            pass
+    tol = max(2, int(tolerance))
+    return (
+        abs(target_neck - next_neck) <= tol
+        and abs(target_lift - next_lift) <= tol
+        and abs(target_tilt - next_tilt) <= tol
+    )
+
+
+def _maybe_drive_gaze(servo_mod, now: float, speech_active: bool) -> bool:
+    """Run the gaze engine for one tick and, when it wants an OFF-target look-away,
+    drive it (and the return) through the shared servo writer. Returns True when the
+    gaze layer is actively driving the head this tick (caller suspends centering),
+    False to let normal face-centering own the ON-target correction.
+
+    Stand-down rules (so it never fights an owner): manual override, an active
+    speaker-gaze room scan, a user-commanded directed gaze, or SLEEP hand the head to
+    those owners outright. While Rex is SPEAKING or in the listening/think wait, the
+    speech/listening motion own the head — the gaze layer starts no new aversion then,
+    but it will FINISH an in-progress return so the head never stalls looking away.
+    """
+    try:
+        if not gaze_engine.enabled() or gaze_engine.under_test_runner():
+            _gaze_release()
+            return False
+
+        manual = bool(getattr(servo_mod, "manual_override_enabled", lambda: False)())
+        listening_active = bool(getattr(servo_mod, "listening_motion_active", lambda: False)())
+        intent = _speaker_gaze_current_intent(now)
+        searching = bool(intent and intent.get("search_requested"))
+        owned_by_other = (
+            manual or searching
+            or directed_gaze_hold_active(now)
+            or state_module.get_state() == State.SLEEP
+        )
+        if owned_by_other:
+            _gaze_release()
+            return False
+
+        fresh_lock = _face_tracking_has_fresh_lock(now)
+        last_touch = max(
+            _engaged_last_touch_at, _recent_engaged_touch_at, _last_proactive_speech_at
+        )
+        idle_secs = (now - last_touch) if last_touch > 0 else 1.0e9
+        conv_active = last_touch > 0 and idle_secs < float(
+            getattr(config, "GAZE_CLOSE_AFTER_IDLE_SECS", 12.0)
+        )
+        soft_suppress = bool(speech_active or listening_active)
+        engine_suppressed = soft_suppress or not fresh_lock or not conv_active
+
+        try:
+            people = world_state.get("people") or []
+            num_visible = sum(
+                1 for p in people
+                if not (p.get("face_visible") is False or p.get("face_missing"))
+            )
+        except Exception:
+            num_visible = 1
+
+        inputs = gaze_engine.GazeInputs(
+            now=now,
+            speaking=bool(speech_active),
+            listening=listening_active,
+            conversation_active=conv_active,
+            conversation_idle_secs=(idle_secs if idle_secs < 1.0e8 else 0.0),
+            num_people=max(1, num_visible),
+            suppressed=engine_suppressed,
+        )
+        decision = gaze_engine.step(inputs)
+
+        # Start / continue an aversion only when nothing higher owns the head.
+        if not soft_suppress and decision.drive:
+            if _gaze_drive.get("phase") != "away":
+                _capture_gaze_anchor(decision)
+            _drive_gaze_aversion(servo_mod, now, decision, _gaze_drive["anchor"])
+            return True
+
+        # ON-target, or the engine stood down: if mid-aversion, return to the anchor
+        # first (even under soft-suppress) so the head comes back to the partner.
+        if _gaze_drive.get("phase") in ("away", "returning"):
+            done = _drive_gaze_return(servo_mod, now)
+            if not done:
+                _gaze_drive["phase"] = "returning"
+                return True
+            _gaze_release()
+        return False
+    except Exception as exc:
+        _log.debug("gaze engine step error: %s", exc)
+        _gaze_release()
+        return False
+
+
 def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
     """
     Center the current face lock in Rex's camera frame.
@@ -9692,6 +9898,13 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         # While SPEAKING, the speaker-gaze pose + speech wobble already move the head;
         # we soften (not suspend) centering below so they don't all fight.
         speech_active = bool(getattr(servo_mod, "speech_motion_active", lambda: False)())
+
+        # Human-like eye-contact rhythm: when the gaze engine decides to break contact
+        # (look away to think, glance up to visualize a complex reply, down to absorb
+        # what was said, then return to hand over the floor), it drives the head this
+        # tick and we suspend centering — exactly like the idle-wander hook above.
+        if _maybe_drive_gaze(servo_mod, now, speech_active):
+            return
 
         candidates = _visible_face_tracking_candidates(people)
         speaker_intent = _speaker_gaze_current_intent(now)
@@ -10363,6 +10576,8 @@ def start() -> None:
     _face_tracking_last_error_at = 0.0
     with _speaker_gaze_lock:
         _speaker_gaze_intent.clear()
+    gaze_engine.reset()
+    _gaze_release()
     _record_face_tracking_state(locked=False, visible=False)
     _personal_space_reacted_at.clear()
     _last_pose_analysis_at = 0.0
@@ -10480,6 +10695,8 @@ def stop() -> None:
     _face_tracking_last_error_at = 0.0
     with _speaker_gaze_lock:
         _speaker_gaze_intent.clear()
+    gaze_engine.reset()
+    _gaze_release()
     _record_face_tracking_state(locked=False, visible=False)
     _personal_space_reacted_at.clear()
     _last_pose_analysis_at = 0.0

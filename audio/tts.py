@@ -179,6 +179,16 @@ def speak(
         logger.info("[tts] audio suppressed — emitted text only")
         return
 
+    # Pre-turn gaze aversion: arm the "look away to think" beat (longer + glance-up
+    # for a complex reply, short to-the-side for a simple one) just before the audio
+    # is fetched/played, so the head breaks contact while "thinking" and returns as
+    # Rex starts to speak. No-op when the gaze feature is off or no head is attached.
+    try:
+        from intelligence import gaze_engine
+        gaze_engine.note_about_to_speak(spoken_text)
+    except Exception:
+        pass
+
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID
     voice_settings = _resolve_voice_settings(emotion, voice_settings)
