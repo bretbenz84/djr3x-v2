@@ -18,6 +18,40 @@ class PerformancePlanTests(unittest.TestCase):
         self.assertEqual(plan.memory_policy, performance_plan.MEMORY_DO_NOT_STORE)
         self.assertIn("Deliver the punchline and stop", plan.prompt_contract)
 
+    def test_tell_joke_rotates_comedic_angle_per_request(self):
+        from intelligence import performance_plan
+
+        # Every rotation index injects a distinct comedic lane, so a rapid joke
+        # chain can't keep recycling the same premise.
+        prompts = [
+            performance_plan.plan_for_action(
+                "humor.tell_joke", user_text="tell me a joke", joke_rotation=i
+            ).prompt_contract
+            for i in range(len(performance_plan.JOKE_ANGLES))
+        ]
+        angle_lines = [p.split("ANGLE FOR THIS ONE:", 1)[1] for p in prompts]
+        self.assertEqual(len(set(angle_lines)), len(performance_plan.JOKE_ANGLES))
+        # Index wraps round-robin.
+        wrapped = performance_plan.plan_for_action(
+            "humor.tell_joke",
+            user_text="tell me a joke",
+            joke_rotation=len(performance_plan.JOKE_ANGLES),
+        ).prompt_contract
+        self.assertEqual(wrapped, prompts[0])
+
+    def test_tell_joke_splices_avoid_directive(self):
+        from intelligence import performance_plan
+
+        plan = performance_plan.plan_for_action(
+            "humor.tell_joke",
+            user_text="tell me a joke",
+            joke_avoid_directive="Premise anti-repeat — avoid: doors, landing.",
+        )
+        self.assertIn("avoid: doors, landing", plan.prompt_contract)
+        # Required catalog phrases survive the splice.
+        self.assertIn("Tell exactly ONE short in-character DJ-R3X joke", plan.prompt_contract)
+        self.assertIn("Deliver the punchline and stop", plan.prompt_contract)
+
     def test_roast_plan_keeps_target_and_safety_contract(self):
         from intelligence import performance_plan
 

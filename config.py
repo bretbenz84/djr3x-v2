@@ -2946,14 +2946,15 @@ IDLE_BANTER_SECS = 8.0
 IDLE_BANTER_COOLDOWN_SECS = 10.0  # minimum gap between nudges
 IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up (was 3 —
                                   # 3 made him re-volunteer the same preoccupation too often)
-# MID-CONVERSATION the human is engaged but may pause far longer than the cold-room
-# 5-8s while composing a reply — and Rex's own ~3-4s reply latency eats into that.
-# A 22-30s floor while a conversation is active matches a human waiting for a slow
-# speaker, instead of piling a fresh proactive line on top every 8s (the over-talk
-# engine, live-logged 2026-06-18). The short window above still keeps a cold/empty
-# room lively.
-IDLE_BANTER_ACTIVE_MIN_SECS = 22.0
-IDLE_BANTER_ACTIVE_MAX_SECS = 30.0
+# MID-CONVERSATION the human is engaged but may pause a beat longer than the cold-room
+# 5-8s while composing a reply — and Rex's own reply latency eats into that — so the
+# active floor sits just above the cold window, NOT at the old 22-30s (that felt
+# abandoned; live-logged 2026-06-19 as a ~30s dead air before Rex spoke up). Over-talk
+# (the 2026-06-18 "fresh line every 8s" engine) is now held off by the SHORT single-line
+# nudge + IDLE_BANTER_COOLDOWN_SECS + IDLE_BANTER_MAX_PER_STRETCH, not by a long first
+# delay — so a responsive ~8-12s first nudge no longer piles on.
+IDLE_BANTER_ACTIVE_MIN_SECS = 8.0
+IDLE_BANTER_ACTIVE_MAX_SECS = 12.0
 # After a normal REPLY that asked a question (even one without a literal '?'),
 # hard-suppress idle filler this long so the user gets a real window to answer
 # before Rex re-asks. Fixes the duplicate camping question (~39s apart) where the

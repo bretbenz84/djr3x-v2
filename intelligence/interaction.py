@@ -3942,9 +3942,10 @@ def _maybe_idle_banter(
         return False
     # Roll a fresh random nudge delay once per silent stretch (reset on re-engagement),
     # so the first re-engagement lands at a natural, non-metronomic moment in [MIN, MAX].
-    # MID-CONVERSATION use a much longer floor: an engaged human pauses far longer than
-    # the cold-room 5-8s, and Rex's own ~3-4s reply latency eats into that — the short
-    # window was the over-talk engine (live-logged 2026-06-18).
+    # MID-CONVERSATION use a slightly longer floor than the cold-room 5-8s (an engaged
+    # human pauses a beat longer while composing, and Rex's own reply latency eats into
+    # that) — but only ~8-12s, not the old 22-30s that read as abandoned. Over-talk is
+    # now held off by the short single-line nudge + cooldown + per-stretch cap.
     try:
         _profile = _situation_assessor.evaluate()
         _conv_active = bool(_profile.conversation_active or _profile.rapid_exchange)
@@ -13437,6 +13438,10 @@ _PLAN_ROUTER_ACTIONS = {
     "performance.mood_pose",
 }
 
+# Round-robin cursor so a rapid "tell me a joke" chain rotates through distinct
+# comedic lanes instead of recycling the same DJ/bad-pilot self-own every time.
+_joke_angle_cursor = 0
+
 
 def _handle_router_performance_action(
     decision: action_router.ActionDecision,
@@ -13450,10 +13455,21 @@ def _handle_router_performance_action(
             handler_error="unsupported_performance_action",
         )
         return None
+    joke_rotation: Optional[int] = None
+    joke_avoid_directive = ""
+    if decision.action == "humor.tell_joke":
+        global _joke_angle_cursor
+        joke_rotation = _joke_angle_cursor
+        _joke_angle_cursor += 1
+        # Steer away from premises Rex has already spent this conversation (shared
+        # with the main reply path so a joke and a normal line can't echo).
+        joke_avoid_directive = premise_memory.build_avoid_directive()
     plan = performance_plan.plan_for_action(
         decision.action,
         user_text=text,
         args=decision.args,
+        joke_rotation=joke_rotation,
+        joke_avoid_directive=joke_avoid_directive,
     )
     if plan is None:
         _router_audit_note_result(
@@ -13468,6 +13484,9 @@ def _handle_router_performance_action(
         play_body_beat=_play_performance_body_beat,
         clean_text=llm.clean_response_text,
     )
+    if decision.action == "humor.tell_joke" and output.text:
+        # Record the delivered joke so the next joke (and the next reply) avoid it.
+        premise_memory.note_line(output.text)
     if output.generation_failed:
         _log.debug("performance action generation failed; used fallback text")
     if output.body_beat_failed:

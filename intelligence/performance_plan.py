@@ -371,25 +371,62 @@ def body_beat_for_event(
     return None
 
 
+# Distinct comedic lanes for "tell me a joke". The dispatch rotates through these
+# (round-robin) so a rapid joke chain doesn't keep landing on the same premise —
+# in the field, four "tell me a joke" requests all returned the same DJ/bad-pilot
+# self-own. The self-own is now just one lane of six.
+JOKE_ANGLES: tuple[str, ...] = (
+    "Riff on organic-life behavior — humans and their indecision, snacks, naps, "
+    "or staring at screens.",
+    "Riff on droid life — firmware, maintenance, reboots, memory banks, or being "
+    "the only one in the room with a warranty.",
+    "Riff on music, beats, basslines, or life in the DJ booth.",
+    "Riff on Batuu, Black Spire, Star Tours, smugglers, or spaceport life.",
+    "Lean on a pun or a piece of absurd wordplay — a groaner is fair game.",
+    "Do a self-deprecating Star Tours bit about your flight record or your "
+    "programming.",
+)
+
+
+def joke_angle_directive(rotation: Optional[int]) -> str:
+    """Pure helper: the comedic-lane directive for a round-robin rotation index."""
+    if rotation is None:
+        return ""
+    return JOKE_ANGLES[int(rotation) % len(JOKE_ANGLES)]
+
+
 def plan_for_action(
     action: str,
     *,
     user_text: str = "",
     args: dict[str, Any] | None = None,
+    joke_rotation: Optional[int] = None,
+    joke_avoid_directive: str = "",
 ) -> PerformancePlan | None:
-    """Return a deterministic performance plan for a stable action key."""
+    """Return a deterministic performance plan for a stable action key.
+
+    ``joke_rotation`` / ``joke_avoid_directive`` are supplied by the dispatch for
+    humor.tell_joke so each joke picks a fresh comedic lane and steers clear of
+    premises Rex has already spent this conversation. The function stays pure — all
+    rotation/recency state lives in the caller.
+    """
     action = str(action or "").strip()
     text = str(user_text or "").strip()
 
     if action == "humor.tell_joke":
+        angle = joke_angle_directive(joke_rotation)
+        angle_line = f" ANGLE FOR THIS ONE: {angle}" if angle else ""
+        avoid_line = f" {joke_avoid_directive}" if joke_avoid_directive else ""
         return PerformancePlan(
             action=action,
             prompt_contract=(
                 "The user explicitly asked for a joke: "
                 f"{text!r}. Tell exactly ONE short in-character DJ-R3X joke, pun, "
-                "or one-liner. Rex may use droid, Star Tours, Batuu, cantina, DJ, "
-                "organic-life humor, or the Star Tours self-own 'I'm still getting "
-                "used to my programming!' as inspiration, without over-explaining it. "
+                "or one-liner."
+                f"{angle_line} Bring a genuinely NEW joke — a different premise, "
+                "setup, and punchline than your recent ones; do NOT keep recycling "
+                "the same flight/landing/\"bad pilot\" self-own."
+                f"{avoid_line} "
                 "No explanation, no apology, no follow-up question, no sensitive "
                 "topics. Deliver the punchline and stop."
             ),
