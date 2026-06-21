@@ -2203,6 +2203,18 @@ WAVE_BACK_MIN_GAP_SECS = _env_float(
 # its travel limits when Rex waves back (one sweep = to one limit and back). The elbow only
 # raises the arm; the wrist does the waving. See sequences/animations.wave_back_gesture.
 WAVE_BACK_WRIST_SWEEPS = _env_int("WAVE_BACK_WRIST_SWEEPS", 4, min_value=1, max_value=8)
+# The wave drives the wrist channel with DIRECT Maestro targets at a fast speed (the global
+# SERVO_DEFAULT_SPEED=40 is far too slow — a full wrist sweep takes ~2s at that rate, so the
+# rapid back-and-forth never completes). The channel is set to this speed/accel for the wave,
+# then restored. HALF_PERIOD is the pause at each extreme (≈ the time to traverse).
+#   SPEED 0  = auto: pick a speed that traverses the wrist's full travel in HALF_PERIOD.
+#   SPEED >0 = use that Maestro speed value verbatim (units of 0.25µs / 10ms).
+#   ACCEL 0  = unlimited (snappiest). Raise SPEED/ACCEL if too slow; lower if too violent.
+WAVE_BACK_WRIST_SPEED = _env_int("WAVE_BACK_WRIST_SPEED", 0, min_value=0, max_value=16383)
+WAVE_BACK_WRIST_ACCEL = _env_int("WAVE_BACK_WRIST_ACCEL", 0, min_value=0, max_value=255)
+WAVE_BACK_WRIST_HALF_PERIOD_SECS = _env_float(
+    "WAVE_BACK_WRIST_HALF_PERIOD_SECS", 0.22, min_value=0.05, max_value=2.0,
+)
 # How long a detected wave stays "pending" while Rex is busy (mid-turn / speaking) before
 # it's answered. A wave is a brief gesture, so it's latched and voiced as soon as Rex is
 # free within this window; longer than this and a stale wave is dropped instead of getting

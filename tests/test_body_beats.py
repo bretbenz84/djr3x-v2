@@ -140,7 +140,8 @@ class BodyBeatAnimationTest(unittest.TestCase):
     def test_wave_back_gesture_sweeps_wrist_full_travel_count_times(self):
         from sequences import animations
 
-        moves = []
+        sets = []        # (channel, position) from set_servo
+        speeds = []      # (channel, speed) from set_speed
         snapshot = {
             4: animations.ELBOW_NEUTRAL,
             5: animations.HAND_NEUTRAL,
@@ -148,12 +149,16 @@ class BodyBeatAnimationTest(unittest.TestCase):
         }
         hand_min = animations.config.SERVO_CHANNELS["hand"]["min"]
         hand_max = animations.config.SERVO_CHANNELS["hand"]["max"]
+        default_speed = animations.config.SERVO_DEFAULT_SPEED
 
         with (
             mock.patch.object(animations._state_module, "get_state", return_value=animations._State.ACTIVE),
             mock.patch.object(animations, "_current_body_pose", return_value=snapshot),
             mock.patch.object(animations.time, "sleep", return_value=None),
-            mock.patch.object(animations.servos, "move_to", side_effect=lambda t, **_k: moves.append(dict(t))),
+            mock.patch.object(animations.servos, "set_servo", side_effect=lambda ch, pos: sets.append((ch, pos))),
+            mock.patch.object(animations.servos, "set_speed", side_effect=lambda ch, sp: speeds.append((ch, sp))),
+            mock.patch.object(animations.servos, "set_acceleration"),
+            mock.patch.object(animations.servos, "move_to") as move_to,
             mock.patch.object(animations.servos, "pause_arm_idle") as pause,
             mock.patch.object(animations.servos, "resume_arm_idle") as resume,
         ):
@@ -161,13 +166,19 @@ class BodyBeatAnimationTest(unittest.TestCase):
 
         pause.assert_called_once()
         resume.assert_called_once()
-        # Arm raised first (elbow up), hand starts neutral.
-        self.assertEqual(moves[0], {7: animations.HEROARM_FORWARD, 4: animations.ELBOW_UP, 5: animations.HAND_NEUTRAL})
-        # The wrist (hand servo) hits BOTH full travel limits exactly `count` times.
-        self.assertEqual(sum(1 for m in moves if m == {5: hand_max}), 4)
-        self.assertEqual(sum(1 for m in moves if m == {5: hand_min}), 4)
-        # Returns to the captured pose at the end.
-        self.assertEqual(moves[-1], snapshot)
+        # The wrist (ch5) is driven to BOTH full travel limits exactly `count` times.
+        self.assertEqual(sum(1 for ch, pos in sets if ch == 5 and pos == hand_max), 4)
+        self.assertEqual(sum(1 for ch, pos in sets if ch == 5 and pos == hand_min), 4)
+        # Arm raised (elbow up + hero arm forward) before the wave.
+        self.assertIn((4, animations.ELBOW_UP), sets)
+        self.assertIn((7, animations.HEROARM_FORWARD), sets)
+        # The wrist channel was sped up then restored to the default speed.
+        self.assertTrue(any(ch == 5 and sp != default_speed for ch, sp in speeds))
+        self.assertEqual(speeds[-1], (7, default_speed))  # last action restores defaults
+        self.assertTrue(any(ch == 5 and sp == default_speed for ch, sp in speeds))
+        # Arm lowered back to the captured pose at the end.
+        move_to.assert_called_once()
+        self.assertEqual(move_to.call_args.args[0], snapshot)
 
     def test_sleep_animation_uses_shutdown_rest_pose(self):
         from sequences import animations

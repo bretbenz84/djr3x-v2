@@ -1473,33 +1473,61 @@ def _run_wave_back_gesture(count: int) -> bool:
     hand_cfg = config.SERVO_CHANNELS.get("hand", {})
     hand_min = int(hand_cfg.get("min", HAND_LEFT))
     hand_max = int(hand_cfg.get("max", HAND_RIGHT))
+    hand_range = max(1, abs(hand_max - hand_min))
+
+    # The Maestro default speed (SERVO_DEFAULT_SPEED=40) is far too slow for the wrist's full
+    # travel — a sweep takes ~2s at that rate, so rapid move_to reversals never complete (the
+    # field symptom: one big swing then jitter, not 4 waves). Drive the wrist with DIRECT
+    # targets at a fast speed instead, sleeping the travel time, then restore the defaults.
+    half_period = float(getattr(config, "WAVE_BACK_WRIST_HALF_PERIOD_SECS", 0.22))
+    configured_speed = int(getattr(config, "WAVE_BACK_WRIST_SPEED", 0))
+    wave_accel = int(getattr(config, "WAVE_BACK_WRIST_ACCEL", 0))
+    # Maestro speed unit ≈ 100 quarter-µs / second; auto-pick a speed that traverses the
+    # wrist's full travel within half_period (full amplitude, ~no pause). 0 → auto.
+    auto_speed = max(1, round(hand_range / (max(0.05, half_period) * 100.0)))
+    wave_speed = configured_speed if configured_speed > 0 else auto_speed
+    default_speed = int(getattr(config, "SERVO_DEFAULT_SPEED", 40))
+    default_accel = int(getattr(config, "SERVO_DEFAULT_ACCELERATION", 8))
 
     step_us = int(getattr(config, "WAKE_WORD_RECOGNITION_WAVE_STEP_QUS", 320))
     step_delay = float(getattr(config, "WAKE_WORD_RECOGNITION_WAVE_STEP_DELAY_SECS", 0.010))
-    hold = float(getattr(config, "WAKE_WORD_RECOGNITION_WAVE_HOLD_SECS", 0.045))
     snapshot = _current_body_pose((4, 5, 7))
 
     _log.info(
-        "[animations] wave-back gesture start: wrist(ch5) %d↔%d x%d, "
-        "servos_enabled=%s, start_pose=%s",
-        hand_min, hand_max, count, getattr(servos, "SERVOS_ENABLED", "?"), snapshot,
+        "[animations] wave-back gesture start: wrist(ch5) %d↔%d x%d, speed=%d accel=%d "
+        "half_period=%.2fs servos_enabled=%s start_pose=%s",
+        hand_min, hand_max, count, wave_speed, wave_accel, half_period,
+        getattr(servos, "SERVOS_ENABLED", "?"), snapshot,
     )
+    arm_channels = (4, 5, 7)
     servos.pause_arm_idle()
     try:
         with _motion_lock:
-            # Raise the arm so the hand is up and visible (elbow up, hero arm forward).
-            servos.move_to(
-                {7: HEROARM_FORWARD, 4: ELBOW_UP, 5: HAND_NEUTRAL},
-                step_us=step_us,
-                step_delay=step_delay,
-            )
-            # Wave: wrist to one limit then the other, `count` times.
-            for _ in range(count):
-                servos.move_to({5: hand_max}, step_us=step_us, step_delay=step_delay)
-                time.sleep(hold)
-                servos.move_to({5: hand_min}, step_us=step_us, step_delay=step_delay)
-                time.sleep(hold)
-            servos.move_to({5: HAND_NEUTRAL}, step_us=step_us, step_delay=step_delay)
+            # Speed up the arm channels so the raise and (especially) the wrist wave are
+            # crisp; restored in the finally below.
+            for ch in arm_channels:
+                servos.set_acceleration(ch, wave_accel)
+                servos.set_speed(ch, wave_speed)
+            try:
+                # Raise the arm so the hand is up and visible (elbow up, hero arm forward).
+                servos.set_servo(7, HEROARM_FORWARD)
+                servos.set_servo(4, ELBOW_UP)
+                servos.set_servo(5, HAND_NEUTRAL)
+                time.sleep(half_period)
+                # Wave: wrist to one limit then the other, `count` times.
+                for _ in range(count):
+                    servos.set_servo(5, hand_max)
+                    time.sleep(half_period)
+                    servos.set_servo(5, hand_min)
+                    time.sleep(half_period)
+                servos.set_servo(5, HAND_NEUTRAL)
+                time.sleep(half_period)
+            finally:
+                # Restore the channels' normal (slow, smooth) speed/accel.
+                for ch in arm_channels:
+                    servos.set_speed(ch, default_speed)
+                    servos.set_acceleration(ch, default_accel)
+            # Lower the arm back smoothly at the restored speed.
             servos.move_to(snapshot, step_us=step_us, step_delay=step_delay)
         _log.info("[animations] wave-back gesture done")
         return True
