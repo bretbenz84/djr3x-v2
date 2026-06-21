@@ -2202,13 +2202,16 @@ POSE_ANALYSIS_INTERVAL_SECS = 0.2
 # per wave. Requires the MediaPipe Pose Landmarker model + POSE_DETECTION_ENABLED; if the
 # model is missing or pose is disabled, wave-back degrades to nothing.
 WAVE_BACK_ENABLED = _env_bool("WAVE_BACK_ENABLED", True)
-# Don't wave back at the SAME person again for this long (one wave-back per greeting).
+# Don't wave back at the SAME person again for this long. This debounces a single sustained
+# wave into one wave-back, but if it's too long a deliberate second wave a few seconds later
+# feels ignored — so it's tuned just above one wave-back's duration (~4s of gesture+greeting)
+# rather than the old 25s, which made re-waving feel dead.
 WAVE_BACK_PER_PERSON_COOLDOWN_SECS = _env_float(
-    "WAVE_BACK_PER_PERSON_COOLDOWN_SECS", 25.0, min_value=0.0, max_value=3600.0,
+    "WAVE_BACK_PER_PERSON_COOLDOWN_SECS", 6.0, min_value=0.0, max_value=3600.0,
 )
 # Global minimum gap between any two wave-backs (so a crowd of wavers doesn't spam).
 WAVE_BACK_MIN_GAP_SECS = _env_float(
-    "WAVE_BACK_MIN_GAP_SECS", 8.0, min_value=0.0, max_value=600.0,
+    "WAVE_BACK_MIN_GAP_SECS", 4.0, min_value=0.0, max_value=600.0,
 )
 # Wave-back arm gesture: how many times the wrist (the "hand" servo) sweeps between BOTH of
 # its travel limits when Rex waves back (one sweep = to one limit and back). The elbow only
