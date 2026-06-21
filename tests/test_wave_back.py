@@ -65,6 +65,9 @@ class StepWaveReactionTest(unittest.TestCase):
         self.assertTrue(out["waved"])
         self.assertIn("Bret", out["line"])
         self.assertEqual(out["kw"].get("purpose"), "wave_back")
+        # reactive=True so the hello breaks through awaiting-reply / active-conversation
+        # gates (a wave during a conversation should still be acknowledged).
+        self.assertTrue(out["kw"].get("reactive"))
 
     def test_neutral_gesture_does_nothing(self):
         p = _waving(); p["gesture"] = "neutral"

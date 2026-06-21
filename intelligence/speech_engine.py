@@ -51,7 +51,7 @@ class _ConsciousnessProxy:
 _c = _ConsciousnessProxy()
 
 
-def can_proactive_speak(*, salient: bool = False) -> bool:
+def can_proactive_speak(*, salient: bool = False, reactive: bool = False) -> bool:
     # salient=True marks a high-value, time-sensitive event (e.g. a new animal
     # arriving in frame) that may interrupt a normal ACTIVE conversation and ignore
     # the proactive pacing cooldown — otherwise a priority-85 reaction is starved by
@@ -59,6 +59,13 @@ def can_proactive_speak(*, salient: bool = False) -> bool:
     # path) bypasses. It STILL respects DJ playback, active games, awaiting-a-reply,
     # an in-flight proactive line, and not talking over live speech, and the governor
     # still arbitrates its priority.
+    #
+    # reactive=True marks a DIRECT reaction to the person right now (e.g. waving back
+    # at a wave). Unlike salient, it also breaks through the "awaiting a reply to Rex's
+    # own question" and active-conversation gates and the pacing cooldown, so a wave is
+    # acknowledged promptly even when Rex just asked something — but it STILL must not
+    # talk over live speech, music, a game, an open tell-about/onboarding flow, or the
+    # give-space window after a heavy moment.
     if not _c._can_speak():
         return False
 
@@ -114,12 +121,13 @@ def can_proactive_speak(*, salient: bool = False) -> bool:
     current_state = state_module.get_state()
     if (
         not salient
+        and not reactive
         and current_state == State.ACTIVE
         and not getattr(config, "CONSCIOUSNESS_ALLOW_PROACTIVE_IN_ACTIVE", False)
     ):
         return False
 
-    if _c.is_waiting_for_response():
+    if not reactive and _c.is_waiting_for_response():
         return False
     if _c._proactive_speech_pending.is_set():
         return False
@@ -129,7 +137,7 @@ def can_proactive_speak(*, salient: bool = False) -> bool:
     except Exception:
         pass
 
-    if not salient:
+    if not salient and not reactive:
         with _c._turn_lock:
             last_spoken = _c._last_proactive_speech_at
         min_gap = max(0.0, float(getattr(config, "CONSCIOUSNESS_PROACTIVE_MIN_GAP_SECS", 0.0)))
@@ -156,6 +164,7 @@ def speak_async(
     on_done: Optional[Callable[[], None]] = None,
     on_spoke: Optional[Callable[[], None]] = None,
     force_salient: bool = False,
+    reactive: bool = False,
 ) -> bool:
     # `on_spoke` fires once the line is committed to the speech queue (only the
     # ENFORCE winner reaches here) — the place for "I fired this" bookkeeping that
@@ -163,9 +172,12 @@ def speak_async(
     # force_salient=True lets a high-value event (e.g. an animal arrival) speak
     # during an ACTIVE conversation and skip the pacing cooldown (see
     # can_proactive_speak); it still yields to live user speech below.
+    # reactive=True is a direct reaction to the person (e.g. wave-back) that also
+    # breaks through the awaiting-a-reply / active-conversation gates (see
+    # can_proactive_speak); it still yields to live speech / music / games.
     def _do_speak(candidate_id: Optional[str]) -> bool:
         try:
-            if not _c._can_proactive_speak(salient=force_salient):
+            if not _c._can_proactive_speak(salient=force_salient, reactive=reactive):
                 _c._mark_governor_candidate(candidate_id, "dropped", "can_proactive_speak_false")
                 return False
             if not text or not text.strip():

@@ -2506,7 +2506,11 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
         break
     if target is None:
         return
-    if not _can_proactive_speak():
+    # reactive=True: a wave is a direct bid for Rex's attention, so acknowledge it even
+    # while Rex is awaiting a reply to his own question or mid-conversation. The remaining
+    # gates (live speech / music / games / give-space / suppress_proactive above) still
+    # keep it from talking over anything.
+    if not _can_proactive_speak(reactive=True):
         return
 
     _wave_reacted_keys[target_key] = now
@@ -2526,6 +2530,7 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
         emotion="happy",
         purpose="wave_back",
         label="wave back",
+        reactive=True,
     )
 
 

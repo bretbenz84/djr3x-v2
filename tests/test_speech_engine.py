@@ -65,5 +65,50 @@ class PatchTransparencyTest(unittest.TestCase):
         enq.assert_not_called()
 
 
+class ReactiveBypassTest(unittest.TestCase):
+    """reactive=True (wave-back) must break through the 'awaiting a reply' gate so a wave
+    is acknowledged even right after Rex asked a question — while a normal proactive line
+    stays blocked. Regression for the logged failure where every wave landed during Rex's
+    await window and was silently dropped."""
+
+    def _allow_everything_except_await(self, stack):
+        from contextlib import ExitStack  # noqa: F401 (documents intent)
+
+        def p(target, **kw):
+            stack.enter_context(mock.patch(target, **kw))
+
+        # Every non-await gate set to "allow".
+        p("intelligence.consciousness._can_speak", return_value=True)
+        p("intelligence.consciousness.is_waiting_for_response", return_value=True)
+        p("intelligence.interaction.tell_about_flow_active", return_value=False)
+        p("intelligence.interaction.onboarding_flow_active", return_value=False)
+        p("intelligence.callback_engine.recently_heavy", return_value=False)
+        p("features.dj.is_playing", return_value=False)
+        p("features.games.suppresses_conversation_interruptions", return_value=False)
+        p("audio.speech_queue.is_speaking", return_value=False)
+        p("audio.output_gate.is_busy", return_value=False)
+        stack.enter_context(
+            mock.patch.object(speech_engine._situation_assessor, "is_interaction_busy",
+                              return_value=False)
+        )
+        stack.enter_context(
+            mock.patch.object(speech_engine.state_module, "get_state",
+                              return_value=speech_engine.State.IDLE)
+        )
+        stack.enter_context(
+            mock.patch.object(consciousness._proactive_speech_pending, "is_set",
+                              return_value=False)
+        )
+
+    def test_reactive_bypasses_awaiting_reply_but_normal_does_not(self):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self._allow_everything_except_await(stack)
+            # Awaiting a reply → a normal proactive line is blocked …
+            self.assertFalse(speech_engine.can_proactive_speak())
+            # … but a reactive one (wave-back) breaks through.
+            self.assertTrue(speech_engine.can_proactive_speak(reactive=True))
+
+
 if __name__ == "__main__":
     unittest.main()
