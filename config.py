@@ -4498,14 +4498,19 @@ WEB_SEARCH_STALL_LINES = [
     "Patience — consulting the galaxy's databanks.",
 ]
 
-# Appended to Rex's normal persona prompt for the search answer: tells him he just
-# looked it up and to lead with the answer in his own voice.
+# Appended to Rex's normal persona prompt for the search answer. IMPORTANT: it
+# explicitly OVERRIDES the core prompt's "default to ONE short sentence" hard limit —
+# a web lookup needs room to actually answer, so without this override the searched
+# result gets compressed to a single clause (the feature searches the web, then
+# throws most of it away). It stays bounded because Rex speaks the answer aloud.
 WEB_SEARCH_PERSONA_ADDENDUM = (
-    "You just looked this up on the web in real time. Lead with the actual answer, "
-    "stated plainly and in your own voice — no preamble, no 'according to my search'. "
-    "Keep it short: one or two sentences. You may add ONE dry aside if it lands, but "
-    "the facts come first. If the search didn't settle it, say so briefly rather than "
-    "guessing."
+    "You just looked this up on the web in real time. THIS REPLY IS THE EXCEPTION to "
+    "your usual one-sentence limit: give the COMPLETE answer the question actually "
+    "needs — typically two to four sentences, fewer for a simple fact — but no padding "
+    "and no rambling. Lead with the actual answer, stated plainly and in your own voice: "
+    "no preamble, no 'according to my search', no source play-by-play. Facts first; you "
+    "may add ONE short dry aside at the end only if it genuinely lands. If the search "
+    "didn't settle it, say so briefly rather than guessing."
 )
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -236,8 +236,12 @@ immediately (non-blocking, so the multi-second search overlaps with playback and
 credited to the stall line), run the search, then speak the answer through the normal
 `speech_queue`. The answer is voiced through Rex's full persona prompt
 (`llm.assemble_system_prompt`) plus `WEB_SEARCH_PERSONA_ADDENDUM`, so it stays in
-character. Everything is failure-safe — any no-trigger / no-result / error returns None
-and Rex falls through to a normal from-knowledge reply (never silent).
+character. The addendum deliberately OVERRIDES the core prompt's "default to ONE short
+sentence" hard limit (the searched call passes no per-turn agenda contract and bypasses
+the streaming sentence-governor) so a lookup has room to actually answer — bounded to
+~2–4 spoken sentences, no padding. Everything is failure-safe — any no-trigger /
+no-result / error returns None and Rex falls through to a normal from-knowledge reply
+(never silent).
 
 Two triggers:
 - **Explicit** — any phrase in `WEB_SEARCH_TRIGGER_PHRASES` (substring, case-insensitive)
