@@ -47,6 +47,27 @@ _breathing_lock = threading.Lock()
 # Set while a scripted arm gesture or speech-reactive gesture owns arm channels.
 _arm_idle_pause = threading.Event()
 
+# Set while a SCRIPTED arm gesture (e.g. the wave-back) owns the arm channels. When set,
+# the speech-reactive "talking with the hands" motion yields the ARM to the gesture (head
+# and visor keep talking) — otherwise the per-frame talking motion overrides the wave and
+# you see no wave. Distinct from _arm_idle_pause (which is set during ALL speech to stand
+# down the idle wander, so it can't be used to mean "a gesture owns the arm").
+_scripted_arm_gesture = threading.Event()
+
+
+def begin_arm_gesture() -> None:
+    """Mark that a scripted arm gesture owns the arm; speech motion will leave the arm
+    channels alone (head/visor keep talking) until end_arm_gesture()."""
+    _scripted_arm_gesture.set()
+
+
+def end_arm_gesture() -> None:
+    _scripted_arm_gesture.clear()
+
+
+def arm_gesture_active() -> bool:
+    return _scripted_arm_gesture.is_set()
+
 # Speech-reactive servo state.
 _speech_active = threading.Event()
 _speech_baseline: dict[int, int] = {}
@@ -664,39 +685,50 @@ def begin_speech_motion(emotion: str = "neutral") -> None:
             speed=head_speed,
             acceleration=_get_config_int("SERVO_SPEECH_ACCELERATION", 8),
         )
-        set_motion_profile(
-            config.ARM_CHANNELS,
-            speed=arm_speed,
-            acceleration=_get_config_int("SERVO_SPEECH_ACCELERATION", 8),
-        )
+        # Don't reprofile the arm if a scripted gesture (wave-back) owns it — it set its
+        # own fast speed for the wave and the speech motion is yielding the arm anyway.
+        if not _scripted_arm_gesture.is_set():
+            set_motion_profile(
+                config.ARM_CHANNELS,
+                speed=arm_speed,
+                acceleration=_get_config_int("SERVO_SPEECH_ACCELERATION", 8),
+            )
 
 
 def end_speech_motion() -> None:
     """Return speech-owned channels toward their baseline and release arms."""
     global _speech_emotion_frame
     _speech_active.clear()
+    # If a scripted arm gesture (wave-back) owns the arm, don't yank the arm back to neutral
+    # when the line finishes mid-gesture — leave the arm channels to the gesture; only the
+    # head/visor return to baseline.
+    arm_owned = _scripted_arm_gesture.is_set()
+
+    def _baseline_pose() -> dict[int, int]:
+        baseline = dict(_speech_baseline) if _speech_baseline else _default_head_pose()
+        baseline[_channel("visor")] = config.SERVO_CHANNELS["visor"]["neutral"]
+        if not arm_owned:
+            baseline[_channel("elbow")] = config.SERVO_CHANNELS["elbow"]["neutral"]
+            baseline[_channel("hand")] = config.SERVO_CHANNELS["hand"]["neutral"]
+            baseline[_channel("pokerarm")] = config.SERVO_CHANNELS["pokerarm"]["neutral"]
+            baseline[_channel("heroarm")] = config.SERVO_CHANNELS["heroarm"]["neutral"]
+        return baseline
+
     try:
         if SERVOS_ENABLED:
+            # Don't reset the arm channels' motion profile while a gesture owns them
+            # (it set its own fast speed for the wave).
+            profile_channels = list(config.HEAD_CHANNELS)
+            if not arm_owned:
+                profile_channels += list(config.ARM_CHANNELS)
             set_motion_profile(
-                config.HEAD_CHANNELS + config.ARM_CHANNELS,
+                profile_channels,
                 speed=_get_config_int("SERVO_DEFAULT_SPEED", 40),
                 acceleration=_get_config_int("SERVO_DEFAULT_ACCELERATION", 8),
             )
-            baseline = dict(_speech_baseline) if _speech_baseline else _default_head_pose()
-            baseline[_channel("visor")] = config.SERVO_CHANNELS["visor"]["neutral"]
-            baseline[_channel("elbow")] = config.SERVO_CHANNELS["elbow"]["neutral"]
-            baseline[_channel("hand")] = config.SERVO_CHANNELS["hand"]["neutral"]
-            baseline[_channel("pokerarm")] = config.SERVO_CHANNELS["pokerarm"]["neutral"]
-            baseline[_channel("heroarm")] = config.SERVO_CHANNELS["heroarm"]["neutral"]
-            set_servos(baseline)
+            set_servos(_baseline_pose())
         elif _gui_servo_sim_enabled():
-            baseline = dict(_speech_baseline) if _speech_baseline else _default_head_pose()
-            baseline[_channel("visor")] = config.SERVO_CHANNELS["visor"]["neutral"]
-            baseline[_channel("elbow")] = config.SERVO_CHANNELS["elbow"]["neutral"]
-            baseline[_channel("hand")] = config.SERVO_CHANNELS["hand"]["neutral"]
-            baseline[_channel("pokerarm")] = config.SERVO_CHANNELS["pokerarm"]["neutral"]
-            baseline[_channel("heroarm")] = config.SERVO_CHANNELS["heroarm"]["neutral"]
-            set_servos(baseline)
+            set_servos(_baseline_pose())
     finally:
         _speech_emotion_frame = {}
         set_breathing_emotion("neutral")
@@ -864,6 +896,13 @@ def speech_reactive_move(intensity: float) -> None:
         hero_ch,
         hero_cfg["neutral"] + random.randint(-hero_swing, hero_swing),
     )
+
+    # If a scripted arm gesture (e.g. the wave-back) owns the arm, leave the arm channels
+    # to it — keep only the head/visor talking motion. Otherwise the per-frame talking
+    # motion overrides the wave and you see no wave.
+    if _scripted_arm_gesture.is_set():
+        for ch in config.ARM_CHANNELS:
+            targets.pop(ch, None)
 
     set_servos(targets)
 

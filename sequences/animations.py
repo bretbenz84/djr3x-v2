@@ -1501,6 +1501,11 @@ def _run_wave_back_gesture(count: int) -> bool:
     )
     arm_channels = (4, 5, 7)
     servos.pause_arm_idle()
+    # Claim the arm: while this is set, the speech-reactive "talking with the hands" motion
+    # leaves the arm channels alone (head/visor keep talking), so Rex's own greeting — or any
+    # concurrent speech — can't override the wave. Without this the talking motion wins and
+    # you see no wave.
+    servos.begin_arm_gesture()
     try:
         with _motion_lock:
             # Speed up the arm channels so the raise and (especially) the wrist wave are
@@ -1535,6 +1540,7 @@ def _run_wave_back_gesture(count: int) -> bool:
         _log.warning("[animations] wave-back gesture failed: %s", exc)
         return False
     finally:
+        servos.end_arm_gesture()
         servos.resume_arm_idle()
         _arm_motion_lock.release()
 
