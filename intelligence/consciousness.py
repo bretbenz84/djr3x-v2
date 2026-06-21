@@ -6710,6 +6710,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 emotional_to_ack: Optional[dict] = None
                 celebration_to_ack: Optional[dict] = None
                 followup_to_remove: Optional[tuple[Optional[int], object]] = None
+                followup_event_name: str = ""
                 anticipated_to_mark: Optional[tuple[Optional[int], object]] = None
                 milestone_to_mark: Optional[int] = None
                 profile_question_to_record: Optional[dict] = None
@@ -6807,6 +6808,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                         ev_name = ev.get("event_name") or ""
                         if ev_name:
                             followup_to_remove = (person_db_id, ev.get("id"))
+                            followup_event_name = ev_name
                             prompt = (
                                 f"{context_sentence} "
                                 f"You remember they told you they had this on their schedule: "
@@ -7055,6 +7057,18 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                             followup_to_remove[0],
                             followup_to_remove[1],
                         )
+                        # Arm the resolver so the user's NEXT reply ("I never went")
+                        # closes this event in memory — otherwise the passed-date plan
+                        # stays 'planned' and Rex re-asks about it every run.
+                        try:
+                            from intelligence import interaction as _interaction
+                            _interaction.set_awaiting_followup_event(
+                                followup_to_remove[0],
+                                followup_to_remove[1],
+                                followup_event_name,
+                            )
+                        except Exception as exc:
+                            _log.debug("arm startup follow-up resolution failed: %s", exc)
                     if anticipated_to_mark is not None:
                         _anticipated_events.add(anticipated_to_mark)
                         try:

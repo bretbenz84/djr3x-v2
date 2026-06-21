@@ -11888,6 +11888,108 @@ def _note_memory_followup_fired(event_id) -> None:
         pass
 
 
+def set_awaiting_followup_event(
+    person_id: Optional[int], event_id, event_name: str = ""
+) -> None:
+    """Arm an outstanding event follow-up so the user's NEXT reply resolves it.
+
+    The consciousness STARTUP follow-up ("how did <festival> go?") fires OUTSIDE the
+    in-conversation _post_response path that normally arms this. Without it, a reply like
+    "I never went" was never tied back to the event, so the passed-date plan stayed
+    planned and re-surfaced every run (the festival re-ask bug). Call this only when the
+    follow-up was actually SPOKEN and is specifically about this event."""
+    global _awaiting_followup_event
+    if event_id is None or person_id is None:
+        return
+    try:
+        eid = int(event_id)
+    except (TypeError, ValueError):
+        return
+    _awaiting_followup_event = {
+        "person_id": person_id,
+        "event_id": eid,
+        "event_name": event_name or "",
+    }
+    _note_memory_followup_fired(eid)
+
+
+def _resolve_awaiting_followup(text: str, person_id: Optional[int]) -> Optional[str]:
+    """If Rex had an outstanding event follow-up, treat this utterance as the outcome and
+    close the loop in memory so the event stops re-surfacing. Returns an event-cancellation
+    ack line to speak, or None. (Extracted from the turn handler so it's unit-testable.)"""
+    global _awaiting_followup_event
+    if not _awaiting_followup_event:
+        return None
+    event_cancellation_ack: Optional[str] = None
+    repair_move = repair_moves.detect(text)
+    followup_repair = (
+        repair_move is not None
+        and repair_move.get("kind") in {
+            "clarify",
+            "factual",
+            "misunderstood",
+            "bare_negation",
+            "repeat",
+        }
+    )
+    pending_pid = _awaiting_followup_event.get("person_id")
+    pending_event_id = _awaiting_followup_event.get("event_id")
+    pending_event_name = _awaiting_followup_event.get("event_name")
+    pid_matches = (
+        pending_pid is None
+        or person_id is None
+        or pending_pid == person_id
+    )
+    # A reply that the event never happened ("I never went / didn't go") resolves the
+    # follow-up even if it parses as a repair — otherwise Rex keeps re-asking about
+    # something the user says they didn't do.
+    did_not_happen = _followup_event_did_not_happen(text)
+    # Don't badger: after a bounded number of unresolved (repair) turns, give up so the
+    # follow-up stops being re-injected into the agenda.
+    holds = int(_awaiting_followup_event.get("holds") or 0)
+    hold_cap = int(getattr(config, "FOLLOWUP_MAX_HELD_OPEN_TURNS", 1) or 0)
+    give_up = followup_repair and holds >= hold_cap
+    if pending_event_id is not None and pid_matches and (
+        did_not_happen or give_up or not followup_repair
+    ):
+        try:
+            if not did_not_happen and events_memory.looks_like_cancellation(text):
+                target_pid = person_id if person_id is not None else pending_pid
+                event_hint = {
+                    "id": int(pending_event_id),
+                    "event_name": pending_event_name or "",
+                }
+                labels = _cancel_stale_event_memory(target_pid, text, event_hint=event_hint)
+                if labels:
+                    event_cancellation_ack = _event_cancellation_ack(labels, target_pid)
+            else:
+                # Real answer, an "I didn't go", or a give-up: close the loop in memory so
+                # this event stops surfacing.
+                events_memory.mark_followed_up(int(pending_event_id), text.strip())
+            _awaiting_followup_event = None
+            if did_not_happen or give_up:
+                _log.info(
+                    "[interaction] follow-up resolved without an outcome — "
+                    "event_id=%s reason=%s text=%r",
+                    pending_event_id,
+                    "did_not_happen" if did_not_happen else "gave_up_after_holds",
+                    text,
+                )
+        except Exception as exc:
+            _log.debug("follow-up outcome write failed: %s", exc)
+    elif followup_repair:
+        _awaiting_followup_event["holds"] = holds + 1
+        _log.info(
+            "[interaction] follow-up outcome held open because user requested repair — "
+            "event_id=%s kind=%s holds=%d text=%r",
+            pending_event_id,
+            repair_move.get("kind"),
+            holds + 1,
+            text,
+        )
+    return event_cancellation_ack
+
+
 def _post_response(
     user_text: str,
     person_id: Optional[int],
@@ -17966,80 +18068,9 @@ def _handle_speech_segment(
 
         # If Rex had an outstanding event follow-up question, treat this utterance
         # as the outcome and close the loop in memory.
-        if _awaiting_followup_event:
-            repair_move = repair_moves.detect(text)
-            followup_repair = (
-                repair_move is not None
-                and repair_move.get("kind") in {
-                    "clarify",
-                    "factual",
-                    "misunderstood",
-                    "bare_negation",
-                    "repeat",
-                }
-            )
-            pending_pid = _awaiting_followup_event.get("person_id")
-            pending_event_id = _awaiting_followup_event.get("event_id")
-            pending_event_name = _awaiting_followup_event.get("event_name")
-            pid_matches = (
-                pending_pid is None
-                or person_id is None
-                or pending_pid == person_id
-            )
-            # A reply that the event never happened ("I never went / didn't go")
-            # resolves the follow-up even if it parses as a repair — otherwise Rex
-            # keeps re-asking about something the user says they didn't do.
-            did_not_happen = _followup_event_did_not_happen(text)
-            # Don't badger: after a bounded number of unresolved (repair) turns,
-            # give up so the follow-up stops being re-injected into the agenda.
-            holds = int(_awaiting_followup_event.get("holds") or 0)
-            hold_cap = int(getattr(config, "FOLLOWUP_MAX_HELD_OPEN_TURNS", 1) or 0)
-            give_up = followup_repair and holds >= hold_cap
-            if pending_event_id is not None and pid_matches and (
-                did_not_happen or give_up or not followup_repair
-            ):
-                try:
-                    if not did_not_happen and events_memory.looks_like_cancellation(text):
-                        target_pid = person_id if person_id is not None else pending_pid
-                        event_hint = {
-                            "id": int(pending_event_id),
-                            "event_name": pending_event_name or "",
-                        }
-                        labels = _cancel_stale_event_memory(
-                            target_pid,
-                            text,
-                            event_hint=event_hint,
-                        )
-                        if labels:
-                            event_cancellation_ack = _event_cancellation_ack(
-                                labels,
-                                target_pid,
-                            )
-                    else:
-                        # Real answer, an "I didn't go", or a give-up: close the
-                        # loop in memory so this event stops surfacing.
-                        events_memory.mark_followed_up(int(pending_event_id), text.strip())
-                    _awaiting_followup_event = None
-                    if did_not_happen or give_up:
-                        _log.info(
-                            "[interaction] follow-up resolved without an outcome — "
-                            "event_id=%s reason=%s text=%r",
-                            pending_event_id,
-                            "did_not_happen" if did_not_happen else "gave_up_after_holds",
-                            text,
-                        )
-                except Exception as exc:
-                    _log.debug("follow-up outcome write failed: %s", exc)
-            elif followup_repair:
-                _awaiting_followup_event["holds"] = holds + 1
-                _log.info(
-                    "[interaction] follow-up outcome held open because user requested repair — "
-                    "event_id=%s kind=%s holds=%d text=%r",
-                    pending_event_id,
-                    repair_move.get("kind"),
-                    holds + 1,
-                    text,
-                )
+        _followup_ack = _resolve_awaiting_followup(text, person_id)
+        if _followup_ack:
+            event_cancellation_ack = _followup_ack
 
         if person_id is not None:
             _session_person_ids.add(person_id)
