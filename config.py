@@ -4477,6 +4477,12 @@ WEB_SEARCH_MAX_OUTPUT_TOKENS = 600
 # seconds) but bounded so a hung search can't freeze the turn. On timeout Rex falls
 # through to a normal from-knowledge reply.
 WEB_SEARCH_TIMEOUT_SECS = 20.0
+# Strip URLs / links / bare domains / "(source: …)" citations out of the spoken
+# answer. Rex reads his replies ALOUD, so a web address is just noise spelled out at
+# the listener. On by default; the prompt also tells him not to speak links, this is
+# the deterministic backstop. Set False only if you ever want links left in (e.g. text
+# / GUI-only use).
+WEB_SEARCH_STRIP_LINKS = True
 
 # Autonomous trigger — let Rex decide on his own that a question needs current info.
 # A cheap keyword prefilter (WEB_SEARCH_AUTONOMOUS_KEYWORDS) narrows to plausibly
@@ -4526,7 +4532,9 @@ WEB_SEARCH_PERSONA_ADDENDUM = (
     "and no rambling. Lead with the actual answer, stated plainly and in your own voice: "
     "no preamble, no 'according to my search', no source play-by-play. Facts first; you "
     "may add ONE short dry aside at the end only if it genuinely lands. If the search "
-    "didn't settle it, say so briefly rather than guessing."
+    "didn't settle it, say so briefly rather than guessing. You are speaking out loud, "
+    "so NEVER include a URL, web address, link, or 'dot-com' citation in your reply — "
+    "state the fact, not where you read it."
 )
 
 # ─────────────────────────────────────────────────────────────────────────────

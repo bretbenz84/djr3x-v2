@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 from typing import List, NamedTuple, Optional
 
 import config
@@ -238,6 +239,42 @@ def _extract_text(response) -> str:
     return "".join(parts).strip()
 
 
+# URL / link shapes the hosted search likes to fold into the answer. Rex SPEAKS his
+# replies, so a read-aloud "https://example.com/long/path" is just noise — strip them.
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")            # [label](url) -> label
+_SOURCE_PAREN_RE = re.compile(
+    r"\s*[\(\[]\s*(?:source|sources|via|see|read more|ref|link)\b[^)\]]*[\)\]]", re.I
+)
+_BARE_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.I)    # http(s):// or www. ...
+_BARE_DOMAIN_RE = re.compile(                                 # espn.com, reuters.com/world/...
+    r"\b(?:[a-z0-9-]+\.)+(?:com|org|net|io|gov|edu|co|news|tv|me|uk|us|ai|app|dev|info|biz)\b"
+    r"(?:/\S*)?",
+    re.I,
+)
+_CITE_MARK_RE = re.compile(r"\s*\[\d+\]")                     # footnote markers [1]
+_EMPTY_BRACKET_RE = re.compile(r"[\(\[]\s*[\)\]]")            # leftover () or []
+
+
+def strip_links(text: str) -> str:
+    """Remove anything URL-shaped from a spoken answer — full URLs, markdown links
+    (keeps the label, drops the address), bare domains, "(source: …)" citations, and
+    footnote markers — then tidy the punctuation/whitespace left behind. Rex reads
+    replies aloud, so a link is just characters spelled out at the listener."""
+    if not text:
+        return text
+    out = _MD_LINK_RE.sub(r"\1", text)
+    out = _SOURCE_PAREN_RE.sub("", out)
+    out = _BARE_URL_RE.sub("", out)
+    out = _BARE_DOMAIN_RE.sub("", out)
+    out = _CITE_MARK_RE.sub("", out)
+    out = _EMPTY_BRACKET_RE.sub("", out)
+    # Tidy orphaned punctuation/whitespace where a link used to be.
+    out = re.sub(r"\s+([,.;:!?])", r"\1", out)
+    out = re.sub(r"\(\s*\)|\[\s*\]", "", out)
+    out = re.sub(r"\s{2,}", " ", out)
+    return out.strip(" \t\n,;:")
+
+
 def _extract_citations(response) -> List[str]:
     """Best-effort list of source URLs from the answer's annotations (for logs)."""
     urls: List[str] = []
@@ -308,10 +345,18 @@ def answer(text: str, person_id: Optional[int] = None, forced: bool = False) -> 
     if not answer_text:
         return SearchResult(False, "", [])
 
+    # Strip URLs/links — Rex speaks his replies, so a read-aloud web address is noise.
+    if getattr(config, "WEB_SEARCH_STRIP_LINKS", True):
+        answer_text = strip_links(answer_text)
+
     try:
         from intelligence import llm
         answer_text = llm.clean_response_text(answer_text)
     except Exception:
         pass
+
+    if not answer_text.strip():
+        # Nothing left after stripping (e.g. a bare-link "answer") — fall through.
+        return SearchResult(False, "", [])
 
     return SearchResult(True, answer_text, _extract_citations(response))

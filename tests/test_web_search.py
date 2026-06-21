@@ -188,6 +188,70 @@ class AnswerTest(unittest.TestCase):
         self.assertFalse(result.ok)
 
 
+class StripLinksTest(unittest.TestCase):
+    def test_removes_bare_url(self):
+        out = web_search.strip_links("The launch is Friday. https://example.com/very/long/path here.")
+        self.assertNotIn("http", out)
+        self.assertNotIn("example.com", out)
+        self.assertIn("The launch is Friday.", out)
+
+    def test_removes_www_url(self):
+        self.assertNotIn("www.", web_search.strip_links("See www.nasa.gov/news for more."))
+
+    def test_markdown_link_keeps_label(self):
+        out = web_search.strip_links("The [Lakers](https://nba.com/lakers) won.")
+        self.assertEqual(out, "The Lakers won.")
+
+    def test_removes_bare_domain(self):
+        out = web_search.strip_links("According to reuters.com the vote passed.")
+        self.assertNotIn("reuters.com", out)
+        self.assertIn("the vote passed", out)
+
+    def test_removes_source_parenthetical(self):
+        out = web_search.strip_links("It rained today (source: weather.com).")
+        self.assertNotIn("weather.com", out)
+        self.assertNotIn("source", out.lower())
+        self.assertTrue(out.startswith("It rained today"))
+
+    def test_strips_footnote_markers(self):
+        self.assertEqual(web_search.strip_links("True enough[1]."), "True enough.")
+
+    def test_plain_text_untouched(self):
+        for s in ("I can't see you.", "That was a great landing.", "Who knows."):
+            self.assertEqual(web_search.strip_links(s), s)
+
+    def test_empty(self):
+        self.assertEqual(web_search.strip_links(""), "")
+
+
+class AnswerStripsLinksTest(unittest.TestCase):
+    def setUp(self):
+        self._instr = mock.patch.object(web_search, "_build_instructions", return_value="SYS")
+        self._instr.start()
+
+    def tearDown(self):
+        self._instr.stop()
+
+    def test_answer_text_has_no_links(self):
+        out_text = "The rover landed Monday. Details at https://mars.nasa.gov/news/9999."
+        with mock.patch.object(config, "WEB_SEARCH_MODEL", "gpt-4o-mini"), \
+             mock.patch.object(web_search._client.responses, "create",
+                               return_value=_resp(output_text=out_text)):
+            result = web_search.answer("what's the latest on mars", person_id=1)
+        self.assertTrue(result.ok)
+        self.assertNotIn("http", result.text)
+        self.assertNotIn("nasa.gov", result.text)
+        self.assertIn("The rover landed Monday.", result.text)
+
+    def test_bare_link_answer_falls_through(self):
+        # If the whole "answer" was just a link, stripping empties it → not ok.
+        with mock.patch.object(config, "WEB_SEARCH_MODEL", "gpt-4o-mini"), \
+             mock.patch.object(web_search._client.responses, "create",
+                               return_value=_resp(output_text="https://example.com/x")):
+            result = web_search.answer("x", person_id=1)
+        self.assertFalse(result.ok)
+
+
 class InteractionHookTest(unittest.TestCase):
     """The _maybe_web_search_reply branch in interaction.py."""
 

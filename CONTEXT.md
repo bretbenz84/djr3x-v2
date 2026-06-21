@@ -239,7 +239,10 @@ credited to the stall line), run the search, then speak the answer through the n
 character. The addendum deliberately OVERRIDES the core prompt's "default to ONE short
 sentence" hard limit (the searched call passes no per-turn agenda contract and bypasses
 the streaming sentence-governor) so a lookup has room to actually answer — bounded to
-~2–4 spoken sentences, no padding. Everything is failure-safe — any no-trigger /
+~2–4 spoken sentences, no padding. URLs/links/bare domains/"(source: …)" citations are
+stripped from the spoken answer (`web_search.strip_links`, `WEB_SEARCH_STRIP_LINKS`) —
+Rex reads replies aloud, so a web address is noise; the prompt also forbids speaking
+links. Everything is failure-safe — any no-trigger /
 no-result / error returns None and Rex falls through to a normal from-knowledge reply
 (never silent).
 
