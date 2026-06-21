@@ -2224,10 +2224,13 @@ WAVE_BACK_WRIST_SWEEPS = _env_int("WAVE_BACK_WRIST_SWEEPS", 4, min_value=1, max_
 #   SPEED 0  = auto: pick a speed that traverses the wrist's full travel in HALF_PERIOD.
 #   SPEED >0 = use that Maestro speed value verbatim (units of 0.25µs / 10ms).
 #   ACCEL 0  = unlimited (snappiest). Raise SPEED/ACCEL if too slow; lower if too violent.
+# HALF_PERIOD is the time for one swing (to one limit); a bigger value = a slower, gentler
+# wave (auto SPEED scales down with it). 0.32s reads as a relaxed wave rather than a frantic
+# flap — lower it toward ~0.2 for a snappier wave, raise it for a lazier one.
 WAVE_BACK_WRIST_SPEED = _env_int("WAVE_BACK_WRIST_SPEED", 0, min_value=0, max_value=16383)
 WAVE_BACK_WRIST_ACCEL = _env_int("WAVE_BACK_WRIST_ACCEL", 0, min_value=0, max_value=255)
 WAVE_BACK_WRIST_HALF_PERIOD_SECS = _env_float(
-    "WAVE_BACK_WRIST_HALF_PERIOD_SECS", 0.22, min_value=0.05, max_value=2.0,
+    "WAVE_BACK_WRIST_HALF_PERIOD_SECS", 0.32, min_value=0.05, max_value=2.0,
 )
 # How long a detected wave stays "pending" while Rex is busy (mid-turn / speaking) before
 # it's answered. A wave is a brief gesture, so it's latched and voiced as soon as Rex is
