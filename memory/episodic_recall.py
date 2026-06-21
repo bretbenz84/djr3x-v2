@@ -109,6 +109,28 @@ def _score(row, now: datetime) -> float:
     return salience * _recency_factor(row["created_at"], now) * _kind_weight(row["kind"])
 
 
+def _topic_overlap(row, topic_tokens) -> int:
+    """How many live-topic words this episode's summary/detail mention (stemmed both
+    sides). The relevance signal that lifts an on-topic callback over a fresher but
+    unrelated one."""
+    if not topic_tokens:
+        return 0
+    try:
+        from memory import text_match
+        text = f"{row['summary'] or ''} {row['detail'] or ''}"
+        return text_match.overlap_count(text, topic_tokens)
+    except Exception:
+        return 0
+
+
+def _topic_bonus(row, topic_tokens) -> float:
+    if not topic_tokens:
+        return 0.0
+    boost = float(_cfg("EPISODIC_RECALL_TOPIC_BOOST", 0.3))
+    cap = int(_cfg("MEMORY_TOPIC_RELEVANCE_MAX_MATCHES", 3))
+    return boost * min(_topic_overlap(row, topic_tokens), cap)
+
+
 def _norm_summary(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower()).rstrip(".")
 
@@ -161,9 +183,10 @@ def cluster_scenes(scene_rows: list, *, top_k: int = 4) -> Optional[str]:
 
 # ── Ranking + dedupe ──────────────────────────────────────────────────────────────
 
-def rank_episodes(rows: list, *, now: Optional[datetime] = None) -> list:
+def rank_episodes(rows: list, *, now: Optional[datetime] = None, topic_tokens=None) -> list:
     """Sort experiential rows by score (desc). Excludes scenes (clustered separately)
-    and zero-weight kinds (e.g. conversation_summary)."""
+    and zero-weight kinds (e.g. conversation_summary). When `topic_tokens` is given, an
+    episode that connects to the live topic is lifted above a fresher unrelated one."""
     now = now or _now()
     scored = []
     for r in rows:
@@ -172,7 +195,7 @@ def rank_episodes(rows: list, *, now: Optional[datetime] = None) -> list:
             continue
         if _kind_weight(kind) <= 0.0:
             continue
-        scored.append((_score(r, now), r))
+        scored.append((_score(r, now) + _topic_bonus(r, topic_tokens), r))
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return [r for _, r in scored]
 
@@ -241,12 +264,15 @@ def session_recap(
 
 def person_episodes(
     person_id: Optional[int], *, limit: int = 3, lookback_days: Optional[int] = None,
-    exclude_sensitive: bool = False, now: Optional[datetime] = None,
+    exclude_sensitive: bool = False, now: Optional[datetime] = None, topic_tokens=None,
 ) -> list[str]:
     """Ranked experiential callbacks for ONE person ("I made you laugh", "we played
     trivia") — first-person summary strings. Excludes scenes, person_seen (low value),
     and conversation_summary. With `exclude_sensitive`, also drops sensitive kinds
-    (emotional check-ins, boundaries). Returns [] when disabled / no person."""
+    (emotional check-ins, boundaries). When `topic_tokens` is given, callbacks that
+    connect to the live topic rank first (so Rex recalls the FITTING moment, not a random
+    one) — falling back to recency/salience when nothing connects. Returns [] when
+    disabled / no person."""
     if not _enabled() or not isinstance(person_id, int):
         return []
     try:
@@ -262,7 +288,7 @@ def person_episodes(
         if exclude_sensitive:
             skip |= set(_cfg("EPISODIC_RECALL_SENSITIVE_KINDS", ()) or ())
         ranked = rank_episodes(
-            [r for r in rows if r["kind"] not in skip], now=now
+            [r for r in rows if r["kind"] not in skip], now=now, topic_tokens=topic_tokens
         )
         deduped = _dedupe(ranked, limit=limit)
         return [(r["summary"] or "").strip().rstrip(".") for r in deduped if (r["summary"] or "").strip()]

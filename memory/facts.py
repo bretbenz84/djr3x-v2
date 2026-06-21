@@ -475,14 +475,13 @@ def get_prompt_facts(person_id: int, *, limit: int = 12) -> list[dict]:
 
 def fact_topic_overlap(fact: dict, topic_tokens) -> int:
     """How many live-topic words this fact's key/value/category mention — the cheap
-    relevance signal for topic-aware retrieval. 0 when no tokens / no match."""
+    relevance signal for topic-aware retrieval. Stems both sides (memory.text_match) so
+    "dogs" matches a "dog" fact. 0 when no tokens / no match."""
     if not topic_tokens:
         return 0
-    text = " ".join(
-        str(fact.get(k) or "") for k in ("key", "value", "category")
-    ).lower()
-    words = set(re.findall(r"[a-z0-9]+", text))
-    return len(words & set(topic_tokens))
+    from memory import text_match
+    text = " ".join(str(fact.get(k) or "") for k in ("key", "value", "category"))
+    return text_match.overlap_count(text, topic_tokens)
 
 
 def _is_expired_provisional(fact: dict) -> bool:

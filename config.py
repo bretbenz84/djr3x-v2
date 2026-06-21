@@ -888,6 +888,13 @@ EPISODIC_RECALL_SENSITIVE_KINDS = ("emotional_checkin", "boundary")
 # surfaces ONE experiential shared-memory callback ("I made you laugh last time"). Kept
 # low so it stays a spice; counts against the one-callback-per-reply budget.
 EPISODIC_RECALL_PERSON_CALLBACK_PROBABILITY = 0.25
+# Topic relevance for episodic callbacks: when the live topic is known, lift episodes
+# whose summary connects to what was JUST said (per matching stemmed word, capped at
+# MEMORY_TOPIC_RELEVANCE_MAX_MATCHES) so Rex recalls "we played trivia" while trivia is
+# the topic — not at random. 0 → pure recency/salience (the prior behavior). Episode
+# base scores are ~0..1, so this is sized to let a topic hit clearly outrank a fresher
+# but unrelated memory.
+EPISODIC_RECALL_TOPIC_BOOST = 0.3
 # Retention: keep at most this many of the newest scene episodes; older scenes are
 # pruned at shutdown (they accrue ~15/run and are only ever clustered to a vibe).
 EPISODIC_RECALL_SCENE_RETENTION = 40

@@ -178,14 +178,13 @@ def upsert_interest(
 
 def interest_topic_overlap(interest: dict, topic_tokens) -> int:
     """How many live-topic words this interest's name/category/notes mention — the
-    relevance signal for topic-aware retrieval. 0 when no tokens / no match."""
+    relevance signal for topic-aware retrieval. Stems both sides (memory.text_match) so
+    "robots" matches a "robot" interest. 0 when no tokens / no match."""
     if not topic_tokens:
         return 0
-    text = " ".join(
-        str(interest.get(k) or "") for k in ("name", "category", "notes")
-    ).lower()
-    words = set(re.findall(r"[a-z0-9]+", text))
-    return len(words & set(topic_tokens))
+    from memory import text_match
+    text = " ".join(str(interest.get(k) or "") for k in ("name", "category", "notes"))
+    return text_match.overlap_count(text, topic_tokens)
 
 
 def get_interests_for_prompt(person_id: int, limit: int = 8, *, topic_tokens=None) -> list[dict]:

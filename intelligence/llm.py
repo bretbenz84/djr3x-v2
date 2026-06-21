@@ -394,10 +394,12 @@ def _pick_stale_fact(person_id: int) -> Optional[dict]:
     return chosen
 
 
-def _pick_nostalgia_callback(person_id: int, tier: str) -> Optional[dict]:
+def _pick_nostalgia_callback(person_id: int, tier: str, topic_tokens=None) -> Optional[dict]:
     """
     Roll the nostalgia probability and, on success, return a past conversation
-    record that hasn't been surfaced this session. Returns None when the roll
+    record that hasn't been surfaced this session. When `topic_tokens` is given, a past
+    conversation whose summary connects to the live topic is preferred over a random one,
+    so the callback lands because it fits — not out of nowhere. Returns None when the roll
     fails, the person isn't in an eligible tier, or no qualifying history exists.
     """
     if tier not in getattr(config, "NOSTALGIA_ELIGIBLE_TIERS", ()):
@@ -415,24 +417,43 @@ def _pick_nostalgia_callback(person_id: int, tier: str) -> Optional[dict]:
     ]
     if not candidates:
         return None
-    chosen = random.choice(candidates)
+    chosen = None
+    if topic_tokens:
+        try:
+            from memory import text_match
+            scored = [
+                (text_match.overlap_count(
+                    f"{c.get('summary') or ''} {c.get('topics') or ''}", topic_tokens), c)
+                for c in candidates
+            ]
+            best = max(s for s, _ in scored)
+            if best > 0:
+                chosen = random.choice([c for s, c in scored if s == best])
+        except Exception as exc:
+            _log.debug("nostalgia topic ranking skipped: %s", exc)
+    if chosen is None:
+        chosen = random.choice(candidates)
     _nostalgia_used_this_session.add(chosen["id"])
     return chosen
 
 
-def _pick_episodic_callback(person_id: int) -> Optional[str]:
+def _pick_episodic_callback(person_id: int, topic_tokens=None) -> Optional[str]:
     """Roll the episodic-callback probability and, on success, return ONE first-person
     experiential memory (rex.db) about this person that hasn't been surfaced this
-    session — "I made you laugh", "we played trivia", "I met you". Sensitive kinds are
-    excluded (people.db's emotional_events owns grief/illness acknowledgment). Returns
-    None when disabled, the roll fails, or there's nothing fresh."""
+    session — "I made you laugh", "we played trivia", "I met you". When `topic_tokens`
+    is given, a memory that connects to what they JUST said is preferred (so the callback
+    fits the moment). Sensitive kinds are excluded (people.db's emotional_events owns
+    grief/illness acknowledgment). Returns None when disabled, the roll fails, or there's
+    nothing fresh."""
     if not getattr(config, "EPISODIC_RECALL_ENABLED", False):
         return None
     if random.random() >= float(getattr(config, "EPISODIC_RECALL_PERSON_CALLBACK_PROBABILITY", 0.25)):
         return None
     try:
         from memory import episodic_recall
-        items = episodic_recall.person_episodes(person_id, exclude_sensitive=True)
+        items = episodic_recall.person_episodes(
+            person_id, exclude_sensitive=True, topic_tokens=topic_tokens
+        )
     except Exception as exc:
         _log.debug("episodic callback lookup failed: %s", exc)
         return None
@@ -716,7 +737,7 @@ def _build_person_context(person_id: int) -> str:
         )
         callback_hook_used = True
 
-    nostalgia = None if callback_hook_used else _pick_nostalgia_callback(person_id, tier)
+    nostalgia = None if callback_hook_used else _pick_nostalgia_callback(person_id, tier, topic_tokens=topic_tokens)
     if nostalgia:
         when = (nostalgia.get("session_date") or "")[:10] or "a while back"
         summary = (nostalgia.get("summary") or "").strip()
@@ -742,7 +763,7 @@ def _build_person_context(person_id: int) -> str:
     # Episodic shared-memory callback (rex.db) — lowest-priority hook: only when nothing
     # above claimed the turn's single callback budget. Experiential, light (sensitive
     # kinds excluded — emotional_events owns those). Counts against callback_hook_used.
-    episodic_cb = None if callback_hook_used else _pick_episodic_callback(person_id)
+    episodic_cb = None if callback_hook_used else _pick_episodic_callback(person_id, topic_tokens=topic_tokens)
     if episodic_cb:
         _log.info("[llm] episodic shared-memory callback for %s — %r", name, episodic_cb)
         lines.append(
