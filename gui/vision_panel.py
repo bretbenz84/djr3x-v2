@@ -10,11 +10,38 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
+import config
 from gui.live_face_tracker import LiveFaceBoxTracker
 
 # Frames older than this read as a dropout: the meta line shows "STALE Xs" and
 # the held image is dimmed so a frozen frame isn't mistaken for a live one.
 _CAMERA_STALE_SECS = 2.0
+
+# Body-pose wireframe (MediaPipe 33-point skeleton). Edges connect named landmarks;
+# only drawn when both endpoints are present and visible. Coordinates in pose_keypoints
+# are normalized (0..1) over the full frame, mapped straight onto the displayed image.
+_SKELETON_COLOR = "#36d9ff"   # cyan — distinct from face boxes (green) / animals (amber)
+_SKELETON_MIN_VIS = 0.3
+_POSE_EDGES = (
+    # face
+    ("LEFT_EAR", "LEFT_EYE"), ("LEFT_EYE", "NOSE"),
+    ("NOSE", "RIGHT_EYE"), ("RIGHT_EYE", "RIGHT_EAR"),
+    # arms
+    ("LEFT_SHOULDER", "LEFT_ELBOW"), ("LEFT_ELBOW", "LEFT_WRIST"),
+    ("RIGHT_SHOULDER", "RIGHT_ELBOW"), ("RIGHT_ELBOW", "RIGHT_WRIST"),
+    # shoulders + torso
+    ("LEFT_SHOULDER", "RIGHT_SHOULDER"),
+    ("LEFT_SHOULDER", "LEFT_HIP"), ("RIGHT_SHOULDER", "RIGHT_HIP"),
+    ("LEFT_HIP", "RIGHT_HIP"),
+    # legs
+    ("LEFT_HIP", "LEFT_KNEE"), ("LEFT_KNEE", "LEFT_ANKLE"),
+    ("RIGHT_HIP", "RIGHT_KNEE"), ("RIGHT_KNEE", "RIGHT_ANKLE"),
+)
+_POSE_JOINTS = (
+    "NOSE", "LEFT_SHOULDER", "RIGHT_SHOULDER", "LEFT_ELBOW", "RIGHT_ELBOW",
+    "LEFT_WRIST", "RIGHT_WRIST", "LEFT_HIP", "RIGHT_HIP",
+    "LEFT_KNEE", "RIGHT_KNEE", "LEFT_ANKLE", "RIGHT_ANKLE",
+)
 
 
 class VisionPanel(QWidget):
@@ -75,6 +102,7 @@ class VisionPanel(QWidget):
             else:
                 image_rect = _scaled_rect(image.width(), image.height(), frame_rect)
                 painter.drawImage(image_rect, image)
+                self._draw_pose_skeletons(painter, image_rect)
                 self._draw_animals(painter, image_rect, image.width(), image.height())
                 self._draw_people(painter, image_rect, image.width(), image.height())
                 stale = self._camera_stale_secs()
@@ -145,6 +173,17 @@ class VisionPanel(QWidget):
                 text_anchor = QPointF(px + 8, py - 8)
 
             _draw_label(painter, text_anchor, label, expression, color)
+
+    def _draw_pose_skeletons(self, painter: QPainter, image_rect: QRectF) -> None:
+        """Overlay a live body-pose wireframe for each person that has landmarks."""
+        if not getattr(config, "GUI_POSE_WIREFRAME_ENABLED", True):
+            return
+        if not self._people or image_rect.isEmpty():
+            return
+        for person in self._people:
+            keypoints = person.get("pose_keypoints")
+            if isinstance(keypoints, dict) and keypoints:
+                _draw_one_skeleton(painter, image_rect, keypoints)
 
     def _draw_animals(
         self,
@@ -253,6 +292,54 @@ class VisionPanel(QWidget):
             painter.setPen(QColor(color))
             painter.drawText(QPointF(x, y), text)
             x += painter.fontMetrics().horizontalAdvance(text) + 12
+
+
+def _skeleton_point(
+    keypoints: dict[str, Any],
+    name: str,
+    image_rect: QRectF,
+) -> QPointF | None:
+    """Map a normalized (x, y, visibility) landmark onto the displayed image, or None
+    if it's missing / below the visibility floor."""
+    value = keypoints.get(name)
+    if not isinstance(value, (list, tuple)) or len(value) < 3:
+        return None
+    try:
+        x, y, vis = float(value[0]), float(value[1]), float(value[2])
+    except (TypeError, ValueError):
+        return None
+    if vis < _SKELETON_MIN_VIS:
+        return None
+    # Landmarks are normalized; clamp lightly so a just-offscreen joint still anchors a line.
+    x = min(max(x, -0.1), 1.1)
+    y = min(max(y, -0.1), 1.1)
+    return QPointF(
+        image_rect.left() + x * image_rect.width(),
+        image_rect.top() + y * image_rect.height(),
+    )
+
+
+def _draw_one_skeleton(
+    painter: QPainter,
+    image_rect: QRectF,
+    keypoints: dict[str, Any],
+) -> None:
+    color = QColor(_SKELETON_COLOR)
+    points = {name: _skeleton_point(keypoints, name, image_rect) for name in _POSE_JOINTS}
+
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.setPen(QPen(color, 2))
+    for a, b in _POSE_EDGES:
+        pa = points.get(a) or _skeleton_point(keypoints, a, image_rect)
+        pb = points.get(b) or _skeleton_point(keypoints, b, image_rect)
+        if pa is not None and pb is not None:
+            painter.drawLine(pa, pb)
+
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(color)
+    for point in points.values():
+        if point is not None:
+            painter.drawEllipse(point, 3.0, 3.0)
 
 
 def _bgr_frame_to_qimage(frame) -> QImage | None:

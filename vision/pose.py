@@ -44,6 +44,12 @@ _load_attempted = False
 _model_lock   = threading.Lock()
 _last_timestamp_ms = 0
 
+# Dedicated sampling loop (mirrors vision/face_expression.py). Pose runs in its own
+# thread, NOT pull-based off the ~1 Hz consciousness tick, so the GUI skeleton overlay
+# and wave-back stay live instead of jumping once a second.
+_stop_event   = threading.Event()
+_thread: Optional[threading.Thread] = None
+
 # ── Visibility threshold — landmarks below this are treated as not-detected ──
 _VIS_MIN = 0.4
 
@@ -546,6 +552,12 @@ def _update_world_state(detected: list[dict]) -> None:
                 "engagement":   person_data["engagement"],
                 "age_estimate": person_data["age_estimate"],
                 "position":     person_data["position"],
+                # Normalized landmark dict (name -> (x, y, visibility)) so the GUI can
+                # draw a live skeleton overlay. NOTE: consciousness._step_person_recognition
+                # rebuilds people on its tick and only carries forward an allowlist of
+                # decoration fields — "pose_keypoints" MUST be in that `decor` tuple or the
+                # skeleton flickers off every recognition commit.
+                "pose_keypoints": person_data.get("keypoints"),
             }
             if i < len(updated):
                 updated[i] = {**updated[i], **pose_fields}
@@ -562,9 +574,10 @@ def _update_world_state(detected: list[dict]) -> None:
         for i in range(len(detected), len(updated)):
             updated[i] = {
                 **updated[i],
-                "pose":       None,
-                "gesture":    None,
-                "engagement": None,
+                "pose":           None,
+                "gesture":        None,
+                "engagement":     None,
+                "pose_keypoints": None,
             }
 
         return updated
@@ -574,9 +587,48 @@ def _update_world_state(detected: list[dict]) -> None:
     world_state.mutate("people", _merge_pose)
 
 
+def process_frame(frame) -> list[dict]:
+    """Detect pose on one frame and publish it to world_state. Loop body / test seam."""
+    return detect_pose(frame)
+
+
+def _loop() -> None:
+    from vision import camera
+
+    interval = max(0.05, float(getattr(config, "POSE_ANALYSIS_INTERVAL_SECS", 0.2) or 0.2))
+    while not _stop_event.is_set():
+        try:
+            frame = camera.get_frame()
+            if frame is not None:
+                process_frame(frame)
+        except Exception as exc:
+            _log.debug("pose detection loop error: %s", exc)
+        _stop_event.wait(interval)
+
+
+def start() -> None:
+    """Start the background pose-sampling loop (idempotent)."""
+    global _thread
+    if not bool(getattr(config, "POSE_DETECTION_ENABLED", True)):
+        return
+    if _thread is not None and _thread.is_alive():
+        return
+    _stop_event.clear()
+    _thread = threading.Thread(target=_loop, daemon=True, name="pose-detection")
+    _thread.start()
+    _log.info(
+        "MediaPipe pose detection started (interval=%.2fs)",
+        float(getattr(config, "POSE_ANALYSIS_INTERVAL_SECS", 0.2) or 0.2),
+    )
+
+
 def stop() -> None:
-    """Release the MediaPipe Pose Landmarker (idempotent)."""
-    global _landmarker, _mp, _load_attempted, _load_ok
+    """Stop the sampling loop and release the MediaPipe Pose Landmarker (idempotent)."""
+    global _thread, _landmarker, _mp, _load_attempted, _load_ok
+    _stop_event.set()
+    if _thread is not None and _thread.is_alive():
+        _thread.join(timeout=2.0)
+    _thread = None
     with _model_lock:
         if _landmarker is not None:
             try:
@@ -592,4 +644,5 @@ def stop() -> None:
 def _reset_for_tests() -> None:
     global _last_timestamp_ms
     stop()
+    _stop_event.clear()
     _last_timestamp_ms = 0

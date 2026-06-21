@@ -138,5 +138,25 @@ class LiveFaceBoxTrackerTests(unittest.TestCase):
         self.assertIsNone(expired[0]["face_box"])
 
 
+class SkeletonOverlayTests(unittest.TestCase):
+    def test_skeleton_point_maps_normalized_into_image_rect(self):
+        from PySide6.QtCore import QRectF
+        from gui.vision_panel import _skeleton_point
+
+        rect = QRectF(10, 20, 100, 200)
+        point = _skeleton_point({"NOSE": (0.5, 0.25, 0.9)}, "NOSE", rect)
+        self.assertIsNotNone(point)
+        self.assertAlmostEqual(point.x(), 60.0)   # 10 + 0.5 * 100
+        self.assertAlmostEqual(point.y(), 70.0)   # 20 + 0.25 * 200
+
+    def test_skeleton_point_drops_low_visibility_and_missing(self):
+        from PySide6.QtCore import QRectF
+        from gui.vision_panel import _skeleton_point
+
+        rect = QRectF(0, 0, 100, 100)
+        self.assertIsNone(_skeleton_point({"NOSE": (0.5, 0.5, 0.1)}, "NOSE", rect))
+        self.assertIsNone(_skeleton_point({}, "NOSE", rect))
+
+
 if __name__ == "__main__":
     unittest.main()

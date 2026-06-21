@@ -1187,6 +1187,9 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     logger.info("Starting vision.face_expression (MediaPipe local telemetry)...")
     face_expression.start()
 
+    logger.info("Starting vision.pose (MediaPipe body pose / gesture)...")
+    pose.start()
+
     logger.info("Starting vision.scene (periodic scan)...")
     vision_scene.start_periodic_scan(config.ENVIRONMENT_SCAN_INTERVAL_SECS)
 

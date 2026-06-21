@@ -78,6 +78,36 @@ class LandmarkExtractionTest(unittest.TestCase):
         self.assertEqual(pose._lm_dict(types.SimpleNamespace(pose_landmarks=[])), {})
 
 
+class WorldStatePublishTest(unittest.TestCase):
+    """_update_world_state must publish normalized landmarks as `pose_keypoints` so the
+    GUI skeleton overlay has data, and clear them when the body leaves frame."""
+
+    def setUp(self):
+        from world_state import world_state
+        self.world_state = world_state
+        world_state.mutate("people", lambda _cur: [{"id": "person_1", "face_visible": True}])
+        self.addCleanup(lambda: world_state.mutate("people", lambda _cur: []))
+
+    def _detected(self):
+        return [{
+            "pose": "facing_forward", "gesture": "waving", "engagement": "high",
+            "age_estimate": "adult", "position": (0.5, 0.5),
+            "keypoints": {"NOSE": (0.5, 0.3, 0.9), "LEFT_SHOULDER": (0.4, 0.5, 0.8)},
+        }]
+
+    def test_publishes_pose_keypoints(self):
+        pose._update_world_state(self._detected())
+        person = self.world_state.get("people")[0]
+        self.assertEqual(person["gesture"], "waving")
+        self.assertEqual(person["pose_keypoints"]["NOSE"], (0.5, 0.3, 0.9))
+
+    def test_clears_pose_keypoints_when_no_body(self):
+        pose._update_world_state(self._detected())
+        pose._update_world_state([])  # body left frame
+        person = self.world_state.get("people")[0]
+        self.assertIsNone(person["pose_keypoints"])
+
+
 class ModelLoadingTest(unittest.TestCase):
     def setUp(self):
         self.addCleanup(pose._reset_for_tests)

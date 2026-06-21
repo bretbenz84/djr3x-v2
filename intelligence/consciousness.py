@@ -3256,7 +3256,7 @@ def _step_person_recognition(frame) -> None:
             # tick didn't assign one, so recognition doesn't revert them.
             def _commit(current):
                 decor = (
-                    "pose", "gesture", "engagement", "age_estimate",
+                    "pose", "gesture", "engagement", "age_estimate", "pose_keypoints",
                     "face_mood", "face_expression", "facial_expression", "expression",
                     # Active-speaker fields (vision/active_speaker.py) — overlay a
                     # fresh speaker write so a concurrent identity re-bind on this
@@ -3378,24 +3378,14 @@ def _maybe_prompt_unknown_identity(
 
 def _step_body_social_analysis(frame) -> None:
     """
-    Merge pose/gesture engagement into visible people and refresh crowd context.
+    Refresh crowd context from the latest people slots.
 
-    Face recognition owns identity and proxemic face boxes. Pose owns body
-    engagement. Social analysis combines the latest people slots into a crowd
-    mode so downstream conversation logic can use it.
+    Pose/gesture detection now runs in vision.pose's own background loop (started in
+    main.py), so it is no longer pulled from this ~1 Hz tick — that keeps the GUI
+    skeleton overlay and wave-back live. Face recognition owns identity and proxemic
+    face boxes; pose decorates engagement/gesture/keypoints onto the same slots. Here
+    we only combine the latest slots into a crowd mode for downstream conversation.
     """
-    global _last_pose_analysis_at
-
-    now = time.monotonic()
-    interval = float(getattr(config, "POSE_ANALYSIS_INTERVAL_SECS", 2.0) or 0.0)
-    if frame is not None and (interval <= 0.0 or (now - _last_pose_analysis_at) >= interval):
-        _last_pose_analysis_at = now
-        try:
-            from vision import pose as pose_mod
-            pose_mod.detect_pose(frame)
-        except Exception as exc:
-            _log.debug("pose analysis step error: %s", exc)
-
     try:
         from awareness import social as social_mod
         social_mod.analyze_crowd(world_state.get("people") or [])

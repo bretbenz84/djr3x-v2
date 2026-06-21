@@ -1776,6 +1776,7 @@ def _advance_demo(bridge: GUIDashboardBridge) -> None:
             "face_missing": False,
             "face_last_seen_at": time.time(),
             "pose": "standing",
+            "pose_keypoints": _demo_skeleton(now, 0),
         },
         {
             "id": "person_2",
@@ -1795,6 +1796,7 @@ def _advance_demo(bridge: GUIDashboardBridge) -> None:
             "face_missing": False,
             "face_last_seen_at": time.time(),
             "pose": "walking away",
+            "pose_keypoints": _demo_skeleton(now, 1),
         },
     ]
     servo_positions = {}
@@ -1898,6 +1900,35 @@ def _demo_frame(now: float) -> np.ndarray:
 def _demo_expression(now: float, offset: int) -> str:
     labels = ("neutral", "smiling", "curious", "focused", "surprised")
     return labels[(int(now / 2.5) + offset) % len(labels)]
+
+
+def _demo_skeleton(now: float, idx: int) -> dict[str, tuple[float, float, float]]:
+    """Animated normalized pose landmarks for the demo feed, so the wireframe overlay
+    is visible without a camera. Person 0 waves a hand; person 1 stands with arms down."""
+    if idx == 0:
+        cx = 0.238
+        wave = math.sin(now * 5.0)
+        kp = {
+            "NOSE": (cx, 0.30, 1.0),
+            "LEFT_EYE": (cx + 0.024, 0.28, 1.0), "RIGHT_EYE": (cx - 0.024, 0.28, 1.0),
+            "LEFT_EAR": (cx + 0.047, 0.30, 1.0), "RIGHT_EAR": (cx - 0.047, 0.30, 1.0),
+            "LEFT_SHOULDER": (cx + 0.082, 0.52, 1.0), "RIGHT_SHOULDER": (cx - 0.082, 0.52, 1.0),
+            "LEFT_ELBOW": (cx + 0.122, 0.66, 1.0), "RIGHT_ELBOW": (cx - 0.118, 0.60, 1.0),
+            "LEFT_WRIST": (cx + 0.142, 0.80, 1.0),
+            "RIGHT_WRIST": (0.10 + 0.03 * wave, 0.30 + 0.02 * wave, 1.0),  # waving hand
+            "LEFT_HIP": (cx + 0.062, 0.86, 1.0), "RIGHT_HIP": (cx - 0.062, 0.86, 1.0),
+        }
+        return kp
+    cx = 0.854
+    return {
+        "NOSE": (cx, 0.28, 1.0),
+        "LEFT_EYE": (cx + 0.022, 0.26, 1.0), "RIGHT_EYE": (cx - 0.022, 0.26, 1.0),
+        "LEFT_EAR": (cx + 0.044, 0.28, 1.0), "RIGHT_EAR": (cx - 0.044, 0.28, 1.0),
+        "LEFT_SHOULDER": (cx + 0.072, 0.50, 1.0), "RIGHT_SHOULDER": (cx - 0.072, 0.50, 1.0),
+        "LEFT_ELBOW": (cx + 0.094, 0.64, 1.0), "RIGHT_ELBOW": (cx - 0.094, 0.64, 1.0),
+        "LEFT_WRIST": (cx + 0.104, 0.78, 1.0), "RIGHT_WRIST": (cx - 0.104, 0.78, 1.0),
+        "LEFT_HIP": (cx + 0.052, 0.84, 1.0), "RIGHT_HIP": (cx - 0.052, 0.84, 1.0),
+    }
 
 
 def _draw_demo_person(frame: np.ndarray, cx: int, cy: int, shirt: tuple[int, int, int], hair: tuple[int, int, int]) -> None:

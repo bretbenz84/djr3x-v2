@@ -122,6 +122,10 @@ GUI_BACKEND = "pyside6"
 GUI_WINDOW_TITLE = "DJ-R3X Control Dashboard"
 GUI_FPS = 20
 GUI_CAMERA_PREVIEW_ENABLED = True
+# Draw the detected body pose as a live wireframe skeleton over the camera preview
+# (in addition to the green face boxes). Reads world_state.people[*].pose_keypoints,
+# published by vision/pose.py. Off → boxes only.
+GUI_POSE_WIREFRAME_ENABLED = True
 GUI_SERVO_SIM_ENABLED = True
 GUI_CONVERSATION_LOG_MAX_LINES = 300
 GUI_AVATAR_SMOOTHING = 0.25
@@ -2171,15 +2175,15 @@ PROXEMICS_INTIMATE_MIN_FRACTION = 0.65  # above this → intimate zone
 PROXEMICS_SOCIAL_MIN_FRACTION   = 0.30  # above this → social zone; below → public zone
 
 # Master switch for body-pose/gesture detection (vision/pose.py). Off → no gesture
-# cues (incl. wave-back); face-based proxemics still work. Kill switch if the pose
-# model is missing or pose detection misbehaves on a given build.
+# cues (incl. wave-back) and no GUI skeleton overlay; face-based proxemics still work.
+# Kill switch if the pose model is missing or pose detection misbehaves on a build.
 POSE_DETECTION_ENABLED = _env_bool("POSE_DETECTION_ENABLED", True)
 
-# Pose runs pull-based inside the consciousness loop, so its effective sampling rate is
-# capped by CONSCIOUSNESS_LOOP_INTERVAL_SECS (~1s). Keep this <= that so pose is sampled
-# every tick — a wave is a brief gesture and a 2s interval used to miss it entirely.
-# Set to 0 to attempt pose analysis every consciousness tick.
-POSE_ANALYSIS_INTERVAL_SECS = 0.5
+# Pose runs in its OWN background loop (vision.pose.start(), like face_expression) rather
+# than off the ~1 Hz consciousness tick, so the GUI skeleton overlay and wave-back stay
+# live. This is that loop's sampling period; ~5 Hz keeps the wireframe smooth without much
+# CPU (pose "lite" is cheap). Raise it to spend less CPU at the cost of a choppier overlay.
+POSE_ANALYSIS_INTERVAL_SECS = 0.2
 
 # Wave back when a visible person waves at Rex. The pose pipeline classifies a "waving"
 # gesture onto world_state.people (a hand raised out to the side — see vision/pose.py);
