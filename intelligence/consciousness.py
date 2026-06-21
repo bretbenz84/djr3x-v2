@@ -271,6 +271,10 @@ _facial_expression_observed: dict[str, dict] = {}
 _last_wave_reaction_at: float = 0.0
 _wave_reacted_keys: dict[str, float] = {}
 _pending_wave_back: Optional[dict] = None
+# Repeat-wave comedy bit: per-person (last_response_monotonic, consecutive_wave_count).
+# Consecutive waves escalate (greet → silent wave → joke → give-up → ignore); the count
+# resets after WAVE_BACK_ESCALATION_RESET_SECS with no wave from that person.
+_wave_escalation: dict[str, tuple[float, int]] = {}
 _facial_expression_reacted_at: dict[tuple[str, str], float] = {}
 _last_facial_expression_reaction_at: float = 0.0
 _last_expression_reaction_line_by_kind: dict[str, str] = {}
@@ -2477,6 +2481,32 @@ def _wave_back_line(first_name: str) -> str:
     return random.choice(pool) if pool else "Hey there!"
 
 
+def _wave_joke_line() -> str:
+    pool = list(getattr(config, "WAVE_BACK_JOKE_LINES", []) or [])
+    return random.choice(pool) if pool else "Still waving? We've established I have arms."
+
+
+def _wave_giveup_line() -> str:
+    pool = list(getattr(config, "WAVE_BACK_GIVEUP_LINES", []) or [])
+    return random.choice(pool) if pool else "Okay, that's the last one."
+
+
+def _wave_response_plan(level: int, first_name: str) -> tuple[Optional[str], bool, bool]:
+    """The escalating repeat-wave bit. Returns (line, should_speak, should_gesture) for the
+    Nth consecutive wave from a person:
+      1 greet + wave · 2 silent wave · 3 joke + wave · 4 give-up joke (no wave) · 5+ ignore.
+    """
+    if level <= 1:
+        return (_wave_back_line(first_name), True, True)
+    if level == 2:
+        return (None, False, True)            # silent wave-back
+    if level == 3:
+        return (_wave_joke_line(), True, True)
+    if level == 4:
+        return (_wave_giveup_line(), True, False)  # protest, no wave
+    return (None, False, False)               # level >= 5: he's done — ignore
+
+
 def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
     """If a visible person waves, wave back (+ one short warm greeting) — the way you'd
     return a wave from across a room.
@@ -2495,7 +2525,7 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
     if not bool(getattr(config, "WAVE_BACK_ENABLED", True)):
         return
     now = time.monotonic()
-    per_person_cd = float(getattr(config, "WAVE_BACK_PER_PERSON_COOLDOWN_SECS", 25.0))
+    per_person_cd = float(getattr(config, "WAVE_BACK_PER_PERSON_COOLDOWN_SECS", 6.0))
 
     # ── (A) Detect a fresh wave and latch it (runs even while Rex is busy) ──────────
     for person in snapshot.get("people", []) or []:
@@ -2524,48 +2554,56 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
         _log.info("consciousness: wave-back expired for %s — Rex wasn't free within %.0fs",
                   pending.get("key"), ttl)
         return
-    if (now - _last_wave_reaction_at) < float(getattr(config, "WAVE_BACK_MIN_GAP_SECS", 8.0)):
-        return
-    if profile.user_mid_sentence:
-        return  # don't talk over the person while they're speaking
-
-    # reactive=True: a wave is a direct bid for Rex's attention, so it breaks through the
-    # awaiting-reply / active-conversation / pacing gates. It STILL yields to live speech /
-    # music / a game / a pending proactive line (so it doesn't talk over anything), which
-    # is exactly what the latch above is for — it waits for that window.
-    if not _can_proactive_speak(reactive=True):
+    if (now - _last_wave_reaction_at) < float(getattr(config, "WAVE_BACK_MIN_GAP_SECS", 4.0)):
         return
 
-    # Speak DIRECTLY (governed=False): a wave-back is a reaction, not a proactive volunteer
-    # to be arbitrated. Under the action governor (ENFORCE) wave_back is a priority-20
-    # candidate, so it was out-prioritized by greetings / idle banter and dropped, and
-    # burned by the proactive cooldown (logged 2026-06-20). governed=False routes past
-    # arbitration; _speak_async returns True only when it actually queued speech.
-    spoke = _speak_async(
-        _wave_back_line(pending.get("name") or ""),
-        emotion="happy",
-        purpose="wave_back",
-        label="wave back",
-        governed=False,
-        reactive=True,
-    )
-    if not spoke:
-        # Couldn't speak this tick (e.g. Rex mid-utterance). Keep the latch and DON'T mark
-        # the per-person debounce — the next tick tries again until the wave is acknowledged
-        # (or the latch TTL expires).
-        return
+    key = pending["key"]
+    name = pending.get("name") or ""
 
-    _wave_reacted_keys[pending["key"]] = now
-    _last_wave_reaction_at = now
+    # Escalation level = how many consecutive waves from this person (resets after a gap).
+    level = 1
+    if bool(getattr(config, "WAVE_BACK_ESCALATION_ENABLED", True)):
+        reset = float(getattr(config, "WAVE_BACK_ESCALATION_RESET_SECS", 30.0))
+        last_t, prev = _wave_escalation.get(key, (0.0, 0))
+        if (now - last_t) <= reset:
+            level = prev + 1
+    line, should_speak, should_gesture = _wave_response_plan(level, name)
+
+    # Speaking levels must clear the speech gates; if blocked, HOLD the latch and retry
+    # without advancing the bit (so the joke lands when Rex is actually free, not lost).
+    # reactive=True breaks through awaiting-reply/active-conversation/pacing but still yields
+    # to live speech/music/games; governed=False routes past the action-governor tournament.
+    if should_speak:
+        if profile.user_mid_sentence:
+            return  # don't talk over the person while they're speaking
+        if not _can_proactive_speak(reactive=True):
+            return
+        spoke = _speak_async(
+            line, emotion="happy", purpose="wave_back", label="wave back",
+            governed=False, reactive=True,
+        )
+        if not spoke:
+            return
+
+    # Responded (spoke and/or waved, or deliberately ignored at high levels) — advance the
+    # bit and consume the wave so a sustained wave doesn't re-trigger it.
+    _wave_escalation[key] = (now, level)
+    _wave_reacted_keys[key] = now
     _pending_wave_back = None
-    # Wave the arm (non-blocking): raise the arm and sweep the wrist between both travel
-    # limits. Failure-safe / no-ops without servos.
-    try:
-        from sequences import animations
-        animations.wave_back_gesture()
-    except Exception as exc:
-        _log.debug("wave-back animation skipped: %s", exc)
-    _log.info("consciousness: wave-back fired for %s", pending["key"])
+    if should_speak or should_gesture:
+        _last_wave_reaction_at = now
+    if should_gesture:
+        # Raise the arm and sweep the wrist between both travel limits (non-blocking;
+        # failure-safe / no-ops without servos).
+        try:
+            from sequences import animations
+            animations.wave_back_gesture()
+        except Exception as exc:
+            _log.debug("wave-back animation skipped: %s", exc)
+    _log.info(
+        "consciousness: wave-back for %s — level=%d speak=%s gesture=%s",
+        key, level, should_speak, should_gesture,
+    )
 
 
 def _step_smile_reaction(snapshot: dict, profile: SituationProfile) -> None:
@@ -10738,6 +10776,7 @@ def start() -> None:
     _facial_expression_observed.clear()
     _facial_expression_reacted_at.clear()
     _wave_reacted_keys.clear()
+    _wave_escalation.clear()
     _pending_wave_back = None
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()
@@ -10855,6 +10894,7 @@ def stop() -> None:
     _facial_expression_observed.clear()
     _facial_expression_reacted_at.clear()
     _wave_reacted_keys.clear()
+    _wave_escalation.clear()
     _pending_wave_back = None
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()

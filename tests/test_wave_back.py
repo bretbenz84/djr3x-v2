@@ -43,11 +43,13 @@ class WaveBackHelpersTest(unittest.TestCase):
 class StepWaveReactionTest(unittest.TestCase):
     def setUp(self):
         c._wave_reacted_keys.clear()
+        c._wave_escalation.clear()
         c._last_wave_reaction_at = 0.0
         c._pending_wave_back = None
 
     def tearDown(self):
         c._wave_reacted_keys.clear()
+        c._wave_escalation.clear()
         c._last_wave_reaction_at = 0.0
         c._pending_wave_back = None
 
@@ -156,6 +158,55 @@ class StepWaveReactionTest(unittest.TestCase):
              mock.patch("sequences.animations.wave_back_gesture"):
             c._step_wave_reaction({"people": [_waving(person_db_id=None, face_id=None)]}, _Profile())
         self.assertEqual(captured.get("line"), "Hey there!")
+
+
+class WaveEscalationTest(unittest.TestCase):
+    """Repeat-wave comedy bit: greet → silent wave → joke → give-up → ignore."""
+
+    def setUp(self):
+        c._wave_reacted_keys.clear()
+        c._wave_escalation.clear()
+        c._last_wave_reaction_at = 0.0
+        c._pending_wave_back = None
+        self.addCleanup(c._wave_escalation.clear)
+        self.addCleanup(c._wave_reacted_keys.clear)
+
+    def test_response_plan_per_level(self):
+        plan = c._wave_response_plan
+        # (line, should_speak, should_gesture)
+        l, s, g = plan(1, "Bret"); self.assertTrue(s and g and l)        # greet + wave
+        l, s, g = plan(2, "Bret"); self.assertEqual((bool(l), s, g), (False, False, True))   # silent wave
+        l, s, g = plan(3, "Bret"); self.assertTrue(s and g and l)        # joke + wave
+        l, s, g = plan(4, "Bret"); self.assertEqual((bool(l), s, g), (True, True, False))    # give-up, no wave
+        l, s, g = plan(5, "Bret"); self.assertEqual((bool(l), s, g), (False, False, False))  # ignore
+
+    def _fire(self, prev_level):
+        """Drive one wave with a given pre-existing escalation level; return ('speak'|'gesture')."""
+        import time
+        events = []
+        c._wave_reacted_keys.clear()       # so phase A latches a fresh wave
+        c._last_wave_reaction_at = 0.0
+        c._pending_wave_back = None
+        if prev_level > 0:
+            c._wave_escalation["db:1"] = (time.monotonic(), prev_level)
+        else:
+            c._wave_escalation.pop("db:1", None)
+        with mock.patch.object(c, "_can_proactive_speak", return_value=True), \
+             mock.patch.object(c, "_first_name", return_value="Bret"), \
+             mock.patch.object(c, "_speak_async",
+                               side_effect=lambda *a, **k: events.append("speak") or True), \
+             mock.patch("sequences.animations.wave_back_gesture",
+                        side_effect=lambda *a, **k: events.append("gesture") or True):
+            c._step_wave_reaction({"people": [_waving()]}, _Profile())
+        return events
+
+    def test_escalation_sequence(self):
+        self.assertEqual(self._fire(0), ["speak", "gesture"])   # 1st: greet + wave
+        self.assertEqual(self._fire(1), ["gesture"])            # 2nd: silent wave
+        self.assertEqual(self._fire(2), ["speak", "gesture"])   # 3rd: joke + wave
+        self.assertEqual(self._fire(3), ["speak"])              # 4th: give-up, no wave
+        self.assertEqual(self._fire(4), [])                     # 5th: ignored
+        self.assertEqual(self._fire(7), [])                     # still ignored
 
 
 if __name__ == "__main__":

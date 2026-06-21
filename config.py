@@ -2257,6 +2257,32 @@ WAVE_BACK_LINES_NO_NAME = [
     "Greetings, lifeform.",
 ]
 
+# Repeat-wave comedy bit: consecutive waves from the SAME person escalate instead of just
+# repeating the greeting. 1st = normal greeting + wave; 2nd = silent wave-back (no line);
+# 3rd = a joke + wave; 4th = a give-up joke (no wave); 5th+ = he ignores you until you stop.
+# The level resets after WAVE_BACK_ESCALATION_RESET_SECS with no wave (so a wave much later
+# starts fresh at the greeting). Set WAVE_BACK_ESCALATION_ENABLED False to always greet.
+WAVE_BACK_ESCALATION_ENABLED = _env_bool("WAVE_BACK_ESCALATION_ENABLED", True)
+WAVE_BACK_ESCALATION_RESET_SECS = _env_float(
+    "WAVE_BACK_ESCALATION_RESET_SECS", 30.0, min_value=2.0, max_value=600.0,
+)
+# 3rd-wave lines — Rex notices you keep waving (deadpan, no name needed).
+WAVE_BACK_JOKE_LINES = [
+    "Still waving? My arm and I are flattered.",
+    "Yes, I have arms. We've covered this.",
+    "Three waves in. We're basically pen pals now.",
+    "I see you. I saw you the last two times, too.",
+    "My wave servo is logging overtime.",
+]
+# 4th-wave lines — Rex taps out (deadpan, also a joke; no wave with these).
+WAVE_BACK_GIVEUP_LINES = [
+    "Okay, that's the last one — my actuators just unionized.",
+    "I'm tapping out. Wave at the chest lights from here on.",
+    "Done waving. I do have other features, you know.",
+    "That's a wrap on the arm. Further waves go under cardio.",
+    "I'm retiring this wave. It had a good run.",
+]
+
 # Personal-space reaction for camera proxemics. "Intimate" means the face fills
 # enough of the frame that, by American conversational norms, Rex can treat the
 # person as comically too close.
