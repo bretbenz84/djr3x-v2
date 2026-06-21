@@ -6,7 +6,7 @@ import logging
 import math
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -77,6 +77,47 @@ _EPHEMERAL_TIME_RE = re.compile(
 
 def _is_ephemeral_statement(fact: dict) -> bool:
     return bool(_EPHEMERAL_TIME_RE.search(str(fact.get("value") or "")))
+
+
+# Week/month-scale future-relative phrases. Unlike the day-scale _EPHEMERAL_TIME_RE
+# (which drops the fact entirely), these are real but TIME-BOUND ("training for a
+# marathon next month", "camping next week") — true now, wrong once the window passes.
+# They get a short stale horizon + fast decay so they age out of prompt injection
+# instead of being recited as standing traits forever.
+_FUTURE_RELATIVE_PATTERNS = (
+    (re.compile(r"\bin\s+(\d{1,2})\s+days?\b", re.IGNORECASE), lambda m: int(m.group(1)) + 3),
+    (re.compile(r"\bin\s+(\d{1,2})\s+weeks?\b", re.IGNORECASE), lambda m: int(m.group(1)) * 7 + 5),
+    (re.compile(r"\bin\s+(\d{1,2})\s+months?\b", re.IGNORECASE), lambda m: int(m.group(1)) * 31 + 7),
+    (re.compile(r"\b(?:this|next)\s+weekend\b", re.IGNORECASE), lambda m: 10),
+    (re.compile(r"\bnext\s+week\b", re.IGNORECASE), lambda m: 12),
+    (re.compile(r"\b(?:later\s+)?this\s+week\b", re.IGNORECASE), lambda m: 8),
+    (re.compile(r"\bnext\s+month\b", re.IGNORECASE), lambda m: 38),
+    (re.compile(r"\bin\s+a\s+(?:few\s+)?weeks?\b", re.IGNORECASE), lambda m: 20),
+    (re.compile(r"\bin\s+a\s+month\b", re.IGNORECASE), lambda m: 38),
+)
+
+
+def _time_bound_stale_days(value: str) -> Optional[int]:
+    """Return a short stale horizon (days) when a value pins to a future window, else None."""
+    text = str(value or "")
+    best: Optional[int] = None
+    for pattern, days_fn in _FUTURE_RELATIVE_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            try:
+                days = max(1, int(days_fn(m)))
+            except Exception:
+                continue
+            best = days if best is None else min(best, days)
+    return best
+
+
+def _reconfirm_min_hours() -> float:
+    try:
+        import config
+        return float(getattr(config, "MEMORY_RECONFIRM_MIN_HOURS", 6.0))
+    except Exception:
+        return 6.0
 
 
 def _now() -> str:
@@ -272,6 +313,14 @@ def add_fact(
     )
     decay_value = _decay_rate(category, key, normalized_source, decay_rate)
     stale_days_value = _default_stale_after_days(decay_value, stale_after_days)
+    # A time-bound value ("next month") gets a short horizon + fast decay so it expires
+    # out of prompt injection once its window passes (never override a permanent fact).
+    time_bound_days = _time_bound_stale_days(value)
+    if time_bound_days is not None and decay_value != "permanent":
+        decay_value = "fast"
+        stale_days_value = (
+            time_bound_days if stale_days_value is None else min(stale_days_value, time_bound_days)
+        )
     existing = db.fetchone(
         "SELECT * FROM person_facts WHERE person_id = ? AND key = ?",
         (person_id, key),
@@ -285,8 +334,24 @@ def add_fact(
         prior_importance = _clamp(row.get("importance", 0.5))
         prior_evidence = int(row.get("evidence_count") or 1)
         if same_value:
-            new_confidence = min(1.0, max(prior_conf, confidence) + 0.05)
-            evidence_count = prior_evidence + 1
+            # Corroboration must be SPACED to count: a fact repeated within the reconfirm
+            # window (same conversation) refreshes recency but does NOT inflate evidence
+            # or confidence — that's what produced "13 confirmations" on idle chatter. A
+            # genuine later-session re-mention (window elapsed) still strengthens it.
+            last_conf_dt = _parse_dt(row.get("last_confirmed_at"))
+            within_window = (
+                last_conf_dt is not None
+                and (datetime.now(timezone.utc) - last_conf_dt)
+                < timedelta(hours=_reconfirm_min_hours())
+            )
+            if within_window:
+                new_confidence = prior_conf
+                evidence_count = prior_evidence
+                confirmed_at = row.get("last_confirmed_at") or now
+            else:
+                new_confidence = min(1.0, max(prior_conf, confidence) + 0.05)
+                evidence_count = prior_evidence + 1
+                confirmed_at = now
             corrected_at = row.get("corrected_at")
         else:
             if (
@@ -303,6 +368,7 @@ def add_fact(
                 return
             new_confidence = confidence
             evidence_count = 1
+            confirmed_at = now
             corrected_at = now if normalized_source == "corrected" else row.get("corrected_at")
         db.execute(
             """UPDATE person_facts
@@ -317,7 +383,7 @@ def add_fact(
                 normalized_source,
                 new_confidence,
                 now,
-                now,
+                confirmed_at,
                 evidence_count,
                 max(prior_importance, importance_value),
                 decay_value,
@@ -419,7 +485,29 @@ def fact_topic_overlap(fact: dict, topic_tokens) -> int:
     return len(words & set(topic_tokens))
 
 
-def get_prompt_worthy_facts(person_id: int, limit: int = 12, *, topic_tokens=None) -> list[dict]:
+def _is_expired_provisional(fact: dict) -> bool:
+    """True for a fast-decay fact that's gone stale and was never corroborated — the
+    'decay queue': a one-off inference or a passed time-bound plan that should no longer
+    be proactively recited. Corroborated facts (evidence >= 2) and permanent/normal
+    facts are kept."""
+    return (
+        fact.get("decay_rate") == "fast"
+        and fact.get("freshness_label") == "stale"
+        and int(fact.get("evidence_count") or 1) < 2
+    )
+
+
+def _fact_hits_mute(fact: dict, mute_terms: set) -> bool:
+    if not mute_terms:
+        return False
+    text = " ".join(str(fact.get(k) or "") for k in ("key", "value", "category")).lower()
+    words = set(re.findall(r"[a-z0-9]+", text))
+    return bool(words & mute_terms)
+
+
+def get_prompt_worthy_facts(
+    person_id: int, limit: int = 12, *, topic_tokens=None, mute_terms=None
+) -> list[dict]:
     """Return prompt-worthy facts ranked by importance, confidence, recency, and use.
 
     When `topic_tokens` is given, a relevance bonus lifts facts that mention what the
@@ -428,11 +516,24 @@ def get_prompt_worthy_facts(person_id: int, limit: int = 12, *, topic_tokens=Non
     original static importance ranking, unchanged.
 
     Skips relative-day statements ("today is …") — see _is_ephemeral_statement —
-    so a one-day-true line isn't recited as a standing fact forever.
+    so a one-day-true line isn't recited as a standing fact forever. Also drops
+    expired-provisional facts (the decay queue) and, when `mute_terms` is supplied,
+    facts whose topic an active boundary has asked Rex not to raise. These filters
+    affect PROACTIVE injection only — get_facts stays unfiltered for direct recall.
     """
+    drop_provisional = True
+    try:
+        import config
+        drop_provisional = bool(getattr(config, "MEMORY_DROP_STALE_PROVISIONAL", True))
+    except Exception:
+        pass
+    mute = set(mute_terms) if mute_terms else None
     facts = [
         f for f in get_facts(person_id)
-        if f.get("key") != "skin_color" and not _is_ephemeral_statement(f)
+        if f.get("key") != "skin_color"
+        and not _is_ephemeral_statement(f)
+        and not (drop_provisional and _is_expired_provisional(f))
+        and not _fact_hits_mute(f, mute)
     ]
     boost = float(_relevance_boost()) if topic_tokens else 0.0
     cap = int(_relevance_max_matches())

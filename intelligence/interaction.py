@@ -11725,6 +11725,18 @@ def _extracted_memory_allowed(payload: dict, person_id: Optional[int]) -> bool:
     return not forgetting.fact_or_event_matches(payload, terms)
 
 
+def _extracted_fact_provenance() -> tuple[str, Optional[float]]:
+    """Source/confidence for a fact the LLM EXTRACTED (an inference, not a direct
+    statement). When MEMORY_EXTRACTED_FACTS_PROVISIONAL is on it's stored 'inferred'
+    (provisional: lower confidence, fast decay, hedged in the prompt) and earns trust
+    only through spaced corroboration — instead of faking explicit/0.95 on one passing
+    remark. Direct user statements and corrections keep their own explicit/corrected
+    source at their call sites; this only governs the extract_facts paths."""
+    if bool(getattr(config, "MEMORY_EXTRACTED_FACTS_PROVISIONAL", True)):
+        return "inferred", None  # None → add_fact applies the inferred default confidence
+    return "explicit", 0.95
+
+
 def _conversation_exchange_count() -> int:
     """Transcript length so far — the cadence clock (~2 lines per back-and-forth).
 
@@ -12027,13 +12039,14 @@ def _post_response(
                         and fact.get("value")
                         and _extracted_memory_allowed(fact, person_id)
                     ):
+                        _ext_src, _ext_conf = _extracted_fact_provenance()
                         facts_memory.add_fact(
                             person_id,
                             fact.get("category", "other"),
                             fact["key"],
                             fact["value"],
-                            source="explicit",
-                            confidence=0.95,
+                            source=_ext_src,
+                            confidence=_ext_conf,
                         )
                         _record_recent_memory_candidate(
                             person_id,
@@ -12840,13 +12853,14 @@ def _end_session() -> None:
                             and fact.get("value")
                             and _extracted_memory_allowed(fact, person_id)
                         ):
+                            _ext_src, _ext_conf = _extracted_fact_provenance()
                             facts_memory.add_fact(
                                 person_id,
                                 fact.get("category", "other"),
                                 fact["key"],
                                 fact["value"],
-                                source="explicit",
-                                confidence=0.95,
+                                source=_ext_src,
+                                confidence=_ext_conf,
                             )
                             _record_recent_memory_candidate(
                                 person_id,

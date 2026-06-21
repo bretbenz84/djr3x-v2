@@ -556,7 +556,17 @@ def _build_person_context(person_id: int) -> str:
     # skin_color is stored for recognition only — never inject into LLM context.
     # topic_tokens (when present) lift facts that match what they JUST said to the top,
     # so Rex surfaces the RIGHT memory because it fit — see _live_topic_tokens.
-    facts = facts_db.get_prompt_worthy_facts(person_id, limit=12, topic_tokens=topic_tokens)
+    # mute_terms drop facts whose topic an active "don't bring up X" boundary covers, so
+    # a consent boundary actually suppresses the matching fact instead of sitting beside it.
+    mute_terms = None
+    try:
+        if getattr(config, "MEMORY_BOUNDARY_SUPPRESSES_FACTS", True):
+            mute_terms = boundaries_db.muted_topic_terms(person_id)
+    except Exception as exc:
+        _log.debug("boundary fact-mute terms skipped: %s", exc)
+    facts = facts_db.get_prompt_worthy_facts(
+        person_id, limit=12, topic_tokens=topic_tokens, mute_terms=mute_terms
+    )
     _log.info("[llm] loaded %d facts for %s", len(facts), name)
     if facts:
         relevant_facts: list = []

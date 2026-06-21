@@ -263,6 +263,56 @@ def is_blocked(person_id: int, behavior: str, topic: str) -> bool:
     return False
 
 
+# Scaffolding words from boundary phrasings that are NOT the topic itself — stripped so
+# a stored value like "do not bring up his mother" yields the topic token {mother}.
+_MUTE_PHRASE_STOP = {
+    "do", "not", "dont", "don", "please", "never", "ever", "again", "stop", "keep",
+    "bring", "brought", "up", "talk", "talking", "talked", "mention", "mentioning",
+    "comment", "commenting", "ask", "asking", "raise", "raising", "discuss",
+    "discussing", "about", "the", "and", "for", "his", "her", "their", "your", "our",
+    "him", "them", "topic", "subject", "stuff", "thing", "things", "anymore", "any",
+    "more", "with", "over", "this", "that",
+}
+
+
+def _topic_terms(text: str) -> set[str]:
+    return {
+        t for t in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if len(t) >= 3 and t not in _MUTE_PHRASE_STOP
+    }
+
+
+def muted_topic_terms(person_id: int) -> set[str]:
+    """Topic tokens Rex has been asked NOT to bring up — from active conversation
+    boundaries (a mention/bring-up behavior) AND boundary/avoids preferences. Used to
+    suppress matching facts from PROACTIVE prompt injection so a 'don't bring up my
+    mother' boundary actually mutes the mother fact. The fact stays in the DB and
+    direct recall still reads it. 'Don't ASK / don't ROAST' boundaries are excluded —
+    Rex may still know the fact, he just won't ask about or tease it."""
+    terms: set[str] = set()
+    try:
+        for row in get_boundaries(person_id, active_only=True):
+            if _normalize_behavior(row.get("behavior") or "") != "mention":
+                continue
+            topic = _normalize_topic(row.get("topic") or "")
+            if topic in {"anything", "questions", "how are you", _DEFAULT_TOPIC}:
+                continue
+            terms |= _topic_terms(topic)
+    except Exception as exc:
+        _log.debug("muted_topic_terms boundary scan failed: %s", exc)
+    try:
+        from memory import preferences as preferences_db
+        for pref in preferences_db.find_preference(person_id):
+            if (pref.get("preference_type") or "") not in {"boundary", "avoids"}:
+                continue
+            key = (pref.get("key") or "").replace("_topic", " ").replace("_", " ")
+            terms |= _topic_terms(key)
+            terms |= _topic_terms(pref.get("value") or "")
+    except Exception as exc:
+        _log.debug("muted_topic_terms preference scan failed: %s", exc)
+    return terms
+
+
 def detect_boundary(
     text: str,
     *,

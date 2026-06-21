@@ -822,6 +822,29 @@ MEMORY_TOPIC_RELEVANCE_MAX_MATCHES = 3
 # Cap on how many facts/interests go in the "Relevant to what they just said" block.
 MEMORY_TOPIC_RELEVANT_MAX = 4
 
+# ── Memory trust: confidence, corroboration, expiry, boundaries (Tier C) ─────────
+# LLM-extracted facts are INFERENCES, not direct statements. When True they're stored
+# as source="inferred" (provisional: lower confidence, fast decay, hedged in the
+# prompt) instead of being faked as explicit/0.95 — so a single passing remark doesn't
+# become a durable high-confidence fact. They earn trust through corroboration across
+# sessions (evidence_count). Direct user statements / corrections stay explicit. Off →
+# legacy behavior (extracted facts written explicit @0.95).
+MEMORY_EXTRACTED_FACTS_PROVISIONAL = True
+# A re-mention only strengthens a fact (evidence_count++, confidence+0.05) when the last
+# confirmation was at least this many hours ago. Stops a fact repeated five times in one
+# conversation from reading as five independent confirmations ("13 confirmations" on
+# chatter). A genuine next-session re-mention still counts.
+MEMORY_RECONFIRM_MIN_HOURS = 6.0
+# Drop a fact from PROACTIVE prompt injection once it's stale AND fast-decay AND never
+# corroborated (evidence_count < 2) — the "decay queue" so a one-off inference or a
+# time-bound plan ("camping next month") fades instead of being recited forever. Direct
+# recall ("what do you remember about X?") still reads it (get_facts is unfiltered).
+MEMORY_DROP_STALE_PROVISIONAL = True
+# Suppress a fact from proactive injection when an active "don't bring up X" boundary
+# (conversation boundary or boundary/avoids preference) covers its topic — so a
+# do-not-mention boundary actually mutes the matching fact, not just sits beside it.
+MEMORY_BOUNDARY_SUPPRESSES_FACTS = True
+
 # ── PHASE 2: episodic RECALL (reading the diary back into behavior) ──────────────
 # SEPARATE kill switch from capture (EPISODIC_MEMORY_ENABLED). Off → recall is inert:
 # rex.db is still written, but nothing is ever surfaced. Env override: EPISODIC_RECALL_ENABLED.
