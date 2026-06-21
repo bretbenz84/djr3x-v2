@@ -72,14 +72,20 @@ _INCOMPLETE_END_WORDS = {
     "without",
     # Common danglers that were missing — "well we're currently in" (the live
     # case where Rex interrupted a mid-sentence pause) ends with "in".
-    "in", "on", "at", "of", "as", "by", "up", "out", "over",
+    "in", "at", "of", "as", "by",
     "a", "an", "my", "our",
-    # NOTE: "before" and "after" are deliberately NOT here — they are far more
-    # often sentence-final adverbs ("never done that before", "the morning after")
-    # than danglers, and mlx_whisper rarely emits the terminal punctuation that
-    # would otherwise save them. The genuinely-dangling forms ("before I left",
-    # "after the show") are caught by _INCOMPLETE_END_PHRASES below. Live failure
-    # 2026-06-17: "doing things I've never done before" -> "Finish the sentence?".
+    # NOTE: "before"/"after" — and the intransitive particles "over", "out", "up",
+    # "on" — are deliberately NOT here. Sentence-finally they are far more often a
+    # COMPLETE predicate/adverb ("the weekend's almost over", "time's up", "I'm
+    # out", "the lights are on", "never done that before", "the morning after")
+    # than a dangling preposition, and mlx_whisper rarely emits the terminal
+    # punctuation that would otherwise save them — so treating them as bare
+    # danglers misfires the "Finish the sentence?" repair on finished turns. The
+    # genuinely-dangling forms ("before I left", "after the show", "going to",
+    # "supposed to") are caught by _INCOMPLETE_END_PHRASES below, which carry the
+    # disambiguating left context. Live failures: 2026-06-17 "doing things I've
+    # never done before"; 2026-06-21 "The weekend's almost over" -> "Finish the
+    # sentence?".
 }
 _INCOMPLETE_END_PHRASES = (
     "about to",

@@ -546,10 +546,18 @@ class TurnTakingTest(unittest.TestCase):
         from intelligence import turn_completion
         # "before"/"after" are sentence-final adverbs here, not danglers (live failure:
         # "doing things I've never done before" -> "Finish the sentence?").
+        # The intransitive particles "over"/"out"/"up"/"on" are the same class
+        # (live failure 2026-06-21: "The weekend's almost over" -> "Finish the
+        # sentence?") — sentence-finally they are a complete predicate, not a
+        # dangling preposition.
         for complete in (
             "doing things I've never done before",
             "I have seen this movie before",
             "the morning after",
+            "The weekend's almost over",
+            "time is almost up",
+            "I'm heading out",
+            "the lights are still on",
         ):
             self.assertIsNone(
                 turn_completion.classify(complete), f"falsely held: {complete!r}"
@@ -557,6 +565,8 @@ class TurnTakingTest(unittest.TestCase):
         # The genuinely-dangling subordinating-conjunction forms are still held.
         self.assertIsNotNone(turn_completion.classify("I have to leave before we"))
         self.assertIsNotNone(turn_completion.classify("let's grab food after the"))
+        # And a real dangling preposition still held ("...currently in").
+        self.assertIsNotNone(turn_completion.classify("well we're currently in"))
 
     def test_rhetorical_reformulation_does_not_expect_a_response(self):
         from intelligence import interaction
