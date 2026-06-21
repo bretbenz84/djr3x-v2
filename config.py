@@ -420,6 +420,10 @@ MEDIAPIPE_FACE_LANDMARKER_MODEL = "assets/models/face/face_landmarker.task"
 MEDIAPIPE_OBJECT_DETECTOR_MODEL = (
     "assets/models/object_detection/efficientdet_lite0.tflite"
 )
+# MediaPipe Tasks Pose Landmarker (body pose / gesture, incl. wave-back). Downloaded
+# by setup_assets.py and tracked in git so it reaches the robot on pull. "lite" is the
+# fastest variant — plenty for the geometric gesture heuristics in vision/pose.py.
+MEDIAPIPE_POSE_LANDMARKER_MODEL = "assets/models/pose/pose_landmarker_lite.task"
 
 # Skip mmod entirely and use HOG from the start. mmod averages >400ms/frame on
 # FaceTime camera — HOG is sufficient for this use case. Set False to re-enable mmod.
@@ -2166,14 +2170,22 @@ SPEAKER_GAZE_STARTUP_SCAN_ENABLED = _env_bool("SPEAKER_GAZE_STARTUP_SCAN_ENABLED
 PROXEMICS_INTIMATE_MIN_FRACTION = 0.65  # above this → intimate zone
 PROXEMICS_SOCIAL_MIN_FRACTION   = 0.30  # above this → social zone; below → public zone
 
-# MediaPipe pose can be heavier than face recognition, so sample it at a lower
-# rate. Set to 0 to attempt pose analysis every consciousness tick.
-POSE_ANALYSIS_INTERVAL_SECS = 2.0
+# Master switch for body-pose/gesture detection (vision/pose.py). Off → no gesture
+# cues (incl. wave-back); face-based proxemics still work. Kill switch if the pose
+# model is missing or pose detection misbehaves on a given build.
+POSE_DETECTION_ENABLED = _env_bool("POSE_DETECTION_ENABLED", True)
 
-# Wave back when a visible person waves at Rex. The pose pipeline already classifies a
-# "waving" gesture onto world_state.people (every POSE_ANALYSIS_INTERVAL_SECS); this fires
-# Rex's wave-back animation + one short warm line, debounced so it reacts once per wave.
-# Requires MediaPipe pose (installed) to detect the wave; degrades to nothing if absent.
+# Pose runs pull-based inside the consciousness loop, so its effective sampling rate is
+# capped by CONSCIOUSNESS_LOOP_INTERVAL_SECS (~1s). Keep this <= that so pose is sampled
+# every tick — a wave is a brief gesture and a 2s interval used to miss it entirely.
+# Set to 0 to attempt pose analysis every consciousness tick.
+POSE_ANALYSIS_INTERVAL_SECS = 0.5
+
+# Wave back when a visible person waves at Rex. The pose pipeline classifies a "waving"
+# gesture onto world_state.people (a hand raised out to the side — see vision/pose.py);
+# this fires Rex's wave-back animation + one short warm line, debounced so it reacts once
+# per wave. Requires the MediaPipe Pose Landmarker model + POSE_DETECTION_ENABLED; if the
+# model is missing or pose is disabled, wave-back degrades to nothing.
 WAVE_BACK_ENABLED = _env_bool("WAVE_BACK_ENABLED", True)
 # Don't wave back at the SAME person again for this long (one wave-back per greeting).
 WAVE_BACK_PER_PERSON_COOLDOWN_SECS = _env_float(

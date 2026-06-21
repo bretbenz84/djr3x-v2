@@ -106,7 +106,7 @@ from audio import (
     speaker_id,
     transcription,
 )
-from vision import camera, scene as vision_scene, face_expression, animal_detector
+from vision import camera, scene as vision_scene, face_expression, animal_detector, pose
 from awareness import chronoception, interoception
 from intelligence import consciousness, emotion_orchestrator, interaction, local_llm, motion_controller
 
@@ -662,6 +662,9 @@ def _shutdown() -> None:
 
     logger.info("Stopping vision.face_expression...")
     face_expression.stop()
+
+    logger.info("Stopping vision.pose...")
+    pose.stop()
 
     logger.info("Stopping vision.camera...")
     camera.stop()

@@ -227,6 +227,12 @@ assets/models/wake_word/*
 !assets/models/wake_word/_openwakeword_resources/
 assets/models/wake_word/_openwakeword_resources/*
 !assets/models/wake_word/_openwakeword_resources/*.onnx
+# Keep the MediaPipe pose model tracked so it reaches the robot on git push
+# (deploy = commit+push to main). It's ~5.5MB and otherwise wouldn't sync, leaving
+# wave-back / gesture detection silently disabled on-device.
+!assets/models/pose/
+assets/models/pose/*
+!assets/models/pose/*.task
 
 # TTS audio cache — rebuilt automatically from ElevenLabs
 assets/audio/tts_cache/

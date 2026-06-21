@@ -23,6 +23,7 @@ from config import (
     FACE_MODELS_DIR,
     MEDIAPIPE_OBJECT_DETECTOR_MODEL,
     MEDIAPIPE_FACE_LANDMARKER_MODEL,
+    MEDIAPIPE_POSE_LANDMARKER_MODEL,
     LOCAL_LLM_ENABLED,
     LOCAL_LLM_PROVIDER,
     OLLAMA_BASE_URL,
@@ -37,6 +38,7 @@ from config import (
 REQUIRED_DIRS = [
     "assets/models/wake_word",
     "assets/models/face",
+    "assets/models/pose",
     "assets/models/object_detection",
     "assets/models/whisper",
     "assets/models/resemblyzer",
@@ -72,6 +74,15 @@ MEDIAPIPE_FACE_LANDMARKER = {
     "url": (
         "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
         "face_landmarker/float16/latest/face_landmarker.task"
+    ),
+}
+
+MEDIAPIPE_POSE_LANDMARKER = {
+    "name": Path(MEDIAPIPE_POSE_LANDMARKER_MODEL).name,
+    "path": MEDIAPIPE_POSE_LANDMARKER_MODEL,
+    "url": (
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+        "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
     ),
 }
 
@@ -442,6 +453,34 @@ def download_mediapipe_face_landmarker(
     try:
         print(f"    Downloading {MEDIAPIPE_FACE_LANDMARKER['name']} ...")
         urllib.request.urlretrieve(MEDIAPIPE_FACE_LANDMARKER["url"], tmp, _progress)
+        print()
+        tmp.rename(dest)
+        return [label], [], []
+    except Exception as exc:
+        if tmp.exists():
+            tmp.unlink()
+        if dest.exists():
+            dest.unlink()
+        return [], [], [f"{label}: {exc}"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 3b — MediaPipe Pose Landmarker model (body pose / gesture, wave-back)
+# ─────────────────────────────────────────────────────────────────────────────
+def download_mediapipe_pose_landmarker(
+    root: Path,
+) -> tuple[list[str], list[str], list[str]]:
+    dest = root / MEDIAPIPE_POSE_LANDMARKER["path"]
+    label = f"pose/{MEDIAPIPE_POSE_LANDMARKER['name']}"
+
+    if dest.exists():
+        return [], [label], []
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".tmp")
+    try:
+        print(f"    Downloading {MEDIAPIPE_POSE_LANDMARKER['name']} ...")
+        urllib.request.urlretrieve(MEDIAPIPE_POSE_LANDMARKER["url"], tmp, _progress)
         print()
         tmp.rename(dest)
         return [label], [], []
@@ -912,7 +951,7 @@ def main() -> None:
     print("DJ-R3X v2 — setup_assets.py")
     print()
 
-    print("[1/8] Creating project directories ...")
+    print("[1/9] Creating project directories ...")
     dir_created = create_directories(root)
     count = len(dir_created)
     print(f"      {count} created." if count else "      All already exist.")
@@ -921,37 +960,42 @@ def main() -> None:
     all_skipped: list[str] = []
     all_failed:  list[str] = []
 
-    print("[2/8] dlib face recognition models ...")
+    print("[2/9] dlib face recognition models ...")
     c, s, f = download_dlib_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[3/8] MediaPipe Face Landmarker model ...")
+    print("[3/9] MediaPipe Face Landmarker model ...")
     c, s, f = download_mediapipe_face_landmarker(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[4/8] MediaPipe Object Detector model ...")
+    print("[4/9] MediaPipe Pose Landmarker model ...")
+    c, s, f = download_mediapipe_pose_landmarker(root)
+    all_created += c; all_skipped += s; all_failed += f
+    _report(c, s, f)
+
+    print("[5/9] MediaPipe Object Detector model ...")
     c, s, f = download_mediapipe_object_detector(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[5/8] mlx-whisper large-v3-turbo model ...")
+    print("[6/9] mlx-whisper large-v3-turbo model ...")
     c, s, f = download_whisper_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[6/8] Resemblyzer speaker-ID model ...")
+    print("[7/9] Resemblyzer speaker-ID model ...")
     c, s, f = download_resemblyzer_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[7/8] Ollama local sidecar model ...")
+    print("[8/9] Ollama local sidecar model ...")
     c, s, f = install_ollama_model()
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[8/8] Database schema and personality defaults ...")
+    print("[9/9] Database schema and personality defaults ...")
     c, s, f = initialize_database(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)

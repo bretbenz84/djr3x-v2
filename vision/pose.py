@@ -1,6 +1,13 @@
 """
 vision/pose.py — MediaPipe Pose estimation, gesture, pose, and engagement detection.
 
+Uses the modern MediaPipe Tasks API (``mp.tasks.vision.PoseLandmarker``). The legacy
+``mp.solutions.pose`` Python solution was REMOVED in mediapipe 0.10.x, so the old
+loader silently failed and no gesture (including "waving") was ever published — which
+is why wave-back never fired on-device. This mirrors the same Tasks-API pattern already
+used by ``vision/face_expression.py`` and ``vision/animal_detector.py`` and loads a
+downloaded ``.task`` model file.
+
 MediaPipe Pose processes one person per call. Multi-person support would require
 running a person detector first and cropping individual bounding boxes before passing
 each crop through this pipeline.
@@ -14,6 +21,9 @@ after real-world testing to adjust sensitivity.
 """
 
 import logging
+import threading
+import time
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -24,13 +34,15 @@ from world_state import world_state
 
 _log = logging.getLogger(__name__)
 
-# ── Model handles ─────────────────────────────────────────────────────────────
+# ── Model handles (MediaPipe Tasks API) ───────────────────────────────────────
 
-_pose        = None   # mediapipe Pose solution instance
-_mp_pose     = None   # mediapipe.solutions.pose module reference
-_mp_drawing  = None   # mediapipe.solutions.drawing_utils (optional)
-_mp_ok       = False
-_mp_attempted = False
+_landmarker   = None   # mp.tasks.vision.PoseLandmarker instance
+_mp           = None   # mediapipe module reference (for mp.Image)
+_landmark_names: list[str] = []   # ordered PoseLandmark names (33-point skeleton)
+_load_ok      = False
+_load_attempted = False
+_model_lock   = threading.Lock()
+_last_timestamp_ms = 0
 
 # ── Visibility threshold — landmarks below this are treated as not-detected ──
 _VIS_MIN = 0.4
@@ -60,12 +72,14 @@ _RIGHT_ANKLE   = 28
 # All values are in normalized frame coordinates (0.0–1.0) unless stated.
 # y=0 is top of frame, y=1 is bottom — "above" means smaller y value.
 
-# raising_hand: wrist must be this much above the shoulder (in y, pointing upward)
+# raised hand (waving / raising_hand): wrist this much above the shoulder (in y)
 _RAISE_Y_MARGIN = 0.05
 
-# waving: wrist y between nose y and shoulder y, and arm extended laterally
-# Lateral extension threshold: abs(wrist.x - shoulder.x) as fraction of frame width
-_WAVE_LATERAL_MIN = 0.10
+# waving: a raised wrist must also sit this far to the SIDE of its shoulder
+# (abs(wrist.x - shoulder.x) as a fraction of frame width) to count as a wave
+# rather than a hand raised straight up. Kept low so a greeting wave near the head
+# is caught at any swing phase; a straight-up hand stays "raising_hand".
+_WAVE_LATERAL_MIN = 0.07
 
 # crossed_arms: both wrists within this fraction of shoulder_width from shoulder midpoint
 # Shoulder width = abs(left_shoulder.x - right_shoulder.x)
@@ -103,59 +117,98 @@ _SIDE_ON_SHOULDER_X_MAX = 0.15
 
 # ── Model loading ─────────────────────────────────────────────────────────────
 
-def _load_model() -> bool:
-    global _pose, _mp_pose, _mp_ok, _mp_attempted
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
 
-    if _mp_attempted:
-        return _mp_ok
-    _mp_attempted = True
+
+def _model_path() -> Path:
+    configured = Path(getattr(config, "MEDIAPIPE_POSE_LANDMARKER_MODEL", ""))
+    return configured if configured.is_absolute() else _project_root() / configured
+
+
+def _load_model() -> bool:
+    global _landmarker, _mp, _landmark_names, _load_ok, _load_attempted
+
+    if not bool(getattr(config, "POSE_DETECTION_ENABLED", True)):
+        return False
+    if _load_attempted:
+        return _load_ok
+    _load_attempted = True
+
+    model_path = _model_path()
+    if not model_path.exists():
+        _log.warning(
+            "MediaPipe Pose Landmarker model missing: %s — run setup_assets.py. "
+            "Body pose/gesture cues (including wave-back) disabled.",
+            model_path,
+        )
+        return False
 
     try:
         import mediapipe as mp
-        solutions = getattr(mp, "solutions", None)
-        if solutions is None or not hasattr(solutions, "pose"):
-            _log.info(
-                "MediaPipe body pose unavailable: installed mediapipe %s does not "
-                "expose the legacy mp.solutions.pose API. Body pose/gesture cues "
-                "disabled; face-based proxemics remain active.",
-                getattr(mp, "__version__", "unknown"),
-            )
-            return False
-        _mp_pose = solutions.pose
-        _pose    = _mp_pose.Pose(
-            static_image_mode=False,
-            model_complexity=1,          # 0=lite, 1=full, 2=heavy — balance speed/accuracy
-            smooth_landmarks=True,
-            enable_segmentation=False,
-            min_detection_confidence=0.5,
+
+        BaseOptions = mp.tasks.BaseOptions
+        PoseLandmarker = mp.tasks.vision.PoseLandmarker
+        PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
+        VisionRunningMode = mp.tasks.vision.RunningMode
+
+        options = PoseLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=str(model_path)),
+            running_mode=VisionRunningMode.VIDEO,
+            num_poses=1,
+            min_pose_detection_confidence=0.5,
+            min_pose_presence_confidence=0.5,
             min_tracking_confidence=0.5,
         )
-        _mp_ok = True
-        _log.info("MediaPipe Pose loaded (model_complexity=1)")
+        _landmarker = PoseLandmarker.create_from_options(options)
+        _mp = mp
+        _landmark_names = [lm.name for lm in mp.tasks.vision.PoseLandmark]
+        _load_ok = True
+        _log.info("MediaPipe Pose Landmarker loaded (Tasks API): %s", model_path)
     except ImportError:
         _log.warning("mediapipe not installed — pose detection unavailable")
     except Exception as exc:
-        _log.error("Failed to init MediaPipe Pose: %s", exc)
+        _log.error("Failed to init MediaPipe Pose Landmarker: %s", exc)
 
-    return _mp_ok
+    return _load_ok
+
+
+def _next_timestamp_ms() -> int:
+    """Monotonic, strictly-increasing timestamps for detect_for_video (VIDEO mode)."""
+    global _last_timestamp_ms
+    ts = int(time.monotonic() * 1000)
+    if ts <= _last_timestamp_ms:
+        ts = _last_timestamp_ms + 1
+    _last_timestamp_ms = ts
+    return ts
 
 
 # ── Landmark extraction ───────────────────────────────────────────────────────
 
-def _lm_dict(results) -> dict[str, tuple[float, float, float]]:
+def _lm_dict(result, index: int = 0) -> dict[str, tuple[float, float, float]]:
     """
-    Convert MediaPipe PoseLandmarks to a dict keyed by landmark name.
+    Convert a MediaPipe Tasks PoseLandmarkerResult to a dict keyed by landmark name.
     Values are (x, y, visibility) all in [0.0, 1.0].
+
+    The Tasks API exposes ``result.pose_landmarks`` as a LIST of per-pose landmark
+    lists (one entry per detected person), unlike the legacy single-pose
+    ``results.pose_landmarks.landmark``.
     """
-    if not results or not results.pose_landmarks:
+    poses = getattr(result, "pose_landmarks", None) or []
+    if index >= len(poses):
         return {}
 
-    names = [lm.name for lm in _mp_pose.PoseLandmark]
-    lms   = results.pose_landmarks.landmark
-    return {
-        name: (lms[i].x, lms[i].y, lms[i].visibility)
-        for i, name in enumerate(names)
-    }
+    landmarks = poses[index]
+    out: dict[str, tuple[float, float, float]] = {}
+    for i, lm in enumerate(landmarks):
+        if i >= len(_landmark_names):
+            break
+        vis = getattr(lm, "visibility", None)
+        # pose_landmarker populates visibility; default a missing value to "visible"
+        # so a model that omits it doesn't blank out every landmark via _VIS_MIN.
+        vis = 1.0 if vis is None else float(vis)
+        out[_landmark_names[i]] = (float(lm.x), float(lm.y), vis)
+    return out
 
 
 def _get(kp: dict, name: str) -> Optional[tuple[float, float, float]]:
@@ -192,29 +245,27 @@ def _classify_gesture(kp: dict) -> str:
     rh = _get(kp, "RIGHT_HIP")
     nose = _get(kp, "NOSE")
 
-    # ── raising_hand ──────────────────────────────────────────────────────────
-    # Rule: either wrist.y < shoulder.y - _RAISE_Y_MARGIN (wrist above shoulder).
-    # y decreases upward in image coordinates, so wrist_y < shoulder_y means raised.
-    if ls and lw and lw[1] < ls[1] - _RAISE_Y_MARGIN:
-        return "raising_hand"
-    if rs and rw and rw[1] < rs[1] - _RAISE_Y_MARGIN:
-        return "raising_hand"
-
     # ── waving ────────────────────────────────────────────────────────────────
-    # Rule: wrist is at approximately face/ear height (wrist.y between nose.y and
-    # shoulder.y) AND the arm is extended laterally away from the shoulder.
-    # Lateral threshold: abs(wrist.x - shoulder.x) > _WAVE_LATERAL_MIN of frame width.
-    # This catches a hand held up near the face with an open lateral arm extension.
-    if nose and ls and lw:
-        wrist_at_face_height = nose[1] <= lw[1] <= ls[1]
-        arm_extended = abs(lw[0] - ls[0]) > _WAVE_LATERAL_MIN
-        if wrist_at_face_height and arm_extended:
-            return "waving"
-    if nose and rs and rw:
-        wrist_at_face_height = nose[1] <= rw[1] <= rs[1]
-        arm_extended = abs(rw[0] - rs[0]) > _WAVE_LATERAL_MIN
-        if wrist_at_face_height and arm_extended:
-            return "waving"
+    # A wave is a hand RAISED above the shoulder (covering a hand up by the face,
+    # the head, or above it) and held OUT to the side of the body (a lateral offset
+    # of the wrist from its shoulder ≥ _WAVE_LATERAL_MIN of frame width).
+    #
+    # This is checked BEFORE raising_hand on purpose: an enthusiastic wave puts the
+    # wrist well above the shoulder, so the old order swallowed it as "raising_hand"
+    # and the wave-back never fired. Detection is single-frame posture — the pose
+    # pipeline samples far too slowly to resolve the side-to-side motion, and a
+    # raised open hand pointed at Rex reads as a greeting regardless of phase.
+    for shoulder, wrist in ((ls, lw), (rs, rw)):
+        if shoulder and wrist and wrist[1] <= shoulder[1] - _RAISE_Y_MARGIN:
+            if abs(wrist[0] - shoulder[0]) >= _WAVE_LATERAL_MIN:
+                return "waving"
+
+    # ── raising_hand ──────────────────────────────────────────────────────────
+    # Wrist above the shoulder but NOT out to the side (e.g. raised straight up to
+    # answer / get attention). y decreases upward, so wrist_y < shoulder_y is raised.
+    for shoulder, wrist in ((ls, lw), (rs, rw)):
+        if shoulder and wrist and wrist[1] <= shoulder[1] - _RAISE_Y_MARGIN:
+            return "raising_hand"
 
     # ── crossed_arms ──────────────────────────────────────────────────────────
     # Rule: both wrists are near the torso centerline (within _CROSS_CENTER_FRACTION
@@ -431,8 +482,10 @@ def detect_pose(frame) -> list[dict]:
         return []
 
     try:
-        rgb = bgr_to_rgb(frame)
-        results = _pose.process(rgb)
+        rgb = np.ascontiguousarray(bgr_to_rgb(frame))
+        mp_image = _mp.Image(image_format=_mp.ImageFormat.SRGB, data=rgb)
+        with _model_lock:
+            results = _landmarker.detect_for_video(mp_image, _next_timestamp_ms())
     except Exception as exc:
         _log.warning("MediaPipe Pose processing error: %s", exc)
         return []
@@ -519,3 +572,24 @@ def _update_world_state(detected: list[dict]) -> None:
     # Read-modify-write under the world_state lock so a concurrent face/identity
     # write (which sets person_db_id) isn't reverted by a stale snapshot.
     world_state.mutate("people", _merge_pose)
+
+
+def stop() -> None:
+    """Release the MediaPipe Pose Landmarker (idempotent)."""
+    global _landmarker, _mp, _load_attempted, _load_ok
+    with _model_lock:
+        if _landmarker is not None:
+            try:
+                _landmarker.close()
+            except Exception:
+                pass
+        _landmarker = None
+        _mp = None
+        _load_attempted = False
+        _load_ok = False
+
+
+def _reset_for_tests() -> None:
+    global _last_timestamp_ms
+    stop()
+    _last_timestamp_ms = 0
