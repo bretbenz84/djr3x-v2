@@ -221,6 +221,41 @@ The failure mode to avoid: a normal contextual response gets a second chance in 
 
 `audio/tts.py` handles ElevenLabs cache lookup/fetch/playback. In no-audio mode, `speak()` and `ensure_cached()` return before network or playback work. By default `speak()` derives expressive ElevenLabs `voice_settings` from the line's emotion (`emotion_orchestrator.voice_settings_for_emotion`, backed by `config.TTS_VOICE_SETTINGS_*`); an explicit empathy/grief override passed by the caller takes precedence.
 
+### Web Search (current-info replies)
+
+`intelligence/web_search.py` lets Rex answer questions that need CURRENT information
+via OpenAI's hosted `web_search` tool on the **Responses API** (the rest of the app
+uses Chat Completions; this branch talks to Responses directly — `llm_compat` is
+Chat-Completions-shaped and does not apply). It reuses the existing `OPENAI_API_KEY`
+— no new provider, dependency, or secret.
+
+It is a self-contained BRANCH off the normal reply: `interaction._maybe_web_search_reply`
+runs at the TOP of `_stream_llm_response` (so the action router and local handlers still
+win first), and the tuned streaming reply is untouched. Flow: speak a stall line
+immediately (non-blocking, so the multi-second search overlaps with playback and TTFS is
+credited to the stall line), run the search, then speak the answer through the normal
+`speech_queue`. The answer is voiced through Rex's full persona prompt
+(`llm.assemble_system_prompt`) plus `WEB_SEARCH_PERSONA_ADDENDUM`, so it stays in
+character. Everything is failure-safe — any no-trigger / no-result / error returns None
+and Rex falls through to a normal from-knowledge reply (never silent).
+
+Two triggers:
+- **Explicit** — any phrase in `WEB_SEARCH_TRIGGER_PHRASES` (substring, case-insensitive)
+  forces a search (`tool_choice="required"`).
+- **Autonomous** — Rex decides on his own: a cheap keyword prefilter
+  (`WEB_SEARCH_AUTONOMOUS_KEYWORDS`, gated to question-shaped turns) narrows to plausibly
+  time-sensitive questions, then a small `gpt-4o-mini` classifier confirms
+  (`WEB_SEARCH_AUTONOMOUS_GATE_ENABLED`; off → keyword-only). This keeps the gate off the
+  path for ordinary chatter.
+
+`WEB_SEARCH_MODEL` defaults to the conversation model (so the answer is in-voice) but is
+independently overridable — point it at a search-capable model if the conversation model
+can't host the tool. Search runs at `WEB_SEARCH_REASONING_EFFORT` (off the realtime
+first-token path, so a little reasoning is fine). User-tunable knobs (enable, trigger
+phrases, stall lines, model, autonomous gate) live in `user_config.example.py`; the rest
+of the machinery is in `config.py`. **Enabled by default** with `WEB_SEARCH_ENABLED` as
+the kill switch. Tests: `tests/test_web_search.py`.
+
 ## Latency And Telemetry
 
 The project now has explicit latency instrumentation.

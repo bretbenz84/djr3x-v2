@@ -4432,6 +4432,83 @@ SLOW_PATH_ACK_LINES = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# WEB SEARCH — current-info lookups via OpenAI's hosted web_search tool
+# ─────────────────────────────────────────────────────────────────────────────
+# When a question needs CURRENT / real-time info, Rex answers it through the OpenAI
+# Responses API's hosted web_search tool instead of from the model's own knowledge.
+# He speaks a short stall line first (a real web search takes a few seconds), then
+# voices the result in character. Two triggers: an explicit out-loud request ("look
+# that up") and an autonomous gate where Rex decides on his own that a question needs
+# live data. Reuses the existing OPENAI_API_KEY — no new provider, dependency, or
+# secret. Runs as a self-contained BRANCH (intelligence/web_search.py); the normal
+# streaming reply is untouched. Kill switch: set WEB_SEARCH_ENABLED False.
+WEB_SEARCH_ENABLED = True
+
+# Model that runs the search AND voices the answer. None → follows
+# LLM_CONVERSATION_MODEL at runtime (so the answer stays in Rex's voice). If a model
+# does not support the hosted web_search tool, set this to one that does (e.g.
+# "gpt-4o-mini") — retrieval happens there and the result is already in-character
+# because the same persona prompt drives it.
+WEB_SEARCH_MODEL = None
+# Reasoning effort for the search call (reasoning models only; ignored for gpt-4o
+# -class models). This is OFF the realtime first-token path — the stall line covers
+# the latency — so a little reasoning is worth it for better synthesis. low|medium|high.
+WEB_SEARCH_REASONING_EFFORT = "low"
+# Cap on the answer length (Responses API max_output_tokens). Keep it tight so Rex
+# stays punchy; on reasoning models the reasoning tokens also draw from this budget.
+WEB_SEARCH_MAX_OUTPUT_TOKENS = 600
+# Hard timeout for the search call. Generous (web search legitimately takes a few
+# seconds) but bounded so a hung search can't freeze the turn. On timeout Rex falls
+# through to a normal from-knowledge reply.
+WEB_SEARCH_TIMEOUT_SECS = 20.0
+
+# Autonomous trigger — let Rex decide on his own that a question needs current info.
+# A cheap keyword prefilter (WEB_SEARCH_AUTONOMOUS_KEYWORDS) narrows to plausibly
+# time-sensitive questions; when WEB_SEARCH_AUTONOMOUS_GATE_ENABLED is on a small
+# gpt-4o-mini classifier then confirms before a search is spent. Gate off → the
+# keyword prefilter alone triggers (faster, less precise).
+WEB_SEARCH_AUTONOMOUS_ENABLED = True
+WEB_SEARCH_AUTONOMOUS_GATE_ENABLED = True
+WEB_SEARCH_GATE_MODEL = "gpt-4o-mini"
+# Currentness markers that make an autonomous search worth considering. Edit freely.
+WEB_SEARCH_AUTONOMOUS_KEYWORDS = [
+    "latest", "current", "currently", "right now", "today", "tonight",
+    "this week", "this month", "this year", "recent", "recently", "news",
+    "headline", "score", "who won", "winner", "price", "stock", "release date",
+    "released", "update", "version", "happening", "this morning", "as of",
+    "nowadays", "trending", "2025", "2026",
+]
+
+# Explicit verbal triggers — an out-loud request to look something up ALWAYS searches
+# (no gate). Substring-matched, case-insensitive. Edit freely.
+WEB_SEARCH_TRIGGER_PHRASES = [
+    "look that up", "look it up", "look up", "search the web",
+    "search the internet", "search for", "search online", "google that",
+    "google it", "what's the latest on", "whats the latest on",
+    "what is the latest on", "can you look up", "find out for me",
+]
+
+# Short in-character lines Rex says the instant a search starts, so he isn't silent
+# while results come back. One is picked at random (never the same one twice running).
+WEB_SEARCH_STALL_LINES = [
+    "Let me check the archives.",
+    "Hold on, pinging the holonet.",
+    "One sec, looking that up.",
+    "Give me a tick, scanning the feeds.",
+    "Patience — consulting the galaxy's databanks.",
+]
+
+# Appended to Rex's normal persona prompt for the search answer: tells him he just
+# looked it up and to lead with the answer in his own voice.
+WEB_SEARCH_PERSONA_ADDENDUM = (
+    "You just looked this up on the web in real time. Lead with the actual answer, "
+    "stated plainly and in your own voice — no preamble, no 'according to my search'. "
+    "Keep it short: one or two sentences. You may add ONE dry aside if it lands, but "
+    "the facts come first. If the search didn't settle it, say so briefly rather than "
+    "guessing."
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PRIVATE THOUGHTS — Idle Monologue Pool
 # Rex occasionally delivers one of these to no one in particular during IDLE.
 # ─────────────────────────────────────────────────────────────────────────────

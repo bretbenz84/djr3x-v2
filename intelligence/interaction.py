@@ -9530,6 +9530,89 @@ def _extract_primary_purpose(directive: str) -> str:
     return ""
 
 
+def _maybe_web_search_reply(
+    text: str,
+    person_id: Optional[int],
+    turn_start: Optional[float] = None,
+) -> Optional[str]:
+    """If this turn needs CURRENT info, run a web search and speak Rex's answer.
+
+    Triggered explicitly ("look that up") or by the autonomous gate (Rex decides a
+    question needs live data). A stall line is spoken immediately and NON-blocking,
+    so the multi-second search overlaps with playback instead of leaving Rex silent;
+    the hosted web_search then runs and the answer is spoken in character.
+
+    Returns the spoken answer (turn handled — the normal reply is skipped) or None to
+    fall through to the normal LLM reply. Fully gated by config.WEB_SEARCH_ENABLED and
+    failure-safe: any error returns None so Rex still answers from his own knowledge.
+    """
+    if not getattr(config, "WEB_SEARCH_ENABLED", False):
+        return None
+    if _interrupted.is_set() or not _can_speak():
+        return None
+    try:
+        from intelligence import web_search
+        decision = web_search.should_search(text)
+    except Exception as exc:
+        _log.debug("[web_search] trigger detection failed: %s", exc)
+        return None
+    if not decision.triggered:
+        return None
+
+    _log.info("[web_search] triggered (%s) for: %r", decision.reason, text)
+
+    # Stall line — spoken immediately and non-blocking so the search latency overlaps
+    # with playback. It is Rex's real first audio this turn, so mark TTFS against it
+    # (first-wins: the answer's later enqueue won't steal the credit).
+    trace = _current_character_loop_trace.get()
+    try:
+        stall = web_search.pick_stall_line()
+    except Exception:
+        stall = ""
+    if stall:
+        _mark_first_response_queued(trace, text=stall, priority=1)
+        speech_queue.enqueue(
+            stall,
+            "neutral",
+            priority=1,
+            on_start=(lambda: _mark_first_response_audio_started(trace))
+            if trace is not None
+            else None,
+            log_text=True,
+        )
+
+    started = time.monotonic()
+    try:
+        result = web_search.answer(text, person_id, forced=decision.forced)
+    except Exception as exc:
+        _log.warning("[web_search] answer failed: %s", exc)
+        return None
+    if turn_start is not None:
+        _latency_log(turn_start, "web_search", started)
+
+    if not result.ok or not (result.text or "").strip():
+        # No usable result — fall through to a normal from-knowledge reply so Rex
+        # still answers (a stall line may already have been spoken; that's fine).
+        _log.info("[web_search] no usable result (ok=%s); falling through", result.ok)
+        return None
+
+    answer_text = result.text.strip()
+    _log.info(
+        "[web_search] answered in %.2fs (%d citations)",
+        time.monotonic() - started,
+        len(result.citations or []),
+    )
+    if result.citations:
+        _log.info("[web_search] sources: %s", ", ".join(result.citations[:5]))
+
+    _speak_blocking(answer_text, emotion="neutral", priority=1, log_text=True)
+    try:
+        _apply_post_tts_handoff(answer_text, source="web_search")
+    except Exception as exc:
+        _log.debug("[web_search] post-tts handoff skipped: %s", exc)
+    return answer_text
+
+
 def _stream_llm_response(
     text: str,
     person_id: Optional[int],
@@ -9541,6 +9624,12 @@ def _stream_llm_response(
     Collecting before speaking keeps AEC suppression as one continuous window
     per response. At max_tokens=150 the added latency is negligible.
     """
+    # Current-info web search branch: when the turn needs live data (explicit ask or
+    # autonomous gate), Rex looks it up and speaks the answer here, skipping the normal
+    # reply. Failure-safe — on no-trigger / no-result it returns None and we proceed.
+    web_answer = _maybe_web_search_reply(text, person_id, turn_start=turn_start)
+    if web_answer is not None:
+        return web_answer
     # Fire the surprise classifier in parallel with the main LLM stream so
     # its result is (usually) ready by the time the response text is in hand.
     # If it returns is_surprising=True before we speak, we prepend a brief

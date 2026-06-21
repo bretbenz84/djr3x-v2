@@ -236,6 +236,7 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # EPISODIC_MEMORY_ENABLED = True         # Rex's own episodic memory capture
 # IDLE_BANTER_ENABLED = True             # re-engage when a present person goes quiet
 # ONBOARDING_ENABLED = True              # first-meeting question burst for strangers
+# WEB_SEARCH_ENABLED = True              # answer current-info questions via web search
 # ANIMAL_DETECTION_ENABLED = True        # react to pets / animals
 # VISUAL_CURIOSITY_ENABLED = True        # camera-grounded riffs / questions
 # SPEAKER_GAZE_ENABLED = True            # env: turn head toward whoever is speaking
@@ -279,3 +280,39 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 
 # Days away before Rex remarks on a long absence when you return.
 # LONG_ABSENCE_THRESHOLD_DAYS = 60
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 6. WEB SEARCH  (current-info lookups)
+# ═════════════════════════════════════════════════════════════════════════════
+# Rex can look things up on the web when a question needs CURRENT info — either
+# because you asked out loud ("look that up") or because he decides on his own it
+# needs live data. He says a short stall line, runs the search via OpenAI's hosted
+# web_search tool, then answers in character. Uses your existing OpenAI key.
+# On/off lives in the feature switches above (WEB_SEARCH_ENABLED).
+
+# Model that runs the search + voices the answer. Leave as None to follow your
+# conversation model. If your conversation model can't use the web_search tool,
+# set a model that can (e.g. "gpt-4o-mini").
+# WEB_SEARCH_MODEL = None
+
+# Let Rex trigger a search on his own (vs only when you explicitly ask). The gate
+# adds a tiny gpt-4o-mini check that confirms a question really needs live data.
+# WEB_SEARCH_AUTONOMOUS_ENABLED = True
+# WEB_SEARCH_AUTONOMOUS_GATE_ENABLED = True
+
+# Spoken phrases that ALWAYS force a search (substring, case-insensitive). Edit freely.
+# WEB_SEARCH_TRIGGER_PHRASES = [
+#     "look that up", "look it up", "look up", "search the web",
+#     "search the internet", "search for", "search online", "google that",
+#     "google it", "what's the latest on", "can you look up", "find out for me",
+# ]
+
+# What Rex says the instant a search starts (one picked at random). Keep them short
+# and in his voice. Edit freely.
+# WEB_SEARCH_STALL_LINES = [
+#     "Let me check the archives.",
+#     "Hold on, pinging the holonet.",
+#     "One sec, looking that up.",
+#     "Give me a tick, scanning the feeds.",
+#     "Patience — consulting the galaxy's databanks.",
+# ]
