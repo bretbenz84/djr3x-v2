@@ -2513,25 +2513,38 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
     if not _can_proactive_speak(reactive=True):
         return
 
-    _wave_reacted_keys[target_key] = now
-    _last_wave_reaction_at = now
     first_name = _first_name(target.get("face_id") or target.get("name"), "")
 
-    # Wave the arm (non-blocking) and say one short warm line. The wave animation is
-    # failure-safe / no-ops without servos, exactly like the wake-word ack wave.
+    # Speak the greeting DIRECTLY (governed=False): a wave-back is a reaction to a direct
+    # bid for attention, not a proactive volunteer to be arbitrated. Under the action
+    # governor (ENFORCE) wave_back is a priority-20 candidate, so it was out-prioritized by
+    # greetings / idle banter and dropped, and burned by the proactive cooldown — logged
+    # 2026-06-20: every wave "fired" but the governor suppressed it. governed=False routes
+    # past arbitration; reactive=True still keeps it off live speech / music / games / a
+    # pending proactive line. _speak_async returns True only when it actually queued speech.
+    spoke = _speak_async(
+        _wave_back_line(first_name),
+        emotion="happy",
+        purpose="wave_back",
+        label="wave back",
+        governed=False,
+        reactive=True,
+    )
+    if not spoke:
+        # Couldn't speak this tick (e.g. Rex mid-utterance). DON'T mark the per-person
+        # debounce — let the next tick try again so the wave still gets acknowledged.
+        return
+
+    _wave_reacted_keys[target_key] = now
+    _last_wave_reaction_at = now
+    # Wave the arm (non-blocking). Failure-safe / no-ops without servos, like the
+    # wake-word ack wave.
     try:
         from sequences import animations
         animations.wake_word_ack_wave()
     except Exception as exc:
         _log.debug("wave-back animation skipped: %s", exc)
     _log.info("consciousness: wave-back fired for %s", target_key)
-    _speak_async(
-        _wave_back_line(first_name),
-        emotion="happy",
-        purpose="wave_back",
-        label="wave back",
-        reactive=True,
-    )
 
 
 def _step_smile_reaction(snapshot: dict, profile: SituationProfile) -> None:

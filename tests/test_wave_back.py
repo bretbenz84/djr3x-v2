@@ -54,7 +54,7 @@ class StepWaveReactionTest(unittest.TestCase):
              mock.patch.object(c, "_first_name", return_value="Bret"), \
              mock.patch.object(c.config, "WAVE_BACK_LINES", ["Hey, {name}!"]), \
              mock.patch.object(c, "_speak_async",
-                               side_effect=lambda line, **k: captured.update(line=line, kw=k)), \
+                               side_effect=lambda line, **k: captured.update(line=line, kw=k) or True), \
              mock.patch("sequences.animations.wake_word_ack_wave") as wave:
             c._step_wave_reaction(snapshot, profile or _Profile())
             captured["waved"] = wave.called
@@ -66,8 +66,11 @@ class StepWaveReactionTest(unittest.TestCase):
         self.assertIn("Bret", out["line"])
         self.assertEqual(out["kw"].get("purpose"), "wave_back")
         # reactive=True so the hello breaks through awaiting-reply / active-conversation
-        # gates (a wave during a conversation should still be acknowledged).
+        # gates; governed=False so it bypasses the proactive-priority tournament (where a
+        # priority-20 wave_back was always out-ranked + dropped). Both are required for a
+        # wave during a conversation to actually be acknowledged.
         self.assertTrue(out["kw"].get("reactive"))
+        self.assertIs(out["kw"].get("governed"), False)
 
     def test_neutral_gesture_does_nothing(self):
         p = _waving(); p["gesture"] = "neutral"
@@ -99,6 +102,28 @@ class StepWaveReactionTest(unittest.TestCase):
         # (also reset the global gap so we isolate the per-person debounce).
         c._last_wave_reaction_at = 0.0
         self.assertFalse(self._run({"people": [_waving()]})["waved"])
+
+    def test_failed_speech_does_not_burn_debounce(self):
+        # If the speech can't be queued this tick (returns False), the per-person debounce
+        # must NOT be marked — else a wave Rex couldn't voice locks out the next 25s. The
+        # next tick must still be able to acknowledge the wave.
+        calls = {"n": 0}
+
+        def fake_speak(_line, **_k):
+            calls["n"] += 1
+            return calls["n"] >= 2  # 1st attempt fails to queue, 2nd succeeds
+
+        with mock.patch.object(c, "_can_proactive_speak", return_value=True), \
+             mock.patch.object(c, "_first_name", return_value="Bret"), \
+             mock.patch.object(c.config, "WAVE_BACK_LINES", ["Hey, {name}!"]), \
+             mock.patch.object(c, "_speak_async", side_effect=fake_speak), \
+             mock.patch("sequences.animations.wake_word_ack_wave"):
+            c._step_wave_reaction({"people": [_waving()]}, _Profile())
+            self.assertEqual(c._wave_reacted_keys, {})  # failed speech → debounce untouched
+            c._last_wave_reaction_at = 0.0  # isolate per-person debounce from global gap
+            c._step_wave_reaction({"people": [_waving()]}, _Profile())
+            self.assertIn("db:1", c._wave_reacted_keys)  # retry succeeded → now marked
+        self.assertEqual(calls["n"], 2)
 
     def test_unknown_waver_gets_no_name_line(self):
         captured = {}
