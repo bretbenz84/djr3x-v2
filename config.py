@@ -2199,22 +2199,25 @@ WAVE_BACK_PER_PERSON_COOLDOWN_SECS = _env_float(
 WAVE_BACK_MIN_GAP_SECS = _env_float(
     "WAVE_BACK_MIN_GAP_SECS", 8.0, min_value=0.0, max_value=600.0,
 )
-# Short, warm wave-back lines (canned for immediacy — a wave-back shouldn't wait on an
-# LLM call). "{name}" is filled with the person's first name when known, else dropped.
+# Short, warm spoken greetings Rex says when he waves back (canned for immediacy — a
+# wave-back shouldn't wait on an LLM call). WAVE_BACK_LINES is used when Rex knows the
+# waver's name ("{name}" is filled with their first name); WAVE_BACK_LINES_NO_NAME is
+# used for an unknown/unnamed waver. One is picked at random per wave.
 WAVE_BACK_LINES = [
-    "Hey, {name}!",
+    "Hello, {name}!",
+    "Hi there, {name}!",
+    "Hey {name}, what's up?",
+    "Greetings, {name}.",
+    "Hello there, {name}!",
     "{name}! Good to see you.",
-    "There they are.",
-    "Hello yourself.",
-    "I see that wave — hi back.",
-    "Hey, {name} — waving detected, waving returned.",
 ]
 WAVE_BACK_LINES_NO_NAME = [
-    "Hey there!",
-    "There they are.",
-    "Hello yourself.",
-    "I see that wave — hi back.",
-    "Waving detected, waving returned.",
+    "Hello!",
+    "Hello there!",
+    "Hi there!",
+    "What's up?",
+    "Greetings.",
+    "Greetings, lifeform.",
 ]
 
 # Personal-space reaction for camera proxemics. "Intimate" means the face fills
