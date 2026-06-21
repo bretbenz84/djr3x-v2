@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import random
 import re
+import time
 from typing import List, NamedTuple, Optional
 
 import config
@@ -202,6 +203,92 @@ def pick_stall_line() -> str:
     chosen = random.choice(choices)
     _last_stall_line = chosen
     return chosen
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Recent-search marker (for inquisitive proactive follow-ups)
+# ─────────────────────────────────────────────────────────────────────────────
+# After Rex looks something up for the person, the proactive/idle loop would
+# otherwise keep COMMENTING on the same topic during the lull (re-summarizing it,
+# piling on opinions). This marker lets the proactive directive flip those lull
+# lines to be INQUISITIVE about the topic instead — "what got you asking about X?".
+
+_recent_search: Optional[dict] = None
+
+# Lead-ins to strip so the stored topic is the subject, not the request wrapper.
+_TOPIC_LEADIN_RE = re.compile(
+    r"^\s*(?:hey\s+rex[,]?\s*)?"
+    r"(?:can|could|would|will)\s+you\s+|"
+    r"(?:please|i'?d\s+like\s+you\s+to|i\s+want\s+you\s+to|let'?s)\s+",
+    re.I,
+)
+_TOPIC_VERB_RE = re.compile(
+    r"^\s*(?:look\s+(?:that|it)?\s*up|look\s+up|look\s+into|"
+    r"search\s+(?:the\s+web|the\s+internet|online)?(?:\s+(?:for|about))?|"
+    r"search(?:\s+for)?|google(?:\s+(?:that|it))?|find\s+out(?:\s+for\s+me)?(?:\s+about)?|"
+    r"what'?s\s+the\s+latest\s+on|what\s+is\s+the\s+latest\s+on|tell\s+me\s+about)\s*",
+    re.I,
+)
+
+
+def _search_topic(query: str) -> str:
+    """Reduce the user's request to a short topic phrase for the follow-up prompt
+    ("search the web about Star Trek Voyager" -> "Star Trek Voyager"). Best-effort."""
+    q = (query or "").strip()
+    if not q:
+        return ""
+    prev = None
+    # Peel a leading politeness/request wrapper, then a search verb, possibly twice
+    # ("can you look up ...").
+    while prev != q:
+        prev = q
+        q = _TOPIC_LEADIN_RE.sub("", q).strip()
+        q = _TOPIC_VERB_RE.sub("", q).strip()
+    topic = q.strip(" ?.!,:'\"") or (query or "").strip()
+    words = topic.split()
+    if len(words) > 12:
+        topic = " ".join(words[:12])
+    return topic
+
+
+def note_search(query: str) -> None:
+    """Record that Rex just web-searched `query` for the person, so the next idle/lull
+    line can be inquisitive about it instead of piling on more facts."""
+    global _recent_search
+    topic = _search_topic(query)
+    if topic:
+        _recent_search = {"topic": topic, "at": time.monotonic()}
+
+
+def recent_search(max_age_secs: Optional[float] = None) -> Optional[str]:
+    """Topic of a still-fresh recent web search, else None. Window defaults to
+    config.WEB_SEARCH_FOLLOWUP_WINDOW_SECS."""
+    if not _recent_search:
+        return None
+    if not getattr(config, "WEB_SEARCH_FOLLOWUP_INQUISITIVE_ENABLED", True):
+        return None
+    window = (
+        float(max_age_secs)
+        if max_age_secs is not None
+        else float(getattr(config, "WEB_SEARCH_FOLLOWUP_WINDOW_SECS", 120.0))
+    )
+    if (time.monotonic() - float(_recent_search.get("at", 0.0))) > window:
+        return None
+    return _recent_search.get("topic") or None
+
+
+def clear_recent_search(min_age_secs: float = 0.0) -> None:
+    """Clear the recent-search marker (e.g. when the user re-engages with a new turn).
+    `min_age_secs` guards against wiping a marker that was set moments ago in the same
+    turn (the searched answer can play for several seconds before control returns)."""
+    global _recent_search
+    if not _recent_search:
+        return
+    if min_age_secs > 0.0 and (
+        time.monotonic() - float(_recent_search.get("at", 0.0)) < min_age_secs
+    ):
+        return
+    _recent_search = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

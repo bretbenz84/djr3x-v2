@@ -184,6 +184,15 @@ def note_user_turn(
     if not cleaned:
         return
 
+    # The user re-engaged, so a just-completed web search is no longer the live thread —
+    # drop the "be inquisitive about the search" steer (min-age guard avoids wiping a
+    # marker set moments ago in this same turn). Failure-safe.
+    try:
+        from intelligence import web_search
+        web_search.clear_recent_search(min_age_secs=3.0)
+    except Exception:
+        pass
+
     unresolved_before = _current.unresolved_question if _current is not None else ""
     answers_unresolved = _answers_unresolved_question(cleaned, unresolved_before)
     now = time.monotonic()

@@ -300,6 +300,10 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # WEB_SEARCH_AUTONOMOUS_ENABLED = True
 # WEB_SEARCH_AUTONOMOUS_GATE_ENABLED = True
 
+# After a search, if you go quiet, have Rex's idle chatter ASK about the topic
+# ("what got you asking about that?") instead of piling on more facts/opinions.
+# WEB_SEARCH_FOLLOWUP_INQUISITIVE_ENABLED = True
+
 # Spoken phrases that ALWAYS force a search (substring, case-insensitive). Edit freely.
 # WEB_SEARCH_TRIGGER_PHRASES = [
 #     "look that up", "look it up", "look up", "search the web",

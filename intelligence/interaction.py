@@ -9610,6 +9610,13 @@ def _maybe_web_search_reply(
         _apply_post_tts_handoff(answer_text, source="web_search")
     except Exception as exc:
         _log.debug("[web_search] post-tts handoff skipped: %s", exc)
+    # Arm the inquisitive follow-up: if they go quiet now, the proactive loop should
+    # ask about the topic ("what got you asking about X?") rather than re-commenting
+    # on what was just looked up. Cleared when they next speak (topic_thread).
+    try:
+        web_search.note_search(text)
+    except Exception as exc:
+        _log.debug("[web_search] note_search skipped: %s", exc)
     return answer_text
 
 

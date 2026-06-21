@@ -252,6 +252,76 @@ class AnswerStripsLinksTest(unittest.TestCase):
         self.assertFalse(result.ok)
 
 
+class RecentSearchMarkerTest(unittest.TestCase):
+    def setUp(self):
+        web_search._recent_search = None
+
+    def tearDown(self):
+        web_search._recent_search = None
+
+    def test_topic_extraction(self):
+        cases = {
+            "I'd like you to search the web about Star Trek Voyager": "Star Trek Voyager",
+            "can you look up the James Webb telescope": "the James Webb telescope",
+            "search the web for tonight's Lakers score": "tonight's Lakers score",
+            "what's the latest on the Mars mission?": "the Mars mission",
+        }
+        for query, expected in cases.items():
+            self.assertEqual(web_search._search_topic(query), expected, query)
+
+    def test_note_then_recent(self):
+        web_search.note_search("search the web about Star Trek Voyager")
+        self.assertEqual(web_search.recent_search(), "Star Trek Voyager")
+
+    def test_expired_window_returns_none(self):
+        web_search.note_search("look up the weather on Mars")
+        # Age the marker past the window.
+        web_search._recent_search["at"] -= 10_000
+        with mock.patch.object(config, "WEB_SEARCH_FOLLOWUP_WINDOW_SECS", 120.0):
+            self.assertIsNone(web_search.recent_search())
+
+    def test_disabled_flag(self):
+        web_search.note_search("look up X")
+        with mock.patch.object(config, "WEB_SEARCH_FOLLOWUP_INQUISITIVE_ENABLED", False):
+            self.assertIsNone(web_search.recent_search())
+
+    def test_clear(self):
+        web_search.note_search("look up X")
+        web_search.clear_recent_search()
+        self.assertIsNone(web_search.recent_search())
+
+    def test_clear_min_age_guard_keeps_fresh_marker(self):
+        web_search.note_search("look up X")          # just set, at = now
+        web_search.clear_recent_search(min_age_secs=3.0)
+        self.assertEqual(web_search.recent_search(), "X")  # not wiped same-turn
+
+    def test_no_marker_recent_is_none(self):
+        self.assertIsNone(web_search.recent_search())
+
+
+class ProactiveSteerTest(unittest.TestCase):
+    """conversation_agenda.with_proactive_directive flips proactive lull lines to be
+    inquisitive while a recent search is armed."""
+
+    def setUp(self):
+        from intelligence import conversation_agenda
+        self.ca = conversation_agenda
+
+    def test_steer_present_after_search(self):
+        with mock.patch.object(web_search, "recent_search", return_value="Star Trek Voyager"):
+            out = self.ca.with_proactive_directive("BASE PROMPT", "small_talk")
+        self.assertIn("POST-SEARCH FOLLOW-UP", out)
+        self.assertIn("Star Trek Voyager", out)
+        self.assertIn("INQUISITIVE", out)
+        self.assertIn("BASE PROMPT", out)
+
+    def test_no_steer_without_search(self):
+        with mock.patch.object(web_search, "recent_search", return_value=None):
+            out = self.ca.with_proactive_directive("BASE PROMPT", "small_talk")
+        self.assertNotIn("POST-SEARCH FOLLOW-UP", out)
+        self.assertIn("BASE PROMPT", out)
+
+
 class InteractionHookTest(unittest.TestCase):
     """The _maybe_web_search_reply branch in interaction.py."""
 

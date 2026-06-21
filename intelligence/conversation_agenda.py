@@ -387,8 +387,35 @@ def proactive_purpose_directive(purpose: str) -> str:
     return "\n".join([base, *extra_lines]) if extra_lines else base
 
 
+def _post_web_search_steer() -> str:
+    """If Rex just web-searched something for the person and they've gone quiet, steer
+    the proactive lull line to be INQUISITIVE about the topic — why they asked, whether
+    they're into it, what they think — instead of repeating the answer or piling on more
+    facts/opinions. Empty string when there's no fresh search. Failure-safe."""
+    try:
+        from intelligence import web_search
+        topic = web_search.recent_search()
+    except Exception:
+        return ""
+    if not topic:
+        return ""
+    return (
+        f"POST-SEARCH FOLLOW-UP: you JUST looked up \"{topic}\" out loud for them a "
+        "moment ago, and now they've gone quiet. Do NOT repeat or re-summarize what you "
+        "already told them, and do NOT keep piling on facts or hot takes about it. "
+        "Instead be INQUISITIVE: ask ONE short, genuine question about THEM and this "
+        "topic — what got them asking about it, whether they're into it, what they think "
+        "or remember about it — then let them lead. One dry opinion is fine ONLY if it is "
+        "attached to that question; lead with the curiosity, not another lecture."
+    )
+
+
 def with_proactive_directive(prompt: str, purpose: str) -> str:
-    return f"{proactive_purpose_directive(purpose)}\n\n{prompt}"
+    directive = proactive_purpose_directive(purpose)
+    steer = _post_web_search_steer()
+    if steer:
+        directive = f"{directive}\n\n{steer}" if directive else steer
+    return f"{directive}\n\n{prompt}"
 
 
 def _known_fact_keys(person_id: int) -> tuple[set[str], set[str]]:

@@ -4571,6 +4571,17 @@ WEB_SEARCH_TIMEOUT_SECS = 20.0
 # / GUI-only use).
 WEB_SEARCH_STRIP_LINKS = True
 
+# After Rex looks something up, if the person goes quiet the proactive/idle loop would
+# otherwise keep COMMENTING on the searched topic (re-summarizing it, piling on
+# opinions — the "Voyager's strengths are…" follow-ups). When this is on, the proactive
+# directive instead flips those lull lines to be INQUISITIVE about the topic — "what got
+# you asking about X?", "are you into it?" — for a short window after the search. He can
+# still offer an opinion, but attached to a question. False = old behavior.
+WEB_SEARCH_FOLLOWUP_INQUISITIVE_ENABLED = True
+# How long after a search the inquisitive steer stays armed (seconds). Also cleared the
+# moment the person speaks again, so this is just the upper bound for a silent lull.
+WEB_SEARCH_FOLLOWUP_WINDOW_SECS = 120.0
+
 # Autonomous trigger — let Rex decide on his own that a question needs current info.
 # A cheap keyword prefilter (WEB_SEARCH_AUTONOMOUS_KEYWORDS) narrows to plausibly
 # time-sensitive questions; when WEB_SEARCH_AUTONOMOUS_GATE_ENABLED is on a small

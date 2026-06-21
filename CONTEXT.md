@@ -261,7 +261,19 @@ can't host the tool. Search runs at `WEB_SEARCH_REASONING_EFFORT` (off the realt
 first-token path, so a little reasoning is fine). User-tunable knobs (enable, trigger
 phrases, stall lines, model, autonomous gate) live in `user_config.example.py`; the rest
 of the machinery is in `config.py`. **Enabled by default** with `WEB_SEARCH_ENABLED` as
-the kill switch. Tests: `tests/test_web_search.py`.
+the kill switch.
+
+**Post-search inquisitiveness:** after a search, if the person goes quiet the proactive
+loop would otherwise keep COMMENTING on the searched topic (re-summarizing it, piling on
+opinions). A successful search arms a short-lived marker (`web_search.note_search` →
+`recent_search`, window `WEB_SEARCH_FOLLOWUP_WINDOW_SECS`, cleared the moment the person
+speaks again via `topic_thread.note_user_turn`). While armed, `conversation_agenda`
+`.with_proactive_directive` — the single choke point EVERY proactive LLM line passes
+through (small-talk questions, visual curiosity, lull callbacks, POV mutterings, env
+snark, chime-ins) — appends a directive flipping the lull line to be INQUISITIVE about
+the topic ("what got you asking about X?", "are you into it?") instead of repeating the
+answer or lecturing. He can still offer an opinion, but attached to a question.
+`WEB_SEARCH_FOLLOWUP_INQUISITIVE_ENABLED` toggles it. Tests: `tests/test_web_search.py`.
 
 ## Latency And Telemetry
 
