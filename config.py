@@ -859,6 +859,25 @@ MEMORY_PROMPT_BUDGET_ITEMS = 16
 MEMORY_RETRIEVAL_FACT_WEIGHT = 1.0
 MEMORY_RETRIEVAL_INTEREST_WEIGHT = 0.85
 
+# ── Semantic recall (embedding relevance) — OPT-IN, default OFF ───────────────────
+# When on, the unified retrieval layer scores topic relevance by EMBEDDING cosine
+# (meaning) instead of stemmed keyword overlap — so an "ocean" topic surfaces a "sailing"
+# interest even with no shared word. Pluggable backend (memory/semantic.py) using the
+# local Ollama embeddings endpoint. DEFAULT OFF because it needs an embed model pulled
+# (`ollama pull nomic-embed-text`) and adds a per-turn embedding call; it degrades
+# gracefully to keyword overlap whenever the model/endpoint is unavailable, so enabling
+# it can never make recall WORSE than keyword. Enable after pulling the model + testing
+# latency on the robot.
+MEMORY_SEMANTIC_RECALL_ENABLED = False
+MEMORY_SEMANTIC_EMBED_MODEL = "nomic-embed-text"
+# Cosine floor: below this the topic/candidate are treated as unrelated (relevance ~0).
+# These embed models put unrelated text around 0.3–0.5, so the floor keeps the signal
+# discriminative instead of giving everything a baseline boost.
+MEMORY_SEMANTIC_FLOOR = 0.55
+MEMORY_SEMANTIC_EMBED_TIMEOUT_SECS = 2.0
+# In-process candidate-embedding cache size (texts are stable, so this warms once).
+MEMORY_SEMANTIC_CACHE_SIZE = 1024
+
 # ── PHASE 2: episodic RECALL (reading the diary back into behavior) ──────────────
 # SEPARATE kill switch from capture (EPISODIC_MEMORY_ENABLED). Off → recall is inert:
 # rex.db is still written, but nothing is ever surfaced. Env override: EPISODIC_RECALL_ENABLED.

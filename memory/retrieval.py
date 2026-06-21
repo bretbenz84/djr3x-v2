@@ -33,18 +33,38 @@ class MemoryItem:
 # ── Pluggable relevance backend ─────────────────────────────────────────────────
 # A backend is fn(topic_tokens, text, cap) -> float in [0, cap]. Default: keyword overlap.
 _relevance_backend = None
+_semantic_checked = False
 
 
 def set_relevance_backend(fn) -> None:
     """Register a relevance scorer (e.g. the semantic embedding layer). None resets to
     the keyword default."""
-    global _relevance_backend
+    global _relevance_backend, _semantic_checked
     _relevance_backend = fn
+    _semantic_checked = fn is not None  # explicit set wins; None re-arms auto-install
+
+
+def _ensure_backend() -> None:
+    """Lazily install the semantic backend the first time, IFF it's enabled. Keeps the
+    semantic module (and its embedding deps) unimported when the feature is off."""
+    global _semantic_checked
+    if _semantic_checked or _relevance_backend is not None:
+        return
+    _semantic_checked = True
+    try:
+        import config
+        if getattr(config, "MEMORY_SEMANTIC_RECALL_ENABLED", False):
+            from memory import semantic
+            set_relevance_backend(semantic.relevance)
+            _log.info("[retrieval] semantic embedding relevance enabled")
+    except Exception as exc:
+        _log.debug("semantic backend install skipped: %s", exc)
 
 
 def _relevance(topic_tokens, text: str, cap: int) -> float:
     if not topic_tokens:
         return 0.0
+    _ensure_backend()
     if _relevance_backend is not None:
         try:
             return float(_relevance_backend(topic_tokens, text, cap))
