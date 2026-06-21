@@ -305,6 +305,64 @@ def record_greeting_event(
     )
 
 
+# ── Cross-DB maintenance (called from people.db delete/merge so the diary stays
+#    consistent — episodes hold a SOFT person_id ref into a separate database) ─────
+
+def purge_person(person_id: Optional[int]) -> int:
+    """Delete every diary entry attributed to a person (on people.db delete).
+
+    Without this, a deleted person's id is later RECYCLED by SQLite AUTOINCREMENT and
+    `episodic_recall.person_episodes` matches on the bare id — so the new occupant
+    inherits "I made you laugh / I met you" memories that were about someone else."""
+    if person_id is None or _suppressed():
+        return 0
+    rex_db.execute("DELETE FROM rex_episodes WHERE person_id = ?", (int(person_id),))
+    return 1
+
+
+def repoint_person(victim_id: Optional[int], survivor_id: Optional[int]) -> int:
+    """Re-attribute the victim's diary entries onto the survivor (on people merge)."""
+    if victim_id is None or survivor_id is None or _suppressed():
+        return 0
+    rex_db.execute(
+        "UPDATE rex_episodes SET person_id = ? WHERE person_id = ?",
+        (int(survivor_id), int(victim_id)),
+    )
+    return 1
+
+
+def detach_all_people() -> int:
+    """Null out person links on every diary entry (on a full people wipe) so no entry
+    dangles onto a recycled id. Rex's experiences survive; the person linkage doesn't."""
+    if _suppressed():
+        return 0
+    rex_db.execute("UPDATE rex_episodes SET person_id = NULL, person_name = NULL")
+    return 1
+
+
+def forget_matching(person_id: Optional[int], terms: set[str]) -> int:
+    """Delete a person's diary entries whose summary/name mentions a forgotten term, so
+    "forget about Scout" also reaches Rex's first-person memories of Scout. Returns the
+    number of rows deleted."""
+    if person_id is None or not terms or _suppressed():
+        return 0
+    rows = rex_db.fetchall(
+        "SELECT id, summary, person_name, detail FROM rex_episodes WHERE person_id = ?",
+        (int(person_id),),
+    )
+    matched: list[int] = []
+    for row in rows:
+        try:
+            hay = " ".join(str(row[k] or "") for k in ("summary", "person_name", "detail")).lower()
+        except Exception:
+            continue
+        if any(term in hay for term in terms):
+            matched.append(int(row["id"]))
+    for ep_id in matched:
+        rex_db.execute("DELETE FROM rex_episodes WHERE id = ?", (ep_id,))
+    return len(matched)
+
+
 # ── Read API — for PHASE-2 exploration only (NOT wired into behavior) ────────────
 
 def recent_episodes(limit: int = 50, *, kind: Optional[str] = None) -> list:

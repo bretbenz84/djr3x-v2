@@ -49,6 +49,22 @@ _PERSON_TABLES = [
 # so it can't share the simple _PERSON_TABLES delete path.
 _RELATIONSHIP_TABLE = "person_relationships"
 
+# Per-person tables that were historically NOT cleaned on delete/merge, leaving
+# orphans: voice_signatures (a person's persisted voiceprint) and the proactive-ask
+# ledger. Kept separate from _PERSON_TABLES because voice_signatures legitimately holds
+# NULL-person rows (unnamed voices) that a blanket wipe must not touch.
+_EXTRA_PERSON_TABLES = ["voice_signatures", "proactive_topics_asked"]
+
+
+def _purge_episodes_for_person(person_id: int) -> None:
+    """Best-effort: drop this person's entries from Rex's diary (rex.db). Never raises —
+    a diary hiccup must not block a people.db delete."""
+    try:
+        from memory import episodes
+        episodes.purge_person(person_id)
+    except Exception as exc:
+        _log.debug("episode purge skipped for person_id=%s: %s", person_id, exc)
+
 # Tier order used for antagonism cap comparisons.
 _TIER_ORDER = ["stranger", "acquaintance", "friend", "close_friend", "best_friend"]
 
@@ -789,15 +805,17 @@ def count_biometrics(person_id: int, type_: str) -> int:
 
 
 def delete_person(person_id: int) -> None:
-    """Delete all rows for a person across every person-related table."""
+    """Delete all rows for a person across every person-related table (incl. the
+    voiceprint signature, proactive-ask ledger, and Rex's diary entries about them)."""
     with db.connection() as conn:
-        for table in _PERSON_TABLES:
+        for table in _PERSON_TABLES + _EXTRA_PERSON_TABLES:
             conn.execute(f"DELETE FROM {table} WHERE person_id = ?", (person_id,))
         conn.execute(
             f"DELETE FROM {_RELATIONSHIP_TABLE} WHERE from_person_id = ? OR to_person_id = ?",
             (person_id, person_id),
         )
         conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
+    _purge_episodes_for_person(person_id)
 
 
 def merge_person(survivor_id: int, victim_id: int) -> bool:
@@ -836,7 +854,7 @@ def merge_person(survivor_id: int, victim_id: int) -> bool:
                 victim_id,
             )
             return False
-        for table in _PERSON_TABLES:
+        for table in _PERSON_TABLES + _EXTRA_PERSON_TABLES:
             conn.execute(
                 f"UPDATE OR IGNORE {table} SET person_id = ? WHERE person_id = ?",
                 (survivor_id, victim_id),
@@ -861,6 +879,11 @@ def merge_person(survivor_id: int, victim_id: int) -> bool:
             (victim_id, victim_id),
         )
         conn.execute("DELETE FROM people WHERE id = ?", (victim_id,))
+    try:
+        from memory import episodes
+        episodes.repoint_person(victim_id, survivor_id)
+    except Exception as exc:
+        _log.debug("episode repoint skipped %s→%s: %s", victim_id, survivor_id, exc)
     _log.info(
         "[identity] merged person_id=%s into survivor_id=%s", victim_id, survivor_id
     )
@@ -878,4 +901,14 @@ def delete_all_people() -> None:
         for table in _PERSON_TABLES:
             conn.execute(f"DELETE FROM {table}")
         conn.execute(f"DELETE FROM {_RELATIONSHIP_TABLE}")
+        # Drop named voiceprints + the proactive ledger, but keep anonymous (NULL-person)
+        # voice signatures so cross-session "I've heard your voice" continuity survives.
+        conn.execute("DELETE FROM voice_signatures WHERE person_id IS NOT NULL")
+        conn.execute("DELETE FROM proactive_topics_asked")
         conn.execute("DELETE FROM people")
+    # Keep Rex's diary but sever the now-dangling person links (ids will be recycled).
+    try:
+        from memory import episodes
+        episodes.detach_all_people()
+    except Exception as exc:
+        _log.debug("episode detach-all skipped: %s", exc)

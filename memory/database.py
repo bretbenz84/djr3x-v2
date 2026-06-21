@@ -227,11 +227,21 @@ _MIGRATIONS = [
 ]
 
 
+def _safe_exec(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> None:
+    """Run one migration statement, isolating its failure. A single bad ALTER/UPDATE
+    must NOT abort the rest of the migration (the old behavior left a half-migrated DB
+    that still passed table-only verification, then surfaced as swallowed query errors)."""
+    try:
+        conn.execute(sql, params)
+    except Exception as exc:
+        _log.warning("migration statement skipped: %s | %s", sql.strip().split("\n")[0][:80], exc)
+
+
 def _run_migrations() -> None:
     try:
         with connection() as conn:
             for stmt in _MIGRATIONS:
-                conn.execute(stmt)
+                _safe_exec(conn, stmt)
             _ensure_column(
                 conn,
                 "person_emotional_events",
@@ -320,38 +330,93 @@ def _run_migrations() -> None:
                 "recency",
                 "TEXT DEFAULT 'unknown'",
             )
-            conn.execute(
+            _safe_exec(
+                conn,
                 """UPDATE person_events
                    SET status = 'planned'
-                   WHERE status IS NULL OR status = ''"""
+                   WHERE status IS NULL OR status = ''""",
             )
-            conn.execute(
+            _safe_exec(
+                conn,
                 """UPDATE person_events
                    SET updated_at = COALESCE(updated_at, follow_up_at, mentioned_at)
-                   WHERE updated_at IS NULL"""
+                   WHERE updated_at IS NULL""",
             )
-            conn.execute(
+            _safe_exec(
+                conn,
                 """UPDATE person_facts
                    SET last_confirmed_at = COALESCE(last_confirmed_at, updated_at, created_at)
-                   WHERE last_confirmed_at IS NULL"""
+                   WHERE last_confirmed_at IS NULL""",
             )
-            conn.execute(
+            _safe_exec(
+                conn,
                 """UPDATE person_facts
                    SET evidence_count = 1
-                   WHERE evidence_count IS NULL OR evidence_count < 1"""
+                   WHERE evidence_count IS NULL OR evidence_count < 1""",
             )
-            conn.execute(
+            _safe_exec(
+                conn,
                 """UPDATE person_facts
                    SET importance = 0.5
-                   WHERE importance IS NULL"""
+                   WHERE importance IS NULL""",
             )
-            conn.execute(
+            _safe_exec(
+                conn,
                 """UPDATE person_facts
                    SET decay_rate = 'normal'
-                   WHERE decay_rate IS NULL OR decay_rate = ''"""
+                   WHERE decay_rate IS NULL OR decay_rate = ''""",
             )
+            _sweep_orphans(conn)
     except Exception as exc:
         _log.warning("schema migration skipped: %s", exc)
+
+
+# Child tables keyed by a plain person_id column. NULL person_id is legitimate for
+# voice_signatures (an as-yet-unnamed voice) and is left alone — only rows pointing at
+# a person id that no longer exists are swept.
+_ORPHAN_PERSON_TABLES = (
+    "biometrics",
+    "person_facts",
+    "person_qa",
+    "conversations",
+    "person_events",
+    "person_aliases",
+    "person_emotional_events",
+    "person_conversation_boundaries",
+    "person_preferences",
+    "person_interests",
+    "person_disposition_stats",
+    "person_callback_material",
+    "voice_signatures",
+    "proactive_topics_asked",
+)
+
+
+def _sweep_orphans(conn: sqlite3.Connection) -> None:
+    """Delete child rows that reference a person id no longer in ``people``.
+
+    Foreign keys are not enforced on this DB (cross-person ``told_by`` / ``described_by``
+    columns would need ON DELETE SET NULL via a table rebuild first), so incomplete
+    historical deletes leave orphaned facts/interests that still feed prompts. This is a
+    cheap, self-healing sweep run on every migration pass; it never touches NULL refs."""
+    for table in _ORPHAN_PERSON_TABLES:
+        try:
+            conn.execute(
+                f"DELETE FROM {table} "
+                "WHERE person_id IS NOT NULL "
+                "AND person_id NOT IN (SELECT id FROM people)"
+            )
+        except Exception as exc:
+            _log.debug("orphan sweep skipped for %s: %s", table, exc)
+    for col in ("from_person_id", "to_person_id"):
+        try:
+            conn.execute(
+                f"DELETE FROM person_relationships "
+                f"WHERE {col} IS NOT NULL "
+                f"AND {col} NOT IN (SELECT id FROM people)"
+            )
+        except Exception as exc:
+            _log.debug("orphan sweep skipped for person_relationships.%s: %s", col, exc)
 
 
 def _ensure_column(
@@ -360,12 +425,15 @@ def _ensure_column(
     column: str,
     definition: str,
 ) -> None:
-    existing = {
-        row["name"]
-        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-    }
-    if column not in existing:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    try:
+        existing = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    except Exception as exc:
+        _log.warning("add column %s.%s skipped: %s", table, column, exc)
 
 
 @contextmanager
@@ -374,6 +442,10 @@ def connection() -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(_DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # WAL allows one writer; the vision/disposition threads write concurrently. Without a
+    # busy timeout a second writer gets SQLITE_BUSY immediately, which the execute()
+    # wrappers swallow as a silently-dropped write. Give contended writes a retry window.
+    conn.execute("PRAGMA busy_timeout=5000")
     try:
         yield conn
         conn.commit()
@@ -389,6 +461,7 @@ def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(_DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -461,3 +534,39 @@ def verify_schema() -> None:
             f"people.db is missing tables: {sorted(missing)}. "
             "Run setup_assets.py to initialize the schema."
         )
+    _run_one_time_data_migrations()
+
+
+# Bump when a new one-time data migration is added below; PRAGMA user_version gates it
+# so the pass runs once per DB, not on every boot.
+_DATA_MIGRATION_VERSION = 1
+
+
+def _run_one_time_data_migrations() -> None:
+    """Run one-time data cleanups (not schema) gated by PRAGMA user_version.
+
+    v1: collapse the duplicate/fragmented interests and events that accumulated under
+    the old exact-string dedup (e.g. 'R3X droid' / 'building an R3X droid', 'camping
+    trip' x4). Idempotent, but user_version keeps it from re-scanning every person on
+    every launch."""
+    try:
+        with connection() as conn:
+            current = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    except Exception as exc:
+        _log.debug("user_version read failed; skipping data migrations: %s", exc)
+        return
+    if current >= _DATA_MIGRATION_VERSION:
+        return
+    try:
+        from memory import dedup
+        summary = dedup.consolidate_all()
+        _log.info("[data_migration] v%d duplicate consolidation: %s",
+                  _DATA_MIGRATION_VERSION, summary)
+    except Exception as exc:
+        _log.warning("[data_migration] duplicate consolidation failed: %s", exc)
+        return
+    try:
+        with connection() as conn:
+            conn.execute(f"PRAGMA user_version = {_DATA_MIGRATION_VERSION}")
+    except Exception as exc:
+        _log.debug("user_version write failed: %s", exc)

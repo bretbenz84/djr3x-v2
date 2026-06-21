@@ -78,9 +78,33 @@ def delete_conversations(person_id: int) -> None:
 # In-memory session transcript buffer
 # ─────────────────────────────────────────────────────────────────────────────
 
-def add_to_transcript(speaker: str, text: str) -> None:
-    """Append a speaker/text entry to the in-memory session transcript."""
-    _transcript.append({"speaker": speaker, "text": text})
+_REX_SPEAKERS = {"rex", "dj-r3x", "djr3x"}
+
+
+def add_to_transcript(speaker: str, text: str, *, learnable: bool = True) -> None:
+    """Append a speaker/text entry to the in-memory session transcript.
+
+    ``learnable`` marks whether this turn may feed session-end memory extraction.
+    Human turns are recorded as learnable by default, BEFORE the turn's routing has
+    decided whether learning should be suppressed (commands, games, corrections,
+    general-knowledge Q&A, minors). When a turn turns out to be non-learnable, the
+    interaction layer flips this flag via ``mark_last_human_turn_unlearnable`` so the
+    session-end consolidation pass honors the same suppression the per-turn extractor
+    already does — otherwise a suppressed turn ("China", a misheard command) would be
+    re-extracted as a permanent fact at teardown.
+    """
+    _transcript.append({"speaker": speaker, "text": text, "learnable": bool(learnable)})
+
+
+def mark_last_human_turn_unlearnable() -> bool:
+    """Flag the most recent NON-Rex transcript turn as not-learnable. Returns True if
+    one was found and flipped. Targets the current exchange's human turn (only one is
+    recorded per exchange; Rex's own lines in between are skipped)."""
+    for entry in reversed(_transcript):
+        if str(entry.get("speaker") or "").lower() not in _REX_SPEAKERS:
+            entry["learnable"] = False
+            return True
+    return False
 
 
 def get_session_transcript() -> list[dict]:

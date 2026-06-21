@@ -100,9 +100,19 @@ def upsert_interest(
     associated_people: Optional[str] = None,
     associated_stories: Optional[str] = None,
 ) -> Optional[int]:
-    """Insert or update an interest and return its row id."""
+    """Insert or update an interest and return its row id.
+
+    A new name is folded into an existing interest when it EXACTLY matches (case-
+    insensitive) OR is a fuzzy/paraphrase match (memory.dedup) — so "building an R3X
+    droid" updates the existing "R3X droid" row instead of forking a near-duplicate.
+    Clearly mis-parsed fragments ("him sassy") are rejected outright.
+    """
     name_clean = _clean_name(name)
     if not name_clean:
+        return None
+    from memory import dedup
+    if dedup.looks_like_junk_interest(name_clean):
+        _log.debug("interest rejected as junk fragment: %r (person_id=%s)", name_clean, person_id)
         return None
     category_clean = _clean_token(category) or "hobby"
     strength_clean = _normalize_strength(interest_strength)
@@ -114,6 +124,12 @@ def upsert_interest(
         "SELECT * FROM person_interests WHERE person_id = ? AND lower(name) = lower(?)",
         (int(person_id), name_clean),
     )
+    if not existing:
+        # Fuzzy fold-in: catch paraphrases the exact match misses.
+        candidates = [dict(r) for r in db.fetchall(
+            "SELECT * FROM person_interests WHERE person_id = ?", (int(person_id),)
+        )]
+        existing = dedup.interest_match(name_clean, candidates)
     if existing:
         row = dict(existing)
         row_id = int(row["id"])

@@ -103,13 +103,35 @@ def add_event(
     event_date: Optional[str],
     event_notes: str,
 ) -> Optional[int]:
-    """Store an upcoming event. event_date may be None if no specific date was given."""
+    """Store an upcoming event. event_date may be None if no specific date was given.
+
+    A planned event that matches an existing OPEN one (same/paraphrased name, via
+    memory.dedup) refreshes that row instead of inserting a duplicate — so mentioning
+    "the camping trip" across several turns doesn't leave four rows Rex re-asks about.
+    """
+    now = _now()
+    try:
+        from memory import dedup
+        open_events = get_open_events(int(person_id))
+        match = dedup.event_match(event_name or "", open_events)
+    except Exception:
+        match = None
+    if match and match.get("id") is not None:
+        db.execute(
+            """UPDATE person_events
+               SET event_date = COALESCE(?, event_date),
+                   event_notes = COALESCE(NULLIF(?, ''), event_notes),
+                   mentioned_at = ?, updated_at = ?
+               WHERE id = ?""",
+            (event_date, (event_notes or "").strip(), now, now, int(match["id"])),
+        )
+        return int(match["id"])
     return db.execute(
         """INSERT INTO person_events
            (person_id, event_name, event_date, event_notes, mentioned_at,
             followed_up, status, updated_at)
            VALUES (?, ?, ?, ?, ?, FALSE, 'planned', ?)""",
-        (person_id, event_name, event_date, event_notes, _now(), _now()),
+        (person_id, event_name, event_date, event_notes, now, now),
     )
 
 

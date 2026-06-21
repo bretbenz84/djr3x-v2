@@ -183,7 +183,39 @@ def forget_specific_memory(person_id: int, target: str) -> ForgetResult:
         ("premise", "topic_slug", "category", "source_quote"),
         terms,
     )
+    result.deleted["relationships"] = _delete_matching_relationships(person_id, terms)
+    result.deleted["episodes"] = _forget_episodes(person_id, terms)
     return result
+
+
+def _delete_matching_relationships(person_id: int, terms: set[str]) -> int:
+    """Delete the person's social edges whose relationship label matches a term, so
+    "forget my brother" also drops the relationship row written alongside the fact."""
+    rows = db.fetchall(
+        "SELECT * FROM person_relationships WHERE from_person_id = ? OR to_person_id = ?",
+        (int(person_id), int(person_id)),
+    )
+    ids = [
+        int(row["id"])
+        for row in [dict(r) for r in rows]
+        if row.get("id") is not None
+        and text_matches_terms(str(row.get("relationship") or ""), terms)
+    ]
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    db.execute(f"DELETE FROM person_relationships WHERE id IN ({placeholders})", (*ids,))
+    return len(ids)
+
+
+def _forget_episodes(person_id: int, terms: set[str]) -> int:
+    """Delete matching entries from Rex's first-person diary (rex.db), so a forgotten
+    topic can't resurface via an episodic "remember when…" callback."""
+    try:
+        from memory import episodes
+        return episodes.forget_matching(person_id, terms)
+    except Exception:
+        return 0
 
 
 def forget_memory_detail(person_id: int, target: str) -> ForgetResult:

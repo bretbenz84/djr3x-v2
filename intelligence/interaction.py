@@ -11816,6 +11816,17 @@ def _post_response(
         except Exception:
             pass
 
+    # The human turn was recorded as learnable BEFORE routing decided suppression.
+    # Flip it now so the session-end consolidation pass (which re-extracts over the
+    # whole transcript) honors the same suppression the per-turn extractor does — a
+    # game answer / misheard command / correction must not become a permanent fact at
+    # teardown just because per-turn suppression doesn't reach the consolidation input.
+    if suppress_memory_learning:
+        try:
+            conv_memory.mark_last_human_turn_unlearnable()
+        except Exception as exc:
+            _log.debug("post_response mark-unlearnable error: %s", exc)
+
     if _game_suppresses_conversation():
         try:
             interoception.record_interaction()
@@ -12798,21 +12809,30 @@ def _end_session() -> None:
                     )
 
             forgotten_terms = _forgotten_terms_for_person(person_id)
+            # Only LEARNABLE turns feed durable memory extraction. Turns marked
+            # unlearnable (commands, games, corrections, general-knowledge Q&A,
+            # minors) were already suppressed per-turn; excluding them here closes
+            # the session-end re-extraction hole. The session SUMMARY above still
+            # uses the full person_transcript (it's a narrative recap, not durable
+            # facts).
+            learnable_transcript = [
+                t for t in person_transcript if t.get("learnable", True)
+            ]
             consolidation_completed = False
-            if person_transcript:
+            if learnable_transcript:
                 consolidation_completed = _consolidate_session_memories(
                     person_id,
                     person_name,
-                    person_transcript,
+                    learnable_transcript,
                     forgotten_terms,
                 )
 
             # Full-transcript extraction fallback — catches facts the
             # per-exchange rolling window may have missed when consolidation is
             # disabled, below threshold, or times out/fails before writing.
-            if person_transcript and not consolidation_completed:
+            if learnable_transcript and not consolidation_completed:
                 try:
-                    end_facts = llm.extract_facts(person_id, person_transcript, person_name=person_name)
+                    end_facts = llm.extract_facts(person_id, learnable_transcript, person_name=person_name)
                     saved = 0
                     for fact in end_facts:
                         if (
@@ -12849,7 +12869,7 @@ def _end_session() -> None:
                 try:
                     end_preferences = llm.extract_preferences(
                         person_id,
-                        person_transcript,
+                        learnable_transcript,
                         person_name=person_name,
                     )
                     saved_preferences = 0
@@ -12897,7 +12917,7 @@ def _end_session() -> None:
                 try:
                     end_interests = llm.extract_interests(
                         person_id,
-                        person_transcript,
+                        learnable_transcript,
                         person_name=person_name,
                     )
                     saved_interests = 0
