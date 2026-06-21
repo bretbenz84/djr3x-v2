@@ -845,6 +845,20 @@ MEMORY_DROP_STALE_PROVISIONAL = True
 # do-not-mention boundary actually mutes the matching fact, not just sits beside it.
 MEMORY_BOUNDARY_SUPPRESSES_FACTS = True
 
+# ── Unified cross-silo memory retrieval (Tier D) ─────────────────────────────────
+# Rank a person's facts + interests on ONE axis and pack to a single global budget,
+# instead of independent per-silo caps (12 facts + 8 interests) that waste slots on weak
+# items in one silo while cutting strong items in another. Rendering is unchanged — only
+# the SELECTION is unified. Off → the legacy fixed per-silo caps.
+MEMORY_UNIFIED_RETRIEVAL_ENABLED = True
+# Max combined facts+interests lines injected per turn (the bloat ceiling for regulars;
+# was effectively 12+8=20). Allocated dynamically by score across both silos.
+MEMORY_PROMPT_BUDGET_ITEMS = 16
+# Relative weight of a fact vs an interest of equal base/relevance (facts tend to be more
+# load-bearing in a reply than a known hobby).
+MEMORY_RETRIEVAL_FACT_WEIGHT = 1.0
+MEMORY_RETRIEVAL_INTEREST_WEIGHT = 0.85
+
 # ── PHASE 2: episodic RECALL (reading the diary back into behavior) ──────────────
 # SEPARATE kill switch from capture (EPISODIC_MEMORY_ENABLED). Off → recall is inert:
 # rex.db is still written, but nothing is ever surfaced. Env override: EPISODIC_RECALL_ENABLED.

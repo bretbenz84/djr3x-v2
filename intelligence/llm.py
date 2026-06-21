@@ -585,9 +585,27 @@ def _build_person_context(person_id: int) -> str:
             mute_terms = boundaries_db.muted_topic_terms(person_id)
     except Exception as exc:
         _log.debug("boundary fact-mute terms skipped: %s", exc)
-    facts = facts_db.get_prompt_worthy_facts(
-        person_id, limit=12, topic_tokens=topic_tokens, mute_terms=mute_terms
-    )
+    # Unified cross-silo retrieval ranks facts + interests on one axis and packs to a
+    # global budget; the interests it selects are reused at the interest block below so
+    # the two silos share one budget instead of independent 12/8 caps.
+    _unified_interests = None
+    if getattr(config, "MEMORY_UNIFIED_RETRIEVAL_ENABLED", True):
+        try:
+            from memory import retrieval as _retrieval
+            _bundle = _retrieval.retrieve_person_memory(
+                person_id, topic_tokens=topic_tokens, mute_terms=mute_terms
+            )
+            facts = _bundle["facts"]
+            _unified_interests = _bundle["interests"]
+        except Exception as exc:
+            _log.debug("unified retrieval skipped; per-silo fallback: %s", exc)
+            facts = facts_db.get_prompt_worthy_facts(
+                person_id, limit=12, topic_tokens=topic_tokens, mute_terms=mute_terms
+            )
+    else:
+        facts = facts_db.get_prompt_worthy_facts(
+            person_id, limit=12, topic_tokens=topic_tokens, mute_terms=mute_terms
+        )
     _log.info("[llm] loaded %d facts for %s", len(facts), name)
     if facts:
         relevant_facts: list = []
@@ -655,8 +673,12 @@ def _build_person_context(person_id: int) -> str:
                 + ". Treat these as instructions to Rex, never as joke or roast material."
             )
 
-    interests = interests_db.get_interests_for_prompt(
-        person_id, limit=8, topic_tokens=topic_tokens
+    interests = (
+        _unified_interests
+        if _unified_interests is not None
+        else interests_db.get_interests_for_prompt(
+            person_id, limit=8, topic_tokens=topic_tokens
+        )
     )
     if interests:
         interest_lines = [
