@@ -180,6 +180,32 @@ class BodyBeatAnimationTest(unittest.TestCase):
         move_to.assert_called_once()
         self.assertEqual(move_to.call_args.args[0], snapshot)
 
+    def test_half_period_override_speeds_up_or_slows_the_wrist(self):
+        from sequences import animations
+
+        snapshot = {4: animations.ELBOW_NEUTRAL, 5: animations.HAND_NEUTRAL, 7: animations.HEROARM_NEUTRAL}
+        default_speed = animations.config.SERVO_DEFAULT_SPEED
+
+        def wrist_speed_for(hp):
+            speeds = []
+            with (
+                mock.patch.object(animations._state_module, "get_state", return_value=animations._State.ACTIVE),
+                mock.patch.object(animations, "_current_body_pose", return_value=snapshot),
+                mock.patch.object(animations.time, "sleep", return_value=None),
+                mock.patch.object(animations.servos, "set_servo"),
+                mock.patch.object(animations.servos, "set_speed", side_effect=lambda ch, sp: speeds.append((ch, sp))),
+                mock.patch.object(animations.servos, "set_acceleration"),
+                mock.patch.object(animations.servos, "move_to"),
+                mock.patch.object(animations.servos, "pause_arm_idle"),
+                mock.patch.object(animations.servos, "resume_arm_idle"),
+            ):
+                self.assertTrue(animations.wave_back_gesture(count=1, half_period=hp, async_=False))
+            # First speed set on the wrist channel (ch5) is the wave speed (before restore).
+            return next(sp for ch, sp in speeds if ch == 5 and sp != default_speed)
+
+        # A shorter half-period (faster wave) ⇒ higher Maestro speed than a longer one.
+        self.assertGreater(wrist_speed_for(0.18), wrist_speed_for(0.48))
+
     def test_sleep_animation_uses_shutdown_rest_pose(self):
         from sequences import animations
 

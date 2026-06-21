@@ -108,6 +108,36 @@ class WorldStatePublishTest(unittest.TestCase):
         self.assertIsNone(person["pose_keypoints"])
 
 
+class WaveSpeedTest(unittest.TestCase):
+    """recent_wave_speed measures how fast the raised wrist is sweeping (for mirroring)."""
+
+    def setUp(self):
+        pose._wave_motion.clear()
+        self.addCleanup(pose._wave_motion.clear)
+
+    def _feed(self, amp):
+        import time
+        pose._wave_motion.clear()
+        t = time.monotonic()
+        for i in range(6):  # 6 samples over ~1s, alternating sides by `amp`
+            pose._wave_motion.append((t - (5 - i) * 0.2, 0.5 + (amp if i % 2 else -amp)))
+
+    def test_fast_wave_measures_higher_than_slow(self):
+        self._feed(0.03)
+        slow = pose.recent_wave_speed()
+        self._feed(0.18)
+        fast = pose.recent_wave_speed()
+        self.assertIsNotNone(slow)
+        self.assertIsNotNone(fast)
+        self.assertGreater(fast, slow)
+
+    def test_too_few_samples_returns_none(self):
+        import time
+        pose._wave_motion.clear()
+        pose._wave_motion.append((time.monotonic(), 0.5))
+        self.assertIsNone(pose.recent_wave_speed())
+
+
 class ModelLoadingTest(unittest.TestCase):
     def setUp(self):
         self.addCleanup(pose._reset_for_tests)

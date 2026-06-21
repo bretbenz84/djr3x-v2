@@ -2507,6 +2507,23 @@ def _wave_response_plan(level: int, first_name: str) -> tuple[Optional[str], boo
     return (None, False, False)               # level >= 5: he's done — ignore
 
 
+def _mirrored_half_period(user_speed: Optional[float]) -> Optional[float]:
+    """Map the user's measured wave speed (normalized-x/sec from vision.pose) to Rex's wave
+    half-period so a slow wave gets a slow wave-back and a fast one a fast wave-back. Linear
+    from [SLOW..FAST] user speed onto [SLOW..FAST] half-period, clamped. None → caller uses
+    the fixed default (mirroring disabled or no measurement)."""
+    if user_speed is None or not bool(getattr(config, "WAVE_SPEED_MIRROR_ENABLED", True)):
+        return None
+    slow_s = float(getattr(config, "WAVE_SPEED_MIRROR_SLOW", 0.25))
+    fast_s = float(getattr(config, "WAVE_SPEED_MIRROR_FAST", 1.20))
+    if fast_s <= slow_s:
+        return None
+    slow_hp = float(getattr(config, "WAVE_BACK_WRIST_HALF_PERIOD_SLOW_SECS", 0.48))
+    fast_hp = float(getattr(config, "WAVE_BACK_WRIST_HALF_PERIOD_FAST_SECS", 0.18))
+    frac = max(0.0, min(1.0, (float(user_speed) - slow_s) / (fast_s - slow_s)))
+    return slow_hp + frac * (fast_hp - slow_hp)
+
+
 def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
     """If a visible person waves, wave back (+ one short warm greeting) — the way you'd
     return a wave from across a room.
@@ -2541,7 +2558,15 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
         name = _first_name(person.get("face_id") or person.get("name"), "")
         if not _pending_wave_back or _pending_wave_back.get("key") != key:
             _log.info("consciousness: wave detected for %s — queued wave-back", key)
-        _pending_wave_back = {"key": key, "name": name, "at": now}
+        # Capture how fast they're waving NOW (refreshed each tick while waving) so the
+        # wave-back can mirror the speed; None if it couldn't be measured.
+        speed = None
+        try:
+            from vision import pose as pose_mod
+            speed = pose_mod.recent_wave_speed()
+        except Exception as exc:
+            _log.debug("wave speed read failed: %s", exc)
+        _pending_wave_back = {"key": key, "name": name, "at": now, "speed": speed}
         break
 
     # ── (B) Fire the latched wave-back as soon as Rex is free ───────────────────────
@@ -2587,22 +2612,27 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
 
     # Responded (spoke and/or waved, or deliberately ignored at high levels) — advance the
     # bit and consume the wave so a sustained wave doesn't re-trigger it.
+    user_speed = pending.get("speed")
+    half_period = _mirrored_half_period(user_speed)  # None → gesture uses the fixed default
     _wave_escalation[key] = (now, level)
     _wave_reacted_keys[key] = now
     _pending_wave_back = None
     if should_speak or should_gesture:
         _last_wave_reaction_at = now
     if should_gesture:
-        # Raise the arm and sweep the wrist between both travel limits (non-blocking;
-        # failure-safe / no-ops without servos).
+        # Raise the arm and sweep the wrist between both travel limits, mirroring the user's
+        # wave speed when measured (non-blocking; failure-safe / no-ops without servos).
         try:
             from sequences import animations
-            animations.wave_back_gesture()
+            animations.wave_back_gesture(half_period=half_period)
         except Exception as exc:
             _log.debug("wave-back animation skipped: %s", exc)
     _log.info(
-        "consciousness: wave-back for %s — level=%d speak=%s gesture=%s",
+        "consciousness: wave-back for %s — level=%d speak=%s gesture=%s "
+        "user_speed=%s half_period=%s",
         key, level, should_speak, should_gesture,
+        ("%.2f" % user_speed) if isinstance(user_speed, (int, float)) else None,
+        ("%.2f" % half_period) if isinstance(half_period, (int, float)) else None,
     )
 
 

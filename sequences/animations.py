@@ -1434,13 +1434,18 @@ def _run_wake_word_ack_wave(count: int) -> bool:
         _arm_motion_lock.release()
 
 
-def wave_back_gesture(count: int | None = None, *, async_: bool = True) -> bool:
+def wave_back_gesture(
+    count: int | None = None, *, half_period: float | None = None, async_: bool = True
+) -> bool:
     """Camera wave-back gesture.
 
     Raises the arm to present the hand, then waves by sweeping the WRIST (the ``hand``
     servo) between BOTH of its travel limits ``count`` times — a clear hand wave, distinct
     from the compact elbow-driven wake-word ack. The elbow only raises the arm; the wrist
     does the waving.
+
+    ``half_period`` (seconds per swing) overrides the configured default — used to mirror
+    the user's wave speed (a smaller value = a faster wave-back).
     """
     if count is None:
         count = int(getattr(config, "WAVE_BACK_WRIST_SWEEPS", 4))
@@ -1450,14 +1455,15 @@ def wave_back_gesture(count: int | None = None, *, async_: bool = True) -> bool:
         threading.Thread(
             target=_run_wave_back_gesture,
             args=(count,),
+            kwargs={"half_period": half_period},
             daemon=True,
             name="wave_back_gesture",
         ).start()
         return True
-    return _run_wave_back_gesture(count)
+    return _run_wave_back_gesture(count, half_period=half_period)
 
 
-def _run_wave_back_gesture(count: int) -> bool:
+def _run_wave_back_gesture(count: int, half_period: float | None = None) -> bool:
     if not _body_beat_allowed():
         _log.info("[animations] wave-back skipped — state not active (sleep/shutdown)")
         return False
@@ -1479,7 +1485,9 @@ def _run_wave_back_gesture(count: int) -> bool:
     # travel — a sweep takes ~2s at that rate, so rapid move_to reversals never complete (the
     # field symptom: one big swing then jitter, not 4 waves). Drive the wrist with DIRECT
     # targets at a fast speed instead, sleeping the travel time, then restore the defaults.
-    half_period = float(getattr(config, "WAVE_BACK_WRIST_HALF_PERIOD_SECS", 0.22))
+    if half_period is None:
+        half_period = float(getattr(config, "WAVE_BACK_WRIST_HALF_PERIOD_SECS", 0.22))
+    half_period = max(0.05, min(2.0, float(half_period)))
     configured_speed = int(getattr(config, "WAVE_BACK_WRIST_SPEED", 0))
     wave_accel = int(getattr(config, "WAVE_BACK_WRIST_ACCEL", 0))
     # Maestro speed unit ≈ 100 quarter-µs / second; auto-pick a speed that traverses the

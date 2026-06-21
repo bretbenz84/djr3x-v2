@@ -209,5 +209,22 @@ class WaveEscalationTest(unittest.TestCase):
         self.assertEqual(self._fire(7), [])                     # still ignored
 
 
+class WaveSpeedMirrorTest(unittest.TestCase):
+    """Map the user's measured wave speed to Rex's wave-back half-period."""
+
+    def test_mapping_is_monotonic_and_clamped(self):
+        f = c._mirrored_half_period
+        slow_hp = c.config.WAVE_BACK_WRIST_HALF_PERIOD_SLOW_SECS
+        fast_hp = c.config.WAVE_BACK_WRIST_HALF_PERIOD_FAST_SECS
+        self.assertIsNone(f(None))                       # no measurement → default
+        self.assertAlmostEqual(f(0.0), slow_hp, places=2)    # very slow → slow (clamped)
+        self.assertAlmostEqual(f(99.0), fast_hp, places=2)   # very fast → fast (clamped)
+        self.assertLess(f(1.0), f(0.3))                  # faster wave → shorter half-period
+
+    def test_disabled_returns_none(self):
+        with mock.patch.object(c.config, "WAVE_SPEED_MIRROR_ENABLED", False):
+            self.assertIsNone(c._mirrored_half_period(1.0))
+
+
 if __name__ == "__main__":
     unittest.main()

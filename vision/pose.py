@@ -23,6 +23,7 @@ after real-world testing to adjust sensitivity.
 import logging
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -49,6 +50,11 @@ _last_timestamp_ms = 0
 # and wave-back stay live instead of jumping once a second.
 _stop_event   = threading.Event()
 _thread: Optional[threading.Thread] = None
+
+# Recent raised-wrist (timestamp, normalized_x) samples, so wave-back can mirror how fast
+# the user is waving. Written by the pose loop, read from the consciousness thread.
+_wave_motion: "deque[tuple[float, float]]" = deque(maxlen=16)
+_wave_motion_lock = threading.Lock()
 
 # ── Visibility threshold — landmarks below this are treated as not-detected ──
 _VIS_MIN = 0.4
@@ -506,6 +512,10 @@ def detect_pose(frame) -> list[dict]:
     engagement = _classify_engagement(pose_label, gesture)
     age        = get_age_category(kp)
 
+    # Track the raised wrist's lateral position over time so wave-back can mirror the
+    # speed of the user's wave (see recent_wave_speed()).
+    _record_wave_motion(kp)
+
     # Compute position from nose or shoulder midpoint for world_state
     nose = _get(kp, "NOSE")
     ls   = _get(kp, "LEFT_SHOULDER")
@@ -585,6 +595,50 @@ def _update_world_state(detected: list[dict]) -> None:
     # Read-modify-write under the world_state lock so a concurrent face/identity
     # write (which sets person_db_id) isn't reverted by a stale snapshot.
     world_state.mutate("people", _merge_pose)
+
+
+def _raised_wrist_x(kp: dict) -> Optional[float]:
+    """Normalized x of the most-raised wrist (above its shoulder), or None. Tracks the
+    waving hand's lateral position across frames for speed measurement."""
+    ls, rs = _get(kp, "LEFT_SHOULDER"), _get(kp, "RIGHT_SHOULDER")
+    lw, rw = _get(kp, "LEFT_WRIST"), _get(kp, "RIGHT_WRIST")
+    best = None  # (height_above_shoulder, wrist_x)
+    for shoulder, wrist in ((ls, lw), (rs, rw)):
+        if shoulder and wrist and wrist[1] <= shoulder[1] - _RAISE_Y_MARGIN:
+            height = shoulder[1] - wrist[1]
+            if best is None or height > best[0]:
+                best = (height, wrist[0])
+    return best[1] if best else None
+
+
+def _record_wave_motion(kp: dict) -> None:
+    """Append the raised wrist's lateral position (with a timestamp) to the motion history.
+    No raised wrist → nothing recorded (old samples age out of recent_wave_speed's window)."""
+    x = _raised_wrist_x(kp)
+    if x is None:
+        return
+    with _wave_motion_lock:
+        _wave_motion.append((time.monotonic(), float(x)))
+
+
+def recent_wave_speed() -> Optional[float]:
+    """Mean absolute lateral wrist speed (normalized-x units / second) over the recent
+    raised-wrist samples, or None if there aren't enough fresh ones. Higher = a faster wave.
+
+    Velocity-based (path length / elapsed time) rather than frequency-based, so it stays
+    meaningful at the ~5 Hz pose rate without needing full back-and-forth cycles.
+    """
+    window = float(getattr(config, "WAVE_SPEED_WINDOW_SECS", 1.2))
+    now = time.monotonic()
+    with _wave_motion_lock:
+        samples = [(t, x) for (t, x) in _wave_motion if (now - t) <= window]
+    if len(samples) < 3:
+        return None
+    path = sum(abs(samples[i + 1][1] - samples[i][1]) for i in range(len(samples) - 1))
+    dt = samples[-1][0] - samples[0][0]
+    if dt <= 0:
+        return None
+    return path / dt
 
 
 def head_anchor_px(frame_w: int, frame_h: int):
@@ -688,6 +742,8 @@ def stop() -> None:
         _mp = None
         _load_attempted = False
         _load_ok = False
+    with _wave_motion_lock:
+        _wave_motion.clear()
 
 
 def _reset_for_tests() -> None:

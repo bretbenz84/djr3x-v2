@@ -2232,6 +2232,24 @@ WAVE_BACK_WRIST_ACCEL = _env_int("WAVE_BACK_WRIST_ACCEL", 0, min_value=0, max_va
 WAVE_BACK_WRIST_HALF_PERIOD_SECS = _env_float(
     "WAVE_BACK_WRIST_HALF_PERIOD_SECS", 0.32, min_value=0.05, max_value=2.0,
 )
+
+# Mirror the user's wave SPEED: measure how fast their wrist is sweeping (normalized-x units
+# per second, from vision.pose.recent_wave_speed) and pick Rex's wave half-period to match —
+# slow wave → slow wave-back, fast → fast. The measured speed is mapped linearly from
+# [SLOW..FAST] user speed onto [SLOW..FAST] half-period (clamped), so it never gets faster
+# than the FAST (non-violent) cap or slower than the SLOW floor. Falls back to the fixed
+# WAVE_BACK_WRIST_HALF_PERIOD_SECS above when off or when no speed could be measured.
+# Tune the user-speed thresholds from the "[wave] mirror" log line on the robot.
+WAVE_SPEED_MIRROR_ENABLED = _env_bool("WAVE_SPEED_MIRROR_ENABLED", True)
+WAVE_SPEED_WINDOW_SECS = _env_float("WAVE_SPEED_WINDOW_SECS", 1.2, min_value=0.3, max_value=5.0)
+WAVE_SPEED_MIRROR_SLOW = _env_float("WAVE_SPEED_MIRROR_SLOW", 0.25, min_value=0.01, max_value=20.0)
+WAVE_SPEED_MIRROR_FAST = _env_float("WAVE_SPEED_MIRROR_FAST", 1.20, min_value=0.02, max_value=40.0)
+WAVE_BACK_WRIST_HALF_PERIOD_SLOW_SECS = _env_float(
+    "WAVE_BACK_WRIST_HALF_PERIOD_SLOW_SECS", 0.48, min_value=0.05, max_value=2.0,
+)
+WAVE_BACK_WRIST_HALF_PERIOD_FAST_SECS = _env_float(
+    "WAVE_BACK_WRIST_HALF_PERIOD_FAST_SECS", 0.18, min_value=0.05, max_value=2.0,
+)
 # How long a detected wave stays "pending" while Rex is busy (mid-turn / speaking) before
 # it's answered. A wave is a brief gesture, so it's latched and voiced as soon as Rex is
 # free within this window; longer than this and a stale wave is dropped instead of getting
