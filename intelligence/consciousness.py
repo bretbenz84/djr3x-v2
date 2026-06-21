@@ -266,8 +266,11 @@ _last_smile_reaction_at: float = 0.0
 _facial_expression_observed: dict[str, dict] = {}
 # Wave-back: last time Rex waved back (global) + per-person last-reacted (debounce so a
 # single wave fires one reaction, and the same person isn't re-waved-at for a cooldown).
+# _pending_wave_back latches a detected wave (a transient ~2s gesture) so it's still
+# answered once Rex is free — a wave seen mid-turn isn't lost. {"key","name","at"}.
 _last_wave_reaction_at: float = 0.0
 _wave_reacted_keys: dict[str, float] = {}
+_pending_wave_back: Optional[dict] = None
 _facial_expression_reacted_at: dict[tuple[str, str], float] = {}
 _last_facial_expression_reaction_at: float = 0.0
 _last_expression_reaction_line_by_kind: dict[str, str] = {}
@@ -2475,23 +2478,26 @@ def _wave_back_line(first_name: str) -> str:
 
 
 def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
-    """If a visible person is waving, wave back (+ one short warm line) — the way you'd
-    return a wave from across a room. The pose pipeline already classifies 'waving' onto
-    world_state.people; this reacts to it, debounced per person + globally so a single
-    wave fires one reaction. Reactive embodiment, not a probe — but still respects the
-    proactive gates (DJ/game/awaiting-reply/give-space) via _can_proactive_speak."""
-    global _last_wave_reaction_at
+    """If a visible person waves, wave back (+ one short warm greeting) — the way you'd
+    return a wave from across a room.
+
+    Two phases, because a wave is a transient (~2s) gesture but Rex may be busy (mid-turn,
+    speaking) when it lands:
+      (A) DETECT + LATCH — record the wave the moment the pose pipeline classifies
+          'waving' onto world_state.people, even mid-turn, so it isn't forgotten.
+      (B) FIRE WHEN FREE — voice the latched greeting as soon as Rex can speak (not over
+          live speech / the user / music / a game). The latch expires after a short TTL so
+          a stale wave isn't answered late. Debounced per person + globally.
+
+    Diagnostic logging (info) records detect / fire / expire so a "why didn't it speak?"
+    question is answerable from the log instead of guesswork."""
+    global _last_wave_reaction_at, _pending_wave_back
     if not bool(getattr(config, "WAVE_BACK_ENABLED", True)):
         return
-    if profile.suppress_proactive:
-        return
     now = time.monotonic()
-    if (now - _last_wave_reaction_at) < float(getattr(config, "WAVE_BACK_MIN_GAP_SECS", 8.0)):
-        return
-
     per_person_cd = float(getattr(config, "WAVE_BACK_PER_PERSON_COOLDOWN_SECS", 25.0))
-    target = None
-    target_key = None
+
+    # ── (A) Detect a fresh wave and latch it (runs even while Rex is busy) ──────────
     for person in snapshot.get("people", []) or []:
         if not isinstance(person, dict):
             continue
@@ -2501,29 +2507,42 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
             continue
         key = _wave_person_key(person)
         if (now - float(_wave_reacted_keys.get(key, 0.0))) < per_person_cd:
-            continue
-        target, target_key = person, key
+            continue  # already waved back at this person recently
+        name = _first_name(person.get("face_id") or person.get("name"), "")
+        if not _pending_wave_back or _pending_wave_back.get("key") != key:
+            _log.info("consciousness: wave detected for %s — queued wave-back", key)
+        _pending_wave_back = {"key": key, "name": name, "at": now}
         break
-    if target is None:
+
+    # ── (B) Fire the latched wave-back as soon as Rex is free ───────────────────────
+    pending = _pending_wave_back
+    if not pending:
         return
-    # reactive=True: a wave is a direct bid for Rex's attention, so acknowledge it even
-    # while Rex is awaiting a reply to his own question or mid-conversation. The remaining
-    # gates (live speech / music / games / give-space / suppress_proactive above) still
-    # keep it from talking over anything.
+    ttl = float(getattr(config, "WAVE_BACK_PENDING_TTL_SECS", 8.0))
+    if (now - float(pending.get("at", 0.0))) > ttl:
+        _pending_wave_back = None
+        _log.info("consciousness: wave-back expired for %s — Rex wasn't free within %.0fs",
+                  pending.get("key"), ttl)
+        return
+    if (now - _last_wave_reaction_at) < float(getattr(config, "WAVE_BACK_MIN_GAP_SECS", 8.0)):
+        return
+    if profile.user_mid_sentence:
+        return  # don't talk over the person while they're speaking
+
+    # reactive=True: a wave is a direct bid for Rex's attention, so it breaks through the
+    # awaiting-reply / active-conversation / pacing gates. It STILL yields to live speech /
+    # music / a game / a pending proactive line (so it doesn't talk over anything), which
+    # is exactly what the latch above is for — it waits for that window.
     if not _can_proactive_speak(reactive=True):
         return
 
-    first_name = _first_name(target.get("face_id") or target.get("name"), "")
-
-    # Speak the greeting DIRECTLY (governed=False): a wave-back is a reaction to a direct
-    # bid for attention, not a proactive volunteer to be arbitrated. Under the action
-    # governor (ENFORCE) wave_back is a priority-20 candidate, so it was out-prioritized by
-    # greetings / idle banter and dropped, and burned by the proactive cooldown — logged
-    # 2026-06-20: every wave "fired" but the governor suppressed it. governed=False routes
-    # past arbitration; reactive=True still keeps it off live speech / music / games / a
-    # pending proactive line. _speak_async returns True only when it actually queued speech.
+    # Speak DIRECTLY (governed=False): a wave-back is a reaction, not a proactive volunteer
+    # to be arbitrated. Under the action governor (ENFORCE) wave_back is a priority-20
+    # candidate, so it was out-prioritized by greetings / idle banter and dropped, and
+    # burned by the proactive cooldown (logged 2026-06-20). governed=False routes past
+    # arbitration; _speak_async returns True only when it actually queued speech.
     spoke = _speak_async(
-        _wave_back_line(first_name),
+        _wave_back_line(pending.get("name") or ""),
         emotion="happy",
         purpose="wave_back",
         label="wave back",
@@ -2531,12 +2550,14 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
         reactive=True,
     )
     if not spoke:
-        # Couldn't speak this tick (e.g. Rex mid-utterance). DON'T mark the per-person
-        # debounce — let the next tick try again so the wave still gets acknowledged.
+        # Couldn't speak this tick (e.g. Rex mid-utterance). Keep the latch and DON'T mark
+        # the per-person debounce — the next tick tries again until the wave is acknowledged
+        # (or the latch TTL expires).
         return
 
-    _wave_reacted_keys[target_key] = now
+    _wave_reacted_keys[pending["key"]] = now
     _last_wave_reaction_at = now
+    _pending_wave_back = None
     # Wave the arm (non-blocking). Failure-safe / no-ops without servos, like the
     # wake-word ack wave.
     try:
@@ -2544,7 +2565,7 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
         animations.wake_word_ack_wave()
     except Exception as exc:
         _log.debug("wave-back animation skipped: %s", exc)
-    _log.info("consciousness: wave-back fired for %s", target_key)
+    _log.info("consciousness: wave-back fired for %s", pending["key"])
 
 
 def _step_smile_reaction(snapshot: dict, profile: SituationProfile) -> None:
@@ -10565,6 +10586,7 @@ def start() -> None:
     global _last_facial_expression_reaction_at
     global _last_startle_sound_reaction_at
     global _last_mood_gesture_at, _mood_owns_visor, _last_mood_breathing
+    global _pending_wave_back
     if _thread and _thread.is_alive():
         _log.debug("consciousness already running")
         return
@@ -10656,6 +10678,7 @@ def start() -> None:
     _facial_expression_observed.clear()
     _facial_expression_reacted_at.clear()
     _wave_reacted_keys.clear()
+    _pending_wave_back = None
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()
     _disposition_sampled_at.clear()
@@ -10718,6 +10741,7 @@ def stop() -> None:
     global _face_tracking_last_error_y, _face_tracking_last_error_at
     global _last_face_seen_at
     global _smile_reaction_watch
+    global _pending_wave_back
     global _last_startle_sound_reaction_at
     _stop_event.set()
     _pending_identity_prompt.clear()
@@ -10771,6 +10795,7 @@ def stop() -> None:
     _facial_expression_observed.clear()
     _facial_expression_reacted_at.clear()
     _wave_reacted_keys.clear()
+    _pending_wave_back = None
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()
     _disposition_sampled_at.clear()

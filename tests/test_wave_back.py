@@ -13,8 +13,9 @@ from intelligence import consciousness as c
 
 
 class _Profile:
-    def __init__(self, suppress_proactive=False):
+    def __init__(self, suppress_proactive=False, user_mid_sentence=False):
         self.suppress_proactive = suppress_proactive
+        self.user_mid_sentence = user_mid_sentence
 
 
 def _waving(person_db_id=1, face_id="Bret", visible=True):
@@ -43,10 +44,12 @@ class StepWaveReactionTest(unittest.TestCase):
     def setUp(self):
         c._wave_reacted_keys.clear()
         c._last_wave_reaction_at = 0.0
+        c._pending_wave_back = None
 
     def tearDown(self):
         c._wave_reacted_keys.clear()
         c._last_wave_reaction_at = 0.0
+        c._pending_wave_back = None
 
     def _run(self, snapshot, *, profile=None, can_speak=True):
         captured = {}
@@ -87,9 +90,28 @@ class StepWaveReactionTest(unittest.TestCase):
             out = self._run({"people": [_waving()]})
         self.assertFalse(out["waved"])
 
-    def test_suppress_proactive_blocks(self):
-        out = self._run({"people": [_waving()]}, profile=_Profile(suppress_proactive=True))
+    def test_user_mid_sentence_blocks(self):
+        # Don't wave back over someone who is mid-sentence; the wave stays latched for when
+        # they pause (the next tick can still fire it).
+        out = self._run({"people": [_waving()]}, profile=_Profile(user_mid_sentence=True))
         self.assertFalse(out["waved"])
+        self.assertIsNotNone(c._pending_wave_back)  # latched, not lost
+
+    def test_wave_latches_while_busy_then_fires_when_free(self):
+        # A wave seen while Rex can't speak is latched and answered on a later tick.
+        with mock.patch.object(c, "_first_name", return_value="Bret"), \
+             mock.patch.object(c.config, "WAVE_BACK_LINES", ["Hey, {name}!"]), \
+             mock.patch.object(c, "_speak_async",
+                               side_effect=lambda line, **k: True), \
+             mock.patch("sequences.animations.wake_word_ack_wave") as wave:
+            with mock.patch.object(c, "_can_proactive_speak", return_value=False):
+                c._step_wave_reaction({"people": [_waving()]}, _Profile())
+            self.assertFalse(wave.called)                 # busy → didn't fire yet
+            self.assertIsNotNone(c._pending_wave_back)    # but latched
+            with mock.patch.object(c, "_can_proactive_speak", return_value=True):
+                c._step_wave_reaction({"people": []}, _Profile())  # wave gone, Rex now free
+            self.assertTrue(wave.called)                  # latched wave fired
+            self.assertIsNone(c._pending_wave_back)       # latch cleared
 
     def test_give_space_gate_blocks(self):
         # _can_proactive_speak False (e.g. sober window / DJ / active game) → no wave-back.

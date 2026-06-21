@@ -2199,6 +2199,13 @@ WAVE_BACK_PER_PERSON_COOLDOWN_SECS = _env_float(
 WAVE_BACK_MIN_GAP_SECS = _env_float(
     "WAVE_BACK_MIN_GAP_SECS", 8.0, min_value=0.0, max_value=600.0,
 )
+# How long a detected wave stays "pending" while Rex is busy (mid-turn / speaking) before
+# it's answered. A wave is a brief gesture, so it's latched and voiced as soon as Rex is
+# free within this window; longer than this and a stale wave is dropped instead of getting
+# a late, out-of-context "Hello!". Covers a typical reply without feeling delayed.
+WAVE_BACK_PENDING_TTL_SECS = _env_float(
+    "WAVE_BACK_PENDING_TTL_SECS", 8.0, min_value=0.0, max_value=120.0,
+)
 # Short, warm spoken greetings Rex says when he waves back (canned for immediacy — a
 # wave-back shouldn't wait on an LLM call). WAVE_BACK_LINES is used when Rex knows the
 # waver's name ("{name}" is filled with their first name); WAVE_BACK_LINES_NO_NAME is
