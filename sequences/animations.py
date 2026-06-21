@@ -1434,6 +1434,72 @@ def _run_wake_word_ack_wave(count: int) -> bool:
         _arm_motion_lock.release()
 
 
+def wave_back_gesture(count: int | None = None, *, async_: bool = True) -> bool:
+    """Camera wave-back gesture.
+
+    Raises the arm to present the hand, then waves by sweeping the WRIST (the ``hand``
+    servo) between BOTH of its travel limits ``count`` times — a clear hand wave, distinct
+    from the compact elbow-driven wake-word ack. The elbow only raises the arm; the wrist
+    does the waving.
+    """
+    if count is None:
+        count = int(getattr(config, "WAVE_BACK_WRIST_SWEEPS", 4))
+    count = max(1, min(8, int(count)))
+
+    if async_:
+        threading.Thread(
+            target=_run_wave_back_gesture,
+            args=(count,),
+            daemon=True,
+            name="wave_back_gesture",
+        ).start()
+        return True
+    return _run_wave_back_gesture(count)
+
+
+def _run_wave_back_gesture(count: int) -> bool:
+    if not _body_beat_allowed():
+        return False
+    if not _arm_motion_lock.acquire(blocking=False):
+        return False
+
+    # Sweep to the wrist servo's full configured travel limits ("both direction maximums").
+    # These are the safe limits from config/.env, so full travel is intentional and safe.
+    hand_cfg = config.SERVO_CHANNELS.get("hand", {})
+    hand_min = int(hand_cfg.get("min", HAND_LEFT))
+    hand_max = int(hand_cfg.get("max", HAND_RIGHT))
+
+    step_us = int(getattr(config, "WAKE_WORD_RECOGNITION_WAVE_STEP_QUS", 320))
+    step_delay = float(getattr(config, "WAKE_WORD_RECOGNITION_WAVE_STEP_DELAY_SECS", 0.010))
+    hold = float(getattr(config, "WAKE_WORD_RECOGNITION_WAVE_HOLD_SECS", 0.045))
+    snapshot = _current_body_pose((4, 5, 7))
+
+    servos.pause_arm_idle()
+    try:
+        with _motion_lock:
+            # Raise the arm so the hand is up and visible (elbow up, hero arm forward).
+            servos.move_to(
+                {7: HEROARM_FORWARD, 4: ELBOW_UP, 5: HAND_NEUTRAL},
+                step_us=step_us,
+                step_delay=step_delay,
+            )
+            # Wave: wrist to one limit then the other, `count` times.
+            for _ in range(count):
+                servos.move_to({5: hand_max}, step_us=step_us, step_delay=step_delay)
+                time.sleep(hold)
+                servos.move_to({5: hand_min}, step_us=step_us, step_delay=step_delay)
+                time.sleep(hold)
+            servos.move_to({5: HAND_NEUTRAL}, step_us=step_us, step_delay=step_delay)
+            servos.move_to(snapshot, step_us=step_us, step_delay=step_delay)
+        return True
+    except Exception as exc:
+        _log.debug("[animations] wave-back gesture failed: %s", exc)
+        return False
+    finally:
+        servos.resume_arm_idle()
+        _arm_motion_lock.release()
+
+
 # ---------------------------------------------------------------------------
 # Composite reactions
 # ---------------------------------------------------------------------------

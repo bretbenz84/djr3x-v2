@@ -2199,6 +2199,10 @@ WAVE_BACK_PER_PERSON_COOLDOWN_SECS = _env_float(
 WAVE_BACK_MIN_GAP_SECS = _env_float(
     "WAVE_BACK_MIN_GAP_SECS", 8.0, min_value=0.0, max_value=600.0,
 )
+# Wave-back arm gesture: how many times the wrist (the "hand" servo) sweeps between BOTH of
+# its travel limits when Rex waves back (one sweep = to one limit and back). The elbow only
+# raises the arm; the wrist does the waving. See sequences/animations.wave_back_gesture.
+WAVE_BACK_WRIST_SWEEPS = _env_int("WAVE_BACK_WRIST_SWEEPS", 4, min_value=1, max_value=8)
 # How long a detected wave stays "pending" while Rex is busy (mid-turn / speaking) before
 # it's answered. A wave is a brief gesture, so it's latched and voiced as soon as Rex is
 # free within this window; longer than this and a stale wave is dropped instead of getting

@@ -58,7 +58,7 @@ class StepWaveReactionTest(unittest.TestCase):
              mock.patch.object(c.config, "WAVE_BACK_LINES", ["Hey, {name}!"]), \
              mock.patch.object(c, "_speak_async",
                                side_effect=lambda line, **k: captured.update(line=line, kw=k) or True), \
-             mock.patch("sequences.animations.wake_word_ack_wave") as wave:
+             mock.patch("sequences.animations.wave_back_gesture") as wave:
             c._step_wave_reaction(snapshot, profile or _Profile())
             captured["waved"] = wave.called
         return captured
@@ -103,7 +103,7 @@ class StepWaveReactionTest(unittest.TestCase):
              mock.patch.object(c.config, "WAVE_BACK_LINES", ["Hey, {name}!"]), \
              mock.patch.object(c, "_speak_async",
                                side_effect=lambda line, **k: True), \
-             mock.patch("sequences.animations.wake_word_ack_wave") as wave:
+             mock.patch("sequences.animations.wave_back_gesture") as wave:
             with mock.patch.object(c, "_can_proactive_speak", return_value=False):
                 c._step_wave_reaction({"people": [_waving()]}, _Profile())
             self.assertFalse(wave.called)                 # busy → didn't fire yet
@@ -139,7 +139,7 @@ class StepWaveReactionTest(unittest.TestCase):
              mock.patch.object(c, "_first_name", return_value="Bret"), \
              mock.patch.object(c.config, "WAVE_BACK_LINES", ["Hey, {name}!"]), \
              mock.patch.object(c, "_speak_async", side_effect=fake_speak), \
-             mock.patch("sequences.animations.wake_word_ack_wave"):
+             mock.patch("sequences.animations.wave_back_gesture"):
             c._step_wave_reaction({"people": [_waving()]}, _Profile())
             self.assertEqual(c._wave_reacted_keys, {})  # failed speech → debounce untouched
             c._last_wave_reaction_at = 0.0  # isolate per-person debounce from global gap
@@ -153,7 +153,7 @@ class StepWaveReactionTest(unittest.TestCase):
              mock.patch.object(c, "_speak_async",
                                side_effect=lambda line, **k: captured.update(line=line)), \
              mock.patch.object(c.config, "WAVE_BACK_LINES_NO_NAME", ["Hey there!"]), \
-             mock.patch("sequences.animations.wake_word_ack_wave"):
+             mock.patch("sequences.animations.wave_back_gesture"):
             c._step_wave_reaction({"people": [_waving(person_db_id=None, face_id=None)]}, _Profile())
         self.assertEqual(captured.get("line"), "Hey there!")
 

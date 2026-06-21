@@ -2558,11 +2558,11 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
     _wave_reacted_keys[pending["key"]] = now
     _last_wave_reaction_at = now
     _pending_wave_back = None
-    # Wave the arm (non-blocking). Failure-safe / no-ops without servos, like the
-    # wake-word ack wave.
+    # Wave the arm (non-blocking): raise the arm and sweep the wrist between both travel
+    # limits. Failure-safe / no-ops without servos.
     try:
         from sequences import animations
-        animations.wake_word_ack_wave()
+        animations.wave_back_gesture()
     except Exception as exc:
         _log.debug("wave-back animation skipped: %s", exc)
     _log.info("consciousness: wave-back fired for %s", pending["key"])
