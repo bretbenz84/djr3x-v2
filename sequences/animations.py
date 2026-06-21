@@ -1459,11 +1459,16 @@ def wave_back_gesture(count: int | None = None, *, async_: bool = True) -> bool:
 
 def _run_wave_back_gesture(count: int) -> bool:
     if not _body_beat_allowed():
+        _log.info("[animations] wave-back skipped — state not active (sleep/shutdown)")
         return False
-    if not _arm_motion_lock.acquire(blocking=False):
+    # Wait briefly for the arm lock instead of instantly bailing: a transient idle-arm
+    # wander move shouldn't silently swallow the wave-back. (Logged INFO so a "no wave"
+    # report is diagnosable from the robot's INFO log.)
+    if not _arm_motion_lock.acquire(timeout=1.5):
+        _log.info("[animations] wave-back skipped — arm busy (couldn't get arm lock in 1.5s)")
         return False
 
-    # Sweep to the wrist servo's full configured travel limits ("both direction maximums").
+    # Sweep to the wrist servo's configured travel limits ("both direction maximums").
     # These are the safe limits from config/.env, so full travel is intentional and safe.
     hand_cfg = config.SERVO_CHANNELS.get("hand", {})
     hand_min = int(hand_cfg.get("min", HAND_LEFT))
@@ -1474,6 +1479,11 @@ def _run_wave_back_gesture(count: int) -> bool:
     hold = float(getattr(config, "WAKE_WORD_RECOGNITION_WAVE_HOLD_SECS", 0.045))
     snapshot = _current_body_pose((4, 5, 7))
 
+    _log.info(
+        "[animations] wave-back gesture start: wrist(ch5) %d↔%d x%d, "
+        "servos_enabled=%s, start_pose=%s",
+        hand_min, hand_max, count, getattr(servos, "SERVOS_ENABLED", "?"), snapshot,
+    )
     servos.pause_arm_idle()
     try:
         with _motion_lock:
@@ -1491,9 +1501,10 @@ def _run_wave_back_gesture(count: int) -> bool:
                 time.sleep(hold)
             servos.move_to({5: HAND_NEUTRAL}, step_us=step_us, step_delay=step_delay)
             servos.move_to(snapshot, step_us=step_us, step_delay=step_delay)
+        _log.info("[animations] wave-back gesture done")
         return True
     except Exception as exc:
-        _log.debug("[animations] wave-back gesture failed: %s", exc)
+        _log.warning("[animations] wave-back gesture failed: %s", exc)
         return False
     finally:
         servos.resume_arm_idle()
