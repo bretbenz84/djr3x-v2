@@ -9612,13 +9612,26 @@ def _evaluate_face_jump(
     ) ** 0.5
     if jump_dist <= max_jump:
         return True, {"key": key, "cx": cx, "cy": cy, "at": now}, None
-    # Big jump from a freshly identity-matched detection: it's really them (they sat
-    # down, leaned over, stood up) — follow immediately.
+    diag = (frame_w * frame_w + frame_h * frame_h) ** 0.5
+    # A freshly identity-matched box that moved a MODERATE distance is really them
+    # (they sat down / leaned / stood) — follow immediately. But a VERY LARGE identified
+    # jump is treated with suspicion: dlib does occasionally false-match a transient
+    # ghost (a reflection, a high-contrast blob, a face-like region above the seated
+    # person) to a known face, and a 1-2 tick ghost would otherwise yank the head to it
+    # and snap back (live-logged: head jerking up to a phantom box above a person seated
+    # low in frame). So a big identified jump must still PERSIST briefly — shorter than
+    # an unknown, since identity is partial evidence — before it's chased.
     if identified and not live_tracked:
-        return True, {"key": key, "cx": cx, "cy": cy, "at": now}, None
-    # Unknown big jump — accept only if the jumped-to position has been holding
-    # (a genuine fast move / new arrival), never via reference staleness.
-    confirm_secs = float(getattr(config, "FACE_TRACKING_JUMP_CONFIRM_SECS", 0.5))
+        identified_max = float(
+            getattr(config, "FACE_TRACKING_IDENTIFIED_INSTANT_JUMP_FRAC", 0.22)
+        ) * diag
+        if jump_dist <= identified_max:
+            return True, {"key": key, "cx": cx, "cy": cy, "at": now}, None
+        confirm_secs = float(getattr(config, "FACE_TRACKING_IDENTIFIED_JUMP_CONFIRM_SECS", 0.25))
+    else:
+        confirm_secs = float(getattr(config, "FACE_TRACKING_JUMP_CONFIRM_SECS", 0.5))
+    # Big jump — accept only if the jumped-to position has been holding (a genuine fast
+    # move / new arrival), never via reference staleness.
     near_pending = pending_center is not None and (
         ((cx - float(pending_center["cx"])) ** 2 + (cy - float(pending_center["cy"])) ** 2) ** 0.5
     ) <= max_jump
@@ -9669,12 +9682,15 @@ def _capture_gaze_anchor(decision) -> None:
     )
     _gaze_drive["return_since"] = 0.0
     _gaze_drive["segment"] = getattr(decision, "segment_id", None)
+    # Start the look-away from rest so it RAMPS in (soft ease-in), not a snap.
+    _gaze_drive["vel"] = {}
 
 
 def _gaze_release() -> None:
     if _gaze_drive.get("phase") != "idle":
         _gaze_drive["phase"] = "idle"
         _gaze_drive["return_since"] = 0.0
+    _gaze_drive["vel"] = {}
 
 
 def _drive_gaze_aversion(servo_mod, now: float, decision, anchor: tuple) -> None:
@@ -9698,9 +9714,9 @@ def _drive_gaze_aversion(servo_mod, now: float, decision, anchor: tuple) -> None
 
     _step_gaze_targets(
         servo_mod, target_neck, target_lift, target_tilt,
-        neck_step=int(getattr(config, "GAZE_AVERSION_NECK_MAX_STEP_QUS", 520)),
-        lift_step=int(getattr(config, "GAZE_AVERSION_LIFT_MAX_STEP_QUS", 90)),
-        tilt_step=int(getattr(config, "GAZE_AVERSION_TILT_MAX_STEP_QUS", 200)),
+        neck_step=int(getattr(config, "GAZE_AVERSION_NECK_MAX_STEP_QUS", 240)),
+        lift_step=int(getattr(config, "GAZE_AVERSION_LIFT_MAX_STEP_QUS", 70)),
+        tilt_step=int(getattr(config, "GAZE_AVERSION_TILT_MAX_STEP_QUS", 130)),
     )
     _record_face_tracking_state(locked=False, visible=False)
 
@@ -9717,9 +9733,9 @@ def _drive_gaze_return(servo_mod, now: float) -> bool:
     target_neck, target_lift, target_tilt = anchor
     reached = _step_gaze_targets(
         servo_mod, int(target_neck), int(target_lift), int(target_tilt),
-        neck_step=int(getattr(config, "GAZE_AVERSION_NECK_MAX_STEP_QUS", 520)),
-        lift_step=int(getattr(config, "GAZE_AVERSION_LIFT_MAX_STEP_QUS", 90)),
-        tilt_step=int(getattr(config, "GAZE_AVERSION_TILT_MAX_STEP_QUS", 200)),
+        neck_step=int(getattr(config, "GAZE_AVERSION_NECK_MAX_STEP_QUS", 240)),
+        lift_step=int(getattr(config, "GAZE_AVERSION_LIFT_MAX_STEP_QUS", 70)),
+        tilt_step=int(getattr(config, "GAZE_AVERSION_TILT_MAX_STEP_QUS", 130)),
         tolerance=int(getattr(config, "FACE_TRACKING_NECK_MAX_STEP_QUS", 420)),
     )
     _record_face_tracking_state(locked=False, visible=False)
@@ -9727,46 +9743,76 @@ def _drive_gaze_return(servo_mod, now: float) -> bool:
     return bool(reached or stalled)
 
 
+def _gaze_ramped_step(name: str, current: int, target: int, max_vel: int, accel: float) -> tuple[int, float]:
+    """One velocity+acceleration-limited tick toward ``target`` (qus). Returns
+    (next_position, velocity). The per-axis velocity is carried in ``_gaze_drive['vel']``
+    so a look-away eases IN from rest (accel-limited) and eases OUT near the target
+    (the desired velocity shrinks with the remaining distance) — a soft drift, not a
+    constant-speed snap."""
+    vel = _gaze_drive.setdefault("vel", {})
+    prev_v = float(vel.get(name, 0.0))
+    delta = float(int(target) - int(current))
+    max_vel = max(1.0, float(max_vel))
+    desired = max(-max_vel, min(max_vel, delta))  # close the gap, capped at top speed
+    if desired > prev_v + accel:
+        v = prev_v + accel
+    elif desired < prev_v - accel:
+        v = prev_v - accel
+    else:
+        v = desired
+    nxt = current + v
+    if (v > 0 and nxt > target) or (v < 0 and nxt < target):  # don't overshoot
+        nxt = float(target)
+        v = nxt - current
+    nxt_clamped = _clamp_servo(name, nxt)
+    vel[name] = v
+    return int(round(nxt_clamped)), v
+
+
 def _step_gaze_targets(
     servo_mod, target_neck: int, target_lift: int, target_tilt: int,
     *, neck_step: int, lift_step: int, tilt_step: int, tolerance: int = 0,
 ) -> bool:
-    """Slew the three head channels one tick toward the targets; return True when all
-    are within ``tolerance`` of target. Updates the gaze baseline so breathing orbits
-    the new pose (matches the wander/rest drivers)."""
-    cur_neck = _current_servo_position("neck")
-    cur_lift = _current_servo_position("headlift")
-    cur_tilt = _current_servo_position("headtilt")
-    next_neck = _limited_tracking_step("neck", cur_neck, target_neck, neck_step)
-    next_lift = _limited_tracking_step("headlift", cur_lift, target_lift, lift_step)
-    next_tilt = _limited_tracking_step("headtilt", cur_tilt, target_tilt, tilt_step)
+    """Ramp the three head channels one tick toward the targets (soft ease-in/out via
+    a per-axis velocity); return True when all are within ``tolerance``. The
+    ``*_step`` args are the per-tick velocity CAP (top speed); the acceleration is that
+    cap divided by GAZE_AVERSION_RAMP_TICKS. Updates the gaze baseline so breathing
+    orbits the new pose (matches the wander/rest drivers)."""
+    ramp = max(1.0, float(getattr(config, "GAZE_AVERSION_RAMP_TICKS", 6.0)))
+    specs = (
+        ("neck", int(target_neck), int(neck_step)),
+        ("headlift", int(target_lift), int(lift_step)),
+        ("headtilt", int(target_tilt), int(tilt_step)),
+    )
+    next_pose: dict[str, int] = {}
     updates: dict[int, int] = {}
-    if abs(next_neck - cur_neck) >= 2:
-        updates[int(config.SERVO_CHANNELS["neck"]["ch"])] = next_neck
-    if abs(next_lift - cur_lift) >= 2:
-        updates[int(config.SERVO_CHANNELS["headlift"]["ch"])] = next_lift
-    if abs(next_tilt - cur_tilt) >= 2:
-        updates[int(config.SERVO_CHANNELS["headtilt"]["ch"])] = next_tilt
+    reached = True
+    tol = max(2, int(tolerance))
+    for name, target, max_vel in specs:
+        cur = _current_servo_position(name)
+        nxt, _v = _gaze_ramped_step(name, cur, target, max_vel, max(1.0, max_vel / ramp))
+        next_pose[name] = nxt
+        if abs(nxt - cur) >= 2:
+            updates[int(config.SERVO_CHANNELS[name]["ch"])] = nxt
+        if abs(target - nxt) > tol:
+            reached = False
     if updates:
         try:
             servo_mod.set_motion_profile(
                 list(updates.keys()),
-                speed=int(getattr(config, "GAZE_AVERSION_SERVO_SPEED", 180)),
-                acceleration=int(getattr(config, "GAZE_AVERSION_SERVO_ACCELERATION", 20)),
+                speed=int(getattr(config, "GAZE_AVERSION_SERVO_SPEED", 90)),
+                acceleration=int(getattr(config, "GAZE_AVERSION_SERVO_ACCELERATION", 9)),
             )
         except Exception:
             pass
         servo_mod.set_servos(updates)
         try:
-            servo_mod.set_face_tracking_baseline(neck=next_neck, lift=next_lift, tilt=next_tilt)
+            servo_mod.set_face_tracking_baseline(
+                neck=next_pose["neck"], lift=next_pose["headlift"], tilt=next_pose["headtilt"],
+            )
         except Exception:
             pass
-    tol = max(2, int(tolerance))
-    return (
-        abs(target_neck - next_neck) <= tol
-        and abs(target_lift - next_lift) <= tol
-        and abs(target_tilt - next_tilt) <= tol
-    )
+    return reached
 
 
 def _maybe_drive_gaze(servo_mod, now: float, speech_active: bool) -> bool:

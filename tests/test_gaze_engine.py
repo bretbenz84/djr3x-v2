@@ -18,7 +18,7 @@ from intelligence.gaze_engine import (
     GazeInputs,
     GazeState,
     KIND_INTERNALIZING,
-    KIND_VISUALIZING,
+    KIND_THINKING,
     complexity_from_text,
 )
 from intelligence.head_interface import HeadPose, SimHead
@@ -150,17 +150,18 @@ class PreTurnAversionTest(unittest.TestCase):
         self.assertAlmostEqual(simple, cfg.pre_aversion_min_secs, delta=0.12)
         self.assertAlmostEqual(complex_, cfg.pre_aversion_max_secs, delta=0.15)
 
-    def test_complex_prep_looks_up_to_visualize(self):
+    def test_complex_prep_looks_down_to_think(self):
         _, first = self._prep_span_and_first(1.0)
         self.assertIsNotNone(first)
         self.assertEqual(first.mode, "off_target")
-        self.assertEqual(first.kind, KIND_VISUALIZING)
-        self.assertGreater(first.pitch_offset_deg, 0.0)  # pitch UP
+        self.assertEqual(first.kind, KIND_THINKING)
+        self.assertLess(first.pitch_offset_deg, 0.0)  # pitch DOWN, never up
 
-    def test_simple_prep_is_to_the_side_not_up(self):
+    def test_simple_prep_is_to_the_side_not_down_to_think(self):
         _, first = self._prep_span_and_first(0.0)
         self.assertIsNotNone(first)
-        self.assertNotEqual(first.kind, KIND_VISUALIZING)
+        self.assertNotEqual(first.kind, KIND_THINKING)
+        self.assertLessEqual(first.pitch_offset_deg, 0.0)  # never up
 
 
 class PitchSemanticsTest(unittest.TestCase):
@@ -175,6 +176,23 @@ class PitchSemanticsTest(unittest.TestCase):
         self.assertEqual(d.kind, KIND_INTERNALIZING)
         self.assertEqual(d.mode, "off_target")
         self.assertLess(d.pitch_offset_deg, 0.0)  # pitch DOWN
+
+    def test_aversions_never_look_up(self):
+        # Across a long mixed conversation (speaking, listening, complex pre-turns),
+        # EVERY look-away must be level-or-down — Rex never looks up to avert.
+        eng = GazeEngine(seed=9)
+        dt = 0.1
+        worst_up = -999.0
+        for i in range(40000):
+            t = i * dt
+            speaking = (int(t) % 12) in (4, 5, 6, 7)   # talk in bursts
+            if abs((t % 12) - 3.9) < 1e-9:
+                eng.note_about_to_speak(0.95)          # complex -> "down to think"
+            d = eng.step(GazeInputs(now=t, speaking=speaking, conversation_active=True,
+                                    partner_bearing=(8.0, 0.0)))
+            if d.active and d.mode == "off_target":
+                worst_up = max(worst_up, d.pitch_offset_deg)
+        self.assertLessEqual(worst_up, 0.0, f"an aversion looked up by {worst_up:.1f} deg")
 
 
 class StateMachineTest(unittest.TestCase):
@@ -322,7 +340,7 @@ class DemoSimTest(unittest.TestCase):
         self.assertIn("opening", states)
         self.assertIn("speaking", states)
         self.assertIn("closing", states)
-        self.assertIn(KIND_VISUALIZING, kinds)  # the complex reply looks up
+        self.assertIn(KIND_THINKING, kinds)  # the complex reply looks down to think
         self.assertTrue(0.0 <= result["duty_on_during_turn"] <= 1.0)
 
 
@@ -338,6 +356,7 @@ class LiveActuationTest(unittest.TestCase):
         self.mock = _mock
         import intelligence.consciousness as c
         self.c = c
+        c._gaze_release()  # reset drive phase + velocity ramp state
         c.world_state.update(
             "self_state", {"servo_positions": {"neck": 6000, "headlift": 6000, "headtilt": 4320}}
         )
@@ -358,31 +377,80 @@ class LiveActuationTest(unittest.TestCase):
         servo = self._mock_servo()
         dec = c.gaze_engine.GazeDecision(
             active=True, state=c.gaze_engine.GazeState.LISTENING, mode="off_target",
-            kind=c.gaze_engine.KIND_VISUALIZING, pose=HeadPose(20.0, 15.0, 45.0),
-            yaw_offset_deg=20.0,    # +yaw = left
-            pitch_offset_deg=15.0,  # +pitch = up
-            pole_mm=45.0,           # lean-in (above rest)
+            kind=c.gaze_engine.KIND_THINKING, pose=HeadPose(20.0, -12.0, 45.0),
+            yaw_offset_deg=20.0,     # +yaw = left
+            pitch_offset_deg=-12.0,  # DOWN (aversions never look up)
+            pole_mm=45.0,            # lean-in (above rest)
             velocity="saccade", center_on=None, reason="t", segment_id=1,
         )
         anchor = (6000, 6000, 4320)
-        c._drive_gaze_aversion(servo, 100.0, dec, anchor)
+        # Step a handful of ticks so the ramp builds past the inclusion threshold.
+        for _ in range(5):
+            c._drive_gaze_aversion(servo, 100.0, dec, anchor)
 
-        servo.set_servos.assert_called_once()
+        servo.set_servos.assert_called()
         updates = servo.set_servos.call_args.args[0]
         neck_ch = c.config.SERVO_CHANNELS["neck"]["ch"]
         lift_ch = c.config.SERVO_CHANNELS["headlift"]["ch"]
         tilt_ch = c.config.SERVO_CHANNELS["headtilt"]["ch"]
         # +yaw (left) raises the neck qus above the anchor.
         self.assertGreater(updates[neck_ch], 6000)
-        # +pitch (up) drives headtilt toward its LOW (min) end (inverted channel).
-        self.assertLess(updates[tilt_ch], 4320)
+        # DOWN pitch drives headtilt toward its HIGH (max) end (inverted channel).
+        self.assertGreater(updates[tilt_ch], 4320)
         # lean-in raises headlift above the anchor.
         self.assertGreater(updates[lift_ch], 6000)
-        # Slew-limited: no axis jumps past its per-tick aversion cap.
-        self.assertLessEqual(
-            abs(updates[neck_ch] - 6000), c.config.GAZE_AVERSION_NECK_MAX_STEP_QUS
+        servo.set_face_tracking_baseline.assert_called()
+
+    def test_aversion_motion_ramps_in_softly(self):
+        # The look-away accelerates from rest: per-tick neck velocity grows, then caps —
+        # never a constant-speed snap (and never exceeds the velocity cap).
+        c = self.c
+        c._gaze_release()
+        cap = c.config.GAZE_AVERSION_NECK_MAX_STEP_QUS
+        vels = []
+        cur = 6000
+        target = 6000 + 4 * cap  # far away so it wants to cruise at the cap
+        for _ in range(4):
+            nxt, v = c._gaze_ramped_step("neck", cur, target, cap, cap / c.config.GAZE_AVERSION_RAMP_TICKS)
+            vels.append(abs(v))
+            cur = nxt
+        self.assertLess(vels[0], vels[-1])          # accelerating (soft ease-in)
+        self.assertTrue(all(v <= cap + 1e-6 for v in vels))  # never exceeds the cap
+
+
+class FaceJumpGuardTest(unittest.TestCase):
+    """The hardened jump guard: a transient identity-matched ghost (e.g. a phantom box
+    high in frame above a seated person) must persist before the head chases it."""
+
+    def setUp(self):
+        import intelligence.consciousness as c
+        self.c = c
+
+    def test_identified_moderate_jump_followed_immediately(self):
+        c = self.c
+        last = {"key": "db:1", "cx": 960, "cy": 800, "at": 100.0}
+        # ~380px move: beyond MAX_JUMP_FRAC (330px) but within the identified instant
+        # ceiling (~485px) — a real sit/lean, follow at once.
+        accept, _last, _pend = c._evaluate_face_jump(
+            960, 420, "db:1", 100.1, 1920, 1080, last, None, identified=True, live_tracked=False,
         )
-        servo.set_face_tracking_baseline.assert_called_once()
+        self.assertTrue(accept)
+
+    def test_identified_extreme_transient_ghost_rejected_then_confirmed(self):
+        c = self.c
+        # Replicates the field log: locked low (cy 862), a phantom box appears high
+        # (cy 390) — a ~600px leap, past the identified instant ceiling.
+        last = {"key": "db:1", "cx": 1230, "cy": 862, "at": 100.0}
+        accept, last2, pend = c._evaluate_face_jump(
+            850, 390, "db:1", 100.08, 1920, 1080, last, None, identified=True, live_tracked=False,
+        )
+        self.assertFalse(accept)  # transient ghost is NOT chased up
+        # If it genuinely persists past the (shorter) identified confirm window, accept.
+        accept2, _l3, _p2 = c._evaluate_face_jump(
+            850, 390, "db:1", 100.08 + 0.3, 1920, 1080, last2, pend,
+            identified=True, live_tracked=False,
+        )
+        self.assertTrue(accept2)
 
 
 if __name__ == "__main__":

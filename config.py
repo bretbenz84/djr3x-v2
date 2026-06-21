@@ -1710,6 +1710,18 @@ FACE_TRACKING_JUMP_CONFIRM_SECS = _env_float(
 FACE_TRACKING_JUMP_MAX_AGE_SECS = _env_float(
     "FACE_TRACKING_JUMP_MAX_AGE_SECS", 5.0, min_value=0.05, max_value=10.0,
 )
+# An identity-matched box that jumped further than MAX_JUMP_FRAC is followed
+# immediately only up to this LARGER fraction (a real sit/lean/stand). Beyond it the
+# match is treated as a possible transient ghost (dlib false-matching a reflection /
+# high-contrast blob to a known face) and must persist for
+# FACE_TRACKING_IDENTIFIED_JUMP_CONFIRM_SECS before it's chased — so a 1-2 tick phantom
+# above a seated person can't yank the head up and snap it back.
+FACE_TRACKING_IDENTIFIED_INSTANT_JUMP_FRAC = _env_float(
+    "FACE_TRACKING_IDENTIFIED_INSTANT_JUMP_FRAC", 0.22, min_value=0.0, max_value=1.5,
+)
+FACE_TRACKING_IDENTIFIED_JUMP_CONFIRM_SECS = _env_float(
+    "FACE_TRACKING_IDENTIFIED_JUMP_CONFIRM_SECS", 0.25, min_value=0.0, max_value=5.0,
+)
 FACE_TRACKING_REVERSAL_DAMPING = _env_float(
     "FACE_TRACKING_REVERSAL_DAMPING",
     0.35,
@@ -1895,14 +1907,17 @@ GAZE_PRE_AVERSION_MAX_SECS = _env_float("GAZE_PRE_AVERSION_MAX_SECS", 1.4, min_v
 GAZE_PRE_AVERSION_VISUALIZE_THRESHOLD = _env_float(
     "GAZE_PRE_AVERSION_VISUALIZE_THRESHOLD", 0.5, min_value=0.0, max_value=1.0
 )
-# Aversion offset ranges (degrees) + on-target jitter.
+# Aversion offset ranges (degrees) + on-target jitter. Aversion pitch is DOWN-only —
+# Rex looks away to the side or down, never up (an up-stare reads as awkward/spacey).
 GAZE_SIDE_YAW_MIN_DEG = _env_float("GAZE_SIDE_YAW_MIN_DEG", 15.0, min_value=0.0, max_value=70.0)
 GAZE_SIDE_YAW_MAX_DEG = _env_float("GAZE_SIDE_YAW_MAX_DEG", 25.0, min_value=0.0, max_value=70.0)
-GAZE_SIDE_PITCH_JITTER_DEG = _env_float("GAZE_SIDE_PITCH_JITTER_DEG", 3.0, min_value=0.0, max_value=20.0)
-GAZE_VISUALIZE_PITCH_MIN_DEG = _env_float("GAZE_VISUALIZE_PITCH_MIN_DEG", 10.0, min_value=0.0, max_value=25.0)
-GAZE_VISUALIZE_PITCH_MAX_DEG = _env_float("GAZE_VISUALIZE_PITCH_MAX_DEG", 20.0, min_value=0.0, max_value=25.0)
-GAZE_VISUALIZE_YAW_MIN_DEG = _env_float("GAZE_VISUALIZE_YAW_MIN_DEG", 5.0, min_value=0.0, max_value=40.0)
-GAZE_VISUALIZE_YAW_MAX_DEG = _env_float("GAZE_VISUALIZE_YAW_MAX_DEG", 12.0, min_value=0.0, max_value=40.0)
+# A side break may dip slightly downward, never up.
+GAZE_SIDE_PITCH_DOWN_MAX_DEG = _env_float("GAZE_SIDE_PITCH_DOWN_MAX_DEG", 5.0, min_value=0.0, max_value=20.0)
+# "Look down to think" (planning a complex reply): a downward glance, slight side.
+GAZE_THINK_PITCH_MIN_DEG = _env_float("GAZE_THINK_PITCH_MIN_DEG", 8.0, min_value=0.0, max_value=25.0)
+GAZE_THINK_PITCH_MAX_DEG = _env_float("GAZE_THINK_PITCH_MAX_DEG", 16.0, min_value=0.0, max_value=25.0)
+GAZE_THINK_YAW_MIN_DEG = _env_float("GAZE_THINK_YAW_MIN_DEG", 5.0, min_value=0.0, max_value=40.0)
+GAZE_THINK_YAW_MAX_DEG = _env_float("GAZE_THINK_YAW_MAX_DEG", 14.0, min_value=0.0, max_value=40.0)
 GAZE_INTERNALIZE_PITCH_MIN_DEG = _env_float("GAZE_INTERNALIZE_PITCH_MIN_DEG", 8.0, min_value=0.0, max_value=20.0)
 GAZE_INTERNALIZE_PITCH_MAX_DEG = _env_float("GAZE_INTERNALIZE_PITCH_MAX_DEG", 15.0, min_value=0.0, max_value=20.0)
 GAZE_ON_TARGET_JITTER_DEG = _env_float("GAZE_ON_TARGET_JITTER_DEG", 2.5, min_value=0.0, max_value=10.0)
@@ -1927,13 +1942,17 @@ GAZE_PITCH_DOWN_LIMIT_DEG = _env_float("GAZE_PITCH_DOWN_LIMIT_DEG", 20.0, min_va
 GAZE_POLE_MIN_MM = _env_float("GAZE_POLE_MIN_MM", 0.0, min_value=0.0, max_value=60.0)
 GAZE_POLE_MAX_MM = _env_float("GAZE_POLE_MAX_MM", 60.0, min_value=1.0, max_value=200.0)
 GAZE_POLE_GAIN_QUS_PER_MM = _env_float("GAZE_POLE_GAIN_QUS_PER_MM", 22.0, min_value=1.0, max_value=100.0)
-# Live actuation: cap the aversion step so an OFF-target look-away is a fast saccade
-# but still slew-limited; POLE bias is applied gently (posture is slow).
-GAZE_AVERSION_NECK_MAX_STEP_QUS = _env_int("GAZE_AVERSION_NECK_MAX_STEP_QUS", 520, min_value=20, max_value=4000)
-GAZE_AVERSION_TILT_MAX_STEP_QUS = _env_int("GAZE_AVERSION_TILT_MAX_STEP_QUS", 200, min_value=10, max_value=1600)
-GAZE_AVERSION_LIFT_MAX_STEP_QUS = _env_int("GAZE_AVERSION_LIFT_MAX_STEP_QUS", 90, min_value=5, max_value=1700)
-GAZE_AVERSION_SERVO_SPEED = _env_int("GAZE_AVERSION_SERVO_SPEED", 180, min_value=1, max_value=255)
-GAZE_AVERSION_SERVO_ACCELERATION = _env_int("GAZE_AVERSION_SERVO_ACCELERATION", 20, min_value=0, max_value=255)
+# Live actuation: the aversion is a velocity-RAMPED move (soft ease-in/out), not a
+# constant-speed snap. The *_MAX_STEP_QUS values are the per-tick velocity CAP (top
+# speed); GAZE_AVERSION_RAMP_TICKS is how many ticks it takes to ramp from rest to
+# that cap (the acceleration). Kept deliberately gentle — a brief look-away should
+# drift, not jerk. POLE (head height) is slowest of all.
+GAZE_AVERSION_NECK_MAX_STEP_QUS = _env_int("GAZE_AVERSION_NECK_MAX_STEP_QUS", 240, min_value=20, max_value=4000)
+GAZE_AVERSION_TILT_MAX_STEP_QUS = _env_int("GAZE_AVERSION_TILT_MAX_STEP_QUS", 130, min_value=10, max_value=1600)
+GAZE_AVERSION_LIFT_MAX_STEP_QUS = _env_int("GAZE_AVERSION_LIFT_MAX_STEP_QUS", 70, min_value=5, max_value=1700)
+GAZE_AVERSION_RAMP_TICKS = _env_float("GAZE_AVERSION_RAMP_TICKS", 6.0, min_value=1.0, max_value=40.0)
+GAZE_AVERSION_SERVO_SPEED = _env_int("GAZE_AVERSION_SERVO_SPEED", 90, min_value=1, max_value=255)
+GAZE_AVERSION_SERVO_ACCELERATION = _env_int("GAZE_AVERSION_SERVO_ACCELERATION", 9, min_value=0, max_value=255)
 
 # Speaker-gaze intent makes head tracking social: when someone talks, prefer
 # that person's face if visible; if no face is visible, run a short down-biased

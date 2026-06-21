@@ -28,6 +28,13 @@ class FaceTrackingTests(unittest.TestCase):
         self.old_tracking_error_x = consciousness._face_tracking_last_error_x
         self.old_tracking_error_y = consciousness._face_tracking_last_error_y
         self.old_tracking_error_at = consciousness._face_tracking_last_error_at
+        # Jump-guard reference state leaks across tests if not isolated (a rejected
+        # jump leaves last/pending center set), making the suite order-dependent —
+        # save + reset it so each test starts from a clean lock-free state.
+        self.old_tracking_last_center = consciousness._face_tracking_last_center
+        self.old_tracking_pending_center = consciousness._face_tracking_pending_center
+        consciousness._face_tracking_last_center = None
+        consciousness._face_tracking_pending_center = None
         self.old_adaptive_head_rest = dict(consciousness._adaptive_head_rest)
         with consciousness._speaker_gaze_lock:
             self.old_speaker_gaze_intent = dict(consciousness._speaker_gaze_intent)
@@ -55,6 +62,8 @@ class FaceTrackingTests(unittest.TestCase):
         c._face_tracking_last_error_x = self.old_tracking_error_x
         c._face_tracking_last_error_y = self.old_tracking_error_y
         c._face_tracking_last_error_at = self.old_tracking_error_at
+        c._face_tracking_last_center = self.old_tracking_last_center
+        c._face_tracking_pending_center = self.old_tracking_pending_center
         c._adaptive_head_rest.clear()
         c._adaptive_head_rest.update(self.old_adaptive_head_rest)
         with c._speaker_gaze_lock:

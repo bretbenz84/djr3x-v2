@@ -21,9 +21,11 @@ Behavioural rules encoded (see the per-method docstrings):
   [1.0, 5.0]; OFF ~ N(1.2, 0.5) clipped to [0.4, 2.5].
 * **Anti-stare hard cap** — never hold ON-target > 5.0 s (a sustained stare reads as
   a threat); a break is forced.
-* **Pitch-direction aversion semantics** — with PITCH available the *direction* of a
-  look-away carries meaning: UP = visualizing/planning a complex reply, DOWN = briefly
-  internalizing what was just heard, level-to-the-side = a low-load thinking break.
+* **Aversion direction** — people look away to the SIDE or DOWN, essentially never
+  up (an up-stare reads as awkward / spacey), so every look-away is yaw-to-the-side
+  and/or a downward pitch: a low-load break glances to the side ~level; "thinking" /
+  planning a complex reply looks down-and-aside; just-heard material is absorbed with
+  a brief down-glance. Pitch on an aversion is hard-clamped to ≤ 0 (never up).
 * **Complexity-scaled pre-turn aversion** — just before R3X speaks he looks away,
   longer + UP for a complex reply, shorter + to-the-side for a simple one.
 * **Turn-yield return** — at the end of his turn he returns ON-target to hand the
@@ -97,12 +99,16 @@ class GazeState(str, Enum):
 
 
 # Aversion "kinds" — the *reason* for a look-away, which picks the pose direction.
+# People look away to the SIDE or DOWN, never up, so every kind is yaw-aside / pitch-down.
 KIND_NONE = "none"
-KIND_SIDE = "side"                 # low-load thinking break: yaw to the side, ~level
-KIND_VISUALIZING = "visualizing"   # planning a complex reply: PITCH UP
+KIND_SIDE = "side"                 # low-load break: yaw to the side, level-to-slightly-down
+KIND_THINKING = "thinking"         # planning a complex reply: look DOWN and aside
 KIND_INTERNALIZING = "internalizing"  # absorbing what was heard: brief PITCH DOWN
 KIND_INCLUDE_SWEEP = "include_sweep"  # sweep to a listener to include them
 KIND_CLOSE = "close"               # disengage: OFF + POLE lowered
+
+# Back-compat alias (the old "visualizing/up" kind is now a down-to-think pose).
+KIND_VISUALIZING = KIND_THINKING
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -147,14 +153,14 @@ class GazeConfig:
     pre_aversion_max_secs: float = 1.4
     pre_aversion_visualize_threshold: float = 0.5   # complexity above this -> PITCH UP
 
-    # --- aversion offset ranges (degrees / mm) --------------------------------
+    # --- aversion offset ranges (degrees / mm); aversion pitch is DOWN-only ----
     side_yaw_min_deg: float = 15.0
     side_yaw_max_deg: float = 25.0
-    side_pitch_jitter_deg: float = 3.0
-    visualize_pitch_min_deg: float = 10.0
-    visualize_pitch_max_deg: float = 20.0
-    visualize_yaw_min_deg: float = 5.0
-    visualize_yaw_max_deg: float = 12.0
+    side_pitch_down_max_deg: float = 5.0   # a side break may dip slightly, never look up
+    think_pitch_min_deg: float = 8.0       # "look down to think" (applied downward)
+    think_pitch_max_deg: float = 16.0
+    think_yaw_min_deg: float = 5.0         # small sideways component of a think glance
+    think_yaw_max_deg: float = 14.0
     internalize_pitch_min_deg: float = 8.0
     internalize_pitch_max_deg: float = 15.0
     on_target_jitter_deg: float = 2.5     # small noise so ON-target is never robotic
@@ -222,11 +228,11 @@ class GazeConfig:
             ),
             side_yaw_min_deg=float(_cfg("GAZE_SIDE_YAW_MIN_DEG", cls.side_yaw_min_deg)),
             side_yaw_max_deg=float(_cfg("GAZE_SIDE_YAW_MAX_DEG", cls.side_yaw_max_deg)),
-            side_pitch_jitter_deg=float(_cfg("GAZE_SIDE_PITCH_JITTER_DEG", cls.side_pitch_jitter_deg)),
-            visualize_pitch_min_deg=float(_cfg("GAZE_VISUALIZE_PITCH_MIN_DEG", cls.visualize_pitch_min_deg)),
-            visualize_pitch_max_deg=float(_cfg("GAZE_VISUALIZE_PITCH_MAX_DEG", cls.visualize_pitch_max_deg)),
-            visualize_yaw_min_deg=float(_cfg("GAZE_VISUALIZE_YAW_MIN_DEG", cls.visualize_yaw_min_deg)),
-            visualize_yaw_max_deg=float(_cfg("GAZE_VISUALIZE_YAW_MAX_DEG", cls.visualize_yaw_max_deg)),
+            side_pitch_down_max_deg=float(_cfg("GAZE_SIDE_PITCH_DOWN_MAX_DEG", cls.side_pitch_down_max_deg)),
+            think_pitch_min_deg=float(_cfg("GAZE_THINK_PITCH_MIN_DEG", cls.think_pitch_min_deg)),
+            think_pitch_max_deg=float(_cfg("GAZE_THINK_PITCH_MAX_DEG", cls.think_pitch_max_deg)),
+            think_yaw_min_deg=float(_cfg("GAZE_THINK_YAW_MIN_DEG", cls.think_yaw_min_deg)),
+            think_yaw_max_deg=float(_cfg("GAZE_THINK_YAW_MAX_DEG", cls.think_yaw_max_deg)),
             internalize_pitch_min_deg=float(_cfg("GAZE_INTERNALIZE_PITCH_MIN_DEG", cls.internalize_pitch_min_deg)),
             internalize_pitch_max_deg=float(_cfg("GAZE_INTERNALIZE_PITCH_MAX_DEG", cls.internalize_pitch_max_deg)),
             on_target_jitter_deg=float(_cfg("GAZE_ON_TARGET_JITTER_DEG", cls.on_target_jitter_deg)),
@@ -468,20 +474,25 @@ class GazeEngine:
                 self._seg_until = now + self.cfg.include_sweep_secs
 
     def _choose_off_offsets(self, kind: str = KIND_SIDE) -> None:
-        """Pick the OFF-target offsets once per segment, jittered + non-repeating."""
+        """Pick the OFF-target offsets once per segment, jittered + non-repeating.
+
+        Aversion pitch is DOWN-only (people look away to the side or down, never up — an
+        up-stare reads as awkward), so every branch produces pitch <= 0 and the result
+        is hard-clamped to <= 0 as a backstop."""
         # Alternate yaw side from the last aversion so we never snap to the same pose twice.
         sign = -1 if self._last_off_yaw_sign >= 0 else 1
-        if kind == KIND_VISUALIZING:
-            yaw = sign * self.rng.uniform(self.cfg.visualize_yaw_min_deg, self.cfg.visualize_yaw_max_deg)
-            pitch = self.rng.uniform(self.cfg.visualize_pitch_min_deg, self.cfg.visualize_pitch_max_deg)
+        if kind == KIND_THINKING:
+            # "Look down to think" — a downward glance with a small sideways component.
+            yaw = sign * self.rng.uniform(self.cfg.think_yaw_min_deg, self.cfg.think_yaw_max_deg)
+            pitch = -self.rng.uniform(self.cfg.think_pitch_min_deg, self.cfg.think_pitch_max_deg)
         elif kind == KIND_INTERNALIZING:
-            yaw = sign * self.rng.uniform(0.0, self.cfg.visualize_yaw_min_deg)
+            yaw = sign * self.rng.uniform(0.0, self.cfg.think_yaw_min_deg)
             pitch = -self.rng.uniform(self.cfg.internalize_pitch_min_deg, self.cfg.internalize_pitch_max_deg)
-        else:  # KIND_SIDE / default low-load thinking break
+        else:  # KIND_SIDE / default low-load break: mostly horizontal, maybe a slight dip
             yaw = sign * self.rng.uniform(self.cfg.side_yaw_min_deg, self.cfg.side_yaw_max_deg)
-            pitch = self.rng.uniform(-self.cfg.side_pitch_jitter_deg, self.cfg.side_pitch_jitter_deg)
+            pitch = -self.rng.uniform(0.0, self.cfg.side_pitch_down_max_deg)
         self._off_yaw = yaw
-        self._off_pitch = pitch
+        self._off_pitch = min(0.0, pitch)  # backstop: an aversion never looks up
         self._last_off_yaw_sign = sign
 
     # --- transitions ----------------------------------------------------------
@@ -492,7 +503,7 @@ class GazeEngine:
             self.cfg.pre_aversion_max_secs - self.cfg.pre_aversion_min_secs
         )
         self._prep_until = now + dur
-        kind = KIND_VISUALIZING if complexity >= self.cfg.pre_aversion_visualize_threshold else KIND_SIDE
+        kind = KIND_THINKING if complexity >= self.cfg.pre_aversion_visualize_threshold else KIND_SIDE
         self._choose_off_offsets(kind)
         self._prep_kind = kind
 
@@ -619,7 +630,7 @@ class GazeEngine:
             kind = getattr(self, "_prep_kind", KIND_SIDE)
             pose = HeadPose(by + self._off_yaw, self._off_pitch, self.cfg.pole_rest_mm)
             reason = (
-                f"pre-turn aversion ({'visualizing/up' if kind == KIND_VISUALIZING else 'to-the-side'}, "
+                f"pre-turn aversion ({'down-to-think' if kind == KIND_THINKING else 'to-the-side'}, "
                 f"complexity={self._prep_complexity:.2f})"
             )
             return self._mk(state, "off_target", kind, pose, self._off_yaw, self._off_pitch,
@@ -661,8 +672,8 @@ class GazeEngine:
             pose = self._on_target_pose(inp, pole)
             return self._mk(state, "on_target", KIND_NONE, pose, 0.0, 0.0, pole, "smooth",
                             inp.active_speaker_id, f"on-target ({state.value}, duty)")
-        # OFF segment — low-load thinking break (occasionally up for variety).
-        kind = self._last_kind if self._last_kind in (KIND_SIDE, KIND_VISUALIZING) else KIND_SIDE
+        # OFF segment — a low-load break (yaw to the side, level-to-slightly-down).
+        kind = self._last_kind if self._last_kind in (KIND_SIDE, KIND_THINKING) else KIND_SIDE
         pose = HeadPose(by + self._off_yaw, self._off_pitch, pole)
         return self._mk(state, "off_target", KIND_SIDE, pose, self._off_yaw, self._off_pitch,
                         pole, "saccade", None, f"off-target break ({state.value})")
