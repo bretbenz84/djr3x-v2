@@ -3122,6 +3122,17 @@ QUESTION_BUDGET_MAX_QUESTIONS = 5
 QUESTION_BUDGET_ENGAGED_GRACE_SECS = 60.0
 QUESTION_BUDGET_ENGAGED_EXTRA = 2
 
+# Anti-interview cadence (separate from the time-window budget above). Once a topic
+# opens, "earned on-thread follow-ups" bypass the budget and Rex can end EVERY turn
+# with a question — an interrogation (live-logged 2026-06-20: six question-ending
+# turns in a row about a favourite movie). After this many consecutive question-ending
+# turns, social_frame forces the next reply to be a statement/reaction (then the streak
+# resets). Urgent identity/emotional asks still override it. The streak also resets
+# after RESET_SECS of no Rex turn (the interview cooled off).
+INTERVIEW_CADENCE_CLAMP_ENABLED = True
+INTERVIEW_CADENCE_MAX_CONSECUTIVE_QUESTIONS = 3
+INTERVIEW_CADENCE_RESET_SECS = 120.0
+
 # ─────────────────────────────────────────────────────────────────────────────
 # NEW-PERSON ONBOARDING  (first-meeting baseline-gathering burst)
 # ─────────────────────────────────────────────────────────────────────────────

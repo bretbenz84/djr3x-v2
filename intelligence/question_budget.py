@@ -59,25 +59,64 @@ _lock = threading.Lock()
 _question_times: deque[float] = deque()
 _engaged_reply_times: deque[float] = deque()
 _last_user_turn_at: float = 0.0
+# Anti-interview cadence: count of consecutive Rex turns that ENDED with a question
+# (reset by a statement turn or a long gap). The time-window budget above rations
+# new-topic questions; this separately stops an on-topic question-every-turn
+# interrogation once a topic has opened.
+_consecutive_question_turns: int = 0
+_last_rex_turn_at: float = 0.0
 
 
 def clear() -> None:
-    global _last_user_turn_at
+    global _last_user_turn_at, _consecutive_question_turns, _last_rex_turn_at
     with _lock:
         _question_times.clear()
         _engaged_reply_times.clear()
         _last_user_turn_at = 0.0
+        _consecutive_question_turns = 0
+        _last_rex_turn_at = 0.0
 
 
 def note_rex_utterance(text: str) -> None:
-    """Record one assistant utterance if it contains at least one question."""
+    """Record one assistant turn: time-window question budget (questions only) AND the
+    consecutive-question-turn counter (every turn — a statement turn resets it)."""
     cleaned = (text or "").strip()
-    if not cleaned or "?" not in cleaned:
+    if not cleaned:
         return
     now = time.monotonic()
+    is_question = "?" in cleaned
     with _lock:
+        global _consecutive_question_turns, _last_rex_turn_at
         _prune_locked(now)
-        _question_times.append(now)
+        # A long pause between Rex turns means the prior interview cooled off.
+        reset_secs = max(0.0, float(getattr(config, "INTERVIEW_CADENCE_RESET_SECS", 120.0)))
+        if reset_secs and _last_rex_turn_at and (now - _last_rex_turn_at) > reset_secs:
+            _consecutive_question_turns = 0
+        _last_rex_turn_at = now
+        if is_question:
+            _question_times.append(now)
+            _consecutive_question_turns += 1
+        else:
+            _consecutive_question_turns = 0  # a statement turn breaks the streak
+
+
+def consecutive_question_turns() -> int:
+    """Consecutive Rex turns that ended with a question (0 if the streak has cooled)."""
+    now = time.monotonic()
+    with _lock:
+        reset_secs = max(0.0, float(getattr(config, "INTERVIEW_CADENCE_RESET_SECS", 120.0)))
+        if reset_secs and _last_rex_turn_at and (now - _last_rex_turn_at) > reset_secs:
+            return 0
+        return _consecutive_question_turns
+
+
+def should_force_statement_turn() -> bool:
+    """True when Rex has ended too many turns in a row with a question — the next reply
+    should be a statement/reaction instead, to break an interview cadence."""
+    if not bool(getattr(config, "INTERVIEW_CADENCE_CLAMP_ENABLED", True)):
+        return False
+    k = max(1, int(getattr(config, "INTERVIEW_CADENCE_MAX_CONSECUTIVE_QUESTIONS", 3)))
+    return consecutive_question_turns() >= k
 
 
 def note_user_turn(

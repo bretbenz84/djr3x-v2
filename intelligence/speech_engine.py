@@ -171,6 +171,13 @@ def speak_async(
             if not text or not text.strip():
                 _c._mark_governor_candidate(candidate_id, "dropped", "empty_text")
                 return False
+            # Claim the proactive floor NOW — BEFORE the (possibly seconds-long) TTS
+            # pre-cache below. can_proactive_speak() consults _proactive_speech_pending,
+            # so without claiming here a SECOND proactive candidate sails through its own
+            # check during our ensure_cached() window and both speak ~seconds apart
+            # (live-logged 2026-06-20: idle_banter + visual_curiosity stacked). Cleared
+            # on every early-out below and after playback completes (_on_done).
+            _c._proactive_speech_pending.set()
             # Yield the floor if the user has already started talking. This line was
             # decided + generated before now; pre-cache its audio so the mic re-check
             # lands right before playback (not ~1s before it, the window in which Rex
@@ -187,6 +194,7 @@ def speak_async(
                     from audio import barge_guard
                     if barge_guard.user_speaking_now():
                         _c._mark_governor_candidate(candidate_id, "dropped", "user_speaking")
+                        _c._proactive_speech_pending.clear()
                         _log.info(
                             "[consciousness] proactive line yielded — user already speaking: %r",
                             text,
@@ -195,8 +203,10 @@ def speak_async(
                 except Exception as exc:
                     _log.debug("proactive yield check failed: %s", exc)
             from audio import speech_queue
-            _c._proactive_speech_pending.set()
-            done = speech_queue.enqueue(text, emotion, priority=0)
+            # log_text=False: we log_rex this line at enqueue (below). Without this
+            # tts.speak would ALSO log it at playback, double-printing every proactive
+            # line in the conversation log (the cosmetic "duplicate" in the field log).
+            done = speech_queue.enqueue(text, emotion, priority=0, log_text=False)
             _c._mark_governor_candidate(candidate_id, "accepted", "current_behavior_enqueued_speech")
             should_open_wait_on_done = (
                 on_done is None and (wait_secs is not None or _c._utterance_expects_reply(text))

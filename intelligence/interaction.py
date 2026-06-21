@@ -3673,6 +3673,18 @@ def _maybe_low_memory_idle_question(
     person_id = _primary_session_person_id()
     if person_id is None or person_id in _low_memory_idle_questions_spoken:
         return False
+    # Never run the generic "I want to get to know you better" profile question on the
+    # creator or a known VIP — Rex knows them on sight, so it reads as treating a
+    # well-known person like a stranger (live-logged 2026-06-20: it fired on the creator
+    # right after reminiscing about his festival, and kicked off an interview). Mirrors
+    # onboarding.py's VIP exclusion (person_specials.is_special_person).
+    try:
+        _person_row = people_memory.get_person(person_id) or {}
+        _person_name = _person_row.get("name")
+        if _person_name and person_specials.is_special_person(_person_name):
+            return False
+    except Exception:
+        pass
     # Don't cold-open a get-to-know-you interview on a disengaged / quiet speaker
     # (Tier 2 — a shy person giving one-word answers). The child case is handled by
     # _next_profile_question() returning None, but back off on low energy too.
@@ -18203,6 +18215,25 @@ def _handle_speech_segment(
                 dialogue_decision.skip_action_router,
             )
 
+            # If the dialogue gate bound this turn as an ANSWER to a Rex question (e.g. a
+            # remembered-event memory_followup like "how did the festival go?") but none
+            # of the tracked-QA captures above claimed it, synthesize answered_question
+            # from the frame so the agenda gives the strong "they just answered Q: …"
+            # directive. Without it the generic "react to what they said" directive lets
+            # the LLM misread a terse answer like "That was good" as praise OF Rex —
+            # live-logged 2026-06-20: it replied "I appreciate a clean compliment" and
+            # then re-asked the festival question.
+            if (
+                answered_question is None
+                and dialogue_decision.label == "answer_to_rex"
+                and dialogue_decision.frame is not None
+                and (getattr(dialogue_decision.frame, "text", "") or "").strip()
+            ):
+                answered_question = {
+                    "question_text": dialogue_decision.frame.text.strip(),
+                    "answer_text": text,
+                }
+
             fast_takeover_response = None
             if not dialogue_decision.skip_action_router:
                 fast_takeover_response = _handle_fast_local_takeover(
@@ -19066,7 +19097,21 @@ def _handle_speech_segment(
         # increment when this flag is set so we never double-count.
         pre_classified_insult = False
         pre_classified_compliment = False
-        if response_text is None and personality.is_obvious_insult(text):
+        # A turn the dialogue-act gate already bound as an ANSWER to Rex's question
+        # (e.g. "That was good" answering "how did the festival go?") is about the TOPIC,
+        # not praise/insult OF Rex — so the keyword-based layer-1 compliment/insult
+        # pre-pass must stand down, or it hijacks the reply. Live-logged 2026-06-20:
+        # "That was good" read as a compliment ("I appreciate a clean compliment,
+        # Bret…"), derailing the festival answer and re-asking it.
+        _turn_is_answer_to_rex = bool(
+            dialogue_decision is not None
+            and getattr(dialogue_decision, "label", None) == "answer_to_rex"
+        )
+        if (
+            response_text is None
+            and not _turn_is_answer_to_rex
+            and personality.is_obvious_insult(text)
+        ):
             new_level = personality.increment_anger(person_id)
             pre_classified_insult = True
             try:
@@ -19080,7 +19125,11 @@ def _handle_speech_segment(
             _log.info(
                 "[interaction] layer-1 insult detected — anger now %d", new_level,
             )
-        elif response_text is None and personality.is_obvious_compliment(text):
+        elif (
+            response_text is None
+            and not _turn_is_answer_to_rex
+            and personality.is_obvious_compliment(text)
+        ):
             # Layer-1 compliment pre-check: immediate pleased body language on this turn.
             # Layer 2 (llm.analyze_sentiment) skips its own beat when this flag is set so
             # we never double-react; subtle praise still gets caught there.

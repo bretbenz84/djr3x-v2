@@ -279,6 +279,15 @@ def build_frame(
         if appetite == "low" or engagement == "low" or energy_mode == "quiet":
             allow_question = False
 
+    # Anti-interview cadence: after several consecutive question-ending turns, force a
+    # statement turn (a specific reaction / opinion instead of yet another question) so
+    # Rex doesn't interrogate once a topic opens. The "earned on-thread follow-up"
+    # bypass above otherwise lets him ask every single turn. An urgent identity ask
+    # still overrides this (re-enabled just below). Live-logged 2026-06-20: six
+    # question-ending turns in a row on the favourite-movie / comedy thread.
+    if allow_question and question_budget.should_force_statement_turn():
+        allow_question = False
+
     if plan.max_words <= 12 or plan.target == "micro":
         allow_question = False
     if urgent_identity and unknown_count:

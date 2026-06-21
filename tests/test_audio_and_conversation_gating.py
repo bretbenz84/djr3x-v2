@@ -1363,7 +1363,9 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
 
         interaction._low_memory_idle_questions_spoken.clear()
         question = {"key": "job", "text": "What do you do — professionally speaking?", "depth": 1}
-        spoken = "I don't know you well yet, Bret, What do you do — professionally speaking?"
+        # A non-VIP, sparsely-known person (the creator/VIPs are skipped — see
+        # test_low_memory_idle_question_skips_creator_and_vips).
+        spoken = "I don't know you well yet, Alex, What do you do — professionally speaking?"
         with (
             mock.patch.object(interaction.config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True),
             mock.patch.object(interaction.config, "LOW_MEMORY_IDLE_QUESTION_SECS", 10.0),
@@ -1379,7 +1381,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             mock.patch.object(
                 interaction.people_memory,
                 "get_person",
-                return_value={"id": 1, "name": "Bret Benziger"},
+                return_value={"id": 1, "name": "Alex Carter"},
             ),
             mock.patch.object(interaction.question_budget, "can_ask", return_value=True),
             mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
@@ -1416,6 +1418,40 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         log_rex.assert_called_once_with(spoken)
         register.assert_called_once_with(spoken)
         save_q.assert_called_once_with(1, "job", spoken, 1)
+        interaction._low_memory_idle_questions_spoken.clear()
+
+    def test_low_memory_idle_question_skips_creator_and_vips(self):
+        # Rex knows the creator (and VIPs) on sight, so the generic "get to know you
+        # better, what's your favorite movie?" must NOT fire on them (live-logged
+        # 2026-06-20: it fired on the creator right after reminiscing about his festival).
+        from intelligence import interaction
+
+        interaction._low_memory_idle_questions_spoken.clear()
+        with (
+            mock.patch.object(interaction.config, "LOW_MEMORY_IDLE_QUESTION_ENABLED", True),
+            mock.patch.object(interaction.config, "LOW_MEMORY_IDLE_QUESTION_SECS", 10.0),
+            mock.patch.object(interaction.config, "LOW_MEMORY_PROFILE_MAX_FACTS", 4),
+            mock.patch.object(interaction, "_primary_session_person_id", return_value=1),
+            mock.patch.object(interaction, "_profile_fact_count", return_value=1),
+            mock.patch.object(interaction, "_next_profile_question") as next_q,
+            mock.patch.object(
+                interaction.people_memory,
+                "get_person",
+                return_value={"id": 1, "name": "Bret Benziger"},  # the creator
+            ),
+            mock.patch.object(interaction.speech_queue, "is_speaking", return_value=False),
+            mock.patch.object(interaction.output_gate, "is_busy", return_value=False),
+            mock.patch.object(interaction.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch.object(interaction, "_speak_blocking", return_value=True) as speak,
+        ):
+            asked = interaction._maybe_low_memory_idle_question(
+                idle_for=11.0,
+                effective_idle_timeout=30.0,
+            )
+
+        self.assertFalse(asked)            # creator is skipped
+        speak.assert_not_called()
+        next_q.assert_not_called()         # gated before any question is even selected
         interaction._low_memory_idle_questions_spoken.clear()
 
     def test_low_memory_question_prefix_uses_first_name(self):

@@ -264,5 +264,28 @@ class FullEquivalenceTest(unittest.TestCase):
         self._assert_equiv("I'm not upset, it's okay, no worries")
 
 
+class AnswerToRexFramedDirectiveTest(unittest.TestCase):
+    """An answer to a Rex memory_followup (e.g. "That was good" → "how did the festival
+    go?") must get the strong 'they just answered Q: …' agenda directive, not the
+    generic 'react to what they said' one — interaction.py synthesizes answered_question
+    from the dialogue frame so the LLM stops misreading the terse answer as praise."""
+
+    def test_event_followup_answer_uses_answer_ack_directive(self):
+        from intelligence import conversation_agenda as ca
+        with mock.patch.object(ca.world_state, "snapshot", return_value={"people": []}):
+            plan = ca.build_turn_plan(
+                "That was good",
+                1,
+                answered_question={
+                    "question_text": "How did the festival go, Bret?",
+                    "answer_text": "That was good",
+                },
+            )
+        self.assertEqual(plan.purpose, "answer_ack")
+        directive = plan.directive.lower()
+        self.assertIn("just answered", directive)
+        self.assertIn("festival", directive)  # the actual question, not a generic ack
+
+
 if __name__ == "__main__":
     unittest.main()
