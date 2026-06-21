@@ -1222,6 +1222,7 @@ HALLUCINATION_BLOCKLIST = [
     "thank you",
     "thanks for watching",
     "please subscribe",
+    "subscribe",  # bare YouTube-caption hallucination on silence (also "plz/pls subscribe")
     "see you next time",
     "you",
     "guh",

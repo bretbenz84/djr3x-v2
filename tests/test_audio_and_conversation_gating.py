@@ -1185,6 +1185,21 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             "thank you thank you thank you thank you thank you"
         ))
 
+    def test_subscribe_caption_hallucinations_filtered(self):
+        from audio import transcription
+
+        # Whisper hallucinates YouTube-caption boilerplate on silence/noise. The
+        # abbreviated "plz subscribe" (field-logged) slipped past the old regex that
+        # only matched "please subscribe" — cover the abbreviations and the bare token.
+        for phrase in ("plz subscribe", "pls subscribe", "please subscribe",
+                       "subscribe", "Subscribe!", "PLZ SUBSCRIBE"):
+            self.assertTrue(
+                transcription._is_hallucination(phrase),
+                f"expected {phrase!r} to be filtered as a caption hallucination",
+            )
+        # Real speech that merely contains the word must NOT be filtered.
+        self.assertFalse(transcription._is_hallucination("I'd subscribe to that idea"))
+
     def test_intro_name_trims_trailing_greeting(self):
         from intelligence import introductions
 
