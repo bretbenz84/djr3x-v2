@@ -3051,6 +3051,46 @@ def _apply_solo_switch_hysteresis(
     return {"id": prev_id, "name": prev_name}
 
 
+def _reject_faces_off_body(detected: list, frame_w: int, frame_h: int) -> list:
+    """Drop detected faces that are far from the pose's head (phantom dlib faces).
+
+    The MediaPipe pose head (nose/eyes/ears) tracks the real head reliably even when dlib
+    throws a spurious face elsewhere — so when a pose head is available, a face whose
+    center is more than POSE_FACE_GUARD_MAX_DIST_MULT head-widths from it is treated as a
+    phantom and dropped. No pose available → no-op (face detection stands on its own)."""
+    if not detected or not bool(getattr(config, "POSE_FACE_GUARD_ENABLED", True)):
+        return detected
+    try:
+        from vision import pose as pose_mod
+        anchor = pose_mod.head_anchor_px(int(frame_w or 0), int(frame_h or 0))
+    except Exception as exc:
+        _log.debug("[pose_face_guard] head anchor lookup failed: %s", exc)
+        anchor = None
+    if anchor is None:
+        return detected  # no pose head this tick — can't guard, trust face detection
+
+    hx, hy, head_w = anchor
+    max_dist = float(getattr(config, "POSE_FACE_GUARD_MAX_DIST_MULT", 1.5)) * float(head_w)
+    kept = []
+    for face in detected:
+        box = face.get("bounding_box") if isinstance(face, dict) else None
+        if not (isinstance(box, (list, tuple)) and len(box) >= 4):
+            kept.append(face)
+            continue
+        x, y, w, h = [float(v) for v in box[:4]]
+        fx, fy = x + w / 2.0, y + h / 2.0
+        dist = ((fx - hx) ** 2 + (fy - hy) ** 2) ** 0.5
+        if dist <= max_dist:
+            kept.append(face)
+        else:
+            _log.info(
+                "[pose_face_guard] dropped phantom face center=(%.0f,%.0f) dist=%.0fpx "
+                "> max=%.0fpx (pose head=(%.0f,%.0f) head_w=%.0f)",
+                fx, fy, dist, max_dist, hx, hy, head_w,
+            )
+    return kept
+
+
 def _step_person_recognition(frame) -> None:
     """
     Detect visible faces, resolve known identities via DB lookup, and update
@@ -3071,6 +3111,12 @@ def _step_person_recognition(frame) -> None:
             return
 
         detected = face_mod.detect_faces(frame)
+        # Reject phantom faces (dlib false positives off the body) using the pose head as
+        # source of truth. If all faces this tick were phantoms, `detected` becomes empty
+        # and the hold/clear path below keeps the last good identity instead of jumping.
+        _frame_h_px = int(getattr(frame, "shape", [0, 0, 0])[0] or 0)
+        _frame_w_px = int(getattr(frame, "shape", [0, 0, 0])[1] or 0)
+        detected = _reject_faces_off_body(detected, _frame_w_px, _frame_h_px)
         if not detected:
             # No visible faces this tick. Hold the last slots briefly so a
             # small/partly occluded face does not lose conversation identity on

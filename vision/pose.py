@@ -587,6 +587,55 @@ def _update_world_state(detected: list[dict]) -> None:
     world_state.mutate("people", _merge_pose)
 
 
+def head_anchor_px(frame_w: int, frame_h: int):
+    """Where the real head is, per the latest detected pose, in PIXELS:
+    ``(nose_x, nose_y, head_width)`` — or None if no usable pose is published.
+
+    The pose's own face landmarks (nose / eyes / ears) track the head reliably even
+    when dlib throws a phantom face elsewhere in the frame, so callers can use this as
+    a source of truth to reject face detections that are far from the body. ``head_width``
+    is a per-person scale (ear span, else eye span, else a fraction of shoulder width)
+    so the tolerance adapts to how close the person is.
+    """
+    if frame_w <= 0 or frame_h <= 0:
+        return None
+    try:
+        people = world_state.get("people") or []
+    except Exception:
+        return None
+
+    for person in people:
+        kp = person.get("pose_keypoints") if isinstance(person, dict) else None
+        if not isinstance(kp, dict) or not kp:
+            continue
+
+        def _pt(name):
+            v = kp.get(name)
+            if isinstance(v, (list, tuple)) and len(v) >= 3 and float(v[2]) >= _VIS_MIN:
+                return (float(v[0]), float(v[1]))
+            return None
+
+        nose = _pt("NOSE") or _pt("LEFT_EYE") or _pt("RIGHT_EYE")
+        if nose is None:
+            continue
+
+        le, re = _pt("LEFT_EAR"), _pt("RIGHT_EAR")
+        leye, reye = _pt("LEFT_EYE"), _pt("RIGHT_EYE")
+        ls, rs = _pt("LEFT_SHOULDER"), _pt("RIGHT_SHOULDER")
+        if le and re:
+            head_w = abs(le[0] - re[0])
+        elif leye and reye:
+            head_w = abs(leye[0] - reye[0]) * 2.2
+        elif ls and rs:
+            head_w = abs(ls[0] - rs[0]) * 0.45
+        else:
+            head_w = 0.08  # normalized fallback (~8% of frame width)
+        head_w = max(0.05, head_w)
+        return (nose[0] * frame_w, nose[1] * frame_h, head_w * frame_w)
+
+    return None
+
+
 def process_frame(frame) -> list[dict]:
     """Detect pose on one frame and publish it to world_state. Loop body / test seam."""
     return detect_pose(frame)

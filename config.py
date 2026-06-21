@@ -472,6 +472,17 @@ FACE_DETECTION_HOLD_SECS = _env_float(
     max_value=30.0,
 )
 
+# Phantom-face guard: dlib occasionally throws a spurious face high in the frame (the
+# GUI box jumps off the body). The MediaPipe pose head (nose/eyes/ears) tracks the real
+# head reliably, so when a pose is available we drop any detected face whose center is
+# farther from the pose head than this multiple of the head width. Bigger = more lenient.
+# NOTE: with single-pose detection this trusts ONE body, so in a multi-person scene a
+# second face with no posed body can be rejected — disable if that matters for a build.
+POSE_FACE_GUARD_ENABLED = _env_bool("POSE_FACE_GUARD_ENABLED", True)
+POSE_FACE_GUARD_MAX_DIST_MULT = _env_float(
+    "POSE_FACE_GUARD_MAX_DIST_MULT", 1.5, min_value=0.5, max_value=10.0,
+)
+
 # Local expression telemetry via MediaPipe Face Landmarker. This does not own
 # identity; it only annotates current dlib/world_state face slots with apparent
 # expressions such as smile, frown, surprise, or brow furrow.
