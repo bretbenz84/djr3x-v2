@@ -180,10 +180,17 @@ class VisionPanel(QWidget):
             return
         if not self._people or image_rect.isEmpty():
             return
-        for person in self._people:
-            keypoints = person.get("pose_keypoints")
-            if isinstance(keypoints, dict) and keypoints:
-                _draw_one_skeleton(painter, image_rect, keypoints)
+        # Clip to the displayed video rect so limbs running off the edge are cut at the
+        # frame boundary instead of bleeding into the panel's letterbox/border.
+        painter.save()
+        painter.setClipRect(image_rect)
+        try:
+            for person in self._people:
+                keypoints = person.get("pose_keypoints")
+                if isinstance(keypoints, dict) and keypoints:
+                    _draw_one_skeleton(painter, image_rect, keypoints)
+        finally:
+            painter.restore()
 
     def _draw_animals(
         self,
