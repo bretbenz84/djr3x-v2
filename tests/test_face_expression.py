@@ -109,5 +109,92 @@ class FaceExpressionTelemetryTests(unittest.TestCase):
         self.assertEqual(world_state.get("people"), [])
 
 
+class AdaptiveBrowBaselineTests(unittest.TestCase):
+    """Brow-furrow fires on a rise above the person's RESTING brow, not an absolute
+    value — so a high-neutral face (MediaPipe over-reads browDown for some face/camera
+    geometries) stops being tagged 'furrowing' every frame, while a low-neutral face
+    keeps its original sensitivity. Floored at the absolute threshold, so it can only
+    reduce false positives, never add them."""
+
+    BOX = (100, 80, 200, 220)
+
+    def setUp(self):
+        from vision import face_expression
+        self.fe = face_expression
+        face_expression.reset_brow_baselines()
+
+    def tearDown(self):
+        self.fe.reset_brow_baselines()
+
+    def _warm(self, value, n=8):
+        baseline = None
+        for _ in range(n):
+            baseline = self.fe._brow_furrow_baseline(self.BOX, value, 1000.0)
+        return baseline
+
+    def test_high_neutral_brow_would_false_furrow_without_baseline(self):
+        # Control: the absolute threshold (warmup / disabled) tags a high-neutral
+        # browDown as furrowing — this is the logged misfire.
+        fe = self.fe
+        with mock.patch.object(fe.config, "FACE_EXPRESSION_BROW_FURROW_THRESHOLD", 0.45):
+            result = fe._classify_expression({"browDownLeft": 0.87, "browDownRight": 0.85})
+        self.assertEqual(result["expression"], "brow_furrow")
+
+    def test_high_neutral_brow_suppressed_after_warmup(self):
+        fe = self.fe
+        with (
+            mock.patch.object(fe.config, "FACE_EXPRESSION_BROW_ADAPTIVE_BASELINE_ENABLED", True),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_BROW_BASELINE_WARMUP_SAMPLES", 5),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_BROW_FURROW_BASELINE_DELTA", 0.18),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_BROW_FURROW_THRESHOLD", 0.45),
+        ):
+            baseline = self._warm(0.86)
+            self.assertIsNotNone(baseline)
+            result = fe._classify_expression(
+                {"browDownLeft": 0.87, "browDownRight": 0.85}, brow_baseline=baseline
+            )
+        self.assertEqual(result["expression"], "neutral")
+
+    def test_genuine_furrow_above_relaxed_baseline_still_detected(self):
+        fe = self.fe
+        with (
+            mock.patch.object(fe.config, "FACE_EXPRESSION_BROW_BASELINE_WARMUP_SAMPLES", 5),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_BROW_FURROW_BASELINE_DELTA", 0.18),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_BROW_FURROW_THRESHOLD", 0.45),
+        ):
+            self._warm(0.50)  # relaxed floor settles low
+            baseline = fe._brow_furrow_baseline(self.BOX, 0.81, 1000.0)  # the furrow frame
+            result = fe._classify_expression(
+                {"browDownLeft": 0.82, "browDownRight": 0.80}, brow_baseline=baseline
+            )
+        self.assertEqual(result["expression"], "brow_furrow")
+
+    def test_low_neutral_face_keeps_original_sensitivity(self):
+        fe = self.fe
+        with (
+            mock.patch.object(fe.config, "FACE_EXPRESSION_BROW_BASELINE_WARMUP_SAMPLES", 5),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_BROW_FURROW_BASELINE_DELTA", 0.18),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_BROW_FURROW_THRESHOLD", 0.45),
+        ):
+            baseline = self._warm(0.05)
+            # baseline ~0.05 → effective threshold floored at 0.45, so a 0.50 furrow fires.
+            result = fe._classify_expression(
+                {"browDownLeft": 0.52, "browDownRight": 0.50}, brow_baseline=baseline
+            )
+        self.assertEqual(result["expression"], "brow_furrow")
+
+    def test_disabled_baseline_returns_none(self):
+        fe = self.fe
+        with mock.patch.object(
+            fe.config, "FACE_EXPRESSION_BROW_ADAPTIVE_BASELINE_ENABLED", False
+        ):
+            self.assertIsNone(fe._brow_furrow_baseline(self.BOX, 0.9, 1000.0))
+
+    def test_unknown_face_box_uses_absolute_threshold(self):
+        fe = self.fe
+        # No box → no track → None baseline → absolute threshold path.
+        self.assertIsNone(fe._brow_furrow_baseline(None, 0.9, 1000.0))
+
+
 if __name__ == "__main__":
     unittest.main()

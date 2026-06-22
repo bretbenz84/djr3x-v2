@@ -541,6 +541,53 @@ FACE_EXPRESSION_BROW_FURROW_THRESHOLD = _env_float(
     min_value=0.0,
     max_value=1.0,
 )
+# Per-face ADAPTIVE brow baseline. MediaPipe's browDown blendshape has a high,
+# person/camera-specific neutral for some faces — a robot camera angled UP at a seated
+# talker reads "brow down" almost constantly — so the absolute threshold above tags
+# their RESTING face as "furrowing" every frame (logged: one talker sat at ~0.86 browDown
+# neutral, well over the 0.45 line, and his disposition label became "intense"). When
+# enabled, each visible face's resting browDown is tracked and brow-furrow fires only on a
+# rise ABOVE it: effective threshold = max(absolute_threshold, baseline + DELTA). Because
+# it is floored at the absolute threshold, this can only make brow detection LESS
+# trigger-happy for high-neutral faces — never more for anyone. Until WARMUP_SAMPLES
+# frames are seen for a face, the absolute threshold is used unchanged.
+FACE_EXPRESSION_BROW_ADAPTIVE_BASELINE_ENABLED = _env_bool(
+    "FACE_EXPRESSION_BROW_ADAPTIVE_BASELINE_ENABLED",
+    True,
+)
+FACE_EXPRESSION_BROW_FURROW_BASELINE_DELTA = _env_float(
+    "FACE_EXPRESSION_BROW_FURROW_BASELINE_DELTA",
+    0.18,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACE_EXPRESSION_BROW_BASELINE_WARMUP_SAMPLES = _env_int(
+    "FACE_EXPRESSION_BROW_BASELINE_WARMUP_SAMPLES",
+    15,
+    min_value=1,
+    max_value=100000,
+)
+FACE_EXPRESSION_BROW_BASELINE_TTL_SECS = _env_float(
+    "FACE_EXPRESSION_BROW_BASELINE_TTL_SECS",
+    8.0,
+    min_value=0.5,
+    max_value=600.0,
+)
+# Asymmetric EMA: fall toward a lower (more relaxed) reading quickly, rise toward a higher
+# one slowly, so the baseline tracks the RESTING brow level and a transient furrow stays a
+# detectable spike above it instead of being absorbed into the baseline.
+FACE_EXPRESSION_BROW_BASELINE_ALPHA_DOWN = _env_float(
+    "FACE_EXPRESSION_BROW_BASELINE_ALPHA_DOWN",
+    0.20,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACE_EXPRESSION_BROW_BASELINE_ALPHA_UP = _env_float(
+    "FACE_EXPRESSION_BROW_BASELINE_ALPHA_UP",
+    0.02,
+    min_value=0.0,
+    max_value=1.0,
+)
 
 # Surfacing the engaged person's CURRENT expression in the per-turn conversation
 # prompt (llm._summarize_world_state) so Rex can respond to a smile / furrowed brow /

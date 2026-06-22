@@ -130,7 +130,62 @@ def _mean(scores: dict[str, float], *keys: str) -> float:
     return sum(_score(scores, key) for key in keys) / float(len(keys))
 
 
-def _classify_expression(scores: dict[str, float]) -> dict:
+# Per-face adaptive brow-furrow baseline (see config.FACE_EXPRESSION_BROW_*). Tracks each
+# visible face's RESTING browDown so a high-neutral face (MediaPipe over-reads browDown for
+# some face/camera geometries) isn't tagged "furrowing" every frame. Keyed by IoU-matched
+# face box; pruned by TTL when a face leaves the frame.
+_brow_tracks: list[dict] = []
+_brow_lock = threading.Lock()
+
+
+def reset_brow_baselines() -> None:
+    """Clear the adaptive brow baselines (device changes / tests)."""
+    with _brow_lock:
+        _brow_tracks.clear()
+
+
+def _brow_furrow_baseline(face_box, brow_down: float, now: float) -> Optional[float]:
+    """Update and return the resting-browDown baseline for the face at ``face_box``.
+
+    Returns None — meaning "use the absolute threshold" — when adaptive baselining is
+    off, the face box is unknown, or the track has fewer than WARMUP_SAMPLES observations.
+    """
+    if not bool(getattr(config, "FACE_EXPRESSION_BROW_ADAPTIVE_BASELINE_ENABLED", True)):
+        return None
+    if not face_box:
+        return None
+    ttl = float(getattr(config, "FACE_EXPRESSION_BROW_BASELINE_TTL_SECS", 8.0))
+    a_down = float(getattr(config, "FACE_EXPRESSION_BROW_BASELINE_ALPHA_DOWN", 0.20))
+    a_up = float(getattr(config, "FACE_EXPRESSION_BROW_BASELINE_ALPHA_UP", 0.02))
+    warmup = max(1, int(getattr(config, "FACE_EXPRESSION_BROW_BASELINE_WARMUP_SAMPLES", 15)))
+    with _brow_lock:
+        # Drop tracks for faces that have left the frame so boxes can't accumulate.
+        _brow_tracks[:] = [t for t in _brow_tracks if (now - t["last_ts"]) <= ttl]
+        track = None
+        best = 0.0
+        for candidate in _brow_tracks:
+            score = _iou(face_box, candidate["box"])
+            if score > best:
+                best, track = score, candidate
+        if track is None or best < 0.10:
+            track = {"box": face_box, "baseline": float(brow_down), "samples": 0, "last_ts": now}
+            _brow_tracks.append(track)
+        base = float(track["baseline"])
+        # Asymmetric: follow a more-relaxed reading quickly, a tenser one slowly, so the
+        # baseline tracks the resting floor and a real furrow stays a spike above it.
+        alpha = a_down if brow_down < base else a_up
+        track["baseline"] = base + alpha * (float(brow_down) - base)
+        track["box"] = face_box
+        track["last_ts"] = now
+        track["samples"] += 1
+        if track["samples"] < warmup:
+            return None
+        return float(track["baseline"])
+
+
+def _classify_expression(
+    scores: dict[str, float], brow_baseline: Optional[float] = None
+) -> dict:
     smile = _mean(scores, "mouthSmileLeft", "mouthSmileRight")
     frown = _mean(scores, "mouthFrownLeft", "mouthFrownRight")
     brow_down = _mean(scores, "browDownLeft", "browDownRight")
@@ -138,6 +193,14 @@ def _classify_expression(scores: dict[str, float]) -> dict:
     jaw_open = _score(scores, "jawOpen")
     brow_inner = _score(scores, "browInnerUp")
     surprise = (eye_wide + jaw_open + brow_inner) / 3.0
+
+    # Brow-furrow fires on a rise ABOVE the person's resting brow, never below the
+    # absolute floor — so a high-neutral face stops false-triggering while a
+    # low-neutral face keeps its original sensitivity unchanged.
+    brow_threshold = float(getattr(config, "FACE_EXPRESSION_BROW_FURROW_THRESHOLD", 0.45))
+    if brow_baseline is not None:
+        delta = float(getattr(config, "FACE_EXPRESSION_BROW_FURROW_BASELINE_DELTA", 0.18))
+        brow_threshold = max(brow_threshold, float(brow_baseline) + delta)
 
     candidates = [
         (
@@ -166,7 +229,7 @@ def _classify_expression(scores: dict[str, float]) -> dict:
             "brow_furrow",
             "furrowed brow",
             brow_down,
-            float(getattr(config, "FACE_EXPRESSION_BROW_FURROW_THRESHOLD", 0.45)),
+            brow_threshold,
         ),
     ]
     mood, expression, notes, confidence, threshold = max(
@@ -224,14 +287,17 @@ def _result_to_expressions(result, frame_shape) -> list[dict]:
     landmarks = list(getattr(result, "face_landmarks", None) or [])
     matrices = list(getattr(result, "facial_transformation_matrixes", None) or [])
     expressions: list[dict] = []
+    now = time.time()
     for idx, categories in enumerate(blendshapes):
         scores = _blendshape_scores(categories)
-        classified = _classify_expression(scores)
         face_box = (
             _face_box_from_landmarks(landmarks[idx], frame_shape)
             if idx < len(landmarks)
             else None
         )
+        brow_down = _mean(scores, "browDownLeft", "browDownRight")
+        brow_baseline = _brow_furrow_baseline(face_box, brow_down, now)
+        classified = _classify_expression(scores, brow_baseline=brow_baseline)
         expressions.append({
             **classified,
             "source": _SOURCE,
