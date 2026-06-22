@@ -262,5 +262,28 @@ class ComedyModesNoCantinaBleedTests(unittest.TestCase):
         self.assertIn("avoid reusing recent", out.lower())
 
 
+class GentleProbeTenderModeTest(unittest.TestCase):
+    """Masked distress -> gentle_probe keeps affect 'neutral'/sensitivity 'none',
+    so it must be caught as a TENDER mode: no roasts, no visual jabs — even when
+    the turn contains a visual word ('look at me')."""
+
+    def test_gentle_probe_suppresses_roast(self):
+        from intelligence import social_frame
+        self.assertEqual(
+            social_frame._roast_level(
+                None, "normal", "gentle_probe", "neutral", "none", "I'm fine"
+            ),
+            "none",
+        )
+
+    def test_gentle_probe_suppresses_visual_even_with_visual_word(self):
+        from intelligence import social_frame
+        self.assertFalse(
+            social_frame._visual_allowed(
+                "look at me, I'm fine", "", "normal", "gentle_probe", "neutral", "none"
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -89,6 +89,12 @@ _PURPOSE_PRIORITIES: dict[str, int] = {
     # sincerity flow (celebration 64 / memory_followup 65 / checkin 100).
     "lull_callback": 58,
     "visual_curiosity": 55,
+    # people_roast: an idle ROAST beat. Wins ties vs ambient idle chatter
+    # (small_talk 45) but stays below visual_curiosity / lull_callback and every
+    # sincerity flow (celebration 64 / memory_followup 65 / checkin 100).
+    # Previously unlisted → fell to the floor (20) and lost almost every cycle,
+    # quietly suppressing the "roast when idle" behavior the goal wants.
+    "people_roast": 46,
     "small_talk": 45,
     "world.animal_arrival": 85,
     "weather.proactive_comment": 42,
@@ -101,6 +107,10 @@ _PURPOSE_PRIORITIES: dict[str, int] = {
     # — they could never fire even on an otherwise-empty idle tick. Still low
     # priority: any presence/identity/check-in candidate outranks them.
     "idle_monologue": 22,
+    # memory_musing: a low-stakes "remember when…" nostalgia beat (episodic recall).
+    # Just above idle_monologue/floor so it clears ACTION_GOVERNOR_MIN_SCORE (20) but
+    # yields to anything with real intent. Previously unlisted → floor 20 (fragile).
+    "memory_musing": 26,
     "direct_speech": 20,
 }
 
@@ -305,6 +315,17 @@ class ActionGovernor:
         score = int(priority)
         reasons: list[str] = []
 
+        # A force_salient / reactive candidate (animal arrival, scenery change,
+        # wave-back) is DESIGNED to skip the pacing cooldown + ACTIVE-conversation
+        # block (salient) and, additionally, the awaiting-a-reply gate (reactive) —
+        # exactly the gates can_proactive_speak itself waives for these flags. The
+        # deferred speak_fn re-checks the real hard gates (DJ/games/flows/live speech)
+        # salient-aware, so DON'T pre-reject on cadence here or a priority-85 reaction
+        # gets starved by the very gate it is meant to bypass.
+        _salient = bool(candidate.metadata.get("salient"))
+        _reactive = bool(candidate.metadata.get("reactive"))
+        _cadence_bypass = _salient or _reactive
+
         if candidate.kind != PROACTIVE_CANDIDATE_KIND:
             reasons.append("non_proactive_candidate")
 
@@ -341,13 +362,13 @@ class ActionGovernor:
                 else:
                     candidate.metadata.setdefault("family_safe", True)
 
-        if candidate.metadata.get("waiting_for_response"):
+        if candidate.metadata.get("waiting_for_response") and not _reactive:
             reasons.append("waiting_for_human_response")
         if candidate.metadata.get("proactive_speech_pending"):
             reasons.append("proactive_speech_pending")
         if candidate.metadata.get("game_interruptions_suppressed"):
             reasons.append("game_active_suppresses_proactive")
-        if candidate.metadata.get("active_state_proactive_blocked"):
+        if candidate.metadata.get("active_state_proactive_blocked") and not _cadence_bypass:
             reasons.append("active_state_proactive_blocked")
         if candidate.metadata.get("speech_queue_speaking"):
             reasons.append("speech_queue_speaking")
@@ -355,7 +376,7 @@ class ActionGovernor:
             reasons.append("output_gate_busy")
         if candidate.metadata.get("output_gate_status_error"):
             reasons.append("output_gate_status_error")
-        if candidate.metadata.get("can_proactive_speak") is False:
+        if candidate.metadata.get("can_proactive_speak") is False and not _cadence_bypass:
             reasons.append("can_proactive_speak_false")
         if candidate.metadata.get("can_speak") is False:
             reasons.append("can_speak_false")
@@ -366,7 +387,7 @@ class ActionGovernor:
             reasons.append("end_thread_grace_suppressed")
         if candidate.metadata.get("question_budget_exhausted"):
             reasons.append("question_budget_exhausted")
-        if candidate.metadata.get("cooldown_active"):
+        if candidate.metadata.get("cooldown_active") and not _cadence_bypass:
             cooldown_reason = str(candidate.metadata.get("cooldown_reason") or "cooldown_active")
             remaining = candidate.metadata.get("cooldown_remaining_secs")
             if isinstance(remaining, (int, float)) and remaining > 0:
@@ -381,6 +402,7 @@ class ActionGovernor:
             and min_gap
             and recent_rex_gap < min_gap
             and not candidate.metadata.get("cooldown_active")
+            and not _cadence_bypass
         ):
             score -= 20
             remaining = max(0.0, min_gap - recent_rex_gap)
@@ -404,7 +426,7 @@ class ActionGovernor:
             or "can_speak_false" in reasons
             or "end_thread_grace_suppressed" in reasons
             or "question_budget_exhausted" in reasons
-            or candidate.metadata.get("cooldown_active")
+            or (candidate.metadata.get("cooldown_active") and not _cadence_bypass)
         )
         min_score = int(getattr(config, "ACTION_GOVERNOR_MIN_SCORE", 20))
         if score < min_score:

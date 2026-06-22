@@ -413,10 +413,40 @@ _DECLINE_PAT = re.compile(
     r"not telling you|stop interviewing|stop the quiz)\b",
     re.IGNORECASE,
 )
-_PIVOT_PAT = re.compile(
-    r"\b(?:can|could|would|will)\s+you\b|"
-    r"\b(?:play|put on|skip|pause|stop the music|what'?s the weather|what time|"
-    r"set a timer|remind me|tell me a joke|let'?s play|start a game)\b",
+# Filler tics that LOOK like a question/command to Rex but are just how people
+# punctuate an enthusiastic answer ("…, can you believe it?", "…, you know?").
+# Stripped before pivot-testing so they don't end the get-to-know-you burst.
+_FILLER_TIC_PAT = re.compile(
+    r"\b(?:you\s+know(?:\s+what\s+i\s+mean)?|you\s+see|can\s+you\s+believe|"
+    r"would\s+you\s+believe|can\s+you\s+imagine|if\s+you\s+(?:will|know)|"
+    r"mind\s+you)\b",
+    re.IGNORECASE,
+)
+# A request/question aimed AT Rex almost always STARTS the turn with a command
+# verb, a "can/could you" lead-in, or a question word + "you". An onboarding
+# ANSWER almost never does ("I'm a paramedic…", "Mostly hiking…"), so anchoring
+# the match at the start avoids misreading an enthusiastic answer as a pivot.
+_REQUEST_START_PAT = re.compile(
+    r"^(?:hey\s+)?(?:rex[,\s]*)?(?:"
+    r"(?:can|could|would|will|can'?t|won'?t)\s+you\b|"
+    r"please\b|"
+    r"(?:play|put|skip|pause|set|remind|show|give|turn|start|stop)\b|"
+    r"(?:do|are|have|did|does|were|was)\s+you(?:r)?\b|"
+    r"what'?s\s+the\b|what\s+time\b|how\s+about\b|what\s+about\b|"
+    r"(?:how'?s|where'?s|who'?s)\s+you(?:r)?\b)",
+    re.IGNORECASE,
+)
+# Unambiguous commands to Rex, valid anywhere in the turn.
+_PIVOT_CMD_PAT = re.compile(
+    r"\b(?:play\s+(?:some\s+|the\s+|me\s+)?(?:music|a\s+song|songs?|tunes?)|"
+    r"put\s+on\s+(?:some\s+)?music|stop\s+the\s+music|set\s+a\s+timer|"
+    r"start\s+a\s+game|let'?s\s+play\b|tell\s+me\s+a\s+joke|"
+    r"what'?s\s+the\s+weather)\b",
+    re.IGNORECASE,
+)
+# A question turned back on Rex at the END of an answer ("…, what about you?").
+_REVERSE_QUESTION_PAT = re.compile(
+    r"\b(?:what|how)\s+about\s+(?:you|yourself)\b|\band\s+(?:you|yourself)\b",
     re.IGNORECASE,
 )
 _DUNNO_PAT = re.compile(
@@ -425,7 +455,14 @@ _DUNNO_PAT = re.compile(
     r"can'?t\s+think|pass|skip|meh|whatever|i\s+guess)\b",
     re.IGNORECASE,
 )
-_SECOND_PERSON_PAT = re.compile(r"\byou\b|\byour\b", re.IGNORECASE)
+# Bare one-word affirmations / vague fillers that ARE disengagement. A real
+# one-word answer ("Austin", "jazz", "paramedic", "yoga") is NOT here, so it
+# counts as engagement and keeps the burst going (instead of a canned ack).
+_LONE_FILLER = {
+    "yeah", "yep", "yup", "yes", "sure", "ok", "okay", "nah", "no", "nope",
+    "maybe", "fine", "cool", "nice", "kinda", "sorta", "mhm", "mm", "hm", "hmm",
+    "stuff", "things", "whatever", "anything", "everything", "nothing", "meh",
+}
 
 
 def is_hard_decline(text: str) -> bool:
@@ -434,30 +471,42 @@ def is_hard_decline(text: str) -> bool:
 
 
 def is_pivot(text: str) -> bool:
-    """A request/command to Rex, or a question turned back on Rex ('what about
-    you?') — the burst should yield and release the turn to normal routing."""
+    """A request/command to Rex, or a question genuinely turned back on him
+    ('what about you?') — the burst should yield and release the turn to normal
+    routing. Enthusiastic-answer tics ('…, can you believe it?', '…, you know?')
+    are NOT pivots: they're stripped first so the answer is still collected."""
     cleaned = (text or "").strip()
     if not cleaned:
         return False
-    if _PIVOT_PAT.search(cleaned):
+    probe = _FILLER_TIC_PAT.sub(" ", cleaned).strip()
+    if not probe:
+        return False
+    if _REQUEST_START_PAT.search(probe):
         return True
-    # A question aimed at Rex ("?" + a second-person reference) is a pivot:
-    # Rex should just answer it, not plow into the next baseline question.
-    if cleaned.endswith("?") and _SECOND_PERSON_PAT.search(cleaned):
+    if _PIVOT_CMD_PAT.search(probe):
+        return True
+    # A genuine question BACK to Rex at the end of the turn — not just any "?"
+    # that happens to contain "you" (which catches "…you know?" / "…right?").
+    if probe.rstrip().endswith("?") and _REVERSE_QUESTION_PAT.search(probe):
         return True
     return False
 
 
 def is_soft_disengage(text: str) -> bool:
-    """Lukewarm/empty answer (short or 'I don't know') — does NOT abort before
-    the MIN floor, but accrues toward the wind-down counter."""
+    """Lukewarm/empty answer ('I don't know', bare filler) — does NOT abort before
+    the MIN floor, but accrues toward the wind-down counter. A genuine one-word
+    answer ('Austin', 'jazz', 'paramedic') is engagement, NOT disengagement."""
     cleaned = (text or "").strip()
     if not cleaned:
         return True
     if _DUNNO_PAT.match(cleaned):
         return True
     words = re.findall(r"[A-Za-z']+", cleaned)
-    return len(words) < 2
+    if not words:
+        return True
+    if len(words) == 1:
+        return words[0].lower() in _LONE_FILLER
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

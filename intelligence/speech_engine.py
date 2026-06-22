@@ -268,6 +268,12 @@ def speak_async(
             emotion=emotion,
             wait_secs=wait_secs,
             requires_llm=False,
+            # Tell the governor this is a salient/reactive move so its scoring waives
+            # the same cadence/active-state gates can_proactive_speak waives for these
+            # flags — otherwise the deferred speak_fn (which DOES honor salient) never
+            # runs because the candidate is rejected at scoring. The speak_fn still
+            # re-checks the real hard gates (DJ/games/flows/live speech).
+            metadata={"salient": bool(force_salient), "reactive": bool(reactive)},
             speak_fn=lambda: _do_speak(None),
         )
         return candidate_id is not None

@@ -434,16 +434,20 @@ class ReactiveTriggerTests(_TempDbCase):
     def test_straight_comedy_mode_blocks(self):
         self.assertIsNone(self._claim(comedy=_comedy(allow_callback=False)))
 
-    def test_light_and_none_roast_frames_block_by_default(self):
-        self.assertIsNone(self._claim(frame=_frame(allow_roast="light")))
+    def test_none_roast_frame_blocks_light_allowed_by_default(self):
+        # 'none' is never callback territory; 'light' IS allowed by default now
+        # (CALLBACK_ALLOW_LIGHT_ROAST_FRAME defaults True) — 'brief'/'micro', the
+        # common conversational target, downgrade 'normal'->'light', so requiring
+        # exactly 'normal' confined reactive callbacks to a near-silent surface.
         self.assertIsNone(self._claim(frame=_frame(allow_roast="none")))
+        self.assertIsNotNone(self._claim(frame=_frame(allow_roast="light")))
 
-    def test_light_frame_allowed_when_configured(self):
+    def test_light_frame_blocked_when_flag_disabled(self):
         import config
         with mock.patch.object(
-            config, "CALLBACK_ALLOW_LIGHT_ROAST_FRAME", True, create=True
+            config, "CALLBACK_ALLOW_LIGHT_ROAST_FRAME", False, create=True
         ):
-            self.assertIsNotNone(self._claim(frame=_frame(allow_roast="light")))
+            self.assertIsNone(self._claim(frame=_frame(allow_roast="light")))
 
     def test_safety_purposes_block(self):
         for purpose in ("closure", "repair", "identity", "answer_ack", "boundary"):

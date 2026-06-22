@@ -763,6 +763,17 @@ def _looks_like_user_question(text: str) -> bool:
     return "?" in cleaned or bool(_QUESTION_START.search(cleaned))
 
 
+# Empathy modes that mean "not in joke/jab territory" — mirrors
+# callback_engine._CARING_MODES so every layer agrees on what counts as tender.
+# gentle_probe (masked distress: "I'm fine" + a strained voice) keeps affect
+# 'neutral'/sensitivity 'none', so it MUST be caught by mode, not the affect check.
+_TENDER_MODES = {
+    "listen", "support", "validate", "ground", "brief", "kind_default",
+    "child_kind", "course_correct", "crisis", "gentle_probe",
+    "acknowledge_then_yield",
+}
+
+
 def _visual_allowed(
     user_text: str,
     agenda_directive: str,
@@ -771,14 +782,21 @@ def _visual_allowed(
     affect: str,
     sensitivity: str,
 ) -> bool:
+    # Tender / sad / sensitive turns: NEVER comment on or jab at what Rex sees,
+    # even if the user mentioned something visual. These guards run FIRST so a
+    # masked-distress (gentle_probe) or sad turn that happens to say "look"/"room"
+    # can't slip a visual jab through (the prior order returned True on the visual
+    # keyword before ever reaching the care guards).
+    if empathy_mode in _TENDER_MODES:
+        return False
+    if affect in {"sad", "withdrawn", "angry", "anxious"} or sensitivity != "none":
+        return False
     text = (user_text or "").lower()
+    # The user explicitly pointed Rex at something visual ("see this?", "my shirt") —
+    # that's a genuine request to look, so answer it (not an unprompted jab).
     if re.search(r"\b(see|look|looking|camera|face|shirt|room|bed|posture)\b", text):
         return True
     if target == "micro":
-        return False
-    if empathy_mode in {"listen", "support", "validate", "ground", "brief"}:
-        return False
-    if affect in {"sad", "withdrawn", "angry", "anxious"} or sensitivity != "none":
         return False
     # Normal, upbeat adult turn: what Rex sees (appearance, props, the room) is
     # fair roast material even when the human didn't explicitly invite it. The
@@ -845,7 +863,7 @@ def _roast_level(
     # Don't needle a boundary / withdrawal / steer-away — give space, don't roast it.
     if _looks_like_boundary(user_text):
         return "none"
-    if empathy_mode in {"listen", "support", "validate", "ground", "brief"}:
+    if empathy_mode in _TENDER_MODES:
         return "none"
     if affect in {"sad", "withdrawn", "angry", "anxious"} or sensitivity == "heavy":
         return "none"

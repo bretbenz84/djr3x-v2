@@ -2422,21 +2422,30 @@ def _resolve_anonymous_speaker_slot(
     raw_best_id: Optional[int],
     raw_best_name: Optional[str],
     raw_best_score: float,
-) -> tuple[Optional[str], Optional[float]]:
-    """Return a session-only label for an unresolved recurring voice."""
+) -> tuple[Optional[str], Optional[float], Optional[dict]]:
+    """Resolve an unresolved recurring voice.
+
+    Returns ``(label, match_score, resolved_person)``:
+      * ``label`` — a session-only anonymous slot label (``unknown_voice_N``) when
+        the voice is unknown, else None.
+      * ``resolved_person`` — ``{"person_id", "person_name"}`` when the voice
+        confidently matches a CROSS-SESSION signature that was already linked to a
+        known person (named-then-departed in an earlier session); the caller should
+        then treat the turn as that known speaker. None otherwise.
+    """
     global _anonymous_speaker_next_id
     if person_id is not None:
-        return None, None
+        return None, None, None
     if not bool(getattr(config, "ANONYMOUS_SPEAKER_SLOTS_ENABLED", True)):
-        return None, None
+        return None, None, None
 
     try:
         embedding = _normalize_voice_embedding(speaker_id.get_embedding(audio_array))
     except Exception as exc:
         _log.debug("[anonymous_speaker] embedding failed: %s", exc)
-        return None, None
+        return None, None, None
     if embedding is None:
-        return None, None
+        return None, None, None
 
     now = time.time()
     threshold = float(getattr(config, "ANONYMOUS_SPEAKER_SLOT_MATCH_THRESHOLD", 0.74))
@@ -2501,7 +2510,51 @@ def _resolve_anonymous_speaker_slot(
             float(raw_best_score or 0.0),
             "raw_candidate_sticky" if raw_candidate_sticky else "threshold",
         )
-        return best_slot.label, score_out
+        return best_slot.label, score_out, None
+
+    # Cross-session recognition: does this voice match one Rex persisted in a
+    # PRIOR session? Computed once — used both to RESOLVE a known person (below)
+    # and to carry the signature onto a fresh anonymous slot.
+    prior = None
+    try:
+        prior = voice_signatures.match(embedding)
+    except Exception as exc:
+        _log.debug("[anonymous_speaker] signature match (new) failed: %s", exc)
+
+    # If that signature was already linked to a known person (named-then-departed
+    # in an earlier session via voice_signatures.attach_person), resolve STRAIGHT to
+    # them when the match is confident — this is the READ side the write side was
+    # built for. Previously such a person came back as a fresh unknown_voice_N and
+    # Rex said "familiar voice, never got a name" when the name was on file.
+    if prior is not None:
+        prior_pid = _safe_int(prior.get("person_id"))
+        prior_score = float(prior.get("score") or 0.0)
+        if (
+            prior_pid is not None
+            and bool(getattr(config, "VOICE_SIGNATURE_RESOLVE_PERSON_ENABLED", True))
+            and prior_score >= float(
+                getattr(config, "VOICE_SIGNATURE_RESOLVE_PERSON_MIN_SCORE", 0.80)
+            )
+        ):
+            prow = None
+            try:
+                prow = people_memory.get_person(prior_pid)
+            except Exception as exc:
+                _log.debug("[anonymous_speaker] resolve get_person failed: %s", exc)
+            if prow is not None:
+                try:
+                    voice_signatures.bump(prior.get("id"), embedding)
+                except Exception:
+                    pass
+                _log.info(
+                    "[anonymous_speaker] cross-session voice RESOLVED to known "
+                    "person_id=%s name=%r (signature id=%s score=%.3f) — no slot minted",
+                    prior_pid, prow.get("name"), prior.get("id"), prior_score,
+                )
+                return None, _safe_round_score(prior_score), {
+                    "person_id": prior_pid,
+                    "person_name": prow.get("name"),
+                }
 
     max_slots = int(getattr(config, "ANONYMOUS_SPEAKER_SLOT_MAX", 8) or 0)
     if max_slots <= 0 or len(_anonymous_speaker_slots) >= max_slots:
@@ -2512,29 +2565,25 @@ def _resolve_anonymous_speaker_slot(
             raw_best_id,
             raw_best_name,
         )
-        return None, _safe_round_score(best_score)
+        return None, _safe_round_score(best_score), None
 
     label = f"unknown_voice_{_anonymous_speaker_next_id}"
     _anonymous_speaker_next_id += 1
-    # Cross-session recognition: does this voice match one Rex persisted in a
-    # PRIOR session? If so, carry the signature so it keeps accruing and so
-    # "who's speaking?" can say he's heard them before.
     signature_id: Optional[int] = None
     recognized = False
-    try:
-        prior = voice_signatures.match(embedding)
-        if prior is not None:
-            signature_id = prior.get("id")
-            recognized = True
+    if prior is not None:
+        signature_id = prior.get("id")
+        recognized = True
+        try:
             voice_signatures.bump(signature_id, embedding)
-            _log.info(
-                "[anonymous_speaker] %s matches a voice from a previous session "
-                "(signature id=%s score=%.3f turns=%s person_id=%s)",
-                label, signature_id, float(prior.get("score") or 0.0),
-                prior.get("turns"), prior.get("person_id"),
-            )
-    except Exception as exc:
-        _log.debug("[anonymous_speaker] signature match (new) failed: %s", exc)
+        except Exception as exc:
+            _log.debug("[anonymous_speaker] signature bump (new) failed: %s", exc)
+        _log.info(
+            "[anonymous_speaker] %s matches a voice from a previous session "
+            "(signature id=%s score=%.3f turns=%s person_id=%s)",
+            label, signature_id, float(prior.get("score") or 0.0),
+            prior.get("turns"), prior.get("person_id"),
+        )
     _anonymous_speaker_slots.append(
         _AnonymousSpeakerSlot(
             label=label,
@@ -2557,7 +2606,7 @@ def _resolve_anonymous_speaker_slot(
         f"{best_score:.3f}" if best_score is not None else None,
         recognized,
     )
-    return label, None
+    return label, None, None
 
 
 def _format_current_time_response(now: Optional[datetime] = None) -> str:
@@ -16975,13 +17024,28 @@ def _handle_speech_segment(
 
         global _current_turn_anonymous
         _current_turn_anonymous = None
-        anonymous_speaker_label, anonymous_speaker_match_score = _resolve_anonymous_speaker_slot(
-            audio_array,
-            person_id=person_id,
-            raw_best_id=raw_best_id,
-            raw_best_name=raw_best_name,
-            raw_best_score=speaker_score,
+        anonymous_speaker_label, anonymous_speaker_match_score, resolved_voice_person = (
+            _resolve_anonymous_speaker_slot(
+                audio_array,
+                person_id=person_id,
+                raw_best_id=raw_best_id,
+                raw_best_name=raw_best_name,
+                raw_best_score=speaker_score,
+            )
         )
+        if resolved_voice_person is not None:
+            # Cross-session voice memory: this voice matched a signature already
+            # linked to a known person. Treat the turn as that known speaker (the
+            # rest of the pipeline keys off person_id/person_name).
+            person_id = resolved_voice_person.get("person_id")
+            person_name = resolved_voice_person.get("person_name")
+            identity_resolution_for_turn = "voice_signature_cross_session"
+            if person_id is not None:
+                _session_person_ids.add(person_id)
+            _log.info(
+                "[interaction] cross-session voice recognized person_id=%s name=%r",
+                person_id, person_name,
+            )
         if anonymous_speaker_label:
             slot = next(
                 (s for s in _anonymous_speaker_slots if s.label == anonymous_speaker_label),

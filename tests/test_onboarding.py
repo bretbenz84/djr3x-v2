@@ -564,5 +564,40 @@ class OnboardingFlowTests(unittest.TestCase):
         self.assertIsNotNone(state["pending_question"])
 
 
+class OnboardingEngagementGuardTests(unittest.TestCase):
+    """Don't cut the get-to-know-you burst short on enthusiastic / terse answers."""
+
+    def test_enthusiastic_answer_is_not_a_pivot(self):
+        from intelligence import onboarding
+        for text in (
+            "I'm a paramedic, can you believe it?",
+            "I do a lot of climbing, you know?",
+            "It's wild, right?",
+            "Can you believe it? I'm a paramedic!",
+        ):
+            self.assertFalse(onboarding.is_pivot(text), text)
+
+    def test_genuine_pivots_still_detected(self):
+        from intelligence import onboarding
+        for text in (
+            "can you play some music?", "what about you?", "do you like jazz?",
+            "what's the weather?", "let's play a game", "set a timer",
+        ):
+            self.assertTrue(onboarding.is_pivot(text), text)
+
+    def test_real_one_word_answer_is_not_soft(self):
+        from intelligence import onboarding
+        for text in ("Austin", "jazz", "paramedic", "Texas", "woodworking"):
+            self.assertFalse(onboarding.is_soft_disengage(text), text)
+        for text in ("", "yeah", "meh", "stuff", "nope", "dunno"):
+            self.assertTrue(onboarding.is_soft_disengage(text), text)
+
+    def test_reveal_cadence_lands_in_a_short_burst(self):
+        import config
+        # since_reveal inits at 0 and a reveal fires when it reaches REVEAL_EVERY,
+        # so <=2 guarantees >=1 reciprocity self-reveal even in a 3-question burst.
+        self.assertLessEqual(int(config.ONBOARDING_REVEAL_EVERY), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

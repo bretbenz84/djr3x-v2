@@ -70,7 +70,15 @@ _INTEREST_PATTERNS: list[re.Pattern[str]] = [
         r"i'?m\s+(?:really\s+)?into|i\s+am\s+(?:really\s+)?into|"
         r"i'?m\s+(?:really\s+)?obsessed\s+with|"
         r"i\s+am\s+(?:really\s+)?obsessed\s+with|"
-        r"i\s+do\s+(?!not\b))(?P<topic>[^.?!,;]{3,90})",
+        # "I do yoga / woodworking" is a hobby; "I do think/believe/need…" is an
+        # emphatic AUXILIARY, not a hobby — exclude a following common verb so the
+        # interest store isn't poisoned with sentence fragments ("think the weather…").
+        r"i\s+do\s+(?!not\b)(?!(?:think|thought|believe|feel|felt|need|want|have|had|"
+        r"know|knew|remember|recall|love|like|enjoy|hate|wish|hope|agree|disagree|"
+        r"understand|care|mind|see|get|got|wonder|guess|suppose|appreciate|prefer|"
+        r"miss|realize|realise|notice|admit|expect|find|found|consider|mean|meant|"
+        r"say|said|tell|told|talk|speak|spoke|plan|intend|tend|happen|seem|sound|"
+        r"look|use|hope)\b))(?P<topic>[^.?!,;]{3,90})",
         re.IGNORECASE,
     ),
     re.compile(

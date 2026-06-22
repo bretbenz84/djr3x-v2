@@ -1960,7 +1960,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     mock.patch.object(
                         interaction,
                         "_resolve_anonymous_speaker_slot",
-                        return_value=("unknown_voice_1", None),
+                        return_value=("unknown_voice_1", None, None),
                     )
                 )
                 stack.enter_context(
@@ -2147,7 +2147,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 stack.enter_context(
                     mock.patch.object(
                         interaction, "_resolve_anonymous_speaker_slot",
-                        return_value=("unknown_voice_1", None),
+                        return_value=("unknown_voice_1", None, None),
                     )
                 )
                 stack.enter_context(
@@ -2378,7 +2378,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     mock.patch.object(
                         interaction,
                         "_resolve_anonymous_speaker_slot",
-                        return_value=("unknown_voice_1", None),
+                        return_value=("unknown_voice_1", None, None),
                     )
                 )
                 stack.enter_context(
@@ -2585,7 +2585,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     mock.patch.object(
                         interaction,
                         "_resolve_anonymous_speaker_slot",
-                        return_value=(None, None),
+                        return_value=(None, None, None),
                     )
                 )
                 stack.enter_context(
@@ -7970,6 +7970,18 @@ class ConversationGatingTest(unittest.TestCase):
 
 
 class PendingMusicPreferenceTest(unittest.TestCase):
+    def setUp(self):
+        # Order-independence: _maybe_capture_pending_qa (used by the music-preference
+        # answer path) bails when any of these interaction globals is left set by an
+        # earlier test in the run, which silently swallows the captured answer. Reset
+        # them so these tests pass regardless of suite ordering.
+        from intelligence import interaction
+
+        interaction._pending_offscreen_identify = None
+        interaction._pending_face_reveal_confirm = None
+        interaction._awaiting_followup_event = None
+        interaction._pending_music_offer = None
+
     def tearDown(self):
         from intelligence import interaction
 
@@ -9613,14 +9625,14 @@ class GroupChatterGatingTest(unittest.TestCase):
                 "get_embedding",
                 side_effect=[first_embedding, second_embedding],
             ):
-                first_label, first_score = interaction._resolve_anonymous_speaker_slot(
+                first_label, first_score, _ = interaction._resolve_anonymous_speaker_slot(
                     audio,
                     person_id=None,
                     raw_best_id=None,
                     raw_best_name=None,
                     raw_best_score=0.0,
                 )
-                second_label, second_score = interaction._resolve_anonymous_speaker_slot(
+                second_label, second_score, _ = interaction._resolve_anonymous_speaker_slot(
                     audio,
                     person_id=None,
                     raw_best_id=None,
@@ -9653,14 +9665,14 @@ class GroupChatterGatingTest(unittest.TestCase):
                 "get_embedding",
                 side_effect=[first_embedding, near_embedding],
             ):
-                first_label, first_score = interaction._resolve_anonymous_speaker_slot(
+                first_label, first_score, _ = interaction._resolve_anonymous_speaker_slot(
                     audio,
                     person_id=None,
                     raw_best_id=1,
                     raw_best_name="Bret",
                     raw_best_score=0.52,
                 )
-                second_label, second_score = interaction._resolve_anonymous_speaker_slot(
+                second_label, second_score, _ = interaction._resolve_anonymous_speaker_slot(
                     audio,
                     person_id=None,
                     raw_best_id=1,
@@ -9694,14 +9706,14 @@ class GroupChatterGatingTest(unittest.TestCase):
                 "get_embedding",
                 side_effect=[first_embedding, near_embedding],
             ):
-                first_label, _ = interaction._resolve_anonymous_speaker_slot(
+                first_label, _, _ = interaction._resolve_anonymous_speaker_slot(
                     audio,
                     person_id=None,
                     raw_best_id=1,
                     raw_best_name="Bret",
                     raw_best_score=0.52,
                 )
-                second_label, second_score = interaction._resolve_anonymous_speaker_slot(
+                second_label, second_score, _ = interaction._resolve_anonymous_speaker_slot(
                     audio,
                     person_id=None,
                     raw_best_id=2,
@@ -9731,14 +9743,14 @@ class GroupChatterGatingTest(unittest.TestCase):
                 "get_embedding",
                 side_effect=[first_embedding, different_embedding],
             ):
-                first_label, _ = interaction._resolve_anonymous_speaker_slot(
+                first_label, _, _ = interaction._resolve_anonymous_speaker_slot(
                     audio,
                     person_id=None,
                     raw_best_id=None,
                     raw_best_name=None,
                     raw_best_score=0.0,
                 )
-                second_label, _ = interaction._resolve_anonymous_speaker_slot(
+                second_label, _, _ = interaction._resolve_anonymous_speaker_slot(
                     audio,
                     person_id=None,
                     raw_best_id=None,
@@ -9759,7 +9771,7 @@ class GroupChatterGatingTest(unittest.TestCase):
         interaction._clear_anonymous_speaker_slots()
         try:
             with mock.patch.object(interaction.speaker_id, "get_embedding") as get_embedding:
-                label, score = interaction._resolve_anonymous_speaker_slot(
+                label, score, _ = interaction._resolve_anonymous_speaker_slot(
                     np.zeros(1600, dtype=np.float32),
                     person_id=1,
                     raw_best_id=1,

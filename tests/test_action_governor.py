@@ -415,5 +415,66 @@ class ProactiveGateExtractionTests(unittest.TestCase):
             self.assertFalse(ca.proactive_budget_blocks("memory_followup"))
 
 
+class SalientBypassAndPriorityTests(unittest.TestCase):
+    def setUp(self):
+        from intelligence import action_governor as ag
+        ag._recent_selected.clear()
+
+    def test_salient_candidate_bypasses_cadence_gates(self):
+        # A force_salient animal arrival must NOT be starved by the pacing cooldown /
+        # ACTIVE-state block / can_proactive_speak metadata — those are exactly the
+        # gates the salient flag is meant to skip (the deferred speak_fn re-checks the
+        # real hard gates). Before the fix it was rejected at scoring and never spoke.
+        from intelligence.action_governor import ActionGovernor, CandidateMove
+        governor = ActionGovernor()
+        governor.start_cycle()
+        governor.observe(CandidateMove(
+            source="_step_animal_arrival",
+            purpose="world.animal_arrival",
+            suggested_text="A dog just walked in!",
+            metadata={
+                "salient": True,
+                "cooldown_active": True,
+                "cooldown_reason": "proactive_speech_cooldown",
+                "cooldown_remaining_secs": 8.0,
+                "active_state_proactive_blocked": True,
+                "can_proactive_speak": False,
+            },
+        ))
+        decision = governor.finish_cycle()
+        scored = decision.scored[0]
+        self.assertFalse(scored.rejected)
+        self.assertEqual(decision.action, "speak")
+        self.assertNotIn("can_proactive_speak_false", scored.reasons)
+        self.assertNotIn("active_state_proactive_blocked", scored.reasons)
+
+    def test_non_salient_candidate_still_blocked_by_cadence(self):
+        # Same metadata, no salient flag → still rejected (bypass is conditional).
+        from intelligence.action_governor import ActionGovernor, CandidateMove
+        governor = ActionGovernor()
+        governor.start_cycle()
+        governor.observe(CandidateMove(
+            source="_step_world_reaction",
+            purpose="world_reaction",
+            suggested_text="No salient flag here.",
+            metadata={"cooldown_active": True, "can_proactive_speak": False},
+        ))
+        decision = governor.finish_cycle()
+        self.assertTrue(decision.scored[0].rejected)
+
+    def test_roast_and_musing_priorities_clear_the_floor(self):
+        # people_roast / memory_musing were unlisted → fell to the 20 floor and lost
+        # nearly every cycle. They now have explicit, sensible priorities.
+        from intelligence.action_governor import _PURPOSE_PRIORITIES
+        self.assertGreater(
+            _PURPOSE_PRIORITIES["people_roast"], _PURPOSE_PRIORITIES["small_talk"]
+        )
+        self.assertGreater(_PURPOSE_PRIORITIES["memory_musing"], 20)
+        # ...but people_roast stays below the sincerity flows.
+        self.assertLess(
+            _PURPOSE_PRIORITIES["people_roast"], _PURPOSE_PRIORITIES["memory_followup"]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

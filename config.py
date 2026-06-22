@@ -1045,7 +1045,12 @@ CALLBACK_COOLDOWN_SECS = 240.0      # wall-clock between fires
 CALLBACK_FIRE_PROBABILITY = 0.6
 # Reactive fires require frame.allow_roast == 'normal'; True also allows 'light'
 # frames (the directive then asks for an affectionate, no-edge phrasing).
-CALLBACK_ALLOW_LIGHT_ROAST_FRAME = False
+# Default True: 'brief'/'micro' is the COMMON conversational target and roast_level
+# downgrades those (and arc-flat turns) 'normal'->'light', so 'normal'-only confined
+# reactive callbacks to a narrow surface and they almost never fired. All callback
+# SAFETY gates (sensitivity wall, caring modes, boundaries, sober-room) are roast-
+# level-independent, and the banked fun-fact is gentle — so 'light' is safe to allow.
+CALLBACK_ALLOW_LIGHT_ROAST_FRAME = True
 # You don't roast strangers on banked facts.
 CALLBACK_ELIGIBLE_TIERS = ("acquaintance", "friend", "close_friend", "best_friend")
 # Personal-material discretion: never fire with more than this many people around.
@@ -3408,7 +3413,7 @@ ONBOARDING_KICKOFF_SECS = 1.2              # beat after the enrollment ack befor
 ONBOARDING_INACTIVITY_TIMEOUT_SECS = 30.0  # close the burst out loud after this much silence
 ONBOARDING_STEP_TTL_SECS = 240.0           # deep fallback: flow hard-expires this many secs after it is ARMED (wall-clock since created_at, NOT sliding on activity)
 ONBOARDING_SOFT_DISENGAGE_LIMIT = 2        # lukewarm answers in a row (past MIN) -> wind down
-ONBOARDING_REVEAL_EVERY = 3                # inject a Rex self-reveal ~every N questions (0 = off)
+ONBOARDING_REVEAL_EVERY = 2                # inject a Rex self-reveal ~every N questions (0 = off); 2 lands ≥1 reveal even in a 3-question burst (since_reveal inits at 0)
 
 # Use the LLM to (a) generate the Tier-C depth follow-up against the live answer
 # and (b) lightly rephrase authored questions in Rex's voice. Both run on the
@@ -3636,6 +3641,13 @@ ANONYMOUS_SPEAKER_SLOT_MAX = 8
 VOICE_SIGNATURE_PERSIST_ENABLED = True
 VOICE_SIGNATURE_MATCH_THRESHOLD = 0.74       # cosine to call it the same voice
 VOICE_SIGNATURE_PERSIST_MIN_TURNS = 2        # session recurrences before persisting
+# Cross-session voice -> KNOWN-PERSON resolution: when an unrecognized voice matches a
+# persisted signature that was already linked (attach_person) to a named person in an
+# earlier session, resolve the turn straight to that person instead of minting a fresh
+# unknown_voice_N. Only fires with NO live face/voice person match. The floor sits ABOVE
+# the match threshold (0.74) so naming someone needs a confident print.
+VOICE_SIGNATURE_RESOLVE_PERSON_ENABLED = True
+VOICE_SIGNATURE_RESOLVE_PERSON_MIN_SCORE = 0.80
 
 # Log coarse timings for the live speech-response path. These are intentionally
 # INFO-level because latency tuning is only useful when it is visible in normal

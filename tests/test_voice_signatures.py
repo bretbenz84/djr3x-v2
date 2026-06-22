@@ -103,26 +103,27 @@ class AnonymousSlotPersistenceTest(_TempPeopleDb):
 
     def _speak(self, emb):
         self._emb = emb
-        return self.I._resolve_anonymous_speaker_slot(
+        label, _score, _person = self.I._resolve_anonymous_speaker_slot(
             np.zeros(16000, dtype=np.float32),
             person_id=None,
             raw_best_id=None,
             raw_best_name=None,
             raw_best_score=0.0,
         )
+        return label
 
     def test_recurring_voice_persists_a_signature(self):
         emb = _unit(1, 2, 3)
-        label1, _ = self._speak(emb)   # turn 1: creates slot, not yet persisted
+        label1 = self._speak(emb)   # turn 1: creates slot, not yet persisted
         self.assertIsNone(vs.match(emb))
-        label2, _ = self._speak(emb)   # turn 2: hits MIN_TURNS -> persisted
+        label2 = self._speak(emb)   # turn 2: hits MIN_TURNS -> persisted
         self.assertEqual(label1, label2)
         self.assertIsNotNone(vs.match(emb))
 
     def test_voice_from_prior_session_is_recognized(self):
         emb = _unit(8, 9)
         vs.record(emb, label="from_last_time")  # simulate a prior session
-        label, _ = self._speak(emb)
+        label = self._speak(emb)
         slot = next(s for s in self.I._anonymous_speaker_slots if s.label == label)
         self.assertTrue(slot.recognized_across_sessions)
         self.assertIsNotNone(slot.signature_id)
@@ -130,9 +131,32 @@ class AnonymousSlotPersistenceTest(_TempPeopleDb):
     def test_promotion_links_signature_to_named_person(self):
         emb = _unit(3, 4, 5)
         self._speak(emb)
-        label, _ = self._speak(emb)  # persisted now
+        label = self._speak(emb)  # persisted now
         self.I._retire_anonymous_speaker_slot(label, person_id=99, person_name="Dana")
         self.assertEqual(vs.match(emb)["person_id"], 99)
+
+    def test_cross_session_voice_resolves_to_known_person(self):
+        # READ side of cross-session voice memory: a signature already linked to a
+        # known person (named-then-departed last session) resolves STRAIGHT to them
+        # on a confident match — no fresh unknown_voice_N slot is minted.
+        emb = _unit(2, 3, 5)
+        self._emb = emb
+        sid = vs.record(emb, label="unknown_voice_1")
+        vs.attach_person(sid, 42)
+        with mock.patch.object(
+            self.I.people_memory, "get_person",
+            return_value={"id": 42, "name": "Dana"},
+        ):
+            label, _score, resolved = self.I._resolve_anonymous_speaker_slot(
+                np.zeros(16000, dtype=np.float32),
+                person_id=None,
+                raw_best_id=None,
+                raw_best_name=None,
+                raw_best_score=0.0,
+            )
+        self.assertIsNone(label)
+        self.assertEqual(resolved, {"person_id": 42, "person_name": "Dana"})
+        self.assertEqual(self.I._anonymous_speaker_slots, [])
 
 
 if __name__ == "__main__":

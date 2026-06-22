@@ -114,5 +114,21 @@ class LastConversationDirectiveStripTest(unittest.TestCase):
         self.assertIn("Max", out)
 
 
+class EmphaticAuxiliaryInterestTest(unittest.TestCase):
+    """An emphatic auxiliary 'I do think/believe/need…' is NOT a hobby and must
+    not be minted as an interest (it used to store the fragment at conf 0.95)."""
+
+    def test_i_do_aux_verb_is_not_an_interest(self):
+        from intelligence import conversation_steering as cs
+        self.assertIsNone(cs.detect_interest("I do think the weather is nice"))
+        self.assertIsNone(cs.detect_interest("I do believe that's wrong"))
+        self.assertIsNone(cs.detect_interest("I do need a vacation"))
+
+    def test_i_do_hobby_still_detected(self):
+        from intelligence import conversation_steering as cs
+        self.assertEqual(cs.detect_interest("I do yoga"), "yoga")
+        self.assertEqual(cs.detect_interest("I do woodworking"), "woodworking")
+
+
 if __name__ == "__main__":
     unittest.main()
