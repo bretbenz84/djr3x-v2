@@ -161,7 +161,7 @@ firmware/
 4. Prewarm output and preload models when enabled.
 5. Enter the main state loop until shutdown.
 
-The local Ollama model `qwen2.5:1.5b` is preloaded for quick classifier/shaping tasks when configured.
+The local Ollama model `qwen2.5:1.5b` is a REQUIRED boot dependency by default (`LOCAL_LLM_ENABLED=True`, `OLLAMA_PRELOAD_REQUIRED=True`): `main.py` preloads it and aborts with `sys.exit(1)` if the Ollama server is unreachable. To degrade gracefully, set `OLLAMA_PRELOAD_REQUIRED=False` (boots with a warning, no sidecar) or disable it entirely with `LOCAL_LLM_ENABLED=False`.
 
 ### Speech And Text Turns
 
@@ -316,8 +316,9 @@ single-visible-face decision is the pure, unit-tested `_voice_primary_face_decis
    `SPEAKER_ID_CONFIDENT_THRESHOLD` (0.70) is trusted regardless of whose face is on
    camera. This is what lets Rex name an off-camera or group speaker.
 2. **Accepted-but-not-confident voice does NOT override a visible known face** — the
-   margin-guarded accept tiers (hard 0.50, known floor 0.45, session-sticky 0.60)
-   resolve a person, but a match *below* the confident threshold (0.45–0.70) that
+   accept tiers (hard 0.50 and known-floor 0.45 are margin-guarded; the
+   session-sticky 0.60 tier drops the margin guard and instead requires the candidate
+   to match the recently-engaged person) resolve a person, but a match *below* the confident threshold (0.45–0.70) that
    points at someone OTHER than the single visible known face does **not** override
    that face: the present, clearly-visible known person anchors identity
    (`voice_weak_face_wins`). A sub-confident match is exactly where an absent/poor
@@ -333,9 +334,13 @@ single-visible-face decision is the pure, unit-tested `_voice_primary_face_decis
    voice candidate at all in a clean 1:1 with the engaged person on camera. If the
    voice leans toward someone *else*, or the scene is ambiguous, the speaker is treated
    as **off-screen / unknown** — never pinned on whoever happens to be in frame.
-4. **Voiceprint refresh is voice-gated** — `_maybe_auto_refresh_voice` only appends a
-   face-confirmed sample when the voice's own best candidate already IS that person, so
-   an off-camera or not-yet-enrolled speaker can never corrupt a visible person's print.
+4. **Voiceprint refresh is voice- AND vision-gated** — `_maybe_auto_refresh_voice`
+   appends a face-confirmed sample only when (guard 1) the voice's own best candidate
+   already IS that person AND (guard 2, `AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER`,
+   default on) the visual active-speaker latch confirms that same person is the on-camera
+   talker — so a 3rd-party/TV/AI voice that merely *scores* onto a visible person's print
+   can't corrupt it. Refresh is opportunistic and retried per turn, so a turn the camera
+   can't confirm is simply skipped (a missed refresh is harmless).
 
 Important behavior:
 
@@ -354,7 +359,11 @@ Important behavior:
   in a LATER session ("I've heard your voice before") — without ever creating a nameless
   person row. The moment that voice is finally named (off-screen identify / self-intro),
   `_retire_anonymous_speaker_slot` links the signature to the new person via
-  `voice_signatures.attach_person`, so future sessions resolve straight to them. The
+  `voice_signatures.attach_person`, so the NAME is recorded against the voiceprint (the
+  WRITE side). ⚠️ The READ side is NOT yet wired: `_resolve_anonymous_speaker_slot` does
+  not use a matched signature's attached `person_id`, so a named-then-departed speaker who
+  returns (and isn't re-recognized by face/biometric) currently re-enters as a fresh
+  `unknown_voice_N` rather than resolving to their name. The
   "who's speaking?" handler acknowledges a recurring (this session) or previously-heard
   (prior session) voice instead of a flat "no idea." Writes are suppressed under the test
   runner on the default DB path (temp-DB fixtures opt back in).
@@ -491,16 +500,16 @@ False to fully disable the burst.
 - **Why it exists:** three gates clamped strangers hardest — the first-meeting
   path ended at the enrollment ack with no question stage; `TIER_MAX_DEPTH
   ["stranger"]=1` locked them to depth-1 questions; and the global question
-  budget (`QUESTION_BUDGET_MAX_QUESTIONS=3`/90s) is tier-blind. The fix does NOT
+  budget (`QUESTION_BUDGET_MAX_QUESTIONS=5`/90s) is tier-blind. The fix does NOT
   loosen the deliberately-tight friend-protecting budget — it carves new people
   out of it.
 - **Trigger:** armed at the `_enroll_new_person` choke point via
   `_maybe_begin_onboarding` for an eligible newcomer (`onboarding.eligible`:
   `visit_count <= ONBOARDING_MAX_VISITS`, `profile_fact_count <=
   ONBOARDING_FACT_FLOOR`, never a minor — shares `profile_questions.person_is_minor`).
-  (It deliberately does NOT skip `person_specials` VIPs/the creator: in a fresh
-  DB Rex genuinely doesn't know them, and the creator needs onboarding to fire on
-  himself to test it.)
+  (By default it SKIPS `person_specials` VIPs/the creator — Rex already knows them on
+  sight; set `ONBOARDING_INCLUDE_VIPS=True` (default False) to force the burst on them,
+  e.g. for fresh-DB testing of the feature on the creator.)
 - **No pile-on:** on close, the person is added to
   `_low_memory_idle_questions_spoken` so the *separate* low-memory idle profile
   question doesn't immediately re-fire (onboarding's facts live under categories
@@ -562,7 +571,7 @@ Important proactive cases:
 - Startup greeting: if a known person is in front of the camera, Rex should greet them by name.
 - Empty-room startup: if nobody is visible, Rex can make a short snarky empty-room remark.
 - First-sight celebration/event check-ins can happen when a remembered relevant event exists.
-- Holiday-plan proactivity is major-holiday-only by default; minor public holidays require `HOLIDAY_PLANS_INCLUDE_MINOR = True`.
+- Holiday-plan proactivity includes minor public holidays by default — the shipped config sets `HOLIDAY_PLANS_INCLUDE_MINOR = True`. Set it to `False` to restrict proactivity to major holidays only.
 - The action governor arbitrates proactive candidates so Rex does not stack too many remarks.
 
 If startup greetings feel wrong, inspect face detection timing, world-state updates, and action-governor candidate selection.
@@ -681,7 +690,7 @@ OpenAI is used for main chat, vision/scene analysis, extraction, and classifiers
 
 ElevenLabs is used for TTS in audio mode only. No-audio mode must not call ElevenLabs.
 
-Ollama/local LLM is used as a low-latency sidecar for quick local tasks when configured.
+Ollama/local LLM (`qwen2.5:1.5b`) is the low-latency sidecar for quick local tasks. It is ENABLED by default and is a hard boot dependency (`OLLAMA_PRELOAD_REQUIRED=True`): `main.py` aborts (`sys.exit(1)`) if the Ollama server is unreachable. Set `OLLAMA_PRELOAD_REQUIRED=False` to boot without it (warning only, no sidecar), or `LOCAL_LLM_ENABLED=False` to disable it entirely.
 
 Network calls may dominate response latency. Prefer local fast paths for clear commands, short acks for slow paths, and telemetry-driven optimization.
 
@@ -720,7 +729,7 @@ venv/bin/python main.py
 - Stale event-cancellation acknowledgments are deterministic to avoid weird generated lines and extra LLM latency.
 - Regression corpus for misroutes lives under `tests/fixtures/misroute_replays.json`; add false-positive examples there when they appear in live logs.
 - Memory-query grounding for self relationship metrics and greeting counts.
-- Minor public holiday proactive questions are gated behind `HOLIDAY_PLANS_INCLUDE_MINOR`.
+- Minor public holiday proactive questions are gated behind `HOLIDAY_PLANS_INCLUDE_MINOR`, which ships **True** (minor holidays are ON by default; set it `False` to restrict to major holidays).
 - Introduction handling that links known visible/recent people instead of renaming the current speaker.
 - README startup flag documentation.
 - User-facing override layer: `config.py` ends with `from user_config import *` (try/except ImportError) so `user_config.py` — gitignored, copied from the committed `user_config.example.py` template by `setup_macos.sh` — overrides defaults without editing `config.py`. Defaults stay in `config.py` (source of truth); `from config import X` is unaffected since the change is purely an additive tail. A re-derive tail after the import recomputes `ACTION_ROUTER_MODEL` (= `LLM_MODEL`) and `STARTUP_BOOT_TTS_LINE` so overriding their base propagates. Scope is ~45 essentials (models, personality dials + base prompt, location, feature toggles, timeouts); each ships commented-out at its current default. See the Configuration And Secrets section.
@@ -740,7 +749,7 @@ venv/bin/python main.py
 - Friendlier profile-building conversation (machinery, rebalanced behind comedy-forward): asks about hobbies/interests/music/preferences with pointed follow-ups and adapts per person.
 - "Muzzle" = decline the music (`interaction._DECLINE_PAT` matches `muzzle(d)`, `keep it off/down/quiet`, `no music`), since the offer line is "…or keep the jukebox muzzled?".
 - Wake-word barge-in during DJ playback STOPS the track and listens (was swallowed by `_dj_suppresses_conversation()`).
-- Wake over music: `audio.wake_word._threshold(dj_playing=True)` raises the bar by `WAKE_WORD_DJ_PLAYBACK_THRESHOLD_DELTA`, floored at `WAKE_WORD_MIN_THRESHOLD`.
+- Wake over music: `audio.wake_word._threshold(dj_playing=True)` LOWERS the bar — it drops the threshold by `WAKE_WORD_DJ_PLAYBACK_THRESHOLD_DELTA` (floored at `WAKE_WORD_MIN_THRESHOLD`) so a music-masked "hey Rex" can still fire. The TTS-playback path (`tts_playing=True`) lowers it the same way via `WAKE_WORD_TTS_PLAYBACK_THRESHOLD_DELTA`.
 - Post-question handoff stickiness: a question turn keeps the response-wait open even if its trailing sentence is a statement (`interaction._apply_post_tts_handoff`, per-sentence + once per reply).
 - Crosstalk suppression: `interaction._looks_like_third_party_crosstalk` is HIGH-precision/low-recall — suppresses only the clearest third-party lines; don't over-tighten.
 - No-response-quip rhetorical guard: `_question_sentence_expects_response` returns False for rhetorical "who doesn't/wouldn't…?" forms, so Rex's flourishes don't arm the quip.
@@ -764,7 +773,7 @@ venv/bin/python main.py
 - Turn-taking + routing + dialogue revamp (round 2): don't interrupt unfinished thoughts, don't misroute/over-roast (`tests/test_conversation_revamp.py`).
 - Repeat / hallucination / truncation / joke-replay fixes (round 3): `tests/test_conversation_revamp.py` + `test_performance_output.py`.
 - Subject pivot: steering can CHANGE the channel when a topic isn't landing, not only deepen it (`intelligence/conversation_steering.py`; `tests/test_conversation_revamp.py::SubjectPivotTest`).
-- Conversation arc memory (Bet 1): a cheap-LLM running summary of the live conversation + callbacks fed into the system prompt (`intelligence/topic_thread.py`; `tests/test_conversation_arc.py`).
+- Conversation arc memory (Bet 1): a running summary of the live conversation + callbacks fed into the system prompt (`intelligence/topic_thread.py`; `tests/test_conversation_arc.py`). Runs off the speech path; the default backend is OpenAI `gpt-4o-mini` (`CONVERSATION_ARC_BACKEND="openai"`) — set `CONVERSATION_ARC_BACKEND="local"` to use the Ollama sidecar instead.
 - TurnPlan (Bet 2): typed `conversation_agenda`→`social_frame` handoff replaces prose-directive regex re-parsing (`tests/test_turn_plan.py`).
 - Relationship-tone tracking: warmth/edge tracks the RELATIONSHIP, not per-turn (`llm._relationship_tone_rule` over `warmth/antagonism/trust_score`; `tests/test_relationship_tone.py`).
 - Offline conversational-quality replay harness (no robot): replays scenarios through the deterministic stack (`tests/test_conversation_replay.py` + `tests/fixtures/conversation_replays.json`).
@@ -800,7 +809,7 @@ venv/bin/python main.py
 - Compliment detection coverage (`config.COMPLIMENT_KEYWORDS/PHRASES`): broadened so everyday compliments ("nice robot", "good boy", "you're sweet/cool") fire the layer-1 proud beat BEFORE the reply (when the arm servos are free). Phrases, not bare words, to avoid false positives.
 - Idle "mind of his own" head wander (`consciousness._idle_wander`/`_step_idle_head_wander`/`_drive_idle_head_wander`, `IDLE_HEAD_WANDER_*`; `tests/test_idle_head_wander.py`): when the conversation lulls with a face locked, look around the room then return gaze and maybe re-greet. The face-loop drives it ABOVE the frame/listening early-returns (self-aborts on speech/listening/resumed talk); a 1Hz backstop ends any stalled wander — `active` can never get stuck.
 - Bored environmental snark (`intelligence/idle_behaviors.do_bored_environment_snark`, `BORED_ENV_SNARK_*`; `tests/test_bored_env_snark.py`): an idle riff on the ROOM via `vision.scene.describe_scene_detailed` — complaint / faux-clueless object question / clutter jab / art opinion / take-me-somewhere — grounded in real objects (never invents props), hard-cooldowned.
-- Wave back (`consciousness._step_wave_reaction`, `WAVE_BACK_*`; `tests/test_wave_back.py`): pose detection already runs in the loop (`_step_body_social_analysis` → `vision.pose.detect_pose` every `POSE_ANALYSIS_INTERVAL_SECS`=2s, classifying `gesture` onto `world_state.people`). This new reaction step (dispatched right before `_step_smile_reaction`) watches for a visible person's `gesture=="waving"` and returns the wave via the existing `animations.wake_word_ack_wave()` + one short canned warm line (`WAVE_BACK_LINES`/`_NO_NAME`, `_speak_async(purpose="wave_back")`). Debounced per person (`WAVE_BACK_PER_PERSON_COOLDOWN_SECS`=25s) + globally (`WAVE_BACK_MIN_GAP_SECS`=8s) so one wave → one wave-back; gated by `_can_proactive_speak` (DJ/game/awaiting-reply/give-space) + `suppress_proactive`. Needs MediaPipe pose installed to SEE the wave (graceful no-op otherwise). NOTE: the "waving" heuristic is single-frame (hand at face/shoulder height, arm extended laterally) — it reads a held-up hand, not the back-and-forth motion; the cooldown absorbs the occasional false positive.
+- Wave back (`consciousness._step_wave_reaction`, `WAVE_BACK_*`; `tests/test_wave_back.py`): pose detection runs in `vision.pose`'s OWN background loop (`vision.pose._loop`, a `pose-detection` daemon thread at `POSE_ANALYSIS_INTERVAL_SECS`=0.2s), classifying `gesture` onto `world_state.people` — NOT driven by `_step_body_social_analysis`. This reaction step (dispatched right before `_step_smile_reaction`) watches for a visible person's `gesture=="waving"`, LATCHES it, and returns the wave via `animations.wave_back_gesture(half_period=…)` — the half-period MIRRORS the user's measured wave speed (`vision.pose.recent_wave_speed`) — plus one short warm line (`WAVE_BACK_LINES`/`_NO_NAME`, `_speak_async(purpose="wave_back")`). FIRE-WHEN-FREE: if the speech gates are blocked the latch is HELD and retried so the greeting isn't lost. Repeat waves drive an ESCALATING comedy bit (`_wave_escalation`, per person: warm greeting → progressively terser → a joke about the repetition → eventually just ignore it). Debounced per person (`WAVE_BACK_PER_PERSON_COOLDOWN_SECS`=6s) + globally (`WAVE_BACK_MIN_GAP_SECS`=4s); gated by `_can_proactive_speak` (DJ/game/awaiting-reply/give-space) + `suppress_proactive`. Needs MediaPipe pose installed to SEE the wave (graceful no-op otherwise). NOTE: the gesture-DETECTION heuristic is still single-frame (hand at face/shoulder height, arm extended laterally — a held-up hand, not the back-and-forth motion); multi-frame motion is used ONLY to mirror the wave SPEED. The cooldown absorbs the occasional false positive.
 - Tidy-up — episodic capture hooks → `intelligence/episodic_hooks.py` (leaf module; consciousness calls `episodic_hooks.<name>`).
 - Tidy-up — idle micro-behaviours → `intelligence/idle_behaviors.py` (dispatcher stays in consciousness and calls `idle_behaviors.do_<name>`; the behaviours reach consciousness's speak engine via a lazy `_c` proxy; `_do_small_talk_question` stayed, being mood-detection-coupled).
 - Tidy-up — proactive-speech ENGINE → `intelligence/speech_engine.py` (15 functions; consciousness re-exports each as a `_name` shim so call sites + test patches are unchanged; intra-engine calls route through the `_c` shims for full patch-transparency; `note_rex_utterance` + shared speech state stayed in consciousness; `tests/test_speech_engine.py`). The governor metadata key MUST stay `"can_proactive_speak"` (action_governor reads it).
