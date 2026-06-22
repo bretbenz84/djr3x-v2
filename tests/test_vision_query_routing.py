@@ -232,6 +232,80 @@ class CompoundLookCommandTests(unittest.TestCase):
         self.assertEqual(ada.call_args.kwargs.get("utterance"), text)
         self.assertEqual(resp, "One telescope.")
 
+    def test_front_truncated_look_still_turns_head(self):
+        """Far-field ASR drops the leading "look", leaving "to your right, what
+        do you see" — which no longer parses as a directed_look and routes here
+        as a plain scene description. Rex must still physically turn before
+        describing, not list what is straight ahead (logged 2026-06-21). This
+        guards the _handle_classified_intent choke point both the router and
+        intent-classifier paths funnel through.
+        """
+        from intelligence import command_parser, interaction
+
+        text = "to your right, what do you see?"
+        # Without "look", the directional half does NOT parse as a directed_look.
+        match = command_parser.parse(text)
+        self.assertTrue(match is None or match.command_key != "directed_look")
+
+        analysis = {
+            "target_summary": "A cluttered shelf of cans",
+            "target_visible": True,
+            "subject_type": "object",
+            "visible_people_count": 0,
+            "animals": [],
+            "notable_details": [],
+            "roast_angle": "",
+            "confidence": "high",
+        }
+        with (
+            mock.patch.object(
+                interaction,
+                "_move_and_capture_gaze",
+                return_value=("right", self._fake_frame()),
+            ) as move,
+            mock.patch(
+                "vision.scene.analyze_directed_attention", return_value=analysis
+            ) as ada,
+            mock.patch.object(
+                interaction.people_memory, "get_person", return_value=None
+            ),
+            mock.patch.object(
+                interaction.llm, "get_response", return_value="A shelf of cans."
+            ),
+            mock.patch.object(
+                interaction.llm, "clean_response_text", side_effect=lambda x: x
+            ),
+            mock.patch.object(interaction, "_speak_blocking"),
+        ):
+            resp = interaction._handle_classified_intent(
+                "query_what_do_you_see", text, 1
+            )
+        self.assertTrue(move.called, "head must physically turn before describing")
+        self.assertEqual(move.call_args.args[0], "right")
+        self.assertTrue(ada.called, "the new view must be analyzed")
+        self.assertEqual(resp, "A shelf of cans.")
+
+    def test_plain_what_do_you_see_does_not_turn(self):
+        """A direction-free "what do you see" must NOT trigger a head-turn — it
+        describes straight ahead via the normal prompt path."""
+        from intelligence import interaction
+
+        with (
+            mock.patch.object(interaction, "_move_and_capture_gaze") as move,
+            mock.patch.object(
+                interaction, "_vision_question_answer_prompt", return_value="PROMPT"
+            ),
+            mock.patch.object(
+                interaction.llm, "get_response", return_value="A desk."
+            ),
+            mock.patch.object(interaction, "_speak_blocking"),
+        ):
+            resp = interaction._handle_classified_intent(
+                "query_what_do_you_see", "what do you see?", 1
+            )
+        self.assertFalse(move.called, "no direction → no head-turn")
+        self.assertEqual(resp, "A desk.")
+
     def test_plain_directional_look_still_greets_visible_face(self):
         from intelligence import command_parser, interaction
 

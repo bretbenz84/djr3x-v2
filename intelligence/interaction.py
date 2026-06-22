@@ -10803,6 +10803,35 @@ def _not_found_visual_response(target_hint: str) -> str:
     )
 
 
+# A directional gaze cue inside a vision-describe turn whose leading "look" was
+# dropped by far-field ASR truncation ("to your right, what do you see"). Requires
+# an explicit "look"/"turn" verb OR a "to the/your" prepositional phrase before the
+# direction, so a bare direction fragment (the "down" of a clipped "shut down", or
+# the "up" in "what's up") can never trigger a silent head-turn.
+_COMPOUND_LOOK_DIRECTION_RE = re.compile(
+    r"\b(?:"
+    r"look\s+(?:to\s+)?(?:the\s+|your\s+)?"
+    r"|turn\s+(?:your\s+head\s+)?(?:to\s+)?(?:the\s+|your\s+)?"
+    r"|to\s+(?:the|your)\s+"
+    r")(?P<direction>left|right|up|down)\b",
+    re.IGNORECASE,
+)
+
+
+def _compound_look_direction(text: str) -> Optional[str]:
+    """Direction from a vision-describe utterance whose leading 'look' was lost to ASR.
+
+    "Look to your right and tell me what you see" parses cleanly as a directed_look
+    and never reaches here. But far-field truncation routinely drops the leading
+    "look", leaving "to your right, what do you see" — which routes to a plain scene
+    description and makes Rex describe straight ahead without ever turning (logged
+    2026-06-21). When a direction survives next to the vision query, return it so the
+    caller can turn the head first. The caller gates this to vision-query turns.
+    """
+    m = _COMPOUND_LOOK_DIRECTION_RE.search(text or "")
+    return m.group("direction").lower() if m else None
+
+
 def _execute_directed_look_command(
     args: dict,
     person_id: Optional[int],
@@ -15979,6 +16008,32 @@ def _handle_classified_intent(
         )
 
     if intent == "query_what_do_you_see":
+        # Compound "<look> <dir> and tell me what you see" where far-field ASR
+        # dropped the leading "look", so the directional half never parsed as a
+        # directed_look and the turn arrives here as a plain scene description.
+        # When a direction survives next to a real vision query, physically turn
+        # the head and describe the NEW view instead of whatever is straight
+        # ahead (logged 2026-06-21: "to your right, what do you see?" → Rex
+        # listed what was in front of him without ever turning right). Gated on
+        # has_vision_query_evidence so the directed-look path is guaranteed to
+        # take its analyze branch rather than falling back to a silent gaze.
+        look_dir = _compound_look_direction(raw_text)
+        if look_dir and action_router.has_vision_query_evidence(raw_text):
+            try:
+                _look_row = people_memory.get_person(person_id) if person_id else None
+            except Exception:
+                _look_row = None
+            return _execute_directed_look_command(
+                {
+                    "direction": look_dir,
+                    "target_hint": "",
+                    "search_target": False,
+                    "utterance": raw_text,
+                },
+                person_id,
+                _look_row.get("name") if _look_row else None,
+                raw_text,
+            )
         return _say(_vision_question_answer_prompt(raw_text))
 
     if intent == "query_music_options":
