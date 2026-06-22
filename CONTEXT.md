@@ -359,14 +359,17 @@ Important behavior:
   in a LATER session ("I've heard your voice before") — without ever creating a nameless
   person row. The moment that voice is finally named (off-screen identify / self-intro),
   `_retire_anonymous_speaker_slot` links the signature to the new person via
-  `voice_signatures.attach_person`, so the NAME is recorded against the voiceprint (the
-  WRITE side). ⚠️ The READ side is NOT yet wired: `_resolve_anonymous_speaker_slot` does
-  not use a matched signature's attached `person_id`, so a named-then-departed speaker who
-  returns (and isn't re-recognized by face/biometric) currently re-enters as a fresh
-  `unknown_voice_N` rather than resolving to their name. The
-  "who's speaking?" handler acknowledges a recurring (this session) or previously-heard
-  (prior session) voice instead of a flat "no idea." Writes are suppressed under the test
-  runner on the default DB path (temp-DB fixtures opt back in).
+  `voice_signatures.attach_person` (the WRITE side). The READ side is wired too:
+  when an unrecognized voice confidently matches a signature already linked to a known
+  person, `_resolve_anonymous_speaker_slot` resolves the turn STRAIGHT to that person
+  (returns them instead of minting a fresh `unknown_voice_N`), so a named-then-departed
+  speaker is recognized in a LATER session even without a face/biometric match. Gated by
+  `VOICE_SIGNATURE_RESOLVE_PERSON_ENABLED` (default on) above
+  `VOICE_SIGNATURE_RESOLVE_PERSON_MIN_SCORE` (0.80 — above the 0.74 match threshold, so
+  naming someone needs a confident print). Only fires when there is NO live face/voice
+  person match. The "who's speaking?" handler also acknowledges a recurring (this session)
+  or previously-heard (prior session) voice instead of a flat "no idea." Writes are
+  suppressed under the test runner on the default DB path (temp-DB fixtures opt back in).
 - Legacy behavior — "a single visible face wins regardless of voice" — is retained only
   behind `VOICE_PRIMARY_IDENTITY_ENABLED=False` (the `_single_visible_face_voice_override`
   path) as a rollback.
