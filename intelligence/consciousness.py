@@ -2158,6 +2158,40 @@ def _person_reactable_expression(person: dict) -> tuple[Optional[str], float]:
     return best_kind, best_score
 
 
+def _expression_is_habitual_disposition(person_id: Optional[int], kind: Optional[str]) -> bool:
+    """True when `kind` is the person's KNOWN dominant resting expression.
+
+    Some people read as habitually brow-furrowed/intense (or perpetually smiling).
+    Reacting to that baseline ("you're not exactly sold on this, are you?") mistakes a
+    visual habit for a live emotional signal — the disposition trend that already feeds
+    the prompt explicitly flags it as "a light visual habit, not a diagnosis". Gate on a
+    minimum sample count so a thin profile can't suppress a genuine reaction.
+    """
+    if not kind or not isinstance(person_id, int):
+        return False
+    if not bool(getattr(config, "FACIAL_EXPRESSION_REACTION_RESPECT_DISPOSITION", True)):
+        return False
+    try:
+        from memory import disposition as disposition_memory
+        stats = disposition_memory.get_stats(person_id)
+    except Exception as exc:
+        _log.debug("disposition suppression lookup failed person_id=%s: %s", person_id, exc)
+        return False
+    if not stats:
+        return False
+    try:
+        total = int(stats.get("total_samples") or 0)
+    except (TypeError, ValueError):
+        total = 0
+    min_samples = int(
+        getattr(config, "FACIAL_EXPRESSION_REACTION_DISPOSITION_MIN_SAMPLES", 20) or 20
+    )
+    if total < max(1, min_samples):
+        return False
+    dominant = str(stats.get("dominant_expression") or "").strip().lower()
+    return bool(dominant) and dominant == str(kind).strip().lower()
+
+
 def _reading_timestamp_seconds(value) -> Optional[float]:
     if value is None:
         return None
@@ -2868,6 +2902,16 @@ def _step_facial_expression_reactions(snapshot: dict, profile: SituationProfile)
     now = time.monotonic()
     state = _update_facial_expression_observation(person_key, kind, score, now)
     if not kind or not state:
+        return
+    if _expression_is_habitual_disposition(_person_db_id(person), kind):
+        # The detected expression IS this person's resting face — don't read a visual
+        # habit as a live emotional reaction (e.g. a habitually brow-furrowed person
+        # getting "you're not exactly sold on this, are you?" at startup).
+        _log.info(
+            "consciousness: facial expression reaction suppressed (habitual disposition) "
+            "person=%s kind=%s score=%.2f",
+            person_key, kind, float(score),
+        )
         return
     if _facial_expression_reaction_on_cooldown(person_key, kind, now):
         return

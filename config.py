@@ -681,6 +681,23 @@ FACIAL_EXPRESSION_REACTION_SURPRISE_MIN_CONFIDENCE = _env_float(
     min_value=0.0,
     max_value=1.0,
 )
+# Don't react to a person's RESTING face. Some people read as habitually
+# brow-furrowed/intense (or perpetually smiling); firing "you're not exactly sold on
+# this, are you?" at that baseline mistakes a visual habit for a live emotional signal
+# (logged 2026-06-21: a startup misfire on a 60-sample, 85%-brow-furrow disposition).
+# When the detected expression IS the person's known dominant disposition (>= MIN_SAMPLES
+# observations), the reaction is suppressed — the same disposition data already drives the
+# "treat as a light visual habit, not a diagnosis" prompt note, so honor it here too.
+FACIAL_EXPRESSION_REACTION_RESPECT_DISPOSITION = _env_bool(
+    "FACIAL_EXPRESSION_REACTION_RESPECT_DISPOSITION",
+    True,
+)
+FACIAL_EXPRESSION_REACTION_DISPOSITION_MIN_SAMPLES = _env_int(
+    "FACIAL_EXPRESSION_REACTION_DISPOSITION_MIN_SAMPLES",
+    20,
+    min_value=1,
+    max_value=100000,
+)
 # Generate facial-expression reactions with the main LLM (conversation-aware: judges
 # surprise against what Rex just said; never narrates the camera). False => use the
 # authored fallback bank only.
@@ -1592,6 +1609,12 @@ CAMERA_POSE_SETTLE_SECS = 0.5
 # capture. Explicit directions use the configured channel min/max limits; current
 # gaze preserves the existing pose instead of centering the neck.
 DIRECTED_LOOK_SETTLE_SECS = 0.22
+# After turning to the commanded direction, hold this long before snapping the photo so
+# BOTH the neck and the visor servo reach their targets. The visor rests near neutral
+# (6000, below the 6400 lens-clear floor) and the idle breathing/mood loop keeps tugging
+# it back there, so a short settle photographs a partly-covered lens. capture_current_gaze
+# re-asserts the visor fully open across this whole window. (logged 2026-06-21)
+DIRECTED_LOOK_CAPTURE_SETTLE_SECS = 1.5
 DIRECTED_LOOK_STEP_QUS = 160
 DIRECTED_LOOK_STEP_DELAY_SECS = 0.008
 DIRECTED_LOOK_SEARCH_DIRECTIONS = ["current", "left", "right", "down", "up"]

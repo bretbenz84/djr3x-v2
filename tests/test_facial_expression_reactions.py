@@ -125,6 +125,67 @@ class FacialExpressionReactionTests(unittest.TestCase):
         speak.assert_called_once()
         self.assertEqual(speak.call_args.args[1], "Whoa — what did I miss?")
 
+    def test_habitual_disposition_suppresses_reaction(self):
+        # Bret reads as habitually brow-furrowed/intense (logged: 60 samples, 85%
+        # brow-furrow). His RESTING face must not trigger "you're not exactly sold on
+        # this, are you?" — that mistakes a visual habit for a live emotional signal.
+        c = self.c
+        c.world_state.update("people", [
+            self._person(
+                "brow_furrow", "focused", 0.88,
+                {"browDownLeft": 0.90, "browDownRight": 0.86},
+            )
+        ])
+        stats = {"total_samples": 60, "dominant_expression": "brow_furrow", "confidence": 0.86}
+        with (
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_BROW_FURROW_SUSTAIN_SECS", 0.0),
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_GLOBAL_COOLDOWN_SECS", 0.0),
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_COOLDOWN_SECS", 0.0),
+            mock.patch("memory.disposition.get_stats", return_value=stats),
+            mock.patch.object(c, "_speak_facial_expression_reaction", return_value=True) as speak,
+        ):
+            c._step_facial_expression_reactions(c.world_state.snapshot(), mock.Mock())
+        speak.assert_not_called()
+
+    def test_non_habitual_brow_furrow_still_reacts(self):
+        # Same expression, but it is NOT this person's dominant resting face → the
+        # reaction fires normally. Proves the guard is disposition-specific, not a
+        # blanket mute of brow-furrow reactions.
+        c = self.c
+        c.world_state.update("people", [
+            self._person(
+                "brow_furrow", "focused", 0.88,
+                {"browDownLeft": 0.90, "browDownRight": 0.86},
+            )
+        ])
+        stats = {"total_samples": 60, "dominant_expression": "smile", "confidence": 0.80}
+        with (
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_BROW_FURROW_SUSTAIN_SECS", 0.0),
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_GLOBAL_COOLDOWN_SECS", 0.0),
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_COOLDOWN_SECS", 0.0),
+            mock.patch("memory.disposition.get_stats", return_value=stats),
+            mock.patch.object(c, "_speak_facial_expression_reaction", return_value=True) as speak,
+        ):
+            c._step_facial_expression_reactions(c.world_state.snapshot(), mock.Mock())
+        speak.assert_called_once()
+        self.assertEqual(speak.call_args.args[0], "brow_furrow")
+
+    def test_disposition_guard_helper_gates(self):
+        c = self.c
+        dominant = {"total_samples": 60, "dominant_expression": "brow_furrow", "confidence": 0.86}
+        thin = {"total_samples": 5, "dominant_expression": "brow_furrow", "confidence": 0.86}
+        with mock.patch("memory.disposition.get_stats", return_value=dominant):
+            self.assertTrue(c._expression_is_habitual_disposition(1, "brow_furrow"))
+            self.assertFalse(c._expression_is_habitual_disposition(1, "smile"))
+            self.assertFalse(c._expression_is_habitual_disposition(None, "brow_furrow"))
+        with mock.patch("memory.disposition.get_stats", return_value=thin):
+            self.assertFalse(c._expression_is_habitual_disposition(1, "brow_furrow"))
+        with (
+            mock.patch.object(c.config, "FACIAL_EXPRESSION_REACTION_RESPECT_DISPOSITION", False),
+            mock.patch("memory.disposition.get_stats", return_value=dominant),
+        ):
+            self.assertFalse(c._expression_is_habitual_disposition(1, "brow_furrow"))
+
     def test_neutral_expression_is_ignored(self):
         c = self.c
         c.world_state.update("people", [self._person("neutral", "neutral", 0.99)])

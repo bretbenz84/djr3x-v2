@@ -331,11 +331,21 @@ def capture_current_gaze(settle_secs: float = 0.15) -> Optional[np.ndarray]:
     from hardware import servos
 
     visor_cfg = config.SERVO_CHANNELS["visor"]
+    visor_open = int(visor_cfg["max"])
     visor_before = servos.get_servo(visor_cfg["ch"]) or visor_cfg["neutral"]
 
     try:
-        servos.set_servo(visor_cfg["ch"], visor_cfg["max"])
-        time.sleep(max(0.0, float(settle_secs)))
+        # Hold the visor fully open for the WHOLE settle. A single set-then-sleep let
+        # the idle breathing/mood loop tug the visor back toward neutral (below the
+        # 6400 lens-clear floor) before the grab, so a longer settle could still
+        # photograph a partly-covered lens. Re-assert across the settle to keep it clear.
+        deadline = time.monotonic() + max(0.0, float(settle_secs))
+        while True:
+            servos.set_servo(visor_cfg["ch"], visor_open)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                break
+            time.sleep(min(0.2, remaining))
         frame = get_frame()
         if frame is None:
             _log.warning("capture_current_gaze: no frame available from buffer")

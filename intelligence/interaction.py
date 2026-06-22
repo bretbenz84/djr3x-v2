@@ -10419,17 +10419,24 @@ def _move_and_capture_gaze(
     from sequences import animations
     from vision import camera as camera_mod
 
-    suspend_secs = (
-        float(getattr(config, "DIRECTED_LOOK_SETTLE_SECS", 0.22))
-        + 0.5
-    )
-    consciousness.suspend_face_tracking(suspend_secs)
-    actual_direction = animations.directed_look_pose(direction, target=target_hint)
-    frame = camera_mod.capture_current_gaze(settle_secs=0.06)
+    # Hold the photo until the head has stabilized AND the visor is fully open. The
+    # visor rests near neutral (below the 6400 lens-clear floor) and the idle
+    # breathing/mood loop keeps tugging it back there, so the old 0.06s settle snapped
+    # a partly-covered lens mid-turn (logged 2026-06-21). Wait the full
+    # DIRECTED_LOOK_CAPTURE_SETTLE_SECS — capture_current_gaze re-asserts the visor open
+    # across that window — and suspend face-tracking long enough to cover the head move
+    # + that settle + the grab so the tracker can't drag the head off the commanded
+    # direction mid-photo (the old 0.72s window expired during a long neck swing).
+    settle_secs = max(0.0, float(getattr(config, "DIRECTED_LOOK_CAPTURE_SETTLE_SECS", 1.5)))
+    consciousness.suspend_face_tracking(settle_secs + 2.5)
     try:
-        consciousness.resume_face_tracking()
-    except Exception:
-        pass
+        actual_direction = animations.directed_look_pose(direction, target=target_hint)
+        frame = camera_mod.capture_current_gaze(settle_secs=settle_secs)
+    finally:
+        try:
+            consciousness.resume_face_tracking()
+        except Exception:
+            pass
     return actual_direction, frame
 
 
