@@ -1,7 +1,7 @@
 """
 intelligence/onboarding.py — first-meeting baseline-gathering for NEW people.
 
-When Rex meets someone brand new, the normal question budget (3/90s) plus the
+When Rex meets someone brand new, the normal question budget (5/90s) plus the
 stranger depth-1 tier lock leave him barely able to ask anything, so he learns
 nothing about the person he is actively talking to. This module backs a SCOPED,
 stranger-only "onboarding" burst that runs right after enrollment: Rex walks a
@@ -192,7 +192,7 @@ def _resolve_text(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LLM depth follow-up (local qwen sidecar; templated fallback)
+# LLM depth follow-up (main OpenAI conversation model via llm.generate_curiosity_question; templated fallback)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def generate_followup(

@@ -213,6 +213,10 @@ class MemoryBanksWindow(QMainWindow):
         # transcription, responses, idle banter, or "are you there?" reactions — so no
         # wasted LLM calls). AUDIO_OUTPUT_SUPPRESSED additionally mutes any already-queued
         # audio. Both are restored to their prior values on close.
+        # KNOWN GAP (junecodereview finding #8): only the AUDIO loop honors this today —
+        # interaction.submit_text() (the GUI/CLI text path) does NOT check INTERACTION_PAUSED,
+        # so typing into the dashboard while this window is open still generates a reply and
+        # can write memories. Fix is a one-line early-return in submit_text().
         self._prior_output_suppressed = bool(getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False))
         self._prior_interaction_paused = bool(getattr(config, "INTERACTION_PAUSED", False))
         config.INTERACTION_PAUSED = True

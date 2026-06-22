@@ -44,7 +44,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS rex_episodes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at  TEXT    NOT NULL,                 -- ISO 'YYYY-MM-DD HH:MM:SS' local time
-    kind        TEXT    NOT NULL,                 -- person_seen | made_laugh | animal | scene | emotional | conversation_summary | said | other
+    kind        TEXT    NOT NULL,                 -- e.g. person_seen | made_laugh | animal | scene | conversation_summary | person_enrolled | game_played | visit_departure | boundary | celebrity | emotional_checkin | birthday_wish | milestone | celebration | reunion  (canonical set: config.EPISODIC_RECALL_KIND_WEIGHTS)
     summary     TEXT    NOT NULL,                 -- first-person, human-readable: "I saw a dog", "I made Bret laugh"
     person_id   INTEGER,                          -- SOFT ref to people.id (people.db, different DB → no FK)
     person_name TEXT,                             -- name snapshot at capture time

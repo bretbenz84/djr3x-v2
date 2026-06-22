@@ -27,11 +27,18 @@ Behavioural rules encoded (see the per-method docstrings):
   planning a complex reply looks down-and-aside; just-heard material is absorbed with
   a brief down-glance. Pitch on an aversion is hard-clamped to ≤ 0 (never up).
 * **Complexity-scaled pre-turn aversion** — just before R3X speaks he looks away,
-  longer + UP for a complex reply, shorter + to-the-side for a simple one.
+  longer + further DOWN-and-aside for a complex reply, shorter + to-the-side for a
+  simple one (pitch is hard-clamped ≤ 0, so a pre-turn aversion never looks up).
 * **Turn-yield return** — at the end of his turn he returns ON-target to hand the
   floor back.
 * **Multi-person include-sweep** — while speaking he occasionally sweeps to a
   non-active listener to "include" them, then returns to the active partner.
+
+**Live-actuation caveat (current robot):** the SPEAKING-state duty-cycle (the ~0.50
+ON-target rule) and the multi-person include-sweep are exercised by the offline sim and
+the tests, but do NOT actuate on the live robot today — ``consciousness._step_face_tracking``
+suspends gaze aversions while R3X is speaking, and the live adapter never populates
+listener bearings. The PREP_TURN pre-turn look-away and the LISTENING duty-cycle ARE live.
 
 The module imports the project ``config`` for tunables + servo geometry but performs
 no I/O and no hardware access, so it is safe to import and unit-test anywhere.

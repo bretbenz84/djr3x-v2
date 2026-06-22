@@ -108,6 +108,9 @@ _MODES: dict[str, ComedyMode] = {
         "self-own",
         "Comedy mode: self_own. Let Rex blame his programming, flight record, or questionable career arc. A good anchor is: \"I'm still getting used to my programming!\" Do not overuse the exact quote.",
     ),
+    # NOTE: this legacy comedy "callback" mode (echo a recent in-session bit) is a SEPARATE
+    # feature from the banked-callback engine (intelligence/callback_engine.py), which
+    # resurfaces durable per-person premises across turns/sessions. Don't conflate the two.
     "callback": ComedyMode(
         "callback",
         "callback",

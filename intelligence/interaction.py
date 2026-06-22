@@ -12747,6 +12747,10 @@ def _store_consolidated_emotional_events(
             valence = max(-1.0, min(1.0, float(item.get("valence") or -0.5)))
         except (TypeError, ValueError):
             valence = -0.5
+        # NOTE: consolidation does not resolve event recency (its schema never captures it),
+        # so add_event() below records recency='unknown' by default — which the proactive
+        # check-in/greeting gates treat as NOT recent. A recency-sensitive check-in therefore
+        # relies on the live empathy-path capture, not this session-end consolidation path.
         emotional_events.add_event(
             person_id,
             str(item.get("category") or "other").strip().lower(),

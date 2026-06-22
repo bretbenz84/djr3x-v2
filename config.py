@@ -3406,7 +3406,7 @@ ONBOARDING_INCLUDE_VIPS = False
 # Pacing.
 ONBOARDING_KICKOFF_SECS = 1.2              # beat after the enrollment ack before the first question
 ONBOARDING_INACTIVITY_TIMEOUT_SECS = 30.0  # close the burst out loud after this much silence
-ONBOARDING_STEP_TTL_SECS = 240.0           # deep fallback: a stale flow self-expires
+ONBOARDING_STEP_TTL_SECS = 240.0           # deep fallback: flow hard-expires this many secs after it is ARMED (wall-clock since created_at, NOT sliding on activity)
 ONBOARDING_SOFT_DISENGAGE_LIMIT = 2        # lukewarm answers in a row (past MIN) -> wind down
 ONBOARDING_REVEAL_EVERY = 3                # inject a Rex self-reveal ~every N questions (0 = off)
 

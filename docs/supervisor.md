@@ -2,7 +2,8 @@
 
 This lets your Mac stay quietly ready to hear **"wake up Rex"** without the full
 robot running. Saying the phrase plays a startup chime (instant "I heard you"
-feedback) and launches the controller; saying **"shut down"** powers it back
+feedback) and launches the controller (`main.py --gui`, so the dashboard opens on every
+wake); saying **"shut down"** powers it back
 down — while the listener keeps running. Test the chime any time with
 `venv/bin/python rex_supervisor.py --test-chime`.
 
@@ -37,7 +38,7 @@ resumes listening on its own.
 
 | You say | Result |
 | --- | --- |
-| **"wake up Rex"** (while off) | Supervisor launches `main.py` |
+| **"wake up Rex"** (while off) | Supervisor launches `main.py --gui` (dashboard opens on every wake) |
 | **"go to sleep"** / "good night" | `main.py` stays running, asleep; only its own "wake up Rex" wakes it |
 | **"wake up Rex"** (while asleep) | `main.py` wakes itself (handled internally, not by the supervisor) |
 | **"shut down"** / "shut down Rex" / "power down" | `main.py` exits cleanly; supervisor resumes listening |

@@ -14,11 +14,12 @@ It piggybacks on the Face Landmarker data ``vision/face_expression.py`` already
 computes every cycle, and reuses that module's IoU face→person association — so it
 adds buffering + math, not inference, and never re-detects or re-associates faces.
 
-Build status — COMMIT 1 (scaffold): the world-state write/latch/read CONTRACT is
-implemented and tested here (it is the race-prone part). The detection layers —
-1: head-pose gate, 2: lip-motion energy, 3: arbitration + hysteresis — land in
-subsequent commits. ``update()`` is a no-op until then, so Rex behaves exactly as
-before while this is built up.
+Status — LIVE (enabled by default via ``ACTIVE_SPEAKER_ENABLED``). All layers are
+implemented and wired: the world-state write/latch/read contract plus detection
+layer 1 (head-pose gate), layer 2 (lip-motion energy), and layer 3 (arbitration +
+hysteresis). ``update()`` runs the full pipeline each cycle, and voice attribution
+consumes the published ``is_speaking`` plus the decaying ``recent_visual_speaker()``
+latch.
 """
 
 from __future__ import annotations

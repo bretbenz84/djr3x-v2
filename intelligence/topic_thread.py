@@ -8,12 +8,14 @@ session-local; durable memories belong in memory/*.
 
 It also owns the **conversation arc** (Bet 1): a short running summary of the
 live conversation — topics covered, what landed vs flopped, the person's mood,
-and open threads — maintained by a cheap local-LLM (Ollama) call and fed back
+and open threads — maintained off the speech path by a cheap LLM (default backend
+OpenAI gpt-4o-mini, config.CONVERSATION_ARC_BACKEND='openai'; set ='local' for the
+Ollama sidecar) and fed back
 into the system prompt so Rex can see what he already asked/roasted (stop
 repeating himself) and call back to an earlier thread. The arc is refreshed on a
 coalesced BACKGROUND worker triggered from the user-turn path, so it never
 touches the time-to-first-speech path; on any failure the previous summary is
-retained. Gated by config.CONVERSATION_ARC_ENABLED and local_llm availability.
+retained. Gated by config.CONVERSATION_ARC_ENABLED (the 'local' backend additionally requires local_llm availability).
 The arc shares this module's session lifecycle: clear() wipes it.
 """
 

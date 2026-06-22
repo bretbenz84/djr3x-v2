@@ -5,7 +5,7 @@ Single small GPT-4o-mini call classifies the user's utterance for emotional
 affect, what they seem to need from Rex, topic sensitivity, and whether they
 are inviting Rex into a vulnerable conversation. The result is fused into a
 "response mode" (default, listen, support, lift, ground, validate, brief,
-amplify, kind_default, child_kind, acknowledge_then_yield) and a one-paragraph
+amplify, kind_default, child_kind) and a one-paragraph
 style directive that gets injected into the system prompt.
 
 Design rule (durable): support / listen / lift modes are NOT gated by friendship

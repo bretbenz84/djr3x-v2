@@ -861,6 +861,7 @@ def initialize_database(
 
 # Schema for Rex's OWN episodic-memory DB (rex.db) — mirrors memory/rex_db.SCHEMA.
 # Kept here too so a fresh system gets the file created at setup time.
+# (See memory/rex_db.SCHEMA / config.EPISODIC_RECALL_KIND_WEIGHTS for the `kind` enum.)
 REX_DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS rex_episodes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
