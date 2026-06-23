@@ -128,22 +128,20 @@ arduino-cli config add board_manager.additional_urls \
 arduino-cli core update-index
 arduino-cli core install esp32-bluepad32:esp32   # platform ID is HYPHENATED (FQBN below too)
 
+# Use `compile --upload` (NOT a bare `upload` — that has no --build-property, so it would
+# flash whatever variant was last cached). UploadSpeed=115200 is REQUIRED: this USB bridge
+# fails the default 921600 ("Invalid head of packet" right after the baud change).
+
 # CONNECTIVITY TEST — gamepad ON, motors STUBBED (the base will NOT move; safest for a
 # first pairing test). The live `gp` telemetry + GUI mirror run identically to live:
-arduino-cli compile --fqbn esp32-bluepad32:esp32:esp32 \
+arduino-cli compile --fqbn esp32-bluepad32:esp32:esp32:UploadSpeed=115200 \
   --build-property "compiler.cpp.extra_flags=-DMOTION_GAMEPAD_PRESENT=1" \
-  firmware/djr3x_motion
-arduino-cli upload --fqbn esp32-bluepad32:esp32:esp32:UploadSpeed=115200 \
-  --build-property "compiler.cpp.extra_flags=-DMOTION_GAMEPAD_PRESENT=1" \
-  -p "$PORT" firmware/djr3x_motion
+  --upload -p "$PORT" firmware/djr3x_motion
 
 # LIVE drive base + gamepad (only on a stand; add -DMOTION_TOF_PRESENT=1 if ToF is wired):
-arduino-cli compile --fqbn esp32-bluepad32:esp32:esp32 \
+arduino-cli compile --fqbn esp32-bluepad32:esp32:esp32:UploadSpeed=115200 \
   --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_GAMEPAD_PRESENT=1" \
-  firmware/djr3x_motion
-arduino-cli upload --fqbn esp32-bluepad32:esp32:esp32:UploadSpeed=115200 \
-  --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_GAMEPAD_PRESENT=1" \
-  -p "$PORT" firmware/djr3x_motion
+  --upload -p "$PORT" firmware/djr3x_motion
 ```
 
 The dual-version LEDC guard in `hal.cpp` means the motor code builds on the Bluepad32
