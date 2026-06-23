@@ -71,8 +71,61 @@ def connect(port: "str | None" = None) -> bool:
         _push_config()
     except Exception:
         _log.debug("motion config push failed", exc_info=True)
+    # Forward gamepad action-button events (the 8BitDo Pro 2 buttons motion doesn't
+    # use) to the soundboard / animation dispatch — Rex reacts to a button press.
+    try:
+        motion.set_callbacks(on_event=_on_motion_event)
+    except Exception:
+        _log.debug("motion event callback wiring failed", exc_info=True)
     _start_heartbeat()
     return True
+
+
+# ── Gamepad action buttons → sound clips / servo animations ──────────────────────
+# The pad pairs to the ESP32, so its non-drive buttons arrive as `event:"button"`
+# telemetry (firmware/djr3x_motion/gamepad.cpp). Map each to a clip and/or animation
+# via config.MOTION_GAMEPAD_BUTTON_ACTIONS — data-driven, no code change to remap.
+
+def _on_motion_event(msg: dict) -> None:
+    """Reader-thread callback for firmware `event` messages. Only `button` events are
+    handled here; everything else (estop/comms/zone_block/...) is consumed elsewhere."""
+    try:
+        if not isinstance(msg, dict) or msg.get("event") != "button":
+            return
+        btn = str(msg.get("btn") or "").strip().lower()
+        if not btn:
+            return
+        actions = getattr(config, "MOTION_GAMEPAD_BUTTON_ACTIONS", {}) or {}
+        action = actions.get(btn)
+        if not isinstance(action, dict) or not action:
+            _log.debug("[gamepad] unmapped button: %r", btn)
+            return
+        _dispatch_button_action(btn, action)
+    except Exception:
+        _log.debug("[gamepad] button event handler failed", exc_info=True)
+
+
+def _dispatch_button_action(btn: str, action: dict) -> None:
+    """Run a button's mapped action: a servo animation and/or a sound clip. Each leg
+    is best-effort and isolated so a missing clip never blocks the animation."""
+    anim = str(action.get("animation") or "").strip()
+    clip = str(action.get("clip") or "").strip()
+    _log.info(
+        "[gamepad] button %s -> %s", btn,
+        {k: v for k, v in (("animation", anim), ("clip", clip)) if v},
+    )
+    if anim:
+        try:
+            from sequences import animations
+            animations.play_body_beat(anim)
+        except Exception:
+            _log.debug("[gamepad] animation %r failed", anim, exc_info=True)
+    if clip:
+        try:
+            from audio import soundboard
+            soundboard.play(clip)
+        except Exception:
+            _log.debug("[gamepad] clip %r failed", clip, exc_info=True)
 
 
 def disconnect() -> None:

@@ -5508,6 +5508,34 @@ MOTION_RECONNECT_INTERVAL_SECS = 2.0  # auto-reconnect cadence after an unplug/d
 MOTION_MANUAL_IDLE_RETURN_SECS = 4
 MOTION_MANUAL_AUTORETURN = False
 
+# ── Gamepad soundboard / animation buttons ──────────────────────────────────────
+# The 8BitDo Pro 2 pairs to the ESP32. The buttons motion does NOT use (left stick =
+# drive, B = e-stop, Start = clear/return-AUTO, L1/R1 = creep/boost, L2+R2 = full
+# override) are forwarded by the firmware as `event:"button"` and dispatched here so
+# pressing them makes Rex trigger a SOUND CLIP and/or a SERVO ANIMATION — without
+# grabbing the wheel, and even in AUTO. (firmware/djr3x_motion/gamepad.cpp +
+# intelligence/motion_controller._on_motion_event.)
+SOUNDBOARD_CLIPS_DIR = "assets/audio/clips"   # where the MP3 clips live
+SOUNDBOARD_SUPPRESS_TAIL_SECS = 0.4           # keep the mic muted this long after a clip
+# Button -> action. Each value is a dict with an optional "clip" (a file STEM in
+# SOUNDBOARD_CLIPS_DIR, case-insensitive — e.g. "Air Horn" for "Air Horn.mp3") and/or
+# "animation" (a beat from sequences.animations.body_beat_names()). Edit freely; an
+# unmapped button is ignored. btn names: a x y dpad_up dpad_down dpad_left dpad_right
+# select home l3 r3.
+MOTION_GAMEPAD_BUTTON_ACTIONS = {
+    "a":          {"clip": "Air Horn",          "animation": "tiny_victory_dance"},
+    "x":          {"clip": "Scratch",           "animation": "proud_dj_pose"},
+    "y":          {"clip": "Yahoo",             "animation": "tiny_victory_dance"},
+    "dpad_up":    {"clip": "Request Line Open"},
+    "dpad_down":  {"clip": "Bad Feeling",       "animation": "suspicious_glance"},
+    "dpad_left":  {"clip": "Astromech Joke"},
+    "dpad_right": {"clip": "Having Fun"},
+    "select":     {"clip": "Hi There"},
+    "home":       {"clip": "On the Decks",      "animation": "proud_dj_pose"},
+    "l3":         {"animation": "thinking_tilt"},
+    "r3":         {"clip": "Scratch"},
+}
+
 # GUI joystick (Motivator Control) command ramping. The console slews its drive
 # command toward the stick position instead of jumping to it: gentle on the way up,
 # faster but never abrupt on the way down — a tall base can topple if it stops dead.

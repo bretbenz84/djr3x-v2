@@ -20,6 +20,7 @@
 #include "context.h"
 #include "control.h"
 #include "calib.h"
+#include "proto_io.h"   // emit_event_kv — forward action-button presses to the Mac
 
 static ControllerPtr s_ctl = nullptr;     // the one pad we drive from
 static bool s_prev_b = false;
@@ -62,6 +63,43 @@ static void maybe_autoreturn() {
   last_in    = g_ctx.last_manual_input_ms;
   UNLOCK_STATE();
   if (manual && autoreturn && (uint32_t)(now - last_in) > idle_ms) ctl_manual_release();
+}
+
+// ---------------------------------------------------------------------------
+// Action buttons -> Mac. The buttons MOTION does NOT use (B=estop, Start, L1/R1,
+// L2+R2, sticks are taken) are forwarded as `event:"button"` so R3X can trigger
+// sound clips / servo animations on the Mac. Rising-edge only (one event per press),
+// emitted whenever the pad is connected — INDEPENDENT of drive owner, so the
+// soundboard works in AUTO too and pressing them does NOT grab the wheel.
+// btn names must match config.MOTION_GAMEPAD_BUTTON_ACTIONS keys on the Mac.
+// ---------------------------------------------------------------------------
+static uint16_t s_prev_actions = 0;
+
+static void poll_action_buttons(ControllerPtr c) {
+  const uint8_t dp = c->dpad();   // Bluepad32 dpad bitmask: UP=1 DOWN=2 RIGHT=4 LEFT=8
+  struct ActionBtn { const char* name; bool pressed; };
+  const ActionBtn btns[] = {
+    {"a",          c->a()},
+    {"x",          c->x()},
+    {"y",          c->y()},
+    {"dpad_up",    (bool)(dp & 0x01)},
+    {"dpad_down",  (bool)(dp & 0x02)},
+    {"dpad_right", (bool)(dp & 0x04)},
+    {"dpad_left",  (bool)(dp & 0x08)},
+    {"select",     c->miscSelect()},   // the "-" button
+    {"home",       c->miscSystem()},   // the star / home button
+    {"l3",         c->thumbL()},        // left stick click
+    {"r3",         c->thumbR()},        // right stick click
+  };
+  const uint8_t n = (uint8_t)(sizeof(btns) / sizeof(btns[0]));
+  uint16_t cur = 0;
+  for (uint8_t i = 0; i < n; i++) {
+    if (btns[i].pressed) cur |= (uint16_t)(1u << i);
+    if (btns[i].pressed && !(s_prev_actions & (uint16_t)(1u << i))) {
+      emit_event_kv("button", "btn", btns[i].name);   // rising edge
+    }
+  }
+  s_prev_actions = cur;
 }
 
 void gamepad_init() {
@@ -107,6 +145,9 @@ void gamepad_tick() {
   bool meaningful = (fabsf(lin) > 0.001f || fabsf(ang) > 0.001f);
   bool isManual; LOCK_STATE(); isManual = (g_ctx.owner == OWNER_MANUAL); UNLOCK_STATE();
   if (meaningful || isManual) ctl_manual_drive(lin, ang);
+
+  // Forward the soundboard / animation buttons to the Mac (does not affect drive).
+  poll_action_buttons(c);
 
   maybe_autoreturn();
 }

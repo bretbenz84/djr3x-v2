@@ -162,6 +162,18 @@ is the only way past it and only while held. If the pad drops, the base stops im
 and stays MANUAL until `MOTION_MANUAL_AUTORETURN`'s idle timeout hands back to AUTO (or
 you reconnect and press Start).
 
+**Action buttons → R3X soundboard / animations.** The buttons motion does NOT use —
+**A, X, Y, D-pad ↑↓←→, Select (−), Home (★), L3/R3 (stick clicks)** — are forwarded to the
+Mac as `event:"button"` (rising edge, one per press) by `poll_action_buttons()`. They fire
+**whenever the pad is connected**, independent of the drive `owner` (so the soundboard works
+in AUTO and pressing them does NOT grab the wheel). On the Mac,
+`intelligence/motion_controller._on_motion_event` looks the button up in
+`config.MOTION_GAMEPAD_BUTTON_ACTIONS` and triggers a **sound clip** (`audio/soundboard.py`
+plays an MP3 from `assets/audio/clips/`) and/or a **servo animation**
+(`sequences.animations.play_body_beat`). The map is data-driven — edit it to remap, no
+firmware change. Button names: `a x y dpad_up dpad_down dpad_left dpad_right select home
+l3 r3`. (Needs the `-DMOTION_GAMEPAD_PRESENT=1` build above.)
+
 > **Scaffold:** the arbitration (owner switching, full-override, disconnect failsafe,
 > watchdog-bypass-while-manual) is compiled and verified in the stock build, but the
 > Bluepad32 I/O itself is **not yet hardware-validated** — verify the button map and

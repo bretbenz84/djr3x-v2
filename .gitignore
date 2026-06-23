@@ -240,6 +240,9 @@ assets/audio/tts_cache/
 # Local music files — user-supplied, not part of the project
 assets/music/
 
+# Gamepad soundboard clips — user-supplied MP3s (assets/audio/clips/*.mp3), local audio
+assets/audio/clips/
+
 # Local runtime memory — person DB (people.db), Rex's episodic diary (rex.db),
 # POV state, their -shm/-wal/.bak siblings, and any manual copies/backups.
 # All of it is local runtime data; never commit. setup_assets.py recreates the

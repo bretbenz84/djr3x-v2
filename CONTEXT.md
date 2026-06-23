@@ -662,6 +662,17 @@ watchdog — it can stop the base without the Mac) and the **Mac owns the intent
 Manual control (a Bluetooth gamepad paired directly to the ESP32) and the real
 motor/encoder/ToF drivers are Phase 1 — see `docs/motion_system.md` §11, §17.
 
+- **Gamepad soundboard / animation buttons** (8BitDo Pro 2): the firmware
+  (`gamepad.cpp` `poll_action_buttons`, behind `-DMOTION_GAMEPAD_PRESENT=1`) forwards the
+  buttons motion doesn't use (A/X/Y, D-pad, Select, Home, L3/R3) to the Mac as
+  `event:"button"` — fired whenever the pad is connected, independent of drive owner, so
+  they never grab the wheel. `intelligence/motion_controller._on_motion_event` dispatches
+  each via `config.MOTION_GAMEPAD_BUTTON_ACTIONS` to a sound clip
+  (`audio/soundboard.py` plays an MP3 from `SOUNDBOARD_CLIPS_DIR=assets/audio/clips/`,
+  no-audio-safe, mic-suppressed, output-gated so it never talks over a reply) and/or a
+  servo animation (`sequences.animations.play_body_beat`). Data-driven map; clips are
+  gitignored local audio. Tests: `tests/test_gamepad_actions.py`.
+
 ## GUI
 
 The PySide6 dashboard is optional and launched with `--gui`.
