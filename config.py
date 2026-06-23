@@ -3846,6 +3846,14 @@ STARTLE_ANIMAL_SPECIES = {
     "bat",
     "lizard",
 }
+# The local MediaPipe animal detector only knows bird/cat/dog/horse — none of the startle
+# species above. When local detection is on, run a low-frequency OpenAI scan (a paid vision
+# call, people-present-gated) so a snake/spider/wasp can still trigger the startle reaction
+# (#29). Kill switch + cadence below; raise the interval (or disable) to trim cost.
+STARTLE_DETECTION_ENABLED = _env_bool("STARTLE_DETECTION_ENABLED", True)
+STARTLE_DETECTION_INTERVAL_SECS = _env_float(
+    "STARTLE_DETECTION_INTERVAL_SECS", 60.0, min_value=10.0, max_value=3600.0,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PRESENCE TRACKING
@@ -4682,10 +4690,10 @@ WEB_SEARCH_FALLBACK_MODEL = "gpt-4o-mini"
 # Reasoning effort for the search call (reasoning models only; ignored for gpt-4o
 # -class models). This is OFF the realtime first-token path — the stall line covers
 # the latency — so a little reasoning is worth it for better synthesis. low|medium|high.
-WEB_SEARCH_REASONING_EFFORT = "low"
+WEB_SEARCH_REASONING_EFFORT = "none"   # reasoning shares the output budget; "none" leaves it all for the answer
 # Cap on the answer length (Responses API max_output_tokens). Keep it tight so Rex
 # stays punchy; on reasoning models the reasoning tokens also draw from this budget.
-WEB_SEARCH_MAX_OUTPUT_TOKENS = 600
+WEB_SEARCH_MAX_OUTPUT_TOKENS = 1200   # shared by reasoning + visible answer; was 600 (truncated longer answers)
 # Hard timeout for the search call. Generous (web search legitimately takes a few
 # seconds) but bounded so a hung search can't freeze the turn. On timeout Rex falls
 # through to a normal from-knowledge reply.

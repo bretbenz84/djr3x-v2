@@ -591,6 +591,50 @@ class ReactiveTriggerTests(_TempDbCase):
         self.assertEqual(row["use_count"], 1)
         self.assertIsNotNone(row["last_used_at"])
 
+    def test_literal_overlap_claims_without_fresh_stash(self):
+        # #23: a literal topic-word match in the live text claims reactively even when
+        # the background relevance stash is absent (the fast/barge-in race).
+        with self.ce._lock:
+            self.ce._relevance_stash = None
+        claim = self._claim(
+            text="been getting into astrophotography lately, it's great")
+        self.assertIsNotNone(claim, "literal overlap should claim without a stash")
+        self.assertEqual(claim.premise_id, self.premise_id)
+
+    def test_no_overlap_and_no_stash_does_not_claim(self):
+        # Control: no stash and no literal overlap → no claim.
+        with self.ce._lock:
+            self.ce._relevance_stash = None
+        self.assertIsNone(self._claim(text="what a totally unrelated rainy monday"))
+
+    def test_settle_topic_only_premise_needs_dwell(self):
+        # #34: a premise whose only content word IS the topic ('loves astrophotography')
+        # must NOT spend on a single bare topic echo (the bit was skipped), but DOES spend
+        # when the topic is dwelt on (>=2 mentions).
+        from memory import callbacks
+
+        pid = self._bank(premise="loves astrophotography", topic="astrophotography")
+
+        def use_count():
+            return next(r for r in callbacks.get_all(self.person_id) if r["id"] == pid)["use_count"]
+
+        self._stash(pid, transcript_len=20)
+        with mock.patch.object(self.ce, "_transcript_len", return_value=20):
+            claim = self._claim()
+            self.assertIsNotNone(claim)
+            self.assertEqual(claim.premise_id, pid)
+        # Single bare topic mention → ordinary on-topic reply, bit skipped → no spend.
+        self.ce.settle_turn("Oh, astrophotography again? Cool.")
+        self.assertEqual(use_count(), 0)
+
+        # Topic dwelt on (>=2 mentions) → the bit landed → spend.
+        self._stash(pid, transcript_len=24)
+        with mock.patch.object(self.ce, "_transcript_len", return_value=24):
+            claim = self._claim()
+            self.assertIsNotNone(claim)
+        self.ce.settle_turn("Astrophotography, astrophotography — your entire personality.")
+        self.assertEqual(use_count(), 1)
+
     def test_session_cap_and_no_repeat(self):
         import config
         from memory import callbacks

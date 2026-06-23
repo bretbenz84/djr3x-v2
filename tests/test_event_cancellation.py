@@ -37,6 +37,19 @@ class LooksLikeCancellationTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertTrue(events.looks_like_cancellation(text))
 
+    def test_gap_phrasings_now_detected(self):
+        # #32: plan-collapsed phrasings that used to slip past and let Rex re-ask.
+        for text in [
+            "that's no longer happening",
+            "the trip's not on anymore",
+            "we scrapped the whole thing",
+            "the plan fell through",
+            "yeah we called it off",
+        ]:
+            with self.subTest(text=text):
+                self.assertTrue(events.looks_like_cancellation(text))
+                self.assertFalse(events.looks_like_postponement(text))
+
     def test_postponements_are_not_cancellations(self):
         # A reschedule is NOT a cancellation — it must not durably lose the plan.
         for text in [

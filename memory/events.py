@@ -20,9 +20,9 @@ _log = logging.getLogger(__name__)
 
 _CANCEL_PAT = re.compile(
     r"\b("
-    r"not going|not gonna|not doing|not happening|"
-    r"no longer going|no longer doing|"
-    r"cancel(?:ed|led|s|ing)?|called off|scrubbed|"
+    r"not going|not gonna|not doing|not happening|no longer happening|"
+    r"no longer going|no longer doing|not on anymore|"
+    r"cancel(?:ed|led|s|ing)?|called off|called it off|scrubbed|scrapped|fell through|"
     r"can'?t make it|won'?t make it|not anymore|not any more|"
     r"changed my mind|skip(?:ping)? it"
     r")\b",

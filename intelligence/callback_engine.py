@@ -663,16 +663,28 @@ def _used_ids_snapshot() -> set[int]:
         return set(_used_premise_ids)
 
 
-def _judge_relevance(context: str, pool: list[dict]) -> tuple[Optional[int], float]:
-    # Deterministic pass first: a premise whose topic/content words literally
-    # appear in the live context is a strong match, no model needed.
+def _deterministic_relevance_id(context: str, pool: list[dict]) -> Optional[int]:
+    """A premise whose topic/content words literally appear in `context` is a strong
+    match needing no model. Returns the first such premise id, or None. Shared by the
+    background judge AND the synchronous reactive fast path (#23)."""
     ctx_words = _content_words(context)
+    if not ctx_words:
+        return None
     for row in pool:
         premise_words = _content_words(
             f"{(row.get('topic_slug') or '').replace('_', ' ')} {row.get('premise') or ''}"
         )
         if premise_words & ctx_words:
-            return int(row["id"]), 1.0
+            return int(row["id"])
+    return None
+
+
+def _judge_relevance(context: str, pool: list[dict]) -> tuple[Optional[int], float]:
+    # Deterministic pass first: a premise whose topic/content words literally
+    # appear in the live context is a strong match, no model needed.
+    det = _deterministic_relevance_id(context, pool)
+    if det is not None:
+        return det, 1.0
 
     if not _llm_allowed():
         return None, 0.0
@@ -805,31 +817,41 @@ def maybe_claim_reactive(
     if _restraint_preferred(person_id):
         return None
 
-    # The stashed relevance verdict, validated fresh and against live consent.
-    with _lock:
-        stash = dict(_relevance_stash) if _relevance_stash else None
-    if not stash or stash.get("person_id") != person_id:
-        return None
-    max_stale = int(getattr(config, "CALLBACK_RELEVANCE_MAX_STALE_EXCHANGES", 4))
-    if (now_len - int(stash.get("transcript_len") or 0)) > max_stale:
-        return None
-    if float(stash.get("score") or 0.0) < float(
-        getattr(config, "CALLBACK_RELEVANCE_MIN_SCORE", 0.5)
-    ):
-        return None
-
+    # Build the live, claimable pool once (off-cooldown, not already used).
     try:
         from memory import callbacks as callbacks_db
-        row = next(
-            (
-                r for r in callbacks_db.active_pool(person_id)
-                if int(r.get("id") or 0) == int(stash["premise_id"])
-            ),
-            None,
-        )
-        if row is None or not callbacks_db.off_cooldown(row):
-            return None
+        pool = [
+            r for r in callbacks_db.active_pool(person_id)
+            if callbacks_db.off_cooldown(r)
+            and int(r.get("id") or 0) not in _used_ids_snapshot()
+        ]
     except Exception:
+        return None
+    if not pool:
+        return None
+
+    # Pick the relevant premise. Prefer the background-judged stash (it can catch
+    # SEMANTIC matches the deterministic pass misses), but fall back to a SYNCHRONOUS
+    # literal word-overlap against the live text so a clear topic match still fires when
+    # the async stash is stale or absent — the race on fast / barge-in turns (#23).
+    premise_id: Optional[int] = None
+    with _lock:
+        stash = dict(_relevance_stash) if _relevance_stash else None
+    if stash and stash.get("person_id") == person_id:
+        max_stale = int(getattr(config, "CALLBACK_RELEVANCE_MAX_STALE_EXCHANGES", 4))
+        fresh = (now_len - int(stash.get("transcript_len") or 0)) <= max_stale
+        strong = float(stash.get("score") or 0.0) >= float(
+            getattr(config, "CALLBACK_RELEVANCE_MIN_SCORE", 0.5)
+        )
+        if fresh and strong:
+            premise_id = int(stash.get("premise_id") or 0) or None
+    if premise_id is None:
+        premise_id = _deterministic_relevance_id(text or "", pool)
+    if premise_id is None:
+        return None
+
+    row = next((r for r in pool if int(r.get("id") or 0) == premise_id), None)
+    if row is None:
         return None
     premise_id = int(row["id"])
     with _lock:
@@ -879,9 +901,10 @@ def settle_turn(spoken_text: str) -> None:
     existed because the live topic already connected to the premise, so an
     ordinary on-topic reply (the directive says to skip the bit when the
     moment turned) naturally repeats the topic word without the joke. Spending
-    requires a premise-content word beyond the topic, or two matches total;
-    a premise with no words beyond its topic falls back to any match (else it
-    could never be spent and would retry forever)."""
+    requires a premise-content word beyond the topic, or two matches total.
+    A premise with NO word beyond its topic spends only if the topic is DWELT
+    on (>=2 occurrences in the reply) — a single bare mention releases for retry
+    rather than burning the joke unspoken (#34)."""
     global _active_claim
     with _lock:
         claim = _active_claim
@@ -896,7 +919,15 @@ def settle_turn(spoken_text: str) -> None:
     if non_topic_premise:
         voiced = bool(matched & non_topic_premise) or len(matched) >= 2
     else:
-        voiced = bool(matched)
+        # Premise has NO word beyond the topic, so a single bare topic echo is just an
+        # ordinary on-topic reply (the directive said skip), not the landed bit — spending
+        # there burns the joke unspoken (#34). Require the topic to be DWELT on (>=2
+        # occurrences in the reply) before spending; a single mention releases for retry.
+        topic_hits = sum(
+            1 for w in _WORD_RE.findall((spoken_text or "").lower())
+            if _stem_match(w, topic_words)
+        )
+        voiced = topic_hits >= 2
     if voiced:
         try:
             from memory import callbacks as callbacks_db

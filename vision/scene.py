@@ -607,6 +607,63 @@ def detect_lifeforms(frame) -> dict:
     }
 
 
+def _scan_for_startle_species(frame) -> list[dict]:
+    """Low-frequency OpenAI scan for STARTLE species (snakes/spiders/wasps/...) that the
+    local MediaPipe detector can't see (it only knows bird/cat/dog/horse). ADDITIVE: merges
+    any startle-species sighting into world_state.animals (dedup by species+position)
+    WITHOUT clobbering locally-detected animals or touching the crowd count — unlike
+    detect_lifeforms, which overwrites both. Returns the newly-added records (#29)."""
+    if frame is None:
+        return []
+    startle = {
+        str(s).strip().lower()
+        for s in (getattr(config, "STARTLE_ANIMAL_SPECIES", set()) or set())
+    }
+    if not startle:
+        return []
+    prompt = (
+        "Scan this image for any SMALL or DANGEROUS real creature a person would flinch "
+        "at — snakes, spiders, scorpions, wasps, hornets, bees, rats, mice, bats, lizards, "
+        "roaches. Ignore people, pet cats/dogs, toys, screens, and logos. "
+        "Return ONLY a JSON object: "
+        '{"animals": [{"species": "<common name>", "position": "<brief location>", '
+        '"furred": <true|false>, "confidence": "<low|medium|high>"}]}. '
+        "Use [] if you see none. No preamble, no markdown."
+    )
+    raw = _call_gpt4o(
+        frame, prompt, "animal_detection",
+        max_tokens=int(getattr(config, "SCENE_CHANGE_MONITOR_MAX_TOKENS", 260) or 260),
+    )
+    if raw is None:
+        return []
+    data = _parse_json(raw)
+    if not isinstance(data, dict):
+        return []
+    records = _animal_records_from_response(data.get("animals") or [])
+    fresh = [
+        r for r in records
+        if str(r.get("species", "")).strip().lower() in startle
+    ]
+    if not fresh:
+        return []
+    current = list(world_state.get("animals") or [])
+    sigs = {
+        (str(a.get("species", "")).strip().lower(), str(a.get("position", "")).strip().lower())
+        for a in current
+    }
+    added = []
+    for r in fresh:
+        sig = (str(r.get("species", "")).strip().lower(), str(r.get("position", "")).strip().lower())
+        if sig not in sigs:
+            current.append(r)
+            sigs.add(sig)
+            added.append(r)
+    if added:
+        world_state.update("animals", current)
+        _log.info("startle scan: merged %s", [a["species"] for a in added])
+    return added
+
+
 def count_crowd(frame) -> dict:
     """
     Count people in frame using GPT-4o vision (config detail: "scene_analysis").
@@ -1099,6 +1156,7 @@ def _scan_loop(interval_secs: float) -> None:
     last_scan_time   = 0.0   # 0.0 ensures the first iteration fires immediately
     last_monitor_time = 0.0
     last_local_animal_time = 0.0
+    last_startle_time = 0.0   # periodic startle-species scan (gap-fill when local is on)
     last_crowd_count = -1    # -1 sentinel means "never observed"
 
     while not _stop_event.is_set():
@@ -1113,9 +1171,14 @@ def _scan_loop(interval_secs: float) -> None:
             float(getattr(config, "LOCAL_ANIMAL_DETECTION_INTERVAL_SECS", 2.0) or 2.0),
         )
 
+        startle_interval = max(
+            10.0,
+            float(getattr(config, "STARTLE_DETECTION_INTERVAL_SECS", 60.0) or 60.0),
+        )
         time_elapsed = (now - last_scan_time) >= interval_secs
         monitor_elapsed = (now - last_monitor_time) >= monitor_interval
         local_animal_elapsed = (now - last_local_animal_time) >= local_animal_interval
+        startle_elapsed = (now - last_startle_time) >= startle_interval
         crowd_jumped = (last_crowd_count >= 0 and
                         abs(current_crowd - last_crowd_count) >= _CROWD_CHANGE_DELTA)
 
@@ -1130,6 +1193,26 @@ def _scan_loop(interval_secs: float) -> None:
                 last_local_animal_time = now
             else:
                 _log.debug("_scan_loop: no frame available — skipping local animal detector")
+
+        # Gap-fill: the local detector can't see snakes/spiders/wasps, so when it's the
+        # active detector run a low-frequency OpenAI startle scan (people-present, paid —
+        # so cheap cadence) and ADD any startle species so the startle reaction can fire (#29).
+        if (
+            getattr(config, "STARTLE_DETECTION_ENABLED", True)
+            and getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True)
+            and getattr(config, "ANIMAL_DETECTION_ENABLED", True)
+            and startle_elapsed
+            and _world_state_has_visible_people()
+        ):
+            frame = camera.get_frame()
+            if frame is not None:
+                try:
+                    _scan_for_startle_species(frame)
+                except Exception as exc:
+                    _log.warning("_scan_loop: startle scan error: %s", exc)
+                last_startle_time = now
+            else:
+                _log.debug("_scan_loop: no frame available — skipping startle scan")
 
         if time_elapsed or crowd_jumped:
             if crowd_jumped:
