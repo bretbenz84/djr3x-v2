@@ -2446,6 +2446,15 @@ FACE_RECOGNITION_MARGIN = 0.06
 # the world-state/overlay identity switches. Damps known<->known flicker. 1 disables.
 FACE_IDENTITY_SWITCH_CONFIRM_FRAMES = 2
 
+# An UNKNOWN face must persist this many consecutive recognition ticks before Rex treats
+# it as a real person (and lets it arm the "who's the mystery guest?" agenda). Filters
+# transient phantom faces — clutter, a shape on the wall, a glance at a messy shelf — that
+# flicker for a frame or two, while a genuine newcomer (who stays put) clears it in ~1s.
+# 1 disables the gate (old behavior); raise if phantom guests still slip through.
+FACE_UNKNOWN_CONFIRM_FRAMES = _env_int(
+    "FACE_UNKNOWN_CONFIRM_FRAMES", 3, min_value=1, max_value=30,
+)
+
 # Resemblyzer cosine similarity — higher is a better match. Real cross-session
 # same-speaker scores in a live room cluster ~0.45-0.65 (a person's own voice measured
 # at ~0.55 against their own enrolled prints), so 0.75 rejected every returning user.

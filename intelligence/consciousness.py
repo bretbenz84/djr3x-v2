@@ -294,6 +294,25 @@ _SOLO_IDENTITY_STICKY_SECS = 5.0
 # consecutive ticks — damps the known<->known HOG flicker (Bret<->Wade).
 _pending_solo_switch: Optional[tuple[int, int]] = None
 
+# Temporal persistence for UNKNOWN faces: consecutive recognition ticks on which any
+# unknown face was detected. An unknown is only exposed as a real "person" (and allowed
+# to arm the who's-the-guest agenda) after FACE_UNKNOWN_CONFIRM_FRAMES consecutive ticks,
+# so transient phantom faces (clutter, a shape on the wall, a glance at a messy shelf) are
+# ignored while a genuine newcomer — who persists — still clears the gate in ~1s.
+_unknown_visible_streak = 0
+
+
+def _unknown_confirm_frames() -> int:
+    return max(1, int(getattr(config, "FACE_UNKNOWN_CONFIRM_FRAMES", 3) or 1))
+
+
+def _update_unknown_streak(had_raw_unknown: bool) -> int:
+    """Advance the unknown-face persistence streak for one recognition tick (resets to 0
+    on a tick with no unknown face). Returns the new streak."""
+    global _unknown_visible_streak
+    _unknown_visible_streak = (_unknown_visible_streak + 1) if had_raw_unknown else 0
+    return _unknown_visible_streak
+
 # Per-person monotonic timestamp of the last departure/return reaction fired.
 _last_departure_reaction_at: dict = {}
 _last_return_reaction_at: dict = {}
@@ -3315,6 +3334,10 @@ def _step_person_recognition(frame) -> None:
 
         recognized_names: list[str] = []
         unknown_count = 0
+        had_raw_unknown = False
+        # An unknown face only counts as a real person once it has PERSISTED — compute
+        # this tick's exposure from the running streak (+1 for this tick if it has one).
+        expose_unknown = (_unknown_visible_streak + 1) >= _unknown_confirm_frames()
         any_identified_this_tick = False
         active_box_keys: set[str] = set()
         for idx, det in enumerate(detected):
@@ -3362,6 +3385,13 @@ def _step_person_recognition(frame) -> None:
                     # never updated because the slot kept face_id='Bro'/'Broski').
                     target_slot = people[idx] if idx < len(people) else None
             else:
+                had_raw_unknown = True
+                # Persistence gate: a transient unknown (clutter, a shape on the wall, a
+                # glance at a messy shelf) must NOT become a visible "person" — that armed
+                # the badgering "who's the mystery guest?" agenda on phantom faces. Skip
+                # exposing it until it has persisted FACE_UNKNOWN_CONFIRM_FRAMES ticks.
+                if not expose_unknown:
+                    continue
                 unknown_count += 1
 
             if target_slot is None:
@@ -3426,6 +3456,14 @@ def _step_person_recognition(frame) -> None:
                         incoming_name,
                         incoming_id,
                     )
+
+        # Commit this tick's unknown-persistence streak (resets when no unknown was seen).
+        _update_unknown_streak(had_raw_unknown)
+        if had_raw_unknown and not expose_unknown:
+            _log.debug(
+                "[face] unknown face held (persistence %d/%d) — not yet treated as a person",
+                _unknown_visible_streak, _unknown_confirm_frames(),
+            )
 
         for stale_key in list(_previous_face_boxes.keys()):
             if stale_key not in active_box_keys:
@@ -10856,6 +10894,7 @@ def start() -> None:
     _animal_seen_signatures.clear()
     _animal_reacted_at.clear()
     _pending_animal_arrivals.clear()
+    _update_unknown_streak(False)   # reset unknown-face persistence streak
     _last_startle_sound_reaction_at = 0.0
     _acknowledged_dates.clear()
     _acknowledged_weather_signatures.clear()

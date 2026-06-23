@@ -7691,6 +7691,7 @@ class ConversationGatingTest(unittest.TestCase):
         old_last_identity = consciousness._last_identity_prompt_at
         old_reply_until = consciousness._identity_prompt_reply_until
         old_solo_unknown = consciousness._solo_unknown_since
+        old_unknown_streak = consciousness._unknown_visible_streak
         try:
             consciousness.world_state.update("people", [])
             consciousness._last_face_feedback_signature = None
@@ -7701,6 +7702,10 @@ class ConversationGatingTest(unittest.TestCase):
             # is mocked to 100.0 below); this test exercises ACTIVE-fallback gating,
             # not the startup grace itself.
             consciousness._solo_unknown_since = 1.0
+            # The unknown has also persisted past the tick-streak gate
+            # (FACE_UNKNOWN_CONFIRM_FRAMES); this test exercises the ACTIVE-fallback
+            # prompt, not the persistence gate, so satisfy the streak up front.
+            consciousness._unknown_visible_streak = consciousness._unknown_confirm_frames()
             frame = np.zeros((720, 1280, 3), dtype=np.uint8)
 
             with (
@@ -7729,6 +7734,7 @@ class ConversationGatingTest(unittest.TestCase):
             consciousness._identity_prompt_in_flight.clear()
             consciousness._identity_prompt_reply_until = old_reply_until
             consciousness._solo_unknown_since = old_solo_unknown
+            consciousness._unknown_visible_streak = old_unknown_streak
 
     def test_identity_prompt_reply_window_consumes_or_expires(self):
         from intelligence import consciousness
