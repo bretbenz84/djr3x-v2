@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 import config
-from audio import stream, output_gate, speech_queue
+from audio import stream, output_gate, speech_queue, echo_cancel
 from world_state import world_state
 
 logger = logging.getLogger(__name__)
@@ -62,21 +62,30 @@ def stop() -> None:
 
 # ── Analysis loop ─────────────────────────────────────────────────────────────
 
+def _should_skip_cycle() -> bool:
+    """True when the scene loop must SKIP analysis because Rex is hearing his OWN
+    audio (not the room): speaker bleed into the mic produces rhythmic bursts that
+    trip _detect_laughter / _detect_music.
+
+    TTS holds the speech-queue flag; DJ/radio playback holds NEITHER the queue nor
+    the output_gate but DOES set echo_cancel.set_playing(True) — so
+    echo_cancel.is_suppressed() (True for TTS AND DJ, plus the post-playback tail) is
+    what stops Rex from startling/laughing at his own music. output_gate's tail also
+    spans module boundaries, covering startup clips that played before this loop began.
+    """
+    return (
+        speech_queue.is_speaking()
+        or echo_cancel.is_suppressed()
+        or output_gate.seconds_since_release() < config.SCENE_ANALYSIS_WINDOW_SECS
+    )
+
+
 def _analysis_loop() -> None:
     # _stop_event.wait(timeout) returns True when the event fires (stop requested),
     # False when it times out — so the loop body runs on each timeout.
     while not _stop_event.wait(timeout=config.SCENE_ANALYSIS_INTERVAL_SECS):
         try:
-            # Skip while the robot is playing its own audio, and for one window
-            # afterward — speaker bleed into the mic produces rhythmic bursts
-            # that trip _detect_laughter, and the analysis buffer still holds
-            # the playback tail until it's overwritten. seconds_since_release()
-            # spans module boundaries, so this works even on the first cycle
-            # after startup clips that played before this loop began.
-            if (
-                speech_queue.is_speaking()
-                or output_gate.seconds_since_release() < config.SCENE_ANALYSIS_WINDOW_SECS
-            ):
+            if _should_skip_cycle():
                 continue
             audio = stream.get_audio_chunk(config.SCENE_ANALYSIS_WINDOW_SECS)
             _analyze_cycle(audio)

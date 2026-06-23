@@ -216,5 +216,31 @@ class PruneTest(_TempRexDb):
         self.assertEqual(kinds.count("made_laugh"), 1)  # non-scene untouched
 
 
+class LlmSessionClearTest(unittest.TestCase):
+    """llm.clear_session() resets the per-session dedup sets so nostalgia /
+    stale-fact prompts / episodic shared-memory callbacks can re-fire in a NEW
+    conversation. They used to clear only on process restart, so each fired at
+    most once per BOOT — starving cross-conversation recall for returning visitors.
+    """
+
+    def test_clear_session_resets_all_dedup_sets(self):
+        from intelligence import llm
+        llm._nostalgia_used_this_session.add(1)
+        llm._stale_facts_asked_this_session.add(2)
+        llm._episodic_callbacks_used_this_session.add("7:I made you laugh")
+        llm.clear_session()
+        self.assertEqual(llm._nostalgia_used_this_session, set())
+        self.assertEqual(llm._stale_facts_asked_this_session, set())
+        self.assertEqual(llm._episodic_callbacks_used_this_session, set())
+
+    def test_interaction_end_session_wires_the_clear(self):
+        # _end_session is heavy (DB/IO), so don't call it — just assert the session-end
+        # path references llm.clear_session() so the dedup actually resets per session.
+        import inspect
+        from intelligence import interaction
+        src = inspect.getsource(interaction._end_session)
+        self.assertIn("llm.clear_session()", src)
+
+
 if __name__ == "__main__":
     unittest.main()

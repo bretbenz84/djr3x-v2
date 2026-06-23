@@ -340,16 +340,31 @@ _TIER_ROAST_STYLE = {
 }
 
 # Conversation IDs Rex has already surfaced as nostalgia this session, so the
-# same memory isn't called back twice. Cleared on process restart.
+# same memory isn't called back twice. Cleared per session via clear_session().
 _nostalgia_used_this_session: set[int] = set()
 
 # Fact IDs Rex has already prompted to confirm this session, so the same stale
-# fact isn't re-asked turn after turn. Cleared on process restart.
+# fact isn't re-asked turn after turn. Cleared per session via clear_session().
 _stale_facts_asked_this_session: set[int] = set()
 
 # Episodic shared-memory callbacks (rex.db) Rex has already surfaced this session,
-# keyed by "<person_id>:<summary>", so the same one isn't repeated. Process-scoped.
+# keyed by "<person_id>:<summary>", so the same one isn't repeated. Cleared per
+# session via clear_session().
 _episodic_callbacks_used_this_session: set[str] = set()
+
+
+def clear_session() -> None:
+    """Reset this module's per-session dedup state so a NEW conversation can
+    re-surface nostalgia / stale-fact prompts / episodic shared-memory callbacks.
+
+    On the long-running robot a 'session' is an ACTIVE<->IDLE cycle, NOT a process
+    restart — so without this each of these fired at most once per BOOT, silently
+    starving "I made you laugh / we played trivia" recall for returning visitors.
+    Called from interaction._end_session alongside callback_engine.clear_session().
+    """
+    _nostalgia_used_this_session.clear()
+    _stale_facts_asked_this_session.clear()
+    _episodic_callbacks_used_this_session.clear()
 
 
 def _pick_stale_fact(person_id: int) -> Optional[dict]:

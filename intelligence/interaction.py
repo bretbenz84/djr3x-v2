@@ -13023,6 +13023,7 @@ def _end_session() -> None:
             # New session token + per-session no-repeat set + volume ledger.
             from intelligence import callback_engine as _cb_engine
             _cb_engine.clear_session()
+            llm.clear_session()  # nostalgia / stale-fact / episodic-callback dedup
         except Exception:
             pass
         try:
@@ -13293,6 +13294,7 @@ def _end_session() -> None:
     try:
         from intelligence import callback_engine as _cb_engine
         _cb_engine.clear_session()
+        llm.clear_session()  # nostalgia / stale-fact / episodic-callback dedup
     except Exception:
         pass
     try:
@@ -20347,6 +20349,7 @@ def start(*, text_only: bool = False) -> None:
     try:
         from intelligence import callback_engine as _cb_engine
         _cb_engine.clear_session()
+        llm.clear_session()  # nostalgia / stale-fact / episodic-callback dedup
     except Exception:
         pass
     end_thread.clear()
