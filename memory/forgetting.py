@@ -130,7 +130,7 @@ def forget_specific_memory(person_id: int, target: str) -> ForgetResult:
     result.deleted["facts"] = _delete_matching(
         "person_facts",
         person_id,
-        ("category", "key", "value", "source"),
+        ("key", "value"),   # content only — never the 'category'/'source' metadata columns
         terms,
     )
     result.deleted["events"] = _delete_matching(
@@ -142,7 +142,7 @@ def forget_specific_memory(person_id: int, target: str) -> ForgetResult:
     result.deleted["emotional_events"] = _delete_matching(
         "person_emotional_events",
         person_id,
-        ("category", "description", "loss_subject", "loss_subject_kind", "loss_subject_name"),
+        ("description", "loss_subject", "loss_subject_kind", "loss_subject_name"),  # not 'category'
         terms,
     )
     result.deleted["conversations"] = _delete_matching(
@@ -160,17 +160,14 @@ def forget_specific_memory(person_id: int, target: str) -> ForgetResult:
     result.deleted["preferences"] = _delete_matching(
         "person_preferences",
         person_id,
-        ("domain", "preference_type", "key", "value", "source"),
+        ("key", "value"),   # content only — not 'domain'/'preference_type'/'source'
         terms,
     )
     result.deleted["interests"] = _delete_matching(
         "person_interests",
         person_id,
-        (
+        (   # content only — not 'category'/'interest_strength'/'source' metadata
             "name",
-            "category",
-            "interest_strength",
-            "source",
             "notes",
             "associated_people",
             "associated_stories",
@@ -180,7 +177,7 @@ def forget_specific_memory(person_id: int, target: str) -> ForgetResult:
     result.deleted["callbacks"] = _delete_matching(
         "person_callback_material",
         person_id,
-        ("premise", "topic_slug", "category", "source_quote"),
+        ("premise", "topic_slug", "source_quote"),   # content only — not 'category'
         terms,
     )
     result.deleted["relationships"] = _delete_matching_relationships(person_id, terms)
@@ -228,23 +225,20 @@ def forget_memory_detail(person_id: int, target: str) -> ForgetResult:
     result.deleted["facts"] = _delete_matching(
         "person_facts",
         person_id,
-        ("category", "key", "value", "source"),
+        ("key", "value"),   # content only — never the 'category'/'source' metadata columns
         terms,
     )
     result.deleted["preferences"] = _delete_matching(
         "person_preferences",
         person_id,
-        ("domain", "preference_type", "key", "value", "source"),
+        ("key", "value"),   # content only — not 'domain'/'preference_type'/'source'
         terms,
     )
     result.deleted["interests"] = _delete_matching(
         "person_interests",
         person_id,
-        (
+        (   # content only — not 'category'/'interest_strength'/'source' metadata
             "name",
-            "category",
-            "interest_strength",
-            "source",
             "notes",
             "associated_people",
             "associated_stories",
@@ -254,7 +248,7 @@ def forget_memory_detail(person_id: int, target: str) -> ForgetResult:
     result.deleted["callbacks"] = _delete_matching(
         "person_callback_material",
         person_id,
-        ("premise", "topic_slug", "category", "source_quote"),
+        ("premise", "topic_slug", "source_quote"),   # content only — not 'category'
         terms,
     )
     return result
@@ -264,14 +258,10 @@ def fact_or_event_matches(payload: dict, terms: set[str]) -> bool:
     """Return True when an extracted fact/event payload mentions forgotten terms."""
     return row_matches_terms(
         payload,
-        (
-            "category",
-            "domain",
-            "preference_type",
+        (   # content fields only — not 'category'/'domain'/'preference_type'/'interest_strength'
             "key",
             "value",
             "name",
-            "interest_strength",
             "notes",
             "associated_people",
             "associated_stories",

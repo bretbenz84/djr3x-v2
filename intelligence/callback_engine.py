@@ -494,6 +494,34 @@ def _llm_candidate(text: str) -> Optional[dict]:
     return {"premise": premise, "topic": topic, "category": category}
 
 
+def _looks_like_thirdparty_premise(text: str) -> bool:
+    """True if the turn is about a THIRD PERSON, not the speaker — so it must never be
+    banked. A deterministic backstop for the secondhand-exclusion invariant that the LLM
+    prompt only *requests*. Conservative by design: a turn that drags in someone else's
+    hobby is dropped rather than risk Rex roasting the user about their brother's passion
+    as if it were the user's own."""
+    t = text or ""
+    # Possessive reference to another person ("my brother", "her coworker", ...).
+    if re.search(
+        r"\b(?:my|his|her|their|our|the)\s+"
+        r"(?:mom|mother|dad|father|parents?|brother|sister|sibling|son|daughter|kids?|"
+        r"wife|husband|spouse|partner|boyfriend|girlfriend|fiance[e]?|friend|buddy|"
+        r"cousin|uncle|aunt|grandpa|grandma|grandmother|grandfather|nephew|niece|"
+        r"co-?worker|colleague|boss|roommate|neighbou?r|teammate)\b",
+        t, re.IGNORECASE,
+    ):
+        return True
+    # A third person explicitly performing the activity ("he collects", "she's into").
+    if re.search(
+        r"\b(?:he|she|they)\s+"
+        r"(?:is|are|was|were|loves?|likes?|collects?|plays?|does|enjoys?|builds?|"
+        r"makes?|prints?|restores?|writes?|reads?|'s|'re)\b",
+        t, re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
 def bank_from_turn(person_id: Optional[int], text: str) -> Optional[int]:
     """Extract and store at most one callback candidate from one user turn.
     Runs on the post-response background thread; caller has already applied
@@ -516,6 +544,12 @@ def bank_from_turn(person_id: Optional[int], text: str) -> Optional[int]:
     if candidate is None:
         candidate = _heuristic_candidate(cleaned)
     if candidate is None:
+        return None
+
+    # Hard third-party backstop: the secondhand-exclusion invariant can't ride on the
+    # LLM prompt alone. Drop turns about someone else's hobby before they're banked.
+    if _looks_like_thirdparty_premise(cleaned):
+        _log.debug("[callback] dropped third-party premise for person %s", person_id)
         return None
 
     # Sensitivity: deterministic wall over everything we'd store; the model

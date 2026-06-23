@@ -4844,12 +4844,14 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
         # Notable calendar date (once per session per date)
         notable_date = snapshot.get("time", {}).get("notable_date")
         if notable_date and notable_date not in _acknowledged_dates:
-            _acknowledged_dates.add(notable_date)
+            # Stash the dedupe key; only consume it if THIS trigger is the one chosen
+            # below (else a co-occurring weather/tod change would swallow it unspoken).
             _add_trigger(
                 f"Today is {notable_date}. Make one spontaneous in-character remark about it "
                 "as if you just noticed the date. Deliver it Rex-style.",
                 "excited",
                 label=f"notable date: {notable_date}",
+                metadata={"ack_date": notable_date},
             )
 
         # Part of day rolled over (morning → afternoon → evening → night). The hour
@@ -4866,13 +4868,13 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                 and curr_tod != prev_tod
                 and curr_tod not in _acknowledged_tod
             ):
-                _acknowledged_tod.add(curr_tod)
                 _add_trigger(
                     f"The time of day just rolled over to {str(curr_tod).replace('_', ' ')}. "
                     "Make one short, spontaneous in-character remark as if you just "
                     "noticed the hour/light shifting. Don't recite the literal clock time.",
                     "curious",
                     label=f"time of day: {curr_tod}",
+                    metadata={"ack_tod": curr_tod},
                 )
 
         # Notable weather change. Weather comes from the network feed, not body
@@ -4921,8 +4923,6 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                     and signature not in _acknowledged_weather_signatures
                     and (time.monotonic() - _last_weather_reaction_at) >= cooldown
                 ):
-                    _acknowledged_weather_signatures.add(signature)
-                    _last_weather_reaction_at = time.monotonic()
                     location = curr_weather.get("location") or "the local area"
                     desc = curr_weather.get("description") or condition
                     temp_clause = f"{temp_int}°F" if temp_int is not None else "temperature unavailable"
@@ -4938,6 +4938,7 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
                             "weather_signature": signature,
                             "weather_condition": condition,
                             "weather_bucket": bucket,
+                            "ack_weather_signature": signature,
                         },
                     )
 
@@ -4949,6 +4950,16 @@ def _step_proactive_reactions(snapshot: dict, profile: SituationProfile) -> None
             ]
             trigger = random.choice(surprise_triggers or triggers)
             metadata = trigger.get("metadata") or {}
+            # Consume dedupe state ONLY for the trigger actually chosen this tick — the
+            # un-chosen co-occurring triggers stay un-acknowledged so they can fire next
+            # tick instead of being permanently swallowed.
+            if metadata.get("ack_date"):
+                _acknowledged_dates.add(metadata["ack_date"])
+            if metadata.get("ack_tod"):
+                _acknowledged_tod.add(metadata["ack_tod"])
+            if metadata.get("ack_weather_signature"):
+                _acknowledged_weather_signatures.add(metadata["ack_weather_signature"])
+                _last_weather_reaction_at = time.monotonic()
             if metadata.get("startle_sound_event"):
                 _last_startle_sound_reaction_at = time.monotonic()
             _prime_emotion_trigger(metadata)
@@ -10806,6 +10817,7 @@ def start() -> None:
     _animal_reacted_at.clear()
     _pending_animal_arrivals.clear()
     _last_startle_sound_reaction_at = 0.0
+    _acknowledged_dates.clear()
     _acknowledged_weather_signatures.clear()
     _acknowledged_tod.clear()
     _last_weather_reaction_at = 0.0

@@ -22,9 +22,22 @@ _CANCEL_PAT = re.compile(
     r"\b("
     r"not going|not gonna|not doing|not happening|"
     r"no longer going|no longer doing|"
-    r"cancel(?:ed|led|s|ing)?|called off|scrubbed|postponed|"
+    r"cancel(?:ed|led|s|ing)?|called off|scrubbed|"
     r"can'?t make it|won'?t make it|not anymore|not any more|"
     r"changed my mind|skip(?:ping)? it"
+    r")\b",
+    re.IGNORECASE,
+)
+# Postponement / reschedule — a DIFFERENT outcome from cancellation: the plan still
+# exists, just at a new (often unknown) time. Must NOT cancel the event (that durably
+# loses it); instead it's kept open + re-dated (see reschedule_event / looks_like_postponement).
+_POSTPONE_PAT = re.compile(
+    r"\b("
+    r"postpone(?:d|s|ment)?|reschedul(?:e|ed|es|ing)?|"
+    r"push(?:ed|ing)?\s+(?:it\s+|them\s+|that\s+)?back|"
+    r"put\s+(?:it\s+|them\s+|that\s+)?off|"
+    r"mov(?:e|ed|ing)\s+(?:it|them|that)\s+to|"
+    r"new\s+date|rain\s?check(?:ed)?"
     r")\b",
     re.IGNORECASE,
 )
@@ -74,6 +87,20 @@ def looks_like_cancellation(text: str) -> bool:
     """
     text = text or ""
     if not _CANCEL_PAT.search(text):
+        return False
+    if _NOT_A_CANCELLATION_PAT.search(text):
+        return False
+    return True
+
+
+def looks_like_postponement(text: str) -> bool:
+    """Return True when text reschedules (not cancels) a planned event.
+
+    A postponement keeps the event OPEN; the caller should reschedule_event() it
+    rather than cancel it. Shares the false-positive guard with cancellation so
+    "on my way to the postponed meetup" isn't treated as a reschedule signal."""
+    text = text or ""
+    if not _POSTPONE_PAT.search(text):
         return False
     if _NOT_A_CANCELLATION_PAT.search(text):
         return False
@@ -199,6 +226,26 @@ def cancel_event(event_id: int, reason: str = "") -> None:
     )
 
 
+def reschedule_event(event_id: int, new_date: Optional[str] = None) -> None:
+    """Keep a postponed event OPEN (status='planned', not followed up) and refresh
+    mentioned_at so it stops re-prompting immediately. event_date is set to ``new_date``
+    when known; when None the now-stale date is CLEARED so the event becomes an undated
+    open plan rather than a perpetually-overdue follow-up. The inverse of cancel_event:
+    a reschedule must never durably lose the plan."""
+    db.execute(
+        """UPDATE person_events
+           SET event_date = ?,
+               status = 'planned',
+               followed_up = FALSE,
+               canceled_at = NULL,
+               outcome = NULL,
+               mentioned_at = ?,
+               updated_at = ?
+           WHERE id = ?""",
+        (new_date, _now(), _now(), int(event_id)),
+    )
+
+
 def get_upcoming_events(person_id: int) -> list[dict]:
     """Return today-or-future events that have not yet been followed up on."""
     today = _today_local()
@@ -272,6 +319,47 @@ def cancel_matching_events(
         canceled.append(open_events[0])
 
     return canceled
+
+
+def postpone_matching_events(
+    person_id: int,
+    text: str,
+    *,
+    event_hint: Optional[dict] = None,
+    new_date: Optional[str] = None,
+) -> list[dict]:
+    """Reschedule (keep open) planned events the user said were postponed/moved.
+
+    Mirrors cancel_matching_events' matching (event_hint wins, else token overlap,
+    else the single open event) but calls reschedule_event instead of cancel_event,
+    so a postponed plan survives and Rex keeps anticipating it."""
+    if person_id is None or not looks_like_postponement(text):
+        return []
+
+    rescheduled: list[dict] = []
+    if event_hint and event_hint.get("id") is not None:
+        reschedule_event(int(event_hint["id"]), new_date)
+        rescheduled.append(dict(event_hint))
+        return rescheduled
+
+    open_events = get_open_events(person_id)
+    if not open_events:
+        return []
+
+    hint_text = ""
+    if event_hint:
+        hint_text = str(event_hint.get("event_name") or event_hint.get("event_notes") or "")
+    text_tokens = _tokens(" ".join([text or "", hint_text]))
+    for ev in open_events:
+        if text_tokens & _event_tokens(ev):
+            reschedule_event(int(ev["id"]), new_date)
+            rescheduled.append(ev)
+
+    if not rescheduled and len(open_events) == 1:
+        reschedule_event(int(open_events[0]["id"]), new_date)
+        rescheduled.append(open_events[0])
+
+    return rescheduled
 
 
 def delete_events(person_id: int) -> None:

@@ -312,9 +312,9 @@ def do_live_vision_comment(snapshot: dict) -> None:
     cooldown = getattr(config, "LIVE_VISION_COMMENT_COOLDOWN_SECS", 300.0)
     if (now - _last_live_vision_comment_at) < cooldown:
         return
-    _last_live_vision_comment_at = now
 
     def _task():
+        global _last_live_vision_comment_at
         try:
             if not _c._can_proactive_speak():
                 return
@@ -337,6 +337,9 @@ def do_live_vision_comment(snapshot: dict) -> None:
                 emotion="curious",
                 purpose="visual_curiosity",
             )
+            # Stamp the cooldown only now that a line was actually produced — a gate
+            # failure or empty scene above must not burn the full cooldown on a no-op.
+            _last_live_vision_comment_at = time.monotonic()
         except Exception as exc:
             _log.debug("live vision comment error: %s", exc)
 
@@ -464,9 +467,9 @@ def do_bored_environment_snark(snapshot: dict) -> None:
     cooldown = float(getattr(config, "BORED_ENV_SNARK_COOLDOWN_SECS", 240.0))
     if (now - _last_bored_env_snark_at) < cooldown:
         return
-    _last_bored_env_snark_at = now
 
     def _task():
+        global _last_bored_env_snark_at
         try:
             if not _c._can_proactive_speak():
                 return
@@ -500,6 +503,9 @@ def do_bored_environment_snark(snapshot: dict) -> None:
                 purpose="visual_curiosity",
                 label=f"bored env snark ({mode})",
             )
+            # Stamp the cooldown only after a line was produced — gate failure or an
+            # empty scene above must not burn the full cooldown on a no-op.
+            _last_bored_env_snark_at = time.monotonic()
         except Exception as exc:
             _log.debug("bored env snark error: %s", exc)
 

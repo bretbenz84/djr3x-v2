@@ -12104,6 +12104,10 @@ def _resolve_awaiting_followup(text: str, person_id: Optional[int]) -> Optional[
                 labels = _cancel_stale_event_memory(target_pid, text, event_hint=event_hint)
                 if labels:
                     event_cancellation_ack = _event_cancellation_ack(labels, target_pid)
+            elif not did_not_happen and events_memory.looks_like_postponement(text):
+                # Postponed, not done: keep the event OPEN and re-dated so Rex anticipates
+                # it again later, instead of closing the loop and losing the plan.
+                events_memory.reschedule_event(int(pending_event_id))
             else:
                 # Real answer, an "I didn't go", or a give-up: close the loop in memory so
                 # this event stops surfacing.
@@ -19365,6 +19369,10 @@ def _handle_speech_segment(
                     except Exception:
                         cancel_person_id = None
                 labels = _cancel_stale_event_memory(cancel_person_id, text)
+                if not labels:
+                    # A postponement isn't a cancellation — reschedule (keep open) any
+                    # matching plan so it survives. No-op unless looks_like_postponement.
+                    events_memory.postpone_matching_events(cancel_person_id, text)
                 if (
                     not labels
                     and _router_decision_executable(

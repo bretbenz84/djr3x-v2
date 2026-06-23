@@ -298,6 +298,53 @@ class BankerTests(_TempDbCase):
         self.assertEqual(row["category"], "passion")
         self.assertEqual(row["topic_slug"], "astrophotography")
 
+    def test_thirdparty_premise_rejected_even_if_model_says_yes(self):
+        """Secondhand material about a third person must never be banked (#20)."""
+        from intelligence import callback_engine as ce
+        from memory import callbacks
+
+        raw_yes = (
+            "Found: yes\n"
+            "Premise: is obsessed with rock climbing\n"
+            "Topic: rock climbing\n"
+            "Category: passion"
+        )
+        third_party = [
+            "My brother is obsessed with rock climbing",
+            "My sister loves painting miniatures",
+            "He collects vintage synthesizers",
+            "My coworker plays competitive chess every weekend",
+        ]
+        for utterance in third_party:
+            with (
+                mock.patch.object(ce, "_llm_allowed", return_value=True),
+                mock.patch.object(ce, "_generate", return_value=raw_yes),
+            ):
+                row_id = ce.bank_from_turn(self.person_id, utterance)
+            self.assertIsNone(row_id, f"third-party should be rejected: {utterance!r}")
+        self.assertEqual(len(callbacks.get_all(self.person_id)), 0)
+
+    def test_firstperson_premise_still_banks(self):
+        """The third-party guard must not eat legitimate first-person premises."""
+        from intelligence import callback_engine as ce
+        from memory import callbacks
+
+        raw_yes = (
+            "Found: yes\n"
+            "Premise: is obsessed with rock climbing\n"
+            "Topic: rock climbing\n"
+            "Category: passion"
+        )
+        with (
+            mock.patch.object(ce, "_llm_allowed", return_value=True),
+            mock.patch.object(ce, "_generate", return_value=raw_yes),
+        ):
+            row_id = ce.bank_from_turn(
+                self.person_id, "I'm obsessed with rock climbing these days"
+            )
+        self.assertIsNotNone(row_id)
+        self.assertEqual(len(callbacks.get_all(self.person_id)), 1)
+
     def test_protected_content_lands_excluded_even_if_model_says_yes(self):
         from intelligence import callback_engine as ce
         from memory import callbacks

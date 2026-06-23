@@ -31,16 +31,58 @@ class LooksLikeCancellationTest(unittest.TestCase):
             "I'm not going anymore",
             "changed my mind about it",
             "I can't make it",
-            "they postponed it",
             "not going to make it after all",
             "we scrubbed the whole thing",
         ]:
             with self.subTest(text=text):
                 self.assertTrue(events.looks_like_cancellation(text))
 
+    def test_postponements_are_not_cancellations(self):
+        # A reschedule is NOT a cancellation — it must not durably lose the plan.
+        for text in [
+            "they postponed it",
+            "we rescheduled for next week",
+            "moved it to Friday",
+            "we're pushing it back a bit",
+            "had to put it off",
+        ]:
+            with self.subTest(text=text):
+                self.assertFalse(events.looks_like_cancellation(text))
+
     def test_empty_and_none(self):
         self.assertFalse(events.looks_like_cancellation(""))
         self.assertFalse(events.looks_like_cancellation(None))
+
+
+class LooksLikePostponementTest(unittest.TestCase):
+    def test_postponements_detected(self):
+        for text in [
+            "they postponed it",
+            "postponed until next week",
+            "we rescheduled for next Tuesday",
+            "moved it to Friday",
+            "we're pushing it back",
+            "had to put it off",
+            "we set a new date",
+        ]:
+            with self.subTest(text=text):
+                self.assertTrue(events.looks_like_postponement(text))
+
+    def test_cancellations_are_not_postponements(self):
+        for text in [
+            "I'm not going anymore",
+            "canceled the whole thing",
+            "changed my mind about it",
+        ]:
+            with self.subTest(text=text):
+                self.assertFalse(events.looks_like_postponement(text))
+
+    def test_false_positive_idioms_guarded(self):
+        # "on my way" shares the cancellation false-positive guard.
+        self.assertFalse(events.looks_like_postponement(
+            "I'm on my way to the postponed session"))
+        self.assertFalse(events.looks_like_postponement(""))
+        self.assertFalse(events.looks_like_postponement(None))
 
 
 if __name__ == "__main__":
