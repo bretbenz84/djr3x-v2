@@ -101,6 +101,18 @@ struct GamepadLive {
   uint32_t btn_mask = 0;     // pressed buttons; bit order = GP_BTN_* in gamepad.cpp
 };
 
+// ===== Per-wheel drive diagnostics (telemetry only) =======================
+// Measured wheel speed (m/s, encoder-derived) and the commanded PWM duty for each
+// wheel THIS control tick — for diagnosing left/right asymmetry (a slower-ramping
+// wheel, an encoder-scale mismatch, etc.). Written by the real HAL under the state
+// lock; stays 0 in the stub build. Straight push: dl≈dr with vl<vr => the left
+// drivetrain is physically weaker (PID hasn't compensated yet / soft tune);
+// vl≈vr but the robot physically veers => an encoder is mis-scaled.
+struct WheelDiag {
+  float   vl = 0, vr = 0;     // measured wheel speed, m/s (encoder-derived)
+  int16_t dl = 0, dr = 0;     // commanded duty, -PWM_DUTY_MAX..+PWM_DUTY_MAX
+};
+
 // ===== The whole shared state =============================================
 struct MotionContext {
   MotionParams params;
@@ -122,6 +134,7 @@ struct MotionContext {
   bool      full_override = false;     // gamepad bypasses ToF zone/cliff gating (held)
   uint32_t  last_manual_input_ms = 0;  // last meaningful gamepad input (idle-autoreturn)
   GamepadLive gp_live;                 // live pad mirror for the GUI (telemetry only)
+  WheelDiag   wheels;                  // per-wheel measured speed + duty (telemetry diag)
 
   uint32_t  cmd_seq   = 0;        // last applied command seq (telemetry)
   uint32_t  seq_alloc = 0;        // (unused on fw side; Mac allocates)

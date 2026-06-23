@@ -259,6 +259,30 @@ def cmd_bringup(c, args):
     print("=" * 72)
 
 
+def cmd_wheels(c, _args):
+    """Stream the per-wheel drive diagnostic (firmware telemetry `wheels`). Drive
+    STRAIGHT on the gamepad and read vl/vr (measured wheel speed, m/s) + dl/dr
+    (commanded duty):
+      dl~dr but vl<vr  -> left drivetrain physically weaker; the PID isn't
+                          compensating yet (soft tune) — raise kp/kd, measure cpm.
+      dl>dr and vl~vr  -> PID IS compensating (more duty to the lagging wheel);
+                          the ramp lag is the transient before the loop catches up.
+      vl~vr but it physically veers -> an encoder is mis-scaled (shared-cpm issue)."""
+    print("PER-WHEEL DIAGNOSTIC — drive straight on the gamepad; watch vl/vr and dl/dr.")
+    print("  Ctrl-C to stop.\n")
+    try:
+        while True:
+            t = c.telemetry() or {}
+            o, w = t.get("odom", {}), t.get("wheels", {})
+            vl, vr = w.get("vl", 0.0), w.get("vr", 0.0)
+            print(f"  {str(t.get('state')):>8}  lin={o.get('lin', 0):+.3f} theta={o.get('theta', 0):+.3f}"
+                  f"  vl={vl:+.3f} vr={vr:+.3f} (d={vr - vl:+.3f})"
+                  f"  dl={int(w.get('dl', 0)):+5d} dr={int(w.get('dr', 0)):+5d}", end="\r")
+            time.sleep(0.13)
+    except KeyboardInterrupt:
+        print()
+
+
 def main():
     ap = argparse.ArgumentParser(description="DJ-R3X motion bench / calibration tool")
     ap.add_argument("--port", default=DEFAULT_PORT,
@@ -267,6 +291,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("encoder")
     sub.add_parser("spin")
+    sub.add_parser("wheels")
     sp = sub.add_parser("straight"); sp.add_argument("--dist", type=float, default=1.0)
     tp = sub.add_parser("turn"); tp.add_argument("--deg", type=float, default=360.0)
     bp = sub.add_parser("bringup")
@@ -280,8 +305,9 @@ def main():
     st.add_argument("--track-width", type=float, dest="track_width")
     args = ap.parse_args()
 
-    handlers = {"encoder": cmd_encoder, "spin": cmd_spin, "straight": cmd_straight,
-                "turn": cmd_turn, "bringup": cmd_bringup, "show": cmd_show, "set": cmd_set}
+    handlers = {"encoder": cmd_encoder, "spin": cmd_spin, "wheels": cmd_wheels,
+                "straight": cmd_straight, "turn": cmd_turn, "bringup": cmd_bringup,
+                "show": cmd_show, "set": cmd_set}
     if not args.port:
         ap.error("no serial port — set MOTION_ESP32_PORT in .env or pass --port "
                  "(find it with `arduino-cli board list`)")

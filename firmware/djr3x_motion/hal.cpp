@@ -123,6 +123,8 @@ void hal_read_odom(Odom& out, float dt) {
   const float inv_dt = (dt > 1e-4f) ? (1.0f / dt) : 0.0f;
   s_vmeas_l = d_l * inv_dt;
   s_vmeas_r = d_r * inv_dt;
+  g_ctx.wheels.vl = s_vmeas_l;   // telemetry diag (caller holds the state lock)
+  g_ctx.wheels.vr = s_vmeas_r;
 
   const float d_center = 0.5f * (d_l + d_r);
   const float d_theta  = (d_r - d_l) / track;           // +d_theta = CCW (REP-103)
@@ -173,6 +175,8 @@ void hal_drive_velocity(float lin, float ang, float dt) {
   const int duty_r = wheel_pid(v_r, s_vmeas_r, s_i_r, s_eprev_r, dt, kp, ki, kd);
   apply_wheel_duty(PIN_L_RPWM, PIN_L_LPWM, duty_l);
   apply_wheel_duty(PIN_R_RPWM, PIN_R_LPWM, duty_r);
+  g_ctx.wheels.dl = (int16_t)duty_l;   // telemetry diag (caller holds the state lock)
+  g_ctx.wheels.dr = (int16_t)duty_r;
 }
 
 void hal_motors_off() {
@@ -180,6 +184,7 @@ void hal_motors_off() {
   pwm_write(PIN_R_RPWM, 0); pwm_write(PIN_R_LPWM, 0);
   motors_enable(false);
   reset_pid();
+  g_ctx.wheels.dl = 0; g_ctx.wheels.dr = 0;   // duties off (caller holds the state lock)
 }
 
 // hal_read_tof()/hal_tof_init() live in tof.cpp — they are gated by MOTION_TOF_PRESENT

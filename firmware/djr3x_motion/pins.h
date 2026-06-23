@@ -19,8 +19,15 @@
 // R_EN+L_EN of each driver are tied together to a single enable GPIO (pull LOW to
 // coast/disable). hal.cpp drives these via LEDC PWM (the channel mapping is handled
 // there for both Arduino-ESP32 core 2.x and 3.x).
-#define PIN_L_RPWM   16   // left  motor, forward duty (RPWM)
-#define PIN_L_LPWM   17   // left  motor, reverse duty (LPWM)
+// LEFT PWM is on 13/14 — DO NOT move it back to 16/17. 2026-06-23: a "left motor
+// always slow" fault followed the LEFT channel even after swapping the motors (and the
+// JGB37-520's encoder is integrated, so that ruled out motor + encoder). Moving the
+// left PWM 16/17 -> 13/14 FIXED it — both wheels then hit full speed. GPIO16/17 are the
+// WROVER PSRAM pins (and the default UART2 pins); on this board they degraded the PWM
+// there. 13/14 are clean output GPIOs (no strapping/PSRAM/UART2 baggage). The two left
+// PWM signal wires are physically on GPIO13/14.
+#define PIN_L_RPWM   13   // left  motor, forward duty (RPWM)  [moved off 16 — see note]
+#define PIN_L_LPWM   14   // left  motor, reverse duty (LPWM)  [moved off 17 — see note]
 #define PIN_R_RPWM   18   // right motor, forward duty (RPWM)
 #define PIN_R_LPWM   19   // right motor, reverse duty (LPWM)
 #define PIN_L_EN     23   // left  driver enable (R_EN+L_EN tied)
@@ -41,7 +48,8 @@
 // ---- I2C — the ToF bus: 8 sensors behind a TCA9548A mux (docs §6) ----------
 // Only consulted when MOTION_TOF_PRESENT==1 (tof.cpp). The 8 sensors (4× VL53L0X on
 // mux ch 0-3 + 4× VL53L1X on mux ch 4-7) all share this one bus; the mux selects one
-// at a time, so NO XSHUT GPIOs are needed (4/5/13/14/15 are free). XSHUT sequencing is
+// at a time, so NO XSHUT GPIOs are needed (4/5/15 free; 13/14 now drive the left PWM —
+// see the diagnostic note above). XSHUT sequencing is
 // unsupported for this layout (8 sensors > free GPIOs — tof.cpp #errors on it), so
 // there are no PIN_TOF_XSHUT_* defines.
 #define PIN_I2C_SDA  21

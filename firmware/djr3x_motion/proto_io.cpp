@@ -44,11 +44,11 @@ void emit_telemetry() {
   // Snapshot under the lock, format outside it.
   MotionState st; MotionOwner ow; MotionGamepad gp; MotionFault fl;
   MotionZone z; MotionDir bd; uint32_t cs, errs; Odom od; TofMm tf; int16_t bm;
-  GamepadLive gpl;
+  GamepadLive gpl; WheelDiag wd;
   LOCK_STATE();
   st = g_ctx.state; ow = g_ctx.owner; gp = g_ctx.gamepad; fl = g_ctx.fault;
   z = g_ctx.zone; bd = g_ctx.blocked_dir; cs = g_ctx.cmd_seq; errs = g_ctx.errs;
-  od = g_ctx.odom; tf = g_ctx.tof; bm = g_ctx.batt_mv; gpl = g_ctx.gp_live;
+  od = g_ctx.odom; tf = g_ctx.tof; bm = g_ctx.batt_mv; gpl = g_ctx.gp_live; wd = g_ctx.wheels;
   UNLOCK_STATE();
 
   JsonDocument doc;
@@ -64,6 +64,10 @@ void emit_telemetry() {
   doc["cmd_seq"] = cs;
   JsonObject o = doc["odom"].to<JsonObject>();
   o["x"] = od.x; o["y"] = od.y; o["theta"] = od.theta; o["lin"] = od.lin; o["ang"] = od.ang;
+  // Per-wheel drive diagnostics: measured speed (m/s) + commanded duty, for
+  // left/right asymmetry debugging (see WheelDiag in context.h).
+  JsonObject w = doc["wheels"].to<JsonObject>();
+  w["vl"] = wd.vl; w["vr"] = wd.vr; w["dl"] = wd.dl; w["dr"] = wd.dr;
   JsonObject t = doc["tof_mm"].to<JsonObject>();
   t["front"] = tf.front; t["rear"] = tf.rear; t["left"] = tf.left; t["right"] = tf.right;
   t["fl"] = tf.fl; t["fr"] = tf.fr; t["rl"] = tf.rl; t["rr"] = tf.rr;
