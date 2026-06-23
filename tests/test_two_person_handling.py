@@ -70,21 +70,17 @@ class GuiPoseCoherenceTest(unittest.TestCase):
         self.assertFalse(vp._pose_face_coherent({"face_visible": True}, head_at_face, 1920, 1080, 0.20))
 
 
-class CelebrityBitGateTest(unittest.TestCase):
-    def test_stranger_named_jt_gets_no_celebrity_bit(self):
+class CelebrityBitTest(unittest.TestCase):
+    def test_jt_volleyball_bit_fires_on_the_name(self):
+        # The JT volleyball easter-egg is INTENTIONAL and fires as soon as the name is
+        # known — including a fresh introduction (Bret programmed it for his partner JT).
         from intelligence import person_specials as ps
-        stranger = {"friendship_tier": "stranger", "visit_count": 1}
-        established = {"friendship_tier": "friend", "visit_count": 5}
-        self.assertFalse(ps.name_keyed_bit_allowed(stranger))
-        self.assertTrue(ps.name_keyed_bit_allowed(established))
-        # prompt hook suppressed for a stranger, present for established
-        self.assertIsNone(ps.special_prompt_context("JT", established=False))
-        self.assertIn("volleyball", (ps.special_prompt_context("JT", established=True) or "").lower())
+        self.assertTrue(ps.is_jt_volleyball_celebrity("JT"))
+        self.assertIn("volleyball", (ps.special_prompt_context("JT") or "").lower())
 
-    def test_creator_bit_always_fires(self):
+    def test_creator_bit_fires(self):
         from intelligence import person_specials as ps
-        # Even with established=False (e.g. a fresh record), the creator hook still applies.
-        self.assertIn("creator", (ps.special_prompt_context("Bret Benziger", established=False) or "").lower())
+        self.assertIn("creator", (ps.special_prompt_context("Bret Benziger") or "").lower())
 
 
 class HumanOnlyExtractionTest(unittest.TestCase):

@@ -854,9 +854,10 @@ venv/bin/python main.py
     `GUI_POSE_FACE_COHERENCE_DIST`) — kills phantom wireframes "above" people and mis-bound
     ones. Fact/interest/preference extraction filters to HUMAN turns only
     (`llm._human_turns_only`) so Rex's own bits (e.g. "JT volleyball celebrity") can't be
-    stored as a person's facts. Name-keyed celebrity bits (`person_specials`) only fire for
-    an ESTABLISHED person (`name_keyed_bit_allowed`), not a freshly-introduced stranger whose
-    name collides. The "who's the mystery guest?" agenda stands down for
+    stored as a person's facts (the name-keyed celebrity bits in `person_specials`, e.g. the
+    JT volleyball easter-egg, are INTENTIONAL and still fire on the name — including a fresh
+    introduction; the human-only filter just stops the bit's content from being persisted as
+    a real interest). The "who's the mystery guest?" agenda stands down for
     `UNKNOWN_GUEST_AGENDA_SUPPRESS_AFTER_INTRO_SECS` after an intro
     (`introductions.intro_recent`). Test: `tests/test_two_person_handling.py`.
 - Tidy-up — episodic capture hooks → `intelligence/episodic_hooks.py` (leaf module; consciousness calls `episodic_hooks.<name>`).

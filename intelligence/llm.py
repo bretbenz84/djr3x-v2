@@ -581,11 +581,7 @@ def _build_person_context(person_id: int) -> str:
     tier = person.get("friendship_tier", "stranger")
     lines.append(f"Person: {name} (tier: {tier}).")
 
-    # Name-keyed celebrity bits (JT, hair-stylist) only fire for an ESTABLISHED person —
-    # not a stranger introduced this session whose name collides with a VIP (the JT run).
-    special_context = person_specials.special_prompt_context(
-        name, established=person_specials.name_keyed_bit_allowed(person)
-    )
+    special_context = person_specials.special_prompt_context(name)
     if special_context:
         lines.append(special_context)
 

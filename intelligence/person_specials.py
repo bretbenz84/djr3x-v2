@@ -99,21 +99,6 @@ def is_special_person(name: object) -> bool:
     )
 
 
-def name_keyed_bit_allowed(person: object) -> bool:
-    """Whether the NAME-KEYED celebrity bits (JT volleyball, galactic hair stylist) may
-    fire for this person record. They are inside-jokes for people Rex KNOWS ON SIGHT, so
-    they only fire for an ESTABLISHED person — never a stranger introduced this session
-    whose name merely collides (the JT run: Bret's brand-new partner is also named JT, and
-    Rex wrongly did the volleyball-celebrity bit on him). The creator bit is exempt and
-    always applies — Bret is always special. Established = a non-stranger tier OR >=2 visits."""
-    if not isinstance(person, dict):
-        return False
-    tier = str(person.get("friendship_tier") or "stranger").strip().lower()
-    try:
-        visits = int(person.get("visit_count") or 0)
-    except (TypeError, ValueError):
-        visits = 0
-    return tier not in {"", "stranger", "newcomer"} or visits >= 2
 
 
 def jt_volleyball_line(*, returning: bool = False) -> str:
@@ -224,13 +209,17 @@ def galactic_hair_stylist_prompt_context(name: object) -> Optional[str]:
     )
 
 
-def special_prompt_context(name: object, *, established: bool = True) -> Optional[str]:
-    """Special-person prompt hooks for this name. The creator bit always applies; the
-    name-keyed celebrity bits (JT, hair-stylist) only when ``established`` (so a stranger
-    whose name collides with a VIP doesn't get the bit injected — see name_keyed_bit_allowed)."""
-    parts = [rex_creator_prompt_context(name)]
-    if established:
-        parts.append(jt_volleyball_prompt_context(name))
-        parts.append(galactic_hair_stylist_prompt_context(name))
-    parts = [context for context in parts if context]
+def special_prompt_context(name: object) -> Optional[str]:
+    """Special-person prompt hooks for this name. These are intentional inside-jokes keyed
+    to specific names (the JT volleyball bit, the hair-stylist bit, the creator bond) and
+    SHOULD fire as soon as the name is known — including on a fresh introduction."""
+    parts = [
+        context
+        for context in (
+            rex_creator_prompt_context(name),
+            jt_volleyball_prompt_context(name),
+            galactic_hair_stylist_prompt_context(name),
+        )
+        if context
+    ]
     return "\n".join(parts) or None
