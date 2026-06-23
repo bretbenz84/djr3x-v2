@@ -3521,6 +3521,14 @@ def _register_rex_utterance(
     except Exception:
         pass
     try:
+        # If this line voiced Rex's current preoccupation, arm the POV spoken-cooldown
+        # so the next reply doesn't re-inject the "volunteer it" directive (the
+        # near-verbatim repeat). Covers ALL reply paths — the only prior caller was the
+        # dead idle-banter branch, so the guard never armed.
+        rex_pov.note_pov_spoken_if_voiced(text)
+    except Exception:
+        pass
+    try:
         end_thread.note_assistant_turn(text)
     except Exception:
         pass
@@ -9825,6 +9833,7 @@ def _stream_llm_response(
                 comedy_mode,
                 agenda_directive,
                 surprise_result,
+                surprise_thread,
                 turn_start,
                 filler_stop,
             )
@@ -10132,6 +10141,7 @@ def _stream_and_speak_sentences(
     comedy_mode,
     agenda_directive: str,
     surprise_result: dict,
+    surprise_thread: Optional[threading.Thread],
     turn_start: Optional[float],
     filler_stop: threading.Event,
 ) -> str:
@@ -10215,6 +10225,18 @@ def _stream_and_speak_sentences(
         pre_beat_ms = empathy_pre_beat_ms
         on_start = None
         if state["first"]:
+            # Brief join so the surprise classifier can resolve BEFORE the first
+            # sentence — the fast first token otherwise wins the race and the
+            # "...didn't see that coming" pre-beat never fires on the streaming path
+            # (the non-streaming path already joins with a 0.3s timeout). Bounded, so
+            # it adds at most this to time-to-first-word, and only when not yet resolved.
+            if surprise_thread is not None and not surprise_result.get("value"):
+                try:
+                    surprise_thread.join(
+                        timeout=float(getattr(config, "SURPRISE_STREAM_JOIN_SECS", 0.25) or 0.0)
+                    )
+                except Exception:
+                    pass
             if surprise_result.get("value"):
                 state["emotion"] = "surprised"
                 surprise_beat = _streaming_surprise_beat(surprise_result)

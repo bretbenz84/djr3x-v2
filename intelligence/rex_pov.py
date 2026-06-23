@@ -32,6 +32,7 @@ the dynamic, carrying counterpart.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -302,6 +303,35 @@ def note_pov_spoken() -> None:
     with _lock:
         if _active is not None:
             _active.last_spoken_at = time.monotonic()
+
+
+def _line_voices_active_pov(line: str, pov: str) -> bool:
+    """True when `line` (a finalized Rex utterance) actually voices the active POV —
+    measured by content-word overlap, so we catch a paraphrased volunteer, not just a
+    verbatim echo. Biased toward detecting (a false positive only suppresses ONE
+    re-volunteer within the cooldown; a false negative lets the repeat through)."""
+    pov_words = set(re.findall(r"[a-z']{4,}", (pov or "").lower()))
+    if len(pov_words) < 2:
+        return False
+    line_words = set(re.findall(r"[a-z']{4,}", (line or "").lower()))
+    overlap = pov_words & line_words
+    return len(overlap) >= max(2, (len(pov_words) + 1) // 2)
+
+
+def note_pov_spoken_if_voiced(line: str) -> bool:
+    """If `line` voices the active preoccupation, arm the spoken-cooldown so it isn't
+    re-volunteered near-verbatim. PURE wrt selection — never MINTS a POV. Returns True
+    on a match. This is the hook the reply path was missing: the only prior caller of
+    note_pov_spoken() was the dead idle-banter branch, so the guard never armed and the
+    near-verbatim repeat could recur."""
+    with _lock:
+        pov = _active.pov if _active is not None else ""
+    if not pov or not (line or "").strip():
+        return False
+    if _line_voices_active_pov(line, pov):
+        note_pov_spoken()
+        return True
+    return False
 
 
 def pov_recently_spoken(window_secs: Optional[float] = None) -> bool:

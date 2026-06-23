@@ -249,9 +249,51 @@ class StreamingOrchestrationTest(unittest.TestCase):
              mock.patch.object(I.time, "sleep"):
             full = I._stream_and_speak_sentences(
                 "hi rex", 1, frame, mode, "directive",
-                {"value": surprising}, None, threading.Event(),
+                {"value": surprising}, None, None, threading.Event(),
             )
         return enqueued, full
+
+    def test_surprise_beat_joins_late_classifier_before_first_sentence(self):
+        # The classifier resolves only DURING the brief join (the streaming-path race);
+        # the join must let it land so the surprise pre-beat actually fires.
+        import config
+        sr = {"value": False}
+
+        def _join(timeout=None):
+            sr["value"] = True  # classifier finishes during the join
+
+        fake_thread = mock.Mock()
+        fake_thread.join.side_effect = _join
+
+        enqueued = []
+
+        def fake_enqueue(text, emotion, *, priority=1, pre_beat_ms=0, post_beat_ms=0,
+                         voice_settings=None, on_start=None, log_text=True):
+            enqueued.append({"text": text, "emotion": emotion, "pre_beat_ms": pre_beat_ms})
+            done = threading.Event()
+            done.set()
+            return done
+
+        def fake_stream(user_text, person_id=None, agenda_directive=None):
+            yield "Whoa, that is wild."
+
+        mode = types.SimpleNamespace(key="straight")
+        with mock.patch.object(I.llm, "stream_response", fake_stream), \
+             mock.patch.object(I.speech_queue, "enqueue", side_effect=fake_enqueue), \
+             mock.patch.object(I.empathy, "get_delivery_overrides", return_value=None), \
+             mock.patch.object(I, "_prefetch_stream_audio"), \
+             mock.patch.object(I, "_apply_post_tts_handoff"), \
+             mock.patch.object(I, "_play_event_body_beat"), \
+             mock.patch.object(config, "SURPRISE_STREAM_JOIN_SECS", 0.5), \
+             mock.patch.object(I.time, "sleep"):
+            I._stream_and_speak_sentences(
+                "hi", 1, _frame(), mode, "d", sr, fake_thread, None, threading.Event()
+            )
+
+        fake_thread.join.assert_called_once()
+        self.assertTrue(sr["value"])
+        self.assertEqual(enqueued[0]["emotion"], "surprised")
+        self.assertGreater(enqueued[0]["pre_beat_ms"], 0)  # the surprise pre-beat landed
 
     def test_sentences_enqueued_in_order_same_priority(self):
         chunks = ["Hello there, Bret. ", "Good to see you again. ", "What's new with you?"]

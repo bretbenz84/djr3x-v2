@@ -243,5 +243,55 @@ class PovPersistenceTest(unittest.TestCase):
         self.assertEqual(after, before)  # neither created nor modified
 
 
+class RexPovSpokenGuardTest(unittest.TestCase):
+    """note_pov_spoken_if_voiced arms the spoken-cooldown when a reply voices the active
+    POV, so the next reply doesn't re-inject the 'volunteer it' directive (the live
+    near-verbatim repeat). The prior only caller was the dead idle-banter branch, so the
+    guard never armed on the reply path."""
+
+    _SEED = [{
+        "id": "x",
+        "pov": "organics always power down at the worst possible moment, a real design flaw",
+        "fits": ["any"],
+    }]
+    _PEOPLE = {"people": True, "flat": False}
+
+    def setUp(self):
+        self._patches = [
+            mock.patch.object(config, "REX_POV_ENABLED", True),
+            mock.patch.object(config, "REX_POV_SEEDS", self._SEED),
+            mock.patch.object(config, "REX_POV_MIN_HOLD_EXCHANGES", 2),
+            mock.patch.object(config, "REX_POV_MAX_HOLD_EXCHANGES", 6),
+            mock.patch.object(config, "REX_POV_SPEAK_COOLDOWN_SECS", 180.0),
+        ]
+        for p in self._patches:
+            p.start()
+        rex_pov.clear()
+
+    def tearDown(self):
+        rex_pov.clear()
+        for p in self._patches:
+            p.stop()
+
+    def test_voicing_pov_arms_the_cooldown(self):
+        rex_pov.current_pov_directive(context=self._PEOPLE, exchange=0)  # select a POV
+        self.assertFalse(rex_pov.pov_recently_spoken())
+        matched = rex_pov.note_pov_spoken_if_voiced(
+            "Honestly my organics always power down at the worst moment — total design flaw."
+        )
+        self.assertTrue(matched)
+        self.assertTrue(rex_pov.pov_recently_spoken())
+
+    def test_unrelated_line_does_not_arm(self):
+        rex_pov.current_pov_directive(context=self._PEOPLE, exchange=0)
+        self.assertFalse(rex_pov.note_pov_spoken_if_voiced("Nice weather we're having today."))
+        self.assertFalse(rex_pov.pov_recently_spoken())
+
+    def test_no_active_pov_is_a_noop_and_never_selects(self):
+        # Nothing selected yet → returns False and does NOT mint a POV.
+        self.assertFalse(rex_pov.note_pov_spoken_if_voiced("organics power down design flaw"))
+        self.assertIsNone(rex_pov.active_seed_id())
+
+
 if __name__ == "__main__":
     unittest.main()

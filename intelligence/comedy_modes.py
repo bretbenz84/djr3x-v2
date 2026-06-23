@@ -430,10 +430,16 @@ def _recent_premise_summary() -> str:
 
 
 def _collapse_overexplained_joke(text: str) -> str:
-    # Only collapse a genuine joke-explainer clause that is SET OFF by a comma or
-    # dash ("..., see," / "... — because ..."), so ordinary verbs/conjunctions in a
-    # normal reply ("I can't see you.") are never truncated to a fragment.
+    # Collapse a genuine joke-EXPLAINER tail. Two shapes:
+    #  1) set off by a comma/dash on the same sentence ("..., see," / "... — because ...")
+    #  2) a FRESH sentence that opens with the tell ("<punchline>. Get it? Because I
+    #     crashed.") — the most natural over-explain, which shape 1 missed.
+    # Ordinary verbs/conjunctions in a normal reply ("I can't see you.") are NOT touched:
+    # shape 1 needs a comma/dash, shape 2 needs a sentence-initial "get it".
     text = re.sub(r"\s*[,—–-]\s*(?:get it|see|because)\b.*$", "", text, flags=re.I)
+    # Sentence-initial "Get it?" explainer — the lookbehind keeps the punchline's own
+    # terminal punctuation ("That was a great landing." not "...landing").
+    text = re.sub(r"(?<=[.!?])\s+get\s+it\b.*$", "", text, flags=re.I)
     text = re.sub(r"\s+Anyway[,]?.*$", "", text, flags=re.I)
     return text.strip()
 

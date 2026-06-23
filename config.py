@@ -3041,6 +3041,11 @@ JOKE_SETUP_PUNCHLINE_PAUSE_MS = 700
 # Pause after genuine surprise event before Rex responds (milliseconds)
 SURPRISE_PAUSE_MS_MIN = 200
 SURPRISE_PAUSE_MS_MAX = 500
+# On the STREAMING reply path, how long to briefly wait for the surprise classifier to
+# resolve BEFORE the first sentence so the surprise pre-beat can land (the fast first
+# token otherwise wins the race). Bounded — at most this is added to time-to-first-word,
+# and only when the classifier hasn't already finished.
+SURPRISE_STREAM_JOIN_SECS = 0.25
 
 # Self-emotion classifier: read the emotional tone of REX'S OWN reply (excited /
 # happy / curious / neutral) so the body actually expresses it — eye colour, speech
