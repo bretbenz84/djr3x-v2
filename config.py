@@ -2119,6 +2119,17 @@ GAZE_POLE_SETTLE_MM = _env_float("GAZE_POLE_SETTLE_MM", 5.0, min_value=0.0, max_
 # Multi-person.
 GAZE_INCLUDE_SWEEP_PROB = _env_float("GAZE_INCLUDE_SWEEP_PROB", 0.20, min_value=0.0, max_value=1.0)
 GAZE_ORIENT_GLANCE_SECS = _env_float("GAZE_ORIENT_GLANCE_SECS", 0.6, min_value=0.0, max_value=3.0)
+# #27 — let the gaze engine run while SPEAKING so the ~50%-on-target duty AND the
+# multi-person include-sweep actually fire (the adapter used to fully suppress speech).
+# ONLY include-sweeps (a bounded glance to a listener) actuate during speech; off-target
+# aversions stay suppressed. Kill switch — set False to restore the speech-suppressed
+# behaviour. NOT yet hardware-validated; flip off if the head hunts during speech.
+GAZE_SPEAKING_SWEEP_ENABLED = _env_bool("GAZE_SPEAKING_SWEEP_ENABLED", True)
+# Max yaw (deg) of an include-sweep glance toward an off-centre listener — keeps it a
+# glance, not a full head-turn, during speech. +deg = right of frame.
+GAZE_LISTENER_MAX_BEARING_DEG = _env_float(
+    "GAZE_LISTENER_MAX_BEARING_DEG", 22.0, min_value=2.0, max_value=45.0,
+)
 # Conversation-activity threshold.
 GAZE_CLOSE_AFTER_IDLE_SECS = _env_float("GAZE_CLOSE_AFTER_IDLE_SECS", 12.0, min_value=1.0, max_value=120.0)
 # Velocities for the offline sim / open-loop RealHead (deg/s, mm/s). The live closed

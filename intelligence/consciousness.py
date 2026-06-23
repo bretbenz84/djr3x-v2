@@ -10068,38 +10068,76 @@ def _maybe_drive_gaze(servo_mod, now: float, speech_active: bool) -> bool:
         conv_active = last_touch > 0 and idle_secs < float(
             getattr(config, "GAZE_CLOSE_AFTER_IDLE_SECS", 12.0)
         )
-        soft_suppress = bool(speech_active or listening_active)
-        engine_suppressed = soft_suppress or not fresh_lock or not conv_active
+        listening = bool(listening_active)
+        speaking = bool(speech_active)
+        sweep_enabled = bool(getattr(config, "GAZE_SPEAKING_SWEEP_ENABLED", True))
+        # The engine now RUNS during SPEAKING (its ~50% on-target duty + the multi-person
+        # include-sweep) so those decisions are produced, not idled away; it still stands
+        # down while listening, or with no fresh lock / inactive convo. With the sweep kill
+        # switch off, speech suppresses the engine exactly as before.
+        engine_suppressed = (
+            listening or not fresh_lock or not conv_active
+            or (speaking and not sweep_enabled)
+        )
 
+        active_speaker = (
+            _engaged_person_id if _engaged_person_id is not None else _recent_engaged_person_id
+        )
+        listener_bearings: list = []
+        num_visible = 1
         try:
             people = world_state.get("people") or []
             num_visible = sum(
                 1 for p in people
                 if not (p.get("face_visible") is False or p.get("face_missing"))
             )
+            if sweep_enabled:
+                frame_w = float(getattr(config, "CAMERA_WIDTH", 1920) or 1920)
+                max_deg = float(getattr(config, "GAZE_LISTENER_MAX_BEARING_DEG", 22.0))
+                for p in people:
+                    if p.get("face_visible") is False or p.get("face_missing"):
+                        continue
+                    pid = p.get("person_db_id")
+                    if pid is not None and pid == active_speaker:
+                        continue  # never sweep to the person already being addressed
+                    box = p.get("face_box") or p.get("bounding_box") or p.get("bbox")
+                    if not (isinstance(box, (list, tuple)) and len(box) >= 4):
+                        continue
+                    cx = float(box[0]) + float(box[2]) / 2.0
+                    # +deg => neck toward max => RIGHT of frame, matching the validated
+                    # _face_x_to_neck_target convention; clamp so a sweep stays a glance.
+                    yaw = ((cx / frame_w) - 0.5) * 2.0 * max_deg
+                    listener_bearings.append((pid, max(-max_deg, min(max_deg, yaw))))
         except Exception:
             num_visible = 1
+            listener_bearings = []
 
         inputs = gaze_engine.GazeInputs(
             now=now,
-            speaking=bool(speech_active),
-            listening=listening_active,
+            speaking=speaking,
+            listening=listening,
             conversation_active=conv_active,
             conversation_idle_secs=(idle_secs if idle_secs < 1.0e8 else 0.0),
             num_people=max(1, num_visible),
+            active_speaker_id=active_speaker,
+            listener_bearings=listener_bearings,
             suppressed=engine_suppressed,
         )
         decision = gaze_engine.step(inputs)
 
-        # Start / continue an aversion only when nothing higher owns the head.
-        if not soft_suppress and decision.drive:
+        is_sweep = (decision.kind == gaze_engine.KIND_INCLUDE_SWEEP)
+        # While SPEAKING, only a bounded include-sweep may drive (a glance to include a
+        # listener); off-target aversions stay suppressed so they don't fight speech head
+        # motion. Listening blocks all new drives. Outside speech, aversions drive as before.
+        block_new_drive = listening or (speaking and not (is_sweep and sweep_enabled))
+        if not block_new_drive and decision.drive:
             if _gaze_drive.get("phase") != "away":
                 _capture_gaze_anchor(decision)
             _drive_gaze_aversion(servo_mod, now, decision, _gaze_drive["anchor"])
             return True
 
         # ON-target, or the engine stood down: if mid-aversion, return to the anchor
-        # first (even under soft-suppress) so the head comes back to the partner.
+        # first (even under suppression) so the head comes back to the partner.
         if _gaze_drive.get("phase") in ("away", "returning"):
             done = _drive_gaze_return(servo_mod, now)
             if not done:
