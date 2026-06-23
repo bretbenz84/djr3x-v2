@@ -158,9 +158,23 @@ remembers the bond for next time.
 | --- | --- |
 | Left stick | arcade drive — Y forward/back, X turn |
 | L1 / R1 | creep / boost speed scale |
+| **D-pad** | **spin to an absolute heading** (encoder test): Up=0°, Left=+90° (CCW), Down=180°, Right=−90° (CW) |
 | **B** | **E-STOP** (always honored) |
 | Start | clear e-stop + return control to AUTO |
 | Hold **both** triggers (L2+R2) | FULL-OVERRIDE: bypass ToF gating (nudge through tight spots) |
+
+**D-pad → absolute-heading turn (encoder validation).** Each arrow press spins the base in
+place to the absolute heading above, via the same encoder-closed-loop finite `turn` the Mac
+uses — so on a correctly wired + calibrated base it lands square at 90° steps. Use it to
+sanity-check the encoders: a **flipped encoder sign** makes the spin run away (never
+converges) instead of stopping; a wrong `counts_per_meter` / `track_width_m` scale makes it
+over- or under-rotate (e.g. command 90°, get 75°). It is issued as a **MANUAL** turn
+(`ctl_manual_turn`), so it runs locally on the base — it survives a USB drop and the Mac
+won't fight it — and it's computed as a shortest-path delta from the live heading
+(`g_ctx.odom.theta`). A left-stick push cancels an in-flight turn; **B** e-stops it; **Start**
+clears + returns to AUTO. A pure spin has no linear travel, so **ToF does NOT gate it** — run
+on a clear floor or a stand. (Needs the `-DMOTION_HW_PRESENT=1` build for real encoders; on
+the stub build the turn "works" but only against synthesized odometry, testing nothing.)
 
 Any meaningful stick push switches `owner` to **MANUAL** — the Mac's drive/turn/move/come
 are then refused (`stop`/`estop`/`config`/`ping` still work) and the GUI shows
@@ -170,7 +184,7 @@ and stays MANUAL until `MOTION_MANUAL_AUTORETURN`'s idle timeout hands back to A
 you reconnect and press Start).
 
 **Action buttons → R3X soundboard / animations.** The buttons motion does NOT use —
-**A, X, Y, D-pad ↑↓←→, Select (−), Home (★), L3/R3 (stick clicks)** — are forwarded to the
+**A, X, Y, Select (−), Home (★), L3/R3 (stick clicks)** — are forwarded to the
 Mac as `event:"button"` (rising edge, one per press) by `poll_action_buttons()`. They fire
 **whenever the pad is connected**, independent of the drive `owner` (so the soundboard works
 in AUTO and pressing them does NOT grab the wheel). On the Mac,
@@ -178,8 +192,9 @@ in AUTO and pressing them does NOT grab the wheel). On the Mac,
 `config.MOTION_GAMEPAD_BUTTON_ACTIONS` and triggers a **sound clip** (`audio/soundboard.py`
 plays an MP3 from `assets/audio/clips/`) and/or a **servo animation**
 (`sequences.animations.play_body_beat`). The map is data-driven — edit it to remap, no
-firmware change. Button names: `a x y dpad_up dpad_down dpad_left dpad_right select home
-l3 r3`. (Needs the `-DMOTION_GAMEPAD_PRESENT=1` build above.)
+firmware change. Button names: `a x y select home l3 r3`. (The **D-pad is NOT** in this list
+— it drives the encoder-test heading turns above, not the soundboard.) (Needs the
+`-DMOTION_GAMEPAD_PRESENT=1` build above.)
 
 **Live state in the GUI ("Motivator Control").** Every telemetry frame carries a `gp`
 object — `{connected, lx, ly, btn}` — mirroring the pad's left stick (normalized, right=+

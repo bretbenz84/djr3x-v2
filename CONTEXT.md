@@ -664,7 +664,7 @@ motor/encoder/ToF drivers are Phase 1 — see `docs/motion_system.md` §11, §17
 
 - **Gamepad soundboard / animation buttons** (8BitDo Pro 2): the firmware
   (`gamepad.cpp` `poll_action_buttons`, behind `-DMOTION_GAMEPAD_PRESENT=1`) forwards the
-  buttons motion doesn't use (A/X/Y, D-pad, Select, Home, L3/R3) to the Mac as
+  buttons motion doesn't use (A/X/Y, Select, Home, L3/R3) to the Mac as
   `event:"button"` — fired whenever the pad is connected, independent of drive owner, so
   they never grab the wheel. `intelligence/motion_controller._on_motion_event` dispatches
   each via `config.MOTION_GAMEPAD_BUTTON_ACTIONS` to a sound clip
@@ -672,6 +672,16 @@ motor/encoder/ToF drivers are Phase 1 — see `docs/motion_system.md` §11, §17
   no-audio-safe, mic-suppressed, output-gated so it never talks over a reply) and/or a
   servo animation (`sequences.animations.play_body_beat`). Data-driven map; clips are
   gitignored local audio. Tests: `tests/test_gamepad_actions.py`.
+- **D-pad → absolute-heading turn (encoder validation):** the four arrows are NOT
+  soundboard buttons — `gamepad_tick` repurposes them to spin the base to absolute headings
+  (Up=0°, Left=+90° CCW, Down=180°, Right=−90° CW) for checking the wheel encoders. Each
+  rising-edge press issues a MANUAL finite turn (`ctl_manual_turn`) BY the shortest-path
+  delta from the live encoder heading (`g_ctx.odom.theta`) — the same encoder-closed-loop
+  spin as `turn`, so a correct base lands square at 90° steps; a flipped `ENC_SIGN_*` runs
+  away and a wrong `counts_per_meter`/`track_width_m` over/under-rotates. MANUAL so the
+  heartbeat watchdog can't abort it (works with the USB link down) and the Mac can't compete;
+  a stick push cancels it, B e-stops, Start returns to AUTO. A spin isn't ToF-gated (no
+  linear travel) — bench/clear-floor use. Needs `-DMOTION_HW_PRESENT=1` for real encoders.
 - **Live gamepad mirror in the GUI**: telemetry carries a `gp` object
   (`{connected, lx, ly, btn}` — left stick + pressed-button bitmask, built in
   `gamepad_tick` / `emit_telemetry`). The GUI's "Motivator Control" window shows a

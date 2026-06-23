@@ -22,10 +22,22 @@
 #include "calib.h"
 #include "proto_io.h"   // emit_event_kv — forward action-button presses to the Mac
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+// Shortest-path angle wrap to (-pi, pi] + a deg->rad helper, for the D-pad heading turns.
+static inline float gp_wrap_pi(float a) {
+  while (a >   (float)M_PI) a -= 2.0f * (float)M_PI;
+  while (a <= -(float)M_PI) a += 2.0f * (float)M_PI;
+  return a;
+}
+static inline float gp_deg2rad(float d) { return d * (float)M_PI / 180.0f; }
+
 static ControllerPtr s_ctl = nullptr;     // the one pad we drive from
 static bool s_prev_b = false;
 static bool s_prev_start = false;
 static bool s_full_override = false;
+static uint8_t s_prev_dpad = 0;           // D-pad rising-edge state (heading-turn triggers)
 
 static void onConnect(ControllerPtr c) {
   if (!s_ctl) { s_ctl = c; ctl_set_gamepad(true); }   // take the first pad; filter reads in tick
@@ -73,20 +85,17 @@ static void maybe_autoreturn() {
 // emitted whenever the pad is connected — INDEPENDENT of drive owner, so the
 // soundboard works in AUTO too and pressing them does NOT grab the wheel.
 // btn names must match config.MOTION_GAMEPAD_BUTTON_ACTIONS keys on the Mac.
+// NOTE: the D-pad is intentionally NOT forwarded here — it is repurposed in gamepad_tick
+// to spin the base to absolute headings for the encoder-validation test (see below).
 // ---------------------------------------------------------------------------
 static uint16_t s_prev_actions = 0;
 
 static void poll_action_buttons(ControllerPtr c) {
-  const uint8_t dp = c->dpad();   // Bluepad32 dpad bitmask: UP=1 DOWN=2 RIGHT=4 LEFT=8
   struct ActionBtn { const char* name; bool pressed; };
   const ActionBtn btns[] = {
     {"a",          c->a()},
     {"x",          c->x()},
     {"y",          c->y()},
-    {"dpad_up",    (bool)(dp & 0x01)},
-    {"dpad_down",  (bool)(dp & 0x02)},
-    {"dpad_right", (bool)(dp & 0x04)},
-    {"dpad_left",  (bool)(dp & 0x08)},
     {"select",     c->miscSelect()},   // the "-" button
     {"home",       c->miscSystem()},   // the star / home button
     {"l3",         c->thumbL()},        // left stick click
@@ -128,6 +137,37 @@ void gamepad_tick() {
   if (start && !s_prev_start) { ctl_clear(0); ctl_manual_release(); }
   s_prev_start = start;
 
+  // D-pad -> spin the base to an ABSOLUTE heading (encoder validation). Rising edge: one
+  // turn per press. Headings in the REP-103 body frame (+deg = CCW / left):
+  //   Up = 0   Left = +90 (CCW)   Down = 180   Right = -90 (CW)
+  // Each press issues a MANUAL finite turn BY the shortest-path delta from the live encoder
+  // heading (g_ctx.odom.theta), so a correctly wired + calibrated base lands square at 90°
+  // steps; a flipped encoder sign runs away, a wrong counts/track scale over/under-rotates.
+  // It runs as a MANUAL turn (ctl_manual_turn) so the heartbeat watchdog won't abort it and
+  // the Mac can't fight it; a left-stick push cancels it. A turn is a pure spin (lin≈0), so
+  // ToF does NOT gate it — run on a clear floor / stand during bring-up.
+  {
+    const uint8_t dp = c->dpad();   // bitmask: UP=0x01 DOWN=0x02 RIGHT=0x04 LEFT=0x08
+    struct DpadTurn { uint8_t bit; float heading_deg; };
+    static const DpadTurn DPAD_TURNS[] = {
+      {0x01,   0.0f},   // Up    -> 0
+      {0x08,  90.0f},   // Left  -> +90 (CCW)
+      {0x02, 180.0f},   // Down  -> 180
+      {0x04, -90.0f},   // Right -> -90 (CW)
+    };
+    for (uint8_t i = 0; i < (uint8_t)(sizeof(DPAD_TURNS) / sizeof(DPAD_TURNS[0])); i++) {
+      const uint8_t bit = DPAD_TURNS[i].bit;
+      if ((dp & bit) && !(s_prev_dpad & bit)) {                  // rising edge: one turn/press
+        float theta, rate;
+        LOCK_STATE(); theta = g_ctx.odom.theta; rate = g_ctx.params.default_turn_rate; UNLOCK_STATE();
+        const float delta_deg =
+            gp_wrap_pi(gp_deg2rad(DPAD_TURNS[i].heading_deg) - theta) * 180.0f / (float)M_PI;
+        ctl_manual_turn(delta_deg, rate);
+      }
+    }
+    s_prev_dpad = dp;
+  }
+
   // FULL-OVERRIDE: hold BOTH analog triggers near full — a deliberate two-hand gesture,
   // distinct from the L1/R1 shoulder buttons used for creep/boost.
   float br = (float)c->brake()    / GAMEPAD_TRIGGER_MAX;
@@ -147,9 +187,16 @@ void gamepad_tick() {
 
   // Enter MANUAL on the first meaningful push; once manual, keep refreshing (incl. zero,
   // which feeds the drive deadman and holds the base stopped) until release/auto-return.
+  // EXCEPTION: while a D-pad encoder-test turn is in flight (finite CMD_TURN), skip the
+  // zero-stick deadman refresh — ctl_manual_drive would wipe the finite turn every poll.
+  // A real stick push (meaningful) still takes over and cancels the turn (intended override).
   bool meaningful = (fabsf(lin) > 0.001f || fabsf(ang) > 0.001f);
-  bool isManual; LOCK_STATE(); isManual = (g_ctx.owner == OWNER_MANUAL); UNLOCK_STATE();
-  if (meaningful || isManual) ctl_manual_drive(lin, ang);
+  bool isManual, turnInFlight;
+  LOCK_STATE();
+  isManual     = (g_ctx.owner == OWNER_MANUAL);
+  turnInFlight = (g_ctx.finite.kind == CMD_TURN);
+  UNLOCK_STATE();
+  if (meaningful || (isManual && !turnInFlight)) ctl_manual_drive(lin, ang);
 
   // Forward the soundboard / animation buttons to the Mac (does not affect drive).
   poll_action_buttons(c);

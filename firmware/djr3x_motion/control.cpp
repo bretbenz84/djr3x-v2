@@ -329,6 +329,32 @@ void ctl_manual_drive(float lin, float ang) {
   if (sup) emit_done(sseq, DONE_SUPERSEDED, sodom);
 }
 
+void ctl_manual_turn(float deg, float rate_dps) {
+  // Gamepad D-pad "spin to a heading" (encoder validation). Same encoder-closed-loop turn
+  // as ctl_turn, but armed as a MANUAL finite command: owner becomes MANUAL so (a) the
+  // heartbeat watchdog won't abort it — it survives a USB drop like stick teleop — and
+  // (b) the Mac can't issue a competing autonomous move. The caller passes a RELATIVE,
+  // signed delta in degrees (it computes shortest-path from the live encoder heading).
+  // gamepad_tick suppresses its zero-stick manual deadman while CMD_TURN is in flight so
+  // this isn't superseded every poll; a real stick push still takes over and cancels it.
+  bool sup = false; uint32_t sseq = 0; Odom sodom;
+  LOCK_STATE();
+  // Don't punch through a hard latch — estop/fault must be cleared first (mirror ctl_manual_drive).
+  if (g_ctx.state == ST_ESTOP || g_ctx.state == ST_FAULT) { UNLOCK_STATE(); return; }
+  sup = begin_finite_locked(sseq, sodom);
+  FiniteCmd f;
+  f.kind = CMD_TURN; f.seq = 0;
+  f.target_dtheta = DEG2RAD(deg);
+  f.rate = DEG2RAD(rate_dps);
+  g_ctx.owner = OWNER_MANUAL;
+  g_ctx.finite = f;
+  g_ctx.cmd_mode = CMD_TURN;
+  g_ctx.last_manual_input_ms = millis();   // a deliberate manual input — defer idle auto-return
+  if (g_ctx.state == ST_IDLE) g_ctx.state = ST_MOVING;
+  UNLOCK_STATE();
+  if (sup) emit_done(sseq, DONE_SUPERSEDED, sodom);
+}
+
 void ctl_manual_stop() {
   // Disconnect failsafe: stop NOW but keep MANUAL ownership, so AUTO doesn't silently
   // resume on a dropped pad (docs §11.4). Auto-return (if enabled) handles the handoff.
