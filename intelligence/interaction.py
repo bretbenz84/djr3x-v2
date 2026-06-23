@@ -14976,21 +14976,30 @@ def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> N
 
 def _generate_repair_response(person_id: Optional[int], text: str, repair: dict) -> str:
     """Generate one concise recovery when the human flags a conversational miss."""
-    if repair.get("kind") == "pronoun":
+    kind = repair.get("kind")
+    if kind == "pronoun":
         _maybe_store_pronoun_repair(person_id, text)
-    prompt = repair_moves.build_prompt(repair)
-    try:
-        response = llm.get_response(prompt, person_id)
-    except Exception as exc:
-        _log.debug("repair response generation failed: %s", exc)
-        response = ""
-    response = (response or "").strip()
-    if not response:
-        response = repair_moves.fallback_response(repair)
-    if repair_moves.should_use_better_luck_line(repair):
-        response = repair_moves.add_better_luck_line(
-            response, repair.get("recovery_line")
-        )
+    # ASR / comprehension miss with NO corrected words supplied: the human is telling us
+    # we got it wrong but hasn't re-said it, so save face with a quick circuit-glitch joke
+    # and invite them to repeat (varied) instead of 'owning it and moving on'.
+    if kind in {"misheard", "misunderstood"} and not repair_moves.correction_has_content(
+        repair.get("correction")
+    ):
+        response = repair_moves.misheard_recovery_response()
+    else:
+        prompt = repair_moves.build_prompt(repair)
+        try:
+            response = llm.get_response(prompt, person_id)
+        except Exception as exc:
+            _log.debug("repair response generation failed: %s", exc)
+            response = ""
+        response = (response or "").strip()
+        if not response:
+            response = repair_moves.fallback_response(repair)
+        if repair_moves.should_use_better_luck_line(repair):
+            response = repair_moves.add_better_luck_line(
+                response, repair.get("recovery_line")
+            )
     _play_event_body_beat("repair", repair_kind=str(repair.get("kind") or ""))
     _speak_blocking(
         response,

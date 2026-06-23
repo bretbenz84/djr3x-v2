@@ -17,11 +17,19 @@ from typing import Optional
 
 
 _MISHEARD_PAT = re.compile(
-    r"\b(you (misheard|heard wrong)|i (said|didn't say|did not say)|"
-    r"that's not what i said|that is not what i said|not what i said|"
-    r"that's not (his|her|their|my) name|that is not (his|her|their|my) name|"
-    r"his name was|her name was|their name was|the name was|"
-    r"wrong word|wrong name|transcribed wrong)\b",
+    r"\b(?:"
+    r"you (?:misheard|heard wrong|heard me wrong)|you misheard me|"
+    r"you (?:didn'?t|did not) (?:hear|catch|get) (?:me|that|it|what i said)|"
+    r"i (?:didn'?t say|did not say)|"
+    r"that'?s not what i said|that is not what i said|not what i said|"
+    r"that'?s not (?:his|her|their|my) name|that is not (?:his|her|their|my) name|"
+    r"(?:his|her|their|the) name was|"
+    r"wrong word|wrong name|got my words wrong|transcribed (?:it )?wrong|mis-?transcribed"
+    r")\b"
+    # Bare "i said" means a correction ("no, I said blues") — but NOT when it's an
+    # emphasis/reference lead-in ("like/as I said") or a recall question ("what I said",
+    # already guarded in detect()). Exclude those so they don't fire a misheard repair.
+    r"|(?<!like )(?<!as )(?<!what )(?<!that )\bi said\b",
     re.IGNORECASE,
 )
 _MISUNDERSTOOD_PAT = re.compile(
@@ -178,6 +186,74 @@ def pick_recovery_line() -> str:
         line = random.choice(choices)
         _last_recovery_line = line
         return line
+
+
+# ── Misheard / misunderstood recovery (no correction supplied) ──────────────────
+# When the human flags a mishearing but hasn't re-said it yet, Rex saves face with a
+# quick self-deprecating "my circuits glitched" joke, then hands the floor back so they
+# can repeat it. Both halves rotate with anti-repeat so back-to-back corrections never
+# read identically (a bystander once noticed Rex repeating the same repair line).
+_SAVE_FACE_LINES = [
+    "Ah, my audio processor fumbled that one.",
+    "Circuits crossed — that decoded as pure static.",
+    "My transcription unit clearly skipped its calibration.",
+    "Static in the receptors; that came through garbled.",
+    "I'm sure we'll have better luck next time!",   # Star Tours sign-off, keep it
+    "One of my logic boards took an unscheduled coffee break.",
+    "My ears run on 90% guesswork and 10% optimism, apparently.",
+    "Bad packet on my end — that arrived as nonsense.",
+    "I misinterpret life forms sometimes; occupational hazard.",
+]
+_REPROMPT_LINES = [
+    "OK, shoot — what'd you say again?",
+    "Run that by me one more time?",
+    "Go on, say it again — I'm listening properly now.",
+    "Give it to me again?",
+    "Once more, for the droid in the back?",
+    "Hit me with it again and I'll get it right.",
+    "Say that again?",
+]
+_last_save_face: str = ""
+_last_reprompt: str = ""
+
+
+def _pick_distinct(pool: list[str], last: str) -> str:
+    choices = [s for s in pool if s != last] or list(pool)
+    return random.choice(choices)
+
+
+# Words that are part of the correction SIGNAL, not re-said content. A captured
+# "correction" made up ENTIRELY of these ("I said", "you misunderstood me") means the
+# human flagged a miss without supplying new words — so Rex should ask them to repeat,
+# not "accept" a phantom correction.
+_CORRECTION_SIGNAL_WORDS = {
+    "i", "you", "me", "no", "nope", "nah", "not", "what", "that", "this", "it",
+    "said", "say", "saying", "mean", "meant", "didn", "didnt", "don", "dont",
+    "is", "was", "misunderstood", "misheard", "heard", "hear", "wrong",
+    "the", "a", "an", "my", "your",
+}
+
+
+def correction_has_content(correction: Optional[str]) -> bool:
+    """True if `correction` carries actual re-said content ('blues not jazz', 'Tom
+    Foster'), not just an echo of the correction signal ('I said', 'you misunderstood
+    me'). Lets the repair path tell 'here's the fix' from a bare 'you got it wrong'."""
+    words = re.findall(r"[a-z']+", (correction or "").lower())
+    return any(w.strip("'") not in _CORRECTION_SIGNAL_WORDS for w in words if w.strip("'"))
+
+
+def misheard_recovery_response() -> str:
+    """Two beats for an ASR/comprehension miss with NO correction supplied: a short
+    save-face circuit-glitch joke + a varied invitation to repeat. Both rotate with
+    anti-repeat. Used instead of the LLM 'own it and move on' path so Rex actually hands
+    the floor back when the human hasn't re-said the thing yet."""
+    global _last_save_face, _last_reprompt
+    with _lock:
+        joke = _pick_distinct(_SAVE_FACE_LINES, _last_save_face)
+        _last_save_face = joke
+        ask = _pick_distinct(_REPROMPT_LINES, _last_reprompt)
+        _last_reprompt = ask
+    return f"{joke} {ask}"
 
 
 def _contains_recovery_line(text: str) -> bool:
