@@ -94,6 +94,23 @@ _BARE_CONTENT_DENIAL_PAT = re.compile(
     r"i\s+(?:didn'?t|did not)\s+say\s+that\b[.!]?\s*$",
     re.IGNORECASE,
 )
+# Asking Rex to RECALL or confirm he FOLLOWED what the user said ("do you recall what I
+# said?", "did you (not) follow what I said?", "what did I say?") is a comprehension /
+# recall request, NOT a misheard-correction. The bare "i said" alternative in _MISHEARD_PAT
+# used to swallow these and fire a canned recovery line ("Consider it logged. Onward.")
+# instead of letting Rex actually recall from the transcript. Hand them to normal
+# conversation so the reply path (which has the recent transcript) can answer.
+_RECALL_REQUEST_PAT = re.compile(
+    r"\b(?:"
+    r"(?:do|did|don'?t|can|could|would|are)\s+you\s+"
+    r"(?:even\s+|not\s+|actually\s+|really\s+)*"
+    r"(?:recall|remember|follow|catch|hear|get|register|understand|know|see)\s+"
+    r"(?:what|when|why|how|that)\s+i\s+(?:said|asked|told|meant|answered)"
+    r"|what\s+did\s+i\s+(?:say|ask|answer|just\s+say|tell\s+you)"
+    r"|(?:repeat\s+back|recall|remind\s+me)\s+(?:of\s+)?(?:what\s+)?i\s+(?:said|asked|answered)"
+    r")",
+    re.IGNORECASE,
+)
 _PRONOUN_PAT = re.compile(
     r"\b(wrong pronouns?|not (he|she|him|her)|"
     r"(?:i|they|he|she|[A-Z][A-Za-z]+)\s+(?:use|uses|go by|goes by)\s+"
@@ -221,6 +238,12 @@ def detect(user_text: str) -> Optional[dict]:
     # A bare "I didn't say that" is a content disagreement, not a repair — hand
     # it to normal conversation so Rex can engage instead of derailing.
     if _BARE_CONTENT_DENIAL_PAT.match(cleaned):
+        return None
+
+    # "Do you recall what I said?" / "did you not follow what I said?" / "what did I say?"
+    # are recall/comprehension requests, NOT corrections — let the reply path recall from
+    # the transcript instead of firing a canned recovery line (see _RECALL_REQUEST_PAT).
+    if _RECALL_REQUEST_PAT.search(cleaned):
         return None
 
     if _INTERRUPT_PAT.search(cleaned):
