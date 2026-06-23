@@ -451,5 +451,36 @@ class ModelFallbackTest(unittest.TestCase):
         self.assertEqual(client.responses.create.call_count, 2)
 
 
+class WebSearchReplyLoggingTest(unittest.TestCase):
+    """The web-search ANSWER must be logged exactly ONCE. _maybe_web_search_reply
+    RETURNS the answer and the caller logs it (conv_log + transcript + GUI); speaking it
+    with log_text=True here too double-printed it in the file AND the GUI, because
+    conv_log only dedupes CONSECUTIVE identical lines within a short window and the
+    multi-second answer playback blows past it."""
+
+    def test_answer_spoken_with_log_text_false(self):
+        from intelligence import interaction, web_search
+
+        decision = web_search.SearchDecision(True, True, "explicit")
+        result = web_search.SearchResult(True, "It is 25 degrees and sunny.", [])
+        interaction._interrupted.clear()
+        with mock.patch.object(config, "WEB_SEARCH_ENABLED", True), \
+             mock.patch.object(interaction, "_can_speak", return_value=True), \
+             mock.patch.object(web_search, "should_search", return_value=decision), \
+             mock.patch.object(web_search, "pick_stall_line", return_value=""), \
+             mock.patch.object(web_search, "answer", return_value=result), \
+             mock.patch.object(web_search, "note_search"), \
+             mock.patch.object(interaction, "_apply_post_tts_handoff"), \
+             mock.patch.object(interaction, "_speak_blocking") as speak:
+            out = interaction._maybe_web_search_reply("look that up", None)
+
+        self.assertEqual(out, "It is 25 degrees and sunny.")
+        speak.assert_called_once()
+        self.assertFalse(
+            speak.call_args.kwargs.get("log_text", True),
+            "web answer must be spoken with log_text=False so the caller logs it once",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

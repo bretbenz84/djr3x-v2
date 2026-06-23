@@ -9676,7 +9676,13 @@ def _maybe_web_search_reply(
     if result.citations:
         _log.info("[web_search] sources: %s", ", ".join(result.citations[:5]))
 
-    _speak_blocking(answer_text, emotion="neutral", priority=1, log_text=True)
+    # log_text=False: we RETURN answer_text, and the caller (_handle_speech_segment)
+    # logs the returned response once (conv_log.log_rex + add_to_transcript) — exactly
+    # like the normal streaming reply. Logging here too double-prints in the file AND the
+    # GUI: conv_log only dedupes CONSECUTIVE identical lines within a short window, and
+    # the multi-second answer playback (plus the interleaved stall line) blows past it,
+    # so the caller's later log isn't coalesced.
+    _speak_blocking(answer_text, emotion="neutral", priority=1, log_text=False)
     try:
         _apply_post_tts_handoff(answer_text, source="web_search")
     except Exception as exc:
