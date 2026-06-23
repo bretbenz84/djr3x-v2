@@ -217,6 +217,18 @@ class ControllerTest(_MotionTestBase):
         self.assertIsNone(mc.move_forward())
         self.assertIsNone(self._last("move"))
 
+    def test_arc_sets_state_then_cancels(self):
+        self._connect()
+        self.assertIsNotNone(mc.arc_move(forward=True, left=False, small=True))
+        self.assertTrue(mc._arc_active)        # heartbeat will refresh the curve...
+        mc.stop()                              # ...until a command/stop supersedes it
+        self.assertFalse(mc._arc_active)
+
+    def test_arc_suppressed_when_manual(self):
+        self._connect(owner="manual")
+        self.assertIsNone(mc.arc_move())       # gamepad owns the base -> no autonomous arc
+        self.assertFalse(mc._arc_active)
+
     def test_disabled_is_noop(self):
         config.MOTION_ENABLED = False
         self.assertFalse(mc.connect(port="FAKE"))
@@ -290,9 +302,42 @@ class ClassifierTest(unittest.TestCase):
         d = ar.classify_explicit_motion("back up 30 cm")
         self.assertAlmostEqual(d.args["dist_m"], 0.30, places=4)
 
+    def test_turn_to_your_side(self):
+        self.assertEqual(ar.classify_explicit_motion("turn to your left").args["direction"], "left")
+        self.assertEqual(ar.classify_explicit_motion("turn to your right").args["direction"], "right")
+
+    def test_small_amount_move(self):
+        # "a little / a bit" between the verb and direction classifies, as a SMALL move.
+        for t in ("move a little forward", "ease slightly forward"):
+            d = ar.classify_explicit_motion(t)
+            self.assertEqual((d.action, d.args["direction"]), ("motion.move", "forward"))
+            self.assertAlmostEqual(d.args["dist_m"], 0.15)
+        for t in ("move a little back", "move a little backwards"):
+            d = ar.classify_explicit_motion(t)
+            self.assertEqual(d.args["direction"], "back")
+            self.assertAlmostEqual(d.args["dist_m"], 0.15)
+
+    def test_arc_compound(self):
+        # A forward/back + left/right joined by "and" in ONE utterance -> a curve (arc).
+        d = ar.classify_explicit_motion("move a little forward and to your right")
+        self.assertEqual(d.action, "motion.arc")
+        self.assertEqual((d.args["lin_dir"], d.args["ang_dir"], d.args["small"]),
+                         ("forward", "right", True))
+        d = ar.classify_explicit_motion("back up and to the left")
+        self.assertEqual((d.action, d.args["lin_dir"], d.args["ang_dir"]),
+                         ("motion.arc", "back", "left"))
+        # Single utterances stay single finite commands (NOT arcs) — sequential when said
+        # one after another.
+        self.assertEqual(self._act("move forward"), "motion.move")
+        self.assertEqual(self._act("turn left"), "motion.turn")
+
     def test_no_false_positives(self):
         for t in ["stop", "play some music", "turn it up", "turn off the lights",
-                  "how do I get back to the menu", "let's move on"]:
+                  "how do I get back to the menu", "let's move on",
+                  # figurative "move forward" / "go ahead" must NOT drive the base
+                  "let's move forward with the plan", "I want to move forward in life",
+                  "go ahead and tell me", "move the box forward",
+                  "move forward towards the goal", "I went left and right all day"]:
             self.assertIsNone(self._act(t), f"{t!r} should not classify as motion")
 
 

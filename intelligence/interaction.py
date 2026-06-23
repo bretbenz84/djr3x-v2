@@ -14002,7 +14002,7 @@ def _handle_router_identity_name_correction(
     return resp
 
 
-_MOTION_ACTIONS = {"motion.turn", "motion.move", "motion.come", "motion.stop"}
+_MOTION_ACTIONS = {"motion.turn", "motion.move", "motion.come", "motion.stop", "motion.arc"}
 # Bare standalone "stop" only counts as a drive-base stop while the base is moving.
 _BARE_MOTION_STOP_RE = re.compile(
     r"^\s*(?:stop|halt|freeze|whoa|hold on|hold up|wait|stop it)\s*[.!]*\s*$", re.I
@@ -14058,6 +14058,16 @@ def _handle_router_motion_action(
         else:
             seq = motion_controller.move_forward(dist)
             line = "Rolling forward."
+        return line if seq is not None else None
+
+    if action == "motion.arc":
+        # Compound "move forward and to your right" — a brief simultaneous curve that
+        # auto-stops (motion_controller refreshes the drive setpoint, then stops).
+        forward = str(args.get("lin_dir") or "forward").lower() != "back"
+        left = str(args.get("ang_dir") or "left").lower() == "left"
+        seq = motion_controller.arc_move(forward, left, small=bool(args.get("small")))
+        line = "Curving {} and {}.".format(
+            "forward" if forward else "back", "left" if left else "right")
         return line if seq is not None else None
 
     return None

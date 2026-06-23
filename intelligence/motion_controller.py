@@ -24,6 +24,15 @@ _log = logging.getLogger(__name__)
 _heartbeat_thread: "threading.Thread | None" = None
 _stop = threading.Event()
 
+# Voice "arc": a brief simultaneous curve (forward/back + left/right). The heartbeat
+# thread re-sends the `drive` setpoint (faster than the firmware deadman) until _arc_until,
+# then stops — so it auto-stops and needs no extra thread. Guarded by _arc_lock.
+_arc_lock = threading.Lock()
+_arc_active = False
+_arc_lin = 0.0
+_arc_ang = 0.0
+_arc_until = 0.0
+
 
 def _get_float(name: str, default: float) -> float:
     return float(getattr(config, name, default))
@@ -129,6 +138,7 @@ def _dispatch_button_action(btn: str, action: dict) -> None:
 
 
 def disconnect() -> None:
+    _cancel_arc()          # kill any in-flight arc before the heartbeat thread stops
     _stop.set()
     thread = _heartbeat_thread
     if thread is not None and thread.is_alive() and thread is not threading.current_thread():
@@ -165,7 +175,7 @@ def _heartbeat_loop() -> None:
     last_reconnect = 0.0
     while not _stop.is_set():
         if motion.connected():
-            motion.ping()
+            _heartbeat_tick()
         else:
             now = time.monotonic()
             if now - last_reconnect >= reconnect_interval:
@@ -180,6 +190,32 @@ def _heartbeat_loop() -> None:
                 except Exception:
                     _log.debug("motion reconnect attempt failed", exc_info=True)
         _stop.wait(period)
+
+
+def _heartbeat_tick() -> None:
+    """One connected-loop step: refresh an in-flight arc's `drive` (then stop it when it
+    expires or motion is no longer allowed), otherwise just `ping`. Both keep the firmware
+    watchdog fed (any valid Mac line resets it). The arc decision + send run UNDER _arc_lock
+    so a concurrent stop()/_cancel_arc can't be overridden by a stale `drive` (the small
+    JSON send is fast; lock order is always _arc_lock -> motion locks, so no deadlock)."""
+    global _arc_active
+    with _arc_lock:
+        if _arc_active:
+            if time.monotonic() < _arc_until and _autonomous_allowed() is None:
+                motion.send({"cmd": "drive", "lin": _arc_lin, "ang": _arc_ang})  # < deadman
+            else:                            # expired, or interrupted (paused / gamepad took over)
+                _arc_active = False
+                motion.send({"cmd": "stop"})
+            return
+    motion.ping()
+
+
+def _cancel_arc() -> None:
+    """Drop any in-flight arc (a new command / stop supersedes it). Does NOT send a
+    stop itself — the caller's own command (or stop) does that."""
+    global _arc_active
+    with _arc_lock:
+        _arc_active = False
 
 
 _TUNING_KEYS = (
@@ -245,6 +281,7 @@ def turn(deg: float, rate: "float | None" = None) -> "int | None":
     rate = _get_float("MOTION_DEFAULT_TURN_RATE", 40.0) if rate is None else rate
     rate = _clampf(abs(rate), 1.0, max_rate)
     deg = _clampf(deg, -360.0, 360.0)
+    _cancel_arc()
     return motion.send({"cmd": "turn", "deg": deg, "rate": rate})
 
 
@@ -258,6 +295,7 @@ def move(dist: float, speed: "float | None" = None) -> "int | None":
     speed = max_lin if speed is None else speed
     speed = _clampf(abs(speed), 0.0, max_lin)
     dist = _clampf(dist, -10.0, 10.0)
+    _cancel_arc()
     return motion.send({"cmd": "move", "dist": dist, "speed": speed})
 
 
@@ -272,11 +310,33 @@ def come(heading: float = 0.0, stop_at: "float | None" = None) -> "int | None":
         _log.debug("motion come unsupported by firmware")
         return None
     stop_at = _get_float("MOTION_COME_STOP_AT_M", 0.60) if stop_at is None else stop_at
+    _cancel_arc()
     return motion.send({
         "cmd": "come",
         "heading": _clampf(heading, -180.0, 180.0),
         "stop_at": _clampf(stop_at, 0.05, 5.0),
     })
+
+
+def arc(lin: float, ang: float, duration_s: "float | None" = None) -> "int | None":
+    """Drive a brief simultaneous curve (m/s, rad/s) for `duration_s`, then auto-stop.
+    Fire-and-forget: the heartbeat thread refreshes the `drive` setpoint and stops it when
+    it expires (so it can't run away). Used for voice "move forward and to your right".
+    Gated like the other autonomous commands."""
+    reason = _autonomous_allowed()
+    if reason:
+        _log.debug("motion arc suppressed: %s", reason)
+        return None
+    max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.25)
+    max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0))
+    dur = _get_float("MOTION_ARC_DURATION_SECS", 1.6) if duration_s is None else float(duration_s)
+    global _arc_active, _arc_lin, _arc_ang, _arc_until
+    with _arc_lock:
+        _arc_lin = _clampf(lin, -max_lin, max_lin)
+        _arc_ang = _clampf(ang, -max_ang, max_ang)
+        _arc_until = time.monotonic() + max(0.2, dur)
+        _arc_active = True
+    return 1   # "issued" — the heartbeat drives + auto-stops it; no per-tick seq
 
 
 def drive(lin: float, ang: float) -> "int | None":
@@ -286,6 +346,7 @@ def drive(lin: float, ang: float) -> "int | None":
     if reason:
         _log.debug("motion drive suppressed: %s", reason)
         return None
+    _cancel_arc()
     max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.25)
     max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0))
     return motion.send({
@@ -302,6 +363,7 @@ def drive_manual(lin: float, ang: float) -> "int | None":
     while a gamepad owns the base."""
     if not motion.connected():
         return None
+    _cancel_arc()
     max_lin = _get_float("MOTION_MAX_LINEAR_MS", 0.25)
     max_ang = math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0))
     return motion.send({
@@ -315,6 +377,7 @@ def stop() -> "int | None":
     """Controlled stop. Always honored while connected (bypasses the gate)."""
     if not motion.connected():
         return None
+    _cancel_arc()
     return motion.send({"cmd": "stop"})
 
 
@@ -322,6 +385,7 @@ def estop() -> "int | None":
     """Hard disable until clear(). Always honored while connected."""
     if not motion.connected():
         return None
+    _cancel_arc()
     return motion.send({"cmd": "estop"})
 
 
@@ -339,6 +403,16 @@ def turn_left(deg: "float | None" = None) -> "int | None":
 
 def turn_right(deg: "float | None" = None) -> "int | None":
     return turn(-(_get_float("MOTION_DEFAULT_TURN_DEG", 90.0) if deg is None else abs(deg)))
+
+
+def arc_move(forward: bool = True, left: bool = True, small: bool = False) -> "int | None":
+    """Voice "move forward and to your right" -> a gentle simultaneous curve (config
+    magnitudes), shorter when "a little". forward/left are the signs (REP-103: +ang = left)."""
+    lin = _get_float("MOTION_ARC_LIN_MS", 0.15) * (1.0 if forward else -1.0)
+    ang = math.radians(_get_float("MOTION_ARC_ANG_DEG_S", 35.0)) * (1.0 if left else -1.0)
+    dur = (_get_float("MOTION_ARC_SMALL_DURATION_SECS", 1.0) if small
+           else _get_float("MOTION_ARC_DURATION_SECS", 1.6))
+    return arc(lin, ang, dur)
 
 
 def move_forward(dist: "float | None" = None) -> "int | None":

@@ -5571,7 +5571,19 @@ MOTION_RECONNECT_INTERVAL_SECS = 2.0  # auto-reconnect cadence after an unplug/d
 
 # Manual gamepad override (ESP32-side; the Mac only observes it via telemetry).
 MOTION_MANUAL_IDLE_RETURN_SECS = 4
-MOTION_MANUAL_AUTORETURN = False
+# True so the base hands control back to AUTO ~MOTION_MANUAL_IDLE_RETURN_SECS after the
+# gamepad goes idle — lets VOICE motion commands work once you set the controller down
+# (while manual, the Mac suppresses voice motion and it falls through to conversation).
+MOTION_MANUAL_AUTORETURN = True
+
+# Voice "arc" command — a single utterance combining a forward/back move with a
+# left/right component via "and" ("move a little forward and to your right") drives a
+# brief simultaneous curve, then auto-stops. (Separate utterances stay separate finite
+# commands.) Magnitudes are gentle; clamped to the caps in motion_controller.
+MOTION_ARC_LIN_MS = 0.15              # arc forward/back speed, m/s
+MOTION_ARC_ANG_DEG_S = 35.0           # arc turn rate, deg/s (+ = left, REP-103)
+MOTION_ARC_DURATION_SECS = 1.6        # how long the curve drives before auto-stop
+MOTION_ARC_SMALL_DURATION_SECS = 1.0  # "a little / a bit" -> shorter curve
 
 # ── Gamepad soundboard / animation buttons ──────────────────────────────────────
 # The 8BitDo Pro 2 pairs to the ESP32. The buttons motion does NOT use (left stick =
@@ -5585,16 +5597,20 @@ SOUNDBOARD_SUPPRESS_TAIL_SECS = 0.4           # keep the mic muted this long aft
 # Button -> action. Each value is a dict with an optional "clip" (a file STEM in
 # SOUNDBOARD_CLIPS_DIR, case-insensitive — e.g. "Air Horn" for "Air Horn.mp3") and/or
 # "animation" (a beat from sequences.animations.body_beat_names()). Edit freely; an
-# unmapped button is ignored. btn names: a x y dpad_up dpad_down dpad_left dpad_right
-# select home l3 r3.
+# unmapped button is ignored. btn names: a x y select home l3 r3.
+# The D-pad is NOT a soundboard button: firmware (gamepad.cpp) repurposes the four arrows
+# to spin the base to absolute headings for the encoder-validation test (Up=0°, Left=+90°,
+# Down=180°, Right=-90°), and no longer forwards dpad_* as button events — so dpad_* entries
+# here would never fire. The old clip choices are kept commented below in case the D-pad is
+# ever reverted to the soundboard.
 MOTION_GAMEPAD_BUTTON_ACTIONS = {
     "a":          {"clip": "Air Horn",          "animation": "tiny_victory_dance"},
     "x":          {"clip": "Scratch",           "animation": "proud_dj_pose"},
     "y":          {"clip": "Yahoo",             "animation": "tiny_victory_dance"},
-    "dpad_up":    {"clip": "Request Line Open"},
-    "dpad_down":  {"clip": "Bad Feeling",       "animation": "suspicious_glance"},
-    "dpad_left":  {"clip": "Astromech Joke"},
-    "dpad_right": {"clip": "Having Fun"},
+    # "dpad_up":    {"clip": "Request Line Open"},          # now: firmware turn -> heading 0°
+    # "dpad_down":  {"clip": "Bad Feeling", "animation": "suspicious_glance"},  # now: heading 180°
+    # "dpad_left":  {"clip": "Astromech Joke"},             # now: firmware turn -> heading +90° (CCW)
+    # "dpad_right": {"clip": "Having Fun"},                 # now: firmware turn -> heading -90° (CW)
     "select":     {"clip": "Hi There"},
     "home":       {"clip": "On the Decks",      "animation": "proud_dj_pose"},
     "l3":         {"animation": "thinking_tilt"},

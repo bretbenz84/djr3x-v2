@@ -1101,14 +1101,36 @@ _MOTION_COME_RE = re.compile(
     r"roll\s+over\s+here|get\s+over\s+here|come\s+to\s+(?:me|daddy))\b",
     re.I,
 )
-_MOTION_FWD_RE = re.compile(
-    r"\b(?:move|go|roll|drive|scoot|head|creep|come)\s+(?:forward|forwards|ahead)\b", re.I
+# An optional "small amount / manner" phrase between the move verb and the direction,
+# so "move a little forward" / "ease slightly back" classify. Kept a strict whitelist
+# (not ".*") so "move the box forward" still does NOT false-positive as a drive command.
+_MOTION_AMOUNT = (
+    r"(?:a\s+(?:little|bit|tad|touch|smidge)|slightly|just|gently|slowly|"
+    r"kinda|kind\s+of|tiny\s+bit)"
 )
-_MOTION_BACK_RE = re.compile(
-    r"\b(?:back\s*up|backup|move\s*back(?:ward|wards)?|go\s*back(?:ward|wards)?|"
-    r"reverse|roll\s*back(?:ward|wards)?|scoot\s*back)\b",
+# "ahead" is intentionally NOT a forward trigger — "go ahead and …" is almost always
+# figurative. The trailing negative lookahead drops the figurative "move forward
+# with/in/on the plan / in life" while still allowing "move forward", "… 2 feet",
+# "… a little", and "… and to your right".
+_MOTION_FWD_RE = re.compile(
+    r"\b(?:move|go|roll|drive|scoot|head|creep|come|ease|inch|edge|pull)"
+    rf"(?:\s+{_MOTION_AMOUNT})?\s+(?:forward|forwards)\b"
+    r"(?!\s+(?:with|in|on|through|into|towards?)\b)",
     re.I,
 )
+_MOTION_BACK_RE = re.compile(
+    r"\b(?:back\s*up|backup|reverse|"
+    r"(?:move|go|roll|drive|scoot|head|ease|inch|edge|pull)"
+    rf"(?:\s+{_MOTION_AMOUNT})?\s+back(?:ward|wards)?)\b",
+    re.I,
+)
+# "a little / a bit / nudge / inch …" with no explicit distance => a SMALL move.
+_MOTION_SMALL_RE = re.compile(rf"\b(?:{_MOTION_AMOUNT}|nudge|inch)\b", re.I)
+_MOTION_SMALL_MOVE_M = 0.15
+# Compound arc: a forward/back move + a left/right component joined by "and" in ONE
+# utterance ("move a little forward and to your right") => a simultaneous curve. The
+# left/right must follow the "and" (within a short window) so it's the arc's turn part.
+_MOTION_ARC_LAT_RE = re.compile(r"\band\b.{0,18}?\b(?P<lr>left|right)\b", re.I)
 _MOTION_TURN_RE = re.compile(
     r"\b(?:turn|rotate|spin|pivot|swing|face)\b.{0,20}?\b"
     r"(?P<dir>left|right|around|clockwise|counter[-\s]?clockwise)\b",
@@ -1162,9 +1184,30 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
             reason="explicit come-here request",
         )
 
+    # Compound arc — a forward/back move AND a left/right turn joined by "and" in a
+    # single utterance drives a brief simultaneous curve. (Two separate utterances —
+    # "move forward" then "turn right" — are NOT merged; each is its own finite command
+    # via the per-utterance pipeline.)
+    if re.search(r"\band\b", cleaned):
+        fwd = bool(_MOTION_FWD_RE.search(cleaned))
+        back = bool(_MOTION_BACK_RE.search(cleaned))
+        lat = _MOTION_ARC_LAT_RE.search(cleaned)
+        if (fwd or back) and lat:
+            return ActionDecision(
+                action="motion.arc", confidence=0.95,
+                args={
+                    "lin_dir": "forward" if fwd else "back",
+                    "ang_dir": lat.group("lr").lower(),
+                    "small": bool(_MOTION_SMALL_RE.search(cleaned)),
+                },
+                reason="explicit compound move+turn arc",
+            )
+
     if _MOTION_FWD_RE.search(cleaned):
         args: dict[str, Any] = {"direction": "forward"}
         dist = _motion_dist_to_m(cleaned)
+        if dist is None and _MOTION_SMALL_RE.search(cleaned):
+            dist = _MOTION_SMALL_MOVE_M
         if dist is not None:
             args["dist_m"] = dist
         return ActionDecision(
@@ -1175,6 +1218,8 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
     if _MOTION_BACK_RE.search(cleaned):
         args = {"direction": "back"}
         dist = _motion_dist_to_m(cleaned)
+        if dist is None and _MOTION_SMALL_RE.search(cleaned):
+            dist = _MOTION_SMALL_MOVE_M
         if dist is not None:
             args["dist_m"] = dist
         return ActionDecision(
