@@ -1046,6 +1046,18 @@ def assemble_system_prompt(
     transcript = conv_db.get_session_transcript()
     if transcript:
         sections.append("Session so far (recent exchanges):\n" + _format_transcript(transcript[-20:]))
+        # Answered-question suppression: the raw transcript above is live (unlike the arc
+        # below, which lags on a background thread). Anchor a hard no-repeat rule to it so
+        # neither the reply nor the proactive small-talk path re-asks something they just
+        # answered — the live-run failure where Rex re-asked "best photon lately?" right
+        # after Bret had named his targets.
+        sections.append(
+            "Before you ask ANY question, scan the exchanges above: if the human already "
+            "answered it this session — or a near-identical question, or a slight-variant "
+            "follow-up on the same thing they just told you — do NOT ask it again. Move to a "
+            "genuinely new subject instead. Re-raise an already-answered topic only if they "
+            "bring it up first."
+        )
 
     # 6b. Conversation arc — the distilled running memory (topics, what landed vs
     # flopped, mood, open threads) maintained by topic_thread. Complements the raw

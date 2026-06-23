@@ -5765,7 +5765,9 @@ def _do_small_talk_question(snapshot: dict) -> None:
                     f"they've been into or thinking about lately, or what they're passionate "
                     f"about. If a cue above gives you something specific (a plan, their mood, a "
                     f"known interest), you may ask about that instead — but don't default to "
-                    f"interrogating them about their schedule. Warm but dry. Don't lecture, "
+                    f"interrogating them about their schedule. Pick something they have NOT "
+                    f"already covered in this conversation — a fresh subject or a new angle, "
+                    f"never a repeat of what they just told you. Warm but dry. Don't lecture, "
                     f"don't give your opinion — just ask. Address {target_name} by name. One "
                     f"short sentence ending in a question mark."
                 )
