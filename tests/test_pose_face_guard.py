@@ -50,15 +50,33 @@ class RejectFacesOffBodyTest(unittest.TestCase):
         from intelligence import consciousness as c
         near = self._face(510, 330)   # ~14px from pose head → real
         far = self._face(510, 60)     # ~260px above → phantom
-        with mock.patch("vision.pose.head_anchor_px", return_value=(500.0, 320.0, 120.0)):
+        with mock.patch("vision.pose.head_anchors_px", return_value=[(500.0, 320.0, 120.0)]):
             out = c._reject_faces_off_body([near, far], 1000, 800)
         self.assertIn((510, 330), self._centers(out))
         self.assertNotIn((510, 60), self._centers(out))
 
+    def test_keeps_face_near_a_second_person(self):
+        # Two tracked bodies: a face near the SECOND head must be kept. This is the
+        # multi-person regression — the old single-head guard dropped a real second
+        # person's face (the "boss had no bounding box" report).
+        from intelligence import consciousness as c
+        p1 = self._face(300, 320)     # near head A
+        p2 = self._face(710, 330)     # near head B (the "boss")
+        phantom = self._face(510, 60)  # far from both heads
+        with mock.patch(
+            "vision.pose.head_anchors_px",
+            return_value=[(300.0, 320.0, 120.0), (700.0, 320.0, 120.0)],
+        ):
+            out = c._reject_faces_off_body([p1, p2, phantom], 1000, 800)
+        centers = self._centers(out)
+        self.assertIn((300, 320), centers)
+        self.assertIn((710, 330), centers)
+        self.assertNotIn((510, 60), centers)
+
     def test_no_pose_anchor_keeps_all(self):
         from intelligence import consciousness as c
         faces = [self._face(10, 10), self._face(900, 700)]
-        with mock.patch("vision.pose.head_anchor_px", return_value=None):
+        with mock.patch("vision.pose.head_anchors_px", return_value=[]):
             self.assertEqual(c._reject_faces_off_body(faces, 1000, 800), faces)
 
     def test_disabled_keeps_all(self):

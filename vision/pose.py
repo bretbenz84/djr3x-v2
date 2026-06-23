@@ -164,10 +164,11 @@ def _load_model() -> bool:
         PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
         VisionRunningMode = mp.tasks.vision.RunningMode
 
+        max_people = max(1, int(getattr(config, "POSE_MAX_PEOPLE", 3)))
         options = PoseLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=str(model_path)),
             running_mode=VisionRunningMode.VIDEO,
-            num_poses=1,
+            num_poses=max_people,
             min_pose_detection_confidence=0.5,
             min_pose_presence_confidence=0.5,
             min_tracking_confidence=0.5,
@@ -502,93 +503,157 @@ def detect_pose(frame) -> list[dict]:
         _log.warning("MediaPipe Pose processing error: %s", exc)
         return []
 
-    kp = _lm_dict(results)
-    if not kp:
-        _update_world_state([])
-        return []
+    frame_h = int(getattr(frame, "shape", [0, 0])[0] or 0)
+    frame_w = int(getattr(frame, "shape", [0, 0, 0])[1] or 0)
 
-    gesture    = _classify_gesture(kp)
-    pose_label = _classify_pose(kp)
-    engagement = _classify_engagement(pose_label, gesture)
-    age        = get_age_category(kp)
+    poses = getattr(results, "pose_landmarks", None) or []
+    people: list[dict] = []
+    wave_kp: Optional[dict] = None
+    for idx in range(len(poses)):
+        kp = _lm_dict(results, idx)
+        if not kp:
+            continue
+
+        gesture    = _classify_gesture(kp)
+        pose_label = _classify_pose(kp)
+        engagement = _classify_engagement(pose_label, gesture)
+        age        = get_age_category(kp)
+
+        # Compute position from nose or shoulder midpoint for world_state matching.
+        nose = _get(kp, "NOSE")
+        ls   = _get(kp, "LEFT_SHOULDER")
+        rs   = _get(kp, "RIGHT_SHOULDER")
+        if nose:
+            position = (nose[0], nose[1])
+        elif ls and rs:
+            position = ((ls[0] + rs[0]) / 2, (ls[1] + rs[1]) / 2)
+        else:
+            position = (0.5, 0.5)
+
+        people.append({
+            "keypoints":  kp,
+            "gesture":    gesture,
+            "pose":       pose_label,
+            "engagement": engagement,
+            "age_estimate": age,
+            "position":   position,
+        })
+        # Wave-speed mirroring keeps ONE wave history — prefer the person actually
+        # waving, else fall back to the first detected body.
+        if wave_kp is None and gesture == "waving":
+            wave_kp = kp
 
     # Track the raised wrist's lateral position over time so wave-back can mirror the
     # speed of the user's wave (see recent_wave_speed()).
-    _record_wave_motion(kp)
+    _record_wave_motion(wave_kp or (people[0]["keypoints"] if people else {}))
 
-    # Compute position from nose or shoulder midpoint for world_state
-    nose = _get(kp, "NOSE")
-    ls   = _get(kp, "LEFT_SHOULDER")
-    rs   = _get(kp, "RIGHT_SHOULDER")
-    if nose:
-        position = (nose[0], nose[1])
-    elif ls and rs:
-        position = ((ls[0] + rs[0]) / 2, (ls[1] + rs[1]) / 2)
-    else:
-        position = (0.5, 0.5)
+    if not people:
+        _update_world_state([], frame_w, frame_h)
+        return []
 
-    person = {
-        "keypoints":  kp,
-        "gesture":    gesture,
-        "pose":       pose_label,
-        "engagement": engagement,
-        "age_estimate": age,
-        "position":   position,
-    }
+    _log.debug("detect_pose: %d pose(s) gestures=%s",
+               len(people), [p["gesture"] for p in people])
 
-    _log.debug("detect_pose: gesture=%s pose=%s engagement=%s age=%s",
-               gesture, pose_label, engagement, age)
-
-    people = [person]
-    _update_world_state(people)
+    _update_world_state(people, frame_w, frame_h)
     return people
 
 
-def _update_world_state(detected: list[dict]) -> None:
+def _update_world_state(detected: list[dict], frame_w: int = 0, frame_h: int = 0) -> None:
     """
-    Merge pose detection results into world_state.people.
+    Merge multi-person pose detection results into world_state.people.
 
-    Strategy: update existing entries by index (person 0 gets the first detected
-    person's pose data, etc.). Entries beyond the detected count have pose fields
-    cleared. This keeps face_id / voice_id assigned by other pipeline stages intact.
+    Each detected pose is bound to the person slot whose FACE BOX is closest to that
+    pose's head (proximity match in normalized coords), so a body skeleton / gesture
+    lands on the RIGHT person in a group instead of always slot 0. Slots that get no
+    pose this tick have their pose fields cleared. When no slot has a face box yet
+    (face pipeline hasn't populated boxes), falls back to index order so an early /
+    face-less pose still shows a skeleton. ``frame_w/h`` convert the pixel face boxes
+    to normalized space for the match.
     """
+    def _pose_fields(person_data):
+        return {
+            "pose":         person_data["pose"],
+            "gesture":      person_data["gesture"],
+            "engagement":   person_data["engagement"],
+            "age_estimate": person_data["age_estimate"],
+            "position":     person_data["position"],
+            # Normalized landmark dict (name -> (x, y, visibility)) so the GUI can draw a
+            # live skeleton overlay. NOTE: consciousness._step_person_recognition rebuilds
+            # people on its tick and only carries forward an allowlist of decoration fields
+            # — "pose_keypoints" MUST be in that `decor` tuple or the skeleton flickers off.
+            "pose_keypoints": person_data.get("keypoints"),
+        }
+
+    def _slot_face_center(slot):
+        box = slot.get("face_box") if isinstance(slot, dict) else None
+        if (isinstance(box, (list, tuple)) and len(box) >= 4
+                and frame_w > 0 and frame_h > 0):
+            x, y, w, h = [float(v) for v in box[:4]]
+            return ((x + w / 2.0) / float(frame_w), (y + h / 2.0) / float(frame_h))
+        return None
+
     def _merge_pose(current):
         updated = list(current)
+        centers = [_slot_face_center(s) for s in updated]
+        have_anchors = any(c is not None for c in centers)
+        used: set[int] = set()  # slot indices that received a pose this tick
 
-        for i, person_data in enumerate(detected):
-            pose_fields = {
-                "pose":         person_data["pose"],
-                "gesture":      person_data["gesture"],
-                "engagement":   person_data["engagement"],
-                "age_estimate": person_data["age_estimate"],
-                "position":     person_data["position"],
-                # Normalized landmark dict (name -> (x, y, visibility)) so the GUI can
-                # draw a live skeleton overlay. NOTE: consciousness._step_person_recognition
-                # rebuilds people on its tick and only carries forward an allowlist of
-                # decoration fields — "pose_keypoints" MUST be in that `decor` tuple or the
-                # skeleton flickers off every recognition commit.
-                "pose_keypoints": person_data.get("keypoints"),
-            }
-            if i < len(updated):
-                updated[i] = {**updated[i], **pose_fields}
-            else:
-                updated.append({
-                    "id":            f"person_{i+1}",
-                    "face_id":       None,
-                    "voice_id":      None,
-                    "distance_zone": None,
-                    **pose_fields,
-                })
+        if have_anchors:
+            # Greedy nearest-match: bind each pose to the closest face slot within range.
+            thresh = float(getattr(config, "POSE_FACE_MATCH_MAX_DIST", 0.22))
+            pairs = []
+            for pi, pd in enumerate(detected):
+                px, py = pd.get("position") or (0.5, 0.5)
+                for si, c in enumerate(centers):
+                    if c is None:
+                        continue
+                    d = ((px - c[0]) ** 2 + (py - c[1]) ** 2) ** 0.5
+                    pairs.append((d, pi, si))
+            pairs.sort(key=lambda t: t[0])
+            matched_pose: set[int] = set()
+            for d, pi, si in pairs:
+                if pi in matched_pose or si in used or d > thresh:
+                    continue
+                updated[si] = {**updated[si], **_pose_fields(detected[pi])}
+                matched_pose.add(pi)
+                used.add(si)
+            # A pose with no nearby face slot → attach to a face-less slot, else append.
+            for pi, pd in enumerate(detected):
+                if pi in matched_pose:
+                    continue
+                si = next((k for k in range(len(updated))
+                           if k not in used and centers[k] is None), None)
+                if si is not None:
+                    updated[si] = {**updated[si], **_pose_fields(pd)}
+                    used.add(si)
+                else:
+                    updated.append({
+                        "id": f"person_{len(updated) + 1}", "face_id": None,
+                        "voice_id": None, "distance_zone": None, **_pose_fields(pd),
+                    })
+                    used.add(len(updated) - 1)
+        else:
+            # No face anchors yet — legacy index order keeps a single/early pose working.
+            for pi, pd in enumerate(detected):
+                if pi < len(updated):
+                    updated[pi] = {**updated[pi], **_pose_fields(pd)}
+                else:
+                    updated.append({
+                        "id": f"person_{pi + 1}", "face_id": None,
+                        "voice_id": None, "distance_zone": None, **_pose_fields(pd),
+                    })
+                used.add(pi)
 
-        # Clear pose fields on any existing entries that no longer have a detected person
-        for i in range(len(detected), len(updated)):
-            updated[i] = {
-                **updated[i],
-                "pose":           None,
-                "gesture":        None,
-                "engagement":     None,
-                "pose_keypoints": None,
-            }
+        # Clear pose fields on any slot that received no pose this tick.
+        for si in range(len(updated)):
+            if si not in used:
+                updated[si] = {
+                    **updated[si],
+                    "pose":           None,
+                    "gesture":        None,
+                    "engagement":     None,
+                    "pose_keypoints": None,
+                }
 
         return updated
 
@@ -641,53 +706,66 @@ def recent_wave_speed() -> Optional[float]:
     return path / dt
 
 
-def head_anchor_px(frame_w: int, frame_h: int):
-    """Where the real head is, per the latest detected pose, in PIXELS:
-    ``(nose_x, nose_y, head_width)`` — or None if no usable pose is published.
-
-    The pose's own face landmarks (nose / eyes / ears) track the head reliably even
-    when dlib throws a phantom face elsewhere in the frame, so callers can use this as
-    a source of truth to reject face detections that are far from the body. ``head_width``
-    is a per-person scale (ear span, else eye span, else a fraction of shoulder width)
-    so the tolerance adapts to how close the person is.
-    """
-    if frame_w <= 0 or frame_h <= 0:
+def _anchor_from_kp(kp, frame_w: int, frame_h: int):
+    """``(nose_x, nose_y, head_width)`` in PIXELS for one pose's normalized keypoints,
+    or None. ``head_width`` is a per-person scale (ear span, else eye span, else a
+    fraction of shoulder width) so the tolerance adapts to how close the person is."""
+    if not isinstance(kp, dict) or not kp:
         return None
+
+    def _pt(name):
+        v = kp.get(name)
+        if isinstance(v, (list, tuple)) and len(v) >= 3 and float(v[2]) >= _VIS_MIN:
+            return (float(v[0]), float(v[1]))
+        return None
+
+    nose = _pt("NOSE") or _pt("LEFT_EYE") or _pt("RIGHT_EYE")
+    if nose is None:
+        return None
+
+    le, re = _pt("LEFT_EAR"), _pt("RIGHT_EAR")
+    leye, reye = _pt("LEFT_EYE"), _pt("RIGHT_EYE")
+    ls, rs = _pt("LEFT_SHOULDER"), _pt("RIGHT_SHOULDER")
+    if le and re:
+        head_w = abs(le[0] - re[0])
+    elif leye and reye:
+        head_w = abs(leye[0] - reye[0]) * 2.2
+    elif ls and rs:
+        head_w = abs(ls[0] - rs[0]) * 0.45
+    else:
+        head_w = 0.08  # normalized fallback (~8% of frame width)
+    head_w = max(0.05, head_w)
+    return (nose[0] * frame_w, nose[1] * frame_h, head_w * frame_w)
+
+
+def head_anchors_px(frame_w: int, frame_h: int) -> list:
+    """ALL detected pose heads in PIXELS — a list of ``(nose_x, nose_y, head_width)``,
+    one per posed body currently in world_state.
+
+    The pose's own face landmarks (nose / eyes / ears) track each head reliably even
+    when dlib throws a phantom face elsewhere, so the face guard can keep a real face
+    near ANY tracked body and reject only faces far from EVERY body (so a second real
+    person is no longer dropped as a phantom)."""
+    if frame_w <= 0 or frame_h <= 0:
+        return []
     try:
         people = world_state.get("people") or []
     except Exception:
-        return None
-
+        return []
+    anchors = []
     for person in people:
         kp = person.get("pose_keypoints") if isinstance(person, dict) else None
-        if not isinstance(kp, dict) or not kp:
-            continue
+        a = _anchor_from_kp(kp, frame_w, frame_h)
+        if a is not None:
+            anchors.append(a)
+    return anchors
 
-        def _pt(name):
-            v = kp.get(name)
-            if isinstance(v, (list, tuple)) and len(v) >= 3 and float(v[2]) >= _VIS_MIN:
-                return (float(v[0]), float(v[1]))
-            return None
 
-        nose = _pt("NOSE") or _pt("LEFT_EYE") or _pt("RIGHT_EYE")
-        if nose is None:
-            continue
-
-        le, re = _pt("LEFT_EAR"), _pt("RIGHT_EAR")
-        leye, reye = _pt("LEFT_EYE"), _pt("RIGHT_EYE")
-        ls, rs = _pt("LEFT_SHOULDER"), _pt("RIGHT_SHOULDER")
-        if le and re:
-            head_w = abs(le[0] - re[0])
-        elif leye and reye:
-            head_w = abs(leye[0] - reye[0]) * 2.2
-        elif ls and rs:
-            head_w = abs(ls[0] - rs[0]) * 0.45
-        else:
-            head_w = 0.08  # normalized fallback (~8% of frame width)
-        head_w = max(0.05, head_w)
-        return (nose[0] * frame_w, nose[1] * frame_h, head_w * frame_w)
-
-    return None
+def head_anchor_px(frame_w: int, frame_h: int):
+    """The FIRST detected pose head in PIXELS (``(nose_x, nose_y, head_width)``), or
+    None. Kept for back-compat; prefer head_anchors_px for the multi-person guard."""
+    anchors = head_anchors_px(frame_w, frame_h)
+    return anchors[0] if anchors else None
 
 
 def process_frame(frame) -> list[dict]:

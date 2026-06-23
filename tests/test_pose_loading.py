@@ -107,6 +107,29 @@ class WorldStatePublishTest(unittest.TestCase):
         person = self.world_state.get("people")[0]
         self.assertIsNone(person["pose_keypoints"])
 
+    def test_binds_pose_to_nearest_face_slot_not_index(self):
+        # Two people with face boxes; the poses arrive in the OTHER order. Each pose must
+        # bind to the person whose FACE BOX is closest (proximity), not by list index —
+        # otherwise a group mis-attributes gestures (the wave-back-on-the-wrong-person bug).
+        self.world_state.mutate("people", lambda _c: [
+            {"id": "p_left",  "face_box": (100, 300, 100, 100)},   # center ~ (0.15, 0.35)
+            {"id": "p_right", "face_box": (800, 300, 100, 100)},   # center ~ (0.85, 0.35)
+        ])
+        detected = [
+            {"pose": "facing_forward", "gesture": "waving", "engagement": "high",
+             "age_estimate": "adult", "position": (0.85, 0.40),     # the RIGHT person
+             "keypoints": {"NOSE": (0.85, 0.40, 0.9)}},
+            {"pose": "facing_forward", "gesture": "neutral", "engagement": "low",
+             "age_estimate": "adult", "position": (0.15, 0.40),     # the LEFT person
+             "keypoints": {"NOSE": (0.15, 0.40, 0.9)}},
+        ]
+        pose._update_world_state(detected, 1000, 1000)
+        people = self.world_state.get("people")
+        left = next(p for p in people if p["id"] == "p_left")
+        right = next(p for p in people if p["id"] == "p_right")
+        self.assertEqual(right["gesture"], "waving")   # the wave bound to the right person
+        self.assertEqual(left["gesture"], "neutral")   # not mis-attributed by index
+
 
 class WaveSpeedTest(unittest.TestCase):
     """recent_wave_speed measures how fast the raised wrist is sweeping (for mirroring)."""

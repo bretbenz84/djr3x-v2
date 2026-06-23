@@ -476,11 +476,22 @@ FACE_DETECTION_HOLD_SECS = _env_float(
 # GUI box jumps off the body). The MediaPipe pose head (nose/eyes/ears) tracks the real
 # head reliably, so when a pose is available we drop any detected face whose center is
 # farther from the pose head than this multiple of the head width. Bigger = more lenient.
-# NOTE: with single-pose detection this trusts ONE body, so in a multi-person scene a
-# second face with no posed body can be rejected — disable if that matters for a build.
+# Multi-person: the guard keeps a face near ANY detected pose head (see POSE_MAX_PEOPLE),
+# so a second real person is no longer dropped as a phantom — only faces far from EVERY
+# tracked body are rejected.
 POSE_FACE_GUARD_ENABLED = _env_bool("POSE_FACE_GUARD_ENABLED", True)
 POSE_FACE_GUARD_MAX_DIST_MULT = _env_float(
     "POSE_FACE_GUARD_MAX_DIST_MULT", 1.5, min_value=0.5, max_value=10.0,
+)
+# How many people MediaPipe Pose tracks at once (PoseLandmarker num_poses). >1 enables
+# a per-person body skeleton AND lets the face guard keep multiple real people. Each pose
+# adds inference cost, so keep this small.
+POSE_MAX_PEOPLE = _env_int("POSE_MAX_PEOPLE", 3, min_value=1, max_value=6)
+# Normalized distance (fraction of frame) between a detected pose's head and a face-box
+# center for the pose to be bound to that person's slot. Beyond this they're treated as
+# different people. Generous, since the pose nose sits inside the face box.
+POSE_FACE_MATCH_MAX_DIST = _env_float(
+    "POSE_FACE_MATCH_MAX_DIST", 0.22, min_value=0.05, max_value=1.0,
 )
 
 # Local expression telemetry via MediaPipe Face Landmarker. This does not own

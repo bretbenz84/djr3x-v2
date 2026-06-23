@@ -3164,25 +3164,26 @@ def _apply_solo_switch_hysteresis(
 
 
 def _reject_faces_off_body(detected: list, frame_w: int, frame_h: int) -> list:
-    """Drop detected faces that are far from the pose's head (phantom dlib faces).
+    """Drop detected faces that are far from EVERY pose head (phantom dlib faces).
 
-    The MediaPipe pose head (nose/eyes/ears) tracks the real head reliably even when dlib
-    throws a spurious face elsewhere — so when a pose head is available, a face whose
-    center is more than POSE_FACE_GUARD_MAX_DIST_MULT head-widths from it is treated as a
-    phantom and dropped. No pose available → no-op (face detection stands on its own)."""
+    The MediaPipe pose heads (nose/eyes/ears) track real heads reliably even when dlib
+    throws a spurious face elsewhere — so a face within POSE_FACE_GUARD_MAX_DIST_MULT
+    head-widths of ANY tracked body is kept, and only a face far from every body is
+    treated as a phantom. Multi-person aware: with POSE_MAX_PEOPLE>1 a second real person
+    has their OWN pose head, so their face survives (the prior single-head version dropped
+    it). No pose heads this tick → no-op (face detection stands on its own)."""
     if not detected or not bool(getattr(config, "POSE_FACE_GUARD_ENABLED", True)):
         return detected
     try:
         from vision import pose as pose_mod
-        anchor = pose_mod.head_anchor_px(int(frame_w or 0), int(frame_h or 0))
+        anchors = pose_mod.head_anchors_px(int(frame_w or 0), int(frame_h or 0))
     except Exception as exc:
         _log.debug("[pose_face_guard] head anchor lookup failed: %s", exc)
-        anchor = None
-    if anchor is None:
-        return detected  # no pose head this tick — can't guard, trust face detection
+        anchors = []
+    if not anchors:
+        return detected  # no pose heads this tick — can't guard, trust face detection
 
-    hx, hy, head_w = anchor
-    max_dist = float(getattr(config, "POSE_FACE_GUARD_MAX_DIST_MULT", 1.5)) * float(head_w)
+    mult = float(getattr(config, "POSE_FACE_GUARD_MAX_DIST_MULT", 1.5))
     kept = []
     for face in detected:
         box = face.get("bounding_box") if isinstance(face, dict) else None
@@ -3191,14 +3192,16 @@ def _reject_faces_off_body(detected: list, frame_w: int, frame_h: int) -> list:
             continue
         x, y, w, h = [float(v) for v in box[:4]]
         fx, fy = x + w / 2.0, y + h / 2.0
-        dist = ((fx - hx) ** 2 + (fy - hy) ** 2) ** 0.5
-        if dist <= max_dist:
+        near_any = any(
+            ((fx - hx) ** 2 + (fy - hy) ** 2) ** 0.5 <= mult * float(head_w)
+            for (hx, hy, head_w) in anchors
+        )
+        if near_any:
             kept.append(face)
         else:
             _log.info(
-                "[pose_face_guard] dropped phantom face center=(%.0f,%.0f) dist=%.0fpx "
-                "> max=%.0fpx (pose head=(%.0f,%.0f) head_w=%.0f)",
-                fx, fy, dist, max_dist, hx, hy, head_w,
+                "[pose_face_guard] dropped phantom face center=(%.0f,%.0f) — far from all "
+                "%d pose head(s)", fx, fy, len(anchors),
             )
     return kept
 
