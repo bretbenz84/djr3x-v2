@@ -373,5 +373,31 @@ class RampTowardTest(unittest.TestCase):
         self.assertEqual(mc.ramp_toward(0.0, 1.0, 0.0, 0.0), 1.0)
 
 
+class MotionTakeoverTest(_MotionTestBase):
+    """interaction._explicit_motion_takeover runs BEFORE the dialogue-act gate, so an
+    explicit command isn't swallowed as an answer_to_rex reply when Rex has just spoken
+    (the live 2026-06-23 bug: "move forward." / "Move backwards" -> conversation.reply).
+    It executes motion regardless of dialogue state, and is a clean no-op otherwise."""
+
+    def test_no_base_is_noop(self):
+        from intelligence import interaction as I
+        self.assertIsNone(I._explicit_motion_takeover("turn left"))   # no base connected
+
+    def test_explicit_motion_executes(self):
+        from intelligence import interaction as I
+        self._connect()
+        self.assertEqual(I._explicit_motion_takeover("turn left"), "Turning left.")
+        self.assertIsNotNone(self._last("turn"))
+        self.assertEqual(I._explicit_motion_takeover("move forward"), "Rolling forward.")
+        self.assertIsNotNone(self._last("move"))
+
+    def test_non_motion_is_noop(self):
+        from intelligence import interaction as I
+        self._connect()
+        self.assertIsNone(I._explicit_motion_takeover("yeah that sounds great, thanks"))
+        self.assertIsNone(self._last("turn"))
+        self.assertIsNone(self._last("move"))
+
+
 if __name__ == "__main__":
     unittest.main()

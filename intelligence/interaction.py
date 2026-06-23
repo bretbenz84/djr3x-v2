@@ -14073,6 +14073,43 @@ def _handle_router_motion_action(
     return None
 
 
+def _explicit_motion_takeover(
+    text: str,
+    *,
+    router_audit: Optional["_RouterDecisionAudit"] = None,
+) -> Optional[str]:
+    """Explicit drive-base motion, run BEFORE the dialogue-act gate.
+
+    A deterministic "turn left" / "move forward" / "move backwards" is a PHYSICAL
+    command, not an answer to Rex's last question — so it must execute even inside an
+    answer_to_rex frame (which otherwise skips the whole router). Returns a short spoken
+    confirmation, or None when it's not an explicit motion command, no base is connected,
+    or the command was suppressed (paused / gamepad owns the base). No-op (None) unless a
+    base is connected, so behavior is unchanged otherwise. Bare "stop" routes here only
+    while the base is actually moving (so it never steals stop-music/game/talk)."""
+    if not motion_controller.available():
+        return None
+    motion_decision = action_router.classify_explicit_motion(text)
+    if (
+        motion_decision is None
+        and motion_controller.is_moving()
+        and _BARE_MOTION_STOP_RE.match(text or "")
+    ):
+        motion_decision = action_router.ActionDecision(
+            action="motion.stop", confidence=0.95, args={},
+            reason="bare stop while base moving",
+        )
+    if motion_decision is None:
+        return None
+    _router_audit_note_decision(router_audit, motion_decision)
+    result = _handle_router_motion_action(motion_decision)
+    if result is not None:
+        _router_audit_note_fast_local_action(
+            router_audit, motion_decision.action, reason=motion_decision.reason
+        )
+    return result
+
+
 def _handle_router_takeover_action(
     decision: Optional[action_router.ActionDecision],
     text: str,
@@ -14437,27 +14474,9 @@ def _handle_fast_local_takeover(
             router_audit=router_audit,
         )
 
-    # Drive-base motion — only when a base is connected, so behavior is unchanged
-    # otherwise. Bare "stop" routes to the base only while it is actually moving.
-    if motion_controller.available():
-        motion_decision = action_router.classify_explicit_motion(text)
-        if (
-            motion_decision is None
-            and motion_controller.is_moving()
-            and _BARE_MOTION_STOP_RE.match(text or "")
-        ):
-            motion_decision = action_router.ActionDecision(
-                action="motion.stop", confidence=0.95, args={},
-                reason="bare stop while base moving",
-            )
-        if motion_decision is not None:
-            _router_audit_note_decision(router_audit, motion_decision)
-            result = _handle_router_motion_action(motion_decision)
-            if result is not None:
-                _router_audit_note_fast_local_action(
-                    router_audit, motion_decision.action, reason=motion_decision.reason
-                )
-                return result
+    # Drive-base motion runs BEFORE the dialogue-act gate (see _explicit_motion_takeover),
+    # so an explicit "turn left" / "move forward" isn't swallowed as an answer_to_rex reply
+    # when Rex has just spoken. Nothing to do here.
 
     directed_followup = _pending_directed_search_reply(
         text,
@@ -18600,14 +18619,22 @@ def _handle_speech_segment(
                 and dialogue_decision.label == "answer_to_rex"
                 and dialogue_decision.frame is not None
                 and (getattr(dialogue_decision.frame, "text", "") or "").strip()
+                # An explicit motion imperative ("move forward") is a PHYSICAL command,
+                # never the answer to Rex's question — don't record it as one, even if the
+                # base is suppressed (manual/paused) and the command falls through to chat.
+                and action_router.classify_explicit_motion(text) is None
             ):
                 answered_question = {
                     "question_text": dialogue_decision.frame.text.strip(),
                     "answer_text": text,
                 }
 
-            fast_takeover_response = None
-            if not dialogue_decision.skip_action_router:
+            # Explicit drive-base motion is a PHYSICAL command, not an answer to Rex — run
+            # it even when the dialogue gate would skip the router, else commands spoken
+            # right after Rex speaks get swallowed as conversation (live-logged 2026-06-23:
+            # "move forward." / "Move backwards" -> conversation.reply).
+            fast_takeover_response = _explicit_motion_takeover(text, router_audit=router_audit)
+            if fast_takeover_response is None and not dialogue_decision.skip_action_router:
                 fast_takeover_response = _handle_fast_local_takeover(
                     text,
                     person_id=person_id,
