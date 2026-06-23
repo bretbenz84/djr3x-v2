@@ -74,5 +74,57 @@ class SkeletonClipTest(unittest.TestCase):
         self.assertEqual(int(outside), 0, "skeleton bled outside the video rect")
 
 
+@unittest.skipUnless(_GUI_OK, "PySide6 / Qt offscreen platform unavailable")
+class CoarseHandPointsTest(unittest.TestCase):
+    """The wireframe extends past the wrist using the coarse pinky/index/thumb points the
+    Pose model already publishes (no Hand Landmarker). They must be in the skeleton
+    definitions AND actually render."""
+
+    def _cyan_count(self, kp):
+        from gui.vision_panel import VisionPanel
+        panel = VisionPanel()
+        panel.resize(640, 480)
+        panel.set_snapshot({
+            "frame": np.ones((480, 640, 3), np.uint8) * 40,
+            "world_state": {"people": [{"id": "p", "face_visible": True, "pose_keypoints": kp}]},
+            "camera_stats": {"last_frame_monotonic": time.monotonic()},
+        })
+        img = QImage(panel.size(), QImage.Format.Format_RGB888)
+        panel.render(img)
+        arr = np.frombuffer(img.constBits().tobytes(), dtype=np.uint8)
+        arr = arr.reshape(img.height(), img.bytesPerLine())[:, : img.width() * 3]
+        arr = arr.reshape(img.height(), img.width(), 3)
+        dist = np.abs(arr.astype(int) - _SKELETON_RGB).sum(axis=2)
+        return int((dist < 60).sum())
+
+    def test_finger_landmarks_in_skeleton_definitions(self):
+        from gui import vision_panel as vp
+        for n in ("LEFT_THUMB", "LEFT_INDEX", "LEFT_PINKY",
+                  "RIGHT_THUMB", "RIGHT_INDEX", "RIGHT_PINKY"):
+            self.assertIn(n, vp._POSE_JOINTS)
+        self.assertIn(("LEFT_WRIST", "LEFT_INDEX"), vp._POSE_EDGES)
+        self.assertIn(("RIGHT_WRIST", "RIGHT_PINKY"), vp._POSE_EDGES)
+
+    def test_coarse_hand_points_render(self):
+        # Same body; adding the in-frame finger points must draw MORE cyan (the hand fan
+        # past the wrist) — proves the new dots/edges actually render, not silently no-op.
+        base = {
+            "NOSE": (0.50, 0.20, 1.0),
+            "LEFT_SHOULDER": (0.60, 0.40, 1.0), "RIGHT_SHOULDER": (0.40, 0.40, 1.0),
+            "LEFT_ELBOW": (0.66, 0.55, 1.0), "RIGHT_ELBOW": (0.34, 0.55, 1.0),
+            "LEFT_WRIST": (0.70, 0.68, 1.0), "RIGHT_WRIST": (0.30, 0.68, 1.0),
+        }
+        fingers = {
+            "LEFT_THUMB": (0.73, 0.71, 1.0), "LEFT_INDEX": (0.76, 0.69, 1.0),
+            "LEFT_PINKY": (0.74, 0.74, 1.0),
+            "RIGHT_THUMB": (0.27, 0.71, 1.0), "RIGHT_INDEX": (0.24, 0.69, 1.0),
+            "RIGHT_PINKY": (0.26, 0.74, 1.0),
+        }
+        self.assertGreater(
+            self._cyan_count({**base, **fingers}), self._cyan_count(dict(base)),
+            "coarse hand points/edges did not add to the wireframe",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

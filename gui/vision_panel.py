@@ -20,6 +20,10 @@ _CAMERA_STALE_SECS = 2.0
 # Body-pose wireframe (MediaPipe 33-point skeleton). Edges connect named landmarks;
 # only drawn when both endpoints are present and visible. Coordinates in pose_keypoints
 # are normalized (0..1) over the full frame, mapped straight onto the displayed image.
+# NOTE: the hand points below are COARSE — the Pose model gives only ONE pinky/index/thumb
+# point per hand (landmarks 17-22), not an articulated finger skeleton. They extend the
+# wireframe past the wrist as a small fan. A real 21-point finger skeleton would need the
+# separate MediaPipe Hand Landmarker (see docs/junecodereview / project notes).
 _SKELETON_COLOR = "#36d9ff"   # cyan — distinct from face boxes (green) / animals (amber)
 _SKELETON_MIN_VIS = 0.3
 _POSE_EDGES = (
@@ -29,6 +33,12 @@ _POSE_EDGES = (
     # arms
     ("LEFT_SHOULDER", "LEFT_ELBOW"), ("LEFT_ELBOW", "LEFT_WRIST"),
     ("RIGHT_SHOULDER", "RIGHT_ELBOW"), ("RIGHT_ELBOW", "RIGHT_WRIST"),
+    # hands (coarse: wrist → thumb/index/pinky + a knuckle line, so the skeleton no
+    # longer stops dead at the wrist; not real fingers — see the note above)
+    ("LEFT_WRIST", "LEFT_THUMB"), ("LEFT_WRIST", "LEFT_INDEX"),
+    ("LEFT_WRIST", "LEFT_PINKY"), ("LEFT_INDEX", "LEFT_PINKY"),
+    ("RIGHT_WRIST", "RIGHT_THUMB"), ("RIGHT_WRIST", "RIGHT_INDEX"),
+    ("RIGHT_WRIST", "RIGHT_PINKY"), ("RIGHT_INDEX", "RIGHT_PINKY"),
     # shoulders + torso
     ("LEFT_SHOULDER", "RIGHT_SHOULDER"),
     ("LEFT_SHOULDER", "LEFT_HIP"), ("RIGHT_SHOULDER", "RIGHT_HIP"),
@@ -41,6 +51,9 @@ _POSE_JOINTS = (
     "NOSE", "LEFT_SHOULDER", "RIGHT_SHOULDER", "LEFT_ELBOW", "RIGHT_ELBOW",
     "LEFT_WRIST", "RIGHT_WRIST", "LEFT_HIP", "RIGHT_HIP",
     "LEFT_KNEE", "RIGHT_KNEE", "LEFT_ANKLE", "RIGHT_ANKLE",
+    # coarse hand points (Pose landmarks 17-22): one pinky/index/thumb dot per hand.
+    "LEFT_THUMB", "LEFT_INDEX", "LEFT_PINKY",
+    "RIGHT_THUMB", "RIGHT_INDEX", "RIGHT_PINKY",
 )
 
 
