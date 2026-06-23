@@ -846,6 +846,19 @@ venv/bin/python main.py
     the GUI never draws a light as a body. Keeps frontal / upper-body-only / side-on bodies.
     Detection confidence is also raised + configurable (`POSE_MIN_DETECTION_CONFIDENCE`=0.6,
     was a hardcoded 0.5). Tests: `tests/test_pose_phantom_filter.py`.
+  - **Two-person hardening** (JT-intro failures): pose↔face binding in `_update_world_state`
+    is now MUTUAL-NEAREST (a pose binds a face slot only if each is the other's nearest
+    within `POSE_FACE_MATCH_MAX_DIST`) so a pose can't cross-bind to a neighbour's face;
+    `_is_plausible_pose` also rejects frame-spanning blobs (`POSE_MAX_SHOULDER_WIDTH`). The
+    GUI only draws a skeleton coherent with a visible face (`GUI_POSE_REQUIRE_FACE`,
+    `GUI_POSE_FACE_COHERENCE_DIST`) — kills phantom wireframes "above" people and mis-bound
+    ones. Fact/interest/preference extraction filters to HUMAN turns only
+    (`llm._human_turns_only`) so Rex's own bits (e.g. "JT volleyball celebrity") can't be
+    stored as a person's facts. Name-keyed celebrity bits (`person_specials`) only fire for
+    an ESTABLISHED person (`name_keyed_bit_allowed`), not a freshly-introduced stranger whose
+    name collides. The "who's the mystery guest?" agenda stands down for
+    `UNKNOWN_GUEST_AGENDA_SUPPRESS_AFTER_INTRO_SECS` after an intro
+    (`introductions.intro_recent`). Test: `tests/test_two_person_handling.py`.
 - Tidy-up — episodic capture hooks → `intelligence/episodic_hooks.py` (leaf module; consciousness calls `episodic_hooks.<name>`).
 - Tidy-up — idle micro-behaviours → `intelligence/idle_behaviors.py` (dispatcher stays in consciousness and calls `idle_behaviors.do_<name>`; the behaviours reach consciousness's speak engine via a lazy `_c` proxy; `_do_small_talk_question` stayed, being mood-detection-coupled).
 - Tidy-up — proactive-speech ENGINE → `intelligence/speech_engine.py` (15 functions; consciousness re-exports each as a `_name` shim so call sites + test patches are unchanged; intra-engine calls route through the `_c` shims for full patch-transparency; `note_rex_utterance` + shared speech state stayed in consciousness; `tests/test_speech_engine.py`). The governor metadata key MUST stay `"can_proactive_speak"` (action_governor reads it).

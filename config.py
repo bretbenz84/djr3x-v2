@@ -126,6 +126,12 @@ GUI_CAMERA_PREVIEW_ENABLED = True
 # (in addition to the green face boxes). Reads world_state.people[*].pose_keypoints,
 # published by vision/pose.py. Off → boxes only.
 GUI_POSE_WIREFRAME_ENABLED = True
+# Only draw a pose wireframe for a slot with a VISIBLE face whose centre is within
+# GUI_POSE_FACE_COHERENCE_DIST (normalized) of the pose head. Kills phantom wireframes
+# (no face there) and mis-bound wireframes (drawn over the wrong person). Set False to
+# draw every detected pose regardless of face (old behavior).
+GUI_POSE_REQUIRE_FACE = True
+GUI_POSE_FACE_COHERENCE_DIST = 0.20
 GUI_SERVO_SIM_ENABLED = True
 GUI_CONVERSATION_LOG_MAX_LINES = 300
 GUI_AVATAR_SMOOTHING = 0.25
@@ -514,6 +520,11 @@ POSE_MIN_TORSO_VISIBILITY = _env_float(
 )
 POSE_MIN_SHOULDER_WIDTH = _env_float(
     "POSE_MIN_SHOULDER_WIDTH", 0.04, min_value=0.0, max_value=0.5,
+)
+# Upper bound on normalized shoulder separation — a real torso never spans most of the
+# frame; a blob/phantom whose two "shoulders" land on opposite edges is rejected.
+POSE_MAX_SHOULDER_WIDTH = _env_float(
+    "POSE_MAX_SHOULDER_WIDTH", 0.6, min_value=0.2, max_value=1.0,
 )
 
 # Local expression telemetry via MediaPipe Face Landmarker. This does not own
@@ -3983,6 +3994,10 @@ IDENTITY_RENAME_COOLDOWN_SECS = 120.0
 # Face detection can flicker off for a second while a newcomer is still present.
 # During this grace window, do not treat an unmatched voice as off-camera.
 UNKNOWN_FACE_RECENT_GRACE_SECS = 6.0
+# After the user explicitly introduces a newcomer ("this is my partner JT"), stand the
+# urgent "who's the mystery guest?" identity-handoff agenda down for this long so Rex
+# stops re-asking every turn while voice/face enrollment catches up (the JT run looped it).
+UNKNOWN_GUEST_AGENDA_SUPPRESS_AFTER_INTRO_SECS = 45.0
 
 # A solo unknown face must PERSIST this long before Rex asks "what's your name?". A
 # known face reads as unknown for the tick or two recognition needs to resolve at

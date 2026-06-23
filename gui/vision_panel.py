@@ -115,7 +115,7 @@ class VisionPanel(QWidget):
             else:
                 image_rect = _scaled_rect(image.width(), image.height(), frame_rect)
                 painter.drawImage(image_rect, image)
-                self._draw_pose_skeletons(painter, image_rect)
+                self._draw_pose_skeletons(painter, image_rect, image.width(), image.height())
                 self._draw_animals(painter, image_rect, image.width(), image.height())
                 self._draw_people(painter, image_rect, image.width(), image.height())
                 stale = self._camera_stale_secs()
@@ -187,12 +187,23 @@ class VisionPanel(QWidget):
 
             _draw_label(painter, text_anchor, label, expression, color)
 
-    def _draw_pose_skeletons(self, painter: QPainter, image_rect: QRectF) -> None:
-        """Overlay a live body-pose wireframe for each person that has landmarks."""
+    def _draw_pose_skeletons(
+        self, painter: QPainter, image_rect: QRectF, frame_w: int = 0, frame_h: int = 0
+    ) -> None:
+        """Overlay a live body-pose wireframe for each person that has landmarks.
+
+        Coherence guard (GUI_POSE_REQUIRE_FACE): only draw a skeleton for a slot that has
+        a VISIBLE face whose centre sits near the pose's head. This kills the two failures
+        from the JT run — phantom wireframes drawn "above us" (no face there) and a
+        mis-bound wireframe drawn over the WRONG person (pose head far from the slot's
+        face). Set GUI_POSE_REQUIRE_FACE=False to draw every detected pose (old behavior).
+        """
         if not getattr(config, "GUI_POSE_WIREFRAME_ENABLED", True):
             return
         if not self._people or image_rect.isEmpty():
             return
+        require_face = bool(getattr(config, "GUI_POSE_REQUIRE_FACE", True))
+        max_dist = float(getattr(config, "GUI_POSE_FACE_COHERENCE_DIST", 0.20))
         # Clip to the displayed video rect so limbs running off the edge are cut at the
         # frame boundary instead of bleeding into the panel's letterbox/border.
         painter.save()
@@ -200,8 +211,13 @@ class VisionPanel(QWidget):
         try:
             for person in self._people:
                 keypoints = person.get("pose_keypoints")
-                if isinstance(keypoints, dict) and keypoints:
-                    _draw_one_skeleton(painter, image_rect, keypoints)
+                if not (isinstance(keypoints, dict) and keypoints):
+                    continue
+                if require_face and not _pose_face_coherent(
+                    person, keypoints, frame_w, frame_h, max_dist
+                ):
+                    continue
+                _draw_one_skeleton(painter, image_rect, keypoints)
         finally:
             painter.restore()
 
@@ -448,6 +464,40 @@ def _person_box(person: dict[str, Any]) -> tuple[float, float, float, float] | N
     if w <= 0 or h <= 0:
         return None
     return (x, y, w, h)
+
+
+def _pose_head_norm(keypoints: dict) -> tuple[float, float] | None:
+    """Normalized (x, y) of the pose's head: the NOSE if present, else the shoulder
+    midpoint. Keypoint values are (x, y, visibility) in [0, 1]."""
+    nose = keypoints.get("NOSE")
+    if isinstance(nose, (list, tuple)) and len(nose) >= 2:
+        return (float(nose[0]), float(nose[1]))
+    ls, rs = keypoints.get("LEFT_SHOULDER"), keypoints.get("RIGHT_SHOULDER")
+    if (isinstance(ls, (list, tuple)) and len(ls) >= 2
+            and isinstance(rs, (list, tuple)) and len(rs) >= 2):
+        return ((float(ls[0]) + float(rs[0])) / 2.0, (float(ls[1]) + float(rs[1])) / 2.0)
+    return None
+
+
+def _pose_face_coherent(
+    person: dict, keypoints: dict, frame_w: int, frame_h: int, max_dist: float
+) -> bool:
+    """True if this slot's pose belongs to its visible face: the slot has a visible
+    face box and the pose head sits within max_dist (normalized) of the face centre.
+    Rejects phantom poses (no face) and mis-bound poses (head far from the slot's face)."""
+    if person.get("face_visible") is False or person.get("face_missing"):
+        return False
+    if frame_w <= 0 or frame_h <= 0:
+        return False
+    box = _person_box(person)
+    if box is None:
+        return False
+    head = _pose_head_norm(keypoints)
+    if head is None:
+        return False
+    fx = (box[0] + box[2] / 2.0) / float(frame_w)
+    fy = (box[1] + box[3] / 2.0) / float(frame_h)
+    return ((head[0] - fx) ** 2 + (head[1] - fy) ** 2) ** 0.5 <= max_dist
 
 
 def _person_point(

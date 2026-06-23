@@ -197,3 +197,24 @@ def followup_fresh(ctx: Optional[dict], *, now: Optional[float] = None) -> bool:
         return False
     now = time.monotonic() if now is None else now
     return (now - float(ctx.get("asked_at") or 0.0)) <= INTRO_FOLLOWUP_TTL_SECS
+
+
+# When the user actively introduces a newcomer ("this is my partner JT"), Rex is already
+# capturing that identity — so the "urgent group identity handoff / who's the mystery
+# guest?" agenda should stand down for a window instead of badgering on every turn while
+# voice/face enrollment catches up (the JT run looped that question ~5 times).
+_last_introduction_at: float = 0.0
+
+
+def note_introduction(*, now: Optional[float] = None) -> None:
+    """Mark that an explicit introduction just happened (for intro_recent)."""
+    global _last_introduction_at
+    _last_introduction_at = time.monotonic() if now is None else now
+
+
+def intro_recent(within_secs: float = 45.0, *, now: Optional[float] = None) -> bool:
+    """True if an explicit introduction happened within the last ``within_secs``."""
+    if _last_introduction_at <= 0.0:
+        return False
+    now = time.monotonic() if now is None else now
+    return (now - _last_introduction_at) <= max(0.0, float(within_secs))

@@ -6545,6 +6545,7 @@ def _handle_relationship_reply(
                 "created_at": time.monotonic(),
                 "asked_at": time.monotonic(),
             }
+            introductions.note_introduction()  # stand down the mystery-guest agenda
             consciousness.note_relationship_slot_handled(slot_id)
             try:
                 first = _first_name_or(engaged_name, "friend")
@@ -8459,6 +8460,7 @@ def _handle_introduction_parse(
             "created_at": time.monotonic(),
             "asked_at": time.monotonic(),
         }
+        introductions.note_introduction()  # stand down the mystery-guest agenda
         rel_hint = f" your {parsed.relationship}" if parsed.relationship else ""
         try:
             if parsed.relationship:
@@ -17622,6 +17624,8 @@ def _handle_speech_segment(
                 text,
                 has_unknown_face=has_unknown_for_intro,
             )
+            if parsed_intro.is_introduction:
+                introductions.note_introduction()  # stand down the mystery-guest agenda
             if parsed_intro.is_introduction and (
                 parsed_intro.subject_kind == "pet"
                 or has_unknown_for_intro
@@ -17783,6 +17787,8 @@ def _handle_speech_segment(
                 text,
                 has_unknown_face=has_unknown_for_intro,
             )
+            if parsed_intro.is_introduction:
+                introductions.note_introduction()  # stand down the mystery-guest agenda
             if parsed_intro.is_introduction and (
                 parsed_intro.subject_kind == "pet"
                 or has_unknown_for_intro

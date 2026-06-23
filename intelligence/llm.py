@@ -126,6 +126,20 @@ def _format_transcript(transcript: list[dict]) -> str:
     )
 
 
+_REX_SPEAKER_LABELS = {"rex", "dj-r3x", "djr3x", "dj r3x", "r3x", "dj-rex"}
+
+
+def _human_turns_only(transcript: list[dict]) -> list[dict]:
+    """Drop Rex's OWN lines before fact/interest/preference extraction. A person's facts
+    must come from what the HUMAN said, never from the droid's own utterances — otherwise
+    a Rex bit like 'JT, major volleyball celebrity' gets mined and stored as JT's real,
+    explicit interest (the JT-run pollution). Only the human describes the human."""
+    return [
+        e for e in (transcript or [])
+        if str(e.get("speaker", "")).strip().lower() not in _REX_SPEAKER_LABELS
+    ]
+
+
 # Human-readable cue for a person's CURRENT facial expression, surfaced as routine
 # per-turn world context so Rex can naturally respond to a smile / furrowed brow /
 # shocked look instead of conversing blind to the face. Deliberately LOOSER than
@@ -567,7 +581,11 @@ def _build_person_context(person_id: int) -> str:
     tier = person.get("friendship_tier", "stranger")
     lines.append(f"Person: {name} (tier: {tier}).")
 
-    special_context = person_specials.special_prompt_context(name)
+    # Name-keyed celebrity bits (JT, hair-stylist) only fire for an ESTABLISHED person —
+    # not a stranger introduced this session whose name collides with a VIP (the JT run).
+    special_context = person_specials.special_prompt_context(
+        name, established=person_specials.name_keyed_bit_allowed(person)
+    )
     if special_context:
         lines.append(special_context)
 
@@ -1939,6 +1957,7 @@ def extract_facts(
     Ask GPT-4o-mini to extract facts about the human speaker from a session transcript.
     Returns a list of dicts with keys: category, key, value.
     """
+    transcript = _human_turns_only(transcript)
     if not transcript:
         return []
 
@@ -2038,6 +2057,7 @@ def extract_preferences(
     Returns dicts with: domain, preference_type, key, value, confidence,
     importance, source.
     """
+    transcript = _human_turns_only(transcript)
     if not transcript:
         return []
 
@@ -2144,6 +2164,7 @@ def extract_interests(
     Returns dicts with: name, category, interest_strength, confidence, source,
     notes, associated_people, associated_stories.
     """
+    transcript = _human_turns_only(transcript)
     if not transcript:
         return []
 
@@ -2247,6 +2268,7 @@ def extract_events(
     Relative dates ("this weekend", "Saturday", "next Monday") are resolved
     against today. Past events and Rex's own statements are ignored.
     """
+    transcript = _human_turns_only(transcript)
     if not transcript:
         return []
 

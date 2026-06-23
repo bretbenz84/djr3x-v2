@@ -1658,6 +1658,21 @@ def _is_jt_volleyball_celebrity(name: object) -> bool:
     return person_specials.is_jt_volleyball_celebrity(name)
 
 
+def _name_keyed_special_established(person_db_id: object) -> bool:
+    """Name-keyed celebrity bits (JT volleyball) only fire for an ESTABLISHED person Rex
+    knows on sight — never a stranger introduced this session whose name collides with a
+    VIP (Bret's brand-new partner also named JT). Looks the person up by db id."""
+    try:
+        pid = int(person_db_id)
+    except (TypeError, ValueError):
+        return False
+    try:
+        from memory import people as _people_db
+        return person_specials.name_keyed_bit_allowed(_people_db.get_person(pid))
+    except Exception:
+        return False
+
+
 def _can_jt_volleyball_speak(profile: SituationProfile) -> bool:
     return _can_jeff_celebrity_speak(profile)
 
@@ -1670,6 +1685,8 @@ def _stage_jt_volleyball_greeting(
 ) -> None:
     if not returning and key in _jt_volleyball_greeted_this_session:
         return
+    if not _name_keyed_special_established(key):
+        return  # don't do the celebrity bit on a freshly-introduced name collision
     existing = _pending_jt_volleyball_greetings.get(key)
     if existing:
         existing["last_seen_at"] = time.monotonic()
@@ -1697,6 +1714,8 @@ def _try_fire_jt_volleyball_greeting(
 ) -> bool:
     if not isinstance(key, int) or not _is_jt_volleyball_celebrity(person_name):
         return False
+    if not _name_keyed_special_established(person_db_id if person_db_id is not None else key):
+        return False  # established VIPs only — not a just-met name collision
     if not returning and key in _jt_volleyball_greeted_this_session:
         return False
     if not _can_jt_volleyball_speak(profile):
@@ -10364,11 +10383,17 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         if speaker_target:
             _speaker_gaze_note_acquired(candidate)
 
+        _prev_lock_pid = _face_tracking_lock.get("person_id") if _face_tracking_lock else None
         _face_tracking_lock = {
             "key": candidate["key"],
             "person_id": candidate.get("person_id"),
             "last_seen_at": now,
         }
+        if candidate.get("person_id") != _prev_lock_pid:
+            # Make the lock SWITCH visible — the JT run silently re-targeted Bret -> JT
+            # with no log of which candidate won. Aids future 2-person diagnosis.
+            _log.info("face_tracking: lock switched key=%s person_id=%s (was person_id=%s)",
+                      candidate.get("key"), candidate.get("person_id"), _prev_lock_pid)
 
         frame_w, frame_h = _frame_size(frame)
         neck_cfg = config.SERVO_CHANNELS["neck"]

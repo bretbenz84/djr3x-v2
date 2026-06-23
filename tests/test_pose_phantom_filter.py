@@ -65,6 +65,14 @@ class IsPlausiblePoseTest(unittest.TestCase):
                 LEFT_SHOULDER_x=0.501, RIGHT_SHOULDER_x=0.500,
                 LEFT_HIP=0.10, RIGHT_HIP=0.10)))
 
+    def test_frame_spanning_blob_dropped(self):
+        # Both shoulders "visible" but on opposite frame edges (width ~0.9) — a real torso
+        # never spans the frame; the upper-width bound rejects it.
+        self.assertFalse(pose._is_plausible_pose(
+            _kp(LEFT_SHOULDER=0.9, RIGHT_SHOULDER=0.9,
+                LEFT_SHOULDER_x=0.04, RIGHT_SHOULDER_x=0.96,
+                LEFT_HIP=0.1, RIGHT_HIP=0.1)))
+
     def test_empty_dropped(self):
         self.assertFalse(pose._is_plausible_pose({}))
 

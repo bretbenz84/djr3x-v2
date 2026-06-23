@@ -255,6 +255,19 @@ def unknown_group_context(
     if scene.unknown_count <= 0:
         return None
 
+    # Stand down the "who's the mystery guest?" handoff while an explicit introduction is
+    # fresh — the user just named the newcomer ("this is my partner JT") and identity
+    # capture is already underway; re-asking every turn is the badgering loop from the JT
+    # run. Resumes after the window if the newcomer is still unknown.
+    try:
+        from intelligence import introductions as _introductions
+        import config as _config
+        window = float(getattr(_config, "UNKNOWN_GUEST_AGENDA_SUPPRESS_AFTER_INTRO_SECS", 45.0))
+        if _introductions.intro_recent(window):
+            return None
+    except Exception:
+        pass
+
     current = _current_visible_person(
         scene,
         current_person_id=current_person_id,

@@ -59,6 +59,10 @@ _wave_motion_lock = threading.Lock()
 # ── Visibility threshold — landmarks below this are treated as not-detected ──
 _VIS_MIN = 0.4
 
+# Last (real_pose_count, phantom_dropped) signature logged, so the per-tick pose summary
+# logs at INFO only when it CHANGES (the JT run had pose internals invisible at INFO).
+_last_pose_log_sig: "tuple | None" = None
+
 # ── Landmark index aliases (MediaPipe Pose 33-point skeleton) ─────────────────
 # Full reference: https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker
 _NOSE          = 0
@@ -502,11 +506,14 @@ def _is_plausible_pose(kp: dict) -> bool:
     ls_v, rs_v = _vis("LEFT_SHOULDER"), _vis("RIGHT_SHOULDER")
     lh_v, rh_v = _vis("LEFT_HIP"), _vis("RIGHT_HIP")
 
-    # Primary: both shoulders confidently visible AND plausibly separated (rejects a
-    # collapsed blob whose two "shoulders" sit on top of each other).
+    # Primary: both shoulders confidently visible AND plausibly separated — rejects a
+    # collapsed blob (shoulders on top of each other) AND a frame-spanning blob (shoulders
+    # absurdly far apart, which a real torso never is).
     if ls_v >= vmin and rs_v >= vmin and ls and rs:
         width = abs(float(ls[0]) - float(rs[0]))
-        if width >= float(getattr(config, "POSE_MIN_SHOULDER_WIDTH", 0.04)):
+        min_w = float(getattr(config, "POSE_MIN_SHOULDER_WIDTH", 0.04))
+        max_w = float(getattr(config, "POSE_MAX_SHOULDER_WIDTH", 0.6))
+        if min_w <= width <= max_w:
             return True
 
     # Side-on fallback: one strong shoulder + one strong hip = a real vertical torso.
@@ -596,14 +603,19 @@ def detect_pose(frame) -> list[dict]:
     # speed of the user's wave (see recent_wave_speed()).
     _record_wave_motion(wave_kp or (people[0]["keypoints"] if people else {}))
 
+    # INFO summary, deduped on (real, dropped) change — so a multi-person frame or a burst
+    # of phantom drops is visible at INFO without spamming the log every tick.
+    global _last_pose_log_sig
+    sig = (len(people), dropped_phantoms)
+    if sig != _last_pose_log_sig:
+        _last_pose_log_sig = sig
+        if len(people) or dropped_phantoms:
+            _log.info("detect_pose: %d real pose(s) gestures=%s (dropped %d phantom)",
+                      len(people), [p["gesture"] for p in people], dropped_phantoms)
+
     if not people:
-        if dropped_phantoms:
-            _log.debug("detect_pose: 0 real poses (dropped %d phantom)", dropped_phantoms)
         _update_world_state([], frame_w, frame_h)
         return []
-
-    _log.debug("detect_pose: %d pose(s) gestures=%s (dropped %d phantom)",
-               len(people), [p["gesture"] for p in people], dropped_phantoms)
 
     _update_world_state(people, frame_w, frame_h)
     return people
@@ -650,24 +662,40 @@ def _update_world_state(detected: list[dict], frame_w: int = 0, frame_h: int = 0
         used: set[int] = set()  # slot indices that received a pose this tick
 
         if have_anchors:
-            # Greedy nearest-match: bind each pose to the closest face slot within range.
+            # MUTUAL-NEAREST match: a pose binds to a face slot only when each is the
+            # OTHER's nearest within range. This refuses to pin a pose on a neighbour's
+            # face when that neighbour has a closer pose of their own — the 2-person
+            # crossed-attribution bug where Bret's slot ended up wearing JT's wireframe.
+            # An ambiguous pose simply stays unbound this tick (better than wrong-bound).
             thresh = float(getattr(config, "POSE_FACE_MATCH_MAX_DIST", 0.22))
-            pairs = []
-            for pi, pd in enumerate(detected):
-                px, py = pd.get("position") or (0.5, 0.5)
-                for si, c in enumerate(centers):
-                    if c is None:
-                        continue
-                    d = ((px - c[0]) ** 2 + (py - c[1]) ** 2) ** 0.5
-                    pairs.append((d, pi, si))
-            pairs.sort(key=lambda t: t[0])
+            slot_idxs = [si for si, c in enumerate(centers) if c is not None]
+
+            def _pf_dist(pi: int, si: int) -> float:
+                px, py = detected[pi].get("position") or (0.5, 0.5)
+                c = centers[si]
+                return ((px - c[0]) ** 2 + (py - c[1]) ** 2) ** 0.5
+
+            pose_nearest: dict[int, int] = {}   # pose idx -> its nearest slot (within thresh)
+            for pi in range(len(detected)):
+                cand = [(si, _pf_dist(pi, si)) for si in slot_idxs]
+                cand = [t for t in cand if t[1] <= thresh]
+                if cand:
+                    pose_nearest[pi] = min(cand, key=lambda t: t[1])[0]
+            slot_nearest: dict[int, int] = {}   # slot idx -> its nearest pose (within thresh)
+            for si in slot_idxs:
+                cand = [(pi, _pf_dist(pi, si)) for pi in range(len(detected))]
+                cand = [t for t in cand if t[1] <= thresh]
+                if cand:
+                    slot_nearest[si] = min(cand, key=lambda t: t[1])[0]
+
             matched_pose: set[int] = set()
-            for d, pi, si in pairs:
-                if pi in matched_pose or si in used or d > thresh:
-                    continue
-                updated[si] = {**updated[si], **_pose_fields(detected[pi])}
-                matched_pose.add(pi)
-                used.add(si)
+            for pi, si in pose_nearest.items():
+                if slot_nearest.get(si) == pi:   # mutually nearest -> a confident bind
+                    updated[si] = {**updated[si], **_pose_fields(detected[pi])}
+                    matched_pose.add(pi)
+                    used.add(si)
+                    _log.debug("pose_bind: pose %d -> slot %d (person_db_id=%s, d=%.3f)",
+                               pi, si, updated[si].get("person_db_id"), _pf_dist(pi, si))
             # A pose with no nearby face slot → attach to a face-less slot, else append.
             for pi, pd in enumerate(detected):
                 if pi in matched_pose:
