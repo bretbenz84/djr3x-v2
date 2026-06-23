@@ -36,6 +36,7 @@ static void onDisconnect(ControllerPtr c) {
     s_ctl = nullptr;
     s_full_override = false;
     ctl_set_gamepad(false);
+    LOCK_STATE(); g_ctx.gp_live.connected = false; UNLOCK_STATE();  // GUI: pad gone
     ctl_manual_stop();        // failsafe: stop now, KEEP manual — never silently resume AUTO
   }
 }
@@ -111,7 +112,11 @@ void gamepad_init() {
 void gamepad_tick() {
   BP32.update();
   ControllerPtr c = s_ctl;
-  if (!c || !c->isConnected() || !c->isGamepad()) { maybe_autoreturn(); return; }
+  if (!c || !c->isConnected() || !c->isGamepad()) {
+    LOCK_STATE(); g_ctx.gp_live.connected = false; UNLOCK_STATE();  // GUI: no pad
+    maybe_autoreturn();
+    return;
+  }
 
   // B = E-STOP (rising edge; always honored, even mid-override).
   bool b = c->b();
@@ -148,6 +153,38 @@ void gamepad_tick() {
 
   // Forward the soundboard / animation buttons to the Mac (does not affect drive).
   poll_action_buttons(c);
+
+  // Mirror the live pad (stick + ALL buttons) to telemetry for the GUI Motivator
+  // Control "physical controller" display. Level state (not edges); reuses turn/fwd/
+  // br/th already read this tick. Bit order GP_BTN_* below MUST match the GUI's
+  // _GP_BTN_LABELS in gui/dashboard.py.
+  //   0 A   1 B   2 X   3 Y   4 L1  5 R1  6 L2  7 R2
+  //   8 Up  9 Down 10 Left 11 Right 12 Select 13 Start 14 Home 15 L3 16 R3
+  const uint8_t dp = c->dpad();
+  uint32_t bm = 0;
+  if (c->a())          bm |= (1u << 0);
+  if (c->b())          bm |= (1u << 1);
+  if (c->x())          bm |= (1u << 2);
+  if (c->y())          bm |= (1u << 3);
+  if (c->l1())         bm |= (1u << 4);
+  if (c->r1())         bm |= (1u << 5);
+  if (br >= GAMEPAD_TRIGGER_PRESS_FRAC) bm |= (1u << 6);   // L2 (brake trigger)
+  if (th >= GAMEPAD_TRIGGER_PRESS_FRAC) bm |= (1u << 7);   // R2 (throttle trigger)
+  if (dp & 0x01)       bm |= (1u << 8);    // up
+  if (dp & 0x02)       bm |= (1u << 9);    // down
+  if (dp & 0x08)       bm |= (1u << 10);   // left
+  if (dp & 0x04)       bm |= (1u << 11);   // right
+  if (c->miscSelect()) bm |= (1u << 12);
+  if (c->miscStart())  bm |= (1u << 13);
+  if (c->miscSystem()) bm |= (1u << 14);
+  if (c->thumbL())     bm |= (1u << 15);
+  if (c->thumbR())     bm |= (1u << 16);
+  LOCK_STATE();
+  g_ctx.gp_live.connected = true;
+  g_ctx.gp_live.lx = turn;     // right = +
+  g_ctx.gp_live.ly = fwd;      // stick-up = +
+  g_ctx.gp_live.btn_mask = bm;
+  UNLOCK_STATE();
 
   maybe_autoreturn();
 }

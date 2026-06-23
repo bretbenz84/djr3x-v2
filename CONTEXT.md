@@ -672,6 +672,12 @@ motor/encoder/ToF drivers are Phase 1 — see `docs/motion_system.md` §11, §17
   no-audio-safe, mic-suppressed, output-gated so it never talks over a reply) and/or a
   servo animation (`sequences.animations.play_body_beat`). Data-driven map; clips are
   gitignored local audio. Tests: `tests/test_gamepad_actions.py`.
+- **Live gamepad mirror in the GUI**: telemetry carries a `gp` object
+  (`{connected, lx, ly, btn}` — left stick + pressed-button bitmask, built in
+  `gamepad_tick` / `emit_telemetry`). The GUI's "Motivator Control" window shows a
+  read-only **PHYSICAL CONTROLLER** panel (`GamepadMirrorWidget`, `gui/dashboard.py`):
+  the dot tracks the real stick and held buttons light up, fed from the existing 150 ms
+  telemetry tick. Bit order (`GP_BTN_*` in `gamepad.cpp`) is mirrored by `_GP_BTN_LABELS`.
 
 ## GUI
 

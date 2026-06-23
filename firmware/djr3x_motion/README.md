@@ -126,13 +126,22 @@ once, then build with that FQBN:
 arduino-cli config add board_manager.additional_urls \
   https://raw.githubusercontent.com/ricardoquesada/esp32-arduino-lib-builder/master/bluepad32_files/package_esp32_bluepad32_index.json
 arduino-cli core update-index
-arduino-cli core install esp32_bluepad32:esp32
+arduino-cli core install esp32-bluepad32:esp32   # platform ID is HYPHENATED (FQBN below too)
 
-# Live drive base + gamepad (combine with -DMOTION_TOF_PRESENT=1 if ToF is wired):
-arduino-cli compile --fqbn esp32_bluepad32:esp32:esp32 \
+# CONNECTIVITY TEST — gamepad ON, motors STUBBED (the base will NOT move; safest for a
+# first pairing test). The live `gp` telemetry + GUI mirror run identically to live:
+arduino-cli compile --fqbn esp32-bluepad32:esp32:esp32 \
+  --build-property "compiler.cpp.extra_flags=-DMOTION_GAMEPAD_PRESENT=1" \
+  firmware/djr3x_motion
+arduino-cli upload --fqbn esp32-bluepad32:esp32:esp32:UploadSpeed=115200 \
+  --build-property "compiler.cpp.extra_flags=-DMOTION_GAMEPAD_PRESENT=1" \
+  -p "$PORT" firmware/djr3x_motion
+
+# LIVE drive base + gamepad (only on a stand; add -DMOTION_TOF_PRESENT=1 if ToF is wired):
+arduino-cli compile --fqbn esp32-bluepad32:esp32:esp32 \
   --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_GAMEPAD_PRESENT=1" \
   firmware/djr3x_motion
-arduino-cli upload --fqbn esp32_bluepad32:esp32:esp32:UploadSpeed=115200 \
+arduino-cli upload --fqbn esp32-bluepad32:esp32:esp32:UploadSpeed=115200 \
   --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_GAMEPAD_PRESENT=1" \
   -p "$PORT" firmware/djr3x_motion
 ```
@@ -174,10 +183,22 @@ plays an MP3 from `assets/audio/clips/`) and/or a **servo animation**
 firmware change. Button names: `a x y dpad_up dpad_down dpad_left dpad_right select home
 l3 r3`. (Needs the `-DMOTION_GAMEPAD_PRESENT=1` build above.)
 
+**Live state in the GUI ("Motivator Control").** Every telemetry frame carries a `gp`
+object — `{connected, lx, ly, btn}` — mirroring the pad's left stick (normalized, right=+
+/ stick-up=+) and a pressed-button bitmask (`emit_telemetry` in `proto_io.cpp`, captured
+each tick in `gamepad_tick`). The GUI's **PHYSICAL CONTROLLER** panel
+(`GamepadMirrorWidget` in `gui/dashboard.py`) renders it read-only: a dot tracks the stick
+and held buttons light up, refreshed at the dialog's 150 ms telemetry tick. The bitmask
+bit order (`GP_BTN_*` in `gamepad.cpp`) MUST stay in sync with `_GP_BTN_LABELS` in the GUI:
+`A B X Y L1 R1 L2 R2 ↑ ↓ ← → Sel Start Home L3 R3`. When no pad is paired (or in a
+non-gamepad build) `gp.connected` is false and the panel shows "no pad connected". This is
+the recommended way to verify controller connectivity — pair, open Motivator Control, and
+watch the dot move.
+
 > **Scaffold:** the arbitration (owner switching, full-override, disconnect failsafe,
 > watchdog-bypass-while-manual) is compiled and verified in the stock build, but the
 > Bluepad32 I/O itself is **not yet hardware-validated** — verify the button map and
-> pairing on the real pad. Builds only with the `esp32_bluepad32` core above.
+> pairing on the real pad. Builds only with the `esp32-bluepad32` core above.
 
 ## Protocol smoke test (the bring-up acceptance test)
 

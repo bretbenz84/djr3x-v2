@@ -1454,6 +1454,115 @@ class DistancePhotoreceptorsWidget(QWidget):
         p.end()
 
 
+class GamepadMirrorWidget(QWidget):
+    """Read-only mirror of the PHYSICAL gamepad paired to the ESP32.
+
+    Driven by the `gp` object in the motion telemetry (lx/ly stick + a pressed-button
+    bitmask), so moving the real stick moves the on-screen dot and held buttons light
+    up. Display-only — it never drives the base (the software JoystickWidget owns that).
+    Convention matches JoystickWidget: lx right-positive, ly UP-positive."""
+
+    # Bit order MUST match the firmware mask in gamepad.cpp (GP_BTN_* comment).
+    _GP_BTN_LABELS = ["A", "B", "X", "Y", "L1", "R1", "L2", "R2",
+                      "↑", "↓", "←", "→", "Sel", "Strt", "Home", "L3", "R3"]
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setMinimumSize(240, 224)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._lx = 0.0
+        self._ly = 0.0
+        self._btn = 0
+        self._live = False
+
+    def set_state(self, lx, ly, btn_mask, connected: bool = True) -> None:
+        try:
+            self._lx = max(-1.0, min(1.0, float(lx)))
+            self._ly = max(-1.0, min(1.0, float(ly)))
+        except (TypeError, ValueError):
+            self._lx = self._ly = 0.0
+        try:
+            self._btn = int(btn_mask)
+        except (TypeError, ValueError):
+            self._btn = 0
+        self._live = bool(connected)
+        self.update()
+
+    def clear(self) -> None:
+        self._lx = self._ly = 0.0
+        self._btn = 0
+        self._live = False
+        self.update()
+
+    def paintEvent(self, _e) -> None:
+        w, h = float(self.width()), float(self.height())
+        dim = 1.0 if self._live else 0.35
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        # --- Stick dial (top portion) ---
+        dial_h = h * 0.58
+        cx = w / 2.0
+        cy = dial_h / 2.0 + 4.0
+        R = min(w, dial_h) / 2.0 - 10.0
+        if R >= 20:
+            rk = R * 0.28
+            travel = max(1.0, R - rk)
+            # Bezel + inner well (mirrors JoystickWidget styling, dimmable).
+            p.setPen(QPen(QColor(70, 80, 95, int(255 * dim)), 2))
+            p.setBrush(QBrush(QColor(28, 33, 41, int(255 * dim))))
+            p.drawEllipse(QRectF(cx - R, cy - R, 2 * R, 2 * R))
+            well = R * 0.82
+            p.setPen(QPen(QColor(48, 56, 68, int(255 * dim)), 1))
+            p.setBrush(QBrush(QColor(18, 22, 28, int(255 * dim))))
+            p.drawEllipse(QRectF(cx - well, cy - well, 2 * well, 2 * well))
+            # Crosshair + N/E/S/W ticks.
+            p.setPen(QPen(QColor(90, 150, 200, int(120 * dim)), 1))
+            p.drawLine(QPointF(cx - well, cy), QPointF(cx + well, cy))
+            p.drawLine(QPointF(cx, cy - well), QPointF(cx, cy + well))
+            # Live knob position (dot).
+            kx, ky = cx + self._lx * travel, cy - self._ly * travel   # up = +ly
+            grad = QRadialGradient(kx - rk * 0.3, ky - rk * 0.35, rk * 1.5)
+            grad.setColorAt(0.0, QColor(130, 215, 255, int(255 * dim)))
+            grad.setColorAt(1.0, QColor(36, 86, 134, int(255 * dim)))
+            p.setBrush(QBrush(grad))
+            p.setPen(QPen(QColor(190, 235, 255, int(255 * dim)), 2))
+            p.drawEllipse(QRectF(kx - rk, ky - rk, 2 * rk, 2 * rk))
+
+        # --- Button pips (bottom portion) ---
+        labels = self._GP_BTN_LABELS
+        pad, gap, pip_h = 6.0, 5.0, 18.0
+        grid_top = dial_h + 4.0
+        avail_w = w - 2 * pad
+        pip_w = 36.0
+        cols = max(1, int((avail_w + gap) // (pip_w + gap)))
+        pip_w = (avail_w - (cols - 1) * gap) / cols   # stretch to fill the row
+        f = p.font(); f.setPointSize(8); f.setBold(True); p.setFont(f)
+        for i, lab in enumerate(labels):
+            r, c = divmod(i, cols)
+            x = pad + c * (pip_w + gap)
+            y = grid_top + r * (pip_h + gap)
+            pressed = bool(self._btn & (1 << i))
+            if pressed and self._live:
+                p.setBrush(QColor(70, 200, 130))
+                p.setPen(QPen(QColor(140, 240, 180), 1))
+                txtcol = QColor(8, 20, 14)
+            else:
+                p.setBrush(QColor(34, 40, 50, int(255 * dim)))
+                p.setPen(QPen(QColor(70, 80, 95, int(255 * dim)), 1))
+                txtcol = QColor(150, 165, 185, int(255 * dim))
+            p.drawRoundedRect(QRectF(x, y, pip_w, pip_h), 4, 4)
+            p.setPen(txtcol)
+            p.drawText(QRectF(x, y, pip_w, pip_h), Qt.AlignmentFlag.AlignCenter, lab)
+
+        if not self._live:
+            p.setPen(QColor(150, 165, 185))
+            f.setPointSize(10); f.setBold(True); p.setFont(f)
+            p.drawText(QRectF(0, cy - 12, w, 24),
+                       Qt.AlignmentFlag.AlignCenter, "no pad connected")
+        p.end()
+
+
 class MotivatorControlDialog(QDialog):
     """Joystick console to drive the motion base by hand, with live ESP32 readout.
 
@@ -1471,7 +1580,7 @@ class MotivatorControlDialog(QDialog):
         # A top-level QDialog doesn't inherit the main window's stylesheet, so apply
         # the dashboard theme (_STYLE) plus the Motivator-specific rules here.
         self.setStyleSheet(_STYLE + _MOTIVATOR_EXTRA)
-        self.resize(760, 700)
+        self.resize(800, 820)
         self._x = 0.0
         self._y = 0.0
         self._engaged = False     # only drive after the operator has touched the stick
@@ -1522,6 +1631,18 @@ class MotivatorControlDialog(QDialog):
         self._photoreceptors = DistancePhotoreceptorsWidget()
         photo_lay.addWidget(self._photoreceptors, 1)
         right.addWidget(photo, 1)
+
+        pad_panel = QFrame()
+        pad_panel.setObjectName("chromePanel")
+        pad_lay = QVBoxLayout(pad_panel)
+        pad_lay.setContentsMargins(12, 10, 12, 10)
+        pad_lay.setSpacing(8)
+        pad_title = QLabel("PHYSICAL CONTROLLER")
+        pad_title.setObjectName("panelTitle")
+        pad_lay.addWidget(pad_title)
+        self._gamepad = GamepadMirrorWidget()
+        pad_lay.addWidget(self._gamepad, 1)
+        right.addWidget(pad_panel)
 
         fb = self._section("ESP32 FEEDBACK")
         self._fb_state = self._row(fb, "State")
@@ -1656,6 +1777,7 @@ class MotivatorControlDialog(QDialog):
                         self._fb_pose, self._fb_tof, self._fb_tof2, self._fb_batt, self._fb_fault):
                 lbl.setText("—")
             self._photoreceptors.clear()
+            self._gamepad.clear()
             return
 
         odom = tel.get("odom") or {}
@@ -1681,6 +1803,12 @@ class MotivatorControlDialog(QDialog):
         self._fb_batt.setText(f"{g(tel, 'batt_mv') / 1000.0:.2f} V")
         self._fb_fault.setText(f"{tel.get('fault') or 'none'} / errs {tel.get('errs', 0)}")
         self._photoreceptors.set_readings(tof, tel.get("zone"), tel.get("blocked_dir"))
+
+        gp = tel.get("gp") or {}
+        if gp.get("connected"):
+            self._gamepad.set_state(gp.get("lx", 0.0), gp.get("ly", 0.0), gp.get("btn", 0), True)
+        else:
+            self._gamepad.clear()
 
     def _stop(self) -> None:
         # Immediate stop (unlike releasing the stick, which ramps down): zero the ramp

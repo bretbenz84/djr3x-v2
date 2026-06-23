@@ -89,6 +89,18 @@ struct TofMm {
   int16_t fl = 1500, fr = 1500, rl = 1500, rr = 1500;            // short-range (VL53L0X)
 };
 
+// ===== Live gamepad mirror (telemetry only) ===============================
+// A snapshot of the paired pad's stick + buttons THIS tick, for the GUI Motivator
+// Control "physical controller" display. Written only by the MOTION_GAMEPAD_PRESENT
+// build (gamepad.cpp); stays {connected=false} otherwise, so emit_telemetry reports
+// "no pad". Normalized, deadzoned, GUI convention: lx right=+, ly stick-up=+.
+struct GamepadLive {
+  bool     connected = false;
+  float    lx = 0.0f;        // turn axis  -1..1 (right = +)
+  float    ly = 0.0f;        // drive axis -1..1 (stick-up = +)
+  uint32_t btn_mask = 0;     // pressed buttons; bit order = GP_BTN_* in gamepad.cpp
+};
+
 // ===== The whole shared state =============================================
 struct MotionContext {
   MotionParams params;
@@ -109,6 +121,7 @@ struct MotionContext {
   // Manual (gamepad) override (docs §11). owner/gamepad above; these two below.
   bool      full_override = false;     // gamepad bypasses ToF zone/cliff gating (held)
   uint32_t  last_manual_input_ms = 0;  // last meaningful gamepad input (idle-autoreturn)
+  GamepadLive gp_live;                 // live pad mirror for the GUI (telemetry only)
 
   uint32_t  cmd_seq   = 0;        // last applied command seq (telemetry)
   uint32_t  seq_alloc = 0;        // (unused on fw side; Mac allocates)

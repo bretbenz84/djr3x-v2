@@ -44,10 +44,11 @@ void emit_telemetry() {
   // Snapshot under the lock, format outside it.
   MotionState st; MotionOwner ow; MotionGamepad gp; MotionFault fl;
   MotionZone z; MotionDir bd; uint32_t cs, errs; Odom od; TofMm tf; int16_t bm;
+  GamepadLive gpl;
   LOCK_STATE();
   st = g_ctx.state; ow = g_ctx.owner; gp = g_ctx.gamepad; fl = g_ctx.fault;
   z = g_ctx.zone; bd = g_ctx.blocked_dir; cs = g_ctx.cmd_seq; errs = g_ctx.errs;
-  od = g_ctx.odom; tf = g_ctx.tof; bm = g_ctx.batt_mv;
+  od = g_ctx.odom; tf = g_ctx.tof; bm = g_ctx.batt_mv; gpl = g_ctx.gp_live;
   UNLOCK_STATE();
 
   JsonDocument doc;
@@ -68,6 +69,15 @@ void emit_telemetry() {
   t["fl"] = tf.fl; t["fr"] = tf.fr; t["rl"] = tf.rl; t["rr"] = tf.rr;
   doc["batt_mv"] = bm;
   doc["errs"] = errs;
+  // Live gamepad mirror for the GUI Motivator Control "physical controller" display.
+  // Always present (stable schema): {connected:false} when no pad / non-gamepad build.
+  JsonObject g = doc["gp"].to<JsonObject>();
+  g["connected"] = gpl.connected;
+  if (gpl.connected) {
+    g["lx"] = gpl.lx;            // turn axis  -1..1 (right = +)
+    g["ly"] = gpl.ly;            // drive axis -1..1 (stick-up = +)
+    g["btn"] = gpl.btn_mask;     // pressed-button bitmask (GP_BTN_* order, gamepad.cpp)
+  }
   tx_line(doc);
 }
 
