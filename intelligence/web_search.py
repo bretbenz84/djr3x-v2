@@ -379,18 +379,22 @@ def _extract_citations(response) -> List[str]:
     return urls
 
 
-def answer(text: str, person_id: Optional[int] = None, forced: bool = False) -> SearchResult:
-    """Run the hosted web search and return Rex's spoken answer. Never raises — on any
-    failure returns ``SearchResult(ok=False, ...)`` so the caller falls through to a
-    normal reply."""
-    model = _search_model()
-    instructions = _build_instructions(person_id)
-    user_input = text
-    if forced:
-        user_input = (
-            f"{text}\n\n[The user explicitly asked you to look this up — use web search.]"
-        )
+def _search_models() -> List[str]:
+    """Models to try, in order: the primary (in-voice) model first, then a known
+    tool-capable fallback. The fallback rescues the case the primary model can't host
+    the web_search tool (it raises) — so an explicit lookup still returns a real result
+    instead of silently degrading to a stale from-knowledge answer."""
+    primary = _search_model()
+    models = [primary]
+    fallback = str(getattr(config, "WEB_SEARCH_FALLBACK_MODEL", "") or "").strip()
+    if fallback and fallback != primary:
+        models.append(fallback)
+    return models
 
+
+def _create_search_response(model: str, *, instructions: str, user_input: str, forced: bool):
+    """One Responses-API create() for `model`, with the tool_choice=required→auto SDK
+    retry. Returns the response or raises (so the caller can try the next model)."""
     kwargs = {
         "model": model,
         "instructions": instructions,
@@ -407,25 +411,46 @@ def answer(text: str, person_id: Optional[int] = None, forced: bool = False) -> 
         effort = getattr(config, "WEB_SEARCH_REASONING_EFFORT", None)
         if effort:
             kwargs["reasoning"] = {"effort": effort}
-
     try:
-        response = _client.responses.create(**kwargs)
+        return _client.responses.create(**kwargs)
     except TypeError as exc:
         # An older/narrower SDK that doesn't accept tool_choice="required" — retry
         # once with auto rather than failing the explicit search outright.
         if forced and "tool_choice" in str(exc):
             _log.debug("[web_search] tool_choice=required rejected; retrying auto")
             kwargs["tool_choice"] = "auto"
-            try:
-                response = _client.responses.create(**kwargs)
-            except Exception as exc2:
-                _log.warning("[web_search] search call failed: %s", exc2)
-                return SearchResult(False, "", [])
-        else:
-            _log.warning("[web_search] search call failed: %s", exc)
-            return SearchResult(False, "", [])
-    except Exception as exc:
-        _log.warning("[web_search] search call failed (%s): %s", type(exc).__name__, exc)
+            return _client.responses.create(**kwargs)
+        raise
+
+
+def answer(text: str, person_id: Optional[int] = None, forced: bool = False) -> SearchResult:
+    """Run the hosted web search and return Rex's spoken answer. Never raises — on any
+    failure returns ``SearchResult(ok=False, ...)`` so the caller falls through to a
+    normal reply."""
+    instructions = _build_instructions(person_id)
+    user_input = text
+    if forced:
+        user_input = (
+            f"{text}\n\n[The user explicitly asked you to look this up — use web search.]"
+        )
+
+    models = _search_models()
+    response = None
+    for idx, model in enumerate(models):
+        try:
+            response = _create_search_response(
+                model, instructions=instructions, user_input=user_input, forced=forced
+            )
+            break
+        except Exception as exc:
+            # The primary model may not support the hosted web_search tool (a 400) —
+            # try the fallback rather than silently returning a stale-knowledge reply.
+            more = " — trying fallback" if idx + 1 < len(models) else ""
+            _log.warning(
+                "[web_search] search call failed on model=%s (%s): %s%s",
+                model, type(exc).__name__, exc, more,
+            )
+    if response is None:
         return SearchResult(False, "", [])
 
     answer_text = _extract_text(response)

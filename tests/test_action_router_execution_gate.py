@@ -700,6 +700,49 @@ class ActionRouterExecutionGateTests(unittest.TestCase):
             "fast_local_takeover.identity.name_correction",
         )
 
+    def test_explicit_unmapped_command_breaks_out_of_answer_frame(self):
+        # An UNMAPPED legacy command that's a genuine explicit imperative (wave gag,
+        # deliberate "remember X") must route mid-frame, not be swallowed for 120s.
+        from intelligence import command_parser, dialogue_act, interaction
+
+        act = dialogue_act.DialogueActDecision(
+            "answer_to_rex", 0.90, "reply to last Rex turn", skip_action_router=True
+        )
+        for key in ("wave_to", "memory_remember_fact", "volume_up",
+                    "set_personality", "query_personality"):
+            with self.subTest(key=key):
+                match = command_parser.CommandMatch(key, "pattern", {})
+                self.assertFalse(
+                    interaction._legacy_command_blocked_by_dialogue(match, act, "wave at them")
+                )
+
+    def test_unmapped_command_fuzzy_match_stays_blocked(self):
+        # Low-precision fuzzy matches are the ones that masquerade as replies — block.
+        from intelligence import command_parser, dialogue_act, interaction
+
+        act = dialogue_act.DialogueActDecision(
+            "answer_to_rex", 0.90, "reply to last Rex turn", skip_action_router=True
+        )
+        match = command_parser.CommandMatch("wave_to", "fuzzy", {})
+        self.assertTrue(interaction._legacy_command_blocked_by_dialogue(match, act, "i waved earlier"))
+
+    def test_memory_correct_fact_still_blocked_as_contextual_reply(self):
+        # NOT in the breakout set: a sensitive reply ("my partner is in the hospital")
+        # pattern-matches memory_correct_fact and must stay a contextual reply.
+        from intelligence import command_parser, dialogue_act, interaction
+
+        act = dialogue_act.DialogueActDecision(
+            "answer_to_rex", 0.90, "reply to last Rex turn", skip_action_router=True
+        )
+        match = command_parser.CommandMatch(
+            "memory_correct_fact", "pattern", {"correction": "my partner is in the hospital"}
+        )
+        self.assertTrue(
+            interaction._legacy_command_blocked_by_dialogue(
+                match, act, "Nope, my partner is in the hospital."
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

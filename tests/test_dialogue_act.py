@@ -144,6 +144,36 @@ class DialogueActReplayTests(unittest.TestCase):
         self.assertEqual(decision.label, "new_command")
         self.assertFalse(decision.skip_action_router)
 
+    def test_fun_commands_break_out_of_answer_frame(self):
+        # Rex ends turns with questions (arming a 120s answer_to_rex frame); explicit
+        # FUN commands under it must still route, not be swallowed as a reply.
+        from intelligence import dialogue_act
+
+        for cmd in ("make me laugh", "riff for us", "wave at them", "wave back",
+                    "start trivia", "let's play a game", "play jeopardy",
+                    "tell me a joke", "roast me"):
+            with self.subTest(cmd=cmd):
+                dialogue_act.clear()
+                dialogue_act.note_rex_turn(
+                    "So what do you do for fun?", expected_reply_types=["answer"]
+                )
+                decision = dialogue_act.classify(
+                    cmd, {"pending": {}, "active_game": False}
+                )
+                self.assertEqual(decision.label, "new_command", cmd)
+                self.assertFalse(decision.skip_action_router, cmd)
+
+    def test_real_contextual_reply_still_binds_to_frame(self):
+        from intelligence import dialogue_act
+
+        dialogue_act.note_rex_turn(
+            "So what do you do for fun?", expected_reply_types=["answer"]
+        )
+        decision = dialogue_act.classify(
+            "yeah, hiking mostly", {"pending": {}, "active_game": False}
+        )
+        self.assertEqual(decision.label, "answer_to_rex")
+
 
 if __name__ == "__main__":
     unittest.main()

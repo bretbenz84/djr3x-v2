@@ -402,5 +402,54 @@ class InteractionHookTest(unittest.TestCase):
                 p.stop()
 
 
+class ModelFallbackTest(unittest.TestCase):
+    """If the primary (in-voice) model can't host the web_search tool, fall back to a
+    known tool-capable model so an explicit lookup returns a REAL result instead of
+    silently degrading to a stale from-knowledge answer."""
+
+    def test_search_models_lists_primary_then_distinct_fallback(self):
+        with mock.patch.object(config, "WEB_SEARCH_MODEL", "primary-x"), \
+             mock.patch.object(config, "WEB_SEARCH_FALLBACK_MODEL", "gpt-4o-mini"):
+            self.assertEqual(web_search._search_models(), ["primary-x", "gpt-4o-mini"])
+
+    def test_search_models_dedups_when_fallback_equals_primary(self):
+        with mock.patch.object(config, "WEB_SEARCH_MODEL", "gpt-4o-mini"), \
+             mock.patch.object(config, "WEB_SEARCH_FALLBACK_MODEL", "gpt-4o-mini"):
+            self.assertEqual(web_search._search_models(), ["gpt-4o-mini"])
+
+    def test_search_models_no_fallback_when_blank(self):
+        with mock.patch.object(config, "WEB_SEARCH_MODEL", "primary-x"), \
+             mock.patch.object(config, "WEB_SEARCH_FALLBACK_MODEL", ""):
+            self.assertEqual(web_search._search_models(), ["primary-x"])
+
+    def test_answer_falls_back_when_primary_cant_host_tool(self):
+        client = mock.MagicMock()
+        client.responses.create.side_effect = [
+            RuntimeError("unsupported tool 'web_search' for this model"),
+            object(),  # fallback succeeds
+        ]
+        with mock.patch.object(web_search, "_client", client), \
+             mock.patch.object(config, "WEB_SEARCH_MODEL", "primary-x"), \
+             mock.patch.object(config, "WEB_SEARCH_FALLBACK_MODEL", "gpt-4o-mini"), \
+             mock.patch.object(web_search, "_build_instructions", return_value="sys"), \
+             mock.patch.object(web_search, "_extract_text", return_value="It is 25 degrees out."), \
+             mock.patch.object(web_search, "_extract_citations", return_value=[]):
+            result = web_search.answer("what's the weather?", forced=True)
+        self.assertTrue(result.ok)
+        self.assertIn("25 degrees", result.text)
+        self.assertEqual(client.responses.create.call_count, 2)  # primary failed, fallback ran
+
+    def test_answer_fails_safe_when_all_models_fail(self):
+        client = mock.MagicMock()
+        client.responses.create.side_effect = RuntimeError("boom")
+        with mock.patch.object(web_search, "_client", client), \
+             mock.patch.object(config, "WEB_SEARCH_MODEL", "primary-x"), \
+             mock.patch.object(config, "WEB_SEARCH_FALLBACK_MODEL", "gpt-4o-mini"), \
+             mock.patch.object(web_search, "_build_instructions", return_value="sys"):
+            result = web_search.answer("what's the weather?", forced=True)
+        self.assertFalse(result.ok)
+        self.assertEqual(client.responses.create.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

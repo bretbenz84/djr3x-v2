@@ -68,7 +68,17 @@ _EXPLICIT_COMMAND_RE = re.compile(
     r"tell\s+(?:me|us)\s+(?:a\s+)?(?:joke|pun)|"
     r"roast\s+(?:me|us|the\s+room|him|her|them)|"
     r"say\s+something\s+(?:funny|hilarious)|"
+    r"make\s+(?:me|us)\s+laugh|"
     r"do\s+(?:a\s+|your\s+)?(?:bit|riff|dance|pose)|"
+    r"riff\s+(?:for|on|about)\b|"
+    r"be\s+funny\b|"
+    # Performance / gesture imperatives — "wave at them", "wave back" (require a
+    # person target so "a nice wave at the beach" isn't read as a command).
+    r"wave\s+(?:at|to)\s+(?:them|him|her|us|me|everyone|the\s+(?:room|crowd|camera|guys|folks|people))|"
+    r"wave\s+(?:back|hi|hello|bye|goodbye)\b|"
+    # Game-start imperatives — "start trivia", "let's play a game", "play jeopardy".
+    r"(?:start|begin|play|let'?s\s+play)\s+(?:a\s+)?(?:game|trivia|jeopardy|"
+    r"i\s+spy|eye\s+spy|twenty\s+questions|20\s+questions|word\s+association)|"
     r"look\s+(?:at|for|around|left|right|up|down)|"
     r"play\s+(?:music|a\s+song|something)|"
     r"play\s+(?:some\s+)?(?:[A-Za-z0-9' -]{1,40}\s+)?music|"

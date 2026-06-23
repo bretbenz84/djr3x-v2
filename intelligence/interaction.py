@@ -1250,13 +1250,35 @@ def _legacy_command_blocked_by_dialogue(
     if dialogue_decision.label != "answer_to_rex":
         return False
     decision = _legacy_command_action_decision(match)
-    if decision is not None and _dialogue_allows_action_breakout(
-        decision.action,
-        text,
-        dialogue_decision,
+    if decision is not None:
+        # Mapped command (sleep/music/vision/game/...): break out only with clear,
+        # action-shaped evidence (the central policy bar). Otherwise treat the turn
+        # as a contextual reply and block the command.
+        if _dialogue_allows_action_breakout(decision.action, text, dialogue_decision):
+            return False
+        return True
+    # UNMAPPED command_key: most have no action to evidence-check. A small set are
+    # genuine EXPLICIT commands (a wave gag, a volume nudge, a personality dial, a
+    # deliberate "remember X") that should still run mid-frame — route them normally
+    # (on a high-precision match) instead of swallowing them for the whole answer_to_rex
+    # window. The live failure: "remember I'm vegetarian" / "wave at them" right after a
+    # Rex question were silently dropped to conversation. Everything else stays blocked —
+    # notably memory_correct_fact, which a SENSITIVE contextual reply ("my partner is in
+    # the hospital") pattern-matches and must NOT be promoted to a memory command.
+    if (
+        getattr(match, "command_key", None) in _LEGACY_ANSWER_FRAME_BREAKOUT_KEYS
+        and str(getattr(match, "match_type", "")) in {"exact", "prefix", "pattern", "action_router"}
     ):
         return False
     return True
+
+
+# Unmapped legacy command_keys explicit enough to break out of an answer_to_rex frame
+# (NOT memory_correct_fact — that pattern-matches sensitive contextual replies).
+_LEGACY_ANSWER_FRAME_BREAKOUT_KEYS = frozenset({
+    "wave_to", "volume_up", "volume_down",
+    "set_personality", "query_personality", "memory_remember_fact",
+})
 
 
 _LEGACY_COMMAND_ACTION_MAP: dict[str, str] = {

@@ -4646,6 +4646,12 @@ WEB_SEARCH_ENABLED = True
 # "gpt-4o-mini") — retrieval happens there and the result is already in-character
 # because the same persona prompt drives it.
 WEB_SEARCH_MODEL = None
+# Fallback model used ONLY if the primary search model can't host the web_search tool
+# (it raises). A known tool-capable model so an explicit "look it up" still returns a
+# real result instead of silently degrading to stale from-knowledge answers. The
+# persona prompt drives it too, so the fallback answer is still in character. Set to
+# "" to disable the fallback (then an unsupported-tool model just falls through).
+WEB_SEARCH_FALLBACK_MODEL = "gpt-4o-mini"
 # Reasoning effort for the search call (reasoning models only; ignored for gpt-4o
 # -class models). This is OFF the realtime first-token path — the stall line covers
 # the latency — so a little reasoning is worth it for better synthesis. low|medium|high.
