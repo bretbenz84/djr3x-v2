@@ -169,9 +169,12 @@ def _load_model() -> bool:
             base_options=BaseOptions(model_asset_path=str(model_path)),
             running_mode=VisionRunningMode.VIDEO,
             num_poses=max_people,
-            min_pose_detection_confidence=0.5,
-            min_pose_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
+            min_pose_detection_confidence=float(
+                getattr(config, "POSE_MIN_DETECTION_CONFIDENCE", 0.6)),
+            min_pose_presence_confidence=float(
+                getattr(config, "POSE_MIN_PRESENCE_CONFIDENCE", 0.5)),
+            min_tracking_confidence=float(
+                getattr(config, "POSE_MIN_TRACKING_CONFIDENCE", 0.5)),
         )
         _landmarker = PoseLandmarker.create_from_options(options)
         _mp = mp
@@ -473,6 +476,46 @@ def get_age_category(keypoints: dict) -> str:
     return "adult"  # conservative default when landmarks are insufficient
 
 
+# ── Phantom-pose rejection ──────────────────────────────────────────────────────
+
+def _is_plausible_pose(kp: dict) -> bool:
+    """True if ``kp`` looks like a real human body rather than a MediaPipe phantom.
+
+    At ``num_poses>1`` the detector will hallucinate weak skeletons onto bright blobs —
+    ceiling lights, reflections, monitors. The reliable tell is the SHOULDER GIRDLE: a
+    real upper body shows two confidently-visible shoulders separated by a plausible
+    width (or, side-on, one strong shoulder plus a hip forming a torso column). A phantom
+    collapses to low-visibility and/or near-zero width. Tunable via POSE_* config; the
+    whole filter is bypassable with POSE_PHANTOM_FILTER_ENABLED=False."""
+    if not kp:
+        return False
+    if not bool(getattr(config, "POSE_PHANTOM_FILTER_ENABLED", True)):
+        return True
+
+    vmin = float(getattr(config, "POSE_MIN_TORSO_VISIBILITY", 0.6))
+
+    def _vis(name: str) -> float:
+        e = kp.get(name)
+        return float(e[2]) if e else 0.0
+
+    ls, rs = kp.get("LEFT_SHOULDER"), kp.get("RIGHT_SHOULDER")
+    ls_v, rs_v = _vis("LEFT_SHOULDER"), _vis("RIGHT_SHOULDER")
+    lh_v, rh_v = _vis("LEFT_HIP"), _vis("RIGHT_HIP")
+
+    # Primary: both shoulders confidently visible AND plausibly separated (rejects a
+    # collapsed blob whose two "shoulders" sit on top of each other).
+    if ls_v >= vmin and rs_v >= vmin and ls and rs:
+        width = abs(float(ls[0]) - float(rs[0]))
+        if width >= float(getattr(config, "POSE_MIN_SHOULDER_WIDTH", 0.04)):
+            return True
+
+    # Side-on fallback: one strong shoulder + one strong hip = a real vertical torso.
+    if max(ls_v, rs_v) >= vmin and max(lh_v, rh_v) >= vmin:
+        return True
+
+    return False
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def detect_pose(frame) -> list[dict]:
@@ -509,9 +552,15 @@ def detect_pose(frame) -> list[dict]:
     poses = getattr(results, "pose_landmarks", None) or []
     people: list[dict] = []
     wave_kp: Optional[dict] = None
+    dropped_phantoms = 0
     for idx in range(len(poses)):
         kp = _lm_dict(results, idx)
         if not kp:
+            continue
+        # Reject phantom skeletons (ceiling lights, reflections) before they become a
+        # "person" and get drawn / tracked. Real bodies have a visible shoulder girdle.
+        if not _is_plausible_pose(kp):
+            dropped_phantoms += 1
             continue
 
         gesture    = _classify_gesture(kp)
@@ -548,11 +597,13 @@ def detect_pose(frame) -> list[dict]:
     _record_wave_motion(wave_kp or (people[0]["keypoints"] if people else {}))
 
     if not people:
+        if dropped_phantoms:
+            _log.debug("detect_pose: 0 real poses (dropped %d phantom)", dropped_phantoms)
         _update_world_state([], frame_w, frame_h)
         return []
 
-    _log.debug("detect_pose: %d pose(s) gestures=%s",
-               len(people), [p["gesture"] for p in people])
+    _log.debug("detect_pose: %d pose(s) gestures=%s (dropped %d phantom)",
+               len(people), [p["gesture"] for p in people], dropped_phantoms)
 
     _update_world_state(people, frame_w, frame_h)
     return people

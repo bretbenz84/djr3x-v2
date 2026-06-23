@@ -839,6 +839,13 @@ venv/bin/python main.py
   body — so a second real person is no longer dropped as a phantom (the earlier single-pose
   guard cost them both a bounding box AND a skeleton). `POSE_FACE_MATCH_MAX_DIST` tunes the
   pose↔face binding distance. Each pose adds inference cost, so keep `POSE_MAX_PEOPLE` small.
+  - **Phantom-pose filter** (`vision.pose._is_plausible_pose`, `POSE_PHANTOM_FILTER_ENABLED`):
+    at `num_poses>1` MediaPipe hallucinates weak skeletons onto bright blobs (ceiling lights,
+    reflections). `detect_pose` drops any pose without a confidently-visible shoulder girdle
+    (`POSE_MIN_TORSO_VISIBILITY`, `POSE_MIN_SHOULDER_WIDTH`) BEFORE it reaches world_state, so
+    the GUI never draws a light as a body. Keeps frontal / upper-body-only / side-on bodies.
+    Detection confidence is also raised + configurable (`POSE_MIN_DETECTION_CONFIDENCE`=0.6,
+    was a hardcoded 0.5). Tests: `tests/test_pose_phantom_filter.py`.
 - Tidy-up — episodic capture hooks → `intelligence/episodic_hooks.py` (leaf module; consciousness calls `episodic_hooks.<name>`).
 - Tidy-up — idle micro-behaviours → `intelligence/idle_behaviors.py` (dispatcher stays in consciousness and calls `idle_behaviors.do_<name>`; the behaviours reach consciousness's speak engine via a lazy `_c` proxy; `_do_small_talk_question` stayed, being mood-detection-coupled).
 - Tidy-up — proactive-speech ENGINE → `intelligence/speech_engine.py` (15 functions; consciousness re-exports each as a `_name` shim so call sites + test patches are unchanged; intra-engine calls route through the `_c` shims for full patch-transparency; `note_rex_utterance` + shared speech state stayed in consciousness; `tests/test_speech_engine.py`). The governor metadata key MUST stay `"can_proactive_speak"` (action_governor reads it).

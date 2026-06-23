@@ -493,6 +493,28 @@ POSE_MAX_PEOPLE = _env_int("POSE_MAX_PEOPLE", 3, min_value=1, max_value=6)
 POSE_FACE_MATCH_MAX_DIST = _env_float(
     "POSE_FACE_MATCH_MAX_DIST", 0.22, min_value=0.05, max_value=1.0,
 )
+# MediaPipe PoseLandmarker confidence gates. Detection is the gate for whether a NEW pose
+# candidate is emitted at all — at num_poses>1 a low gate lets MediaPipe return weak
+# phantom skeletons on bright blobs (ceiling lights, reflections), so keep it firm.
+POSE_MIN_DETECTION_CONFIDENCE = _env_float(
+    "POSE_MIN_DETECTION_CONFIDENCE", 0.6, min_value=0.1, max_value=0.99,
+)
+POSE_MIN_PRESENCE_CONFIDENCE = _env_float(
+    "POSE_MIN_PRESENCE_CONFIDENCE", 0.5, min_value=0.1, max_value=0.99,
+)
+POSE_MIN_TRACKING_CONFIDENCE = _env_float(
+    "POSE_MIN_TRACKING_CONFIDENCE", 0.5, min_value=0.1, max_value=0.99,
+)
+# Phantom-pose plausibility filter: a real body has a confidently-visible shoulder girdle
+# of plausible width; a hallucinated pose's core landmarks are low-visibility / collapsed.
+# Drops them before they reach world_state (so the GUI never draws a light as a skeleton).
+POSE_PHANTOM_FILTER_ENABLED = _env_bool("POSE_PHANTOM_FILTER_ENABLED", True)
+POSE_MIN_TORSO_VISIBILITY = _env_float(
+    "POSE_MIN_TORSO_VISIBILITY", 0.6, min_value=0.1, max_value=0.99,
+)
+POSE_MIN_SHOULDER_WIDTH = _env_float(
+    "POSE_MIN_SHOULDER_WIDTH", 0.04, min_value=0.0, max_value=0.5,
+)
 
 # Local expression telemetry via MediaPipe Face Landmarker. This does not own
 # identity; it only annotates current dlib/world_state face slots with apparent
