@@ -3352,6 +3352,12 @@ IDLE_BANTER_SECS = 8.0
 IDLE_BANTER_COOLDOWN_SECS = 10.0  # minimum gap between nudges
 IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up (was 3 —
                                   # 3 made him re-volunteer the same preoccupation too often)
+# When the FIRST re-engagement question also goes unanswered (truly dead) AND there's a
+# live thread to react to, the next nudge VOLUNTEERS a short on-topic take instead of
+# asking again — a real angle to push back on or laugh at (idle directive [1]), never the
+# off-topic "thing on my mind" preoccupation. Keeps the question-first re-engagement while
+# letting Rex have an opinion when the room is genuinely silent. Kill switch.
+IDLE_BANTER_VOLUNTEER_TAKE = True
 # MID-CONVERSATION the human is engaged but may pause a beat longer than the cold-room
 # 5-8s while composing a reply — and Rex's own reply latency eats into that — so the
 # active floor sits just above the cold window, NOT at the old 22-30s (that felt

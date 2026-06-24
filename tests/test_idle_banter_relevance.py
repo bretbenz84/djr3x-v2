@@ -58,6 +58,34 @@ class IdleBanterDirectiveTest(unittest.TestCase):
         self.assertIs(directive, ix._IDLE_BANTER_DIRECTIVES[1])
 
 
+class IdleVolunteerTakeGateTest(unittest.TestCase):
+    """The first re-engagement is a QUESTION; an on-topic take is volunteered only once the
+    room is truly dead (the first question went unanswered) AND there's a live thread."""
+
+    def test_first_nudge_asks_a_question(self):
+        # idle_count 0 = first attempt this stretch.
+        self.assertFalse(ix._idle_should_volunteer_take(0, has_live_topic=True))
+
+    def test_second_nudge_volunteers_take_on_live_topic(self):
+        self.assertTrue(ix._idle_should_volunteer_take(1, has_live_topic=True))
+
+    def test_no_take_without_a_live_topic(self):
+        # No live thread -> no on-topic take possible; keep asking, never the off-topic POV.
+        self.assertFalse(ix._idle_should_volunteer_take(1, has_live_topic=False))
+
+    def test_kill_switch_disables_takes(self):
+        with mock.patch.object(ix.config, "IDLE_BANTER_VOLUNTEER_TAKE", False):
+            self.assertFalse(ix._idle_should_volunteer_take(2, has_live_topic=True))
+
+    def test_take_turn_selects_on_topic_take_directive(self):
+        # End-to-end: a truly-dead, live-topic turn picks directive [1] (on-topic take),
+        # never the off-topic preoccupation even if a pov string exists.
+        volunteer = ix._idle_should_volunteer_take(1, has_live_topic=True)
+        directive, pov = ix._idle_banter_directive(not volunteer, True, "ranking organic snacks")
+        self.assertIs(directive, ix._IDLE_BANTER_DIRECTIVES[1])
+        self.assertFalse(pov)
+
+
 class IdleHasLiveTopicTest(unittest.TestCase):
     def _patch_transcript(self, entries):
         return mock.patch.object(

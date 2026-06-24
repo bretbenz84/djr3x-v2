@@ -3983,6 +3983,20 @@ def _idle_has_live_topic() -> bool:
         return False
 
 
+def _idle_should_volunteer_take(idle_count: int, has_live_topic: bool) -> bool:
+    """Volunteer an ON-topic take instead of asking yet another question.
+
+    Only once the room is TRULY dead — the first re-engagement question already went
+    unanswered (idle_count >= 1) — and only when there's a live thread to react to, so the
+    take stays on the subject they were discussing (idle directive [1]: a real angle to
+    push back on or laugh at), never the off-topic 'thing on my mind' preoccupation. The
+    first nudge still draws the user out with a question. Kill switch: IDLE_BANTER_VOLUNTEER_TAKE.
+    """
+    if not bool(getattr(config, "IDLE_BANTER_VOLUNTEER_TAKE", True)):
+        return False
+    return bool(has_live_topic) and idle_count >= 1
+
+
 def _idle_banter_directive(
     ask_user: bool, has_live_topic: bool, pov_text: str
 ) -> tuple[str, bool]:
@@ -4141,12 +4155,15 @@ def _maybe_idle_banter(
         if _live_label and _topic_is_recently_banned(_live_label):
             _log.info("[topic_ban] idle banter pivoting OFF a recently-banned topic")
             live_topic = False
-    # Re-engaging a quiet person should ALWAYS draw THEM out with a question — deepen the
-    # live thread if the user actually started one, otherwise a getting-to-know-you
-    # question (the user's ask: "ask questions so R3X can continue to get to know the
-    # person"). Rex's own off-topic opinions still surface in the reply path; idle banter
-    # is for engaging the speaker, not monologuing at a silent one.
-    ask_user = True
+    # The FIRST re-engagement always draws the user out with a question — deepen the live
+    # thread if they started one, else a getting-to-know-you question. But if that first
+    # question ALSO goes unanswered (truly dead) and there's a live thread to react to,
+    # the next nudge VOLUNTEERS a short ON-topic take instead of asking again — a real
+    # angle to push back on or laugh at (directive [1]) — rather than monologuing an
+    # off-topic preoccupation. (User ask 2026-06-24: offer opinions when it's truly dead,
+    # but keep them fun and on-topic.) pov_text stays empty so the off-topic 'thing on my
+    # mind' never fires here.
+    ask_user = not _idle_should_volunteer_take(_idle_banter_count, live_topic)
     pov_text = ""
     directive, pov_volunteered = _idle_banter_directive(ask_user, live_topic, pov_text)
     # True only when we're turning the spotlight on the user MID-topic — the agenda
