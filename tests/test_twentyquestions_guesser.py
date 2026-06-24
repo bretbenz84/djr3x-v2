@@ -134,12 +134,13 @@ class KnowledgeBaseTest(unittest.TestCase):
         self.assertNotIn("plant", seen)
         self.assertNotIn("place", seen)
 
-    def test_manmade_prunes_place(self):
-        # A man-made object isn't a "place" — skip it.
+    def test_manmade_keeps_place(self):
+        # "is it a place?" is NOT pruned by man-made=yes: man-made PLACES (Coney Island,
+        # the Eiffel Tower, a stadium) need that signal, so it must still be asked.
         seen = self._walk_spine(
             {"alive": False, "person": False, "manmade": True},
             {"is it alive?", "is it a person?", "is it man made?"})
-        self.assertNotIn("place", seen)
+        self.assertIn("place", seen)
 
     def test_alive_prunes_place(self):
         # A living thing isn't a "place" either.

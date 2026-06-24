@@ -75,7 +75,6 @@ def next_spine_question(answers: dict, asked: set) -> Optional[dict]:
     is_person = answers.get("person") is True
     is_animal = answers.get("animal") is True
     is_plant = answers.get("plant") is True
-    is_manmade = answers.get("manmade") is True
 
     for entry in _load().get("spine", []):
         concept = entry.get("concept")
@@ -90,17 +89,20 @@ def next_spine_question(answers: dict, asked: set) -> Optional[dict]:
         if parent == "not_alive" and alive is not False:
             continue          # only ask the object branch once "alive?" is NO
 
-        # Mutual-exclusion pruning: once a category is established, don't waste a question
-        # on a sibling category the answer already rules out (the redundant "is it a plant?"
-        # after animal=yes and "is it a place?" after man-made=yes).
+        # Mutual-exclusion pruning: once a category is established, don't waste a question on
+        # a sibling category the answer already rules out (the redundant "is it a plant?" after
+        # animal=yes). NOTE: we deliberately do NOT skip "is it a place?" after man-made=yes —
+        # man-made PLACES (Coney Island, the Eiffel Tower, a stadium) need that signal, and
+        # losing it made the guesser chase buildings/towers. Only a living thing is never a
+        # place, so "place" is pruned on alive=yes alone.
         if concept == "person" and (is_animal or is_plant):
             continue
         if concept == "animal" and (is_person or is_plant):
             continue
         if concept == "plant" and (is_person or is_animal):
             continue
-        if concept == "place" and (alive is True or is_manmade):
-            continue          # a living thing or a man-made object isn't a "place"
+        if concept == "place" and alive is True:
+            continue          # a living thing isn't a "place"
 
         return entry
     return None

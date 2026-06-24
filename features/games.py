@@ -465,58 +465,91 @@ def _20q_classify_answer(text: str) -> str:
     return "unknown"
 
 
-def _20q_llm_move(qa_log: list, asked: list, q_count: int) -> dict:
-    """Decide Rex's next move from the Q&A so far: ask a new yes/no question, or guess.
-    Returns {"action":"ask","question":str} or {"action":"guess","subject":str}."""
+def _20q_decide(qa_log: list, asked: list, q_count: int,
+                candidates: list, guesses: list) -> dict:
+    """Candidate-tracking turn engine — plays like the classic 20Q toy. Each turn it keeps a
+    running SHORTLIST of the answers still consistent with EVERY clue, then either asks the
+    yes/no question that best SPLITS that shortlist or commits to the front-runner. Tracking
+    candidates (instead of improvising one question at a time) is what stops the tunnel-vision
+    that handed away easy wins. Returns:
+        {"candidates": [...], "action": "ask"|"guess", "question": str, "subject": str}
+    """
     transcript = "\n".join(
         f"  Q: {e.get('q','')}  ->  A: {e.get('a','')}" for e in qa_log) or "  (none yet)"
     remaining = _20Q_MAX_QUESTIONS - q_count
+    prior = ", ".join(candidates) if candidates else "(none yet — build it now)"
+    avoid = ", ".join(guesses) if guesses else "none"
     raw = _smart_call(
-        "You are an expert 20 Questions GUESSER. The player is thinking of one specific, common "
-        "person, place, or thing. Identify it with yes/no questions.\n\n"
-        f"So far:\n{transcript}\n\n"
-        f"You have asked {q_count} questions; {remaining} remain. Choose your next move:\n"
-        "1. If the answers already point to one common thing, GUESS it now — don't waste "
-        "questions, and don't over-narrow into a rare breed/brand/sub-type.\n"
-        "2. Otherwise ask ONE yes/no question that roughly HALVES the remaining possibilities, "
-        "about an OBSERVABLE ATTRIBUTE: size, shape, color, material, parts, sound, movement, "
-        "where it's kept, how it's used.\n"
-        '   GOOD: "Is it bigger than a microwave?"  "Does it make a sound?"  "Does it have '
-        'wheels?"  "Can you hold it in one hand?"  "Is it used for music?"\n'
-        '   BAD — never do this: marching through a list of categories ("is it a type of '
-        'furniture?", "is it a type of toy?", "is it a facility related to energy?"). That '
-        "wastes questions and never converges.\n"
-        "3. Never repeat an earlier question.\n"
-        'Return ONLY a JSON object: {"action":"ask","question":"..."} or '
-        '{"action":"guess","subject":"..."}',
-        temperature=0.3, max_tokens=700,
+        "You are an expert 20 Questions guesser that plays like the classic 20Q toy: you keep a "
+        "running SHORTLIST of candidate answers and narrow it down with every clue.\n\n"
+        f"Q&A so far:\n{transcript}\n\n"
+        f"Your shortlist from last turn (reconsider it, don't just trust it): {prior}\n"
+        f"Already guessed wrong — never propose these again: {avoid}\n"
+        f"You have asked {q_count} questions; {remaining} remain.\n\n"
+        "Do BOTH steps:\n"
+        "1. SHORTLIST — REBUILD it FRESH from ALL the clues above (do not just trim last turn's "
+        "list). Pick the 3-6 most likely things consistent with EVERY clear answer. Rules:\n"
+        "   - Weigh ALL clues together; never fixate on the latest answer.\n"
+        "   - Treat 'unknown'/'maybe'/'sometimes' as SOFT hints, not hard rules.\n"
+        "   - Strongly prefer COMMON, everyday answers. Keep the list diverse across CATEGORIES "
+        "you haven't ruled out (until size is known, include both hand-held things like a guitar "
+        "or book AND large ones), but NEVER drift into rare, exotic, regional, or hyper-specific "
+        "variants — if 'pizza' fits, do not list 'tostada' or 'huarache'.\n"
+        "   - If your last guesses were wrong, your whole CATEGORY may be wrong — seriously "
+        "consider a different KIND of thing rather than narrowing deeper into the same one.\n"
+        "2. MOVE —\n"
+        "   - If one candidate clearly leads, OR 2 or fewer questions remain, GUESS it. Guess the "
+        "COMMON general name ('bicycle', not 'commuter bicycle'; 'pizza', not 'tostada').\n"
+        "   - Otherwise ASK one yes/no question whose answer best SPLITS your shortlist (about "
+        "half your candidates would say yes, half no). Early on, split the BROADEST open "
+        "dimension first (size/portability, or what it's mainly used for). You MAY ask ONE sharp "
+        "category question when it cleanly splits the list (e.g. 'Is it a musical instrument?', "
+        "'Is it a vehicle?') — just never ask several 'is it a type of X?' questions in a row. "
+        "Make it concrete and observable; never repeat a question.\n"
+        'Return ONLY JSON: {"candidates":["c1","c2",...],"action":"ask" or "guess",'
+        '"question":"<yes/no question if asking>","subject":"<candidate to guess if guessing>"}',
+        temperature=0.3, max_tokens=900,
     )
     data = _parse_json(raw)
+    new_candidates = list(candidates)
     if isinstance(data, dict):
+        cand = data.get("candidates")
+        if isinstance(cand, list):
+            cleaned = [str(c).strip() for c in cand if str(c).strip()]
+            if cleaned:
+                new_candidates = cleaned[:6]
         action = str(data.get("action", "")).lower()
         if action == "guess" and data.get("subject"):
-            return {"action": "guess", "subject": str(data["subject"]).strip()}
+            return {"candidates": new_candidates, "action": "guess",
+                    "subject": str(data["subject"]).strip()}
         if action == "ask" and data.get("question"):
             if _norm_q(str(data["question"])) not in set(asked):
-                return {"action": "ask", "question": str(data["question"]).strip()}
-    # Fallback: deep in -> guess; otherwise a generic narrowing question.
+                return {"candidates": new_candidates, "action": "ask",
+                        "question": str(data["question"]).strip()}
+    # Fallback: out of road -> guess the front-runner; otherwise a generic splitter.
     if remaining <= 1:
-        return {"action": "guess", "subject": ""}
-    return {"action": "ask", "question": "Is it something you'd find in most homes?"}
+        return {"candidates": new_candidates, "action": "guess",
+                "subject": new_candidates[0] if new_candidates else ""}
+    return {"candidates": new_candidates, "action": "ask",
+            "question": "Is it something you'd find in most homes?"}
 
 
-def _20q_llm_guess(qa_log: list, prior_guesses: list) -> str:
-    """Rex's single best guess given the Q&A, avoiding any already-rejected guesses."""
+def _20q_best_guess(qa_log: list, candidates: list, guesses: list) -> str:
+    """Rex's single best guess. Prefer the tracked shortlist's front-runner (skipping anything
+    already guessed wrong); fall back to deriving one from the full Q&A."""
+    rejected = {g.strip().lower() for g in guesses}
+    for c in candidates or []:
+        if c.strip() and c.strip().lower() not in rejected:
+            return c.strip()
     transcript = "\n".join(
         f"  Q: {e.get('q','')}  ->  A: {e.get('a','')}" for e in qa_log) or "  (none)"
-    avoid = ", ".join(prior_guesses) if prior_guesses else "none"
     raw = _smart_call(
-        "You are playing 20 Questions as the guesser. Based on the answers below, name your "
-        "single best guess for what the player is thinking of. Guess the MOST COMMON, GENERAL, "
-        "everyday thing that is consistent with EVERY answer — do not over-specify into a rare "
-        "breed, brand, or sub-type.\n\n"
+        "You are playing 20 Questions as the guesser. Based on the answers, name your single "
+        "best guess — the most likely COMMON, everyday thing consistent with EVERY answer "
+        "(its general name, e.g. 'bicycle' or 'pizza', not a rare sub-type or regional variant)."
+        "\n\n"
         f"Questions and answers:\n{transcript}\n\n"
-        f"Already guessed wrong (do not repeat): {avoid}\n"
+        f"Already guessed wrong (do not repeat): {', '.join(guesses) or 'none'}\n"
         "Return ONLY the name of your guess — no punctuation, no explanation.",
         temperature=0.5, max_tokens=400,
     ).strip().strip(".!?\"'")
@@ -531,7 +564,8 @@ def _20q_make_guess(person_id: Optional[int], suggested: str = "",
     guesses = _game_state.get("guesses", [])
     subject = (suggested or "").strip()
     if not subject:
-        subject = _20q_llm_guess(_game_state.get("qa_log", []), guesses)
+        subject = _20q_best_guess(_game_state.get("qa_log", []),
+                                  _game_state.get("candidates", []), guesses)
     final = twentyq_kb.snap_guess(subject) or subject or "a protocol droid"
     guesses.append(final)
     _game_state["guesses"] = guesses
@@ -583,12 +617,15 @@ def _20q_ask_next(person_id: Optional[int]) -> tuple[str, bool]:
             False,
         )
 
-    # Mid/late game: let the model narrow further or commit to a guess.
-    move = _20q_llm_move(_game_state.get("qa_log", []), asked, q_count)
-    if move.get("action") == "guess":
-        return _20q_make_guess(person_id, suggested=move.get("subject", ""))
+    # Mid/late game: the candidate-tracking engine narrows the shortlist or commits to a guess.
+    decision = _20q_decide(
+        _game_state.get("qa_log", []), asked, q_count,
+        _game_state.get("candidates", []), _game_state.get("guesses", []))
+    _game_state["candidates"] = decision.get("candidates", _game_state.get("candidates", []))
+    if decision.get("action") == "guess":
+        return _20q_make_guess(person_id, suggested=decision.get("subject", ""))
 
-    question = move.get("question") or "Is it something you could hold in one hand?"
+    question = decision.get("question") or "Is it something you could hold in one hand?"
     _game_state["last_question"] = question
     _game_state["last_concept"] = None
     asked.append(_norm_q(question))
@@ -613,6 +650,7 @@ def _20q_start(person_id: Optional[int]) -> str:
         "concept_answers": {},
         "question_count": 0,
         "guesses": [],
+        "candidates": [],
         "last_question": "",
         "last_concept": None,
     })
