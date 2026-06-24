@@ -6,7 +6,8 @@ import re
 from datetime import datetime
 from typing import Any, Callable, Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -34,6 +35,14 @@ class ConversationPanel(QWidget):
         self._log.setFrameShape(QFrame.Shape.NoFrame)
         self._log.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self._log, 1)
+
+        # Auto-scroll: keep the newest line pinned to the bottom. We apply the scroll
+        # intent from rangeChanged (not right after setHtml) because QTextBrowser relays
+        # its HTML out lazily — the scrollbar maximum is stale immediately after setHtml,
+        # so pinning there races the layout and leaves new text below the fold.
+        self._pin_to_bottom = True
+        self._restore_value: Optional[int] = None
+        self._log.verticalScrollBar().rangeChanged.connect(self._on_scroll_range_changed)
 
         entry_row = QHBoxLayout()
         entry_row.setContentsMargins(0, 0, 0, 0)
@@ -63,30 +72,47 @@ class ConversationPanel(QWidget):
             return
 
         scrollbar = self._log.verticalScrollBar()
-        # Capture intent BEFORE the re-render: was the view pinned to the newest
-        # line, and where was the reader otherwise? setHtml resets the scrollbar
-        # to the top, so these must be read first.
-        at_bottom = scrollbar.value() >= scrollbar.maximum() - 6
-        prev_value = scrollbar.value()
+        # Capture intent BEFORE the re-render, while the scrollbar still reflects the
+        # OLD document: was the reader pinned to the newest line, or scrolled up reading
+        # history? setHtml replaces the whole document and resets the scrollbar, and the
+        # new range isn't final until the document relays out, so we only RECORD intent
+        # here. _on_scroll_range_changed applies it once the range actually updates.
+        self._pin_to_bottom = scrollbar.value() >= scrollbar.maximum() - 6
+        self._restore_value = None if self._pin_to_bottom else scrollbar.value()
 
         self._log.setHtml(_format_lines(lines))
         self._last_seq = last_seq
+        self._apply_scroll_intent()
 
-        if at_bottom:
-            # Keep the latest text anchored to the bottom and let older lines
-            # scroll up out of view. setHtml relays the document out lazily, so
-            # the scrollbar's maximum can still be stale on this pass — pin once
-            # now and again after layout settles, otherwise the newest line ends
-            # up below the fold (the "I have to scroll down to see it" bug).
-            self._scroll_to_bottom()
-            QTimer.singleShot(0, self._scroll_to_bottom)
-        else:
-            # Reader has scrolled up through history — only new lines were
-            # appended below, so hold their position across the full re-render
-            # instead of snapping them back to the top.
-            scrollbar.setValue(min(prev_value, scrollbar.maximum()))
+    def _on_scroll_range_changed(self, _minimum: int, _maximum: int) -> None:
+        """Re-pin to the bottom whenever the document's scroll range settles.
 
-    def _scroll_to_bottom(self) -> None:
+        QTextBrowser relays its HTML out lazily, so rangeChanged can fire one or more
+        times after setHtml (and on resize). Re-pinning here catches the final layout
+        even though the maximum was stale immediately after setHtml. We only re-pin the
+        bottom case — the "restore position" target is fixed and applied once below, so
+        it must NOT be re-forced on every later relayout (that would fight the reader)."""
+        if self._pin_to_bottom:
+            self._pin_bottom()
+
+    def _apply_scroll_intent(self) -> None:
+        if self._pin_to_bottom:
+            self._pin_bottom()
+        elif self._restore_value is not None:
+            # Reader scrolled up through history — hold their position across the full
+            # re-render (setHtml resets to the top) instead of snapping them up.
+            scrollbar = self._log.verticalScrollBar()
+            scrollbar.setValue(min(self._restore_value, scrollbar.maximum()))
+
+    def _pin_bottom(self) -> None:
+        # Move the cursor to the very end and reveal it. ensureCursorVisible forces the
+        # lazy document layout to resolve the true bottom and scrolls there — this
+        # overrides setHtml's own reset-to-top, which is why simply setting the scrollbar
+        # to a (stale) maximum after setHtml left new text below the fold.
+        cursor = self._log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self._log.setTextCursor(cursor)
+        self._log.ensureCursorVisible()
         scrollbar = self._log.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
