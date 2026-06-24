@@ -1217,9 +1217,25 @@ def assemble_system_prompt(
     # Unknown-face awareness: when Rex is replying to a known person AND an
     # unknown face is also in frame, surface it so curiosity gets woven into
     # the normal reply instead of waiting for a proactive speech slot.
-    if person_id is not None:
+    # While a game owns the turn, stand down the "who's your friend?" curiosity entirely —
+    # it was hijacking 20 Questions turns.
+    _game_owns_turn = False
+    try:
+        from features import games as _games
+        _game_owns_turn = _games.suppresses_conversation_interruptions()
+    except Exception:
+        _game_owns_turn = False
+
+    if person_id is not None and not _game_owns_turn:
+        # Only a slot with an actually-detected, visible FACE counts as an unknown person.
+        # A pose-only phantom (e.g. MediaPipe hallucinating a second skeleton when the user
+        # is reclining) has person_db_id=None but no face_box — it must NOT trigger this
+        # curiosity. Mirrors interaction._has_unknown_visible_person's gate.
         unknown_in_frame = any(
-            p.get("person_db_id") is None for p in ws.get("people", [])
+            p.get("person_db_id") is None
+            and not (p.get("face_visible") is False or p.get("face_missing"))
+            and (p.get("face_box") or p.get("bounding_box") or p.get("bbox"))
+            for p in ws.get("people", [])
         )
         if unknown_in_frame:
             engaged_first = ""

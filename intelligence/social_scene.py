@@ -127,6 +127,15 @@ class ConversationCastContext:
     directive: str
 
 
+def _slot_has_visible_face(person: dict) -> bool:
+    """True if a workspace person-slot has an actually-detected, visible face (not a
+    pose-only phantom). Mirrors interaction._has_unknown_visible_person's gate so a
+    hallucinated second skeleton with no face_box never reads as an 'unknown person'."""
+    if person.get("face_visible") is False or person.get("face_missing"):
+        return False
+    return bool(person.get("face_box") or person.get("bounding_box") or person.get("bbox"))
+
+
 def from_snapshot(snapshot: Optional[dict] = None) -> SocialScene:
     snap = snapshot if snapshot is not None else world_state.snapshot()
     known: list[VisiblePerson] = []
@@ -135,7 +144,11 @@ def from_snapshot(snapshot: Optional[dict] = None) -> SocialScene:
         pid = person.get("person_db_id")
         name = person.get("face_id") or person.get("voice_id") or ""
         if pid is None:
-            unknown_count += 1
+            # Count as an unknown person only if the slot actually has a visible face — a
+            # faceless pose-only phantom must not inflate the unknown count (it was firing
+            # bogus "who's the mystery guest?" handoffs while the user was alone).
+            if _slot_has_visible_face(person):
+                unknown_count += 1
             continue
         if not name:
             name = f"person_{pid}"
@@ -251,6 +264,15 @@ def unknown_group_context(
     Interaction.py owns the actual identity capture; prompt/governor layers use
     this to keep group banter natural and to avoid losing the identity question.
     """
+    # Stand down entirely while a game owns the turn — even a real newcomer's identity
+    # handoff must not interrupt active gameplay (the player is engaged with the game).
+    try:
+        from features import games as _games
+        if _games.suppresses_conversation_interruptions():
+            return None
+    except Exception:
+        pass
+
     scene = from_snapshot(snapshot)
     if scene.unknown_count <= 0:
         return None

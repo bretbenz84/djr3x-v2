@@ -6783,6 +6783,10 @@ class ConversationGatingTest(unittest.TestCase):
                     "id": "person_2",
                     "person_db_id": None,
                     "face_id": None,
+                    # A real unfamiliar guest has an actual detected face (face_box); a
+                    # faceless slot is a pose-only phantom and must NOT count as a person.
+                    "face_box": [820, 210, 980, 430],
+                    "face_visible": True,
                 },
             ],
             "environment": {},
@@ -6812,6 +6816,10 @@ class ConversationGatingTest(unittest.TestCase):
                     "id": "person_2",
                     "person_db_id": None,
                     "face_id": None,
+                    # A real unfamiliar guest has an actual detected face (face_box); a
+                    # faceless slot is a pose-only phantom and must NOT count as a person.
+                    "face_box": [820, 210, 980, 430],
+                    "face_visible": True,
                 },
             ],
         }

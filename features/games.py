@@ -408,6 +408,10 @@ _20Q_UNKNOWN = {
     "i don't know", "i dont know", "dont know", "don't know", "not sure", "no idea",
     "unsure", "dunno", "hard to say", "can't say", "cant say", "who knows",
 }
+# Whisper near-homophones of "no" that show up in far-field game answers (the mic hears the
+# clipped "no" as "now"/"know"). Corrected to "no" ONLY inside the 20Q yes/no classifier —
+# never in general conversation, where the user may legitimately say "now".
+_20Q_NO_MISHEARS = {"now", "know", "know.", "gnaw", "knnow", "noh"}
 
 
 def _norm_q(q: str) -> str:
@@ -424,6 +428,9 @@ def _20q_classify_answer(text: str) -> str:
     t = re.sub(r"\s+", " ", (text or "").strip().lower()).strip(" .!?")
     if not t:
         return "unknown"
+    # Correct the common far-field mishear of "no" before anything else (game-scoped).
+    if t in _20Q_NO_MISHEARS:
+        return "no"
     # Whole-phrase membership first (so "no idea" -> unknown, not "no").
     for label, vocab in (("unknown", _20Q_UNKNOWN), ("yes", _20Q_YES),
                          ("no", _20Q_NO), ("sometimes", _20Q_MAYBE)):
@@ -449,8 +456,11 @@ def _20q_classify_answer(text: str) -> str:
         f"Classify their answer as ONLY one word: yes, no, sometimes, or unknown.",
         temperature=0, max_tokens=4,
     ).strip().lower()
+    # Match whole words, not substrings — "no" is a substring of "unknown", so a substring
+    # check would silently turn every "unknown" verdict into "no".
+    raw_tokens = set(re.findall(r"[a-z]+", raw))
     for label in ("yes", "no", "sometimes", "unknown"):
-        if label in raw:
+        if label in raw_tokens:
             return label
     return "unknown"
 

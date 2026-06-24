@@ -65,6 +65,22 @@ class ClassifyAnswerTest(unittest.TestCase):
             self.assertEqual(games._20q_classify_answer("the third one from the left"), "yes")
             qc.assert_called_once()
 
+    def test_now_mishear_corrects_to_no_without_llm(self):
+        # Whisper hears the clipped "no" as "now"/"know" far-field — correct it deterministically
+        # inside the game, with no LLM round-trip.
+        with mock.patch.object(games, "_quick_call",
+                               side_effect=AssertionError("should not hit LLM")):
+            for t in ("now", "now.", "know", "gnaw"):
+                self.assertEqual(games._20q_classify_answer(t), "no", t)
+
+    def test_llm_unknown_verdict_is_not_swallowed_by_no_substring(self):
+        # The LLM fallback returns the literal word "unknown"; "no" is a substring of it, so a
+        # naive `if label in raw` would wrongly return "no". It must return "unknown".
+        with mock.patch.object(games, "_quick_call", return_value="unknown"):
+            self.assertEqual(games._20q_classify_answer("the one on the left, perhaps"), "unknown")
+        with mock.patch.object(games, "_quick_call", return_value="no"):
+            self.assertEqual(games._20q_classify_answer("the one on the left, perhaps"), "no")
+
 
 # ── Knowledge base ──────────────────────────────────────────────────────────────
 
