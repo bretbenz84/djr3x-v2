@@ -715,6 +715,39 @@ def _valid_prefix_arg(command_key: str, arg_value: str) -> bool:
     return True
 
 
+# Game-start detection that tolerates a leading conversational clause ("I'm good, but let's
+# play 20 questions") and bare game names ("20 questions") — phrasings that used to miss the
+# start_game prefix and fall through to the canned "here are my games" list. Reuses the
+# play-verb prefixes + _valid_prefix_arg, so deferred ("...trivia later"), narrated ("we
+# played trivia"), and idiom ("play it by ear") uses stay blocked exactly as before.
+_GAME_START_PREFIXES: tuple[str, ...] = tuple(
+    prefix for prefix, key, _arg in PREFIX_COMMANDS if key == "start_game"
+)
+_KNOWN_GAME_NAMES = frozenset({
+    "20 questions", "twenty questions", "trivia", "jeopardy",
+    "i spy", "eye spy", "word association",
+})
+_GAME_CLAUSE_SPLIT_RE = re.compile(r"\s*(?:,|;|\bbut\b|\bso\b|\band then\b)\s+", re.IGNORECASE)
+
+
+def _parse_game_start(normalized: str) -> dict | None:
+    """Resolve a 'start this game' request to {'game': name}, even behind a leading clause or
+    as a bare game name. Returns None for narrated/deferred/idiom uses (still vetoed by
+    _valid_prefix_arg, exactly like the plain prefix path)."""
+    for clause in _GAME_CLAUSE_SPLIT_RE.split(normalized):
+        clause = clause.strip()
+        if not clause:
+            continue
+        for prefix in _GAME_START_PREFIXES:
+            if clause.startswith(prefix):
+                arg = clause[len(prefix):].strip()
+                if arg and _valid_prefix_arg("start_game", arg):
+                    return {"game": arg}
+        if _plain(clause) in _KNOWN_GAME_NAMES:
+            return {"game": clause}
+    return None
+
+
 # ─── Personality parameter patterns ──────────────────────────────────────────
 
 _PARAMS = list(config.PERSONALITY_DEFAULTS.keys())
@@ -854,6 +887,10 @@ def parse(text: str) -> CommandMatch | None:
     themed_trivia = _parse_themed_trivia(normalized, original)
     if themed_trivia is not None:
         return CommandMatch("start_game", "pattern", themed_trivia)
+
+    game_start = _parse_game_start(normalized)
+    if game_start is not None:
+        return CommandMatch("start_game", "pattern", game_start)
 
     wave = _parse_wave(normalized, original)
     if wave is not None:

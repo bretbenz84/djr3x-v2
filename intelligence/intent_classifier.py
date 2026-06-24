@@ -145,9 +145,13 @@ _WEATHER_QUERY_RE = re.compile(
     r"\b(weather|temperature|forecast|rain|raining|hot|cold|outside)\b",
     re.IGNORECASE,
 )
+# Genuine "what can we play?" asks only. A bare/embedded game NAME ("20 questions",
+# "let's play trivia") must NOT land here — that routed every game mention to the canned
+# games list instead of starting the game; command_parser now resolves those to start_game.
 _GAMES_QUERY_RE = re.compile(
-    r"\b(what games|which games|games can you|play a game|start a game|"
-    r"trivia|jeopardy|i spy|20 questions|twenty questions|word association)\b",
+    r"\b(what games|which games|games can you|"
+    r"what can (?:we|i|you) play|what do you have to play|"
+    r"play a game|start a game|got any games|any games)\b",
     re.IGNORECASE,
 )
 _CAPABILITIES_QUERY_RE = re.compile(

@@ -20,6 +20,11 @@ class CommandParserBoundaryTests(unittest.TestCase):
             "play something later",
             "Nope, my partner is in the hospital.",
             "Actually, my partner is in the hospital.",
+            # Stray game mentions in narration must NOT start a game (these used to fire
+            # the canned games list / re-trigger start).
+            "it was just the 20 questions idea that I had",
+            "we used to play 20 questions",
+            "I don't want to play 20 questions",
         ]
 
         for text in cases:
@@ -42,6 +47,13 @@ class CommandParserBoundaryTests(unittest.TestCase):
             "call me Bret": "rename_me",
             "I want to play trivia": "start_game",
             "play something upbeat": "dj_play_vibe",
+            # Game-start must survive a leading clause and a bare game name (the routing
+            # that previously fell through to the canned "here are my games" list).
+            "let's play 20 questions": "start_game",
+            "I'm good, but let's play 20 questions": "start_game",
+            "okay so let's play trivia": "start_game",
+            "20 questions": "start_game",
+            "twenty questions": "start_game",
         }
 
         for text, command_key in cases.items():
