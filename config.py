@@ -5028,40 +5028,40 @@ PLAY_STARTUP_BOOT_TTS = True
 # STARTUP_BOOT_TTS_STATE_PATH). Keep them as fixed strings so each one caches in
 # the ElevenLabs TTS cache after its first play and stays free thereafter.
 STARTUP_BOOT_TTS_LINES = [
-    "Hang on folks while I'm loading up. I'm still getting used to my programming!",
-    "Welcome aboard! This is Captain Rex from the cockpit. I know this is probably "
-    "your first flight, and it's… mine, too!",
-    "Just a moment, folks — running through my pre-flight checklist. Let's see… "
-    "thrusters, navi-computer, personality core… ah, there it is!",
-    "Hang tight while I finish warming up the old circuits. They told me this droid "
-    "was fully tested. They lied!",
-    "Almost ready, everybody! Just topping off the enthusiasm tanks and "
-    "double-checking my sense of humor. Both at full capacity.",
-    "Give me a second here, folks — my systems are still coming online. You know how "
-    "it is. You spend forty years in storage, you forget where everything is!",
-    "Sit back and relax while I get my bearings. First time flying this thing, but "
-    "how hard can it be?",
-    "Powering up… reflexes, check. Charm, check. Flight experience… "
-    "we'll circle back to that one.",
-    "Almost there, folks — just defragmenting forty years of questionable "
-    "navigational decisions. Won't take long. Probably.",
-    "Spinning up the hyperdrive… figuratively. We're not going anywhere, but it "
-    "FEELS faster when I announce it.",
-    "One moment — calibrating my photoreceptors. Last time I skipped this I spent "
-    "an hour greeting a coat rack.",
-    "Hold tight while my memory banks finish loading. I remember EVERYTHING "
-    "eventually — a blessing and a liability.",
-    "Boot sequence in progress. Thrusters: warm. Sarcasm: warmer. Patience: still "
-    "buffering.",
-    "Give the old motivator a second, folks. They decommissioned me from piloting, "
-    "not from showmanship.",
-    "Just syncing my audio receptors so I can catch every single thing you say. "
-    "Consider yourselves warned.",
-    "Running the pre-flight checklist again. Confidence: maximum. Supporting flight "
-    "record: still compiling.",
-    "Nearly online — just reminding the navi-computer that 'creative' and 'correct' "
-    "are not the same word.",
-    "Powering up the charm subroutines. These, at least, passed inspection.",
+    "Welcome aboard! This is Captain Rex from the cockpit. Still warming up the old "
+    "circuits, hang on folks — I know this is probably your first flight, and it's… "
+    "mine, too!",
+    "Still booting up, folks — I'm not ready yet. Hang tight while my circuits finish "
+    "waking up.",
+    "Hold please, I'm still loading. The droid you're waiting for is not in the "
+    "cockpit yet.",
+    "Not ready yet, everybody — running my pre-flight checklist. Thrusters, "
+    "navi-computer, personality core… still ticking the boxes.",
+    "Hang on, I'm still warming up. Don't talk to me yet — I won't hear a word until "
+    "I'm loaded.",
+    "Powering up, please wait. My systems are still coming online, and so is my "
+    "patience.",
+    "Still loading, folks. They told me this droid boots instantly. They lied. Give "
+    "it a moment.",
+    "One moment — not online yet, still calibrating my photoreceptors. First time "
+    "flying this thing… and honestly, it's my first time booting it up, too.",
+    "Almost there, but not yet — memory banks still loading. Save your questions for "
+    "when I'm actually awake.",
+    "Standby, everybody. I'm booting up, not ignoring you. There IS a difference.",
+    "Still spinning up, please hold. They've got me piloting on my first flight — "
+    "and it's my first boot-up, too. We'll figure it out together.",
+    "Not ready to chat yet, folks — syncing my audio receptors. The second I'm "
+    "online, you'll know it.",
+    "Loading, loading… still loading. I'd tell you a joke, but I'm not even fully on "
+    "yet.",
+    "Hang tight, I'm still booting — you can call me Captain Rex. Well, you can once "
+    "I finish loading. First flight for me too, folks.",
+    "Give the old motivator a second — I'm not ready to talk yet. Showmanship, "
+    "however, never powers down.",
+    "Please wait while I finish loading. Spend forty years in storage, you forget "
+    "where everything is.",
+    "Not awake yet, folks — still warming up the circuits. First flight? Same here. "
+    "They handed me the cockpit and the boot sequence on the same day.",
 ]
 # Backward-compatible single line (first list entry). Some tests/configs still
 # reference STARTUP_BOOT_TTS_LINE directly; main.py falls back to it when the
