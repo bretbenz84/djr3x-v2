@@ -379,9 +379,38 @@ class MotionTakeoverTest(_MotionTestBase):
     (the live 2026-06-23 bug: "move forward." / "Move backwards" -> conversation.reply).
     It executes motion regardless of dialogue state, and is a clean no-op otherwise."""
 
-    def test_no_base_is_noop(self):
+    def test_no_base_drive_command_is_verbally_denied(self):
+        from unittest import mock
         from intelligence import interaction as I
-        self.assertIsNone(I._explicit_motion_takeover("turn left"))   # no base connected
+        # No base connected: an explicit DRIVE command is refused OUT LOUD (in character)
+        # instead of silently falling through to conversation.
+        with mock.patch.object(I, "_speak_blocking", return_value=True) as spoke:
+            resp = I._explicit_motion_takeover("turn left")
+        self.assertIn(resp, config.MOTION_NO_BASE_DENIAL_LINES)
+        spoke.assert_called_once()
+        self.assertEqual(spoke.call_args.args[0], resp)   # the returned line is the spoken line
+
+    def test_no_base_bare_stop_is_noop(self):
+        from unittest import mock
+        from intelligence import interaction as I
+        # "halt"/bare-stop and non-motion text must NOT be denied (no wheels to stop, and
+        # "stop" must stay free for stop-music/game).
+        with mock.patch.object(I, "_speak_blocking", return_value=True) as spoke:
+            self.assertIsNone(I._explicit_motion_takeover("halt"))
+            self.assertIsNone(I._explicit_motion_takeover("yeah that sounds great, thanks"))
+        spoke.assert_not_called()
+
+    def test_no_base_denial_can_be_disabled(self):
+        from unittest import mock
+        from intelligence import interaction as I
+        orig = config.MOTION_NO_BASE_DENIAL_ENABLED
+        config.MOTION_NO_BASE_DENIAL_ENABLED = False
+        try:
+            with mock.patch.object(I, "_speak_blocking", return_value=True) as spoke:
+                self.assertIsNone(I._explicit_motion_takeover("turn left"))
+            spoke.assert_not_called()
+        finally:
+            config.MOTION_NO_BASE_DENIAL_ENABLED = orig
 
     def test_explicit_motion_executes(self):
         from intelligence import interaction as I

@@ -14003,6 +14003,10 @@ def _handle_router_identity_name_correction(
 
 
 _MOTION_ACTIONS = {"motion.turn", "motion.move", "motion.come", "motion.stop", "motion.arc"}
+# Drive intents that need a physically-connected base. Bare "stop"/"halt" (motion.stop) is
+# deliberately excluded: with no base there is nothing to halt, and the word must stay free
+# to mean stop-music / stop-game.
+_MOTION_DRIVE_ACTIONS = {"motion.turn", "motion.move", "motion.come", "motion.arc"}
 # Bare standalone "stop" only counts as a drive-base stop while the base is moving.
 _BARE_MOTION_STOP_RE = re.compile(
     r"^\s*(?:stop|halt|freeze|whoa|hold on|hold up|wait|stop it)\s*[.!]*\s*$", re.I
@@ -14073,6 +14077,21 @@ def _handle_router_motion_action(
     return None
 
 
+def _motion_no_base_denial_line(text: str) -> Optional[str]:
+    """A pre-canned, in-character refusal for an explicit DRIVE command spoken while no
+    ESP32 drive base is connected. Returns None for non-drive / bare-stop text (so those
+    fall through to normal routing) or when the behavior is disabled."""
+    if not bool(getattr(config, "MOTION_NO_BASE_DENIAL_ENABLED", True)):
+        return None
+    decision = action_router.classify_explicit_motion(text)
+    if decision is None or decision.action not in _MOTION_DRIVE_ACTIONS:
+        return None
+    lines = list(getattr(config, "MOTION_NO_BASE_DENIAL_LINES", []) or [])
+    if not lines:
+        return None
+    return random.choice(lines)
+
+
 def _explicit_motion_takeover(
     text: str,
     *,
@@ -14083,12 +14102,27 @@ def _explicit_motion_takeover(
     A deterministic "turn left" / "move forward" / "move backwards" is a PHYSICAL
     command, not an answer to Rex's last question — so it must execute even inside an
     answer_to_rex frame (which otherwise skips the whole router). Returns a short spoken
-    confirmation, or None when it's not an explicit motion command, no base is connected,
-    or the command was suppressed (paused / gamepad owns the base). No-op (None) unless a
-    base is connected, so behavior is unchanged otherwise. Bare "stop" routes here only
-    while the base is actually moving (so it never steals stop-music/game/talk)."""
+    confirmation, or None when it's not an explicit motion command or the command was
+    suppressed (paused / gamepad owns the base). Bare "stop" routes here only while the
+    base is actually moving (so it never steals stop-music/game/talk).
+
+    When NO base is connected, an explicit DRIVE command (turn/move/come/arc) gets a
+    spoken in-character denial instead of silently falling through to conversation — with
+    no wheels there's no physical acknowledgment, so Rex says so out loud. Bare
+    "stop"/"halt" still no-ops here (nothing to halt)."""
     if not motion_controller.available():
-        return None
+        denial = _motion_no_base_denial_line(text)
+        if denial is None:
+            return None
+        _log.info(
+            "[motion] drive command with no base connected -> verbal denial: text=%r",
+            text,
+        )
+        _speak_blocking(denial, emotion="neutral", log_text=False)
+        _router_audit_note_fast_local_action(
+            router_audit, "motion.denied_no_base", reason="drive base not connected"
+        )
+        return denial
     motion_decision = action_router.classify_explicit_motion(text)
     if (
         motion_decision is None

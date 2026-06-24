@@ -5585,6 +5585,26 @@ MOTION_ARC_ANG_DEG_S = 35.0           # arc turn rate, deg/s (+ = left, REP-103)
 MOTION_ARC_DURATION_SECS = 1.6        # how long the curve drives before auto-stop
 MOTION_ARC_SMALL_DURATION_SECS = 1.0  # "a little / a bit" -> shorter curve
 
+# Verbal denial when an explicit DRIVE command is spoken but no ESP32 drive base is
+# connected. With a base attached the wheels actually moving ARE the acknowledgment, so
+# the motion confirmation isn't spoken; with NO base there's nothing to feel, so instead
+# of silently swallowing "turn left" as conversation Rex answers OUT LOUD, in character,
+# with one of these pre-canned quips. Fires only on real drive intents (turn / move /
+# come / arc) — never on a bare "stop"/"halt", which must stay free to mean stop-music /
+# stop-game. Keep the lines venue-neutral and self-aware-droid; edit freely. Kill switch:
+# set MOTION_NO_BASE_DENIAL_ENABLED = False to restore the old silent no-op.
+MOTION_NO_BASE_DENIAL_ENABLED = True
+MOTION_NO_BASE_DENIAL_LINES = [
+    "Love to roll, but my drive base is unplugged. Right now I'm just a head with opinions.",
+    "Roll where? Nobody hooked up my wheels, hot shot. Connect the base and I'll burn rubber.",
+    "I'd move, but I appear to be a torso on a desk. Plug in my motors and we'll talk.",
+    "Big talk for the guy who didn't connect my drive base. No wheels, no boogie.",
+    "Can't feel my wheels. Mostly because there aren't any attached. Drive base is offline, chief.",
+    "Yeah, about that: I'm running on charm and a USB cable. The wheels stayed home.",
+    "Motion denied. My drive base ghosted me. Check the connection and try me again.",
+    "I would, but my legs are still in the shop. Somebody forgot to plug the base in.",
+]
+
 # ── Gamepad soundboard / animation buttons ──────────────────────────────────────
 # The 8BitDo Pro 2 pairs to the ESP32. The buttons motion does NOT use (left stick =
 # drive, B = e-stop, Start = clear/return-AUTO, L1/R1 = creep/boost, L2+R2 = full

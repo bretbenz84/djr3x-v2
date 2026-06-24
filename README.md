@@ -156,6 +156,7 @@ An optional ESP32-controlled drive base lets Rex physically move around a room o
 - **Wire contract:** [docs/motion_protocol.md](docs/motion_protocol.md). **Feature spec & wiring:** [docs/motion_system.md](docs/motion_system.md).
 - **Firmware:** [firmware/djr3x_motion](firmware/djr3x_motion/) (Arduino sketch for the ESP32). The current Phase 0 build runs the full protocol against a stubbed hardware layer, so it works on a bare ESP32 with nothing wired — flip `MOTION_HW_PRESENT` in `hal.h` to `1` as motors, encoders, and sensors are added.
 - **Enable it:** set `MOTION_ESP32_PORT` in `.env` (the setup script can auto-detect and set this). Motion is fully disabled — with zero change to the rest of Rex's behavior — until that port is set.
+- **No base attached?** If you give Rex a drive command ("turn left", "move forward", "come here") while the ESP32 isn't connected, he refuses out loud with a pre-canned in-character quip instead of silently ignoring it — there are no wheels to move, so he says so (toggle/edit with `MOTION_NO_BASE_DENIAL_ENABLED` / `MOTION_NO_BASE_DENIAL_LINES`). A bare "stop"/"halt" is unaffected.
 - **Bring-up test:** `venv/bin/python firmware/tools/motion_serial_smoketest.py` exercises the whole protocol against a connected board.
 
 > Safety: the ESP32 stops the base on its own (obstacle/cliff/lost-comms) independent of the Mac. Do not attach motor power until the base has been bench-tested with wheels off the ground.
