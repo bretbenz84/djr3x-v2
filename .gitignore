@@ -261,3 +261,7 @@ logs/
 djr3x-main.lock
 
 .VSCodeCounter/
+
+# 20 Questions — raw allenai/twentyquestions dataset (large; distilled into the tracked
+# assets/20questions/r3x_kb.json by assets/20questions/build_kb.py).
+assets/20questions/twentyquestions-*.jsonl

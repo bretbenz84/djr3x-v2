@@ -5,7 +5,7 @@ Manages one active game at a time. All games are interruptible via stop_game().
 
 Supported games:
     "i_spy"            — Rex picks an object from the camera frame; player guesses
-    "20_questions"     — Rex thinks of something; player asks yes/no questions
+    "20_questions"     — Player thinks of something; Rex guesses it via yes/no questions
     "trivia"           — Rex runs a short scored trivia round
     "jeopardy"         — A verbal Jeopardy-style board with real clue data
     "word_association" — Rapid back-and-forth word chain
@@ -25,6 +25,7 @@ import json
 import copy
 import logging
 import random
+import re
 import sys
 import threading
 import time
@@ -38,6 +39,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from rapidfuzz import fuzz
 
 import config
+from features import twentyq_kb
 from vision.image_utils import encode_jpeg_base64
 
 _log = logging.getLogger(__name__)
@@ -126,6 +128,35 @@ def _quick_call(prompt: str, temperature: float = 0.7, max_tokens: int = 100) ->
     except Exception as exc:
         _log.error("[games] _quick_call failed: %s", exc)
         return ""
+
+
+def _smart_call(prompt: str, *, temperature: float = 0.3, max_tokens: int = 700,
+                reasoning_effort: str = "low") -> str:
+    """Higher-reasoning call for decisions where a stronger model clearly pays off — namely
+    20 Questions' question selection and final guess (deciding the right yes/no question and
+    making the leap to the answer). Routes through the conversation model (gpt-5.4-mini) via
+    llm_compat so GPT-5-family params (max_completion_tokens, reasoning_effort, temperature
+    gating) are handled in one place. `max_tokens` is intentionally generous: reasoning models
+    spend tokens thinking before they emit, so a tight cap can starve the visible answer.
+    Falls back to the cheap GPT-4o-mini path on any error."""
+    try:
+        from intelligence import llm_compat
+        client = _get_client()
+        resp = llm_compat.create(
+            client,
+            model=config.LLM_CONVERSATION_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            # Reasoning models reject a non-default temperature once reasoning is engaged, so
+            # we omit it here; `temperature` only flavors the GPT-4o-mini fallback below.
+            temperature=None,
+            reasoning_effort=reasoning_effort,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        return text or _quick_call(prompt, temperature=temperature, max_tokens=120)
+    except Exception as exc:
+        _log.warning("[games] _smart_call fell back to _quick_call: %s", exc)
+        return _quick_call(prompt, temperature=temperature, max_tokens=120)
 
 
 def _rex_respond(game_context: str, person_id: Optional[int] = None) -> str:
@@ -352,131 +383,304 @@ def _ispy_stop(person_id: Optional[int]) -> str:
 
 # ── 20 Questions game ─────────────────────────────────────────────────────────
 
-_20Q_MAX_QUESTIONS = 20
+_20Q_MAX_QUESTIONS = 20      # hard cap; Rex must commit to a guess by here
+_20Q_MAX_GUESSES = 3         # how many final guesses Rex gets before conceding
+_20Q_SPINE_TURNS = 5         # use the dataset's discriminator spine for the opening N questions
+
+# Answer keyword sets for parsing the player's yes/no replies (LLM fallback for the rest).
+_20Q_YES = {
+    "yes", "yeah", "yep", "yup", "yah", "ya", "sure", "correct", "right", "true",
+    "definitely", "absolutely", "affirmative", "mhm", "mmhm", "uh huh", "uhuh",
+    "of course", "exactly", "indeed", "totally", "for sure", "you got it",
+    "that's right", "thats right", "you're right", "youre right", "got it", "bingo",
+    "yes it is", "yep that's it", "you nailed it",
+}
+_20Q_NO = {
+    "no", "nope", "nah", "naw", "negative", "false", "wrong", "incorrect", "nuh uh",
+    "not really", "i don't think so", "i dont think so", "definitely not", "no way",
+    "not at all", "afraid not", "nope sorry", "not even close", "not quite",
+}
+_20Q_MAYBE = {
+    "sometimes", "maybe", "kind of", "kinda", "sort of", "sorta", "partly", "partially",
+    "occasionally", "depends", "it depends", "in a way", "more or less", "somewhat",
+}
+_20Q_UNKNOWN = {
+    "i don't know", "i dont know", "dont know", "don't know", "not sure", "no idea",
+    "unsure", "dunno", "hard to say", "can't say", "cant say", "who knows",
+}
 
 
-def _20q_pick_secret() -> dict:
+def _norm_q(q: str) -> str:
+    """Normalize a question for de-dup / spine matching."""
+    q = re.sub(r"\s+", " ", (q or "").strip().lower())
+    if q and not q.endswith("?"):
+        q += "?"
+    return q
+
+
+def _20q_classify_answer(text: str) -> str:
+    """Map the player's reply to one of: yes / no / sometimes / unknown.
+    Keyword-first (deterministic, test-friendly); LLM fallback for anything ambiguous."""
+    t = re.sub(r"\s+", " ", (text or "").strip().lower()).strip(" .!?")
+    if not t:
+        return "unknown"
+    # Whole-phrase membership first (so "no idea" -> unknown, not "no").
+    for label, vocab in (("unknown", _20Q_UNKNOWN), ("yes", _20Q_YES),
+                         ("no", _20Q_NO), ("sometimes", _20Q_MAYBE)):
+        if t in vocab:
+            return label
+    # Multi-word cue anywhere in the reply (check unknown/no before the rest).
+    for label, vocab in (("unknown", _20Q_UNKNOWN), ("no", _20Q_NO),
+                         ("sometimes", _20Q_MAYBE), ("yes", _20Q_YES)):
+        if any(phrase in t for phrase in vocab if " " in phrase):
+            return label
+    # Leading token.
+    first = t.split()[0]
+    if first in {"yes", "yeah", "yep", "yup", "ya", "yah", "correct", "right", "true",
+                 "sure", "definitely", "absolutely", "exactly", "bingo", "totally"}:
+        return "yes"
+    if first in {"no", "nope", "nah", "naw", "negative", "false", "wrong", "incorrect"}:
+        return "no"
+    if first in {"sometimes", "maybe", "kinda", "sorta", "occasionally", "somewhat"}:
+        return "sometimes"
+    # Ambiguous — ask the model.
     raw = _quick_call(
-        "Pick something interesting for a game of 20 Questions — a person, place, or thing. "
-        "Choose something reasonably well-known, not too obscure. "
-        "Bias toward Star Wars, science, pop culture, or space themes. "
-        "Return a JSON object with exactly two keys:\n"
-        '  "secret": the name of the person, place, or thing,\n'
-        '  "category": one of "person", "place", or "thing".\n'
-        "Return ONLY the JSON object — no preamble, no markdown.",
-        temperature=0.9,
-        max_tokens=80,
+        f'In a yes/no game, the player answered: "{text.strip()}". '
+        f"Classify their answer as ONLY one word: yes, no, sometimes, or unknown.",
+        temperature=0, max_tokens=4,
+    ).strip().lower()
+    for label in ("yes", "no", "sometimes", "unknown"):
+        if label in raw:
+            return label
+    return "unknown"
+
+
+def _20q_llm_move(qa_log: list, asked: list, q_count: int) -> dict:
+    """Decide Rex's next move from the Q&A so far: ask a new yes/no question, or guess.
+    Returns {"action":"ask","question":str} or {"action":"guess","subject":str}."""
+    transcript = "\n".join(
+        f"  Q: {e.get('q','')}  ->  A: {e.get('a','')}" for e in qa_log) or "  (none yet)"
+    remaining = _20Q_MAX_QUESTIONS - q_count
+    raw = _smart_call(
+        "You are an expert 20 Questions GUESSER. The player is thinking of one specific, common "
+        "person, place, or thing. Identify it with yes/no questions.\n\n"
+        f"So far:\n{transcript}\n\n"
+        f"You have asked {q_count} questions; {remaining} remain. Choose your next move:\n"
+        "1. If the answers already point to one common thing, GUESS it now — don't waste "
+        "questions, and don't over-narrow into a rare breed/brand/sub-type.\n"
+        "2. Otherwise ask ONE yes/no question that roughly HALVES the remaining possibilities, "
+        "about an OBSERVABLE ATTRIBUTE: size, shape, color, material, parts, sound, movement, "
+        "where it's kept, how it's used.\n"
+        '   GOOD: "Is it bigger than a microwave?"  "Does it make a sound?"  "Does it have '
+        'wheels?"  "Can you hold it in one hand?"  "Is it used for music?"\n'
+        '   BAD — never do this: marching through a list of categories ("is it a type of '
+        'furniture?", "is it a type of toy?", "is it a facility related to energy?"). That '
+        "wastes questions and never converges.\n"
+        "3. Never repeat an earlier question.\n"
+        'Return ONLY a JSON object: {"action":"ask","question":"..."} or '
+        '{"action":"guess","subject":"..."}',
+        temperature=0.3, max_tokens=700,
     )
     data = _parse_json(raw)
-    if isinstance(data, dict) and data.get("secret") and data.get("category"):
-        return data
-    return {"secret": "a lightsaber", "category": "thing"}
+    if isinstance(data, dict):
+        action = str(data.get("action", "")).lower()
+        if action == "guess" and data.get("subject"):
+            return {"action": "guess", "subject": str(data["subject"]).strip()}
+        if action == "ask" and data.get("question"):
+            if _norm_q(str(data["question"])) not in set(asked):
+                return {"action": "ask", "question": str(data["question"]).strip()}
+    # Fallback: deep in -> guess; otherwise a generic narrowing question.
+    if remaining <= 1:
+        return {"action": "guess", "subject": ""}
+    return {"action": "ask", "question": "Is it something you'd find in most homes?"}
 
 
-def _20q_start(person_id: Optional[int]) -> str:
-    secret_data = _20q_pick_secret()
-    _game_state.update({
-        "secret": secret_data["secret"],
-        "category": secret_data["category"],
-        "question_count": 0,
-        "questions_log": [],
-    })
+def _20q_llm_guess(qa_log: list, prior_guesses: list) -> str:
+    """Rex's single best guess given the Q&A, avoiding any already-rejected guesses."""
+    transcript = "\n".join(
+        f"  Q: {e.get('q','')}  ->  A: {e.get('a','')}" for e in qa_log) or "  (none)"
+    avoid = ", ".join(prior_guesses) if prior_guesses else "none"
+    raw = _smart_call(
+        "You are playing 20 Questions as the guesser. Based on the answers below, name your "
+        "single best guess for what the player is thinking of. Guess the MOST COMMON, GENERAL, "
+        "everyday thing that is consistent with EVERY answer — do not over-specify into a rare "
+        "breed, brand, or sub-type.\n\n"
+        f"Questions and answers:\n{transcript}\n\n"
+        f"Already guessed wrong (do not repeat): {avoid}\n"
+        "Return ONLY the name of your guess — no punctuation, no explanation.",
+        temperature=0.5, max_tokens=400,
+    ).strip().strip(".!?\"'")
+    return raw.split("\n")[0].strip() if raw else ""
+
+
+def _20q_make_guess(person_id: Optional[int], suggested: str = "",
+                    forced: bool = False) -> tuple[str, bool]:
+    """Commit to a guess: name it, ground it against the real-subject vocabulary, and wait
+    for the player to confirm. Mutates state into the 'guessing' phase. Never terminal here —
+    the player's next reply decides win/lose."""
+    guesses = _game_state.get("guesses", [])
+    subject = (suggested or "").strip()
+    if not subject:
+        subject = _20q_llm_guess(_game_state.get("qa_log", []), guesses)
+    final = twentyq_kb.snap_guess(subject) or subject or "a protocol droid"
+    guesses.append(final)
+    _game_state["guesses"] = guesses
+    _game_state["pending_guess"] = final
+    _game_state["phase"] = "guessing"
     _body_beat("thinking_tilt")
-
-    return _rex_respond(
-        f"[GAME: 20 Questions — START] Rex is thinking of a {secret_data['category']}. "
-        f"Give Rex's opening line: he's got something in mind and the player gets "
-        f"{_20Q_MAX_QUESTIONS} yes/no questions to figure it out. Rex adds his usual flair.",
-        person_id,
-    )
-
-
-def _20q_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
-    secret = _game_state.get("secret", "")
-    category = _game_state.get("category", "thing")
     q_count = _game_state.get("question_count", 0)
-    q_log = _game_state.get("questions_log", [])
-
-    text_lower = text.strip().lower()
-    questions_left = _20Q_MAX_QUESTIONS - q_count
-
-    # Detect final guess: explicit phrasing or out of questions
-    is_final_guess = (
-        questions_left <= 0
-        or any(phrase in text_lower for phrase in [
-            "is it", "is the answer", "i think it", "my answer", "i guess", "final answer",
-        ])
-    )
-
-    if is_final_guess:
-        correct = (
-            fuzz.ratio(text_lower, secret.lower()) >= 70
-            or secret.lower() in text_lower
-        )
-        _body_beat("tiny_victory_dance" if correct else "suspicious_glance")
-        _game_state.clear()
-        if correct:
-            return (
-                _rex_respond(
-                    f"[GAME: 20 Questions — CORRECT GUESS] Player correctly identified "
-                    f"\"{secret}\" after {q_count} questions. Rex delivers a grudging "
-                    f"congratulations — mildly annoyed, fully in character.",
-                    person_id,
-                ),
-                True,
-            )
-        outcome = "ran out of questions" if questions_left <= 0 else "wrong final guess"
-        return (
-            _rex_respond(
-                f"[GAME: 20 Questions — WRONG/DONE] Player {outcome}. "
-                f"The answer was \"{secret}\" (a {category}). "
-                f"Rex reveals it — smug and amused in equal measure.",
-                person_id,
-            ),
-            True,
-        )
-
-    # Answer the yes/no question
-    q_count += 1
-    _game_state["question_count"] = q_count
-
-    answer = _quick_call(
-        f'I am thinking of "{secret}" (a {category}) in a game of 20 Questions.\n'
-        f'The player asked: "{text.strip()}"\n'
-        f"Answer with ONLY one word: yes, no, or sometimes.",
-        temperature=0,
-        max_tokens=5,
-    ).strip().lower()
-    if answer not in ("yes", "no", "sometimes"):
-        answer = "no"
-
-    q_log.append({"q": text.strip(), "a": answer})
-    _game_state["questions_log"] = q_log
-
-    questions_left = _20Q_MAX_QUESTIONS - q_count
-    running_low = questions_left <= 5
-
+    pressure = " He's out of questions, so this is his final answer." if forced else ""
     return (
         _rex_respond(
-            f"[GAME: 20 Questions — Q#{q_count}/{_20Q_MAX_QUESTIONS}] "
-            f"Rex is thinking of \"{secret}\" (a {category}). "
-            f'Player asked: "{text.strip()}". The truthful answer is: "{answer}". '
-            f"Rex delivers this answer in character — brief and punchy. "
-            f"{questions_left} questions remaining."
-            + (" Mention they're running low on questions." if running_low else ""),
+            f"[GAME: 20 Questions — REX GUESSES] After {q_count} questions, Rex is ready to "
+            f"guess what the player is thinking of. Rex guesses it is: \"{final}\". Rex phrases "
+            f"it as a confident guess (\"Is it ___?\") with swagger and asks the player to "
+            f"confirm whether he nailed it.{pressure} One or two sentences.",
             person_id,
         ),
         False,
     )
 
 
-def _20q_stop(person_id: Optional[int]) -> str:
-    secret = _game_state.get("secret", "something")
+def _20q_ask_next(person_id: Optional[int]) -> tuple[str, bool]:
+    """Ask Rex's next question (dataset spine first, then LLM), or pivot to a guess.
+    Mutates state. Returns (response, done)."""
     q_count = _game_state.get("question_count", 0)
-    _game_state.clear()
+    asked = _game_state.get("asked", [])
+    concept_answers = _game_state.get("concept_answers", {})
+
+    if q_count >= _20Q_MAX_QUESTIONS:
+        return _20q_make_guess(person_id, forced=True)
+
+    # Opening: use the dataset's proven discriminator spine for strong, varied narrowing.
+    entry = None
+    if q_count < _20Q_SPINE_TURNS:
+        entry = twentyq_kb.next_spine_question(concept_answers, set(asked))
+
+    if entry is not None:
+        question = entry["question"]
+        _game_state["last_question"] = question
+        _game_state["last_concept"] = entry.get("concept")
+        asked.append(_norm_q(question))
+        _game_state["question_count"] = q_count + 1
+        return (
+            _rex_respond(
+                f"[GAME: 20 Questions — Q#{q_count + 1}/{_20Q_MAX_QUESTIONS}] Rex is trying to "
+                f"guess what the player is thinking of. Rex asks them this yes/no question, in "
+                f"his voice — keep it a clear yes/no question, brief: \"{question}\"",
+                person_id,
+            ),
+            False,
+        )
+
+    # Mid/late game: let the model narrow further or commit to a guess.
+    move = _20q_llm_move(_game_state.get("qa_log", []), asked, q_count)
+    if move.get("action") == "guess":
+        return _20q_make_guess(person_id, suggested=move.get("subject", ""))
+
+    question = move.get("question") or "Is it something you could hold in one hand?"
+    _game_state["last_question"] = question
+    _game_state["last_concept"] = None
+    asked.append(_norm_q(question))
+    _game_state["question_count"] = q_count + 1
+    return (
+        _rex_respond(
+            f"[GAME: 20 Questions — Q#{q_count + 1}/{_20Q_MAX_QUESTIONS}] Rex is narrowing in on "
+            f"what the player is thinking of. Rex asks them this yes/no question in his voice — "
+            f"keep it a clear yes/no question, brief: \"{question}\"",
+            person_id,
+        ),
+        False,
+    )
+
+
+def _20q_start(person_id: Optional[int]) -> str:
+    """Player thinks of something; Rex will guess it. Roles are reversed from classic 20Q."""
+    _game_state.update({
+        "phase": "ready",
+        "qa_log": [],
+        "asked": [],
+        "concept_answers": {},
+        "question_count": 0,
+        "guesses": [],
+        "last_question": "",
+        "last_concept": None,
+    })
+    _body_beat("thinking_tilt")
     return _rex_respond(
-        f"[GAME: 20 Questions — STOPPED] Game cut short after {q_count} questions. "
-        f"The answer was \"{secret}\". Rex delivers a brief in-character close.",
+        f"[GAME: 20 Questions — START] The roles are reversed: the PLAYER thinks of any person, "
+        f"place, or thing, and REX has to guess it by asking up to {_20Q_MAX_QUESTIONS} yes/no "
+        f"questions. Rex tells the player to think of something and lock it in — the moment they "
+        f"say they're ready, the interrogation begins. Rex is cocky about his deductive powers. "
+        f"One or two sentences.",
+        person_id,
+    )
+
+
+def _20q_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
+    phase = _game_state.get("phase", "ready")
+
+    # The player has thought of something; their first reply kicks off the questioning.
+    if phase == "ready":
+        _game_state["phase"] = "asking"
+        return _20q_ask_next(person_id)
+
+    # Rex has made a guess and is awaiting the player's verdict.
+    if phase == "guessing":
+        verdict = _20q_classify_answer(text)
+        guess = _game_state.get("pending_guess", "it")
+        q_count = _game_state.get("question_count", 0)
+        if verdict == "yes":
+            _body_beat("tiny_victory_dance")
+            _game_state["result"] = "win"
+            _game_state["final_guess"] = guess
+            return (
+                _rex_respond(
+                    f"[GAME: 20 Questions — REX WINS] Rex correctly guessed \"{guess}\" in "
+                    f"{q_count} questions. Rex gloats — insufferably proud of his deductive "
+                    f"superiority, fully in character.",
+                    person_id,
+                ),
+                True,
+            )
+        # Not a clean yes → the guess was wrong.
+        guesses = _game_state.get("guesses", [])
+        if len(guesses) >= _20Q_MAX_GUESSES or q_count >= _20Q_MAX_QUESTIONS:
+            _body_beat("suspicious_glance")
+            _game_state["result"] = "lose"
+            return (
+                _rex_respond(
+                    f"[GAME: 20 Questions — REX LOSES] Rex guessed \"{guess}\" and was wrong, and "
+                    f"he's out of guesses. Rex concedes — grudging and dramatic, blames the player "
+                    f"for thinking of something absurd, and asks what it actually was. In character.",
+                    person_id,
+                ),
+                True,
+            )
+        # Wrong, but Rex still has road left: log the rejected guess and keep narrowing.
+        _body_beat("suspicious_glance")
+        _game_state["phase"] = "asking"
+        _game_state.get("qa_log", []).append({"q": f"is it {guess}?", "a": "no"})
+        return _20q_ask_next(person_id)
+
+    # phase == "asking": the player's input is the answer to Rex's last question.
+    answer = _20q_classify_answer(text)
+    last_q = _game_state.get("last_question", "")
+    last_concept = _game_state.get("last_concept")
+    qa_log = _game_state.get("qa_log", [])
+    qa_log.append({"q": last_q, "a": answer})
+    _game_state["qa_log"] = qa_log
+    if last_concept and answer in ("yes", "no"):
+        _game_state.setdefault("concept_answers", {})[last_concept] = (answer == "yes")
+    return _20q_ask_next(person_id)
+
+
+def _20q_stop(person_id: Optional[int]) -> str:
+    q_count = _game_state.get("question_count", 0)
+    return _rex_respond(
+        f"[GAME: 20 Questions — STOPPED] The player ended the guessing game early after Rex asked "
+        f"{q_count} questions — before he could crack it. Rex is annoyed to be denied the win and "
+        f"insists he was about to get it. Brief, in character.",
         person_id,
     )
 
@@ -1670,6 +1874,13 @@ def _extract_game_outcome(state: dict) -> str:
             )
             if total > 0:
                 return f"scored {score} out of {total}"
+        # 20 Questions (Rex is the guesser): result survives to the natural end.
+        result = state.get("result")
+        if result == "win":
+            guess = state.get("final_guess", "it")
+            return f"guessed it — {guess} — in {state.get('question_count', 0)} questions"
+        if result == "lose":
+            return "couldn't guess it"
     except Exception:
         pass
     return ""
