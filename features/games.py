@@ -618,11 +618,15 @@ def _20q_start(person_id: Optional[int]) -> str:
     })
     _body_beat("thinking_tilt")
     return _rex_respond(
-        f"[GAME: 20 Questions — START] The roles are reversed: the PLAYER thinks of any person, "
-        f"place, or thing, and REX has to guess it by asking up to {_20Q_MAX_QUESTIONS} yes/no "
-        f"questions. Rex tells the player to think of something and lock it in — the moment they "
-        f"say they're ready, the interrogation begins. Rex is cocky about his deductive powers. "
-        f"One or two sentences.",
+        f"[GAME: 20 Questions — START] Roles are reversed: the PLAYER secretly picks something "
+        f"and REX guesses it. Give Rex's opening line in his cocky voice, but it MUST make all "
+        f"THREE of these unmistakable to the player:\n"
+        f"  1) Think of any one person, place, or thing.\n"
+        f"  2) Keep it SECRET — do NOT say it out loud.\n"
+        f"  3) Tell Rex when you're ready (e.g. say \"ready\" or \"I've got it\") and the "
+        f"questions begin.\n"
+        f"He's confident he'll crack it in {_20Q_MAX_QUESTIONS} yes/no questions. Keep it punchy "
+        f"(2-3 short sentences) but leave NONE of the three instructions out.",
         person_id,
     )
 

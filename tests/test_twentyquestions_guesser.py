@@ -165,11 +165,17 @@ class GuesserFlowTest(unittest.TestCase):
 
     def test_start_reverses_roles_no_secret(self):
         with _mocked_llm(lambda *a, **k: ""):
-            games._20q_start(None)
+            opener = games._20q_start(None)   # the mock echoes the directive text
         # Rex no longer holds a secret — the player does.
         self.assertNotIn("secret", games._game_state)
         self.assertEqual(games._game_state["phase"], "ready")
         self.assertEqual(games._game_state["question_count"], 0)
+        # The opener must make all three player instructions explicit: pick a thing,
+        # keep it secret, and signal when ready.
+        low = opener.lower()
+        self.assertIn("person, place, or thing", low)
+        self.assertIn("secret", low)
+        self.assertIn("ready", low)
 
     def test_spine_opening_and_branch_narrowing(self):
         with _mocked_llm(lambda *a, **k: ""):
