@@ -983,6 +983,17 @@ def _live_expression_prompt_line(ws: dict, person_id: Optional[int]) -> str:
         return ""
 
 
+def _game_active() -> bool:
+    """True while a game owns the conversational turn. Proactive prompt layers (empathy
+    course-correction, the unknown-person curiosity) stand down so they can't hijack a
+    game turn — terse yes/no game answers are gameplay, not emotional/social signals."""
+    try:
+        from features import games as _games
+        return bool(_games.suppresses_conversation_interruptions())
+    except Exception:
+        return False
+
+
 def assemble_system_prompt(
     person_id: Optional[int] = None,
     agenda_directive: Optional[str] = None,
@@ -1022,13 +1033,18 @@ def assemble_system_prompt(
         )
     except Exception as exc:
         _log.debug("emotion frame directive injection skipped: %s", exc)
-    try:
-        from intelligence import empathy as _empathy
-        directive = _empathy.get_directive(person_id)
-        if directive:
-            emotion_block.append(directive)
-    except Exception as exc:
-        _log.debug("empathy directive injection skipped: %s", exc)
+    # Empathy directives (course-correction, support, etc.) are about emotional shape,
+    # not gameplay. During a game the player's terse yes/no answers read as a "worsening
+    # mood" and wrongly trigger a "that landed wrong, let me try again" preamble on plain
+    # game questions — so skip the empathy layer entirely while a game owns the turn.
+    if not _game_active():
+        try:
+            from intelligence import empathy as _empathy
+            directive = _empathy.get_directive(person_id)
+            if directive:
+                emotion_block.append(directive)
+        except Exception as exc:
+            _log.debug("empathy directive injection skipped: %s", exc)
     sections.append("\n".join(emotion_block))
 
     # 4. WorldState snapshot summary
@@ -1219,14 +1235,7 @@ def assemble_system_prompt(
     # the normal reply instead of waiting for a proactive speech slot.
     # While a game owns the turn, stand down the "who's your friend?" curiosity entirely —
     # it was hijacking 20 Questions turns.
-    _game_owns_turn = False
-    try:
-        from features import games as _games
-        _game_owns_turn = _games.suppresses_conversation_interruptions()
-    except Exception:
-        _game_owns_turn = False
-
-    if person_id is not None and not _game_owns_turn:
+    if person_id is not None and not _game_active():
         # Only a slot with an actually-detected, visible FACE counts as an unknown person.
         # A pose-only phantom (e.g. MediaPipe hallucinating a second skeleton when the user
         # is reclining) has person_db_id=None but no face_box — it must NOT trigger this

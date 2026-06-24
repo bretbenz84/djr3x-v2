@@ -114,6 +114,40 @@ class KnowledgeBaseTest(unittest.TestCase):
             {"alive": True, "person": True}, {"is it alive?", "is it a person?"})
         self.assertNotIn(nxt["concept"], ("animal", "plant"))
 
+    def _walk_spine(self, answers, asked):
+        """Walk the remaining spine, answering 'no' to each, and return the concepts asked."""
+        answers, asked, seen = dict(answers), set(asked), []
+        for _ in range(12):
+            entry = twentyq_kb.next_spine_question(answers, asked)
+            if entry is None:
+                break
+            seen.append(entry["concept"])
+            asked.add(entry["question"])
+            answers[entry["concept"]] = False
+        return seen
+
+    def test_animal_prunes_plant_and_place(self):
+        # Once it's an animal, don't waste a question on "is it a plant?" or "is it a place?".
+        seen = self._walk_spine(
+            {"alive": True, "person": False, "animal": True},
+            {"is it alive?", "is it a person?", "is it an animal?"})
+        self.assertNotIn("plant", seen)
+        self.assertNotIn("place", seen)
+
+    def test_manmade_prunes_place(self):
+        # A man-made object isn't a "place" — skip it.
+        seen = self._walk_spine(
+            {"alive": False, "person": False, "manmade": True},
+            {"is it alive?", "is it a person?", "is it man made?"})
+        self.assertNotIn("place", seen)
+
+    def test_alive_prunes_place(self):
+        # A living thing isn't a "place" either.
+        seen = self._walk_spine(
+            {"alive": True, "person": False, "animal": True},
+            {"is it alive?", "is it a person?", "is it an animal?"})
+        self.assertNotIn("place", seen)
+
     def test_snap_guess_grounds_to_vocab(self):
         self.assertEqual(twentyq_kb.snap_guess("a guitar"), "guitar")
         self.assertEqual(twentyq_kb.snap_guess("GUITAR"), "guitar")

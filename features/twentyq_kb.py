@@ -75,6 +75,7 @@ def next_spine_question(answers: dict, asked: set) -> Optional[dict]:
     is_person = answers.get("person") is True
     is_animal = answers.get("animal") is True
     is_plant = answers.get("plant") is True
+    is_manmade = answers.get("manmade") is True
 
     for entry in _load().get("spine", []):
         concept = entry.get("concept")
@@ -89,11 +90,17 @@ def next_spine_question(answers: dict, asked: set) -> Optional[dict]:
         if parent == "not_alive" and alive is not False:
             continue          # only ask the object branch once "alive?" is NO
 
-        # Redundancy pruning within the living-thing branch.
-        if concept in ("animal", "plant") and is_person:
-            continue
+        # Mutual-exclusion pruning: once a category is established, don't waste a question
+        # on a sibling category the answer already rules out (the redundant "is it a plant?"
+        # after animal=yes and "is it a place?" after man-made=yes).
         if concept == "person" and (is_animal or is_plant):
             continue
+        if concept == "animal" and (is_person or is_plant):
+            continue
+        if concept == "plant" and (is_person or is_animal):
+            continue
+        if concept == "place" and (alive is True or is_manmade):
+            continue          # a living thing or a man-made object isn't a "place"
 
         return entry
     return None
