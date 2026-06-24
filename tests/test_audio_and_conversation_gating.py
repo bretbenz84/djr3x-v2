@@ -4312,6 +4312,26 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction.state_module.set_state(old_state)
 
+    def test_submit_text_is_ignored_while_paused(self):
+        # INTERACTION_PAUSED (Memory Banks editor open) halts the voice loop; typed input
+        # must honor it too — no reply, no memory write, no state change (junecodereview #8).
+        from intelligence import interaction
+        import config
+
+        old_state = interaction.state_module.get_state()
+        interaction.state_module.set_state(interaction.State.ACTIVE)
+        try:
+            with (
+                mock.patch.object(config, "INTERACTION_PAUSED", True),
+                mock.patch.object(interaction, "_handle_speech_segment") as handle,
+                mock.patch.object(interaction, "_begin_user_turn") as begin_turn,
+            ):
+                self.assertFalse(interaction.submit_text("hello while paused"))
+            handle.assert_not_called()
+            begin_turn.assert_not_called()
+        finally:
+            interaction.state_module.set_state(old_state)
+
     def test_pending_question_recent_attribution_survives_panned_away_face(self):
         from intelligence import interaction
 

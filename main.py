@@ -1468,7 +1468,15 @@ def _make_gui_text_submit_callback(ready=None):
                 handled = interaction.submit_text(cleaned)
                 if not handled:
                     from utils import conv_log
-                    conv_log.log_system("Text input was ignored because Rex is asleep or shutting down.")
+                    import config as _config
+                    if getattr(_config, "INTERACTION_PAUSED", False):
+                        conv_log.log_system(
+                            "Rex is paused (Memory Banks editor open) — close it to chat."
+                        )
+                    else:
+                        conv_log.log_system(
+                            "Text input was ignored because Rex is asleep or shutting down."
+                        )
             except Exception as exc:
                 logger.exception("GUI text input failed: %s", exc)
                 try:

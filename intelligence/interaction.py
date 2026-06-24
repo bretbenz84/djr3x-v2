@@ -20065,6 +20065,13 @@ def submit_text(
     if not cleaned:
         return False
 
+    # Honor the global pause (Memory Banks editor open). The voice loop halts the whole
+    # conversation engine while paused — no responses, no memory writes — but the typed-
+    # input path bypassed it, so a message typed during a pause still replied AND persisted
+    # memory (junecodereview #8). Drop it silently here too; the user re-submits on resume.
+    if getattr(config, "INTERACTION_PAUSED", False):
+        return False
+
     with _text_input_lock:
         current_state = state_module.get_state()
         if current_state in (State.SLEEP, State.SHUTDOWN):
