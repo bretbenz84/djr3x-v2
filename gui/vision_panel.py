@@ -157,6 +157,8 @@ class VisionPanel(QWidget):
         for idx, person in enumerate(self._people):
             if person.get("face_visible") is False or person.get("face_missing"):
                 continue
+            if not _slot_is_drawable_person(person):
+                continue
             label = _person_label(person)
             expression = _person_expression(person)
             color = QColor("#75ef63")
@@ -412,6 +414,21 @@ def _person_label(person: dict[str, Any]) -> str:
         if value:
             return str(value)
     return "Unknown"
+
+
+def _slot_is_drawable_person(person: dict[str, Any]) -> bool:
+    """True if a world-state slot should get a GUI person marker.
+
+    A pose-only phantom — person_db_id None, NO face box, NO identity — is not a person to
+    draw: with no face box it falls to the dot branch and renders a bogus "Unknown" marker at
+    the pose's nose, right over the real person's correctly-labelled face (the close-up
+    regression from POSE_MAX_PEOPLE>1, where MediaPipe hallucinates a stray skeleton). Draw a
+    marker only for a slot with a real detected face box OR a known identity — mirroring the
+    visible-face gate the unknown-COUNTING consumers already use (social_scene, llm; a6f01bd).
+    """
+    if _person_box(person) is not None:
+        return True  # a real detected face box — draw it even if the face is unidentified
+    return bool(person.get("name") or person.get("face_id") or person.get("voice_id"))
 
 
 def _person_details(person: dict[str, Any]) -> str:

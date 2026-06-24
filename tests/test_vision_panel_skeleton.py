@@ -30,6 +30,38 @@ _SKELETON_RGB = np.array([54, 217, 255])  # _SKELETON_COLOR "#36d9ff"
 
 
 @unittest.skipUnless(_GUI_OK, "PySide6 / Qt offscreen platform unavailable")
+class DrawablePersonGateTest(unittest.TestCase):
+    """A faceless pose-only phantom slot (POSE_MAX_PEOPLE>1 hallucinating a stray skeleton)
+    must NOT be drawn as a bogus 'Unknown' marker over the real person's labelled face."""
+
+    def setUp(self):
+        from gui.vision_panel import _slot_is_drawable_person
+        self.drawable = _slot_is_drawable_person
+
+    def test_real_face_is_drawn(self):
+        self.assertTrue(self.drawable(
+            {"person_db_id": 1, "face_id": "Bret Benziger",
+             "face_box": (10, 10, 80, 80), "face_visible": True}))
+
+    def test_unidentified_real_face_is_drawn(self):
+        # A genuine unknown FACE (has a detected face box) still draws — that's a real person.
+        self.assertTrue(self.drawable(
+            {"person_db_id": None, "face_box": (10, 10, 80, 80), "face_visible": True}))
+
+    def test_known_identity_without_box_is_drawn(self):
+        # A momentarily box-less but identified slot keeps its marker.
+        self.assertTrue(self.drawable(
+            {"person_db_id": 1, "face_id": "Bret Benziger",
+             "pose_keypoints": {"NOSE": (0.5, 0.4, 0.9)}}))
+
+    def test_faceless_phantom_pose_slot_is_not_drawn(self):
+        # No face box, no identity — the phantom that rendered "Unknown" at the pose nose.
+        self.assertFalse(self.drawable(
+            {"id": "person_2", "person_db_id": None, "face_id": None,
+             "voice_id": None, "pose_keypoints": {"NOSE": (0.5, 0.4, 0.9)}}))
+
+
+@unittest.skipUnless(_GUI_OK, "PySide6 / Qt offscreen platform unavailable")
 class SkeletonClipTest(unittest.TestCase):
     def _render(self, people, *, frame=(540, 820), size=(640, 480)):
         panel = VisionPanel()
