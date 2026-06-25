@@ -46,6 +46,52 @@ class BodyBeatAnimationTest(unittest.TestCase):
         self.assertLess(first_move[2], animations.HEADTILT_NEUTRAL)
         self.assertEqual(first_move[3], animations.VISOR_OPEN)
 
+    def test_visor_squint_is_halfway_between_neutral_and_closed(self):
+        # The angry glower depth: the visor drops to ~halfway between neutral and
+        # fully-closed — genuinely over the eyes, below the lens-clear floor.
+        from sequences import animations
+
+        halfway = (animations.VISOR_NEUTRAL + animations.VISOR_CLOSED) // 2
+        self.assertAlmostEqual(animations.VISOR_SQUINT, halfway, delta=40)
+        self.assertLess(animations.VISOR_SQUINT, animations.VISOR_NEUTRAL)    # below neutral
+        self.assertGreater(animations.VISOR_SQUINT, animations.VISOR_CLOSED)  # not fully closed
+        self.assertLess(animations.VISOR_SQUINT, animations.VISOR_HALF)       # below the camera floor
+
+    def test_anger_flash_drops_visor_over_the_eyes(self):
+        # The beat insults route to (anger_flash) must drop the visor DOWN to the
+        # squint — below the lens-clear floor — so an insult reads as a glower.
+        from sequences import animations
+
+        moves = []
+
+        def record_move(targets, **_kwargs):
+            moves.append(dict(targets))
+
+        snapshot = {
+            0: animations.NECK_CENTER,
+            1: animations.HEADLIFT_NEUTRAL,
+            2: animations.HEADTILT_NEUTRAL,
+            3: animations.VISOR_HALF,
+            4: animations.ELBOW_NEUTRAL,
+            5: animations.HAND_NEUTRAL,
+            7: animations.HEROARM_NEUTRAL,
+        }
+
+        with (
+            mock.patch.object(animations._state_module, "get_state", return_value=animations._State.ACTIVE),
+            mock.patch.object(animations, "_current_body_pose", return_value=snapshot),
+            mock.patch.object(animations.random, "choice", return_value=1),
+            mock.patch.object(animations.time, "sleep", return_value=None),
+            mock.patch.object(animations.servos, "move_to", side_effect=record_move),
+            mock.patch.object(animations.servos, "pause_arm_idle"),
+            mock.patch.object(animations.servos, "resume_arm_idle"),
+        ):
+            self.assertTrue(animations.play_body_beat("anger_flash", async_=False))
+
+        first_move = moves[0]
+        self.assertEqual(first_move[3], animations.VISOR_SQUINT)        # visor dropped to the squint
+        self.assertLess(first_move[3], animations.VISOR_HALF)           # below the lens-clear floor
+
     def test_named_body_beats_are_registered(self):
         from sequences import animations
 

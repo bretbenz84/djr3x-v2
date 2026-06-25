@@ -12354,6 +12354,14 @@ def _post_response(
                     if person_id is not None:
                         # P3: a jab from a warm friend reads as banter, not antagonism.
                         people_memory.apply_jab(person_id, "insult_mild")
+                    try:
+                        # Immediate physical reaction: the anger_flash beat drops the
+                        # visor DOWN over the eyes (a glower), mirroring the keyword
+                        # path — so a subtler LLM-detected insult gets the same drop,
+                        # not just the sustained offended posture.
+                        _play_event_body_beat("insult.detected")
+                    except Exception as exc:
+                        _log.debug("[interaction] layer-2 insult beat skipped: %s", exc)
                     _set_body_mood("offended", source="layer2_insult")
 
             elif sentiment.get("is_apology"):

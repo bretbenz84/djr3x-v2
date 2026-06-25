@@ -425,6 +425,16 @@ so insult/anger now narrows the visor to a squint instead of opening it (`angry`
 `offended` 6500). The floor enforces "squint, but not blind." Tests: `tests/test_body_mood.py`
 (`test_anger_and_offense_narrow_the_visor_to_the_floor`).
 
+**Also shipped — the transient glower (the immediate reaction):** the sustained mood can't dip
+below the lens-clear floor, so a separate *transient* gesture handles the in-the-moment glower. An
+insult now fires the `anger_flash` body beat, which drops the visor DOWN over the eyes to
+`VISOR_SQUINT` (**5272** — ~halfway between neutral 6000 and fully-closed 4544), holds ~0.4s, then
+restores to lens-clear. Wired into BOTH insult paths in `interaction._post_response`: the keyword
+(layer-1) path already fired it; the LLM-detected (layer-2) path now does too (it previously only
+set the sustained mood). Dipping below the floor is safe *because it's transient* — the sustained
+posture stays clamped at 6400. Tests: `tests/test_body_beats.py`
+(`test_visor_squint_is_halfway_between_neutral_and_closed`, `test_anger_flash_drops_visor_over_the_eyes`).
+
 When a user insults Rex or makes him mad, **lower the visor partway over the eyes — an angry
 squint** (never fully; the lens-clear floor is the clamp, so it reads as "covered, but not all the
 way" and the camera is never blinded). ⚠ verified: the moods already exist and already command the

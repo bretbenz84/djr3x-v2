@@ -81,10 +81,12 @@ HEADTILT_SLIGHT_DOWN = 4700
 
 # Ch 3 — Visor: 4544–6976, neutral 6000, higher = more open
 VISOR_CLOSED  = 4544   # sleep / privacy — covers camera lens
-VISOR_SQUINT  = 5400   # below neutral — visor dips to partly cover the eyes (a
-                       # narrowed "displeased squint", e.g. reacting to an insult).
-                       # Transient only: below the lens-clear floor, so beats dip
-                       # here briefly then return. Tune 5200–5700 for more/less squint.
+VISOR_SQUINT  = 5272   # ~halfway between neutral (6000) and fully-closed (4544): the
+                       # visor drops DOWN over the eyes — a transient "displeased
+                       # squint/glower" reacting to an insult. Below the lens-clear
+                       # floor, so beats dip here briefly then return (NEVER sustained —
+                       # the body_mood path stays clamped at the floor). Tune 5000–5700
+                       # for a deeper/shallower glower.
 VISOR_HALF    = 6400   # default resting open — clear of camera lens
 VISOR_NEUTRAL = 6000
 VISOR_OPEN    = 6976   # max — required before any camera capture
