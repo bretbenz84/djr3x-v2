@@ -390,9 +390,16 @@ directed ask only. **Effort: L** *(gated on §2 room_model).*
 gamepad) — each new beat = 1 runner func + 3 small map edits (the "for free" really means three
 tiny coordinated edits, incl. `_BODY_BEAT_CHANNELS` so `play_body_beat` can snapshot/restore). Per
 the owner call, **fully LLM-addressable now** (Rex can self-direct a mic-drop) — **add a frequency
-cooldown** so it doesn't become constant mugging. ⚠ `headtilt`/`elbow` are mechanically tiny; lean
-the reads on neck+visor+heroarm; bench-test ~8 beats on real servos. Pairs with the batch-1
-delivery profiles. **Effort: M.**
+cooldown** so it doesn't become constant mugging.
+**⚠ Hardware reality — the eyes do not physically move.** They're fixed LED clusters (color/emotion
+only, via `leds_head.set_eye_color`/`set_eye_emotion`), so **no beat may rely on eye motion** — the
+reads come from the head/neck, the **visor**, and the heroarm. Concretely: the **eye-roll is the
+visor as a brow-lift** — raise/open the visor like a cocked eyebrow (within the lens-clear floor
+clamp, ≥6400, so it never blinds the camera) paired with a slow head/neck arc; it is NOT an eye
+movement. The rest follow the same substitution: double-take = look away → head snap-back + visor
+pop; spit-take = sharp head recoil + visor snap; mic-drop = heroarm forward-then-drop + dismissive
+head turn. ⚠ `headtilt`/`elbow` are mechanically tiny; lean the reads on neck+visor+heroarm;
+bench-test ~8 beats on real servos. Pairs with the batch-1 delivery profiles. **Effort: M.**
 
 ### "Thinking eyes" while the LLM works — **BUILD**
 ⚠ verified all hooks exist: `set_eye_color` (`leds_head.py:422`), the eye heartbeat, and the
