@@ -416,6 +416,22 @@ set. Optionally only fire when the wait exceeds a threshold. **Effort: S.**
 face-tracking stays primary (`set_mood` already guards a weaker mood stomping a stronger one).
 Decide "landed" = fire on `humor.roast` completion vs wait for an audience laugh. **Effort: S.**
 
+### Angry/offended visor squint — **TUNE** *(make insult/anger read as a squint, not an open glare)*
+When a user insults Rex or makes him mad, **lower the visor partway over the eyes — an angry
+squint** (never fully; the lens-clear floor is the clamp, so it reads as "covered, but not all the
+way" and the camera is never blinded). ⚠ verified: the moods already exist and already command the
+visor, but they currently render it **open**, not squinting — `body_mood._MOOD_POSE`
+(`body_mood.py:54`) maps `offended → visor 6500` ("haughty chin up"), `angry → 6800` ("glare"),
+and only `annoyed → 6400` (the floor). Since **higher = more open** (floor 6400, max 6976) and the
+**eyes don't move**, the visor is Rex's only "eye expression": the fix is to ride the offended/
+angry visor targets **down toward the lens-clear floor (6400)** so insult/anger reads as a glare-
+squint instead of a wide-open visor. Reuses the existing **insult → offended** / **mad → angry**
+drivers (`interaction.py:12357/19573`; aliases `insulted→offended`, `mad→angry` at
+`body_mood.py:96-98`) and decays over the mood TTL. The chin-up head these moods already apply
+pairs with the squint as an "indignant glare" (revisit toward a slight forward lean later if a
+more menacing read is wanted). **Effort: S** *(a value tweak to `_MOOD_POSE` + a bench check; the
+visor-openness dimension and the safe floor already exist).*
+
 ### Deferred §6 notes
 - **Rimshot/sad-trombone/airhorn on his own punchline**, **composite show-moment**, **reveal
   stingers**, **fuller puppeteer board** — all need the clip pack first (⚠ only `Air Horn.mp3`
