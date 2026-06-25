@@ -103,6 +103,18 @@ class BodyMoodStateTest(unittest.TestCase):
                 self.assertGreaterEqual(target, floor, (m, inten))  # lens-clear floor
                 self.assertLessEqual(target, 6976, (m, inten))      # max open
 
+    def test_anger_and_offense_narrow_the_visor_to_the_floor(self):
+        # Insult/anger reads as a SQUINT: the visor narrows to the lens-clear floor
+        # (the most-closed safe position), never an open "glare". Regression guard —
+        # "angry" used to OPEN the visor to 6800 and "offended" to 6500.
+        floor = body_mood.visor_lens_clear_floor()
+        for m in ("offended", "angry", "insulted", "mad"):
+            body_mood.set_mood(m, intensity=1.0, ttl=60)
+            self.assertEqual(body_mood.visor_target(), floor, m)
+        # A positive mood still opens it well above the floor (proves the contrast).
+        body_mood.set_mood("proud", intensity=1.0, ttl=60)
+        self.assertGreater(body_mood.visor_target(), floor)
+
     def test_visor_none_below_min_intensity(self):
         body_mood.set_mood("proud", intensity=1.0, ttl=10)
         self._t[0] += 9.0  # intensity ~0.1, below the 0.25 visor floor

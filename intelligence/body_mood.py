@@ -62,8 +62,12 @@ _MOOD_POSE: dict[str, tuple[int, int, Optional[int]]] = {
     "thinking":   (120, 260, 6450),
     "suspicious": (90,  170, 6400),    # narrowed side-eye
     "annoyed":    (-250, 120, 6400),   # slight droop, subdued visor
-    "offended":   (260, -260, 6500),   # haughty chin up, indignant
-    "angry":      (220, -200, 6800),   # alert, chin up, visor open (glare)
+    "offended":   (260, -260, 6400),   # haughty chin up, indignant — visor narrowed
+                                       # to the floor (an offended squint, was open 6500)
+    "angry":      (220, -200, 6400),   # alert, chin up, visor NARROWED to the floor —
+                                       # a glare-squint, never an open 'glare' (was 6800).
+                                       # The lens-clear floor caps it so it can't fully
+                                       # cover the camera ("squint, but not blind").
     "sad":        (-700, 260, 6400),   # droop down, chin down, subdued (lens-clear)
     "bored":      (-450, 180, 6400),   # droop, subdued
     "neutral":    (0, 0, None),

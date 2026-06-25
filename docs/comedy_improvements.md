@@ -409,14 +409,22 @@ codified):** the head-LED link drops bytes during speech (`leds_head.py:501`) �
 rate low and confine the animation to the **silent transcription→LLM gap** before `_speaking` is
 set. Optionally only fire when the wait exceeds a threshold. **Effort: S.**
 
-### Smug-after-a-good-roast sustained mood — **BUILD** *(batch 1)*
+### Smug-after-a-good-roast sustained mood — **✅ IMPLEMENTED** *(batch 1)*
 ⚠ verified: `smug` is already an alias of `proud` (`body_mood.py:97`); the machine + the
 `made_laugh → giddy` precedent (`consciousness.py:2762`) exist — this is **one new call site**
-`set_mood('smug', source='roast_landed')`, plus an optional sulk-after-flop. Modest intensity so
-face-tracking stays primary (`set_mood` already guards a weaker mood stomping a stronger one).
-Decide "landed" = fire on `humor.roast` completion vs wait for an audience laugh. **Effort: S.**
+`set_mood('smug', source='roast_landed')`. **Shipped:** fires on a completed `humor.roast`
+performance action (`interaction._handle_router_performance_action`) at full intensity, mirroring
+the `compliment → proud` reaction; `smug` resolves to the proud chin-up posture and decays over the
+mood TTL. "Landed" = `humor.roast` completion (deterministic), not an audience-laugh signal.
+Sulk-after-flop deferred. Tests: `tests/test_humor_actions.py`
+(`test_router_roast_action_makes_rex_smug`, `test_joke_action_does_not_make_rex_smug`). **Effort: S.**
 
-### Angry/offended visor squint — **TUNE** *(make insult/anger read as a squint, not an open glare)*
+### Angry/offended visor squint — **✅ IMPLEMENTED** *(make insult/anger read as a squint, not an open glare)*
+**Shipped:** `body_mood._MOOD_POSE` offended/angry visor targets → **6400** (the lens-clear floor),
+so insult/anger now narrows the visor to a squint instead of opening it (`angry` was an open 6800,
+`offended` 6500). The floor enforces "squint, but not blind." Tests: `tests/test_body_mood.py`
+(`test_anger_and_offense_narrow_the_visor_to_the_floor`).
+
 When a user insults Rex or makes him mad, **lower the visor partway over the eyes — an angry
 squint** (never fully; the lens-clear floor is the clamp, so it reads as "covered, but not all the
 way" and the camera is never blinded). ⚠ verified: the moods already exist and already command the

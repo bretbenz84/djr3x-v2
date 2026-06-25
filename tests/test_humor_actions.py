@@ -205,6 +205,66 @@ class HumorActionExecutionTests(unittest.TestCase):
         beat.assert_called_once_with("tiny_victory_dance")
         self.assertEqual(speak.call_args.kwargs["emotion"], "happy")
 
+    def test_router_roast_action_makes_rex_smug(self):
+        # After landing a deliberate roast, Rex basks: a 'smug' body mood (resolves
+        # to the proud chin-up posture) — the affective mirror of compliment->proud.
+        from intelligence import action_router, interaction
+
+        decision = action_router.ActionDecision(
+            action="humor.roast",
+            confidence=0.96,
+            args={"target": "speaker"},
+            reason="explicit roast request",
+        )
+
+        with (
+            mock.patch.object(interaction.llm, "get_response", return_value="Roast line."),
+            mock.patch.object(interaction, "_speak_blocking", return_value=True),
+            mock.patch("sequences.animations.play_body_beat"),
+            mock.patch.object(interaction, "_set_body_mood") as set_mood,
+        ):
+            interaction._handle_router_takeover_action(
+                decision,
+                "roast me",
+                person_id=1,
+                person_name="Bret",
+                raw_best_id=1,
+                raw_best_name="Bret",
+                raw_best_score=0.99,
+            )
+
+        set_mood.assert_called_once_with("smug", source="roast_landed")
+
+    def test_joke_action_does_not_make_rex_smug(self):
+        # Only a roast triggers the smug afterglow — a plain joke must not.
+        from intelligence import action_router, interaction
+
+        decision = action_router.ActionDecision(
+            action="humor.tell_joke",
+            confidence=0.96,
+            args={},
+            reason="explicit joke request",
+        )
+
+        with (
+            mock.patch.object(interaction.llm, "get_response", return_value="Joke line."),
+            mock.patch.object(interaction, "_speak_blocking", return_value=True),
+            mock.patch("sequences.animations.play_body_beat"),
+            mock.patch.object(interaction, "_set_body_mood") as set_mood,
+        ):
+            interaction._handle_router_takeover_action(
+                decision,
+                "tell me a joke",
+                person_id=1,
+                person_name="Bret",
+                raw_best_id=1,
+                raw_best_name="Bret",
+                raw_best_score=0.99,
+            )
+
+        for call in set_mood.call_args_list:
+            self.assertNotEqual(call.args[0], "smug")
+
 
 if __name__ == "__main__":
     unittest.main()

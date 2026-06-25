@@ -13895,6 +13895,11 @@ def _handle_router_performance_action(
     if decision.action == "humor.tell_joke" and output.text:
         # Record the delivered joke so the next joke (and the next reply) avoid it.
         premise_memory.note_line(output.text)
+    if decision.action == "humor.roast" and output.completed and output.text:
+        # Rex just landed a deliberate roast — let him bask. 'smug' resolves to the
+        # 'proud' chin-up posture via body_mood's alias (the affective mirror of the
+        # compliment -> proud reaction) and decays over the mood TTL.
+        _set_body_mood("smug", source="roast_landed")
     if output.generation_failed:
         _log.debug("performance action generation failed; used fallback text")
     if output.body_beat_failed:
