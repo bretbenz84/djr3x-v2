@@ -275,6 +275,10 @@ _pending_wave_back: Optional[dict] = None
 # Consecutive waves escalate (greet → silent wave → joke → give-up → ignore); the count
 # resets after WAVE_BACK_ESCALATION_RESET_SECS with no wave from that person.
 _wave_escalation: dict[str, tuple[float, int]] = {}
+# Stability gate: consecutive ticks each visible person has read gesture=='waving'.
+# A wave is only trusted once its streak reaches WAVE_BACK_CONFIRM_FRAMES — a held human
+# wave persists across ticks; a flickering non-human blob (a pillow) does not.
+_wave_streak: dict[str, int] = {}
 _facial_expression_reacted_at: dict[tuple[str, str], float] = {}
 _last_facial_expression_reaction_at: float = 0.0
 _last_expression_reaction_line_by_kind: dict[str, str] = {}
@@ -2598,6 +2602,28 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
     per_person_cd = float(getattr(config, "WAVE_BACK_PER_PERSON_COOLDOWN_SECS", 6.0))
 
     # ── (A) Detect a fresh wave and latch it (runs even while Rex is busy) ──────────
+    # Stability gate: a wave must persist across WAVE_BACK_CONFIRM_FRAMES consecutive
+    # ticks before it's trusted. A held human wave spans 2-3 of these ~1 Hz ticks; a
+    # flickering non-human blob (a pillow MediaPipe momentarily skeletonizes) cycles
+    # random gestures per appearing-frame and virtually never reads 'waving' twice in a
+    # row — so it never accumulates a streak and is rejected (live-logged 2026-06-26).
+    confirm = max(1, int(getattr(config, "WAVE_BACK_CONFIRM_FRAMES", 2)))
+    waving_now: set[str] = set()
+    for person in snapshot.get("people", []) or []:
+        if not isinstance(person, dict):
+            continue
+        if person.get("face_visible") is False:
+            continue
+        if (person.get("gesture") or "") != "waving":
+            continue
+        waving_now.add(_wave_person_key(person))
+    # Drop any tracked key that isn't waving this tick (gesture changed / gone), then
+    # advance the streak for those that are.
+    for stale_key in [k for k in _wave_streak if k not in waving_now]:
+        del _wave_streak[stale_key]
+    for waving_key in waving_now:
+        _wave_streak[waving_key] = _wave_streak.get(waving_key, 0) + 1
+
     for person in snapshot.get("people", []) or []:
         if not isinstance(person, dict):
             continue
@@ -2606,6 +2632,8 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
         if (person.get("gesture") or "") != "waving":
             continue
         key = _wave_person_key(person)
+        if _wave_streak.get(key, 0) < confirm:
+            continue  # wave not yet stable across enough ticks — reject flicker
         if (now - float(_wave_reacted_keys.get(key, 0.0))) < per_person_cd:
             continue  # already waved back at this person recently
         name = _first_name(person.get("face_id") or person.get("name"), "")
@@ -10951,6 +10979,7 @@ def start() -> None:
     _facial_expression_reacted_at.clear()
     _wave_reacted_keys.clear()
     _wave_escalation.clear()
+    _wave_streak.clear()
     _pending_wave_back = None
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()
@@ -11069,6 +11098,7 @@ def stop() -> None:
     _facial_expression_reacted_at.clear()
     _wave_reacted_keys.clear()
     _wave_escalation.clear()
+    _wave_streak.clear()
     _pending_wave_back = None
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()

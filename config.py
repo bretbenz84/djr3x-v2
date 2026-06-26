@@ -2343,6 +2343,13 @@ WAVE_BACK_PER_PERSON_COOLDOWN_SECS = _env_float(
 WAVE_BACK_MIN_GAP_SECS = _env_float(
     "WAVE_BACK_MIN_GAP_SECS", 4.0, min_value=0.0, max_value=600.0,
 )
+# Stability gate: how many CONSECUTIVE consciousness ticks (~1 Hz) a person must read
+# gesture=='waving' before a wave-back is trusted. A held human wave spans 2-3 ticks; a
+# flickering non-human blob (a pillow MediaPipe momentarily skeletonizes — live-logged
+# 2026-06-26: pose appeared/vanished every ~1s cycling random gestures) virtually never
+# reads 'waving' twice in a row, so it's rejected. Set 1 to restore old single-frame
+# behavior (the source of the phantom waves).
+WAVE_BACK_CONFIRM_FRAMES = _env_int("WAVE_BACK_CONFIRM_FRAMES", 2, min_value=1, max_value=10)
 # Wave-back arm gesture: how many times the wrist (the "hand" servo) sweeps between BOTH of
 # its travel limits when Rex waves back (one sweep = to one limit and back). The elbow only
 # raises the arm; the wrist does the waving. See sequences/animations.wave_back_gesture.
@@ -3370,6 +3377,18 @@ IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up (was
 # off-topic "thing on my mind" preoccupation. Keeps the question-first re-engagement while
 # letting Rex have an opinion when the room is genuinely silent. Kill switch.
 IDLE_BANTER_VOLUNTEER_TAKE = True
+# Low-content / quiet-turn gate. A curt, content-free answer ("not much", "nothing",
+# "Hello") is a LEGITIMATE reply, not a topic to keep mining. When the user's last real
+# turn is <= IDLE_BANTER_LOW_CONTENT_MAX_WORDS words, idle banter (a) does NOT treat it
+# as a live topic to riff on (so it pivots to a fresh question instead of editorializing
+# the non-answer), and (b) is capped to IDLE_BANTER_LOW_CONTENT_MAX_PER_STRETCH nudges
+# before a real user turn is required. Fixes the live-logged 2026-06-26 pile-on where
+# "not much" got editorialized twice ~18s apart ("door closing itself" / "choosing peace
+# over explanation"). This is a GATE, not a mute — one warm pivot still fires; a
+# substantive turn keeps the full budget. Kill switch.
+IDLE_BANTER_LOW_CONTENT_GATE_ENABLED = True
+IDLE_BANTER_LOW_CONTENT_MAX_WORDS = 3       # 'not much'/'Hello' = low-content; raise to 4 if too tight
+IDLE_BANTER_LOW_CONTENT_MAX_PER_STRETCH = 1 # at most one idle nudge after a curt answer
 # MID-CONVERSATION the human is engaged but may pause a beat longer than the cold-room
 # 5-8s while composing a reply — and Rex's own reply latency eats into that — so the
 # active floor sits just above the cold window, NOT at the old 22-30s (that felt

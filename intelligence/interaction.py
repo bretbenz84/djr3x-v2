@@ -3985,6 +3985,31 @@ def _idle_has_live_topic() -> bool:
         return False
 
 
+def _last_user_turn_text() -> str:
+    """The most recent USER (non-Rex) transcript line's text, or '' — used to tell
+    whether the thing an idle nudge would 'riff on' is actually a content-free answer."""
+    try:
+        for t in reversed(conv_memory.get_session_transcript() or []):
+            if str(t.get("speaker") or "").strip().lower() in ("rex", "dj-r3x", "dj rex"):
+                continue
+            text = (t.get("text") or "").strip()
+            if text:
+                return text
+    except Exception:
+        pass
+    return ""
+
+
+def _last_user_turn_was_low_content() -> bool:
+    """True when the user's last real turn was a curt, content-free answer ('not much',
+    'nothing', 'Hello') — a legitimate reply Rex should let breathe, NOT keep mining as a
+    topic. Gated on word count (IDLE_BANTER_LOW_CONTENT_MAX_WORDS)."""
+    text = _last_user_turn_text()
+    if not text:
+        return False
+    return _word_count(text) <= int(getattr(config, "IDLE_BANTER_LOW_CONTENT_MAX_WORDS", 3))
+
+
 def _idle_should_volunteer_take(idle_count: int, has_live_topic: bool) -> bool:
     """Volunteer an ON-topic take instead of asking yet another question.
 
@@ -4095,6 +4120,16 @@ def _maybe_idle_banter(
         return False
     if _idle_banter_count >= int(getattr(config, "IDLE_BANTER_MAX_PER_STRETCH", 2) or 0):
         return False
+    # A curt, content-free answer ("not much") is a legitimate reply, NOT a topic to keep
+    # mining. Allow at most ONE gentle re-engagement after it, then wait for a real user
+    # turn — don't pile a second chime-in onto the same non-answer (live-logged 2026-06-26:
+    # "not much" was editorialized twice, ~18s apart).
+    if (
+        bool(getattr(config, "IDLE_BANTER_LOW_CONTENT_GATE_ENABLED", True))
+        and _idle_banter_count >= int(getattr(config, "IDLE_BANTER_LOW_CONTENT_MAX_PER_STRETCH", 1) or 0)
+        and _last_user_turn_was_low_content()
+    ):
+        return False
     now = time.monotonic()
     if now - _last_idle_banter_at < float(getattr(config, "IDLE_BANTER_COOLDOWN_SECS", 12.0) or 0.0):
         return False
@@ -4141,6 +4176,16 @@ def _maybe_idle_banter(
     # room — where alternating keeps it from being a wall of questions. (Truly long idle
     # is owned by the session timeout + outro, not by piling on more banter.)
     live_topic = _idle_has_live_topic()
+    # A curt, content-free last answer ("not much") is not a thread to riff on — forcing
+    # live_topic False makes this nudge a fresh getting-to-know-you question instead of
+    # editorializing the non-answer, and (a volunteered take requires a live topic) blocks
+    # the "here's my take on your 'not much'" pile-on.
+    if (
+        bool(getattr(config, "IDLE_BANTER_LOW_CONTENT_GATE_ENABLED", True))
+        and live_topic
+        and _last_user_turn_was_low_content()
+    ):
+        live_topic = False
     # If the human just asked to change the subject, the live thread is BANNED —
     # don't deepen it. Pivot OFF it (a getting-to-know-you / plans question) so the
     # boundary acknowledgment isn't undone by an idle line revisiting the topic

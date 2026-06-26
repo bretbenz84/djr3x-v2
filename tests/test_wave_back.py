@@ -44,12 +44,19 @@ class StepWaveReactionTest(unittest.TestCase):
     def setUp(self):
         c._wave_reacted_keys.clear()
         c._wave_escalation.clear()
+        c._wave_streak.clear()
         c._last_wave_reaction_at = 0.0
         c._pending_wave_back = None
+        # These tests predate the multi-frame stability gate — pin confirm=1 so a single
+        # 'waving' tick still fires (the gate itself is covered by WaveStabilityGateTest).
+        self._cf = mock.patch.object(c.config, "WAVE_BACK_CONFIRM_FRAMES", 1)
+        self._cf.start()
+        self.addCleanup(self._cf.stop)
 
     def tearDown(self):
         c._wave_reacted_keys.clear()
         c._wave_escalation.clear()
+        c._wave_streak.clear()
         c._last_wave_reaction_at = 0.0
         c._pending_wave_back = None
 
@@ -166,10 +173,16 @@ class WaveEscalationTest(unittest.TestCase):
     def setUp(self):
         c._wave_reacted_keys.clear()
         c._wave_escalation.clear()
+        c._wave_streak.clear()
         c._last_wave_reaction_at = 0.0
         c._pending_wave_back = None
         self.addCleanup(c._wave_escalation.clear)
         self.addCleanup(c._wave_reacted_keys.clear)
+        self.addCleanup(c._wave_streak.clear)
+        # Escalation tests drive one wave per level — pin confirm=1 (gate tested separately).
+        self._cf = mock.patch.object(c.config, "WAVE_BACK_CONFIRM_FRAMES", 1)
+        self._cf.start()
+        self.addCleanup(self._cf.stop)
 
     def test_response_plan_per_level(self):
         plan = c._wave_response_plan
@@ -207,6 +220,47 @@ class WaveEscalationTest(unittest.TestCase):
         self.assertEqual(self._fire(3), ["speak"])              # 4th: give-up, no wave
         self.assertEqual(self._fire(4), [])                     # 5th: ignored
         self.assertEqual(self._fire(7), [])                     # still ignored
+
+
+class WaveStabilityGateTest(unittest.TestCase):
+    """A wave must persist across WAVE_BACK_CONFIRM_FRAMES consecutive ticks (default 2)
+    before it's trusted — so a flickering non-human blob (a pillow MediaPipe momentarily
+    skeletonizes) is rejected while a held human wave still fires."""
+
+    def setUp(self):
+        for d in (c._wave_reacted_keys, c._wave_escalation, c._wave_streak):
+            d.clear()
+            self.addCleanup(d.clear)
+        c._last_wave_reaction_at = 0.0
+        c._pending_wave_back = None
+
+    def _tick(self, snapshot):
+        waved = {"v": False}
+        with mock.patch.object(c, "_can_proactive_speak", return_value=True), \
+             mock.patch.object(c, "_first_name", return_value="Bret"), \
+             mock.patch.object(c.config, "WAVE_BACK_LINES", ["Hey, {name}!"]), \
+             mock.patch.object(c, "_speak_async", side_effect=lambda *a, **k: True), \
+             mock.patch("sequences.animations.wave_back_gesture",
+                        side_effect=lambda *a, **k: waved.update(v=True) or True):
+            c._step_wave_reaction(snapshot, _Profile())
+        return waved["v"]
+
+    def test_single_frame_phantom_wave_is_ignored(self):
+        # One isolated 'waving' tick (the pillow flicker) does NOT fire at default confirm=2.
+        self.assertFalse(self._tick({"people": [_waving()]}))
+        self.assertIsNone(c._pending_wave_back)
+
+    def test_two_consecutive_waving_ticks_fire(self):
+        # A held human wave persists across ticks → fires on the 2nd.
+        self.assertFalse(self._tick({"people": [_waving()]}))   # streak 1 — not yet
+        self.assertTrue(self._tick({"people": [_waving()]}))    # streak 2 — fires
+
+    def test_broken_streak_resets(self):
+        # Flicker: waving, then gone, then waving — never 2 in a row, so it never fires.
+        self.assertFalse(self._tick({"people": [_waving()]}))   # streak 1
+        self.assertFalse(self._tick({"people": []}))            # gone → streak reset
+        self.assertFalse(self._tick({"people": [_waving()]}))   # streak 1 again
+        self.assertIsNone(c._pending_wave_back)
 
 
 class WaveSpeedMirrorTest(unittest.TestCase):
