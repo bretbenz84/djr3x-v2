@@ -126,6 +126,10 @@ GUI_CAMERA_PREVIEW_ENABLED = True
 # (in addition to the green face boxes). Reads world_state.people[*].pose_keypoints,
 # published by vision/pose.py. Off → boxes only.
 GUI_POSE_WIREFRAME_ENABLED = True
+# Draw a bounding box + label for each detected room OBJECT (the local COCO stream,
+# world_state.objects) over the camera preview, like the face boxes and pose
+# wireframe. Off → no object boxes (the detection stream still runs for behaviors).
+GUI_OBJECT_BOXES_ENABLED = True
 # Only draw a pose wireframe for a slot with a VISIBLE face whose centre is within
 # GUI_POSE_FACE_COHERENCE_DIST (normalized) of the pose head. Kills phantom wireframes
 # (no face there) and mis-bound wireframes (drawn over the wrong person). Set False to
@@ -3951,6 +3955,52 @@ LOCAL_ANIMAL_DETECTION_SPECIES = {
     "bear",
     "zebra",
     "giraffe",
+}
+
+# ── Local object detection (COCO 80-class via the SHARED MediaPipe detector) ──────
+# The animal detector already runs the full 80-class EfficientDet-Lite0 model and
+# throws away every non-animal box. This stream KEEPS the rest — the room's
+# furniture and items — as world_state.objects, the substrate for object-grounded
+# curiosity, "wait, that's new" change detection, and the persistent room model.
+# It reuses the SAME loaded detector (one model, a separate inference pass).
+# "Rich" privacy posture: open vocabulary MINUS screens/devices (never publish a
+# laptop/tv/phone) and MINUS people/animals (already tracked in world_state.people
+# and world_state.animals).
+OBJECT_DETECTION_ENABLED = _env_bool("OBJECT_DETECTION_ENABLED", True)
+OBJECT_DETECTION_INTERVAL_SECS = _env_float(
+    "OBJECT_DETECTION_INTERVAL_SECS",
+    2.5,
+    min_value=0.5,
+    max_value=30.0,
+)
+# A detected object must score at least this to be published (room objects are usually
+# clearer than a pet held to a wide lens, so the bar is a touch higher than animals').
+OBJECT_DETECTION_SCORE_THRESHOLD = _env_float(
+    "OBJECT_DETECTION_SCORE_THRESHOLD",
+    0.35,
+    min_value=0.05,
+    max_value=0.95,
+)
+OBJECT_DETECTION_MAX_RESULTS = _env_int(
+    "OBJECT_DETECTION_MAX_RESULTS",
+    12,
+    min_value=1,
+    max_value=25,
+)
+# Consecutive-scan confirm streak before an object counts as really present — indoor
+# flicker / one-frame misreads must persist first, exactly like animal arrivals.
+OBJECT_DETECTION_CONFIRM_SCANS = _env_int(
+    "OBJECT_DETECTION_CONFIRM_SCANS",
+    2,
+    min_value=1,
+    max_value=10,
+)
+# Honor the no-screens rule: these COCO classes are dropped AT DETECTION TIME so a
+# screen/device never reaches world_state.objects (or the GUI / room model / prompt).
+# Matched case-insensitively against the model's lowercase class name.
+OBJECT_DETECTION_BANNED_CLASSES = {
+    "laptop", "tv", "tvmonitor", "monitor", "screen",
+    "cell phone", "cellphone", "keyboard", "mouse", "remote",
 }
 
 # Animal detection runs alongside periodic scene scans. OpenAI animal detection

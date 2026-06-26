@@ -63,6 +63,7 @@ class VisionPanel(QWidget):
         self._frame = None
         self._people: list[dict[str, Any]] = []
         self._animals: list[dict[str, Any]] = []
+        self._objects: list[dict[str, Any]] = []
         self._scene_description = ""
         self._last_frame_at = 0.0
         self._camera_stats: dict[str, Any] = {}
@@ -78,6 +79,11 @@ class VisionPanel(QWidget):
             dict(animal)
             for animal in (ws.get("animals") or [])
             if isinstance(animal, dict)
+        ]
+        self._objects = [
+            dict(obj)
+            for obj in (ws.get("objects") or [])
+            if isinstance(obj, dict)
         ]
         env = ws.get("environment") or {}
         self._scene_description = (
@@ -116,6 +122,7 @@ class VisionPanel(QWidget):
                 image_rect = _scaled_rect(image.width(), image.height(), frame_rect)
                 painter.drawImage(image_rect, image)
                 self._draw_pose_skeletons(painter, image_rect, image.width(), image.height())
+                self._draw_objects(painter, image_rect, image.width(), image.height())
                 self._draw_animals(painter, image_rect, image.width(), image.height())
                 self._draw_people(painter, image_rect, image.width(), image.height())
                 stale = self._camera_stale_secs()
@@ -255,6 +262,49 @@ class VisionPanel(QWidget):
                 text_anchor = rect.topLeft() + QPointF(0, -6)
             else:
                 point = _animal_point(animal, frame_w, frame_h)
+                px = image_rect.left() + point[0] * sx
+                py = image_rect.top() + point[1] * sy
+                painter.setBrush(color)
+                painter.drawEllipse(QPointF(px, py), 6, 6)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                text_anchor = QPointF(px + 8, py - 8)
+
+            _draw_label(painter, text_anchor, label, details, color)
+
+    def _draw_objects(
+        self,
+        painter: QPainter,
+        image_rect: QRectF,
+        frame_w: int,
+        frame_h: int,
+    ) -> None:
+        if not getattr(config, "GUI_OBJECT_BOXES_ENABLED", True):
+            return
+        if not self._objects or frame_w <= 0 or frame_h <= 0:
+            return
+
+        sx = image_rect.width() / float(frame_w)
+        sy = image_rect.height() / float(frame_h)
+        color = QColor("#b98cff")  # violet — distinct from faces/animals/poses
+        painter.setPen(QPen(color, 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        for idx, obj in enumerate(self._objects):
+            label = _object_label(obj, idx)
+            details = _animal_details(obj)  # confidence/source render identically
+            box = _animal_box(obj)          # objects carry the same (x, y, w, h) box
+            if box is not None:
+                x, y, w, h = box
+                rect = QRectF(
+                    image_rect.left() + x * sx,
+                    image_rect.top() + y * sy,
+                    w * sx,
+                    h * sy,
+                )
+                painter.drawRect(rect)
+                text_anchor = rect.topLeft() + QPointF(0, -6)
+            else:
+                point = _animal_point(obj, frame_w, frame_h)
                 px = image_rect.left() + point[0] * sx
                 py = image_rect.top() + point[1] * sy
                 painter.setBrush(color)
@@ -538,6 +588,11 @@ def _person_point(
 def _animal_label(animal: dict[str, Any], idx: int) -> str:
     species = str(animal.get("species") or "").strip()
     return species.title() if species else f"Animal {idx + 1}"
+
+
+def _object_label(obj: dict[str, Any], idx: int) -> str:
+    label = str(obj.get("label") or obj.get("class") or obj.get("name") or "").strip()
+    return label.title() if label else f"Object {idx + 1}"
 
 
 def _animal_details(animal: dict[str, Any]) -> str:

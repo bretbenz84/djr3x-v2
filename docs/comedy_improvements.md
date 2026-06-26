@@ -107,6 +107,12 @@
   `ComedyMode` stances in `select_mode`'s rotation (off interest/engaged-1:1 turns for the two
   self-absorbed ones), each with its own delivery profile (smug / deadpan / new **theatrical**).
   **This completes Batch 1.** `tests/test_comedy_modes.py::ComedicPersonaTests`.
+- **COCO unlock → `world_state.objects` (+ GUI bounding boxes)** — the already-running 80-class
+  detector now publishes the room's objects (minus screens/devices, people, animals) to
+  `world_state.objects` via `animal_detector.detect_objects` / `scene.detect_objects_local` on its
+  own scan cadence; `gui/vision_panel._draw_objects` overlays violet bbox+label. The substrate the
+  whole §2 curiosity cluster stands on. Adversarially reviewed (no-screens airtight; one shared-detector
+  use-after-close race hardened in both paths). `tests/test_object_detection.py`.
 
 **IN (still to build):**
 - §1 Comedy & roasting — sharp tier, running gags, tease-obsession, signature handle
@@ -145,7 +151,7 @@ Movie Night (E-8), roll-up/mock-retreat base bits.
    mischief/dj_hype later. **Precedence:** empathy outranks comedy on a non-default empathy
    turn; comedy layers only on neutral-empathy turns. **Effort: M.**
 
-2. **Free the COCO object detector → `world_state.objects`.** ⚠ verified: `animal_detector.py`
+2. **Free the COCO object detector → `world_state.objects`.** **✅ SHIPPED** (+ GUI boxes). ⚠ verified: `animal_detector.py`
    loads the full 80-class MediaPipe ObjectDetector (`efficientdet_lite0.tflite`) and
    `_best_animal_category` (`:149`) discards every non-animal detection — the data is computed
    and thrown away. Generalize behind the **Rich** posture (open vocab **minus** screens/
@@ -256,12 +262,11 @@ is allowed. **Rich posture details:** coarse buckets (left/center/right + fg/bg)
 persist (no auto-forget), but **never log screens/text** (the COCO stream already drops devices).
 Inherit episodic test-suppression. **Hard-depends on the COCO unlock.** **Effort: L.**
 
-### NEW — GUI object bounding boxes + labels — **BUILD** *(owner request)*
-Overlay each detected object's bbox + label on the dashboard camera preview, mirroring the
-existing pose-wireframe + face-box overlay. Feed from `world_state.objects` (the COCO stream).
-Gate it like the pose wireframe (`GUI_POSE_WIREFRAME_ENABLED` → a new `GUI_OBJECT_BOXES_ENABLED`).
-**Hooks:** `gui/dashboard.py` camera-preview overlay; `world_state.objects`. **Effort: S** *(once
-the COCO stream exists).*
+### NEW — GUI object bounding boxes + labels — **✅ IMPLEMENTED** *(owner request)*
+**Shipped** with the COCO unlock: `gui/vision_panel._draw_objects` overlays each `world_state.objects`
+entry's bbox + label (violet, distinct from the green face boxes / amber animals / cyan pose) on the
+camera preview, mirroring `_draw_animals` (same pixel-box scaling). Gated by `GUI_OBJECT_BOXES_ENABLED`.
+Tests: `tests/test_object_detection.py`.
 
 ### "Wait — that's new": live change detection — **BUILD (needs COCO + room_model first)**
 ⚠ Don't flip `SCENERY_CHANGE_REMARK_ENABLED` (that's the boot-to-boot caption path). Diff
@@ -629,7 +634,7 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
 
 1. ~~**Batch 1 — Comedy felt immediately:** delivery profiles → smug-after-a-roast mood → comedic
    personas.~~ **✅ ALL DONE.** The change a human feels instantly. (Next batch starts at step 2.)
-2. **The COCO unlock → `world_state.objects`** (+ GUI bounding boxes) — the substrate for all of §2.
+2. ~~**The COCO unlock → `world_state.objects`** (+ GUI bounding boxes)~~ **✅ done** — the substrate for all of §2.
 3. **Reactions in parallel:** land-the-laugh / take-a-bow · the gesture-reaction layer · named
    arrivals + departures (build the bbox→direction primitive here, shared with call-outs).
 4. **Cheap conversation wins:** inject open plans into the live reply · open commitments.
@@ -644,7 +649,7 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
 
 1. ~~**Comedic delivery profiles**~~ **✅ done (deadpan + smug)** — the single change felt immediately;
    every joke under-landed because a roast and a condolence sounded identical. **M.**
-2. **Free the COCO detector → object inventory (+ GUI boxes)** — the zero-cost data substrate that
+2. ~~**Free the COCO detector → object inventory (+ GUI boxes)**~~ **✅ done** — the zero-cost data substrate that
    kills "generic curiosity" at the root and feeds 5+ §2 ideas. **M.**
 3. **Land-the-laugh / take-a-bow** — Rex is currently deaf to laughter *and* applause; the signal's
    already computed. **M.**

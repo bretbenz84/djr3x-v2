@@ -10,6 +10,11 @@ _DEFAULTS = {
         "last_updated": None,
     },
     "animals": [],
+    # Non-animal room objects from the local COCO detector (vision/scene.detect_objects_local).
+    # Each: {id, label, position, last_seen, confidence, source, box?}. Substrate for §2
+    # object-grounded curiosity / change detection / room model. Screens/devices, people,
+    # and animals are filtered out at detection time (tracked elsewhere or never logged).
+    "objects": [],
     "environment": {
         "scene_type": None,
         "indoor_outdoor": None,

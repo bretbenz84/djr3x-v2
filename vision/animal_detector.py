@@ -49,7 +49,12 @@ def _model_path() -> Path:
 def _load_model() -> bool:
     global _detector, _mp, _load_attempted, _load_ok
 
-    if not bool(getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True)):
+    # The same detector backs BOTH animal and object detection — load it when EITHER
+    # is enabled (objects reuse this instance; no second model).
+    if not (
+        bool(getattr(config, "LOCAL_ANIMAL_DETECTION_ENABLED", True))
+        or bool(getattr(config, "OBJECT_DETECTION_ENABLED", True))
+    ):
         return False
     if _load_attempted:
         return _load_ok
@@ -74,7 +79,11 @@ def _load_model() -> bool:
         options = ObjectDetectorOptions(
             base_options=BaseOptions(model_asset_path=str(model_path)),
             running_mode=VisionRunningMode.IMAGE,
-            max_results=int(getattr(config, "LOCAL_ANIMAL_DETECTION_MAX_RESULTS", 8) or 8),
+            # Shared by animals + objects, so return enough for the larger of the two.
+            max_results=max(
+                int(getattr(config, "LOCAL_ANIMAL_DETECTION_MAX_RESULTS", 8) or 8),
+                int(getattr(config, "OBJECT_DETECTION_MAX_RESULTS", 12) or 12),
+            ),
             # Use the low MODEL_FLOOR here, NOT the acceptance threshold, so the
             # detector still returns sub-threshold animal candidates; acceptance is
             # applied (and sub-threshold sightings logged) in _records_from_detections.
@@ -285,14 +294,113 @@ def detect_animals(frame) -> Optional[list[dict]]:
 
     try:
         rgb = np.ascontiguousarray(bgr_to_rgb(frame))
-        image = _mp.Image(image_format=_mp.ImageFormat.SRGB, data=rgb)
+        # Hold the lock across BOTH the _mp.Image construction and detect() so a
+        # concurrent close() (atexit) can't null _mp/_detector mid-call.
         with _model_lock:
+            image = _mp.Image(image_format=_mp.ImageFormat.SRGB, data=rgb)
             result = _detector.detect(image)
     except Exception as exc:
         _log.error("local animal detection failed: %s", exc)
         return None
 
     return _records_from_detections(
+        getattr(result, "detections", []) or [],
+        frame.shape,
+    )
+
+
+# ── Object detection (the rest of the COCO 80 classes the animal path discards) ──────
+
+def _object_excluded_classes() -> set[str]:
+    """COCO labels NOT published as room objects: screens/devices (the no-screens
+    rule), plus people and animals — those are tracked in world_state.people /
+    world_state.animals, not the object stream."""
+    banned = {
+        str(x).strip().lower()
+        for x in (getattr(config, "OBJECT_DETECTION_BANNED_CLASSES", set()) or set())
+    }
+    return banned | _animal_species() | {"person"}
+
+
+def _best_object_category(detection, excluded: set[str]) -> Optional[tuple[str, float]]:
+    """Highest-scoring category for a detection that is NOT excluded, or None."""
+    best: Optional[tuple[str, float]] = None
+    for category in getattr(detection, "categories", []) or []:
+        name = _category_text(category)
+        if not name or name in excluded:
+            continue
+        score = float(getattr(category, "score", 0.0) or 0.0)
+        if best is None or score > best[1]:
+            best = (name, score)
+    return best
+
+
+def _object_records_from_detections(
+    detections, frame_shape, *, now: Optional[float] = None
+) -> list[dict]:
+    timestamp = time.time() if now is None else now
+    excluded = _object_excluded_classes()
+    accept = float(getattr(config, "OBJECT_DETECTION_SCORE_THRESHOLD", 0.35))
+    records: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    for detection in detections or []:
+        best = _best_object_category(detection, excluded)
+        if best is None:
+            continue
+        label, score = best
+        if score < accept:
+            continue
+        bbox = getattr(detection, "bounding_box", None)
+        position = _position_from_bbox(bbox, frame_shape) if bbox is not None else "unknown"
+        box = _box_tuple(bbox)
+        key = (label, position)
+        if key in seen:
+            continue
+        seen.add(key)
+        record = {
+            "id": f"object_{len(records) + 1}",
+            "label": label,
+            "position": position,
+            "last_seen": timestamp,
+            "confidence": round(max(0.0, min(1.0, score)), 3),
+            "source": _SOURCE,
+        }
+        if box is not None:
+            record["box"] = box
+        records.append(record)
+
+    return records
+
+
+def detect_objects(frame) -> Optional[list[dict]]:
+    """
+    Return visible non-animal room OBJECTS from a BGR frame — the COCO 80-class stream
+    MINUS screens/devices (no-screens rule), people, and animals (tracked elsewhere).
+
+    Returns None when object detection is disabled/unavailable, and [] when the detector
+    ran but nothing publishable was visible. Reuses the SAME loaded detector as
+    detect_animals (one model; a separate inference pass).
+    """
+    if frame is None:
+        return None
+    if not bool(getattr(config, "OBJECT_DETECTION_ENABLED", True)):
+        return None
+    if not _load_model():
+        return None
+
+    try:
+        rgb = np.ascontiguousarray(bgr_to_rgb(frame))
+        # Hold the lock across BOTH the _mp.Image construction and detect() so a
+        # concurrent close() (atexit) can't null _mp/_detector mid-call.
+        with _model_lock:
+            image = _mp.Image(image_format=_mp.ImageFormat.SRGB, data=rgb)
+            result = _detector.detect(image)
+    except Exception as exc:
+        _log.error("local object detection failed: %s", exc)
+        return None
+
+    return _object_records_from_detections(
         getattr(result, "detections", []) or [],
         frame.shape,
     )

@@ -540,6 +540,56 @@ def _confirm_persistent_animals(animals: list[dict]) -> list[dict]:
     ]
 
 
+# Per-label consecutive-scan streak, mirroring _animal_confirm_streak, so a one-frame
+# object misread can't churn the room model.
+_object_confirm_streak: dict[str, int] = {}
+
+
+def _confirm_persistent_objects(objects: list[dict]) -> list[dict]:
+    """Keep only objects seen in OBJECT_DETECTION_CONFIRM_SCANS consecutive scans (same
+    debounce as animals) so flicker/one-frame misreads never reach world_state.objects."""
+    need = int(getattr(config, "OBJECT_DETECTION_CONFIRM_SCANS", 1))
+    if need <= 1:
+        return objects
+    seen = {str(o.get("label") or "").strip().lower() for o in objects if o.get("label")}
+    for lbl in list(_object_confirm_streak):
+        if lbl not in seen:
+            del _object_confirm_streak[lbl]  # missed this scan → streak broken
+    for lbl in seen:
+        _object_confirm_streak[lbl] = _object_confirm_streak.get(lbl, 0) + 1
+    return [
+        o for o in objects
+        if _object_confirm_streak.get(str(o.get("label") or "").strip().lower(), 0) >= need
+    ]
+
+
+def detect_objects_local(frame) -> list[dict]:
+    """
+    Detect non-animal room objects in frame via the local MediaPipe object detector and
+    publish them to world_state.objects — the no-OpenAI-credits substrate for §2
+    object-grounded curiosity / change detection / room model. Preserves existing state
+    if the detector is unavailable.
+    """
+    if frame is None:
+        return world_state.get("objects") or []
+
+    objects = local_animal_detector.detect_objects(frame)
+    if objects is None:
+        return world_state.get("objects") or []
+
+    objects = _confirm_persistent_objects(objects)
+    world_state.update("objects", objects)
+    if objects:
+        _log.info(
+            "detect_objects_local: %d detected — %s",
+            len(objects),
+            [o["label"] for o in objects],
+        )
+    else:
+        _log.debug("detect_objects_local: no objects detected")
+    return objects
+
+
 def detect_lifeforms(frame) -> dict:
     """
     Low-token visual change scan for people count and animal arrivals.
@@ -1196,6 +1246,7 @@ def _scan_loop(interval_secs: float) -> None:
     last_scan_time   = 0.0   # 0.0 ensures the first iteration fires immediately
     last_monitor_time = 0.0
     last_local_animal_time = 0.0
+    last_local_object_time = 0.0   # local COCO object stream → world_state.objects
     last_startle_time = 0.0   # periodic startle-species scan (gap-fill when local is on)
     last_crowd_count = -1    # -1 sentinel means "never observed"
 
@@ -1210,6 +1261,10 @@ def _scan_loop(interval_secs: float) -> None:
             0.5,
             float(getattr(config, "LOCAL_ANIMAL_DETECTION_INTERVAL_SECS", 2.0) or 2.0),
         )
+        local_object_interval = max(
+            0.5,
+            float(getattr(config, "OBJECT_DETECTION_INTERVAL_SECS", 2.5) or 2.5),
+        )
 
         startle_interval = max(
             10.0,
@@ -1218,6 +1273,7 @@ def _scan_loop(interval_secs: float) -> None:
         time_elapsed = (now - last_scan_time) >= interval_secs
         monitor_elapsed = (now - last_monitor_time) >= monitor_interval
         local_animal_elapsed = (now - last_local_animal_time) >= local_animal_interval
+        local_object_elapsed = (now - last_local_object_time) >= local_object_interval
         startle_elapsed = (now - last_startle_time) >= startle_interval
         crowd_jumped = (last_crowd_count >= 0 and
                         abs(current_crowd - last_crowd_count) >= _CROWD_CHANGE_DELTA)
@@ -1233,6 +1289,18 @@ def _scan_loop(interval_secs: float) -> None:
                 last_local_animal_time = now
             else:
                 _log.debug("_scan_loop: no frame available — skipping local animal detector")
+
+        # Local object stream (the rest of the COCO classes) → world_state.objects.
+        if (
+            getattr(config, "OBJECT_DETECTION_ENABLED", True)
+            and local_object_elapsed
+        ):
+            frame = camera.get_frame()
+            if frame is not None:
+                detect_objects_local(frame)
+                last_local_object_time = now
+            else:
+                _log.debug("_scan_loop: no frame available — skipping local object detector")
 
         # Gap-fill: the local detector can't see snakes/spiders/wasps, so when it's the
         # active detector run a low-frequency OpenAI startle scan (people-present, paid —
