@@ -950,6 +950,43 @@ def describe_scene_detailed(frame) -> dict:
     }
 
 
+def describe_for_roast(frame, *, known_names=None) -> str:
+    """Cheap gpt-4o-mini look at a CONSENTING speaker + their room for roast material.
+
+    Fired only when someone asks Rex to roast THEM (or their room) — see
+    ``config.ROAST_VISION_ENABLED`` — so Rex roasts a real visible detail instead of
+    riffing on what they last said. Returns a short, concrete list of VISIBLE
+    roast-worthy observations (build/posture/expression, outfit/grooming/accessories,
+    what they're doing, the state of the room), or "" when there is no frame or the
+    call fails (the roast then falls back to its verbal, vibe-based form).
+
+    Protected/hateful angles (race, ethnicity, religion, disability, medical
+    conditions) are excluded HERE and again in the downstream roast prompt; the
+    consent + self/room scoping is enforced by the caller, not this function.
+    """
+    if frame is None:
+        return ""
+    names = _resolve_known_names(known_names)
+    who = f"the person (Rex knows them as {names[0]})" if names else "the person"
+    prompt = (
+        f"DJ-R3X is about to playfully ROAST {who}, who JUST ASKED to be roasted "
+        "(they consented — a friendly roast battle), so honest material is welcome. "
+        "Look at the image and list concrete, VISIBLE things a stand-up comic could "
+        "riff on: their build, posture, and expression; their outfit, hair, grooming, "
+        "and accessories; what they're doing; and the state of the room behind them "
+        "(clutter, decor, lighting, mess). Be specific and honest — 'slouching in a "
+        "rumpled gray hoodie, three energy drinks, cables everywhere' beats 'a person "
+        "at a desk'. Do NOT mention race, ethnicity, religion, disability, or medical "
+        "conditions. Reply with 3-5 short comma-separated observations and nothing else."
+    )
+    try:
+        out = _call_gpt4o(frame, prompt, "roast", max_tokens=160)
+    except Exception as exc:
+        _log.debug("describe_for_roast failed: %s", exc)
+        return ""
+    return (out or "").strip()
+
+
 def analyze_directed_attention(
     frame,
     *,

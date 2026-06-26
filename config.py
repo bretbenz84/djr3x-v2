@@ -412,7 +412,19 @@ VISION_DETAIL = {
     "active_conversation":    "auto",  # general vision queries mid-conversation
     "mood_analysis":          "low",   # mood read of the engaged person's face
     "presence_scan":          "low",   # is-anyone-there + where-in-frame startup fallback
+    "roast":                  "auto",  # "roast me" — look at the consenting speaker + room
 }
+
+# "Roast me" → roast what Rex SEES. When the speaker asks to be roasted (a CONSENT
+# self-roast: "roast me", "give me a roast", "roast the room"), Rex takes a cheap
+# gpt-4o-mini look at them + the room (config.VISION_MODEL, already gpt-4o-mini) and
+# roasts a real visible detail — their look, outfit, posture, the mess behind them —
+# instead of riffing on whatever they last said. Scoped to a SELF/room roast of a
+# consenting adult: third-party roasts ("roast Dave") stay gentle/public and never
+# get the vision read, minors never do, and the roast prompt still excludes race /
+# ethnicity / religion / disability / medical conditions and anything hateful. Kill
+# switch (falls back to the verbal, vibe-based roast):
+ROAST_VISION_ENABLED = True
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PATHS — Models & Assets

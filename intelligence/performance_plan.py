@@ -421,13 +421,17 @@ def plan_for_action(
     args: dict[str, Any] | None = None,
     joke_rotation: Optional[int] = None,
     joke_avoid_directive: str = "",
+    visual_material: str = "",
 ) -> PerformancePlan | None:
     """Return a deterministic performance plan for a stable action key.
 
     ``joke_rotation`` / ``joke_avoid_directive`` are supplied by the dispatch for
     humor.tell_joke so each joke picks a fresh comedic lane and steers clear of
-    premises Rex has already spent this conversation. The function stays pure — all
-    rotation/recency state lives in the caller.
+    premises Rex has already spent this conversation. ``visual_material`` is a short
+    description of what Rex SEES, supplied by the dispatch for a consent self-roast
+    ("roast me") so humor.roast makes fun of a real visible detail instead of the
+    conversation; empty for every other case. The function stays pure — all
+    rotation/recency/vision state lives in the caller.
     """
     action = str(action or "").strip()
     text = str(user_text or "").strip()
@@ -461,6 +465,36 @@ def plan_for_action(
 
     if action == "humor.roast":
         target = _arg_text(args, "target", "person", "name") or "speaker"
+        if visual_material:
+            # Consent self/room roast WITH a vision read: roast what Rex actually
+            # SEES. The speaker asked to be roasted, so commit — a sharp, specific
+            # jab at a visible detail beats a polite vibe joke. Still hard-excludes
+            # the genuinely off-limits angles (and never runs for a non-consenting
+            # third party or a minor — the dispatch gates that before we get here).
+            return PerformancePlan(
+                action=action,
+                prompt_contract=(
+                    "The user explicitly asked Rex to ROAST THEM — consent given, a "
+                    f"friendly roast battle: {text!r}. Here is what Rex SEES right now: "
+                    f"{visual_material!r}. Deliver exactly ONE sharp, funny, still-"
+                    "affectionate roast that makes fun of what you SEE — their look, "
+                    "build, posture, outfit, grooming, or the state of their room — "
+                    "pick the single funniest VISIBLE detail and commit to it. Be "
+                    "specific (name the actual thing you see), land like a roast-battle "
+                    "headliner, and a little brutal is fine BECAUSE they asked. Do NOT "
+                    "roast their race, ethnicity, religion, disability, or a medical "
+                    "condition, and never be hateful or use slurs. Do NOT fall back to "
+                    "joking about what they SAID. No preamble, no question, one line only."
+                ),
+                fallback_text=(
+                    "I ran the roast subroutine, got one look at you, and the "
+                    "punchline filed for hazard pay."
+                ),
+                emotion="curious",
+                body_beat=body_beat_for_event("action", action=action),
+                delivery_style="consent_roast",
+                memory_policy=MEMORY_DO_NOT_STORE,
+            )
         return PerformancePlan(
             action=action,
             prompt_contract=(

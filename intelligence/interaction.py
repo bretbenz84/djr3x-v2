@@ -13971,6 +13971,82 @@ _PLAN_ROUTER_ACTIONS = {
 _joke_angle_cursor = 0
 
 
+def _roast_targets_speaker(
+    decision: action_router.ActionDecision, person_id: Optional[int]
+) -> bool:
+    """True when an explicit roast is aimed at the speaker themselves or their room (a
+    CONSENT self-roast) rather than a named third party. `_clean_roast_target` maps
+    'me'/'myself' -> 'speaker' and 'us'/'the room' -> 'room', so those are the eligible
+    vision-roast targets; a named person ('roast Dave') or 'rex' is not."""
+    target = str((decision.args or {}).get("target") or "").strip().lower()
+    if target in ("", "speaker", "room"):
+        return True
+    if person_id is not None:
+        try:
+            from memory import people as _people
+            person = _people.get_person(person_id)
+            name = str((person or {}).get("name") or "").strip().lower()
+            if name and (target == name or target == name.split()[0]):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _roast_visual_material(
+    decision: action_router.ActionDecision, person_id: Optional[int]
+) -> str:
+    """For a consent self/room roast, take a cheap gpt-4o-mini look at the speaker +
+    room so Rex roasts what he SEES instead of what they said. Returns "" — Rex falls
+    back to the gentler VERBAL roast — for everything that must NOT get a body-roast:
+    the feature off, a non-consenting third-party target, an UNIDENTIFIED speaker (no
+    person_id — could be a minor the camera sees), a known minor, an unresolved age
+    (fail-safe), a tender/empathetic/boundary moment, or no camera frame. Every age/
+    context gate fails SAFE: lack of proof of a consenting adult → no vision body-roast."""
+    if not bool(getattr(config, "ROAST_VISION_ENABLED", True)):
+        return ""
+    if not _roast_targets_speaker(decision, person_id):
+        return ""
+    # A vision BODY-roast requires a CONFIRMED adult. An unidentified speaker (no
+    # person_id) or any error resolving age fails SAFE to the verbal roast — never
+    # assume adult. The camera can see a minor we have no record for.
+    if person_id is None:
+        return ""
+    try:
+        if profile_questions.person_is_minor(person_id):
+            return ""
+    except Exception:
+        return ""
+    # Don't body-roast someone who is in a tender / empathetic / boundary moment, even
+    # on an explicit "roast me" — fall back to the verbal roast. The performance roast
+    # path skips the social-frame governor, so this contextual gate lives here for the
+    # loosened roast (the empathy mode is the recent-affect signal already in hand).
+    try:
+        empathy_mode = (empathy.get_delivery_overrides(person_id) or {}).get("mode") or "default"
+        if empathy_mode not in ("default", ""):
+            return ""
+    except Exception:
+        pass
+    try:
+        from vision import camera as camera_mod
+        from vision import scene as vision_scene
+        from vision import face as face_mod
+        frame = camera_mod.get_frame()
+        if frame is None:
+            return ""
+        try:
+            names = face_mod.visible_known_names() or None
+        except Exception:
+            names = None
+        material = vision_scene.describe_for_roast(frame, known_names=names)
+        if material:
+            _log.info("[roast] vision material: %s", material)
+        return material or ""
+    except Exception as exc:
+        _log.debug("[roast] visual material failed: %s", exc)
+        return ""
+
+
 def _handle_router_performance_action(
     decision: action_router.ActionDecision,
     text: str,
@@ -13992,12 +14068,18 @@ def _handle_router_performance_action(
         # Steer away from premises Rex has already spent this conversation (shared
         # with the main reply path so a joke and a normal line can't echo).
         joke_avoid_directive = premise_memory.build_avoid_directive()
+    # "Roast me" → roast what Rex SEES: a cheap gpt-4o-mini look at the consenting
+    # speaker + room (self/room roasts of a non-minor only; "" otherwise → verbal roast).
+    visual_material = ""
+    if decision.action == "humor.roast":
+        visual_material = _roast_visual_material(decision, person_id)
     plan = performance_plan.plan_for_action(
         decision.action,
         user_text=text,
         args=decision.args,
         joke_rotation=joke_rotation,
         joke_avoid_directive=joke_avoid_directive,
+        visual_material=visual_material,
     )
     if plan is None:
         _router_audit_note_result(
