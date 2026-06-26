@@ -71,6 +71,7 @@ def execute_plan(
     play_body_beat: Optional[PlayBodyBeat] = None,
     play_landing_body_beat: Optional[PlayBodyBeat] = None,
     clean_text: Optional[CleanText] = None,
+    on_text: Optional[Callable[[str], None]] = None,
 ) -> PerformanceOutput:
     """Generate, physically punctuate, and speak one performance plan.
 
@@ -94,6 +95,16 @@ def execute_plan(
     text = _clean(raw, clean_text)
     if not text:
         text = _clean(plan.fallback_text, clean_text) or str(plan.fallback_text or "").strip()
+
+    # Surface the line to the transcript the MOMENT it's generated — BEFORE the
+    # blocking speak — so the GUI shows it immediately (read-along) instead of after
+    # TTS finishes. The spoken lines below pass log_text=False; the caller's later
+    # conv_log.log_rex of the returned text dedupes against this one.
+    if on_text is not None and text:
+        try:
+            on_text(text)
+        except Exception:
+            pass
 
     # Decide upfront-vs-post-line for the body beat. A "landing" beat is deferred to
     # the END of the line's audio (the comedic button in the silence); everything else

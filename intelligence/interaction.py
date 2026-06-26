@@ -14094,6 +14094,10 @@ def _handle_router_performance_action(
         play_body_beat=_play_performance_body_beat,
         play_landing_body_beat=_fire_post_line_body_beat,
         clean_text=llm.clean_response_text,
+        # Show the line in the GUI the instant it's generated (read-along), before the
+        # blocking speak — otherwise the caller only logs it AFTER playback finishes.
+        # The caller's later conv_log.log_rex of the returned text dedupes against this.
+        on_text=conv_log.log_rex,
     )
     if decision.action == "humor.tell_joke" and output.text:
         # Record the delivered joke so the next joke (and the next reply) avoid it.

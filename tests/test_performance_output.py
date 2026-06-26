@@ -3,6 +3,37 @@ from unittest import mock
 
 
 class PerformanceOutputTests(unittest.TestCase):
+    def test_on_text_fires_with_generated_line_before_speaking(self):
+        # Read-along: the line must reach the transcript the moment it's generated,
+        # BEFORE the blocking speak — so the GUI shows it instead of waiting for TTS.
+        from intelligence import performance_output, performance_plan
+
+        plan = performance_plan.PerformancePlan(
+            action="humor.roast",
+            prompt_contract="Roast them.",
+            fallback_text="Fallback roast.",
+            emotion="curious",
+            delivery_style="consent_roast",
+            memory_policy=performance_plan.MEMORY_DO_NOT_STORE,
+        )
+        order = []
+        on_text = mock.Mock(side_effect=lambda t: order.append(("log", t)))
+        speak = mock.Mock(side_effect=lambda *a, **k: order.append(("speak", a[0])) or True)
+
+        output = performance_output.execute_plan(
+            plan,
+            generate_text=mock.Mock(return_value="Nice posture, gravity wins again."),
+            speak_text=speak,
+            clean_text=lambda text: text.strip(),
+            on_text=on_text,
+        )
+
+        on_text.assert_called_once_with("Nice posture, gravity wins again.")
+        self.assertEqual(output.text, "Nice posture, gravity wins again.")
+        # log BEFORE speak.
+        self.assertEqual(order[0][0], "log")
+        self.assertEqual(order[1][0], "speak")
+
     def test_execute_plan_generates_body_beats_and_speaks(self):
         from intelligence import performance_output, performance_plan
 

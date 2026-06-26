@@ -298,7 +298,9 @@ class RoastVisionTests(unittest.TestCase):
             visual_material="rumpled gray hoodie, three energy drinks, cables everywhere",
         )
         self.assertIn("rumpled gray hoodie", plan.prompt_contract)
-        self.assertIn("what you SEE", plan.prompt_contract)
+        # Targets the PERSON, and explicitly steers OFF the room/furniture.
+        self.assertIn("THE PERSON", plan.prompt_contract)
+        self.assertIn("not their furniture", plan.prompt_contract)
         # The protected-category floor survives even in the loosened consent roast.
         self.assertIn("race", plan.prompt_contract)
         self.assertIn("disability", plan.prompt_contract)
@@ -313,7 +315,7 @@ class RoastVisionTests(unittest.TestCase):
         )
         self.assertIn("consent-based Rex roast", plan.prompt_contract)
         self.assertIn("Do NOT joke about body", plan.prompt_contract)
-        self.assertNotIn("what you SEE", plan.prompt_contract)
+        self.assertNotIn("what Rex SEES", plan.prompt_contract)
 
     # --- self/room vs third-party target detection ---
     def test_self_and_room_targets_are_eligible(self):
