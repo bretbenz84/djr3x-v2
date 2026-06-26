@@ -22,6 +22,10 @@ GenerateText = Callable[[str], str]
 CleanText = Callable[[str], str]
 PlayBodyBeat = Callable[[str], None]
 
+# Delivery styles whose body beat should LAND in the post-line silence (the comedic
+# "button" after the line) rather than fire upfront over the front of the line.
+_POST_LINE_STYLES = frozenset({"quick_punchline", "consent_roast", "quick_riff"})
+
 
 @dataclass(frozen=True)
 class PerformanceOutput:
@@ -65,9 +69,17 @@ def execute_plan(
     generate_text: GenerateText,
     speak_text: Callable[..., bool],
     play_body_beat: Optional[PlayBodyBeat] = None,
+    play_landing_body_beat: Optional[PlayBodyBeat] = None,
     clean_text: Optional[CleanText] = None,
 ) -> PerformanceOutput:
-    """Generate, physically punctuate, and speak one performance plan."""
+    """Generate, physically punctuate, and speak one performance plan.
+
+    For the comedic-landing delivery styles (_POST_LINE_STYLES) a `play_landing_body_beat`
+    may be supplied: the body beat is then deferred to fire the instant the line's audio
+    ends (via the speak layer's on_audio_end hook) so it lands IN the post-line silence —
+    "line lands -> beat of silence -> button" — instead of over the front of the line.
+    Falls back to the upfront `play_body_beat` when no landing player is given or the
+    PERFORMANCE_POST_LINE_BEAT_ENABLED flag is off."""
     raw = ""
     generation_failed = False
     if plan.requires_llm and plan.prompt_contract:
@@ -83,8 +95,22 @@ def execute_plan(
     if not text:
         text = _clean(plan.fallback_text, clean_text) or str(plan.fallback_text or "").strip()
 
+    # Decide upfront-vs-post-line for the body beat. A "landing" beat is deferred to
+    # the END of the line's audio (the comedic button in the silence); everything else
+    # keeps firing upfront over the front of the line.
+    landing = bool(
+        getattr(config, "PERFORMANCE_POST_LINE_BEAT_ENABLED", True)
+        and plan.body_beat
+        and play_landing_body_beat is not None
+        and plan.delivery_style in _POST_LINE_STYLES
+    )
+    on_audio_end = (lambda: play_landing_body_beat(plan.body_beat)) if landing else None
+    # Only the FINAL spoken line (the punchline / the single line) gets the landing —
+    # never a setup line, or the button would fire mid-joke.
+    _land = {"on_audio_end": on_audio_end} if on_audio_end is not None else {}
+
     body_beat_failed = False
-    if plan.body_beat and play_body_beat is not None:
+    if plan.body_beat and play_body_beat is not None and not landing:
         try:
             play_body_beat(plan.body_beat)
         except Exception:
@@ -119,6 +145,7 @@ def execute_plan(
                         pre_beat_ms=pause_ms,
                         post_beat_ms_override=plan.post_beat_ms,
                         log_text=False,
+                        **_land,
                     )
                 )
         else:
@@ -129,6 +156,7 @@ def execute_plan(
                     pre_beat_ms=plan.pre_beat_ms,
                     post_beat_ms_override=plan.post_beat_ms,
                     log_text=False,
+                    **_land,
                 )
             )
     else:
@@ -139,6 +167,7 @@ def execute_plan(
                 pre_beat_ms=plan.pre_beat_ms,
                 post_beat_ms_override=plan.post_beat_ms,
                 log_text=False,
+                **_land,
             )
         )
     return PerformanceOutput(

@@ -157,6 +157,122 @@ class PerformanceOutputTests(unittest.TestCase):
         self.assertEqual(output.text, "Physical expression logged.")
         generate.assert_not_called()
 
+    def test_post_line_landing_defers_beat_to_audio_end(self):
+        # A comedic-landing style with a landing player defers the body beat: it does
+        # NOT fire upfront, and instead rides the line's on_audio_end so it lands in
+        # the post-line silence.
+        from intelligence import performance_output, performance_plan
+
+        plan = performance_plan.PerformancePlan(
+            action="humor.roast",
+            prompt_contract="Roast.",
+            fallback_text="Fallback.",
+            emotion="curious",
+            body_beat="suspicious_glance",
+            delivery_style="consent_roast",
+        )
+        upfront = mock.Mock()
+        landing = mock.Mock()
+        captured = {}
+
+        def speak(text, **kwargs):
+            captured.update(kwargs)
+            return True
+
+        with mock.patch.object(
+            performance_output.config, "PERFORMANCE_POST_LINE_BEAT_ENABLED", True
+        ):
+            output = performance_output.execute_plan(
+                plan,
+                generate_text=mock.Mock(return_value="Roast line."),
+                speak_text=speak,
+                play_body_beat=upfront,
+                play_landing_body_beat=landing,
+                clean_text=lambda t: t.strip(),
+            )
+
+        self.assertTrue(output.completed)
+        upfront.assert_not_called()                       # NOT fired upfront
+        self.assertIn("on_audio_end", captured)           # routed to the audio-end hook
+        landing.assert_not_called()                       # not yet — only when audio ends
+        captured["on_audio_end"]()                        # simulate audio ending
+        landing.assert_called_once_with("suspicious_glance")
+
+    def test_post_line_landing_attaches_to_punchline_not_setup(self):
+        # For a split joke the button must land after the PUNCHLINE only, never the setup.
+        from intelligence import performance_output, performance_plan
+
+        plan = performance_plan.PerformancePlan(
+            action="humor.tell_joke",
+            prompt_contract="Joke.",
+            fallback_text="Fallback.",
+            emotion="happy",
+            body_beat="dramatic_visor_peek",
+            delivery_style="quick_punchline",
+        )
+        landing = mock.Mock()
+        calls = []
+
+        def speak(text, **kwargs):
+            calls.append((text, kwargs))
+            return True
+
+        with mock.patch.object(
+            performance_output.config, "PERFORMANCE_POST_LINE_BEAT_ENABLED", True
+        ):
+            performance_output.execute_plan(
+                plan,
+                generate_text=mock.Mock(
+                    return_value="Why did the droid cross the room? To reach the cantina."
+                ),
+                speak_text=speak,
+                play_body_beat=mock.Mock(),
+                play_landing_body_beat=landing,
+                clean_text=lambda t: t.strip(),
+            )
+
+        self.assertEqual(len(calls), 2)
+        _, setup_kwargs = calls[0]
+        _, punch_kwargs = calls[1]
+        self.assertNotIn("on_audio_end", setup_kwargs)    # setup: no button
+        self.assertIn("on_audio_end", punch_kwargs)       # punchline: carries the button
+        punch_kwargs["on_audio_end"]()
+        landing.assert_called_once_with("dramatic_visor_peek")
+
+    def test_post_line_landing_disabled_fires_upfront(self):
+        # Kill switch off -> behaves exactly like before (beat upfront, no on_audio_end).
+        from intelligence import performance_output, performance_plan
+
+        plan = performance_plan.PerformancePlan(
+            action="humor.roast",
+            prompt_contract="Roast.",
+            fallback_text="Fallback.",
+            emotion="curious",
+            body_beat="suspicious_glance",
+            delivery_style="consent_roast",
+        )
+        upfront = mock.Mock()
+        captured = {}
+
+        def speak(text, **kwargs):
+            captured.update(kwargs)
+            return True
+
+        with mock.patch.object(
+            performance_output.config, "PERFORMANCE_POST_LINE_BEAT_ENABLED", False
+        ):
+            performance_output.execute_plan(
+                plan,
+                generate_text=mock.Mock(return_value="Roast line."),
+                speak_text=speak,
+                play_body_beat=upfront,
+                play_landing_body_beat=mock.Mock(),
+                clean_text=lambda t: t.strip(),
+            )
+
+        upfront.assert_called_once_with("suspicious_glance")
+        self.assertNotIn("on_audio_end", captured)
+
     def test_execute_body_beat_event_plays_mapped_event(self):
         from intelligence import performance_output
 

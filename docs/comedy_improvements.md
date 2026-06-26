@@ -395,10 +395,29 @@ mic-drop = heroarm forward-then-drop + dismissive turn; spit-take = sharp recoil
 **Frequency cooldown** (`config.COMEDY_BEAT_MIN_GAP_SECS`,
 `animations.spontaneous_beat_allowed`/`note_spontaneous_beat` + a `play_body_beat(spontaneous=True)`
 gate) throttles **self-directed** beats only — explicit "do a mic drop" requests and
-event/mood/gamepad beats are never gated. Tests: `tests/test_body_beats.py`. **Remaining:** the
-marginal beats (shrug/facepalm/slow-clap — they want shoulders/two hands this body lacks) are
-deferred, and **(B) firing a beat INTO the existing post-line pause** (the comedic-landing sync,
-reusing `POST_PUNCHLINE_BEAT_MS`) is the next step.
+event/mood/gamepad beats are never gated. Tests: `tests/test_body_beats.py`.
+
+**✅ (B) comedic-landing sync — shipped:** comedic-performance beats (joke / roast / free-bit —
+delivery styles `quick_punchline` / `consent_roast` / `quick_riff`) now **defer** their body beat to
+the instant the line's audio ends, so the physical button lands **into** the existing post-line
+silence (`POST_PUNCHLINE_BEAT_MS`, 800–1500ms) — *line lands → beat of silence → button* — instead of
+firing over the front of the line. Mechanism (mapped by a 3-agent design+adversarial workflow): a new
+per-item **`on_audio_end`** hook in `audio/speech_queue.py` (fired at the audio-end → post-beat
+boundary in the worker), `performance_output.execute_plan` routing the beat there for the landing
+styles (never the joke *setup* line), and a barge-in-guarded landing player
+(`interaction._fire_post_line_body_beat` skips if a turn has begun). Kill switch
+`PERFORMANCE_POST_LINE_BEAT_ENABLED`. Tests: `tests/test_performance_output.py`.
+
+**⚠ Adversarially-flagged residual risk (deferred hardening):** the post-line window is treated as
+*"not speaking"* (tts clears `_speaking`/AEC *before* the worker's post-beat sleep), so wander/
+face-tracking are nominally live and a barge-in *mid-beat* lets the (non-interruptible) beat finish —
+the same non-interruptibility today's upfront beats already have. The **start** is guarded (skip if a
+turn began) and the landing is scoped to comedic styles whose plan beats are head-only/light, which
+keeps the practical risk low in the sub-second window. Deferred for a later pass: cancel-aware beats
+(abort mid-flight on barge-in), a **refcounted** `servos._arm_idle_pause` (today a bare Event — an
+arm-using post-line beat could theoretically strand the idle latch), and restoring to the live
+face-tracking baseline. **Remaining beat-pack items:** the marginal beats (shrug/facepalm/slow-clap —
+they want shoulders/two hands this body lacks).
 
 ⚠ verified: 15 existing beats are emotion reactions; none is a comedy bit. Registration is
 **3-paths-for-free** (LLM via `performance_plan.BODY_BEAT_NAMES`, event via `_EVENT_BODY_BEATS`,

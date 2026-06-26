@@ -35,7 +35,10 @@ class HumorActionExecutionTests(unittest.TestCase):
         speak.assert_called_once()
         self.assertEqual(speak.call_args.args[0], "Joke line.")
         self.assertEqual(speak.call_args.kwargs["emotion"], "happy")
-        beat.assert_called_once_with("dramatic_visor_peek")
+        # The visor-peek button now LANDS in the post-line silence: it is deferred to
+        # the line's on_audio_end hook rather than fired upfront over the line.
+        beat.assert_not_called()
+        self.assertIsNotNone(speak.call_args.kwargs.get("on_audio_end"))
 
     def test_router_roast_action_keeps_prompt_non_sensitive(self):
         from intelligence import action_router, interaction
@@ -68,7 +71,10 @@ class HumorActionExecutionTests(unittest.TestCase):
         self.assertIn("Do NOT joke about body, age, gender", prompt)
         self.assertIn("No question. One line only.", prompt)
         self.assertEqual(speak.call_args.kwargs["emotion"], "curious")
-        beat.assert_called_once_with("suspicious_glance")
+        # The side-eye button now lands in the post-line silence (deferred to the
+        # line's on_audio_end), not fired upfront over the roast.
+        beat.assert_not_called()
+        self.assertIsNotNone(speak.call_args.kwargs.get("on_audio_end"))
 
     def test_fast_local_takeover_handles_explicit_free_humor_without_router_flag(self):
         from intelligence import interaction

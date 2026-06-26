@@ -3097,6 +3097,12 @@ JOKE_SETUP_PUNCHLINE_PAUSE_MS = 700
 # deterministic event/mood/gamepad beats are never throttled. Seconds; 0 disables.
 COMEDY_BEAT_MIN_GAP_SECS = 6.0
 
+# When a comedic line is performed (joke / roast / free-bit), land its body beat in
+# the SILENCE after the line ("line lands -> beat of silence -> button") instead of
+# firing it over the front of the line. Kill switch: set False to restore the
+# upfront beat. The landing is guarded against barge-in (skips if a turn has begun).
+PERFORMANCE_POST_LINE_BEAT_ENABLED = True
+
 # Pause after genuine surprise event before Rex responds (milliseconds)
 SURPRISE_PAUSE_MS_MIN = 200
 SURPRISE_PAUSE_MS_MAX = 500

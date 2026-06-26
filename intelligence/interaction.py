@@ -1986,6 +1986,7 @@ def _speak_blocking(
     post_beat_ms_override: int = 0,
     voice_settings: Optional[dict] = None,
     log_text: bool = True,
+    on_audio_end=None,
 ) -> bool:
     """
     Enqueue text for speech and block until playback finishes, monitoring for
@@ -2032,6 +2033,7 @@ def _speak_blocking(
         voice_settings=voice_settings,
         on_start=_on_playback_start if trace is not None else None,
         log_text=log_text,
+        on_audio_end=on_audio_end,
     )
 
     while not done.wait(timeout=0.05):
@@ -13808,6 +13810,26 @@ def _play_performance_body_beat(beat: str) -> None:
     animations.play_body_beat(beat)
 
 
+def _fire_post_line_body_beat(beat: str) -> None:
+    """Fire a comedic 'button' beat the instant the line's audio ends, so it LANDS
+    in the post-line silence (via the speech-queue on_audio_end hook). This runs in
+    a window the system already treats as 'not speaking', so GUARD it: if the user
+    has barged in / a turn has begun, skip the beat — a button must never slew the
+    head into the new turn. Failure-safe; the beat itself is async (own thread)."""
+    try:
+        if _interrupted.is_set():
+            return
+        try:
+            if barge_guard.user_speaking_now():
+                return
+        except Exception:
+            pass
+        from sequences import animations
+        animations.play_body_beat(beat)
+    except Exception as exc:
+        _log.debug("[performance] post-line body beat skipped: %s", exc)
+
+
 def _play_event_body_beat(event: str, **context) -> Optional[str]:
     beat = performance_output.execute_body_beat_event(
         event,
@@ -13898,6 +13920,7 @@ def _handle_router_performance_action(
         generate_text=lambda prompt: llm.get_response(prompt, person_id),
         speak_text=_speak_blocking,
         play_body_beat=_play_performance_body_beat,
+        play_landing_body_beat=_fire_post_line_body_beat,
         clean_text=llm.clean_response_text,
     )
     if decision.action == "humor.tell_joke" and output.text:
