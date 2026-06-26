@@ -3286,15 +3286,22 @@ COMEDY_DELIVERY_PROFILES = {
     # smug — cocky, self-satisfied swagger after a jab; more expressive style
     # than baseline but controlled, savored a touch slower.
     "smug":    {"stability": 0.46, "style": 0.64, "similarity_boost": 0.82, "speed": 0.96},
+    # theatrical — the over-the-top movie-trailer narrator: very dynamic (low
+    # stability = big range), high style for drama, a touch slow for gravitas.
+    "theatrical": {"stability": 0.30, "style": 0.78, "similarity_boost": 0.82, "speed": 0.98},
 }
 # comedy_modes.select_mode key → delivery profile name (above). Modes left out
 # (straight / fake_system_error / dj_flair) get NO comedy voice shaping for now.
 COMEDY_MODE_DELIVERY_PROFILE = {
-    "dry_ack":         "deadpan",
-    "self_own":        "deadpan",
-    "callback":        "deadpan",
-    "callback_banked": "deadpan",
-    "friendly_roast":  "smug",
+    "dry_ack":              "deadpan",
+    "self_own":             "deadpan",
+    "callback":             "deadpan",
+    "callback_banked":      "deadpan",
+    "friendly_roast":       "smug",
+    # Comedic personas — each gets its own timbre.
+    "smug_superiority":     "smug",
+    "appliance_conspiracy": "deadpan",
+    "dramatic_narrator":    "theatrical",
 }
 
 # If True, Rex will begin processing normal speech from IDLE without requiring

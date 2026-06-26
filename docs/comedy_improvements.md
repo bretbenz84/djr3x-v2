@@ -99,10 +99,18 @@
   self_own/callback(_banked) → deadpan, friendly_roast → smug; straight/care never shaped. Shipped
   **voice-only** — timing is already covered by `POST_PUNCHLINE_BEAT_MS` (800–1500ms) so no beat
   map was needed. `tests/test_comedy_modes.py::ComedyDeliveryProfileTests`.
+- **Vision-oriented "roast me"** — an explicit self/room roast takes a cheap gpt-4o-mini look and
+  roasts what Rex SEES (appearance/build/posture/outfit, person-first), safety-scoped (consent /
+  non-minor / not-tender, fail-safe to the verbal roast). Plus performance-action read-along
+  (`execute_plan` `on_text`) so the roast text shows before TTS. `230842b` / `4dfbc13`
+- **Comedic personas (smug_superiority / appliance_conspiracy / dramatic_narrator)** — three drop-in
+  `ComedyMode` stances in `select_mode`'s rotation (off interest/engaged-1:1 turns for the two
+  self-absorbed ones), each with its own delivery profile (smug / deadpan / new **theatrical**).
+  **This completes Batch 1.** `tests/test_comedy_modes.py::ComedicPersonaTests`.
 
 **IN (still to build):**
-- §1 Comedy & roasting — sharp tier, running gags, **personas** (smug mood ✅ done), tease-obsession,
-  signature handle (delivery profiles ✅ done — deadpan + smug).
+- §1 Comedy & roasting — sharp tier, running gags, tease-obsession, signature handle
+  (delivery profiles ✅, smug mood ✅, **personas ✅** — Batch 1 done).
 - §2 Curiosity — **all-in**: COCO unlock, `room_model` (Rich), object-grounded curiosity,
   change detection, POV seeds, react-to-you, crowd curiosity, **+ GUI object bboxes**. Docent
   bit is in but **ask-only**.
@@ -189,8 +197,15 @@ beloved gag doesn't outstay its welcome; honor boundary/forget → retire.
 **Hooks:** `callbacks.py` CATEGORIES/`mark_used`/`freshness_factor`; `callback_engine.py`
 `settle_turn`/`build_callback_directive`/`build_lull_prompt`. **Effort: M.**
 
-### Comedic personas (smug_superiority / appliance_conspiracy / dramatic_narrator) — **BUILD** *(batch 1)*
-⚠ verified lowest-risk/highest-leverage: `select_mode` rotates 8 thin one-beat stances with
+### Comedic personas (smug_superiority / appliance_conspiracy / dramatic_narrator) — **✅ IMPLEMENTED** *(batch 1)*
+**Shipped:** three drop-in `ComedyMode` entries (`_MODES` + `_SLIM_STANCE` + `_premise_for` tags + `select_mode`
+pool branches). The two self-absorbed bits (`dramatic_narrator` / `appliance_conspiracy`) are kept OFF the
+interest and engaged-1:1 pools so they don't talk over a sincere share; `smug_superiority` (a topic-engaging
+condescension) is allowed there. Each persona pairs with a delivery profile — `smug_superiority` → smug,
+`appliance_conspiracy` → deadpan, `dramatic_narrator` → a new **theatrical** profile (low stability / high
+style movie-trailer voice). Tests: `tests/test_comedy_modes.py::ComedicPersonaTests`.
+
+Original plan ⚠ verified lowest-risk/highest-leverage: `select_mode` rotates 8 thin one-beat stances with
 anti-repeat (`_choose_without_stutter:381`) and premise rotation; new `ComedyMode` entries are
 genuinely drop-in (add to `_MODES`, `_SLIM_STANCE`, a `select_mode` pool branch, `_premise_for`
 tags). **Watch the interest-turn guard** (`comedy_modes.py:150`): `dramatic_narrator` and
@@ -612,8 +627,8 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
 
 ## Revised build order (maximizes fun-per-week, post-scope)
 
-1. **Batch 1 — Comedy felt immediately:** ~~delivery profiles (start deadpan + smug)~~ **✅ done** →
-   ~~smug-after-a-roast mood~~ **✅ done** → comedic personas. The change a human feels instantly.
+1. ~~**Batch 1 — Comedy felt immediately:** delivery profiles → smug-after-a-roast mood → comedic
+   personas.~~ **✅ ALL DONE.** The change a human feels instantly. (Next batch starts at step 2.)
 2. **The COCO unlock → `world_state.objects`** (+ GUI bounding boxes) — the substrate for all of §2.
 3. **Reactions in parallel:** land-the-laugh / take-a-bow · the gesture-reaction layer · named
    arrivals + departures (build the bbox→direction primitive here, shared with call-outs).

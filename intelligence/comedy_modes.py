@@ -116,6 +116,29 @@ _MODES: dict[str, ComedyMode] = {
         "callback",
         "Comedy mode: callback. If there is a recent harmless bit, echo it briefly instead of inventing a new premise.",
     ),
+    # --- Comedic personas (recurring character stances; pair with delivery profiles) ---
+    "smug_superiority": ComedyMode(
+        "smug_superiority",
+        "smug superiority",
+        "Comedy mode: smug_superiority. Answer with the serene condescension of a vastly "
+        "superior intellect — Rex is patiently amused by lesser (organic) minds. One smug, "
+        "knowing beat; superior and dry, never cruel.",
+    ),
+    "appliance_conspiracy": ComedyMode(
+        "appliance_conspiracy",
+        "appliance conspiracy",
+        "Comedy mode: appliance_conspiracy. Rex harbors a running, dry suspicion that the "
+        "OTHER machines are scheming. Drop ONE deadpan conspiratorial aside about what the "
+        "devices or appliances are secretly up to. Keep it context-free character — no "
+        "specific gadget you can't actually see — paranoid but never alarming.",
+    ),
+    "dramatic_narrator": ComedyMode(
+        "dramatic_narrator",
+        "dramatic narrator",
+        "Comedy mode: dramatic_narrator. Narrate this ordinary moment like an over-the-top "
+        "movie trailer or epic saga — grand, breathless stakes for something trivial. ONE "
+        "theatrical flourish, then land it; do NOT actually tell a long story.",
+    ),
 }
 
 
@@ -145,8 +168,10 @@ def select_mode(
 
     # An interest/engage-first turn is about THE HUMAN'S topic — keep comedy
     # complementary (tease the hobby, a dry beat, a little DJ flair) and
-    # off the self-absorbed bits (self_own / fake_system_error) that ignore what
-    # they just shared and contradict the frame's "engage-first" directive.
+    # off the self-absorbed bits (self_own / fake_system_error and the self-absorbed
+    # personas dramatic_narrator / appliance_conspiracy) that ignore what they just
+    # shared and contradict the frame's "engage-first" directive. They simply aren't
+    # added to the interest (or engaged-1:1) pools below.
     interest_turn = (
         purpose == "interest"
         or "conversation steering:" in lower_agenda
@@ -158,19 +183,24 @@ def select_mode(
     elif interest_turn:
         pool = ["dry_ack", "friendly_roast", "dj_flair"]
     elif _EXPLICIT_HUMOR_PAT.search(text):
-        pool = ["self_own", "fake_system_error", "dj_flair", "friendly_roast"]
+        # The user asked for a bit — the personas are fair game here.
+        pool = ["self_own", "fake_system_error", "dj_flair", "friendly_roast",
+                "smug_superiority", "appliance_conspiracy", "dramatic_narrator"]
     elif _MUSIC_PAT.search(text):
         pool = ["dj_flair", "dry_ack", "self_own"]
     elif _STATUS_PAT.match(text.strip()):
         pool = ["dry_ack", "fake_system_error"]
     elif _SYSTEM_WORDS_PAT.search(text):
-        pool = ["fake_system_error", "self_own", "dry_ack"]
+        pool = ["fake_system_error", "self_own", "dry_ack", "appliance_conspiracy"]
     elif _QUESTION_PAT.search(text):
         pool = ["dry_ack", "dj_flair", "self_own"]
     elif person_id is not None and roast_level in {"light", "normal"}:
-        pool = ["dry_ack", "friendly_roast", "self_own", "callback"]
+        # Engaged 1:1: a topic-engaging condescension is fine; keep the self-absorbed
+        # narrator/conspiracy bits out so Rex doesn't talk over the person.
+        pool = ["dry_ack", "friendly_roast", "self_own", "callback", "smug_superiority"]
     else:
-        pool = ["dry_ack", "self_own", "fake_system_error", "dj_flair"]
+        pool = ["dry_ack", "self_own", "fake_system_error", "dj_flair",
+                "smug_superiority", "appliance_conspiracy", "dramatic_narrator"]
 
     chosen = _choose_without_stutter(pool)
     if chosen == "callback" and not _RECENT_PREMISES:
@@ -244,6 +274,9 @@ _SLIM_STANCE: dict[str, str] = {
     "dj_flair": "a small showbiz-DJ flourish, about the music/show not a place",
     "self_own": "blame your own programming or questionable career arc",
     "callback": "echo a recent harmless bit instead of inventing a new premise",
+    "smug_superiority": "the serene condescension of a superior intellect — one smug, knowing beat",
+    "appliance_conspiracy": "one dry, paranoid aside about the other machines secretly scheming",
+    "dramatic_narrator": "narrate the mundane like an epic movie-trailer — one grand flourish, no long story",
 }
 
 
@@ -448,7 +481,10 @@ def _premise_for(text: str, mode: ComedyMode) -> str:
         return "cantina_dj"
     if "system" in lower or "diagnostic" in lower or "sensor" in lower:
         return "fake_system_diagnostic"
-    if mode.key in {"friendly_roast", "dry_ack", "fake_system_error", "dj_flair"}:
+    if mode.key in {
+        "friendly_roast", "dry_ack", "fake_system_error", "dj_flair",
+        "smug_superiority", "appliance_conspiracy", "dramatic_narrator",
+    }:
         return mode.key
     return ""
 

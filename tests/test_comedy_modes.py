@@ -376,5 +376,96 @@ class ComedyDeliveryProfileTests(unittest.TestCase):
         )
 
 
+class ComedicPersonaTests(unittest.TestCase):
+    """smug_superiority / appliance_conspiracy / dramatic_narrator recurring stances,
+    each paired with a delivery profile, kept off interest/engaged-1:1 turns."""
+
+    _PERSONAS = ("smug_superiority", "appliance_conspiracy", "dramatic_narrator")
+    _SELF_ABSORBED = ("appliance_conspiracy", "dramatic_narrator")
+
+    def setUp(self):
+        from intelligence import comedy_modes
+
+        comedy_modes.reset_recent_state()
+
+    def _frame(self, *, purpose="answer", allow_roast="normal"):
+        from intelligence import social_frame
+
+        return social_frame.SocialFrame(
+            addressee="Bret", purpose=purpose, max_words=32, max_sentences=2,
+            allow_question=False, allow_roast=allow_roast, allow_visual_comment=False,
+            reason="test",
+        )
+
+    def _captured_pool(self, text, frame):
+        from intelligence import comedy_modes
+
+        captured = {}
+
+        def fake_choose(pool):
+            captured["pool"] = list(pool)
+            return pool[0]
+
+        with mock.patch.object(comedy_modes, "_choose_without_stutter", side_effect=fake_choose):
+            comedy_modes.select_mode(text, person_id=1, frame=frame)
+        return captured["pool"]
+
+    def test_personas_are_registered_with_directives_and_stances(self):
+        from intelligence import comedy_modes
+
+        for key in self._PERSONAS:
+            self.assertIn(key, comedy_modes._MODES)
+            mode = comedy_modes._MODES[key]
+            self.assertTrue(comedy_modes.build_directive(mode).strip())
+            self.assertTrue(comedy_modes.build_slim_directive(mode).strip())
+
+    def test_each_persona_has_a_delivery_profile(self):
+        import config
+        from intelligence import comedy_modes
+
+        profiles = config.COMEDY_DELIVERY_PROFILES
+        self.assertEqual(
+            comedy_modes.voice_settings_for_mode(comedy_modes._MODES["smug_superiority"]),
+            profiles["smug"],
+        )
+        self.assertEqual(
+            comedy_modes.voice_settings_for_mode(comedy_modes._MODES["appliance_conspiracy"]),
+            profiles["deadpan"],
+        )
+        self.assertEqual(
+            comedy_modes.voice_settings_for_mode(comedy_modes._MODES["dramatic_narrator"]),
+            profiles["theatrical"],
+        )
+
+    def test_personas_are_in_the_explicit_humor_pool(self):
+        pool = self._captured_pool("say something funny", self._frame())
+        for key in self._PERSONAS:
+            self.assertIn(key, pool)
+
+    def test_self_absorbed_personas_excluded_from_interest_turn(self):
+        pool = self._captured_pool("I really love astronomy", self._frame(purpose="interest"))
+        for key in self._SELF_ABSORBED:
+            self.assertNotIn(key, pool)
+
+    def test_engaged_pool_allows_smug_but_not_self_absorbed_personas(self):
+        # A plain engaged 1:1 turn (no explicit-humor / system / music words).
+        pool = self._captured_pool("the weather is fine today", self._frame())
+        self.assertIn("smug_superiority", pool)
+        for key in self._SELF_ABSORBED:
+            self.assertNotIn(key, pool)
+
+    def test_appliance_conspiracy_in_system_words_pool(self):
+        pool = self._captured_pool("is your processor acting up?", self._frame())
+        self.assertIn("appliance_conspiracy", pool)
+
+    def test_persona_premise_tags_enable_anti_repeat(self):
+        from intelligence import comedy_modes
+
+        for key in self._PERSONAS:
+            self.assertEqual(
+                comedy_modes._premise_for("whatever", comedy_modes._MODES[key]), key
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
