@@ -279,6 +279,7 @@ _wave_escalation: dict[str, tuple[float, int]] = {}
 # A wave is only trusted once its streak reaches WAVE_BACK_CONFIRM_FRAMES — a held human
 # wave persists across ticks; a flickering non-human blob (a pillow) does not.
 _wave_streak: dict[str, int] = {}
+_last_wave_close_log_at: float = 0.0  # throttle for the "face too close" suppression log
 _facial_expression_reacted_at: dict[tuple[str, str], float] = {}
 _last_facial_expression_reaction_at: float = 0.0
 _last_expression_reaction_line_by_kind: dict[str, str] = {}
@@ -2527,6 +2528,18 @@ def _wave_person_key(person: dict) -> str:
     return f"slot:{slot}" if slot else "unknown"
 
 
+def _wave_face_too_close(person: dict) -> bool:
+    """True when the waver's face fills too much of the frame to be a real across-the-room
+    wave — i.e. they're right at the camera (a desk/laptop webcam), where a detected 'wave'
+    is almost always a near-camera artifact (an arm/object) and a wave-back makes no sense.
+    Gated by WAVE_BACK_MAX_FACE_FRACTION (face AREA / frame area; 0 disables)."""
+    max_frac = float(getattr(config, "WAVE_BACK_MAX_FACE_FRACTION", 0.0) or 0.0)
+    if max_frac <= 0.0:
+        return False
+    frac = person.get("face_box_area_fraction")
+    return isinstance(frac, (int, float)) and float(frac) >= max_frac
+
+
 def _wave_back_line(first_name: str) -> str:
     """A short warm wave-back line, with the person's name woven in when known."""
     name = (first_name or "").strip()
@@ -2595,7 +2608,7 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
 
     Diagnostic logging (info) records detect / fire / expire so a "why didn't it speak?"
     question is answerable from the log instead of guesswork."""
-    global _last_wave_reaction_at, _pending_wave_back
+    global _last_wave_reaction_at, _pending_wave_back, _last_wave_close_log_at
     if not bool(getattr(config, "WAVE_BACK_ENABLED", True)):
         return
     now = time.monotonic()
@@ -2609,6 +2622,7 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
     # row — so it never accumulates a streak and is rejected (live-logged 2026-06-26).
     confirm = max(1, int(getattr(config, "WAVE_BACK_CONFIRM_FRAMES", 2)))
     waving_now: set[str] = set()
+    too_close_frac = 0.0
     for person in snapshot.get("people", []) or []:
         if not isinstance(person, dict):
             continue
@@ -2616,7 +2630,24 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
             continue
         if (person.get("gesture") or "") != "waving":
             continue
+        # Too close to the camera (face fills the frame) → a wave at this range is almost
+        # always a near-camera artifact (an arm/object by a desk webcam); skip it so it
+        # never accumulates a streak.
+        if _wave_face_too_close(person):
+            try:
+                too_close_frac = max(too_close_frac, float(person.get("face_box_area_fraction") or 0.0))
+            except Exception:
+                pass
+            continue
         waving_now.add(_wave_person_key(person))
+    if too_close_frac > 0.0 and not waving_now and (now - _last_wave_close_log_at) > 10.0:
+        _last_wave_close_log_at = now
+        _log.info(
+            "consciousness: wave ignored — waver's face fills %.0f%% of the frame "
+            "(>= %.0f%% threshold); too close to the camera for a real wave",
+            too_close_frac * 100.0,
+            float(getattr(config, "WAVE_BACK_MAX_FACE_FRACTION", 0.0)) * 100.0,
+        )
     # Drop any tracked key that isn't waving this tick (gesture changed / gone), then
     # advance the streak for those that are.
     for stale_key in [k for k in _wave_streak if k not in waving_now]:
@@ -2638,7 +2669,10 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
             continue  # already waved back at this person recently
         name = _first_name(person.get("face_id") or person.get("name"), "")
         if not _pending_wave_back or _pending_wave_back.get("key") != key:
-            _log.info("consciousness: wave detected for %s — queued wave-back", key)
+            _area = person.get("face_box_area_fraction")
+            _area_s = f"{float(_area):.2f}" if isinstance(_area, (int, float)) else "n/a"
+            _log.info("consciousness: wave detected for %s — queued wave-back (face_area=%s)",
+                      key, _area_s)
         # Capture how fast they're waving NOW (refreshed each tick while waving) so the
         # wave-back can mirror the speed; None if it couldn't be measured.
         speed = None
@@ -3461,6 +3495,13 @@ def _step_person_recognition(frame) -> None:
                     )
                     target_slot["face_box_fraction"] = (
                         (box[2] / frame_width) if frame_width > 0 else None
+                    )
+                    # AREA fraction (face box area / frame area) — robust to wide 16:9
+                    # webcams where a close-up face is tall, not wide, so the width-based
+                    # fraction above under-reads closeness. Used by the wave-back close gate.
+                    target_slot["face_box_area_fraction"] = (
+                        (box[2] * box[3]) / (frame_width * frame_height)
+                        if frame_width > 0 and frame_height > 0 else None
                     )
                     _previous_face_boxes[slot_key] = box
                     changed = True
