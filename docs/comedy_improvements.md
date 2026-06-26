@@ -384,7 +384,22 @@ directed ask only. **Effort: L** *(gated on §2 room_model).*
 > need clip assets that don't exist yet, and auto-SFX is the overuse that kills a joke. Build the
 > wins that need no clips.
 
-### Comedic-timing beat pack (double-take, eye-roll, mic-drop, etc.) — **BUILD** *(fully LLM-addressable)*
+### Comedic-timing beat pack (double-take, eye-roll, mic-drop, etc.) — **✅ IMPLEMENTED (first 4 beats)** *(fully LLM-addressable)*
+**Shipped — eye_roll, double_take, mic_drop, spit_take:** four `_beat_*` runners in
+`sequences/animations.py`, registered across `_BODY_BEAT_RUNNERS` / `_BODY_BEAT_CHANNELS` /
+`_BODY_BEAT_ALIASES` + `performance_plan.BODY_BEAT_NAMES`/aliases/fallbacks/emotions + the
+action-router LLM instruction list — so all three call paths (LLM `performance.body_beat`, event,
+gamepad) light up automatically. Choreographed on neck+visor+heroarm+headlift (eyes don't move):
+eye-roll = visor brow-lift + slow neck arc; double-take = look-away → snap-back + visor pop;
+mic-drop = heroarm forward-then-drop + dismissive turn; spit-take = sharp recoil + visor snap.
+**Frequency cooldown** (`config.COMEDY_BEAT_MIN_GAP_SECS`,
+`animations.spontaneous_beat_allowed`/`note_spontaneous_beat` + a `play_body_beat(spontaneous=True)`
+gate) throttles **self-directed** beats only — explicit "do a mic drop" requests and
+event/mood/gamepad beats are never gated. Tests: `tests/test_body_beats.py`. **Remaining:** the
+marginal beats (shrug/facepalm/slow-clap — they want shoulders/two hands this body lacks) are
+deferred, and **(B) firing a beat INTO the existing post-line pause** (the comedic-landing sync,
+reusing `POST_PUNCHLINE_BEAT_MS`) is the next step.
+
 ⚠ verified: 15 existing beats are emotion reactions; none is a comedy bit. Registration is
 **3-paths-for-free** (LLM via `performance_plan.BODY_BEAT_NAMES`, event via `_EVENT_BODY_BEATS`,
 gamepad) — each new beat = 1 runner func + 3 small map edits (the "for free" really means three

@@ -332,7 +332,8 @@ Rules:
   agreement_nod, anger_flash, disagreement_shake, disbelief_stare,
   disgust_recoil, giddy_wiggle, happy_bounce, sad_droop, surprise_pop,
   suspicious_glance, proud_dj_pose, offended_recoil, thinking_tilt,
-  dramatic_visor_peek, tiny_victory_dance. Do not use it for ordinary
+  dramatic_visor_peek, tiny_victory_dance, eye_roll, double_take, mic_drop,
+  spit_take. Do not use it for ordinary
   "look at this" vision requests.
 - Use performance.mood_pose for emotion-driven physical acting requests such as
   "act embarrassed", "look annoyed", or "look proud". Put one of these exact

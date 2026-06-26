@@ -3,6 +3,39 @@ from unittest import mock
 
 
 class BodyBeatAnimationTest(unittest.TestCase):
+    def tearDown(self):
+        from sequences import animations
+        animations._last_spontaneous_beat_at = 0.0
+
+    def _play_and_capture(self, beat_name):
+        from sequences import animations
+
+        moves = []
+
+        def record_move(targets, **_kwargs):
+            moves.append(dict(targets))
+
+        snapshot = {
+            0: animations.NECK_CENTER,
+            1: animations.HEADLIFT_NEUTRAL,
+            2: animations.HEADTILT_NEUTRAL,
+            3: animations.VISOR_HALF,
+            4: animations.ELBOW_NEUTRAL,
+            5: animations.HAND_NEUTRAL,
+            7: animations.HEROARM_NEUTRAL,
+        }
+        with (
+            mock.patch.object(animations._state_module, "get_state", return_value=animations._State.ACTIVE),
+            mock.patch.object(animations, "_current_body_pose", return_value=snapshot),
+            mock.patch.object(animations.random, "choice", return_value=1),
+            mock.patch.object(animations.time, "sleep", return_value=None),
+            mock.patch.object(animations.servos, "move_to", side_effect=record_move),
+            mock.patch.object(animations.servos, "pause_arm_idle"),
+            mock.patch.object(animations.servos, "resume_arm_idle"),
+        ):
+            self.assertTrue(animations.play_body_beat(beat_name, async_=False))
+        return moves
+
     def test_neck_center_uses_configured_range_midpoint(self):
         from sequences import animations
 
@@ -113,6 +146,10 @@ class BodyBeatAnimationTest(unittest.TestCase):
                 "suspicious_glance",
                 "thinking_tilt",
                 "tiny_victory_dance",
+                "eye_roll",
+                "double_take",
+                "mic_drop",
+                "spit_take",
             },
         )
 
@@ -347,6 +384,67 @@ class BodyBeatAnimationTest(unittest.TestCase):
         head_active.assert_called_once()
         eye_color.assert_called_once_with(255, 200, 0)
         resume_arm.assert_called_once()
+
+
+    def test_eye_roll_brow_lifts_the_visor_and_looks_up(self):
+        # Eyes don't move — the visor is the brow. An eye-roll lifts the visor wide
+        # (brow up) and tips the chin up ("ugh, really").
+        from sequences import animations
+
+        first = self._play_and_capture("eye_roll")[0]
+        self.assertEqual(first[3], animations.VISOR_OPEN)       # brow-lift
+        self.assertEqual(first[2], animations.HEADTILT_UP)      # look up
+        self.assertLess(first[2], animations.HEADTILT_NEUTRAL)  # (inverted: up = lower value)
+
+    def test_double_take_glances_away_then_snaps_back_with_visor_pop(self):
+        from sequences import animations
+
+        moves = self._play_and_capture("double_take")
+        self.assertNotEqual(moves[0][0], animations.NECK_CENTER)   # first: glance away
+        snap = moves[1]                                            # then: SNAP back
+        self.assertEqual(snap[0], animations.NECK_CENTER)
+        self.assertEqual(snap[3], animations.VISOR_OPEN)          # visor pop
+        self.assertEqual(snap[1], animations.HEADLIFT_UP)
+
+    def test_mic_drop_presents_then_drops_the_hero_arm(self):
+        from sequences import animations
+
+        moves = self._play_and_capture("mic_drop")
+        self.assertEqual(moves[0][7], animations.HEROARM_FORWARD)  # present the mic
+        self.assertEqual(moves[1][7], animations.HEROARM_BACK)     # drop it
+
+    def test_spit_take_recoils_with_a_wide_visor(self):
+        from sequences import animations
+
+        first = self._play_and_capture("spit_take")[0]
+        self.assertEqual(first[1], animations.HEADLIFT_HIGH)  # sharp recoil up-and-back
+        self.assertEqual(first[3], animations.VISOR_OPEN)     # eyes wide (visor)
+
+    def test_spontaneous_beat_frequency_cooldown(self):
+        from sequences import animations
+
+        clock = [1000.0]
+        with (
+            mock.patch.object(animations.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(animations.config, "COMEDY_BEAT_MIN_GAP_SECS", 10.0),
+        ):
+            animations._last_spontaneous_beat_at = 0.0
+            self.assertTrue(animations.spontaneous_beat_allowed())
+            animations.note_spontaneous_beat()                        # fired at t=1000
+            self.assertFalse(animations.spontaneous_beat_allowed())   # immediately: blocked
+            clock[0] += 11.0
+            self.assertTrue(animations.spontaneous_beat_allowed())    # gap elapsed: allowed
+
+    def test_spontaneous_play_is_gated_but_explicit_is_not(self):
+        from sequences import animations
+
+        # A self-directed beat is suppressed while on cooldown...
+        with mock.patch.object(animations, "spontaneous_beat_allowed", return_value=False):
+            self.assertFalse(animations.play_body_beat("eye_roll", spontaneous=True, async_=False))
+            # ...but an explicit (non-spontaneous) call ignores the cooldown entirely.
+            with mock.patch.object(animations, "_run_body_beat", return_value=True) as run:
+                self.assertTrue(animations.play_body_beat("eye_roll", spontaneous=False, async_=False))
+                run.assert_called_once()
 
 
 if __name__ == "__main__":

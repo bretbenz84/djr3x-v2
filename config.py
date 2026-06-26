@@ -3091,6 +3091,12 @@ POST_PUNCHLINE_BEAT_MS_MAX = 1500
 # the joke delivery; the post-punchline beat above happens after the line lands.
 JOKE_SETUP_PUNCHLINE_PAUSE_MS = 700
 
+# Frequency cooldown for SELF-DIRECTED comedic body beats (eye-roll, double-take,
+# mic-drop, spit-take, etc.) so Rex doesn't mug nonstop on his own. Only beats
+# fired with spontaneous=True are gated; explicit "do a mic drop" requests and
+# deterministic event/mood/gamepad beats are never throttled. Seconds; 0 disables.
+COMEDY_BEAT_MIN_GAP_SECS = 6.0
+
 # Pause after genuine surprise event before Rex responds (milliseconds)
 SURPRISE_PAUSE_MS_MIN = 200
 SURPRISE_PAUSE_MS_MAX = 500

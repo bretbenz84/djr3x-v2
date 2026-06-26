@@ -32,6 +32,10 @@ BODY_BEAT_NAMES = frozenset({
     "suspicious_glance",
     "thinking_tilt",
     "tiny_victory_dance",
+    "eye_roll",
+    "double_take",
+    "mic_drop",
+    "spit_take",
 })
 MOOD_POSE_NAMES = frozenset({
     "agreement",
@@ -93,6 +97,13 @@ _BODY_BEAT_ALIASES = {
     "visor_peek": "dramatic_visor_peek",
     "wrong": "suspicious_glance",
     "wrong_answer": "suspicious_glance",
+    "eyeroll": "eye_roll",
+    "roll_eyes": "eye_roll",
+    "rolls_eyes": "eye_roll",
+    "doubletake": "double_take",
+    "micdrop": "mic_drop",
+    "drop_the_mic": "mic_drop",
+    "spittake": "spit_take",
 }
 
 _BODY_BEAT_FALLBACKS = {
@@ -111,6 +122,10 @@ _BODY_BEAT_FALLBACKS = {
     "suspicious_glance": "Suspicious glance engaged. I distrust the room professionally.",
     "thinking_tilt": "Thinking tilt. It makes the processors look busy.",
     "tiny_victory_dance": "Tiny victory dance deployed. Try not to be intimidated.",
+    "eye_roll": "Eye-roll executed. The visor did the heavy lifting.",
+    "double_take": "Double take. I saw that. I definitely saw that.",
+    "mic_drop": "Mic drop. I'd help you up, but I'm done here.",
+    "spit_take": "Spit take. Imagine the mess if I had liquids.",
 }
 
 _BODY_BEAT_EMOTIONS = {
@@ -129,6 +144,10 @@ _BODY_BEAT_EMOTIONS = {
     "suspicious_glance": "curious",
     "thinking_tilt": "curious",
     "tiny_victory_dance": "happy",
+    "eye_roll": "curious",
+    "double_take": "excited",
+    "mic_drop": "happy",
+    "spit_take": "excited",
 }
 _MOOD_POSE_ALIASES = {
     "agree": "agreement",

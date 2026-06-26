@@ -154,6 +154,10 @@ _BODY_BEAT_CHANNELS: dict[str, tuple[int, ...]] = {
     "thinking_tilt": _BODY_BEAT_HEAD_CHANNELS,
     "dramatic_visor_peek": _BODY_BEAT_HEAD_CHANNELS,
     "tiny_victory_dance": _BODY_BEAT_HEAD_CHANNELS + _BODY_BEAT_ARM_CHANNELS,
+    "eye_roll": _BODY_BEAT_HEAD_CHANNELS,
+    "double_take": _BODY_BEAT_HEAD_CHANNELS,
+    "mic_drop": _BODY_BEAT_HEAD_CHANNELS + (7,),
+    "spit_take": _BODY_BEAT_HEAD_CHANNELS,
 }
 _BODY_BEAT_ARM_NAMES = {
     name
@@ -250,6 +254,32 @@ def _body_beat_allowed() -> bool:
         return _state_module.get_state() not in (_State.SLEEP, _State.SHUTDOWN)
     except Exception:
         return True
+
+
+# Spontaneous (self-directed) comedic beats are rate-limited so Rex doesn't mug
+# nonstop on his own. EXPLICIT requests ("do a mic drop") and deterministic
+# event/mood/gamepad beats are NOT gated — only self-fires pass spontaneous=True.
+_last_spontaneous_beat_at = 0.0
+_spontaneous_beat_lock = threading.Lock()
+
+
+def spontaneous_beat_allowed() -> bool:
+    """True if enough time has elapsed to fire another SELF-DIRECTED comedic beat."""
+    try:
+        gap = float(getattr(config, "COMEDY_BEAT_MIN_GAP_SECS", 6.0))
+    except Exception:
+        gap = 6.0
+    if gap <= 0:
+        return True
+    with _spontaneous_beat_lock:
+        return (time.monotonic() - _last_spontaneous_beat_at) >= gap
+
+
+def note_spontaneous_beat() -> None:
+    """Record that a self-directed comedic beat just fired (starts the cooldown)."""
+    global _last_spontaneous_beat_at
+    with _spontaneous_beat_lock:
+        _last_spontaneous_beat_at = time.monotonic()
 
 
 def _move_body(targets: dict[int, int], *, step_us: int = 70, step_delay: float = 0.01) -> None:
@@ -549,6 +579,86 @@ def _beat_sad_droop(snapshot: dict[int, int]) -> None:
     _restore_body_pose(snapshot, step_us=45, step_delay=0.016)
 
 
+def _beat_eye_roll(snapshot: dict[int, int]) -> None:
+    # No movable eyes — the visor IS the brow. An eye-roll reads as a brow-lift
+    # (visor pops open), the chin tipping up ("ugh, really"), and a slow neck arc
+    # across and back. Languid on purpose: a slow roll, not a snap.
+    side = random.choice([-1, 1])
+    _move_body(
+        {2: HEADTILT_UP, 3: VISOR_OPEN, 0: NECK_CENTER + side * 320},
+        step_us=60,
+        step_delay=0.013,
+    )
+    time.sleep(0.12)
+    _move_body(
+        {0: NECK_CENTER - side * 320, 2: HEADTILT_SLIGHT_DOWN},
+        step_us=52,
+        step_delay=0.015,
+    )
+    time.sleep(0.08)
+    _restore_body_pose(snapshot)
+
+
+def _beat_double_take(snapshot: dict[int, int]) -> None:
+    # Glance away, casual — then SNAP back with a visor pop and a head lift: the
+    # classic "wait... WHAT." The comedy is the speed difference between the lazy
+    # look-away and the sharp return.
+    side = random.choice([-1, 1])
+    _move_body(
+        {0: NECK_CENTER + side * 760, 3: VISOR_HALF},
+        step_us=120,
+        step_delay=0.005,
+    )
+    time.sleep(0.16)
+    _move_body(
+        {0: NECK_CENTER, 3: VISOR_OPEN, 1: HEADLIFT_UP, 2: HEADTILT_UP},
+        step_us=230,
+        step_delay=0.002,
+    )
+    time.sleep(0.13)
+    _restore_body_pose(snapshot)
+
+
+def _beat_mic_drop(snapshot: dict[int, int]) -> None:
+    # Present the "mic" — hero arm forward, chin up, visor wide, supremely smug —
+    # hold the beat, then DROP it: the arm swings back/down and the head turns away
+    # dismissively. The punctuation on a line he knows landed.
+    side = random.choice([-1, 1])
+    _move_body(
+        {7: HEROARM_FORWARD, 1: HEADLIFT_UP, 2: HEADTILT_UP, 3: VISOR_OPEN},
+        step_us=110,
+        step_delay=0.006,
+    )
+    time.sleep(0.24)
+    _move_body(
+        {7: HEROARM_BACK, 0: NECK_CENTER + side * 720, 2: HEADTILT_SLIGHT_DOWN},
+        step_us=210,
+        step_delay=0.003,
+    )
+    time.sleep(0.16)
+    _restore_body_pose(snapshot)
+
+
+def _beat_spit_take(snapshot: dict[int, int]) -> None:
+    # Sharp backward recoil — head snaps up-and-back, visor pops wide (shock), a
+    # quick neck flinch, then a small settle. The "you said WHAT" reaction: fast
+    # and jerky where the eye-roll is slow.
+    side = random.choice([-1, 1])
+    _move_body(
+        {1: HEADLIFT_HIGH, 2: HEADTILT_UP, 3: VISOR_OPEN, 0: NECK_CENTER + side * 360},
+        step_us=255,
+        step_delay=0.002,
+    )
+    time.sleep(0.10)
+    _move_body(
+        {0: NECK_CENTER - side * 240, 1: HEADLIFT_UP},
+        step_us=170,
+        step_delay=0.004,
+    )
+    time.sleep(0.06)
+    _restore_body_pose(snapshot)
+
+
 _BODY_BEAT_RUNNERS = {
     "agreement_nod": _beat_agreement_nod,
     "anger_flash": _beat_anger_flash,
@@ -565,6 +675,10 @@ _BODY_BEAT_RUNNERS = {
     "thinking_tilt": _beat_thinking_tilt,
     "dramatic_visor_peek": _beat_dramatic_visor_peek,
     "tiny_victory_dance": _beat_tiny_victory_dance,
+    "eye_roll": _beat_eye_roll,
+    "double_take": _beat_double_take,
+    "mic_drop": _beat_mic_drop,
+    "spit_take": _beat_spit_take,
 }
 
 _BODY_BEAT_ALIASES = {
@@ -620,6 +734,15 @@ _BODY_BEAT_ALIASES = {
     "correct_answer": "tiny_victory_dance",
     "game_correct": "tiny_victory_dance",
     "victory": "tiny_victory_dance",
+    "eyeroll": "eye_roll",
+    "roll_eyes": "eye_roll",
+    "rolls_eyes": "eye_roll",
+    "doubletake": "double_take",
+    "micdrop": "mic_drop",
+    "drop_the_mic": "mic_drop",
+    "mic": "mic_drop",
+    "spittake": "spit_take",
+    "spit": "spit_take",
 }
 
 
@@ -634,17 +757,28 @@ def body_beat_names() -> list[str]:
     return sorted(_BODY_BEAT_RUNNERS)
 
 
-def play_body_beat(name: str, *, async_: bool = True) -> bool:
+def play_body_beat(name: str, *, async_: bool = True, spontaneous: bool = False) -> bool:
     """
     Play a named physical punctuation beat.
 
     The beat runs in a daemon thread by default so conversation/game/DJ logic can
     keep moving while Rex performs a short embodied reaction.
+
+    Set spontaneous=True for a SELF-DIRECTED beat (Rex deciding to perform on his
+    own, with no explicit request or triggering event): these are frequency-gated
+    by COMEDY_BEAT_MIN_GAP_SECS so he doesn't mug nonstop. Explicit requests and
+    deterministic event/mood/gamepad beats leave it False and are never throttled.
     """
     canonical = _canonical_body_beat(name)
     if not canonical:
         _log.debug("[animations] unknown body beat: %r", name)
         return False
+
+    if spontaneous and not spontaneous_beat_allowed():
+        _log.debug("[animations] spontaneous body beat %r suppressed by frequency cooldown", canonical)
+        return False
+    if spontaneous:
+        note_spontaneous_beat()
 
     if async_:
         threading.Thread(
