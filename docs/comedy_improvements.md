@@ -83,17 +83,26 @@
 
 ## Scope at a glance
 
-**IN (build):**
-- §1 Comedy & roasting — all five items (sharp tier, running gags, personas, tease-obsession,
-  signature handle) + the delivery-profile "do-first."
+**✅ SHIPPED (this cycle — live on `main`, tested):**
+- **Smug-after-a-roast mood** — a landed `humor.roast` fires `set_mood('smug')` (proud chin-up). `10ee119`
+- **Angry/offended visor squint + transient glower** — insult/anger narrows the visor to the lens-clear
+  floor (sustained), and the immediate insult reaction drops the visor over the eyes (`anger_flash`,
+  wired into both insult paths). `10ee119` / `757cbb4`
+- **Comedic-timing beat pack (first 4 beats)** — eye-roll, double-take, mic-drop, spit-take, fully
+  registered + LLM-addressable with a self-direct frequency cooldown. `f4f414e`
+- **(B) comedic-landing sync** — joke/roast/free-bit beats land in the post-line silence via a new
+  `speech_queue.on_audio_end` hook, barge-in-guarded. `5707941`
+
+**IN (still to build):**
+- §1 Comedy & roasting — sharp tier, running gags, **personas** (smug mood ✅ done), tease-obsession,
+  signature handle + the delivery-profile "do-first."
 - §2 Curiosity — **all-in**: COCO unlock, `room_model` (Rich), object-grounded curiosity,
   change detection, POV seeds, react-to-you, crowd curiosity, **+ GUI object bboxes**. Docent
   bit is in but **ask-only**.
 - §3 Crowdwork — land-the-laugh, room-energy read, named arrivals + departures, name-and-point
   call-outs, compare-the-room, gesture-reaction layer, **host mode (operator-triggered only)**.
 - §4 Storytelling — tall-tale, multi-episode saga (`person_story`), docent — **all ask-only**.
-- §6 Physical — **no-clip wins only**: comedic beat pack (LLM-addressable), thinking eyes,
-  smug-after-a-roast mood.
+- §6 Physical — remaining no-clip win: **thinking eyes** (beat pack ✅, smug/angry moods ✅).
 - §8 Personalization — open commitments, honorifics (celebration-sourced for now), gossip
   discharge, feed-callback-bank (about-present-people only), **+ rescued "inject open plans."**
 
@@ -102,10 +111,9 @@
   puppeteer expansion), beat-synced dance mode (needs a beat signal), E-4 Cantina Open
   (diminished), E-5 Long Con (diminished).
 
-**CUT (removed from scope):**
-- §7 Smart home (whole cluster), §8 per-person smart-home anticipation, Roast Battle (E-3),
-  Name That Tune Showdown (E-6), Movie Night (E-8), roll-up/mock-retreat base bits
-  (base not show-ready).
+**CUT (removed from this doc — see the Decisions table for rationale):** smart home (§7) +
+per-person smart-home anticipation, Roast Battle (E-3), Name That Tune Showdown (E-6),
+Movie Night (E-8), roll-up/mock-retreat base bits.
 
 ---
 
@@ -492,27 +500,20 @@ visor-openness dimension and the safe floor already exist).*
 - **Beat-synced DJ dance mode** — ⚠ `arm_rhythm_tick` is a complete function with **zero callers**;
   needs a beat signal the playback loop doesn't emit (librosa is installed; live beat-tracking adds
   latency/CPU). The chest-per-beat flash is also a firmware gap. `L`, later.
-- **Roll-up / mock-retreat base bits** — **CUT:** the base is not show-ready (slow caps, ToF
-  avoidance still a stub, calibration unfinished, topple risk). Revisit at motion Phase 1.
 
 ---
 
 ## 7. Usefulness & smart home — **CUT**
 
-> Owner call: **cut the entire smart-home cluster.** ⚠ verified 100% greenfield anyway — no timer,
-> reminder, light control, device transport, `announce`, or scheduled-callback primitive exists,
-> and Alexa cannot be driven directly. Home Assistant, Alexa-via-switch, timers/reminders, the
-> announce primitive, show-cue, Movie Time, and the "act" half of notice→offer→act are all out of
-> scope.
->
-> **One item rescued and moved to §8:** "inject open plans into the live reply" is pure
-> conversation (events → `_build_person_context`), not home control.
+> Entire cluster removed (HA, Alexa, timers/reminders, announce/scheduler, show-cue, Movie Time —
+> see the Decisions table). The one conversation-only item, "inject open plans into the live reply,"
+> was rescued to §8.
 
 ---
 
 ## 8. Personalization & running gags from memory
 
-### Inject open plans into the LIVE reply — **BUILD** *(rescued from §7 — cheapest real win)*
+### Inject open plans into the LIVE reply — **BUILD** *(rescued from the cut smart-home cluster — cheapest real win)*
 ⚠ verified exactly: `_build_person_context` (`llm.py:572`) only reads `emotional_events`; the
 calendar readers `get_open_events`/`get_upcoming_events` (`memory/events.py:249/264`) are never
 called there, so mid-conversation Rex doesn't know you have a thing tomorrow. Add a short "Open
@@ -559,14 +560,12 @@ funny?" flavor was rejected as tiresome). This deliberately relaxes the speaker-
 the new path needs its own hard gate, separate from the existing one. Feeds the running-gag engine
 (§1). **Effort: M.**
 
-### Per-person smart-home anticipation — **CUT** *(depended on §7).*
-
 ---
 
 ## The big swings — revised after scoping
 
-> E-tickets are fusions of the above. After the scope cuts, three survive intact-ish, two are
-> diminished, three are cut.
+> E-tickets are fusions of the above. Three survive (**E-1, E-2, E-7**), two are diminished/deferred
+> (**E-4, E-5**); E-3, E-6, and E-8 were cut (see the Decisions table).
 
 ### E-1 — "The Reunion" — **KEEP (reframed as an upgrade)**
 ⚠ The absence detector already exists and ships a real long-absence greeting today
@@ -578,12 +577,10 @@ positive would fire a loud withheld-greeting performance at the wrong person —
 that, so gate on identity stability. **New glue:** the staged sequence + lockout through the governor.
 
 ### E-2 — "Story Time" — **KEEP (diminished: LED staging, ask-only)**
-With §7 cut, there's no `show_cue`/`home.scene` — stage with **chest-LED dim + duck his own music**
+With smart-home cut, there's no `show_cue`/`home.scene` — stage with **chest-LED dim + duck his own music**
 (`dj.set_volume`/`volume_down` exist). `dramatic_narrator` persona + the tall-tale cap-bypass,
 ask-only. ⚠ `dramatic_narrator` and `show_cue` don't exist yet — both net-new. The false-climax
 prompt scaffold is the one real authoring challenge.
-
-### E-3 — "Roast Battle" — **CUT** *(off-brand; the guardrail isn't even on the game path).*
 
 ### E-4 — "Cantina Open" — **DIMINISHED (defer)**
 Loses `home.scene` (cut) and the leaderboard + auto-DJ-announce (games deferred). What survives is a
@@ -591,12 +588,10 @@ once-per-window first-arrival ritual + dance mode (needs the beat signal, deferr
 callback + the open-plans bulletin. Keep as a **later** note; revisit if games/dance resume.
 
 ### E-5 — "The Long Con" — **DIMINISHED**
-Loses the cross-session scheduled-callback payoff and `show_cue` (both §7-adjacent, cut). Survives as
+Loses the cross-session scheduled-callback payoff and `show_cue` (both smart-home-adjacent, cut). Survives as
 the **`running_bit` escalation (silent, §1) + the `appliance_conspiracy` persona** — an evolving
 multi-session frame without the staged scheduled reveal. ⚠ `appliance_conspiracy`/`toaster` and a
 cross-session scheduled callback are both vaporware today.
-
-### E-6 — "Name That Tune: Showdown" — **CUT** *(games deferred).*
 
 ### E-7 — "The Welcome Committee" — **KEEP (diminished: no home offer)**
 ⚠ The consecutive-tick confirmation primitive exists (`consciousness.py:294`,
@@ -606,14 +601,12 @@ thin layer over callbacks (§1, buildable); the **per-person home offer is cut**
 door-direction sensing** in the build — degrade to a plain face-arrival (no directional snap).
 **New glue:** the identity-stability arrival gate + chaining call→brief into one sequence.
 
-### E-8 — "Movie Night" — **CUT** *(depended entirely on Home Assistant).*
-
 ---
 
 ## Revised build order (maximizes fun-per-week, post-scope)
 
-1. **Batch 1 — Comedy felt immediately:** delivery profiles (start deadpan + smug) → smug-after-a-
-   roast mood → comedic personas. All ready, no prereqs; the change a human feels instantly.
+1. **Batch 1 — Comedy felt immediately:** delivery profiles (start deadpan + smug) → ~~smug-after-a-
+   roast mood~~ **✅ done** → comedic personas. All ready, no prereqs; the change a human feels instantly.
 2. **The COCO unlock → `world_state.objects`** (+ GUI bounding boxes) — the substrate for all of §2.
 3. **Reactions in parallel:** land-the-laugh / take-a-bow · the gesture-reaction layer · named
    arrivals + departures (build the bbox→direction primitive here, shared with call-outs).
@@ -635,12 +628,14 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
    already computed. **M.**
 4. **Running gags that escalate** — resurrects dead `running_bit`; turns callbacks into bits that
    recur (silently) instead of decaying. **M.**
-5. **Comedic-timing beat pack** — 8 LLM-addressable physical bits a room reads instantly. **M.**
+5. ~~**Comedic-timing beat pack**~~ — **✅ done (first 4 beats)** + the (B) post-line landing; LLM-addressable
+   physical bits a room reads instantly. Remaining: shrug/facepalm/slow-clap (deferred). **M.**
 6. **Energetic named arrivals + departures** — identity is already in hand and discarded; clock people
    by name. **M.**
 7. **Warmth-earned sharp roast tier** — gives the roaster energy a place to live; warmth-gated. **M.**
 8. **Inject open plans into the live reply** — the cheapest real "more useful" win, fully ready. **S.**
-9. **Smug-after-a-roast mood + thinking eyes** — two `S` personality wins from existing machinery.
+9. ~~**Smug-after-a-roast mood**~~ **✅ done** (+ angry-squint/glower ✅) **+ thinking eyes** — `S` personality
+   wins from existing machinery.
 10. **room_model + object permanence** — the L investment that makes object-grounded curiosity,
     change-detection, and the docent bit possible. **L.**
 
