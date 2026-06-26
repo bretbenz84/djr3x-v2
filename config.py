@@ -2350,15 +2350,16 @@ WAVE_BACK_MIN_GAP_SECS = _env_float(
 # reads 'waving' twice in a row, so it's rejected. Set 1 to restore old single-frame
 # behavior (the source of the phantom waves).
 WAVE_BACK_CONFIRM_FRAMES = _env_int("WAVE_BACK_CONFIRM_FRAMES", 2, min_value=1, max_value=10)
-# Suppress wave-back when the waver's face fills too much of the frame — i.e. they're
-# right at the camera (a desk/laptop webcam), where a detected "wave" is almost always a
-# near-camera artifact (an arm/object) and a wave across the room makes no sense. Measured
-# as face-box AREA / frame area (robust to wide 16:9 webcams, where a close-up face is tall
-# not wide, so the width-based proxemics zone under-reads closeness — live-logged 2026-06-26
-# on a dev-mac FaceTime cam: a pillow read as a waving arm). 0 disables. Tune off the
-# "face_area=" value in the "wave detected" log line for your setup.
+# Suppress wave-back when the waver's face fills too much of the frame HEIGHT — i.e.
+# they're right at the camera (a desk/laptop webcam), where a detected "wave" is almost
+# always a near-camera artifact (an arm/object) and a wave across the room makes no sense.
+# Measured as face-box HEIGHT / frame height, NOT the width-based proxemics zone: on a wide
+# 16:9 webcam a close-up face is TALL not wide, so width under-reads closeness (live-logged
+# 2026-06-26: a face filling ~half the frame height still logged distance=public). Default
+# 0.30 = "face taller than 30% of the screen → desk-webcam close-up". 0 disables. Tune off
+# the "face_height=" value in the "wave detected" log line for your setup.
 WAVE_BACK_MAX_FACE_FRACTION = _env_float(
-    "WAVE_BACK_MAX_FACE_FRACTION", 0.08, min_value=0.0, max_value=1.0,
+    "WAVE_BACK_MAX_FACE_FRACTION", 0.30, min_value=0.0, max_value=1.0,
 )
 # Wave-back arm gesture: how many times the wrist (the "hand" servo) sweeps between BOTH of
 # its travel limits when Rex waves back (one sweep = to one limit and back). The elbow only

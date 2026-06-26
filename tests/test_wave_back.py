@@ -40,12 +40,12 @@ class WaveBackHelpersTest(unittest.TestCase):
         self.assertEqual(c._wave_person_key({}), "unknown")
 
     def test_face_too_close_gate(self):
-        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.08):
-            self.assertTrue(c._wave_face_too_close({"face_box_area_fraction": 0.20}))   # close
-            self.assertFalse(c._wave_face_too_close({"face_box_area_fraction": 0.03}))  # far
-            self.assertFalse(c._wave_face_too_close({}))                                # no data
-        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.0):           # disabled
-            self.assertFalse(c._wave_face_too_close({"face_box_area_fraction": 0.9}))
+        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.30):
+            self.assertTrue(c._wave_face_too_close({"face_box_height_fraction": 0.49}))  # close-up
+            self.assertFalse(c._wave_face_too_close({"face_box_height_fraction": 0.18}))  # across room
+            self.assertFalse(c._wave_face_too_close({}))                                  # no data
+        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.0):             # disabled
+            self.assertFalse(c._wave_face_too_close({"face_box_height_fraction": 0.9}))
 
 
 class StepWaveReactionTest(unittest.TestCase):
@@ -271,22 +271,22 @@ class WaveStabilityGateTest(unittest.TestCase):
         self.assertIsNone(c._pending_wave_back)
 
     def test_close_up_face_never_waves_back(self):
-        # A waver whose face fills the frame (desk webcam close-up) is ignored even across
-        # many consecutive 'waving' ticks — a near-camera artifact, not a real wave.
+        # A waver whose face fills the frame height (desk webcam close-up) is ignored even
+        # across many consecutive 'waving' ticks — a near-camera artifact, not a real wave.
         close = _waving()
-        close["face_box_area_fraction"] = 0.25
-        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.08):
+        close["face_box_height_fraction"] = 0.49   # ~half the frame height (laptop close-up)
+        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.30):
             self.assertFalse(self._tick({"people": [close]}))
             self.assertFalse(self._tick({"people": [close]}))   # never accumulates a streak
             self.assertFalse(self._tick({"people": [close]}))
         self.assertIsNone(c._pending_wave_back)
 
     def test_normal_distance_face_still_waves(self):
-        # A waver at normal distance (small face area) passes the close gate and fires
+        # A waver at normal distance (small face height) passes the close gate and fires
         # once the stability streak is met.
         far = _waving()
-        far["face_box_area_fraction"] = 0.03
-        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.08):
+        far["face_box_height_fraction"] = 0.18     # across the room
+        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.30):
             self.assertFalse(self._tick({"people": [far]}))     # streak 1
             self.assertTrue(self._tick({"people": [far]}))      # streak 2 → fires
 

@@ -2532,11 +2532,11 @@ def _wave_face_too_close(person: dict) -> bool:
     """True when the waver's face fills too much of the frame to be a real across-the-room
     wave — i.e. they're right at the camera (a desk/laptop webcam), where a detected 'wave'
     is almost always a near-camera artifact (an arm/object) and a wave-back makes no sense.
-    Gated by WAVE_BACK_MAX_FACE_FRACTION (face AREA / frame area; 0 disables)."""
+    Gated by WAVE_BACK_MAX_FACE_FRACTION (face box HEIGHT / frame height; 0 disables)."""
     max_frac = float(getattr(config, "WAVE_BACK_MAX_FACE_FRACTION", 0.0) or 0.0)
     if max_frac <= 0.0:
         return False
-    frac = person.get("face_box_area_fraction")
+    frac = person.get("face_box_height_fraction")
     return isinstance(frac, (int, float)) and float(frac) >= max_frac
 
 
@@ -2635,7 +2635,7 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
         # never accumulates a streak.
         if _wave_face_too_close(person):
             try:
-                too_close_frac = max(too_close_frac, float(person.get("face_box_area_fraction") or 0.0))
+                too_close_frac = max(too_close_frac, float(person.get("face_box_height_fraction") or 0.0))
             except Exception:
                 pass
             continue
@@ -2643,7 +2643,7 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
     if too_close_frac > 0.0 and not waving_now and (now - _last_wave_close_log_at) > 10.0:
         _last_wave_close_log_at = now
         _log.info(
-            "consciousness: wave ignored — waver's face fills %.0f%% of the frame "
+            "consciousness: wave ignored — waver's face fills %.0f%% of the frame height "
             "(>= %.0f%% threshold); too close to the camera for a real wave",
             too_close_frac * 100.0,
             float(getattr(config, "WAVE_BACK_MAX_FACE_FRACTION", 0.0)) * 100.0,
@@ -2669,10 +2669,10 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
             continue  # already waved back at this person recently
         name = _first_name(person.get("face_id") or person.get("name"), "")
         if not _pending_wave_back or _pending_wave_back.get("key") != key:
-            _area = person.get("face_box_area_fraction")
-            _area_s = f"{float(_area):.2f}" if isinstance(_area, (int, float)) else "n/a"
-            _log.info("consciousness: wave detected for %s — queued wave-back (face_area=%s)",
-                      key, _area_s)
+            _fh = person.get("face_box_height_fraction")
+            _fh_s = f"{float(_fh):.2f}" if isinstance(_fh, (int, float)) else "n/a"
+            _log.info("consciousness: wave detected for %s — queued wave-back (face_height=%s)",
+                      key, _fh_s)
         # Capture how fast they're waving NOW (refreshed each tick while waving) so the
         # wave-back can mirror the speed; None if it couldn't be measured.
         speed = None
@@ -3496,12 +3496,14 @@ def _step_person_recognition(frame) -> None:
                     target_slot["face_box_fraction"] = (
                         (box[2] / frame_width) if frame_width > 0 else None
                     )
-                    # AREA fraction (face box area / frame area) — robust to wide 16:9
-                    # webcams where a close-up face is tall, not wide, so the width-based
-                    # fraction above under-reads closeness. Used by the wave-back close gate.
-                    target_slot["face_box_area_fraction"] = (
-                        (box[2] * box[3]) / (frame_width * frame_height)
-                        if frame_width > 0 and frame_height > 0 else None
+                    # HEIGHT fraction (face box height / frame height) — robust to wide
+                    # 16:9 webcams where a close-up face is TALL, not wide, so the width
+                    # fraction above under-reads closeness (proxemics logged distance=public
+                    # for a face filling ~half the frame height). Used by the wave-back
+                    # close gate: a face taller than ~a third of the frame is a desk-webcam
+                    # close-up, where a "wave" is a near-camera artifact.
+                    target_slot["face_box_height_fraction"] = (
+                        (box[3] / frame_height) if frame_height > 0 else None
                     )
                     _previous_face_boxes[slot_key] = box
                     changed = True
