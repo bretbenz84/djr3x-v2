@@ -3249,6 +3249,42 @@ COMEDY_LINE_BANKS = {
     ],
 }
 
+# ── Comedic delivery profiles ────────────────────────────────────────────────
+# A landed roast and a condolence currently reach ElevenLabs with IDENTICAL
+# voice settings, so every joke under-lands. These profiles give each comedic
+# STANCE (intelligence/comedy_modes.select_mode) its own timbre, mirroring the
+# empathy delivery layer (intelligence/empathy._MODE_VOICE_SETTINGS) but keyed
+# on the turn's comedy mode instead of a per-person empathy cache.
+#
+# Precedence: empathy/grief delivery shaping OUTRANKS comedy. A comedy profile
+# is applied ONLY on a neutral-empathy turn (when empathy left the voice alone),
+# and the "straight" care mode carries no profile — so sensitive turns are never
+# comedically shaped. Comedy also rides under TTS_EXPRESSIVE_VOICE_ENABLED: with
+# expressive voice off (flat clone + pre-existing cache) comedy stays off too.
+#
+# Each distinct {stability,style,...} combo is a fresh TTS cache key, so start
+# with a SMALL set (deadpan + smug) to limit cache regen; add mischief / dj_hype
+# later by adding a profile here and a comedy-mode → profile row below.
+COMEDY_DELIVERY_PROFILES_ENABLED = True
+COMEDY_DELIVERY_PROFILES = {
+    # deadpan — flat, dry, deliberate; the even monotone a dry button lands on.
+    # Higher stability than baseline (less inflection), much lower style (no
+    # flourish), a hair slower so the button is delivered, not tossed off.
+    "deadpan": {"stability": 0.66, "style": 0.20, "similarity_boost": 0.82, "speed": 0.97},
+    # smug — cocky, self-satisfied swagger after a jab; more expressive style
+    # than baseline but controlled, savored a touch slower.
+    "smug":    {"stability": 0.46, "style": 0.64, "similarity_boost": 0.82, "speed": 0.96},
+}
+# comedy_modes.select_mode key → delivery profile name (above). Modes left out
+# (straight / fake_system_error / dj_flair) get NO comedy voice shaping for now.
+COMEDY_MODE_DELIVERY_PROFILE = {
+    "dry_ack":         "deadpan",
+    "self_own":        "deadpan",
+    "callback":        "deadpan",
+    "callback_banked": "deadpan",
+    "friendly_roast":  "smug",
+}
+
 # If True, Rex will begin processing normal speech from IDLE without requiring
 # a wake word first. Wake words remain active for explicit attention grabbing and
 # mid-speech interruption behavior.

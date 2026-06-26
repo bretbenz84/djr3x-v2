@@ -285,5 +285,96 @@ class GentleProbeTenderModeTest(unittest.TestCase):
         )
 
 
+class ComedyDeliveryProfileTests(unittest.TestCase):
+    """voice_settings_for_mode: comedy STANCE -> ElevenLabs timbre, layered
+    under empathy (precedence is enforced by the caller, not here)."""
+
+    def _mode(self, key):
+        from intelligence import comedy_modes
+
+        return comedy_modes._MODES[key]
+
+    def test_dry_ack_maps_to_deadpan_profile(self):
+        import config
+        from intelligence import comedy_modes
+
+        settings = comedy_modes.voice_settings_for_mode(self._mode("dry_ack"))
+        self.assertEqual(settings, config.COMEDY_DELIVERY_PROFILES["deadpan"])
+
+    def test_friendly_roast_maps_to_smug_profile(self):
+        import config
+        from intelligence import comedy_modes
+
+        settings = comedy_modes.voice_settings_for_mode(self._mode("friendly_roast"))
+        self.assertEqual(settings, config.COMEDY_DELIVERY_PROFILES["smug"])
+
+    def test_self_own_and_callback_are_deadpan(self):
+        import config
+        from intelligence import comedy_modes
+
+        deadpan = config.COMEDY_DELIVERY_PROFILES["deadpan"]
+        self.assertEqual(comedy_modes.voice_settings_for_mode(self._mode("self_own")), deadpan)
+        self.assertEqual(comedy_modes.voice_settings_for_mode(self._mode("callback")), deadpan)
+
+    def test_banked_callback_inherits_deadpan(self):
+        import config
+        from intelligence import comedy_modes
+
+        banked = comedy_modes.with_banked_premise(
+            self._mode("dry_ack"), "echo the toaster bit"
+        )
+        self.assertEqual(banked.key, "callback_banked")
+        self.assertEqual(
+            comedy_modes.voice_settings_for_mode(banked),
+            config.COMEDY_DELIVERY_PROFILES["deadpan"],
+        )
+
+    def test_straight_care_mode_gets_no_profile(self):
+        from intelligence import comedy_modes
+
+        self.assertIsNone(comedy_modes.voice_settings_for_mode(self._mode("straight")))
+
+    def test_unmapped_modes_get_no_profile(self):
+        from intelligence import comedy_modes
+
+        # dj_flair / fake_system_error have no profile yet (mischief/dj_hype later).
+        self.assertIsNone(comedy_modes.voice_settings_for_mode(self._mode("dj_flair")))
+        self.assertIsNone(
+            comedy_modes.voice_settings_for_mode(self._mode("fake_system_error"))
+        )
+
+    def test_none_mode_is_safe(self):
+        from intelligence import comedy_modes
+
+        self.assertIsNone(comedy_modes.voice_settings_for_mode(None))
+
+    def test_disabled_flag_suppresses_profile(self):
+        from intelligence import comedy_modes
+
+        with mock.patch("config.COMEDY_DELIVERY_PROFILES_ENABLED", False):
+            self.assertIsNone(
+                comedy_modes.voice_settings_for_mode(self._mode("dry_ack"))
+            )
+
+    def test_expressive_voice_off_suppresses_profile(self):
+        from intelligence import comedy_modes
+
+        # Comedy rides under the global expressive-voice switch.
+        with mock.patch("config.TTS_EXPRESSIVE_VOICE_ENABLED", False):
+            self.assertIsNone(
+                comedy_modes.voice_settings_for_mode(self._mode("friendly_roast"))
+            )
+
+    def test_returns_fresh_dict_not_the_shared_config(self):
+        import config
+        from intelligence import comedy_modes
+
+        settings = comedy_modes.voice_settings_for_mode(self._mode("dry_ack"))
+        settings["stability"] = 0.999
+        self.assertNotEqual(
+            config.COMEDY_DELIVERY_PROFILES["deadpan"]["stability"], 0.999
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

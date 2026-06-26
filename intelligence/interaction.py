@@ -9985,6 +9985,24 @@ def _stream_llm_response(
                 delivery_voice_settings if delivery_voice_settings else "default",
             )
 
+        # Comedic delivery profile — give the chosen comedy STANCE its own timbre
+        # (deadpan / smug / ...), but ONLY when empathy left the voice alone.
+        # Empathy/grief delivery outranks comedy: a sympathetic mode that already
+        # shaped the voice above is never overwritten. "straight" (care) modes
+        # carry no profile, so sensitive turns are never comedically shaped.
+        if delivery_voice_settings is None:
+            try:
+                comedy_voice = comedy_modes.voice_settings_for_mode(comedy_mode)
+            except Exception as exc:
+                _log.debug("[comedy] delivery profile error: %s", exc)
+                comedy_voice = None
+            if comedy_voice:
+                delivery_voice_settings = comedy_voice
+                _log.info(
+                    "[comedy] delivery profile: mode=%s voice=%s",
+                    getattr(comedy_mode, "key", "?"), comedy_voice,
+                )
+
         # Non-streaming path: the whole reply is in hand, so classify Rex's own tone
         # directly and let it drive the delivery emotion (eyes/voice/motion) + a body-
         # mood afterglow. Surprise/empathy keep priority. Skipped with audio suppressed
@@ -10240,6 +10258,23 @@ def _stream_and_speak_sentences(
         empathy_pre_beat_ms = int(overrides.get("pre_beat_ms") or 0)
         empathy_post_beat_ms = int(overrides.get("post_beat_ms") or 0)
         delivery_voice_settings = overrides.get("voice_settings")
+
+    # Comedic delivery profile — layer the comedy stance's timbre (deadpan / smug)
+    # UNDER empathy: only when empathy supplied no voice_settings of its own (a
+    # neutral-empathy turn). Empathy/grief delivery always wins; "straight" care
+    # turns carry no profile. Resolved once and applied to every sentence.
+    if delivery_voice_settings is None:
+        try:
+            comedy_voice = comedy_modes.voice_settings_for_mode(comedy_mode)
+        except Exception as exc:
+            _log.debug("[comedy] delivery profile error: %s", exc)
+            comedy_voice = None
+        if comedy_voice:
+            delivery_voice_settings = comedy_voice
+            _log.info(
+                "[comedy] delivery profile (stream): mode=%s voice=%s",
+                getattr(comedy_mode, "key", "?"), comedy_voice,
+            )
 
     spoken: list[str] = []
     done_events: list[threading.Event] = []

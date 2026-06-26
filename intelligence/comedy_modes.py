@@ -268,6 +268,42 @@ def build_slim_directive(mode: ComedyMode) -> str:
     return " ".join(parts)
 
 
+def voice_settings_for_mode(mode: Optional[ComedyMode]) -> Optional[dict]:
+    """ElevenLabs voice_settings for a comedic STANCE, or None.
+
+    Mirrors intelligence/empathy._MODE_VOICE_SETTINGS, but keyed on the comedy
+    mode chosen for THIS turn (select_mode) instead of a per-person empathy
+    cache, so a deadpan dry button and a smug post-roast swagger no longer reach
+    TTS with the same neutral timbre. Returns None — caller falls through to the
+    emotion-derived baseline — when:
+      * the feature or expressive voice is disabled,
+      * the mode has no profile mapping (straight/care turns, and modes not yet
+        assigned a profile).
+
+    Precedence is enforced by the CALLER: the comedy timbre is layered only on a
+    neutral-empathy turn (when empathy supplied no voice_settings of its own), so
+    empathy/grief delivery always wins. Returns a fresh dict so callers can't
+    mutate the shared config profile.
+    """
+    if not bool(getattr(config, "COMEDY_DELIVERY_PROFILES_ENABLED", True)):
+        return None
+    # Comedy rides under the global expressive-voice switch: with expressive voice
+    # off (flat clone + pre-existing cache), comedy must not silently reintroduce
+    # voice variation or cache thrash.
+    if not bool(getattr(config, "TTS_EXPRESSIVE_VOICE_ENABLED", True)):
+        return None
+    key = getattr(mode, "key", None)
+    if not key:
+        return None
+    profile_name = (getattr(config, "COMEDY_MODE_DELIVERY_PROFILE", {}) or {}).get(key)
+    if not profile_name:
+        return None
+    profile = (getattr(config, "COMEDY_DELIVERY_PROFILES", {}) or {}).get(profile_name)
+    if not isinstance(profile, dict) or not profile:
+        return None
+    return dict(profile)
+
+
 def polish_response(text: str, mode: ComedyMode, *, allow_roast: str = "normal") -> str:
     """Deterministic post-generation polish; no network calls."""
     cleaned = " ".join(str(text or "").strip().split())

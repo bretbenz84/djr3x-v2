@@ -92,10 +92,17 @@
   registered + LLM-addressable with a self-direct frequency cooldown. `f4f414e`
 - **(B) comedic-landing sync** — joke/roast/free-bit beats land in the post-line silence via a new
   `speech_queue.on_audio_end` hook, barge-in-guarded. `5707941`
+- **Comedic delivery profiles (deadpan + smug)** — each comedy STANCE (`comedy_modes.select_mode`)
+  now reaches ElevenLabs with its own timbre via `comedy_modes.voice_settings_for_mode` + the new
+  `config.COMEDY_DELIVERY_PROFILES`/`COMEDY_MODE_DELIVERY_PROFILE`, injected at both reply seams
+  (non-stream + stream) layered UNDER empathy (`if delivery_voice_settings is None`). dry_ack/
+  self_own/callback(_banked) → deadpan, friendly_roast → smug; straight/care never shaped. Shipped
+  **voice-only** — timing is already covered by `POST_PUNCHLINE_BEAT_MS` (800–1500ms) so no beat
+  map was needed. `tests/test_comedy_modes.py::ComedyDeliveryProfileTests`.
 
 **IN (still to build):**
 - §1 Comedy & roasting — sharp tier, running gags, **personas** (smug mood ✅ done), tease-obsession,
-  signature handle + the delivery-profile "do-first."
+  signature handle (delivery profiles ✅ done — deadpan + smug).
 - §2 Curiosity — **all-in**: COCO unlock, `room_model` (Rich), object-grounded curiosity,
   change detection, POV seeds, react-to-you, crowd curiosity, **+ GUI object bboxes**. Docent
   bit is in but **ask-only**.
@@ -119,7 +126,7 @@ Movie Night (E-8), roll-up/mock-retreat base bits.
 
 ## The three things to do first (revised)
 
-1. **Comedic delivery profiles** *(batch 1).* A roast and a condolence currently use
+1. **Comedic delivery profiles** *(batch 1).* **✅ SHIPPED (voice-only).** A roast and a condolence used
    **identical** ElevenLabs voice settings — ⚠ verified: delivery shaping flows *only* through
    `empathy.get_delivery_overrides` (`empathy.py:1214`), keyed on empathy mode; a default-mode
    roast gets the plain voice. Mirror `empathy._MODE_VOICE_SETTINGS` (`empathy.py:1163`) with a
@@ -605,8 +612,8 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
 
 ## Revised build order (maximizes fun-per-week, post-scope)
 
-1. **Batch 1 — Comedy felt immediately:** delivery profiles (start deadpan + smug) → ~~smug-after-a-
-   roast mood~~ **✅ done** → comedic personas. All ready, no prereqs; the change a human feels instantly.
+1. **Batch 1 — Comedy felt immediately:** ~~delivery profiles (start deadpan + smug)~~ **✅ done** →
+   ~~smug-after-a-roast mood~~ **✅ done** → comedic personas. The change a human feels instantly.
 2. **The COCO unlock → `world_state.objects`** (+ GUI bounding boxes) — the substrate for all of §2.
 3. **Reactions in parallel:** land-the-laugh / take-a-bow · the gesture-reaction layer · named
    arrivals + departures (build the bbox→direction primitive here, shared with call-outs).
@@ -620,8 +627,8 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
 
 ## Top items (ranked, post-scope)
 
-1. **Comedic delivery profiles** — the single change felt immediately; every joke under-lands today
-   because a roast and a condolence sound identical. **M.**
+1. ~~**Comedic delivery profiles**~~ **✅ done (deadpan + smug)** — the single change felt immediately;
+   every joke under-landed because a roast and a condolence sounded identical. **M.**
 2. **Free the COCO detector → object inventory (+ GUI boxes)** — the zero-cost data substrate that
    kills "generic curiosity" at the root and feeds 5+ §2 ideas. **M.**
 3. **Land-the-laugh / take-a-bow** — Rex is currently deaf to laughter *and* applause; the signal's
