@@ -53,6 +53,10 @@ class GUIDashboardBridge:
             maxlen=max(1, int(max_lines or getattr(config, "GUI_CONVERSATION_LOG_MAX_LINES", 300)))
         )
         self._line_seq = 0
+        # seq of the Rex line currently being streamed in sentence-by-sentence, or
+        # None. Lets a reply's text fill the transcript AS it is generated (read-along)
+        # instead of appearing as one block after TTS finishes.
+        self._streaming_rex_seq: Optional[int] = None
         self._log_lines: deque[dict[str, Any]] = deque(
             maxlen=max(1, int(getattr(config, "GUI_LOG_PANEL_MAX_LINES", 600) or 600))
         )
@@ -165,6 +169,57 @@ class GUIDashboardBridge:
                 "kind": kind,
             })
             self._updated_at = time.time()
+
+    def append_rex_stream(self, text: str) -> None:
+        """Append a freshly-generated sentence to Rex's in-progress reply line.
+
+        The first call of a reply creates the Rex line; later calls GROW that same
+        line in place, so the transcript fills in sentence-by-sentence as the model
+        generates (and audio plays alongside) instead of the whole reply appearing
+        as one block after TTS finishes. If anything else was logged after the
+        streaming line (a human/system turn, so it is no longer the last line), a
+        fresh Rex line is started rather than reviving the old one."""
+        text = (text or "").strip()
+        if not text:
+            return
+        with self._lock:
+            seq = self._streaming_rex_seq
+            active = None
+            if seq is not None and self._conversation_lines:
+                last = self._conversation_lines[-1]
+                if last.get("seq") == seq and last.get("kind") == "rex":
+                    active = last
+            if active is not None:
+                cur = active.get("text") or ""
+                active["text"] = f"{cur} {text}".strip() if cur else text
+            else:
+                self._line_seq += 1
+                self._streaming_rex_seq = self._line_seq
+                self._conversation_lines.append({
+                    "seq": self._line_seq,
+                    "ts": time.time(),
+                    "speaker": "Rex",
+                    "text": text,
+                    "kind": "rex",
+                })
+            self._updated_at = time.time()
+
+    def finish_rex_stream(self, full_text: Optional[str] = None) -> None:
+        """Close out a streamed Rex reply line. Clears the streaming marker so the
+        next reply starts a new line; when `full_text` is given, the line is set to
+        that canonical text so the bubble matches the on-disk transcript exactly."""
+        with self._lock:
+            seq = self._streaming_rex_seq
+            self._streaming_rex_seq = None
+            if seq is None or not full_text:
+                return
+            full_text = full_text.strip()
+            if not full_text or not self._conversation_lines:
+                return
+            last = self._conversation_lines[-1]
+            if last.get("seq") == seq and last.get("kind") == "rex":
+                last["text"] = full_text
+                self._updated_at = time.time()
 
     def add_log_line(self, text: str, level: str = "INFO") -> None:
         """Buffer one formatted app-log line for the dashboard's system-log panel.

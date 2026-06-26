@@ -121,8 +121,13 @@ def log_heard(speaker: str | None, text: str) -> None:
     _mirror_to_gui(label if label != "Unknown" else "Unknown speaker", text, "user")
 
 
-def log_rex(text: str) -> None:
-    """Log something Rex said."""
+def log_rex(text: str, *, to_gui: bool = True) -> None:
+    """Log something Rex said.
+
+    `to_gui=False` writes the on-disk transcript (and updates the dedupe window)
+    but skips the GUI conversation panel — used by the streaming reply path, which
+    has already filled the GUI bubble sentence-by-sentence via log_rex_stream() and
+    would otherwise re-add the whole reply as a duplicate line."""
     global _last_rex_norm, _last_rex_at
     if not text or not text.strip():
         return
@@ -135,7 +140,38 @@ def log_rex(text: str) -> None:
         _last_rex_at = now
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         _append_locked(f"{ts} | REX   | {text.strip()}")
-    _mirror_to_gui("Rex", text.strip(), "rex")
+    if to_gui:
+        _mirror_to_gui("Rex", text.strip(), "rex")
+
+
+def log_rex_stream(text: str) -> None:
+    """Stream one freshly-generated reply sentence to the GUI conversation panel.
+
+    GUI-only (no on-disk write, no dedupe): the sentences grow a single Rex bubble
+    in place so the reply text appears in the dashboard the moment it is generated,
+    reading along with the TTS, instead of after playback finishes. The on-disk
+    transcript is written once at the end via log_rex(..., to_gui=False)."""
+    text = (text or "").strip()
+    if not text or not bool(getattr(config, "GUI_ENABLED", False)):
+        return
+    try:
+        from gui.state_bridge import gui_bridge
+        gui_bridge.append_rex_stream(text)
+    except Exception:
+        pass
+
+
+def finish_rex_stream(full_text: str | None = None) -> None:
+    """Close out the streamed Rex bubble (see log_rex_stream). Clears the streaming
+    marker so the next reply starts fresh; `full_text`, when given, normalizes the
+    bubble to the canonical reply text."""
+    if not bool(getattr(config, "GUI_ENABLED", False)):
+        return
+    try:
+        from gui.state_bridge import gui_bridge
+        gui_bridge.finish_rex_stream(full_text)
+    except Exception:
+        pass
 
 
 def log_system(text: str) -> None:

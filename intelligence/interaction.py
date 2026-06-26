@@ -10315,6 +10315,12 @@ def _stream_and_speak_sentences(
                 return
             state["spoke_question"] = True
 
+        # Read-along: show this sentence in the GUI transcript the MOMENT it is
+        # generated (it grows one Rex bubble in place), so the text leads the TTS
+        # instead of the whole reply landing after playback. The on-disk transcript
+        # is still written once below.
+        conv_log.log_rex_stream(prepared)
+
         # Once the self-emotion read is in, let the rest of the reply carry it.
         if (
             state["emotion"] == "neutral"
@@ -10430,9 +10436,13 @@ def _stream_and_speak_sentences(
 
     full_text = " ".join(part for part in spoken if part).strip()
     if full_text:
-        # Log the whole reply once (file + GUI), not one entry per sentence.
+        # The GUI bubble was already filled sentence-by-sentence via log_rex_stream
+        # (read-along), so write the on-disk transcript once here WITHOUT re-mirroring
+        # to the GUI (to_gui=False, else the whole reply re-appears as a duplicate),
+        # then finalize the streamed bubble to the canonical text.
         try:
-            conv_log.log_rex(full_text)
+            conv_log.log_rex(full_text, to_gui=False)
+            conv_log.finish_rex_stream(full_text)
         except Exception as exc:
             _log.debug("[interaction] stream conversation log failed: %s", exc)
     if turn_start is not None:

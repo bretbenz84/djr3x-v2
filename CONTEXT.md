@@ -696,6 +696,20 @@ The PySide6 dashboard is optional and launched with `--gui`.
 Important GUI behavior:
 
 - It mirrors runtime state and conversation logs.
+- **Read-along reply streaming:** a spoken reply fills the conversation panel
+  sentence-by-sentence AS Rex generates it (the text leads / reads along with the
+  TTS), instead of the whole reply appearing as one block after playback. The
+  streaming path (`interaction._stream_and_speak_sentences._consume`) calls
+  `conv_log.log_rex_stream(sentence)` the moment each sentence is governed/polished;
+  `gui_bridge.append_rex_stream` GROWS a single Rex bubble in place (stable seq), and
+  `conversation_panel.set_snapshot` re-renders on a render key of `(last seq, last
+  text)` so a growing line under one seq still repaints. The on-disk transcript is
+  still written ONCE at the end via `conv_log.log_rex(full_text, to_gui=False)` +
+  `conv_log.finish_rex_stream(full_text)` (file-only, so the bubble isn't duplicated).
+  Root cause it fixed: the bubble used to be logged once at generation-completion,
+  which lands at/after the audio when early (cache-hit) sentences play while the cloud
+  model is still streaming. GUI-only + gated on `GUI_ENABLED`; no-audio/non-GUI paths
+  unchanged. Tests: `tests/test_conversation_streaming.py`.
 - Its text input can submit turns through `interaction.submit_text(...)`.
 - With `--gui --noaudio`, the app becomes a text-only test interface for the full conversation/router/memory pipeline.
 - GUI-first startup: the window opens maximized within seconds (Qt owns the main

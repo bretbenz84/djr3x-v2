@@ -22,7 +22,11 @@ from PySide6.QtWidgets import (
 class ConversationPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._last_seq = -1
+        # Render key = (last line's seq, last line's text). Keying on the text too —
+        # not just the seq — means a Rex reply that STREAMS in (the last line grows in
+        # place under one seq) re-renders on every appended sentence, so the transcript
+        # fills as Rex generates instead of jumping in all at once at the end.
+        self._last_render_key: Optional[tuple] = None
         self._submit_callback: Optional[Callable[[str], None]] = None
 
         layout = QVBoxLayout(self)
@@ -67,8 +71,9 @@ class ConversationPanel(QWidget):
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         lines = list(snapshot.get("conversation_lines") or [])
-        last_seq = lines[-1].get("seq", -1) if lines else -1
-        if last_seq == self._last_seq:
+        last = lines[-1] if lines else None
+        render_key = (last.get("seq", -1), last.get("text", "")) if last else (-1, "")
+        if render_key == self._last_render_key:
             return
 
         scrollbar = self._log.verticalScrollBar()
@@ -81,7 +86,7 @@ class ConversationPanel(QWidget):
         self._restore_value = None if self._pin_to_bottom else scrollbar.value()
 
         self._log.setHtml(_format_lines(lines))
-        self._last_seq = last_seq
+        self._last_render_key = render_key
         self._apply_scroll_intent()
 
     def _on_scroll_range_changed(self, _minimum: int, _maximum: int) -> None:
