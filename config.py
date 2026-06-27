@@ -3851,6 +3851,39 @@ VISUAL_CURIOSITY_PERSON_COOLDOWN_SECS = 240.0
 VISUAL_CURIOSITY_TURN_WINDOW_SECS = 60.0
 VISUAL_CURIOSITY_MIN_USER_TURNS = 1
 VISUAL_CURIOSITY_MAX_CROWD_COUNT = 2
+# Feed the LOCAL object detector's confirmed objects (world_state.objects) into the
+# visual-curiosity prompt so Rex grounds the question in a REAL named object he can
+# see (a detector-verified "chair"/"guitar"/"plant"), not just the GPT vision blob.
+# Off → the prior behavior (GPT scene summary only).
+VISUAL_CURIOSITY_USE_OBJECTS = True
+VISUAL_CURIOSITY_OBJECTS_MAX = 6            # most-confident N objects fed to the prompt
+VISUAL_CURIOSITY_OBJECTS_MIN_CONFIDENCE = 0.40
+
+# ── Land-the-laugh / take-a-bow ───────────────────────────────────────────────────
+# React to the ROOM landing Rex's material: applause -> a take-a-bow (proud_dj_pose +
+# a line), laughter shortly after a Rex line -> a dry follow-through. Reads the
+# (otherwise unread) audio_scene.applause_detected / laughter_detected signals, gated
+# on a recent-Rex-utterance window (so ambient noise/music/TV doesn't set him off) plus
+# a global cooldown and a LOW per-session cap (so "see, that one's free" never reads as
+# needy). Yields to live speech/music/games like every reaction.
+ROOM_REACTION_ENABLED = True
+ROOM_REACTION_AFTER_REX_SECS = 12.0   # laughter/applause only counts within this of a Rex line
+ROOM_REACTION_MIN_GAP_SECS = 20.0     # global cooldown (also de-dups one multi-cycle burst)
+ROOM_REACTION_SESSION_CAP = 3         # max take-a-bow / follow-throughs per session
+ROOM_APPLAUSE_REACTION_LINES = [
+    "Thank you, thank you. No need to stand. ...Oh, you're already standing.",
+    "Please, hold your applause. ...Okay, don't.",
+    "A standing ovation, or you're all just stretching. I'll take it either way.",
+    "And THIS is why they keep me plugged in.",
+    "I'd take a bow, but my actuators bill by the hour.",
+]
+ROOM_LAUGHTER_REACTION_LINES = [
+    "See? That one was free.",
+    "I'll be here all week. Literally — I can't leave.",
+    "Comedy subroutine: validated.",
+    "There it is. Carbon-based approval.",
+    "And they said a droid couldn't do stand-up.",
+]
 
 # How often GPT-4o runs a full environment/scene analysis (seconds)
 ENVIRONMENT_SCAN_INTERVAL_SECS = 180

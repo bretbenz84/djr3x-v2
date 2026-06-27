@@ -23,6 +23,7 @@ import heapq
 import logging
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -180,6 +181,7 @@ class _SpeechQueue:
         self._not_empty = threading.Condition(self._lock)
         self._seq = 0
         self._speaking = False
+        self._last_speech_end_at: float = 0.0  # monotonic time the last line FINISHED playing
         self._current_priority: int = -1
         self._current_audio_path: Optional[str] = None
         self._startup_chime_queued: bool = False
@@ -491,6 +493,7 @@ class _SpeechQueue:
                         pass
                 with self._lock:
                     self._speaking = False
+                    self._last_speech_end_at = time.monotonic()
                     self._current_priority = -1
                     self._current_audio_path = None
                 item.done.set()
@@ -672,3 +675,16 @@ def is_speaking() -> bool:
 def current_audio_path() -> Optional[str]:
     """Return the direct audio file currently playing, if any."""
     return _queue.current_audio_path()
+
+
+def seconds_since_last_speech() -> float:
+    """Monotonic seconds since Rex's last spoken line FINISHED playing (across EVERY
+    path — replies, roasts, proactive — since the worker plays them all). Large when
+    Rex is currently speaking or has never spoken. Lets a room reaction tell a laugh
+    AT Rex's line from ambient laughter while he's been idle."""
+    if _queue.is_speaking():
+        return 0.0
+    last = _queue._last_speech_end_at
+    if last <= 0.0:
+        return float("inf")
+    return max(0.0, time.monotonic() - last)

@@ -113,6 +113,14 @@
   own scan cadence; `gui/vision_panel._draw_objects` overlays violet bbox+label. The substrate the
   whole §2 curiosity cluster stands on. Adversarially reviewed (no-screens airtight; one shared-detector
   use-after-close race hardened in both paths). `tests/test_object_detection.py`.
+- **Land-the-laugh / take-a-bow** — `consciousness._step_room_reaction` reacts to the ROOM landing
+  Rex's material: applause → a take-a-bow (`proud_dj_pose` + a line), laughter → a dry follow-through.
+  Reads the (previously unread) `audio_scene.applause_detected` / `laughter_detected`, gated on a
+  recent-Rex window (the new universal `speech_queue.seconds_since_last_speech()`, so it ignores
+  ambient noise) + cooldown + a low per-session cap. `tests/test_room_reaction.py`.
+- **Object-grounded curiosity** — `_step_visual_curiosity` now grounds its question in a detector-
+  CONFIRMED `world_state.objects` entry (off the new COCO stream, no room_model needed), preserving
+  the "never invent" guardrail. `VISUAL_CURIOSITY_USE_OBJECTS`. `tests/test_room_reaction.py`.
 
 **IN (still to build):**
 - §1 Comedy & roasting — sharp tier, running gags, tease-obsession, signature handle
@@ -162,7 +170,7 @@ Movie Night (E-8), roll-up/mock-retreat base bits.
    floors (`efficientdet_lite0` is weak; indoor flicker is real). This is the substrate the
    whole §2 stands on. **Effort: M.**
 
-3. **Land-the-laugh / take-a-bow.** ⚠ verified: `audio/scene.py:_analyze_cycle` computes
+3. **Land-the-laugh / take-a-bow.** **✅ SHIPPED.** ⚠ verified: `audio/scene.py:_analyze_cycle` computes
    `laughter_detected` *and* `applause_detected` every cycle; `laughter` is read as passive
    prompt flavor in one place (`llm.py:261`), and **`applause` has no reader at all**. Add a
    `_step_room_reaction`: laughter shortly after a Rex line → a dry follow-through; applause →
@@ -276,13 +284,15 @@ object, fire `do_noticed_change` through the governor. Dispatch slots into
 **Per-object cooldown + confirm-streak** so he doesn't cry wolf; one genuine double-take per
 visit. **Effort: M** *(after the prereqs).*
 
-### Object-grounded curiosity questions — **BUILD (needs room_model first)**
-⚠ Today's `_step_visual_curiosity` (`:6133`) already spans clothing/accessories/activity, not
-just objects (the "name an object and ask" paraphrase undersold it) — but it's stateless.
-Rewrite the prompt to prioritize the most novel/longest-present/most-personal object from
-`room_model`, crossed with known interests (`conversation_steering.build_context`). Preserve the
-elaborate gating chain (cooldowns, silence window, min-turns). **Effort: S** *(once room_model
-exists).*
+### Object-grounded curiosity questions — **✅ SHIPPED (live-stream version, no room_model needed)**
+**Shipped** off the LIVE `world_state.objects` COCO stream (the room_model persistence is a later
+upgrade): `consciousness._visual_curiosity_objects_line` feeds the detector-CONFIRMED objects
+(label + coarse position, confidence-filtered, capped) into `_step_visual_curiosity`'s prompt with a
+"PREFER grounding the question in a confirmed object — these are detector-verified, safe to name"
+instruction, so Rex asks about a REAL named object instead of a possibly-hallucinated GPT detail. The
+"never invent an object" guardrail is preserved and the elaborate gating chain is UNCHANGED. Gated by
+`VISUAL_CURIOSITY_USE_OBJECTS`. The "most novel/longest-present" prioritization + interest-cross still
+want `room_model` (sort is by confidence for now). Tests: `tests/test_room_reaction.py`.
 
 ### Room-and-person-aware POV seeds — **BUILD** *(person/interest slice ships now)*
 ⚠ verified: `REX_POV_SEEDS` are 100% internal; `rex_pov._context_signature` (`:157`) emits only
@@ -635,8 +645,8 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
 1. ~~**Batch 1 — Comedy felt immediately:** delivery profiles → smug-after-a-roast mood → comedic
    personas.~~ **✅ ALL DONE.** The change a human feels instantly. (Next batch starts at step 2.)
 2. ~~**The COCO unlock → `world_state.objects`** (+ GUI bounding boxes)~~ **✅ done** — the substrate for all of §2.
-3. **Reactions in parallel:** land-the-laugh / take-a-bow · the gesture-reaction layer · named
-   arrivals + departures (build the bbox→direction primitive here, shared with call-outs).
+3. **Reactions in parallel:** ~~land-the-laugh / take-a-bow~~ **✅ done** · the gesture-reaction layer ·
+   named arrivals + departures (build the bbox→direction primitive here, shared with call-outs).
 4. **Cheap conversation wins:** inject open plans into the live reply · open commitments.
 5. **room_model (L)** → then object-grounded curiosity, change detection, the docent bit (ask-only).
 6. **The roast lane:** sharp tier (warmth-gated) · running-gag escalation · tease-the-obsession ·
@@ -651,8 +661,8 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
    every joke under-landed because a roast and a condolence sounded identical. **M.**
 2. ~~**Free the COCO detector → object inventory (+ GUI boxes)**~~ **✅ done** — the zero-cost data substrate that
    kills "generic curiosity" at the root and feeds 5+ §2 ideas. **M.**
-3. **Land-the-laugh / take-a-bow** — Rex is currently deaf to laughter *and* applause; the signal's
-   already computed. **M.**
+3. ~~**Land-the-laugh / take-a-bow**~~ **✅ done** — Rex was deaf to laughter *and* applause; the signal
+   was already computed. Applause → bow, laughter → dry follow-through, gated on a recent-Rex window. **M.**
 4. **Running gags that escalate** — resurrects dead `running_bit`; turns callbacks into bits that
    recur (silently) instead of decaying. **M.**
 5. ~~**Comedic-timing beat pack**~~ — **✅ done (first 4 beats)** + the (B) post-line landing; LLM-addressable

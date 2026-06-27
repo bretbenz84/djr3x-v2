@@ -280,6 +280,9 @@ _wave_escalation: dict[str, tuple[float, int]] = {}
 # wave persists across ticks; a flickering non-human blob (a pillow) does not.
 _wave_streak: dict[str, int] = {}
 _last_wave_close_log_at: float = 0.0  # throttle for the "face too close" suppression log
+# Land-the-laugh / take-a-bow: per-session count + last-fire time (a plain dict so
+# mutation needs no `global`; reset on session reset alongside the wave state).
+_room_reacted: dict[str, float] = {"count": 0.0, "last_at": 0.0}
 _facial_expression_reacted_at: dict[tuple[str, str], float] = {}
 _last_facial_expression_reaction_at: float = 0.0
 _last_expression_reaction_line_by_kind: dict[str, str] = {}
@@ -2748,6 +2751,84 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
         key, level, should_speak, should_gesture,
         ("%.2f" % user_speed) if isinstance(user_speed, (int, float)) else None,
         ("%.2f" % half_period) if isinstance(half_period, (int, float)) else None,
+    )
+
+
+def _step_room_reaction(snapshot: dict, profile: SituationProfile) -> None:
+    """Land the laugh / take a bow: react to the ROOM responding to Rex's material.
+
+    The audio scene exposes momentary `applause_detected` / `laughter_detected` booleans
+    (and analysis is suppressed while Rex is speaking, so these land just AFTER his line).
+    Applause → a quick take-a-bow (`proud_dj_pose` + a line); laughter → a dry
+    follow-through. Gated on a recent-Rex-utterance window so ambient noise / music / TV
+    can't set him off, a global cooldown that also de-dups one multi-cycle burst, and a
+    LOW per-session cap so it never reads as needy. No latch — fire when free, else skip
+    (a take-a-bow 10s late is worse than none).
+    """
+    if not bool(getattr(config, "ROOM_REACTION_ENABLED", True)):
+        return
+
+    audio = snapshot.get("audio_scene") or {}
+    applause = bool(audio.get("applause_detected"))
+    laughter = bool(audio.get("laughter_detected"))
+    if not (applause or laughter):
+        return
+
+    now = time.monotonic()
+    # Only react when this is plausibly a response to REX — i.e. his last line FINISHED
+    # within the window. speech_queue tracks EVERY spoken line (reply, roast, proactive),
+    # so a roast's laugh counts where the proactive-only timestamp would miss it; ambient
+    # laughter while Rex has been idle does not. (Audio analysis is suppressed during his
+    # TTS, so the laugh/applause lands just after he stops.)
+    after_rex = float(getattr(config, "ROOM_REACTION_AFTER_REX_SECS", 12.0))
+    try:
+        from audio import speech_queue
+        since_spoke = speech_queue.seconds_since_last_speech()
+    except Exception:
+        since_spoke = float("inf")
+    if since_spoke > after_rex:
+        return
+    # Global cooldown (also collapses the 2-3 consecutive True reads of one burst).
+    if (now - float(_room_reacted.get("last_at", 0.0))) < float(
+        getattr(config, "ROOM_REACTION_MIN_GAP_SECS", 20.0)
+    ):
+        return
+    if _room_reacted.get("count", 0.0) >= float(getattr(config, "ROOM_REACTION_SESSION_CAP", 3)):
+        return
+    if profile.user_mid_sentence:
+        return
+    if not _can_proactive_speak(reactive=True):
+        return
+
+    # Applause is the bigger moment — it wins if both fire in the same cycle.
+    if applause:
+        lines = getattr(config, "ROOM_APPLAUSE_REACTION_LINES", []) or []
+        kind, emotion, beat = "applause", "happy", "proud_dj_pose"
+    else:
+        lines = getattr(config, "ROOM_LAUGHTER_REACTION_LINES", []) or []
+        kind, emotion, beat = "laughter", "happy", None
+    if not lines:
+        return
+    line = random.choice(list(lines))
+
+    spoke = _speak_async(
+        line, emotion=emotion, purpose="room_reaction", label=f"land the {kind}",
+        governed=False, reactive=True,
+    )
+    if not spoke:
+        return
+    _room_reacted["last_at"] = now
+    _room_reacted["count"] = _room_reacted.get("count", 0.0) + 1
+    if beat:
+        try:
+            from sequences import animations
+            animations.play_body_beat(beat)
+        except Exception as exc:
+            _log.debug("room-reaction beat skipped: %s", exc)
+    _log.info(
+        "consciousness: room reaction — %s (count=%d/%s)",
+        kind, int(_room_reacted["count"]),
+        getattr(config, "ROOM_REACTION_SESSION_CAP", 3),
     )
 
 
@@ -6088,6 +6169,36 @@ def note_emotional_checkin_boundary(
     return True
 
 
+def _visual_curiosity_objects_line() -> str:
+    """A compact 'Confirmed objects in view' line from the LOCAL object detector
+    (world_state.objects), or '' when disabled / nothing confident enough. These are
+    detector-verified, so the curiosity prompt may name them by label without risking
+    an invented prop — the substrate for object-grounded curiosity."""
+    if not bool(getattr(config, "VISUAL_CURIOSITY_USE_OBJECTS", True)):
+        return ""
+    try:
+        objects = world_state.get("objects") or []
+    except Exception:
+        return ""
+    min_conf = float(getattr(config, "VISUAL_CURIOSITY_OBJECTS_MIN_CONFIDENCE", 0.40))
+    keep = [
+        o for o in objects
+        if isinstance(o, dict) and o.get("label")
+        and float(o.get("confidence") or 0.0) >= min_conf
+    ]
+    if not keep:
+        return ""
+    keep.sort(key=lambda o: float(o.get("confidence") or 0.0), reverse=True)
+    cap = int(getattr(config, "VISUAL_CURIOSITY_OBJECTS_MAX", 6))
+    items = ", ".join(
+        f"{o.get('label')} ({o.get('position') or 'in view'})" for o in keep[:cap]
+    )
+    return (
+        "Confirmed objects in view (a local object detector verified these are really "
+        f"there — safe to name): {items}.\n\n"
+    )
+
+
 def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
     """
     After a recent engaged back-and-forth goes quiet, use a fresh visual summary
@@ -6228,24 +6339,33 @@ def _step_visual_curiosity(snapshot: dict, profile: SituationProfile) -> None:
                 return
 
             visual_json = json.dumps(visual, ensure_ascii=False)[:3500]
+            objects_line = _visual_curiosity_objects_line()
             family_clause = (
                 "A child or teen is present, so keep it gentle and family-safe. "
                 if profile.force_family_safe else ""
+            )
+            prefer_object = (
+                "PREFER grounding it in one of the confirmed objects above when one "
+                "leads somewhere natural — those are detector-verified, so you can name "
+                "them with confidence. "
+                if objects_line else ""
             )
             prompt = (
                 f"You're mid-conversation with {first_name}, and they just went "
                 f"quiet for a few seconds after a back-and-forth. You took a fresh "
                 f"visual snapshot. Use it as a conversational springboard.\n\n"
                 f"Vision summary JSON: {visual_json}\n\n"
+                f"{objects_line}"
                 f"{family_clause}"
                 "Ask exactly ONE short, in-character Rex question grounded in a "
-                "specific visible, non-sensitive detail. It can be dry or mildly "
-                "teasing about clothing, accessories, objects, decor, or what they "
-                "seem to be doing, but do not roast grief, emotions, body, identity, "
+                f"specific visible, non-sensitive detail. {prefer_object}It can be dry "
+                "or mildly teasing about clothing, accessories, objects, decor, or what "
+                "they seem to be doing, but do not roast grief, emotions, body, identity, "
                 "health, age, race, religion, politics, disability, money, or private "
-                "screen/document text. Do not say you took a picture. Do not explain "
-                "the visual system. Address them by name if natural. End with a "
-                "question mark."
+                "screen/document text. Reference only things actually in view — a confirmed "
+                "object or something in the vision summary — never invent an object. Do not "
+                "say you took a picture. Do not explain the visual system. Address them by "
+                "name if natural. End with a question mark."
             )
             prompt = _apply_proactive_directive(prompt, "visual_curiosity")
             text = get_response(prompt, engaged_id)
@@ -10881,6 +11001,10 @@ def _loop() -> None:
             # if the target visibly cracks a smile and answer it once.
             _step_smile_reaction(snapshot, profile)
 
+            # 10g-b. Land the laugh / take a bow — react to the ROOM applauding or
+            # laughing at Rex's material (gated on a recent-Rex-line window).
+            _step_room_reaction(snapshot, profile)
+
             # 10h. Facial expression reactions — gently notice clear surprise,
             # frowns, and brow furrows from the local MediaPipe telemetry.
             _step_facial_expression_reactions(snapshot, profile)
@@ -11024,6 +11148,8 @@ def start() -> None:
     _wave_escalation.clear()
     _wave_streak.clear()
     _pending_wave_back = None
+    _room_reacted["count"] = 0.0
+    _room_reacted["last_at"] = 0.0
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()
     _disposition_sampled_at.clear()
@@ -11143,6 +11269,8 @@ def stop() -> None:
     _wave_escalation.clear()
     _wave_streak.clear()
     _pending_wave_back = None
+    _room_reacted["count"] = 0.0
+    _room_reacted["last_at"] = 0.0
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()
     _disposition_sampled_at.clear()
