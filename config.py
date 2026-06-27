@@ -4098,6 +4098,12 @@ PRESENCE_STARTUP_RECENT_RETURN_GRACE_SECS = 45.0
 # keep treating it as the same known person for this long.
 PRESENCE_IDENTITY_BRIDGE_SECS = 12.0
 
+# Scale the TONE of return + departure reactions by the relationship (a warmer/sharper
+# rib for a close friend or someone who needles Rex, a plain note for a near-stranger),
+# the way arrivals already do via _greeting_profile. Reuses llm._relationship_tone_rule.
+# Off → the prior flat "warm but dry" / "playful and dry" lines for everyone.
+PRESENCE_RELATIONSHIP_TONE_ENABLED = True
+
 # Cooldown between departure/return reactions for the same person (avoids jitter spam).
 PRESENCE_DEPARTURE_COOLDOWN_SECS = 30
 

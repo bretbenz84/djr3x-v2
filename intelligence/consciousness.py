@@ -4126,6 +4126,28 @@ def _greeting_profile(person_db_id: Optional[int]) -> tuple[str, bool]:
     return ("You barely know them — a polite, friendly hello.", False)
 
 
+def _presence_relationship_tone(person_db_id: Optional[int]) -> str:
+    """Relationship-edge directive for a RETURN / DEPARTURE line so the tone scales with
+    the relationship — a sharper rib for a friend who needles Rex, a warmer one for a
+    close friend, "" (the line stays plain) for a near-stranger or neutral relationship.
+    Reuses the same tested logic the reply path uses (llm._relationship_tone_rule over the
+    person's warmth/antagonism/tier). Arrivals already scale via _greeting_profile."""
+    if not bool(getattr(config, "PRESENCE_RELATIONSHIP_TONE_ENABLED", True)):
+        return ""
+    if not isinstance(person_db_id, int):
+        return ""
+    try:
+        from memory import people as people_mod
+        from intelligence import llm as _llm
+        person = people_mod.get_person(person_db_id)
+        if not person:
+            return ""
+        return _llm._relationship_tone_rule(person, person.get("name") or "") or ""
+    except Exception as exc:
+        _log.debug("presence relationship tone failed: %s", exc)
+        return ""
+
+
 # Short, warm "hello" openers rotated for REPEAT greetings within the day / an ~8h
 # window, so seeing Bret a second/third time isn't always "how are you, Bret?". All are
 # question-style so they fit the "ends in a question mark" instruction. The default
@@ -7010,12 +7032,14 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         if is_known:
             first_name = _first_name(person_name, "there")
             _log.info("consciousness: departure reaction firing for %s", person_name)
+            tone = _presence_relationship_tone(person_db_id)
+            tone_clause = f" {tone}" if tone else ""
             _generate_and_speak_presence(
                 f"The person named '{first_name}' just slipped out of your camera view. "
                 "React in one short in-character line as Rex — playful and dry, "
                 "but not mean or needy. Do not imply they literally left the room; "
                 "they may only be off-camera. Do not imply nobody likes or misses "
-                f"them. Examples: 'Lost visual on {first_name}. Dramatic.', "
+                f"them.{tone_clause} Examples: 'Lost visual on {first_name}. Dramatic.', "
                 f"'And {first_name} exits frame, stage left.', "
                 f"'Fine, {first_name}, hide from the optics.' "
                 f"Address {first_name} by name. One line only.",
@@ -7607,19 +7631,21 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 )
                 continue
             appearance_hint = _pick_appearance_hint(person_db_id)
+            tone = _presence_relationship_tone(person_db_id)
+            tone_clause = f" {tone}" if tone else ""
             if appearance_hint and random.random() < getattr(config, "APPEARANCE_RIFF_PROBABILITY", 0.35):
                 prompt = (
                     f"The person named '{first_name}' just came back into your camera view "
                     f"after about {int(absent_secs)} seconds away. You remember this about "
                     f"their appearance: {appearance_hint}. React in one short in-character "
                     f"Rex line that NATURALLY references that appearance detail — warm but "
-                    f"dry. Address {first_name} by name. One line only."
+                    f"dry.{tone_clause} Address {first_name} by name. One line only."
                 )
             else:
                 prompt = (
                     f"The person named '{first_name}' just came back into your camera view after "
                     f"being away for about {int(absent_secs)} seconds. "
-                    "React in one short in-character line as Rex — warm but dry. Examples: "
+                    f"React in one short in-character line as Rex — warm but dry.{tone_clause} Examples: "
                     f"'Oh, there you are, {first_name}.', "
                     f"'Visual reacquired. There you are, {first_name}.', "
                     f"'There you are, {first_name}; optics are back online.' "

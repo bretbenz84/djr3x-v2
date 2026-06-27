@@ -121,6 +121,11 @@
 - **Object-grounded curiosity** — `_step_visual_curiosity` now grounds its question in a detector-
   CONFIRMED `world_state.objects` entry (off the new COCO stream, no room_model needed), preserving
   the "never invent" guardrail. `VISUAL_CURIOSITY_USE_OBJECTS`. `tests/test_room_reaction.py`.
+- **Relationship-toned arrivals + departures** — named arrivals/returns/departures already existed;
+  the RETURN and DEPARTURE reactions were tone-flat, so `consciousness._presence_relationship_tone`
+  (reusing `llm._relationship_tone_rule`) now scales them — a sharper rib for a needling friend, a
+  warmer one for a close friend, plain for a near-stranger (`PRESENCE_RELATIONSHIP_TONE_ENABLED`).
+  The bbox→direction look-toward glance is deferred (shared with call-outs). `tests/test_presence_tone.py`.
 
 **IN (still to build):**
 - §1 Comedy & roasting — sharp tier, running gags, tease-obsession, signature handle
@@ -330,15 +335,20 @@ branch relaxes that, slightly more than a one-line swap. **Effort: S.**
 bonus in `action_governor._score` (`:311`, already receives the profile). **Ship in shadow-log
 mode first** before wiring to scoring so he can't go manic in a loud room. **Effort: M.**
 
-### Energetic, named arrivals & departures — **BUILD** *(arrivals + warm departures)*
-⚠ verified: identity is **already in hand and discarded** — `known_now` (`consciousness.py:4821`)
-is computed at the trigger site and used only as a suppression gate, never to name anyone. Swap
-the generic count-based line for a named one. Per the owner call, **also react to a known person
-leaving** with a warm rib. ⚠ The physical turn-toward-door needs the **bbox→direction primitive**
-(`directed_look_pose(target)` is diagnostic-only) — build it once; shared with call-outs. Tone
-scales with relationship (rib at warm/sparring, plain welcome otherwise). **Require a stable
-`person_db_id` for a couple ticks** before naming (identity flicker on entry is the worst
-failure). Don't double-fire the intentional JT-volleyball bit. **Effort: M.**
+### Energetic, named arrivals & departures — **✅ SHIPPED (relationship-toned)** *(arrivals + warm departures)*
+**Build note — on investigation, most of this already existed and the real gap was tone.** Rex already
+greets known people BY NAME on arrival (startup + mid-session first-sight, `_step_presence_reactions` /
+`_step_first_sight_presence`, with a birthday→emotional→milestone→warm-greeting cascade), already
+welcomes them back (return reactions), and already sends them off by name (departure quip) — identity is
+NOT actually discarded except in the generic *unknown*-arrival line. Arrivals already scaled tone via
+`_greeting_profile`; **the RETURN and DEPARTURE reactions were tone-FLAT** ("warm but dry" / "playful and
+dry" for everyone). **Shipped:** `consciousness._presence_relationship_tone` (reuses
+`llm._relationship_tone_rule` over warmth/antagonism/tier) now scales the return + departure lines — a
+sharper rib for a friend who needles Rex, a warmer one for a close friend, plain for a near-stranger
+(`PRESENCE_RELATIONSHIP_TONE_ENABLED`). Stability gating + JT-bit non-double-fire are pre-existing in the
+presence loop. The physical **turn-toward (bbox→direction primitive) is DEFERRED** — `directed_look_pose`
+sets no face-tracking hold (a glance is instantly re-centered) and blocks ~0.65s; build it once when
+call-outs need it too (the doc's own "shared with call-outs"). Tests: `tests/test_presence_tone.py`.
 
 ### Name-and-point individual call-outs — **BUILD (L)**
 ⚠ verified: pieces mostly exist (`active_speaker.current_speaker:391`, `roast_pose:1574`) but
@@ -645,8 +655,9 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
 1. ~~**Batch 1 — Comedy felt immediately:** delivery profiles → smug-after-a-roast mood → comedic
    personas.~~ **✅ ALL DONE.** The change a human feels instantly. (Next batch starts at step 2.)
 2. ~~**The COCO unlock → `world_state.objects`** (+ GUI bounding boxes)~~ **✅ done** — the substrate for all of §2.
-3. **Reactions in parallel:** ~~land-the-laugh / take-a-bow~~ **✅ done** · the gesture-reaction layer ·
-   named arrivals + departures (build the bbox→direction primitive here, shared with call-outs).
+3. **Reactions in parallel:** ~~land-the-laugh / take-a-bow~~ **✅ done** · the gesture-reaction layer
+   (cut — arms can't cross/raise) · ~~named arrivals + departures~~ **✅ done (relationship-toned;
+   bbox→direction look-toward deferred to the call-out work)**.
 4. **Cheap conversation wins:** inject open plans into the live reply · open commitments.
 5. **room_model (L)** → then object-grounded curiosity, change detection, the docent bit (ask-only).
 6. **The roast lane:** sharp tier (warmth-gated) · running-gag escalation · tease-the-obsession ·
@@ -667,8 +678,8 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
    recur (silently) instead of decaying. **M.**
 5. ~~**Comedic-timing beat pack**~~ — **✅ done (first 4 beats)** + the (B) post-line landing; LLM-addressable
    physical bits a room reads instantly. Remaining: shrug/facepalm/slow-clap (deferred). **M.**
-6. **Energetic named arrivals + departures** — identity is already in hand and discarded; clock people
-   by name. **M.**
+6. ~~**Energetic named arrivals + departures**~~ **✅ done** — naming already existed; added the
+   relationship-tone scaling the returns + departures were missing (warm rib for friends). **M.**
 7. **Warmth-earned sharp roast tier** — gives the roaster energy a place to live; warmth-gated. **M.**
 8. **Inject open plans into the live reply** — the cheapest real "more useful" win, fully ready. **S.**
 9. ~~**Smug-after-a-roast mood**~~ **✅ done** (+ angry-squint/glower ✅) **+ thinking eyes** — `S` personality
