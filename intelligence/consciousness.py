@@ -293,6 +293,9 @@ _last_wave_close_log_at: float = 0.0  # throttle for the "face too close" suppre
 # Land-the-laugh / take-a-bow: per-session count + last-fire time (a plain dict so
 # mutation needs no `global`; reset on session reset alongside the wave state).
 _room_reacted: dict[str, float] = {"count": 0.0, "last_at": 0.0}
+# "Wait, that's new" change detection: per-session cooldown/cap + per-label de-dup.
+_room_change_state: dict[str, float] = {"count": 0.0, "last_at": 0.0}
+_room_change_remarked: set[str] = set()
 _facial_expression_reacted_at: dict[tuple[str, str], float] = {}
 _last_facial_expression_reaction_at: float = 0.0
 _last_expression_reaction_line_by_kind: dict[str, str] = {}
@@ -2839,6 +2842,80 @@ def _step_room_reaction(snapshot: dict, profile: SituationProfile) -> None:
         "consciousness: room reaction — %s (count=%d/%s)",
         kind, int(_room_reacted["count"]),
         getattr(config, "ROOM_REACTION_SESSION_CAP", 3),
+    )
+
+
+def _step_room_change(snapshot: dict, profile: SituationProfile) -> None:
+    """Wait — that's new. When the room is KNOWN (Rex has an established object baseline)
+    and a genuinely new object shows up — currently present, low recorded sighting count,
+    never a fixture — Rex clocks it ONCE with a dry one-liner. Heavily gated because the
+    COCO detector is noisy: it needs a baseline first (no fresh-install flood), fires only
+    in a lull (plain _can_proactive_speak yields to active conversation), and is bounded by
+    a cooldown + a low per-session cap + per-label de-dup."""
+    if not bool(getattr(config, "ROOM_CHANGE_REMARK_ENABLED", True)):
+        return
+    if profile.suppress_proactive or profile.user_mid_sentence or profile.interaction_busy:
+        return
+
+    labels = {
+        str(o.get("label") or "").strip().lower()
+        for o in (snapshot.get("objects") or [])
+        if isinstance(o, dict) and o.get("label")
+    }
+    labels = {lbl for lbl in labels if lbl and lbl not in _room_change_remarked}
+    if not labels:
+        return
+
+    now = time.monotonic()
+    if (now - float(_room_change_state.get("last_at", 0.0))) < float(
+        getattr(config, "ROOM_CHANGE_COOLDOWN_SECS", 120.0)
+    ):
+        return
+    if _room_change_state.get("count", 0.0) >= float(getattr(config, "ROOM_CHANGE_SESSION_CAP", 3)):
+        return
+
+    try:
+        from memory import room_model
+        # Rex must KNOW the room first — without an established baseline, a fresh install
+        # (or a freshly-cleared rex.db) would flag every fixture as "new".
+        established_min = int(getattr(config, "ROOM_MODEL_ESTABLISHED_SIGHTINGS", 20))
+        if room_model.established_count(established_min) < int(
+            getattr(config, "ROOM_CHANGE_MIN_BASELINE", 4)
+        ):
+            return
+        counts = room_model.label_sightings(labels)
+    except Exception as exc:
+        _log.debug("room-change model read failed: %s", exc)
+        return
+
+    lo = int(getattr(config, "ROOM_CHANGE_MIN_SIGHTINGS", 2))
+    hi = int(getattr(config, "ROOM_CHANGE_MAX_SIGHTINGS", 12))
+    new_labels = sorted(lbl for lbl in labels if lo <= counts.get(lbl, 0) <= hi)
+    if not new_labels:
+        return
+    if not _can_proactive_speak():
+        return
+
+    label = new_labels[0]
+    lines = getattr(config, "ROOM_CHANGE_REMARK_LINES", []) or []
+    if not lines:
+        return
+    # De-dup the label NOW, before speaking: even if the enqueue races and fails, this new
+    # object is "handled" for the session — a flickering detection must never re-fire it.
+    # (The cooldown + session cap only advance on an actual remark, below.)
+    _room_change_remarked.add(label)
+    line = random.choice(list(lines)).replace("{label}", label)
+    if not _speak_async(
+        line, emotion="curious", purpose="room_change", label=f"room change: {label}",
+        governed=False,
+    ):
+        return
+    _room_change_state["last_at"] = now
+    _room_change_state["count"] = _room_change_state.get("count", 0.0) + 1
+    _log.info(
+        "consciousness: room-change remark — %s (sightings=%d, count=%d/%s)",
+        label, counts.get(label, 0), int(_room_change_state["count"]),
+        getattr(config, "ROOM_CHANGE_SESSION_CAP", 3),
     )
 
 
@@ -6222,12 +6299,33 @@ def _visual_curiosity_objects_line() -> str:
         return ""
     keep.sort(key=lambda o: float(o.get("confidence") or 0.0), reverse=True)
     cap = int(getattr(config, "VISUAL_CURIOSITY_OBJECTS_MAX", 6))
+    # Novelty (room model): float objects that are NEW to the room (low/zero recorded
+    # sightings) to the front and tell the LLM to prefer them, so curiosity asks about
+    # what changed rather than the fixtures Rex sees every day. Degrades to plain order.
+    novel_note = ""
+    try:
+        from memory import room_model
+        counts = room_model.label_sightings({o.get("label") for o in keep})
+        nmax = int(getattr(config, "ROOM_MODEL_NOVELTY_MAX_SIGHTINGS", 6))
+
+        def _is_novel(o) -> bool:
+            return counts.get(str(o.get("label") or "").strip().lower(), 0) < nmax
+
+        novel = [o for o in keep if _is_novel(o)]
+        if novel and len(novel) < len(keep):  # only worth flagging if SOME are fixtures
+            keep = novel + [o for o in keep if not _is_novel(o)]
+            novel_note = (
+                f" The {novel[0].get('label')} is NEW to the room (Rex hasn't logged it "
+                "here before) — prefer asking about that."
+            )
+    except Exception:
+        pass
     items = ", ".join(
         f"{o.get('label')} ({o.get('position') or 'in view'})" for o in keep[:cap]
     )
     return (
         "Confirmed objects in view (a local object detector verified these are really "
-        f"there — safe to name): {items}.\n\n"
+        f"there — safe to name): {items}.{novel_note}\n\n"
     )
 
 
@@ -11041,6 +11139,10 @@ def _loop() -> None:
             # laughing at Rex's material (gated on a recent-Rex-line window).
             _step_room_reaction(snapshot, profile)
 
+            # 10g-c. "Wait, that's new" — notice a genuinely new object in the room
+            # (room_model permanence), in a lull, once per object per session.
+            _step_room_change(snapshot, profile)
+
             # 10h. Facial expression reactions — gently notice clear surprise,
             # frowns, and brow furrows from the local MediaPipe telemetry.
             _step_facial_expression_reactions(snapshot, profile)
@@ -11186,6 +11288,9 @@ def start() -> None:
     _pending_wave_back = None
     _room_reacted["count"] = 0.0
     _room_reacted["last_at"] = 0.0
+    _room_change_state["count"] = 0.0
+    _room_change_state["last_at"] = 0.0
+    _room_change_remarked.clear()
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()
     _disposition_sampled_at.clear()
@@ -11307,6 +11412,9 @@ def stop() -> None:
     _pending_wave_back = None
     _room_reacted["count"] = 0.0
     _room_reacted["last_at"] = 0.0
+    _room_change_state["count"] = 0.0
+    _room_change_state["last_at"] = 0.0
+    _room_change_remarked.clear()
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()
     _disposition_sampled_at.clear()

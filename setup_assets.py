@@ -877,6 +877,15 @@ CREATE TABLE IF NOT EXISTS rex_episodes (
 CREATE INDEX IF NOT EXISTS idx_rex_episodes_created ON rex_episodes(created_at);
 CREATE INDEX IF NOT EXISTS idx_rex_episodes_kind    ON rex_episodes(kind);
 CREATE INDEX IF NOT EXISTS idx_rex_episodes_person  ON rex_episodes(person_id);
+
+-- Persistent per-object room model (memory/room_model.py), one row per label.
+CREATE TABLE IF NOT EXISTS room_objects (
+    label           TEXT    PRIMARY KEY,
+    location_bucket TEXT,
+    first_seen      TEXT    NOT NULL,
+    last_seen       TEXT    NOT NULL,
+    sighting_count  INTEGER NOT NULL DEFAULT 1
+);
 """
 
 

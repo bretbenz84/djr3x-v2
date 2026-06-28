@@ -130,6 +130,12 @@
   the calendar; `llm._open_plans_prompt_line` now appends a short "Open plans they mentioned: X
   (tomorrow / on DATE)" awareness block (dated, ≤2 within 14 days, restraint rule), gated against the
   proactive `_anticipated_events` throttle. `OPEN_PLANS_IN_REPLY_ENABLED`. `tests/test_open_plans.py`.
+- **Room model (object permanence) + its payoffs** — `memory/room_model.py` + a `room_objects` rex.db
+  table records which objects Rex has seen over time (one row per label, fed by the COCO stream). Powers
+  (a) novelty-aware curiosity (`_visual_curiosity_objects_line` floats what's NEW to the room) and (b) a
+  conservatively-gated "wait, that's new" reaction (`_step_room_change`: baseline gate + sighting window +
+  per-label de-dup + cooldown/cap). Adversarially reviewed (1 minor fixed). `ROOM_MODEL_*` / `ROOM_CHANGE_*`.
+  `tests/test_room_model.py`.
 
 **IN (still to build):**
 - §1 Comedy & roasting — sharp tier, running gags, tease-obsession, signature handle
@@ -267,17 +273,17 @@ one-liner.
 > to build the full persistent substrate. Privacy posture = **Rich**: open vocabulary minus
 > screens/devices, persist indefinitely, coarse buckets.
 
-### Room baseline + object permanence (`memory/room_model.py` + rex.db table) — **BUILD (L)**
-⚠ verified: no `room_model.py`, no objects table; scene memory today is fuzzy free-text captions
-(`episodic_hooks.py:213`) — the "clustered into one vibe" framing was loose, but per-object
-structured memory genuinely does not exist. Build a new `rex.db` table (label, location bucket,
-first_seen, last_seen, sighting_count) + migration in `setup_assets.py`, fed by the
-`world_state.objects` stream, with a compact "remembered room" summary injected into the
-curiosity prompt. **Loosen** the `visual_curiosity` proactive rule (`conversation_agenda.py:125`
-literally says "visible scene only. Do not also bring up memory") so a remembered-room reference
-is allowed. **Rich posture details:** coarse buckets (left/center/right + fg/bg), single room,
-persist (no auto-forget), but **never log screens/text** (the COCO stream already drops devices).
-Inherit episodic test-suppression. **Hard-depends on the COCO unlock.** **Effort: L.**
+### Room baseline + object permanence (`memory/room_model.py` + rex.db table) — **✅ SHIPPED (L)**
+**Shipped:** `memory/room_model.py` + a `room_objects` rex.db table (`label PRIMARY KEY`, location_bucket,
+first_seen, last_seen, sighting_count), in BOTH the `rex_db.SCHEMA` runtime string and
+`setup_assets.REX_DB_SCHEMA` (idempotent `CREATE TABLE IF NOT EXISTS` — existing rex.db gets it via
+`ensure_schema`, no migration system needed). `record_objects` upserts ONE row per label (keyed on
+label, NOT (label,bucket) — the head moves an object's coarse position frame-to-frame, so a chair is
+one chair wherever it lands) and is fed from `vision.scene.detect_objects_local` (the COCO scan
+thread). `label_sightings` / `established_count` query the baseline. Gated + test-suppressed exactly
+like `episodes` (never writes a real rex.db under the test runner). Rich posture inherited from the
+COCO stream (screens/devices/people/animals already filtered out). `ROOM_MODEL_*` config.
+Tests: `tests/test_room_model.py`.
 
 ### NEW — GUI object bounding boxes + labels — **✅ IMPLEMENTED** *(owner request)*
 **Shipped** with the COCO unlock: `gui/vision_panel._draw_objects` overlays each `world_state.objects`
@@ -285,13 +291,16 @@ entry's bbox + label (violet, distinct from the green face boxes / amber animals
 camera preview, mirroring `_draw_animals` (same pixel-box scaling). Gated by `GUI_OBJECT_BOXES_ENABLED`.
 Tests: `tests/test_object_detection.py`.
 
-### "Wait — that's new": live change detection — **BUILD (needs COCO + room_model first)**
-⚠ Don't flip `SCENERY_CHANGE_REMARK_ENABLED` (that's the boot-to-boot caption path). Diff
-`world_state.objects` vs `room_model` each idle tick; on a confirm-streak-crossed new/departed
-object, fire `do_noticed_change` through the governor. Dispatch slots into
-`consciousness._idle_micro_behavior_choices` (`:5318`) → a new `idle_behaviors.do_noticed_change`.
-**Per-object cooldown + confirm-streak** so he doesn't cry wolf; one genuine double-take per
-visit. **Effort: M** *(after the prereqs).*
+### "Wait — that's new": live change detection — **✅ SHIPPED** *(with room_model)*
+**Shipped:** `consciousness._step_room_change` — when the room is KNOWN (`room_model.established_count`
+≥ `ROOM_CHANGE_MIN_BASELINE`) and a current object's recorded sighting count is in
+`[ROOM_CHANGE_MIN_SIGHTINGS, ROOM_CHANGE_MAX_SIGHTINGS]` (confirmed-present but recent — past the
+one-frame-misread floor, below the fixture ceiling) and not already remarked, Rex clocks it ONCE with
+a dry canned line (`ROOM_CHANGE_REMARK_LINES`, `{label}` slot). The baseline gate kills the
+fresh-install flood; per-label de-dup (marked BEFORE the enqueue so a speech race can't re-fire it) +
+a 120s cooldown + a session cap of 3 + a lull-only `_can_proactive_speak` are defense-in-depth against
+COCO noise. Adversarially reviewed (0 blocker/major; one speech-race de-dup minor, fixed).
+`ROOM_CHANGE_REMARK_ENABLED`. Tests: `tests/test_room_model.py`.
 
 ### Object-grounded curiosity questions — **✅ SHIPPED (live-stream version, no room_model needed)**
 **Shipped** off the LIVE `world_state.objects` COCO stream (the room_model persistence is a later
@@ -300,8 +309,11 @@ upgrade): `consciousness._visual_curiosity_objects_line` feeds the detector-CONF
 "PREFER grounding the question in a confirmed object — these are detector-verified, safe to name"
 instruction, so Rex asks about a REAL named object instead of a possibly-hallucinated GPT detail. The
 "never invent an object" guardrail is preserved and the elaborate gating chain is UNCHANGED. Gated by
-`VISUAL_CURIOSITY_USE_OBJECTS`. The "most novel/longest-present" prioritization + interest-cross still
-want `room_model` (sort is by confidence for now). Tests: `tests/test_room_reaction.py`.
+`VISUAL_CURIOSITY_USE_OBJECTS`. **Novelty upgrade shipped with room_model:** `_visual_curiosity_objects_line`
+now floats objects that are NEW to the room (`room_model.label_sightings` < `ROOM_MODEL_NOVELTY_MAX_SIGHTINGS`)
+to the front and tells the LLM "X is NEW — prefer asking about that," so curiosity targets what changed
+rather than the daily fixtures (degrades to confidence order when the model is empty). Tests:
+`tests/test_room_reaction.py`, `tests/test_room_model.py`.
 
 ### Room-and-person-aware POV seeds — **BUILD** *(person/interest slice ships now)*
 ⚠ verified: `REX_POV_SEEDS` are 100% internal; `rex_pov._context_signature` (`:157`) emits only
@@ -664,7 +676,7 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
    (cut — arms can't cross/raise) · ~~named arrivals + departures~~ **✅ done (relationship-toned;
    bbox→direction look-toward deferred to the call-out work)**.
 4. **Cheap conversation wins:** ~~inject open plans into the live reply~~ **✅ done** · open commitments.
-5. **room_model (L)** → then object-grounded curiosity, change detection, the docent bit (ask-only).
+5. ~~**room_model (L)** → object-grounded curiosity, change detection~~ **✅ done** → the docent bit (ask-only) remains.
 6. **The roast lane:** sharp tier (warmth-gated) · running-gag escalation · tease-the-obsession ·
    signature handle (thin over callbacks).
 7. **Storytelling (ask-only):** tall-tale → `person_story` saga → E-1 Reunion staging.
@@ -690,8 +702,8 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
    mid-conversation Rex now knows you have a thing tomorrow. **S.**
 9. ~~**Smug-after-a-roast mood**~~ **✅ done** (+ angry-squint/glower ✅) **+ thinking eyes** — `S` personality
    wins from existing machinery.
-10. **room_model + object permanence** — the L investment that makes object-grounded curiosity,
-    change-detection, and the docent bit possible. **L.**
+10. ~~**room_model + object permanence**~~ **✅ done** — the L investment; now powers novelty-aware
+    curiosity + "wait, that's new" change detection (the docent bit remains). **L.**
 
 ## Open tuning knobs (recommended defaults — adjust in build)
 

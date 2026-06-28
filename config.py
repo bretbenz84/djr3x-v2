@@ -4036,6 +4036,37 @@ OBJECT_DETECTION_BANNED_CLASSES = {
     "cell phone", "cellphone", "keyboard", "mouse", "remote",
 }
 
+# ── Room model (persistent object permanence in rex.db) ───────────────────────────
+# Record which objects Rex has seen over time (memory/room_model.py, fed by the local
+# COCO stream) so curiosity prefers what's NEW and Rex can notice a genuinely new object
+# across sessions. Rides on EPISODIC_MEMORY_ENABLED (the rex.db capture kill switch) plus
+# its own flag; never writes a real rex.db under the test runner.
+ROOM_MODEL_ENABLED = True
+# An object becomes a "fixture" Rex knows once recorded this many times (≈ object scans
+# at OBJECT_DETECTION_INTERVAL_SECS, so ~20 ≈ ~50s of presence).
+ROOM_MODEL_ESTABLISHED_SIGHTINGS = 20
+# Curiosity treats an object as NEW-to-the-room (prefer asking about it) below this count.
+ROOM_MODEL_NOVELTY_MAX_SIGHTINGS = 6
+
+# "Wait — that's new": when the room is KNOWN (an established baseline exists) and a
+# genuinely new object shows up (currently present, low recorded sighting count, never a
+# fixture), Rex remarks on it ONCE. Heavily gated because the COCO detector is noisy — it
+# needs a baseline first, fires only in a lull (via _can_proactive_speak), and is bounded
+# by a cooldown + a LOW per-session cap + per-label de-dup. Kill switch:
+ROOM_CHANGE_REMARK_ENABLED = True
+ROOM_CHANGE_MIN_BASELINE = 4      # need ≥ this many known fixtures before noticing changes
+ROOM_CHANGE_MIN_SIGHTINGS = 2     # the new object must be confirmed (not a 1-frame misread)
+ROOM_CHANGE_MAX_SIGHTINGS = 12    # ...but still recent (just appeared), not a slow fixture
+ROOM_CHANGE_COOLDOWN_SECS = 120.0
+ROOM_CHANGE_SESSION_CAP = 3
+ROOM_CHANGE_REMARK_LINES = [
+    "Hold on — when did that {label} get here?",
+    "New {label}. The room's redecorating without consulting me.",
+    "Is that {label} new? I keep an inventory, you know.",
+    "Wait. That {label} wasn't there a minute ago. I notice things.",
+    "A wild {label} appears. The room's got range.",
+]
+
 # Animal detection runs alongside periodic scene scans. OpenAI animal detection
 # remains available for explicit scene queries and as an optional fallback.
 ANIMAL_DETECTION_ENABLED = True

@@ -579,6 +579,13 @@ def detect_objects_local(frame) -> list[dict]:
 
     objects = _confirm_persistent_objects(objects)
     world_state.update("objects", objects)
+    # Feed the persistent room model (rex.db) so curiosity prefers what's new and Rex can
+    # notice changes. Fail-safe + test-suppressed inside record_objects.
+    try:
+        from memory import room_model
+        room_model.record_objects(objects)
+    except Exception as exc:
+        _log.debug("room_model record skipped: %s", exc)
     if objects:
         _log.info(
             "detect_objects_local: %d detected — %s",

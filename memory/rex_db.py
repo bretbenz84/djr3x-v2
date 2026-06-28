@@ -55,6 +55,19 @@ CREATE TABLE IF NOT EXISTS rex_episodes (
 CREATE INDEX IF NOT EXISTS idx_rex_episodes_created ON rex_episodes(created_at);
 CREATE INDEX IF NOT EXISTS idx_rex_episodes_kind    ON rex_episodes(kind);
 CREATE INDEX IF NOT EXISTS idx_rex_episodes_person  ON rex_episodes(person_id);
+
+-- Persistent per-object room model (memory/room_model.py), fed by the local COCO
+-- stream. One row PER LABEL (robust to the head moving the object's position around);
+-- sighting_count + first/last_seen give object PERMANENCE so curiosity prefers what's
+-- new and Rex can notice 'wait, that's new' across sessions. Screens/devices/people/
+-- animals are filtered upstream and never reach this table.
+CREATE TABLE IF NOT EXISTS room_objects (
+    label           TEXT    PRIMARY KEY,           -- COCO class, lowercased
+    location_bucket TEXT,                           -- most-recent coarse position ("foreground left")
+    first_seen      TEXT    NOT NULL,               -- ISO 'YYYY-MM-DD HH:MM:SS' local
+    last_seen       TEXT    NOT NULL,
+    sighting_count  INTEGER NOT NULL DEFAULT 1
+);
 """
 
 
