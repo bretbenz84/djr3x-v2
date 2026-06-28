@@ -4831,6 +4831,15 @@ ANTICIPATION_LOOKAHEAD_DAYS = 30
 # same Juneteenth plan on every startup, which got old fast. ~20h ≈ at most once a day.
 ANTICIPATION_REPEAT_COOLDOWN_HOURS = 20
 
+# Inject open plans into the LIVE reply: mid-conversation, surface the next 1-2 DATED
+# upcoming events the person mentioned (memory.events.get_upcoming_events) into the reply
+# context, so Rex actually knows you have a thing tomorrow — as background AWARENESS with
+# a restraint rule, NOT a reminder he forces. Skips events the ANTICIPATION proactive path
+# already raised this session (no double-mention). Off → the reply has no calendar awareness.
+OPEN_PLANS_IN_REPLY_ENABLED = True
+OPEN_PLANS_WITHIN_DAYS = 14   # only events this close qualify (distant plans feel forced)
+OPEN_PLANS_MAX = 2            # at most this many surfaced in one reply's context
+
 # Visit count milestones Rex acknowledges in character
 VISIT_MILESTONES = [5, 10, 25, 50, 100]
 

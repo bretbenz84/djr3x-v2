@@ -180,6 +180,16 @@ _greeted_this_session: set[int] = set()
 # so the same upcoming event isn't referenced on every re-entry into frame.
 _anticipated_events: set[tuple[int, int]] = set()
 
+
+def event_recently_anticipated(person_id: int, event_id: int) -> bool:
+    """True if the PROACTIVE anticipation path has already raised this (person, event)
+    pair this session — so the reply path's open-plans injection can skip it and the two
+    don't both bring up the same upcoming plan."""
+    try:
+        return (int(person_id), int(event_id)) in _anticipated_events
+    except (TypeError, ValueError):
+        return False
+
 # Third-party awareness state.
 # _third_party_seen_at: per-tracking-key monotonic timestamp of when the
 #   person was first noticed as a non-engaged bystander this lurking spell.

@@ -126,6 +126,10 @@
   (reusing `llm._relationship_tone_rule`) now scales them — a sharper rib for a needling friend, a
   warmer one for a close friend, plain for a near-stranger (`PRESENCE_RELATIONSHIP_TONE_ENABLED`).
   The bbox→direction look-toward glance is deferred (shared with call-outs). `tests/test_presence_tone.py`.
+- **Inject open plans into the live reply** — `_build_person_context` read emotional events but never
+  the calendar; `llm._open_plans_prompt_line` now appends a short "Open plans they mentioned: X
+  (tomorrow / on DATE)" awareness block (dated, ≤2 within 14 days, restraint rule), gated against the
+  proactive `_anticipated_events` throttle. `OPEN_PLANS_IN_REPLY_ENABLED`. `tests/test_open_plans.py`.
 
 **IN (still to build):**
 - §1 Comedy & roasting — sharp tier, running gags, tease-obsession, signature handle
@@ -560,14 +564,15 @@ visor-openness dimension and the safe floor already exist).*
 
 ## 8. Personalization & running gags from memory
 
-### Inject open plans into the LIVE reply — **BUILD** *(rescued from the cut smart-home cluster — cheapest real win)*
-⚠ verified exactly: `_build_person_context` (`llm.py:572`) only reads `emotional_events`; the
-calendar readers `get_open_events`/`get_upcoming_events` (`memory/events.py:249/264`) are never
-called there, so mid-conversation Rex doesn't know you have a thing tomorrow. Add a short "Open
-plans they mentioned: X (on DATE)" block with a restraint rule, gated against the
-`_anticipated_events` throttle (`consciousness.py:181`) to avoid double-mentioning with the
-proactive path. Inject only the next 1-2 within N days; prefer dated over undated (undated nags).
-~15-30 lines. **Effort: S.**
+### Inject open plans into the LIVE reply — **✅ SHIPPED** *(rescued from the cut smart-home cluster — cheapest real win)*
+**Shipped exactly as scoped:** `llm._open_plans_prompt_line` reads `memory.events.get_upcoming_events`
+(dated, today-or-future, not-followed-up, planned) and appends a short "Open plans they mentioned: X
+(tomorrow / on DATE)" block to `_build_person_context` (added LAST — lowest priority) with a restraint
+rule ("background awareness, do NOT lead/force/nag"). Only the next `OPEN_PLANS_MAX` (2) within
+`OPEN_PLANS_WITHIN_DAYS` (14); dated only (undated excluded by the query). Gated against the
+`_anticipated_events` throttle via a new `consciousness.event_recently_anticipated()` accessor (lazy
+import — consciousness imports llm) so the reply never double-mentions what the proactive path already
+raised. Fail-safe. `OPEN_PLANS_IN_REPLY_ENABLED`. Tests: `tests/test_open_plans.py`.
 
 ### Open commitments ("you SWORE you'd fix that sensor") — **BUILD**
 ⚠ verified: the `status` column + cancel/reschedule machinery exist (`events.py:160/215/229`); a
@@ -658,7 +663,7 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
 3. **Reactions in parallel:** ~~land-the-laugh / take-a-bow~~ **✅ done** · the gesture-reaction layer
    (cut — arms can't cross/raise) · ~~named arrivals + departures~~ **✅ done (relationship-toned;
    bbox→direction look-toward deferred to the call-out work)**.
-4. **Cheap conversation wins:** inject open plans into the live reply · open commitments.
+4. **Cheap conversation wins:** ~~inject open plans into the live reply~~ **✅ done** · open commitments.
 5. **room_model (L)** → then object-grounded curiosity, change detection, the docent bit (ask-only).
 6. **The roast lane:** sharp tier (warmth-gated) · running-gag escalation · tease-the-obsession ·
    signature handle (thin over callbacks).
@@ -681,7 +686,8 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
 6. ~~**Energetic named arrivals + departures**~~ **✅ done** — naming already existed; added the
    relationship-tone scaling the returns + departures were missing (warm rib for friends). **M.**
 7. **Warmth-earned sharp roast tier** — gives the roaster energy a place to live; warmth-gated. **M.**
-8. **Inject open plans into the live reply** — the cheapest real "more useful" win, fully ready. **S.**
+8. ~~**Inject open plans into the live reply**~~ **✅ done** — the cheapest real "more useful" win;
+   mid-conversation Rex now knows you have a thing tomorrow. **S.**
 9. ~~**Smug-after-a-roast mood**~~ **✅ done** (+ angry-squint/glower ✅) **+ thinking eyes** — `S` personality
    wins from existing machinery.
 10. **room_model + object permanence** — the L investment that makes object-grounded curiosity,

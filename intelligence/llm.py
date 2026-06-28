@@ -569,6 +569,66 @@ def _topic_relevant_max() -> int:
         return 4
 
 
+def _open_plan_anticipated(person_id: int, event_id) -> bool:
+    """True if the proactive anticipation path already raised this (person, event) this
+    session, so the reply context skips it (no double-mention). Lazy import — consciousness
+    imports llm, so this can't be a module-level dependency."""
+    if event_id is None:
+        return False
+    try:
+        from intelligence import consciousness
+        return consciousness.event_recently_anticipated(int(person_id), int(event_id))
+    except Exception:
+        return False
+
+
+def _open_plans_prompt_line(person_id: int) -> str:
+    """A short 'Open plans they mentioned' block for the reply context — so Rex actually
+    knows mid-conversation that they have a thing coming up. Only the next OPEN_PLANS_MAX
+    DATED events within OPEN_PLANS_WITHIN_DAYS, skipping any the proactive path already
+    raised. Background AWARENESS with a restraint rule, not a reminder to force. "" when
+    there's nothing near-term to surface."""
+    if not bool(getattr(config, "OPEN_PLANS_IN_REPLY_ENABLED", True)):
+        return ""
+    try:
+        from datetime import date as _date
+        from memory import events as _events
+        upcoming = _events.get_upcoming_events(person_id)  # dated, today-or-future, ordered
+    except Exception as exc:
+        _log.debug("open-plans read failed: %s", exc)
+        return ""
+    if not upcoming:
+        return ""
+    within_days = int(getattr(config, "OPEN_PLANS_WITHIN_DAYS", 14))
+    max_n = max(1, int(getattr(config, "OPEN_PLANS_MAX", 2)))
+    today = _date.today()
+    picked: list[str] = []
+    for ev in upcoming:
+        name = str(ev.get("event_name") or "").strip()
+        date_str = str(ev.get("event_date") or "").strip()[:10]
+        if not name or not date_str:
+            continue
+        try:
+            days = (_date.fromisoformat(date_str) - today).days
+        except ValueError:
+            continue
+        if days < 0 or days > within_days:
+            continue
+        if _open_plan_anticipated(person_id, ev.get("id")):
+            continue
+        when = "today" if days == 0 else "tomorrow" if days == 1 else f"on {date_str}"
+        picked.append(f"{name} ({when})")
+        if len(picked) >= max_n:
+            break
+    if not picked:
+        return ""
+    return (
+        "Open plans they mentioned: " + "; ".join(picked) + ". "
+        "Use this ONLY if it fits naturally — you may ask about it or weave it in, but do "
+        "NOT lead with it, force it, or nag; it's background awareness, not a reminder."
+    )
+
+
 def _build_person_context(person_id: int) -> str:
     person = people_db.get_person(person_id)
     if not person:
@@ -874,6 +934,16 @@ def _build_person_context(person_id: int) -> str:
                 )
     except Exception as exc:
         _log.debug("emotional events injection skipped: %s", exc)
+
+    # Open plans they mentioned (dated, near-term) — added LAST so it sits below the
+    # relationship/facts/emotional context: it's the lowest-priority "by the way, you have
+    # a thing tomorrow" awareness, not something to lead with.
+    try:
+        plans_line = _open_plans_prompt_line(person_id)
+        if plans_line:
+            lines.append(plans_line)
+    except Exception as exc:
+        _log.debug("open-plans injection skipped: %s", exc)
 
     return "\n".join(lines)
 
