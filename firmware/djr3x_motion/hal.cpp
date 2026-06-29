@@ -127,7 +127,10 @@ void hal_read_odom(Odom& out, float dt) {
   g_ctx.wheels.vr = s_vmeas_r;
 
   const float d_center = 0.5f * (d_l + d_r);
-  const float d_theta  = (d_r - d_l) / track;           // +d_theta = CCW (REP-103)
+  // Negated (d_l - d_r, not d_r - d_l) to match the swapped-sides motor mixing in
+  // hal_drive_velocity, so +d_theta = physical CCW/left (REP-103) and odometry heading
+  // tracks the real world (keeps voice/D-pad/autonomous turns correct).
+  const float d_theta  = (d_l - d_r) / track;
 
   out.theta += d_theta;
   while (out.theta >  (float)M_PI)  out.theta -= 2.0f * (float)M_PI;
@@ -159,9 +162,13 @@ void hal_drive_velocity(float lin, float ang, float dt) {
   // Caller holds the state lock — read the runtime params as a consistent snapshot.
   const float track = g_ctx.params.track_width_m;
   const float kp = g_ctx.params.kp, ki = g_ctx.params.ki, kd = g_ctx.params.kd;
-  // Differential-drive kinematics (REP-103: +lin forward, +ang CCW/left).
-  const float v_l = lin - ang * (track * 0.5f);
-  const float v_r = lin + ang * (track * 0.5f);
+  // Differential-drive kinematics (REP-103: +lin forward, +ang CCW/left). The drive
+  // channels are wired to the OPPOSITE physical sides (verified on the bench: a +ang
+  // command spun the base CW/right while forward/back were correct), so the angular term
+  // is negated here — kept in lockstep with the same negation in hal_read_odom — to make
+  // +ang = physical CCW/left WITHOUT swapping the pin map (pins.h stays as-wired).
+  const float v_l = lin + ang * (track * 0.5f);
+  const float v_r = lin - ang * (track * 0.5f);
 
   // Energize only when something should move (commanded OR still rolling, so we
   // actively brake a coasting wheel to a stop before disabling it).
