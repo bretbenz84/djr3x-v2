@@ -176,8 +176,14 @@ void gamepad_tick() {
   if (fo != s_full_override) { s_full_override = fo; ctl_set_full_override(fo); }
 
   // Left stick -> arcade drive; L1 creep / R1 boost scales the caps.
+  // axisX is negated: this pad (8BitDo Pro 2 via Bluepad32) reports left-stick X as
+  // LEFT-positive, the opposite of the assumed convention, which drove the base the wrong
+  // way on turns. Negating here restores right = +x, so the REP-103 `ang` mapping below
+  // and the GUI mirror (gp_live.lx) both stay correct. NOTE: this ONLY corrects the
+  // manual stick. If voice/D-pad turns are ALSO reversed, the fix is the L/R wheel
+  // labeling (swap motor+encoder pins in pins.h), not this line.
   float fwd   = -stick_norm(c->axisY());   // stick up = forward
-  float turn  =  stick_norm(c->axisX());   // stick right = +x
+  float turn  = -stick_norm(c->axisX());   // stick right = +x (pad reports left-positive)
   float scale = c->l1() ? GAMEPAD_SCALE_CREEP : (c->r1() ? GAMEPAD_SCALE_BOOST : GAMEPAD_SCALE_CRUISE);
 
   float max_lin, max_ang;
