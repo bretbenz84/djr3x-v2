@@ -38,6 +38,16 @@
 #define ENC_SIGN_L  (+1.0f)
 #define ENC_SIGN_R  (+1.0f)
 
+// Per-wheel MOTOR direction. +1 means "a positive (forward) duty spins the wheel
+// forward." Flip to -1 (per wheel) — the software equivalent of swapping that motor's
+// two power leads — if the bench `spin` test runs away / auto-estops or the wheel spins
+// BACKWARD on a forward command. MUST agree with ENC_SIGN_* (forward duty -> forward
+// travel -> +counts): a mismatch makes the velocity PID positive feedback and trips the
+// runaway guard. Fixing direction HERE keeps each channel paired with its own encoder,
+// so it does NOT desync odometry the way swapping only the motor leads does.
+#define MOTOR_SIGN_L  (+1)
+#define MOTOR_SIGN_R  (+1)
+
 // ---- Motor PWM (LEDC) -----------------------------------------------------
 // 20 kHz is above audible and well within the BTS7960's switching range.
 #define PWM_FREQ_HZ    20000
