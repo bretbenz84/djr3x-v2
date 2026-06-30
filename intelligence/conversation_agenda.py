@@ -636,6 +636,40 @@ def _plan_clarify_answer(plan: TurnPlan, lines: list, text: str, person_id: Opti
     return _finish(plan, lines)
 
 
+# The human is signalling they want OFF this thread — bored, the bit/metaphor isn't landing,
+# or they explicitly asked for something else. These are NOT on-topic answers to be deepened;
+# they mean DROP the subject and change direction. Field 2026-06-30: Rex ground a "bed/mattress"
+# metaphor for five straight turns, and when Bret said "Don't you have anything else to say?" the
+# system processed it as a normal answer and stayed ON the bed bit. (Bare "what?" is deliberately
+# excluded — it's handled by the misheard-repair path, not a topic pivot.)
+_NEW_DIRECTION_PAT = re.compile(
+    r"(?:do|don'?t)\s+you\s+have\s+(?:anything|something)\s+else"
+    r"|(?:anything|something)\s+else\s+(?:to\s+)?(?:say|talk|add|do)\b"
+    r"|say\s+something\s+else|talk\s+about\s+something\s+else"
+    r"|change\s+the\s+(?:subject|topic)|change\s+(?:subjects|topics)"
+    r"|(?:new|different|another)\s+(?:subject|topic)|(?:let'?s\s+)?move\s+on\b|moving\s+on\b|next\s+topic"
+    r"|you\s+(?:keep|already)\s+(?:saying|said)|(?:said|asked)\s+that\s+already"
+    r"|you'?re\s+repeating|stop\s+(?:saying|repeating|talking\s+about)"
+    r"|enough\s+(?:about|of|with)\b|you'?re\s+stuck\s+on|same\s+thing\s+over"
+    r"|beating\s+a\s+dead\s+horse|let\s+it\s+(?:go|die|rest)\b|drop\s+it\b"
+    r"|you'?ve\s+lost\s+(?:me|the\s+(?:metaphor|plot|thread|point))|losing\s+me\b"
+    r"|lost\s+the\s+(?:metaphor|plot|thread)"
+    r"|you'?re\s+(?:rambling|not\s+making\s+(?:any\s+)?sense|making\s+no\s+sense)"
+    r"|(?:that|this|it)\s+(?:doesn'?t|does\s+not)\s+make\s+(?:any\s+)?sense"
+    r"|this\s+is\s+(?:boring|pointless|going\s+nowhere)|i'?m\s+(?:bored|lost|confused)\b"
+    r"|you'?re\s+(?:boring|being\s+weird)|talking\s+(?:so\s+)?weird",
+    re.IGNORECASE,
+)
+
+
+def _wants_new_direction(text: str) -> bool:
+    """True when the human wants OFF the current thread (bored / the bit isn't landing /
+    'don't you have anything else to say?' / 'you've lost the metaphor' / 'you keep saying
+    that'). Such a turn must DROP the topic and change direction, not be answered on-topic."""
+    t = (text or "").strip()
+    return bool(t) and bool(_NEW_DIRECTION_PAT.search(t))
+
+
 def build_turn_plan(
     user_text: str,
     person_id: Optional[int],
@@ -840,6 +874,34 @@ def build_turn_plan(
             lines.append(unknown_context.directive)
         return _finish(plan, lines)
 
+    # MOVE-ON OVERRIDE: the human wants off this thread (bored / the bit isn't landing / asked
+    # for something else). DROP the topic and change direction — this beats the "stay on this
+    # exact topic, do not pivot" agendas below that were grinding one dead metaphor (field
+    # 2026-06-30). Ban the just-dropped topic so the reply AND idle banter both stop re-raising it.
+    if bool(getattr(config, "SUBJECT_CHANGE_ON_CUE_ENABLED", True)) and _wants_new_direction(text):
+        try:
+            from intelligence import interaction as _interaction
+            _ban = str((answered_question or {}).get("question_text") or "") if answered_question else ""
+            if _ban:
+                _interaction._record_banned_topic(_ban)
+        except Exception as exc:
+            _log.debug("move-on topic ban failed: %s", exc)
+        next_q = _next_useful_question(person_id) if person_id is not None else None
+        pivot = (
+            "Primary purpose: the human is telling you to MOVE ON — they're done with this "
+            "thread, or the bit/metaphor isn't landing. DROP the current topic, bit, and "
+            "metaphor ENTIRELY: do not continue it, defend it, explain it, or reference it "
+            "again. Give ONE quick, warm, self-aware beat that you're switching gears (no "
+            "sulking, no 'fair, ...' loop), then genuinely CHANGE THE SUBJECT — ask about "
+            "something they're actually into or open a fresh, specific topic. Do NOT take "
+            "another lap on the dead one."
+        )
+        if next_q:
+            pivot += f" A fresh thing to ask about if it fits: {next_q['text']!r}."
+        lines.append(pivot)
+        plan.explicit_followup = True
+        return _finish(plan, lines, purpose="interest")
+
     steering_ctx = None
     try:
         steering_ctx = conversation_steering.note_user_turn(person_id, text)
@@ -903,9 +965,11 @@ def build_turn_plan(
                 f"Question: {q_text!r}. Answer: {a_text!r}. "
                 "React to the actual content with genuine, specific interest — "
                 "show you find it interesting, not just that you logged it. After "
-                "answering, ask at most one short follow-up that stays on this "
-                "exact topic, or carry the turn with a specific Rex opinion / "
-                "light roast instead. Do not pivot into a new interview topic."
+                "answering, ask at most one short follow-up that builds on what "
+                "they said, or carry the turn with a specific Rex opinion / light "
+                "roast instead. Don't re-ask what they just answered. You don't have "
+                "to stay welded to this exact subject — if the thread is clearly "
+                "thinning, a brief, natural change of tack is welcome (not a fresh interview)."
             )
             plan.explicit_followup = True
         else:
@@ -1006,8 +1070,9 @@ def build_turn_plan(
                 "with a non-sequitur. If they shared something real, show you find "
                 "it interesting before (or instead of) teasing. Use known facts and "
                 "what you see if relevant. At most one tightly related follow-up "
-                "question, only if it continues this exact thread; never pivot into "
-                "a new interview topic."
+                "question that continues this thread — but don't grind one topic or "
+                "metaphor turn after turn; if it's clearly run its course, a natural "
+                "change of tack beats another lap (just don't launch a fresh interview)."
             )
     else:
         lines.append(

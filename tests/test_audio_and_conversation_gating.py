@@ -6630,7 +6630,9 @@ class ConversationGatingTest(unittest.TestCase):
             )
 
         self.assertIn("tightly related follow-up question", directive)
-        self.assertIn("never pivot into a new interview topic", directive)
+        # The lock was softened to permit a natural change of tack while still forbidding a
+        # fresh interview (field 2026-06-30: Rex ground one metaphor for five turns).
+        self.assertIn("don't launch a fresh interview", directive)
 
     def test_social_frame_generic_related_followup_directive_does_not_invite_pivot(self):
         from intelligence import social_frame

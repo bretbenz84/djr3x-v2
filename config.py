@@ -3520,6 +3520,14 @@ IDLE_BANTER_RECENT_QUESTION_DEDUP_SECS = 120.0
 # acknowledgment isn't undone by an idle line revisiting the topic ~20s later.
 TOPIC_BAN_COOLDOWN_SECS = 90.0
 TOPIC_BAN_PROACTIVE_SUPPRESS = True
+
+# When the human signals they want OFF the current thread — bored, the bit/metaphor isn't
+# landing, or they explicitly ask for something else ("don't you have anything else to say?",
+# "you've lost the metaphor", "you keep saying that") — DROP the topic and change direction
+# instead of answering it on-topic. Overrides the "stay on this exact topic" reply agenda (field
+# 2026-06-30: Rex ground a bed/mattress metaphor for five turns and ignored "anything else?").
+# Kill switch.
+SUBJECT_CHANGE_ON_CUE_ENABLED = True
 # Priority idle banter competes with under ACTION_GOVERNOR_ENFORCE (proactive-layer
 # consolidation). Moderate — above ambient idle_monologue (15), below the check-ins.
 IDLE_BANTER_GOVERNOR_PRIORITY = 50
