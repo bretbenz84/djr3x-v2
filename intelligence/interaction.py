@@ -2111,6 +2111,23 @@ def _speak_proactive(
                 return False
         except Exception as exc:
             _log.debug("[interaction] proactive yield check failed: %s", exc)
+    # NEVER talk over Rex's OWN in-flight line. The consciousness proactive path is already
+    # gated by speech_engine.can_proactive_speak (which drops a line while speech_queue is
+    # playing), but the idle path reaches _speak_blocking directly — so without this an idle
+    # line PREEMPTS a visual-curiosity / celebration line that's still playing (field
+    # 2026-06-30: the "Strawberry pillows…" line was cut off mid-sentence). Drop the ambient
+    # line (one line, then wait) rather than enqueuing it at a priority that preempts.
+    if bool(getattr(config, "PROACTIVE_NO_SELF_OVERLAP_ENABLED", True)):
+        try:
+            from audio import output_gate as _output_gate
+            if speech_queue.is_speaking() or _output_gate.is_busy():
+                _log.info(
+                    "[interaction] proactive line dropped — Rex is still speaking (%s): %r",
+                    label, text,
+                )
+                return False
+        except Exception as exc:
+            _log.debug("[interaction] self-overlap guard failed: %s", exc)
     completed = _speak_blocking(
         text,
         emotion=emotion,

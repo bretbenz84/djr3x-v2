@@ -1350,6 +1350,11 @@ VAD_BARGE_IN_ENABLED = False
 # buffer is un-attenuated, so the onset is preserved). Direct replies — where the
 # user JUST spoke — are unaffected; this only gates self-initiated speech.
 PROACTIVE_SPEECH_YIELD_ENABLED = True
+# Never let a self-initiated (proactive) line talk over Rex's OWN in-flight line: the idle
+# path reaches the speech queue directly and would otherwise preempt a visual-curiosity /
+# celebration line still playing (field 2026-06-30: the pillow line was cut off mid-sentence).
+# When Rex is already speaking, the ambient proactive line is dropped (one line, then wait).
+PROACTIVE_NO_SELF_OVERLAP_ENABLED = True
 # Look-back window (s) of recent mic audio scanned for the user's voice. Covers
 # the "started just before Rex's line plays" case without reaching back far enough
 # to catch Rex's own prior playback tail.
