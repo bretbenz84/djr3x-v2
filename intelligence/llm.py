@@ -1064,6 +1064,33 @@ def _relationship_tone_rule(person: dict, name: str) -> str:
             if (trust >= 0.6 or close)
             else ""
         )
+        # Earned-SHARP tone: the closest, warmest bonds (the SAME effective-warmth gate the
+        # roast governor uses to lift the cap to "sharp" — social_frame._roast_level) get the
+        # harder, more cutting rib so the prompt and the cap agree. Not minors (the governor
+        # zeroes their warmth; mirror that here so the two never disagree). The cruelty
+        # backstop + content-ban still stand; this only tells Rex he may sharpen.
+        try:
+            _sharp_gate = float(getattr(config, "ANTAGONISM_TIER_CAPS_LIFT_WARMTH", 1.01))
+        except (TypeError, ValueError):
+            _sharp_gate = 1.01
+        _is_minor = False
+        try:
+            from intelligence import profile_questions as _pq
+            _is_minor = _pq.person_is_minor(person.get("id"), person=person)
+        except Exception:
+            _is_minor = False
+        if (
+            getattr(config, "SHARP_ROAST_TIER_ENABLED", True)
+            and not _is_minor
+            and effective_warmth >= _sharp_gate
+        ):
+            return (
+                f"Relationship tone: {who} is one of your closest — they have earned the sharp "
+                "stuff and they love it. Bring a genuinely sharper, more cutting rib: aim true "
+                "and don't pull the punch the way you would with a casual friend. The warmth "
+                "underneath is total and obvious, which is exactly what lets the edge land as "
+                f"love, not cruelty. Never actually mean, never about body, health, or identity.{trust_clause}"
+            )
         if close:
             return (
                 f"Relationship tone: {who} is one of your real ones — you two go way "

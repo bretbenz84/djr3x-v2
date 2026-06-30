@@ -302,6 +302,18 @@ RELATIONSHIP_TIER_WARMTH_FLOOR = {
     "best_friend": 0.90,
 }
 
+# Sharp roast tier: lift the deterministic roast-intensity cap from "normal" to "sharp"
+# ONLY for an earned, heavily-warm relationship — a close/needling friend who clearly
+# enjoys the bit (the creator bond is the exemplar). Gated on effective warmth ALONE
+# (max(warmth_score, the tier floor above); no separate consent flag). The best_friend
+# floor is 0.90 and close_friend 0.70, so 0.85 admits earned best_friends + very-warm
+# close_friends and excludes everyone below (and strangers/minors score 0.0). This is
+# NEVER a safety bypass: it only changes which sentences the governor's intensity cap
+# removes — the cruelty backstop (_CRUEL_ROAST_PAT, all tiers), the content-ban, the
+# family-safe cap, and every upstream care/boundary "none" gate stay intact at "sharp".
+SHARP_ROAST_TIER_ENABLED = True
+ANTAGONISM_TIER_CAPS_LIFT_WARMTH = 0.85
+
 # Verbose diagnostic: log the FULL assembled system prompt (every section,
 # including the conversation-arc block) at INFO each turn, so you can confirm
 # what the main LLM actually sees. Noisy — flip to False when done inspecting.

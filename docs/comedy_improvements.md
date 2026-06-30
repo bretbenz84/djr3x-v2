@@ -22,7 +22,7 @@
 | --- | --- | --- |
 | **Smart home (§7)** | **CUT entirely** | Drops HA, Alexa, timers, the announce + scheduler primitives, show-cue, Movie Time, and the "act" half of notice→offer→act. **Rescued:** "inject open plans into the live reply" is pure conversation, not home control — **moved to §8**. |
 | **Storytelling (§4)** | **Explicit-ask only** | No idle/self-initiated tall tales. Kills the over-eager failure mode. Simplifies E-2. |
-| **Sharp roast tier (§1)** | **Build it**, gated on **warmth alone**, accept `roasted_sincere` drift | Loosest gate → keep the harsh-word governor regex as the cruelty backstop. |
+| **Sharp roast tier (§1)** | **✅ SHIPPED** — gated on **warmth alone** (`ANTAGONISM_TIER_CAPS_LIFT_WARMTH`=0.85); harsh-word governor made UNCONDITIONAL as the cruelty backstop; `roasted_sincere` drift accepted (golden cases untouched). | — |
 | **Roast Battle (E-3)** | **CUT** | Off-brand for a warm-curious Rex; the rest of crowdwork stays. |
 | **Curiosity (§2)** | **ALL-IN** on `room_model` | Full object permanence + change detection + object-grounded curiosity + docent (docent is ask-only). |
 | **Room privacy posture** | **Rich** | Open vocabulary **minus screens/devices**, persist indefinitely, coarse buckets. **+ new item:** GUI object bounding boxes + labels. |
@@ -40,12 +40,14 @@
 
 ## Verification corrections (load-bearing — these were wrong/imprecise in the brainstorm)
 
-- **⚠ Sharp roast tier is lower-risk than framed.** `llm._TIER_ROAST_STYLE` (`llm.py:348`)
-  *already* steers best-friend roasts hot ("the full arsenal, zero mercy"). Only the
-  deterministic governor (`social_frame._roast_level`, `social_frame.py:849`) caps everyone
-  at `normal`. The feature is "stop the governor clamping what the prompt already
-  encourages," **not** "invent escalation." Two cited config keys
-  (`ANTAGONISM_TIER_CAPS_LIFT_WARMTH`, `TIER_ROAST_STYLE`) **do not exist** — must be created.
+- **✅ Sharp roast tier — done.** Confirmed lower-risk than framed: `llm._TIER_ROAST_STYLE` already
+  steered best-friend roasts hot; only the deterministic governor (`social_frame._roast_level`) capped
+  everyone at `normal`. The feature was "stop the governor clamping what the prompt already encourages,"
+  so `sharp` adds ZERO new governor enforcement (it falls through the none/light scrubs like `normal`).
+  `ANTAGONISM_TIER_CAPS_LIFT_WARMTH` (0.85) + `SHARP_ROAST_TIER_ENABLED` created; the `sharp` tone lives
+  in `_relationship_tone_rule` (warmth-gated), not a new `_TIER_ROAST_STYLE` key. **Net safety win:** the
+  harsh-word governor was made UNCONDITIONAL (`_CRUEL_ROAST_PAT`, all tiers) — `normal` previously had no
+  harsh scrub at all.
 - **⚠ Room-energy landmine:** `social_mode=='performance'` **also fires for an empty room**
   (`awareness/social.py:70-71`, count==0). A "hot room" boost keyed on it fires to nobody.
   Derive energy from headcount + smiles + laughter, never from `social_mode` alone.
@@ -136,6 +138,18 @@
   sensor?") as background context — aged so it's a callback not an instant nag, once-per-session, cleared
   on a retraction (→ canceled) or a "I fixed it" (→ completed, roast fuel). Structurally invisible to the
   plan readers, so no double-mention with open-plans. `OPEN_COMMITMENTS_*`. `tests/test_open_commitments.py`.
+- **Warmth-earned sharp roast tier** — a fourth, hotter antagonism level above `normal`. `_roast_level`
+  now lifts the cap to `sharp` ONLY when `effective_warmth = max(warmth_score, tier_floor) >=
+  ANTAGONISM_TIER_CAPS_LIFT_WARMTH` (0.85) — a genuinely close, adult relationship (the creator bond is
+  the exemplar); the lift is the LAST branch, so every upstream care/boundary `none`/`light` gate (sad,
+  tender, boundary, roast-averse, minor→warmth 0.0, micro/brief) still wins. The cap-lift sharpens the
+  PROMPT (new `sharp` strings in `build_directive` + `_slim_roast_rule`, and a matching `sharp` tone line
+  in `llm._relationship_tone_rule` on the same gate); it does NOT touch the safety net. Crucially, the
+  harsh-word/cruelty governor was made UNCONDITIONAL — a tight `_CRUEL_ROAST_PAT` (name-calling/contempt,
+  NOT vivid affectionate hyperbole like "dumpster fire") now scrubs at EVERY tier, so `sharp` (and the
+  previously-unscrubbed `normal`) can never emit genuine cruelty. `SHARP_ROAST_TIER_ENABLED`.
+  `tests/test_sharp_roast_tier.py` (20). Accepted: a small `roasted_sincere` drift on the generated
+  corpus (the 9 golden judge-cases are boundary/sincere turns where `sharp` never fires).
 - **Running gags that escalate** — a callback premise that keeps landing is promoted to a recurring
   "running bit" (computed from `use_count`, no schema change) that escapes use-decay + the 7-day reuse
   lockout, so it recurs across encounters instead of fading, then ages back out at `RETIRE_AT`. Silent
@@ -150,8 +164,8 @@
 
 **IN — still to build** (verified against the live tree at this reconcile; the ✅ items above are
 **done**, so they're omitted here):
-- §1 Comedy & roasting — sharp roast tier, tease-the-obsession lane, per-person signature roast handle.
-  *(running-gag escalation ✅ — see Shipped.)*
+- §1 Comedy & roasting — tease-the-obsession lane, per-person signature roast handle.
+  *(running-gag escalation ✅, sharp roast tier ✅ — see Shipped.)*
 - §2 Curiosity — react-to-YOU (clothing/pet/held-object diff), let-curiosity-work-in-a-crowd
   (the `crowd_count>2` gate still excludes crowds). **Partial:** POV seeds (person/quiet slice ✅;
   room-object tagging remains), object-grounded curiosity (novelty ✅; longest-present/personal
@@ -721,8 +735,8 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
    bbox→direction look-toward deferred to the call-out work)**.
 4. ~~**Cheap conversation wins:** inject open plans into the live reply · open commitments.~~ **✅ ALL DONE.**
 5. ~~**room_model (L)** → object-grounded curiosity, change detection~~ **✅ done** → the docent bit (ask-only) remains.
-6. **The roast lane:** sharp tier (warmth-gated) · ~~running-gag escalation~~ **✅ done** · tease-the-obsession ·
-   signature handle (thin over callbacks).
+6. **The roast lane:** ~~sharp tier (warmth-gated)~~ **✅ done** · ~~running-gag escalation~~ **✅ done** ·
+   tease-the-obsession · signature handle (thin over callbacks).
 7. **Storytelling (ask-only):** tall-tale → `person_story` saga → E-1 Reunion staging.
 8. **Crowdwork depth:** room-energy read (shadow-log) · compare-the-room · name-and-point call-outs ·
    host mode (operator-triggered) · E-7 Welcome Committee.
@@ -741,7 +755,8 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
    physical bits a room reads instantly. Remaining: shrug/facepalm/slow-clap (deferred). **M.**
 6. ~~**Energetic named arrivals + departures**~~ **✅ done** — naming already existed; added the
    relationship-tone scaling the returns + departures were missing (warm rib for friends). **M.**
-7. **Warmth-earned sharp roast tier** — gives the roaster energy a place to live; warmth-gated. **M.**
+7. ~~**Warmth-earned sharp roast tier**~~ **✅ done** — gives the roaster energy a place to live;
+   warmth-gated, cruelty backstop made unconditional. **M.**
 8. ~~**Inject open plans into the live reply**~~ **✅ done** — the cheapest real "more useful" win;
    mid-conversation Rex now knows you have a thing tomorrow. **S.**
 9. ~~**Smug-after-a-roast mood**~~ **✅ done** (+ angry-squint/glower ✅) **+ thinking eyes** — `S` personality

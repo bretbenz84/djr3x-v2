@@ -116,6 +116,24 @@ _HARSH_ROAST_PAT = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+# Genuine cruelty — name-calling / contempt that is over the line even for a best friend.
+# Scrubbed at EVERY roast tier (incl. normal/sharp) as the cruelty backstop, so lifting the
+# intensity cap to "sharp" sharpens the PROMPT, never the safety net. Deliberately TIGHTER
+# than _HARSH_ROAST_PAT (which also flags context-sensitive words like "body"/"weight" and
+# runs only at the light tier): this is the unambiguous insult subset, safe to drop at all
+# tiers without scrubbing innocent mentions ("the weight of the box") or the vivid-but-
+# affectionate hyperbole ("your code is a dumpster fire") a sharp rib is allowed to use.
+_CRUEL_ROAST_PAT = re.compile(
+    r"\b("
+    r"idiots?|morons?|imbeciles?|cretins?|dumbass(?:es)?|jackass(?:es)?|halfwits?|"
+    r"losers?|worthless|pathetic|pitiful|"
+    r"hate you|shut up|"
+    r"piece of (?:trash|garbage|crap|shit)"
+    r")\b"
+    r"|\b(?:you'?re|you are|what(?:'?s| is)? an?)\s+(?:so\s+|such\s+|a\s+|an\s+|really\s+)*"
+    r"(?:stupid|dumb|ugly|gross|disgusting|useless|a\s+failure|a\s+disgrace|a\s+joke|an\s+idiot)\b",
+    re.IGNORECASE,
+)
 _BAD_CLOSURE_PAT = re.compile(
     r"\b(fun for who|probably not me|not me|can'?t say i enjoyed|"
     r"finally over|good riddance|escape this conversation|"
@@ -311,7 +329,10 @@ def build_frame(
         affect,
         sensitivity,
     )
-    roast_level = _roast_level(person_id, plan.target, empathy_mode, affect, sensitivity, user_text)
+    roast_level = _roast_level(
+        person_id, plan.target, empathy_mode, affect, sensitivity, user_text,
+        effective_warmth=_effective_warmth(person_id),
+    )
     if purpose == "closure":
         roast_level = "none"
 
@@ -407,7 +428,7 @@ def build_directive(frame: SocialFrame) -> str:
     # deflects a sincere share is exactly what makes Rex feel like a snark
     # generator instead of a conversationalist. Banter/visual/general turns keep
     # the roast-first default.
-    if frame.allow_roast == "normal" and frame.purpose in {"interest", "answer_ack"}:
+    if frame.allow_roast in {"normal", "sharp"} and frame.purpose in {"interest", "answer_ack"}:
         roast_rule = (
             "ENGAGE-FIRST. They just shared something they care about — lead with "
             "genuine, SPECIFIC curiosity or a reaction that shows you actually find "
@@ -432,6 +453,16 @@ def build_directive(frame: SocialFrame) -> str:
                 "every turn gets old fast; a roast that actually lands beats three "
                 "friendly sentences AND beats a forced one. Punch up, stay "
                 "good-natured (loyalty lives under the insult)."
+            ),
+            "sharp": (
+                "SHARP RIB — this is one of your real ones and they take a harder roast, so "
+                "don't pull the punch the way you would with a casual friend. Go for the "
+                "surgical, SPECIFIC cut: use what you genuinely know about them and commit "
+                "fully, no softening hedge. Punch UP, and the affection has to read THROUGH "
+                "the burn — they know you're on their side, and that's exactly what lets the "
+                "edge land as love instead of cruelty. Still off-limits: body, health, "
+                "identity, money, grief, trauma, private facts; never actually mean. And you "
+                "still don't owe them a jab every turn — a sharp one that lands beats a forced one."
             ),
         }.get(frame.allow_roast, "Land one sharp, specific, good-natured jab when it fits.")
     return (
@@ -501,7 +532,7 @@ def _slim_question_rule(frame: SocialFrame) -> str:
 
 
 def _slim_roast_rule(frame: SocialFrame) -> str:
-    if frame.allow_roast == "normal" and frame.purpose in {"interest", "answer_ack"}:
+    if frame.allow_roast in {"normal", "sharp"} and frame.purpose in {"interest", "answer_ack"}:
         return (
             "lead with genuine, SPECIFIC curiosity about what they shared; a sharp "
             "roast may ride on top, but never deflect a sincere share with a joke"
@@ -512,6 +543,12 @@ def _slim_roast_rule(frame: SocialFrame) -> str:
         "normal": (
             "land ONE sharp, specific jab only when you actually have an angle — not "
             "every turn; a plain honest reaction can be the move"
+        ),
+        "sharp": (
+            "you've earned the harder rib with this one — land a genuinely sharp, surgical "
+            "jab that uses what you actually know about them; commit to it, punch UP, keep "
+            "the loyalty unmistakable under the cut (still nothing about body/health/identity, "
+            "still not every turn)"
         ),
     }.get(frame.allow_roast, "one sharp, specific, good-natured jab when it fits")
 
@@ -598,6 +635,15 @@ def govern_response(text: str, frame: SocialFrame) -> GovernResult:
         if len(kept) != len(sentences):
             sentences = kept
             notes.append("removed_sharp_roast")
+
+    # Cruelty backstop — runs at EVERY tier (incl. normal/sharp). Lifting the roast cap to
+    # "sharp" sharpens the PROMPT, never the safety net: genuine name-calling/contempt is
+    # dropped regardless of warmth. (none/light already remove these via their broader
+    # filters above; this guarantees normal + sharp do too — a net safety improvement.)
+    kept = [s for s in sentences if not _CRUEL_ROAST_PAT.search(s)]
+    if len(kept) != len(sentences):
+        sentences = kept
+        notes.append("removed_cruel_roast")
 
     enforce_length = bool(getattr(config, "SOCIAL_FRAME_ENFORCE_LENGTH_LIMITS", False))
     if frame.purpose == "closure":
@@ -695,6 +741,9 @@ def govern_stream_sentence(sentence: str, frame: SocialFrame) -> str:
     if frame.allow_roast == "none" and _is_roast_sentence(current):
         return ""
     if frame.allow_roast == "light" and _is_sharp_roast_sentence(current):
+        return ""
+    # Cruelty backstop — every tier, incl. normal/sharp (see govern_response).
+    if _CRUEL_ROAST_PAT.search(current):
         return ""
     return current
 
@@ -846,6 +895,30 @@ def _looks_like_boundary(text: str) -> bool:
     return bool(_BOUNDARY_RE.search(text or ""))
 
 
+def _effective_warmth(person_id: Optional[int]) -> float:
+    """Earned warmth for the sharp-roast gate: max(raw warmth_score, the relationship-tier
+    floor), mirroring llm._relationship_tone_rule exactly so the governor and the prompt
+    tone agree on who qualifies. Returns 0.0 for strangers, no-id callers, MINORS, or any
+    error — so the sharp tier is reachable only for a genuinely close, adult relationship."""
+    if person_id is None:
+        return 0.0
+    try:
+        from intelligence import profile_questions
+        person = people_memory.get_person(person_id)
+        if not person:
+            return 0.0
+        if profile_questions.person_is_minor(person_id, person=person):
+            return 0.0
+        warmth = float(person.get("warmth_score") or 0.0)
+        tier = str(person.get("friendship_tier") or "stranger").strip().lower()
+        floors = getattr(config, "RELATIONSHIP_TIER_WARMTH_FLOOR", None) or {}
+        floor = float(floors.get(tier, 0.0) or 0.0)
+        return max(warmth, floor)
+    except Exception as exc:
+        _log.debug("[social_frame] effective-warmth lookup failed: %s", exc)
+        return 0.0
+
+
 def _roast_level(
     person_id: Optional[int],
     target: str,
@@ -853,6 +926,8 @@ def _roast_level(
     affect: str,
     sensitivity: str,
     user_text: str = "",
+    *,
+    effective_warmth: float = 0.0,
 ) -> str:
     try:
         cooldown = float(getattr(config, "TONE_REPAIR_NO_ROAST_SECS", 180.0) or 0.0)
@@ -895,6 +970,20 @@ def _roast_level(
                 return "light"
     except Exception as exc:
         _log.debug("[social_frame] arc roast-ease check failed: %s", exc)
+    # Earned-warmth SHARP tier — the hottest level, reachable ONLY here at the very end,
+    # after every care/boundary gate above has had its chance to force "none"/"light".
+    # So strangers, minors (effective_warmth==0.0), sad/tender/boundary turns, roast-averse
+    # people, and micro/brief turns can never reach it; only a genuinely close, warm,
+    # otherwise-"normal" turn lifts the cap. It does NOT bypass the cruelty backstop or the
+    # content-ban (those run downstream/independently) — it only frees the prompt to sharpen.
+    try:
+        if (
+            getattr(config, "SHARP_ROAST_TIER_ENABLED", True)
+            and effective_warmth >= float(getattr(config, "ANTAGONISM_TIER_CAPS_LIFT_WARMTH", 1.01))
+        ):
+            return "sharp"
+    except Exception as exc:
+        _log.debug("[social_frame] sharp-roast lift check failed: %s", exc)
     return "normal"
 
 
@@ -1218,6 +1307,8 @@ def _salvage_pure_question(dropped_questions: list[str], frame: SocialFrame) -> 
         if frame.allow_roast == "none" and _is_roast_sentence(sentence):
             continue
         if frame.allow_roast == "light" and _is_sharp_roast_sentence(sentence):
+            continue
+        if _CRUEL_ROAST_PAT.search(sentence):   # cruelty backstop — every tier
             continue
         return sentence
     return ""
