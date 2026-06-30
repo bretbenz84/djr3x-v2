@@ -3474,8 +3474,12 @@ IDLE_BANTER_MIN_SECS = 5.0
 IDLE_BANTER_MAX_SECS = 8.0
 IDLE_BANTER_SECS = 8.0
 IDLE_BANTER_COOLDOWN_SECS = 10.0  # minimum gap between nudges
-IDLE_BANTER_MAX_PER_STRETCH = 2   # re-engagement attempts before giving up (was 3 —
-                                  # 3 made him re-volunteer the same preoccupation too often)
+IDLE_BANTER_MAX_PER_STRETCH = 3   # re-engagement attempts per silent stretch while the user is
+                                  # PRESENT (escalates ask → on-topic take → playful tease before a
+                                  # warm give-up). The earlier over-talk came from short-interval
+                                  # banter bypassing the min-gap, NOT the cap — the 10s cooldown,
+                                  # low-content gate, opener-diversity guard, and presence-gating
+                                  # keep this from being spammy.
 # When the FIRST re-engagement question also goes unanswered (truly dead) AND there's a
 # live thread to react to, the next nudge VOLUNTEERS a short on-topic take instead of
 # asking again — a real angle to push back on or laugh at (idle directive [1]), never the
@@ -3532,7 +3536,29 @@ IDLE_OUTRO_LINES = [
     "Ah, the room has chosen silence. Bold, mysterious, mildly rude.",
     "Nobody talking now. Excellent. I shall pretend this was my idea.",
     "And there it is: conversational hyperspace. I'll be here, judging the ambience.",
+    # Warmer give-ups that keep the door open instead of a cold brush-off.
+    "Alright, I'll let the quiet win this round — holler when you miss me.",
+    "Going on standby, but I'm easily summoned. Don't be a stranger.",
+    "Fine, soak up the silence. I'll be right here when you want company.",
 ]
+
+# Stay engaged longer while the user is PRESENT (on camera) but quiet: extend the effective
+# idle timeout so a few spaced, varied re-engagement attempts actually land before the give-up
+# outro — instead of the 45s timeout structurally allowing only ~1. The moment the user leaves
+# the frame, presence drops and the timeout snaps back to CONVERSATION_IDLE_TIMEOUT_SECS so a
+# departed/empty room still times out promptly (and is never nudged). Kill switch.
+PRESENT_REENGAGE_ENABLED = True
+PRESENT_REENGAGE_IDLE_TIMEOUT_SECS = 90.0
+
+# When a re-engagement has already gone unanswered, a LATER idle nudge may playfully call out the
+# dead air IN CHARACTER (a fond teasing jab that invites them back — "cat got your tongue?",
+# "stumped, or just gone full mute?") instead of another earnest line. This is the ONE idle mode
+# allowed to announce the silence; every other directive still must not. Fires only at attempt
+# index >= IDLE_BANTER_TEASE_SILENCE_AT (0-based), so the first re-engagement stays earnest. It
+# composes with the low-content gate (a curt "not much" is still not mined; only a genuine
+# silence gets teased) and inherits the opener-diversity guard for variety. Kill switch.
+IDLE_BANTER_TEASE_SILENCE_ENABLED = True
+IDLE_BANTER_TEASE_SILENCE_AT = 2
 
 # If Rex knows who someone is but barely knows anything about them, use a lull
 # before idle to ask one profile-building question from QUESTION_POOL.

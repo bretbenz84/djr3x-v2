@@ -3877,10 +3877,12 @@ _IDLE_BANTER_DIRECTIVES = (
     # Even attempts: turn the spotlight on the user.
     "The conversation just went quiet — the user didn't say goodbye, they simply "
     "stopped talking. DRIVE it forward, in character: ask ONE short, specific "
-    "question about the user that you're genuinely curious about given what you "
-    "know of them (their day, their work, their dog, what they're into), or riff "
-    "a question off something you can see. Light and inviting, one or two "
-    "sentences. Do not sign off and do not announce the silence.",
+    "question rooted in what you actually KNOW about them. If their 'Interest profile' "
+    "above names a hobby or interest, LEAD WITH THAT — a real, curious follow-up ('still "
+    "wrangling those time-of-flight sensors?', 'how's the astrophotography coming?'), never "
+    "a generic 'what are you up to?'. Otherwise riff a question off their work, their dog, "
+    "or something you can see. Light and inviting, one or two sentences. Do not sign off "
+    "and do not announce the silence.",
     # Odd attempts: Rex volunteers a take — but ON the live topic, not a generic bit.
     "Still quiet, but you two were mid-conversation. Stay ON the subject you were just "
     "discussing (see 'Session so far' and the conversation arc above) and VOLUNTEER a "
@@ -3904,8 +3906,27 @@ _IDLE_BANTER_LIVE_TOPIC_ASK = (
     "you, ask that ONE question. NEVER re-ask something they already answered — do NOT "
     "ask what they're working on, what they're up to, or what their latest project is; "
     "they just told you, and asking again breaks the conversation. If you don't have a "
-    "real new question, volunteer a short, specific take on that same topic instead. Do "
-    "not sign off or announce the silence."
+    "real new question, EITHER volunteer a short, specific take on that same topic, OR — if "
+    "that exact thread is genuinely spent — PIVOT to something else you know they're into "
+    "(their 'Interest profile' above: a hobby, a project, an upcoming plan) and ask a real "
+    "follow-up about that. Do not sign off or announce the silence."
+)
+
+# A LATER idle attempt, after an earnest re-engagement has already gone unanswered: the ONE
+# mode allowed to call out the dead air — but only the way you'd needle a friend you're fond
+# of. Selected when tease=True (idle_count >= IDLE_BANTER_TEASE_SILENCE_AT); the tuple gives the
+# model varied seeds, and the opener-diversity guard stops two teases stacking the same opener.
+_IDLE_BANTER_TEASE_SILENCE = (
+    "They've gone properly quiet on you — no goodbye, just dead air. THIS time you ARE allowed "
+    "to call out the silence, but do it the way you'd needle a friend you're fond of: ONE short, "
+    "warm, teasing jab that pokes at the quiet and dares them back in ('cat got your tongue?', "
+    "'are you trying to stump me, or just gone full mute?', 'I can hear you thinking — out loud, "
+    "coward'). The ribbing obviously comes from affection and it MUST invite a reply — never sad, "
+    "never a sign-off, never 'I'll be here'. One line, ~8-14 words; land it like a grin.",
+    "Still nothing — the silence is getting comically long. Break it IN CHARACTER by gently "
+    "roasting the quiet itself: a fond, teasing dare that makes them want to fire back ('you do "
+    "remember how talking works, right?', 'this dramatic pause is doing real numbers'). Warm under "
+    "the snark, an obvious invitation to re-engage, never a goodbye, never melancholy. One short line.",
 )
 
 
@@ -4068,7 +4089,7 @@ def _idle_should_volunteer_take(idle_count: int, has_live_topic: bool) -> bool:
 
 
 def _idle_banter_directive(
-    ask_user: bool, has_live_topic: bool, pov_text: str
+    ask_user: bool, has_live_topic: bool, pov_text: str, tease: bool = False
 ) -> tuple[str, bool]:
     """Choose the idle-banter directive and whether Rex's preoccupation was volunteered.
 
@@ -4083,6 +4104,10 @@ def _idle_banter_directive(
       the user talks camping), so it's used ONLY as a cold-open fallback when there's no
       real exchange yet. The POV still surfaces in the reply path regardless.
     """
+    # Later in a silent stretch the earnest re-engagement(s) went unanswered → escalate to a
+    # playful tease of the dead air. The only directive permitted to announce the silence.
+    if tease:
+        return random.choice(_IDLE_BANTER_TEASE_SILENCE), False
     if ask_user:
         if has_live_topic:
             return _IDLE_BANTER_LIVE_TOPIC_ASK, False
@@ -4255,7 +4280,16 @@ def _maybe_idle_banter(
     # mind' never fires here.
     ask_user = not _idle_should_volunteer_take(_idle_banter_count, live_topic)
     pov_text = ""
-    directive, pov_volunteered = _idle_banter_directive(ask_user, live_topic, pov_text)
+    # Escalate a LATER attempt to a playful silence-tease ("cat got your tongue?") once the
+    # earnest re-engagement(s) have gone unanswered — only on a genuine silence, never on a curt
+    # non-answer (the low-content gate above already capped that case).
+    tease_silence = (
+        bool(getattr(config, "IDLE_BANTER_TEASE_SILENCE_ENABLED", True))
+        and not _last_user_turn_was_low_content()
+        and _idle_banter_count >= int(getattr(config, "IDLE_BANTER_TEASE_SILENCE_AT", 2))
+    )
+    directive, pov_volunteered = _idle_banter_directive(
+        ask_user, live_topic, pov_text, tease=tease_silence)
     # True only when we're turning the spotlight on the user MID-topic — the agenda
     # below then anchors the question to the live thread instead of a fresh interview.
     ask_on_topic = ask_user and live_topic
@@ -4305,7 +4339,12 @@ def _maybe_idle_banter(
             )
             return False
         try:
-            if ask_on_topic:
+            if tease_silence:
+                _purpose = (
+                    "Playfully call out the dead air with ONE short, fond teasing jab that "
+                    "dares them back into talking — a goad, never a sign-off."
+                )
+            elif ask_on_topic:
                 _purpose = (
                     "Ask ONE genuinely new, specific follow-up question that builds on "
                     "the topic you were just discussing; never re-ask what they already "
@@ -4327,9 +4366,10 @@ def _maybe_idle_banter(
                     "conversation alive. " + _purpose
                 ),
             )
-            # Asking IS the point of an "ask the user" nudge — force the question
-            # through (otherwise the quiet-energy frame strips it and Rex dead-acks).
-            frame.allow_question = bool(ask_user)
+            # Asking IS the point of an "ask the user" nudge — force the question through
+            # (otherwise the quiet-energy frame strips it and Rex dead-acks). The silence-tease
+            # is a rhetorical goad ("cat got your tongue?"), so it also needs the question slot.
+            frame.allow_question = bool(ask_user or tease_silence)
             if ask_user:
                 frame.max_sentences = max(frame.max_sentences, 2)
                 frame.max_words = max(frame.max_words, 24)
@@ -20591,6 +20631,22 @@ def _loop() -> None:
                 effective_idle_timeout = max(
                     effective_idle_timeout,
                     float(getattr(config, "ACTIVE_GAME_IDLE_TIMEOUT_SECS", effective_idle_timeout)),
+                )
+        except Exception:
+            pass
+        # Stay engaged longer while the user is PRESENT (on camera) but quiet, so a few spaced,
+        # varied re-engagement attempts actually land before the give-up outro (the base 45s
+        # timeout structurally allowed only ~1). Presence-gated: when nobody known is visible,
+        # _primary_session_person_id() is None, the timeout snaps back to the base value, and a
+        # departed/empty room times out promptly — never nudged.
+        try:
+            if (
+                bool(getattr(config, "PRESENT_REENGAGE_ENABLED", True))
+                and _primary_session_person_id() is not None
+            ):
+                effective_idle_timeout = max(
+                    effective_idle_timeout,
+                    float(getattr(config, "PRESENT_REENGAGE_IDLE_TIMEOUT_SECS", 90.0)),
                 )
         except Exception:
             pass
