@@ -130,6 +130,11 @@
   the calendar; `llm._open_plans_prompt_line` now appends a short "Open plans they mentioned: X
   (tomorrow / on DATE)" awareness block (dated, ≤2 within 14 days, restraint rule), gated against the
   proactive `_anticipated_events` throttle. `OPEN_PLANS_IN_REPLY_ENABLED`. `tests/test_open_plans.py`.
+- **Running gags that escalate** — a callback premise that keeps landing is promoted to a recurring
+  "running bit" (computed from `use_count`, no schema change) that escapes use-decay + the 7-day reuse
+  lockout, so it recurs across encounters instead of fading, then ages back out at `RETIRE_AT`. Silent
+  (no numbering); within-session volume still bounded by `CALLBACK_MAX_PER_SESSION` so the engine's
+  safety pipeline is untouched. `RUNNING_BIT_*`. `tests/test_callback_humor.py::RunningBitEscalationTests`.
 - **Room model (object permanence) + its payoffs** — `memory/room_model.py` + a `room_objects` rex.db
   table records which objects Rex has seen over time (one row per label, fed by the COCO stream). Powers
   (a) novelty-aware curiosity (`_visual_curiosity_objects_line` floats what's NEW to the room) and (b) a
@@ -139,8 +144,8 @@
 
 **IN — still to build** (verified against the live tree at this reconcile; the ✅ items above are
 **done**, so they're omitted here):
-- §1 Comedy & roasting — sharp roast tier, running-gag escalation (`running_bit` is still dead
-  scaffolding), tease-the-obsession lane, per-person signature roast handle.
+- §1 Comedy & roasting — sharp roast tier, tease-the-obsession lane, per-person signature roast handle.
+  *(running-gag escalation ✅ — see Shipped.)*
 - §2 Curiosity — react-to-YOU (clothing/pet/held-object diff), let-curiosity-work-in-a-crowd
   (the `crowd_count>2` gate still excludes crowds). **Partial:** POV seeds (person/quiet slice ✅;
   room-object tagging remains), object-grounded curiosity (novelty ✅; longest-present/personal
@@ -220,7 +225,17 @@ regex as the cruelty backstop** (it must still catch genuinely cruel output), an
 `govern_stream_sentence`; new config keys; `BANTER_WARMTH_THRESHOLD` (`config.py:2981`, exists).
 **Effort: M** *(touches the whole roast pipeline + an eval pass).*
 
-### Running gags that escalate (resurrect dead `running_bit`) — **BUILD** *(silent escalation)*
+### Running gags that escalate (resurrect dead `running_bit`) — **✅ IMPLEMENTED** *(silent recurrence)*
+**Shipped:** a premise that keeps LANDING is promoted to a recurring "running bit" — computed from
+`use_count` (`memory.callbacks.is_running_bit`, the `[RUNNING_BIT_PROMOTE_AT, RETIRE_AT)` window, **no
+schema change**) — and ESCAPES the reuse-suppression: `freshness_factor` returns full weight (no
+use-decay) and `off_cooldown` drops the 7-day lockout (`RUNNING_BIT_REUSE_COOLDOWN_DAYS≈0`), so a bit
+that genuinely recurs comes back across encounters instead of fading; it ages back out at
+`RETIRE_AT` (reverts to normal decay) so a beloved gag doesn't go stale. **Silent** — Rex never
+numbers it aloud; the escalation is purely higher recurrence. Within-session volume stays bounded by
+`CALLBACK_MAX_PER_SESSION` (so the engine's safety pipeline is untouched — `callbacks.py`-only change).
+Kill switch `RUNNING_BIT_ENABLED`. Tests: `tests/test_callback_humor.py::RunningBitEscalationTests`.
+
 ⚠ verified dead scaffolding: `running_bit` is in `callbacks.py:CATEGORIES` but never produced
 (`bank()` coerces out-of-set categories to `quirk`, `:141`) or read for selection. ⚠ The real
 work is **carving an escalating gag OUT of the reuse-suppression pipeline**: `freshness_factor`
@@ -687,7 +702,7 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
    bbox→direction look-toward deferred to the call-out work)**.
 4. **Cheap conversation wins:** ~~inject open plans into the live reply~~ **✅ done** · open commitments.
 5. ~~**room_model (L)** → object-grounded curiosity, change detection~~ **✅ done** → the docent bit (ask-only) remains.
-6. **The roast lane:** sharp tier (warmth-gated) · running-gag escalation · tease-the-obsession ·
+6. **The roast lane:** sharp tier (warmth-gated) · ~~running-gag escalation~~ **✅ done** · tease-the-obsession ·
    signature handle (thin over callbacks).
 7. **Storytelling (ask-only):** tall-tale → `person_story` saga → E-1 Reunion staging.
 8. **Crowdwork depth:** room-energy read (shadow-log) · compare-the-room · name-and-point call-outs ·
@@ -701,8 +716,8 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
    kills "generic curiosity" at the root and feeds 5+ §2 ideas. **M.**
 3. ~~**Land-the-laugh / take-a-bow**~~ **✅ done** — Rex was deaf to laughter *and* applause; the signal
    was already computed. Applause → bow, laughter → dry follow-through, gated on a recent-Rex window. **M.**
-4. **Running gags that escalate** — resurrects dead `running_bit`; turns callbacks into bits that
-   recur (silently) instead of decaying. **M.**
+4. ~~**Running gags that escalate**~~ **✅ done** — resurrected dead `running_bit`; a premise that keeps
+   landing recurs (silently) across encounters instead of decaying, then ages back out. **M.**
 5. ~~**Comedic-timing beat pack**~~ — **✅ done (first 4 beats)** + the (B) post-line landing; LLM-addressable
    physical bits a room reads instantly. Remaining: shrug/facepalm/slow-clap (deferred). **M.**
 6. ~~**Energetic named arrivals + departures**~~ **✅ done** — naming already existed; added the

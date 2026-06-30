@@ -319,11 +319,38 @@ def has_topic(person_id: int, topic: str) -> bool:
     return row is not None
 
 
-def off_cooldown(row: dict, *, now: Optional[datetime] = None) -> bool:
-    """Whether a premise's cross-session reuse cooldown has elapsed."""
+def is_running_bit(row: dict) -> bool:
+    """A premise that has LANDED enough to become a recurring "running bit" — and not yet
+    aged out. A promoted bit escapes the reuse-suppression (no use-decay, no cross-session
+    lockout) so a gag that genuinely recurs comes back instead of fading; the recurrence
+    IS the joke (silent — never numbered aloud). Promotion is computed from use_count (no
+    schema change), so it's EARNED by real recurrence, and it ages back out at RETIRE_AT.
+    Gated by RUNNING_BIT_ENABLED."""
     try:
         import config
-        days = float(getattr(config, "CALLBACK_REUSE_COOLDOWN_DAYS", 7.0))
+        if not bool(getattr(config, "RUNNING_BIT_ENABLED", True)):
+            return False
+        promote = int(getattr(config, "RUNNING_BIT_PROMOTE_AT", 3))
+        retire = int(getattr(config, "RUNNING_BIT_RETIRE_AT", 8))
+    except Exception:
+        return False
+    try:
+        uses = int(row.get("use_count") or 0)
+    except Exception:
+        return False
+    return promote <= uses < retire
+
+
+def off_cooldown(row: dict, *, now: Optional[datetime] = None) -> bool:
+    """Whether a premise's cross-session reuse cooldown has elapsed. A promoted running
+    bit uses the much shorter RUNNING_BIT_REUSE_COOLDOWN_DAYS so it can recur instead of
+    being locked out for a week."""
+    try:
+        import config
+        if is_running_bit(row):
+            days = float(getattr(config, "RUNNING_BIT_REUSE_COOLDOWN_DAYS", 0.0))
+        else:
+            days = float(getattr(config, "CALLBACK_REUSE_COOLDOWN_DAYS", 7.0))
     except Exception:
         days = 7.0
     last = _parse_ts(row.get("last_used_at"))
@@ -335,7 +362,15 @@ def off_cooldown(row: dict, *, now: Optional[datetime] = None) -> bool:
 
 def freshness_factor(row: dict) -> float:
     """Decaying-reuse weight: halves every CALLBACK_USE_DECAY_HALFLIFE_USES
-    uses, so a well-worn bit gradually steps back without ever being banned."""
+    uses, so a well-worn bit gradually steps back without ever being banned.
+    A promoted running bit is EXEMPT — it keeps full weight so it recurs instead of
+    fading (until it ages out at RETIRE_AT and the normal decay resumes)."""
+    if is_running_bit(row):
+        try:
+            import config
+            return max(0.0, float(getattr(config, "RUNNING_BIT_FRESHNESS", 1.0)))
+        except Exception:
+            return 1.0
     try:
         import config
         halflife = float(getattr(config, "CALLBACK_USE_DECAY_HALFLIFE_USES", 3.0))

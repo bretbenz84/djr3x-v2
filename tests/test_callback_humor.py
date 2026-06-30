@@ -166,7 +166,9 @@ class StorageLifecycleTests(_TempDbCase):
             self.assertFalse(callbacks.off_cooldown(row))
             future = datetime.now(timezone.utc) + timedelta(days=8)
             self.assertTrue(callbacks.off_cooldown(row, now=future))
-        with mock.patch.object(config, "CALLBACK_USE_DECAY_HALFLIFE_USES", 3, create=True):
+        # Pure use-decay (running-bit exemption off, so use_count=3 isn't promoted).
+        with mock.patch.object(config, "CALLBACK_USE_DECAY_HALFLIFE_USES", 3, create=True), \
+             mock.patch.object(config, "RUNNING_BIT_ENABLED", False, create=True):
             self.assertAlmostEqual(
                 callbacks.freshness_factor({"use_count": 3}), 0.5, places=3
             )
@@ -770,6 +772,57 @@ class RelevanceTests(_TempDbCase):
             mock.patch.object(ce, "_generate", side_effect=RuntimeError("ollama down")),
         ):
             self.assertEqual(ce._judge_relevance("music gear talk", pool), (None, 0.0))
+
+
+class RunningBitEscalationTests(unittest.TestCase):
+    """A premise that keeps LANDING is promoted to a recurring 'running bit': it escapes
+    use-decay and the cross-session lockout so it recurs instead of fading, then ages back
+    out at RETIRE_AT. Pure-function checks on the storage layer (no DB needed)."""
+
+    def _row(self, use_count, last_used_at=None):
+        return {"use_count": use_count, "last_used_at": last_used_at}
+
+    def test_promotion_window(self):
+        import config
+        from memory import callbacks
+        with mock.patch.object(config, "RUNNING_BIT_ENABLED", True, create=True), \
+             mock.patch.object(config, "RUNNING_BIT_PROMOTE_AT", 3, create=True), \
+             mock.patch.object(config, "RUNNING_BIT_RETIRE_AT", 8, create=True):
+            self.assertFalse(callbacks.is_running_bit(self._row(2)))   # not landed enough
+            self.assertTrue(callbacks.is_running_bit(self._row(3)))    # promoted
+            self.assertTrue(callbacks.is_running_bit(self._row(7)))    # still a running bit
+            self.assertFalse(callbacks.is_running_bit(self._row(8)))   # aged out
+            with mock.patch.object(config, "RUNNING_BIT_ENABLED", False, create=True):
+                self.assertFalse(callbacks.is_running_bit(self._row(4)))  # kill switch
+
+    def test_running_bit_does_not_decay(self):
+        import config
+        from memory import callbacks
+        with mock.patch.object(config, "RUNNING_BIT_ENABLED", True, create=True), \
+             mock.patch.object(config, "RUNNING_BIT_PROMOTE_AT", 3, create=True), \
+             mock.patch.object(config, "RUNNING_BIT_RETIRE_AT", 8, create=True), \
+             mock.patch.object(config, "RUNNING_BIT_FRESHNESS", 1.0, create=True), \
+             mock.patch.object(config, "CALLBACK_USE_DECAY_HALFLIFE_USES", 3, create=True):
+            # In the running-bit window (use 4) → full weight, no decay.
+            self.assertEqual(callbacks.freshness_factor(self._row(4)), 1.0)
+            # Below promotion (use 2) decays normally; aged out (use 9) decays hard.
+            self.assertLess(callbacks.freshness_factor(self._row(2)), 1.0)
+            self.assertLess(callbacks.freshness_factor(self._row(9)), 0.5)
+
+    def test_running_bit_bypasses_cross_session_cooldown(self):
+        import config
+        from memory import callbacks
+        now = datetime.now(timezone.utc)
+        just_fired = now.isoformat()
+        with mock.patch.object(config, "RUNNING_BIT_ENABLED", True, create=True), \
+             mock.patch.object(config, "RUNNING_BIT_PROMOTE_AT", 3, create=True), \
+             mock.patch.object(config, "RUNNING_BIT_RETIRE_AT", 8, create=True), \
+             mock.patch.object(config, "RUNNING_BIT_REUSE_COOLDOWN_DAYS", 0.0, create=True), \
+             mock.patch.object(config, "CALLBACK_REUSE_COOLDOWN_DAYS", 7, create=True):
+            # A running bit (use 4) that just fired is still off-cooldown → can recur.
+            self.assertTrue(callbacks.off_cooldown(self._row(4, just_fired), now=now))
+            # A normal premise (use 1) that just fired is locked out for the week.
+            self.assertFalse(callbacks.off_cooldown(self._row(1, just_fired), now=now))
 
 
 if __name__ == "__main__":

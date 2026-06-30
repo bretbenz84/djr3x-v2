@@ -1132,6 +1132,19 @@ CALLBACK_LULL_PERSON_COOLDOWN_SECS = 900.0
 CALLBACK_LULL_PRIORITY = 58   # > visual_curiosity 55, < celebration 64 / followup 65 / checkin 100
 # Score boost for premises banked THIS session ("earlier tonight you said…").
 CALLBACK_LULL_W_SAME_SESSION = 0.3
+# Running gags: a premise that keeps LANDING is promoted to a recurring "running bit"
+# and escapes the reuse-suppression — it stops decaying and loses the 7-day cross-session
+# lockout, so a bit that genuinely recurs comes back instead of fading (the joke gets
+# FUNNIER by recurring). Promotion is computed from use_count (no schema change), so it's
+# EARNED by real recurrence; it ages back out at RETIRE_AT (reverting to normal decay) so
+# a beloved gag doesn't outstay its welcome. Silent — Rex never numbers it aloud; the
+# escalation is purely higher recurrence. Within-session volume is still bounded by
+# CALLBACK_MAX_PER_SESSION. Kill switch.
+RUNNING_BIT_ENABLED = _env_bool("RUNNING_BIT_ENABLED", True)
+RUNNING_BIT_PROMOTE_AT = 3            # lands (use_count) before a premise becomes a running bit
+RUNNING_BIT_RETIRE_AT = 8             # lands at/after which it ages out, back to normal decay
+RUNNING_BIT_REUSE_COOLDOWN_DAYS = 0.0 # cross-session reuse cooldown for a running bit (vs CALLBACK_REUSE_COOLDOWN_DAYS=7)
+RUNNING_BIT_FRESHNESS = 1.0           # fixed selection weight for a running bit (no use-decay)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TTS — ELEVENLABS
