@@ -4795,6 +4795,15 @@ RECENT_RETURN_THRESHOLD_HOURS = 48
 # Rex's own greetings that day (see memory.people.greetings_today_count).
 PRESENCE_SAME_DAY_RETURN_ENABLED = True
 
+# Returning-regular flavor for the FIRST-sight warm greeting (the plain "Hey Bret, how are
+# you?" path). For an established regular (visit_count >= MIN_VISITS), the greeting gets a
+# warm "look who's back / hey, it's you again" familiarity note AND the opener is rotated by
+# visit_count so even the first boot of the day varies (it previously hard-defaulted to "how
+# are you" every cold boot). Stays simple + warm — NO roast/clever-bit/interest-hook. Off →
+# the plain generic greeting. Strangers/acquaintances never reach this branch.
+PRESENCE_RETURNING_REGULAR_GREETING_ENABLED = True
+PRESENCE_RETURNING_REGULAR_MIN_VISITS = 4
+
 # Cold-open celebration gating: Rex should NOT lead his first-sight greeting with
 # a vague, inferred, or stale "good news" memory (e.g. "the speaker feels proud
 # of their problem-solving skills") — that reads as an awkward way to open. A

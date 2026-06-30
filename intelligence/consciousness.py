@@ -4276,18 +4276,22 @@ def _repeat_greeting_opener(greeting_ordinal: int) -> Optional[str]:
 
 def _build_simple_greeting_prompt(
     first_name: str, tone: str, *, note: str = "", opener: Optional[str] = None,
+    allow_familiarity: bool = False,
 ) -> str:
     """A plain, warm, human greeting — the way a real friend says hello. No roast, no
     clever theme, no interest hook; just a friendly hello. `note` optionally sets the
     situation (seen earlier today, been a while) so it lands naturally. `opener` sets the
-    hello STYLE (e.g. "what's up") for repeat-visit variety; defaults to "how are you"."""
+    hello STYLE (e.g. "what's up") for repeat-visit variety; defaults to "how are you".
+    `allow_familiarity` drops ONLY the "it's you again" ban (for an established regular whose
+    `note` invites that warmth) — every other ban (roast, clever bit, interest hook) stays."""
     note_clause = (note.strip() + " ") if note else ""
     opener = (opener or "how are you").strip()
+    again_ban = "" if allow_familiarity else "NO 'oh it's you again', "
     return (
         f"You see {first_name}. {note_clause}{tone} Give a simple, natural, warm hello "
         f"that opens with a \"{opener}\"-style greeting — exactly how a real friend says "
         f"hello (e.g. 'Hey {first_name}, {opener}?', or a close, natural variant of that). "
-        f"Keep it to ONE short, genuine line. NO roast, NO 'oh it's you again', NO clever "
+        f"Keep it to ONE short, genuine line. NO roast, {again_ban}NO clever "
         f"bit or Star Wars one-liner, NO 'what do you need / what are you up to / working "
         f"on / tinkering with', and NO interest callbacks — just a warm hello by name that "
         f"ends in a question mark."
@@ -7457,13 +7461,40 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                 # per Bret's feedback that a greeting should just be a friendly hello, not
                 # a themed hook or a roast.
                 if prompt is None and greeting_warm_default:
+                    # Returning-regular flavor: for an established regular, add a warm
+                    # "look who's back" familiarity note and rotate the opener by visit_count
+                    # so even the first boot of the day varies (it otherwise hard-defaults to
+                    # "how are you" every cold boot — the field "no greeting variation" gripe).
+                    _greet_note = ""
+                    _greet_opener = greeting_opener
+                    _allow_familiarity = False
+                    try:
+                        if (
+                            bool(getattr(config, "PRESENCE_RETURNING_REGULAR_GREETING_ENABLED", True))
+                            and isinstance(person_db_id, int)
+                        ):
+                            from memory import people as _people_mod
+                            _prow = _people_mod.get_person(person_db_id) or {}
+                            _visits = int(_prow.get("visit_count") or 0)
+                            if _visits >= int(getattr(config, "PRESENCE_RETURNING_REGULAR_MIN_VISITS", 4)):
+                                _allow_familiarity = True
+                                _greet_note = (
+                                    f"You know {first_name} well — a regular you're always "
+                                    f"glad to see, so a warm, familiar 'look who's back / hey, "
+                                    f"it's you' vibe fits."
+                                )
+                                if not _greet_opener:
+                                    _greet_opener = _GREETING_OPENERS[_visits % len(_GREETING_OPENERS)]
+                    except Exception as exc:
+                        _log.debug("[greeting] returning-regular flavor failed: %s", exc)
                     prompt = _build_simple_greeting_prompt(
-                        first_name, greeting_tone, opener=greeting_opener)
+                        first_name, greeting_tone, note=_greet_note,
+                        opener=_greet_opener, allow_familiarity=_allow_familiarity)
                     label = f"first-sight warm greeting for {person_name}"
                     emotion = "happy"
                     _log.info(
-                        "consciousness: first-sight warm greeting for %s (friend/creator)",
-                        person_name,
+                        "consciousness: first-sight warm greeting for %s (friend/creator, familiar=%s)",
+                        person_name, _allow_familiarity,
                     )
 
                 # Fallback — profile-building greeting for sparse known people,
