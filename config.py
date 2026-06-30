@@ -4804,6 +4804,14 @@ PRESENCE_SAME_DAY_RETURN_ENABLED = True
 PRESENCE_RETURNING_REGULAR_GREETING_ENABLED = True
 PRESENCE_RETURNING_REGULAR_MIN_VISITS = 4
 
+# Deterministic opener-diversity guard for AMBIENT proactive chatter: drop a low-stakes
+# proactive line (idle banter, celebration/emotional check-in) that opens with the same
+# leading word as one of Rex's last few lines — the field "Good… Good… Good…" stack the
+# soft 'vary your opener' prompt rule failed to stop. Scoped to chit-chat purposes only, so
+# a salient reaction / greeting / reply is NEVER dropped. Off → soft prompt rule only.
+PROACTIVE_OPENER_DIVERSITY_GUARD = True
+PROACTIVE_OPENER_DIVERSITY_LOOKBACK = 3   # compare against the last N distinct Rex openers
+
 # Cold-open celebration gating: Rex should NOT lead his first-sight greeting with
 # a vague, inferred, or stale "good news" memory (e.g. "the speaker feels proud
 # of their problem-solving skills") — that reads as an awkward way to open. A

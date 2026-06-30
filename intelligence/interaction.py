@@ -2135,6 +2135,32 @@ def _proactive_line_recently_fired(min_gap: Optional[float] = None) -> bool:
     return (time.monotonic() - _last_proactive_line_at) < min_gap
 
 
+# AMBIENT proactive purposes whose lines are low-stakes chit-chat — variety matters more
+# than the specific line, so an opener that repeats a recent one is dropped. Salient
+# reactions (animal arrival, wave-back), greetings, and replies are NOT in this set and are
+# never dropped by the opener-diversity guard.
+_OPENER_DIVERSITY_PURPOSES = {
+    "idle_monologue", "celebration_checkin", "emotional_checkin",
+}
+
+
+def _proactive_opener_repeats(text: str, purpose: Optional[str] = None) -> bool:
+    """True when a low-stakes AMBIENT proactive line opens with the same leading word as one
+    of Rex's last few lines — the deterministic guard against the 'Good… Good… Good…' stack
+    the soft prompt rule failed to stop. Scoped to chit-chat purposes (never salient
+    reactions / greetings / replies); config-gated kill switch."""
+    if not bool(getattr(config, "PROACTIVE_OPENER_DIVERSITY_GUARD", True)):
+        return False
+    if purpose is not None and str(purpose) not in _OPENER_DIVERSITY_PURPOSES:
+        return False
+    try:
+        from intelligence import comedy_modes
+        lookback = int(getattr(config, "PROACTIVE_OPENER_DIVERSITY_LOOKBACK", 3))
+        return comedy_modes.opens_like_recent(text, lookback=lookback)
+    except Exception:
+        return False
+
+
 def _post_tts_handoff_policy(text: Optional[str]) -> _PostTtsHandoffPolicy:
     asked_question = _assistant_asked_question(text or "")
     fast_response_expected = _fast_response_handoff_expected(text)
@@ -4295,6 +4321,13 @@ def _maybe_idle_banter(
                 line = governed.text
         except Exception as exc:
             _log.debug("idle banter govern failed: %s", exc)
+
+        # Opener-diversity backstop: don't fire an idle line that opens with the same word as
+        # a recent line (the "Good… Good…" stack). Drop → the idle loop just yields this tick;
+        # no canned fallback, so silence is the (better) outcome.
+        if _proactive_opener_repeats(line, "idle_monologue"):
+            _log.info("[interaction] idle banter dropped — opener repeats a recent line: %r", line)
+            return False
 
         completed = _speak_proactive(
             line, emotion="curious", priority=1, label="idle_banter",

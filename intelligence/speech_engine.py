@@ -555,6 +555,13 @@ def generate_and_speak(
                     return
             from intelligence.llm import get_response
             text = get_response(_c._apply_proactive_directive(prompt, purpose))
+            # Opener-diversity backstop for ambient proactive chatter (celebration/emotional
+            # check-ins): drop a line that opens with the same word as a recent line — the
+            # "Good… Good…" field stack. Scoped to chit-chat purposes, so salient reactions
+            # are untouched; on a drop the proactive beat simply yields (no canned fallback).
+            if text and _c._proactive_opener_repeats(text, purpose):
+                _log.info("[speech_engine] proactive line dropped — opener repeats a recent line: %r", text)
+                return
             if text and (token is None or _c._proactive_purpose_current(token)):
                 if _c._speak_async(text, emotion, wait_secs=wait_secs, governed=False):
                     if on_spoke is not None:

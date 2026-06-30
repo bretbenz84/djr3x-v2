@@ -427,6 +427,17 @@ def last_spoken_line() -> str:
     return _LAST_SPOKEN_LINE
 
 
+def opens_like_recent(text: str, lookback: int = 2) -> bool:
+    """True if `text` opens with the same leading word as one of Rex's last `lookback`
+    distinct finalized openers — the deterministic backstop for the soft 'vary your opener'
+    prompt rule (stops a 'Good… Good… Good…' proactive stack). Banned fillers are stripped
+    first via _opener_key, so 'Oh, good…' and 'good…' compare equal."""
+    key = _opener_key(text)
+    if not key:
+        return False
+    return key in recent_openers_to_avoid(limit=max(1, lookback))
+
+
 def recent_openers_to_avoid(limit: int = 2) -> list[str]:
     seen: list[str] = []
     for opener in reversed(_RECENT_OPENERS):
