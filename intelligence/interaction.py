@@ -12424,6 +12424,21 @@ def _post_response(
             _learn_direct_memory_from_user_text(user_text, person_id)
         except Exception as exc:
             _log.debug("direct memory learning error: %s", exc)
+        # Open commitments: file a first-person promise ("I'll fix that sensor") as a
+        # status='promised' event so Rex can dryly needle it on a LATER turn. Deterministic
+        # (regex, no LLM); skipped on cancel/postpone/done turns (those RESOLVE a promise,
+        # handled on the hot path) so a retraction can't immediately re-file a promise.
+        if bool(getattr(config, "OPEN_COMMITMENTS_ENABLED", True)):
+            try:
+                if (
+                    events_memory.looks_like_commitment(user_text)
+                    and not events_memory.looks_like_cancellation(user_text)
+                    and not events_memory.looks_like_postponement(user_text)
+                    and not events_memory.looks_like_completion(user_text)
+                ):
+                    events_memory.add_commitment(person_id, user_text)
+            except Exception as exc:
+                _log.debug("[commitments] capture failed: %s", exc)
         try:
             transcript = conv_memory.get_session_transcript()
             recent = transcript[-10:] if len(transcript) >= 10 else transcript
@@ -19688,6 +19703,13 @@ def _handle_speech_segment(
                     # A postponement isn't a cancellation — reschedule (keep open) any
                     # matching plan so it survives. No-op unless looks_like_postponement.
                     events_memory.postpone_matching_events(cancel_person_id, text)
+                # Open commitments: a cancel/never-mind or a "did it" also resolves a
+                # still-open promise (→ canceled / completed). Scoped to the 'promised' pool,
+                # so it never cross-clears a planned event. No-op unless one matches.
+                try:
+                    events_memory.resolve_matching_commitments(cancel_person_id, text)
+                except Exception as _commit_exc:
+                    _log.debug("[commitments] resolve failed: %s", _commit_exc)
                 if (
                     not labels
                     and _router_decision_executable(

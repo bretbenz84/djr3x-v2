@@ -629,6 +629,68 @@ def _open_plans_prompt_line(person_id: int) -> str:
     )
 
 
+def _note_commitment_needled(person_id, event_id) -> None:
+    """Mark a promise as needled this session (reusing the anticipation set) so the same
+    open commitment isn't ribbed every single turn. Lazy import — consciousness imports llm."""
+    if event_id is None:
+        return
+    try:
+        from intelligence import consciousness
+        consciousness.note_event_anticipated(int(person_id), int(event_id))
+    except Exception:
+        pass
+
+
+def _open_commitments_prompt_line(person_id: int) -> str:
+    """A single dry ACCOUNTABILITY needle for the reply context: a still-open promise the
+    person made ('I'll fix that sensor') that Rex MAY rib on a LATER turn. Background
+    awareness with a hard restraint rule (one wry jab, never nag/lead), AGED so a just-made
+    promise isn't ribbed immediately (the joke is the callback), and marked so it isn't
+    repeated this session. "" when there's nothing rib-worthy open."""
+    if not bool(getattr(config, "OPEN_COMMITMENTS_ENABLED", True)):
+        return ""
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        from memory import events as _events
+        promises = _events.get_open_commitments(person_id)  # status='promised', newest first
+    except Exception as exc:
+        _log.debug("open-commitments read failed: %s", exc)
+        return ""
+    if not promises:
+        return ""
+    min_age_h = float(getattr(config, "OPEN_COMMITMENTS_MIN_AGE_HOURS", 6.0))
+    max_n = max(1, int(getattr(config, "OPEN_COMMITMENTS_MAX", 1)))
+    now = _dt.now(_tz.utc)
+    picked: list[str] = []
+    for ev in promises:
+        action = str(ev.get("event_name") or "").strip()
+        if not action:
+            continue
+        # Don't rib a promise made just now — the comedy is the later callback.
+        try:
+            made = _dt.fromisoformat(str(ev.get("mentioned_at") or ""))
+            if made.tzinfo is None:
+                made = made.replace(tzinfo=_tz.utc)
+            if (now - made).total_seconds() < min_age_h * 3600.0:
+                continue
+        except Exception:
+            pass
+        if _open_plan_anticipated(person_id, ev.get("id")):
+            continue
+        picked.append(action)
+        _note_commitment_needled(person_id, ev.get("id"))
+        if len(picked) >= max_n:
+            break
+    if not picked:
+        return ""
+    return (
+        'Still-open promise they made: "' + "; ".join(picked) + '". '
+        'If it fits, you MAY dryly needle them ONCE about whether they ever did it '
+        '(a wry "weren\'t you going to…?") — but do NOT nag, moralize, or lead the reply '
+        "with it; it's background accountability ribbing, not a reminder."
+    )
+
+
 def _build_person_context(person_id: int) -> str:
     person = people_db.get_person(person_id)
     if not person:
@@ -944,6 +1006,16 @@ def _build_person_context(person_id: int) -> str:
             lines.append(plans_line)
     except Exception as exc:
         _log.debug("open-plans injection skipped: %s", exc)
+
+    # Open commitments (accountability ribbing) — a still-open promise Rex MAY dryly needle.
+    # Lowest priority, appended last; structurally distinct from open-plans (status='promised'
+    # vs 'planned'), so the two can never surface the same row.
+    try:
+        commitments_line = _open_commitments_prompt_line(person_id)
+        if commitments_line:
+            lines.append(commitments_line)
+    except Exception as exc:
+        _log.debug("open-commitments injection skipped: %s", exc)
 
     return "\n".join(lines)
 

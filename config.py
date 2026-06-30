@@ -4884,6 +4884,15 @@ OPEN_PLANS_IN_REPLY_ENABLED = True
 OPEN_PLANS_WITHIN_DAYS = 14   # only events this close qualify (distant plans feel forced)
 OPEN_PLANS_MAX = 2            # at most this many surfaced in one reply's context
 
+# Open commitments (accountability ribbing): a first-person promise ("I'll fix that
+# sensor", "I'm gonna call my mom") is filed as a status='promised' event and Rex may dryly
+# needle the still-open promise on a LATER turn ("weren't you going to fix that sensor?").
+# Cleared on a cancel/never-mind or a "did it" confirmation. Distinct from open-plans (dated
+# events) — promised rows are structurally invisible to the plan readers, so no double-mention.
+OPEN_COMMITMENTS_ENABLED = True
+OPEN_COMMITMENTS_MAX = 1               # at most one needle in a reply's context (no nagging list)
+OPEN_COMMITMENTS_MIN_AGE_HOURS = 6.0   # don't rib a promise the moment it's made; the joke is the later callback
+
 # Visit count milestones Rex acknowledges in character
 VISIT_MILESTONES = [5, 10, 25, 50, 100]
 

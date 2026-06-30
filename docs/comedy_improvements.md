@@ -130,6 +130,12 @@
   the calendar; `llm._open_plans_prompt_line` now appends a short "Open plans they mentioned: X
   (tomorrow / on DATE)" awareness block (dated, ≤2 within 14 days, restraint rule), gated against the
   proactive `_anticipated_events` throttle. `OPEN_PLANS_IN_REPLY_ENABLED`. `tests/test_open_plans.py`.
+- **Open commitments (accountability ribbing)** — a first-person promise ("I'll fix that sensor") is
+  filed as a `status='promised'` event (deterministic regex, no LLM; hedge/state/movement-filler guarded)
+  and Rex may dryly needle the still-open promise on a *later* turn ("weren't you going to fix the
+  sensor?") as background context — aged so it's a callback not an instant nag, once-per-session, cleared
+  on a retraction (→ canceled) or a "I fixed it" (→ completed, roast fuel). Structurally invisible to the
+  plan readers, so no double-mention with open-plans. `OPEN_COMMITMENTS_*`. `tests/test_open_commitments.py`.
 - **Running gags that escalate** — a callback premise that keeps landing is promoted to a recurring
   "running bit" (computed from `use_count`, no schema change) that escapes use-decay + the 7-day reuse
   lockout, so it recurs across encounters instead of fading, then ages back out at `RETIRE_AT`. Silent
@@ -155,8 +161,8 @@
   host mode (operator-triggered).
 - §4 Storytelling — tall-tale, multi-episode saga (`person_story`), docent — **all ask-only**, none started.
 - §6 Physical — **thinking eyes** (the one remaining no-clip win).
-- §8 Personalization — open commitments, durable honorifics, gossip discharge, feed-callback-bank
-  (about-present-people only).
+- §8 Personalization — durable honorifics, gossip discharge, feed-callback-bank
+  (about-present-people only). *(open commitments ✅ — see Shipped.)*
 - **E-tickets (remaining glue):** E-1 Reunion staging (long-absence greeting ✅; staged sequence +
   greeting lockout remain), E-2 Story Time (`dramatic_narrator` ✅; LED-dim/duck staging + tall-tale
   leg remain), E-7 Welcome Committee (parts exist; arrival identity-stability gate + the chained
@@ -611,14 +617,27 @@ rule ("background awareness, do NOT lead/force/nag"). Only the next `OPEN_PLANS_
 import — consciousness imports llm) so the reply never double-mentions what the proactive path already
 raised. Fail-safe. `OPEN_PLANS_IN_REPLY_ENABLED`. Tests: `tests/test_open_plans.py`.
 
-### Open commitments ("you SWORE you'd fix that sensor") — **BUILD**
-⚠ verified: the `status` column + cancel/reschedule machinery exist (`events.py:160/215/229`); a
-`status='promised'` value is schema-compatible but the **commitment regex + injection are net-new**.
-The hard 80% is the linguistic gate — a **tight first-person future-intent regex** that excludes
-"I should really…" and is cleared by cancel/postpone phrases. Recommended default: **one dry needle
-on return as background context** (not an authored accusatory cold-open); clears on explicit
-done/never-mind; reuse the anticipation throttle so it doesn't double-mention with `get_pending_
-followups`. **Effort: M.**
+### Open commitments ("you SWORE you'd fix that sensor") — **✅ SHIPPED**
+A first-person promise ("I'll fix the sensor", "I'm gonna call my mom") is filed as a
+`status='promised'` person_event and Rex may dryly needle the still-open promise on a **later** turn
+("weren't you going to fix the sensor?"). Implementation (all config-gated, `OPEN_COMMITMENTS_ENABLED`,
+default ON):
+- **Detection** (`events.looks_like_commitment`) — the hard 80%: a tight first-person commissive regex
+  (`I'll/I'm gonna/I will/I promise to/I gotta` + verb) with a negative guard that drops hedges
+  ("I should really…", "maybe I'll…", "I might…"), questions, and the **state/movement/filler** class
+  that field logs are full of ("I'll be right back", "going to bed", "gonna grab a coffee", "gotta run").
+- **Capture** — deterministic (no LLM) in `_post_response`, behind `suppress_memory_learning`, skipped on
+  cancel/postpone/done turns. `add_commitment` extracts the action phrase as the event name.
+- **Needle** (`llm._open_commitments_prompt_line`) — one dry accountability needle as **background
+  context** (never an authored cold-open), appended last in `_build_person_context`; **aged** (≥
+  `OPEN_COMMITMENTS_MIN_AGE_HOURS`, so a just-made promise isn't ribbed immediately) and marked via the
+  anticipation set so it isn't repeated every turn.
+- **Resolution** — on the hot-path cancel/postpone hook, `resolve_matching_commitments` clears a promise
+  on a retraction ("never mind", "changed my mind", "scrap it") → canceled, or a confirmation
+  ("I fixed the sensor") → completed (kept as roast fuel). Token-overlap matched.
+- **No double-mention** — structural: `status='promised'` rows are invisible to `get_upcoming_events`/
+  `get_open_events`/`get_pending_followups` (all gate `status='planned'`), so a promise can never collide
+  with open-plans or the proactive follow-up. Tests: `tests/test_open_commitments.py` (20).
 
 ### Durable honorifics from positive milestones — **BUILD** *(celebration-sourced for now)*
 ⚠ verified: `inside_joke` category exists and is **HIGH_IMPORTANCE / slow-decay** (`facts.py:52`) —
@@ -700,7 +719,7 @@ door-direction sensing** in the build — degrade to a plain face-arrival (no di
 3. **Reactions in parallel:** ~~land-the-laugh / take-a-bow~~ **✅ done** · the gesture-reaction layer
    (cut — arms can't cross/raise) · ~~named arrivals + departures~~ **✅ done (relationship-toned;
    bbox→direction look-toward deferred to the call-out work)**.
-4. **Cheap conversation wins:** ~~inject open plans into the live reply~~ **✅ done** · open commitments.
+4. ~~**Cheap conversation wins:** inject open plans into the live reply · open commitments.~~ **✅ ALL DONE.**
 5. ~~**room_model (L)** → object-grounded curiosity, change detection~~ **✅ done** → the docent bit (ask-only) remains.
 6. **The roast lane:** sharp tier (warmth-gated) · ~~running-gag escalation~~ **✅ done** · tease-the-obsession ·
    signature handle (thin over callbacks).

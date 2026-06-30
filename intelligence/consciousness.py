@@ -190,6 +190,18 @@ def event_recently_anticipated(person_id: int, event_id: int) -> bool:
     except (TypeError, ValueError):
         return False
 
+
+def note_event_anticipated(person_id: int, event_id: int) -> None:
+    """Mark a (person, event) as raised this session so the reply context and proactive path
+    don't double-surface it. Used by open-plans and open-commitments (the accountability
+    needle marks itself here so the same promise isn't ribbed every turn). Session-scoped."""
+    if person_id is None or event_id is None:
+        return
+    try:
+        _anticipated_events.add((int(person_id), int(event_id)))
+    except (TypeError, ValueError):
+        pass
+
 # Third-party awareness state.
 # _third_party_seen_at: per-tracking-key monotonic timestamp of when the
 #   person was first noticed as a non-engaged bystander this lurking spell.

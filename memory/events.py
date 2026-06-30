@@ -362,6 +362,184 @@ def postpone_matching_events(
     return rescheduled
 
 
+# ── Open commitments (accountability ribbing) ──────────────────────────────────
+# A first-person FUTURE promise ("I'll fix that sensor", "I'm gonna call my mom") is filed
+# as a status='promised' person_event — STRUCTURALLY invisible to the plan readers above
+# (get_upcoming_events / get_open_events / get_pending_followups all gate status='planned'),
+# so a promise never collides with open-plans or the proactive follow-up. Rex dryly needles
+# a still-open promise on a LATER turn; it's cleared on a cancel/never-mind or a "did it".
+# The detector is a TIGHT first-person commissive regex with a hedge guard, mirroring
+# looks_like_cancellation — "I should really…" / "maybe I'll…" / "I might…" / a question are
+# NOT commitments.
+
+_COMMIT_PAT = re.compile(
+    r"\bi'?ll\s+(?!(?:just|say|admit|tell|bet|guess|see|be|have|kid|wager|give|suppose|imagine|figure)\b)[a-z]+"
+    r"|\bi'?m\s+(?:gonna|going\s+to)\s+[a-z]+"
+    r"|\bi\s+am\s+(?:gonna|going\s+to)\s+[a-z]+"
+    r"|\bi\s+(?:will\s+(?:definitely\s+|finally\s+)?|promise\s+to\s+|swear\s+(?:i'?ll\s+)?|gotta\s+)[a-z]+"
+    r"|\bi'?ll\s+get\s+(?:around\s+)?to\b",
+    re.IGNORECASE,
+)
+_NOT_A_COMMITMENT_PAT = re.compile(
+    r"\bi\s+should(?:\s+really)?\b"
+    r"|\bi\s+(?:really\s+)?ought\s+to\b"
+    r"|\bi\s+wish\s+i\s+(?:could|would|had)\b"
+    r"|\bi'?d\s+(?:love|like|want|prefer|hate)\s+to\b"
+    r"|\bmaybe\s+i'?ll\b"
+    r"|\bi\s+might\b|\bi\s+may\b|\bi\s+could\b"
+    r"|\bi\s+was\s+(?:gonna|going\s+to)\b"
+    r"|\bi\s+think\s+i'?ll\b"
+    r"|\bi\s+hope\s+to\b"
+    r"|\bi\s+keep\s+meaning\s+to\b"
+    r"|\bwe'?ll\s+see\b"
+    r"|\b(?:if|when|unless|whenever)\s+i\b"
+    # State / movement / immediate-departure filler — said constantly, never task promises
+    # worth ribbing ("I'll be right back", "going to bed", "gonna grab a coffee", "gotta run").
+    r"|\b(?:i\s+will|i'?ll)\s+be\b"
+    r"|\b(?:going\s+to|gonna)\s+(?:bed|sleep|asleep|nap|lunch|dinner|breakfast|"
+    r"grab|head|run|jet|bounce|hit)\b"
+    r"|\bgoing\s+to\s+work(?!\s+on)\b"
+    r"|\bgoing\s+to\s+the\s+\w+"
+    r"|\bi\s+gotta\s+(?:run|go|head|jet|bounce|get\s+going)\b",
+    re.IGNORECASE,
+)
+_DONE_PAT = re.compile(
+    r"\b(?:i|we)\s+(?:finally\s+|already\s+)?"
+    r"(?:did|fixed|finished|handled|sorted|sent|called|built|wrote|cleaned|installed|"
+    r"repaired|completed|mailed|emailed|submitted|booked|paid)\b"
+    r"|\b(?:i|we)\s+(?:finally\s+)?(?:got|knocked)\s+(?:it|that)\s+(?:done|out|sorted)\b"
+    r"|\balready\s+(?:did|done|took\s+care\s+of)\b"
+    r"|\b(?:it'?s|that'?s|it\s+is)\s+(?:done|fixed|finished|handled|sorted|taken\s+care\s+of)\b"
+    r"|\btook\s+care\s+of\s+(?:it|that)\b",
+    re.IGNORECASE,
+)
+_COMMIT_HEAD_RE = re.compile(
+    r"^.*?\b(?:i'?ll|i\s+will(?:\s+definitely|\s+finally)?|i'?m\s+gonna|i\s+am\s+gonna|"
+    r"i'?m\s+going\s+to|i\s+am\s+going\s+to|i\s+promise\s+to|i\s+swear\s+(?:i'?ll\s+)?|"
+    r"i\s+gotta|i'?ll\s+get\s+(?:around\s+)?to)\s+",
+    re.IGNORECASE | re.DOTALL,
+)
+# Natural promise retractions the shared _CANCEL_PAT doesn't cover ("never mind", "forget
+# it"). Used ONLY against the promised pool in resolve_matching_commitments, so broadening
+# the retraction vocabulary here can never false-cancel a planned calendar event.
+_COMMIT_RETRACT_PAT = re.compile(
+    r"\b(?:never\s*mind|nevermind|forget\s+(?:it|that|about\s+(?:it|that))|"
+    r"scrap\s+(?:it|that)|drop\s+it|don'?t\s+bother|not\s+gonna\s+bother|"
+    r"on\s+second\s+thought)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_commitment(text: str) -> bool:
+    """True when text is a first-person FUTURE commitment worth holding Rex accountable to
+    ("I'll fix the sensor", "I'm gonna call my mom") and NOT a hedge/wish/hypothetical
+    ("I should really…", "maybe I'll…", "I might…") or a question. Positive pattern AND a
+    negative guard, mirroring looks_like_cancellation."""
+    text = text or ""
+    if text.rstrip().endswith("?"):
+        return False
+    if _NOT_A_COMMITMENT_PAT.search(text):
+        return False
+    return bool(_COMMIT_PAT.search(text))
+
+
+def looks_like_completion(text: str) -> bool:
+    """True when text reports a first-person task COMPLETION ("I finally fixed it",
+    "already called them", "it's done") — retires a matching open promise as done."""
+    return bool(_DONE_PAT.search(text or ""))
+
+
+def _commitment_action(text: str) -> str:
+    """The action phrase from a commitment utterance, for a clean needle:
+    'yeah I'll finally fix the sensor this weekend' -> 'fix the sensor this weekend'.
+    Falls back to the trimmed utterance when the head-strip leaves too little."""
+    raw = re.sub(r"\s+", " ", (text or "")).strip()
+    m = _COMMIT_HEAD_RE.match(raw)
+    rest = raw[m.end():].strip() if m else raw
+    rest = re.split(r"[.!?;,]| but | and then | then ", rest, maxsplit=1)[0].strip()
+    if len(rest.split()) < 2:
+        return raw[:120]
+    return rest[:120]
+
+
+def get_open_commitments(person_id: int) -> list[dict]:
+    """Still-open first-person promises ('I'll fix that sensor') for accountability
+    ribbing — newest first. status='promised', not yet resolved."""
+    rows = db.fetchall(
+        """SELECT * FROM person_events
+           WHERE person_id = ?
+             AND followed_up = FALSE
+             AND COALESCE(status, 'planned') = 'promised'
+           ORDER BY mentioned_at DESC""",
+        (person_id,),
+    )
+    return [dict(r) for r in rows]
+
+
+def add_commitment(person_id: int, text: str) -> Optional[int]:
+    """File a first-person promise (from the raw utterance) as an undated status='promised'
+    person_event: the extracted action phrase is the event name, the full utterance the
+    notes. Dedups against open promises so repeating the same vow refreshes one row."""
+    action = _commitment_action(text)
+    if person_id is None or not action:
+        return None
+    now = _now()
+    try:
+        from memory import dedup
+        match = dedup.event_match(action, get_open_commitments(int(person_id)))
+    except Exception:
+        match = None
+    if match and match.get("id") is not None:
+        db.execute(
+            """UPDATE person_events
+               SET event_notes = COALESCE(NULLIF(?, ''), event_notes),
+                   mentioned_at = ?, updated_at = ?
+               WHERE id = ?""",
+            ((text or "").strip()[:500], now, now, int(match["id"])),
+        )
+        return int(match["id"])
+    return db.execute(
+        """INSERT INTO person_events
+           (person_id, event_name, event_date, event_notes, mentioned_at,
+            followed_up, status, updated_at)
+           VALUES (?, ?, NULL, ?, ?, FALSE, 'promised', ?)""",
+        (int(person_id), action[:200], (text or "").strip()[:500], now, now),
+    )
+
+
+def resolve_matching_commitments(person_id: int, text: str) -> list[dict]:
+    """Resolve a still-open promise when the user retracts it (cancel/never-mind → canceled)
+    or reports it done ("I fixed it" → completed, kept as roast fuel). Scoped to the
+    'promised' population so it never cross-resolves a planned event. Token-overlap match;
+    a generic 'never mind' clears the lone open promise (mirrors cancel_matching_events),
+    while a completion always requires a token match (so a bare 'done' can't nuke a promise)."""
+    if person_id is None:
+        return []
+    is_cancel = (
+        looks_like_cancellation(text)
+        or looks_like_postponement(text)
+        or bool(_COMMIT_RETRACT_PAT.search(text or ""))
+    )
+    is_done = looks_like_completion(text)
+    if not (is_cancel or is_done):
+        return []
+    promised = get_open_commitments(person_id)
+    if not promised:
+        return []
+    text_tokens = _tokens(text or "")
+    matched = [ev for ev in promised if text_tokens & _event_tokens(ev)]
+    if not matched and is_cancel and not is_done and len(promised) == 1:
+        matched = promised  # generic retraction with a single open promise
+    resolved: list[dict] = []
+    for ev in matched:
+        if is_done:
+            mark_followed_up(int(ev["id"]), (text or "")[:500])   # completed — roast fuel
+        else:
+            cancel_event(int(ev["id"]), text)                     # retracted
+        resolved.append(ev)
+    return resolved
+
+
 def delete_events(person_id: int) -> None:
     """Remove all events for a person."""
     db.execute("DELETE FROM person_events WHERE person_id = ?", (person_id,))
