@@ -137,18 +137,25 @@
   per-label de-dup + cooldown/cap). Adversarially reviewed (1 minor fixed). `ROOM_MODEL_*` / `ROOM_CHANGE_*`.
   `tests/test_room_model.py`.
 
-**IN (still to build):**
-- §1 Comedy & roasting — sharp tier, running gags, tease-obsession, signature handle
-  (delivery profiles ✅, smug mood ✅, **personas ✅** — Batch 1 done).
-- §2 Curiosity — **all-in**: COCO unlock, `room_model` (Rich), object-grounded curiosity,
-  change detection, POV seeds, react-to-you, crowd curiosity, **+ GUI object bboxes**. Docent
-  bit is in but **ask-only**.
-- §3 Crowdwork — land-the-laugh, room-energy read, named arrivals + departures, name-and-point
-  call-outs, compare-the-room, gesture-reaction layer, **host mode (operator-triggered only)**.
-- §4 Storytelling — tall-tale, multi-episode saga (`person_story`), docent — **all ask-only**.
-- §6 Physical — remaining no-clip win: **thinking eyes** (beat pack ✅, smug/angry moods ✅).
-- §8 Personalization — open commitments, honorifics (celebration-sourced for now), gossip
-  discharge, feed-callback-bank (about-present-people only), **+ rescued "inject open plans."**
+**IN — still to build** (verified against the live tree at this reconcile; the ✅ items above are
+**done**, so they're omitted here):
+- §1 Comedy & roasting — sharp roast tier, running-gag escalation (`running_bit` is still dead
+  scaffolding), tease-the-obsession lane, per-person signature roast handle.
+- §2 Curiosity — react-to-YOU (clothing/pet/held-object diff), let-curiosity-work-in-a-crowd
+  (the `crowd_count>2` gate still excludes crowds). **Partial:** POV seeds (person/quiet slice ✅;
+  room-object tagging remains), object-grounded curiosity (novelty ✅; longest-present/personal
+  weighting remains).
+- §3 Crowdwork — room-energy read (hot/warm/cold → governor), name-and-point call-outs (+ the shared
+  bbox→direction turn), compare-and-rank the room, gesture-reaction layer (raised hands/crossed arms),
+  host mode (operator-triggered).
+- §4 Storytelling — tall-tale, multi-episode saga (`person_story`), docent — **all ask-only**, none started.
+- §6 Physical — **thinking eyes** (the one remaining no-clip win).
+- §8 Personalization — open commitments, durable honorifics, gossip discharge, feed-callback-bank
+  (about-present-people only).
+- **E-tickets (remaining glue):** E-1 Reunion staging (long-absence greeting ✅; staged sequence +
+  greeting lockout remain), E-2 Story Time (`dramatic_narrator` ✅; LED-dim/duck staging + tall-tale
+  leg remain), E-7 Welcome Committee (parts exist; arrival identity-stability gate + the chained
+  call→brief→open-plan remain).
 
 **DEFERRED (someday — keep the notes, don't build yet):**
 - §5 Games (entire cluster), the clip-dependent §6 bits (rimshot/show-moment/reveal-stingers/
@@ -315,7 +322,10 @@ to the front and tells the LLM "X is NEW — prefer asking about that," so curio
 rather than the daily fixtures (degrades to confidence order when the model is empty). Tests:
 `tests/test_room_reaction.py`, `tests/test_room_model.py`.
 
-### Room-and-person-aware POV seeds — **BUILD** *(person/interest slice ships now)*
+### Room-and-person-aware POV seeds — **🟡 PARTIAL** *(person/quiet slice ✅ shipped; room-object tagging remains)*
+**Shipped:** `rex_pov._context_signature` emits {people|quiet}(+flat) tags and `_choose` biases seed
+selection by them (`tests/test_rex_pov.py`). **Remaining:** the room-object half — `_context_signature`
+doesn't yet read `world_state.objects`/`room_model`, so no seed fires on a detected object class.
 ⚠ verified: `REX_POV_SEEDS` are 100% internal; `rex_pov._context_signature` (`:157`) emits only
 {people|quiet|flat}. The **person/interest/unknown-face tags ship today** (no detection
 dependency); only the **object-class tag** wants the COCO stream. Keep the hallucinated-prop
