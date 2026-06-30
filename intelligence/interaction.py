@@ -19762,16 +19762,28 @@ def _handle_speech_segment(
 
         if repair_move is None:
             repair_move = repair_moves.detect(text)
-        if (
+        # Re-route the CORRECTION text to the normal reply path (respond to it) instead of
+        # firing the repair-ack echo when: (a) a grief flow is active (existing behavior), or
+        # (b) the turn is a BARE restatement of real content ("I said I watch a lot of Netflix
+        # specials") — the user repeating their turn after a mishear wants an answer, not
+        # "We'll get there — recalibrating. <their words>." back (the field bug).
+        _reroute_correction = bool(
             repair_move
-            and active_grief_for_turn
             and repair_move.get("kind") in {"misheard", "misunderstood"}
             and repair_move.get("correction")
-        ):
+            and (
+                active_grief_for_turn
+                or (
+                    bool(getattr(config, "REPAIR_RESTATEMENT_AS_REPLY_ENABLED", True))
+                    and repair_moves.is_bare_restatement(text)
+                )
+            )
+        )
+        if _reroute_correction:
             routing_text = repair_move["correction"]
             repair_moves.mark_handled(repair_move.get("kind") or "")
             _log.info(
-                "[repair] applying corrected text to active grief flow: %r",
+                "[repair] re-routing restated content to a normal reply: %r",
                 routing_text,
             )
         elif repair_move:

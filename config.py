@@ -3221,6 +3221,11 @@ SOCIAL_FRAME_GOVERNOR_ENABLED = True
 SOCIAL_FRAME_ENFORCE_LENGTH_LIMITS = False
 TONE_REPAIR_NO_ROAST_SECS = 180.0
 
+# When a "misheard" repair actually carries re-stated real content (a bare "I said X" /
+# "I meant X" with no contrast), respond to X as the real turn instead of echoing a
+# recalibration line back ("We'll get there — recalibrating. <your words>."). Kill switch.
+REPAIR_RESTATEMENT_AS_REPLY_ENABLED = True
+
 # Phase 1 / "Bet 2": ship the LLM ONE compact per-turn contract (~130 words) built
 # from the structured SocialFrame, instead of the ~40-segment block that pipe-joined
 # a dozen governors' prose and contradicted its own "choose ONE purpose" preamble.

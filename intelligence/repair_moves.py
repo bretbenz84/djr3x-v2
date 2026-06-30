@@ -154,6 +154,32 @@ _NO_COMMA_CORRECTION_PAT = re.compile(
     re.IGNORECASE,
 )
 
+# A BARE restatement: the user simply repeats their real turn with an "I said / I meant …"
+# lead-in and NO contrast ("I said I watch a lot of Netflix specials"). That is the user's
+# actual turn after a mishear — it should be RESPONDED to, not echoed back as a "correction"
+# (the "We'll get there — recalibrating. <your words>." field bug). A CONTRASTIVE correction
+# ("I said blues, not jazz") is NOT bare and still flows through the repair-ack path.
+_BARE_RESTATEMENT_LEAD_PAT = re.compile(
+    r"^\s*(?:um|uh|well|okay|ok|so|yeah|yes)?,?\s*i (?:said|meant)\b",
+    re.IGNORECASE,
+)
+_RESTATEMENT_CONTRAST_PAT = re.compile(
+    r"\bnot\b|\bno\b|\bnope\b|\bwrong\b|\bincorrect\b|isn'?t|wasn'?t|aren'?t|"
+    r"weren'?t|instead of|rather than|that'?s not|you (?:said|heard|got|thought)",
+    re.IGNORECASE,
+)
+
+
+def is_bare_restatement(text: str) -> bool:
+    """True when the user RE-STATES content with an 'I said/I meant …' lead-in and NO
+    contrast — i.e. repeating their real turn after a mishear, which should be answered, not
+    echoed. A contrastive correction ('I said blues, not jazz') returns False (repair path)."""
+    t = (text or "").strip()
+    if not t or not _BARE_RESTATEMENT_LEAD_PAT.search(t):
+        return False
+    return not _RESTATEMENT_CONTRAST_PAT.search(t)
+
+
 _lock = threading.Lock()
 _last_assistant_text: str = ""
 _last_assistant_at: float = 0.0
@@ -256,9 +282,17 @@ def misheard_recovery_response() -> str:
     return f"{joke} {ask}"
 
 
+def _norm_apostrophes(s: str) -> str:
+    """Fold curly/modifier apostrophes to a straight ' so a substring check survives the
+    LLM rendering a recovery line with U+2019 while the constant uses U+0027. Without this,
+    the dedup guard misses and add_better_luck_line() appends the recovery line a 2nd time
+    (the 'We'll get there — recalibrating. … We'll get there — recalibrating.' field bug)."""
+    return (s or "").lower().replace("’", "'").replace("ʼ", "'").replace("‘", "'")
+
+
 def _contains_recovery_line(text: str) -> bool:
-    low = (text or "").lower()
-    return any(line.lower() in low for line in _RECOVERY_LINES)
+    low = _norm_apostrophes(text)
+    return any(_norm_apostrophes(line) in low for line in _RECOVERY_LINES)
 
 
 _BETTER_LUCK_REPAIR_KINDS = {
