@@ -209,6 +209,18 @@ LLM_REQUEST_TIMEOUT_SECS = 30.0
 LLM_STREAM_TIMEOUT_SECS  = 18.0
 LLM_MAX_RETRIES          = 2
 
+# ── Lean brain (rebuild, Phase 0) ──────────────────────────────────────────────
+# One streaming model call — the coherent Rex persona (REX_CORE_PROMPT) + a small live
+# context + the recent turns as real chat messages — replacing the router→agenda→social_frame
+# →4,400-word-prompt pipeline. OFF until proven via the offline replay harness (tools/
+# lean_replay.py); wiring it into the live turn path is a later step. Latency-first: small,
+# consistent prompt for fast time-to-first-token; the live path streams sentence-by-sentence.
+LEAN_BRAIN_ENABLED          = False   # kill switch; stays off until we've felt it's better
+LEAN_BRAIN_MODEL            = ""      # "" → the standard conversation model (gpt-5.4-mini, reasoning off)
+LEAN_BRAIN_MAX_TOKENS       = 120     # keep replies short + first audio fast
+LEAN_BRAIN_TRANSCRIPT_TURNS = 8       # recent turns passed as real user/assistant messages
+LEAN_BRAIN_PERSONA          = ""      # "" → REX_CORE_PROMPT verbatim (the voice, minus the scaffolding)
+
 # Fire a tiny throwaway OpenAI completion at startup (in a background thread) so
 # the first real turn doesn't pay cold TLS / HTTP-connection setup on the OpenAI
 # clients used by the answer LLM and the action router (separate clients, each
