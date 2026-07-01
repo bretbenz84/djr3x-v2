@@ -215,7 +215,7 @@ LLM_MAX_RETRIES          = 2
 # →4,400-word-prompt pipeline. OFF until proven via the offline replay harness (tools/
 # lean_replay.py); wiring it into the live turn path is a later step. Latency-first: small,
 # consistent prompt for fast time-to-first-token; the live path streams sentence-by-sentence.
-LEAN_BRAIN_ENABLED          = False   # kill switch; stays off until we've felt it's better
+LEAN_BRAIN_ENABLED          = True    # ON for live GUI testing — set False to revert to the classic brain instantly
 LEAN_BRAIN_MODEL            = ""      # "" → the standard conversation model (gpt-5.4-mini, reasoning off)
 LEAN_BRAIN_MAX_TOKENS       = 120     # keep replies short + first audio fast
 LEAN_BRAIN_TRANSCRIPT_TURNS = 8       # recent turns passed as real user/assistant messages

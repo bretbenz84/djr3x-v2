@@ -217,9 +217,14 @@ class StreamingOrchestrationTest(unittest.TestCase):
 
     def setUp(self):
         I._interrupted.clear()
+        # These drive the CLASSIC streaming-govern path (question/roast stripping, one-question
+        # cap). The lean brain owns its whole reply and bypasses those gates, so pin it off here.
+        self._lean_off = mock.patch.object(I.config, "LEAN_BRAIN_ENABLED", False)
+        self._lean_off.start()
 
     def tearDown(self):
         I._interrupted.clear()
+        self._lean_off.stop()
 
     def _run(self, chunks, frame, *, surprising=False):
         enqueued = []
@@ -355,6 +360,20 @@ class StreamingOrchestrationTest(unittest.TestCase):
             I._interrupted.clear()
         self.assertEqual(enqueued, [])
         self.assertEqual(full, "")
+
+
+class LeanStreamPrepTest(unittest.TestCase):
+    """With the lean brain on, _prepare_stream_sentence keeps the reply intact (no frame
+    question/roast/length gates) but still applies the always-on cruelty scrub."""
+
+    def test_lean_keeps_questions_and_scrubs_cruelty(self):
+        with mock.patch.object(I.config, "LEAN_BRAIN_ENABLED", True):
+            # A question survives (the classic path would strip it on a no-question frame);
+            # frame/comedy_mode are ignored on the lean branch, so None is fine.
+            kept = I._prepare_stream_sentence("What's the trouble, Bret?", None, None)
+            self.assertIn("trouble", kept.lower())
+            # Genuine cruelty is still scrubbed at every tier.
+            self.assertEqual(I._prepare_stream_sentence("You're a pathetic idiot.", None, None), "")
 
 
 if __name__ == "__main__":

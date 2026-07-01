@@ -715,6 +715,12 @@ def is_question_sentence(text: str) -> bool:
     return _has_unquoted_question(text or "")
 
 
+def contains_cruelty(text: str) -> bool:
+    """True if text contains genuine name-calling / contempt (the all-tiers cruelty backstop).
+    Public so the lean reply path can keep this one safety scrub while skipping the frame gates."""
+    return bool(_CRUEL_ROAST_PAT.search(text or ""))
+
+
 def govern_stream_sentence(sentence: str, frame: SocialFrame) -> str:
     """Per-sentence governance for streamed (spoken-as-generated) replies.
 

@@ -9998,11 +9998,23 @@ def _stream_llm_response(
                 _settle_callback_claim(spoken)
             return spoken
         llm_started = time.monotonic()
-        full_text = llm.get_response(
-            text,
-            person_id,
-            agenda_directive=agenda_directive,
-        )
+        if bool(getattr(config, "LEAN_BRAIN_ENABLED", False)):
+            try:
+                from intelligence import lean_brain
+                full_text = lean_brain.respond(
+                    text, person_id,
+                    transcript=_lean_recent_transcript(text),
+                    world=_lean_world(),
+                ).get("text") or ""
+            except Exception as exc:
+                _log.error("[lean] non-streaming reply failed, using classic path: %s", exc)
+                full_text = llm.get_response(text, person_id, agenda_directive=agenda_directive)
+        else:
+            full_text = llm.get_response(
+                text,
+                person_id,
+                agenda_directive=agenda_directive,
+            )
         if turn_start is not None:
             _latency_log(turn_start, "llm_response", llm_started)
     except BaseException:
@@ -10255,8 +10267,59 @@ def _streaming_surprise_beat(surprise_result: dict) -> int:
     return 0
 
 
+def _lean_recent_transcript(user_text: str) -> list[dict]:
+    """Recent session turns for the lean brain, EXCLUDING the current user turn (the lean brain
+    appends it itself). Empty on any error."""
+    try:
+        rows = conv_memory.get_session_transcript() or []
+    except Exception:
+        return []
+    turns = [
+        {"speaker": r.get("speaker"), "text": r.get("text")}
+        for r in rows if str(r.get("text") or "").strip()
+    ]
+    if turns and str(turns[-1].get("text") or "").strip() == str(user_text or "").strip():
+        turns = turns[:-1]
+    return turns
+
+
+def _lean_world() -> Optional[dict]:
+    try:
+        from world_state import world_state as _ws
+        return _ws.snapshot()
+    except Exception:
+        return None
+
+
+def _reply_token_stream(user_text: str, person_id, agenda_directive):
+    """Reply generator: the LEAN brain (one coherent call — persona + small context + recent
+    turns) when LEAN_BRAIN_ENABLED, else the classic assembled-prompt path. A lean init error
+    falls back to the classic path so a hiccup never breaks a live turn."""
+    if bool(getattr(config, "LEAN_BRAIN_ENABLED", False)):
+        try:
+            from intelligence import lean_brain
+            return lean_brain.stream_reply(
+                user_text, person_id,
+                transcript=_lean_recent_transcript(user_text),
+                world=_lean_world(),
+            )
+        except Exception as exc:
+            _log.error("[lean] live reply init failed, using classic path: %s", exc)
+    return llm.stream_response(user_text, person_id, agenda_directive=agenda_directive)
+
+
 def _prepare_stream_sentence(sentence: str, frame, comedy_mode) -> str:
     """Govern + polish a single streamed sentence; "" means skip it."""
+    if bool(getattr(config, "LEAN_BRAIN_ENABLED", False)):
+        # The lean brain owns the whole reply — don't let the OLD frame's question/roast/
+        # visual/length gates mangle it. Keep ONLY the always-on cruelty scrub + normalize.
+        try:
+            if social_frame.contains_cruelty(sentence):
+                return ""
+        except Exception:
+            pass
+        cleaned = llm.clean_response_text(sentence or "")
+        return cleaned.strip() if cleaned else ""
     governed = social_frame.govern_stream_sentence(sentence, frame)
     if not governed:
         return ""
@@ -10470,9 +10533,7 @@ def _stream_and_speak_sentences(
     buffer = ""
     raw_chunks: list[str] = []
     try:
-        for chunk in llm.stream_response(
-            user_text, person_id, agenda_directive=agenda_directive
-        ):
+        for chunk in _reply_token_stream(user_text, person_id, agenda_directive):
             if _interrupted.is_set():
                 break
             raw_chunks.append(chunk)
