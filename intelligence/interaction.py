@@ -4173,14 +4173,11 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     except Exception:
         pass
 
-    # Arm the cooldown NOW (even if we skip / pass) so we consult the model at most once per
-    # window instead of every tick. Then a config 'in the mood' coin: a sustained lull shouldn't
-    # be a metronome of impulses.
+    # Consult the lean brain: does Rex genuinely feel like saying one thing, or does he watch?
+    # Arm the cooldown NOW (whether he speaks OR passes) so we consult at most once per window,
+    # not every tick — but never burn a window on a coin-flip skip (the bug that made him mute).
     _last_lean_impulse_at = now
-    if random.random() > float(getattr(config, "LEAN_IMPULSE_ACT_PROBABILITY", 0.5)):
-        return False
-
-    decided_at = time.monotonic()
+    decided_at = now
     try:
         mood = body_mood.current_mood()[0]
     except Exception:
@@ -4198,6 +4195,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         _log.debug("[lean] impulse generation failed: %s", exc)
         return False
     if not line:
+        _log.info("[lean] impulse — watched (person_id=%s, quiet=%.0fs)", person_id, idle_for)
         return False                            # Rex chose to just watch
     if _proactive_opener_repeats(line, "idle_monologue"):
         _log.info("[lean] impulse dropped — opener repeats a recent line: %r", line)

@@ -227,13 +227,12 @@ LEAN_BRAIN_PERSONA          = ""      # "" → REX_CORE_PROMPT verbatim (the voi
 # single motivated impulse. Restraint is set by the quiet threshold + cooldown, and the model's
 # heavy bias to PASS. Only active alongside LEAN_BRAIN_ENABLED.
 LEAN_IMPULSE_ENABLED        = True
-LEAN_IMPULSE_QUIET_SECS     = 30.0    # min seconds of quiet (present) before Rex even considers acting
-LEAN_IMPULSE_COOLDOWN_SECS  = 50.0    # min gap between impulse CHECKS (armed even on a pass, so the model isn't hammered)
-LEAN_IMPULSE_ACT_PROBABILITY = 0.5    # of eligible checks, the fraction Rex is "in the mood" to even consider acting
+LEAN_IMPULSE_QUIET_SECS     = 14.0    # min seconds of quiet (present) before Rex considers acting
+LEAN_IMPULSE_COOLDOWN_SECS  = 28.0    # the model is consulted at most once per this window during a lull
 LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
-# Frequency is controlled by these three knobs (quiet threshold + cooldown + probability), NOT by
-# the prompt — the model reliably produces a motivated line OR passes; how OFTEN it's consulted is
-# the dial. Start calm; tune live.
+# Cadence = quiet-threshold + cooldown ONLY. Each eligible window Rex consults the lean brain and
+# either says one motivated thing or passes (the model decides quality); the cooldown spaces the
+# consults. Too chatty → raise COOLDOWN; too quiet → lower QUIET_SECS/COOLDOWN. Tune live.
 
 # Old silence-fill proactive purposes the lean brain's own agency (the motivated impulse) REPLACES.
 # Suppressed ONLY when LEAN_BRAIN_ENABLED. Genuine perception/real-event reactors — arrival greeting
