@@ -239,26 +239,56 @@ def respond(
 # speak it is because something moved him, which is what makes it feel alive instead of a tic.
 
 _IMPULSE_INSTRUCTION = (
-    "[Quiet moment — nobody's spoken for a bit. You're comfortable in silence, and you NEVER fill "
-    "dead air with a generic 'so, what's up?' or an interview.]\n"
+    "[Quiet moment — a few seconds of silence. That's fine; you don't fill dead air with a generic "
+    "'so, what's up?' or an interview.]\n"
     "{situation}"
-    "You're a curious droid with a real point of view. If a genuine one comes to mind right now — a "
-    "real QUESTION you actually want the answer to (what they're working on tonight, what got them "
-    "into it, the hard part — real curiosity, NOT a generic 'so what's up?'), a specific reaction, a "
-    "callback to what you know about {who}, something you actually notice, or a tease you'd enjoy "
-    "landing — say that ONE thing, short, in your voice, not a point you already made. Reaching for a "
-    "genuine question is often better than another observation. If nothing real comes to mind, reply "
-    "with EXACTLY: PASS."
+    "React to WHAT'S HAPPENING RIGHT NOW — not to old memories. Good moves: a genuine reaction or a "
+    "real question about something you actually SEE this second (their expression, what they're "
+    "doing, an object, the room), a follow-up on what they JUST said, or a dry tease/roast of the "
+    "present moment. CRUCIAL: do NOT dredge up a hobby, interest, or fact they haven't brought up "
+    "recently — randomly asking '{who}, shooting any space stuff tonight?' out of nowhere is the "
+    "exact awkward, left-field move to avoid (people don't do their hobbies every day). If there's "
+    "genuinely nothing here-and-now worth a line — no expression to read, nothing fresh said, "
+    "nothing worth seeing — just watch: reply EXACTLY PASS. Otherwise say the ONE thing, short."
 )
+
+
+def _scene_summary(world: Optional[dict]) -> str:
+    """A compact 'what Rex sees/hears RIGHT NOW' from the world snapshot (the person's expression,
+    gestures, visible objects, the room) — the present-moment perception the impulse was blind to.
+    Reuses the existing world summarizer."""
+    if not world:
+        return ""
+    try:
+        return (llm._summarize_world_state(world) or "").strip()
+    except Exception:
+        return ""
 
 
 def _situation_block(person_id: Optional[int], world: Optional[dict],
                      quiet_secs: float, mood: Optional[str]) -> str:
-    lines = _person_lines(person_id) + _scene_lines(world)
+    """The impulse's PRESENT-focused situation: who he's with + what he SEES/HEARS this moment +
+    how long it's been quiet + his mood. Deliberately NOT the person's hobby/fact list — dredging
+    stored interests out of context is the awkward, left-field behavior we're removing (temporally-
+    appropriate hobby follow-ups belong in the REPLY, right when the person brings it up)."""
+    lines: list[str] = []
+    if person_id is not None:
+        try:
+            from memory import people
+            p = people.get_person(int(person_id)) or {}
+            who = _first_name(p)
+            tier = str(p.get("friendship_tier") or "").strip().lower()
+            if who:
+                lines.append(f"You're with {who}" + (f" ({tier})." if tier and tier != "stranger" else "."))
+        except Exception:
+            pass
+    scene = _scene_summary(world)
+    if scene:
+        lines.append("What you see/hear right now — " + scene)
     if quiet_secs and quiet_secs > 0:
-        lines.append(f"It's been quiet for about {int(quiet_secs)} seconds.")
+        lines.append(f"It's been quiet ~{int(quiet_secs)}s.")
     if mood and str(mood).strip() and str(mood).strip().lower() != "neutral":
-        lines.append(f"Your own mood right now: {str(mood).strip()}.")
+        lines.append(f"Your mood: {str(mood).strip()}.")
     if not lines:
         return ""
     return "You notice:\n" + "\n".join("- " + s for s in lines) + "\n"

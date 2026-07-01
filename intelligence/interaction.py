@@ -4203,10 +4203,13 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         _log.debug("[lean] impulse generation failed: %s", exc)
         return False
     if not line:
-        _log.info("[lean] impulse — watched (person_id=%s, quiet=%.0fs)", person_id, idle_for)
+        _log.info("[lean] impulse — watched (person_id=%s, quiet=%.0fs)", person_id, quiet)
         return False                            # Rex chose to just watch
-    if _proactive_opener_repeats(line, "idle_monologue"):
-        _log.info("[lean] impulse dropped — opener repeats a recent line: %r", line)
+    # Content-based anti-repeat (NOT the first-word opener guard — that killed every 'What…?'
+    # question, so Rex generated lines and spoke none, and the conversation died). This only
+    # drops a near-duplicate of a recent question, so distinct curious questions still get through.
+    if _line_duplicates_recent_question(line):
+        _log.info("[lean] impulse dropped — re-asks a recent question: %r", line)
         return False
 
     completed = _speak_proactive(
