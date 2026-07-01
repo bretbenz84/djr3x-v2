@@ -72,28 +72,33 @@ def _person_lines(person_id: Optional[int]) -> list[str]:
     who = _first_name(person) or "them"
     tier = str(person.get("friendship_tier") or "").strip().lower()
     out.append(f"You're talking with {who}" + (f" — {tier}." if tier and tier != "stranger" else "."))
+    background: list[str] = []
     try:
         from memory import facts as _facts
-        vals = [
+        background += [
             str(f.get("value") or f.get("text") or "").strip()
-            for f in (_facts.get_prompt_worthy_facts(int(person_id), limit=5) or [])
+            for f in (_facts.get_prompt_worthy_facts(int(person_id), limit=4) or [])
         ]
-        vals = [v for v in vals if v][:5]
-        if vals:
-            out.append("Things you know about them: " + "; ".join(vals) + ".")
     except Exception as exc:
         _log.debug("[lean] facts read failed: %s", exc)
     try:
         from memory import interests as _interests
-        names = [
+        background += [
             str(it.get("name") or "").strip()
-            for it in (_interests.get_interests_for_prompt(int(person_id), limit=5) or [])
+            for it in (_interests.get_interests_for_prompt(int(person_id), limit=4) or [])
         ]
-        names = [n for n in names if n][:5]
-        if names:
-            out.append("They're into: " + ", ".join(names) + ".")
     except Exception as exc:
         _log.debug("[lean] interests read failed: %s", exc)
+    background = [b for b in background if b][:7]
+    if background:
+        # Framed hard as BACKGROUND, not fodder: dredging a stored hobby the person didn't just
+        # raise (e.g. opening with "so, shooting any nebulae?") is the exact out-of-nowhere move
+        # the owner keeps flagging. React to the ACTUAL conversation; touch this only when relevant.
+        out.append(
+            "Background you happen to know about " + who + " — do NOT bring any of it up unless THEY "
+            "raise it or it's directly relevant to what they JUST said; NEVER open with it or dredge "
+            "a hobby/topic they didn't mention: " + "; ".join(background) + "."
+        )
     return out
 
 
