@@ -229,3 +229,89 @@ def respond(
         "total_s": total,
         "model": _model(),
     }
+
+
+# ── Agency: the motivated impulse (Phase 1) ────────────────────────────────────
+# The old proactive brain fired a menu of templated behaviors on a timer. This is the
+# opposite: when a known person is present but quiet, Rex — with a genuine point of view,
+# grounded in what he perceives + remembers + feels — DECIDES whether he has a real impulse
+# to say one thing, or is content to just watch. The default, heavily, is watch. When he does
+# speak it is because something moved him, which is what makes it feel alive instead of a tic.
+
+_IMPULSE_INSTRUCTION = (
+    "[Quiet moment — nobody's spoken for a bit. You're comfortable in silence, and you NEVER fill "
+    "dead air with a generic 'so, what's up?' or an interview.]\n"
+    "{situation}"
+    "You're a curious droid with a real point of view. If a genuine one comes to mind right now — a "
+    "specific reaction to what {who} said, a callback to what you know about them, something you "
+    "actually notice, or a tease you'd enjoy landing — say that ONE thing, short, in your voice, "
+    "not a point you already made. If nothing real comes to mind, reply with EXACTLY: PASS."
+)
+
+
+def _situation_block(person_id: Optional[int], world: Optional[dict],
+                     quiet_secs: float, mood: Optional[str]) -> str:
+    lines = _person_lines(person_id) + _scene_lines(world)
+    if quiet_secs and quiet_secs > 0:
+        lines.append(f"It's been quiet for about {int(quiet_secs)} seconds.")
+    if mood and str(mood).strip() and str(mood).strip().lower() != "neutral":
+        lines.append(f"Your own mood right now: {str(mood).strip()}.")
+    if not lines:
+        return ""
+    return "You notice:\n" + "\n".join("- " + s for s in lines) + "\n"
+
+
+def consider_initiating(
+    person_id: Optional[int] = None,
+    transcript: Optional[list[dict]] = None,
+    world: Optional[dict] = None,
+    quiet_secs: float = 0.0,
+    mood: Optional[str] = None,
+) -> str:
+    """Let Rex DECIDE, in character, to say ONE thing or just watch (the strong default).
+    Returns the line to speak, or "" on PASS / any error. This is the agentic replacement for
+    the old silence-fill taxonomy: motivated by perception + memory + mood, not a timer."""
+    try:
+        who = "them"
+        if person_id is not None:
+            try:
+                from memory import people
+                who = _first_name(people.get_person(int(person_id))) or "them"
+            except Exception:
+                who = "them"
+        instruction = _IMPULSE_INSTRUCTION.format(
+            who=who, situation=_situation_block(person_id, world, quiet_secs, mood)
+        )
+        messages: list[dict] = [{"role": "system", "content": _persona()}]
+        keep = max(0, int(getattr(config, "LEAN_BRAIN_TRANSCRIPT_TURNS", 8)))
+        for turn in (transcript or [])[-keep:] if keep else []:
+            text = str(turn.get("text") or "").strip()
+            if not text:
+                continue
+            role = "assistant" if str(turn.get("speaker") or "").strip().lower() in _REX_SPEAKERS else "user"
+            messages.append({"role": role, "content": text})
+        messages.append({"role": "user", "content": instruction})
+
+        parts: list[str] = []
+        stream = llm_compat.create(
+            llm._client,
+            model=_model(),
+            messages=messages,
+            stream=True,
+            max_tokens=int(getattr(config, "LEAN_IMPULSE_MAX_TOKENS", 60)),
+            timeout=float(getattr(config, "LLM_STREAM_TIMEOUT_SECS", 18.0)),
+        )
+        for chunk in stream:
+            try:
+                delta = chunk.choices[0].delta
+            except (AttributeError, IndexError):
+                continue
+            if getattr(delta, "content", None):
+                parts.append(delta.content)
+        text = llm.clean_response_text("".join(parts)).strip().strip('"').strip()
+        if not text or text.upper() == "PASS" or text.upper().startswith("PASS"):
+            return ""  # he chose to just watch
+        return text
+    except Exception as exc:
+        _log.debug("[lean] consider_initiating failed: %s", exc)
+        return ""

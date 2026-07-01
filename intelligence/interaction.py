@@ -259,6 +259,7 @@ _idle_plans_asked: set[str] = set()
 # Wall-clock of the last self-initiated (proactive) line of any kind. Used to
 # keep proactive lines from stacking back-to-back (see _proactive_line_recently_fired).
 _last_proactive_line_at: float = 0.0
+_last_lean_impulse_at: float = 0.0   # cooldown anchor for the lean agentic impulse (armed even on a pass)
 # Monotonic time the most recent user turn began processing. A proactive line is
 # decided on a silence timer, then spends ~1-2s in LLM+TTS before any sound; if a
 # user turn started in that gap, the line is stale and must yield at speak time.
@@ -4120,6 +4121,103 @@ def _idle_banter_directive(
             "and do not sign off or announce the silence."
         ), True
     return _IDLE_BANTER_DIRECTIVES[1], False
+
+
+def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bool:
+    """Lean AGENCY (Phase 1): when a known person is PRESENT but quiet, let Rex DECIDE — via the
+    lean brain, grounded in perception + memory + mood — to say ONE motivated thing or just watch
+    (the default). Replaces the old silence-fill taxonomy (idle banter / interview questions).
+
+    Restraint is spacing, not a chatty prompt: a quiet threshold + a cooldown (armed even on a
+    pass, so the model isn't hammered) + a config 'in the mood' probability. Frequency lives in
+    config (LEAN_IMPULSE_*), tuned live — the model reliably produces a good line OR passes."""
+    global _last_lean_impulse_at, _last_proactive_line_at
+    if not (
+        bool(getattr(config, "LEAN_BRAIN_ENABLED", False))
+        and bool(getattr(config, "LEAN_IMPULSE_ENABLED", True))
+    ):
+        return False
+    if _game_suppresses_conversation() or _directed_context_fresh():
+        return False
+    try:
+        if end_thread.is_grace_active():
+            return False
+    except Exception:
+        pass
+    person_id = _primary_session_person_id()
+    if person_id is None:                       # nobody known present → never nudge an empty room
+        return False
+    if idle_for < float(getattr(config, "LEAN_IMPULSE_QUIET_SECS", 30.0)):
+        return False
+    if idle_for >= max(0.0, effective_idle_timeout - 1.0):   # leave room for the outro
+        return False
+    if time.monotonic() < _floor_held_until:    # Rex just asked something — let them answer
+        return False
+    if _proactive_line_recently_fired():
+        return False
+    now = time.monotonic()
+    if now - _last_lean_impulse_at < float(getattr(config, "LEAN_IMPULSE_COOLDOWN_SECS", 50.0)):
+        return False
+    try:
+        if consciousness.is_waiting_for_response():
+            return False
+    except Exception:
+        pass
+    if _interrupted.is_set():
+        return False
+    if speech_queue.is_speaking() or output_gate.is_busy() or echo_cancel.is_suppressed():
+        return False
+    try:
+        if _suppress_proactive_after_heavy(person_id):
+            return False
+    except Exception:
+        pass
+
+    # Arm the cooldown NOW (even if we skip / pass) so we consult the model at most once per
+    # window instead of every tick. Then a config 'in the mood' coin: a sustained lull shouldn't
+    # be a metronome of impulses.
+    _last_lean_impulse_at = now
+    if random.random() > float(getattr(config, "LEAN_IMPULSE_ACT_PROBABILITY", 0.5)):
+        return False
+
+    decided_at = time.monotonic()
+    try:
+        mood = body_mood.current_mood()[0]
+    except Exception:
+        mood = None
+    try:
+        from intelligence import lean_brain
+        line = lean_brain.consider_initiating(
+            person_id,
+            transcript=_lean_recent_transcript(""),
+            world=_lean_world(),
+            quiet_secs=idle_for,
+            mood=mood,
+        )
+    except Exception as exc:
+        _log.debug("[lean] impulse generation failed: %s", exc)
+        return False
+    if not line:
+        return False                            # Rex chose to just watch
+    if _proactive_opener_repeats(line, "idle_monologue"):
+        _log.info("[lean] impulse dropped — opener repeats a recent line: %r", line)
+        return False
+
+    completed = _speak_proactive(
+        line, emotion="curious", priority=1, label="lean_impulse", decided_at=decided_at
+    )
+    if completed:
+        _last_proactive_line_at = time.monotonic()
+        conv_memory.add_to_transcript("Rex", line)
+        conv_log.log_rex(line)
+        _register_rex_utterance(
+            line,
+            source="lean_impulse",
+            target_person_id=person_id,
+            expected_reply_types=(["answer", "statement"] if "?" in line else None),
+        )
+        _log.info("[lean] impulse — person_id=%s text=%r", person_id, line)
+    return completed
 
 
 def _maybe_idle_banter(
@@ -20724,21 +20822,30 @@ def _loop() -> None:
         if _maybe_onboarding_question():
             continue
         if not tell_about_flow_active() and not onboarding_flow_active():
-            if _maybe_interest_idle_followup(
-                idle_for=idle_for,
-                effective_idle_timeout=effective_idle_timeout,
-            ):
-                continue
-            if _maybe_low_memory_idle_question(
-                idle_for=idle_for,
-                effective_idle_timeout=effective_idle_timeout,
-            ):
-                continue
-            if _maybe_idle_banter(
-                idle_for=idle_for,
-                effective_idle_timeout=effective_idle_timeout,
-            ):
-                continue
+            if bool(getattr(config, "LEAN_BRAIN_ENABLED", False)):
+                # Lean agency owns the quiet: ONE motivated impulse (or silence) replaces the
+                # old silence-fill trio (interest / low-memory / idle-banter interview questions).
+                if _maybe_lean_impulse(
+                    idle_for=idle_for,
+                    effective_idle_timeout=effective_idle_timeout,
+                ):
+                    continue
+            else:
+                if _maybe_interest_idle_followup(
+                    idle_for=idle_for,
+                    effective_idle_timeout=effective_idle_timeout,
+                ):
+                    continue
+                if _maybe_low_memory_idle_question(
+                    idle_for=idle_for,
+                    effective_idle_timeout=effective_idle_timeout,
+                ):
+                    continue
+                if _maybe_idle_banter(
+                    idle_for=idle_for,
+                    effective_idle_timeout=effective_idle_timeout,
+                ):
+                    continue
 
         if time.monotonic() < _listen_resume_at:
             _situation_assessor.set_vad_active(False)

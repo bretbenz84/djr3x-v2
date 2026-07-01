@@ -315,6 +315,17 @@ class ActionGovernor:
         score = int(priority)
         reasons: list[str] = []
 
+        # Lean brain owns proactivity: its motivated impulse replaces the old silence-fill
+        # taxonomy, so drop those purposes here when lean is on. Genuine perception reactors
+        # (presence_reaction / world.animal_arrival / world.scenery_change) aren't in the set
+        # and fall through unchanged; wave_back/room_change/smile never reach _score at all.
+        if (
+            bool(getattr(config, "LEAN_BRAIN_ENABLED", False))
+            and candidate.purpose in getattr(config, "LEAN_SUPPRESSED_PROACTIVE_PURPOSES", set())
+        ):
+            reasons.append("lean_brain_silence_fill_suppressed")
+            return ScoredCandidate(candidate=candidate, score=score, rejected=True, reasons=reasons)
+
         # A force_salient / reactive candidate (animal arrival, scenery change,
         # wave-back) is DESIGNED to skip the pacing cooldown + ACTIVE-conversation
         # block (salient) and, additionally, the awaiting-a-reply gate (reactive) —

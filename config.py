@@ -221,6 +221,31 @@ LEAN_BRAIN_MAX_TOKENS       = 120     # keep replies short + first audio fast
 LEAN_BRAIN_TRANSCRIPT_TURNS = 8       # recent turns passed as real user/assistant messages
 LEAN_BRAIN_PERSONA          = ""      # "" → REX_CORE_PROMPT verbatim (the voice, minus the scaffolding)
 
+# Lean AGENCY (Phase 1): when a known person is PRESENT but quiet, Rex DECIDES (in character,
+# grounded in perception + memory + mood) to say ONE thing or just watch — the strong default is
+# watch. This replaces the old silence-fill taxonomy (idle_banter / lull re-engagement) with a
+# single motivated impulse. Restraint is set by the quiet threshold + cooldown, and the model's
+# heavy bias to PASS. Only active alongside LEAN_BRAIN_ENABLED.
+LEAN_IMPULSE_ENABLED        = True
+LEAN_IMPULSE_QUIET_SECS     = 30.0    # min seconds of quiet (present) before Rex even considers acting
+LEAN_IMPULSE_COOLDOWN_SECS  = 50.0    # min gap between impulse CHECKS (armed even on a pass, so the model isn't hammered)
+LEAN_IMPULSE_ACT_PROBABILITY = 0.5    # of eligible checks, the fraction Rex is "in the mood" to even consider acting
+LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
+# Frequency is controlled by these three knobs (quiet threshold + cooldown + probability), NOT by
+# the prompt — the model reliably produces a motivated line OR passes; how OFTEN it's consulted is
+# the dial. Start calm; tune live.
+
+# Old silence-fill proactive purposes the lean brain's own agency (the motivated impulse) REPLACES.
+# Suppressed ONLY when LEAN_BRAIN_ENABLED. Genuine perception/real-event reactors — arrival greeting
+# (presence_reaction), wave_back, world.animal_arrival, world.scenery_change, room_change,
+# room_reaction, smile, emotional_checkin — are NOT listed and keep firing.
+LEAN_SUPPRESSED_PROACTIVE_PURPOSES = {
+    "idle_monologue", "small_talk", "lull_callback", "relationship_inquiry",
+    "celebration_checkin", "memory_followup", "memory_musing", "reengagement",
+    "visual_curiosity", "ambient_observation", "appearance_riff", "people_roast",
+    "startup_empty_room", "weather.proactive_comment",
+}
+
 # Fire a tiny throwaway OpenAI completion at startup (in a background thread) so
 # the first real turn doesn't pay cold TLS / HTTP-connection setup on the OpenAI
 # clients used by the answer LLM and the action router (separate clients, each
