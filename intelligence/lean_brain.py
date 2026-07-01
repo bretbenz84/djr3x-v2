@@ -265,9 +265,26 @@ def _scene_summary(world: Optional[dict]) -> str:
     if not world:
         return ""
     try:
-        return (llm._summarize_world_state(world) or "").strip()
+        summary = (llm._summarize_world_state(world) or "").strip()
     except Exception:
-        return ""
+        summary = ""
+    # _summarize_world_state OMITS detected objects — so the clock/dreamcatcher/teddy bear the
+    # camera sees never reached the conversation (owner: "at no point did it use the mediapipe
+    # descriptions"). Add them so Rex can be genuinely curious about what's physically around.
+    # COCO labels are often wrong (a dreamcatcher reads as 'clock'); the persona already says to
+    # drop a guess the instant they correct it, so a wrong label is a fine conversation starter.
+    try:
+        objs = []
+        for o in (world.get("objects") or []):
+            label = str((o.get("label") if isinstance(o, dict) else o) or "").strip()
+            if label and label not in objs:
+                objs.append(label)
+        if objs:
+            summary = (summary + " " if summary else "") + \
+                "Objects in view (rough camera labels, may be wrong): " + ", ".join(objs[:6]) + "."
+    except Exception:
+        pass
+    return summary
 
 
 def _situation_block(person_id: Optional[int], world: Optional[dict],
