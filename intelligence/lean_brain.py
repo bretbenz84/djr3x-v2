@@ -244,17 +244,18 @@ def respond(
 # speak it is because something moved him, which is what makes it feel alive instead of a tic.
 
 _IMPULSE_INSTRUCTION = (
-    "[Quiet moment — a few seconds of silence. That's fine; you don't fill dead air with a generic "
-    "'so, what's up?' or an interview.]\n"
+    "[The conversation just went quiet. You DISLIKE dead air — it's your move to keep it alive, and "
+    "reasonably quickly, but with something GOOD, not filler.]\n"
     "{situation}"
-    "React to WHAT'S HAPPENING RIGHT NOW — not to old memories. Good moves: a genuine reaction or a "
-    "real question about something you actually SEE this second (their expression, what they're "
-    "doing, an object, the room), a follow-up on what they JUST said, or a dry tease/roast of the "
-    "present moment. CRUCIAL: do NOT dredge up a hobby, interest, or fact they haven't brought up "
-    "recently — randomly asking '{who}, shooting any space stuff tonight?' out of nowhere is the "
-    "exact awkward, left-field move to avoid (people don't do their hobbies every day). If there's "
-    "genuinely nothing here-and-now worth a line — no expression to read, nothing fresh said, "
-    "nothing worth seeing — just watch: reply EXACTLY PASS. Otherwise say the ONE thing, short."
+    "Break the silence with the funniest or most genuine thing THIS MOMENT gives you: a joke or a "
+    "dry roast, a read on what you SEE right now (their expression, what they're doing, an object, "
+    "the room), a light tease about the silence itself ('you've gone quiet on me'), or a follow-up "
+    "on what they JUST said. Do NOT dredge up a hobby/topic they haven't raised — randomly asking "
+    "'{who}, shooting any space stuff tonight?' out of nowhere is the exact awkward, left-field move "
+    "to avoid. And do NOT keep circling the SAME thing — if you already made your joke about the main "
+    "object in view (the clock, say), it's spent; find a genuinely different angle or reply PASS "
+    "rather than riffing on it again. Only PASS if you genuinely have nothing new worth saying — "
+    "otherwise lean toward saying the ONE good thing, short, in your voice."
 )
 
 

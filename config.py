@@ -227,7 +227,7 @@ LEAN_BRAIN_PERSONA          = ""      # "" → REX_CORE_PROMPT verbatim (the voi
 # single motivated impulse. Restraint is set by the quiet threshold + cooldown, and the model's
 # heavy bias to PASS. Only active alongside LEAN_BRAIN_ENABLED.
 LEAN_IMPULSE_ENABLED        = True
-LEAN_IMPULSE_QUIET_SECS     = 5.0     # seconds after REX FINISHES talking (not since you spoke) before he may add something
+LEAN_IMPULSE_QUIET_SECS     = 4.0     # seconds after REX FINISHES talking (not since you spoke) before he may break the silence
 LEAN_IMPULSE_COOLDOWN_SECS  = 12.0    # min gap between his self-initiated lines during a sustained lull
 LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
 # Cadence = quiet-threshold (measured from Rex's last line, so a natural short pause triggers it)
