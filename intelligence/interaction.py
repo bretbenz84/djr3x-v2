@@ -4147,7 +4147,15 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     person_id = _primary_session_person_id()
     if person_id is None:                       # nobody known present → never nudge an empty room
         return False
-    if idle_for < float(getattr(config, "LEAN_IMPULSE_QUIET_SECS", 30.0)):
+    # "Quiet" = seconds since REX last spoke (his reply or a prior impulse), NOT since the user
+    # spoke — a short natural pause after Rex FINISHES is the trigger, so the reply's own
+    # generation + playback time doesn't count against it. 0.0 while he's still speaking (blocked
+    # below), inf before he's ever spoken (the greeting leads, not the impulse).
+    try:
+        quiet = speech_queue.seconds_since_last_speech()
+    except Exception:
+        quiet = idle_for
+    if quiet == float("inf") or quiet < float(getattr(config, "LEAN_IMPULSE_QUIET_SECS", 5.0)):
         return False
     if idle_for >= max(0.0, effective_idle_timeout - 1.0):   # leave room for the outro
         return False
@@ -4188,7 +4196,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             person_id,
             transcript=_lean_recent_transcript(""),
             world=_lean_world(),
-            quiet_secs=idle_for,
+            quiet_secs=quiet,
             mood=mood,
         )
     except Exception as exc:
