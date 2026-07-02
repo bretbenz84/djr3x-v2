@@ -241,7 +241,7 @@ class StreamingOrchestrationTest(unittest.TestCase):
             done.set()  # pretend playback finished so the drain returns at once
             return done
 
-        def fake_stream(user_text, person_id=None, agenda_directive=None):
+        def fake_stream(user_text, person_id=None, agenda_directive=None, **kwargs):
             for c in chunks:
                 yield c
 
@@ -279,7 +279,7 @@ class StreamingOrchestrationTest(unittest.TestCase):
             done.set()
             return done
 
-        def fake_stream(user_text, person_id=None, agenda_directive=None):
+        def fake_stream(user_text, person_id=None, agenda_directive=None, **kwargs):
             yield "Whoa, that is wild."
 
         mode = types.SimpleNamespace(key="straight")

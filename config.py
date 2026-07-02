@@ -220,6 +220,13 @@ LEAN_BRAIN_MODEL            = ""      # "" → the standard conversation model (
 LEAN_BRAIN_MAX_TOKENS       = 120     # keep replies short + first audio fast
 LEAN_BRAIN_TRANSCRIPT_TURNS = 8       # recent turns passed as real user/assistant messages
 LEAN_BRAIN_PERSONA          = ""      # "" → REX_CORE_PROMPT verbatim (the voice, minus the scaffolding)
+# Phase 4 — ONE VOICE. Route the OTHER spoken-line generators (greetings, world/presence reactions,
+# onboarding reactions/questions, directed-look/wave/etc.) through the SAME lean persona as replies,
+# instead of the classic 4,400-word assembled prompt / onboarding's thin inline persona. So Rex
+# sounds like one character everywhere, not just in replies. Only active alongside LEAN_BRAIN_ENABLED;
+# the reply-path CLASSIC fallbacks stay classic for resilience. Kill switch → instant revert to the
+# per-path voices.
+LEAN_ONE_VOICE_ENABLED      = True
 
 # Lean AGENCY (Phase 1): when a known person is PRESENT but quiet, Rex DECIDES (in character,
 # grounded in perception + memory + mood) to say ONE thing or just watch — the strong default is

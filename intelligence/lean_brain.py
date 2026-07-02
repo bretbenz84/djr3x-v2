@@ -232,6 +232,35 @@ def stream_reply(
         yield "...circuits hiccuped. Say that again?"
 
 
+def stream_directive(
+    instruction: str,
+    person_id: Optional[int] = None,
+    world: Optional[dict] = None,
+    transcript: Optional[list[dict]] = None,
+) -> Generator[str, None, None]:
+    """Phase 4 (ONE VOICE): generate a proactive / greeting / reaction line from a DIRECTIVE using
+    the SAME lean persona + live context as replies, so Rex sounds consistent everywhere. The
+    directive is the final user-turn instruction ('You see Bret — greet with genuine warmth').
+    Reuses the reply pipeline. RAISES on error (unlike stream_reply's inline fallback) so the caller
+    (llm.stream_response) can fall back to the classic assembled prompt."""
+    messages = _messages(instruction, person_id, transcript, world)
+    stream = llm_compat.create(
+        llm._client,
+        model=_model(),
+        messages=messages,
+        stream=True,
+        max_tokens=int(getattr(config, "LEAN_BRAIN_MAX_TOKENS", 120)),
+        timeout=float(getattr(config, "LLM_STREAM_TIMEOUT_SECS", 18.0)),
+    )
+    for chunk in stream:
+        try:
+            delta = chunk.choices[0].delta
+        except (AttributeError, IndexError):
+            continue
+        if getattr(delta, "content", None):
+            yield delta.content
+
+
 def stream_sentences(
     user_text: str,
     person_id: Optional[int] = None,

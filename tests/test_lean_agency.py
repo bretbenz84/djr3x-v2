@@ -217,5 +217,60 @@ class RecentTopicsAwarenessTest(unittest.TestCase):
         self.assertNotIn("IN YOUR MEMORY", sp)
 
 
+class OneVoiceTest(unittest.TestCase):
+    """Phase 4: proactive/greeting/reaction generation shares the lean persona — llm.stream_response
+    routes to lean_brain.stream_directive — EXCEPT the reply-path classic fallbacks (classic=True)
+    and whenever the lean brain is disabled."""
+
+    def test_one_voice_active_gating(self):
+        from intelligence import llm
+        with mock.patch.object(llm.config, "LEAN_BRAIN_ENABLED", True), \
+             mock.patch.object(llm.config, "LEAN_ONE_VOICE_ENABLED", True):
+            self.assertTrue(llm._one_voice_active(classic=False))
+            self.assertFalse(llm._one_voice_active(classic=True))    # reply fallback stays classic
+        with mock.patch.object(llm.config, "LEAN_BRAIN_ENABLED", False), \
+             mock.patch.object(llm.config, "LEAN_ONE_VOICE_ENABLED", True):
+            self.assertFalse(llm._one_voice_active(classic=False))   # lean brain off → all classic
+
+    def test_stream_response_routes_to_lean(self):
+        from intelligence import llm
+        used = {"lean": False, "classic": False}
+
+        def fake_directive(instruction, person_id=None, world=None, transcript=None):
+            used["lean"] = True
+            yield "lean line."
+
+        def fake_assemble(*a, **k):
+            used["classic"] = True
+            return "CLASSIC"
+
+        with mock.patch.object(llm.config, "LEAN_BRAIN_ENABLED", True), \
+             mock.patch.object(llm.config, "LEAN_ONE_VOICE_ENABLED", True), \
+             mock.patch.object(llm, "assemble_system_prompt", fake_assemble), \
+             mock.patch.object(llm, "_one_voice_world", lambda: None), \
+             mock.patch.object(llm, "_one_voice_transcript", lambda: None), \
+             mock.patch("intelligence.lean_brain.stream_directive", fake_directive):
+            out = "".join(llm.stream_response("greet Bret warmly", 1))
+        self.assertEqual(out, "lean line.")
+        self.assertTrue(used["lean"])
+        self.assertFalse(used["classic"])   # never touched the classic assembled prompt
+
+    def test_classic_flag_bypasses_lean(self):
+        from intelligence import llm
+        used = {"lean": False}
+
+        def fake_directive(*a, **k):
+            used["lean"] = True
+            yield "x"
+
+        with mock.patch.object(llm.config, "LEAN_BRAIN_ENABLED", True), \
+             mock.patch.object(llm.config, "LEAN_ONE_VOICE_ENABLED", True), \
+             mock.patch.object(llm, "assemble_system_prompt", lambda *a, **k: "CLASSIC"), \
+             mock.patch.object(llm.llm_compat, "create", side_effect=RuntimeError("no api")), \
+             mock.patch("intelligence.lean_brain.stream_directive", fake_directive):
+            list(llm.stream_response("hi", 1, classic=True))   # reply-path fallback
+        self.assertFalse(used["lean"])      # classic=True must never route to the lean voice
+
+
 if __name__ == "__main__":
     unittest.main()

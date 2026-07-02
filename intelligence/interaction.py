@@ -10179,7 +10179,7 @@ def _stream_llm_response(
                 ).get("text") or ""
             except Exception as exc:
                 _log.error("[lean] non-streaming reply failed, using classic path: %s", exc)
-                full_text = llm.get_response(text, person_id, agenda_directive=agenda_directive)
+                full_text = llm.get_response(text, person_id, agenda_directive=agenda_directive, classic=True)
         else:
             full_text = llm.get_response(
                 text,
@@ -10476,7 +10476,9 @@ def _reply_token_stream(user_text: str, person_id, agenda_directive):
             )
         except Exception as exc:
             _log.error("[lean] live reply init failed, using classic path: %s", exc)
-    return llm.stream_response(user_text, person_id, agenda_directive=agenda_directive)
+    # classic=True: this is the reply-path fallback — if the lean brain failed, use the classic
+    # assembled prompt for resilience, not the one-voice lean directive path.
+    return llm.stream_response(user_text, person_id, agenda_directive=agenda_directive, classic=True)
 
 
 def _prepare_stream_sentence(sentence: str, frame, comedy_mode) -> str:

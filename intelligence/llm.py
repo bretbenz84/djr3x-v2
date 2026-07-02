@@ -1487,12 +1487,89 @@ def warmup() -> bool:
         return False
 
 
+def _one_voice_active(classic: bool) -> bool:
+    """Phase 4: proactive/greeting/reaction lines share the lean persona. Off for reply-path
+    CLASSIC fallbacks (classic=True) and whenever the lean brain is disabled."""
+    return (
+        not classic
+        and bool(getattr(config, "LEAN_BRAIN_ENABLED", False))
+        and bool(getattr(config, "LEAN_ONE_VOICE_ENABLED", False))
+    )
+
+
+def _one_voice_world() -> Optional[dict]:
+    try:
+        from world_state import world_state as _ws
+        return _ws.snapshot()
+    except Exception:
+        return None
+
+
+def _one_voice_transcript() -> Optional[list[dict]]:
+    try:
+        from intelligence import conv_memory
+        rows = conv_memory.get_session_transcript() or []
+        return [
+            {"speaker": r.get("speaker"), "text": r.get("text")}
+            for r in rows if str(r.get("text") or "").strip()
+        ]
+    except Exception:
+        return None
+
+
+def _persona_task_messages(prompt: str) -> list[dict]:
+    """One-voice: prepend the lean persona as the system message so a task-prompt helper (onboarding
+    reaction / curiosity question) speaks in Rex's FULL voice, not a thin inline 'You are Rex' persona.
+    The task prompt's own tone rules (e.g. onboarding's 'keep it warm, do NOT roast') still apply on
+    top. Falls back to prompt-only when one-voice is off."""
+    if _one_voice_active(False):
+        try:
+            from intelligence import lean_brain
+            return [
+                {"role": "system", "content": lean_brain._persona()},
+                {"role": "user", "content": prompt},
+            ]
+        except Exception:
+            pass
+    return [{"role": "user", "content": prompt}]
+
+
 def stream_response(
     user_text: str,
     person_id: Optional[int] = None,
     agenda_directive: Optional[str] = None,
+    *,
+    classic: bool = False,
 ) -> Generator[str, None, None]:
-    """Assemble the system prompt and stream GPT-4o-mini response chunks."""
+    """Assemble the system prompt and stream conversation-model response chunks.
+
+    Phase 4 (ONE VOICE): unless classic=True, proactive/greeting/reaction callers are routed through
+    the SAME lean persona as replies (lean_brain.stream_directive), so Rex's voice is consistent
+    everywhere. Falls back to the classic assembled prompt on any lean error."""
+    if _one_voice_active(classic):
+        got = False
+        try:
+            from intelligence import lean_brain
+            instruction = (user_text or "").strip()
+            if agenda_directive:
+                instruction = (instruction + "\n\n" + agenda_directive).strip() if instruction else agenda_directive
+            for chunk in lean_brain.stream_directive(
+                instruction, person_id,
+                world=_one_voice_world(), transcript=_one_voice_transcript(),
+            ):
+                got = True
+                yield chunk
+        except Exception as exc:
+            if got:
+                # Already spoke part of the line — don't restart on the classic prompt (would double it).
+                _log.error("[lean] one-voice failed mid-stream after partial output: %s", exc)
+                return
+            _log.error("[lean] one-voice generation failed, using classic: %s", exc)
+        else:
+            if got:
+                return
+            _log.warning("[lean] one-voice produced no output — using classic prompt")
+        # Only reached when nothing was yielded (got is False) → safe to use the classic prompt.
     system_prompt = assemble_system_prompt(person_id, agenda_directive=agenda_directive)
     try:
         # Routed through llm_compat so a GPT-5-class conversation model gets the right
@@ -1526,10 +1603,13 @@ def get_response(
     user_text: str,
     person_id: Optional[int] = None,
     agenda_directive: Optional[str] = None,
+    *,
+    classic: bool = False,
 ) -> str:
-    """Assemble the system prompt and return the full GPT-4o-mini response as a string."""
+    """Assemble the system prompt and return the full conversation-model response as a string.
+    classic=True forces the classic assembled prompt (reply-path fallbacks) — see stream_response."""
     return clean_response_text(
-        "".join(stream_response(user_text, person_id, agenda_directive=agenda_directive))
+        "".join(stream_response(user_text, person_id, agenda_directive=agenda_directive, classic=classic))
     )
 
 
@@ -1887,7 +1967,7 @@ def generate_curiosity_question(
         resp = llm_compat.create(
             _client,
             model=llm_compat.conversation_model(),
-            messages=[{"role": "user", "content": prompt}],
+            messages=_persona_task_messages(prompt),
             temperature=0.8,
             max_tokens=60,
         )
@@ -1932,7 +2012,7 @@ def generate_onboarding_reaction(
         resp = llm_compat.create(
             _client,
             model=llm_compat.conversation_model(),
-            messages=[{"role": "user", "content": prompt}],
+            messages=_persona_task_messages(prompt),
             temperature=0.8,
             max_tokens=40,
         )
