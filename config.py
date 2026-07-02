@@ -2567,12 +2567,8 @@ INTRO_VOICE_CAPTURE_WINDOW_SECS = 45.0
 # trusting a genuinely confident introducer re-take.
 INTRO_VOICE_INTRODUCER_CONFIDENT_THRESHOLD = 0.75
 
-# VAD (Silero) — probability threshold above which speech is considered detected.
-# 0.4 (was 0.5): soft-onset phonemes ("wh" in "what's", the "p" in "plus") don't cross 0.5 in the
-# first 32ms chunk, so the VAD fires a chunk or two late and the leading word is clipped ("what's 2
-# plus 2" heard as "plus two"). Silero is well-calibrated at 0.4; MIN_SPEECH_DURATION_SECS=0.45 still
-# guards against noise triggering a turn. Owner: long-standing "Whisper keeps cutting me off".
-VAD_THRESHOLD = 0.4
+# VAD (Silero) — probability threshold above which speech is considered detected
+VAD_THRESHOLD = 0.5
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AUDIO STREAM
@@ -3381,21 +3377,21 @@ MIN_SPEECH_DURATION_SECS = 0.45
 
 # Include audio before the first VAD-positive chunk so soft starts are not
 # clipped. Question answers get more pre-roll because people often begin while
-# Rex's last syllable or room echo is still fading. 0.75 (was 0.45): the VAD fires
-# ~0.3-0.4s after true speech onset, so 0.45 still let the first word slip out of the
-# window; 0.75 covers the detection delay + buffer turnover (leading silence is free
-# for Whisper). Pairs with the VAD_THRESHOLD=0.4 change above.
-SPEECH_PREROLL_SECS = 0.75
+# Rex's last syllable or room echo is still fading.
+SPEECH_PREROLL_SECS = 0.45
 POST_QUESTION_SPEECH_PREROLL_SECS = 2.0
 
 # How far a NON-question reply's capture may reach back past the post-TTS handoff
 # into the raw (un-attenuated) rolling buffer. 0.0 meant a reply that began as Rex
 # finished a statement had its front clipped (the buffer holds it, but the capture
-# floor refused to reach back). 0.25 (was 0.12): a user who starts speaking the
-# instant Rex stops was still losing the leading word; 0.25 reliably recovers the
-# front. AEC + Whisper's leading-noise/hallucination filter absorb the rare tail of
-# Rex's own final word this reaches.
-POST_TTS_CAPTURE_PREROLL_GRACE_SECS = 0.25
+# floor refused to reach back). 0.12 mirrors the question grace — enough to recover
+# the front, small enough that it rarely reaches Rex's final word (≥0.25s does).
+# NOTE: reaching further back is ONLY safe with hardware AEC (see the aec_on branch
+# in interaction.py that lifts this to POST_TTS_CAPTURE_PREROLL_GRACE_SECS_AEC). On a
+# no-AEC setup (dev Mac, whisper suppressed while Rex speaks), a larger value pulls
+# Rex's own tail at full volume → self-transcription / dropped segment → the user
+# gets cut off. Keep this SMALL when there is no AEC.
+POST_TTS_CAPTURE_PREROLL_GRACE_SECS = 0.12
 
 # Let question-answer capture reach slightly before the handoff, but only into
 # the typical silent pad at the end of TTS. 250ms can include Rex's final word.
