@@ -2640,7 +2640,15 @@ AEC_SUPPRESSION_FACTOR = 0.05
 
 # Seconds suppression stays active after set_playing(False) — prevents Rex's
 # voice tail that has already bled into the mic buffer from passing the VAD.
-POST_PLAYBACK_SUPPRESSION_SECS = 0.5
+# 0.12 (was 0.5): this general default is used by NON-reply playback (proactive
+# lines, greetings, startup); replies already use the short 0.12 reply tail
+# (POST_QUESTION/SPEECH_PLAYBACK_SUPPRESSION_SECS) via _reply_playback_tail_secs.
+# At 0.5, a user who answered a greeting or a lull-breaker the instant Rex stopped
+# had their first words attenuated to 5% (AEC_SUPPRESSION_FACTOR) and dropped —
+# front-clipping. The buffer is flushed at playback-stop, so the tail only needs to
+# cover the speaker's brief acoustic decay; 0.12 is the value the reply path already
+# proves safe on this no-AEC dev Mac. (Robot hardware AEC uses the 0.05 _AEC tail.)
+POST_PLAYBACK_SUPPRESSION_SECS = 0.12
 
 # Seconds the audio guard (audio/sd_guard.py) holds after a sounddevice stop()
 # before any replay's play() may run, so CoreAudio releases the global output
