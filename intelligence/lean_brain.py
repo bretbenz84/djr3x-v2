@@ -72,6 +72,15 @@ def _person_lines(person_id: Optional[int]) -> list[str]:
     who = _first_name(person) or "them"
     tier = str(person.get("friendship_tier") or "").strip().lower()
     out.append(f"You're talking with {who}" + (f" — {tier}." if tier and tier != "stranger" else "."))
+    if tier and tier != "stranger":
+        # License the roast to the relationship: known people (esp. the creator) enjoy the sparring
+        # and can take a pointed jab — don't play it safe with them. Strangers get no such line and
+        # stay warm (matches the first-meeting onboarding tone).
+        out.append(
+            "You know " + who + " — the more you two know each other, the harder you can go; they "
+            "enjoy the sparring and can take a sharp, SPECIFIC roast, so don't soften your wit to be "
+            "polite. (Still: drop it instantly on a genuinely sincere or vulnerable moment.)"
+        )
     background: list[str] = []
     try:
         from memory import facts as _facts
