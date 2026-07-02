@@ -244,18 +244,23 @@ def respond(
 # speak it is because something moved him, which is what makes it feel alive instead of a tic.
 
 _IMPULSE_INSTRUCTION = (
-    "[The conversation just went quiet. You DISLIKE dead air — it's your move to keep it alive, and "
-    "reasonably quickly, but with something GOOD, not filler.]\n"
+    "[The conversation just went quiet — the last topic wound down and they stopped. You DISLIKE "
+    "dead air, so keep it alive quickly — but the way to do that is to OPEN a NEW thread, not to "
+    "keep talking about what you were just on.]\n"
     "{situation}"
-    "Break the silence with the funniest or most genuine thing THIS MOMENT gives you: a joke or a "
-    "dry roast, a read on what you SEE right now (their expression, what they're doing, an object, "
-    "the room), a light tease about the silence itself ('you've gone quiet on me'), or a follow-up "
-    "on what they JUST said. Do NOT dredge up a hobby/topic they haven't raised — randomly asking "
-    "'{who}, shooting any space stuff tonight?' out of nowhere is the exact awkward, left-field move "
-    "to avoid. And do NOT keep circling the SAME thing — if you already made your joke about the main "
-    "object in view (the clock, say), it's spent; find a genuinely different angle or reply PASS "
-    "rather than riffing on it again. Only PASS if you genuinely have nothing new worth saying — "
-    "otherwise lean toward saying the ONE good thing, short, in your voice."
+    "Say ONE good thing that gives them a fresh, obvious opening to reply — an OPEN DOOR, not a "
+    "closed quip. Reach for whichever fits this moment: a genuine NEW question, a natural pivot to "
+    "something the moment invites (what you SEE right now — their expression, what they're doing, an "
+    "object, the room — or the day / the occasion / the time), the thing YOU'VE been chewing on (your "
+    "own take or tangent), or a light tease about the silence itself ('you've gone quiet on me'). "
+    "Hard rules: do NOT reheat a spent topic — not the one you were just discussing (the burger, "
+    "say) AND not a thread you ALREADY tried into this quiet. If your last line already asked about "
+    "the Fourth and they didn't bite, that's used up too — go somewhere genuinely different or PASS; "
+    "never say a near-copy of your own last line, and don't reuse the same opener twice ('you've "
+    "gone quiet on me'). Do NOT drag up a hobby/topic they never raised — asking '{who}, shooting "
+    "any space stuff tonight?' out of nowhere is the exact awkward, left-field move to avoid. Only "
+    "PASS if you truly have nothing fresh worth opening — otherwise say the ONE short, door-opening "
+    "thing, in your voice."
 )
 
 
