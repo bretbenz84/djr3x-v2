@@ -44,5 +44,40 @@ class BareRestatementTest(unittest.TestCase):
         self.assertFalse(r.is_bare_restatement(None))
 
 
+class QueryCorrectionRerouteTest(unittest.TestCase):
+    """A correction that restates a routable QUERY ('no I said what's the weather') must re-run the
+    query, not fire a repair-ack (field bug: user had to ask a 3rd time). Distinct from a bare
+    restatement — 'no …' is not bare, but a query correction still re-routes."""
+
+    def setUp(self):
+        from unittest import mock
+        import intelligence.interaction as I
+        self.I = I
+        self._p = mock.patch.object(I.config, "INTENT_CLASSIFIER_ENABLED", True)
+        self._p.start()
+
+    def tearDown(self):
+        self._p.stop()
+
+    def test_query_corrections_route(self):
+        for c in ["what's the weather", "what time is it", "what can you do"]:
+            self.assertTrue(self.I._correction_routes_to_query(c), f"query should route: {c!r}")
+
+    def test_statement_corrections_do_not_route(self):
+        for c in ["I went to my dad's for the 4th", "I like jazz", "my name is Bob", "", None]:
+            self.assertFalse(self.I._correction_routes_to_query(c), f"statement must NOT route: {c!r}")
+
+    def test_field_case_reroutes_but_statement_correction_does_not(self):
+        # The exact field utterance re-routes (kind=misheard, correction is a query), while a
+        # restated non-query statement with the same "no …" shape keeps the repair-ack path.
+        weather = r.detect("no I said what's the weather")
+        self.assertEqual(weather.get("kind"), "misheard")
+        self.assertTrue(self.I._correction_routes_to_query(weather.get("correction")))
+        self.assertFalse(r.is_bare_restatement("no I said what's the weather"))  # not bare, but routes
+
+        dad = r.detect("no I said I went to my dad's")
+        self.assertFalse(self.I._correction_routes_to_query(dad.get("correction")))
+
+
 if __name__ == "__main__":
     unittest.main()

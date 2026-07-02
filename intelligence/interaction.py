@@ -15574,6 +15574,22 @@ def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> N
         _pending_prompted_name_confirmation = None
 
 
+def _correction_routes_to_query(correction: Optional[str]) -> bool:
+    """True when a repair CORRECTION restates a routable query/command (weather, time, capabilities,
+    memory, …). Lets 'no I said what's the weather' re-run the weather query instead of firing a
+    repair-ack and stranding the user (field bug: they had to ask a third time). Reuses the
+    deterministic intent classifier — no duplicated pattern list, and it stays 'general' (→ False)
+    for plain restated statements like 'no I said I went to my dad's', which correctly keep the ack."""
+    text = (correction or "").strip()
+    if not text or not getattr(config, "INTENT_CLASSIFIER_ENABLED", False):
+        return False
+    try:
+        intent = intent_classifier.classify_deterministic(text)
+    except Exception:
+        return False
+    return bool(intent) and intent != "general"
+
+
 def _generate_repair_response(person_id: Optional[int], text: str, repair: dict) -> str:
     """Generate one concise recovery when the human flags a conversational miss."""
     kind = repair.get("kind")
@@ -20068,6 +20084,11 @@ def _handle_speech_segment(
                     bool(getattr(config, "REPAIR_RESTATEMENT_AS_REPLY_ENABLED", True))
                     and repair_moves.is_bare_restatement(text)
                 )
+                # A correction that restates a routable QUERY ("no I said what's the weather") must
+                # re-run that query, not get a repair-ack — even though "no …" isn't a bare
+                # restatement. is_bare_restatement stays the gate for restated *content*; this covers
+                # restated *commands/queries*.
+                or _correction_routes_to_query(repair_move["correction"])
             )
         )
         if _reroute_correction:
@@ -20263,14 +20284,16 @@ def _handle_speech_segment(
             if getattr(config, "INTENT_CLASSIFIER_ENABLED", False) and not active_grief_for_turn:
                 try:
                     intent_started = time.monotonic()
-                    intent = intent_classifier.classify_deterministic(text)
+                    # routing_text == text normally; for a re-routed correction it's the corrected
+                    # words, so 'no I said what's the weather' classifies as its query, not the wrapper.
+                    intent = intent_classifier.classify_deterministic(routing_text)
                     _latency_log(turn_start, "intent_classifier", intent_started)
                 except Exception as exc:
                     _log.debug("intent classification error: %s", exc)
                     intent = "general"
                 intent_block_reason = _intent_execution_block_reason(
                     intent,
-                    text=text,
+                    text=routing_text,
                     context=router_context,
                     dialogue_decision=dialogue_decision,
                     router_action=(
@@ -20300,7 +20323,7 @@ def _handle_speech_segment(
                     except Exception:
                         pass
                     response_text = _handle_classified_intent(
-                        intent, text, person_id,
+                        intent, routing_text, person_id,
                         raw_best_id=raw_best_id,
                         raw_best_name=raw_best_name,
                         raw_best_score=speaker_score,
