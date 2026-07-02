@@ -55,6 +55,21 @@ def _first_name(person: Optional[dict]) -> str:
     return name.split()[0] if name else ""
 
 
+def _recent_topics(person_id: Optional[int]) -> list[str]:
+    """What Rex + this person already covered in recent PRIOR runs (from rex.db) — so neither a
+    reply nor a silence-break re-opens the same thing every boot. [] when disabled/unavailable."""
+    if person_id is None or not bool(getattr(config, "RECENT_TOPICS_AWARENESS_ENABLED", True)):
+        return []
+    try:
+        from memory import episodic_recall
+        return episodic_recall.recent_conversation_topics(
+            int(person_id), limit=int(getattr(config, "RECENT_TOPICS_LIMIT", 4))
+        )
+    except Exception as exc:
+        _log.debug("[lean] recent topics read failed: %s", exc)
+        return []
+
+
 def _person_lines(person_id: Optional[int]) -> list[str]:
     """A handful of REAL things about who Rex is talking to — name/relationship + a few facts
     and interests. Deliberately small: no callbacks, plans, episodic recall, or nostalgia
@@ -123,6 +138,14 @@ def _person_lines(person_id: Optional[int]) -> list[str]:
             "Background you happen to know about " + who + " — do NOT bring any of it up unless THEY "
             "raise it or it's directly relevant to what they JUST said; NEVER open with it or dredge "
             "a hobby/topic they didn't mention: " + "; ".join(background) + "."
+        )
+    topics = _recent_topics(person_id)
+    if topics:
+        out.append(
+            "You've ALREADY talked with " + who + " about these in recent chats — do NOT re-open any "
+            "of them cold or re-ask as if it's new (this is the 'brings up the same thing every run' "
+            "problem to avoid); only revisit if THEY raise it or there's genuine news: "
+            + " | ".join(topics) + "."
         )
     return out
 
@@ -279,8 +302,10 @@ _IMPULSE_INSTRUCTION = (
     "object, the room — or the day / the occasion / the time), the thing YOU'VE been chewing on (your "
     "own take or tangent), or a light tease about the silence itself ('you've gone quiet on me'). "
     "Hard rules: do NOT reheat a spent topic — not the one you were just discussing (the burger, "
-    "say) AND not a thread you ALREADY tried into this quiet. If your last line already asked about "
-    "the Fourth and they didn't bite, that's used up too — go somewhere genuinely different or PASS; "
+    "say), NOT a thread you ALREADY tried into this quiet, and NOT anything under 'ALREADY COVERED' "
+    "above (their Fourth-of-July / weekend plans included if listed — re-asking those is the exact "
+    "every-run repeat). If your last line already asked about the Fourth and they didn't bite, "
+    "that's used up too — go somewhere genuinely different or PASS; "
     "never say a near-copy of your own last line, and don't reuse the same opener twice ('you've "
     "gone quiet on me'). Do NOT drag up a hobby/topic they never raised — asking '{who}, shooting "
     "any space stuff tonight?' out of nowhere is the exact awkward, left-field move to avoid. Only "
@@ -298,11 +323,12 @@ _REENGAGE_INSTRUCTION = (
     "conversation.]\n"
     "{situation}"
     "Bring up something genuinely NEW and easy to pick up — a fresh question, a different subject, "
-    "something you're honestly curious about, or a light read on the moment (what you see, the day, "
-    "the occasion). Give them an obvious open door to walk through. Warm and unforced — not needy, "
-    "not clingy, not a comment about how quiet it is. Do NOT reheat anything from earlier or a thread "
-    "you already tried, and do NOT drag up a stored hobby they never raised. If there's genuinely "
-    "nothing worth opening, reply PASS."
+    "something you're honestly curious about, or a light read on what you SEE right now. Give them "
+    "an obvious open door to walk through. Warm and unforced — not needy, not clingy, not a comment "
+    "about how quiet it is. Do NOT reheat anything from earlier or a thread you already tried, do "
+    "NOT touch anything under 'ALREADY COVERED' above (that's the every-run repeat to avoid — "
+    "including their holiday/weekend plans if those are listed), and do NOT drag up a stored hobby "
+    "they never raised. If there's genuinely nothing worth opening, reply PASS."
 )
 
 
@@ -355,6 +381,14 @@ def _situation_block(person_id: Optional[int], world: Optional[dict],
     scene = _scene_summary(world)
     if scene:
         lines.append("What you see/hear right now — " + scene)
+    topics = _recent_topics(person_id)
+    if topics:
+        lines.append(
+            "ALREADY COVERED with them in recent chats — you KNOW these, so asking again from ANY "
+            "angle (even 'what's the plan for it?') is the exact 'brings up the same thing every "
+            "run' problem. Do NOT reference, re-ask, or open with any of them; pick a genuinely "
+            "DIFFERENT subject: " + "; ".join(topics)
+        )
     if quiet_secs and quiet_secs > 0:
         lines.append(f"It's been quiet ~{int(quiet_secs)}s.")
     if mood and str(mood).strip() and str(mood).strip().lower() != "neutral":

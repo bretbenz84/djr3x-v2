@@ -185,5 +185,35 @@ class ImpulseReengageTest(unittest.TestCase):
         self.assertFalse(fired, "under the re-engage threshold, the fast cap still holds — no pile-on")
 
 
+class RecentTopicsAwarenessTest(unittest.TestCase):
+    """Cross-session 'already discussed, don't re-open' awareness reaches the lean prompt (replies
+    AND the silence impulse), and is inert when the flag is off."""
+
+    def _patched_topics(self, topics):
+        from memory import episodic_recall
+        return mock.patch.object(episodic_recall, "recent_conversation_topics", lambda *a, **k: topics)
+
+    def test_recent_topics_reach_reply_prompt(self):
+        with mock.patch.object(config, "RECENT_TOPICS_AWARENESS_ENABLED", True), \
+             self._patched_topics(["Bret went to his dad's for fireworks", "Bret rewatched Pirates"]):
+            sp = lean_brain._system_prompt(1, {})
+        self.assertIn("ALREADY talked", sp)
+        self.assertIn("fireworks", sp)
+        self.assertIn("Pirates", sp)
+
+    def test_recent_topics_reach_impulse_situation(self):
+        with mock.patch.object(config, "RECENT_TOPICS_AWARENESS_ENABLED", True), \
+             self._patched_topics(["Bret went to his dad's for fireworks"]):
+            block = lean_brain._situation_block(1, {}, quiet_secs=42, mood="amused")
+        self.assertIn("ALREADY COVERED", block)
+        self.assertIn("fireworks", block)
+
+    def test_flag_off_is_inert(self):
+        with mock.patch.object(config, "RECENT_TOPICS_AWARENESS_ENABLED", False), \
+             self._patched_topics(["Bret went to his dad's for fireworks"]):
+            sp = lean_brain._system_prompt(1, {})
+        self.assertNotIn("ALREADY talked", sp)
+
+
 if __name__ == "__main__":
     unittest.main()

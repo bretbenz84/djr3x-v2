@@ -718,6 +718,24 @@ def _build_person_context(person_id: int) -> str:
     if insult_count:
         lines.append(f"Lifetime insults from this person: {insult_count}.")
 
+    # Cross-session "already discussed" awareness — stop re-opening (esp. GREETING with) the same
+    # thing every run (owner: "between runs it keeps bringing up the same things"). Reads recent
+    # prior-run conversation summaries from rex.db; empty/inert when disabled.
+    if bool(getattr(config, "RECENT_TOPICS_AWARENESS_ENABLED", True)):
+        try:
+            from memory import episodic_recall
+            _recent = episodic_recall.recent_conversation_topics(
+                int(person_id), limit=int(getattr(config, "RECENT_TOPICS_LIMIT", 4))
+            )
+        except Exception:
+            _recent = []
+        if _recent:
+            lines.append(
+                "Already discussed with them in recent PRIOR chats — do NOT open or greet with the "
+                "same thing again as if it's new (only revisit if they raise it or there's real "
+                "news): " + " | ".join(_recent) + "."
+            )
+
     try:
         disposition_summary = disposition_db.summarize_for_prompt(person_id)
         if disposition_summary:

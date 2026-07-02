@@ -1038,6 +1038,12 @@ MEMORY_SEMANTIC_CACHE_SIZE = 1024
 # SEPARATE kill switch from capture (EPISODIC_MEMORY_ENABLED). Off → recall is inert:
 # rex.db is still written, but nothing is ever surfaced. Env override: EPISODIC_RECALL_ENABLED.
 EPISODIC_RECALL_ENABLED = _env_bool("EPISODIC_RECALL_ENABLED", True)
+# Cross-session "already discussed, don't re-raise" awareness. Both the lean brain (replies +
+# silence impulse) and the classic greeting get a compact digest of what Rex + this person talked
+# about in recent PRIOR runs (from rex.db conversation_summary episodes) so he stops re-opening the
+# same thing every boot (owner: "between runs it keeps bringing up the same things"). Kill switch.
+RECENT_TOPICS_AWARENESS_ENABLED = True
+RECENT_TOPICS_LIMIT = 4               # how many recent prior-session topics to surface
 # Recency half-life (days) for ranking — an episode's weight halves every N days.
 EPISODIC_RECALL_RECENCY_HALFLIFE_DAYS = 5.0
 # How far back the cross-session "since last time" recap looks.

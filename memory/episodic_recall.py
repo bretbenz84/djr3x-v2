@@ -262,6 +262,52 @@ def session_recap(
         return None
 
 
+def recent_conversation_topics(
+    person_id: Optional[int], *, limit: int = 4, lookback_days: Optional[int] = None,
+    exclude_current_session: bool = True,
+) -> list[str]:
+    """What Rex and this person ALREADY talked about in recent PRIOR runs — the newest
+    conversation_summary episodes (current run excluded), de-duped, newest first. This is the
+    "don't re-open the same thing every boot" signal (distinct from person_episodes, which is
+    nostalgia callbacks). Returns [] when disabled / no person / nothing stored."""
+    if not _enabled() or not isinstance(person_id, int):
+        return []
+    try:
+        lookback = lookback_days if lookback_days is not None else int(_cfg("EPISODIC_RECALL_LOOKBACK_DAYS", 14))
+        cutoff = (_now() - timedelta(days=int(lookback))).strftime("%Y-%m-%d %H:%M:%S")
+        exclude = _current_session() if exclude_current_session else None
+        if exclude:
+            rows = rex_db.fetchall(
+                "SELECT summary FROM rex_episodes WHERE person_id = ? AND kind = 'conversation_summary' "
+                "AND created_at >= ? AND (session_id IS NULL OR session_id != ?) "
+                "ORDER BY created_at DESC LIMIT ?",
+                (person_id, cutoff, exclude, max(1, int(limit)) * 4),
+            )
+        else:
+            rows = rex_db.fetchall(
+                "SELECT summary FROM rex_episodes WHERE person_id = ? AND kind = 'conversation_summary' "
+                "AND created_at >= ? ORDER BY created_at DESC LIMIT ?",
+                (person_id, cutoff, max(1, int(limit)) * 4),
+            )
+        out: list[str] = []
+        seen: set[str] = set()
+        for r in rows or []:
+            s = (r["summary"] or "").strip().rstrip(".")
+            if not s:
+                continue
+            key = _norm_summary(s)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(s)
+            if len(out) >= max(1, int(limit)):
+                break
+        return out
+    except Exception as exc:
+        _log.debug("recent_conversation_topics failed: %s", exc)
+        return []
+
+
 def person_episodes(
     person_id: Optional[int], *, limit: int = 3, lookback_days: Optional[int] = None,
     exclude_sensitive: bool = False, now: Optional[datetime] = None, topic_tokens=None,
