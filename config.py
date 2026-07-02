@@ -1378,6 +1378,17 @@ PROACTIVE_SPEECH_YIELD_MIN_SPEECH_SECS = 0.1
 # only.
 PROACTIVE_SPEECH_YIELD_POLL_SECS = 0.35
 
+# When a proactive line YIELDS because the user began talking during its ~1-2s generation gap, the
+# main VAD loop was blocked through that gap, so it only notices the speech late and clips the user's
+# opening words ("what are my weekend plans" → "weekend plans"). Rex was NOT playing during that
+# window (a lull), so the rolling buffer holds the user's clean onset — reach the next capture back
+# to the impulse-decision time to recover it. Bounded by _MAX_SECS so a stale marker can't over-reach
+# into a prior utterance/Rex tail; _LOOKBACK is the fallback reach-back when the caller passed no
+# decided_at. Kill switch.
+PROACTIVE_YIELD_RECOVER_ONSET_ENABLED = True
+PROACTIVE_YIELD_ONSET_LOOKBACK_SECS = 1.5   # fallback reach-back when decided_at is unknown
+PROACTIVE_YIELD_ONSET_MAX_SECS = 3.0        # hard cap on how far back the recovery may reach
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TRANSCRIPTION — Whisper Accuracy Tuning
 # ─────────────────────────────────────────────────────────────────────────────

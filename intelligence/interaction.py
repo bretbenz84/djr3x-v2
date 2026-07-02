@@ -310,6 +310,12 @@ _listen_resume_at: float = 0.0
 # answer pre-roll from pulling Rex's just-finished prompt into Whisper.
 _listen_capture_floor_at: float = 0.0
 
+# When a proactive line yields because the user started talking during its generation gap, this
+# holds the monotonic time to reach the NEXT speech capture back to (the impulse-decision time), so
+# the user's opening words spoken while the loop was blocked aren't clipped. Consumed + cleared by
+# the next detected speech onset. 0 = nothing pending. See _barge_recovered_speech_start.
+_barge_yield_onset_at: float = 0.0
+
 # When True, a post-TTS cleanup flush already happened and the next detected
 # speech onset should simply clear this marker. Question handoffs usually leave
 # this False so a fast human answer is not deleted.
@@ -2113,6 +2119,17 @@ def _speak_proactive(
             _log.debug("[interaction] proactive pre-cache failed: %s", exc)
         try:
             if barge_guard.user_speaking_now():
+                # The user started talking during the ~1-2s we spent generating this line, and Rex
+                # was NOT playing through that gap (a lull), so the buffer holds their clean onset.
+                # Record where to reach the next capture back to so their opening words aren't clipped.
+                if bool(getattr(config, "PROACTIVE_YIELD_RECOVER_ONSET_ENABLED", True)):
+                    global _barge_yield_onset_at
+                    _barge_yield_onset_at = (
+                        float(decided_at) if decided_at
+                        else time.monotonic() - float(
+                            getattr(config, "PROACTIVE_YIELD_ONSET_LOOKBACK_SECS", 1.5)
+                        )
+                    )
                 _log.info(
                     "[interaction] proactive line yielded — user already speaking (%s): %r",
                     label,
@@ -9820,6 +9837,20 @@ def _speech_capture_secs(speech_start_mono: float, finished_mono: Optional[float
         start_at = max(start_at, _listen_capture_floor_at)
     duration = max(0.0, finished - start_at)
     return min(duration, float(config.AUDIO_BUFFER_SECONDS))
+
+
+def _barge_recovered_speech_start(now: float, onset_at: float) -> float:
+    """Effective speech_start when a proactive line just yielded to the user's speech.
+
+    A proactive line spends ~1-2s generating before it yields; the user's opening words spoken in
+    that gap are in the rolling buffer but the loop only notices the speech late, so a plain
+    now-based speech_start clips them. Reach back to the recorded onset (impulse-decision time),
+    bounded by PROACTIVE_YIELD_ONSET_MAX_SECS so a stale marker can't pull in a prior utterance or
+    Rex's tail. Returns `now` unchanged when nothing is pending (onset_at <= 0)."""
+    if onset_at <= 0.0 or not bool(getattr(config, "PROACTIVE_YIELD_RECOVER_ONSET_ENABLED", True)):
+        return now
+    earliest = now - max(0.0, float(getattr(config, "PROACTIVE_YIELD_ONSET_MAX_SECS", 3.0)))
+    return max(min(now, onset_at), earliest)
 
 
 def _accumulate_speech(
@@ -20664,7 +20695,7 @@ def submit_text(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _loop() -> None:
-    global _last_speech_at, _listen_resume_at, _post_tts_flush_needed
+    global _last_speech_at, _listen_resume_at, _post_tts_flush_needed, _barge_yield_onset_at
 
     idle_timeout = config.CONVERSATION_IDLE_TIMEOUT_SECS
     _last_speech_at = time.monotonic()
@@ -20948,6 +20979,10 @@ def _loop() -> None:
         _active_speech = vad.is_speech(_chunk_for_vad(chunk))
         _situation_assessor.set_vad_active(_active_speech)
         if not _active_speech:
+            # A pending barge-yield onset is only valid for the speech that immediately follows the
+            # yield; if silence intervenes it's stale — drop it so a later turn can't reach back
+            # through a Rex line that played in between.
+            _barge_yield_onset_at = 0.0
             if _maybe_prompt_incomplete_turn():
                 _last_speech_at = time.monotonic()
             _stop_event.wait(_CHUNK_SECS)
@@ -20961,6 +20996,12 @@ def _loop() -> None:
 
         # ── Speech detected ────────────────────────────────────────────────────
         speech_start = time.monotonic()
+        # If a proactive line just yielded because the user began talking during its generation gap,
+        # reach the capture back to that onset so their opening words (spoken while this loop was
+        # blocked generating the line) aren't clipped. Safe: Rex wasn't playing during that window.
+        if _barge_yield_onset_at > 0.0:
+            speech_start = _barge_recovered_speech_start(speech_start, _barge_yield_onset_at)
+            _barge_yield_onset_at = 0.0
         _last_speech_at = speech_start
         _begin_user_turn()
         try:
