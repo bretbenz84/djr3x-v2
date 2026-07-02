@@ -266,3 +266,5 @@ djr3x-main.lock
 # assets/20questions/r3x_kb.json by assets/20questions/build_kb.py).
 assets/20questions/twentyquestions-*.jsonl
 kokoro_samples/
+piper_samples/
+piper_voices/
