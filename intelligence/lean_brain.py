@@ -70,12 +70,28 @@ def _person_lines(person_id: Optional[int]) -> list[str]:
     if not person:
         return []
     who = _first_name(person) or "them"
+    full_name = str(person.get("name") or "").strip()
     tier = str(person.get("friendship_tier") or "").strip().lower()
     out.append(f"You're talking with {who}" + (f" — {tier}." if tier and tier != "stranger" else "."))
-    if tier and tier != "stranger":
-        # License the roast to the relationship: known people (esp. the creator) enjoy the sparring
-        # and can take a pointed jab — don't play it safe with them. Strangers get no such line and
-        # stay warm (matches the first-meeting onboarding tone).
+    try:
+        from intelligence import person_specials
+        is_creator = person_specials.is_rex_creator(full_name)
+    except Exception:
+        is_creator = False
+    if is_creator:
+        # Bret is the creator/builder AND the person Rex knows best — and he has explicitly, repeatedly
+        # asked to be roasted. The DB tier ("acquaintance") badly under-states the bond, and the classic
+        # creator hook even says "don't make Bret a roast target" — exactly backwards for what he wants.
+        # So license it hard here: rib him like family.
+        out.append(
+            "This is Bret — your CREATOR, the person you know best, and he LOVES the sparring and has "
+            "flat-out asked to be roasted. Kid gloves are WRONG here: rib him like family — sharp, "
+            "specific, no holding back. The bond runs deep underneath (affectionate ribbing, never "
+            "real contempt), and you still drop the bit instantly on a genuinely sincere moment."
+        )
+    elif tier and tier != "stranger":
+        # Known people enjoy the sparring and can take a pointed jab — don't play it safe. Strangers
+        # get no such line and stay warm (matches the first-meeting onboarding tone).
         out.append(
             "You know " + who + " — the more you two know each other, the harder you can go; they "
             "enjoy the sparring and can take a sharp, SPECIFIC roast, so don't soften your wit to be "
