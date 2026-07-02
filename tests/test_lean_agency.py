@@ -121,5 +121,69 @@ class ImpulseBackoffTest(unittest.TestCase):
             self.assertEqual(len(spoken), 3)
 
 
+class ImpulseReengageTest(unittest.TestCase):
+    """After the fast lull-break has yielded the floor (cap hit), a LONG silence with the person
+    still present should still get ONE patient, fresh-topic re-engagement — bypassing the fast cap,
+    routed through the calmer re-engage voice (long_silence=True)."""
+
+    def _run(self, *, quiet_secs, consecutive):
+        import intelligence.interaction as I
+        captured = {}
+        spoken = []
+        with contextlib.ExitStack() as es:
+            p = es.enter_context
+            p(mock.patch.object(I.config, "LEAN_BRAIN_ENABLED", True))
+            p(mock.patch.object(I.config, "LEAN_IMPULSE_ENABLED", True))
+            p(mock.patch.object(I.config, "LEAN_IMPULSE_QUIET_SECS", 4.0))
+            p(mock.patch.object(I.config, "LEAN_IMPULSE_COOLDOWN_SECS", 12.0))
+            p(mock.patch.object(I.config, "LEAN_IMPULSE_MAX_UNANSWERED", 2))
+            p(mock.patch.object(I.config, "LEAN_IMPULSE_ESCALATION", 1.0))
+            p(mock.patch.object(I.config, "LEAN_IMPULSE_REENGAGE_SECS", 40.0))
+            p(mock.patch.object(I.config, "PROACTIVE_LINE_MIN_GAP_SECS", 6.0))
+            p(mock.patch.object(I.time, "monotonic", lambda: 10_000.0))
+            p(mock.patch.object(I, "_game_suppresses_conversation", lambda: False))
+            p(mock.patch.object(I, "_directed_context_fresh", lambda: False))
+            p(mock.patch.object(I.end_thread, "is_grace_active", lambda: False))
+            p(mock.patch.object(I, "_primary_session_person_id", lambda: 1))
+            p(mock.patch.object(I.speech_queue, "seconds_since_last_speech", lambda: quiet_secs))
+            p(mock.patch.object(I.speech_queue, "is_speaking", lambda: False))
+            p(mock.patch.object(I.consciousness, "is_waiting_for_response", lambda: False))
+            p(mock.patch.object(I.output_gate, "is_busy", lambda: False))
+            p(mock.patch.object(I.echo_cancel, "is_suppressed", lambda: False))
+            p(mock.patch.object(I, "_suppress_proactive_after_heavy", lambda pid: False))
+            p(mock.patch.object(I.body_mood, "current_mood", lambda: ("relaxed", 0.4)))
+            p(mock.patch.object(I, "_lean_recent_transcript", lambda s: []))
+            p(mock.patch.object(I, "_lean_world", lambda: {}))
+            p(mock.patch.object(I, "_line_duplicates_recent_question", lambda line: False))
+            p(mock.patch.object(I, "_register_rex_utterance", lambda *a, **k: None))
+            p(mock.patch.object(I.conv_memory, "add_to_transcript", lambda *a, **k: None))
+            p(mock.patch.object(I.conv_log, "log_rex", lambda *a, **k: None))
+
+            def consider(*a, **k):
+                captured["long_silence"] = k.get("long_silence")
+                return "So what's the plan for the long weekend?"
+            p(mock.patch.object(lean_brain, "consider_initiating", consider))
+            p(mock.patch.object(I, "_speak_proactive", lambda line, **k: spoken.append(line) or True))
+
+            # Fast run already exhausted; last line was long ago.
+            I._consecutive_lean_impulses = consecutive
+            I._last_lean_impulse_at = 10_000.0 - 100.0
+            I._last_proactive_line_at = 0.0
+            I._floor_held_until = 0.0
+            I._interrupted.clear()
+            fired = I._maybe_lean_impulse(idle_for=60.0, effective_idle_timeout=120.0)
+        return fired, captured.get("long_silence"), spoken
+
+    def test_long_silence_reengages_past_the_fast_cap(self):
+        fired, mode, spoken = self._run(quiet_secs=42.0, consecutive=5)   # cap (2) already blown
+        self.assertTrue(fired, "40s+ quiet with the person present → one patient re-engage fires")
+        self.assertTrue(mode, "re-engage routes through the calm long_silence voice")
+        self.assertEqual(len(spoken), 1)
+
+    def test_short_silence_stays_capped(self):
+        fired, mode, _ = self._run(quiet_secs=10.0, consecutive=5)        # < REENGAGE_SECS
+        self.assertFalse(fired, "under the re-engage threshold, the fast cap still holds — no pile-on")
+
+
 if __name__ == "__main__":
     unittest.main()

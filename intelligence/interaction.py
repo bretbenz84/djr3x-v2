@@ -4172,19 +4172,30 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         return False
     if _proactive_line_recently_fired():
         return False
-    # Back off HARD when talking into silence. After Rex breaks a lull and gets no reply he does NOT
-    # keep quipping every cooldown-tick (the "piled 4 lines about your dinner into the void" failure):
-    # each unanswered self-initiated line widens the required gap, and after MAX_UNANSWERED of them he
-    # goes quiet until the user speaks. The counter + anchor reset in _begin_user_turn, so a fresh
-    # silence gets its full allowance — break the silence once or twice, then let it be.
-    if _consecutive_lean_impulses >= int(getattr(config, "LEAN_IMPULSE_MAX_UNANSWERED", 2)):
-        return False
     now = time.monotonic()
-    _base_cooldown = float(getattr(config, "LEAN_IMPULSE_COOLDOWN_SECS", 50.0))
-    _escalation = float(getattr(config, "LEAN_IMPULSE_ESCALATION", 1.0))
-    _required_gap = _base_cooldown * (1.0 + _escalation * _consecutive_lean_impulses)
-    if now - _last_lean_impulse_at < _required_gap:
-        return False
+    # Two tempos for a quiet room:
+    #  FAST lull-break — within a few seconds of Rex finishing, up to MAX_UNANSWERED escalating lines,
+    #    then he yields the floor (no piling quips into the void). Counter + anchor reset when the user
+    #    speaks (_begin_user_turn), so a fresh silence gets its full allowance.
+    #  SLOW re-engagement — once the fast run has yielded and it's gone truly quiet for REENGAGE_SECS
+    #    (since Rex last spoke) with the person STILL here, take one PATIENT swing on a genuinely NEW
+    #    topic so the conversation doesn't just die (owner: "after 40s of silence, bring up a new
+    #    topic"). It bypasses the fast cap/gap but is itself spaced by REENGAGE_SECS (the anchor arms
+    #    on every consult, so it can't hammer) and ultimately bounded by the present give-up outro.
+    _reengage_secs = float(getattr(config, "LEAN_IMPULSE_REENGAGE_SECS", 0.0))
+    long_silence = (
+        _reengage_secs > 0.0
+        and quiet >= _reengage_secs
+        and (now - _last_lean_impulse_at) >= _reengage_secs
+    )
+    if not long_silence:
+        if _consecutive_lean_impulses >= int(getattr(config, "LEAN_IMPULSE_MAX_UNANSWERED", 2)):
+            return False
+        _base_cooldown = float(getattr(config, "LEAN_IMPULSE_COOLDOWN_SECS", 50.0))
+        _escalation = float(getattr(config, "LEAN_IMPULSE_ESCALATION", 1.0))
+        _required_gap = _base_cooldown * (1.0 + _escalation * _consecutive_lean_impulses)
+        if now - _last_lean_impulse_at < _required_gap:
+            return False
     try:
         if consciousness.is_waiting_for_response():
             return False
@@ -4217,12 +4228,14 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             world=_lean_world(),
             quiet_secs=quiet,
             mood=mood,
+            long_silence=long_silence,
         )
     except Exception as exc:
         _log.debug("[lean] impulse generation failed: %s", exc)
         return False
+    _mode = "reengage" if long_silence else "lull"
     if not line:
-        _log.info("[lean] impulse — watched (person_id=%s, quiet=%.0fs)", person_id, quiet)
+        _log.info("[lean] impulse — watched (person_id=%s, quiet=%.0fs, mode=%s)", person_id, quiet, _mode)
         return False                            # Rex chose to just watch
     # Content-based anti-repeat (NOT the first-word opener guard — that killed every 'What…?'
     # question, so Rex generated lines and spoke none, and the conversation died). This only
@@ -4245,7 +4258,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             target_person_id=person_id,
             expected_reply_types=(["answer", "statement"] if "?" in line else None),
         )
-        _log.info("[lean] impulse — person_id=%s text=%r", person_id, line)
+        _log.info("[lean] impulse — person_id=%s mode=%s text=%r", person_id, _mode, line)
     return completed
 
 

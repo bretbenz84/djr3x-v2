@@ -264,6 +264,23 @@ _IMPULSE_INSTRUCTION = (
 )
 
 
+# A LONGER silence — the quick lull-break already went unanswered and it's been quiet a while, but
+# they're still HERE. This is the patient re-engagement (owner: "after 40s of silence, bring up a new
+# topic"): a calm, low-pressure restart on something genuinely new, not another quick jab.
+_REENGAGE_INSTRUCTION = (
+    "[It's been quiet for a while now — {who} drifted off and hasn't said anything in a bit, but "
+    "they're still right here with you. Take ONE relaxed, low-pressure swing to restart the "
+    "conversation.]\n"
+    "{situation}"
+    "Bring up something genuinely NEW and easy to pick up — a fresh question, a different subject, "
+    "something you're honestly curious about, or a light read on the moment (what you see, the day, "
+    "the occasion). Give them an obvious open door to walk through. Warm and unforced — not needy, "
+    "not clingy, not a comment about how quiet it is. Do NOT reheat anything from earlier or a thread "
+    "you already tried, and do NOT drag up a stored hobby they never raised. If there's genuinely "
+    "nothing worth opening, reply PASS."
+)
+
+
 def _scene_summary(world: Optional[dict]) -> str:
     """A compact 'what Rex sees/hears RIGHT NOW' from the world snapshot (the person's expression,
     gestures, visible objects, the room) — the present-moment perception the impulse was blind to.
@@ -328,10 +345,14 @@ def consider_initiating(
     world: Optional[dict] = None,
     quiet_secs: float = 0.0,
     mood: Optional[str] = None,
+    long_silence: bool = False,
 ) -> str:
     """Let Rex DECIDE, in character, to say ONE thing or just watch (the strong default).
     Returns the line to speak, or "" on PASS / any error. This is the agentic replacement for
-    the old silence-fill taxonomy: motivated by perception + memory + mood, not a timer."""
+    the old silence-fill taxonomy: motivated by perception + memory + mood, not a timer.
+
+    long_silence=True switches from the quick lull-break to the patient re-engagement voice: it's
+    been quiet a while and the fast run already yielded, so open a genuinely NEW topic, calmly."""
     try:
         who = "them"
         if person_id is not None:
@@ -340,7 +361,8 @@ def consider_initiating(
                 who = _first_name(people.get_person(int(person_id))) or "them"
             except Exception:
                 who = "them"
-        instruction = _IMPULSE_INSTRUCTION.format(
+        template = _REENGAGE_INSTRUCTION if long_silence else _IMPULSE_INSTRUCTION
+        instruction = template.format(
             who=who, situation=_situation_block(person_id, world, quiet_secs, mood)
         )
         messages: list[dict] = [{"role": "system", "content": _persona()}]

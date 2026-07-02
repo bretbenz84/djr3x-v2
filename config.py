@@ -237,6 +237,13 @@ LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
 # fresh silence gets its full allowance. Break the silence once or twice — then let it be.
 LEAN_IMPULSE_MAX_UNANSWERED = 2       # consecutive self-initiated lines w/ no user reply before he goes quiet
 LEAN_IMPULSE_ESCALATION     = 1.0     # gap after n unanswered lines = COOLDOWN * (1 + ESCALATION * n)
+# SLOW re-engagement — after the fast lull-break yields the floor, don't let the conversation just
+# die: if the person is still HERE but it's gone truly quiet for this long (since Rex last spoke),
+# take one PATIENT swing on a genuinely NEW topic/question (bypasses the fast unanswered cap). Spaced
+# by the same interval so it can't hammer, presence-gated, and ultimately bounded by the give-up
+# outro (PRESENT_REENGAGE_IDLE_TIMEOUT_SECS). 0 disables. Owner ask: "after 40s of silence he should
+# try to bring up a new topic/question."
+LEAN_IMPULSE_REENGAGE_SECS  = 40.0
 # Cadence = quiet-threshold (measured from Rex's last line, so a natural short pause triggers it)
 # + cooldown. Each eligible window Rex consults the lean brain and either says one motivated thing
 # or passes. Too chatty → raise COOLDOWN; too slow → lower QUIET_SECS. Tune live.
@@ -3550,7 +3557,10 @@ IDLE_OUTRO_LINES = [
 # the frame, presence drops and the timeout snaps back to CONVERSATION_IDLE_TIMEOUT_SECS so a
 # departed/empty room still times out promptly (and is never nudged). Kill switch.
 PRESENT_REENGAGE_ENABLED = True
-PRESENT_REENGAGE_IDLE_TIMEOUT_SECS = 90.0
+# 120s (was 90s): the fast lull-break eats the first ~30s, so leave room for a slow ~40s-spaced
+# re-engagement (LEAN_IMPULSE_REENGAGE_SECS) to land AND get a fair answer window before Rex signs
+# off. Still presence-gated — snaps back to 45s the moment the person leaves the frame.
+PRESENT_REENGAGE_IDLE_TIMEOUT_SECS = 120.0
 
 # When a re-engagement has already gone unanswered, a LATER idle nudge may playfully call out the
 # dead air IN CHARACTER (a fond teasing jab that invites them back — "cat got your tongue?",
