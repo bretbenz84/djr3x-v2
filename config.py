@@ -3393,9 +3393,11 @@ CROSSTALK_SUPPRESSION_ENABLED = True
 # Seconds of sustained silence after speech before the segment is processed.
 # This is the largest "I stopped talking, why is Rex waiting?" knob -- lowering
 # it shaves dead time off the start of every turn. Tradeoff: too low and a
-# person who pauses mid-sentence can get cut off. 0.6 is a responsive default;
-# raise toward 0.8 if Rex starts replying before slow / pausing speakers finish.
-SILENCE_TIMEOUT_SECS = 0.6
+# person who pauses mid-sentence can get cut off. 0.85 (was 0.6): the owner has
+# more thought coming after a brief pause, so give a longer grace before Rex
+# decides the turn is done (small added latency, in exchange for not cutting him
+# off mid-thought). Raise further if it still ends turns too early.
+SILENCE_TIMEOUT_SECS = 0.85
 
 # Minimum seconds of accumulated audio before silence can end a recording.
 # Prevents single-word transcriptions when the person is still talking.
