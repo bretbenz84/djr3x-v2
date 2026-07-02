@@ -260,6 +260,10 @@ _idle_plans_asked: set[str] = set()
 # keep proactive lines from stacking back-to-back (see _proactive_line_recently_fired).
 _last_proactive_line_at: float = 0.0
 _last_lean_impulse_at: float = 0.0   # cooldown anchor for the lean agentic impulse (armed even on a pass)
+# Consecutive lean-impulse lines Rex has spoken into the CURRENT silence with no user reply. Widens
+# the required gap each time and caps the run (LEAN_IMPULSE_MAX_UNANSWERED) so he doesn't monologue
+# into the void. Reset the instant the user speaks (_begin_user_turn) — a fresh lull gets a fresh run.
+_consecutive_lean_impulses: int = 0
 # Monotonic time the most recent user turn began processing. A proactive line is
 # decided on a silence timer, then spends ~1-2s in LLM+TTS before any sound; if a
 # user turn started in that gap, the line is stale and must yield at speak time.
@@ -335,9 +339,14 @@ def _begin_user_turn() -> None:
     # from the previous one.
     global _idle_banter_count, _last_proactive_line_at, _floor_held_until
     global _last_user_turn_started_at, _idle_banter_threshold
+    global _consecutive_lean_impulses, _last_lean_impulse_at
     _idle_banter_count = 0
     _idle_banter_threshold = None  # roll a fresh random nudge delay for the next stretch
     _last_proactive_line_at = 0.0
+    # The user re-engaged: reset the lean-impulse pile-on run AND clear the cooldown anchor so the
+    # NEXT silence's first line is gated only by the quiet threshold (fast), not last lull's cooldown.
+    _consecutive_lean_impulses = 0
+    _last_lean_impulse_at = 0.0
     _floor_held_until = 0.0
     _last_user_turn_started_at = time.monotonic()
     try:
@@ -4131,7 +4140,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     Restraint is spacing, not a chatty prompt: a quiet threshold + a cooldown (armed even on a
     pass, so the model isn't hammered) + a config 'in the mood' probability. Frequency lives in
     config (LEAN_IMPULSE_*), tuned live — the model reliably produces a good line OR passes."""
-    global _last_lean_impulse_at, _last_proactive_line_at
+    global _last_lean_impulse_at, _last_proactive_line_at, _consecutive_lean_impulses
     if not (
         bool(getattr(config, "LEAN_BRAIN_ENABLED", False))
         and bool(getattr(config, "LEAN_IMPULSE_ENABLED", True))
@@ -4163,8 +4172,18 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         return False
     if _proactive_line_recently_fired():
         return False
+    # Back off HARD when talking into silence. After Rex breaks a lull and gets no reply he does NOT
+    # keep quipping every cooldown-tick (the "piled 4 lines about your dinner into the void" failure):
+    # each unanswered self-initiated line widens the required gap, and after MAX_UNANSWERED of them he
+    # goes quiet until the user speaks. The counter + anchor reset in _begin_user_turn, so a fresh
+    # silence gets its full allowance — break the silence once or twice, then let it be.
+    if _consecutive_lean_impulses >= int(getattr(config, "LEAN_IMPULSE_MAX_UNANSWERED", 2)):
+        return False
     now = time.monotonic()
-    if now - _last_lean_impulse_at < float(getattr(config, "LEAN_IMPULSE_COOLDOWN_SECS", 50.0)):
+    _base_cooldown = float(getattr(config, "LEAN_IMPULSE_COOLDOWN_SECS", 50.0))
+    _escalation = float(getattr(config, "LEAN_IMPULSE_ESCALATION", 1.0))
+    _required_gap = _base_cooldown * (1.0 + _escalation * _consecutive_lean_impulses)
+    if now - _last_lean_impulse_at < _required_gap:
         return False
     try:
         if consciousness.is_waiting_for_response():
@@ -4217,6 +4236,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     )
     if completed:
         _last_proactive_line_at = time.monotonic()
+        _consecutive_lean_impulses += 1   # count it against the into-the-void run (reset when the user speaks)
         conv_memory.add_to_transcript("Rex", line)
         conv_log.log_rex(line)
         _register_rex_utterance(
