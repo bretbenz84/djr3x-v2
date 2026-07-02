@@ -142,10 +142,12 @@ def _person_lines(person_id: Optional[int]) -> list[str]:
     topics = _recent_topics(person_id)
     if topics:
         out.append(
-            "You've ALREADY talked with " + who + " about these in recent chats — do NOT re-open any "
-            "of them cold or re-ask as if it's new (this is the 'brings up the same thing every run' "
-            "problem to avoid); only revisit if THEY raise it or there's genuine news: "
-            + " | ".join(topics) + "."
+            "Things you and " + who + " have talked about in recent chats — these are IN YOUR MEMORY. "
+            "If they ask about any of it ('what are my plans?', 'what am I doing this weekend?', 'what "
+            "did I tell you about…?'), RECALL and answer accurately from this list — do NOT claim they "
+            "never told you or that you have nothing, when the answer is right here. Just don't "
+            "PROACTIVELY dredge them up unprompted or re-ask as if it's new (the 'same thing every "
+            "run' problem): " + " | ".join(topics) + "."
         )
     return out
 

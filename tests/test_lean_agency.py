@@ -197,7 +197,9 @@ class RecentTopicsAwarenessTest(unittest.TestCase):
         with mock.patch.object(config, "RECENT_TOPICS_AWARENESS_ENABLED", True), \
              self._patched_topics(["Bret went to his dad's for fireworks", "Bret rewatched Pirates"]):
             sp = lean_brain._system_prompt(1, {})
-        self.assertIn("ALREADY talked", sp)
+        # Reply path frames recent topics as RECALLABLE-when-asked (not a blanket suppression).
+        self.assertIn("IN YOUR MEMORY", sp)
+        self.assertIn("RECALL and answer", sp)
         self.assertIn("fireworks", sp)
         self.assertIn("Pirates", sp)
 
@@ -212,7 +214,7 @@ class RecentTopicsAwarenessTest(unittest.TestCase):
         with mock.patch.object(config, "RECENT_TOPICS_AWARENESS_ENABLED", False), \
              self._patched_topics(["Bret went to his dad's for fireworks"]):
             sp = lean_brain._system_prompt(1, {})
-        self.assertNotIn("ALREADY talked", sp)
+        self.assertNotIn("IN YOUR MEMORY", sp)
 
 
 if __name__ == "__main__":
