@@ -1179,12 +1179,16 @@ RUNNING_BIT_FRESHNESS = 1.0           # fixed selection weight for a running bit
 # Rex voice clone ID — find this in your ElevenLabs account after cloning the voice
 ELEVENLABS_VOICE_ID = "kb9LZZlhckjFQsP89t9T"
 
-# ElevenLabs model to use for TTS. eleven_multilingual_v2 gives the fullest
-# expressive range — it honors the `style` voice setting strongly — at the cost
-# of a little more latency per uncached line. Switch back to eleven_turbo_v2 for
-# lowest latency, but note turbo applies `style` only weakly, so the expressive
-# settings below mostly move stability/speed there, not style.
-TTS_MODEL_ID = "eleven_multilingual_v2"
+# ElevenLabs model to use for TTS.
+#   eleven_v3              — most expressive / most in-character (owner's pick), same per-character
+#                            cost as v2; ~+0.5s latency per uncached line and slightly more variable.
+#                            ElevenLabs officially flags v3 as "not ideal for real-time" — acceptable
+#                            here for the richer voice, but if it drags on the robot, override per
+#                            machine in user_config.py: TTS_MODEL_ID = "eleven_turbo_v2_5".
+#   eleven_multilingual_v2 — fullest v2 expressive range (strong `style`); the previous default.
+#   eleven_turbo_v2_5     — lowest latency AND ~half the credit cost, but weaker `style` shaping.
+# Verified v3 works on our streaming code path with the current voice_settings (2026-07-02).
+TTS_MODEL_ID = "eleven_v3"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TTS — EXPRESSIVE VOICE (anti-monotone)
