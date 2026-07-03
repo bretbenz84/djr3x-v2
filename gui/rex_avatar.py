@@ -1,18 +1,51 @@
-"""Simplified 2D Rex avatar for the optional dashboard."""
+"""Articulated 2D DJ R-3X avatar for the optional dashboard.
+
+Drawn procedurally with QPainter (no sprites) to match the real robot: striped
+orange dome visor that slides over the eyes, blue carry handle and ear pods,
+binocular LED eyes, ribbed vocoder chin, coil-spring neck on a lift pole, the
+orange ring / black bellows / ribbed drum / flared bell torso stack on a domed
+base — plus the two articulated arms (hero arm with elbow+claw at the top of the
+torso, poker arm at the base).
+"""
 
 from __future__ import annotations
 
 import math
 import random
 import time
-from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QTransform
+from PySide6.QtGui import (
+    QColor,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QRadialGradient,
+)
 from PySide6.QtWidgets import QWidget
 
 import config
+
+# Design-space canvas the robot is drawn in; scaled to fit the widget.
+_DW = 460.0
+_DH = 640.0
+
+# Palette sampled from the reference figure.
+_ORANGE = QColor("#d97a1f")
+_ORANGE_HI = QColor("#f09a3e")
+_ORANGE_LO = QColor("#a2551a")
+_ORANGE_EDGE = QColor("#6f3a10")
+_CREAM = QColor("#e9e2d4")
+_SILVER = QColor("#9aa0a6")
+_SILVER_HI = QColor("#c3c8cc")
+_SILVER_LO = QColor("#5f656b")
+_GUNMETAL = QColor("#3a3f44")
+_DARK = QColor("#23272b")
+_NEAR_BLACK = QColor("#15181b")
+_BLUE = QColor("#2e5f9d")
+_BLUE_DK = QColor("#1d3f6e")
 
 
 def normalize_servo(channel_or_name, value) -> float:
@@ -95,7 +128,6 @@ class RexAvatar(QWidget):
         self._idle_phase = 0.0
         self._mouth_phase = 0.0
         self._last_blink_tick = time.monotonic()
-        self._sprites = _load_sprites()
         if not self._show_background:
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             self.setAutoFillBackground(False)
@@ -132,6 +164,8 @@ class RexAvatar(QWidget):
             self._speech_state.update(speech_state)
         self.update()
 
+    # ── Painting ────────────────────────────────────────────────────────────
+
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
         self._smooth()
         self._tick_eye_animation()
@@ -141,206 +175,453 @@ class RexAvatar(QWidget):
             painter.fillRect(self.rect(), QColor("#07111a"))
         if self._show_grid:
             self._draw_grid(painter)
-
-        if self._sprites:
-            self._draw_sprite_avatar(painter)
-            painter.end()
-            return
-
-        w = self.width()
-        h = self.height()
-        cx = w * 0.48
-        base_y = h * 0.50
-
-        self._draw_base(painter, cx, base_y)
-        self._draw_body(painter, cx, base_y)
-        self._draw_left_arm(painter, cx, base_y)
-        self._draw_right_arm(painter, cx, base_y)
-        self._draw_head(painter, cx, base_y)
-
+        self._draw_robot(painter)
         painter.end()
 
-    def _draw_sprite_avatar(self, painter: QPainter) -> None:
-        w = self.width()
-        h = self.height()
-        cx = w * 0.50
-        body = self._sprites["body"]
-        head = self._sprites["head"]
-        right_arm = self._sprites.get("right_arm")
-        poker_arm = self._sprites.get("poker_arm")
+    def _draw_robot(self, painter: QPainter) -> None:
+        w = float(self.width())
+        h = float(self.height())
+        fill = 1.00 if not self._show_background else 0.94
+        s = min(w / _DW, h / _DH) * fill
+        painter.save()
+        painter.translate(w / 2.0, (h - _DH * s) / 2.0)
+        painter.scale(s, s)
+        # Design coords: x centered on 0, y 0..640 top→bottom.
+
         speaking = self._is_speaking()
-        speech_bob = (math.sin(self._mouth_phase * 0.72) * h * 0.010) if speaking else 0.0
+        speech_bob = (math.sin(self._mouth_phase * 0.72) * 3.0) if speaking else 0.0
+        # servo_to_offset: max lift → -29 (head UP), min → +29 (head DOWN).
+        lift = servo_to_offset("headlift", self._value("headlift"))
+        neck_top_y = 224.0 + lift * 0.85 + speech_bob
 
-        embedded = not self._show_background
-        body_h = min(h * (0.88 if embedded else 0.76), w * (1.22 if embedded else 1.08))
-        body_w = body_h * body.width() / max(1, body.height())
-        body_top_ratio = 0.06 if embedded else 0.14
-        body_rect = QRectF(cx - body_w / 2.0, h * body_top_ratio + speech_bob, body_w, body_h)
+        self._draw_base(painter)
+        self._draw_torso(painter)
+        self._draw_poker_arm(painter)
+        self._draw_hero_arm(painter)
+        self._draw_neck(painter, neck_top_y)
+        self._draw_head(painter, neck_top_y)
+        painter.restore()
 
-        lift = servo_to_offset("headlift", self._value("headlift")) * 0.78
-        pitch = servo_to_angle("headtilt", self._value("headtilt")) / 18.0
+    # ── Base + torso ────────────────────────────────────────────────────────
+
+    def _draw_base(self, painter: QPainter) -> None:
+        # Flared dome foot with round ports and a center vent, on a squat ring.
+        grad = QLinearGradient(0, 505, 0, 620)
+        grad.setColorAt(0.0, _ORANGE_HI)
+        grad.setColorAt(0.55, _ORANGE)
+        grad.setColorAt(1.0, _ORANGE_LO)
+        painter.setPen(QPen(_ORANGE_EDGE, 3))
+        painter.setBrush(grad)
+        dome = QPainterPath()
+        dome.moveTo(-150, 596)
+        dome.cubicTo(-150, 520, -70, 502, 0, 502)
+        dome.cubicTo(70, 502, 150, 520, 150, 596)
+        dome.closeSubpath()
+        painter.drawPath(dome)
+        # bottom ring
+        painter.setBrush(QColor("#b3641c"))
+        painter.drawRoundedRect(QRectF(-128, 592, 256, 26), 9, 9)
+        painter.setBrush(_ORANGE_LO)
+        painter.drawRoundedRect(QRectF(-112, 614, 224, 10), 5, 5)
+
+        # round ports (angled onto the dome slope)
+        painter.setPen(QPen(_NEAR_BLACK, 2))
+        for x, y, rx, ry in ((-96, 549, 17, 14), (96, 549, 17, 14), (130, 585, 10, 12)):
+            painter.setBrush(QColor("#41464b"))
+            painter.drawEllipse(QPointF(x, y), rx, ry)
+            painter.setBrush(QColor("#23272b"))
+            painter.drawEllipse(QPointF(x, y), rx * 0.62, ry * 0.62)
+
+        # center vent with concentric rings + bracket greebles
+        painter.setBrush(QColor("#4b5054"))
+        painter.drawEllipse(QPointF(0, 568), 24, 22)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor("#8d959b"), 2))
+        for r in (6, 11, 16):
+            painter.drawEllipse(QPointF(0, 568), r, r * 0.92)
+        painter.setPen(QPen(QColor("#e8ddc9"), 3))
+        for sx in (-1, 1):
+            x0 = sx * 44
+            painter.drawLine(QPointF(x0, 556), QPointF(x0 + sx * 12, 556))
+            painter.drawLine(QPointF(x0, 556), QPointF(x0, 580))
+            painter.drawLine(QPointF(x0, 580), QPointF(x0 + sx * 12, 580))
+        # small hatch high on the dome
+        painter.setPen(QPen(_ORANGE_EDGE, 2))
+        painter.setBrush(QColor("#c06a1c"))
+        painter.drawRoundedRect(QRectF(-17, 518, 34, 13), 3, 3)
+
+    def _draw_torso(self, painter: QPainter) -> None:
+        # Grey pedestal column between bell and base.
+        grad = QLinearGradient(-28, 0, 28, 0)
+        grad.setColorAt(0.0, QColor("#565b60"))
+        grad.setColorAt(0.5, QColor("#7d838a"))
+        grad.setColorAt(1.0, QColor("#4a4f54"))
+        painter.setPen(QPen(_NEAR_BLACK, 2))
+        painter.setBrush(grad)
+        painter.drawRect(QRectF(-28, 452, 56, 78))
+        painter.setPen(QPen(QColor("#2c3034"), 2))
+        painter.setBrush(QColor("#5d6268"))
+        painter.drawRoundedRect(QRectF(-13, 492, 26, 26), 3, 3)
+        painter.setBrush(QColor("#33383c"))
+        painter.drawEllipse(QPointF(0, 481), 4, 4)
+
+        # Flared orange bell.
+        bell = QPainterPath()
+        bell.moveTo(-75, 424)
+        bell.cubicTo(-82, 452, -112, 462, -118, 478)
+        bell.lineTo(118, 478)
+        bell.cubicTo(112, 462, 82, 452, 75, 424)
+        bell.closeSubpath()
+        grad = QLinearGradient(0, 424, 0, 478)
+        grad.setColorAt(0.0, _ORANGE_HI)
+        grad.setColorAt(1.0, _ORANGE_LO)
+        painter.setPen(QPen(_ORANGE_EDGE, 3))
+        painter.setBrush(grad)
+        painter.drawPath(bell)
+        painter.setPen(QPen(_ORANGE_EDGE, 2))
+        painter.setBrush(QColor("#c06a1c"))
+        painter.drawRoundedRect(QRectF(-21, 448, 42, 16), 3, 3)
+
+        # Ribbed grey drum.
+        grad = QLinearGradient(-105, 0, 105, 0)
+        grad.setColorAt(0.0, QColor("#565c62"))
+        grad.setColorAt(0.5, QColor("#8b9198"))
+        grad.setColorAt(1.0, QColor("#4b5157"))
+        painter.setPen(QPen(_NEAR_BLACK, 3))
+        painter.setBrush(grad)
+        painter.drawRoundedRect(QRectF(-105, 378, 210, 48), 10, 10)
+        painter.setPen(QPen(QColor("#c9cdd1"), 4))
+        for x in range(-88, 89, 16):
+            painter.drawLine(QPointF(x, 386), QPointF(x, 418))
+        painter.setPen(QPen(QColor("#2c3034"), 2))
+        painter.setBrush(QColor("#787f86"))
+        painter.drawRoundedRect(QRectF(54, 388, 34, 28), 4, 4)
+
+        # Black accordion bellows.
+        painter.setPen(Qt.PenStyle.NoPen)
+        y = 336.0
+        for i in range(6):
+            wobble = 96 + (4 if i % 2 else 0)
+            painter.setBrush(QColor("#191c1f") if i % 2 else QColor("#26292d"))
+            painter.drawRoundedRect(QRectF(-wobble, y, wobble * 2, 9.4), 4.5, 4.5)
+            y += 7.2
+        # Upper orange ring with the blue glyph plate.
+        grad = QLinearGradient(0, 300, 0, 340)
+        grad.setColorAt(0.0, _ORANGE_HI)
+        grad.setColorAt(1.0, _ORANGE_LO)
+        painter.setPen(QPen(_ORANGE_EDGE, 3))
+        painter.setBrush(grad)
+        painter.drawRoundedRect(QRectF(-85, 300, 170, 40), 12, 12)
+        painter.setPen(QPen(QColor("#0c1116"), 2))
+        painter.setBrush(QColor("#0d1319"))
+        painter.drawRoundedRect(QRectF(-46, 308, 92, 22), 4, 4)
+        painter.setPen(QPen(QColor("#57a8ff"), 2))
+        font = painter.font()
+        font.setPointSizeF(13.0)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(QRectF(-46, 308, 92, 22), Qt.AlignmentFlag.AlignCenter, "7Δ4⊪")
+
+        # Grey platter the neck spring sits on.
+        grad = QLinearGradient(0, 288, 0, 302)
+        grad.setColorAt(0.0, QColor("#a7abb0"))
+        grad.setColorAt(1.0, QColor("#5c6167"))
+        painter.setPen(QPen(_NEAR_BLACK, 2))
+        painter.setBrush(grad)
+        painter.drawEllipse(QPointF(0, 296), 92, 15)
+        painter.setBrush(QColor("#6d7378"))
+        painter.drawEllipse(QPointF(0, 292), 70, 10)
+
+    # ── Neck + head ─────────────────────────────────────────────────────────
+
+    def _draw_neck(self, painter: QPainter, neck_top_y: float) -> None:
+        # Lift pole.
+        painter.setPen(QPen(QColor("#2b2f33"), 16, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QPointF(0, 292), QPointF(0, neck_top_y + 6))
+        painter.setPen(QPen(QColor("#7d838a"), 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QPointF(0, 292), QPointF(0, neck_top_y + 6))
+        # Coil spring stretches with the lift.
+        top = neck_top_y + 18
+        bottom = 290.0
+        coils = 5
+        span = max(10.0, bottom - top)
+        painter.setPen(QPen(QColor("#1a1d20"), 6))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for i in range(coils):
+            cy = top + span * (i + 0.5) / coils
+            painter.drawEllipse(QPointF(0, cy), 24, max(4.0, span / coils * 0.44))
+
+    def _draw_head(self, painter: QPainter, neck_top_y: float) -> None:
+        tilt = servo_to_angle("headtilt", self._value("headtilt"))
         yaw = servo_to_yaw("neck", self._value("neck"))
-        head_y_shift = lift + pitch * 22.0 + speech_bob * 1.6
-        head_squash = 1.0 - abs(pitch) * 0.12
-        head_shear = pitch * 0.05
-        head_yaw_scale = 1.0 - abs(yaw) * 0.22
-        head_yaw_shear = yaw * 0.10
-
-        if poker_arm is not None:
-            self._draw_pivoted_sprite(
-                painter,
-                poker_arm,
-                QPointF(body_rect.left() + body_rect.width() * 0.52, body_rect.top() + body_rect.height() * 0.31),
-                QPointF(30, 120),
-                body_rect.width() * 0.92,
-                servo_to_angle("pokerarm", self._value("pokerarm")) * 0.55 - 8,
-            )
-        if right_arm is not None:
-            self._draw_pivoted_sprite(
-                painter,
-                right_arm,
-                QPointF(body_rect.left() + body_rect.width() * 0.67, body_rect.top() + body_rect.height() * 0.23),
-                QPointF(60, 155),
-                body_rect.width() * 0.52,
-                servo_to_angle("heroarm", self._value("heroarm")) * 0.55 - 10,
-            )
-
-        painter.drawPixmap(body_rect, body, QRectF(body.rect()))
-
-        neck_top = QPointF(cx, body_rect.top() + body_rect.height() * 0.15 + lift * 0.70)
-        neck_bottom = QPointF(cx, body_rect.top() + body_rect.height() * 0.28)
-        painter.setPen(QPen(QColor("#15181b"), 13, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(neck_bottom, neck_top)
-        painter.setPen(QPen(QColor("#30363b"), 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(neck_bottom, neck_top)
-
-        head_w = body_rect.width() * 0.72
-        head_h = head_w * head.height() / max(1, head.width()) * head_squash
-        head_rect = QRectF(
-            cx - head_w / 2.0,
-            body_rect.top() - head_h * 0.30 + head_y_shift,
-            head_w,
-            head_h,
-        )
-
-        painter.save()
-        painter.translate(head_rect.center())
-        painter.scale(head_yaw_scale, 1.0)
-        painter.shear(head_yaw_shear + head_shear, 0.0)
-        painter.drawPixmap(
-            QRectF(-head_rect.width() / 2.0, -head_rect.height() / 2.0, head_rect.width(), head_rect.height()),
-            head,
-            QRectF(head.rect()),
-        )
-        self._draw_visor_overlay(painter, head_rect.size().width(), head_rect.size().height(), yaw)
-        self._draw_eye_overlay(painter, head_rect.size().width(), head_rect.size().height(), yaw)
-        self._draw_mouth_overlay(painter, head_rect.size().width(), head_rect.size().height(), yaw)
-        painter.restore()
-
-    def _draw_pivoted_sprite(
-        self,
-        painter: QPainter,
-        sprite: QPixmap,
-        target_pivot: QPointF,
-        source_pivot: QPointF,
-        target_width: float,
-        angle: float,
-    ) -> None:
-        scale = target_width / max(1, sprite.width())
-        painter.save()
-        painter.translate(target_pivot)
-        painter.rotate(angle)
-        painter.scale(scale, scale)
-        painter.drawPixmap(QPointF(-source_pivot.x(), -source_pivot.y()), sprite)
-        painter.restore()
-
-    def _draw_visor_overlay(self, painter: QPainter, head_w: float, head_h: float, yaw: float = 0.0) -> None:
+        yaw_scale = 1.0 - abs(yaw) * 0.16
+        yaw_shear = yaw * 0.10
+        face_shift = yaw * 13.0
         visor_open = normalize_servo("visor", self._value("visor"))
-        closed = 1.0 - visor_open
-        visor_y = -head_h * 0.39 + closed * head_h * 0.18
-        face_shift = yaw * head_w * 0.035
-        visor_rect = QRectF(-head_w * 0.30 + face_shift, visor_y, head_w * 0.60, head_h * 0.20)
+        visor_drop = (1.0 - visor_open) * 54.0
 
-        painter.setPen(QPen(QColor("#8b4216"), 2))
-        painter.setBrush(QColor(218, 122, 31, 235))
-        painter.drawChord(visor_rect, 0, 180 * 16)
+        painter.save()
+        painter.translate(0, neck_top_y)
+        painter.rotate(tilt)
+        painter.scale(yaw_scale, 1.0)
+        painter.shear(yaw_shear, 0.0)
 
-        painter.setPen(QPen(QColor(255, 226, 197, 185), 2))
-        for offset in (-0.18, -0.09, 0.0, 0.09, 0.18):
-            x = offset * head_w + face_shift
-            painter.drawLine(
-                QPointF(x, visor_y + head_h * 0.02),
-                QPointF(x - head_w * 0.025, visor_y + head_h * 0.16),
-            )
+        # Ear pods (behind the face plate).
+        for sx in (-1, 1):
+            cx = sx * 104
+            grad = QLinearGradient(cx - 20, 0, cx + 20, 0)
+            grad.setColorAt(0.0, QColor("#3a6cb0"))
+            grad.setColorAt(1.0, _BLUE_DK)
+            painter.setPen(QPen(QColor("#122c4e"), 2))
+            painter.setBrush(grad)
+            painter.drawEllipse(QPointF(cx, -52), 25, 37)
+            painter.setPen(QPen(QColor("#0f2340"), 2))
+            for i in range(5):
+                yy = -76 + i * 12
+                half = 24 * math.sqrt(max(0.05, 1 - ((yy + 52) / 37.0) ** 2))
+                painter.drawLine(QPointF(cx - half, yy), QPointF(cx + half, yy))
+            painter.setPen(QPen(_NEAR_BLACK, 2))
+            painter.setBrush(QColor("#5b6167"))
+            painter.drawEllipse(QPointF(sx * 121, -52), 8, 24)
 
-    def _draw_eye_overlay(self, painter: QPainter, head_w: float, head_h: float, yaw: float = 0.0) -> None:
+        # Face plate.
+        grad = QLinearGradient(0, -100, 0, 0)
+        grad.setColorAt(0.0, _SILVER_HI)
+        grad.setColorAt(0.5, _SILVER)
+        grad.setColorAt(1.0, _SILVER_LO)
+        painter.setPen(QPen(QColor("#25292d"), 3))
+        painter.setBrush(grad)
+        painter.drawRoundedRect(QRectF(-95, -102, 190, 102), 20, 20)
+        # darker slate band around the eyes
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(58, 63, 68, 220))
+        painter.drawRoundedRect(QRectF(-82, -88, 164, 62), 14, 14)
+        # chin lip
+        painter.setBrush(QColor("#a7abb0"))
+        painter.drawRoundedRect(QRectF(-56, -16, 112, 13), 5, 5)
+
+        # Eyes.
+        self._draw_eyes(painter, face_shift)
+
+        # Nose vent.
+        nose = QPainterPath()
+        nose.moveTo(-9 + face_shift, -34)
+        nose.lineTo(9 + face_shift, -34)
+        nose.lineTo(14 + face_shift, -14)
+        nose.lineTo(-14 + face_shift, -14)
+        nose.closeSubpath()
+        painter.setPen(QPen(QColor("#33383c"), 2))
+        painter.setBrush(QColor("#6d7378"))
+        painter.drawPath(nose)
+
+        # Vocoder chin (speaking EQ lives here).
+        self._draw_vocoder(painter, face_shift)
+
+        # Dome visor (slides down over the eyes) + side caps.
+        painter.save()
+        painter.translate(0, visor_drop)
+        for sx in (-1, 1):
+            cap = QPainterPath()
+            cap.moveTo(sx * 66, -122)
+            cap.lineTo(sx * 100, -122)
+            cap.lineTo(sx * 88, -148)
+            cap.closeSubpath()
+            painter.setPen(QPen(QColor("#26292d"), 2))
+            painter.setBrush(QColor("#4a4f54"))
+            painter.drawPath(cap)
+        dome_rect = QRectF(-102, -198, 204, 152)
+        grad = QLinearGradient(0, -198, 0, -120)
+        grad.setColorAt(0.0, _ORANGE_HI)
+        grad.setColorAt(1.0, _ORANGE_LO)
+        painter.setPen(QPen(_ORANGE_EDGE, 3))
+        painter.setBrush(grad)
+        painter.drawChord(dome_rect, 0, 180 * 16)
+        painter.setPen(QPen(_CREAM, 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        for offset in (-0.30, -0.15, 0.0, 0.15, 0.30):
+            x_b = offset * 190
+            x_t = offset * 74
+            painter.drawLine(QPointF(x_b, -126), QPointF(x_t, -186))
+        painter.setPen(QPen(QColor("#8c4a12"), 3))
+        painter.setBrush(QColor("#c06a1c"))
+        painter.drawRoundedRect(QRectF(-102, -128, 204, 12), 6, 6)
+        painter.restore()
+
+        # Blue carry handle (fixed to the ear posts; dome slides under it).
+        painter.setPen(QPen(_BLUE, 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        handle = QPainterPath()
+        handle.moveTo(-86, -138)
+        handle.cubicTo(-64, -216, 64, -216, 86, -138)
+        painter.drawPath(handle)
+        painter.setPen(QPen(_BLUE_DK, 4))
+        painter.drawPath(handle.translated(0, 3))
+
+        painter.restore()
+
+    def _draw_eyes(self, painter: QPainter, face_shift: float) -> None:
         color = _eye_color(self._eye_state)
         active = bool(self._eye_state.get("eyes_active")) and any(color)
-        openness = 1.0 if active and self._blink_state != "closed" else 0.0
+        open_eye = active and self._blink_state != "closed"
         brightness = self._eye_brightness() if active else 0.0
-        radius_x = head_w * 0.043
-        radius_y = head_h * 0.056
-        face_shift = yaw * head_w * 0.040
-        centers = (
-            QPointF(-head_w * 0.113 + face_shift, -head_h * 0.095),
-            QPointF(head_w * 0.113 + face_shift, -head_h * 0.095),
-        )
-        painter.setPen(QPen(QColor("#08101c"), 2))
-        for center in centers:
-            painter.setBrush(QColor(5, 8, 12, 235))
-            painter.drawEllipse(center, radius_x * 1.25, radius_y * 1.25)
-            if openness <= 0.0:
-                painter.setPen(QPen(QColor("#38414b"), 2))
+        for sx in (-1, 1):
+            center = QPointF(sx * 42 + face_shift, -58)
+            painter.setPen(QPen(QColor("#2b2f33"), 2))
+            painter.setBrush(QColor("#b9bdc1"))
+            painter.drawEllipse(center, 27, 27)
+            painter.setBrush(QColor("#14181c"))
+            painter.drawEllipse(center, 21, 21)
+            if not open_eye:
+                painter.setPen(QPen(QColor("#3f464d"), 3))
                 painter.drawLine(
-                    QPointF(center.x() - radius_x * 1.1, center.y()),
-                    QPointF(center.x() + radius_x * 1.1, center.y()),
+                    QPointF(center.x() - 13, center.y()), QPointF(center.x() + 13, center.y())
                 )
-                painter.setPen(QPen(QColor("#08101c"), 2))
                 continue
             r, g, b = (int(v * brightness) for v in color)
-            painter.setBrush(QColor(r, g, b, 245))
-            painter.drawEllipse(center, radius_x, radius_y)
-            painter.setPen(QPen(QColor(min(255, r + 70), min(255, g + 70), min(255, b + 70), 210), 1))
-            for shrink in (0.45, 0.75):
-                painter.drawEllipse(center, radius_x * shrink, radius_y * shrink)
-            painter.setPen(QPen(QColor("#08101c"), 2))
-
-    def _draw_mouth_overlay(self, painter: QPainter, head_w: float, head_h: float, yaw: float = 0.0) -> None:
-        speaking = self._is_speaking()
-        strength = 0.25
-        if speaking:
-            strength = 0.62 + 0.30 * (0.5 + 0.5 * math.sin(self._mouth_phase * 1.25))
-        face_shift = yaw * head_w * 0.038
-        mouth = QRectF(-head_w * 0.105 + face_shift, head_h * 0.118, head_w * 0.210, head_h * 0.255)
-        painter.setPen(QPen(QColor(3, 9, 14, 190), max(1.0, head_w * 0.006)))
-        painter.setBrush(QColor(5, 12, 18, 145 if speaking else 95))
-        painter.drawRoundedRect(mouth, head_w * 0.014, head_w * 0.014)
-        if speaking:
-            painter.setPen(QPen(QColor(60, 165, 255, 120), max(1.0, head_w * 0.008)))
+            glow = QRadialGradient(center, 18)
+            glow.setColorAt(0.0, QColor(min(255, r + 130), min(255, g + 130), min(255, b + 130)))
+            glow.setColorAt(0.55, QColor(r, g, b))
+            glow.setColorAt(1.0, QColor(int(r * 0.25), int(g * 0.25), int(b * 0.35)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(glow)
+            painter.drawEllipse(center, 17, 17)
+            painter.setPen(QPen(QColor(min(255, r + 70), min(255, g + 70), min(255, b + 70), 200), 1.4))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(mouth.adjusted(-1.5, -1.5, 1.5, 1.5), head_w * 0.016, head_w * 0.016)
+            for shrink in (0.42, 0.72):
+                painter.drawEllipse(center, 17 * shrink, 17 * shrink)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(255, 255, 255, 215))
+            painter.drawEllipse(QPointF(center.x() - 5, center.y() - 6), 3.4, 3.4)
 
-        bar_count = 5
-        gap = mouth.height() * 0.08
-        bar_h = (mouth.height() - gap * (bar_count + 1)) / bar_count
-        for idx in range(bar_count):
+    def _draw_vocoder(self, painter: QPainter, face_shift: float) -> None:
+        speaking = self._is_speaking()
+        rect = QRectF(-27 + face_shift, -12, 54, 46)
+        painter.setPen(QPen(QColor("#0c0e10"), 3))
+        painter.setBrush(QColor("#1c1f22"))
+        painter.drawRoundedRect(rect, 9, 9)
+        rib_count = 5
+        gap = rect.height() * 0.055
+        rib_h = (rect.height() - gap * (rib_count + 1)) / rib_count
+        for idx in range(rib_count):
             phase = math.sin(self._mouth_phase + idx * 0.92)
-            active = strength * (0.50 + 0.50 * phase) if speaking else 0.10
-            alpha = int(45 + 175 * max(0.0, min(1.0, active)))
-            bar_w = mouth.width() * (0.52 + 0.34 * max(0.0, phase if speaking else 0.0))
-            bar = QRectF(
-                mouth.center().x() - bar_w / 2.0,
-                mouth.top() + gap + idx * (bar_h + gap),
-                bar_w,
-                max(1.0, bar_h),
-            )
-            if idx % 2:
-                color = QColor(48, 148, 255, alpha)
+            if speaking:
+                level = 0.55 + 0.45 * phase
+                alpha = int(70 + 165 * max(0.0, min(1.0, level)))
+                color = QColor(72, 160, 255, alpha) if idx % 2 else QColor(255, 166, 48, alpha)
+                rib_w = rect.width() * (0.58 + 0.30 * max(0.0, phase))
             else:
-                color = QColor(255, 166, 48, alpha if speaking else int(alpha * 0.55))
+                color = QColor("#34383c")
+                rib_w = rect.width() * 0.78
+            rib = QRectF(
+                rect.center().x() - rib_w / 2.0,
+                rect.top() + gap + idx * (rib_h + gap),
+                rib_w,
+                max(1.5, rib_h),
+            )
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(color)
-            painter.drawRoundedRect(bar, bar_h * 0.45, bar_h * 0.45)
+            painter.drawRoundedRect(rib, rib_h * 0.4, rib_h * 0.4)
+
+    # ── Arms ────────────────────────────────────────────────────────────────
+
+    def _draw_hero_arm(self, painter: QPainter) -> None:
+        """Articulated arm mounted on the ring at the top of the torso."""
+        mount = QPointF(88, 308)
+        # heroarm max raises the arm (toward horizontal), min hangs it down the torso.
+        shoulder_deg = 38.0 - servo_to_angle("heroarm", self._value("heroarm")) * 0.85
+        elbow_deg = -52.0 - servo_to_angle("elbow", self._value("elbow")) * 0.9
+        upper_len, fore_len = 84.0, 74.0
+        a1 = math.radians(shoulder_deg)
+        elbow = QPointF(mount.x() + math.cos(a1) * upper_len, mount.y() + math.sin(a1) * upper_len)
+        a2 = math.radians(shoulder_deg + elbow_deg)
+        wrist = QPointF(elbow.x() + math.cos(a2) * fore_len, elbow.y() + math.sin(a2) * fore_len)
+
+        # mount plate on the torso ring
+        painter.setPen(QPen(_ORANGE_EDGE, 2))
+        painter.setBrush(_ORANGE)
+        painter.drawEllipse(mount, 15, 15)
+        painter.setBrush(QColor("#8c4a12"))
+        painter.drawEllipse(mount, 7, 7)
+
+        self._capsule(painter, mount, elbow, 15, QColor("#565b60"))
+        self._joint(painter, elbow, 12)
+        self._capsule(painter, elbow, wrist, 12, QColor("#6d7378"))
+        # orange wrist cuff near the claw
+        cuff_from = QPointF(
+            wrist.x() - math.cos(a2) * 20, wrist.y() - math.sin(a2) * 20
+        )
+        self._capsule(painter, cuff_from, wrist, 13, _ORANGE, edge=_ORANGE_EDGE)
+
+        # claw
+        hand_deg = math.degrees(a2) + servo_to_angle("hand", self._value("hand")) * 0.6
+        painter.save()
+        painter.translate(wrist)
+        painter.rotate(hand_deg)
+        painter.setPen(QPen(QColor("#2b2f33"), 2))
+        painter.setBrush(QColor("#9aa0a6"))
+        painter.drawEllipse(QPointF(4, 0), 8, 8)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor("#b9bdc1"), 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        upper = QPainterPath(QPointF(8, -5))
+        upper.quadTo(30, -20, 40, -6)
+        painter.drawPath(upper)
+        lower = QPainterPath(QPointF(8, 5))
+        lower.quadTo(30, 20, 40, 6)
+        painter.drawPath(lower)
+        painter.setPen(QPen(QColor("#7d838a"), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QPointF(8, 0), QPointF(24, 0))
+        painter.restore()
+
+    def _draw_poker_arm(self, painter: QPainter) -> None:
+        """Simple tool arm mounted at the base of the torso; sweeps left/right."""
+        mount = QPointF(-96, 448)
+        swing = servo_to_angle("pokerarm", self._value("pokerarm"))
+        a1 = math.radians(182.0 + swing * 0.9)
+        seg1 = 60.0
+        elbow = QPointF(mount.x() + math.cos(a1) * seg1, mount.y() + math.sin(a1) * seg1)
+        a2 = a1 + math.radians(-16.0)
+        seg2 = 54.0
+        tip = QPointF(elbow.x() + math.cos(a2) * seg2, elbow.y() + math.sin(a2) * seg2)
+
+        painter.setPen(QPen(_ORANGE_EDGE, 2))
+        painter.setBrush(_ORANGE)
+        painter.drawEllipse(mount, 12, 12)
+        self._capsule(painter, mount, elbow, 12, QColor("#4a4f54"))
+        self._joint(painter, elbow, 9)
+        self._capsule(painter, elbow, tip, 10, QColor("#565b60"))
+        # little tool head: stylus + crossbars
+        painter.save()
+        painter.translate(tip)
+        painter.rotate(math.degrees(a2))
+        painter.setPen(QPen(_ORANGE_EDGE, 2))
+        painter.setBrush(_ORANGE)
+        painter.drawRoundedRect(QRectF(-4, -8, 14, 16), 3, 3)
+        painter.setPen(QPen(QColor("#b9bdc1"), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QPointF(10, -14), QPointF(22, 14))
+        painter.drawLine(QPointF(10, 14), QPointF(22, -14))
+        painter.restore()
+
+    def _capsule(
+        self,
+        painter: QPainter,
+        p1: QPointF,
+        p2: QPointF,
+        width: float,
+        fill: QColor,
+        edge: QColor | None = None,
+    ) -> None:
+        painter.setPen(QPen(edge or QColor("#1d2125"), width + 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(p1, p2)
+        painter.setPen(QPen(fill, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(p1, p2)
+
+    def _joint(self, painter: QPainter, center: QPointF, radius: float) -> None:
+        painter.setPen(QPen(QColor("#15181b"), 2))
+        painter.setBrush(QColor("#787f86"))
+        painter.drawEllipse(center, radius, radius)
+        painter.setBrush(QColor("#33383c"))
+        painter.drawEllipse(center, radius * 0.42, radius * 0.42)
+
+    # ── Animation state ─────────────────────────────────────────────────────
 
     def _tick_eye_animation(self) -> None:
         now = time.monotonic()
@@ -403,23 +684,6 @@ class RexAvatar(QWidget):
         for y in range(14, self.height(), step):
             painter.drawLine(14, y, self.width() - 14, y)
 
-    def _draw_base(self, painter: QPainter, cx: float, base_y: float) -> None:
-        base_top = base_y + 95
-        painter.setPen(QPen(QColor("#3b2c1b"), 2))
-        painter.setBrush(QColor("#b5631d"))
-        painter.drawEllipse(QPointF(cx, base_top + 22), 96, 28)
-        painter.setBrush(QColor("#d77a23"))
-        painter.drawRoundedRect(QRectF(cx - 88, base_top - 7, 176, 34), 10, 10)
-        painter.setBrush(QColor("#2d3033"))
-        painter.drawEllipse(QPointF(cx, base_top + 8), 22, 22)
-        painter.setPen(QPen(QColor("#7b8790"), 2))
-        for i in range(12):
-            angle = math.radians(i * 30)
-            painter.drawLine(
-                QPointF(cx + math.cos(angle) * 8, base_top + 8 + math.sin(angle) * 8),
-                QPointF(cx + math.cos(angle) * 18, base_top + 8 + math.sin(angle) * 18),
-            )
-
     def _smooth(self) -> None:
         smoothing = max(0.01, min(1.0, float(getattr(config, "GUI_AVATAR_SMOOTHING", 0.25))))
         for name, target in self._target.items():
@@ -431,170 +695,12 @@ class RexAvatar(QWidget):
         norm = self._current.get(name, 0.5)
         return int(cfg["min"] + (cfg["max"] - cfg["min"]) * norm)
 
-    def _draw_body(self, painter: QPainter, cx: float, base_y: float) -> None:
-        body = QRectF(cx - 60, base_y - 10, 120, 110)
-        lift = servo_to_offset("headlift", self._value("headlift")) * 0.55
-        painter.setPen(QPen(QColor("#1b2025"), 2))
-        painter.setBrush(QColor("#c46b1f"))
-        painter.drawRoundedRect(body, 18, 18)
-        painter.setBrush(QColor("#202429"))
-        painter.drawRoundedRect(QRectF(cx - 66, base_y + 16, 132, 50), 9, 9)
-        painter.setPen(QPen(QColor("#9da7ad"), 4))
-        for x in range(-42, 43, 16):
-            painter.drawLine(QPointF(cx + x, base_y + 20), QPointF(cx + x, base_y + 62))
-        painter.setPen(QPen(QColor("#5d6d78"), 2))
-        painter.setBrush(QColor("#14191d"))
-        painter.drawRoundedRect(QRectF(cx - 36, base_y - 1, 72, 24), 5, 5)
-        painter.setPen(QPen(QColor("#3e9bff"), 2))
-        painter.drawText(QRectF(cx - 30, base_y + 1, 60, 19), Qt.AlignmentFlag.AlignCenter, "7A11")
-        painter.setPen(QPen(QColor("#6e7b8f"), 8))
-        painter.drawLine(QPointF(cx, base_y - 8), QPointF(cx, base_y - 42 + lift))
-
-    def _draw_head(self, painter: QPainter, cx: float, base_y: float) -> None:
-        yaw = servo_to_yaw("neck", self._value("neck"))
-        tilt_angle = servo_to_angle("headtilt", self._value("headtilt"))
-        lift = servo_to_offset("headlift", self._value("headlift")) * 0.55
-        head_x = cx
-        head_y = base_y - 94 + lift
-        yaw_scale = 1.0 - abs(yaw) * 0.20
-        yaw_shear = yaw * 0.12
-        face_shift = yaw * 7.0
-
-        painter.save()
-        painter.translate(head_x, head_y)
-        painter.rotate(tilt_angle)
-        painter.scale(yaw_scale, 1.0)
-        painter.shear(yaw_shear, 0.0)
-
-        head = QRectF(-78, -52, 156, 94)
-        painter.setPen(QPen(QColor("#222930"), 2))
-        painter.setBrush(QColor("#2e3338"))
-        painter.drawRoundedRect(head, 14, 14)
-        painter.setBrush(QColor("#d87920"))
-        painter.drawChord(QRectF(-70, -70, 140, 76), 0, 180 * 16)
-        painter.setPen(QPen(QColor("#f5d2b4"), 3))
-        for x in range(-42, 43, 18):
-            painter.drawLine(QPointF(x, -63), QPointF(x - 8, -24))
-
-        painter.setBrush(QColor("#384455"))
-        painter.drawRoundedRect(QRectF(-56, -25, 112, 36), 8, 8)
-
-        visor_open = normalize_servo("visor", self._value("visor"))
-        shutter_y = -20 - visor_open * 23
-        painter.setBrush(QColor("#0b1118"))
-        painter.drawRoundedRect(QRectF(-52, shutter_y, 104, 18), 6, 6)
-        painter.setPen(QPen(QColor("#17365a"), 3))
-        painter.setBrush(QColor("#1a63e6"))
-        painter.drawEllipse(QPointF(-28 + face_shift, -7), 14, 14)
-        painter.drawEllipse(QPointF(28 + face_shift, -7), 14, 14)
-        painter.setPen(QPen(QColor("#7dbdff"), 1))
-        for r in (5, 9):
-            painter.drawEllipse(QPointF(-28 + face_shift, -7), r, r)
-            painter.drawEllipse(QPointF(28 + face_shift, -7), r, r)
-
-        painter.setPen(QPen(QColor("#7c8796"), 4))
-        painter.drawLine(QPointF(-42 + face_shift, 30), QPointF(42 + face_shift, 30))
-        painter.setPen(QPen(QColor("#5e6978"), 2))
-        for x in range(-35, 41, 14):
-            painter.drawLine(QPointF(x + face_shift, 24), QPointF(x + face_shift, 36))
-        if self._is_speaking():
-            painter.setPen(QPen(QColor("#48a9ff"), 3))
-            for idx, y in enumerate((22, 28, 34)):
-                width = 28 + 18 * (0.5 + 0.5 * math.sin(self._mouth_phase + idx))
-                painter.drawLine(QPointF(-width + face_shift, y), QPointF(width + face_shift, y))
-
-        painter.restore()
-
-    def _draw_right_arm(self, painter: QPainter, cx: float, base_y: float) -> None:
-        shoulder = QPointF(cx + 68, base_y + 16)
-        hero = math.radians(servo_to_angle("heroarm", self._value("heroarm")) + 25)
-        elbow_angle = math.radians(servo_to_angle("elbow", self._value("elbow")))
-        upper_len = 58
-        lower_len = 50
-        elbow = QPointF(
-            shoulder.x() + math.cos(hero) * upper_len,
-            shoulder.y() + math.sin(hero) * upper_len,
-        )
-        wrist_angle = hero + elbow_angle
-        wrist = QPointF(
-            elbow.x() + math.cos(wrist_angle) * lower_len,
-            elbow.y() + math.sin(wrist_angle) * lower_len,
-        )
-        self._draw_limb(painter, shoulder, elbow, wrist, QColor("#d77a23"))
-        painter.save()
-        painter.translate(wrist)
-        painter.rotate(servo_to_angle("hand", self._value("hand")))
-        painter.setPen(QPen(QColor("#11161a"), 3))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        for angle in (-35, 0, 35):
-            painter.save()
-            painter.rotate(angle)
-            painter.drawLine(QPointF(0, 0), QPointF(0, -34))
-            painter.restore()
-        painter.restore()
-
-    def _draw_left_arm(self, painter: QPainter, cx: float, base_y: float) -> None:
-        shoulder = QPointF(cx - 68, base_y + 24)
-        angle = math.radians(180 + servo_to_angle("pokerarm", self._value("pokerarm")) * 0.8)
-        elbow = QPointF(shoulder.x() + math.cos(angle) * 48, shoulder.y() + math.sin(angle) * 48)
-        wrist = QPointF(elbow.x() - 36, elbow.y() + 14)
-        self._draw_limb(painter, shoulder, elbow, wrist, QColor("#9aa5ad"))
-
-    def _draw_limb(
-        self,
-        painter: QPainter,
-        shoulder: QPointF,
-        elbow: QPointF,
-        wrist: QPointF,
-        color: QColor,
-    ) -> None:
-        painter.setPen(QPen(QColor("#20262b"), 12, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(shoulder, elbow)
-        painter.drawLine(elbow, wrist)
-        painter.setPen(QPen(color, 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(shoulder, elbow)
-        painter.drawLine(elbow, wrist)
-        painter.setBrush(QColor("#3a4249"))
-        painter.setPen(QPen(QColor("#101418"), 2))
-        for point in (shoulder, elbow, wrist):
-            painter.drawEllipse(point, 6, 6)
-
-    def _draw_servo_values(self, painter: QPainter) -> None:
-        font = QFont()
-        font.setPointSize(9)
-        painter.setFont(font)
-        painter.setPen(QColor("#9fb0c4"))
-        lines = []
-        for name in ("neck", "headlift", "headtilt", "visor", "heroarm", "elbow", "hand", "pokerarm"):
-            lines.append(f"{name}: {self._value(name)}")
-        painter.drawText(
-            QRectF(12, 12, 140, self.height() - 24),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-            "\n".join(lines),
-        )
-
 
 def _neutral_norms() -> dict[str, float]:
     return {
         name: normalize_servo(name, cfg["neutral"])
         for name, cfg in config.SERVO_CHANNELS.items()
     }
-
-
-def _load_sprites() -> dict[str, QPixmap]:
-    root = Path(__file__).resolve().parent.parent / "assets" / "gui"
-    paths = {
-        "head": root / "rex_head.png",
-        "body": root / "rex_body_base.png",
-        "right_arm": root / "rex_right_arm.png",
-        "poker_arm": root / "rex_poker_arm.png",
-    }
-    sprites = {name: QPixmap(str(path)) for name, path in paths.items() if path.exists()}
-    if not sprites.get("head") or sprites["head"].isNull():
-        return {}
-    if not sprites.get("body") or sprites["body"].isNull():
-        return {}
-    return {name: pix for name, pix in sprites.items() if not pix.isNull()}
 
 
 def _eye_color(eye_state: dict[str, Any]) -> tuple[int, int, int]:
