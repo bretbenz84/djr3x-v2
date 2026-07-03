@@ -455,14 +455,27 @@ class RexAvatar(QWidget):
         painter.restore()
 
         # Blue carry handle (fixed to the ear posts; dome slides under it).
-        painter.setPen(QPen(_BLUE, 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        # Square-sided like the figure: vertical posts, squared corners, and a
+        # gently bowed top bar — not a round arc.
         painter.setBrush(Qt.BrushStyle.NoBrush)
         handle = QPainterPath()
-        handle.moveTo(-86, -138)
-        handle.cubicTo(-64, -216, 64, -216, 86, -138)
+        handle.moveTo(-80, -136)
+        handle.lineTo(-80, -196)
+        handle.quadTo(0, -212, 80, -196)
+        handle.lineTo(80, -136)
+        pen = QPen(_BLUE_DK, 12, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        painter.setPen(pen)
         painter.drawPath(handle)
-        painter.setPen(QPen(_BLUE_DK, 4))
-        painter.drawPath(handle.translated(0, 3))
+        pen = QPen(_BLUE, 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        painter.setPen(pen)
+        painter.drawPath(handle)
+        # grey corner brackets at the squared shoulders (see figure)
+        painter.setPen(QPen(QColor("#2b2f33"), 2))
+        painter.setBrush(QColor("#5b6167"))
+        for sx in (-1, 1):
+            painter.drawRoundedRect(QRectF(sx * 80 - 9, -204, 18, 16), 3, 3)
 
         painter.restore()
 
@@ -580,44 +593,56 @@ class RexAvatar(QWidget):
         painter.restore()
 
     def _draw_middle_arm(self, painter: QPainter) -> None:
-        """Static tool arm from the figure (no servo on the real build): mounted on the
-        upper-torso ring, elbow bent, forearm raised holding a two-prong tool."""
-        mount = QPointF(-86, 312)
-        elbow = QPointF(-124, 356)
-        hand = QPointF(-140, 268)
+        """Static vestigial arm from the figure (no servo on the real build).
 
-        painter.setPen(QPen(_ORANGE_EDGE, 2))
-        painter.setBrush(_ORANGE)
-        painter.drawEllipse(mount, 13, 13)
-        self._capsule(painter, mount, elbow, 13, QColor("#4a4f54"))
+        Anchored to the SCREEN-LEFT edge of the grey ribbed drum: a short fixed
+        pole sticks straight out to the left, the upper arm hangs straight down
+        from it, and the elbow folds the ribbed tool forearm back UP alongside
+        the torso — matching the reference figure."""
+        pole_root = QPointF(-103, 400)   # left edge of the ribbed drum
+        pole_end = QPointF(-130, 400)
+        elbow = QPointF(-130, 458)       # straight down from the pole
+        hand = QPointF(-142, 352)        # elbow folds the forearm back up
+
+        # fixed mounting pole (with a small orange collar at the drum)
+        self._capsule(painter, pole_root, pole_end, 11, QColor("#565b60"))
+        self._capsule(painter, pole_root, QPointF(-112, 400), 13, _ORANGE, edge=_ORANGE_EDGE)
+        self._joint(painter, pole_end, 9)
+        # upper arm straight down, elbow at the bottom
+        self._capsule(painter, pole_end, elbow, 12, QColor("#4a4f54"))
         self._joint(painter, elbow, 10)
+        # small idler disc hanging under the elbow (see figure)
+        painter.setPen(QPen(QColor("#15181b"), 2))
+        painter.setBrush(QColor("#5b6167"))
+        painter.drawEllipse(QPointF(-130, 474), 8, 8)
+        # forearm folded back UP, carrying the ribbed clipper tool
         self._capsule(painter, elbow, hand, 11, QColor("#6d7378"))
-        # orange cuff midway up the forearm
-        cuff_a = QPointF(elbow.x() + (hand.x() - elbow.x()) * 0.42, elbow.y() + (hand.y() - elbow.y()) * 0.42)
-        cuff_b = QPointF(elbow.x() + (hand.x() - elbow.x()) * 0.60, elbow.y() + (hand.y() - elbow.y()) * 0.60)
-        self._capsule(painter, cuff_a, cuff_b, 13, _ORANGE, edge=_ORANGE_EDGE)
-        # two-prong tool in the hand
         painter.save()
         painter.translate(hand)
-        painter.rotate(math.degrees(math.atan2(hand.y() - elbow.y(), hand.x() - elbow.x())))
+        painter.rotate(math.degrees(math.atan2(hand.y() - elbow.y(), hand.x() - elbow.x())) + 90)
+        # ribbed tool head: grey block with horizontal ribs and a rounded cap
+        tool = QRectF(-11, -54, 22, 54)
+        painter.setPen(QPen(QColor("#2b2f33"), 2))
+        painter.setBrush(QColor("#83898f"))
+        painter.drawRoundedRect(tool, 5, 5)
+        painter.setPen(QPen(QColor("#3f464d"), 2))
+        for i in range(6):
+            yy = tool.top() + 8 + i * 8
+            painter.drawLine(QPointF(tool.left() + 3, yy), QPointF(tool.right() - 3, yy))
         painter.setPen(QPen(QColor("#2b2f33"), 2))
         painter.setBrush(QColor("#9aa0a6"))
-        painter.drawEllipse(QPointF(2, 0), 7, 7)
-        painter.setPen(QPen(QColor("#b9bdc1"), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(QPointF(6, -4), QPointF(26, -13))
-        painter.drawLine(QPointF(6, 4), QPointF(26, 13))
-        painter.setPen(QPen(QColor("#7d838a"), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.drawLine(QPointF(6, 0), QPointF(30, 0))
+        painter.drawEllipse(QPointF(0, 0), 7, 7)
         painter.restore()
 
     def _draw_poker_arm(self, painter: QPainter) -> None:
-        """Simple tool arm mounted at the base of the torso; sweeps left/right."""
-        mount = QPointF(-96, 448)
+        """Simple tool arm mounted on the SCREEN-RIGHT of the bottom torso ring;
+        sweeps left/right with the pokerarm servo."""
+        mount = QPointF(98, 450)
         swing = servo_to_angle("pokerarm", self._value("pokerarm"))
-        a1 = math.radians(182.0 + swing * 0.9)
+        a1 = math.radians(-2.0 - swing * 0.9)
         seg1 = 60.0
         elbow = QPointF(mount.x() + math.cos(a1) * seg1, mount.y() + math.sin(a1) * seg1)
-        a2 = a1 + math.radians(-16.0)
+        a2 = a1 + math.radians(16.0)
         seg2 = 54.0
         tip = QPointF(elbow.x() + math.cos(a2) * seg2, elbow.y() + math.sin(a2) * seg2)
 
