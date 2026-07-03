@@ -1,92 +1,162 @@
 #!/usr/bin/env python3
-"""Audition ElevenLabs v3 SEEDS for Rex's voice.
+"""Audition ElevenLabs v3 SEEDS for Rex's voice — at scale.
 
-With request stitching in place, the voice is consistent WITHIN a reply regardless of seed —
-the seed just picks WHICH vocal character/take v3 settles on. So to change the character you
-don't retune anything; you just try seeds until one sounds right, then set config.TTS_V3_SEED.
+The seed picks WHICH vocal character/take v3 settles on (verified: distinct seeds -> distinct
+takes). So to change the voice you just try seeds until one sounds right, then set config.TTS_V3_SEED.
 
-This synthesizes the same line at each seed through the SAME path the robot uses (current
-voice_id, eleven_v3, stability 0.5) and saves one mp3 per seed so you can A/B them, then tell
-Claude the winning number.
+Synthesizes the same short line at each seed through the robot's real voice_id / eleven_v3 /
+stability, saves one mp3 per seed, and writes an index.html player so you can click through many
+fast. Requests are made with an EXPLICIT per-call seed (no global-config mutation), so it's
+thread-safe and parallelized.
 
-    ./venv/bin/python -m tools.seed_voice_test                 # default spread + default line
+    ./venv/bin/python -m tools.seed_voice_test                       # default: seeds 1..24
+    ./venv/bin/python -m tools.seed_voice_test --range 1 100         # 100 seeds
     ./venv/bin/python -m tools.seed_voice_test --seeds 7 88 2187
-    ./venv/bin/python -m tools.seed_voice_test --line "Oh good, you're back."
+    ./venv/bin/python -m tools.seed_voice_test --range 1 100 --line "Say something, Rex."
 
-Output: tts_samples/seeds/seed_<n>.mp3   (tts_samples/ is gitignored — local audition only)
-Cost: ElevenLabs v3 bills 1 credit/char, so N seeds x len(line) chars. Keep the line short.
+Output: tts_samples/seeds/seed_<n>.mp3  +  tts_samples/seeds/index.html   (gitignored)
+Cost: ElevenLabs v3 bills 1 credit/char, so N seeds x len(line). The default line is short on
+purpose. NOTE: previous_text/stitching is unsupported on eleven_v3, so this is one clean generation.
 """
 
 import argparse
+import concurrent.futures
+import html
 import sys
+import time
 from pathlib import Path
 
-# A couple of short sentences with a bit of Rex attitude so the character is audible. The 2nd
-# sentence is stitched onto the 1st (previous_text) so you hear the real streamed continuity.
-DEFAULT_LINE_1 = "Oh good, you're back."
-DEFAULT_LINE_2 = "I was starting to think my charm finally short-circuited something."
+# Short but characterful — enough to judge the voice, cheap enough to run 100.
+DEFAULT_LINE = "Oh good, you're back. Did you miss me?"
+# ElevenLabs caps this subscription at 5 concurrent requests — stay UNDER it to avoid 429s.
+DEFAULT_WORKERS = 4
 
-# 42 is the current shipped seed — included so you can hear what you DON'T like next to the rest.
-DEFAULT_SEEDS = [42, 7, 101, 777, 2187, 55555, 314159]
+
+def _synth(client, VoiceSettings, voice_id, model_id, vs_dict, text, seed, retries=6):
+    """One synthesis with an explicit seed. Retries on the 5-concurrent-request rate limit.
+    Returns bytes on success, or a short 'ERROR: ...' string."""
+    kwargs = {"voice_id": voice_id, "text": text, "model_id": model_id, "seed": int(seed)}
+    if vs_dict:
+        kwargs["voice_settings"] = VoiceSettings(**{k: v for k, v in vs_dict.items() if v is not None})
+    for attempt in range(retries):
+        try:
+            return b"".join(client.text_to_speech.stream(**kwargs)) or None
+        except Exception as exc:
+            msg = str(exc)
+            rate_limited = "429" in msg or "concurrent" in msg.lower() or "rate_limit" in msg.lower()
+            if rate_limited and attempt < retries - 1:
+                time.sleep(1.0 + 1.2 * attempt)   # simple backoff; another worker will free a slot
+                continue
+            return f"ERROR: {msg[:150]}"
+
+
+def _write_index(out_dir: Path, line: str, results: list[tuple[int, bool]], current_seed) -> Path:
+    rows = []
+    for seed, ok in results:
+        if not ok:
+            rows.append(f'<tr><td>{seed}</td><td colspan="2" class="fail">failed</td></tr>')
+            continue
+        mark = ' <span class="cur">current</span>' if seed == current_seed else ""
+        rows.append(
+            f'<tr><td>{seed}{mark}</td>'
+            f'<td><audio controls preload="none" src="seed_{seed}.mp3"></audio></td>'
+            f'<td><button onclick="navigator.clipboard.writeText(\'{seed}\')">copy seed</button></td></tr>'
+        )
+    doc = f"""<!doctype html><meta charset="utf-8"><title>Rex seed audition</title>
+<style>
+ body{{font:15px/1.5 system-ui,sans-serif;margin:2rem;max-width:760px}}
+ h1{{font-size:1.2rem}} .line{{color:#555;font-style:italic;margin-bottom:1rem}}
+ table{{border-collapse:collapse;width:100%}} td{{padding:.4rem .6rem;border-bottom:1px solid #eee;vertical-align:middle}}
+ .cur{{background:#ffe08a;border-radius:4px;padding:0 .35rem;font-size:.8rem}}
+ .fail{{color:#b00}} audio{{height:32px}}
+</style>
+<h1>Rex v3 seed audition — {len(results)} seeds</h1>
+<div class="line">Line: “{html.escape(line)}”</div>
+<table><tr><td><b>seed</b></td><td><b>audio</b></td><td></td></tr>
+{chr(10).join(rows)}
+</table>
+<p style="color:#777;margin-top:1rem">Pick the seed you like and tell Claude the number — it'll set <code>TTS_V3_SEED</code>.</p>
+"""
+    idx = out_dir / "index.html"
+    idx.write_text(doc, encoding="utf-8")
+    return idx
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Audition ElevenLabs v3 seeds for Rex's voice.")
-    ap.add_argument("--seeds", type=int, nargs="+", default=DEFAULT_SEEDS,
-                    help="seeds to try (default: %(default)s)")
-    ap.add_argument("--line", type=str, default=None,
-                    help="single line to speak (default: a 2-sentence stitched Rex line)")
-    ap.add_argument("--line2", type=str, default=None,
-                    help="optional 2nd sentence, stitched onto --line (default provided)")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--seeds", type=int, nargs="+", help="explicit seeds")
+    g.add_argument("--range", type=int, nargs=2, metavar=("START", "END"), help="inclusive seed range")
+    ap.add_argument("--line", type=str, default=DEFAULT_LINE, help="line to speak (keep it short)")
+    ap.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="concurrent requests")
     args = ap.parse_args()
 
     import config
     from audio import tts
+    import apikeys
+    from elevenlabs import ElevenLabs, VoiceSettings
 
     if str(config.TTS_MODEL_ID).strip() != "eleven_v3":
-        print(f"[seed-test] TTS_MODEL_ID is {config.TTS_MODEL_ID!r}, not eleven_v3 — seeds only "
-              f"affect v3. Aborting.")
+        print(f"[seed-test] TTS_MODEL_ID is {config.TTS_MODEL_ID!r}, not eleven_v3 — aborting.")
         return 2
 
-    line1 = args.line if args.line is not None else DEFAULT_LINE_1
-    line2 = args.line2 if args.line2 is not None else (None if args.line is not None else DEFAULT_LINE_2)
+    if args.seeds:
+        seeds = args.seeds
+    elif args.range:
+        seeds = list(range(args.range[0], args.range[1] + 1))
+    else:
+        seeds = list(range(1, 25))
 
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID
-    voice_settings = tts._resolve_voice_settings("neutral", None)  # pins v3 stability to 0.5
+    vs_dict = tts._resolve_voice_settings("neutral", None)  # pins v3 stability
+    current_seed = getattr(config, "TTS_V3_SEED", None)
+    client = ElevenLabs(api_key=apikeys.ELEVENLABS_API_KEY)
 
     out_dir = Path(config.TTS_CACHE_DIR).parent / "tts_samples" / "seeds"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    total_chars = len(line1) + (len(line2) if line2 else 0)
-    print(f"[seed-test] voice={voice_id} model={model_id} stability={voice_settings.get('stability')}")
-    print(f"[seed-test] {len(args.seeds)} seeds x ~{total_chars} chars "
-          f"= ~{len(args.seeds) * total_chars} credits total")
-    print(f"[seed-test] line: {line1!r}" + (f" + {line2!r}" if line2 else ""))
+    # Idempotent gap-fill: skip seeds already generated so a re-run (e.g. after a 429 batch) only
+    # pays for the missing ones. Delete the mp3 to force a re-gen.
+    results: dict[int, bool] = {}
+    todo = []
+    for s in seeds:
+        p = out_dir / f"seed_{s}.mp3"
+        if p.exists() and p.stat().st_size > 0:
+            results[s] = True
+        else:
+            todo.append(s)
 
-    # NOTE: eleven_v3 rejects previous_text (400 unsupported_model), so we synthesize the whole
-    # line in ONE generation — which is also how a consistent reply should be produced on v3.
-    full_line = line1 if not line2 else f"{line1} {line2}"
+    print(f"[seed-test] voice={voice_id} model={model_id} stability={vs_dict.get('stability')}")
+    print(f"[seed-test] {len(seeds)} seeds ({len(seeds) - len(todo)} already done) -> generating "
+          f"{len(todo)} x {len(args.line)} chars = ~{len(todo) * len(args.line)} credits")
+    print(f"[seed-test] line: {args.line!r}  ({args.workers} workers)")
 
-    orig_seed = getattr(config, "TTS_V3_SEED", None)
-    ok = 0
-    try:
-        for seed in args.seeds:
-            config.TTS_V3_SEED = seed  # _fetch_from_api reads this
-            audio = tts._fetch_from_api(full_line, voice_id, model_id, voice_settings)
-            if not audio:
-                print(f"[seed-test] seed {seed}: FAILED (no audio — check credits / API)")
-                continue
-            path = out_dir / f"seed_{seed}.mp3"
-            path.write_bytes(audio)
-            marker = "  <- current" if seed == orig_seed else ""
-            print(f"[seed-test] seed {seed:>7}  ->  {path}{marker}")
-            ok += 1
-    finally:
-        config.TTS_V3_SEED = orig_seed
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+        futs = {
+            pool.submit(_synth, client, VoiceSettings, voice_id, model_id, vs_dict, args.line, s): s
+            for s in todo
+        }
+        done = 0
+        for fut in concurrent.futures.as_completed(futs):
+            seed = futs[fut]
+            audio = fut.result()
+            done += 1
+            if isinstance(audio, bytes):
+                (out_dir / f"seed_{seed}.mp3").write_bytes(audio)
+                results[seed] = True
+            else:
+                results[seed] = False
+                print(f"[seed-test] seed {seed}: {audio}")
+            if done % 10 == 0 or done == len(todo):
+                print(f"[seed-test] {done}/{len(todo)} generated")
 
-    print(f"\n[seed-test] wrote {ok}/{len(args.seeds)} samples to {out_dir}")
-    print("[seed-test] listen, then tell Claude the seed you like and it'll set TTS_V3_SEED.")
+    ordered = [(s, results.get(s, False)) for s in seeds]
+    ok = sum(1 for _, v in ordered if v)
+    idx = _write_index(out_dir, args.line, ordered, current_seed)
+    print(f"\n[seed-test] wrote {ok}/{len(seeds)} samples")
+    print(f"[seed-test] open the player:  {idx}")
+    print("[seed-test] pick a seed, tell Claude the number, and it'll set TTS_V3_SEED.")
     return 0 if ok else 1
 
 
