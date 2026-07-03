@@ -105,7 +105,11 @@ class RexAvatar(QWidget):
         super().__init__(parent)
         self._show_background = bool(show_background)
         self._show_grid = bool(show_grid)
-        self._target: dict[str, float] = _neutral_norms()
+        # Boot pose matches the powered-off robot: visor rolled fully DOWN over the
+        # face. Real servo positions stream in from the first hardware command
+        # (hardware/servos._record_servo_positions → gui bridge), so the avatar
+        # mirrors the physical visor rolling up while the program loads.
+        self._target: dict[str, float] = _boot_norms()
         self._current: dict[str, float] = dict(self._target)
         self._last_paint = time.monotonic()
         self._eye_state: dict[str, Any] = {
@@ -149,9 +153,12 @@ class RexAvatar(QWidget):
         self_state = ws.get("self_state") or ws.get("self") or {}
         positions = dict(snapshot.get("servo_positions") or {})
         positions.update(self_state.get("servo_positions") or {})
-        for name, cfg in config.SERVO_CHANNELS.items():
-            value = positions.get(name, cfg["neutral"])
-            self._target[name] = normalize_servo(name, value)
+        # Only track servos the runtime has actually reported. Missing data must NOT
+        # default to neutral — that would snap the visor open at launch before the
+        # first real servo command, instead of holding the powered-off boot pose.
+        for name in config.SERVO_CHANNELS:
+            if name in positions:
+                self._target[name] = normalize_servo(name, positions[name])
         eye_state = snapshot.get("head_led_state") or {}
         if eye_state:
             self._eye_state.update(eye_state)
@@ -779,6 +786,14 @@ def _neutral_norms() -> dict[str, float]:
         name: normalize_servo(name, cfg["neutral"])
         for name, cfg in config.SERVO_CHANNELS.items()
     }
+
+
+def _boot_norms() -> dict[str, float]:
+    """Powered-off pose: neutral everywhere except the visor, which is rolled fully
+    down over the face (servo min → norm 0.0) exactly like the real robot at rest."""
+    norms = _neutral_norms()
+    norms["visor"] = 0.0
+    return norms
 
 
 def _eye_color(eye_state: dict[str, Any]) -> tuple[int, int, int]:
