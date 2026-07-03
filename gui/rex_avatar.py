@@ -197,6 +197,7 @@ class RexAvatar(QWidget):
         self._draw_base(painter)
         self._draw_torso(painter)
         self._draw_poker_arm(painter)
+        self._draw_middle_arm(painter)
         self._draw_hero_arm(painter)
         self._draw_neck(painter, neck_top_y)
         self._draw_head(painter, neck_top_y)
@@ -352,18 +353,24 @@ class RexAvatar(QWidget):
             painter.drawEllipse(QPointF(0, cy), 24, max(4.0, span / coils * 0.44))
 
     def _draw_head(self, painter: QPainter, neck_top_y: float) -> None:
-        tilt = servo_to_angle("headtilt", self._value("headtilt"))
-        yaw = servo_to_yaw("neck", self._value("neck"))
+        # headtilt is PITCH (looking down at his toes / up at the sky), not a roll:
+        # front-on it reads as the face features sliding down/up with a vertical
+        # foreshorten squash. pitch +1 = looking down, -1 = looking up. Physical
+        # convention (consciousness gaze search): tilt servo MAX = looking DOWN,
+        # while servo_to_angle maps max → -18 — hence the negation.
+        pitch = -servo_to_angle("headtilt", self._value("headtilt")) / 18.0
+        # The avatar faces the camera, so his right = screen LEFT → mirror the yaw.
+        yaw = -servo_to_yaw("neck", self._value("neck"))
         yaw_scale = 1.0 - abs(yaw) * 0.16
         yaw_shear = yaw * 0.10
         face_shift = yaw * 13.0
+        face_dy = pitch * 15.0
         visor_open = normalize_servo("visor", self._value("visor"))
         visor_drop = (1.0 - visor_open) * 54.0
 
         painter.save()
-        painter.translate(0, neck_top_y)
-        painter.rotate(tilt)
-        painter.scale(yaw_scale, 1.0)
+        painter.translate(0, neck_top_y + pitch * 8.0)
+        painter.scale(yaw_scale, 1.0 - abs(pitch) * 0.12)
         painter.shear(yaw_shear, 0.0)
 
         # Ear pods (behind the face plate).
@@ -398,28 +405,29 @@ class RexAvatar(QWidget):
         painter.drawRoundedRect(QRectF(-82, -88, 164, 62), 14, 14)
         # chin lip
         painter.setBrush(QColor("#a7abb0"))
-        painter.drawRoundedRect(QRectF(-56, -16, 112, 13), 5, 5)
+        painter.drawRoundedRect(QRectF(-56, -16 + face_dy * 0.6, 112, 13), 5, 5)
 
         # Eyes.
-        self._draw_eyes(painter, face_shift)
+        self._draw_eyes(painter, face_shift, face_dy)
 
         # Nose vent.
         nose = QPainterPath()
-        nose.moveTo(-9 + face_shift, -34)
-        nose.lineTo(9 + face_shift, -34)
-        nose.lineTo(14 + face_shift, -14)
-        nose.lineTo(-14 + face_shift, -14)
+        nose.moveTo(-9 + face_shift, -34 + face_dy)
+        nose.lineTo(9 + face_shift, -34 + face_dy)
+        nose.lineTo(14 + face_shift, -14 + face_dy)
+        nose.lineTo(-14 + face_shift, -14 + face_dy)
         nose.closeSubpath()
         painter.setPen(QPen(QColor("#33383c"), 2))
         painter.setBrush(QColor("#6d7378"))
         painter.drawPath(nose)
 
         # Vocoder chin (speaking EQ lives here).
-        self._draw_vocoder(painter, face_shift)
+        self._draw_vocoder(painter, face_shift, face_dy)
 
-        # Dome visor (slides down over the eyes) + side caps.
+        # Dome visor (slides down over the eyes) + side caps. The dome leans into
+        # the pitch a little so looking down shows more dome, looking up more chin.
         painter.save()
-        painter.translate(0, visor_drop)
+        painter.translate(0, visor_drop + face_dy * 0.45)
         for sx in (-1, 1):
             cap = QPainterPath()
             cap.moveTo(sx * 66, -122)
@@ -458,13 +466,13 @@ class RexAvatar(QWidget):
 
         painter.restore()
 
-    def _draw_eyes(self, painter: QPainter, face_shift: float) -> None:
+    def _draw_eyes(self, painter: QPainter, face_shift: float, face_dy: float = 0.0) -> None:
         color = _eye_color(self._eye_state)
         active = bool(self._eye_state.get("eyes_active")) and any(color)
         open_eye = active and self._blink_state != "closed"
         brightness = self._eye_brightness() if active else 0.0
         for sx in (-1, 1):
-            center = QPointF(sx * 42 + face_shift, -58)
+            center = QPointF(sx * 42 + face_shift, -58 + face_dy)
             painter.setPen(QPen(QColor("#2b2f33"), 2))
             painter.setBrush(QColor("#b9bdc1"))
             painter.drawEllipse(center, 27, 27)
@@ -492,9 +500,9 @@ class RexAvatar(QWidget):
             painter.setBrush(QColor(255, 255, 255, 215))
             painter.drawEllipse(QPointF(center.x() - 5, center.y() - 6), 3.4, 3.4)
 
-    def _draw_vocoder(self, painter: QPainter, face_shift: float) -> None:
+    def _draw_vocoder(self, painter: QPainter, face_shift: float, face_dy: float = 0.0) -> None:
         speaking = self._is_speaking()
-        rect = QRectF(-27 + face_shift, -12, 54, 46)
+        rect = QRectF(-27 + face_shift, -12 + face_dy, 54, 46)
         painter.setPen(QPen(QColor("#0c0e10"), 3))
         painter.setBrush(QColor("#1c1f22"))
         painter.drawRoundedRect(rect, 9, 9)
@@ -569,6 +577,37 @@ class RexAvatar(QWidget):
         painter.drawPath(lower)
         painter.setPen(QPen(QColor("#7d838a"), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawLine(QPointF(8, 0), QPointF(24, 0))
+        painter.restore()
+
+    def _draw_middle_arm(self, painter: QPainter) -> None:
+        """Static tool arm from the figure (no servo on the real build): mounted on the
+        upper-torso ring, elbow bent, forearm raised holding a two-prong tool."""
+        mount = QPointF(-86, 312)
+        elbow = QPointF(-124, 356)
+        hand = QPointF(-140, 268)
+
+        painter.setPen(QPen(_ORANGE_EDGE, 2))
+        painter.setBrush(_ORANGE)
+        painter.drawEllipse(mount, 13, 13)
+        self._capsule(painter, mount, elbow, 13, QColor("#4a4f54"))
+        self._joint(painter, elbow, 10)
+        self._capsule(painter, elbow, hand, 11, QColor("#6d7378"))
+        # orange cuff midway up the forearm
+        cuff_a = QPointF(elbow.x() + (hand.x() - elbow.x()) * 0.42, elbow.y() + (hand.y() - elbow.y()) * 0.42)
+        cuff_b = QPointF(elbow.x() + (hand.x() - elbow.x()) * 0.60, elbow.y() + (hand.y() - elbow.y()) * 0.60)
+        self._capsule(painter, cuff_a, cuff_b, 13, _ORANGE, edge=_ORANGE_EDGE)
+        # two-prong tool in the hand
+        painter.save()
+        painter.translate(hand)
+        painter.rotate(math.degrees(math.atan2(hand.y() - elbow.y(), hand.x() - elbow.x())))
+        painter.setPen(QPen(QColor("#2b2f33"), 2))
+        painter.setBrush(QColor("#9aa0a6"))
+        painter.drawEllipse(QPointF(2, 0), 7, 7)
+        painter.setPen(QPen(QColor("#b9bdc1"), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QPointF(6, -4), QPointF(26, -13))
+        painter.drawLine(QPointF(6, 4), QPointF(26, 13))
+        painter.setPen(QPen(QColor("#7d838a"), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QPointF(6, 0), QPointF(30, 0))
         painter.restore()
 
     def _draw_poker_arm(self, painter: QPainter) -> None:
