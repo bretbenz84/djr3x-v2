@@ -43,7 +43,7 @@ from gui.jeopardy_panel import JeopardyPanel
 from gui.log_panel import LogPanel
 from gui.rex_avatar import RexAvatar, normalize_servo, servo_to_angle, servo_to_offset
 from gui.state_bridge import GUIDashboardBridge, gui_bridge
-from gui.theme import HoloPanel as ChromePanel, StarfieldBackdrop
+from gui.theme import HoloPanel as ChromePanel, ServoGauge, StarfieldBackdrop
 from gui.vision_panel import VisionPanel
 
 _log = logging.getLogger(__name__)
@@ -168,7 +168,7 @@ class DashboardWindow(QMainWindow):
         title_col = QVBoxLayout(title_box)
         title_col.setContentsMargins(0, 0, 0, 0)
         title_col.setSpacing(0)
-        title = QLabel("DJ R-3X ▸ DROID CONTROL")
+        title = QLabel("DJ-R3X ▸ DROID CONTROL")
         title.setObjectName("windowTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle = QLabel("⌐≡∆⊪  OGA'S CANTINA SYSTEMS CONSOLE  ⊪∆≡¬")
@@ -1056,7 +1056,7 @@ class ServoPositionsPanel(QWidget):
             label.setObjectName("servoName")
             layout.addWidget(label, visual_row, 0)
 
-            slider = QSlider(Qt.Orientation.Horizontal)
+            slider = ServoGauge()
             slider.setEnabled(False)
             slider.setFixedHeight(17)
             cfg = config.SERVO_CHANNELS[name]
@@ -1539,7 +1539,7 @@ class MotivatorControlDialog(QDialog):
         self.setObjectName("motivatorDialog")
         self.setModal(False)
         # A top-level QDialog doesn't inherit the main window's stylesheet, so apply
-        # the dashboard theme (_STYLE) plus the Motivator-specific rules here.
+        # the shared console theme plus the Motivator-specific rules (theme.DIALOG_STYLE).
         self.setStyleSheet(theme.DIALOG_STYLE)
         self.resize(800, 820)
         self._x = 0.0

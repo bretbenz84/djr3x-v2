@@ -26,7 +26,15 @@ from PySide6.QtGui import (
     QPixmap,
     QRadialGradient,
 )
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
 # ── Palette ──────────────────────────────────────────────────────────────────
 SPACE_BLACK = "#040a11"     # window / page background
@@ -166,6 +174,61 @@ def _aurebesh_tag(title: str) -> str:
     glyphs = "⌐¬⌈⌉⌊⌋⊦⊪≡∆"
     rng = random.Random(hash(title) & 0xFFFF)
     return "".join(rng.choice(glyphs) for _ in range(4))
+
+
+class ServoGauge(QSlider):
+    """Custom-painted servo slider: dark track, orange fill to the current
+    position, amber handle. QSS sub-page/add-page rendering is glitchy across
+    Qt styles, so this paints the gauge directly — enabled = manual override
+    (draggable, bright), disabled = live readout (dimmed fill)."""
+
+    _TRACK_H = 5.0
+    _HANDLE_W = 9.0
+    _HANDLE_H = 15.0
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(Qt.Orientation.Horizontal, parent)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w = float(self.width())
+        cy = self.height() / 2.0
+        span = max(1, self.maximum() - self.minimum())
+        frac = (self.value() - self.minimum()) / span
+        pad = self._HANDLE_W / 2.0 + 1
+        x = pad + frac * (w - pad * 2)
+
+        track = QRectF(pad, cy - self._TRACK_H / 2.0, w - pad * 2, self._TRACK_H)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#142230"))
+        painter.drawRoundedRect(track, 2, 2)
+        fill = QRectF(track.left(), track.top(), max(0.0, x - track.left()), track.height())
+        painter.setBrush(QColor(ORANGE) if self.isEnabled() else QColor("#9c5e1b"))
+        painter.drawRoundedRect(fill, 2, 2)
+        handle = QRectF(x - self._HANDLE_W / 2.0, cy - self._HANDLE_H / 2.0,
+                        self._HANDLE_W, self._HANDLE_H)
+        painter.setBrush(QColor(AMBER) if self.isEnabled() else QColor("#c98636"))
+        painter.drawRoundedRect(handle, 2, 2)
+        painter.end()
+
+    # Direct click-to-position (the default QStyle hit test doesn't know our
+    # custom handle geometry).
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self.isEnabled():
+            self._set_from_x(event.position().x())
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self.isEnabled() and event.buttons() & Qt.MouseButton.LeftButton:
+            self._set_from_x(event.position().x())
+        super().mouseMoveEvent(event)
+
+    def _set_from_x(self, x: float) -> None:
+        pad = self._HANDLE_W / 2.0 + 1
+        w = max(1.0, self.width() - pad * 2)
+        frac = min(1.0, max(0.0, (x - pad) / w))
+        self.setValue(round(self.minimum() + frac * (self.maximum() - self.minimum())))
 
 
 class StarfieldBackdrop(QWidget):
@@ -321,21 +384,7 @@ QPushButton#topShutdownButton:hover {{ background: #4a1d1d; border: 1px solid #d
 QLabel#servoName {{ color: #cfd9e4; font-size: 11px; font-weight: 800; }}
 QLabel#servoValue {{ color: {BLUE}; font-size: 11px; font-weight: 700; }}
 QLabel#servoState {{ color: {TEXT_DIM}; font-size: 11px; }}
-QSlider#servoSlider::groove:horizontal {{
-    height: 3px;
-    background: #1a2c3f;
-    border: none;
-}}
-QSlider#servoSlider::sub-page:horizontal {{ background: {ORANGE_DIM}; border: none; }}
-QSlider#servoSlider::handle:horizontal {{
-    width: 9px;
-    height: 15px;
-    margin: -6px 0;
-    border-radius: 1px;
-    background: {ORANGE};
-}}
-QSlider#servoSlider:disabled::sub-page:horizontal {{ background: #23425f; }}
-QSlider#servoSlider:disabled::handle:horizontal {{ background: #4d7ba8; }}
+/* Servo gauges are custom-painted (theme.ServoGauge) — no QSS needed. */
 QScrollBar:vertical {{ background: transparent; width: 9px; }}
 QScrollBar::handle:vertical {{ background: #33506b; border-radius: 4px; min-height: 30px; }}
 QScrollBar::handle:vertical:hover {{ background: {BLUE_DIM}; }}
@@ -351,6 +400,11 @@ QDialog {{
     border: 1px solid {BORDER};
 }}
 QLabel#confirmText {{ color: #dbe7f3; font-size: 15px; font-weight: 700; }}
+QFrame#chromePanel, QWidget#chromePanel {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {PANEL_TOP}, stop:1 {PANEL_BOTTOM});
+    border: 1px solid {BORDER};
+    border-radius: 2px;
+}}
 QLabel#dialogTitle {{ color: {ORANGE}; font-size: 14px; font-weight: 900; letter-spacing: 2px; }}
 QPushButton#confirmNo {{
     min-height: 34px; padding: 0 20px;

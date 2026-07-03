@@ -51,105 +51,107 @@ _log = logging.getLogger(__name__)
 _ROLE_ID = Qt.ItemDataRole.UserRole
 
 
-# Matches the main dashboard's palette/typography (gui/dashboard.py _STYLE): deep-navy
-# ground, gradient panels, accent-blue headers, Apple system font.
+# Shared Star Wars console theme (gui/theme.py): space-black ground, angular 2px
+# corners, R3X-orange section headers, holo-blue data/borders.
 _MEMORY_BANKS_STYLE = """
-QMainWindow { background: #07111a; }
+QMainWindow { background: #040a11; }
 QWidget#memBankRoot {
-    background: #07111a;
+    background: #040a11;
     color: #d9e3ee;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     font-size: 13px;
 }
 QLabel { color: #d9e3ee; }
 QLabel#memSection {
-    color: #4e94ff;
-    font-size: 13px;
+    color: #e08428;
+    font-size: 12px;
     font-weight: 900;
-    letter-spacing: 1px;
+    letter-spacing: 2px;
     padding: 8px 2px 4px 2px;
 }
 QLabel#memMeta { color: #7c8a99; font-size: 12px; }
 QLabel#memBanner {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0b1824, stop:1 #08111a);
-    color: #ffd479;
-    border: 1px solid #6b5a1f;
-    border-radius: 7px;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0b1722, stop:1 #060e16);
+    color: #ffb21e;
+    border: 1px solid #8c5316;
+    border-radius: 2px;
     padding: 7px 12px;
     font-weight: 700;
 }
 QListWidget, QTableWidget, QPlainTextEdit {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0b1824, stop:1 #08111a);
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0b1722, stop:1 #060e16);
     color: #d9e3ee;
-    border: 1px solid #255484;
-    border-radius: 7px;
+    border: 1px solid #24486b;
+    border-radius: 2px;
     selection-background-color: #244f89;
     selection-color: #ffffff;
 }
 QListWidget::item { padding: 5px 6px; }
 QListWidget::item:selected, QTableWidget::item:selected { background: #244f89; color: #ffffff; }
-QTableWidget { gridline-color: #173049; }
-QTableView { background: #0b1824; }
-QHeaderView { background: #0e1d2b; border: none; }
+QTableWidget { gridline-color: #14283c; }
+QTableView { background: #0b1722; }
+QHeaderView { background: #0c1826; border: none; }
 QHeaderView::section {
-    background: #0e1d2b;
-    color: #9fb6cc;
+    background: #0c1826;
+    color: #e08428;
     border: none;
-    border-right: 1px solid #1c3247;
-    border-bottom: 1px solid #255484;
+    border-right: 1px solid #14283c;
+    border-bottom: 1px solid #8c5316;
     padding: 5px 8px;
-    font-weight: 700;
+    font-weight: 800;
+    letter-spacing: 1px;
 }
-QTableCornerButton::section { background: #0e1d2b; border: none; }
+QTableCornerButton::section { background: #0c1826; border: none; }
 QLineEdit, QDoubleSpinBox {
     min-height: 28px;
     padding: 2px 10px;
-    background: #111b27;
+    background: #0d1926;
     color: #e0e9f2;
-    border: 1px solid #2b4562;
-    border-radius: 5px;
+    border: 1px solid #2b4a66;
+    border-radius: 2px;
 }
-QLineEdit:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus { border: 1px solid #65a2ff; }
+QLineEdit:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus { border: 1px solid #4e94ff; }
 QComboBox {
     min-height: 24px;
     padding: 1px 6px;
-    background: #111b27;
+    background: #0d1926;
     color: #e0e9f2;
-    border: 1px solid #2b4562;
-    border-radius: 4px;
+    border: 1px solid #2b4a66;
+    border-radius: 2px;
 }
-QComboBox:focus { border: 1px solid #65a2ff; }
+QComboBox:focus { border: 1px solid #4e94ff; }
 QComboBox QAbstractItemView {
-    background: #0e1d2b;
+    background: #0c1826;
     color: #d9e3ee;
-    border: 1px solid #255484;
+    border: 1px solid #24486b;
     selection-background-color: #244f89;
     selection-color: #ffffff;
 }
 QPushButton {
     min-height: 30px;
     padding: 4px 14px;
-    background: #15212f;
-    color: #dbe7f3;
-    border: 1px solid #2b4562;
-    border-radius: 5px;
+    background: #0d1926;
+    color: #cfe0f1;
+    border: 1px solid #2b4a66;
+    border-radius: 2px;
     font-weight: 700;
 }
-QPushButton:hover { background: #1d2f44; border: 1px solid #65a2ff; }
+QPushButton:hover { background: #1d2f44; border: 1px solid #4e94ff; }
 QPushButton:pressed { background: #244f89; }
-QPushButton#primary { background: #326bbe; color: #ffffff; border: 1px solid #4e8be4; }
-QPushButton#primary:hover { background: #3b7fd9; border: 1px solid #65a2ff; }
-QScrollBar:vertical { background: #07111a; width: 12px; margin: 0; }
-QScrollBar::handle:vertical { background: #244f89; border-radius: 5px; min-height: 24px; }
-QScrollBar:horizontal { background: #07111a; height: 12px; margin: 0; }
-QScrollBar::handle:horizontal { background: #244f89; border-radius: 5px; min-width: 24px; }
+QPushButton#primary { background: #4a2c0e; color: #ffd9a8; border: 1px solid #e08428; }
+QPushButton#primary:hover { background: #6b3f14; border: 1px solid #ffb21e; }
+QScrollBar:vertical { background: transparent; width: 10px; margin: 0; }
+QScrollBar::handle:vertical { background: #33506b; border-radius: 4px; min-height: 24px; }
+QScrollBar::handle:vertical:hover { background: #2b4a66; }
+QScrollBar:horizontal { background: transparent; height: 10px; margin: 0; }
+QScrollBar::handle:horizontal { background: #33506b; border-radius: 4px; min-width: 24px; }
 QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
-QStatusBar { color: #9fb6cc; background: #07111a; }
+QStatusBar { color: #9fb6cc; background: #040a11; }
 /* Pop-up dialogs (confirm/prompt/warning) are top-level windows that do NOT inherit
    this window's stylesheet, so they render with the white OS default unless this sheet
    is applied to them directly — see _themed_messagebox / the New Person prompt. */
 QMessageBox, QInputDialog, QDialog {
-    background: #0b1824;
+    background: #0b1722;
     color: #d9e3ee;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     font-size: 13px;
@@ -174,10 +176,10 @@ def _hline() -> QFrame:
 # Bold-red styling for destructive actions — the pale text-only red read as greyed-out.
 _DANGER_QSS = (
     "QPushButton {"
-    " min-height:30px; padding:4px 14px; background:#c62828; color:#ffffff;"
-    " font-weight:800; border:1px solid #ff5252; border-radius:5px; }"
-    "QPushButton:hover { background:#e53935; border:1px solid #ff8a80; }"
-    "QPushButton:pressed { background:#8e0000; }"
+    " min-height:30px; padding:4px 14px; background:#7a1f1f; color:#ffffff;"
+    " font-weight:800; border:1px solid #a23a3a; border-radius:2px; }"
+    "QPushButton:hover { background:#9a2a2a; border:1px solid #d05a5a; }"
+    "QPushButton:pressed { background:#5e1414; }"
 )
 
 
@@ -248,6 +250,9 @@ class MemoryBanksWindow(QMainWindow):
         splitter.addWidget(self._build_detail_panel())
         splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 6)
+        # Stretch factors only shape RESIZES; without initial sizes the left column
+        # opens at its size hint (~320px) and the detail pane is a wasteland.
+        splitter.setSizes([460, 820])
 
         bottom = QHBoxLayout()
         bottom.addStretch(1)
@@ -300,8 +305,15 @@ class MemoryBanksWindow(QMainWindow):
     def _build_detail_panel(self) -> QWidget:
         self.detail = QStackedWidget()
 
-        # 0 — placeholder
-        placeholder = QLabel("Select a memory or a person on the left to view and edit it.")
+        # 0 — placeholder (themed empty state, not a bare line of grey text)
+        placeholder = QLabel(
+            "<div style='text-align:center;'>"
+            "<span style='font-size:44px; color:#24486b;'>⌈ 🧠 ⌉</span><br/><br/>"
+            "<span style='font-size:15px; font-weight:800; color:#e08428; letter-spacing:2px;'>"
+            "MEMORY BANKS</span><br/><br/>"
+            "<span style='color:#8ba0b5;'>Select one of R3X's memories or a person on the left<br/>"
+            "to view and edit it.</span></div>"
+        )
         placeholder.setObjectName("memMeta")
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.detail.addWidget(placeholder)

@@ -347,7 +347,7 @@ class JeopardyPanel(QWidget):
         label = QRectF(rect.left() + 14, rect.top() + 8, rect.width() - 28, name_h)
         painter.setPen(QPen(QColor("#14191f"), 2))
         painter.setBrush(QColor(color if enrolled else "#1c355a"))
-        painter.drawRoundedRect(label, 6, 6)
+        painter.drawRoundedRect(label, 2, 2)
         painter.setPen(QColor("#f8fbff"))
         font = QFont()
         font.setPointSize(max(10, int(min(15, label.width() / 10))))
@@ -361,14 +361,14 @@ class JeopardyPanel(QWidget):
         grad.setColorAt(1, QColor(color).darker(120) if enrolled else QColor("#05101d"))
         painter.setPen(QPen(QColor(color if enrolled else "#39516d"), 2))
         painter.setBrush(grad)
-        painter.drawRoundedRect(portrait, 7, 7)
+        painter.drawRoundedRect(portrait, 2, 2)
         self._draw_silhouette(painter, portrait, QColor(color if enrolled else "#2d587c"))
 
         score = QRectF(rect.left() + 14, rect.bottom() - 58, rect.width() - 28, 46)
         painter.setPen(QPen(QColor("#222830"), 2))
         painter.setBrush(QColor("#020304"))
-        painter.drawRoundedRect(score, 5, 5)
-        painter.setPen(QColor("#f7f7f7"))
+        painter.drawRoundedRect(score, 2, 2)
+        painter.setPen(QColor("#ffb21e"))
         font.setPointSize(22)
         font.setBold(True)
         painter.setFont(font)
@@ -427,21 +427,21 @@ class JeopardyPanel(QWidget):
         painter.drawText(rect.adjusted(8, 0, -8, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"ROUND {round_no}  ·  {phase}")
 
     def _metal_panel(self, painter: QPainter, rect: QRectF, *, radius: float = 8, active: bool = False) -> None:
-        grad = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        grad.setColorAt(0, QColor("#5e6468"))
-        grad.setColorAt(0.45, QColor("#25292c"))
-        grad.setColorAt(1, QColor("#111417"))
-        painter.setPen(QPen(QColor("#9aa1a6") if active else QColor("#343a40"), 2))
-        painter.setBrush(grad)
-        painter.drawRoundedRect(rect, radius, radius)
+        """Console holo panel — same cut-corner chrome as the dashboard."""
+        del radius
+        theme.paint_panel_chrome(painter, rect)
+        if active:
+            painter.setPen(QPen(QColor(theme.AMBER), 2.4))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(theme.panel_path(rect.adjusted(1.5, 1.5, -1.5, -1.5)))
 
     def _blue_panel(self, painter: QPainter, rect: QRectF, *, dim: bool = False) -> None:
-        grad = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        grad.setColorAt(0, QColor("#053b92") if not dim else QColor("#06162d"))
-        grad.setColorAt(1, QColor("#001748") if not dim else QColor("#030914"))
-        painter.setPen(QPen(QColor("#0a0f18"), 2))
+        grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        grad.setColorAt(0, QColor("#0a2f74") if not dim else QColor("#081527"))
+        grad.setColorAt(1, QColor("#03153c") if not dim else QColor("#04090f"))
+        painter.setPen(QPen(QColor("#1b3f78") if not dim else QColor("#12233a"), 1.4))
         painter.setBrush(grad)
-        painter.drawRoundedRect(rect, 3, 3)
+        painter.drawRoundedRect(rect, 2, 2)
 
 
 def _phase_prompt(state: dict[str, Any]) -> str:
