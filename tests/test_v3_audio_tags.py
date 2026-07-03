@@ -88,6 +88,60 @@ class StabilityPinTest(unittest.TestCase):
             self.assertEqual(tts._pin_v3_stability({"stability": 0.3})["stability"], 0.3)
 
 
+class SeedTest(unittest.TestCase):
+    """A fixed v3 seed keeps the voice consistent across separate per-sentence API calls."""
+
+    def test_seed_only_on_v3(self):
+        with mock.patch.object(config, "TTS_V3_SEED", 42):
+            self.assertEqual(tts._v3_seed("eleven_v3"), 42)
+            self.assertIsNone(tts._v3_seed("eleven_multilingual_v2"))
+
+    def test_seed_none_disables(self):
+        with mock.patch.object(config, "TTS_V3_SEED", None):
+            self.assertIsNone(tts._v3_seed("eleven_v3"))
+
+    def test_seed_folded_into_cache_key(self):
+        with mock.patch.object(config, "TTS_V3_SEED", 42):
+            a = tts._cache_path("hi", "vid", "eleven_v3", {"stability": 0.5})
+        with mock.patch.object(config, "TTS_V3_SEED", 99):
+            b = tts._cache_path("hi", "vid", "eleven_v3", {"stability": 0.5})
+        self.assertNotEqual(a, b)   # different seed -> different cache entry
+
+    def test_seed_sent_to_api_for_v3(self):
+        captured = {}
+
+        class _FakeTTS:
+            def stream(self, **kwargs):
+                captured.update(kwargs)
+                return [b"x"]
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                self.text_to_speech = _FakeTTS()
+
+        with mock.patch.object(config, "TTS_V3_SEED", 42), \
+             mock.patch("elevenlabs.ElevenLabs", _FakeClient):
+            tts._fetch_from_api("hello", "vid", "eleven_v3", {"stability": 0.5})
+        self.assertEqual(captured.get("seed"), 42)
+
+    def test_no_seed_for_non_v3(self):
+        captured = {}
+
+        class _FakeTTS:
+            def stream(self, **kwargs):
+                captured.update(kwargs)
+                return [b"x"]
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                self.text_to_speech = _FakeTTS()
+
+        with mock.patch.object(config, "TTS_V3_SEED", 42), \
+             mock.patch("elevenlabs.ElevenLabs", _FakeClient):
+            tts._fetch_from_api("hello", "vid", "eleven_multilingual_v2", {"stability": 0.5})
+        self.assertNotIn("seed", captured)
+
+
 class StripTagsTest(unittest.TestCase):
     def test_strips_all_tags(self):
         self.assertEqual(

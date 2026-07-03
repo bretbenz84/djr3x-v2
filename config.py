@@ -1205,6 +1205,12 @@ TTS_V3_AUDIO_TAGS_ENABLED = True
 # 0.5 = Natural: steady between lines but still responsive to audio tags (only HIGH/Robust mutes
 # tags, per the best-practices doc). Set to None to fall back to the per-emotion v2-style values.
 TTS_V3_STABILITY = 0.5
+# v3 re-rolls fresh randomness on EVERY request, and we stream a reply sentence-by-sentence — each
+# sentence is a separate API call — so even with identical settings Rex's voice drifts take-to-take
+# ("a different voice each sentence"). A FIXED seed pins that randomness so consecutive generations
+# share one vocal character. It also makes our audio cache fully deterministic. The exact value is
+# arbitrary (0..4294967295) — just keep it fixed. Set to None to let the API randomize each call.
+TTS_V3_SEED = 42
 # Owner-approved palette (the official v3 tags that sounded like Rex). Only these may ship; a mapped
 # or model-emitted tag outside this set is dropped.
 TTS_V3_TAG_WHITELIST = {

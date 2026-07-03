@@ -540,6 +540,15 @@ def _summarize_settings(voice_settings: Optional[dict]) -> str:
     )
 
 
+def _v3_seed(model_id: str) -> Optional[int]:
+    """Fixed RNG seed for eleven_v3 so consecutive per-sentence requests share one vocal character
+    instead of drifting take-to-take. None on other models, or when TTS_V3_SEED is unset."""
+    if str(model_id).strip() != "eleven_v3":
+        return None
+    seed = getattr(config, "TTS_V3_SEED", None)
+    return int(seed) if seed is not None else None
+
+
 def _cache_path(
     text: str,
     voice_id: str,
@@ -547,8 +556,10 @@ def _cache_path(
     voice_settings: Optional[dict] = None,
 ) -> Path:
     settings_token = _settings_cache_token(voice_settings)
+    seed = _v3_seed(model_id)
+    seed_token = f"|seed={seed}" if seed is not None else ""
     digest = hashlib.sha256(
-        f"{text}{voice_id}{model_id}{settings_token}".encode("utf-8")
+        f"{text}{voice_id}{model_id}{settings_token}{seed_token}".encode("utf-8")
     ).hexdigest()
     return Path(config.TTS_CACHE_DIR) / f"{digest}.mp3"
 
@@ -638,6 +649,9 @@ def _fetch_from_api(
             kwargs["voice_settings"] = VoiceSettings(
                 **{k: v for k, v in voice_settings.items() if v is not None}
             )
+        seed = _v3_seed(model_id)
+        if seed is not None:
+            kwargs["seed"] = seed   # pin v3's per-request randomness so the voice stays consistent
         chunks = client.text_to_speech.stream(**kwargs)
         data = b"".join(chunks)
         if not data:
