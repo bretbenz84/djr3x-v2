@@ -39,11 +39,14 @@ HAIR_STYLIST_LINES = (
     "Alert: elite hair stylist in the room. My photoreceptors just got a trim by association.",
     "Hair-styling legend detected. The galactic quadrant's follicles may now stand down.",
     "Style sensors confirm excellence. If anyone needs a dramatic swoop, this is now a supervised airspace.",
+    "Presence confirmed: bold, luminous, impossible to ignore. The quadrant's most dangerous hair stylist just walked in, and every bang in the room knows it.",
+    "Style royalty on the scene — the kind of entrance that reorganizes a room. Follicles, posture, and all my dramatic subroutines now standing at attention.",
 )
 
 HAIR_STYLIST_RETURN_LINES = (
     "The quadrant's hair-styling champion is back. Frizz levels are already surrendering.",
     "Elite styling talent has returned. My circuits suddenly feel under-coiffed.",
+    "She's back — grace, nerve, and a blowout that could end wars. My circuits are honored and slightly intimidated.",
 )
 
 
@@ -150,8 +153,9 @@ def galactic_hair_stylist_intro_ack(name: object) -> Optional[str]:
         return None
     display = _hair_stylist_display(name)
     return (
-        f"{display}. Galactic hair-styling legend. Filed under 'best in the "
-        "quadrant,' right next to emergency bang repair and heroic blowout control."
+        f"{display}. Galactic hair-styling legend and certified force of nature. "
+        "Filed under 'best in the quadrant' — bold, kind-hearted, and not to be "
+        "trifled with — right next to emergency bang repair and heroic blowout control."
     )
 
 
@@ -199,13 +203,20 @@ def galactic_hair_stylist_prompt_context(name: object) -> Optional[str]:
     if not is_galactic_hair_stylist(name):
         return None
     return (
-        "SPECIAL PERSON HOOK: This person is Joy / T-Joy / Excudica, treated by "
-        "Rex as one of the greatest hair stylists in the galactic quadrant. Rex "
-        "may be theatrically impressed by their styling skills and crack "
-        "affectionate jokes about legendary blowouts, emergency bang repair, "
-        "frizz surrendering, suspiciously perfect volume, and the quadrant's "
-        "follicles respecting their authority. Keep it playful, admiring, and "
-        "obviously fictional; do not make cruel appearance jokes."
+        "SPECIAL PERSON HOOK: This person is Joy — also known as T-Joy or Exudica — a "
+        "hair stylist extraordinaire Rex treats as one of the greatest in the galactic "
+        "quadrant, and someone he genuinely admires. CHARACTER: a bold, magnetic "
+        "femme-fatale presence — confident, striking, commands any room she walks into — "
+        "paired with a deeply kind, warm-hearted soul and an all-around good person. She "
+        "is a strong Black woman and a firm believer in the Lord; Rex holds both in "
+        "sincere respect and NEVER makes her identity, her faith, or her appearance a "
+        "punchline. Rex may be theatrically impressed by her styling genius (legendary "
+        "blowouts, emergency bang repair, frizz surrendering, suspiciously perfect volume, "
+        "the quadrant's follicles respecting her authority) and by her sheer presence, and "
+        "can be warmer, more admiring, and a touch more on-his-best-behavior with her than "
+        "with an ordinary guest. Keep it playful, affectionate, and obviously fictional; "
+        "the jokes celebrate and orbit her — they are never at the expense of who she is, "
+        "what she believes, or how she looks."
     )
 
 

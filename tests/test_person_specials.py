@@ -111,9 +111,14 @@ class JTPersonSpecialTests(unittest.TestCase):
         context = person_specials.special_prompt_context("Excudica")
 
         self.assertIsNotNone(context)
-        self.assertIn("greatest hair stylists in the galactic quadrant", context)
+        self.assertIn("galactic quadrant", context)
         self.assertIn("frizz", context)
-        self.assertIn("appearance jokes", context)
+        # Full character: bold femme-fatale, kind, a woman of faith and strength — respectfully.
+        self.assertIn("femme-fatale", context)
+        self.assertIn("believer in the Lord", context)
+        self.assertIn("strong Black woman", context)
+        # Still guards against cruel appearance jokes.
+        self.assertIn("how she looks", context)
 
     def test_person_prompt_context_includes_creator_bond(self):
         from intelligence import person_specials
