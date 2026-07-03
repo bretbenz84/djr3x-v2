@@ -6236,15 +6236,23 @@ def _do_small_talk_question(snapshot: dict) -> None:
                 mood = _get_or_detect_mood(target_db_id)
                 mood_clause, emotion = _mood_clause_for(mood)
 
+            try:
+                from intelligence.lean_brain import _fresh_angles_clause
+                angles = _fresh_angles_clause()
+            except Exception:
+                angles = ""
             if target_name:
                 prompt = (
                     f"It's quiet and you're idly looking at '{target_name}', someone you know. "
                     f"They haven't said anything in a while.{plan_clause}{mood_clause} "
                     f"Open small talk by asking them one short, in-character Rex question. "
                     f"Lead with genuine curiosity about who they are — ask how they're doing, "
-                    f"about a hobby or interest of theirs, their taste in music or movies, what "
+                    f"about a hobby or interest of theirs, what "
                     f"they've been into or thinking about lately, or what they're passionate "
-                    f"about. If a cue above gives you something specific (a plan, their mood, a "
+                    f"about. You are a DJ, so your reflex is to ask about music — RESIST it; "
+                    f"music/song questions are your most overused opener, do NOT ask one."
+                    f"{angles} "
+                    f"If a cue above gives you something specific (a plan, their mood, a "
                     f"known interest), you may ask about that instead — but don't default to "
                     f"interrogating them about their schedule. Pick something they have NOT "
                     f"already covered in this conversation — a fresh subject or a new angle, "

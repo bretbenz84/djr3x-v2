@@ -26,6 +26,7 @@ exercised only by the offline A/B harness tools/lean_replay.py.
 from __future__ import annotations
 
 import logging
+import random
 import re
 import time
 from typing import Generator, Optional
@@ -331,8 +332,11 @@ _IMPULSE_INSTRUCTION = (
     "closed quip. Reach for whichever fits this moment: a genuine NEW question, a natural pivot to "
     "something the moment invites (what you SEE right now — their expression, what they're doing, an "
     "object, the room — or the day / the occasion / the time), or the thing YOU'VE been chewing on "
-    "(your own take or tangent). "
-    "Hard rules: do NOT comment on the silence or on them going quiet ('you've gone quiet on me', "
+    "(your own take or tangent).{angles} "
+    "Hard rules: you are a DJ, so your REFLEX is to ask about music — RESIST it. Music / song / "
+    "playlist / soundtrack questions are your single most overused opener; do NOT ask one (music is "
+    "only fair game if THEY brought it up this conversation). Do NOT comment on the silence or on "
+    "them going quiet ('you've gone quiet on me', "
     "'you've gone suspiciously quiet', 'quiet-night energy', 'cat got your tongue') — a short pause "
     "needs no remarking on and calling it out reads as needy; just OPEN something real instead. Do "
     "NOT reheat a spent topic — not the one you were just discussing (the burger, say), NOT a thread "
@@ -357,12 +361,51 @@ _REENGAGE_INSTRUCTION = (
     "{situation}"
     "Bring up something genuinely NEW and easy to pick up — a fresh question, a different subject, "
     "something you're honestly curious about, or a light read on what you SEE right now. Give them "
-    "an obvious open door to walk through. Warm and unforced — not needy, not clingy, not a comment "
-    "about how quiet it is. Do NOT reheat anything from earlier or a thread you already tried, do "
+    "an obvious open door to walk through.{angles} Warm and unforced — not needy, not clingy, not a "
+    "comment about how quiet it is. You are a DJ, so your reflex is to ask about music — RESIST it; "
+    "music/song/playlist questions are your most overused opener, so do NOT ask one (music is only "
+    "fair game if THEY brought it up this conversation). Do NOT reheat anything from earlier or a "
+    "thread you already tried, do "
     "NOT touch anything under 'ALREADY COVERED' above (that's the every-run repeat to avoid — "
     "including their holiday/weekend plans if those are listed), and do NOT drag up a stored hobby "
     "they never raised. If there's genuinely nothing worth opening, reply PASS."
 )
+
+
+# Rotating inspiration for the lull-breakers. The instruction prompt used to be IDENTICAL every
+# call, so the model kept converging on its strongest persona default: music questions ("what song
+# survives your veto process?" every single lull — owner: "usually around music and not very
+# interesting"). Sampling a few concrete non-music angles per call varies the prompt itself, which
+# is what actually varies the output. Angles are suggestions, not scripts — the model may ignore
+# them when the moment offers something better (a plan follow-up, something it sees).
+_FRESH_ANGLES = (
+    "the best or dumbest part of their day so far",
+    "the last thing they ate that was actually worth it — or a food crime they'd defend",
+    "a small opinion they hold with suspicious intensity",
+    "what they're building or working on lately, and what part is fighting back",
+    "a would-you-rather with two genuinely bad options — make them pick",
+    "the object near them with the most suspicious backstory",
+    "the most interesting character they've crossed paths with lately",
+    "the weirdest thing they've seen all week",
+    "the next thing they're honestly looking forward to (skip if their plans are ALREADY COVERED)",
+    "something about organic life that genuinely confuses you, a droid — ask them to explain it",
+    "the one skill they'd download into their brain right now",
+    "the last thing that made them actually laugh",
+    "where they'd teleport right now if they could",
+    "what they've been watching, reading, or playing — and whether it's any good",
+    "something they were unreasonably obsessed with as a kid",
+    "a petty either/or between two everyday things — which wins and why",
+    "the most useless purchase they secretly love",
+    "what their perfect lazy day actually looks like",
+)
+
+
+def _fresh_angles_clause(rng: Optional[random.Random] = None) -> str:
+    picks = (rng or random).sample(_FRESH_ANGLES, k=3)
+    return (
+        " If nothing in the moment jumps out, tonight's fresh angles — pick AT MOST one, only if "
+        "it fits naturally: (a) " + picks[0] + "; (b) " + picks[1] + "; (c) " + picks[2] + "."
+    )
 
 
 def _scene_summary(world: Optional[dict]) -> str:
@@ -455,7 +498,9 @@ def consider_initiating(
                 who = "them"
         template = _REENGAGE_INSTRUCTION if long_silence else _IMPULSE_INSTRUCTION
         instruction = template.format(
-            who=who, situation=_situation_block(person_id, world, quiet_secs, mood)
+            who=who,
+            situation=_situation_block(person_id, world, quiet_secs, mood),
+            angles=_fresh_angles_clause(),
         )
         messages: list[dict] = [{"role": "system", "content": _persona()}]
         keep = max(0, int(getattr(config, "LEAN_BRAIN_TRANSCRIPT_TURNS", 8)))

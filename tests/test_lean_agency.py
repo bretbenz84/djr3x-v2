@@ -51,6 +51,28 @@ class ImpulseDecisionParsingTest(unittest.TestCase):
             self.assertEqual(lean_brain.consider_initiating(person_id=None, transcript=[]),
                              "Nice hat, Bret.")
 
+    def test_lull_instruction_resists_music_and_rotates_angles(self):
+        # The lull-breaker kept asking music questions every silence (DJ persona default on an
+        # identical prompt). The instruction must carry the anti-music-reflex rule and a SAMPLED
+        # fresh-angles menu so the prompt (and thus the questions) vary run to run.
+        captured = []
+
+        def fake_create(client, **kwargs):
+            captured.append(kwargs["messages"][-1]["content"])
+            return _one_chunk_stream("PASS")
+
+        with mock.patch.object(lean_brain.llm_compat, "create", side_effect=fake_create):
+            for long_silence in (False, True):
+                lean_brain.consider_initiating(
+                    person_id=None, transcript=[], long_silence=long_silence
+                )
+        for instruction in captured:
+            self.assertIn("RESIST", instruction)
+            self.assertIn("fresh angles", instruction)
+        # sampling varies the clause across calls (statistically: 3 of 18 angles)
+        clauses = {lean_brain._fresh_angles_clause() for _ in range(12)}
+        self.assertGreater(len(clauses), 1)
+
 
 class ImpulseBackoffTest(unittest.TestCase):
     """Talking into the void: Rex breaks a lull once or twice, then goes quiet until the user
