@@ -1259,7 +1259,7 @@ TTS_V3_STABILITY = 0.5
 # ("a different voice each sentence"). A FIXED seed pins that randomness so consecutive generations
 # share one vocal character. It also makes our audio cache fully deterministic. The exact value is
 # arbitrary (0..4294967295) — just keep it fixed. Set to None to let the API randomize each call.
-TTS_V3_SEED = 42
+TTS_V3_SEED = 1440639067
 # Request stitching — the ACTUAL fix for "voice changes each sentence." We stream a reply as
 # separate per-sentence API calls, which ElevenLabs calls "splitting up a large task into multiple
 # requests." Passing each sentence the text that came before it (previous_text) lets v3 condition on
