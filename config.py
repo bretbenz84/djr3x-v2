@@ -1198,8 +1198,13 @@ TTS_MODEL_ID = "eleven_v3"
 # injects into the synthesized text only; callers log their own clean text). Kill switch → exact
 # prior behavior.
 TTS_V3_AUDIO_TAGS_ENABLED = True
-# The docs' #1 rule: HIGH stability MUTES tags. Pin any tagged line to Creative so the tag lands.
-TTS_V3_TAG_STABILITY = 0.35
+# v3's `stability` is a 3-way preset slider (Creative≈0.0 / Natural≈0.5 / Robust≈1.0), NOT the
+# continuous knob v2 used. At low/varying stability v3 regenerates each line very differently —
+# Rex ends up sounding like a different voice sentence to sentence. So on v3 we IGNORE the per-
+# emotion/per-comedy stability deltas (those were tuned for v2) and pin EVERY line to one value.
+# 0.5 = Natural: steady between lines but still responsive to audio tags (only HIGH/Robust mutes
+# tags, per the best-practices doc). Set to None to fall back to the per-emotion v2-style values.
+TTS_V3_STABILITY = 0.5
 # Owner-approved palette (the official v3 tags that sounded like Rex). Only these may ship; a mapped
 # or model-emitted tag outside this set is dropped.
 TTS_V3_TAG_WHITELIST = {

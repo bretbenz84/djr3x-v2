@@ -2,7 +2,8 @@
 
 Tags shape delivery at synthesis but must NEVER reach the transcript/log. The mapping is:
 comedy_mode (sarcasm/mischief) wins, else the reply emotion, else nothing (neutral/sincere).
-Stability is pinned to Creative on any tagged line (high stability mutes tags per the v3 docs).
+On eleven_v3 stability is pinned globally to one Natural preset (0.5) so Rex's voice is
+consistent line to line; Natural still lets tags land (only HIGH/Robust stability mutes them).
 """
 
 import unittest
@@ -31,15 +32,16 @@ class ResolveTagTest(unittest.TestCase):
 
 
 class ApplyTagsTest(unittest.TestCase):
-    def test_prepends_and_pins_stability(self):
+    def test_prepends_tag_and_leaves_stability_alone(self):
+        # Stability is owned by _pin_v3_stability now, not the tag layer.
         text, vs = tts._apply_audio_tags("A bold plan.", "neutral", "smug_superiority", {"stability": 0.7})
         self.assertEqual(text, "[sarcastic] A bold plan.")
-        self.assertEqual(vs["stability"], config.TTS_V3_TAG_STABILITY)
+        self.assertEqual(vs["stability"], 0.7)
 
     def test_untagged_line_is_unchanged(self):
         text, vs = tts._apply_audio_tags("Just the facts.", "neutral", "dry_ack", {"stability": 0.7})
         self.assertEqual(text, "Just the facts.")
-        self.assertEqual(vs["stability"], 0.7)   # not pinned when no tag
+        self.assertEqual(vs["stability"], 0.7)
 
     def test_non_whitelisted_inline_tag_dropped(self):
         text, _ = tts._apply_audio_tags("[annoyed] Sure. [sarcastic] Fine.", "neutral", None, {})
@@ -56,6 +58,34 @@ class ApplyTagsTest(unittest.TestCase):
         with mock.patch.object(config, "TTS_MODEL_ID", "eleven_multilingual_v2"):
             text, _ = tts._apply_audio_tags("A bold plan.", "neutral", "smug_superiority", {})
         self.assertEqual(text, "A bold plan.")   # v2 would speak the brackets — never tag it
+
+
+class StabilityPinTest(unittest.TestCase):
+    """v3 pins stability to one preset so Rex doesn't sound like a different voice each sentence."""
+
+    def test_v3_forces_fixed_stability_over_emotion_value(self):
+        with mock.patch.object(config, "TTS_MODEL_ID", "eleven_v3"), \
+             mock.patch.object(config, "TTS_V3_STABILITY", 0.5):
+            # An excited line would otherwise carry stability 0.30 from the per-style table.
+            vs = tts._resolve_voice_settings("excited", None)
+            self.assertEqual(vs["stability"], 0.5)
+
+    def test_v3_forces_fixed_stability_on_explicit_override(self):
+        with mock.patch.object(config, "TTS_MODEL_ID", "eleven_v3"), \
+             mock.patch.object(config, "TTS_V3_STABILITY", 0.5):
+            vs = tts._resolve_voice_settings("neutral", {"stability": 0.66, "style": 0.2})
+            self.assertEqual(vs["stability"], 0.5)
+            self.assertEqual(vs["style"], 0.2)   # only stability is overridden
+
+    def test_pin_is_noop_on_non_v3_model(self):
+        with mock.patch.object(config, "TTS_MODEL_ID", "eleven_multilingual_v2"), \
+             mock.patch.object(config, "TTS_V3_STABILITY", 0.5):
+            self.assertEqual(tts._pin_v3_stability({"stability": 0.3})["stability"], 0.3)
+
+    def test_pin_disabled_when_stability_none(self):
+        with mock.patch.object(config, "TTS_MODEL_ID", "eleven_v3"), \
+             mock.patch.object(config, "TTS_V3_STABILITY", None):
+            self.assertEqual(tts._pin_v3_stability({"stability": 0.3})["stability"], 0.3)
 
 
 class StripTagsTest(unittest.TestCase):

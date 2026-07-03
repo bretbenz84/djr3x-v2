@@ -127,14 +127,30 @@ def _resolve_voice_settings(
     An explicit override (empathy/grief delivery shaping) always wins. Otherwise
     the settings are derived from the emotion frame's voice_style so normal lines
     carry Rex's expressive baseline instead of the voice clone's flat defaults.
+
+    On eleven_v3, stability is finally pinned to one fixed preset (see
+    _pin_v3_stability): the per-emotion/per-comedy stability deltas were tuned for
+    v2's continuous knob and make v3 sound like a different voice each sentence.
     """
     if override:
-        return override
+        return _pin_v3_stability(override)
     try:
-        return emotion_orchestrator.voice_settings_for_emotion(emotion)
+        return _pin_v3_stability(emotion_orchestrator.voice_settings_for_emotion(emotion))
     except Exception as exc:
         logger.debug("[tts] voice settings resolution failed: %s", exc)
-        return None
+        return _pin_v3_stability(None)   # still pin v3 stability even if emotion resolution fails
+
+
+def _pin_v3_stability(voice_settings: Optional[dict]) -> Optional[dict]:
+    """On eleven_v3, force `stability` to the single configured preset (config.TTS_V3_STABILITY)
+    so Rex's voice is consistent line to line. No-op on other models, or when TTS_V3_STABILITY is
+    None. This is the ONE choke point every synthesis path passes through."""
+    if str(getattr(config, "TTS_MODEL_ID", "")).strip() != "eleven_v3":
+        return voice_settings
+    fixed = getattr(config, "TTS_V3_STABILITY", None)
+    if fixed is None:
+        return voice_settings
+    return {**(voice_settings or {}), "stability": float(fixed)}
 
 
 # ── Eleven v3 audio tags ─────────────────────────────────────────────────────
@@ -177,22 +193,18 @@ def _apply_audio_tags(
     """Return (text-for-ElevenLabs, voice_settings) with a v3 audio tag applied. Used by BOTH speak
     and ensure_cached so their cache keys match. No-op unless v3 tags are active. Keeps only
     whitelisted inline tags (model-emitted, a later phase), else prepends the affect-mapped leading
-    tag, and PINS stability to Creative on any tagged line (high stability mutes tags per the docs)."""
+    tag. Stability is NOT touched here — it is pinned globally by _pin_v3_stability to the Natural
+    preset, which still lets tags land (only HIGH/Robust stability mutes them)."""
     if not _v3_tags_active():
         return spoken_text, voice_settings
     whitelist = getattr(config, "TTS_V3_TAG_WHITELIST", set()) or set()
     text = _AUDIO_TAG_RE.sub(
         lambda m: m.group(0) if m.group(1).strip().lower() in whitelist else "", spoken_text
     )
-    has_tag = bool(_AUDIO_TAG_RE.search(text))
-    if not has_tag:
+    if not _AUDIO_TAG_RE.search(text):
         tag = resolve_audio_tag(emotion, comedy_mode)
         if tag:
             text = f"[{tag}] {text.lstrip()}"
-            has_tag = True
-    if has_tag:
-        stability = float(getattr(config, "TTS_V3_TAG_STABILITY", 0.35))
-        voice_settings = {**(voice_settings or {}), "stability": stability}
     return re.sub(r"\s{2,}", " ", text).strip(), voice_settings
 
 
