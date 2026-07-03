@@ -130,6 +130,7 @@ class _Item:
         "neg_priority", "seq", "text", "emotion", "audio_path",
         "done", "tag", "pre_beat_ms", "post_beat_ms", "voice_settings",
         "on_start", "log_text", "on_audio_end",
+        "comedy_mode", "suppress_audio_tag",
     )
 
     def __init__(
@@ -147,6 +148,8 @@ class _Item:
         on_start: Optional[Callable[[], None]] = None,
         log_text: bool = True,
         on_audio_end: Optional[Callable[[], None]] = None,
+        comedy_mode: Optional[str] = None,
+        suppress_audio_tag: bool = False,
     ) -> None:
         self.neg_priority = -priority
         self.seq = seq
@@ -161,6 +164,8 @@ class _Item:
         self.on_start = on_start
         self.log_text = log_text
         self.on_audio_end = on_audio_end
+        self.comedy_mode = comedy_mode
+        self.suppress_audio_tag = suppress_audio_tag
 
     def __lt__(self, other: "_Item") -> bool:
         if self.neg_priority != other.neg_priority:
@@ -204,6 +209,8 @@ class _SpeechQueue:
         on_start: Optional[Callable[[], None]] = None,
         log_text: bool = True,
         on_audio_end: Optional[Callable[[], None]] = None,
+        comedy_mode: Optional[str] = None,
+        suppress_audio_tag: bool = False,
     ) -> threading.Event:
         """Enqueue text for TTS. Returns an Event set when playback finishes.
 
@@ -223,7 +230,7 @@ class _SpeechQueue:
         return self._add(
             text, emotion, None, priority, tag,
             pre_beat_ms, post_beat_ms, voice_settings, on_start, log_text,
-            on_audio_end,
+            on_audio_end, comedy_mode, suppress_audio_tag,
         )
 
     def enqueue_audio_file(
@@ -299,6 +306,8 @@ class _SpeechQueue:
         on_start: Optional[Callable[[], None]] = None,
         log_text: bool = True,
         on_audio_end: Optional[Callable[[], None]] = None,
+        comedy_mode: Optional[str] = None,
+        suppress_audio_tag: bool = False,
     ) -> threading.Event:
         done = threading.Event()
         if _state_suppresses_output():
@@ -336,7 +345,7 @@ class _SpeechQueue:
                 self._heap,
                 _Item(priority, seq, text, emotion, audio_path, done, tag,
                       pre_beat_ms, post_beat_ms, voice_settings, on_start, log_text,
-                      on_audio_end),
+                      on_audio_end, comedy_mode, suppress_audio_tag),
             )
             self._not_empty.notify()
 
@@ -455,6 +464,8 @@ class _SpeechQueue:
                         voice_settings=item.voice_settings,
                         on_playback_start=_fire_item_start,
                         log_text=item.log_text,
+                        comedy_mode=item.comedy_mode,
+                        suppress_audio_tag=item.suppress_audio_tag,
                         **_playback_handoff_options(item.text),
                     )
 
@@ -624,11 +635,13 @@ def enqueue(
     on_start: Optional[Callable[[], None]] = None,
     log_text: bool = True,
     on_audio_end: Optional[Callable[[], None]] = None,
+    comedy_mode: Optional[str] = None,
+    suppress_audio_tag: bool = False,
 ) -> threading.Event:
     """Enqueue text for TTS speech. Returns an Event set when playback finishes."""
     return _queue.enqueue(
         text, emotion, priority, tag, pre_beat_ms, post_beat_ms,
-        voice_settings, on_start, log_text, on_audio_end,
+        voice_settings, on_start, log_text, on_audio_end, comedy_mode, suppress_audio_tag,
     )
 
 

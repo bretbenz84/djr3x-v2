@@ -55,7 +55,7 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 
 # ElevenLabs voice — the cloned-voice id Rex speaks with (from your ElevenLabs
 # account after cloning). TTS_MODEL_ID is the ElevenLabs engine.
-# ELEVENLABS_VOICE_ID = "kb9LZZlhckjFQsP89t9T"
+ELEVENLABS_VOICE_ID = "no5jvDWvnx2leN3dFOS7"
 # TTS_MODEL_ID = "eleven_multilingual_v2"
 
 # ═════════════════════════════════════════════════════════════════════════════

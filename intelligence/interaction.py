@@ -2003,6 +2003,7 @@ def _speak_blocking(
     voice_settings: Optional[dict] = None,
     log_text: bool = True,
     on_audio_end=None,
+    comedy_mode: Optional[str] = None,
 ) -> bool:
     """
     Enqueue text for speech and block until playback finishes, monitoring for
@@ -2050,6 +2051,7 @@ def _speak_blocking(
         on_start=_on_playback_start if trace is not None else None,
         log_text=log_text,
         on_audio_end=on_audio_end,
+        comedy_mode=comedy_mode,
     )
 
     while not done.wait(timeout=0.05):
@@ -10308,6 +10310,7 @@ def _stream_llm_response(
             pre_beat_ms=pre_beat_ms,
             post_beat_ms_override=delivery_post_beat_ms,
             voice_settings=delivery_voice_settings,
+            comedy_mode=getattr(comedy_mode, "key", None),
         )
         if turn_start is not None:
             _latency_log(turn_start, "tts_playback_complete", speak_started)
@@ -10513,7 +10516,9 @@ def _prefetch_stream_audio(
     def _run() -> None:
         try:
             from audio import tts
-            tts.ensure_cached(text, voice_settings=voice_settings, emotion=emotion)
+            # Only 2nd+ sentences of a reply are prefetched, and those suppress the audio tag —
+            # match that here so the warmed cache key equals what the suppressed enqueue looks up.
+            tts.ensure_cached(text, voice_settings=voice_settings, emotion=emotion, suppress_audio_tag=True)
         except Exception as exc:
             _log.debug("[interaction] stream prefetch failed: %s", exc)
 
@@ -10698,6 +10703,10 @@ def _stream_and_speak_sentences(
             voice_settings=delivery_voice_settings,
             on_start=on_start,
             log_text=False,  # the whole turn is logged once below
+            # One v3 audio tag per reply, on the FIRST sentence only (from the comedy stance +
+            # emotion); later sentences suppress it so [sarcastic] doesn't repeat every sentence.
+            comedy_mode=getattr(comedy_mode, "key", None),
+            suppress_audio_tag=not state["first"],
         )
         done_events.append(done)
         spoken.append(prepared)

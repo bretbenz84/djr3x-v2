@@ -231,7 +231,7 @@ class StreamingOrchestrationTest(unittest.TestCase):
 
         def fake_enqueue(text, emotion, *, priority=1, pre_beat_ms=0,
                          post_beat_ms=0, voice_settings=None, on_start=None,
-                         log_text=True):
+                         log_text=True, **kwargs):
             enqueued.append({
                 "text": text, "emotion": emotion, "priority": priority,
                 "pre_beat_ms": pre_beat_ms, "post_beat_ms": post_beat_ms,
@@ -273,7 +273,7 @@ class StreamingOrchestrationTest(unittest.TestCase):
         enqueued = []
 
         def fake_enqueue(text, emotion, *, priority=1, pre_beat_ms=0, post_beat_ms=0,
-                         voice_settings=None, on_start=None, log_text=True):
+                         voice_settings=None, on_start=None, log_text=True, **kwargs):
             enqueued.append({"text": text, "emotion": emotion, "pre_beat_ms": pre_beat_ms})
             done = threading.Event()
             done.set()

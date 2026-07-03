@@ -1190,6 +1190,41 @@ ELEVENLABS_VOICE_ID = "kb9LZZlhckjFQsP89t9T"
 # Verified v3 works on our streaming code path with the current voice_settings (2026-07-02).
 TTS_MODEL_ID = "eleven_v3"
 
+# ── Eleven v3 audio tags — expressive delivery ───────────────────────────────
+# Inject ONE leading audio tag ([sarcastic], [laughs], …) into the text sent to ElevenLabs,
+# deterministically mapped from the per-line affect the app ALREADY computes (comedy_mode + emotion).
+# Makes Rex's delivery match his intent. Only active when TTS_MODEL_ID is eleven_v3 (v2/turbo would
+# read the brackets aloud). Tags go ONLY to ElevenLabs — never to logs/transcript/memory (audio.tts
+# injects into the synthesized text only; callers log their own clean text). Kill switch → exact
+# prior behavior.
+TTS_V3_AUDIO_TAGS_ENABLED = True
+# The docs' #1 rule: HIGH stability MUTES tags. Pin any tagged line to Creative so the tag lands.
+TTS_V3_TAG_STABILITY = 0.35
+# Owner-approved palette (the official v3 tags that sounded like Rex). Only these may ship; a mapped
+# or model-emitted tag outside this set is dropped.
+TTS_V3_TAG_WHITELIST = {
+    "sarcastic", "curious", "excited", "mischievously",
+    "laughs", "sighs", "whispers", "snorts", "exhales",
+}
+# comedy_mode (Rex's comedic STANCE) → tag. This is where sarcasm/mischief come from — it is NOT in
+# the `emotion` string. dry_ack / callback / dramatic_narrator intentionally map to nothing (deadpan
+# is a delivery, not a tag).
+TTS_V3_TAG_BY_COMEDY_MODE = {
+    "smug_superiority":     "sarcastic",
+    "friendly_roast":       "sarcastic",
+    "appliance_conspiracy": "mischievously",
+    "self_own":             "snorts",
+}
+# Rex reply emotion → tag (fallback when comedy_mode maps to nothing). Only clearly expressive beats;
+# neutral / surprised / sleepy / anything sincere → NO tag (never tag a serious moment).
+# NOTE: "happy" → "laughs" is the most FREQUENT mapping — if Rex ends up chuckling too much, set it
+# to None here (the others fire only on roasts / excitement / curiosity, which are rarer).
+TTS_V3_TAG_BY_EMOTION = {
+    "excited": "excited",
+    "curious": "curious",
+    "happy":   "laughs",
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TTS — EXPRESSIVE VOICE (anti-monotone)
 # ─────────────────────────────────────────────────────────────────────────────

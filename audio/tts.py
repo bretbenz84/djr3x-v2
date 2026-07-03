@@ -137,6 +137,65 @@ def _resolve_voice_settings(
         return None
 
 
+# ── Eleven v3 audio tags ─────────────────────────────────────────────────────
+# Tags shape delivery at synthesis; they must NEVER reach the transcript / log / memory / GUI.
+_AUDIO_TAG_RE = re.compile(r"\[([A-Za-z][A-Za-z '\-]*)\]")
+
+
+def strip_audio_tags(text: Optional[str]) -> str:
+    """Remove [audio tags] from text — use anywhere Rex's line is stored or displayed, so a v3
+    delivery tag never leaks into the transcript/log/memory."""
+    if not text:
+        return text or ""
+    return re.sub(r"\s{2,}", " ", _AUDIO_TAG_RE.sub("", text)).strip()
+
+
+def _v3_tags_active() -> bool:
+    return (
+        str(getattr(config, "TTS_MODEL_ID", "")).strip() == "eleven_v3"
+        and bool(getattr(config, "TTS_V3_AUDIO_TAGS_ENABLED", False))
+    )
+
+
+def resolve_audio_tag(emotion: Optional[str] = None, comedy_mode: Optional[str] = None) -> Optional[str]:
+    """Deterministic affect -> v3 tag. comedy_mode (Rex's comedic STANCE — where sarcasm/mischief
+    live) wins; else the reply emotion. Returns a whitelisted bare tag word, or None for
+    neutral/sincere/unknown affect (never tag a serious moment)."""
+    by_mode = getattr(config, "TTS_V3_TAG_BY_COMEDY_MODE", {}) or {}
+    by_emo = getattr(config, "TTS_V3_TAG_BY_EMOTION", {}) or {}
+    tag = by_mode.get((comedy_mode or "").strip().lower()) or by_emo.get((emotion or "").strip().lower())
+    whitelist = getattr(config, "TTS_V3_TAG_WHITELIST", set()) or set()
+    return tag if (tag and tag in whitelist) else None
+
+
+def _apply_audio_tags(
+    spoken_text: str,
+    emotion: Optional[str],
+    comedy_mode: Optional[str],
+    voice_settings: Optional[dict],
+) -> Tuple[str, Optional[dict]]:
+    """Return (text-for-ElevenLabs, voice_settings) with a v3 audio tag applied. Used by BOTH speak
+    and ensure_cached so their cache keys match. No-op unless v3 tags are active. Keeps only
+    whitelisted inline tags (model-emitted, a later phase), else prepends the affect-mapped leading
+    tag, and PINS stability to Creative on any tagged line (high stability mutes tags per the docs)."""
+    if not _v3_tags_active():
+        return spoken_text, voice_settings
+    whitelist = getattr(config, "TTS_V3_TAG_WHITELIST", set()) or set()
+    text = _AUDIO_TAG_RE.sub(
+        lambda m: m.group(0) if m.group(1).strip().lower() in whitelist else "", spoken_text
+    )
+    has_tag = bool(_AUDIO_TAG_RE.search(text))
+    if not has_tag:
+        tag = resolve_audio_tag(emotion, comedy_mode)
+        if tag:
+            text = f"[{tag}] {text.lstrip()}"
+            has_tag = True
+    if has_tag:
+        stability = float(getattr(config, "TTS_V3_TAG_STABILITY", 0.35))
+        voice_settings = {**(voice_settings or {}), "stability": stability}
+    return re.sub(r"\s{2,}", " ", text).strip(), voice_settings
+
+
 def speak(
     text: str,
     emotion: str = "neutral",
@@ -145,6 +204,8 @@ def speak(
     post_playback_tail_secs: Optional[float] = None,
     flush_on_playback_stop: Optional[bool] = None,
     log_text: bool = True,
+    comedy_mode: Optional[str] = None,
+    suppress_audio_tag: bool = False,
 ) -> None:
     """Convert text to speech and play it, blocking until playback finishes.
 
@@ -192,7 +253,14 @@ def speak(
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID
     voice_settings = _resolve_voice_settings(emotion, voice_settings)
-    cache_file = _cache_path(spoken_text, voice_id, model_id, voice_settings)
+    # synth_text may carry a leading v3 audio tag ([sarcastic] …); spoken_text stays CLEAN for the
+    # conversation log below, so tags reach ElevenLabs only, never the transcript. suppress_audio_tag
+    # is set for the 2nd+ sentences of a streamed reply so the leading tag lands once, not per sentence.
+    if suppress_audio_tag:
+        synth_text = spoken_text
+    else:
+        synth_text, voice_settings = _apply_audio_tags(spoken_text, emotion, comedy_mode, voice_settings)
+    cache_file = _cache_path(synth_text, voice_id, model_id, voice_settings)
 
     if cache_file.exists():
         logger.info("[tts] cache hit: %s", cache_file.name)
@@ -202,7 +270,7 @@ def speak(
             f" (voice_settings={_summarize_settings(voice_settings)})"
             if voice_settings else "",
         )
-        audio_bytes = _fetch_from_api(spoken_text, voice_id, model_id, voice_settings)
+        audio_bytes = _fetch_from_api(synth_text, voice_id, model_id, voice_settings)
         if not audio_bytes:
             return
         cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -499,11 +567,14 @@ def ensure_cached(
     text: str,
     voice_settings: Optional[dict] = None,
     emotion: str = "neutral",
+    comedy_mode: Optional[str] = None,
+    suppress_audio_tag: bool = False,
 ) -> bool:
     """Ensure text has a cached TTS file without playing it.
 
-    `emotion` must match what the line will be spoken with so the prefilled
-    file lands under the same cache key the live turn looks up.
+    `emotion` (and `comedy_mode`) must match what the line will be spoken with so the prefilled file
+    lands under the same cache key the live turn looks up — including any v3 audio tag + its pinned
+    stability, applied identically here and in speak().
     """
     if not text or not text.strip():
         return False
@@ -515,14 +586,18 @@ def ensure_cached(
         return False
     spoken_text = _normalize_for_speech(text)
     voice_settings = _resolve_voice_settings(emotion, voice_settings)
+    if suppress_audio_tag:
+        synth_text = spoken_text
+    else:
+        synth_text, voice_settings = _apply_audio_tags(spoken_text, emotion, comedy_mode, voice_settings)
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID
-    cache_file = _cache_path(spoken_text, voice_id, model_id, voice_settings)
+    cache_file = _cache_path(synth_text, voice_id, model_id, voice_settings)
     if cache_file.exists():
         return True
 
-    logger.info("[tts] cache prefill miss — calling ElevenLabs API for %r", spoken_text)
-    audio_bytes = _fetch_from_api(spoken_text, voice_id, model_id, voice_settings)
+    logger.info("[tts] cache prefill miss — calling ElevenLabs API for %r", synth_text)
+    audio_bytes = _fetch_from_api(synth_text, voice_id, model_id, voice_settings)
     if not audio_bytes:
         return False
     cache_file.parent.mkdir(parents=True, exist_ok=True)

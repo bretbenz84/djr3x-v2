@@ -268,3 +268,4 @@ assets/20questions/twentyquestions-*.jsonl
 kokoro_samples/
 piper_samples/
 piper_voices/
+tts_samples/
