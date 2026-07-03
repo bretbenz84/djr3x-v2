@@ -369,7 +369,7 @@ class RexAvatar(QWidget):
         # The visor is a full dome shell riding OUTSIDE the crown: rolled up it shows
         # only its top edge above the head; rolled fully down it covers the whole face
         # (robot off), with just the vocoder poking out below.
-        visor_drop = (1.0 - visor_open) * 104.0
+        visor_drop = (1.0 - visor_open) * 82.0
 
         painter.save()
         painter.translate(0, neck_top_y + pitch * 8.0)
@@ -406,8 +406,9 @@ class RexAvatar(QWidget):
             painter.setPen(QPen(QColor("#26292d"), 2))
             painter.setBrush(QColor("#4a4f54"))
             painter.drawPath(cap)
-        crown_rect = QRectF(-97, -192, 194, 188)
-        grad = QLinearGradient(0, -192, 0, -98)
+        # Flat, low crown — the real head is squat; the dome is a shallow curve.
+        crown_rect = QRectF(-97, -160, 194, 124)
+        grad = QLinearGradient(0, -160, 0, -98)
         grad.setColorAt(0.0, _SILVER_HI)
         grad.setColorAt(0.6, _SILVER)
         grad.setColorAt(1.0, _SILVER_LO)
@@ -454,13 +455,13 @@ class RexAvatar(QWidget):
         # hidden, vocoder poking out below. Bottom edge bows down slightly.
         painter.save()
         painter.translate(0, visor_drop + face_dy * 0.45)
-        outer = QRectF(-104, -206, 208, 156)   # top arc; ends at (±104, -128)
+        outer = QRectF(-104, -172, 208, 108)   # shallow top arc; ends at (±104, -118)
         visor = QPainterPath()
         visor.arcMoveTo(outer, 180)
         visor.arcTo(outer, 180, -180)          # over the crown, left end → right end
-        visor.quadTo(0, -110, -104, -128)      # gently down-bowed bottom edge
+        visor.quadTo(0, -100, -104, -118)      # gently down-bowed bottom edge
         visor.closeSubpath()
-        grad = QLinearGradient(0, -206, 0, -110)
+        grad = QLinearGradient(0, -172, 0, -100)
         grad.setColorAt(0.0, _ORANGE_HI)
         grad.setColorAt(1.0, _ORANGE_LO)
         painter.setPen(QPen(_ORANGE_EDGE, 2.5))
@@ -468,15 +469,14 @@ class RexAvatar(QWidget):
         painter.drawPath(visor)
         painter.restore()
 
-        # Blue carry handle (fixed to the ear posts; dome slides under it).
-        # Square-sided like the figure: vertical posts, squared corners, and a
-        # gently bowed top bar — not a round arc.
+        # Blue carry handle — WIDE, square-sided, rooted at the ear muffs (posts at
+        # the ear-pod centerlines), with the orange visor fitting INSIDE the frame.
         painter.setBrush(Qt.BrushStyle.NoBrush)
         handle = QPainterPath()
-        handle.moveTo(-80, -136)
-        handle.lineTo(-80, -196)
-        handle.quadTo(0, -212, 80, -196)
-        handle.lineTo(80, -136)
+        handle.moveTo(-104, -92)
+        handle.lineTo(-104, -186)
+        handle.quadTo(0, -204, 104, -186)
+        handle.lineTo(104, -92)
         pen = QPen(_BLUE_DK, 12, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap)
         pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         painter.setPen(pen)
@@ -489,7 +489,7 @@ class RexAvatar(QWidget):
         painter.setPen(QPen(QColor("#2b2f33"), 2))
         painter.setBrush(QColor("#5b6167"))
         for sx in (-1, 1):
-            painter.drawRoundedRect(QRectF(sx * 80 - 9, -204, 18, 16), 3, 3)
+            painter.drawRoundedRect(QRectF(sx * 104 - 9, -194, 18, 16), 3, 3)
 
         painter.restore()
 
