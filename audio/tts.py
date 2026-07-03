@@ -112,11 +112,21 @@ def prewarm() -> None:
         try:
             import sounddevice as sd
             silence = np.zeros(int(44100 * 0.1), dtype=np.float32)
-            sd.play(silence, samplerate=44100, blocksize=2048)
+            sd.play(silence, samplerate=44100, **playback_stream_kwargs())
             sd.wait()
             logger.info("[tts] audio output device pre-warmed")
         except Exception as exc:
             logger.warning("[tts] prewarm failed (non-fatal): %s", exc)
+
+
+def playback_stream_kwargs() -> dict:
+    """Deep-buffer playback params (audio QoS): a bigger blocksize + high host-buffer
+    latency lets playback survive GIL stalls from heavy work elsewhere (model preloads
+    at boot) without the mid-sentence stutter. Shared by every sd.play() call site."""
+    return {
+        "blocksize": int(getattr(config, "AUDIO_PLAYBACK_BLOCKSIZE", 4096)),
+        "latency": str(getattr(config, "AUDIO_PLAYBACK_LATENCY", "high") or "high"),
+    }
 
 
 def _resolve_voice_settings(
@@ -438,7 +448,7 @@ def _play(
                     on_playback_start()
                 except Exception:
                     pass
-            sd.play(audio, samplerate, blocksize=2048)
+            sd.play(audio, samplerate, **playback_stream_kwargs())
             sd.wait()
         except Exception as exc:
             logger.error("[tts] playback error: %s", exc)

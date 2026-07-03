@@ -288,7 +288,7 @@ def _play_audio_file(
             echo_cancel.add_reference(audio)
             if led_thread is not None:
                 led_thread.start()
-            sd.play(audio, samplerate, blocksize=2048)
+            sd.play(audio, samplerate, **tts.playback_stream_kwargs())
             _log_conversation_line_for_audio_file(path)
             sd.wait()
         finally:
@@ -1098,6 +1098,41 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     # pre-cached in the worker so playback is a cheap cache hit, and the look-around
     # scan also keeps the head alive. We join it AFTER the preloads, below.
 
+    # ── Audio QoS during the model preloads ──────────────────────────────────
+    # The boot filler line plays WHILE the models load (that's the point of it).
+    # But each load holds the GIL in long C-level bursts, which starves the
+    # Python-level audio callback → the mid-sentence stutter. Two mitigations
+    # while preloading (playback buffers are also deepened globally — see
+    # config.AUDIO_PLAYBACK_BLOCKSIZE/LATENCY):
+    #   1. a finer GIL switch interval so pure-Python import storms yield to the
+    #      audio thread sooner;
+    #   2. a short breath between load steps so the playback buffer refills
+    #      after each burst (only while startup audio is actually playing).
+    _audio_qos = (
+        bool(getattr(config, "STARTUP_PRELOAD_AUDIO_QOS_ENABLED", True)) and not no_audio
+    )
+    _prior_switch_interval = sys.getswitchinterval()
+    if _audio_qos:
+        sys.setswitchinterval(
+            float(getattr(config, "STARTUP_PRELOAD_GIL_SWITCH_INTERVAL", 0.002))
+        )
+        logger.info(
+            "Audio QoS active for preloads (switch interval %.3fs, breath %.2fs)",
+            sys.getswitchinterval(),
+            float(getattr(config, "STARTUP_PRELOAD_BREATH_SECS", 0.25)),
+        )
+
+    def _preload_breath() -> None:
+        """Give the audio callback room to refill its buffer after a load's GIL burst."""
+        if not _audio_qos:
+            return
+        try:
+            playing = output_gate.is_busy() or speech_queue.is_speaking() or tts.is_speaking()
+        except Exception:
+            playing = True
+        if playing:
+            time.sleep(float(getattr(config, "STARTUP_PRELOAD_BREATH_SECS", 0.25)))
+
     _abort_startup_if_shutdown("Whisper preload")
     if no_audio:
         logger.info("Skipping local Whisper preload (--noaudio)")
@@ -1107,6 +1142,7 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
             logger.warning("Local Whisper preload failed; first transcription may be slower.")
     else:
         logger.info("Local Whisper preload disabled by config.WHISPER_PRELOAD_ON_STARTUP")
+    _preload_breath()
 
     _abort_startup_if_shutdown("speaker ID preload")
     if no_audio:
@@ -1117,6 +1153,7 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
             logger.warning("Speaker ID encoder preload failed; continuing without voice ID.")
     else:
         logger.info("Speaker ID encoder preload disabled by config.SPEAKER_ID_PRELOAD_ON_STARTUP")
+    _preload_breath()
 
     _abort_startup_if_shutdown("local LLM preload")
     logger.info("Pre-loading local LLM...")
@@ -1130,6 +1167,7 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         sys.exit(1)
     if not local_llm_ok:
         logger.warning("Local LLM preload failed; continuing without local sidecar model.")
+    _preload_breath()
 
     if bool(getattr(config, "OPENAI_WARMUP_ON_STARTUP", True)):
         # Warm both OpenAI clients (answer LLM + action router) in the background
@@ -1157,6 +1195,10 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
             )
     else:
         logger.info("Local animal detector preload disabled by config.")
+
+    # Preloads done — restore the interpreter's normal GIL switch interval.
+    if _audio_qos:
+        sys.setswitchinterval(_prior_switch_interval)
 
     # Preloads are done. Let the boot line finish (it played CONCURRENTLY with the loads
     # above, covering the wait) before the ready line / sensors take over, so nothing

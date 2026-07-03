@@ -2752,6 +2752,29 @@ AUDIO_OUTPUT_DEVICE_NAME = os.getenv("AUDIO_OUTPUT_DEVICE_NAME", "").strip()
 # firmware / no hardware AEC). With this set, also set WAKE_WORD_ALLOW_DURING_TTS=True.
 AUDIO_AEC_INPUT_CHANNEL = _env_int("AUDIO_AEC_INPUT_CHANNEL", -1, min_value=-1, max_value=7)
 
+# ── Audio playback QoS ────────────────────────────────────────────────────────
+# Playback runs through a Python-level PortAudio callback that must grab the GIL for
+# EVERY audio block. Heavy work elsewhere (model preloads at boot: Whisper, speaker-ID,
+# Ollama, YOLO — long C calls that hold the GIL) can starve that callback past its
+# deadline → buffer underrun → the mid-sentence stutter in the startup filler lines.
+# The fix is depth, not priority (the callback thread is already realtime; the GIL is
+# the bottleneck):
+#   BLOCKSIZE 4096 (~93ms @44.1k, was 2048/~46ms) + LATENCY "high" asks CoreAudio for a
+#   deep host buffer, so playback shrugs off GIL stalls of a few hundred ms. Costs only
+#   a little extra time-to-first-sound.
+AUDIO_PLAYBACK_BLOCKSIZE = _env_int("AUDIO_PLAYBACK_BLOCKSIZE", 4096, min_value=256, max_value=32768)
+AUDIO_PLAYBACK_LATENCY = os.getenv("AUDIO_PLAYBACK_LATENCY", "high").strip() or "high"
+# During the boot preloads, additionally: (a) shrink the GIL switch interval so pure-
+# Python import storms yield to the audio callback sooner, and (b) take a short breath
+# between preload steps so the audio buffer refills after each load's GIL burst. The
+# filler line keeps playing WHILE models load (that's the point) — these just keep it
+# smooth. Breaths only fire while startup audio is actually playing.
+STARTUP_PRELOAD_AUDIO_QOS_ENABLED = _env_bool("STARTUP_PRELOAD_AUDIO_QOS_ENABLED", True)
+STARTUP_PRELOAD_BREATH_SECS = _env_float("STARTUP_PRELOAD_BREATH_SECS", 0.25, min_value=0.0, max_value=2.0)
+STARTUP_PRELOAD_GIL_SWITCH_INTERVAL = _env_float(
+    "STARTUP_PRELOAD_GIL_SWITCH_INTERVAL", 0.002, min_value=0.0005, max_value=0.05
+)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ECHO CANCELLATION (AEC)
 # Simple suppression approach: reduce mic sensitivity during playback rather
