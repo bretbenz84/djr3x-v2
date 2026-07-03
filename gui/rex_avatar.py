@@ -366,7 +366,10 @@ class RexAvatar(QWidget):
         face_shift = yaw * 13.0
         face_dy = pitch * 15.0
         visor_open = normalize_servo("visor", self._value("visor"))
-        visor_drop = (1.0 - visor_open) * 64.0
+        # The visor is a full dome shell riding OUTSIDE the crown: rolled up it shows
+        # only its top edge above the head; rolled fully down it covers the whole face
+        # (robot off), with just the vocoder poking out below.
+        visor_drop = (1.0 - visor_open) * 104.0
 
         painter.save()
         painter.translate(0, neck_top_y + pitch * 8.0)
@@ -390,6 +393,27 @@ class RexAvatar(QWidget):
             painter.setPen(QPen(_NEAR_BLACK, 2))
             painter.setBrush(QColor("#5b6167"))
             painter.drawEllipse(QPointF(sx * 121, -52), 8, 24)
+
+        # Crown dome — same silver as the forehead and CONNECTED to it (one shell):
+        # the chord's flat bottom lands just under the face-plate top so the two
+        # read as a single continuous head. Side caps belong to this shell.
+        for sx in (-1, 1):
+            cap = QPainterPath()
+            cap.moveTo(sx * 66, -122)
+            cap.lineTo(sx * 100, -122)
+            cap.lineTo(sx * 88, -148)
+            cap.closeSubpath()
+            painter.setPen(QPen(QColor("#26292d"), 2))
+            painter.setBrush(QColor("#4a4f54"))
+            painter.drawPath(cap)
+        crown_rect = QRectF(-97, -192, 194, 188)
+        grad = QLinearGradient(0, -192, 0, -98)
+        grad.setColorAt(0.0, _SILVER_HI)
+        grad.setColorAt(0.6, _SILVER)
+        grad.setColorAt(1.0, _SILVER_LO)
+        painter.setPen(QPen(QColor("#25292d"), 3))
+        painter.setBrush(grad)
+        painter.drawChord(crown_rect, 0, 180 * 16)
 
         # Face plate.
         grad = QLinearGradient(0, -100, 0, 0)
@@ -424,39 +448,19 @@ class RexAvatar(QWidget):
         # Vocoder chin (speaking EQ lives here).
         self._draw_vocoder(painter, face_shift, face_dy)
 
-        # Dark head-shell dome + side caps — fixed parts of the head (the real
-        # robot's crown is grey; only the orange crescent visor moves).
-        for sx in (-1, 1):
-            cap = QPainterPath()
-            cap.moveTo(sx * 66, -122)
-            cap.lineTo(sx * 100, -122)
-            cap.lineTo(sx * 88, -148)
-            cap.closeSubpath()
-            painter.setPen(QPen(QColor("#26292d"), 2))
-            painter.setBrush(QColor("#4a4f54"))
-            painter.drawPath(cap)
-        dome_rect = QRectF(-97, -192, 194, 140)
-        grad = QLinearGradient(0, -192, 0, -122)
-        grad.setColorAt(0.0, QColor("#5a6066"))
-        grad.setColorAt(1.0, QColor("#34393e"))
-        painter.setPen(QPen(QColor("#23272b"), 3))
-        painter.setBrush(grad)
-        painter.drawChord(dome_rect, 0, 180 * 16)
-
-        # Orange visor: a NARROW crescent brim riding over the grey dome (see the
-        # real robot) — thickest at the crown, tapering to the sides, with a gently
-        # curved bottom edge. It slides down over the face with the visor servo and
-        # leans into the pitch slightly.
+        # Orange visor: a FULL dome shell riding OUTSIDE the crown (see the real
+        # robot). Rolled up, only its top edge shows above the head (the crescent
+        # look); rolled fully down it slides in front of the whole face — eyes
+        # hidden, vocoder poking out below. Bottom edge bows down slightly.
         painter.save()
         painter.translate(0, visor_drop + face_dy * 0.45)
-        outer = QRectF(-108, -212, 216, 148)
-        inner = QRectF(-100, -192, 200, 112)
+        outer = QRectF(-104, -206, 208, 156)   # top arc; ends at (±104, -128)
         visor = QPainterPath()
         visor.arcMoveTo(outer, 180)
-        visor.arcTo(outer, 180, -180)   # over the top, left tip → right tip
-        visor.arcTo(inner, 0, 180)      # back along the shallower inner arc
+        visor.arcTo(outer, 180, -180)          # over the crown, left end → right end
+        visor.quadTo(0, -110, -104, -128)      # gently down-bowed bottom edge
         visor.closeSubpath()
-        grad = QLinearGradient(0, -212, 0, -136)
+        grad = QLinearGradient(0, -206, 0, -110)
         grad.setColorAt(0.0, _ORANGE_HI)
         grad.setColorAt(1.0, _ORANGE_LO)
         painter.setPen(QPen(_ORANGE_EDGE, 2.5))
