@@ -22,9 +22,12 @@ purpose. NOTE: previous_text/stitching is unsupported on eleven_v3, so this is o
 import argparse
 import concurrent.futures
 import html
+import random
 import sys
 import time
 from pathlib import Path
+
+SEED_MAX = 4294967295  # ElevenLabs seed range is 0..4294967295
 
 # Short but characterful — enough to judge the voice, cheap enough to run 100.
 DEFAULT_LINE = "Oh good, you're back. Did you miss me?"
@@ -87,6 +90,8 @@ def main() -> int:
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--seeds", type=int, nargs="+", help="explicit seeds")
     g.add_argument("--range", type=int, nargs=2, metavar=("START", "END"), help="inclusive seed range")
+    g.add_argument("--random", type=int, metavar="N",
+                   help="N seeds scattered across the FULL 0..4.29B range (varied characters)")
     ap.add_argument("--line", type=str, default=DEFAULT_LINE, help="line to speak (keep it short)")
     ap.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="concurrent requests")
     args = ap.parse_args()
@@ -104,6 +109,9 @@ def main() -> int:
         seeds = args.seeds
     elif args.range:
         seeds = list(range(args.range[0], args.range[1] + 1))
+    elif args.random:
+        seeds = sorted(random.sample(range(0, SEED_MAX + 1), args.random))
+        print(f"[seed-test] random seeds: {seeds}")
     else:
         seeds = list(range(1, 25))
 
