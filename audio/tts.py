@@ -558,12 +558,16 @@ def _stitch_previous_text(previous_text: Optional[str], model_id: str) -> str:
     or empty — must be computed identically here and in the request so cache keys line up."""
     if not previous_text:
         return ""
-    if str(model_id).strip() != "eleven_v3":
+    # eleven_v3 REJECTS previous_text (HTTP 400 "unsupported_model") — verified against the live API.
+    # So NEVER send it on v3; doing so drops the sentence. v3 consistency instead comes from
+    # whole-reply synthesis (LLM_STREAMING_TTS_ENABLED off → a reply is ONE generation). Stitching
+    # stays available for models that DO support it (v2 / turbo), should we ever stream on those.
+    if str(model_id).strip() == "eleven_v3":
         return ""
     if not bool(getattr(config, "TTS_V3_STITCH_ENABLED", True)):
         return ""
     cap = int(getattr(config, "TTS_V3_STITCH_MAX_CHARS", 400))
-    # Normalize like the spoken text so the conditioning context matches what v3 actually said
+    # Normalize like the spoken text so the conditioning context matches what was actually said
     # (e.g. "WWII" -> "World War Two"), not the raw transcript form.
     text = _normalize_for_speech(str(previous_text)).strip()
     return text[-cap:] if cap > 0 else text

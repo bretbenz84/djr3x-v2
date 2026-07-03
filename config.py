@@ -384,7 +384,14 @@ LOG_SYSTEM_PROMPT = True
 # talks over himself. Per-sentence safety governance (no disallowed questions /
 # roasts / visual comments) is preserved. Automatically bypassed in no-audio mode
 # (no latency benefit there, and it would split the text/GUI log per sentence).
-LLM_STREAMING_TTS_ENABLED = True
+#
+# OFF on eleven_v3 for VOICE CONSISTENCY: v3 re-rolls a fresh vocal take on every request, so
+# streaming a reply as separate per-sentence requests makes the voice drift sentence-to-sentence.
+# v3 also rejects the previous_text stitching that would fix that (400 unsupported_model). So we
+# compose the WHOLE reply and synthesize it as ONE generation — the voice stays consistent within a
+# reply, at the cost of not speaking until the reply is composed (replies are short, so the added
+# latency is small). Flip back to True to trade consistency for the first-sentence latency win.
+LLM_STREAMING_TTS_ENABLED = False
 
 # A finished sentence shorter than this many characters is merged with the next
 # one before speaking, so tiny fragments ("Yeah.", initials, abbreviations,
