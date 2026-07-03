@@ -967,7 +967,11 @@ def build_turn_plan(
                 "show you find it interesting, not just that you logged it. After "
                 "answering, ask at most one short follow-up that builds on what "
                 "they said, or carry the turn with a specific Rex opinion / light "
-                "roast instead. Don't re-ask what they just answered. You don't have "
+                "roast instead. If their answer was TERSE — a bare thing like 'my "
+                "car' — the curious follow-up about the THING they named is almost "
+                "always the right move (what kind, what happened, how it went); a "
+                "quip with no question is a dead-end there. "
+                "Don't re-ask what they just answered. You don't have "
                 "to stay welded to this exact subject — if the thread is clearly "
                 "thinning, a brief, natural change of tack is welcome (not a fresh interview)."
             )

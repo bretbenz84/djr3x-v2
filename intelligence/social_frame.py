@@ -268,6 +268,13 @@ def build_frame(
     # budget exists to stop NEW-topic interview pivots, not to ration genuine
     # curiosity about what was just shared. _explicit_followup_allowed only fires
     # for interest/answer/identity directives, so this stays narrow.
+    #
+    # A follow-up ABOUT the answer they just gave is the essence of curiosity, not
+    # an interview — it also survives the anti-interview cadence and the terse-
+    # reply length gate below. (Field bug: "what did you fix?" → "my car" → the
+    # micro plan + cadence gates killed the obvious "what kind of car?" and Rex
+    # quipped a dead-end instead.)
+    answer_followup = answered_question is not None and bool(explicit_followup)
     allow_question = False
     if urgent_identity and unknown_count:
         allow_question = True
@@ -294,7 +301,12 @@ def build_frame(
         appetite = str((energy or {}).get("question_appetite") or "").lower()
         engagement = str((energy or {}).get("engagement") or "").lower()
         energy_mode = str((energy or {}).get("mode") or "").lower()
-        if appetite == "low" or engagement == "low" or energy_mode == "quiet":
+        if appetite == "low":
+            allow_question = False
+        elif (engagement == "low" or energy_mode == "quiet") and not answer_followup:
+            # Low engagement blocks interviews — but a single follow-up about the
+            # answer they JUST gave isn't an interview (terse answers read as "low
+            # engagement" precisely when the curious follow-up is the right move).
             allow_question = False
 
     # Anti-interview cadence: after several consecutive question-ending turns, force a
@@ -303,10 +315,14 @@ def build_frame(
     # bypass above otherwise lets him ask every single turn. An urgent identity ask
     # still overrides this (re-enabled just below). Live-logged 2026-06-20: six
     # question-ending turns in a row on the favourite-movie / comedy thread.
-    if allow_question and question_budget.should_force_statement_turn():
+    if (
+        allow_question
+        and question_budget.should_force_statement_turn()
+        and not answer_followup
+    ):
         allow_question = False
 
-    if plan.max_words <= 12 or plan.target == "micro":
+    if (plan.max_words <= 12 or plan.target == "micro") and not answer_followup:
         allow_question = False
     if urgent_identity and unknown_count:
         allow_question = True
@@ -317,6 +333,10 @@ def build_frame(
         # follow-up." A one-sentence frame was trimming away the actual
         # follow-up and leaving inert acknowledgements like "Voyager, huh?"
         plan.max_sentences = max(plan.max_sentences, 2)
+        if answer_followup:
+            # A terse answer produced a micro/12-word plan; the surviving
+            # follow-up needs room for beat + question ("Nice save. What kind?").
+            plan.max_words = max(plan.max_words, 24)
     elif plan.target != "micro":
         plan.max_words = max(plan.max_words, 32)
         plan.max_sentences = max(plan.max_sentences, 2)

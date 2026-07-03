@@ -6056,6 +6056,56 @@ class ConversationGatingTest(unittest.TestCase):
 
         self.assertFalse(frame.allow_question)
 
+    def test_terse_answer_followup_survives_cadence_and_micro_gates(self):
+        # Field bug: "what did you fix?" → "my car" → the anti-interview cadence +
+        # the terse-reply micro plan killed the obvious "what kind of car?" and Rex
+        # quipped a dead-end. A follow-up about the answer they JUST gave is the
+        # essence of curiosity — it must survive those gates (with room to ask).
+        from intelligence import social_frame, question_budget
+
+        answered = {"question_text": "What's the last thing you fixed?", "answer_text": "my car"}
+        directive = (
+            "Primary purpose: the human just answered a question Rex asked. "
+            "After answering, ask at most one short follow-up that builds on what they said"
+        )
+        with (
+            mock.patch.object(question_budget, "should_force_statement_turn", return_value=True),
+            mock.patch.object(
+                social_frame, "_safe_user_energy",
+                return_value={"engagement": "low", "mode": "quiet", "question_appetite": "normal"},
+            ),
+            mock.patch.object(social_frame, "_unknown_visible_count", return_value=0),
+            mock.patch.object(social_frame, "_question_budget_allows", return_value=False),
+        ):
+            frame = social_frame.build_frame(
+                "my car", 1, answered_question=answered, agenda_directive=directive
+            )
+        self.assertTrue(frame.allow_question)
+        self.assertGreaterEqual(frame.max_words, 24)
+        self.assertGreaterEqual(frame.max_sentences, 2)
+
+    def test_answer_followup_still_blocked_by_low_question_appetite(self):
+        # The explicit "stop asking me things" signal keeps its veto.
+        from intelligence import social_frame, question_budget
+
+        answered = {"question_text": "What did you fix?", "answer_text": "my car"}
+        directive = (
+            "Primary purpose: the human just answered a question Rex asked. "
+            "After answering, ask at most one short follow-up that builds on what they said"
+        )
+        with (
+            mock.patch.object(question_budget, "should_force_statement_turn", return_value=False),
+            mock.patch.object(
+                social_frame, "_safe_user_energy", return_value={"question_appetite": "low"}
+            ),
+            mock.patch.object(social_frame, "_unknown_visible_count", return_value=0),
+            mock.patch.object(social_frame, "_question_budget_allows", return_value=False),
+        ):
+            frame = social_frame.build_frame(
+                "my car", 1, answered_question=answered, agenda_directive=directive
+            )
+        self.assertFalse(frame.allow_question)
+
     def test_social_frame_keeps_only_one_allowed_question(self):
         from intelligence import social_frame
 
