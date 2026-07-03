@@ -366,7 +366,7 @@ class RexAvatar(QWidget):
         face_shift = yaw * 13.0
         face_dy = pitch * 15.0
         visor_open = normalize_servo("visor", self._value("visor"))
-        visor_drop = (1.0 - visor_open) * 54.0
+        visor_drop = (1.0 - visor_open) * 64.0
 
         painter.save()
         painter.translate(0, neck_top_y + pitch * 8.0)
@@ -424,10 +424,8 @@ class RexAvatar(QWidget):
         # Vocoder chin (speaking EQ lives here).
         self._draw_vocoder(painter, face_shift, face_dy)
 
-        # Dome visor (slides down over the eyes) + side caps. The dome leans into
-        # the pitch a little so looking down shows more dome, looking up more chin.
-        painter.save()
-        painter.translate(0, visor_drop + face_dy * 0.45)
+        # Dark head-shell dome + side caps — fixed parts of the head (the real
+        # robot's crown is grey; only the orange crescent visor moves).
         for sx in (-1, 1):
             cap = QPainterPath()
             cap.moveTo(sx * 66, -122)
@@ -437,21 +435,33 @@ class RexAvatar(QWidget):
             painter.setPen(QPen(QColor("#26292d"), 2))
             painter.setBrush(QColor("#4a4f54"))
             painter.drawPath(cap)
-        dome_rect = QRectF(-102, -198, 204, 152)
-        grad = QLinearGradient(0, -198, 0, -120)
-        grad.setColorAt(0.0, _ORANGE_HI)
-        grad.setColorAt(1.0, _ORANGE_LO)
-        painter.setPen(QPen(_ORANGE_EDGE, 3))
+        dome_rect = QRectF(-97, -192, 194, 140)
+        grad = QLinearGradient(0, -192, 0, -122)
+        grad.setColorAt(0.0, QColor("#5a6066"))
+        grad.setColorAt(1.0, QColor("#34393e"))
+        painter.setPen(QPen(QColor("#23272b"), 3))
         painter.setBrush(grad)
         painter.drawChord(dome_rect, 0, 180 * 16)
-        painter.setPen(QPen(_CREAM, 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        for offset in (-0.30, -0.15, 0.0, 0.15, 0.30):
-            x_b = offset * 190
-            x_t = offset * 74
-            painter.drawLine(QPointF(x_b, -126), QPointF(x_t, -186))
-        painter.setPen(QPen(QColor("#8c4a12"), 3))
-        painter.setBrush(QColor("#c06a1c"))
-        painter.drawRoundedRect(QRectF(-102, -128, 204, 12), 6, 6)
+
+        # Orange visor: a NARROW crescent brim riding over the grey dome (see the
+        # real robot) — thickest at the crown, tapering to the sides, with a gently
+        # curved bottom edge. It slides down over the face with the visor servo and
+        # leans into the pitch slightly.
+        painter.save()
+        painter.translate(0, visor_drop + face_dy * 0.45)
+        outer = QRectF(-108, -212, 216, 148)
+        inner = QRectF(-100, -192, 200, 112)
+        visor = QPainterPath()
+        visor.arcMoveTo(outer, 180)
+        visor.arcTo(outer, 180, -180)   # over the top, left tip → right tip
+        visor.arcTo(inner, 0, 180)      # back along the shallower inner arc
+        visor.closeSubpath()
+        grad = QLinearGradient(0, -212, 0, -136)
+        grad.setColorAt(0.0, _ORANGE_HI)
+        grad.setColorAt(1.0, _ORANGE_LO)
+        painter.setPen(QPen(_ORANGE_EDGE, 2.5))
+        painter.setBrush(grad)
+        painter.drawPath(visor)
         painter.restore()
 
         # Blue carry handle (fixed to the ear posts; dome slides under it).
