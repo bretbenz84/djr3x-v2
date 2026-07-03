@@ -4559,6 +4559,15 @@ AUTO_VOICE_REFRESH_MAX_SAMPLES = 5
 AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER = _env_bool(
     "AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER", True
 )
+# BOOTSTRAP a fresh/empty voiceprint. The normal refresh Guard 1 requires the voice to already
+# match this person — but a person with NO voiceprint (freshly wiped or never enrolled) matches
+# SOMEONE ELSE, so Guard 1 would lock them out forever (chicken-and-egg). While a person has fewer
+# than BOOTSTRAP_MIN_SAMPLES prints, skip Guard 1 and enroll their face+camera-confirmed audio so the
+# print can form. Guard 2 (the visual active-speaker must confirm THIS person is the on-camera
+# talker) still applies — it is the sole protection while Guard 1 is relaxed, so we never seed the
+# print with someone else's voice. Once at/above the floor, normal refresh rules resume.
+AUTO_VOICE_BOOTSTRAP_ENABLED = _env_bool("AUTO_VOICE_BOOTSTRAP_ENABLED", True)
+AUTO_VOICE_BOOTSTRAP_MIN_SAMPLES = _env_int("AUTO_VOICE_BOOTSTRAP_MIN_SAMPLES", 3, min_value=1, max_value=20)
 
 # Voice enrollment samples should be long enough to represent a voice, not just
 # a one-word name or noisy aside. The person row/face can still be saved; the

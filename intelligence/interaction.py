@@ -7904,20 +7904,34 @@ def _maybe_auto_refresh_voice(
     AND the camera confirms that person actually spoke.
 
     Runs asynchronously so re-embedding doesn't delay Rex's response. One refresh
-    per person per session.
+    per person per session — EXCEPT while bootstrapping an empty/thin print (below
+    AUTO_VOICE_BOOTSTRAP_MIN_SAMPLES), where Guard 1 is relaxed and the once-per-session
+    budget is not consumed, so the print can build across several camera-confirmed turns.
     """
     if person_id is None:
         return
-    if person_id in _voice_refreshed_this_session:
+    max_samples = int(getattr(config, "AUTO_VOICE_REFRESH_MAX_SAMPLES", 5))
+    current = people_memory.count_biometrics(person_id, "voice")
+    if current >= max_samples:
+        _voice_refreshed_this_session.add(person_id)  # don't keep checking
+        return
+    # BOOTSTRAP: a face+camera-confirmed speaker whose print is empty/thin (freshly wiped or never
+    # enrolled) must be allowed to build one even though their voice currently matches SOMEONE ELSE —
+    # that near-neighbor mismatch is the whole reason the print is thin (chicken-and-egg). While below
+    # the floor we skip Guard 1 (voice-already-matches) but KEEP Guard 2 (camera confirms the talker),
+    # and we do NOT consume the once-per-session budget, so a print can form across several turns.
+    bootstrapping = bool(
+        face_confirmed
+        and getattr(config, "AUTO_VOICE_BOOTSTRAP_ENABLED", True)
+        and current < int(getattr(config, "AUTO_VOICE_BOOTSTRAP_MIN_SAMPLES", 3))
+    )
+    if not bootstrapping and person_id in _voice_refreshed_this_session:
         return
     if face_confirmed:
-        # Guard 1 — only trust the SAMPLE if the voice already points at this person,
-        # otherwise we'd be teaching their print someone else's voice (see docstring).
-        if raw_best_id is not None and _safe_int(raw_best_id) != _safe_int(person_id):
-            return
-        # Guard 2 — the visible face is not proof of SPEAKING. Require the camera to
-        # confirm this person is the active on-camera talker, else a 3rd-party/AI
-        # voice that merely scores onto their print would poison it.
+        # Guard 2 — the visible face is not proof of SPEAKING. Require the camera to confirm this
+        # person is the active on-camera talker, else a 3rd-party/AI voice that merely scores onto
+        # their print would poison it. This is the SOLE protection while bootstrapping, so it always
+        # applies (bootstrap included).
         require_visual = bool(
             getattr(config, "AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER", True)
         )
@@ -7925,21 +7939,26 @@ def _maybe_auto_refresh_voice(
             _log.debug(
                 "[interaction] auto-refresh skipped: visual active-speaker did not "
                 "confirm person_id=%s is the on-camera talker (visual_speaker=%s, "
-                "score=%.3f) — not strengthening the print with unconfirmed audio",
-                person_id, visual_speaker_pid, voice_score,
+                "score=%.3f, bootstrap=%s) — not seeding/strengthening the print with "
+                "unconfirmed audio",
+                person_id, visual_speaker_pid, voice_score, bootstrapping,
             )
+            return
+        # Guard 1 — only trust the SAMPLE if the voice already points at this person, otherwise we'd
+        # be teaching their print someone else's voice. Skipped while bootstrapping (see above).
+        if (
+            not bootstrapping
+            and raw_best_id is not None
+            and _safe_int(raw_best_id) != _safe_int(person_id)
+        ):
             return
     else:
         min_score = float(getattr(config, "AUTO_VOICE_REFRESH_MIN_SCORE", 0.90))
         if voice_score < min_score:
             return
-    max_samples = int(getattr(config, "AUTO_VOICE_REFRESH_MAX_SAMPLES", 5))
-    current = people_memory.count_biometrics(person_id, "voice")
-    if current >= max_samples:
-        _voice_refreshed_this_session.add(person_id)  # don't keep checking
-        return
 
-    _voice_refreshed_this_session.add(person_id)
+    if not bootstrapping:
+        _voice_refreshed_this_session.add(person_id)
     audio_copy = audio_array.copy()
 
     def _task() -> None:
@@ -17554,6 +17573,20 @@ def _handle_speech_segment(
                     speaker_score, person_id, person_name,
                     voice_lost_pid, voice_lost_name, _voice_dec_visual_pid,
                 )
+                # The voice matched the WRONG person only because this person's print is empty/thin
+                # (that mismatch IS the symptom). If the camera confirms they are the on-camera
+                # talker, this face-confirmed audio is exactly what BOOTSTRAPS their print — the only
+                # way out of the deadlock. _maybe_auto_refresh_voice bootstraps only below the sample
+                # floor and only with visual-speaker confirmation, so an established print is never
+                # polluted by this branch.
+                try:
+                    _maybe_auto_refresh_voice(
+                        person_id, speaker_score, audio_array,
+                        face_confirmed=True, raw_best_id=raw_best_id,
+                        visual_speaker_pid=_voice_dec_visual_pid,
+                    )
+                except Exception as exc:
+                    _log.debug("auto voice-bootstrap skip: %s", exc)
             elif decision == "corroborate":
                 # Voice weakly leans toward the one visible person — their own
                 # (weak) print, corroborated by their face.
