@@ -24,6 +24,45 @@ class RecoveryLineDedupTest(unittest.TestCase):
         self.assertFalse(r._contains_recovery_line("Tell me about the festival."))
 
 
+class ConfusionComplaintTest(unittest.TestCase):
+    """'You're not saying anything that makes sense' must trigger the humble factual
+    repair, never a roast comeback (field log 2026-07-03: it got 'your conversation
+    pacing is the one doing barrel rolls')."""
+
+    def test_second_person_confusion_routes_to_factual_repair(self):
+        r.note_assistant_turn("Some Rex line just spoken.")
+        for text in (
+            "What is going on? You're not saying anything that makes sense",
+            "you're not making sense",
+            "nothing you're saying makes sense",
+        ):
+            detected = r.detect(text)
+            self.assertIsNotNone(detected, text)
+            self.assertEqual(detected.get("kind"), "factual", text)
+
+
+class SubjectChangeTest(unittest.TestCase):
+    """'Can we talk about something else?' is a TRANSIENT steer — tagged subject_change
+    with the topic resolved from the live thread, never a durable boundary built from
+    the request's own words (field log: banned topic 'can / talk')."""
+
+    def test_subject_change_tagged_with_fallback_topic(self):
+        from memory import boundaries
+        d = boundaries.detect_boundary(
+            "Can we talk about something else?", fallback_topic="car repairs"
+        )
+        self.assertIsNotNone(d)
+        self.assertEqual(d.get("kind"), "subject_change")
+        self.assertEqual(d.get("topic"), "car repairs")
+
+    def test_real_boundary_still_tagged_boundary(self):
+        from memory import boundaries
+        d = boundaries.detect_boundary("don't ask about work", fallback_topic="x")
+        self.assertIsNotNone(d)
+        self.assertEqual(d.get("kind"), "boundary")
+        self.assertEqual(d.get("topic"), "work")
+
+
 class BareRestatementTest(unittest.TestCase):
     def test_plain_restatements_reroute(self):
         for t in ["I said I watch a lot of Netflix specials",

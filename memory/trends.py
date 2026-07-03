@@ -106,7 +106,11 @@ def summarize_for_prompt(person_id: Optional[int]) -> str:
     elif s["sessions_7d"] >= 3:
         bits.append(f"{s['sessions_7d']} visits in the last week — they come around a lot")
     if s["recurring_topics"]:
-        bits.append("topics you two keep landing on: " + ", ".join(s["recurring_topics"]))
+        bits.append(
+            "topics you two keep landing on (recognition only, when THEY raise one — "
+            "never re-open these yourself; they're worn): "
+            + ", ".join(s["recurring_topics"])
+        )
     if not bits:
         return ""
     return (

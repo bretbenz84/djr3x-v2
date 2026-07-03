@@ -3007,7 +3007,11 @@ def _step_room_reaction(snapshot: dict, profile: SituationProfile) -> None:
         kind, emotion, beat = "laughter", "happy", None
     if not lines:
         return
-    line = random.choice(list(lines))
+    # Never the same victory lap twice in one session ("Encore's included…" fired
+    # twice in 10 minutes and read as a glitch, not a bit).
+    pool = [l for l in lines if l != _room_reacted.get("last_line")] or list(lines)
+    line = random.choice(pool)
+    _room_reacted["last_line"] = line
 
     spoke = _speak_async(
         line, emotion=emotion, purpose="room_reaction", label=f"land the {kind}",

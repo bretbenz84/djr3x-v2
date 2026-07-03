@@ -86,6 +86,12 @@ _GROUNDING_CORRECTION_PAT = re.compile(
     r"\b((that|this|it) (makes no sense|doesn'?t make (any |much )?sense|"
     r"made no sense|makes zero sense)|"
     r"none of (that|this) (makes sense|is right)|"
+    # second-person confusion: the human says REX is the one not making sense
+    # (field bug: "You're not saying anything that makes sense" got a roast
+    # comeback instead of a humble reset).
+    r"you'?re not making (any )?sense|"
+    r"(you'?re )?not saying anything that makes sense|"
+    r"nothing you('?re| are) saying makes (any )?sense|"
     r"you'?re (just )?making (that|this|it|stuff) up|"
     r"you (just )?(invented|assumed|made (?:that|this|it|the|a)? ?up|made up)\b|"
     r"i never said (that|this)|i didn'?t mention|where are you getting (that|this))\b",

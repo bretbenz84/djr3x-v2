@@ -4185,6 +4185,19 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         quiet = idle_for
     if quiet == float("inf") or quiet < float(getattr(config, "LEAN_IMPULSE_QUIET_SECS", 5.0)):
         return False
+    # A conversation that is actively FLOWING is not a lull. If the user spoke within
+    # the flow window, the reply thread owns the floor — a new self-initiated thread
+    # needs a genuinely long mutual silence first. (Field bug: 7 impulse questions in
+    # 2.5 minutes of active back-and-forth read as random question spam, drowning the
+    # actual conversation.)
+    _flow_window = float(getattr(config, "LEAN_IMPULSE_FLOW_WINDOW_SECS", 120.0))
+    _flow_quiet = float(getattr(config, "LEAN_IMPULSE_FLOW_QUIET_SECS", 30.0))
+    if (
+        _last_user_turn_started_at > 0.0
+        and (time.monotonic() - _last_user_turn_started_at) <= _flow_window
+        and quiet < _flow_quiet
+    ):
+        return False
     if idle_for >= max(0.0, effective_idle_timeout - 1.0):   # leave room for the outro
         return False
     if time.monotonic() < _floor_held_until:    # Rex just asked something — let them answer
@@ -15442,6 +15455,29 @@ def _handle_conversation_boundary(
         )
         if not detected:
             return None
+        if detected.get("kind") == "subject_change":
+            # "Can we talk about something else?" is a TRANSIENT steer, not a durable
+            # consent rule — don't persist a boundary (the old path stored garbage like
+            # topic='can / talk' scraped from the request itself and answered with the
+            # robotic "I won't bring up can / talk"). Ban the CURRENT thread from
+            # proactive lines briefly, then actually CHANGE THE SUBJECT.
+            topic = str(detected.get("topic") or "").strip()
+            if topic and topic not in {"current topic", "anything"}:
+                _apply_topic_boundary_side_effects(person_id, text, banned_topic=topic)
+            try:
+                from intelligence import lean_brain as _lb
+                angle = random.choice(_lb._FRESH_ANGLES)
+            except Exception:
+                angle = "something they're genuinely into lately"
+            return llm.get_response(
+                "The user just asked to change the subject — they're a little tired of "
+                "the current one. Do it gracefully: a TINY acknowledgment (a few words, "
+                "no apology tour), then open ONE genuinely new thread in your own voice. "
+                f"Suggested fresh angle (use it only if it fits): {angle}. Do NOT return "
+                "to the old topic. Two short Rex-style sentences max, ending with an "
+                "easy question.",
+                person_id,
+            )
         applied = boundary_memory.apply_detected_boundary(person_id, detected)
         if not applied:
             return None

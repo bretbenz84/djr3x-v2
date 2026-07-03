@@ -236,6 +236,12 @@ LEAN_ONE_VOICE_ENABLED      = True
 LEAN_IMPULSE_ENABLED        = True
 LEAN_IMPULSE_QUIET_SECS     = 4.0     # seconds after REX FINISHES talking (not since you spoke) before he may break the silence
 LEAN_IMPULSE_COOLDOWN_SECS  = 12.0    # min gap between his self-initiated lines during a sustained lull
+# Mid-conversation restraint: while the user has spoken within FLOW_WINDOW, the reply
+# thread owns the floor — an impulse additionally needs FLOW_QUIET secs of mutual
+# silence (vs the 4s true-lull trigger). Stops the question-machine failure without
+# dulling his presence when the room has actually gone quiet.
+LEAN_IMPULSE_FLOW_WINDOW_SECS = _env_float("LEAN_IMPULSE_FLOW_WINDOW_SECS", 120.0, min_value=0.0, max_value=900.0)
+LEAN_IMPULSE_FLOW_QUIET_SECS  = _env_float("LEAN_IMPULSE_FLOW_QUIET_SECS", 30.0, min_value=0.0, max_value=300.0)
 LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
 # Talking into the void: after Rex breaks a lull and gets NO reply, he must NOT keep quipping every
 # cooldown-tick (the "piled 4 lines about your dinner into silence" failure). Each unanswered
@@ -4121,7 +4127,9 @@ VISUAL_CURIOSITY_OBJECTS_MIN_CONFIDENCE = 0.40
 ROOM_REACTION_ENABLED = True
 ROOM_REACTION_AFTER_REX_SECS = 12.0   # laughter/applause only counts within this of a Rex line
 ROOM_REACTION_MIN_GAP_SECS = 20.0     # global cooldown (also de-dups one multi-cycle burst)
-ROOM_REACTION_SESSION_CAP = 3         # max take-a-bow / follow-throughs per session
+# Low cap: laughter detection has false positives (TV/AC/his own TTS tail), and even one
+# unearned victory lap reads as needy — two read as a malfunction (field log 2026-07-03).
+ROOM_REACTION_SESSION_CAP = 2         # max take-a-bow / follow-throughs per session
 ROOM_APPLAUSE_REACTION_LINES = [
     "Thank you, thank you. No need to stand. ...Oh, you're already standing.",
     "Please, hold your applause. ...Okay, don't.",

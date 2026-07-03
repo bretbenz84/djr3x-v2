@@ -123,7 +123,9 @@ _GENERIC_BOUNDARY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # on a steering verb/lead-in + the subject/topic nouns (or "something else")
     # so embedded mentions ("the new subject I'm studying", "a change of subject
     # in my thesis", "let's talk about astronomy") do NOT false-trigger.
-    # detect_boundary resolves the banned topic from the fallback (the live thread).
+    # detect_boundary resolves the banned topic from the fallback (the live thread)
+    # and tags the result kind="subject_change" — it is a TRANSIENT steer, not a
+    # durable consent boundary (see interaction._handle_conversation_boundary).
     ("mention", re.compile(
         # lead-in + verb + subject/topic
         r"\b(?:let'?s|lets|can we|could we|how about we|why don'?t we|shall we|"
@@ -353,6 +355,7 @@ def detect_boundary(
             "action": "add",
             "behavior": behavior,
             "topic": topic,
+            "kind": "boundary",
             "description": _description_for(behavior, topic),
             "source_text": cleaned,
         }
@@ -360,10 +363,15 @@ def detect_boundary(
         if not pattern.search(cleaned):
             continue
         topic = _normalize_topic(fallback_topic or ("anything" if behavior == "roast" else _DEFAULT_TOPIC))
+        # The change-the-subject family (the LAST generic pattern) is a TRANSIENT
+        # steer: the caller pivots the conversation instead of storing a durable
+        # consent boundary about whatever the thread label happened to be.
+        subject_change = pattern is _GENERIC_BOUNDARY_PATTERNS[-1][1]
         return {
             "action": "add",
             "behavior": behavior,
             "topic": topic,
+            "kind": "subject_change" if subject_change else "boundary",
             "description": _description_for(behavior, topic),
             "source_text": cleaned,
         }

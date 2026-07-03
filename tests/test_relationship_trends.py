@@ -97,7 +97,7 @@ class TrendsTest(unittest.TestCase):
             line = trends.summarize_for_prompt(1)
         self.assertIn("visit #23", line)
         self.assertIn("volleyball", line)
-        self.assertLess(len(line.split()), 60)
+        self.assertLess(len(line.split()), 70)
         # a stranger with no story produces nothing
         with mock.patch.object(trends, "visit_stats", return_value={
             "total_visits": 1, "days_known": 0, "sessions_7d": 1,
