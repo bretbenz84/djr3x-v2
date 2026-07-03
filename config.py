@@ -878,6 +878,16 @@ FACIAL_EXPRESSION_REACTION_DISPOSITION_MIN_SAMPLES = _env_int(
 # surprise against what Rex just said; never narrates the camera). False => use the
 # authored fallback bank only.
 FACIAL_EXPRESSION_REACTION_LLM_ENABLED = True
+# When a real expression change fires a reaction, optionally ground the line with ONE
+# GPT vision read of the moment (what they're doing / holding / the vibe), so the
+# reaction references reality instead of being generic. Token-budgeted three ways:
+# the trigger itself is the FREE local classifier (baseline-corrected), the per-person
+# mood cache (MOOD_ANALYSIS_PER_PERSON_COOLDOWN_SECS) is consulted first at no cost,
+# and a fresh read is allowed at most once per MIN_INTERVAL globally.
+EXPRESSION_REACTION_VISION_ENABLED = _env_bool("EXPRESSION_REACTION_VISION_ENABLED", True)
+EXPRESSION_REACTION_VISION_MIN_INTERVAL_SECS = _env_float(
+    "EXPRESSION_REACTION_VISION_MIN_INTERVAL_SECS", 120.0, min_value=0.0, max_value=3600.0
+)
 FACIAL_EXPRESSION_REACTION_SMILE_SUSTAIN_SECS = _env_float(
     "FACIAL_EXPRESSION_REACTION_SMILE_SUSTAIN_SECS",
     1.0,

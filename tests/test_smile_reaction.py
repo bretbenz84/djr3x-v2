@@ -100,6 +100,21 @@ class SmileReactionTests(unittest.TestCase):
         speak.assert_called_once()
         self.assertIsNone(c._smile_reaction_watch)
 
+    def test_raw_blendshapes_never_trigger_when_classifier_says_neutral(self):
+        # THE "comedy validated on a non-smile" fix: MediaPipe over-reads mouthSmile on a
+        # resting face at the robot's camera angle. The baseline-corrected CLASSIFIER label
+        # is the sole trigger — a neutral label with screaming-hot raw blendshapes must not
+        # count as a smile, for the discrete reaction or the expression-kind nominator.
+        c = self.c
+        person = self._person("neutral", 0.9)
+        person["face_expression"]["blendshapes"] = {
+            "mouthSmileLeft": 0.85,
+            "mouthSmileRight": 0.83,
+        }
+        self.assertFalse(c._person_is_smiling(person))
+        kind, _score = c._person_reactable_expression(person)
+        self.assertIsNone(kind)
+
     def test_low_confidence_smile_does_not_trigger_reaction(self):
         c = self.c
         item = self._quip_item()

@@ -386,7 +386,7 @@ _FRESH_ANGLES = (
     "a would-you-rather with two genuinely bad options — make them pick",
     "the object near them with the most suspicious backstory",
     "the most interesting character they've crossed paths with lately",
-    "the weirdest thing they've seen all week",
+    "something odd they spotted recently and haven't told anyone about",
     "the next thing they're honestly looking forward to (skip if their plans are ALREADY COVERED)",
     "something about organic life that genuinely confuses you, a droid — ask them to explain it",
     "the one skill they'd download into their brain right now",
@@ -400,11 +400,31 @@ _FRESH_ANGLES = (
 )
 
 
+# Angles already offered this session — never re-offered until the pool runs dry, so
+# consecutive lulls can't converge on the same suggestion (field bug: "dumbest thing
+# you've watched this week" then "weirdest thing you've seen all week" 30s apart —
+# same template twice).
+_offered_angles: set[str] = set()
+
+
+def reset_offered_angles() -> None:
+    _offered_angles.clear()
+
+
 def _fresh_angles_clause(rng: Optional[random.Random] = None) -> str:
-    picks = (rng or random).sample(_FRESH_ANGLES, k=3)
+    pool = [a for a in _FRESH_ANGLES if a not in _offered_angles]
+    if len(pool) < 3:
+        _offered_angles.clear()
+        pool = list(_FRESH_ANGLES)
+    picks = (rng or random).sample(pool, k=3)
+    _offered_angles.update(picks)
     return (
         " If nothing in the moment jumps out, tonight's fresh angles — pick AT MOST one, only if "
-        "it fits naturally: (a) " + picks[0] + "; (b) " + picks[1] + "; (c) " + picks[2] + "."
+        "it fits naturally: (a) " + picks[0] + "; (b) " + picks[1] + "; (c) " + picks[2] + ". "
+        "Also vary the FORM, not just the topic: never reuse a question shape you've already used "
+        "this session (two \"what's the ___est thing this week\" questions = a rerun even if the "
+        "topic changed), and sometimes skip the question entirely — float your own small take and "
+        "let them push back."
     )
 
 

@@ -2044,7 +2044,9 @@ _EXPRESSION_REACTION_PHRASE = {
 }
 
 
-def generate_expression_reaction(kind: str, person_id: Optional[int] = None) -> str:
+def generate_expression_reaction(
+    kind: str, person_id: Optional[int] = None, visual_context: str = ""
+) -> str:
     """One short, in-character reaction to a person's CURRENT facial expression that
     is AWARE of what Rex just said, so it lands in context.
 
@@ -2052,6 +2054,8 @@ def generate_expression_reaction(kind: str, person_id: Optional[int] = None) -> 
     person reads a face IN CONTEXT. A surprised look right after Rex said something
     provocative gets OWNED (lean in, don't act shocked they're shocked); a surprised
     look out of nowhere gets a genuine "what? you good?". Never narrates the camera.
+    `visual_context` (optional; token-budgeted upstream) is a short camera read of the
+    moment — their vibe / what they're doing — so the line can reference reality.
     Returns "" so the caller falls back to the authored bank (offline/disabled)."""
     phrase = _EXPRESSION_REACTION_PHRASE.get(kind)
     if not phrase:
@@ -2076,10 +2080,17 @@ def generate_expression_reaction(kind: str, person_id: Optional[int] = None) -> 
             who = first[0] if first else "they"
         except Exception:
             who = "they"
+    visual = (visual_context or "").strip()
     instr = (
         f"You are Rex. Right now you can see {who}'s face showing {phrase}.\n"
         + (f'Your own last line was: "{rex_last}"\n' if rex_last else "")
         + (f"Recent exchange:\n{recent}\n" if recent else "")
+        + (
+            f"What you can see of the moment (use it only if it makes the line land "
+            f"better — reference at most ONE concrete detail, casually, the way a "
+            f"person glances and notices): {visual}\n"
+            if visual else ""
+        )
         + "\nReact in ONE short, in-character line, like a person who just clocked their "
         "expression change. "
     )

@@ -2309,6 +2309,11 @@ def _person_expression_label(person: dict) -> str:
 
 
 def _person_is_smiling(person: dict) -> bool:
+    """The CLASSIFIER label (per-face adaptive baseline, vision/face_expression) is the
+    sole trigger. Raw blendshapes only corroborate confidence when the label already says
+    smiling — they must never trigger alone: MediaPipe over-reads mouthSmile on resting
+    faces at the robot's upward camera angle, which is exactly the false '[laughs] there
+    it is' / 'comedy validated' misfire on a non-smiling face."""
     reading = _expression_reading(person)
     expression = _norm_expression_label(reading.get("expression"))
     mood = _norm_expression_label(reading.get("mood"))
@@ -2317,7 +2322,7 @@ def _person_is_smiling(person: dict) -> bool:
     min_conf = _safe_confidence(getattr(config, "SMILE_REACTION_MIN_CONFIDENCE", 0.45))
     if expression in _SMILE_LABELS or mood in _SMILE_LABELS:
         return max(confidence, blend_score) >= min_conf
-    return blend_score >= min_conf
+    return False
 
 
 def _expression_kind_blend_score(kind: str, blendshapes: dict) -> float:
@@ -2355,6 +2360,10 @@ def _facial_expression_reaction_min_confidence(kind: str) -> float:
 
 
 def _person_reactable_expression(person: dict) -> tuple[Optional[str], float]:
+    """Only the CLASSIFIER's baseline-corrected label can nominate an expression kind;
+    raw blendshapes merely raise its confidence. (They previously nominated alone, which
+    let a resting face's over-read mouthSmile/browDown fire reactions the classifier
+    had already rejected as neutral.)"""
     reading = _expression_reading(person)
     expression = _norm_expression_label(reading.get("expression"))
     mood = _norm_expression_label(reading.get("mood"))
@@ -2363,11 +2372,9 @@ def _person_reactable_expression(person: dict) -> tuple[Optional[str], float]:
     best_kind: Optional[str] = None
     best_score = 0.0
     for kind, labels in _FACIAL_EXPRESSION_REACTION_LABELS.items():
-        blend_score = _expression_kind_blend_score(kind, blendshapes)
-        if expression in labels or mood in labels:
-            score = max(confidence, blend_score)
-        else:
-            score = blend_score
+        if expression not in labels and mood not in labels:
+            continue
+        score = max(confidence, _expression_kind_blend_score(kind, blendshapes))
         if score > best_score:
             best_kind = kind
             best_score = score
@@ -3293,6 +3300,43 @@ def _speak_facial_expression_reaction(
     )
 
 
+_expr_vision_last_fresh_at = 0.0
+
+
+def _expression_vision_context(person_db_id: Optional[int]) -> str:
+    """A short GPT-vision read of the moment to ground an expression reaction — budgeted:
+    the FREE local classifier is the trigger; the per-person mood cache is consulted first
+    (no tokens); a fresh vision call is allowed at most once per
+    EXPRESSION_REACTION_VISION_MIN_INTERVAL_SECS across all people. Returns "" when there
+    is nothing affordable/useful."""
+    global _expr_vision_last_fresh_at
+    if person_db_id is None:
+        return ""
+    if not bool(getattr(config, "EXPRESSION_REACTION_VISION_ENABLED", True)):
+        return ""
+
+    def _notes(mood: Optional[dict]) -> str:
+        if not isinstance(mood, dict):
+            return ""
+        notes = str(mood.get("notes") or "").strip()
+        label = str(mood.get("mood") or "").strip()
+        if notes and label:
+            return f"{label} — {notes}"
+        return notes or label
+
+    # Free first: a recent cached read.
+    text = _notes(get_cached_mood(person_db_id))
+    if text:
+        return text
+    # One fresh read, globally rate-limited.
+    now = time.monotonic()
+    min_gap = float(getattr(config, "EXPRESSION_REACTION_VISION_MIN_INTERVAL_SECS", 120.0))
+    if (now - _expr_vision_last_fresh_at) < min_gap:
+        return ""
+    _expr_vision_last_fresh_at = now
+    return _notes(_get_or_detect_mood(person_db_id))
+
+
 def _generate_contextual_expression_reaction(
     kind: str, person_id: Optional[int]
 ) -> str:
@@ -3303,7 +3347,10 @@ def _generate_contextual_expression_reaction(
         return ""
     try:
         from intelligence import llm
-        return llm.generate_expression_reaction(kind, person_id=person_id)
+        visual = _expression_vision_context(person_id)
+        return llm.generate_expression_reaction(
+            kind, person_id=person_id, visual_context=visual
+        )
     except Exception as exc:
         _log.debug("contextual expression reaction failed: %s", exc)
         return ""
