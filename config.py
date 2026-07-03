@@ -1253,6 +1253,14 @@ TTS_V3_STABILITY = 0.5
 # share one vocal character. It also makes our audio cache fully deterministic. The exact value is
 # arbitrary (0..4294967295) — just keep it fixed. Set to None to let the API randomize each call.
 TTS_V3_SEED = 42
+# Request stitching — the ACTUAL fix for "voice changes each sentence." We stream a reply as
+# separate per-sentence API calls, which ElevenLabs calls "splitting up a large task into multiple
+# requests." Passing each sentence the text that came before it (previous_text) lets v3 condition on
+# it and continue ONE performance instead of re-rolling a fresh voice per call. (A fixed seed does
+# NOT do this — it only makes an IDENTICAL request reproducible, not different sentences consistent.)
+# previous_text is capped to the last N chars — the immediately-preceding context is what matters.
+TTS_V3_STITCH_ENABLED = _env_bool("TTS_V3_STITCH_ENABLED", True)
+TTS_V3_STITCH_MAX_CHARS = _env_int("TTS_V3_STITCH_MAX_CHARS", 400, min_value=0, max_value=5000)
 # Owner-approved palette (the official v3 tags that sounded like Rex). Only these may ship; a mapped
 # or model-emitted tag outside this set is dropped.
 TTS_V3_TAG_WHITELIST = {

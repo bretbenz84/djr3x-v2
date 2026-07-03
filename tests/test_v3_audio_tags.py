@@ -142,6 +142,69 @@ class SeedTest(unittest.TestCase):
         self.assertNotIn("seed", captured)
 
 
+class StitchTest(unittest.TestCase):
+    """Request stitching: each streamed sentence is told the reply's prior text so v3 keeps one
+    voice across the per-sentence API calls."""
+
+    def test_stitch_only_on_v3_and_when_enabled(self):
+        with mock.patch.object(config, "TTS_V3_STITCH_ENABLED", True), \
+             mock.patch.object(config, "TTS_V3_STITCH_MAX_CHARS", 400):
+            self.assertEqual(tts._stitch_previous_text("Prior line.", "eleven_v3"), "Prior line.")
+            self.assertEqual(tts._stitch_previous_text("Prior line.", "eleven_multilingual_v2"), "")
+        with mock.patch.object(config, "TTS_V3_STITCH_ENABLED", False):
+            self.assertEqual(tts._stitch_previous_text("Prior line.", "eleven_v3"), "")
+
+    def test_empty_previous_text_is_no_stitch(self):
+        self.assertEqual(tts._stitch_previous_text("", "eleven_v3"), "")
+        self.assertEqual(tts._stitch_previous_text(None, "eleven_v3"), "")
+
+    def test_capped_to_last_chars(self):
+        with mock.patch.object(config, "TTS_V3_STITCH_ENABLED", True), \
+             mock.patch.object(config, "TTS_V3_STITCH_MAX_CHARS", 10):
+            self.assertEqual(tts._stitch_previous_text("abcdefghijklmnop", "eleven_v3"), "ghijklmnop")
+
+    def test_previous_text_folded_into_cache_key(self):
+        with mock.patch.object(config, "TTS_V3_STITCH_ENABLED", True):
+            first = tts._cache_path("hi", "vid", "eleven_v3", {"stability": 0.5}, previous_text="")
+            stitched = tts._cache_path("hi", "vid", "eleven_v3", {"stability": 0.5}, previous_text="Before.")
+        self.assertNotEqual(first, stitched)   # context changes the take -> different cache entry
+
+    def test_previous_text_sent_to_api_for_v3(self):
+        captured = {}
+
+        class _FakeTTS:
+            def stream(self, **kwargs):
+                captured.update(kwargs)
+                return [b"x"]
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                self.text_to_speech = _FakeTTS()
+
+        with mock.patch.object(config, "TTS_V3_STITCH_ENABLED", True), \
+             mock.patch("elevenlabs.ElevenLabs", _FakeClient):
+            tts._fetch_from_api("second sentence", "vid", "eleven_v3", {"stability": 0.5},
+                                previous_text="First sentence.")
+        self.assertEqual(captured.get("previous_text"), "First sentence.")
+
+    def test_no_previous_text_kwarg_when_empty(self):
+        captured = {}
+
+        class _FakeTTS:
+            def stream(self, **kwargs):
+                captured.update(kwargs)
+                return [b"x"]
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                self.text_to_speech = _FakeTTS()
+
+        with mock.patch("elevenlabs.ElevenLabs", _FakeClient):
+            tts._fetch_from_api("first sentence", "vid", "eleven_v3", {"stability": 0.5},
+                                previous_text="")
+        self.assertNotIn("previous_text", captured)
+
+
 class StripTagsTest(unittest.TestCase):
     def test_strips_all_tags(self):
         self.assertEqual(

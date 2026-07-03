@@ -218,6 +218,7 @@ def speak(
     log_text: bool = True,
     comedy_mode: Optional[str] = None,
     suppress_audio_tag: bool = False,
+    previous_text: Optional[str] = None,
 ) -> None:
     """Convert text to speech and play it, blocking until playback finishes.
 
@@ -272,7 +273,7 @@ def speak(
         synth_text = spoken_text
     else:
         synth_text, voice_settings = _apply_audio_tags(spoken_text, emotion, comedy_mode, voice_settings)
-    cache_file = _cache_path(synth_text, voice_id, model_id, voice_settings)
+    cache_file = _cache_path(synth_text, voice_id, model_id, voice_settings, previous_text)
 
     if cache_file.exists():
         logger.info("[tts] cache hit: %s", cache_file.name)
@@ -282,7 +283,7 @@ def speak(
             f" (voice_settings={_summarize_settings(voice_settings)})"
             if voice_settings else "",
         )
-        audio_bytes = _fetch_from_api(synth_text, voice_id, model_id, voice_settings)
+        audio_bytes = _fetch_from_api(synth_text, voice_id, model_id, voice_settings, previous_text)
         if not audio_bytes:
             return
         cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -541,12 +542,31 @@ def _summarize_settings(voice_settings: Optional[dict]) -> str:
 
 
 def _v3_seed(model_id: str) -> Optional[int]:
-    """Fixed RNG seed for eleven_v3 so consecutive per-sentence requests share one vocal character
-    instead of drifting take-to-take. None on other models, or when TTS_V3_SEED is unset."""
+    """Fixed RNG seed for eleven_v3 so an identical request is reproducible (and the cache is
+    deterministic). NOTE: seed does NOT keep DIFFERENT sentences sounding alike — that is what
+    _stitch_previous_text is for. None on other models, or when TTS_V3_SEED is unset."""
     if str(model_id).strip() != "eleven_v3":
         return None
     seed = getattr(config, "TTS_V3_SEED", None)
     return int(seed) if seed is not None else None
+
+
+def _stitch_previous_text(previous_text: Optional[str], model_id: str) -> str:
+    """The text that came before this line, for ElevenLabs request stitching — so v3 continues one
+    performance across a reply's per-sentence requests instead of re-rolling the voice each call.
+    Capped to the last N chars (the near context carries the continuity). "" when disabled, not v3,
+    or empty — must be computed identically here and in the request so cache keys line up."""
+    if not previous_text:
+        return ""
+    if str(model_id).strip() != "eleven_v3":
+        return ""
+    if not bool(getattr(config, "TTS_V3_STITCH_ENABLED", True)):
+        return ""
+    cap = int(getattr(config, "TTS_V3_STITCH_MAX_CHARS", 400))
+    # Normalize like the spoken text so the conditioning context matches what v3 actually said
+    # (e.g. "WWII" -> "World War Two"), not the raw transcript form.
+    text = _normalize_for_speech(str(previous_text)).strip()
+    return text[-cap:] if cap > 0 else text
 
 
 def _cache_path(
@@ -554,12 +574,15 @@ def _cache_path(
     voice_id: str,
     model_id: str,
     voice_settings: Optional[dict] = None,
+    previous_text: Optional[str] = None,
 ) -> Path:
     settings_token = _settings_cache_token(voice_settings)
     seed = _v3_seed(model_id)
     seed_token = f"|seed={seed}" if seed is not None else ""
+    prev = _stitch_previous_text(previous_text, model_id)
+    prev_token = f"|prev={prev}" if prev else ""
     digest = hashlib.sha256(
-        f"{text}{voice_id}{model_id}{settings_token}{seed_token}".encode("utf-8")
+        f"{text}{voice_id}{model_id}{settings_token}{seed_token}{prev_token}".encode("utf-8")
     ).hexdigest()
     return Path(config.TTS_CACHE_DIR) / f"{digest}.mp3"
 
@@ -592,6 +615,7 @@ def ensure_cached(
     emotion: str = "neutral",
     comedy_mode: Optional[str] = None,
     suppress_audio_tag: bool = False,
+    previous_text: Optional[str] = None,
 ) -> bool:
     """Ensure text has a cached TTS file without playing it.
 
@@ -615,12 +639,12 @@ def ensure_cached(
         synth_text, voice_settings = _apply_audio_tags(spoken_text, emotion, comedy_mode, voice_settings)
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID
-    cache_file = _cache_path(synth_text, voice_id, model_id, voice_settings)
+    cache_file = _cache_path(synth_text, voice_id, model_id, voice_settings, previous_text)
     if cache_file.exists():
         return True
 
     logger.info("[tts] cache prefill miss — calling ElevenLabs API for %r", synth_text)
-    audio_bytes = _fetch_from_api(synth_text, voice_id, model_id, voice_settings)
+    audio_bytes = _fetch_from_api(synth_text, voice_id, model_id, voice_settings, previous_text)
     if not audio_bytes:
         return False
     cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -634,6 +658,7 @@ def _fetch_from_api(
     voice_id: str,
     model_id: str,
     voice_settings: Optional[dict] = None,
+    previous_text: Optional[str] = None,
 ) -> Optional[bytes]:
     try:
         import apikeys
@@ -651,7 +676,10 @@ def _fetch_from_api(
             )
         seed = _v3_seed(model_id)
         if seed is not None:
-            kwargs["seed"] = seed   # pin v3's per-request randomness so the voice stays consistent
+            kwargs["seed"] = seed   # reproducible identical requests + deterministic cache
+        prev = _stitch_previous_text(previous_text, model_id)
+        if prev:
+            kwargs["previous_text"] = prev   # stitch: continue one performance across the reply
         chunks = client.text_to_speech.stream(**kwargs)
         data = b"".join(chunks)
         if not data:

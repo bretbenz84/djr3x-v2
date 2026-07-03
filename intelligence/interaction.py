@@ -10510,15 +10510,20 @@ def _prepare_stream_sentence(sentence: str, frame, comedy_mode) -> str:
 
 
 def _prefetch_stream_audio(
-    text: str, emotion: str, voice_settings: Optional[dict]
+    text: str, emotion: str, voice_settings: Optional[dict],
+    previous_text: Optional[str] = None,
 ) -> None:
     """Warm the TTS cache for an upcoming sentence so playback doesn't gap."""
     def _run() -> None:
         try:
             from audio import tts
             # Only 2nd+ sentences of a reply are prefetched, and those suppress the audio tag —
-            # match that here so the warmed cache key equals what the suppressed enqueue looks up.
-            tts.ensure_cached(text, voice_settings=voice_settings, emotion=emotion, suppress_audio_tag=True)
+            # match that here (and the stitched previous_text) so the warmed cache key equals what
+            # the suppressed enqueue looks up.
+            tts.ensure_cached(
+                text, voice_settings=voice_settings, emotion=emotion,
+                suppress_audio_tag=True, previous_text=previous_text,
+            )
         except Exception as exc:
             _log.debug("[interaction] stream prefetch failed: %s", exc)
 
@@ -10662,6 +10667,10 @@ def _stream_and_speak_sentences(
 
         pre_beat_ms = empathy_pre_beat_ms
         on_start = None
+        # Request stitching: hand this sentence the reply's already-spoken text so v3 continues one
+        # performance across the per-sentence API calls (empty for the first sentence). Captured as a
+        # string now so the background prefetch thread and the live enqueue below key identically.
+        stream_prev_text = " ".join(spoken).strip()
         if state["first"]:
             # Brief join so the surprise classifier can resolve BEFORE the first
             # sentence — the fast first token otherwise wins the race and the
@@ -10692,7 +10701,10 @@ def _stream_and_speak_sentences(
             if turn_start is not None:
                 _latency_log(turn_start, "llm_first_sentence", llm_started)
         elif prefetch_enabled:
-            _prefetch_stream_audio(prepared, state["emotion"], delivery_voice_settings)
+            _prefetch_stream_audio(
+                prepared, state["emotion"], delivery_voice_settings,
+                previous_text=stream_prev_text,
+            )
 
         done = speech_queue.enqueue(
             prepared,
@@ -10707,6 +10719,7 @@ def _stream_and_speak_sentences(
             # emotion); later sentences suppress it so [sarcastic] doesn't repeat every sentence.
             comedy_mode=getattr(comedy_mode, "key", None),
             suppress_audio_tag=not state["first"],
+            previous_text=stream_prev_text,   # stitch onto the reply's prior sentences
         )
         done_events.append(done)
         spoken.append(prepared)
