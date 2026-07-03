@@ -5,10 +5,13 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from PySide6.QtCore import QRectF, Qt
+import random
+
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
+from gui import theme
 from gui.rex_avatar import RexAvatar
 
 
@@ -99,10 +102,19 @@ class JeopardyPanel(QWidget):
 
     def _draw_background(self, painter: QPainter) -> None:
         grad = QLinearGradient(0, 0, self.width(), self.height())
-        grad.setColorAt(0, QColor("#030914"))
-        grad.setColorAt(0.55, QColor("#071a2c"))
+        grad.setColorAt(0, QColor("#071019"))
+        grad.setColorAt(0.55, QColor(theme.SPACE_BLACK))
         grad.setColorAt(1, QColor("#02060c"))
         painter.fillRect(self.rect(), grad)
+        # deterministic starfield so the game screen matches the console backdrop
+        rng = random.Random(3263827)
+        w, h = self.width(), self.height()
+        painter.setPen(Qt.PenStyle.NoPen)
+        for _ in range(int(w * h / 7000)):
+            x, y = rng.uniform(0, w), rng.uniform(0, h)
+            b = rng.randint(60, 170)
+            painter.setBrush(QColor(b, b + 10, min(255, b + 30), rng.randint(80, 160)))
+            painter.drawEllipse(QPointF(x, y), 0.9, 0.9)
 
     def _draw_mascot(self, painter: QPainter, rect: QRectF) -> None:
         self._metal_panel(painter, rect, radius=10)

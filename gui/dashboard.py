@@ -37,11 +37,13 @@ except Exception as exc:  # pragma: no cover - exercised when dependency missing
 import numpy as np
 
 import config
+from gui import theme
 from gui.conversation_panel import ConversationPanel
 from gui.jeopardy_panel import JeopardyPanel
 from gui.log_panel import LogPanel
 from gui.rex_avatar import RexAvatar, normalize_servo, servo_to_angle, servo_to_offset
 from gui.state_bridge import GUIDashboardBridge, gui_bridge
+from gui.theme import HoloPanel as ChromePanel, StarfieldBackdrop
 from gui.vision_panel import VisionPanel
 
 _log = logging.getLogger(__name__)
@@ -112,7 +114,7 @@ class DashboardWindow(QMainWindow):
         self.state_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._last_badge_text = ""
 
-        root = QWidget()
+        root = StarfieldBackdrop()
         root.setObjectName("root")
         self._shell = QVBoxLayout(root)
         self._shell.setContentsMargins(14, 8, 14, 14)
@@ -162,12 +164,21 @@ class DashboardWindow(QMainWindow):
         self._shutdown_btn.clicked.connect(self._confirm_shutdown)
         cluster.addWidget(self._shutdown_btn)
 
-        title = QLabel("DJ-R3X Controller")
+        title_box = QWidget()
+        title_col = QVBoxLayout(title_box)
+        title_col.setContentsMargins(0, 0, 0, 0)
+        title_col.setSpacing(0)
+        title = QLabel("DJ R-3X ▸ DROID CONTROL")
         title.setObjectName("windowTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle = QLabel("⌐≡∆⊪  OGA'S CANTINA SYSTEMS CONSOLE  ⊪∆≡¬")
+        subtitle.setObjectName("windowSubtitle")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_col.addWidget(title)
+        title_col.addWidget(subtitle)
         # Spans the whole bar on top of the side groups; let clicks fall through to
         # the buttons beneath it.
-        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        title_box.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         # Right cluster: live device-connection indicators, then the overall
         # connection status — hugging the right edge (after the centered title,
@@ -192,7 +203,7 @@ class DashboardWindow(QMainWindow):
                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         top.addWidget(right_cluster, 0, 2,
                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        top.addWidget(title, 0, 0, 1, 3, Qt.AlignmentFlag.AlignCenter)
+        top.addWidget(title_box, 0, 0, 1, 3, Qt.AlignmentFlag.AlignCenter)
         top.setColumnStretch(0, 0)
         top.setColumnStretch(1, 1)
         top.setColumnStretch(2, 0)
@@ -207,19 +218,20 @@ class DashboardWindow(QMainWindow):
         left = QVBoxLayout()
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(12)
-        left.addWidget(ChromePanel("", "VISION", self.vision), 4)
-        left.addWidget(ChromePanel("", "OPENAI VISION + DLIB STATE", self.scene), 8)
+        left.addWidget(ChromePanel("", "VISUAL FEED", self.vision), 5)
+        left.addWidget(ChromePanel("", "SCANNER ▸ SCENE INTEL", self.scene), 7)
         left_box = QWidget()
         left_box.setLayout(left)
 
-        center = ChromePanel("☵", "CONVERSATION LOG", self.conversation)
+        center = ChromePanel("", "COMMS LOG", self.conversation)
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(12)
-        avatar_panel = ChromePanel("", "R3X AVATAR", self.avatar)
-        servo_panel = ChromePanel("", "SERVO POSITIONS", self.servos)
-        servo_panel.setMinimumHeight(410)
-        servo_panel.setMaximumHeight(470)
+        avatar_panel = ChromePanel("", "R3X UNIT ▸ LIVE", self.avatar)
+        servo_panel = ChromePanel("", "ACTUATORS", self.servos)
+        # Compact readout: the avatar owns the column; the actuator strip stays short.
+        servo_panel.setMinimumHeight(268)
+        servo_panel.setMaximumHeight(300)
         right.addWidget(avatar_panel, 1)
         right.addWidget(servo_panel, 0)
         right_box = QWidget()
@@ -233,8 +245,8 @@ class DashboardWindow(QMainWindow):
         columns.addWidget(center, 0, 1)
         columns.addWidget(right_box, 0, 2)
         columns.setColumnStretch(0, 12)
-        columns.setColumnStretch(1, 16)
-        columns.setColumnStretch(2, 12)
+        columns.setColumnStretch(1, 15)
+        columns.setColumnStretch(2, 13)
         columns_box = QWidget()
         columns_box.setLayout(columns)
 
@@ -265,7 +277,7 @@ class DashboardWindow(QMainWindow):
         self._shell.addWidget(self._main_stack, 1)
 
         self.setCentralWidget(root)
-        self.setStyleSheet(_STYLE)
+        self.setStyleSheet(theme.STYLE)
 
         fps = max(1, int(getattr(config, "GUI_FPS", 20) or 20))
         self._timer = QTimer(self)
@@ -331,7 +343,7 @@ class DashboardWindow(QMainWindow):
         dlg.setObjectName("confirmDialog")
         dlg.setWindowTitle("Shut Down DJ-R3X")
         dlg.setModal(True)
-        dlg.setStyleSheet(_STYLE + _CONFIRM_EXTRA)
+        dlg.setStyleSheet(theme.DIALOG_STYLE)
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(24, 22, 24, 18)
         lay.setSpacing(18)
@@ -544,37 +556,6 @@ def _state_badge_spec(state_value: Any, speaking: bool, paused: bool = False) ->
     return "—", "#5b6b7d"
 
 
-class ChromePanel(QFrame):
-    def __init__(self, index: str, title: str, content: QWidget, parent=None) -> None:
-        super().__init__(parent)
-        self.setObjectName("chromePanel")
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        header = QHBoxLayout()
-        header.setContentsMargins(22, 18, 18, 16)
-        header.setSpacing(12)
-        if index:
-            badge = QLabel(index)
-            badge.setObjectName("panelBadge")
-            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            header.addWidget(badge)
-        label = QLabel(title)
-        label.setObjectName("panelTitle")
-        header.addWidget(label)
-        header.addStretch(1)
-        layout.addLayout(header)
-
-        separator = QFrame()
-        separator.setObjectName("panelSeparator")
-        separator.setFixedHeight(1)
-        layout.addWidget(separator)
-        layout.addWidget(content, 1)
-
-
 class VisionDescriptionPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -642,7 +623,7 @@ def _vision_state_html(snapshot: dict[str, Any]) -> str:
             for idx, person in enumerate(people, start=1)
         )
     else:
-        people_html = '<p class="empty">No dlib face slots yet.</p>'
+        people_html = '<p class="empty">No contacts on scope.</p>'
     animals_html = _animals_html(animals)
 
     return f"""
@@ -651,19 +632,19 @@ def _vision_state_html(snapshot: dict[str, Any]) -> str:
 <style>
 body {{
   margin: 0;
-  background: #07111a;
+  background: transparent;
   color: #d9e3ee;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 12px;
 }}
 .section {{
-  margin: 0 0 14px 0;
+  margin: 0 0 13px 0;
 }}
 .eyebrow {{
-  color: #4e94ff;
+  color: #e08428;
   font-size: 11px;
   font-weight: 900;
-  letter-spacing: 0;
+  letter-spacing: 2px;
   text-transform: uppercase;
 }}
 .description {{
@@ -680,7 +661,7 @@ body {{
 .face {{
   margin: 8px 0 0 0;
   padding: 8px 0 0 0;
-  border-top: 1px solid #233b55;
+  border-top: 1px solid #1c344e;
 }}
 .face-title {{
   color: #e7f0fa;
@@ -702,7 +683,7 @@ table.kv {{
 }}
 td.key {{
   padding: 1px 14px 1px 0;
-  color: #6fa0dc;
+  color: #4e94ff;
   font-weight: 800;
   white-space: nowrap;
 }}
@@ -718,17 +699,17 @@ td.value {{
 </head>
 <body>
   <div class="section">
-    <div class="eyebrow">Vision Summary</div>
+    <div class="eyebrow">◢ Scene Read</div>
     <div class="description">{_html(description)}</div>
   </div>
   <div class="section">
-    <div class="eyebrow">dlib + Expression State</div>
+    <div class="eyebrow">◢ Contacts</div>
     <div class="summary">{_html(summary)}</div>
     {tracking_html}
     {people_html}
   </div>
   <div class="section">
-    <div class="eyebrow">Local Object State</div>
+    <div class="eyebrow">◢ Fauna</div>
     {animals_html}
   </div>
 </body>
@@ -751,43 +732,27 @@ def _tracking_html(face_tracking: dict[str, Any]) -> str:
     else:
         status = "idle"
 
-    lost_age = _coerce_float(face_tracking.get("lost_age_secs"))
     rows = [
         ("tracking", status),
         ("target", face_tracking.get("lock_key")),
-        ("person id", face_tracking.get("person_id")),
-        (
-            "visible",
-            _yes_no(face_tracking.get("visible"))
-            if face_tracking.get("visible") is not None
-            else None,
-        ),
-        ("lost age", _format_age(lost_age) if lost_age is not None else None),
         ("search", face_tracking.get("search_reason")),
-        ("search pose", face_tracking.get("search_pose")),
     ]
     return '<div class="face">' + _kv_table(rows) + "</div>"
 
 
 def _person_dlib_html(idx: int, person: dict[str, Any]) -> str:
+    """One contact card — the fields a human actually reads at a glance.
+
+    The old dump (db id / face id / voice id / box / center / face width /
+    approach / last seen) was debug noise; that detail still lives in the logs."""
     label = _person_display_name(person, idx)
     status, status_class = _person_face_status(person)
     rows = [
-        ("status", status),
-        ("db id", person.get("person_db_id")),
-        ("face id", person.get("face_id")),
-        ("voice id", person.get("voice_id")),
-        ("box", _format_box(person)),
-        ("center", _format_position(person.get("position"))),
-        ("face width", _format_face_fraction(person.get("face_box_fraction"))),
         ("distance", _clean_text(person.get("distance_zone"))),
-        ("approach", _clean_text(person.get("approach_vector"))),
-        ("pose", _clean_text(person.get("pose"))),
-        ("gesture", _clean_text(person.get("gesture"))),
         ("engagement", _clean_text(person.get("engagement"))),
         ("expression", _format_expression(person)),
         ("mood", _format_mood(person)),
-        ("last seen", _last_seen_label(person)),
+        ("gesture", _clean_text(person.get("gesture"))),
     ]
     return (
         '<div class="face">'
@@ -1061,45 +1026,39 @@ class ServoPositionsPanel(QWidget):
         self._updating_snapshot = False
 
         layout = QGridLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setHorizontalSpacing(12)
-        layout.setVerticalSpacing(9)
+        layout.setContentsMargins(14, 4, 14, 10)
+        layout.setHorizontalSpacing(10)
+        layout.setVerticalSpacing(3)
 
+        # One compact control row: override + motivator side by side.
         visual_row = 0
-        self._override_button = QPushButton("Manual Servo Override")
+        self._override_button = QPushButton("MANUAL OVERRIDE")
         self._override_button.setObjectName("servoOverrideButton")
         self._override_button.setCheckable(True)
         self._override_button.setToolTip(
             "Freeze program-driven servo motion and drive servos directly with the sliders."
         )
         self._override_button.toggled.connect(self._set_manual_override)
-        layout.addWidget(self._override_button, visual_row, 0, 1, 4)
-        visual_row += 1
+        layout.addWidget(self._override_button, visual_row, 0, 1, 2)
 
-        self._motivator_button = QPushButton("🕹  Motivator Control")
+        self._motivator_button = QPushButton("🕹 MOTIVATOR")
         self._motivator_button.setObjectName("servoOverrideButton")
         self._motivator_button.setToolTip(
             "Open a joystick console to drive the motion base (motivator) by hand."
         )
         self._motivator_button.clicked.connect(self._open_motivator)
-        layout.addWidget(self._motivator_button, visual_row, 0, 1, 4)
+        layout.addWidget(self._motivator_button, visual_row, 2, 1, 2)
         visual_row += 1
         self._motivator_dialog: Optional["MotivatorControlDialog"] = None
 
         for row, name in enumerate(self._ORDER):
-            if row == 4:
-                line = QFrame()
-                line.setObjectName("panelSeparator")
-                line.setFixedHeight(1)
-                layout.addWidget(line, visual_row, 0, 1, 4)
-                visual_row += 1
-
             label = QLabel(_servo_label(name))
             label.setObjectName("servoName")
             layout.addWidget(label, visual_row, 0)
 
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setEnabled(False)
+            slider.setFixedHeight(17)
             cfg = config.SERVO_CHANNELS[name]
             slider.setRange(int(cfg["min"]), int(cfg["max"]))
             slider.setObjectName("servoSlider")
@@ -1112,18 +1071,20 @@ class ServoPositionsPanel(QWidget):
             value = QLabel("")
             value.setObjectName("servoValue")
             value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            value.setMinimumWidth(38)
             layout.addWidget(value, visual_row, 2)
             self._value_labels[name] = value
 
             state = QLabel("")
             state.setObjectName("servoState")
             state.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            state.setMinimumWidth(42)
             layout.addWidget(state, visual_row, 3)
             self._state_labels[name] = state
             visual_row += 1
 
         layout.setColumnStretch(1, 1)
-        self.setMinimumHeight(360)
+        self.setMinimumHeight(220)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
         ws = snapshot.get("world_state") or {}
@@ -1579,7 +1540,7 @@ class MotivatorControlDialog(QDialog):
         self.setModal(False)
         # A top-level QDialog doesn't inherit the main window's stylesheet, so apply
         # the dashboard theme (_STYLE) plus the Motivator-specific rules here.
-        self.setStyleSheet(_STYLE + _MOTIVATOR_EXTRA)
+        self.setStyleSheet(theme.DIALOG_STYLE)
         self.resize(800, 820)
         self._x = 0.0
         self._y = 0.0
@@ -2093,272 +2054,6 @@ def _servo_state(name: str, value: int) -> str:
     if name == "headlift":
         return f"{servo_to_offset(name, value):+.0f}mm"
     return f"{servo_to_angle(name, value):+.0f}°"
-
-
-_STYLE = """
-QWidget#root {
-    background: #07111a;
-    color: #d9e3ee;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-QLabel#windowTitle {
-    color: #aab5c1;
-    font-size: 15px;
-    font-weight: 800;
-}
-QLabel#connectionLabel {
-    color: #45d85e;
-    font-size: 13px;
-}
-QLabel#deviceStatus {
-    color: #9fb6cc;
-    font-size: 12px;
-    font-weight: 700;
-}
-QLabel#stateBadge {
-    color: #5b6b7d;
-    border: 1px solid #2b4562;
-    border-radius: 5px;
-    padding: 3px 13px;
-    font-size: 14px;
-    font-weight: 900;
-}
-QFrame#chromePanel {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0b1824, stop:1 #08111a);
-    border: 1px solid #255484;
-    border-radius: 7px;
-}
-QFrame#panelSeparator {
-    background: rgba(66, 105, 145, 0.48);
-    border: none;
-}
-QLabel#panelBadge {
-    min-width: 28px;
-    max-width: 28px;
-    min-height: 28px;
-    max-height: 28px;
-    border-radius: 5px;
-    background: #3b7fd9;
-    color: white;
-    font-size: 18px;
-    font-weight: 900;
-}
-QLabel#panelTitle {
-    color: #4e94ff;
-    font-size: 18px;
-    font-weight: 900;
-}
-QTextBrowser#conversationLog {
-    background: #07111a;
-    color: #d9e3ee;
-    border: none;
-}
-QTextBrowser#visionDescription {
-    background: #07111a;
-    color: #d9e3ee;
-    border: none;
-}
-QPlainTextEdit#systemLog {
-    background: #050d14;
-    color: #9fb6cc;
-    border: none;
-    selection-background-color: #244f89;
-}
-QLineEdit#messageEntry {
-    min-height: 40px;
-    padding: 0 14px;
-    background: #111b27;
-    color: #e0e9f2;
-    border: 1px solid #2b4562;
-    border-radius: 5px;
-    font-size: 13px;
-}
-QPushButton#primaryButton {
-    min-height: 40px;
-    padding: 0 18px;
-    background: #326bbe;
-    color: white;
-    border: 1px solid #4e8be4;
-    border-radius: 5px;
-    font-weight: 800;
-}
-QPushButton#servoOverrideButton {
-    min-height: 34px;
-    padding: 0 12px;
-    background: #111b27;
-    color: #dbe7f3;
-    border: 1px solid #2b4562;
-    border-radius: 5px;
-    font-weight: 800;
-}
-QPushButton#memoryBanksButton {
-    min-height: 30px;
-    padding: 0 14px;
-    margin-left: 10px;
-    background: #15212f;
-    color: #aee0ff;
-    border: 1px solid #2b4562;
-    border-radius: 5px;
-    font-weight: 700;
-}
-QPushButton#memoryBanksButton:hover {
-    background: #1d2f44;
-    border: 1px solid #65a2ff;
-}
-QPushButton#topControlButton {
-    min-height: 30px;
-    padding: 0 14px;
-    margin-left: 8px;
-    background: #15212f;
-    color: #aee0ff;
-    border: 1px solid #2b4562;
-    border-radius: 5px;
-    font-weight: 700;
-}
-QPushButton#topControlButton:hover {
-    background: #1d2f44;
-    border: 1px solid #65a2ff;
-}
-QPushButton#topShutdownButton {
-    min-height: 30px;
-    padding: 0 14px;
-    margin-left: 8px;
-    background: #2a1416;
-    color: #ffb3ab;
-    border: 1px solid #5e2a2a;
-    border-radius: 5px;
-    font-weight: 700;
-}
-QPushButton#topShutdownButton:hover {
-    background: #4a1d1d;
-    border: 1px solid #d05a5a;
-    color: #ffffff;
-}
-QPushButton#servoOverrideButton[active="true"] {
-    background: #244f89;
-    color: #ffffff;
-    border: 1px solid #65a2ff;
-}
-QLabel#servoName, QLabel#servoValue, QLabel#servoState {
-    color: #d6e0ea;
-    font-size: 13px;
-}
-QLabel#servoName {
-    font-weight: 700;
-}
-QLabel#servoValue, QLabel#servoState {
-    color: #b8c3d0;
-}
-QSlider#servoSlider::groove:horizontal {
-    height: 2px;
-    background: #203040;
-    border: none;
-    border-radius: 1px;
-}
-QSlider#servoSlider::sub-page:horizontal {
-    background: transparent;
-    border: none;
-}
-QSlider#servoSlider::handle:horizontal {
-    width: 13px;
-    height: 13px;
-    margin: -6px 0;
-    border-radius: 6px;
-    background: #4d8dea;
-}
-QSlider#servoSlider:disabled::groove:horizontal {
-    background: #182637;
-}
-QSlider#servoSlider:disabled::handle:horizontal {
-    background: #526171;
-}
-QScrollBar:vertical {
-    background: #07111a;
-    width: 10px;
-}
-QScrollBar::handle:vertical {
-    background: #657384;
-    border-radius: 5px;
-    min-height: 30px;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    height: 0;
-}
-"""
-
-
-# Motivator Control dialog theme — extends _STYLE (a top-level QDialog does not
-# inherit the main window's stylesheet) with the dialog background + its widgets.
-_MOTIVATOR_EXTRA = """
-QDialog#motivatorDialog {
-    background: #07111a;
-    color: #d9e3ee;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-QLabel#motivatorConn {
-    color: #8aa0b6;
-    font-size: 12px;
-    font-weight: 700;
-    padding: 2px;
-}
-QLabel#motivatorConn[ok="true"] { color: #45d85e; }
-QLabel#motivatorConn[ok="false"] { color: #e0a23a; }
-QPushButton#motivatorStop {
-    min-height: 38px;
-    background: #7a1f1f;
-    color: #ffffff;
-    border: 1px solid #a23a3a;
-    border-radius: 6px;
-    font-weight: 900;
-    font-size: 14px;
-}
-QPushButton#motivatorStop:hover {
-    background: #9a2a2a;
-    border: 1px solid #d05a5a;
-}
-"""
-
-
-# Shutdown confirmation dialog — dashboard-themed yes/no.
-_CONFIRM_EXTRA = """
-QDialog#confirmDialog {
-    background: #0b1824;
-    color: #d9e3ee;
-    border: 1px solid #255484;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-QLabel#confirmText {
-    color: #dbe7f3;
-    font-size: 15px;
-    font-weight: 700;
-}
-QPushButton#confirmNo {
-    min-height: 34px;
-    padding: 0 20px;
-    background: #15212f;
-    color: #aee0ff;
-    border: 1px solid #2b4562;
-    border-radius: 5px;
-    font-weight: 700;
-}
-QPushButton#confirmNo:hover {
-    background: #1d2f44;
-    border: 1px solid #65a2ff;
-}
-QPushButton#confirmYes {
-    min-height: 34px;
-    padding: 0 20px;
-    background: #7a1f1f;
-    color: #ffffff;
-    border: 1px solid #a23a3a;
-    border-radius: 5px;
-    font-weight: 800;
-}
-QPushButton#confirmYes:hover {
-    background: #9a2a2a;
-    border: 1px solid #d05a5a;
-}
-"""
 
 
 def main(argv: Optional[list[str]] = None) -> int:

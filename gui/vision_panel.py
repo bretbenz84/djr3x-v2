@@ -106,10 +106,11 @@ class VisionPanel(QWidget):
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor("#07111a"))
 
-        content = self.rect().adjusted(16, 16, -16, -16)
-        frame_rect = QRectF(content.adjusted(0, 0, 0, -42))
+        # The holo panel behind provides the backdrop; the video owns the full area
+        # (the old 42px caption strip is folded into a small in-frame status chip).
+        content = self.rect().adjusted(12, 6, -12, -10)
+        frame_rect = QRectF(content)
         image_rect = QRectF()
 
         if self._frame is None:
@@ -131,7 +132,7 @@ class VisionPanel(QWidget):
                     painter.fillRect(image_rect, QColor(7, 17, 26, 150))
 
         self._draw_timestamp(painter, frame_rect)
-        self._draw_camera_meta(painter, content)
+        self._draw_camera_meta(painter, image_rect if not image_rect.isEmpty() else frame_rect)
         painter.end()
 
     def _draw_placeholder(self, painter: QPainter, rect: QRectF) -> None:
@@ -339,47 +340,31 @@ class VisionPanel(QWidget):
             text,
         )
 
-    def _draw_camera_meta(self, painter: QPainter, content: QRectF) -> None:
-        font = QFont()
-        font.setPointSize(11)
-        font.setBold(True)
-        painter.setFont(font)
-        y = content.bottom() - 10
-        x = content.left() + 8
+    def _draw_camera_meta(self, painter: QPainter, frame_rect: QRectF) -> None:
+        """Tiny in-frame status chip: live FPS, or an honest STALE / NO SIGNAL warning.
 
-        stats = self._camera_stats or {}
-        label = str(stats.get("label") or "").strip() or "Camera"
-        accent = "#5396ff"
-        value = "#c5d0dc"
-        amber = "#f0c45a"
-
-        parts: list[tuple[str, str]] = [("Camera:", accent), (label, value), ("•", accent)]
-
-        # Freshness/rate: tell the truth instead of a hardcoded "30 FPS".
+        The old caption strip (camera name + resolution) was noise; the chip keeps the
+        one thing worth glancing at — is the feed live and how fast."""
         stale = self._camera_stale_secs()
         if stale is None:
-            parts.append(("No Signal", amber))
+            text, color = "● NO SIGNAL", "#f0c45a"
         elif stale > _CAMERA_STALE_SECS:
-            parts.append((f"STALE {stale:.1f}s", amber))
+            text, color = f"● STALE {stale:.1f}s", "#f0c45a"
         else:
-            fps = stats.get("fps")
-            parts.append((f"{float(fps):.0f} FPS" if fps else "— FPS", value))
-        parts.append(("•", accent))
+            fps = (self._camera_stats or {}).get("fps")
+            text, color = (f"● {float(fps):.0f} FPS" if fps else "● LIVE"), "#75ef63"
 
-        # Resolution: prefer the live frame, fall back to the reported stat.
-        resolution = stats.get("resolution")
-        if self._frame is not None:
-            arr = np.asarray(self._frame)
-            parts.append((f"{arr.shape[1]}x{arr.shape[0]}", value))
-        elif isinstance(resolution, (list, tuple)) and len(resolution) == 2:
-            parts.append((f"{int(resolution[0])}x{int(resolution[1])}", value))
-        else:
-            parts.append(("No Signal", value))
-
-        for text, color in parts:
-            painter.setPen(QColor(color))
-            painter.drawText(QPointF(x, y), text)
-            x += painter.fontMetrics().horizontalAdvance(text) + 12
+        font = QFont()
+        font.setPointSize(10)
+        font.setBold(True)
+        painter.setFont(font)
+        width = painter.fontMetrics().horizontalAdvance(text) + 16
+        chip = QRectF(frame_rect.left() + 6, frame_rect.bottom() - 26, width, 20)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(4, 10, 17, 200))
+        painter.drawRoundedRect(chip, 2, 2)
+        painter.setPen(QColor(color))
+        painter.drawText(chip, Qt.AlignmentFlag.AlignCenter, text)
 
 
 def _skeleton_point(
