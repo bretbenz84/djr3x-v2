@@ -4129,9 +4129,10 @@ ROOM_APPLAUSE_REACTION_LINES = [
     "And THIS is why they keep me plugged in.",
     "I'd take a bow, but my actuators bill by the hour.",
 ]
+# NOTE: keep these free of "I can't move/leave" jokes — the robot is getting wheels.
 ROOM_LAUGHTER_REACTION_LINES = [
     "See? That one was free.",
-    "I'll be here all week. Literally — I can't leave.",
+    "I'll be here all week. Encore's included whether you want it or not.",
     "Comedy subroutine: validated.",
     "There it is. Carbon-based approval.",
     "And they said a droid couldn't do stand-up.",

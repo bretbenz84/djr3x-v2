@@ -398,7 +398,7 @@ def _bored_env_snark_prompt(
         )
     else:
         base = (
-            "You are DJ-R3X, stuck stationary in this same room with nothing happening for a "
+            "You are DJ-R3X, parked in this same room with nothing happening for a "
             "while, and you are genuinely BORED. You just looked around the space. What you "
             f"actually see: {summary or 'a dull, quiet room'}"
             f"{('. Notable things in view: ' + detail_bits) if detail_bits else ''}. "
