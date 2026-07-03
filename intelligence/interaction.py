@@ -16900,12 +16900,18 @@ def _handle_classified_intent(
                         f"Do not invent a person."
                     )
                 if target.detail == "no_person_match" and target.name:
-                    return _say(
-                        f"The user asked what you know about {target.name!r}, but "
-                        f"there is no matching person in memory. In ONE short "
-                        f"Rex-style line, say you do not have memory for that person "
-                        f"yet. Do not invent facts."
+                    # Not someone in people.db — so this is almost certainly a
+                    # GENERAL-KNOWLEDGE subject that merely looked person-shaped
+                    # ("tell me about your friend R2D2", "tell me about Star Tours").
+                    # Fall through to the normal LLM path so Rex answers from
+                    # knowledge instead of dead-ending with "no memory for them"
+                    # (mirrors how "search the web for ..." falls through).
+                    _log.info(
+                        "[interaction] query_memory: %r not in people.db — falling "
+                        "through to the general LLM path",
+                        target.name,
                     )
+                    return None
                 return _say(
                     f"The user asked a memory question ({raw_text!r}), but you "
                     f"cannot resolve who it is about. In ONE short Rex-style line, "

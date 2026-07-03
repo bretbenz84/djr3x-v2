@@ -8685,6 +8685,41 @@ class PendingMusicPreferenceTest(unittest.TestCase):
         )
         self.assertEqual(intent_classifier.classify("Me and you"), "general")
 
+    def test_query_memory_unknown_person_falls_through_to_llm(self):
+        # "Tell me about your friend R2D2": person-shaped, but R2D2 is not in
+        # people.db — the handler must return None (fall through to the general
+        # LLM path) instead of dead-ending with "no memory for that person".
+        from intelligence import interaction, memory_query
+
+        target = memory_query.MemoryTarget(mode="named", name="R2D2", detail="no_person_match")
+        with mock.patch.object(memory_query, "resolve_target", return_value=target), \
+             mock.patch.object(interaction, "_speak_blocking") as speak, \
+             mock.patch.object(interaction, "_try_slow_path_ack"), \
+             mock.patch.object(interaction.llm, "get_response") as llm_call:
+            result = interaction._handle_classified_intent(
+                "query_memory", "Tell me about your friend R2D2", 1
+            )
+        self.assertIsNone(result)          # falls through to the normal LLM turn
+        self.assertFalse(speak.called)     # says nothing itself
+        self.assertFalse(llm_call.called)
+
+    def test_query_memory_missing_relationship_still_answers_locally(self):
+        # A genuinely personal miss ("my brother" with none stored) keeps the
+        # honest local answer — only unknown NAMES fall through.
+        from intelligence import interaction, memory_query
+
+        target = memory_query.MemoryTarget(
+            mode="relationship", detail="no_relationship_match", relation_label="brother"
+        )
+        with mock.patch.object(memory_query, "resolve_target", return_value=target), \
+             mock.patch.object(interaction, "_speak_blocking"), \
+             mock.patch.object(interaction, "_try_slow_path_ack"), \
+             mock.patch.object(interaction.llm, "get_response", return_value="No brother on file."):
+            result = interaction._handle_classified_intent(
+                "query_memory", "Tell me about my brother", 1
+            )
+        self.assertEqual(result, "No brother on file.")
+
     def test_memory_query_resolves_score_and_greeting_queries_to_current_speaker(self):
         from intelligence import memory_query
 
