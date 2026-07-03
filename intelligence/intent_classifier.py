@@ -499,11 +499,18 @@ def _memory_query_allowed(text: str) -> bool:
         return True
     if not _MEMORY_QUERY_OPENER_RE.search(cleaned):
         return False
-    if references_person_memory_target(cleaned):
-        return True
+    # "tell me about X / what do you know about X / explain X": decide by the TOPIC, not the whole
+    # sentence. Otherwise the bare "me" in the "tell me" opener makes EVERY subject look like a
+    # person-memory query — e.g. "tell me about Star Tours" was answered "I don't have memory for
+    # that person yet" instead of falling through to a general LLM answer. Only route to query_memory
+    # when the topic itself points at a person / relationship / known name.
     topic_match = _TOPIC_KNOWLEDGE_QUERY_RE.search(cleaned)
-    topic = (topic_match.group("topic") if topic_match else "").strip()
-    return bool(topic and references_person_memory_target(topic))
+    if topic_match:
+        topic = (topic_match.group("topic") or "").strip()
+        return bool(topic and references_person_memory_target(topic))
+    # Non-topic openers ("what have I told you about X", "how many times ...") — the whole-sentence
+    # person check is correct here (there is no "tell me about" opener injecting a spurious "me").
+    return references_person_memory_target(cleaned)
 
 
 def _classify_with_llm(text: str) -> str:

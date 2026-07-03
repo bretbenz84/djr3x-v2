@@ -236,6 +236,27 @@ class PersonMemoryRoutingTests(unittest.TestCase):
 
         self.assertEqual(intent, "query_memory")
 
+    def test_general_subject_topic_is_not_a_memory_query(self):
+        # "tell me about <subject>" must fall through to a general LLM answer, not query_memory.
+        # Regression: the bare "me" in the "tell me" opener made every subject look like a person
+        # query, so "Tell me about Star Tours" was answered "I don't have memory for that person yet".
+        from intelligence import intent_classifier, person_memory_targets
+
+        with mock.patch.object(
+            person_memory_targets, "_load_known_person_names", return_value=["Daniel Benziger"]
+        ):
+            for text in (
+                "Tell me about Star Tours",
+                "Can you tell me about Star Tours and Disneyland and how you used to pilot it?",
+                "Tell me a joke",
+                "Explain how hyperdrives work",
+            ):
+                self.assertFalse(
+                    intent_classifier._memory_query_allowed(text),
+                    f"{text!r} should not route to query_memory",
+                )
+                self.assertEqual(intent_classifier._deterministic_label(text), "general", text)
+
 
 class AudioStreamBufferLockTests(unittest.TestCase):
     def test_callback_snapshot_and_flush_use_buffer_lock(self):
