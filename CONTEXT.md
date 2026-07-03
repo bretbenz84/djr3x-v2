@@ -174,7 +174,8 @@ Spoken turn:
 3. Run speaker ID.
 4. Fuse voice with visible/recent world state.
 5. Run dialogue-act/contextual binding before executable routing.
-6. Execute local handler or call LLM.
+6. Execute local handler, or generate the reply via the LEAN BRAIN (primary voice; see
+   "Conversation Voice" below), falling back to the classic assembled prompt on lean errors.
 7. Queue speech/text output.
 8. Extract memories after the turn unless suppressed.
 9. Log `[character_loop]` telemetry.
@@ -214,6 +215,29 @@ When investigating false positives, search logs for:
 - `[action_router_audit]`: final routed action, legacy claim, allowlist/block reason, and executed path.
 
 The failure mode to avoid: a normal contextual response gets a second chance in a later legacy layer and becomes a durable action. Do not add new command/intent bypasses after the dialogue gate unless they pass the same central evidence policy.
+
+### Conversation Voice (lean brain primary, classic prompt as fallback)
+
+`intelligence/lean_brain.py` is Rex's PRIMARY conversational voice (`LEAN_BRAIN_ENABLED`).
+One streaming model call per turn: the coherent persona (`config.REX_CORE_PROMPT`, via the
+`LEAN_BRAIN_PERSONA` override hook) as the system message + a small live situation block
+(who he's with, what he sees/hears right now, recent-topic bans, quiet time, mood) + the
+recent transcript. It also owns the LULL BREAKERS (`consider_initiating`): quick impulse
+and patient re-engage instructions with a rotating, session-deduped "fresh angles" menu and
+an anti-music-reflex rule, returning PASS when watching is the better move. Phase 4
+("one voice"): proactive/greeting/reaction/onboarding text generated through
+`llm.stream_response` routes through `lean_brain.stream_directive` when
+`LEAN_ONE_VOICE_ENABLED`, so every spoken line shares the same voice.
+
+The classic layered prompt (`llm.assemble_system_prompt`: REX_CORE_PROMPT + personality
+params + emotion/empathy + world summary + person context + transcript + arc + rules) is
+NOT dead — it is retained as (a) the reply-path fallback whenever the lean brain errors or
+yields nothing (`classic=True` call sites in `interaction.py`), and (b) the base prompt for
+web-search replies (`web_search.py`). Do not delete it; do keep new persona/taste rules in
+`REX_CORE_PROMPT` (shared by both voices) rather than in classic-only sections.
+`REX_CORE_PROMPT` lives in `config.py` and is actively iterated — user_config overrides of
+it freeze a stale copy and are deliberately discouraged (both user-config files carry only
+a pointer note, not a copy of the text).
 
 ### Output
 
