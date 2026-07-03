@@ -437,6 +437,14 @@ Main concepts:
 - Person facts, preferences, interests, and events.
 - Emotional events for celebrations, grief, wins, worries, and follow-ups.
 - Social relationship edges between people.
+- Cross-session relationship trends (`memory/trends.py`): visit cadence (streaks,
+  visits-per-week, medium gaps), and topics recurring across 3+ distinct days —
+  computed from the per-session `conversations` rows, zero LLM calls, cached per day.
+  Feeds (a) one compact "relationship trend" line into person context and (b) the
+  greeting cadence hook ("third day in a row" / "4 visits this week" / "first time
+  in about 2 weeks" — the 2–60-day gap band no other hook covered). Cadence remarks
+  only fire for established relationships (sparse profiles get onboarding instead)
+  and at most once per day.
 
 Memory extraction runs after turns and may call OpenAI. It should be suppressed for commands or corrections where learning would be wrong. Forget/discard commands exist and should be respected.
 

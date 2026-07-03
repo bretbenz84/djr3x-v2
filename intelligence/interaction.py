@@ -13654,6 +13654,17 @@ def _end_session() -> None:
                 else:
                     summary = llm.generate_session_summary(person_id, person_transcript)
                     emotion_tone, topics = "neutral", ""
+                    # Long / multi-person sessions used to persist topics="" — starving the
+                    # cross-session trends layer (memory/trends.py recurring topics) for
+                    # exactly the sessions that matter most. The arc's topic tags are
+                    # already computed each turn; reuse them for the structured columns
+                    # even when its windowed summary can't replace the full-transcript one.
+                    try:
+                        arc_tail = topic_thread.arc_persistence_fields()
+                        if arc_tail:
+                            emotion_tone, topics = arc_tail[1], arc_tail[2]
+                    except Exception as exc:
+                        _log.debug("arc topic fallback skipped: %s", exc)
                 if summary:
                     conv_memory.save_conversation(
                         person_id,

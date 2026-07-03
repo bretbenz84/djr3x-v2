@@ -5162,6 +5162,14 @@ OPEN_COMMITMENTS_MIN_AGE_HOURS = 6.0   # don't rib a promise the moment it's mad
 # Visit count milestones Rex acknowledges in character
 VISIT_MILESTONES = [5, 10, 25, 50, 100]
 
+# Cross-session cadence awareness (memory/trends.py) — computed from existing session
+# rows, no LLM calls. The greeting hook notices streaks ("third day in a row"), high
+# frequency ("4 visits this week"), and the 2–60-day gap band no other hook covered
+# ("first time in about 2 weeks"); fires only on the first greeting of the day. The
+# same stats feed one ~25-token "relationship trend" line into person context.
+TREND_GREETING_HOOK_ENABLED = _env_bool("TREND_GREETING_HOOK_ENABLED", True)
+TREND_FREQUENT_SESSIONS_7D = _env_int("TREND_FREQUENT_SESSIONS_7D", 4, min_value=2, max_value=50)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # LATENCY FILLER — Thinking Out Loud
 # Lines Rex says while waiting for LLM or TTS responses. Never repeats back-to-back.

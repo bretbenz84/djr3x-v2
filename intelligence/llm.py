@@ -876,6 +876,17 @@ def _build_person_context(person_id: int) -> str:
     except Exception as exc:
         _log.debug("friendship pattern injection skipped: %s", exc)
 
+    # Cross-session cadence + recurring topics (memory/trends.py) — the "we've been
+    # seeing a lot of each other" awareness. Computed from existing rows, cached per
+    # day, ~25 tokens.
+    try:
+        from memory import trends as _trends
+        trend_line = _trends.summarize_for_prompt(person_id)
+        if trend_line:
+            lines.append(trend_line)
+    except Exception as exc:
+        _log.debug("relationship trend injection skipped: %s", exc)
+
     last_conv = conv_db.get_last_conversation(person_id)
     if last_conv:
         _recap = _strip_rex_directives(last_conv.get('summary', ''))

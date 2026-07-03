@@ -7658,6 +7658,59 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                             person_name, prior_today + 1,
                         )
 
+                # Priority 3.8 — visit-cadence trend (streak / frequency / medium gap).
+                # The human-shaped "we've been seeing a lot of each other" awareness:
+                # "third day in a row", "4 visits this week", "first time in ~2 weeks"
+                # (the 2–60-day band no other hook covered). First greeting of the day
+                # only, and computed from existing session rows — zero extra tokens.
+                if prompt is None and prior_today == 0 and bool(
+                    getattr(config, "TREND_GREETING_HOOK_ENABLED", True)
+                ):
+                    # Cadence remarks are for ESTABLISHED relationships. Someone Rex
+                    # barely knows (sparse profile) gets the getting-to-know-you flow
+                    # instead — "you're becoming a regular" before knowing their name
+                    # is backwards.
+                    try:
+                        _sparse = profile_questions.profile_fact_count(person_db_id) <= int(
+                            getattr(config, "LOW_MEMORY_PROFILE_MAX_FACTS", 4) or 4
+                        )
+                    except Exception:
+                        _sparse = False
+                    hook = None
+                    if not _sparse:
+                        try:
+                            from memory import trends as _trends
+                            hook = _trends.cadence_hook(person_db_id)
+                        except Exception:
+                            hook = None
+                    if hook is not None:
+                        kind, phrase = hook
+                        if kind == "medium_gap":
+                            detail = (
+                                f"It's been {phrase} since you last saw them — notice it "
+                                f"warmly (glad they're back, maybe a dry 'the place was too "
+                                f"quiet'), never guilt-trippy."
+                            )
+                        else:
+                            detail = (
+                                f"This is {phrase} they've come by — you've genuinely "
+                                f"noticed they're around a lot, and you like it. Remark on "
+                                f"it the way a friend would (warm, a little dry — 'you're "
+                                f"becoming a regular' energy), never as a logged statistic."
+                            )
+                        prompt = (
+                            f"You see '{first_name}', someone you know. {detail} "
+                            f"{greeting_tone} Then ask one small open question. Address "
+                            f"{first_name} by name. Two short sentences max — the second "
+                            f"must end in a question mark."
+                        )
+                        label = f"startup cadence ({kind}) for {person_name}"
+                        emotion = "happy"
+                        _log.info(
+                            "consciousness: startup cadence hook for %s (%s: %s)",
+                            person_name, kind, phrase,
+                        )
+
                 # Priority 4 — long absence or recent return
                 if prompt is None:
                     absence = _pick_absence_phase(person_db_id)
