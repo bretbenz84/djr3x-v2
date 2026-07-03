@@ -53,16 +53,25 @@ def _synth(client, VoiceSettings, voice_id, model_id, vs_dict, text, seed, retri
             return f"ERROR: {msg[:150]}"
 
 
-def _write_index(out_dir: Path, line: str, results: list[tuple[int, bool]], current_seed) -> Path:
+def _write_index(out_dir: Path, line: str, current_seed) -> Path:
+    """Rebuild the player from EVERY seed_*.mp3 in the folder (accumulates across runs — this tool
+    never deletes prior samples). Newest files first so a fresh batch is at the top."""
+    files = list(out_dir.glob("seed_*.mp3"))
+
+    def _seed_of(p: Path):
+        try:
+            return int(p.stem.split("_", 1)[1])
+        except (ValueError, IndexError):
+            return -1
+
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)  # most recently generated on top
     rows = []
-    for seed, ok in results:
-        if not ok:
-            rows.append(f'<tr><td>{seed}</td><td colspan="2" class="fail">failed</td></tr>')
-            continue
+    for p in files:
+        seed = _seed_of(p)
         mark = ' <span class="cur">current</span>' if seed == current_seed else ""
         rows.append(
             f'<tr><td>{seed}{mark}</td>'
-            f'<td><audio controls preload="none" src="seed_{seed}.mp3"></audio></td>'
+            f'<td><audio controls preload="none" src="{html.escape(p.name)}"></audio></td>'
             f'<td><button onclick="navigator.clipboard.writeText(\'{seed}\')">copy seed</button></td></tr>'
         )
     doc = f"""<!doctype html><meta charset="utf-8"><title>Rex seed audition</title>
@@ -73,8 +82,8 @@ def _write_index(out_dir: Path, line: str, results: list[tuple[int, bool]], curr
  .cur{{background:#ffe08a;border-radius:4px;padding:0 .35rem;font-size:.8rem}}
  .fail{{color:#b00}} audio{{height:32px}}
 </style>
-<h1>Rex v3 seed audition — {len(results)} seeds</h1>
-<div class="line">Line: “{html.escape(line)}”</div>
+<h1>Rex v3 seed audition — {len(rows)} samples (newest first)</h1>
+<div class="line">Latest batch line: “{html.escape(line)}”</div>
 <table><tr><td><b>seed</b></td><td><b>audio</b></td><td></td></tr>
 {chr(10).join(rows)}
 </table>
@@ -159,10 +168,10 @@ def main() -> int:
             if done % 10 == 0 or done == len(todo):
                 print(f"[seed-test] {done}/{len(todo)} generated")
 
-    ordered = [(s, results.get(s, False)) for s in seeds]
-    ok = sum(1 for _, v in ordered if v)
-    idx = _write_index(out_dir, args.line, ordered, current_seed)
-    print(f"\n[seed-test] wrote {ok}/{len(seeds)} samples")
+    ok = sum(1 for s in seeds if results.get(s))
+    idx = _write_index(out_dir, args.line, current_seed)   # scans ALL seed_*.mp3 — accumulates
+    total = len(list(out_dir.glob("seed_*.mp3")))
+    print(f"\n[seed-test] this run: {ok}/{len(seeds)} | folder now holds {total} samples (nothing deleted)")
     print(f"[seed-test] open the player:  {idx}")
     print("[seed-test] pick a seed, tell Claude the number, and it'll set TTS_V3_SEED.")
     return 0 if ok else 1
