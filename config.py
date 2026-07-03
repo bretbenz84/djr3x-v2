@@ -599,7 +599,49 @@ FACE_EXPRESSION_MIN_TRACKING_CONFIDENCE = _env_float(
 )
 FACE_EXPRESSION_SMILE_THRESHOLD = _env_float(
     "FACE_EXPRESSION_SMILE_THRESHOLD",
-    0.35,
+    0.50,
+    min_value=0.0,
+    max_value=1.0,
+)
+# Per-face ADAPTIVE smile baseline — same story as the brow baseline below. MediaPipe's
+# mouthSmile blendshape has a high, person/camera-specific neutral for some faces (a robot
+# camera angled UP at a seated talker over-reads a resting mouth as a faint smile), so the
+# old 0.35 absolute floor tagged a NON-smiling resting face as "happy ~0.5" — which then put
+# "looks amused / smiling" into Rex's prompt and made him react to a smile that wasn't there.
+# When enabled, each visible face's resting mouthSmile is tracked and "smiling" fires only on
+# a rise ABOVE it: effective threshold = max(absolute_threshold, baseline + DELTA). Floored at
+# the absolute threshold, so it can only make smile detection LESS trigger-happy, never more.
+FACE_EXPRESSION_SMILE_ADAPTIVE_BASELINE_ENABLED = _env_bool(
+    "FACE_EXPRESSION_SMILE_ADAPTIVE_BASELINE_ENABLED",
+    True,
+)
+FACE_EXPRESSION_SMILE_BASELINE_DELTA = _env_float(
+    "FACE_EXPRESSION_SMILE_BASELINE_DELTA",
+    0.22,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACE_EXPRESSION_SMILE_BASELINE_WARMUP_SAMPLES = _env_int(
+    "FACE_EXPRESSION_SMILE_BASELINE_WARMUP_SAMPLES",
+    15,
+    min_value=1,
+    max_value=100000,
+)
+FACE_EXPRESSION_SMILE_BASELINE_TTL_SECS = _env_float(
+    "FACE_EXPRESSION_SMILE_BASELINE_TTL_SECS",
+    8.0,
+    min_value=0.5,
+    max_value=600.0,
+)
+FACE_EXPRESSION_SMILE_BASELINE_ALPHA_DOWN = _env_float(
+    "FACE_EXPRESSION_SMILE_BASELINE_ALPHA_DOWN",
+    0.20,
+    min_value=0.0,
+    max_value=1.0,
+)
+FACE_EXPRESSION_SMILE_BASELINE_ALPHA_UP = _env_float(
+    "FACE_EXPRESSION_SMILE_BASELINE_ALPHA_UP",
+    0.02,
     min_value=0.0,
     max_value=1.0,
 )
@@ -678,7 +720,7 @@ FACE_EXPRESSION_BROW_BASELINE_ALPHA_UP = _env_float(
 # stale or low-signal frame from putting words in Rex's mouth.
 FACE_EXPRESSION_CONTEXT_MIN_CONFIDENCE = _env_float(
     "FACE_EXPRESSION_CONTEXT_MIN_CONFIDENCE",
-    0.45,
+    0.60,
     min_value=0.0,
     max_value=1.0,
 )
@@ -756,7 +798,7 @@ SMILE_REACTION_COOLDOWN_SECS = _env_float(
 )
 SMILE_REACTION_MIN_CONFIDENCE = _env_float(
     "SMILE_REACTION_MIN_CONFIDENCE",
-    0.45,
+    0.60,
     min_value=0.0,
     max_value=1.0,
 )

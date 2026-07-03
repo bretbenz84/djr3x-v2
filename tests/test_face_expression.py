@@ -196,5 +196,90 @@ class AdaptiveBrowBaselineTests(unittest.TestCase):
         self.assertIsNone(fe._brow_furrow_baseline(None, 0.9, 1000.0))
 
 
+class AdaptiveSmileBaselineTests(unittest.TestCase):
+    """Smile fires on a rise above the person's RESTING mouth, not an absolute value — so a
+    face MediaPipe over-reads as faintly smiling at rest (a robot camera angled up at a seated
+    talker) stops being tagged 'happy' every frame and leaking 'looks amused / smiling' into
+    Rex's prompt. Floored at the absolute threshold, so it can only reduce false positives."""
+
+    BOX = (100, 80, 200, 220)
+
+    def setUp(self):
+        from vision import face_expression
+        self.fe = face_expression
+        face_expression.reset_smile_baselines()
+
+    def tearDown(self):
+        self.fe.reset_smile_baselines()
+
+    def _warm(self, value, n=8):
+        baseline = None
+        for _ in range(n):
+            baseline = self.fe._smile_baseline(self.BOX, value, 1000.0)
+        return baseline
+
+    def test_high_neutral_smile_would_false_happy_without_baseline(self):
+        # Control: absolute threshold (warmup / disabled) tags a high-neutral resting mouth as
+        # smiling — this is the "carbon-based approval / there it is, a smile" misfire.
+        fe = self.fe
+        with mock.patch.object(fe.config, "FACE_EXPRESSION_SMILE_THRESHOLD", 0.50):
+            result = fe._classify_expression({"mouthSmileLeft": 0.56, "mouthSmileRight": 0.54})
+        self.assertEqual(result["expression"], "smile")
+
+    def test_high_neutral_smile_suppressed_after_warmup(self):
+        fe = self.fe
+        with (
+            mock.patch.object(fe.config, "FACE_EXPRESSION_SMILE_ADAPTIVE_BASELINE_ENABLED", True),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_SMILE_BASELINE_WARMUP_SAMPLES", 5),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_SMILE_BASELINE_DELTA", 0.22),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_SMILE_THRESHOLD", 0.50),
+        ):
+            baseline = self._warm(0.55)
+            self.assertIsNotNone(baseline)
+            result = fe._classify_expression(
+                {"mouthSmileLeft": 0.56, "mouthSmileRight": 0.54}, smile_baseline=baseline
+            )
+        self.assertEqual(result["expression"], "neutral")
+
+    def test_genuine_smile_above_relaxed_baseline_still_detected(self):
+        fe = self.fe
+        with (
+            mock.patch.object(fe.config, "FACE_EXPRESSION_SMILE_BASELINE_WARMUP_SAMPLES", 5),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_SMILE_BASELINE_DELTA", 0.22),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_SMILE_THRESHOLD", 0.50),
+        ):
+            self._warm(0.10)  # resting mouth settles low
+            baseline = fe._smile_baseline(self.BOX, 0.82, 1000.0)  # the smile frame
+            result = fe._classify_expression(
+                {"mouthSmileLeft": 0.83, "mouthSmileRight": 0.81}, smile_baseline=baseline
+            )
+        self.assertEqual(result["expression"], "smile")
+
+    def test_low_neutral_face_keeps_original_sensitivity(self):
+        fe = self.fe
+        with (
+            mock.patch.object(fe.config, "FACE_EXPRESSION_SMILE_BASELINE_WARMUP_SAMPLES", 5),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_SMILE_BASELINE_DELTA", 0.22),
+            mock.patch.object(fe.config, "FACE_EXPRESSION_SMILE_THRESHOLD", 0.50),
+        ):
+            baseline = self._warm(0.05)
+            # baseline ~0.05 → effective threshold floored at 0.50, so a 0.55 smile fires.
+            result = fe._classify_expression(
+                {"mouthSmileLeft": 0.56, "mouthSmileRight": 0.54}, smile_baseline=baseline
+            )
+        self.assertEqual(result["expression"], "smile")
+
+    def test_disabled_baseline_returns_none(self):
+        fe = self.fe
+        with mock.patch.object(
+            fe.config, "FACE_EXPRESSION_SMILE_ADAPTIVE_BASELINE_ENABLED", False
+        ):
+            self.assertIsNone(fe._smile_baseline(self.BOX, 0.9, 1000.0))
+
+    def test_unknown_face_box_uses_absolute_threshold(self):
+        fe = self.fe
+        self.assertIsNone(fe._smile_baseline(None, 0.9, 1000.0))
+
+
 if __name__ == "__main__":
     unittest.main()

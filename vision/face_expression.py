@@ -138,10 +138,61 @@ _brow_tracks: list[dict] = []
 _brow_lock = threading.Lock()
 
 
+# Per-face adaptive smile baseline (see config.FACE_EXPRESSION_SMILE_*). Same mechanism as the
+# brow baseline: tracks each visible face's RESTING mouthSmile so a face MediaPipe over-reads as
+# faintly smiling at rest isn't tagged "happy" every frame (which leaked "looks amused / smiling"
+# into Rex's prompt). Keyed by IoU-matched face box; pruned by TTL when a face leaves the frame.
+_smile_tracks: list[dict] = []
+_smile_lock = threading.Lock()
+
+
 def reset_brow_baselines() -> None:
     """Clear the adaptive brow baselines (device changes / tests)."""
     with _brow_lock:
         _brow_tracks.clear()
+
+
+def reset_smile_baselines() -> None:
+    """Clear the adaptive smile baselines (device changes / tests)."""
+    with _smile_lock:
+        _smile_tracks.clear()
+
+
+def _smile_baseline(face_box, smile: float, now: float) -> Optional[float]:
+    """Update and return the resting-mouthSmile baseline for the face at ``face_box``.
+
+    Returns None — meaning "use the absolute threshold" — when adaptive baselining is off, the
+    face box is unknown, or the track has fewer than WARMUP_SAMPLES observations. Mirrors
+    _brow_furrow_baseline exactly (asymmetric EMA: follow a more-relaxed reading fast, a wider
+    smile slowly, so a real smile stays a spike above the resting floor)."""
+    if not bool(getattr(config, "FACE_EXPRESSION_SMILE_ADAPTIVE_BASELINE_ENABLED", True)):
+        return None
+    if not face_box:
+        return None
+    ttl = float(getattr(config, "FACE_EXPRESSION_SMILE_BASELINE_TTL_SECS", 8.0))
+    a_down = float(getattr(config, "FACE_EXPRESSION_SMILE_BASELINE_ALPHA_DOWN", 0.20))
+    a_up = float(getattr(config, "FACE_EXPRESSION_SMILE_BASELINE_ALPHA_UP", 0.02))
+    warmup = max(1, int(getattr(config, "FACE_EXPRESSION_SMILE_BASELINE_WARMUP_SAMPLES", 15)))
+    with _smile_lock:
+        _smile_tracks[:] = [t for t in _smile_tracks if (now - t["last_ts"]) <= ttl]
+        track = None
+        best = 0.0
+        for candidate in _smile_tracks:
+            score = _iou(face_box, candidate["box"])
+            if score > best:
+                best, track = score, candidate
+        if track is None or best < 0.10:
+            track = {"box": face_box, "baseline": float(smile), "samples": 0, "last_ts": now}
+            _smile_tracks.append(track)
+        base = float(track["baseline"])
+        alpha = a_down if smile < base else a_up
+        track["baseline"] = base + alpha * (float(smile) - base)
+        track["box"] = face_box
+        track["last_ts"] = now
+        track["samples"] += 1
+        if track["samples"] < warmup:
+            return None
+        return float(track["baseline"])
 
 
 def _brow_furrow_baseline(face_box, brow_down: float, now: float) -> Optional[float]:
@@ -184,7 +235,9 @@ def _brow_furrow_baseline(face_box, brow_down: float, now: float) -> Optional[fl
 
 
 def _classify_expression(
-    scores: dict[str, float], brow_baseline: Optional[float] = None
+    scores: dict[str, float],
+    brow_baseline: Optional[float] = None,
+    smile_baseline: Optional[float] = None,
 ) -> dict:
     smile = _mean(scores, "mouthSmileLeft", "mouthSmileRight")
     frown = _mean(scores, "mouthFrownLeft", "mouthFrownRight")
@@ -202,13 +255,20 @@ def _classify_expression(
         delta = float(getattr(config, "FACE_EXPRESSION_BROW_FURROW_BASELINE_DELTA", 0.18))
         brow_threshold = max(brow_threshold, float(brow_baseline) + delta)
 
+    # Smile fires on a rise ABOVE the person's resting mouth, same as brow — a real smile is a
+    # spike over the resting face, not an absolute score a high-neutral mouth already sits at.
+    smile_threshold = float(getattr(config, "FACE_EXPRESSION_SMILE_THRESHOLD", 0.50))
+    if smile_baseline is not None:
+        delta = float(getattr(config, "FACE_EXPRESSION_SMILE_BASELINE_DELTA", 0.22))
+        smile_threshold = max(smile_threshold, float(smile_baseline) + delta)
+
     candidates = [
         (
             "happy",
             "smile",
             "smiling",
             smile,
-            float(getattr(config, "FACE_EXPRESSION_SMILE_THRESHOLD", 0.35)),
+            smile_threshold,
         ),
         (
             "surprised",
@@ -297,7 +357,11 @@ def _result_to_expressions(result, frame_shape) -> list[dict]:
         )
         brow_down = _mean(scores, "browDownLeft", "browDownRight")
         brow_baseline = _brow_furrow_baseline(face_box, brow_down, now)
-        classified = _classify_expression(scores, brow_baseline=brow_baseline)
+        smile = _mean(scores, "mouthSmileLeft", "mouthSmileRight")
+        smile_baseline = _smile_baseline(face_box, smile, now)
+        classified = _classify_expression(
+            scores, brow_baseline=brow_baseline, smile_baseline=smile_baseline
+        )
         expressions.append({
             **classified,
             "source": _SOURCE,
