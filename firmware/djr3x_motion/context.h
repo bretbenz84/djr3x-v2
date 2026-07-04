@@ -29,7 +29,7 @@ inline uint32_t clampu(uint32_t v, uint32_t lo, uint32_t hi) {
 // ===== Runtime-tunable parameters (the `config` command, docs §10) ==========
 struct MotionParams {
   float    max_lin       = 0.35f;  // m/s  (was 0.25 — teleop topped out ~0.16 m/s; tune up to the hard cap)
-  float    max_ang       = 1.05f;  // rad/s (~60 deg/s)
+  float    max_ang       = 1.50f;  // rad/s (~86 deg/s) — turns felt slow at 1.05; tune with `set --max-ang`
   float    slow_zone_m   = 0.60f;
   float    stop_zone_m   = 0.25f;
   float    come_stop_at_m= 0.60f;

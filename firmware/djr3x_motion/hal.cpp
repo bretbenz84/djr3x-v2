@@ -182,17 +182,20 @@ void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer) {
   float v_l = lin + ang * (track * 0.5f);
   float v_r = lin - ang * (track * 0.5f);
 
-  // Forward-pivot steering (joystick teleop only). A turn may slow or fully STOP the
-  // inside wheel, but must never spin it BACKWARD: clamp each wheel so the turn can't
-  // push it across zero against the linear direction. Pure left (+ang, lin 0) → the
-  // inside (left) wheel would go negative → held at 0 while the outside (right) wheel
-  // drives forward; pure right is the mirror. Deliberate straight/curved REVERSE
-  // (lin<0) is preserved via the symmetric branch (a wheel only runs backward when the
-  // stick itself is pulled back, never merely from turning). NOT applied to autonomous
-  // finite turns — those must spin in place, so control_tick passes pivot_steer=false.
-  if (pivot_steer) {
-    if (lin >= 0.0f) { if (v_l < 0.0f) v_l = 0.0f; if (v_r < 0.0f) v_r = 0.0f; }
-    else             { if (v_l > 0.0f) v_l = 0.0f; if (v_r > 0.0f) v_r = 0.0f; }
+  // Joystick steering (teleop only) — two regimes by whether the stick is translating:
+  //   • NO forward/back (|lin| ~ 0, a pure left/right push): SPIN IN PLACE. Leave the
+  //     differential mix alone so the inside wheel runs backward and the base rotates
+  //     briskly on the spot (full left → left wheel back a little, right wheel forward).
+  //   • Translating (|lin| above the threshold, moving forward or back): the turn only
+  //     makes the inside wheel go SLOWER, never backward. Clamp each wheel so it can't
+  //     cross zero against the travel direction — a hard turn slows the inside wheel to
+  //     a stop at most, and a wheel only ever reverses because the stick itself is
+  //     pulled back, never merely from adding steering to a forward push.
+  // NOT applied to autonomous finite turns (control_tick passes pivot_steer=false) —
+  // those spin via CMD_TURN regardless.
+  if (pivot_steer && fabsf(lin) >= 0.02f) {   // 0.02 m/s buffer avoids spin flicker at the deadzone edge
+    if (lin > 0.0f) { if (v_l < 0.0f) v_l = 0.0f; if (v_r < 0.0f) v_r = 0.0f; }
+    else            { if (v_l > 0.0f) v_l = 0.0f; if (v_r > 0.0f) v_r = 0.0f; }
   }
 
   // Energize only when something should move (commanded OR still rolling, so we

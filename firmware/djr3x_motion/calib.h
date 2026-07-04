@@ -90,9 +90,9 @@
 // released stick coasts to a stop over ~(speed/accel) seconds instead of slamming
 // to zero and dynamic-braking (the abrupt-stop complaint). Autonomous finite
 // move/turn/come commands are NOT slewed here (they stay crisp + distance-accurate).
-// Softened after the first field test ("takes off super quick"): at max_lin≈0.35,
-// 0.5 m/s² ramps 0→top in ~0.70 s. Tune with `set --accel-lin` (higher = snappier).
-#define DRIVE_ACCEL_LIN    0.5f     // m/s^2  (teleop linear setpoint slew)
+// Softened twice after field tests ("takes off super quick" x2): at max_lin≈0.35,
+// 0.3 m/s² ramps 0→top in ~1.17 s. Tune with `set --accel-lin` (higher = snappier).
+#define DRIVE_ACCEL_LIN    0.3f     // m/s^2  (teleop linear setpoint slew)
 #define DRIVE_ACCEL_ANG    4.0f     // rad/s^2 (teleop angular setpoint slew)
 
 // ---- ToF subsystem (8 radial sensors) — only used when MOTION_TOF_PRESENT==1 -
