@@ -96,6 +96,12 @@
 #define DRIVE_ACCEL_LIN    0.2f     // m/s^2  (teleop linear setpoint slew)
 #define DRIVE_ACCEL_ANG    4.0f     // rad/s^2 (teleop angular setpoint slew)
 
+// Below this |lin| (m/s) the joystick is treated as NOT translating — a pure in-place
+// SPIN. Shared by gamepad.cpp (which then gives full turn authority) and hal.cpp (which
+// then allows the differential spin instead of the no-reverse arcade clamp) so the two
+// stay in lockstep.
+#define DRIVE_SPIN_LIN_EPS 0.02f
+
 // ---- ToF subsystem (8 radial sensors) — only used when MOTION_TOF_PRESENT==1 -
 // 4× short-range VL53L0X on mux ch 0-3 (45° diagonals) + 4× long-range VL53L1X on
 // mux ch 4-7 (cardinals). Requires the TCA9548A mux (8 sensors > free XSHUT GPIOs).
@@ -133,6 +139,12 @@
 #define GAMEPAD_SPEED_SLOW     0.15f    // level 0 (default on boot / reconnect)
 #define GAMEPAD_SPEED_MED      0.30f    // level 1  (= the old SLOW, which felt like a good middle)
 #define GAMEPAD_SPEED_FULL     0.50f    // level 2
+// A pure in-place SPIN (stick full left/right, no forward/back) uses THIS turn scale
+// instead of the speed level, so ALL levels get the same full turning authority — enough
+// feedforward duty to break carpet traction and actually rotate. The speed level throttles
+// TRANSLATION, not the pivot. 1.0 = the full max_ang cap (tune the spin rate with `set
+// --max-ang`; the PID saturates to max duty on a stiff surface regardless).
+#define GAMEPAD_SPIN_SCALE     1.00f
 #define GAMEPAD_TRIGGER_MAX    1023.0f  // Bluepad32 analog trigger full-scale
 #define GAMEPAD_FULL_OVERRIDE_FRAC 0.85f // both triggers past this fraction = bypass ToF
 #define GAMEPAD_TRIGGER_PRESS_FRAC 0.50f // trigger past this fraction = "pressed" (GUI mirror)

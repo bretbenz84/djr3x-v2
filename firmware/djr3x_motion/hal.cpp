@@ -193,7 +193,7 @@ void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer) {
   //     pulled back, never merely from adding steering to a forward push.
   // NOT applied to autonomous finite turns (control_tick passes pivot_steer=false) —
   // those spin via CMD_TURN regardless.
-  if (pivot_steer && fabsf(lin) >= 0.02f) {   // 0.02 m/s buffer avoids spin flicker at the deadzone edge
+  if (pivot_steer && fabsf(lin) >= DRIVE_SPIN_LIN_EPS) {   // translating → arcade clamp; below → spin
     if (lin > 0.0f) { if (v_l < 0.0f) v_l = 0.0f; if (v_r < 0.0f) v_r = 0.0f; }
     else            { if (v_l > 0.0f) v_l = 0.0f; if (v_r > 0.0f) v_r = 0.0f; }
   }

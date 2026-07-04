@@ -202,7 +202,12 @@ void gamepad_tick() {
   float max_lin, max_ang;
   LOCK_STATE(); max_lin = g_ctx.params.max_lin; max_ang = g_ctx.params.max_ang; UNLOCK_STATE();
   float lin =  fwd  * max_lin * scale;
-  float ang = -turn * max_ang * scale;     // stick-right => turn right => -ang (REP-103: +ang = left)
+  // A pure in-place spin (not translating) gets FULL turn authority at every speed level,
+  // so slow/med can still break carpet traction and rotate; while translating, the turn is
+  // throttled by the level so steering stays gentle. The <eps band matches hal.cpp's
+  // spin-vs-arcade gate, so the two decisions never disagree.
+  bool pure_spin = (fabsf(lin) < DRIVE_SPIN_LIN_EPS);
+  float ang = -turn * max_ang * (pure_spin ? GAMEPAD_SPIN_SCALE : scale);  // stick-right => -ang (REP-103: +ang = left)
 
   // Enter MANUAL on the first meaningful push; once manual, keep refreshing (incl. zero,
   // which feeds the drive deadman and holds the base stopped) until release/auto-return.
