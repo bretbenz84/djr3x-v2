@@ -47,6 +47,10 @@ bool apply_config(JsonObjectConst cmd, MotionParams& out) {
   clamped |= take_f(cmd, "kp", 0.0f, 100000.0f, p.kp);
   clamped |= take_f(cmd, "ki", 0.0f, 100000.0f, p.ki);
   clamped |= take_f(cmd, "kd", 0.0f, 100000.0f, p.kd);
+  clamped |= take_f(cmd, "kff",      0.0f, 100000.0f, p.kff);
+  clamped |= take_f(cmd, "min_duty", 0.0f, (float)PWM_DUTY_MAX, p.min_duty);
+  clamped |= take_f(cmd, "accel_lin", 0.05f, 20.0f, p.accel_lin);   // m/s^2  (0 would freeze teleop)
+  clamped |= take_f(cmd, "accel_ang", 0.05f, 50.0f, p.accel_ang);   // rad/s^2
   clamped |= take_f(cmd, "counts_per_meter", 1000.0f, 1.0e6f, p.counts_per_meter);
   clamped |= take_f(cmd, "track_width_m",    0.05f,   2.0f,   p.track_width_m);
 

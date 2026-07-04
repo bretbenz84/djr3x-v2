@@ -115,6 +115,8 @@ void emit_config_ack(uint32_t seq, bool clamped, const MotionParams& p) {
   e["manual_idle_return_secs"] = p.manual_idle_return_secs;
   e["manual_autoreturn"] = p.manual_autoreturn;
   e["kp"] = p.kp; e["ki"] = p.ki; e["kd"] = p.kd;
+  e["kff"] = p.kff; e["min_duty"] = p.min_duty;
+  e["accel_lin"] = p.accel_lin; e["accel_ang"] = p.accel_ang;
   e["counts_per_meter"] = p.counts_per_meter;
   e["track_width_m"] = p.track_width_m;
   tx_line(doc);

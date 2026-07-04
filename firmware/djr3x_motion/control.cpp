@@ -20,6 +20,14 @@ static inline float wrap_pi(float a) {
 }
 static inline float signf(float v) { return v >= 0.0f ? 1.0f : -1.0f; }
 
+#if MOTION_HW_PRESENT
+// Teleop setpoint slew state (m/s, rad/s). The commanded velocity ramps toward the
+// stick target at params.accel_* — symmetric, so release coasts to a stop instead of
+// hard dynamic-braking. Owned solely by control_tick (single control task), reset on
+// any halt. Only CMD_DRIVE (gamepad/teleop) is slewed; finite move/turn/come stay crisp.
+static float s_ramp_lin = 0.0f, s_ramp_ang = 0.0f;
+#endif
+
 void control_init() {
   // Nothing yet; plant state lives in g_ctx (zeroed at construction).
 }
@@ -170,8 +178,25 @@ void control_tick(float dt) {
 #if MOTION_HW_PRESENT
   // Act: drive the wheels toward the (reflex-gated, clamped) target velocity, or
   // cut the motors entirely on any halt (estop / fault / comms-lost).
-  if (halted) hal_motors_off();
-  else        hal_drive_velocity(lin_t, ang_t, dt);
+  if (halted) {
+    s_ramp_lin = 0.0f; s_ramp_ang = 0.0f;   // don't resume mid-ramp after a halt clears
+    hal_motors_off();
+  } else if (c.cmd_mode == CMD_DRIVE) {
+    // Teleop: slew the commanded velocity toward the target (accel-limited, symmetric)
+    // so a stick push ramps up briskly and a release coasts to a stop rather than
+    // stepping to zero and dynamic-braking. Feedforward (in wheel_pid) keeps the ramp
+    // responsive; the slew just removes the jerk at both ends.
+    const float al = c.params.accel_lin * dt;
+    const float aa = c.params.accel_ang * dt;
+    s_ramp_lin += clampf(lin_t - s_ramp_lin, -al, al);
+    s_ramp_ang += clampf(ang_t - s_ramp_ang, -aa, aa);
+    hal_drive_velocity(s_ramp_lin, s_ramp_ang, dt);
+  } else {
+    // Autonomous finite move/turn/come (or idle): drive the target directly and keep
+    // the ramp synced to it, so a later teleop takeover starts from the real velocity.
+    s_ramp_lin = lin_t; s_ramp_ang = ang_t;
+    hal_drive_velocity(lin_t, ang_t, dt);
+  }
 #else
   // Push velocity to the motor HAL (stub: no-op until wheels are wired).
   hal_apply_velocity(c.odom.lin, c.odom.ang);

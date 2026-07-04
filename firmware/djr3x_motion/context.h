@@ -20,7 +20,7 @@ inline uint32_t clampu(uint32_t v, uint32_t lo, uint32_t hi) {
 // ===== Hard caps (compile-time ceilings; `config` can tighten, never exceed) =
 // These are deliberately conservative for a tall, top-heavy droid on 2 driven
 // wheels. Re-tune once the base is measured (docs/motion_system.md §14).
-#define HARDCAP_MAX_LINEAR_MS     0.40f   // m/s
+#define HARDCAP_MAX_LINEAR_MS     0.60f   // m/s (headroom to tune teleop speed up via `config`)
 #define HARDCAP_MAX_ANGULAR_RAD_S 2.50f   // rad/s (~143 deg/s)
 #define HARDCAP_MAX_TURN_RATE_DPS 120.0f  // deg/s
 #define HARDCAP_WATCHDOG_MS       2000u   // watchdog can't be set looser than this
@@ -28,7 +28,7 @@ inline uint32_t clampu(uint32_t v, uint32_t lo, uint32_t hi) {
 
 // ===== Runtime-tunable parameters (the `config` command, docs §10) ==========
 struct MotionParams {
-  float    max_lin       = 0.25f;  // m/s
+  float    max_lin       = 0.35f;  // m/s  (was 0.25 — teleop topped out ~0.16 m/s; tune up to the hard cap)
   float    max_ang       = 1.05f;  // rad/s (~60 deg/s)
   float    slow_zone_m   = 0.60f;
   float    stop_zone_m   = 0.25f;
@@ -45,6 +45,10 @@ struct MotionParams {
   float    kp = WHEEL_PID_KP;
   float    ki = WHEEL_PID_KI;
   float    kd = WHEEL_PID_KD;
+  float    kff      = WHEEL_PID_KFF;    // velocity feedforward (duty per m/s of command)
+  float    min_duty = WHEEL_MIN_DUTY;   // stiction breakaway kick (duty)
+  float    accel_lin = DRIVE_ACCEL_LIN; // teleop linear setpoint slew (m/s^2)
+  float    accel_ang = DRIVE_ACCEL_ANG; // teleop angular setpoint slew (rad/s^2)
   float    counts_per_meter = COUNTS_PER_METER;
   float    track_width_m    = TRACK_WIDTH_M;
 };

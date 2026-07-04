@@ -164,7 +164,8 @@ def cmd_turn(c, args):
     c.send({"cmd": "stop"})
 
 
-_PARAM_ORDER = ("kp", "ki", "kd", "counts_per_meter", "track_width_m",
+_PARAM_ORDER = ("kp", "ki", "kd", "kff", "min_duty", "accel_lin", "accel_ang",
+                "counts_per_meter", "track_width_m",
                 "max_lin", "max_ang", "slow_zone_m", "stop_zone_m")
 
 
@@ -194,10 +195,17 @@ def cmd_set(c, args):
     if args.kp is not None: keys["kp"] = args.kp
     if args.ki is not None: keys["ki"] = args.ki
     if args.kd is not None: keys["kd"] = args.kd
+    if args.kff is not None: keys["kff"] = args.kff
+    if args.min_duty is not None: keys["min_duty"] = args.min_duty
+    if args.accel_lin is not None: keys["accel_lin"] = args.accel_lin
+    if args.accel_ang is not None: keys["accel_ang"] = args.accel_ang
+    if args.max_lin is not None: keys["max_lin"] = args.max_lin
+    if args.max_ang is not None: keys["max_ang"] = args.max_ang
     if args.counts_per_meter is not None: keys["counts_per_meter"] = args.counts_per_meter
     if args.track_width is not None: keys["track_width_m"] = args.track_width
     if not keys:
-        print("  nothing to set — pass --kp/--ki/--kd/--counts-per-meter/--track-width")
+        print("  nothing to set — pass --kp/--ki/--kd/--kff/--min-duty/--accel-lin/"
+              "--accel-ang/--max-lin/--max-ang/--counts-per-meter/--track-width")
         return
     # Calibration (geometry) re-scales odometry immediately, which would corrupt an
     # in-flight finite command's progress — only allow it at idle. Gains are safe live.
@@ -301,6 +309,12 @@ def main():
     st = sub.add_parser("set")
     st.add_argument("--kp", type=float); st.add_argument("--ki", type=float)
     st.add_argument("--kd", type=float)
+    st.add_argument("--kff", type=float, help="velocity feedforward (duty per m/s)")
+    st.add_argument("--min-duty", type=float, dest="min_duty", help="stiction breakaway kick (duty)")
+    st.add_argument("--accel-lin", type=float, dest="accel_lin", help="teleop linear slew (m/s^2)")
+    st.add_argument("--accel-ang", type=float, dest="accel_ang", help="teleop angular slew (rad/s^2)")
+    st.add_argument("--max-lin", type=float, dest="max_lin", help="linear speed cap (m/s)")
+    st.add_argument("--max-ang", type=float, dest="max_ang", help="angular speed cap (rad/s)")
     st.add_argument("--counts-per-meter", type=float, dest="counts_per_meter")
     st.add_argument("--track-width", type=float, dest="track_width")
     args = ap.parse_args()

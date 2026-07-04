@@ -141,10 +141,20 @@ void hal_read_odom(Odom& out, float dt) {
   out.ang = d_theta  * inv_dt;
 }
 
-// One wheel's velocity PID: target m/s -> signed duty. Gains are runtime-tunable
-// (g_ctx.params); i_clamp stays a compile-time safety bound. Updates integ/eprev.
+// One wheel's velocity controller: target m/s -> signed duty. Feedforward + stiction
+// kick + PID trim. Gains are runtime-tunable (g_ctx.params); i_clamp stays a
+// compile-time safety bound. Updates integ/eprev.
+//
+// u = KFF*target                      feedforward: ~right duty the instant a speed is
+//                                     commanded (no waiting for the integrator to wind up)
+//   + MIN_DUTY*sign(target)          stiction breakaway kick in the travel direction
+//   + kp*err + integ + kd*deriv      closed-loop trim on the encoder-measured error
+// Without the first two terms the loop starts every move from zero duty, so low
+// speeds sit below breakaway friction (weak + slow to start) and duty only scales up
+// as the integrator climbs (strong only once fast) — the reported feel. With them the
+// wheel is strong and responsive from the first tick; the PID just corrects.
 static int wheel_pid(float target, float meas, float& integ, float& eprev, float dt,
-                     float kp, float ki, float kd) {
+                     float kp, float ki, float kd, float kff, float min_duty) {
   if (fabsf(target) < WHEEL_STOP_EPS_MS) {
     integ = 0; eprev = 0;            // commanded stop: don't chase, drop windup
     return 0;
@@ -154,7 +164,8 @@ static int wheel_pid(float target, float meas, float& integ, float& eprev, float
   integ = clampf(integ, -WHEEL_PID_I_CLAMP, WHEEL_PID_I_CLAMP);   // anti-windup
   const float deriv = (dt > 1e-4f) ? (err - eprev) / dt : 0.0f;
   eprev = err;
-  const float u = kp * err + integ + kd * deriv;
+  const float ff = kff * target + min_duty * (target >= 0.0f ? 1.0f : -1.0f);
+  const float u  = ff + kp * err + integ + kd * deriv;
   return (int)clampf(u, -(float)PWM_DUTY_MAX, (float)PWM_DUTY_MAX);
 }
 
@@ -162,6 +173,7 @@ void hal_drive_velocity(float lin, float ang, float dt) {
   // Caller holds the state lock — read the runtime params as a consistent snapshot.
   const float track = g_ctx.params.track_width_m;
   const float kp = g_ctx.params.kp, ki = g_ctx.params.ki, kd = g_ctx.params.kd;
+  const float kff = g_ctx.params.kff, min_duty = g_ctx.params.min_duty;
   // Differential-drive kinematics (REP-103: +lin forward, +ang CCW/left). The drive
   // channels are wired to the OPPOSITE physical sides (verified on the bench: a +ang
   // command spun the base CW/right while forward/back were correct), so the angular term
@@ -180,8 +192,8 @@ void hal_drive_velocity(float lin, float ang, float dt) {
   motors_enable(true);
   // PID runs in the forward=+ convention; MOTOR_SIGN_* maps its effort onto each
   // H-bridge, so a wheel that spins backwards is fixed in software, not by rewiring.
-  const int duty_l = MOTOR_SIGN_L * wheel_pid(v_l, s_vmeas_l, s_i_l, s_eprev_l, dt, kp, ki, kd);
-  const int duty_r = MOTOR_SIGN_R * wheel_pid(v_r, s_vmeas_r, s_i_r, s_eprev_r, dt, kp, ki, kd);
+  const int duty_l = MOTOR_SIGN_L * wheel_pid(v_l, s_vmeas_l, s_i_l, s_eprev_l, dt, kp, ki, kd, kff, min_duty);
+  const int duty_r = MOTOR_SIGN_R * wheel_pid(v_r, s_vmeas_r, s_i_r, s_eprev_r, dt, kp, ki, kd, kff, min_duty);
   apply_wheel_duty(PIN_L_RPWM, PIN_L_LPWM, duty_l);
   apply_wheel_duty(PIN_R_RPWM, PIN_R_LPWM, duty_r);
   g_ctx.wheels.dl = (int16_t)duty_l;   // telemetry diag (caller holds the state lock)

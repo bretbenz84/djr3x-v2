@@ -65,9 +65,34 @@
 // accumulate while the motor is saturated/stalled.
 #define WHEEL_PID_I_CLAMP  (0.8f * PWM_DUTY_MAX)
 
+// ---- Velocity feedforward + stiction compensation -------------------------
+// The PID alone starts every move from ZERO duty and only reaches a useful duty
+// once the integrator winds up — so low speeds sit below breakaway friction (weak
+// + slow to start) and duty scales with speed (strong only when fast). Two terms
+// fix that mechanically:
+//   KFF  — feedforward duty per commanded m/s. The instant a speed is commanded the
+//          wheel gets ~the right duty, so the loop only trims instead of building
+//          from nothing. Start ≈ 0.9 * PWM_DUTY_MAX / max_lin (so the top commanded
+//          speed maps to ~90% duty, leaving PID headroom). Tune on the bench.
+//   MIN_DUTY — a fixed breakaway "kick" added in the travel direction whenever a
+//          nonzero speed is commanded, to clear static friction on a heavy base.
+//          Raise until the wheel starts moving crisply at creep; lower if it lurches.
+#define WHEEL_PID_KFF    2600.0f    // duty per (m/s) of COMMAND (feedforward)
+#define WHEEL_MIN_DUTY    120.0f    // stiction breakaway kick (duty), in travel dir
+
 // A wheel target below this (m/s magnitude) counts as "stopped" → the wheel is
 // braked to zero and its integrator reset rather than chasing micro-setpoints.
 #define WHEEL_STOP_EPS_MS  0.01f
+
+// ---- Drive setpoint slew (teleop feel) ------------------------------------
+// Acceleration limit applied to the TELEOP (gamepad drive) setpoint so the base
+// ramps smoothly toward the stick command in BOTH directions — symmetric, so a
+// released stick coasts to a stop over ~(speed/accel) seconds instead of slamming
+// to zero and dynamic-braking (the abrupt-stop complaint). Autonomous finite
+// move/turn/come commands are NOT slewed here (they stay crisp + distance-accurate).
+// Brisk by design: at max_lin≈0.35, 0.8 m/s² ramps 0→top in ~0.44 s.
+#define DRIVE_ACCEL_LIN    0.8f     // m/s^2  (teleop linear setpoint slew)
+#define DRIVE_ACCEL_ANG    4.0f     // rad/s^2 (teleop angular setpoint slew)
 
 // ---- ToF subsystem (8 radial sensors) — only used when MOTION_TOF_PRESENT==1 -
 // 4× short-range VL53L0X on mux ch 0-3 (45° diagonals) + 4× long-range VL53L1X on
@@ -98,7 +123,7 @@
 // Left stick = arcade drive (Y forward, X turn); L1 creep / R1 boost; B = e-stop;
 // Start = clear + return to AUTO; hold BOTH analog triggers = full-override (docs §11).
 #define GAMEPAD_DEADZONE       0.12f    // stick fraction ignored around center
-#define GAMEPAD_SCALE_CRUISE   0.65f    // default speed as a fraction of the caps
+#define GAMEPAD_SCALE_CRUISE   0.85f    // default speed as a fraction of the caps
 #define GAMEPAD_SCALE_CREEP    0.35f    // L1 held
 #define GAMEPAD_SCALE_BOOST    1.00f    // R1 held
 #define GAMEPAD_TRIGGER_MAX    1023.0f  // Bluepad32 analog trigger full-scale
