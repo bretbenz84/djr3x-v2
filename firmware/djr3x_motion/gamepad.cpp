@@ -9,7 +9,7 @@
 // the library normalizes them, so this mapping is pad-agnostic). Pairing/mode notes
 // in README. Mapping (docs §11.2):
 //   left stick : arcade drive — Y forward/back, X turn
-//   L1 / R1    : creep / boost speed scale
+//   L3 (click) : cycle speed level — slow (default) / faster / full
 //   B          : E-STOP (always honored)
 //   Start      : clear e-stop + return control to AUTO
 //   L2 + R2 (both, near full): hold to FULL-OVERRIDE — bypass ToF gating
@@ -38,6 +38,13 @@ static bool s_prev_b = false;
 static bool s_prev_start = false;
 static bool s_full_override = false;
 static uint8_t s_prev_dpad = 0;           // D-pad rising-edge state (heading-turn triggers)
+static bool s_prev_l3 = false;            // left-stick-click rising edge (speed-level toggle)
+static uint8_t s_speed_level = 0;         // 0 slow (default) / 1 med / 2 full; L3 cycles
+
+// The three teleop speed levels L3 cycles through (fraction of the caps).
+static const float SPEED_LEVELS[3] = {
+  GAMEPAD_SPEED_SLOW, GAMEPAD_SPEED_MED, GAMEPAD_SPEED_FULL,
+};
 
 static void onConnect(ControllerPtr c) {
   if (!s_ctl) { s_ctl = c; ctl_set_gamepad(true); }   // take the first pad; filter reads in tick
@@ -47,6 +54,7 @@ static void onDisconnect(ControllerPtr c) {
   if (s_ctl == c) {
     s_ctl = nullptr;
     s_full_override = false;
+    s_speed_level = 0;        // a reconnected pad starts at the SLOW level, not wherever it left off
     ctl_set_gamepad(false);
     LOCK_STATE(); g_ctx.gp_live.connected = false; UNLOCK_STATE();  // GUI: pad gone
     ctl_manual_stop();        // failsafe: stop now, KEEP manual — never silently resume AUTO
@@ -98,8 +106,9 @@ static void poll_action_buttons(ControllerPtr c) {
     {"y",          c->y()},
     {"select",     c->miscSelect()},   // the "-" button
     {"home",       c->miscSystem()},   // the star / home button
-    {"l3",         c->thumbL()},        // left stick click
     {"r3",         c->thumbR()},        // right stick click
+    // NB: L3 (left stick click) is NOT forwarded — it cycles the drive speed level
+    // (see gamepad_tick), so it must not also fire a soundboard clip.
   };
   const uint8_t n = (uint8_t)(sizeof(btns) / sizeof(btns[0]));
   uint16_t cur = 0;
@@ -136,6 +145,16 @@ void gamepad_tick() {
   bool start = c->miscStart();
   if (start && !s_prev_start) { ctl_clear(0); ctl_manual_release(); }
   s_prev_start = start;
+
+  // Left-stick CLICK (L3) = cycle the drive speed level: slow -> faster -> full -> slow
+  // (rising edge, one step per press). Latches — it's a mode, not a held modifier.
+  bool l3 = c->thumbL();
+  if (l3 && !s_prev_l3) {
+    s_speed_level = (uint8_t)((s_speed_level + 1) % 3);
+    const char lv[2] = { (char)('1' + s_speed_level), '\0' };  // "1"/"2"/"3" for a Mac cue
+    emit_event_kv("speed", "level", lv);
+  }
+  s_prev_l3 = l3;
 
   // D-pad -> spin the base to an ABSOLUTE heading (encoder validation). Rising edge: one
   // turn per press. Headings in the REP-103 body frame (+deg = CCW / left):
@@ -175,10 +194,10 @@ void gamepad_tick() {
   bool fo = (br >= GAMEPAD_FULL_OVERRIDE_FRAC && th >= GAMEPAD_FULL_OVERRIDE_FRAC);
   if (fo != s_full_override) { s_full_override = fo; ctl_set_full_override(fo); }
 
-  // Left stick -> arcade drive; L1 creep / R1 boost scales the caps.
+  // Left stick -> arcade drive; the L3-selected speed level scales the caps.
   float fwd   = -stick_norm(c->axisY());   // stick up = forward
   float turn  =  stick_norm(c->axisX());   // stick right = +x
-  float scale = c->l1() ? GAMEPAD_SCALE_CREEP : (c->r1() ? GAMEPAD_SCALE_BOOST : GAMEPAD_SCALE_CRUISE);
+  float scale = SPEED_LEVELS[s_speed_level];
 
   float max_lin, max_ang;
   LOCK_STATE(); max_lin = g_ctx.params.max_lin; max_ang = g_ctx.params.max_ang; UNLOCK_STATE();

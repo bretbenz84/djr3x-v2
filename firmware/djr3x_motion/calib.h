@@ -90,9 +90,10 @@
 // released stick coasts to a stop over ~(speed/accel) seconds instead of slamming
 // to zero and dynamic-braking (the abrupt-stop complaint). Autonomous finite
 // move/turn/come commands are NOT slewed here (they stay crisp + distance-accurate).
-// Softened twice after field tests ("takes off super quick" x2): at max_lin≈0.35,
-// 0.3 m/s² ramps 0→top in ~1.17 s. Tune with `set --accel-lin` (higher = snappier).
-#define DRIVE_ACCEL_LIN    0.3f     // m/s^2  (teleop linear setpoint slew)
+// Softened repeatedly after field tests ("takes off too fast" x3): at the SLOW level
+// (0.30*max_lin≈0.105 m/s) 0.2 m/s² ramps to top in ~0.5 s; at FULL (0.35) ~1.75 s.
+// Tune with `set --accel-lin` (higher = snappier).
+#define DRIVE_ACCEL_LIN    0.2f     // m/s^2  (teleop linear setpoint slew)
 #define DRIVE_ACCEL_ANG    4.0f     // rad/s^2 (teleop angular setpoint slew)
 
 // ---- ToF subsystem (8 radial sensors) — only used when MOTION_TOF_PRESENT==1 -
@@ -124,9 +125,12 @@
 // Left stick = arcade drive (Y forward, X turn); L1 creep / R1 boost; B = e-stop;
 // Start = clear + return to AUTO; hold BOTH analog triggers = full-override (docs §11).
 #define GAMEPAD_DEADZONE       0.12f    // stick fraction ignored around center
-#define GAMEPAD_SCALE_CRUISE   0.85f    // default speed as a fraction of the caps
-#define GAMEPAD_SCALE_CREEP    0.35f    // L1 held
-#define GAMEPAD_SCALE_BOOST    1.00f    // R1 held
+// Teleop speed levels, cycled by CLICKING the left stick (L3): slow -> faster -> full ->
+// slow. Boots at SLOW so the default is gentle; each is a fraction of the caps (max_lin/
+// max_ang). Full = 1.0 = the caps themselves. Tune the caps live with `set --max-lin`.
+#define GAMEPAD_SPEED_SLOW     0.30f    // level 0 (default on boot / reconnect)
+#define GAMEPAD_SPEED_MED      0.60f    // level 1
+#define GAMEPAD_SPEED_FULL     1.00f    // level 2
 #define GAMEPAD_TRIGGER_MAX    1023.0f  // Bluepad32 analog trigger full-scale
 #define GAMEPAD_FULL_OVERRIDE_FRAC 0.85f // both triggers past this fraction = bypass ToF
 #define GAMEPAD_TRIGGER_PRESS_FRAC 0.50f // trigger past this fraction = "pressed" (GUI mirror)

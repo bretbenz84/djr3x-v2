@@ -156,8 +156,8 @@ remembers the bond for next time.
 
 | Input | Action |
 | --- | --- |
-| Left stick | arcade drive — Y forward/back, X turn |
-| L1 / R1 | creep / boost speed scale |
+| Left stick | arcade drive — Y forward/back, X turn. Pure X (no Y) spins in place; adding X to a forward push just slows the inside wheel (never reverses it) |
+| **L3 (click left stick)** | **cycle drive speed level**: slow (default) → faster → full. Latches; resets to slow on reconnect. Emits `event:"speed" level:1..3` |
 | **D-pad** | **spin to an absolute heading** (encoder test): Up=0°, Left=+90° (CCW), Down=180°, Right=−90° (CW) |
 | **B** | **E-STOP** (always honored) |
 | Start | clear e-stop + return control to AUTO |
@@ -184,8 +184,9 @@ and stays MANUAL until `MOTION_MANUAL_AUTORETURN`'s idle timeout hands back to A
 you reconnect and press Start).
 
 **Action buttons → R3X soundboard / animations.** The buttons motion does NOT use —
-**A, X, Y, Select (−), Home (★), L3/R3 (stick clicks)** — are forwarded to the
-Mac as `event:"button"` (rising edge, one per press) by `poll_action_buttons()`. They fire
+**A, X, Y, Select (−), Home (★), R3 (right stick click)** — are forwarded to the
+Mac as `event:"button"` (rising edge, one per press) by `poll_action_buttons()`.
+(L3 is NOT forwarded — it's the speed-level toggle above.) They fire
 **whenever the pad is connected**, independent of the drive `owner` (so the soundboard works
 in AUTO and pressing them does NOT grab the wheel). On the Mac,
 `intelligence/motion_controller._on_motion_event` looks the button up in
