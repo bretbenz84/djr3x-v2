@@ -4600,6 +4600,23 @@ def _build_anticipation_prompt(
     event_date = event.get("event_date") or ""
     notes = (event.get("event_notes") or "").strip()
     when_clause = f" coming up on {event_date}" if event_date else " coming up"
+    # Spell out the relative day with LOCAL dates — the model has no reliable
+    # "today" and guessed (field bug: a July-4 event opened as happening
+    # "tonight" at 9:33pm on July 3).
+    if event_date:
+        try:
+            from datetime import date as _d
+            days = (_d.fromisoformat(str(event_date)[:10]) - _d.today()).days
+            rel = (
+                "TODAY" if days == 0 else "TOMORROW" if days == 1
+                else f"in {days} days" if days > 1 else "already past"
+            )
+            when_clause = (
+                f" coming up on {event_date} — that is {rel}; phrase any time "
+                f"reference accordingly and never guess a different day"
+            )
+        except (ValueError, TypeError):
+            pass
     notes_clause = f" Context they gave: {notes}." if notes else ""
     return (
         f"You see '{first_name}', someone you know — {situation}. "

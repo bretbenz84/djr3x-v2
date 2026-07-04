@@ -160,6 +160,11 @@ def _scene_lines(world: Optional[dict]) -> list[str]:
         return []
     try:
         bits: list[str] = []
+        # LOCAL date first — without it the model guesses what "today" is and gets
+        # relative days wrong ("tonight" for a tomorrow event). ~8 tokens.
+        from datetime import datetime as _dt
+        _now = _dt.now()
+        bits.append(_now.strftime("%A %Y-%m-%d"))
         tod = str(world.get("time_of_day") or world.get("part_of_day") or "").strip()
         if tod:
             bits.append(tod)
