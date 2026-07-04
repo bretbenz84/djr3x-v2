@@ -127,10 +127,12 @@
 #define GAMEPAD_DEADZONE       0.12f    // stick fraction ignored around center
 // Teleop speed levels, cycled by CLICKING the left stick (L3): slow -> faster -> full ->
 // slow. Boots at SLOW so the default is gentle; each is a fraction of the caps (max_lin/
-// max_ang). Full = 1.0 = the caps themselves. Tune the caps live with `set --max-lin`.
-#define GAMEPAD_SPEED_SLOW     0.30f    // level 0 (default on boot / reconnect)
-#define GAMEPAD_SPEED_MED      0.60f    // level 1
-#define GAMEPAD_SPEED_FULL     1.00f    // level 2
+// max_ang). Lowered a full notch after field feel ("still too fast across the board; the
+// slowest should be the middle") — the old SLOW (0.30) is now the MIDDLE, everything else
+// shifts down. Raise all three together by bumping the caps live with `set --max-lin`.
+#define GAMEPAD_SPEED_SLOW     0.15f    // level 0 (default on boot / reconnect)
+#define GAMEPAD_SPEED_MED      0.30f    // level 1  (= the old SLOW, which felt like a good middle)
+#define GAMEPAD_SPEED_FULL     0.50f    // level 2
 #define GAMEPAD_TRIGGER_MAX    1023.0f  // Bluepad32 analog trigger full-scale
 #define GAMEPAD_FULL_OVERRIDE_FRAC 0.85f // both triggers past this fraction = bypass ToF
 #define GAMEPAD_TRIGGER_PRESS_FRAC 0.50f // trigger past this fraction = "pressed" (GUI mirror)
