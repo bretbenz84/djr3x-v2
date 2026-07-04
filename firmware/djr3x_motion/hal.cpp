@@ -169,7 +169,7 @@ static int wheel_pid(float target, float meas, float& integ, float& eprev, float
   return (int)clampf(u, -(float)PWM_DUTY_MAX, (float)PWM_DUTY_MAX);
 }
 
-void hal_drive_velocity(float lin, float ang, float dt) {
+void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer) {
   // Caller holds the state lock — read the runtime params as a consistent snapshot.
   const float track = g_ctx.params.track_width_m;
   const float kp = g_ctx.params.kp, ki = g_ctx.params.ki, kd = g_ctx.params.kd;
@@ -179,8 +179,21 @@ void hal_drive_velocity(float lin, float ang, float dt) {
   // command spun the base CW/right while forward/back were correct), so the angular term
   // is negated here — kept in lockstep with the same negation in hal_read_odom — to make
   // +ang = physical CCW/left WITHOUT swapping the pin map (pins.h stays as-wired).
-  const float v_l = lin + ang * (track * 0.5f);
-  const float v_r = lin - ang * (track * 0.5f);
+  float v_l = lin + ang * (track * 0.5f);
+  float v_r = lin - ang * (track * 0.5f);
+
+  // Forward-pivot steering (joystick teleop only). A turn may slow or fully STOP the
+  // inside wheel, but must never spin it BACKWARD: clamp each wheel so the turn can't
+  // push it across zero against the linear direction. Pure left (+ang, lin 0) → the
+  // inside (left) wheel would go negative → held at 0 while the outside (right) wheel
+  // drives forward; pure right is the mirror. Deliberate straight/curved REVERSE
+  // (lin<0) is preserved via the symmetric branch (a wheel only runs backward when the
+  // stick itself is pulled back, never merely from turning). NOT applied to autonomous
+  // finite turns — those must spin in place, so control_tick passes pivot_steer=false.
+  if (pivot_steer) {
+    if (lin >= 0.0f) { if (v_l < 0.0f) v_l = 0.0f; if (v_r < 0.0f) v_r = 0.0f; }
+    else             { if (v_l > 0.0f) v_l = 0.0f; if (v_r > 0.0f) v_r = 0.0f; }
+  }
 
   // Energize only when something should move (commanded OR still rolling, so we
   // actively brake a coasting wheel to a stop before disabling it).

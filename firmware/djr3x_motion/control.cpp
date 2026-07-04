@@ -190,12 +190,16 @@ void control_tick(float dt) {
     const float aa = c.params.accel_ang * dt;
     s_ramp_lin += clampf(lin_t - s_ramp_lin, -al, al);
     s_ramp_ang += clampf(ang_t - s_ramp_ang, -aa, aa);
-    hal_drive_velocity(s_ramp_lin, s_ramp_ang, dt);
+    // Forward-pivot steering for the JOYSTICK (owner==MANUAL): a turn stops the inside
+    // wheel instead of reversing it. The Mac's autonomous `drive` (owner==AUTO) keeps
+    // true differential mixing so it can still rotate in place via a velocity command.
+    hal_drive_velocity(s_ramp_lin, s_ramp_ang, dt, c.owner == OWNER_MANUAL);
   } else {
     // Autonomous finite move/turn/come (or idle): drive the target directly and keep
     // the ramp synced to it, so a later teleop takeover starts from the real velocity.
+    // pivot_steer=false — a finite TURN must spin in place (one wheel reverses).
     s_ramp_lin = lin_t; s_ramp_ang = ang_t;
-    hal_drive_velocity(lin_t, ang_t, dt);
+    hal_drive_velocity(lin_t, ang_t, dt, false);
   }
 #else
   // Push velocity to the motor HAL (stub: no-op until wheels are wired).
