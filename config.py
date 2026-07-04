@@ -4419,6 +4419,11 @@ PRESENCE_ENGAGED_DEPARTURE_CONFIRM_SECS = 12.0
 
 # Seconds to pause after current TTS finishes before firing a presence reaction.
 PRESENCE_REACTION_DELAY_SECS = 2.0
+# How long a queued presence line (startup greeting, departure, return) may WAIT for a
+# transient proactive block to clear before being dropped (with a log). Covers the
+# phantom-turn race: a hallucinated VAD segment blocks proactive speech for ~1-2s and
+# used to swallow the startup greeting silently.
+PRESENCE_SPEAK_GRACE_SECS = _env_float("PRESENCE_SPEAK_GRACE_SECS", 8.0, min_value=0.0, max_value=60.0)
 
 # If Rex is currently engaged in conversation with a person, presence reactions
 # for THAT person are suppressed entirely while the engagement window is open.

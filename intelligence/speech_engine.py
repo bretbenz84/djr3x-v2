@@ -672,15 +672,34 @@ def generate_and_speak_presence(
     if not speech_text:
         prompt = _c._apply_proactive_directive(prompt, purpose)
 
+    def _wait_proactive_clear(grace_secs: float) -> bool:
+        """Wait briefly for a transient proactive block to clear instead of silently
+        dropping the line. A Whisper-hallucination 'user turn' blocks proactive
+        speech for ~1-2s — that race used to swallow the startup greeting entirely
+        (field log 2026-07-03: greeting accepted by the governor, never spoken,
+        Rex silent for a minute). Purpose-current stays a hard cancel."""
+        deadline = time.monotonic() + max(0.0, grace_secs)
+        while True:
+            if not _c._proactive_purpose_current(token):
+                return False
+            if _c._can_proactive_speak():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.5)
+
     def _task():
         if not _c._presence_reaction_lock.acquire(blocking=False):
             _log.debug("generate_and_speak_presence: reaction already in progress, skipping — %s", label)
             _c._release_proactive_purpose(token)
             return
+        grace = float(getattr(config, "PRESENCE_SPEAK_GRACE_SECS", 8.0))
         try:
-            if not _c._proactive_purpose_current(token):
-                return
-            if not _c._can_proactive_speak():
+            if not _wait_proactive_clear(grace):
+                _log.info(
+                    "consciousness: presence reaction dropped before generation — %s "
+                    "(proactive blocked past %.0fs grace or superseded)", label, grace,
+                )
                 return
             if speech_text:
                 text = speech_text
@@ -688,21 +707,20 @@ def generate_and_speak_presence(
                 from intelligence.llm import get_response
                 text = get_response(prompt)
             if not text or not text.strip():
+                _log.info("consciousness: presence reaction dropped — empty generation (%s)", label)
                 return
             if startup_greeting_name and not speech_text:
                 text = _c._ensure_named_startup_greeting(text, startup_greeting_name)
-            if not _c._proactive_purpose_current(token):
-                return
-            if not _c._can_proactive_speak():
-                return
 
             delay = getattr(config, "PRESENCE_REACTION_DELAY_SECS", 2.0)
             if delay > 0:
                 time.sleep(delay)
 
-            if not _c._proactive_purpose_current(token):
-                return
-            if not _c._can_proactive_speak():
+            if not _wait_proactive_clear(grace):
+                _log.info(
+                    "consciousness: presence reaction dropped after generation — %s "
+                    "(proactive blocked past %.0fs grace or superseded)", label, grace,
+                )
                 return
 
             from audio import speech_queue

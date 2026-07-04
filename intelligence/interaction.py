@@ -268,6 +268,9 @@ _consecutive_lean_impulses: int = 0
 # decided on a silence timer, then spends ~1-2s in LLM+TTS before any sound; if a
 # user turn started in that gap, the line is stale and must yield at speak time.
 _last_user_turn_started_at: float = 0.0
+# Last ACCEPTED user speech (post hallucination-filter) — the lean-impulse flow gate
+# anchors on this, not the VAD-level turn start.
+_last_user_content_at: float = 0.0
 # Memory follow-up cadence — the moderate clamp so Rex doesn't run down a checklist
 # of remembered events turn-after-turn (see config.FOLLOWUP_MIN_GAP_EXCHANGES). Clocked
 # on transcript length (like rex_pov / the arc) so it self-resets at session boundaries
@@ -4193,8 +4196,8 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     _flow_window = float(getattr(config, "LEAN_IMPULSE_FLOW_WINDOW_SECS", 120.0))
     _flow_quiet = float(getattr(config, "LEAN_IMPULSE_FLOW_QUIET_SECS", 30.0))
     if (
-        _last_user_turn_started_at > 0.0
-        and (time.monotonic() - _last_user_turn_started_at) <= _flow_window
+        _last_user_content_at > 0.0
+        and (time.monotonic() - _last_user_content_at) <= _flow_window
         and quiet < _flow_quiet
     ):
         return False
@@ -17935,6 +17938,11 @@ def _handle_speech_segment(
                 speaker_label, person_id, text,
             )
             _note_session_person_turn(person_id)
+            # Anchor for the lean-impulse flow gate: REAL accepted speech only. The
+            # VAD-level _begin_user_turn also fires for Whisper hallucinations
+            # ("and the"), which must not read as "the conversation is flowing".
+            global _last_user_content_at
+            _last_user_content_at = time.monotonic()
 
         name_merge_response, name_merge_person_id, name_merge_name = (None, None, None)
         if not game_conversation_lock:
