@@ -2315,10 +2315,25 @@ def extract_facts(
         "'don't ask me about X', 'don't roast me about X', or 'don't mention X'; "
         "those are handled by a separate preference system. If no facts are "
         "present, return an empty array.\n\n"
+        "QUALITY RULES (a wrong fact is stored permanently — omit beats guess):\n"
+        "  - The VALUE must be a distilled noun phrase, NEVER a whole sentence the "
+        "speaker said. 'I might go see my dad for the 4th' is a plan, not a family "
+        "fact — omit it.\n"
+        "  - NEVER set the value to just the relation/category word: value 'dad' for a "
+        "family fact or 'dog' for a pet is USELESS — store a NAME or a specific detail, "
+        "else omit.\n"
+        "  - NEVER store a NEGATED, HYPOTHETICAL, or HEARSAY statement as a positive "
+        "fact: a place the speaker says they've NEVER been is NOT their hometown; "
+        "'I might live in X', 'imagine if X', 'someone told me X' are NOT facts — omit.\n"
+        "  - Do not store a fictional plot point (a movie/show SCENE) as a fact; the "
+        "movie TITLE they like is a preference, the scene is not.\n"
+        "  - Do not store a bare topical noun ('fireworks') with no statement attached.\n\n"
         "Return a JSON array where each element has exactly these fields:\n"
         '  "category": one of "job", "hometown", "pet", "family", "belief", "worldview", "preference", "other"\n'
         '  "key": a snake_case identifier (e.g. "hometown", "job_title", "favorite_band")\n'
-        '  "value": the fact value as a concise string\n\n'
+        '  "value": the fact value as a concise string\n'
+        '  "source_quote": the SHORT exact phrase from the transcript this fact came '
+        "from (so its polarity can be checked). Keep it to the one clause.\n\n"
         f"Transcript:\n{_format_transcript(transcript)}\n\n"
         "Return only the JSON array. No explanation."
     )
@@ -2347,6 +2362,7 @@ def extract_facts(
                 "category": item.get("category", "other"),
                 "key": item.get("key", ""),
                 "value": item.get("value", ""),
+                "source_quote": item.get("source_quote", ""),
             }
             for item in result
             if isinstance(item, dict) and item.get("key") and item.get("value")
@@ -2379,7 +2395,9 @@ def extract_preferences(
         "Extract only preferences, dislikes, interaction style requests, and "
         "boundaries stated by the HUMAN speaker. Do not extract ordinary facts "
         "like job, hometown, pet, family, or one-off jokes unless they clearly "
-        "express a preference.\n\n"
+        "express a preference. Never store a NEGATED phrasing as a positive "
+        "preference — 'I hate country' is a DISLIKE of country, not a like. "
+        "Attribute preferences only to the human, never to Rex.\n\n"
         "Fields:\n"
         '- "domain": food, music, conversation, humor, travel, interaction, '
         "entertainment, games, general, etc.\n"
@@ -2486,6 +2504,12 @@ def extract_interests(
         "Extract interests the HUMAN speaker says they enjoy, follow, build, "
         "play, practice, collect, or are currently doing. These are durable "
         "conversation hooks, not generic facts. Do not extract Rex's interests. "
+        "Attribute interests ONLY to the HUMAN: if REX is the one 'obsessed with' "
+        "something, or you are INFERRING the human's interest from what Rex said, "
+        "DROP it. A movie/show/book TITLE the human likes is a valid interest "
+        "(name = the title); a SCENE or plot point ('the scene where...') is NOT an "
+        "interest — omit it. 'notes' must be a short third-person context phrase, "
+        "NEVER the speaker's raw verbatim question or quote. "
         "Do not extract one-off chores unless the speaker frames them as an "
         "ongoing interest.\n\n"
         "Fields:\n"

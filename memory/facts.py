@@ -15,6 +15,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from memory import database as db
+from memory import fact_quality
 
 _log = logging.getLogger(__name__)
 
@@ -274,6 +275,7 @@ def add_fact(
     fact_kind: Optional[str] = None,
     kindness: Optional[float] = None,
     told_by: Optional[int] = None,
+    utterance: str = "",
 ) -> None:
     """
     Insert or update a fact.
@@ -285,7 +287,22 @@ def add_fact(
     fact_kind ('fact'|'gossip'), kindness (-1 mean .. +1 kind), and told_by
     (person_id of the teller) classify secondhand "tell me about" material so
     prompt formatting can hedge it and keep unkind gossip from being recited.
+
+    `utterance` is the raw source clause (when available) for the negation/
+    hypothetical quality gate — the extracted value alone is polarity-stripped, so
+    "a place I'd NEVER been" only stays out of `hometown` if the source clause is
+    seen. Defaults to "" (the gate then defers that class to the extractor prompt).
     """
+    # ── content-quality gate (memory/fact_quality.py) ──
+    # Drop mis-extracted garbage (tautology / fragment / fiction / verbatim question /
+    # negated-source) BEFORE any DB work. Silent + debug-log: a false negative is a
+    # stray row; a false positive erases a real memory, so the predicates are
+    # deliberately conservative and proven against a good-facts guard in tests.
+    _reject = fact_quality.reject_fact(category, key, value, utterance=utterance, source=source)
+    if _reject:
+        _log.debug("add_fact rejected (%s): person_id=%s cat=%r key=%r value=%r",
+                   _reject, person_id, category, key, value)
+        return
     now = _now()
     normalized_source = _normalize_source(source)
     fact_kind_value = fact_kind if fact_kind in ("fact", "gossip") else None

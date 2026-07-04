@@ -12899,6 +12899,7 @@ def _post_response(
                             fact["value"],
                             source=_ext_src,
                             confidence=_ext_conf,
+                            utterance=fact.get("source_quote", ""),
                         )
                         _record_recent_memory_candidate(
                             person_id,
@@ -13729,6 +13730,7 @@ def _end_session() -> None:
                                 fact["value"],
                                 source=_ext_src,
                                 confidence=_ext_conf,
+                                utterance=fact.get("source_quote", ""),
                             )
                             _record_recent_memory_candidate(
                                 person_id,

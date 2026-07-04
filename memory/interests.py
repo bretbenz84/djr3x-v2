@@ -114,6 +114,14 @@ def upsert_interest(
     if dedup.looks_like_junk_interest(name_clean):
         _log.debug("interest rejected as junk fragment: %r (person_id=%s)", name_clean, person_id)
         return None
+    # Content-quality gate: fiction scenes ('scene where...'), plot-line names, and
+    # Rex-misattributed interests ('music', note='Rex mentioned being obsessed...').
+    from memory import fact_quality
+    _rej = fact_quality.reject_interest(name_clean, notes or "")
+    if _rej:
+        _log.debug("interest rejected (%s): %r (person_id=%s)", _rej, name_clean, person_id)
+        return None
+    notes = fact_quality.clean_interest_note(notes or "")  # blank a junk note, keep the interest
     category_clean = _clean_token(category) or "hobby"
     strength_clean = _normalize_strength(interest_strength)
     confidence_clean = _clamp(confidence)

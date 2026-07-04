@@ -539,7 +539,7 @@ def verify_schema() -> None:
 
 # Bump when a new one-time data migration is added below; PRAGMA user_version gates it
 # so the pass runs once per DB, not on every boot.
-_DATA_MIGRATION_VERSION = 1
+_DATA_MIGRATION_VERSION = 2
 
 
 def _run_one_time_data_migrations() -> None:
@@ -547,8 +547,11 @@ def _run_one_time_data_migrations() -> None:
 
     v1: collapse the duplicate/fragmented interests and events that accumulated under
     the old exact-string dedup (e.g. 'R3X droid' / 'building an R3X droid', 'camping
-    trip' x4). Idempotent, but user_version keeps it from re-scanning every person on
-    every launch."""
+    trip' x4).
+    v2: purge already-stored garbage the new fact_quality gate rejects — tautologies
+    ('dad'->'dad'), first-person fragments, fiction scenes, verbatim-question values/
+    notes — that landed before the extraction gate existed.
+    Idempotent, but user_version keeps it from re-scanning every person on every launch."""
     try:
         with connection() as conn:
             current = int(conn.execute("PRAGMA user_version").fetchone()[0])
@@ -562,6 +565,9 @@ def _run_one_time_data_migrations() -> None:
         summary = dedup.consolidate_all()
         _log.info("[data_migration] v%d duplicate consolidation: %s",
                   _DATA_MIGRATION_VERSION, summary)
+        purge = dedup.purge_low_quality()
+        _log.info("[data_migration] v%d low-quality purge: %s",
+                  _DATA_MIGRATION_VERSION, purge)
     except Exception as exc:
         _log.warning("[data_migration] duplicate consolidation failed: %s", exc)
         return

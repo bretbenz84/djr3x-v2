@@ -227,3 +227,34 @@ def consolidate_all() -> dict:
         except Exception as exc:
             _log.debug("consolidate person_id=%s failed: %s", pid, exc)
     return {"interests_removed": interests_removed, "events_removed": events_removed}
+
+
+def purge_low_quality() -> dict:
+    """One-time: delete already-stored facts/interests the fact_quality gate now
+    rejects, and blank junk interest notes. Idempotent (a clean DB deletes nothing).
+
+    Runs WITHOUT a source utterance, so it cannot see the negation class (a bare
+    'Coney Island' hometown, a fabricated pet 'Max') — those age out via their low
+    inferred confidence + fast decay, or are removed by hand. It DOES clear the
+    tautologies, first-person fragments, fiction scenes, and verbatim-question
+    values/notes that carry a lexical signal."""
+    from memory import fact_quality
+    facts_removed = interests_removed = notes_cleaned = 0
+    for r in [dict(x) for x in db.fetchall("SELECT * FROM person_facts")]:
+        if fact_quality.reject_fact(r.get("category", "") or "", r.get("key", "") or "",
+                                    r.get("value", "") or ""):
+            db.execute("DELETE FROM person_facts WHERE id = ?", (int(r["id"]),))
+            facts_removed += 1
+    for r in [dict(x) for x in db.fetchall("SELECT * FROM person_interests")]:
+        notes = r.get("notes", "") or ""
+        if fact_quality.reject_interest(r.get("name", "") or "", notes):
+            db.execute("DELETE FROM person_interests WHERE id = ?", (int(r["id"]),))
+            interests_removed += 1
+            continue
+        cleaned = fact_quality.clean_interest_note(notes)
+        if cleaned != notes.strip():
+            db.execute("UPDATE person_interests SET notes = ? WHERE id = ?",
+                       (cleaned, int(r["id"])))
+            notes_cleaned += 1
+    return {"facts_removed": facts_removed, "interests_removed": interests_removed,
+            "notes_cleaned": notes_cleaned}
