@@ -244,10 +244,14 @@ def _calibrate(name: str, seconds: float) -> None:
         print(f"  • {int((arr < threshold).sum())} round(s) fell below the ACCEPT floor {threshold:.2f} — in the field")
         print(f"    those turns would go unattributed. If they were the quiet/far rounds,")
         print(f"    that's the far-field gain issue, not identity.")
-    if len(scores) >= 4 and n_rows >= 3:
-        print(f"  • If this band looks low overall, consider a clean re-enroll:")
+    if len(scores) >= 4 and n_rows >= 3 and float(np.median(arr)) < 0.80:
+        # Only when the band is actually LOW — a healthy print (median >= 0.80,
+        # e.g. Bret's fresh 6-row print at 0.868) should not be poked.
+        print(f"  • This band is LOW for clean windows — consider a clean re-enroll:")
         print(f"    ./venv/bin/python tools/test_voice_id.py --enroll \"{name}\" --replace")
         print(f"    then 2-3 more --enroll \"{name}\" runs (varied distance) to rebuild the centroid.")
+    elif float(np.median(arr)) >= 0.80:
+        print(f"  • Print looks healthy (median {np.median(arr):.3f}) — leave it alone.")
 
 
 def main() -> int:
