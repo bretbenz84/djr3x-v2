@@ -9587,7 +9587,10 @@ class GroupChatterGatingTest(unittest.TestCase):
                 )
 
             self.assertTrue(consumed)
-            self.assertEqual(response, "JT, welcome aboard.")
+            # JT is a celebrity persona: the offscreen resolution now delivers his
+            # authored volleyball intro bit instead of the generic LLM ack
+            # (owner request 2026-07-05 — the routine must fire however he's named).
+            self.assertIn("volleyball", response.lower())
             self.assertIsNone(interaction._pending_offscreen_identify)
             find_or_create.assert_called_once_with("JT")
             # The gate is mocked open above (min audio 0.0 / min words 1), so the
@@ -9603,10 +9606,12 @@ class GroupChatterGatingTest(unittest.TestCase):
             bind_identity.assert_called_once_with(77, "JT")
             retired = {call.args[0] for call in retire_slot.call_args_list}
             self.assertEqual(retired, {"unknown_voice_1", "unknown_voice_2"})
-            speak.assert_called_once_with("JT, welcome aboard.")
-            add_transcript.assert_called_once_with("Rex", "JT, welcome aboard.")
-            log_rex.assert_called_once_with("JT, welcome aboard.")
-            register.assert_called_once_with("JT, welcome aboard.")
+            speak.assert_called_once()
+            self.assertIn("volleyball", speak.call_args[0][0].lower())
+            spoken = speak.call_args[0][0]
+            add_transcript.assert_called_once_with("Rex", spoken)
+            log_rex.assert_called_once_with(spoken)
+            register.assert_called_once_with(spoken)
         finally:
             interaction._pending_offscreen_identify = old_pending
             interaction._session_exchange_count = old_exchange_count
