@@ -42,6 +42,40 @@ class VoicePrimaryFaceDecisionTest(unittest.TestCase):
     def test_voice_and_face_agree(self):
         self.assertEqual(self._decide(person_id=1, raw_best_id=1, speaker_score=0.72), "voice_agrees")
 
+    # ── Marginal match on the VISIBLE face (owner architecture call 2026-07-05:
+    #    the camera never upgrades a marginal voice — JT's "happy 4th" at 0.628
+    #    on Bret's print was credited to silently-on-camera Bret) ──────────────
+    def test_marginal_match_on_visible_face_challenges_without_credibility(self):
+        # 0.628 on the visible face, no continuity, no camera confirmation → ASK.
+        self.assertEqual(
+            self._decide(person_id=1, raw_best_id=1, speaker_score=0.628),
+            "challenge_identity",
+        )
+
+    def test_marginal_match_passes_with_voice_continuity(self):
+        # Same score, but this person's own voice was confidently matched minutes
+        # ago — their voice trailing into a short turn. Attribute, never refresh.
+        self.assertEqual(
+            self._decide(person_id=1, raw_best_id=1, speaker_score=0.628,
+                         voice_continuity=True),
+            "voice_agrees_no_refresh",
+        )
+
+    def test_marginal_match_passes_when_camera_confirms_talking(self):
+        # The visual active-speaker latch positively says the visible face is the
+        # one talking — the camera CAN corroborate, it just can't upgrade alone.
+        self.assertEqual(
+            self._decide(person_id=1, raw_best_id=1, speaker_score=0.628,
+                         visual_speaker_pid=1),
+            "voice_agrees",
+        )
+
+    def test_confident_match_needs_no_credibility(self):
+        self.assertEqual(
+            self._decide(person_id=1, raw_best_id=1, speaker_score=0.71),
+            "voice_agrees",
+        )
+
     def test_voice_matched_someone_else_wins_over_face(self):
         # Voice CONFIDENTLY matched person 2 (off-camera); person 1 is the visible
         # face. Confident voice is primary — keep person 2.

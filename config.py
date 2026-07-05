@@ -4547,6 +4547,12 @@ SPEAKER_ID_CHALLENGE_COOLDOWN_SECS = _env_float("SPEAKER_ID_CHALLENGE_COOLDOWN_S
 # instead of silent credit. Owner preference — an unenrolled housemate should be asked
 # about and enrolled on the answer, not impersonate the nearest print.
 SPEAKER_ID_CHALLENGE_EMPTY_FRAME = _env_bool("SPEAKER_ID_CHALLENGE_EMPTY_FRAME", True)
+# Voice continuity window: a MARGINAL match on a person is silently trusted only while
+# their last CONFIDENT (>= SPEAKER_ID_CONFIDENT_THRESHOLD) match is this recent — their
+# own voice trailing into a short/mumbled turn. Outside it, a marginal match on even a
+# VISIBLE face is challenged ("who's speaking?"): the camera never upgrades a marginal
+# voice (owner architecture call 2026-07-05 — voice primary, vision secondary).
+SPEAKER_ID_CONTINUITY_WINDOW_SECS = _env_float("SPEAKER_ID_CONTINUITY_WINDOW_SECS", 240.0, min_value=0.0, max_value=3600.0)
 
 # Engaged-and-visible attribution floor: when the best voice candidate IS the
 # engaged person AND that engaged person is currently visible on camera, the

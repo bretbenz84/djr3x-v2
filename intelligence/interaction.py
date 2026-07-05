@@ -1697,38 +1697,53 @@ def _voice_primary_face_decision(
     unknown_visible: bool,
     other_known_recently: bool,
     visual_speaker_pid: Optional[int] = None,
+    voice_continuity: bool = False,
 ) -> str:
     """Voice-primary attribution decision when exactly one known face (``ws_pid``)
     is visible. Pure (no side effects) so it is directly unit-testable.
 
-    WHO is speaking is decided by the VOICE — but a voice match only OVERRIDES a
-    present, known visible face when the voice is genuinely *confident* (off-camera
-    speaker really there), or when the camera positively shows that the visible
-    face is *not* the one talking. A marginal off-camera near-neighbor match (the
-    0.45-0.70 band — exactly where an absent/poor print lands a voice on the wrong
-    person) must NOT override a clearly-visible known face. ``visual_speaker_pid``
-    is the latched recent visual active-speaker (``person_db_id`` or ``None`` when
+    WHO is speaking is decided by the VOICE — the camera never upgrades a marginal
+    voice into an identity (owner architecture call 2026-07-05, after JT's
+    "happy 4th" at 0.628 on Bret's print was credited to silently-on-camera Bret
+    via the old unconditional voice_agrees). A marginal match on the VISIBLE face
+    passes only when the voice itself has recent credibility (``voice_continuity``:
+    a confident match on that same person within the continuity window) or the
+    camera positively confirms that face is the talker; otherwise Rex challenges
+    ("...who's speaking? I don't recognize the voice"). ``visual_speaker_pid`` is
+    the latched recent visual active-speaker (``person_db_id`` or ``None`` when
     the detector is disabled / its latch is empty or expired).
 
     Returns one of:
-      ``voice_agrees``         voice matched the visible face — attribute + refresh
-      ``voice_over_face``      voice CONFIDENTLY matched someone else, or the camera
-                               shows the visible face is not the talker — keep voice
-      ``voice_weak_face_wins`` voice marginally matched someone else while a known
-                               face is visible and the camera does not contradict it
-                               — the present face anchors identity, no refresh
-      ``corroborate``          voice weakly leans toward the visible face — attribute + refresh
-      ``face_only_continuity`` no voice signal at all in a clean 1:1 — attribute, no refresh
-      ``unknown_intro_path``   voice unrecognized while an unknown face is present — leave
-                               person unresolved for the intro/identify path (not off-screen)
-      ``off_screen_unknown``   voice points away / scene ambiguous — off-screen unknown voice
+      ``voice_agrees``            confident voice matched the visible face (or the
+                                  camera confirms they're talking) — attribute + refresh
+      ``voice_agrees_no_refresh`` MARGINAL match on the visible face backed only by
+                                  voice continuity — attribute, do NOT touch the print
+      ``challenge_identity``      marginal match on the visible face with NO voice
+                                  credibility — reply to content + ask who's speaking
+      ``voice_over_face``         voice CONFIDENTLY matched someone else, or the camera
+                                  shows the visible face is not the talker — keep voice
+      ``voice_weak_face_wins``    voice marginally matched someone else while a known
+                                  face is visible and the camera does not contradict it
+                                  — the present face anchors identity, no refresh
+      ``corroborate``             voice weakly leans toward the visible face — attribute + refresh
+      ``face_only_continuity``    no voice signal at all in a clean 1:1 — attribute, no refresh
+      ``unknown_intro_path``      voice unrecognized while an unknown face is present — leave
+                                  person unresolved for the intro/identify path (not off-screen)
+      ``off_screen_unknown``      voice points away / scene ambiguous — off-screen unknown voice
     """
     pid = _safe_int(person_id)
     raw_id = _safe_int(raw_best_id)
     ws = _safe_int(ws_pid)
     vis = _safe_int(visual_speaker_pid)
     if pid is not None and pid == ws:
-        return "voice_agrees"
+        confident = float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70))
+        if speaker_score >= confident:
+            return "voice_agrees"            # the voice stands on its own
+        if vis is not None and vis == ws:
+            return "voice_agrees"            # camera positively confirms they're talking
+        if voice_continuity:
+            return "voice_agrees_no_refresh"  # marginal but consistent with recent confident voice
+        return "challenge_identity"           # marginal + no credibility: never assume the face
     if pid is not None:
         # Accepted voice match points at someone OTHER than the visible known face.
         confident = float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70))
@@ -6674,6 +6689,36 @@ def _bare_wake_should_ask_visible_unknown_identity(
 
 
 _last_voice_challenge_at: float = 0.0
+
+# Voice continuity anchor: person_id -> monotonic time of their last CONFIDENT
+# (>= SPEAKER_ID_CONFIDENT_THRESHOLD) voice match. A marginal match on a person is
+# only trusted silently while their voice has this recent credibility — the camera
+# never supplies it (voice is the primary identity channel; owner call 2026-07-05).
+_last_confident_voice_at: dict[int, float] = {}
+
+
+def _note_confident_voice(person_id, speaker_score: float) -> None:
+    """Record a confident voice match as the person's continuity anchor."""
+    pid = _safe_int(person_id)
+    if pid is None:
+        return
+    confident = float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70))
+    if float(speaker_score or 0.0) >= confident:
+        _last_confident_voice_at[pid] = time.monotonic()
+
+
+def _voice_continuity_active(person_id) -> bool:
+    """True while the person's last CONFIDENT voice match is recent enough that a
+    marginal follow-up match is plausibly the same voice trailing off (short
+    commands, mumbles) rather than a different person cross-matching their print."""
+    pid = _safe_int(person_id)
+    if pid is None:
+        return False
+    anchor = _last_confident_voice_at.get(pid)
+    if anchor is None:
+        return False
+    window = float(getattr(config, "SPEAKER_ID_CONTINUITY_WINDOW_SECS", 240.0))
+    return (time.monotonic() - anchor) <= window
 
 
 def _someone_visible_who_isnt(person_id) -> bool:
@@ -17747,8 +17792,10 @@ def _handle_speech_segment(
                 unknown_visible=_has_unknown_visible_or_recent(),
                 other_known_recently=_other_known_visible_recently(ws_pid),
                 visual_speaker_pid=_voice_dec_visual_pid,
+                voice_continuity=_voice_continuity_active(person_id),
             )
             if decision == "voice_agrees":
+                _note_confident_voice(person_id, speaker_score)
                 _log.info(
                     "[interaction] person resolution: voice+face agree — person_id=%s name=%r score=%.3f",
                     person_id, person_name, speaker_score,
@@ -17761,7 +17808,32 @@ def _handle_speech_segment(
                     )
                 except Exception as exc:
                     _log.debug("auto voice-refresh skip: %s", exc)
+            elif decision == "voice_agrees_no_refresh":
+                # Marginal match on the visible face, backed by recent CONFIDENT voice
+                # continuity (their own voice trailing into a short/mumbled turn).
+                # Attribute, but never let a marginal sample near the print.
+                _log.info(
+                    "[interaction] person resolution: marginal voice (%.3f) on visible face "
+                    "accepted via voice continuity — person_id=%s name=%r (no print refresh)",
+                    speaker_score, person_id, person_name,
+                )
+            elif decision == "challenge_identity":
+                # Marginal match on the visible face with NO voice credibility — the
+                # exact "JT says happy-4th, silently-on-camera Bret gets credit" shape.
+                # Voice is primary: the camera never upgrades a marginal score. Reply
+                # handles content + asks who's speaking; the answer enrolls the voice.
+                _log.info(
+                    "[interaction] person resolution: marginal voice (%.3f) matched the "
+                    "visible face %r but no recent confident voice backs it — challenging "
+                    "identity instead of assuming the face is the speaker",
+                    speaker_score, ws_name,
+                )
+                person_id = None
+                person_name = None
+                off_camera_unknown = True
+                voice_challenge_fired = True
             elif decision == "voice_over_face":
+                _note_confident_voice(person_id, speaker_score)
                 # Voice matched someone OTHER than the visible face. Voice is
                 # primary: keep the voice result — the visible person is simply
                 # also present, and the speaker the voice matched is talking off
@@ -17884,6 +17956,7 @@ def _handle_speech_segment(
                 off_camera_unknown = True
                 voice_challenge_fired = True
             else:
+                _note_confident_voice(person_id, speaker_score)
                 _log.info(
                     "[interaction] person resolution: voice match — person_id=%s name=%r score=%.3f",
                     person_id, person_name, speaker_score,
@@ -20114,15 +20187,16 @@ def _handle_speech_segment(
                 }
                 try:
                     q_text = llm.get_response(
-                        f"You just heard an UNFAMILIAR voice but you cannot see who said it "
-                        f"(no face in view). They said: '{text}'. Your friend "
-                        f"'{first_name_local}' is here with you and you were talking "
-                        f"with them. In ONE short in-character Rex line, ask who that "
-                        f"was off-camera — curious, slightly wary. Address "
-                        f"{first_name_local} naturally. Examples: "
-                        f"'Who's that, {first_name_local}? I can't see them.', "
+                        f"You just heard a voice you don't recognize. They said: '{text}'. "
+                        f"Your friend '{first_name_local}' is here with you. In ONE short "
+                        f"in-character Rex line: if what they said merits a quick reaction "
+                        f"(a greeting, a joke, a holiday wish), give ONE brief beat "
+                        f"responding to it FIRST, then ask who's speaking — curious, "
+                        f"slightly wary, never hostile. Examples: "
+                        f"'Happy Fourth to you too — but who said that? I don't recognize "
+                        f"the voice.', "
                         f"'Hold up — who just chimed in back there?', "
-                        f"'Someone's lurking off-camera, {first_name_local}. Friend of yours?' "
+                        f"'Nice line, mystery voice. Who are you, exactly?' "
                         f"One line ending in a question mark."
                     )
                     if q_text:
