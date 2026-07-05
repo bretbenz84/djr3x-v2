@@ -202,7 +202,20 @@ def mark_anticipated(event_id: int) -> None:
 
 
 def mark_followed_up(event_id: int, outcome: str) -> None:
-    """Set followed_up to TRUE and record the outcome and follow_up_at timestamp."""
+    """Set followed_up to TRUE and record the outcome and follow_up_at timestamp.
+
+    SAME-DATE SIBLINGS: resolving a dated follow-up also closes any other still-open
+    PLANNED events this person has on the SAME date. The extractor routinely stores one
+    outing as several differently-named events across sessions ("visit dad" /
+    "4th of July" / "fireworks" / "fireworks at dad's", all 2026-07-04) — the fuzzy
+    name dedup can't fold those, so Rex asked "how did it go?" once per duplicate
+    (field log 2026-07-05: three asks in one session, a fourth still pending). One
+    date = one outing = one follow-up. A same-date sibling that is genuinely a
+    different plan is a rare, acceptable loss next to the certain re-ask annoyance."""
+    row = db.fetchone(
+        "SELECT person_id, event_name, event_date FROM person_events WHERE id = ?",
+        (event_id,),
+    )
     db.execute(
         """UPDATE person_events
            SET followed_up = TRUE, outcome = ?, follow_up_at = ?,
@@ -210,6 +223,27 @@ def mark_followed_up(event_id: int, outcome: str) -> None:
            WHERE id = ?""",
         (outcome, _now(), _now(), event_id),
     )
+    if row and row["event_date"]:
+        name = (row["event_name"] or "that").strip()
+        siblings = db.fetchall(
+            """SELECT id, event_name FROM person_events
+               WHERE person_id = ? AND event_date = ? AND id != ?
+                 AND followed_up = FALSE AND COALESCE(status, 'planned') = 'planned'""",
+            (row["person_id"], row["event_date"], event_id),
+        )
+        for sib in siblings:
+            db.execute(
+                """UPDATE person_events
+                   SET followed_up = TRUE, follow_up_at = ?, status = 'completed',
+                       outcome = ?, updated_at = ?
+                   WHERE id = ?""",
+                (_now(), f"(same outing as '{name}' — resolved together)", _now(),
+                 int(sib["id"])),
+            )
+            _log.info(
+                "[events] same-date sibling closed with #%s: #%s %r",
+                event_id, sib["id"], sib["event_name"],
+            )
 
 
 def cancel_event(event_id: int, reason: str = "") -> None:
