@@ -63,6 +63,44 @@ class VoiceChallengeGateTest(unittest.TestCase):
         self.assertFalse(_suspect(last_challenge=_time.monotonic()))
 
 
+class ChallengedSelfIdTest(unittest.TestCase):
+    """'This is JT' from a challenged unknown voice must resolve inline — never
+    'Nice to meet you, JT — who's speaking?' (field log 2026-07-05-02-51)."""
+
+    def test_self_identifications_extract(self):
+        for text, want in [("This is JT", "JT"), ("this is JT speaking", "JT"),
+                           ("It's Joy", "Joy"), ("I'm JT", "JT")]:
+            self.assertEqual(interaction._challenged_self_identified_name(text), want, text)
+
+    def test_interjections_do_not_extract(self):
+        for text in ("this is ridiculous", "this is amazing", "it's fine",
+                     "this is so cool", "this is my house"):
+            self.assertIsNone(interaction._challenged_self_identified_name(text), text)
+
+
+class WarmSignatureResolveTest(unittest.TestCase):
+    """A just-linked signature resolves at the warm bar; old ones need the cold bar
+    (field log: JT re-became unknown_voice_2 at 0.758 fifteen seconds after naming)."""
+
+    def _iso(self, secs_ago):
+        from datetime import datetime, timezone, timedelta
+        return (datetime.now(timezone.utc) - timedelta(seconds=secs_ago)).isoformat()
+
+    def test_warm_signature_resolves_at_lower_bar(self):
+        self.assertTrue(interaction._signature_resolves_to_person(0.758, self._iso(15)))
+
+    def test_cold_signature_needs_strict_bar(self):
+        self.assertFalse(interaction._signature_resolves_to_person(0.758, self._iso(172800)))
+        self.assertTrue(interaction._signature_resolves_to_person(0.83, self._iso(172800)))
+
+    def test_weak_score_never_resolves(self):
+        self.assertFalse(interaction._signature_resolves_to_person(0.65, self._iso(15)))
+
+    def test_garbage_timestamp_is_cold(self):
+        self.assertFalse(interaction._signature_resolves_to_person(0.758, None))
+        self.assertFalse(interaction._signature_resolves_to_person(0.758, "not-a-date"))
+
+
 class SpeakerCorrectionPatternTest(unittest.TestCase):
     def _name(self, text):
         m = interaction._SPEAKER_CORRECTION_PAT.match(text.strip())

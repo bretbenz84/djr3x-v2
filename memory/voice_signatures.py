@@ -123,7 +123,7 @@ def match(embedding) -> Optional[dict]:
     threshold = float(getattr(config, "VOICE_SIGNATURE_MATCH_THRESHOLD", 0.74))
     try:
         rows = db.fetchall(
-            "SELECT id, embedding, turns, person_id, label FROM voice_signatures"
+            "SELECT id, embedding, turns, person_id, label, last_seen_at FROM voice_signatures"
         )
     except Exception as exc:
         _log.debug("voice_signatures match query failed: %s", exc)
@@ -141,6 +141,7 @@ def match(embedding) -> Optional[dict]:
                 "person_id": row["person_id"],
                 "turns": int(row["turns"] or 0),
                 "label": row["label"],
+                "last_seen_at": row["last_seen_at"],
             }
     if best is None or best["score"] < threshold:
         return None

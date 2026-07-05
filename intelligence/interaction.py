@@ -2646,9 +2646,7 @@ def _resolve_anonymous_speaker_slot(
         if (
             prior_pid is not None
             and bool(getattr(config, "VOICE_SIGNATURE_RESOLVE_PERSON_ENABLED", True))
-            and prior_score >= float(
-                getattr(config, "VOICE_SIGNATURE_RESOLVE_PERSON_MIN_SCORE", 0.80)
-            )
+            and _signature_resolves_to_person(prior_score, prior.get("last_seen_at"))
         ):
             prow = None
             try:
@@ -4936,6 +4934,45 @@ _IDENTITY_PROMPT_ECHO_RE = re.compile(
     re.IGNORECASE,
 )
 
+# "this is X" / "it's X" self-identification — ONLY trusted for a voice that is
+# already being challenged as unknown (the global _SELF_NAME_PATTERNS deliberately
+# exclude these: "this is amazing" would false-fire in open conversation). Extra
+# guards here because a false hit would name a person row after an interjection.
+_CHALLENGED_SELF_ID_RE = re.compile(r"\b(?:this is|it'?s)\s+(.+)$", re.IGNORECASE)
+_CHALLENGED_SELF_ID_STOPWORDS = {
+    "ridiculous", "amazing", "awesome", "great", "cool", "crazy", "insane", "wild",
+    "hilarious", "perfect", "fine", "nice", "fun", "weird", "bad", "good", "stupid",
+    "me", "us", "it", "true", "false", "wrong", "right", "over", "done", "nothing",
+    "important", "urgent", "serious", "sarcasm", "a", "the", "so",
+}
+
+
+def _challenged_self_identified_name(text: str) -> Optional[str]:
+    """Name from a self-identifying utterance by an ALREADY-CHALLENGED unknown voice
+    ('This is JT', "it's Joy", 'I'm JT'). Field bug 2026-07-05-02-51: 'This is JT'
+    armed the who's-that ask and Rex answered a self-introduction with
+    'Nice to meet you, JT — who's speaking?'."""
+    name = _extract_self_identified_name(text)
+    if name:
+        return name
+    m = _CHALLENGED_SELF_ID_RE.search((text or "").strip())
+    if not m:
+        return None
+    candidate = m.group(1).strip().rstrip(".!?,")
+    candidate = re.sub(r"\s+(?:speaking|talking)$", "", candidate, flags=re.IGNORECASE)
+    if not candidate or _SELF_INTRO_NON_NAME_RE.search(candidate):
+        return None
+    if not _looks_like_name_chunk(candidate):
+        return None
+    tokens = candidate.split()
+    if tokens[0].lower() in _CHALLENGED_SELF_ID_STOPWORDS:
+        return None
+    # Names arrive capitalized from ASR mid-utterance ("This is JT"); a lowercase
+    # word after "this is" is almost always an adjective, not a name.
+    if not tokens[0][0].isupper():
+        return None
+    return _normalize_name(candidate)
+
 
 def _looks_like_name_chunk(chunk: str) -> bool:
     """True when chunk is 1-3 plain alphabetic name tokens (after trimming punct)."""
@@ -6527,10 +6564,19 @@ def _handle_pending_offscreen_identify_reply(
                 audio_array,
                 include_reply_audio=from_unknown_self_answer,
             )
+            # The words check must see everything the AUDIO contains: the held
+            # overheard utterance + the reply. Passing only the reply ("JT", one
+            # word) rejected the enrollment as too_few_words while the audio was
+            # actually "This is JT" + "JT" (field log 2026-07-05-02-51 — JT ended
+            # the session with 0 voice rows despite answering the ask).
+            enroll_text = " ".join(
+                part for part in (str(pending.get("overheard_text") or ""), text)
+                if part
+            ).strip()
             _safe_enroll_voice(
                 new_pid,
                 enroll_audio,
-                transcript_text=text,
+                transcript_text=enroll_text,
                 source="offscreen_identify",
                 confirmed=from_engaged_person,
             )
@@ -6595,18 +6641,36 @@ def _handle_pending_offscreen_identify_reply(
         return True, None
 
     ack_text = f"Got it: {intro_name}. Welcome to the frequency."
+    # Celebrity personas (JT the volleyball legend, Joy/Exudica, the creator) get
+    # their authored intro bit — identifying via the who's-that ask must land the
+    # same routine a face-recognized arrival would (field gap 2026-07-05: JT was
+    # named through this flow and got a generic "welcome aboard" instead).
+    special_ack = None
     try:
-        introducer_name = _first_name_or(person_name or prior_engaged_name, "friend")
-        ack_text = llm.get_response(
-            f"You just learned the nearby/off-camera person's "
-            f"name is {intro_name}. {introducer_name} introduced "
-            f"or named them. In ONE very short in-character Rex line, "
-            f"acknowledge {intro_name} by name and welcome "
-            f"them. Address {intro_name}, not {introducer_name}. "
-            f"Do not ask another question."
-        ) or ack_text
-    except Exception as exc:
-        _log.debug("off-camera identify ack generation failed: %s", exc)
+        from intelligence import person_specials as _specials
+        special_ack = _specials.special_intro_ack(intro_name)
+    except Exception:
+        special_ack = None
+    if special_ack:
+        ack_text = special_ack
+        try:
+            if _specials.is_jt_volleyball_celebrity(intro_name) and new_pid is not None:
+                consciousness.mark_jt_volleyball_greeted(int(new_pid))
+        except Exception:
+            pass
+    else:
+        try:
+            introducer_name = _first_name_or(person_name or prior_engaged_name, "friend")
+            ack_text = llm.get_response(
+                f"You just learned the nearby/off-camera person's "
+                f"name is {intro_name}. {introducer_name} introduced "
+                f"or named them. In ONE very short in-character Rex line, "
+                f"acknowledge {intro_name} by name and welcome "
+                f"them. Address {intro_name}, not {introducer_name}. "
+                f"Do not ask another question."
+            ) or ack_text
+        except Exception as exc:
+            _log.debug("off-camera identify ack generation failed: %s", exc)
     _speak_blocking(ack_text)
     conv_memory.add_to_transcript("Rex", ack_text)
     conv_log.log_rex(ack_text)
@@ -6693,6 +6757,34 @@ def _bare_wake_should_ask_visible_unknown_identity(
 
 
 _last_voice_challenge_at: float = 0.0
+
+
+def _signature_resolves_to_person(score: float, last_seen_at) -> bool:
+    """Should a person-linked voice signature resolve the speaker outright?
+
+    Cold signatures (from an earlier session) need the strict bar. But a WARM one —
+    bumped/linked within the warm window — resolves at a lower bar: field log
+    2026-07-05-02-51, JT was confirmed by name and his very next utterance matched
+    his just-linked signature at 0.758 < the 0.80 cold bar, so he became
+    unknown_voice_2 fifteen seconds after Rex said 'welcome aboard'. A signature
+    seen seconds ago is the same person still talking."""
+    cold_bar = float(getattr(config, "VOICE_SIGNATURE_RESOLVE_PERSON_MIN_SCORE", 0.80))
+    if float(score or 0.0) >= cold_bar:
+        return True
+    warm_bar = float(getattr(config, "VOICE_SIGNATURE_RESOLVE_WARM_MIN_SCORE", 0.70))
+    if float(score or 0.0) < warm_bar:
+        return False
+    warm_secs = float(getattr(config, "VOICE_SIGNATURE_WARM_WINDOW_SECS", 900.0))
+    try:
+        from datetime import datetime, timezone
+        seen = datetime.fromisoformat(str(last_seen_at))
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - seen).total_seconds()
+        return 0.0 <= age <= warm_secs
+    except (TypeError, ValueError):
+        return False
+
 
 # Voice continuity anchor: person_id -> monotonic time of their last CONFIDENT
 # (>= SPEAKER_ID_CONFIDENT_THRESHOLD) voice match. A marginal match on a person is
@@ -20186,6 +20278,41 @@ def _handle_speech_segment(
                     recent_engagement.get("name") if recent_engagement else None
                 ) or ""
                 first_name_local = _first_name_or(engaged_name_local, "friend")
+                # SELF-IDENTIFYING utterance ("This is JT", "I'm JT"): the overheard
+                # line already ANSWERS the who's-that question — asking it back is
+                # absurd (field log 2026-07-05-02-51: "Nice to meet you, JT — who's
+                # speaking?"). Arm the pending state and consume THIS utterance as
+                # the self-answer immediately: name resolved, voice enrolled from
+                # this very clip, celebrity intro ack spoken. Falls through to the
+                # normal ask only if the inline resolution doesn't consume it.
+                self_id_name = _challenged_self_identified_name(text)
+                if self_id_name:
+                    _pending_offscreen_identify = {
+                        "audio": None,   # this utterance IS the audio; don't double it
+                        "asked_at": time.monotonic(),
+                        "prior_engaged_id": (recent_engagement or {}).get("person_id"),
+                        "prior_engaged_name": engaged_name_local,
+                        "overheard_text": "",
+                        "anonymous_speaker_label": anonymous_speaker_label,
+                    }
+                    try:
+                        consumed, _ack = _handle_pending_offscreen_identify_reply(
+                            text,
+                            person_id=None,
+                            person_name=None,
+                            audio_array=audio_array,
+                            anonymous_speaker_label=anonymous_speaker_label,
+                        )
+                    except Exception as exc:
+                        _log.debug("inline self-identify resolution failed: %s", exc)
+                        consumed = False
+                    if consumed:
+                        _log.info(
+                            "[interaction] off-camera self-identification resolved "
+                            "inline (no redundant who's-that ask): %r", text,
+                        )
+                        return
+                    _pending_offscreen_identify = None   # fall through to the ask
                 _pending_offscreen_identify = {
                     "audio": audio_array.copy(),
                     "asked_at": time.monotonic(),

@@ -4553,6 +4553,13 @@ SPEAKER_ID_CHALLENGE_EMPTY_FRAME = _env_bool("SPEAKER_ID_CHALLENGE_EMPTY_FRAME",
 # VISIBLE face is challenged ("who's speaking?"): the camera never upgrades a marginal
 # voice (owner architecture call 2026-07-05 — voice primary, vision secondary).
 SPEAKER_ID_CONTINUITY_WINDOW_SECS = _env_float("SPEAKER_ID_CONTINUITY_WINDOW_SECS", 240.0, min_value=0.0, max_value=3600.0)
+# A person-linked voice signature resolves the speaker outright at the strict cold bar
+# (VOICE_SIGNATURE_RESOLVE_PERSON_MIN_SCORE) — but a WARM signature (seen within the
+# warm window, e.g. linked seconds ago by a "that's JT" answer) resolves at this lower
+# bar. Field bug: JT re-became unknown_voice_2 at 0.758 fifteen seconds after being
+# named, because only the 0.80 cold bar existed.
+VOICE_SIGNATURE_RESOLVE_WARM_MIN_SCORE = _env_float("VOICE_SIGNATURE_RESOLVE_WARM_MIN_SCORE", 0.70, min_value=0.0, max_value=1.0)
+VOICE_SIGNATURE_WARM_WINDOW_SECS = _env_float("VOICE_SIGNATURE_WARM_WINDOW_SECS", 900.0, min_value=0.0, max_value=86400.0)
 
 # Engaged-and-visible attribution floor: when the best voice candidate IS the
 # engaged person AND that engaged person is currently visible on camera, the

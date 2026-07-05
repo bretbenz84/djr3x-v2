@@ -1695,6 +1695,15 @@ def _is_jt_volleyball_celebrity(name: object) -> bool:
     return person_specials.is_jt_volleyball_celebrity(name)
 
 
+def mark_jt_volleyball_greeted(person_id: int) -> None:
+    """External identity flows (the off-camera who's-that ask) delivered the JT
+    volleyball intro bit — don't repeat it when his face later hits the camera."""
+    try:
+        _jt_volleyball_greeted_this_session.add(int(person_id))
+    except (TypeError, ValueError):
+        pass
+
+
 def _can_jt_volleyball_speak(profile: SituationProfile) -> bool:
     return _can_jeff_celebrity_speak(profile)
 
