@@ -175,7 +175,7 @@ def main():
             odom = tel.get("odom", {})
             check("odom has x/y/theta/lin/ang", all(k in odom for k in ("x", "y", "theta", "lin", "ang")))
             tof = tel.get("tof_mm", {})
-            check("tof_mm has 5 sensors", all(k in tof for k in ("fl", "fc", "fr", "rear", "down")),
+            check("tof_mm has 8 sensors", all(k in tof for k in ("fl", "fr", "rl", "rr", "lf", "lb", "rf", "rb")),
                   f"tof={tof}")
 
         # 3) turn left 90  -> ack + done completed, theta ~ +1.57 (CCW positive)

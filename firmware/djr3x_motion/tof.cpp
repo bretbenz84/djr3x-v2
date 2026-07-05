@@ -1,10 +1,13 @@
 // tof.cpp — ToF (Time-of-Flight) distance subsystem: 8 radial sensors.
 //
-// Layout for spatial awareness (docs/motion_protocol.md §6):
-//   - 4× SHORT-range VL53L0X on mux channels 0..3, at the 45° DIAGONALS (fl/fr/rl/rr)
-//   - 4× LONG-range  VL53L1X on mux channels 4..7, at the CARDINALS (front/left/rear/right)
-// The long-range sensors give R3X a sense of where the walls are (room-scale); the
-// short diagonals fill the gaps between them for close-in obstacle coverage.
+// Layout (docs/motion_protocol.md §6): mounted at the 540 mm base-ring surface, every
+// 45° starting 22.5° off the forward axis (no sensor on the cardinals themselves):
+//   - 2× LONG  VL53L1X FRONT pair (fl / fr, ±22.5° off forward)  — wall sense + stop reflex
+//   - 2× LONG  VL53L1X REAR  pair (rl / rr, ±22.5° off rearward) — reversing reflex
+//   - 2× SHORT VL53L0X LEFT  pair (lf / lb, ±22.5° off left)     — lateral clearance
+//   - 2× SHORT VL53L0X RIGHT pair (rf / rb, ±22.5° off right)    — lateral clearance
+// The long pairs give room-scale range fore/aft; the short pairs read the hallway
+// wall distance for the manual steering assist (control.cpp).
 //
 // Owns hal_read_tof() / hal_tof_init() for ALL builds, gated by MOTION_TOF_PRESENT
 // (hal.h) independently of the motor drivers — the base can drive on real motors +
@@ -39,17 +42,17 @@
 // Index order == read order == TofMm field order. First TOF_SHORT_COUNT are the
 // short VL53L0X (mux 0..3); the rest are the long VL53L1X (mux 4..7). The mux channel
 // for index i is simply i. EDIT THIS TABLE (and hal_read_tof below) to match wiring.
-//   idx mux type     field   placement (screen bearing; front = up)
-//   0   0   VL53L0X  fl      front-left   (135°)
-//   1   1   VL53L0X  fr      front-right  ( 45°)
-//   2   2   VL53L0X  rl      rear-left    (225°)
-//   3   3   VL53L0X  rr      rear-right   (315°)
-//   4   4   VL53L1X  front   front        ( 90°)
-//   5   5   VL53L1X  left    left         (180°)
-//   6   6   VL53L1X  rear    rear         (270°)
-//   7   7   VL53L1X  right   right        (  0°)
+//   idx mux type     field  placement (screen bearing; front = up = 90°, CCW+)
+//   0   0   VL53L0X  lf     left-front   (157.5°)
+//   1   1   VL53L0X  lb     left-back    (202.5°)
+//   2   2   VL53L0X  rf     right-front  ( 22.5°)
+//   3   3   VL53L0X  rb     right-back   (337.5°)
+//   4   4   VL53L1X  fl     front-left   (112.5°)
+//   5   5   VL53L1X  fr     front-right  ( 67.5°)
+//   6   6   VL53L1X  rl     rear-left    (247.5°)
+//   7   7   VL53L1X  rr     rear-right   (292.5°)
 static const char* const TOF_LABEL[TOF_COUNT] = {
-  "fl", "fr", "rl", "rr", "front", "left", "rear", "right",
+  "lf", "lb", "rf", "rb", "fl", "fr", "rl", "rr",
 };
 
 static VL53L0X s_short[TOF_SHORT_COUNT];   // index i in [0, TOF_SHORT_COUNT)
@@ -156,27 +159,35 @@ static int read_mm(int i) {
   return mm;
 }
 
-void hal_read_tof(TofMm& out) {
-  // Round-robin: read ONE sensor per call. Each continuous sensor produces a sample
-  // every ~33-60 ms; by the time the cursor revisits a sensor its sample is ready, so
-  // the blocking read returns immediately instead of stalling the loop on every pass.
-  const int i = s_next;
-  s_next = (s_next + 1) % TOF_COUNT;
+static void poll_one(int i) {
   if (!s_ok[i]) {
     s_dist[i] = -1;                               // not present -> honest error/no-data
   } else {
     const int mm = read_mm(i);
     if (mm >= 0) s_dist[i] = (int16_t)mm;          // transient -1 keeps the last good value
   }
+}
 
-  out.fl    = s_dist[0];   // short, mux 0
-  out.fr    = s_dist[1];   // short, mux 1
-  out.rl    = s_dist[2];   // short, mux 2
-  out.rr    = s_dist[3];   // short, mux 3
-  out.front = s_dist[4];   // long,  mux 4
-  out.left  = s_dist[5];   // long,  mux 5
-  out.rear  = s_dist[6];   // long,  mux 6
-  out.right = s_dist[7];   // long,  mux 7
+void hal_read_tof(TofMm& out) {
+  // Round-robin, TWO sensors per call (one short + one long) so each sensor refreshes
+  // every 4 task ticks (~80 ms at the 50 Hz sensor task) — fresh enough for the stop
+  // reflex and the hallway assist at teleop speeds (≤ ~15 mm of travel per revisit).
+  // Each continuous sensor produces a sample every ~33-60 ms, so by the time the
+  // cursor revisits one its sample is ready and the blocking read returns immediately.
+  const int s = s_next;                            // 0..3: shorts (mux 0..3)
+  const int l = TOF_SHORT_COUNT + s_next;          // 4..7: longs  (mux 4..7)
+  s_next = (s_next + 1) % TOF_SHORT_COUNT;
+  poll_one(s);
+  poll_one(l);
+
+  out.lf = s_dist[0];   // short, mux 0 — left-front
+  out.lb = s_dist[1];   // short, mux 1 — left-back
+  out.rf = s_dist[2];   // short, mux 2 — right-front
+  out.rb = s_dist[3];   // short, mux 3 — right-back
+  out.fl = s_dist[4];   // long,  mux 4 — front-left
+  out.fr = s_dist[5];   // long,  mux 5 — front-right
+  out.rl = s_dist[6];   // long,  mux 6 — rear-left
+  out.rr = s_dist[7];   // long,  mux 7 — rear-right
 }
 
 #else
@@ -187,7 +198,7 @@ void hal_read_tof(TofMm& out) {
 void hal_tof_init() {}
 
 void hal_read_tof(TofMm& out) {
-  out.front = out.rear = out.left = out.right = 2000;
-  out.fl = out.fr = out.rl = out.rr = 1500;
+  out.fl = out.fr = out.rl = out.rr = 4000;   // long pairs: room reads clear
+  out.lf = out.lb = out.rf = out.rb = 1500;   // short pairs: no walls in range
 }
 #endif  // MOTION_TOF_PRESENT

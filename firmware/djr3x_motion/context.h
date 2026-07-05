@@ -51,6 +51,14 @@ struct MotionParams {
   float    accel_ang = DRIVE_ACCEL_ANG; // teleop angular setpoint slew (rad/s^2)
   float    counts_per_meter = COUNTS_PER_METER;
   float    track_width_m    = TRACK_WIDTH_M;
+
+  // Hallway steering assist (manual forward drive only — docs §6.3). While the pad
+  // commands forward, ToF wall clearance steers the base away from walls / centers it
+  // in a hallway; the operator's stick still adds on top and the stop reflex still
+  // hard-blocks. All runtime-tunable via `config`.
+  bool     assist_enabled   = true;
+  float    assist_engage_mm = ASSIST_ENGAGE_MM;  // walls beyond this are ignored
+  float    assist_gain      = ASSIST_GAIN;       // rad/s per METER of left-right imbalance
 };
 
 // ===== Active finite command (turn / move / come) ===========================
@@ -90,14 +98,20 @@ struct Setpoint {
 };
 
 // ===== ToF distances (mm; -1 = sensor error) ==============================
-// 8 radial sensors for spatial awareness (docs/motion_protocol.md §6):
-//   - 4 long-range VL53L1X at the CARDINALS: front / rear / left / right
-//   - 4 short-range VL53L0X at the 45° DIAGONALS: fl / fr / rl / rr
-// No down/cliff sensor in this layout. A reading is mm, -1 = sensor error, and a
-// large value (per-type out-of-range cap) means "nothing in range = clear".
+// 8 radial sensors on the 540 mm base ring (docs/motion_protocol.md §6), mounted at
+// the ring surface, every 45° starting 22.5° off the forward axis (no sensor on the
+// cardinals themselves):
+//   - 2 long-range  VL53L1X FRONT pair, ±22.5° off forward:  fl / fr
+//   - 2 long-range  VL53L1X REAR  pair, ±22.5° off rearward: rl / rr
+//   - 2 short-range VL53L0X LEFT  pair, ±22.5° off left:     lf / lb (front/back)
+//   - 2 short-range VL53L0X RIGHT pair, ±22.5° off right:    rf / rb (front/back)
+// The long pairs give room-scale wall sense fore/aft; the short pairs read the
+// lateral clearance for the hallway steering assist. No down/cliff sensor. A reading
+// is mm, -1 = sensor error, and a large value (per-type out-of-range cap) means
+// "nothing in range = clear".
 struct TofMm {
-  int16_t front = 2000, rear = 2000, left = 2000, right = 2000;  // long-range (VL53L1X)
-  int16_t fl = 1500, fr = 1500, rl = 1500, rr = 1500;            // short-range (VL53L0X)
+  int16_t fl = 4000, fr = 4000, rl = 4000, rr = 4000;  // long-range (VL53L1X) front/rear pairs
+  int16_t lf = 1500, lb = 1500, rf = 1500, rb = 1500;  // short-range (VL53L0X) left/right pairs
 };
 
 // ===== Live gamepad mirror (telemetry only) ===============================

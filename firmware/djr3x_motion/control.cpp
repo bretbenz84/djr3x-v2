@@ -32,6 +32,44 @@ void control_init() {
   // Nothing yet; plant state lives in g_ctx (zeroed at construction).
 }
 
+// Nearest VALID reading of a sensor pair, capped at `cap` — "no wall inside the
+// engage distance" and "sensor error" both read as exactly `cap`, so the steering
+// assist's imbalance term is zero unless a real wall is actually close.
+static int16_t nearest_capped(int16_t a, int16_t b, int16_t cap) {
+  int16_t m = cap;
+  if (a >= 0 && a < m) m = a;
+  if (b >= 0 && b < m) m = b;
+  return m;
+}
+
+// Hallway steering assist (docs §6.3): while the GAMEPAD drives FORWARD, steer away
+// from nearby walls / center between them. Side short pairs give lateral clearance;
+// the front long pair adds an anticipatory term (approaching a wall at an angle
+// steers toward the open side, so a hallway curve is followed instead of face-planted).
+// The correction ADDS to the operator's stick (capped at ASSIST_MAX_ANG_FRAC of
+// max_ang, so the human always wins a fight) and rides the same slew/blend path as
+// any other teleop command. The Z_STOP reflex still hard-blocks regardless. Returns
+// the rad/s correction (+ = steer left, REP-103). Caller holds the state lock.
+static float hall_assist_correction(const MotionContext& c, float lin_t) {
+  if (!c.params.assist_enabled) return 0.0f;
+  if (c.owner != OWNER_MANUAL || c.cmd_mode != CMD_DRIVE) return 0.0f;
+  if (lin_t <= ASSIST_MIN_LIN_MS) return 0.0f;      // forward drive only
+  if (c.full_override) return 0.0f;                 // operator explicitly bypassing ToF
+  const int16_t eng = (int16_t)c.params.assist_engage_mm;
+  if (eng <= 0) return 0.0f;
+  const int16_t l_side = nearest_capped(c.tof.lf, c.tof.lb, eng);
+  const int16_t r_side = nearest_capped(c.tof.rf, c.tof.rb, eng);
+  const int16_t l_frnt = nearest_capped(c.tof.fl, -1, eng);
+  const int16_t r_frnt = nearest_capped(c.tof.fr, -1, eng);
+  // Imbalance in metres: positive (l - r) = the left side is more open (right wall
+  // closer) -> steer LEFT (+ang, REP-103) toward the open side; negative mirrors.
+  const float imbal_m = ((float)(l_side - r_side)
+                         + ASSIST_FRONT_WEIGHT * (float)(l_frnt - r_frnt)) * 0.001f;
+  const float corr = c.params.assist_gain * imbal_m;
+  const float cap  = ASSIST_MAX_ANG_FRAC * c.params.max_ang;
+  return clampf(corr, -cap, cap);
+}
+
 // Travel direction a finite command pushes toward (for reflex-block matching).
 // turn has no linear travel; swing-side ToF gating for spins is Phase 1.
 static MotionDir finite_travel_dir(const FiniteCmd& f) {
@@ -104,6 +142,12 @@ void control_tick(float dt) {
       default: break;
     }
   }
+
+  // Hallway steering assist: nudge the manual forward drive away from nearby walls
+  // (centering in a hallway) BEFORE the reflex gate — the assist steers, the reflex
+  // still stops. No-op unless MANUAL + CMD_DRIVE + moving forward + a wall inside
+  // the engage distance (open rooms and the stub build are exactly zero correction).
+  if (!halted) ang_t += hall_assist_correction(c, lin_t);
 
   // Reflex gating: if blocked in the travel direction, zero that component — UNLESS
   // a gamepad operator is holding full-override (docs §11.4), which deliberately

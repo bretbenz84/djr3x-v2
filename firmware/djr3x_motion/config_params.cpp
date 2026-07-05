@@ -54,6 +54,11 @@ bool apply_config(JsonObjectConst cmd, MotionParams& out) {
   clamped |= take_f(cmd, "counts_per_meter", 1000.0f, 1.0e6f, p.counts_per_meter);
   clamped |= take_f(cmd, "track_width_m",    0.05f,   2.0f,   p.track_width_m);
 
+  // Hallway steering assist (manual forward drive).
+  if (cmd["assist_enabled"].is<bool>()) p.assist_enabled = cmd["assist_enabled"].as<bool>();
+  clamped |= take_f(cmd, "assist_engage_mm", 0.0f, 2000.0f, p.assist_engage_mm);
+  clamped |= take_f(cmd, "assist_gain",      0.0f, 20.0f,   p.assist_gain);
+
   // Keep zones sane: stop_zone must be < slow_zone.
   if (p.stop_zone_m >= p.slow_zone_m) { p.stop_zone_m = p.slow_zone_m * 0.5f; clamped = true; }
 

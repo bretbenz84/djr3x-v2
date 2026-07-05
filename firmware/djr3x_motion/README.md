@@ -94,12 +94,16 @@ explicit command energizes them.
 ### ToF obstacle avoidance (sensors wired)
 
 Off by default even in the live build (`hal_read_tof` reports a clear room). Enable it
-once the 8 ToF sensors are on the I²C mux — combine the flags. The layout is **8 radial
-sensors** for spatial awareness: 4 short-range **VL53L0X** on mux ch 0-3 at the 45°
-diagonals (`fl,fr,rl,rr`) + 4 long-range **VL53L1X** on mux ch 4-7 at the cardinals
-(`front,left,rear,right`). All stay at 0x29; the TCA9548A mux selects one channel at a
+once the 8 ToF sensors are on the I²C mux — combine the flags. The layout (rev 2) is
+**8 radial sensors** at the 540 mm base-ring surface, every 45° starting 22.5° off the
+forward axis: 4 short-range **VL53L0X** on mux ch 0-3 as the LEFT/RIGHT pairs
+(`lf,lb,rf,rb` — lateral clearance for the hallway steering assist) + 4 long-range
+**VL53L1X** on mux ch 4-7 as the FRONT/REAR pairs (`fl,fr,rl,rr`, ±22.5° off each axis —
+stop reflex + room sense). All stay at 0x29; the TCA9548A mux selects one channel at a
 time (zero XSHUT GPIOs). There is **no down/cliff sensor** in this layout, so cliff/
-drop-off detection is unavailable.
+drop-off detection is unavailable. While driving FORWARD on the gamepad, the firmware
+auto-steers away from walls / centers in a hallway (`assist_*` config params, docs §6.4);
+the operator's stick adds on top and B/e-stop + the stop reflex always win.
 
 ```bash
 arduino-cli compile --fqbn esp32:esp32:esp32 \

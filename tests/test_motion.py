@@ -66,7 +66,8 @@ class FakeESP32Serial:
         return {"v": 1, "type": "telemetry", "t": 1, "state": self._state, "owner": self.owner,
                 "gamepad": "none", "fault": None, "zone": "clear", "blocked_dir": "none",
                 "cmd_seq": 0, "odom": {"x": 0, "y": 0, "theta": 0, "lin": 0, "ang": 0},
-                "tof_mm": {"fl": 1500, "fc": 1500, "fr": 1500, "rear": 1500, "down": 60},
+                "tof_mm": {"fl": 4000, "fr": 4000, "rl": 4000, "rr": 4000,
+                           "lf": 1500, "lb": 1500, "rf": 1500, "rb": 1500},
                 "batt_mv": 12000, "errs": 0}
 
     def read(self, n=1):

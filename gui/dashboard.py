@@ -1269,9 +1269,11 @@ class JoystickWidget(QWidget):
 class DistancePhotoreceptorsWidget(QWidget):
     """Top-down 'radar' of the drive base's 8 radial distance photoreceptors.
 
-    Front is up. Four long-range VL53L1X at the cardinals (F / B / L / R) plus four
-    short-range VL53L0X at the 45° diagonals (FL / FR / RL / RR) — a spatial sense of
-    the room. Each cone's reach scales with the measured distance and is colored by
+    Front is up. Sensors sit at the 540 mm base-ring surface every 45°, starting 22.5°
+    off the forward axis (nothing on the cardinals themselves): two long-range VL53L1X
+    pairs straddle FRONT (FL/FR) and REAR (RL/RR), two short-range VL53L0X pairs read
+    the LEFT (LF/LB) and RIGHT (RF/RB) wall clearance — the hallway steering assist's
+    inputs. Each cone's reach scales with the measured distance and is colored by
     zone — green clear, amber slow (< MOTION_SLOW_ZONE_M), red stop (< MOTION_STOP_ZONE_M)
     — with dashed reference rings at those thresholds. A -1 reading (sensor error / no
     return) draws a faint stub. Read-only: call set_readings() from the telemetry tick.
@@ -1282,16 +1284,16 @@ class DistancePhotoreceptorsWidget(QWidget):
 
     _FOV_DEG = 25.0                       # ToF cone ~25° (VL53L0X / VL53L1X similar)
     # (bearing°, telemetry key, label) — screen convention: 0 = 3 o'clock, CCW+, front = up = 90°.
-    # 8 sensors at 45° steps: cardinals are long-range VL53L1X, diagonals short VL53L0X.
+    # 8 sensors at 45° steps offset 22.5° from the cardinals; keys match firmware tof.cpp.
     _BEAMS = (
-        (90.0,  "front", "F"),
-        (135.0, "fl",    "FL"),
-        (180.0, "left",  "L"),
-        (225.0, "rl",    "RL"),
-        (270.0, "rear",  "B"),
-        (315.0, "rr",    "RR"),
-        (0.0,   "right", "R"),
-        (45.0,  "fr",    "FR"),
+        (112.5, "fl", "FL"),   # long  VL53L1X — front pair
+        (67.5,  "fr", "FR"),
+        (247.5, "rl", "RL"),   # long  VL53L1X — rear pair
+        (292.5, "rr", "RR"),
+        (157.5, "lf", "LF"),   # short VL53L0X — left pair (front/back)
+        (202.5, "lb", "LB"),
+        (22.5,  "rf", "RF"),   # short VL53L0X — right pair (front/back)
+        (337.5, "rb", "RB"),
     )
 
     def __init__(self, parent=None) -> None:
@@ -1611,8 +1613,8 @@ class MotivatorControlDialog(QDialog):
         self._fb_zone = self._row(fb, "Zone / blocked")
         self._fb_odom = self._row(fb, "Odom lin / ang")
         self._fb_pose = self._row(fb, "Pose x / y / θ")
-        self._fb_tof = self._row(fb, "ToF F/B/L/R")
-        self._fb_tof2 = self._row(fb, "ToF FL/FR/RL/RR")
+        self._fb_tof = self._row(fb, "ToF FL/FR/RL/RR (long)")
+        self._fb_tof2 = self._row(fb, "ToF LF/LB/RF/RB (short)")
         self._fb_batt = self._row(fb, "Battery")
         self._fb_fault = self._row(fb, "Fault / errs")
         right.addWidget(fb["frame"])
@@ -1758,9 +1760,9 @@ class MotivatorControlDialog(QDialog):
             f"{g(odom, 'x'):+.2f} / {g(odom, 'y'):+.2f} / {math.degrees(g(odom, 'theta')):+.0f}°"
         )
         self._fb_tof.setText(
-            f"{tof.get('front', '—')} / {tof.get('rear', '—')} / {tof.get('left', '—')} / {tof.get('right', '—')} mm")
-        self._fb_tof2.setText(
             f"{tof.get('fl', '—')} / {tof.get('fr', '—')} / {tof.get('rl', '—')} / {tof.get('rr', '—')} mm")
+        self._fb_tof2.setText(
+            f"{tof.get('lf', '—')} / {tof.get('lb', '—')} / {tof.get('rf', '—')} / {tof.get('rb', '—')} mm")
         self._fb_batt.setText(f"{g(tel, 'batt_mv') / 1000.0:.2f} V")
         self._fb_fault.setText(f"{tel.get('fault') or 'none'} / errs {tel.get('errs', 0)}")
         self._photoreceptors.set_readings(tof, tel.get("zone"), tel.get("blocked_dir"))

@@ -23,11 +23,10 @@ void safety_init() {
   s_prev_zone_for_block = Z_CLEAR;
 }
 
-static int16_t min3_valid(int16_t a, int16_t b, int16_t c) {
+static int16_t min2_valid(int16_t a, int16_t b) {
   int16_t m = 32767;
   if (a >= 0 && a < m) m = a;
   if (b >= 0 && b < m) m = b;
-  if (c >= 0 && c < m) m = c;
   return m;
 }
 
@@ -84,13 +83,17 @@ void safety_tick() {
   MotionDir travel = (lin > SAFETY_EPS) ? DIR_FRONT
                    : (lin < -SAFETY_EPS) ? DIR_REAR : DIR_NONE;
 
-  // Nearest obstacle in the travel direction: the cardinal sensor + the two
-  // diagonals flanking it (front -> front + fl + fr; rear -> rear + rl + rr).
+  // Nearest obstacle in the travel direction: the long-range pair straddling that
+  // axis (front -> fl+fr at ±22.5°, whose ~25° FOVs cover the frontal ~±35° arc;
+  // rear -> rl+rr). The side SHORT pairs are deliberately NOT in the reflex: they
+  // point 67.5° off the travel axis, so a parallel hallway wall ~250 mm away reads
+  // ~270 mm on them and would pin the base in SLOW forever — hallway wall handling
+  // belongs to the steering assist (control.cpp), not the stop reflex.
   int16_t d_mm = 32767;
   if (travel == DIR_FRONT) {
-    d_mm = min3_valid(c.tof.front, c.tof.fl, c.tof.fr);
+    d_mm = min2_valid(c.tof.fl, c.tof.fr);
   } else if (travel == DIR_REAR) {
-    d_mm = min3_valid(c.tof.rear, c.tof.rl, c.tof.rr);
+    d_mm = min2_valid(c.tof.rl, c.tof.rr);
   }
 
   MotionZone z;

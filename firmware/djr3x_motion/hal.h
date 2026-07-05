@@ -14,8 +14,8 @@
 #define MOTION_HW_PRESENT 0    // override per-build: -DMOTION_HW_PRESENT=1
 #endif
 
-// MOTION_TOF_PRESENT gates the 8-sensor ToF subsystem (4× short VL53L0X at the 45°
-// diagonals + 4× long VL53L1X at the cardinals) SEPARATELY from the drive motors,
+// MOTION_TOF_PRESENT gates the 8-sensor ToF subsystem (long VL53L1X front/rear pairs
+// at ±22.5° off each axis + short VL53L0X left/right pairs) SEPARATELY from the drive motors,
 // because the base can have working motors/encoders while the ToF sensors are still
 // unwired. While it is 0 the ToF read returns "all clear" (obstacle avoidance
 // inactive); the live drive build (MOTION_HW_PRESENT=1) ships this way today. Build

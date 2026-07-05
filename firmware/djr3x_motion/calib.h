@@ -99,11 +99,12 @@
 // GAMEPAD_SPIN_BLEND_FWD_LO/HI band above; the blend factor rides the setpoint.)
 
 // ---- ToF subsystem (8 radial sensors) — only used when MOTION_TOF_PRESENT==1 -
-// 4× short-range VL53L0X on mux ch 0-3 (45° diagonals) + 4× long-range VL53L1X on
-// mux ch 4-7 (cardinals). Requires the TCA9548A mux (8 sensors > free XSHUT GPIOs).
-// Scaffold defaults; validate on hardware. docs §6.
-#define TOF_SHORT_COUNT       4         // VL53L0X (short), mux ch 0..3 — 45° diagonals
-#define TOF_LONG_COUNT        4         // VL53L1X (long),  mux ch 4..7 — cardinals
+// Mounted at the 540 mm base-ring surface, every 45° starting 22.5° off the forward
+// axis: 4× short-range VL53L0X on mux ch 0-3 (LEFT pair lf/lb + RIGHT pair rf/rb) +
+// 4× long-range VL53L1X on mux ch 4-7 (FRONT pair fl/fr + REAR pair rl/rr).
+// Requires the TCA9548A mux (8 sensors > free XSHUT GPIOs). docs §6.
+#define TOF_SHORT_COUNT       4         // VL53L0X (short), mux ch 0..3 — left/right pairs
+#define TOF_LONG_COUNT        4         // VL53L1X (long),  mux ch 4..7 — front/rear pairs
 #define TOF_COUNT             (TOF_SHORT_COUNT + TOF_LONG_COUNT)   // 8 total
 #define TOF_MUX_ADDR          0x70      // TCA9548A I²C address (mux selects one ch at a time)
 // Per-read wait for a fresh continuous sample. MUST exceed the slowest sensor's
@@ -122,6 +123,22 @@
 #define TOF_L1X_TIMING_BUDGET_US  50000 // 50 ms budget (Long mode wants >= ~33 ms)
 #define TOF_L1X_INTERMEASUREMENT_MS 60  // continuous-mode period (> timing budget)
 #define TOF_L1X_OUT_OF_RANGE_MM   4000  // clamp "nothing in range" to a far/clear value
+
+// ---- Hallway steering assist (manual forward drive) ------------------------
+// While the gamepad commands FORWARD, the base steers itself away from walls using
+// the side short-range pairs (lateral clearance) plus the front long pair
+// (anticipatory: approaching a wall at an angle steers toward the open side). Sized
+// for a typical US hallway (~915-1220 mm) around the 540 mm base ring: centered in a
+// 1 m hall each side reads ~230 mm, well inside ENGAGE, so both walls are "felt" and
+// the correction centers the base. Walls beyond ENGAGE are ignored (open rooms drive
+// exactly as before). The operator's stick adds on top; the correction itself is
+// capped at ASSIST_MAX_ANG_FRAC of max_ang so the human always has override
+// authority; the Z_STOP reflex still hard-blocks a head-on wall regardless.
+#define ASSIST_ENGAGE_MM      450.0f    // walls farther than this don't steer
+#define ASSIST_GAIN           2.0f      // rad/s per METER of left-right imbalance
+#define ASSIST_FRONT_WEIGHT   0.7f      // front-pair contribution vs the side pairs
+#define ASSIST_MAX_ANG_FRAC   0.6f      // correction cap as a fraction of max_ang
+#define ASSIST_MIN_LIN_MS     0.02f     // assist only while actually driving forward
 
 // ---- Bluetooth gamepad (Bluepad32) — only when MOTION_GAMEPAD_PRESENT==1 ----
 // Left stick = arcade drive (Y forward, X turn); L1 creep / R1 boost; B = e-stop;

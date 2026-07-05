@@ -42,8 +42,8 @@ the Mac (the existing DJ-R3X brain) sends high-level commands over USB serial.
 | 2 | JGB37-520 12V gear motor, 176:1, ~25 kg·cm, **Hall quadrature encoder** | Powered drive wheels |
 | 2 | Omni / caster wheels | Passive support (front+back or side balance) |
 | 2 | BTS7960 43A motor driver module (full H-bridge) | One per drive motor |
-| 4 | VL53L0X ToF sensor (short range ~1.2 m, I²C, 940 nm) | Close obstacle sensing — 45° diagonals |
-| 4 | VL53L1X ToF sensor (long range ~4 m, I²C) | Room-scale spatial sensing — cardinals (F/B/L/R) |
+| 4 | VL53L0X ToF sensor (short range ~1.2 m, I²C, 940 nm) | Lateral wall clearance — left/right pairs |
+| 4 | VL53L1X ToF sensor (long range ~4 m, I²C) | Room-scale sensing + stop reflex — front/rear pairs (±22.5°) |
 | 1 | TCA9548A I²C multiplexer | Puts all 8 ToF sensors (each at 0x29) on one I²C bus |
 | 1 | ESP32 dev board | Real-time motion controller ("the base brain") |
 | 1 | 12 V battery / supply + 5 V buck converter | Motor power + ESP32/sensor logic power |
@@ -134,22 +134,23 @@ one GPIO per sensor, is not viable here — 8 sensors exceed the ESP32's free GP
 the firmware `#error`s on the XSHUT build for this layout.) Mux channel map: **ch 0-3 =
 short VL53L0X, ch 4-7 = long VL53L1X.**
 
-### 6.2 Placement (8 sensors, radial) — for spatial awareness
-8 sensors every 45°, so R3X senses the room all around (not just the travel arc). The 4
-long-range VL53L1X (cardinals) give room-scale distance; the 4 short-range VL53L0X (45°
-diagonals) fill the gaps for close-in coverage. Bearings are robot-frame (REP-103:
-front 0°, +left/CCW):
+### 6.2 Placement (8 sensors, radial) — rev 2, 2026-07-04
+8 sensors at the **540 mm base-ring surface**, every 45° starting **22.5° off the
+forward axis** (nothing on the cardinals themselves). The two long-range pairs straddle
+the travel axes (stop reflex fore/aft + room sense); the two short-range pairs read the
+lateral wall clearance for the hallway steering assist (§6.4). Bearings are robot-frame
+(REP-103: front 0°, +left/CCW):
 
 | Mux ch | Sensor | Bearing | `tof_mm` field | Role |
 | --- | --- | --- | --- | --- |
-| 4 | VL53L1X (long ~4 m) | front 0° | `front` | room distance ahead |
-| 5 | VL53L1X (long ~4 m) | left +90° | `left` | room distance left |
-| 6 | VL53L1X (long ~4 m) | rear 180° | `rear` | room distance behind |
-| 7 | VL53L1X (long ~4 m) | right −90° | `right` | room distance right |
-| 0 | VL53L0X (short ~1.2 m) | front-left +45° | `fl` | close obstacle |
-| 1 | VL53L0X (short ~1.2 m) | front-right −45° | `fr` | close obstacle |
-| 2 | VL53L0X (short ~1.2 m) | rear-left +135° | `rl` | close obstacle |
-| 3 | VL53L0X (short ~1.2 m) | rear-right −135° | `rr` | close obstacle |
+| 4 | VL53L1X (long ~4 m) | front-left +22.5° | `fl` | stop reflex + wall ahead |
+| 5 | VL53L1X (long ~4 m) | front-right −22.5° | `fr` | stop reflex + wall ahead |
+| 6 | VL53L1X (long ~4 m) | rear-left +157.5° | `rl` | reversing reflex |
+| 7 | VL53L1X (long ~4 m) | rear-right −157.5° | `rr` | reversing reflex |
+| 0 | VL53L0X (short ~1.2 m) | left-front +67.5° | `lf` | lateral clearance (assist) |
+| 1 | VL53L0X (short ~1.2 m) | left-back +112.5° | `lb` | lateral clearance (assist) |
+| 2 | VL53L0X (short ~1.2 m) | right-front −67.5° | `rf` | lateral clearance (assist) |
+| 3 | VL53L0X (short ~1.2 m) | right-back −112.5° | `rb` | lateral clearance (assist) |
 
 > **No down-facing cliff sensor** in this layout — so there is **no cliff / stair-drop
 > protection** (a deliberate trade for all-around spatial awareness; revisit if indoor
@@ -163,6 +164,21 @@ front 0°, +left/CCW):
 - **ToF can't classify** — it reports distance, not "person vs wall." "Avoid people" is
   really "avoid anything in the path." A person stepping in front = an obstacle that
   triggers slow/stop. That is sufficient for the goal, but state it plainly.
+
+### 6.4 Hallway steering assist (manual forward drive)
+While the gamepad commands **forward**, the firmware steers the base away from nearby
+walls and centers it between two (a typical US hallway, ~915–1220 mm, leaves only
+~190–340 mm per side around the 540 mm ring). Mechanism (`control.cpp`): per side,
+take the nearest valid reading of that side's short pair, **capped at
+`assist_engage_mm`** (default 450 — walls beyond it are ignored, so open rooms drive
+untouched); steer toward the more open side at `assist_gain` rad/s per metre of
+left-right imbalance, with the front long pair adding an anticipatory term (approaching
+a wall at an angle steers toward the open side). The correction **adds to the
+operator's stick** (capped at 60 % of `max_ang` so the human always wins), rides the
+normal slew/blend path, and the Z_STOP reflex still hard-blocks head-on regardless.
+Inactive when: disabled (`assist_enabled`), reversing, spinning, FULL-OVERRIDE held,
+or autonomous (owner AUTO). Runtime-tunable: `assist_enabled` / `assist_engage_mm` /
+`assist_gain` via `config` (bench: `set --assist 0/1 --assist-engage-mm --assist-gain`).
 
 ---
 

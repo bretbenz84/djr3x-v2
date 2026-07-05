@@ -68,9 +68,11 @@ void emit_telemetry() {
   // left/right asymmetry debugging (see WheelDiag in context.h).
   JsonObject w = doc["wheels"].to<JsonObject>();
   w["vl"] = wd.vl; w["vr"] = wd.vr; w["dl"] = wd.dl; w["dr"] = wd.dr;
+  // ToF layout (docs §6): long front/rear pairs (fl/fr/rl/rr, ±22.5° off the axis)
+  // + short left/right pairs (lf/lb/rf/rb). Keys match the GUI radar in dashboard.py.
   JsonObject t = doc["tof_mm"].to<JsonObject>();
-  t["front"] = tf.front; t["rear"] = tf.rear; t["left"] = tf.left; t["right"] = tf.right;
   t["fl"] = tf.fl; t["fr"] = tf.fr; t["rl"] = tf.rl; t["rr"] = tf.rr;
+  t["lf"] = tf.lf; t["lb"] = tf.lb; t["rf"] = tf.rf; t["rb"] = tf.rb;
   doc["batt_mv"] = bm;
   doc["errs"] = errs;
   // Live gamepad mirror for the GUI Motivator Control "physical controller" display.
@@ -119,6 +121,9 @@ void emit_config_ack(uint32_t seq, bool clamped, const MotionParams& p) {
   e["accel_lin"] = p.accel_lin; e["accel_ang"] = p.accel_ang;
   e["counts_per_meter"] = p.counts_per_meter;
   e["track_width_m"] = p.track_width_m;
+  e["assist_enabled"] = p.assist_enabled;
+  e["assist_engage_mm"] = p.assist_engage_mm;
+  e["assist_gain"] = p.assist_gain;
   tx_line(doc);
 }
 

@@ -166,7 +166,8 @@ def cmd_turn(c, args):
 
 _PARAM_ORDER = ("kp", "ki", "kd", "kff", "min_duty", "accel_lin", "accel_ang",
                 "counts_per_meter", "track_width_m",
-                "max_lin", "max_ang", "slow_zone_m", "stop_zone_m")
+                "max_lin", "max_ang", "slow_zone_m", "stop_zone_m",
+                "assist_enabled", "assist_engage_mm", "assist_gain")
 
 
 def _print_params(cfg):
@@ -203,6 +204,9 @@ def cmd_set(c, args):
     if args.max_ang is not None: keys["max_ang"] = args.max_ang
     if args.counts_per_meter is not None: keys["counts_per_meter"] = args.counts_per_meter
     if args.track_width is not None: keys["track_width_m"] = args.track_width
+    if args.assist is not None: keys["assist_enabled"] = bool(args.assist)
+    if args.assist_engage_mm is not None: keys["assist_engage_mm"] = args.assist_engage_mm
+    if args.assist_gain is not None: keys["assist_gain"] = args.assist_gain
     if not keys:
         print("  nothing to set — pass --kp/--ki/--kd/--kff/--min-duty/--accel-lin/"
               "--accel-ang/--max-lin/--max-ang/--counts-per-meter/--track-width")
@@ -317,6 +321,12 @@ def main():
     st.add_argument("--max-ang", type=float, dest="max_ang", help="angular speed cap (rad/s)")
     st.add_argument("--counts-per-meter", type=float, dest="counts_per_meter")
     st.add_argument("--track-width", type=float, dest="track_width")
+    st.add_argument("--assist", type=int, choices=(0, 1), dest="assist",
+                    help="hallway steering assist on/off (manual forward drive)")
+    st.add_argument("--assist-engage-mm", type=float, dest="assist_engage_mm",
+                    help="walls beyond this (mm) don't steer")
+    st.add_argument("--assist-gain", type=float, dest="assist_gain",
+                    help="rad/s per meter of left-right wall imbalance")
     args = ap.parse_args()
 
     handlers = {"encoder": cmd_encoder, "spin": cmd_spin, "wheels": cmd_wheels,
