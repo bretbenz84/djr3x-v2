@@ -6518,6 +6518,10 @@ def _handle_pending_offscreen_identify_reply(
     try:
         new_pid, created = people_memory.find_or_create_person(intro_name)
         if new_pid is not None:
+            # A human just CONFIRMED who this voice is — the strongest credibility
+            # signal there is. Anchor voice continuity so their next marginal-scoring
+            # turns aren't immediately re-challenged.
+            _last_confident_voice_at[int(new_pid)] = time.monotonic()
             enroll_audio = _offscreen_identity_enrollment_audio(
                 pending.get("audio"),
                 audio_array,
@@ -6759,11 +6763,13 @@ def _voice_only_attribution_suspect(person_id, speaker_score: float) -> bool:
     confident = float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70))
     if float(speaker_score or 0.0) >= confident:
         return False                      # genuinely confident voice: trust it
-    grace = float(getattr(config, "SPEAKER_ID_UNSEEN_GRACE_SECS", 20.0))
-    try:
-        if consciousness.person_visible_recently(person_id, grace):
-            return False                  # they're around; off-camera speech is normal
-    except Exception:
+    # Credibility comes from the VOICE, never the camera. The first version used
+    # person_visible_recently() here — and field log 2026-07-05-02-37 showed why
+    # that's wrong: Bret's face at session start suppressed every challenge while
+    # JT talked ("this is JT" soft-accepted as Bret at 0.483). Being in the room
+    # is not evidence of being the one talking. A marginal match passes only when
+    # this person's OWN voice matched confidently within the continuity window.
+    if _voice_continuity_active(person_id):
         return False
     if not _someone_visible_who_isnt(person_id):
         # EMPTY frame: no visual contradiction, but also no corroboration — a marginal
@@ -15632,6 +15638,9 @@ def _handle_speaker_correction(
         row = people_db_mod.find_person_by_name(name)
         if row and row.get("name"):
             display = str(row["name"])
+            # Human-confirmed attribution → anchor voice continuity for that person.
+            if row.get("id") is not None:
+                _last_confident_voice_at[int(row["id"])] = time.monotonic()
     except Exception:
         pass
     moved = False

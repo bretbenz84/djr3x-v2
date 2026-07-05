@@ -15,13 +15,13 @@ from intelligence import consciousness
 from intelligence import interaction
 
 
-def _suspect(person_id=1, score=0.660, *, recently_visible=False, others_visible=True,
+def _suspect(person_id=1, score=0.660, *, voice_continuity=False, others_visible=True,
              enabled=True, last_challenge=0.0, empty_frame_challenge=True):
     """Drive _voice_only_attribution_suspect with fully mocked surroundings."""
     people = [{"person_db_id": None, "face_missing": True}] if others_visible else []
     with mock.patch.object(config, "SPEAKER_ID_UNSEEN_CHALLENGE_ENABLED", enabled, create=True), \
          mock.patch.object(config, "SPEAKER_ID_CHALLENGE_EMPTY_FRAME", empty_frame_challenge, create=True), \
-         mock.patch.object(consciousness, "person_visible_recently", return_value=recently_visible), \
+         mock.patch.object(interaction, "_voice_continuity_active", return_value=voice_continuity), \
          mock.patch.object(interaction.world_state, "get", return_value=people), \
          mock.patch.object(interaction, "_last_voice_challenge_at", last_challenge):
         return interaction._voice_only_attribution_suspect(person_id, score)
@@ -35,10 +35,17 @@ class VoiceChallengeGateTest(unittest.TestCase):
     def test_confident_voice_is_trusted(self):
         self.assertFalse(_suspect(score=0.75))
 
-    def test_recently_visible_person_not_challenged(self):
-        # Bret talking while the camera pans away is NORMAL — no challenge.
-        self.assertTrue(_suspect(recently_visible=False))
-        self.assertFalse(_suspect(recently_visible=True))
+    def test_voice_continuity_suppresses_challenge(self):
+        # Bret spoke CONFIDENTLY minutes ago; his marginal follow-up turns pass.
+        # (v1 suppressed on face-recency instead — field log 2026-07-05-02-37: Bret's
+        # face at session start shielded every JT turn, including 'this is JT' soft-
+        # accepted as Bret at 0.483. Being in the room is not evidence of talking.)
+        self.assertTrue(_suspect(voice_continuity=False))
+        self.assertFalse(_suspect(voice_continuity=True))
+
+    def test_sub_threshold_soft_accept_is_challenged(self):
+        # The exact field shape: 0.483 soft-accepted (floor 0.45) with no continuity.
+        self.assertTrue(_suspect(score=0.483))
 
     def test_empty_frame_now_challenges_by_default(self):
         # Owner call 2026-07-05: an unseen marginal match with an EMPTY frame is still
