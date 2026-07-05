@@ -95,12 +95,8 @@
 // Tune with `set --accel-lin` (higher = snappier).
 #define DRIVE_ACCEL_LIN    0.2f     // m/s^2  (teleop linear setpoint slew)
 #define DRIVE_ACCEL_ANG    4.0f     // rad/s^2 (teleop angular setpoint slew)
-
-// Below this |lin| (m/s) the joystick is treated as NOT translating — a pure in-place
-// SPIN. Shared by gamepad.cpp (which then gives full turn authority) and hal.cpp (which
-// then allows the differential spin instead of the no-reverse arcade clamp) so the two
-// stay in lockstep.
-#define DRIVE_SPIN_LIN_EPS 0.02f
+// (The old DRIVE_SPIN_LIN_EPS binary spin gate is gone — replaced by the smooth
+// GAMEPAD_SPIN_BLEND_FWD_LO/HI band above; the blend factor rides the setpoint.)
 
 // ---- ToF subsystem (8 radial sensors) — only used when MOTION_TOF_PRESENT==1 -
 // 4× short-range VL53L0X on mux ch 0-3 (45° diagonals) + 4× long-range VL53L1X on
@@ -145,6 +141,15 @@
 // TRANSLATION, not the pivot. 1.0 = the full max_ang cap (tune the spin rate with `set
 // --max-ang`; the PID saturates to max duty on a stiff surface regardless).
 #define GAMEPAD_SPIN_SCALE     1.00f
+// Spin↔arcade BLEND band, on the forward/back stick fraction (post-deadzone, 0..1).
+// Below LO: pure spin-in-place (full authority, inside wheel may reverse). Above HI:
+// pure arcade steer (level-scaled authority, inside wheel floored at 0). Between the
+// two, BOTH the turn authority and the wheel mixing interpolate smoothly (smoothstep),
+// so tilting slightly forward out of a spin eases into a tightening arc instead of the
+// turn rate collapsing at a hard threshold (field bug: "mostly left + slightly forward
+// acts strange" — the old binary 0.02 m/s gate stepped authority 1.0 -> 0.15 at slow).
+#define GAMEPAD_SPIN_BLEND_FWD_LO  0.05f   // stick fraction where the blend starts
+#define GAMEPAD_SPIN_BLEND_FWD_HI  0.35f   // stick fraction where it's fully arcade
 #define GAMEPAD_TRIGGER_MAX    1023.0f  // Bluepad32 analog trigger full-scale
 #define GAMEPAD_FULL_OVERRIDE_FRAC 0.85f // both triggers past this fraction = bypass ToF
 #define GAMEPAD_TRIGGER_PRESS_FRAC 0.50f // trigger past this fraction = "pressed" (GUI mirror)

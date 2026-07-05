@@ -21,7 +21,7 @@ bool ctl_clear(uint32_t seq);                                // false => nothing
 
 // Manual (gamepad) control — owner becomes MANUAL; the Mac's drive/turn/move/come are
 // gated off (proto_io motion_gate) while stop/estop/config/ping still work (docs §11).
-void ctl_manual_drive(float lin, float ang);   // m/s, rad/s — gamepad teleop setpoint
+void ctl_manual_drive(float lin, float ang, float pivot_blend = 1.0f);   // m/s, rad/s, spin↔arcade blend (0 spin .. 1 arcade) — gamepad teleop setpoint
 void ctl_manual_turn (float deg, float rate);   // deg signed, deg/s mag — gamepad spin-in-place BY deg as a MANUAL finite turn (D-pad encoder test)
 void ctl_manual_stop();                         // stop but STAY manual (disconnect failsafe)
 void ctl_manual_release();                      // stop and hand control back to AUTO

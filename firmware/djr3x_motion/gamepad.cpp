@@ -202,12 +202,18 @@ void gamepad_tick() {
   float max_lin, max_ang;
   LOCK_STATE(); max_lin = g_ctx.params.max_lin; max_ang = g_ctx.params.max_ang; UNLOCK_STATE();
   float lin =  fwd  * max_lin * scale;
-  // A pure in-place spin (not translating) gets FULL turn authority at every speed level,
-  // so slow/med can still break carpet traction and rotate; while translating, the turn is
-  // throttled by the level so steering stays gentle. The <eps band matches hal.cpp's
-  // spin-vs-arcade gate, so the two decisions never disagree.
-  bool pure_spin = (fabsf(lin) < DRIVE_SPIN_LIN_EPS);
-  float ang = -turn * max_ang * (pure_spin ? GAMEPAD_SPIN_SCALE : scale);  // stick-right => -ang (REP-103: +ang = left)
+  // Spin↔arcade BLEND, keyed off how far the stick is pushed forward/back. At (or near)
+  // zero fwd: a pure spin with FULL turn authority at every speed level (breaks carpet
+  // traction). As fwd grows through the GAMEPAD_SPIN_BLEND_FWD_LO..HI band, the turn
+  // authority eases down to the level's scale and (via pivot_blend in hal) the inside
+  // wheel's reverse allowance eases out — a spin tightens smoothly into a forward arc.
+  // The old binary gate snapped authority 1.0 -> 0.15 (slow) at a 0.02 m/s threshold,
+  // which felt like the turn dying the moment the stick tilted forward.
+  float bt = clampf((fabsf(fwd) - GAMEPAD_SPIN_BLEND_FWD_LO) /
+                    (GAMEPAD_SPIN_BLEND_FWD_HI - GAMEPAD_SPIN_BLEND_FWD_LO), 0.0f, 1.0f);
+  bt = bt * bt * (3.0f - 2.0f * bt);       // smoothstep: zero slope at both edges
+  const float turn_authority = GAMEPAD_SPIN_SCALE + (scale - GAMEPAD_SPIN_SCALE) * bt;
+  float ang = -turn * max_ang * turn_authority;  // stick-right => -ang (REP-103: +ang = left)
 
   // Enter MANUAL on the first meaningful push; once manual, keep refreshing (incl. zero,
   // which feeds the drive deadman and holds the base stopped) until release/auto-return.
@@ -220,7 +226,7 @@ void gamepad_tick() {
   isManual     = (g_ctx.owner == OWNER_MANUAL);
   turnInFlight = (g_ctx.finite.kind == CMD_TURN);
   UNLOCK_STATE();
-  if (meaningful || (isManual && !turnInFlight)) ctl_manual_drive(lin, ang);
+  if (meaningful || (isManual && !turnInFlight)) ctl_manual_drive(lin, ang, bt);
 
   // Forward the soundboard / animation buttons to the Mac (does not affect drive).
   poll_action_buttons(c);

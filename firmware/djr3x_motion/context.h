@@ -80,6 +80,13 @@ struct Odom {
 struct Setpoint {
   float lin = 0;   // m/s target
   float ang = 0;   // rad/s target
+  // Teleop spin↔arcade blend, 0..1 (gamepad only; autonomous paths leave it 1).
+  //   0 = pure spin-in-place mixing (inside wheel may reverse)
+  //   1 = full arcade clamp (inside wheel floored at 0, never reversed by a turn)
+  // Computed in gamepad.cpp from the fwd-stick fraction (GAMEPAD_SPIN_BLEND_FWD_*)
+  // and applied per-wheel in hal_drive_velocity, so the transition out of a spin is
+  // a smooth tightening arc instead of a hard regime snap.
+  float pivot_blend = 1.0f;
 };
 
 // ===== ToF distances (mm; -1 = sensor error) ==============================

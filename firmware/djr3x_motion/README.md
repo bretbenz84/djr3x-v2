@@ -156,7 +156,7 @@ remembers the bond for next time.
 
 | Input | Action |
 | --- | --- |
-| Left stick | arcade drive — Y forward/back, X turn. Pure X (no Y) spins in place; adding X to a forward push just slows the inside wheel (never reverses it) |
+| Left stick | arcade drive — Y forward/back, X turn. Pure X (no Y) spins in place at full turn authority; as Y is added the spin **blends smoothly** into an arcade arc (turn authority eases to the speed level, inside-wheel reverse eases out — no hard regime snap) |
 | **L3 (click left stick)** | **cycle drive speed level**: slow (default) → faster → full. Latches; resets to slow on reconnect. Emits `event:"speed" level:1..3` |
 | **D-pad** | **spin to an absolute heading** (encoder test): Up=0°, Left=+90° (CCW), Down=180°, Right=−90° (CW) |
 | **B** | **E-STOP** (always honored) |

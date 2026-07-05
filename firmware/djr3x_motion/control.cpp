@@ -190,16 +190,19 @@ void control_tick(float dt) {
     const float aa = c.params.accel_ang * dt;
     s_ramp_lin += clampf(lin_t - s_ramp_lin, -al, al);
     s_ramp_ang += clampf(ang_t - s_ramp_ang, -aa, aa);
-    // Forward-pivot steering for the JOYSTICK (owner==MANUAL): a turn stops the inside
-    // wheel instead of reversing it. The Mac's autonomous `drive` (owner==AUTO) keeps
-    // true differential mixing so it can still rotate in place via a velocity command.
-    hal_drive_velocity(s_ramp_lin, s_ramp_ang, dt, c.owner == OWNER_MANUAL);
+    // Joystick steering (owner==MANUAL): pivot_blend (0 spin .. 1 arcade, from the
+    // fwd-stick fraction) smoothly morphs the wheel mixing — a pure spin may reverse
+    // the inside wheel; as forward is added the reverse allowance eases out until a
+    // turn only slows the inside wheel. The Mac's autonomous `drive` (owner==AUTO)
+    // keeps plain differential mixing (blend forced to 1, pivot_steer false).
+    hal_drive_velocity(s_ramp_lin, s_ramp_ang, dt,
+                       c.owner == OWNER_MANUAL, c.setpoint.pivot_blend);
   } else {
     // Autonomous finite move/turn/come (or idle): drive the target directly and keep
     // the ramp synced to it, so a later teleop takeover starts from the real velocity.
     // pivot_steer=false — a finite TURN must spin in place (one wheel reverses).
     s_ramp_lin = lin_t; s_ramp_ang = ang_t;
-    hal_drive_velocity(lin_t, ang_t, dt, false);
+    hal_drive_velocity(lin_t, ang_t, dt, false, 1.0f);
   }
 #else
   // Push velocity to the motor HAL (stub: no-op until wheels are wired).
@@ -229,6 +232,7 @@ void ctl_drive(float lin, float ang, uint32_t seq) {
   sup = begin_finite_locked(sseq, sodom);
   g_ctx.finite = FiniteCmd();
   g_ctx.setpoint.lin = lin; g_ctx.setpoint.ang = ang;
+  g_ctx.setpoint.pivot_blend = 1.0f;   // Mac velocity drive: plain differential mixing
   g_ctx.cmd_mode = CMD_DRIVE;
   g_ctx.drive_set_ms = millis();
   g_ctx.cmd_seq = seq;
@@ -340,7 +344,7 @@ bool ctl_clear(uint32_t seq) {
 // it works even with the USB unplugged. owner=MANUAL makes proto_io's motion_gate
 // reject Mac drive/turn/move/come; stop/estop/config/ping still pass.
 
-void ctl_manual_drive(float lin, float ang) {
+void ctl_manual_drive(float lin, float ang, float pivot_blend) {
   // Refreshed every gamepad poll; the drive deadman stops the base if polls stall.
   bool sup = false; uint32_t sseq = 0; Odom sodom;
   LOCK_STATE();
@@ -350,6 +354,7 @@ void ctl_manual_drive(float lin, float ang) {
   g_ctx.owner = OWNER_MANUAL;
   g_ctx.finite = FiniteCmd();
   g_ctx.setpoint.lin = lin; g_ctx.setpoint.ang = ang;
+  g_ctx.setpoint.pivot_blend = clampf(pivot_blend, 0.0f, 1.0f);
   g_ctx.cmd_mode = CMD_DRIVE;
   g_ctx.drive_set_ms = millis();
   if (fabsf(lin) > 0.01f || fabsf(ang) > 0.01f) g_ctx.last_manual_input_ms = millis();

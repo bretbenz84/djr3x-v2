@@ -169,7 +169,7 @@ static int wheel_pid(float target, float meas, float& integ, float& eprev, float
   return (int)clampf(u, -(float)PWM_DUTY_MAX, (float)PWM_DUTY_MAX);
 }
 
-void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer) {
+void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer, float pivot_blend) {
   // Caller holds the state lock — read the runtime params as a consistent snapshot.
   const float track = g_ctx.params.track_width_m;
   const float kp = g_ctx.params.kp, ki = g_ctx.params.ki, kd = g_ctx.params.kd;
@@ -182,20 +182,23 @@ void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer) {
   float v_l = lin + ang * (track * 0.5f);
   float v_r = lin - ang * (track * 0.5f);
 
-  // Joystick steering (teleop only) — two regimes by whether the stick is translating:
-  //   • NO forward/back (|lin| ~ 0, a pure left/right push): SPIN IN PLACE. Leave the
-  //     differential mix alone so the inside wheel runs backward and the base rotates
-  //     briskly on the spot (full left → left wheel back a little, right wheel forward).
-  //   • Translating (|lin| above the threshold, moving forward or back): the turn only
-  //     makes the inside wheel go SLOWER, never backward. Clamp each wheel so it can't
-  //     cross zero against the travel direction — a hard turn slows the inside wheel to
-  //     a stop at most, and a wheel only ever reverses because the stick itself is
-  //     pulled back, never merely from adding steering to a forward push.
-  // NOT applied to autonomous finite turns (control_tick passes pivot_steer=false) —
-  // those spin via CMD_TURN regardless.
-  if (pivot_steer && fabsf(lin) >= DRIVE_SPIN_LIN_EPS) {   // translating → arcade clamp; below → spin
-    if (lin > 0.0f) { if (v_l < 0.0f) v_l = 0.0f; if (v_r < 0.0f) v_r = 0.0f; }
-    else            { if (v_l > 0.0f) v_l = 0.0f; if (v_r > 0.0f) v_r = 0.0f; }
+  // Joystick steering (teleop only) — a smooth MORPH between two mixings, driven by
+  // pivot_blend (0..1, from the fwd-stick fraction in gamepad.cpp):
+  //   • blend 0 (pure left/right, no forward/back): SPIN IN PLACE. Raw differential
+  //     mix — the inside wheel runs backward and the base rotates on the spot.
+  //   • blend 1 (clearly translating): ARCADE STEER. Each wheel is floored at zero
+  //     against the travel direction, so a turn only slows the inside wheel — it
+  //     never reverses from steering, only from the stick itself being pulled back.
+  //   • between: per-wheel lerp of the two, so tilting the stick forward out of a
+  //     spin tightens smoothly into an arc (no regime snap at a threshold).
+  // NOT applied to autonomous paths (control_tick passes pivot_steer=false) — finite
+  // turns spin via CMD_TURN and the Mac's velocity drive keeps plain mixing.
+  if (pivot_steer && pivot_blend > 0.0f) {
+    float a_l = v_l, a_r = v_r;              // the arcade (clamped) mix
+    if (lin >= 0.0f) { if (a_l < 0.0f) a_l = 0.0f; if (a_r < 0.0f) a_r = 0.0f; }
+    else             { if (a_l > 0.0f) a_l = 0.0f; if (a_r > 0.0f) a_r = 0.0f; }
+    v_l += (a_l - v_l) * pivot_blend;        // lerp raw spin mix -> arcade mix
+    v_r += (a_r - v_r) * pivot_blend;
   }
 
   // Energize only when something should move (commanded OR still rolling, so we
