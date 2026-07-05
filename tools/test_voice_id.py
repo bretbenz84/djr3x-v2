@@ -225,6 +225,10 @@ def _calibrate(name: str, seconds: float) -> None:
     # Data-driven readout — worst case is what matters (every round is genuinely you).
     lo = float(arr.min())
     print("\n  READOUT:")
+    print("  • NB: these are CLEAN continuous windows. Live turns (short VAD segments")
+    print("    through echo-cancel, room noise) score ~0.05-0.12 LOWER — measured")
+    print("    2026-07-05: Bret calibrated 0.742-0.830 but logged 0.625-0.715 in real")
+    print("    conversation. Judge thresholds against the live band, not this one.")
     if lo >= confident:
         print(f"  • Even your worst condition ({lo:.3f}) clears the confident bar — the")
         print(f"    challenge gate should essentially never fire on you as configured.")
