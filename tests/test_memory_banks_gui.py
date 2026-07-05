@@ -172,7 +172,78 @@ class MemoryBanksWindowSmokeTest(unittest.TestCase):
             key_options = [key.itemText(i) for i in range(key.count())]
             self.assertEqual(key_options, admin.suggested_keys_for_category("relationship"))
             self.assertIn("boss", key_options)
+            w._clear_dirty()   # discard the unsaved row so close() isn't guarded
         finally:
+            w.close()
+
+    # ── Unsaved-changes model (the "do I need to save?" rework) ──────────────
+    def test_edit_marks_dirty_and_save_clears_it(self):
+        w = MemoryBanksWindow()
+        try:
+            w._select_person_in_list(1)
+            self.assertFalse(w._person_dirty)                 # freshly loaded = clean
+            self.assertFalse(w.person_save_btn.isEnabled())   # nothing to save
+            w._add_fact_row()                                 # unsaved work appears
+            self.assertTrue(w._person_dirty)
+            self.assertTrue(w.person_save_btn.isEnabled())
+            self.assertIn("UNSAVED", w.person_chip.text())
+            self.assertIn("UNSAVED", w.windowTitle())
+            # fill the row so save keeps it, then save-all clears the state
+            row = w.facts_table.rowCount() - 1
+            w.facts_table.cellWidget(row, 1).setCurrentText("favorite_color")
+            w.facts_table.item(row, 2).setText("teal")
+            w._save_person_and_facts()
+            self.assertFalse(w._person_dirty)
+            self.assertNotIn("UNSAVED", w.windowTitle())
+        finally:
+            w.close()
+
+    def test_close_with_unsaved_changes_prompts_and_discard_closes(self):
+        from PySide6.QtWidgets import QMessageBox
+        w = MemoryBanksWindow()
+        try:
+            w._select_person_in_list(1)
+            w.p_nick.setText("Bee")
+            w.p_nick.textEdited.emit("Bee")   # setText alone doesn't fire textEdited
+            self.assertTrue(w._person_dirty)
+            with mock.patch.object(
+                QMessageBox, "exec", return_value=QMessageBox.StandardButton.Discard
+            ):
+                self.assertTrue(w.close())    # discard -> allowed to close
+        finally:
+            w._clear_dirty()
+            if w.isVisible():
+                w.close()
+
+    def test_cancel_keeps_you_on_the_dirty_person(self):
+        from PySide6.QtWidgets import QMessageBox
+        from memory import admin
+        admin.create_person("Zed Beta")
+        w = MemoryBanksWindow()
+        try:
+            w._select_person_in_list(1)
+            first_row = w.people_list.currentRow()
+            w.p_nick.setText("Bee")
+            w.p_nick.textEdited.emit("Bee")
+            self.assertTrue(w._person_dirty)
+            # try to switch to the other person; CANCEL the guard
+            other_row = next(
+                i for i in range(w.people_list.count())
+                if w.people_list.item(i).text().startswith("Zed")
+            )
+            self.assertNotEqual(other_row, first_row)
+            with mock.patch.object(
+                QMessageBox, "exec", return_value=QMessageBox.StandardButton.Cancel
+            ):
+                w.people_list.setCurrentRow(other_row)
+            # still on the dirty person, edits intact
+            self.assertEqual(w.people_list.currentRow(), first_row)
+            self.assertEqual(w.p_nick.text(), "Bee")
+            self.assertTrue(w._person_dirty)
+        finally:
+            # ALWAYS drop dirty state before close — a failed assertion above must
+            # surface as a failure, not hang the suite on the close guard's modal.
+            w._clear_dirty()
             w.close()
 
 

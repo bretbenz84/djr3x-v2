@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QBrush, QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -88,7 +88,12 @@ QListWidget, QTableWidget, QPlainTextEdit {
 }
 QListWidget::item { padding: 5px 6px; }
 QListWidget::item:selected, QTableWidget::item:selected { background: #244f89; color: #ffffff; }
-QTableWidget { gridline-color: #14283c; }
+QTableWidget {
+    gridline-color: #14283c;
+    font-size: 13px;
+    alternate-background-color: #0a1420;
+}
+QLabel#memHint { color: #6f8296; font-size: 11px; padding: 0 2px; }
 QTableView { background: #0b1722; }
 QHeaderView { background: #0c1826; border: none; }
 QHeaderView::section {
@@ -189,6 +194,19 @@ def _danger_button(text: str) -> QPushButton:
     return btn
 
 
+# Unsaved-state chip styles — the single at-a-glance answer to "do I need to save?".
+_CHIP_DIRTY_QSS = (
+    "QLabel { background:#4a2c0e; color:#ffb21e; border:1px solid #e08428;"
+    " border-radius:2px; padding:3px 10px; font-weight:800; letter-spacing:1px; }"
+)
+_CHIP_CLEAN_QSS = (
+    "QLabel { background:transparent; color:#5f7186; border:1px solid #1c3247;"
+    " border-radius:2px; padding:3px 10px; font-weight:700; letter-spacing:1px; }"
+)
+# Amber tint for edited/new (not yet saved) fact rows.
+_UNSAVED_ROW_BRUSH_RGB = (74, 44, 14)
+
+
 class MemoryBanksWindow(QMainWindow):
     """Memory browser/editor. Pauses robot audio output while open."""
 
@@ -226,6 +244,15 @@ class MemoryBanksWindow(QMainWindow):
         _log.info("[memory_banks] opened — conversation engine paused")
 
         self._current_person_id = None
+        self._editing_rex_id = None
+        # Unsaved-work tracking. _loading suppresses dirty signals while an editor is
+        # being POPULATED (programmatic setText/setItem fire the same signals as typing).
+        self._loading = False
+        self._rex_dirty = False
+        self._person_dirty = False
+        # Last committed selection (list widget, row) — restored when the user cancels
+        # a navigation away from unsaved changes.
+        self._nav_anchor = None
         self._build_ui()
         self.reload_all()
 
@@ -243,6 +270,16 @@ class MemoryBanksWindow(QMainWindow):
         )
         banner.setObjectName("memBanner")
         outer.addWidget(banner)
+
+        # State the save model plainly so nobody has to guess it from behavior.
+        hint = QLabel(
+            "HOW SAVING WORKS:   Deletions apply IMMEDIATELY (after a confirmation).   "
+            "Edits and new rows are held until you press SAVE — unsaved work is marked "
+            "in amber, and switching away will ask what to do with it."
+        )
+        hint.setObjectName("memHint")
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         outer.addWidget(splitter, 1)
@@ -325,31 +362,41 @@ class MemoryBanksWindow(QMainWindow):
     def _build_rex_editor(self) -> QWidget:
         w = QWidget()
         v = QVBoxLayout(w)
-        v.addWidget(_section_label("EDIT MEMORY"))
+        head = QHBoxLayout()
+        head.addWidget(_section_label("EDIT MEMORY"))
+        head.addStretch(1)
+        self.rex_chip = QLabel("ALL SAVED")
+        self.rex_chip.setStyleSheet(_CHIP_CLEAN_QSS)
+        head.addWidget(self.rex_chip)
+        v.addLayout(head)
         self.rex_meta = QLabel("")
         self.rex_meta.setObjectName("memMeta")
         v.addWidget(self.rex_meta)
         v.addWidget(QLabel("Kind:"))
         self.rex_kind = QLineEdit()
+        self.rex_kind.textEdited.connect(lambda _t: self._mark_rex_dirty())
         v.addWidget(self.rex_kind)
         v.addWidget(QLabel("Memory (first-person):"))
         self.rex_summary = QPlainTextEdit()
+        self.rex_summary.textChanged.connect(self._mark_rex_dirty)  # guarded by _loading
         v.addWidget(self.rex_summary, 1)
         sal_row = QHBoxLayout()
         sal_row.addWidget(QLabel("Salience (0–1):"))
         self.rex_salience = QDoubleSpinBox()
         self.rex_salience.setRange(0.0, 1.0)
         self.rex_salience.setSingleStep(0.1)
+        self.rex_salience.valueChanged.connect(lambda _v: self._mark_rex_dirty())
         sal_row.addWidget(self.rex_salience)
         sal_row.addStretch(1)
         v.addLayout(sal_row)
         btns = QHBoxLayout()
-        save = QPushButton("Save Memory")
-        save.setObjectName("primary")
-        save.clicked.connect(self._save_rex_memory)
-        delete = _danger_button("Delete Memory")
+        self.rex_save_btn = QPushButton("Save Memory")
+        self.rex_save_btn.setObjectName("primary")
+        self.rex_save_btn.clicked.connect(self._save_rex_memory)
+        self.rex_save_btn.setEnabled(False)   # nothing to save until something changes
+        delete = _danger_button("Delete Memory  (immediate)")
         delete.clicked.connect(self._delete_rex_memory)
-        btns.addWidget(save)
+        btns.addWidget(self.rex_save_btn)
         btns.addWidget(delete)
         btns.addStretch(1)
         v.addLayout(btns)
@@ -359,14 +406,23 @@ class MemoryBanksWindow(QMainWindow):
         w = QWidget()
         v = QVBoxLayout(w)
 
-        # Header: name + nickname + person actions
-        v.addWidget(_section_label("PERSON"))
+        # Header: name + nickname + person actions + the unsaved-state chip
+        head = QHBoxLayout()
+        head.addWidget(_section_label("PERSON"))
+        head.addStretch(1)
+        self.person_chip = QLabel("ALL SAVED")
+        self.person_chip.setStyleSheet(_CHIP_CLEAN_QSS)
+        head.addWidget(self.person_chip)
+        v.addLayout(head)
+
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("Name:"))
         self.p_name = QLineEdit()
+        self.p_name.textEdited.connect(lambda _t: self._mark_person_dirty())
         name_row.addWidget(self.p_name, 2)
         name_row.addWidget(QLabel("Nickname:"))
         self.p_nick = QLineEdit()
+        self.p_nick.textEdited.connect(lambda _t: self._mark_person_dirty())
         name_row.addWidget(self.p_nick, 1)
         v.addLayout(name_row)
 
@@ -375,32 +431,35 @@ class MemoryBanksWindow(QMainWindow):
         v.addWidget(self.p_meta)
 
         person_btns = QHBoxLayout()
-        save_person = QPushButton("Save Person")
-        save_person.setObjectName("primary")
-        save_person.clicked.connect(self._save_person)
-        del_person = _danger_button("Delete Person")
+        self.person_save_btn = QPushButton("Save All Changes")
+        self.person_save_btn.setObjectName("primary")
+        self.person_save_btn.setToolTip(
+            "Saves the name/nickname AND every edited or added fact row in one click."
+        )
+        self.person_save_btn.clicked.connect(self._save_person_and_facts)
+        self.person_save_btn.setEnabled(False)
+        del_person = _danger_button("Delete Person  (immediate)")
         del_person.clicked.connect(self._delete_person)
-        person_btns.addWidget(save_person)
+        person_btns.addWidget(self.person_save_btn)
         person_btns.addWidget(del_person)
         person_btns.addStretch(1)
         v.addLayout(person_btns)
 
         v.addWidget(_hline())
 
-        # Biometrics — does Rex have a face ID / voiceprint for this person?
-        v.addWidget(_section_label("BIOMETRICS"))
+        # Biometrics — one compact line: status + the two clear actions.
+        bio_row = QHBoxLayout()
+        bio_row.addWidget(_section_label("BIOMETRICS"))
         self.bio_label = QLabel("")
         self.bio_label.setObjectName("memMeta")
-        v.addWidget(self.bio_label)
-        bio_btns = QHBoxLayout()
+        bio_row.addWidget(self.bio_label, 1)
         self.clear_face_btn = _danger_button("Clear Face Data")
         self.clear_face_btn.clicked.connect(lambda: self._clear_biometric("face"))
         self.clear_voice_btn = _danger_button("Clear Voiceprint")
         self.clear_voice_btn.clicked.connect(lambda: self._clear_biometric("voice"))
-        bio_btns.addWidget(self.clear_face_btn)
-        bio_btns.addWidget(self.clear_voice_btn)
-        bio_btns.addStretch(1)
-        v.addLayout(bio_btns)
+        bio_row.addWidget(self.clear_face_btn)
+        bio_row.addWidget(self.clear_voice_btn)
+        v.addLayout(bio_row)
 
         v.addWidget(_hline())
 
@@ -428,30 +487,39 @@ class MemoryBanksWindow(QMainWindow):
             "category — e.g. relationship → boss / coworker / mentor; family → nephew / "
             "spouse. Editable, so you can type your own."
         )
-        v.addWidget(self.facts_table, 3)
+        # Readability: taller rows (the combos need air), real starting column widths
+        # (Key used to squeeze into ~90px and truncate), alternating row stripes, and
+        # edits tracked per-row so unsaved rows can be tinted amber.
+        self.facts_table.setAlternatingRowColors(True)
+        self.facts_table.verticalHeader().setDefaultSectionSize(34)
+        self.facts_table.setColumnWidth(0, 150)
+        self.facts_table.setColumnWidth(1, 240)
+        self.facts_table.setColumnWidth(3, 100)
+        self.facts_table.itemChanged.connect(self._on_fact_item_changed)
+        v.addWidget(self.facts_table, 5)
         fact_btns = QHBoxLayout()
-        add_fact = QPushButton("Add Fact")
+        add_fact = QPushButton("+ Add Fact")
         add_fact.clicked.connect(self._add_fact_row)
-        del_fact = _danger_button("Delete Selected Fact")
+        del_fact = _danger_button("Delete Selected Fact  (immediate)")
         del_fact.clicked.connect(self._delete_selected_fact)
-        save_facts = QPushButton("Save Facts")
-        save_facts.setObjectName("primary")
-        save_facts.clicked.connect(self._save_facts)
         fact_btns.addWidget(add_fact)
         fact_btns.addWidget(del_fact)
-        fact_btns.addWidget(save_facts)
         fact_btns.addStretch(1)
+        fact_note = QLabel("edited / new rows are amber until saved")
+        fact_note.setObjectName("memHint")
+        fact_btns.addWidget(fact_note)
         v.addLayout(fact_btns)
 
         v.addWidget(_hline())
 
-        # Interests + preferences (view + delete)
+        # Interests + preferences (view + delete; deletes are immediate)
         lists_row = QHBoxLayout()
         int_col = QVBoxLayout()
         int_col.addWidget(_section_label("INTERESTS"))
         self.interests_list = QListWidget()
+        self.interests_list.setWordWrap(True)
         int_col.addWidget(self.interests_list)
-        del_int = _danger_button("Delete Selected Interest")
+        del_int = _danger_button("Delete Selected Interest  (immediate)")
         del_int.clicked.connect(self._delete_selected_interest)
         int_col.addWidget(del_int)
         lists_row.addLayout(int_col)
@@ -459,12 +527,13 @@ class MemoryBanksWindow(QMainWindow):
         pref_col = QVBoxLayout()
         pref_col.addWidget(_section_label("PREFERENCES"))
         self.prefs_list = QListWidget()
+        self.prefs_list.setWordWrap(True)
         pref_col.addWidget(self.prefs_list)
-        del_pref = _danger_button("Delete Selected Preference")
+        del_pref = _danger_button("Delete Selected Preference  (immediate)")
         del_pref.clicked.connect(self._delete_selected_preference)
         pref_col.addWidget(del_pref)
         lists_row.addLayout(pref_col)
-        v.addLayout(lists_row, 2)
+        v.addLayout(lists_row, 3)
 
         return w
 
@@ -493,6 +562,81 @@ class MemoryBanksWindow(QMainWindow):
             item.setData(_ROLE_ID, int(person["id"]))
             self.people_list.addItem(item)
 
+    # ── Unsaved-work tracking ────────────────────────────────────────────────
+    def _mark_rex_dirty(self) -> None:
+        if self._loading or self._editing_rex_id is None:
+            return
+        self._rex_dirty = True
+        self._refresh_dirty_ui()
+
+    def _mark_person_dirty(self) -> None:
+        if self._loading or self._current_person_id is None:
+            return
+        self._person_dirty = True
+        self._refresh_dirty_ui()
+
+    def _clear_dirty(self) -> None:
+        self._rex_dirty = False
+        self._person_dirty = False
+        self._refresh_dirty_ui()
+
+    def _refresh_dirty_ui(self) -> None:
+        """One place drives every 'do I need to save?' signal: the chips, the save
+        buttons' enabled state, and the window-title asterisk."""
+        for chip, btn, dirty in (
+            (getattr(self, "rex_chip", None), getattr(self, "rex_save_btn", None), self._rex_dirty),
+            (getattr(self, "person_chip", None), getattr(self, "person_save_btn", None), self._person_dirty),
+        ):
+            if chip is not None:
+                chip.setText("●  UNSAVED — press SAVE" if dirty else "ALL SAVED")
+                chip.setStyleSheet(_CHIP_DIRTY_QSS if dirty else _CHIP_CLEAN_QSS)
+            if btn is not None:
+                btn.setEnabled(dirty)
+        dirty_any = self._rex_dirty or self._person_dirty
+        self.setWindowTitle("R3X — Memory Banks" + ("  *UNSAVED*" if dirty_any else ""))
+
+    def _confirm_leave(self) -> bool:
+        """Called before navigating away from (or closing over) unsaved changes.
+        Returns True when it is OK to proceed (saved or deliberately discarded)."""
+        if not (self._rex_dirty or self._person_dirty):
+            return True
+        box = self._themed_messagebox(
+            QMessageBox.Icon.Warning,
+            "Unsaved changes",
+            "You have unsaved edits here. Save them before switching?",
+        )
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.Save)
+        choice = box.exec()
+        if choice == QMessageBox.StandardButton.Cancel:
+            return False
+        if choice == QMessageBox.StandardButton.Save:
+            if self._rex_dirty:
+                self._save_rex_memory()
+            if self._person_dirty:
+                self._save_person_and_facts()
+        else:
+            self._clear_dirty()   # deliberate discard
+        return True
+
+    def _restore_nav_anchor(self) -> None:
+        """Put the selection back where it was (used when a guard is cancelled)."""
+        if not self._nav_anchor:
+            return
+        widget, row = self._nav_anchor
+        other = self.people_list if widget is self.rex_list else self.rex_list
+        for lst in (widget, other):
+            lst.blockSignals(True)
+        other.clearSelection()
+        if 0 <= row < widget.count():
+            widget.setCurrentRow(row)
+        for lst in (widget, other):
+            lst.blockSignals(False)
+
     # ── Rex memory editing ───────────────────────────────────────────────────
     def _selected_id(self, widget: QListWidget):
         items = widget.selectedItems()
@@ -502,18 +646,27 @@ class MemoryBanksWindow(QMainWindow):
         mem_id = self._selected_id(self.rex_list)
         if mem_id is None:
             return
+        if int(mem_id) != (self._editing_rex_id or -1) and not self._confirm_leave():
+            self._restore_nav_anchor()
+            return
         self.people_list.clearSelection()
         mem = next((m for m in admin.list_rex_memories() if m["id"] == mem_id), None)
         if not mem:
             return
         self._editing_rex_id = int(mem_id)
-        self.rex_meta.setText(
-            f"#{mem['id']}  ·  {mem.get('created_at','')}"
-            + (f"  ·  about {mem.get('person_name')}" if mem.get("person_name") else "")
-        )
-        self.rex_kind.setText(mem.get("kind") or "")
-        self.rex_summary.setPlainText(mem.get("summary") or "")
-        self.rex_salience.setValue(float(mem.get("salience") or 0.5))
+        self._loading = True
+        try:
+            self.rex_meta.setText(
+                f"#{mem['id']}  ·  {mem.get('created_at','')}"
+                + (f"  ·  about {mem.get('person_name')}" if mem.get("person_name") else "")
+            )
+            self.rex_kind.setText(mem.get("kind") or "")
+            self.rex_summary.setPlainText(mem.get("summary") or "")
+            self.rex_salience.setValue(float(mem.get("salience") or 0.5))
+        finally:
+            self._loading = False
+        self._clear_dirty()
+        self._nav_anchor = (self.rex_list, self.rex_list.currentRow())
         self.detail.setCurrentIndex(1)
 
     def _save_rex_memory(self) -> None:
@@ -526,7 +679,12 @@ class MemoryBanksWindow(QMainWindow):
             kind=self.rex_kind.text(),
             salience=self.rex_salience.value(),
         )
+        self._rex_dirty = False
+        self._refresh_dirty_ui()
+        # Reload the list without disturbing the current editing session.
+        self.rex_list.blockSignals(True)
         self.reload_rex_memories()
+        self.rex_list.blockSignals(False)
         self._toast("Memory saved.")
 
     def _delete_rex_memory(self) -> None:
@@ -537,6 +695,7 @@ class MemoryBanksWindow(QMainWindow):
             return
         admin.delete_rex_memory(mem_id)
         self._editing_rex_id = None
+        self._clear_dirty()
         self.detail.setCurrentIndex(0)
         self.reload_rex_memories()
 
@@ -570,62 +729,75 @@ class MemoryBanksWindow(QMainWindow):
         person_id = self._selected_id(self.people_list)
         if person_id is None:
             return
+        if int(person_id) != (self._current_person_id or -1) and not self._confirm_leave():
+            self._restore_nav_anchor()
+            return
         self.rex_list.clearSelection()
         self._load_person(int(person_id))
+        self._nav_anchor = (self.people_list, self.people_list.currentRow())
 
     def _load_person(self, person_id: int) -> None:
         detail = admin.get_person_detail(person_id)
         if not detail:
             return
         self._current_person_id = person_id
-        person = detail["person"]
-        self.p_name.setText(person.get("name") or "")
-        self.p_nick.setText(person.get("nickname") or "")
-        self.p_meta.setText(
-            f"#{person_id}  ·  tier {person.get('friendship_tier','?')}  ·  "
-            f"warmth {float(person.get('warmth_score') or 0):.2f}  ·  "
-            f"antagonism {float(person.get('antagonism_score') or 0):.2f}  ·  "
-            f"{person.get('visit_count') or 0} visit(s)"
-        )
-
-        # Biometrics — can Rex recognize this person by face / voice?
-        bio = detail.get("biometrics") or {}
-        face_n = int(bio.get("face") or 0)
-        voice_n = int(bio.get("voice") or 0)
-        self.bio_label.setText(
-            f"Face ID: {'✓ ' + str(face_n) + ' stored' if face_n else '✗ none'}"
-            f"        Voiceprint: {'✓ ' + str(voice_n) + ' stored' if voice_n else '✗ none'}"
-        )
-        self.clear_face_btn.setEnabled(face_n > 0)
-        self.clear_voice_btn.setEnabled(voice_n > 0)
-
-        # Facts table
-        self.facts_table.setRowCount(0)
-        for fact in detail["facts"]:
-            self._append_fact_row(
-                fact_id=int(fact["id"]),
-                category=fact.get("category") or "",
-                key=fact.get("key") or "",
-                value=fact.get("value") or "",
-                importance=float(fact.get("importance") or 0.5),
+        self._loading = True
+        try:
+            person = detail["person"]
+            self.p_name.setText(person.get("name") or "")
+            self.p_nick.setText(person.get("nickname") or "")
+            self.p_meta.setText(
+                f"#{person_id}  ·  tier {person.get('friendship_tier','?')}  ·  "
+                f"warmth {float(person.get('warmth_score') or 0):.2f}  ·  "
+                f"antagonism {float(person.get('antagonism_score') or 0):.2f}  ·  "
+                f"{person.get('visit_count') or 0} visit(s)"
             )
 
-        # Interests
-        self.interests_list.clear()
-        for it in detail["interests"]:
-            label = f"{it.get('name','?')} ({it.get('interest_strength') or 'medium'})"
-            li = QListWidgetItem(label)
-            li.setData(_ROLE_ID, int(it["id"]))
-            self.interests_list.addItem(li)
+            # Biometrics — can Rex recognize this person by face / voice?
+            bio = detail.get("biometrics") or {}
+            face_n = int(bio.get("face") or 0)
+            voice_n = int(bio.get("voice") or 0)
+            self.bio_label.setText(
+                f"Face ID: {'✓ ' + str(face_n) + ' stored' if face_n else '✗ none'}"
+                f"        Voiceprint: {'✓ ' + str(voice_n) + ' stored' if voice_n else '✗ none'}"
+            )
+            self.clear_face_btn.setEnabled(face_n > 0)
+            self.clear_voice_btn.setEnabled(voice_n > 0)
 
-        # Preferences
-        self.prefs_list.clear()
-        for pr in detail["preferences"]:
-            label = f"{pr.get('domain','')}.{pr.get('preference_type','')}: {pr.get('value') or pr.get('key') or ''}"
-            li = QListWidgetItem(label)
-            li.setData(_ROLE_ID, int(pr["id"]))
-            self.prefs_list.addItem(li)
+            # Facts table
+            self.facts_table.setRowCount(0)
+            for fact in detail["facts"]:
+                self._append_fact_row(
+                    fact_id=int(fact["id"]),
+                    category=fact.get("category") or "",
+                    key=fact.get("key") or "",
+                    value=fact.get("value") or "",
+                    importance=float(fact.get("importance") or 0.5),
+                )
 
+            # Interests — "name · strength", notes in the tooltip.
+            self.interests_list.clear()
+            for it in detail["interests"]:
+                label = f"{it.get('name','?')}   ·   {it.get('interest_strength') or 'medium'}"
+                li = QListWidgetItem(label)
+                li.setData(_ROLE_ID, int(it["id"]))
+                notes = (it.get("notes") or "").strip()
+                if notes:
+                    li.setToolTip(notes)
+                self.interests_list.addItem(li)
+
+            # Preferences — "domain · type — value", full text in the tooltip.
+            self.prefs_list.clear()
+            for pr in detail["preferences"]:
+                val = pr.get("value") or pr.get("key") or ""
+                label = f"{pr.get('domain','?')} · {pr.get('preference_type','?')}  —  {val}"
+                li = QListWidgetItem(label)
+                li.setData(_ROLE_ID, int(pr["id"]))
+                li.setToolTip(label)
+                self.prefs_list.addItem(li)
+        finally:
+            self._loading = False
+        self._clear_dirty()
         self.detail.setCurrentIndex(2)
 
     @staticmethod
@@ -636,6 +808,11 @@ class MemoryBanksWindow(QMainWindow):
             combo.setCurrentIndex(idx)
         else:
             combo.setEditText(text)
+        # Editable combos scroll their line-edit to the cursor (the END of the text),
+        # so "preference" rendered as "erence" in a narrow cell. Snap back to the start.
+        le = combo.lineEdit()
+        if le is not None:
+            le.setCursorPosition(0)
 
     def _make_category_combo(self, category: str) -> QComboBox:
         combo = QComboBox()
@@ -670,18 +847,68 @@ class MemoryBanksWindow(QMainWindow):
         cat_combo.currentTextChanged.connect(
             lambda text, kc=key_combo: self._repopulate_key_combo(kc, text)
         )
+        # Any combo edit marks the ROW unsaved (amber) + the page dirty. The row is
+        # resolved at FIRE time from the widget (a captured index would go stale the
+        # moment a row above it is deleted).
+        cat_combo.currentTextChanged.connect(lambda _t, cb=cat_combo: self._note_fact_widget_edited(cb))
+        key_combo.currentTextChanged.connect(lambda _t, cb=key_combo: self._note_fact_widget_edited(cb))
         self.facts_table.setCellWidget(row, 0, cat_combo)
         self.facts_table.setCellWidget(row, 1, key_combo)
         value_item = QTableWidgetItem(value)
         value_item.setData(_ROLE_ID, fact_id)  # None for a new, unsaved row
+        value_item.setToolTip(value)           # full text survives a narrow column
         self.facts_table.setItem(row, 2, value_item)
         self.facts_table.setItem(row, 3, QTableWidgetItem(f"{importance:.2f}"))
+
+    def _note_fact_widget_edited(self, widget) -> None:
+        """Combo-edit hook: resolve the widget's CURRENT row, then mark it edited."""
+        if self._loading:
+            return
+        for row in range(self.facts_table.rowCount()):
+            if (self.facts_table.cellWidget(row, 0) is widget
+                    or self.facts_table.cellWidget(row, 1) is widget):
+                self._note_fact_row_edited(row)
+                return
+
+    def _note_fact_row_edited(self, row: int) -> None:
+        if self._loading:
+            return
+        self._tint_fact_row(row)
+        self._mark_person_dirty()
+
+    def _on_fact_item_changed(self, item: QTableWidgetItem) -> None:
+        # Guard both the load-time population and our own setToolTip/setBackground
+        # writes below (item mutations re-emit itemChanged — would recurse).
+        if self._loading or getattr(self, "_tinting", False):
+            return
+        self._tinting = True
+        try:
+            if item.column() == 2:
+                item.setToolTip(item.text())
+        finally:
+            self._tinting = False
+        self._note_fact_row_edited(item.row())
+
+    def _tint_fact_row(self, row: int) -> None:
+        """Amber-tint a row's editable cells: the visual 'this row isn't saved yet'."""
+        if getattr(self, "_tinting", False):
+            return
+        self._tinting = True
+        try:
+            brush = QBrush(QColor(*_UNSAVED_ROW_BRUSH_RGB))
+            for col in (2, 3):
+                item = self.facts_table.item(row, col)
+                if item is not None:
+                    item.setBackground(brush)
+        finally:
+            self._tinting = False
 
     def _add_fact_row(self) -> None:
         if self._current_person_id is None:
             return
         self._append_fact_row(fact_id=None, category="preference", key="", value="", importance=0.5)
         row = self.facts_table.rowCount() - 1
+        self._note_fact_row_edited(row)        # a new row IS unsaved work
         key_combo = self.facts_table.cellWidget(row, 1)
         if isinstance(key_combo, QComboBox):
             key_combo.setFocus()
@@ -753,22 +980,87 @@ class MemoryBanksWindow(QMainWindow):
             return
         fact_id = self._fact_id(row)
         if fact_id is not None:
+            # A persisted fact — deleting is immediate and permanent; say so.
+            value = self._cell(row, 2)
+            if not self._confirm(
+                "Delete this fact?",
+                f"“{value or self._key_text(row)}” will be removed immediately "
+                "(deletions don't wait for Save).",
+            ):
+                return
             admin.delete_fact(int(fact_id))
-        self.facts_table.removeRow(row)
+        self.facts_table.removeRow(row)   # an unsaved new row just disappears, no prompt
 
     def _delete_selected_interest(self) -> None:
         iid = self._selected_id(self.interests_list)
-        if iid is not None:
-            admin.delete_interest(int(iid))
-            if self._current_person_id is not None:
-                self._load_person(self._current_person_id)
+        if iid is None:
+            return
+        label = self.interests_list.selectedItems()[0].text()
+        if not self._confirm(
+            "Delete this interest?",
+            f"“{label}” will be removed immediately (deletions don't wait for Save).",
+        ):
+            return
+        admin.delete_interest(int(iid))
+        if self._current_person_id is not None:
+            self._reload_person_preserving_edits()
 
     def _delete_selected_preference(self) -> None:
         pid = self._selected_id(self.prefs_list)
-        if pid is not None:
-            admin.delete_preference(int(pid))
-            if self._current_person_id is not None:
-                self._load_person(self._current_person_id)
+        if pid is None:
+            return
+        label = self.prefs_list.selectedItems()[0].text()
+        if not self._confirm(
+            "Delete this preference?",
+            f"“{label}” will be removed immediately (deletions don't wait for Save).",
+        ):
+            return
+        admin.delete_preference(int(pid))
+        if self._current_person_id is not None:
+            self._reload_person_preserving_edits()
+
+    def _reload_person_preserving_edits(self) -> None:
+        """Refresh after an interest/preference delete WITHOUT discarding unsaved fact
+        edits: a full _load_person would rebuild the facts table and silently drop
+        them (the old behavior — exactly the trap this rework removes). If facts are
+        clean, do the full reload; if dirty, refresh only the interests/prefs lists."""
+        pid = self._current_person_id
+        if pid is None:
+            return
+        if not self._person_dirty:
+            self._load_person(pid)
+            return
+        detail = admin.get_person_detail(pid)
+        if not detail:
+            return
+        self._loading = True
+        try:
+            self.interests_list.clear()
+            for it in detail["interests"]:
+                label = f"{it.get('name','?')}   ·   {it.get('interest_strength') or 'medium'}"
+                li = QListWidgetItem(label)
+                li.setData(_ROLE_ID, int(it["id"]))
+                notes = (it.get("notes") or "").strip()
+                if notes:
+                    li.setToolTip(notes)
+                self.interests_list.addItem(li)
+            self.prefs_list.clear()
+            for pr in detail["preferences"]:
+                val = pr.get("value") or pr.get("key") or ""
+                label = f"{pr.get('domain','?')} · {pr.get('preference_type','?')}  —  {val}"
+                li = QListWidgetItem(label)
+                li.setData(_ROLE_ID, int(pr["id"]))
+                li.setToolTip(label)
+                self.prefs_list.addItem(li)
+        finally:
+            self._loading = False
+
+    def _save_person_and_facts(self) -> None:
+        """The one Save button: person fields + every edited/new fact row together."""
+        if self._current_person_id is None:
+            return
+        self._save_person()
+        self._save_facts()
 
     def _save_person(self) -> None:
         if self._current_person_id is None:
@@ -778,8 +1070,11 @@ class MemoryBanksWindow(QMainWindow):
             name=self.p_name.text(),
             nickname=self.p_nick.text(),
         )
+        # Refresh the people list (name may have changed) without bouncing selection.
+        self.people_list.blockSignals(True)
         self.reload_people()
-        self._load_person(self._current_person_id)
+        self._select_person_in_list(self._current_person_id)
+        self.people_list.blockSignals(False)
         self._toast("Person saved.")
 
     def _delete_person(self) -> None:
@@ -794,6 +1089,7 @@ class MemoryBanksWindow(QMainWindow):
             return
         admin.delete_person(self._current_person_id)
         self._current_person_id = None
+        self._clear_dirty()
         self.detail.setCurrentIndex(0)
         self.reload_people()
 
@@ -846,6 +1142,10 @@ class MemoryBanksWindow(QMainWindow):
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        # Same guard as switching: closing over unsaved edits asks first.
+        if not self._confirm_leave():
+            event.ignore()
+            return
         # Restore the robot to whatever pause/mute state it was in before we opened.
         config.AUDIO_OUTPUT_SUPPRESSED = self._prior_output_suppressed
         config.INTERACTION_PAUSED = self._prior_interaction_paused
