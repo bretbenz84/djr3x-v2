@@ -156,6 +156,96 @@ def _trim_all() -> None:
     print(f"\nTotal voice biometrics removed: {total_dropped}")
 
 
+# Calibration rounds: sample the SAME voice across the conditions that actually vary
+# in the field (distance, level, head angle, utterance length) — the self-score band
+# this produces is the ground truth for setting thresholds.
+_CALIBRATION_ROUNDS = [
+    "Speak NORMALLY at your usual distance from the robot.",
+    "Normal again — different sentence, keep talking the whole window.",
+    "From ACROSS THE ROOM (a few meters back).",
+    "Speak SOFTLY — almost a murmur, normal distance.",
+    "Speak LOUDLY / energetically.",
+    "Turn your HEAD AWAY from the mic while speaking.",
+    "SHORT command style: a couple of quick one-liners with pauses.",
+    "Normal one last time.",
+]
+
+
+def _calibrate(name: str, seconds: float) -> None:
+    """Record N varied-condition rounds and report the self-score distribution for
+    `name`, with verdicts under the CURRENT thresholds and data-driven suggestions."""
+    pid = _find_person_id(name)
+    if pid is None:
+        print(f"  No person named {name!r} in the DB.")
+        return
+    n_rows = db.fetchone(
+        "SELECT COUNT(*) AS n FROM biometrics WHERE person_id = ? AND type='voice'", (pid,)
+    )["n"]
+    print(f"CALIBRATION for {name} (person_id={pid}, {n_rows} enrolled sample(s))")
+    print(f"{len(_CALIBRATION_ROUNDS)} rounds × {seconds:.0f}s. Talk for the WHOLE window each time —")
+    print("read a sentence, describe your day, anything. Ready?\n")
+    threshold = config.SPEAKER_ID_SIMILARITY_THRESHOLD
+    confident = float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70))
+
+    scores: list[float] = []
+    results_table: list[tuple[str, float, str]] = []
+    for i, condition in enumerate(_CALIBRATION_ROUNDS, 1):
+        print(f"── Round {i}/{len(_CALIBRATION_ROUNDS)}: {condition}")
+        for c in (3, 2, 1):
+            print(f"  {c}...")
+            time.sleep(0.8)
+        audio = _record(seconds)
+        ranked = speaker_id.rank_speakers(audio)
+        me = next((sim for p, _nm, sim in ranked if p == pid), None)
+        if me is None:
+            print("  (embedding failed / no score — skipping round)\n")
+            results_table.append((condition, float("nan"), "no-score"))
+            continue
+        verdict = ("CONFIDENT" if me >= confident
+                   else "accepted " if me >= threshold else "REJECTED ")
+        print(f"  → your score this round: {me:.3f}  [{verdict.strip()}]\n")
+        scores.append(me)
+        results_table.append((condition, me, verdict.strip()))
+        time.sleep(0.4)
+
+    if not scores:
+        print("No usable rounds — check the mic and rerun.")
+        return
+
+    arr = np.array(scores, dtype=np.float64)
+    print("\n════════ CALIBRATION SUMMARY ════════")
+    print(f"  {'score':>7}  verdict     condition")
+    for condition, sc, verdict in results_table:
+        sc_txt = f"{sc:.3f}" if sc == sc else "  —  "
+        print(f"  {sc_txt:>7}  {verdict:<10}  {condition}")
+    print(f"\n  rounds={len(scores)}  min={arr.min():.3f}  median={np.median(arr):.3f}  "
+          f"mean={arr.mean():.3f}  max={arr.max():.3f}  spread={arr.max()-arr.min():.3f}")
+    print(f"  current thresholds: accept={threshold:.2f}  confident={confident:.2f}")
+
+    # Data-driven readout — worst case is what matters (every round is genuinely you).
+    lo = float(arr.min())
+    print("\n  READOUT:")
+    if lo >= confident:
+        print(f"  • Even your worst condition ({lo:.3f}) clears the confident bar — the")
+        print(f"    challenge gate should essentially never fire on you as configured.")
+    else:
+        below = int((arr < confident).sum())
+        print(f"  • {below}/{len(scores)} of your OWN rounds score below the {confident:.2f} 'confident'")
+        print(f"    bar (worst {lo:.3f}). This is the overlap zone: an unenrolled voice")
+        print(f"    (JT) lands on your print at ~0.60-0.67 — INSIDE your own band. No")
+        print(f"    absolute threshold can split 'weak you' from 'strong someone-else'.")
+        print(f"    That's why the fix is a second print (enroll JT) + the visual")
+        print(f"    challenge gate, not threshold tuning.")
+    if int((arr < threshold).sum()) > 0:
+        print(f"  • {int((arr < threshold).sum())} round(s) fell below the ACCEPT floor {threshold:.2f} — in the field")
+        print(f"    those turns would go unattributed. If they were the quiet/far rounds,")
+        print(f"    that's the far-field gain issue, not identity.")
+    if len(scores) >= 4 and n_rows >= 3:
+        print(f"  • If this band looks low overall, consider a clean re-enroll:")
+        print(f"    ./venv/bin/python tools/test_voice_id.py --enroll \"{name}\" --replace")
+        print(f"    then 2-3 more --enroll \"{name}\" runs (varied distance) to rebuild the centroid.")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--secs", type=float, default=5.0, help="Seconds to record (default 5)")
@@ -164,6 +254,8 @@ def main() -> int:
     ap.add_argument("--replace", action="store_true", help="With --enroll: after adding the new row, delete older voice rows for this person")
     ap.add_argument("--trim", type=str, default=None, help="Keep only the newest voice biometric for NAME")
     ap.add_argument("--trim-all", action="store_true", help="Keep only the newest voice biometric per person, DB-wide")
+    ap.add_argument("--calibrate", type=str, default=None, metavar="NAME",
+                    help="Guided multi-condition session measuring NAME's self-score distribution")
     args = ap.parse_args()
 
     # Trim modes don't need the mic.
@@ -182,6 +274,11 @@ def main() -> int:
 
     print(f"Audio device: {AUDIO_SELECTION_DESCRIPTION}")
     print(f"Sample rate: {config.AUDIO_SAMPLE_RATE} Hz\n")
+
+    if args.calibrate:
+        secs = args.secs if args.secs != 5.0 else 6.0   # calibration wants longer windows
+        _calibrate(args.calibrate, secs)
+        return 0
 
     if args.enroll:
         _enroll(args.enroll, args.secs, replace=args.replace)
