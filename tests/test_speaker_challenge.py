@@ -16,10 +16,11 @@ from intelligence import interaction
 
 
 def _suspect(person_id=1, score=0.660, *, recently_visible=False, others_visible=True,
-             enabled=True, last_challenge=0.0):
+             enabled=True, last_challenge=0.0, empty_frame_challenge=True):
     """Drive _voice_only_attribution_suspect with fully mocked surroundings."""
     people = [{"person_db_id": None, "face_missing": True}] if others_visible else []
     with mock.patch.object(config, "SPEAKER_ID_UNSEEN_CHALLENGE_ENABLED", enabled, create=True), \
+         mock.patch.object(config, "SPEAKER_ID_CHALLENGE_EMPTY_FRAME", empty_frame_challenge, create=True), \
          mock.patch.object(consciousness, "person_visible_recently", return_value=recently_visible), \
          mock.patch.object(interaction.world_state, "get", return_value=people), \
          mock.patch.object(interaction, "_last_voice_challenge_at", last_challenge):
@@ -39,8 +40,13 @@ class VoiceChallengeGateTest(unittest.TestCase):
         self.assertTrue(_suspect(recently_visible=False))
         self.assertFalse(_suspect(recently_visible=True))
 
-    def test_empty_frame_keeps_voice_attribution(self):
-        self.assertFalse(_suspect(others_visible=False))
+    def test_empty_frame_now_challenges_by_default(self):
+        # Owner call 2026-07-05: an unseen marginal match with an EMPTY frame is still
+        # the cross-match shape — ask instead of silently crediting the match.
+        self.assertTrue(_suspect(others_visible=False))
+
+    def test_empty_frame_challenge_can_be_disabled(self):
+        self.assertFalse(_suspect(others_visible=False, empty_frame_challenge=False))
 
     def test_kill_switch(self):
         self.assertFalse(_suspect(enabled=False))

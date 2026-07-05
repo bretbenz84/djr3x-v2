@@ -6721,7 +6721,13 @@ def _voice_only_attribution_suspect(person_id, speaker_score: float) -> bool:
     except Exception:
         return False
     if not _someone_visible_who_isnt(person_id):
-        return False                      # empty frame: the voice is all we have — keep it
+        # EMPTY frame: no visual contradiction, but also no corroboration — a marginal
+        # match on an unseen person is still the cross-match shape. Owner's call
+        # (2026-07-05): prefer asking "who's that?" over silently crediting the match;
+        # an unenrolled housemate gets named-and-enrolled on the answer instead of
+        # impersonating the print owner. Disable via config if it gets chatty.
+        if not bool(getattr(config, "SPEAKER_ID_CHALLENGE_EMPTY_FRAME", True)):
+            return False
     now = time.monotonic()
     cooldown = float(getattr(config, "SPEAKER_ID_CHALLENGE_COOLDOWN_SECS", 45.0))
     if (now - _last_voice_challenge_at) < cooldown:
@@ -17579,6 +17585,7 @@ def _handle_speech_segment(
         # as genuinely unknown rather than mis-attributing to the visible engaged
         # person — this is the hook for Rex's "who's that speaking?" behavior.
         off_camera_unknown = False
+        voice_challenge_fired = False   # set when the marginal-match challenge rejects a voice attribution
         recent_engagement = None
         try:
             recent_engagement = consciousness.get_recent_engagement()
@@ -17875,6 +17882,7 @@ def _handle_speech_segment(
                 person_id = None
                 person_name = None
                 off_camera_unknown = True
+                voice_challenge_fired = True
             else:
                 _log.info(
                     "[interaction] person resolution: voice match — person_id=%s name=%r score=%.3f",
@@ -20055,7 +20063,13 @@ def _handle_speech_segment(
                 final_executed_path = "ignored.off_camera_background_chatter"
                 completed = False
                 return
-            if not _utterance_invites_identity_question(text):
+            if not _utterance_invites_identity_question(text) and not voice_challenge_fired:
+                # The invite gate keeps Rex from interrogating background chatter — but
+                # a CHALLENGED voice (marginal match on an unseen person, body in frame
+                # or empty room) is not chatter: someone real is talking to him and the
+                # match is untrustworthy. Ask regardless of the utterance's shape, so an
+                # unenrolled housemate gets named-and-enrolled instead of impersonating
+                # the nearest print (owner request 2026-07-05).
                 _log.info(
                     "[interaction] deferring off-camera identity ask; turn should get "
                     "normal handling text=%r raw_best=%s score=%.3f",

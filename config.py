@@ -4542,6 +4542,11 @@ SPEAKER_ID_CONFIDENT_THRESHOLD = 0.70
 SPEAKER_ID_UNSEEN_CHALLENGE_ENABLED = _env_bool("SPEAKER_ID_UNSEEN_CHALLENGE_ENABLED", True)
 SPEAKER_ID_UNSEEN_GRACE_SECS = _env_float("SPEAKER_ID_UNSEEN_GRACE_SECS", 20.0, min_value=0.0, max_value=300.0)
 SPEAKER_ID_CHALLENGE_COOLDOWN_SECS = _env_float("SPEAKER_ID_CHALLENGE_COOLDOWN_SECS", 45.0, min_value=0.0, max_value=600.0)
+# Also challenge when the frame is EMPTY (no visual contradiction, but no corroboration
+# either): a marginal match on someone unseen for the grace window gets "who's that?"
+# instead of silent credit. Owner preference — an unenrolled housemate should be asked
+# about and enrolled on the answer, not impersonate the nearest print.
+SPEAKER_ID_CHALLENGE_EMPTY_FRAME = _env_bool("SPEAKER_ID_CHALLENGE_EMPTY_FRAME", True)
 
 # Engaged-and-visible attribution floor: when the best voice candidate IS the
 # engaged person AND that engaged person is currently visible on camera, the
