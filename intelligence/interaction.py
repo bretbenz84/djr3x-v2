@@ -7983,6 +7983,27 @@ def _maybe_auto_refresh_voice(
     """
     if person_id is None:
         return
+    # SAMPLE-QUALITY gate: a refresh sample becomes part of the centroid FOREVER — a
+    # short or quiet VAD shard drags every future score down. Measured 2026-07-05: a
+    # print diluted with live shards scored ~0.08 BELOW a fresh clean enroll across
+    # every condition (0.742-0.830 vs 0.812-0.921), which is how "90%+ weeks ago"
+    # decayed. Only long-enough, loud-enough audio may seed or strengthen a print
+    # (applies to bootstrap too — a garbage first sample is the worst outcome).
+    try:
+        sr = float(getattr(config, "AUDIO_SAMPLE_RATE", 16000) or 16000)
+        sample_secs = float(len(audio_array)) / max(sr, 1.0)
+        sample_rms = float(np.sqrt(np.mean(np.asarray(audio_array, dtype=np.float64) ** 2)))
+    except Exception:
+        sample_secs, sample_rms = 0.0, 0.0
+    min_secs = float(getattr(config, "AUTO_VOICE_REFRESH_MIN_SECS", 2.5))
+    min_rms = float(getattr(config, "AUTO_VOICE_REFRESH_MIN_RMS", 0.008))
+    if sample_secs < min_secs or sample_rms < min_rms:
+        _log.debug(
+            "[interaction] auto-refresh skipped: sample quality too low for a durable "
+            "print (secs=%.2f < %.2f or rms=%.4f < %.4f) person_id=%s",
+            sample_secs, min_secs, sample_rms, min_rms, person_id,
+        )
+        return
     max_samples = int(getattr(config, "AUTO_VOICE_REFRESH_MAX_SAMPLES", 5))
     current = people_memory.count_biometrics(person_id, "voice")
     if current >= max_samples:

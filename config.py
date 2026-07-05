@@ -4623,6 +4623,12 @@ AUTO_VOICE_REFRESH_REQUIRE_VISUAL_SPEAKER = _env_bool(
 # talker) still applies — it is the sole protection while Guard 1 is relaxed, so we never seed the
 # print with someone else's voice. Once at/above the floor, normal refresh rules resume.
 AUTO_VOICE_BOOTSTRAP_ENABLED = _env_bool("AUTO_VOICE_BOOTSTRAP_ENABLED", True)
+# Quality floor for ANY sample added to a voiceprint (refresh + bootstrap): shorter or
+# quieter clips than this drag the centroid off the person's true voice permanently
+# (measured 2026-07-05: a shard-diluted print scored ~0.08 below a clean enroll in
+# every condition). Duration is post-VAD audio length; RMS is float32 full-scale.
+AUTO_VOICE_REFRESH_MIN_SECS = _env_float("AUTO_VOICE_REFRESH_MIN_SECS", 2.5, min_value=0.0, max_value=30.0)
+AUTO_VOICE_REFRESH_MIN_RMS = _env_float("AUTO_VOICE_REFRESH_MIN_RMS", 0.008, min_value=0.0, max_value=1.0)
 AUTO_VOICE_BOOTSTRAP_MIN_SAMPLES = _env_int("AUTO_VOICE_BOOTSTRAP_MIN_SAMPLES", 3, min_value=1, max_value=20)
 
 # Voice enrollment samples should be long enough to represent a voice, not just

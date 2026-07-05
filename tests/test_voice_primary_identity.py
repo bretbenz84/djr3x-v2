@@ -166,7 +166,11 @@ class VoiceprintPollutionGuardTest(unittest.TestCase):
                 if self._t:
                     self._t()
 
-        audio = np.zeros(16000, dtype=np.float32)
+        # 3s of audible noise: passes the sample-quality gate (>=2.5s, RMS >= 0.008)
+        # so these tests keep exercising the GUARDS, not the quality floor.
+        audio = kwargs.pop("audio", None)
+        if audio is None:
+            audio = (0.05 * np.random.default_rng(0).standard_normal(48000)).astype(np.float32)
         with mock.patch.object(I.people_memory, "count_biometrics", return_value=current), \
              mock.patch.object(I, "_safe_enroll_voice", side_effect=lambda *a, **k: seen.append(1) or True), \
              mock.patch.object(I.threading, "Thread", _Inline):
@@ -176,6 +180,19 @@ class VoiceprintPollutionGuardTest(unittest.TestCase):
     def test_established_print_skips_when_voice_points_elsewhere(self):
         # Guard 1: an ESTABLISHED print (>= floor) is not touched when the voice matches someone else.
         self.assertFalse(self._enrolled(current=4, face_confirmed=True, raw_best_id=2, visual_speaker_pid=1))
+
+    def test_short_shard_rejected_by_quality_gate(self):
+        # A 1s VAD shard must never enter a print (dilution: measured -0.08 per-score
+        # on a shard-fed centroid, 2026-07-05). Guards would otherwise pass this one.
+        shard = (0.05 * np.random.default_rng(1).standard_normal(16000)).astype(np.float32)
+        self.assertFalse(self._enrolled(current=4, face_confirmed=True, raw_best_id=1,
+                                        visual_speaker_pid=1, audio=shard))
+
+    def test_quiet_audio_rejected_by_quality_gate(self):
+        # Long enough but near the noise floor — embeds badly, drags the centroid.
+        quiet = (0.001 * np.random.default_rng(2).standard_normal(48000)).astype(np.float32)
+        self.assertFalse(self._enrolled(current=4, face_confirmed=True, raw_best_id=1,
+                                        visual_speaker_pid=1, audio=quiet))
 
     def test_thin_print_bootstraps_when_voice_points_elsewhere_but_camera_confirms(self):
         # THE FIX: 0 prints, voice matches the wrong person (that's WHY it's 0), camera confirms JT
