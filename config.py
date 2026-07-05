@@ -4534,6 +4534,15 @@ VOICE_PRIMARY_IDENTITY_ENABLED = True
 # labelled provisional and won't trigger a face-confirmed voiceprint refresh.
 SPEAKER_ID_CONFIDENT_THRESHOLD = 0.70
 
+# Voice-only challenge (the single-print cross-match trap, field log 2026-07-05: JT's
+# voice matched Bret's print at 0.660 while the camera showed only JT). On the
+# voice-only path a MARGINAL match is challenged — "who's that speaking?" — instead of
+# silently attributed, when the matched person hasn't been on camera within the grace
+# window AND someone else (face or real pose) is visible right now.
+SPEAKER_ID_UNSEEN_CHALLENGE_ENABLED = _env_bool("SPEAKER_ID_UNSEEN_CHALLENGE_ENABLED", True)
+SPEAKER_ID_UNSEEN_GRACE_SECS = _env_float("SPEAKER_ID_UNSEEN_GRACE_SECS", 20.0, min_value=0.0, max_value=300.0)
+SPEAKER_ID_CHALLENGE_COOLDOWN_SECS = _env_float("SPEAKER_ID_CHALLENGE_COOLDOWN_SECS", 45.0, min_value=0.0, max_value=600.0)
+
 # Engaged-and-visible attribution floor: when the best voice candidate IS the
 # engaged person AND that engaged person is currently visible on camera, the
 # face presence + voice candidacy together are sufficient evidence even at

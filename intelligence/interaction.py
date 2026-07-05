@@ -6673,6 +6673,63 @@ def _bare_wake_should_ask_visible_unknown_identity(
     )
 
 
+_last_voice_challenge_at: float = 0.0
+
+
+def _someone_visible_who_isnt(person_id) -> bool:
+    """True if the camera currently shows ANY person (known-other, unknown face, or a
+    real pose-only body) who is not `person_id`. Pose-only entries COUNT here — unlike
+    the unknown-count curiosity (which requires a face_box, per the phantom-pose fix),
+    this feeds the who's-that-speaking challenge, where an unidentifiable body in frame
+    is exactly the evidence that matters (vision.pose already drops phantoms)."""
+    try:
+        people = world_state.get("people") or []
+    except Exception:
+        return False
+    target = _safe_int(person_id)
+    for person in people:
+        if not isinstance(person, dict):
+            continue
+        pid = _safe_int(person.get("person_db_id"))
+        if target is not None and pid == target:
+            continue
+        return True
+    return False
+
+
+def _voice_only_attribution_suspect(person_id, speaker_score: float) -> bool:
+    """The single-print cross-match trap (field log 2026-07-05): with only ONE
+    voiceprint enrolled, a DIFFERENT person's voice can land a marginal match on it
+    (JT read as Bret at 0.660) while the camera plainly shows a body that is NOT the
+    matched person. On the voice-only resolution path (no identified faces), don't
+    silently attribute when ALL of:
+      - the match is marginal (below SPEAKER_ID_CONFIDENT_THRESHOLD), and
+      - the matched person hasn't been on camera recently (grace covers camera pans), and
+      - someone ELSE is visible right now (face or real pose).
+    The caller then routes to the who's-that-speaking ask instead. Cooldown-limited so
+    a chatty second voice doesn't get challenged every single turn."""
+    global _last_voice_challenge_at
+    if not bool(getattr(config, "SPEAKER_ID_UNSEEN_CHALLENGE_ENABLED", True)):
+        return False
+    confident = float(getattr(config, "SPEAKER_ID_CONFIDENT_THRESHOLD", 0.70))
+    if float(speaker_score or 0.0) >= confident:
+        return False                      # genuinely confident voice: trust it
+    grace = float(getattr(config, "SPEAKER_ID_UNSEEN_GRACE_SECS", 20.0))
+    try:
+        if consciousness.person_visible_recently(person_id, grace):
+            return False                  # they're around; off-camera speech is normal
+    except Exception:
+        return False
+    if not _someone_visible_who_isnt(person_id):
+        return False                      # empty frame: the voice is all we have — keep it
+    now = time.monotonic()
+    cooldown = float(getattr(config, "SPEAKER_ID_CHALLENGE_COOLDOWN_SECS", 45.0))
+    if (now - _last_voice_challenge_at) < cooldown:
+        return False
+    _last_voice_challenge_at = now
+    return True
+
+
 def _has_unknown_visible_person() -> bool:
     """True if WorldState currently includes at least one person without a face match."""
     try:
@@ -15446,6 +15503,81 @@ def _event_cancellation_ack(labels: list[str], person_id: Optional[int]) -> str:
     return f"Got it - {label} is no longer on the flight plan."
 
 
+# "That was JT speaking" / "that wasn't me, that was JT" — a speaker-attribution
+# correction. Tight on purpose: the name must end the sentence or be followed by
+# speaking/talking, so "that was JT's idea" or "that was great" never match.
+_SPEAKER_CORRECTION_PAT = re.compile(
+    r"^\s*(?:no[,.\s]+)?"
+    # Either the full denial lead ("that wasn't me, that was ") or a plain lead
+    # ("that was " / "that's " / "it was ").
+    r"(?:that\s+was(?:n'?t|\s+not)\s+me[,.\s]+(?:that\s+was|it\s+was)\s+"
+    r"|(?:that\s+(?:was|is)|that'?s|it\s+was)\s+)"
+    # Lazy optional second word: under IGNORECASE a [A-Z] class can't fence off
+    # "speaking"/"talking", so keep the name minimal and let the tail claim those.
+    r"(?P<name>[A-Za-z][\w'.-]*(?:\s+[A-Za-z][\w'.-]*)??)"
+    r"\s*(?:speaking|talking|who\s+(?:said|was\s+speaking)\s+that)?\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+_SPEAKER_CORRECTION_PREFIX_PAT = re.compile(
+    r"^\s*(?:no[,.\s]+)?that\s+was(?:n'?t|\s+not)\s+me\b", re.IGNORECASE
+)
+# Words that positively signal a correction even without the wasn't-me prefix.
+_SPEAKER_CORRECTION_TAIL_PAT = re.compile(r"\b(speaking|talking)\s*[.!]?\s*$", re.IGNORECASE)
+_CORRECTION_NON_NAMES = {
+    "me", "you", "him", "her", "them", "it", "rex", "r3x", "great", "good", "funny",
+    "loud", "weird", "nothing", "nobody", "someone", "somebody", "wrong", "right",
+}
+
+
+def _handle_speaker_correction(
+    text: str, person_id: Optional[int], person_name: Optional[str]
+) -> Optional[str]:
+    """Handle "that was <Name> (speaking)" / "that wasn't me, that was <Name>".
+
+    Field log 2026-07-05: JT's line was credited to Bret; Bret said "That was JT
+    speaking" and Rex just bantered — the transcript (and therefore session-end
+    memory extraction) kept the wrong attribution. Now the correction MOVES the
+    previous turn's speaker label and acks it. Returns the ack line, or None if the
+    utterance isn't a correction."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    m = _SPEAKER_CORRECTION_PAT.match(cleaned)
+    if not m:
+        return None
+    # Require a positive correction signal: either the "that wasn't me" prefix or a
+    # speaking/talking tail — a bare "that was Jeff" is too ambiguous mid-conversation.
+    if not (_SPEAKER_CORRECTION_PREFIX_PAT.match(cleaned)
+            or _SPEAKER_CORRECTION_TAIL_PAT.search(cleaned)):
+        return None
+    name = (m.group("name") or "").strip().rstrip(".!,")
+    if not name or name.lower() in _CORRECTION_NON_NAMES:
+        return None
+    # Canonicalize against known people when possible (keeps transcript labels stable).
+    display = name
+    try:
+        from memory import people as people_db_mod
+        row = people_db_mod.find_person_by_name(name)
+        if row and row.get("name"):
+            display = str(row["name"])
+    except Exception:
+        pass
+    moved = False
+    if person_name:
+        try:
+            moved = conv_memory.relabel_prior_turn(person_name, display, skip_text=cleaned)
+        except Exception as exc:
+            _log.debug("speaker-correction relabel failed: %s", exc)
+    _log.info(
+        "[interaction] speaker correction: previous turn reattributed %r -> %r (moved=%s)",
+        person_name, display, moved,
+    )
+    first = display.split()[0]
+    if moved:
+        return f"Ah — that was {first} talking. Logged to the right organic this time."
+    return f"Got it — {first} said that, not you. I'll keep my wires straight."
+
+
 def _handle_conversation_boundary(
     person_id: Optional[int],
     text: str,
@@ -17708,10 +17840,25 @@ def _handle_speech_segment(
                     sticky_accepted = False
                     identity_resolution_override = "visible_face_over_voice_conflict"
         elif person_id is not None:
-            _log.info(
-                "[interaction] person resolution: voice match — person_id=%s name=%r score=%.3f",
-                person_id, person_name, speaker_score,
-            )
+            if _voice_only_attribution_suspect(person_id, speaker_score):
+                # Marginal voice match, matched person not seen on camera, and a body
+                # IS visible that we can't identify — the JT-reads-as-Bret shape. Ask
+                # who's speaking (the off-camera identify flow below) instead of
+                # silently crediting the voice match.
+                _log.info(
+                    "[interaction] person resolution: marginal voice match %r (%.3f) but "
+                    "they haven't been on camera and someone ELSE is visible — treating "
+                    "as unknown speaker (who's-that path)",
+                    person_name, speaker_score,
+                )
+                person_id = None
+                person_name = None
+                off_camera_unknown = True
+            else:
+                _log.info(
+                    "[interaction] person resolution: voice match — person_id=%s name=%r score=%.3f",
+                    person_id, person_name, speaker_score,
+                )
         else:
             # No single identified face and no voice match. Track as an off-screen
             # / unknown voice so group and crowded-room speakers are NOT dropped —
@@ -19546,6 +19693,34 @@ def _handle_speech_segment(
             conv_log.log_rex(boundary_response)
             _session_exchange_count += 1
             _register_rex_utterance(boundary_response)
+            return
+
+        speaker_correction_ack = _handle_speaker_correction(text, person_id, person_name)
+        if speaker_correction_ack:
+            try:
+                consciousness.clear_response_wait()
+            except Exception:
+                pass
+            # The correction utterance itself teaches nothing durable about the speaker.
+            conv_memory.mark_last_human_turn_unlearnable()
+            completed = _speak_blocking(
+                speaker_correction_ack,
+                emotion="neutral",
+                pre_beat_ms=100,
+                post_beat_ms_override=200,
+            )
+            response_text = speaker_correction_ack
+            final_executed_path = "legacy.speaker_correction"
+            _log_router_audit(
+                router_audit,
+                final_executed_path,
+                completed=completed,
+                spoken_text=speaker_correction_ack,
+            )
+            conv_memory.add_to_transcript("Rex", speaker_correction_ack)
+            conv_log.log_rex(speaker_correction_ack)
+            _session_exchange_count += 1
+            _register_rex_utterance(speaker_correction_ack)
             return
 
         preference_response = _handle_conversation_boundary(person_id, text)

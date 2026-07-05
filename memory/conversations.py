@@ -107,6 +107,28 @@ def mark_last_human_turn_unlearnable() -> bool:
     return False
 
 
+def relabel_prior_turn(old_speaker: str, new_speaker: str, *, skip_text: str = "") -> bool:
+    """Move the ATTRIBUTION of the most recent transcript turn recorded under
+    ``old_speaker`` to ``new_speaker`` — the "that was JT speaking" correction. The
+    words stay; the speaker label changes, so session-end extraction credits the right
+    person. ``skip_text`` excludes the correction utterance itself (it is usually the
+    newest matching entry). The relabeled turn is also marked non-learnable for the
+    ORIGINAL person's sake; whether it is learnable for the new speaker is a later
+    turn's problem (conservative: don't extract from a disputed line at all)."""
+    old_l = (old_speaker or "").strip().lower()
+    skip = (skip_text or "").strip()
+    for entry in reversed(_transcript):
+        speaker = str(entry.get("speaker") or "").strip()
+        if speaker.lower() != old_l:
+            continue
+        if skip and str(entry.get("text") or "").strip() == skip:
+            continue
+        entry["speaker"] = new_speaker
+        entry["learnable"] = False
+        return True
+    return False
+
+
 def get_session_transcript() -> list[dict]:
     """Return a copy of the current in-memory session transcript."""
     return list(_transcript)
