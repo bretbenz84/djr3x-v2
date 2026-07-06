@@ -9817,13 +9817,17 @@ class GroupChatterGatingTest(unittest.TestCase):
         finally:
             interaction._clear_anonymous_speaker_slots()
 
-    def test_anonymous_speaker_slot_does_not_sticky_match_different_raw_candidate(self):
+    def test_recent_slot_reuses_despite_raw_candidate_flip(self):
+        # NEW semantics (2026-07-05, Guest-2/3/4 churn fix): a slot active moments
+        # ago that matches at >= the recent-sticky bar is the SAME person still
+        # talking, even when the raw top candidate flips between overlapping prints
+        # (JT's turns matched his own prior slot at 0.70 while raw read Bret).
         import numpy as np
         from intelligence import interaction
 
         audio = np.zeros(1600, dtype=np.float32)
         first_embedding = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-        near_embedding = np.array([0.72, 0.694, 0.0], dtype=np.float32)
+        near_embedding = np.array([0.72, 0.694, 0.0], dtype=np.float32)   # sim ~0.72
 
         interaction._clear_anonymous_speaker_slots()
         try:
@@ -9831,6 +9835,44 @@ class GroupChatterGatingTest(unittest.TestCase):
                 interaction.speaker_id,
                 "get_embedding",
                 side_effect=[first_embedding, near_embedding],
+            ):
+                first_label, _, _ = interaction._resolve_anonymous_speaker_slot(
+                    audio,
+                    person_id=None,
+                    raw_best_id=1,
+                    raw_best_name="Bret",
+                    raw_best_score=0.52,
+                )
+                second_label, second_score, _ = interaction._resolve_anonymous_speaker_slot(
+                    audio,
+                    person_id=None,
+                    raw_best_id=2,
+                    raw_best_name="JT",
+                    raw_best_score=0.53,
+                )
+
+            self.assertEqual(first_label, "unknown_voice_1")
+            self.assertEqual(second_label, "unknown_voice_1")   # reused, not minted
+            self.assertEqual(len(interaction._anonymous_speaker_slots), 1)
+        finally:
+            interaction._clear_anonymous_speaker_slots()
+
+    def test_recent_slot_still_separates_a_genuinely_different_voice(self):
+        # The recent-sticky bar (0.62) still splits a truly different voice that
+        # shows up moments later with a different raw candidate.
+        import numpy as np
+        from intelligence import interaction
+
+        audio = np.zeros(1600, dtype=np.float32)
+        first_embedding = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        far_embedding = np.array([0.55, 0.8352, 0.0], dtype=np.float32)   # sim ~0.55
+
+        interaction._clear_anonymous_speaker_slots()
+        try:
+            with mock.patch.object(
+                interaction.speaker_id,
+                "get_embedding",
+                side_effect=[first_embedding, far_embedding],
             ):
                 first_label, _, _ = interaction._resolve_anonymous_speaker_slot(
                     audio,

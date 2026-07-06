@@ -2585,10 +2585,24 @@ def _resolve_anonymous_speaker_slot(
         and raw_id == best_slot.raw_best_id
         and best_score >= sticky_threshold
     )
+    # RECENT sticky: a slot active moments ago matching at a modest bar is the same
+    # person still talking. The raw-candidate condition above breaks exactly when two
+    # enrolled prints overlap — the top candidate flip-flops between them per
+    # utterance (field log 2026-07-05-21-22: JT's turns matched his prior slot at
+    # 0.702/0.698/0.609 but raw flipped JT→Bret→Bret, so every line minted a fresh
+    # Guest slot). Same-conversation continuity doesn't need the raw label to agree.
+    recent_secs = float(getattr(config, "ANONYMOUS_SPEAKER_RECENT_STICKY_SECS", 180.0))
+    recent_bar = float(getattr(config, "ANONYMOUS_SPEAKER_RECENT_STICKY_THRESHOLD", 0.62))
+    recent_sticky = (
+        best_slot is not None
+        and best_score is not None
+        and (now - float(best_slot.last_seen_at or 0.0)) <= recent_secs
+        and best_score >= recent_bar
+    )
     if (
         best_slot is not None
         and best_score is not None
-        and (best_score >= threshold or raw_candidate_sticky)
+        and (best_score >= threshold or raw_candidate_sticky or recent_sticky)
     ):
         blend_weight = float(min(max(best_slot.turns, 1), 5))
         blended = _normalize_voice_embedding(
@@ -6757,6 +6771,17 @@ def _bare_wake_should_ask_visible_unknown_identity(
 
 
 _last_voice_challenge_at: float = 0.0
+
+
+def _voice_ambiguous_between_knowns(score: float, margin: float) -> bool:
+    """True when the voice cleared the accept threshold but two ENROLLED people are
+    within the ambiguity margin of each other (field log 2026-07-05-21-22: JT 0.563
+    vs Bret 0.529, margin 0.034 < 0.07). That is not background chatter — a real,
+    enrolled-adjacent person is talking and the prints can't split them. It must
+    escalate to the who's-that ask, not churn anonymous Guest-N slots."""
+    thr = float(getattr(config, "SPEAKER_ID_SIMILARITY_THRESHOLD", 0.50))
+    known_margin = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.07))
+    return float(score or 0.0) >= thr and 0.0 <= float(margin or 0.0) < known_margin
 
 
 def _signature_resolves_to_person(score: float, last_seen_at) -> bool:
@@ -20237,6 +20262,21 @@ def _handle_speech_segment(
                 final_executed_path = "ignored.off_camera_background_chatter"
                 completed = False
                 return
+            # Ambiguous-between-knowns escalation: the margin guard refused because
+            # TWO enrolled voices are near-tied — someone real and known-adjacent is
+            # talking. Upgrade to a challenge so the ask fires (it would otherwise be
+            # deferred as chatter and each utterance would mint a fresh Guest slot).
+            if (
+                off_camera_unknown
+                and not voice_challenge_fired
+                and _voice_ambiguous_between_knowns(speaker_score, speaker_margin)
+            ):
+                voice_challenge_fired = True
+                _log.info(
+                    "[interaction] ambiguous between enrolled voices (top=%r %.3f, "
+                    "margin=%.3f) — escalating to who's-that ask",
+                    raw_best_name, speaker_score, speaker_margin,
+                )
             if not _utterance_invites_identity_question(text) and not voice_challenge_fired:
                 # The invite gate keeps Rex from interrogating background chatter — but
                 # a CHALLENGED voice (marginal match on an unseen person, body in frame

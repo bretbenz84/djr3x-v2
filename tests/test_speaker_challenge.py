@@ -101,6 +101,25 @@ class WarmSignatureResolveTest(unittest.TestCase):
         self.assertFalse(interaction._signature_resolves_to_person(0.758, "not-a-date"))
 
 
+class AmbiguousBetweenKnownsTest(unittest.TestCase):
+    """Two enrolled voices near-tied is a challenge, not Guest-N churn
+    (field log 2026-07-05-21-22: JT 0.563 vs Bret 0.529, margin 0.034)."""
+
+    def test_field_shape_is_ambiguous(self):
+        self.assertTrue(interaction._voice_ambiguous_between_knowns(0.563, 0.034))
+
+    def test_clear_winner_is_not_ambiguous(self):
+        self.assertFalse(interaction._voice_ambiguous_between_knowns(0.712, 0.235))
+
+    def test_below_threshold_is_not_ambiguous(self):
+        # A sub-threshold top score is a plain unknown, not an enrolled near-tie.
+        self.assertFalse(interaction._voice_ambiguous_between_knowns(0.42, 0.01))
+
+    def test_single_enrolled_person_is_not_ambiguous(self):
+        # With one print the margin is score+1 (no second candidate) — never ambiguous.
+        self.assertFalse(interaction._voice_ambiguous_between_knowns(0.563, 1.563))
+
+
 class SpeakerCorrectionPatternTest(unittest.TestCase):
     def _name(self, text):
         m = interaction._SPEAKER_CORRECTION_PAT.match(text.strip())
