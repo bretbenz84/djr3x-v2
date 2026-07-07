@@ -6256,6 +6256,31 @@ MOTION_ARC_ANG_DEG_S = 35.0           # arc turn rate, deg/s (+ = left, REP-103)
 MOTION_ARC_DURATION_SECS = 1.6        # how long the curve drives before auto-stop
 MOTION_ARC_SMALL_DURATION_SECS = 1.0  # "a little / a bit" -> shorter curve
 
+# ── Autonomous motion (intelligence/motion_agency.py) ─────────────────────────
+# Rex moves on his own: turns the base to face the person his head is tracking,
+# and closes distance to someone far away. Decisions only — actual motion runs
+# the closed-loop firmware commands (turn/come), so the ESP32's ToF reflexes,
+# drive deadman, and gamepad-owner override all still apply. One maneuver per
+# consciousness tick, only from motion state "idle", never while the human is
+# mid-sentence. No downward/cliff sensing (owner: the robot is never upstairs).
+AUTONOMOUS_MOTION_ENABLED = _env_bool("AUTONOMOUS_MOTION_ENABLED", True)
+# Turn the base under the head. The NECK is the signal: face-tracking centers the
+# face in frame, so a neck parked off-neutral = the body points the wrong way.
+MOTION_FACE_PERSON_ENABLED = True
+MOTION_FACE_NECK_FRACTION = 0.30      # neck offset (fraction of half-span) that arms a turn
+MOTION_FACE_CONFIRM_TICKS = 2         # consecutive ticks past the fraction before turning
+MOTION_FACE_TURN_MAX_DEG = 60.0       # base turn at full neck deflection (proportional below)
+MOTION_FACE_TURN_MIN_DEG = 10.0       # smallest worthwhile correction
+MOTION_FACE_TURN_COOLDOWN_SECS = 8.0  # settle time between corrections (no oscillation)
+MOTION_FACE_TURN_INVERT = False       # flip turn direction if field testing disagrees
+# Approach a far person: distance_zone "public" (face < 30% of frame width) held for
+# N ticks while the base already faces them -> `come` (firmware advances until the
+# forward ToF sees anything at MOTION_COME_STOP_AT_M — the person, or furniture first).
+MOTION_APPROACH_ENABLED = True
+MOTION_APPROACH_CONFIRM_TICKS = 4     # ~4 s of sustained "they're far" before moving
+MOTION_APPROACH_COOLDOWN_SECS = 120.0 # at most one spontaneous approach per 2 min
+MOTION_APPROACH_CENTERED_FRACTION = 0.18  # neck must be this close to neutral (facing them)
+
 # Verbal denial when an explicit DRIVE command is spoken but no ESP32 drive base is
 # connected. With a base attached the wheels actually moving ARE the acknowledgment, so
 # the motion confirmation isn't spoken; with NO base there's nothing to feel, so instead

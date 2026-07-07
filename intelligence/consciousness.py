@@ -2804,6 +2804,17 @@ def _mirrored_half_period(user_speed: Optional[float]) -> Optional[float]:
     return slow_hp + frac * (fast_hp - slow_hp)
 
 
+def _step_autonomous_motion(snapshot: dict, profile: SituationProfile) -> None:
+    """Autonomous base motion: rotate to face the tracked person, approach a far one.
+    All decision logic lives in intelligence/motion_agency.py (turn/come are
+    closed-loop firmware commands under the ESP32's ToF reflexes)."""
+    try:
+        from intelligence import motion_agency
+        motion_agency.step(snapshot, profile)
+    except Exception as exc:
+        _log.debug("autonomous motion step error: %s", exc)
+
+
 def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
     """If a visible person waves, wave back (+ one short warm greeting) — the way you'd
     return a wave from across a room.
@@ -11545,6 +11556,11 @@ def _loop() -> None:
             # 10f-b. Wave back — if a visible person waves, return the wave (+ a short
             # warm line), the way you'd wave back across a room.
             _step_wave_reaction(snapshot, profile)
+
+            # 10f-c. Autonomous base motion — rotate the base to face the tracked
+            # person (the neck's standing offset is the signal) and approach someone
+            # far away (`come`, ToF-guarded by the firmware reflexes).
+            _step_autonomous_motion(snapshot, profile)
 
             # 10g. Smile reaction — after Rex lands a joke/snarky aside, notice
             # if the target visibly cracks a smile and answer it once.

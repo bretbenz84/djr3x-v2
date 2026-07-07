@@ -113,12 +113,19 @@ intelligence/
   social_frame.py        Response shape/governance cleanup.
   tell_me_about.py       "Tell me about someone" pre-briefing parsing/lines/classifier.
   motion_controller.py   High-level drive-base API: turn/move/come/stop + heartbeat + safety gates.
+  motion_agency.py       Autonomous motion decisions: turn base to face the tracked person
+                         (neck-offset signal), approach a far person (`come`, ToF-guarded).
+                         AUTONOMOUS_MOTION_ENABLED + per-behavior flags; one maneuver/tick,
+                         idle-state only, never mid-sentence; gamepad owner always wins.
 
 memory/
   database.py            SQLite connection, schema, migrations.
   people.py              People, face/voice biometrics, familiarity.
   facts.py               Person facts and observations.
-  events.py              Upcoming/follow-up events.
+  events.py              Upcoming/follow-up events + session-opener continuity threads
+                         (get_recent_open_threads: undated open plans from a previous
+                         session, greeting Priority 2.6 — "last night you never told me
+                         how the soup turned out"; SESSION_OPENER_CONTINUITY_ENABLED).
   emotional_events.py    Sensitive/celebratory emotional memories.
   social.py              Inter-person relationship edges.
 
