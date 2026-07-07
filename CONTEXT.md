@@ -997,6 +997,20 @@ venv/bin/python main.py
   getting-to-know-you burst was wanted (live-logged: creator wiped his row, got zero
   onboarding questions, silently — the skip logs at DEBUG only). Set False to restore
   the exemption. `tests/test_onboarding.py`.
+- 20 Questions guesser rework (2026-07-07, after a live loss to "a rubber ducky"): the
+  spine (`features/twentyq_kb.py`) gained authored TIER-2 branch questions (toy/kitchen/
+  bathroom/sports/decorative for objects; pet/four-legs/flies for animals; real/famous/
+  performer for people; landmark/building for places; drink/sweet/hot for food) gated by
+  `requires`/`not_true`, plus smarter pruning ("is it a person?" deferred until man-made=no;
+  holdable⇒never a place; edible/place/person prune the material-and-category probes) and a
+  size-before-place ask order; `_20Q_SPINE_TURNS` 5→12. The LLM endgame (`games._20q_decide`,
+  now medium reasoning effort) gets an established-facts digest, a verbatim never-re-ask
+  list, a vetted-splitter menu, and a discriminate-within-the-shortlist rule; a deterministic
+  guess gate (`_20q_guess_gate_ok`: shortlist ≤2, or late-game ≤3, or ≤2 questions left)
+  converts premature stabs into questions, near-duplicate questions fall back to a proven
+  splitter, and after any YES from Q7 on Rex checks for a confident early strike between
+  spine questions. Verified 4/4 wins in live-API offline sims (rubber ducky, pizza, stapler,
+  Eiffel Tower — the first two shapes were prior losses). `tests/test_twentyquestions_guesser.py`.
 
 ## Likely Future Work
 

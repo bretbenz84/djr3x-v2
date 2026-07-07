@@ -39,6 +39,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from rapidfuzz import fuzz
 
 import config
+
 from features import twentyq_kb
 from vision.image_utils import encode_jpeg_base64
 
@@ -385,7 +386,10 @@ def _ispy_stop(person_id: Optional[int]) -> str:
 
 _20Q_MAX_QUESTIONS = 20      # hard cap; Rex must commit to a guess by here
 _20Q_MAX_GUESSES = 3         # how many final guesses Rex gets before conceding
-_20Q_SPINE_TURNS = 5         # use the dataset's discriminator spine for the opening N questions
+_20Q_SPINE_TURNS = 12        # spine (dataset + authored tier-2 branches) leads for up to N questions
+_20Q_EARLY_GUESS_FLOOR = 7   # from this many questions on, check between spine questions whether
+                             # the shortlist has collapsed and strike early instead of grinding on
+_20Q_GUESS_SHORTLIST_MAX = 2  # a mid-game guess needs the shortlist down to this many candidates
 
 # Answer keyword sets for parsing the player's yes/no replies (LLM fallback for the rest).
 _20Q_YES = {
@@ -465,50 +469,116 @@ def _20q_classify_answer(text: str) -> str:
     return "unknown"
 
 
+def _20q_question_is_redundant(question: str, asked: list) -> bool:
+    """True when a proposed question is a repeat or a blatant rephrase of one already asked.
+    Conservative on purpose (near-duplicate only, token_set_ratio >= 95): the live 2026-07-07
+    game burned Q17 on 'is it primarily used for carrying items?' one turn after 'is it mainly
+    a container for carrying or storing things?'. A legit NARROWING ('is it a stringed
+    instrument?' after 'is it a musical instrument?') must NOT be blocked, so the threshold
+    stays high and the prompt carries the semantic no-re-ask rule."""
+    nq = _norm_q(question)
+    if nq in set(asked):
+        return True
+    return any(fuzz.token_set_ratio(nq, a) >= 95 for a in asked)
+
+
+def _20q_fallback_question(asked: list) -> str:
+    """A deterministic, decent splitter when the LLM's question was unusable: first an
+    applicable unasked spine/tier-2 question, then a generic bank."""
+    entry = twentyq_kb.next_spine_question(
+        _game_state.get("concept_answers", {}), set(asked))
+    if entry is not None:
+        return entry["question"]
+    for q in (
+        "Is it something you'd find in most homes?",
+        "Is it used every day?",
+        "Is it bigger than a microwave?",
+        "Is it mainly for entertainment?",
+        "Would most people own one?",
+    ):
+        if not _20q_question_is_redundant(q, asked):
+            return q
+    return "Is it something you could buy in a regular store?"
+
+
+def _20q_guess_gate_ok(q_count: int, remaining: int, candidates: list) -> bool:
+    """Deterministic commit gate: Rex only spends a guess when the evidence supports it.
+    The live 2026-07-07 game burned a guess on 'wallet' at Q14 off a broad shortlist —
+    a guess now needs the shortlist collapsed to the front-runners (the model's own
+    confidence signal), a late-game near-collapse, or no road left."""
+    if remaining <= 2:
+        return True
+    if len(candidates) <= _20Q_GUESS_SHORTLIST_MAX and q_count >= 5:
+        return True
+    if q_count >= 12 and len(candidates) <= 3:
+        return True
+    return False
+
+
 def _20q_decide(qa_log: list, asked: list, q_count: int,
                 candidates: list, guesses: list) -> dict:
     """Candidate-tracking turn engine — plays like the classic 20Q toy. Each turn it keeps a
     running SHORTLIST of the answers still consistent with EVERY clue, then either asks the
     yes/no question that best SPLITS that shortlist or commits to the front-runner. Tracking
     candidates (instead of improvising one question at a time) is what stops the tunnel-vision
-    that handed away easy wins. Returns:
+    that handed away easy wins. A deterministic gate (_20q_guess_gate_ok) vets any guess and a
+    near-duplicate check vets any question, so a wobbly model turn degrades to a proven
+    splitter instead of a wasted move. Returns:
         {"candidates": [...], "action": "ask"|"guess", "question": str, "subject": str}
     """
-    transcript = "\n".join(
-        f"  Q: {e.get('q','')}  ->  A: {e.get('a','')}" for e in qa_log) or "  (none yet)"
+    hard = [e for e in qa_log if e.get("a") in ("yes", "no")]
+    soft = [e for e in qa_log if e.get("a") not in ("yes", "no")]
+    facts = "\n".join(
+        f"  - {e.get('q','')} -> {str(e.get('a','')).upper()}" for e in hard) or "  (none yet)"
+    hints = "\n".join(
+        f"  - {e.get('q','')} -> {e.get('a','')}" for e in soft) or "  (none)"
+    asked_list = "\n".join(f"  - {q}" for q in asked) or "  (none)"
+    menu = twentyq_kb.spine_menu(_game_state.get("concept_answers", {}), set(asked), limit=4)
+    menu_line = (
+        "Proven unasked splitters you may use if they fit better than your own question: "
+        + "; ".join(menu) if menu else ""
+    )
     remaining = _20Q_MAX_QUESTIONS - q_count
     prior = ", ".join(candidates) if candidates else "(none yet — build it now)"
     avoid = ", ".join(guesses) if guesses else "none"
     raw = _smart_call(
         "You are an expert 20 Questions guesser that plays like the classic 20Q toy: you keep a "
         "running SHORTLIST of candidate answers and narrow it down with every clue.\n\n"
-        f"Q&A so far:\n{transcript}\n\n"
+        f"ESTABLISHED FACTS (hard yes/no answers — every candidate MUST satisfy all of them):\n"
+        f"{facts}\n\n"
+        f"Soft hints (maybe/sometimes/unknown — suggestive, not binding):\n{hints}\n\n"
+        f"Questions already asked — NEVER repeat one, NEVER rephrase one, and NEVER ask "
+        f"anything whose answer the facts above already determine:\n{asked_list}\n\n"
         f"Your shortlist from last turn (reconsider it, don't just trust it): {prior}\n"
         f"Already guessed wrong — never propose these again: {avoid}\n"
         f"You have asked {q_count} questions; {remaining} remain.\n\n"
         "Do BOTH steps:\n"
-        "1. SHORTLIST — REBUILD it FRESH from ALL the clues above (do not just trim last turn's "
-        "list). Pick the 3-6 most likely things consistent with EVERY clear answer. Rules:\n"
+        "1. SHORTLIST — REBUILD it FRESH from ALL the facts (do not just trim last turn's "
+        "list). Rules:\n"
         "   - Weigh ALL clues together; never fixate on the latest answer.\n"
-        "   - Treat 'unknown'/'maybe'/'sometimes' as SOFT hints, not hard rules.\n"
         "   - Strongly prefer COMMON, everyday answers. Keep the list diverse across CATEGORIES "
         "you haven't ruled out (until size is known, include both hand-held things like a guitar "
         "or book AND large ones), but NEVER drift into rare, exotic, regional, or hyper-specific "
         "variants — if 'pizza' fits, do not list 'tostada' or 'huarache'.\n"
         "   - If your last guesses were wrong, your whole CATEGORY may be wrong — seriously "
         "consider a different KIND of thing rather than narrowing deeper into the same one.\n"
+        "   - List 3-6 candidates while still exploring; once you are genuinely confident, "
+        "list ONLY the 1-2 real contenders — a short list is your signal to strike.\n"
         "2. MOVE —\n"
-        "   - If one candidate clearly leads, OR 2 or fewer questions remain, GUESS it. Guess the "
-        "COMMON general name ('bicycle', not 'commuter bicycle'; 'pizza', not 'tostada').\n"
+        "   - GUESS only when your shortlist is down to 1-2 real contenders, or 2 or fewer "
+        "questions remain. Guess the COMMON general name ('bicycle', not 'commuter bicycle'; "
+        "'pizza', not 'tostada').\n"
         "   - Otherwise ASK one yes/no question whose answer best SPLITS your shortlist (about "
-        "half your candidates would say yes, half no). Early on, split the BROADEST open "
-        "dimension first (size/portability, or what it's mainly used for). You MAY ask ONE sharp "
-        "category question when it cleanly splits the list (e.g. 'Is it a musical instrument?', "
-        "'Is it a vehicle?') — just never ask several 'is it a type of X?' questions in a row. "
-        "Make it concrete and observable; never repeat a question.\n"
+        "half your candidates would say yes, half no). Split the BROADEST open dimension first — "
+        "purpose or location beats material or brand. Once a category is already confirmed by "
+        "the facts, your question must DISCRIMINATE among your shortlisted candidates — a "
+        "concrete feature some have and others lack (moving parts, uses refills, has a screen, "
+        "worn on the feet) — NOT another 'is it used for X?' subcategory probe; fishing through "
+        "subcategories one at a time is how you lose. "
+        f"{menu_line}\n"
         'Return ONLY JSON: {"candidates":["c1","c2",...],"action":"ask" or "guess",'
         '"question":"<yes/no question if asking>","subject":"<candidate to guess if guessing>"}',
-        temperature=0.3, max_tokens=900,
+        temperature=0.3, max_tokens=900, reasoning_effort="medium",
     )
     data = _parse_json(raw)
     new_candidates = list(candidates)
@@ -520,18 +590,29 @@ def _20q_decide(qa_log: list, asked: list, q_count: int,
                 new_candidates = cleaned[:6]
         action = str(data.get("action", "")).lower()
         if action == "guess" and data.get("subject"):
-            return {"candidates": new_candidates, "action": "guess",
-                    "subject": str(data["subject"]).strip()}
+            if _20q_guess_gate_ok(q_count, remaining, new_candidates):
+                return {"candidates": new_candidates, "action": "guess",
+                        "subject": str(data["subject"]).strip()}
+            # Premature stab — convert to a question so the evidence catches up first.
+            question = str(data.get("question") or "").strip()
+            if not question or _20q_question_is_redundant(question, asked):
+                question = _20q_fallback_question(asked)
+            _log.info("[20q] guess gate held fire (q=%d, shortlist=%d) — asking instead",
+                      q_count, len(new_candidates))
+            return {"candidates": new_candidates, "action": "ask", "question": question}
         if action == "ask" and data.get("question"):
-            if _norm_q(str(data["question"])) not in set(asked):
-                return {"candidates": new_candidates, "action": "ask",
-                        "question": str(data["question"]).strip()}
-    # Fallback: out of road -> guess the front-runner; otherwise a generic splitter.
+            question = str(data["question"]).strip()
+            if not _20q_question_is_redundant(question, asked):
+                return {"candidates": new_candidates, "action": "ask", "question": question}
+            _log.info("[20q] rejected near-duplicate question %r — using fallback", question)
+            return {"candidates": new_candidates, "action": "ask",
+                    "question": _20q_fallback_question(asked)}
+    # Fallback: out of road -> guess the front-runner; otherwise a proven splitter.
     if remaining <= 1:
         return {"candidates": new_candidates, "action": "guess",
                 "subject": new_candidates[0] if new_candidates else ""}
     return {"candidates": new_candidates, "action": "ask",
-            "question": "Is it something you'd find in most homes?"}
+            "question": _20q_fallback_question(asked)}
 
 
 def _20q_best_guess(qa_log: list, candidates: list, guesses: list) -> str:
@@ -551,7 +632,7 @@ def _20q_best_guess(qa_log: list, candidates: list, guesses: list) -> str:
         f"Questions and answers:\n{transcript}\n\n"
         f"Already guessed wrong (do not repeat): {', '.join(guesses) or 'none'}\n"
         "Return ONLY the name of your guess — no punctuation, no explanation.",
-        temperature=0.5, max_tokens=400,
+        temperature=0.5, max_tokens=400, reasoning_effort="medium",
     ).strip().strip(".!?\"'")
     return raw.split("\n")[0].strip() if raw else ""
 
@@ -596,10 +677,29 @@ def _20q_ask_next(person_id: Optional[int]) -> tuple[str, bool]:
     if q_count >= _20Q_MAX_QUESTIONS:
         return _20q_make_guess(person_id, forced=True)
 
-    # Opening: use the dataset's proven discriminator spine for strong, varied narrowing.
+    # Opening/mid-game: the proven discriminator spine (dataset + authored tier-2 branches)
+    # leads for strong, non-redundant narrowing.
     entry = None
     if q_count < _20Q_SPINE_TURNS:
         entry = twentyq_kb.next_spine_question(concept_answers, set(asked))
+
+    # Confident early exit: once enough evidence is in, check between spine questions whether
+    # the shortlist has already collapsed — an obvious answer (phone, dog, pizza) should be
+    # guessed at Q8, not ground through the rest of the spine. Only worth a model call right
+    # after a YES (a yes collapses the space; a string of no's never does), and the guess
+    # still has to pass the deterministic gate inside _20q_decide, so a broad shortlist
+    # keeps asking.
+    qa_log_so_far = _game_state.get("qa_log", [])
+    last_answer_was_yes = bool(qa_log_so_far) and qa_log_so_far[-1].get("a") == "yes"
+    if entry is not None and q_count >= _20Q_EARLY_GUESS_FLOOR and last_answer_was_yes:
+        decision = _20q_decide(
+            _game_state.get("qa_log", []), asked, q_count,
+            _game_state.get("candidates", []), _game_state.get("guesses", []))
+        _game_state["candidates"] = decision.get(
+            "candidates", _game_state.get("candidates", []))
+        if decision.get("action") == "guess":
+            return _20q_make_guess(person_id, suggested=decision.get("subject", ""))
+        # Not confident yet — ignore the engine's question and stay on the vetted spine.
 
     if entry is not None:
         question = entry["question"]
@@ -709,10 +809,13 @@ def _20q_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
                 ),
                 True,
             )
-        # Wrong, but Rex still has road left: log the rejected guess and keep narrowing.
+        # Wrong, but Rex still has road left: log the rejected guess (as both a fact and an
+        # asked question, so the engine can neither re-guess it nor re-fish it) and keep
+        # narrowing.
         _body_beat("suspicious_glance")
         _game_state["phase"] = "asking"
         _game_state.get("qa_log", []).append({"q": f"is it {guess}?", "a": "no"})
+        _game_state.setdefault("asked", []).append(_norm_q(f"is it {guess}?"))
         return _20q_ask_next(person_id)
 
     # phase == "asking": the player's input is the answer to Rex's last question.
