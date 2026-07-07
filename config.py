@@ -3048,6 +3048,11 @@ SCENE_MUSIC_ACTIVE_BANDS_MIN = 2
 # Laughter detection: burst-pattern heuristic on 50 ms RMS sub-windows.
 SCENE_LAUGHTER_MEAN_RMS_MIN       = 0.02   # minimum mean energy
 SCENE_LAUGHTER_BURST_VARIANCE_MIN = 3e-4   # minimum variance of per-chunk RMS values
+# Extra quiet margin after Rex's own output before scene analysis resumes, ON TOP
+# of the analysis window — ensures the sampled window can't straddle his speech
+# tail or the suppression step (false "laughter" → unearned take-a-bow,
+# live-logged 2026-07-06-22-28). Total post-speech blindness = WINDOW + this.
+SCENE_POST_OUTPUT_GUARD_SECS = 1.5
 
 # Applause detection: broadband noise with high spectral flatness.
 SCENE_APPLAUSE_RMS_MIN              = 0.04  # minimum overall RMS

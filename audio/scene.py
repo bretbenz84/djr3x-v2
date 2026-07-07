@@ -73,10 +73,19 @@ def _should_skip_cycle() -> bool:
     what stops Rex from startling/laughing at his own music. output_gate's tail also
     spans module boundaries, covering startup clips that played before this loop began.
     """
+    guard = float(getattr(config, "SCENE_POST_OUTPUT_GUARD_SECS", 1.5) or 0.0)
     return (
         speech_queue.is_speaking()
         or echo_cancel.is_suppressed()
-        or output_gate.seconds_since_release() < config.SCENE_ANALYSIS_WINDOW_SECS
+        # The analyzer reads a rolling buffer WINDOW reaching back in time, so the
+        # skip must hold until NO part of that window overlaps Rex's own playback
+        # or the suppression boundary. `< WINDOW` alone left the window's leading
+        # edge inside his speech tail: his line ended, the next cycle sampled a
+        # window straddling the bleed + the suppression step, and the rhythmic
+        # bursts read as LAUGHTER — Rex took a bow at nobody (live-logged
+        # 2026-07-06-22-28, owner: "I didn't laugh").
+        or output_gate.seconds_since_release()
+            < config.SCENE_ANALYSIS_WINDOW_SECS + guard
     )
 
 

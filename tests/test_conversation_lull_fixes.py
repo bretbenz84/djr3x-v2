@@ -69,5 +69,32 @@ class ImpulseLooseEndTest(unittest.TestCase):
         self.assertIn("ALREADY COVERED", LB._IMPULSE_INSTRUCTION)
 
 
+class SceneWindowGuardTest(unittest.TestCase):
+    """False take-a-bow (owner: 'I didn't laugh', log 2026-07-06-22-28): the scene
+    analyzer samples a rolling window that reaches BACK in time, so the skip must
+    hold until no part of that window overlaps Rex's own playback tail."""
+
+    def _skip(self, since_release):
+        from unittest import mock
+        from audio import scene
+        with (
+            mock.patch.object(scene.speech_queue, "is_speaking", return_value=False),
+            mock.patch.object(scene.echo_cancel, "is_suppressed", return_value=False),
+            mock.patch.object(scene.output_gate, "seconds_since_release",
+                              return_value=since_release),
+        ):
+            return scene._should_skip_cycle()
+
+    def test_window_straddling_speech_tail_is_skipped(self):
+        # The field case: gate released ~2.1s ago, window 2.0s — the old `< WINDOW`
+        # check let this through and the window's leading edge held Rex's bleed.
+        self.assertTrue(self._skip(2.1))
+
+    def test_fully_clear_window_analyzes(self):
+        window = float(config.SCENE_ANALYSIS_WINDOW_SECS)
+        guard = float(config.SCENE_POST_OUTPUT_GUARD_SECS)
+        self.assertFalse(self._skip(window + guard + 0.1))
+
+
 if __name__ == "__main__":
     unittest.main()
