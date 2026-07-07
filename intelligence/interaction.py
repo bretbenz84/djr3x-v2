@@ -15160,6 +15160,21 @@ def _handle_router_character_preference(
     return reply.text
 
 
+def _negation_is_answer(repair_move: Optional[dict], dialogue_decision) -> bool:
+    """A bare "no/nope" that ANSWERS a question Rex just asked is CONTENT, not a
+    conversational correction — the dialogue act already bound the turn as
+    answer_to_rex. Without this, "What's one gadget that earns its keep?" → "nope"
+    fired the canned repair line ("Fair enough — let me reset and try that
+    again."), a total non-sequitur (live-logged 2026-07-06-22-17). The reply path
+    should riff on the refusal instead."""
+    return bool(
+        repair_move
+        and repair_move.get("kind") == "bare_negation"
+        and dialogue_decision is not None
+        and getattr(dialogue_decision, "label", "") == "answer_to_rex"
+    )
+
+
 def _router_repair_move(
     text: str,
     decision: action_router.ActionDecision,
@@ -21056,6 +21071,12 @@ def _handle_speech_segment(
 
         if repair_move is None:
             repair_move = repair_moves.detect(text)
+        if _negation_is_answer(repair_move, dialogue_decision):
+            _log.info(
+                "[repair] bare negation is an ANSWER to Rex's question "
+                "(dialogue_act=answer_to_rex) — replying normally, no repair"
+            )
+            repair_move = None
         # Re-route the CORRECTION text to the normal reply path (respond to it) instead of
         # firing the repair-ack echo when: (a) a grief flow is active (existing behavior), or
         # (b) the turn is a BARE restatement of real content ("I said I watch a lot of Netflix

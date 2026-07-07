@@ -247,7 +247,12 @@ LEAN_IMPULSE_COOLDOWN_SECS  = 12.0    # min gap between his self-initiated lines
 # silence (vs the 4s true-lull trigger). Stops the question-machine failure without
 # dulling his presence when the room has actually gone quiet.
 LEAN_IMPULSE_FLOW_WINDOW_SECS = _env_float("LEAN_IMPULSE_FLOW_WINDOW_SECS", 120.0, min_value=0.0, max_value=900.0)
-LEAN_IMPULSE_FLOW_QUIET_SECS  = _env_float("LEAN_IMPULSE_FLOW_QUIET_SECS", 30.0, min_value=0.0, max_value=300.0)
+# 30s read as Rex going dead after every exchange (owner 2026-07-06: replied to
+# "It's okay" with a quip, then 42 SECONDS of silence — "too long"). 14s is a real
+# human beat: long enough that the person clearly isn't answering, short enough
+# that Rex still feels present. The question-machine failure this guard exists for
+# (impulses stacking during ACTIVE back-and-forth) had sub-10s gaps.
+LEAN_IMPULSE_FLOW_QUIET_SECS  = _env_float("LEAN_IMPULSE_FLOW_QUIET_SECS", 14.0, min_value=0.0, max_value=300.0)
 LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
 # Talking into the void: after Rex breaks a lull and gets NO reply, he must NOT keep quipping every
 # cooldown-tick (the "piled 4 lines about your dinner into silence" failure). Each unanswered

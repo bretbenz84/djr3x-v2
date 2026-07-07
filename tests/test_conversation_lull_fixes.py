@@ -1,0 +1,73 @@
+"""
+Conversation-quality fixes from the 2026-07-06-22-17 field log:
+
+1. "nope" answering Rex's own question got hijacked by the bare-negation REPAIR
+   ("Fair enough — let me reset and try that again." — a non-sequitur). When the
+   dialogue act binds the turn as answer_to_rex, a bare negation is CONTENT for
+   the reply path, never a correction.
+2. Rex went silent for 42s after a user turn: the impulse flow-guard demanded 30s
+   of mutual silence after ANY user content. Now 14s — a human beat, while the
+   sub-10s question-machine failure the guard exists for stays blocked.
+3. The lull impulse was FORBIDDEN from following up a flat half-answer ("It's
+   okay") by the new-thread-only rule, so it reached for generic interview
+   questions instead. The instruction now carves out loose-end follow-ups.
+"""
+
+import unittest
+from types import SimpleNamespace
+
+import config
+from intelligence import interaction as I
+from intelligence import lean_brain as LB
+from intelligence import repair_moves as r
+
+
+class NegationIsAnswerTest(unittest.TestCase):
+    def _dd(self, label):
+        return SimpleNamespace(label=label)
+
+    def test_nope_answering_rex_question_is_not_a_repair(self):
+        move = {"kind": "bare_negation", "severity": "low"}
+        self.assertTrue(I._negation_is_answer(move, self._dd("answer_to_rex")))
+
+    def test_unprompted_negation_still_repairs(self):
+        move = {"kind": "bare_negation", "severity": "low"}
+        self.assertFalse(I._negation_is_answer(move, self._dd("new_topic")))
+        self.assertFalse(I._negation_is_answer(move, None))
+
+    def test_other_repair_kinds_unaffected(self):
+        move = {"kind": "misheard", "correction": "I said tacos"}
+        self.assertFalse(I._negation_is_answer(move, self._dd("answer_to_rex")))
+
+    def test_no_repair_move_is_false(self):
+        self.assertFalse(I._negation_is_answer(None, self._dd("answer_to_rex")))
+
+    def test_bare_negation_detection_itself_still_works(self):
+        # The repair layer still catches a genuine unprompted correction shape.
+        r.note_assistant_turn("So you're heading to the lake tomorrow, right?")
+        detected = r.detect("nope")
+        self.assertIsNotNone(detected)
+        self.assertEqual(detected.get("kind"), "bare_negation")
+
+
+class FlowQuietTimingTest(unittest.TestCase):
+    def test_flow_quiet_is_a_human_beat_not_half_a_minute(self):
+        # 42s of dead air after "It's okay" was the field complaint; the guard's
+        # job is only to block sub-10s question-machine stacking.
+        self.assertLessEqual(float(config.LEAN_IMPULSE_FLOW_QUIET_SECS), 15.0)
+        self.assertGreaterEqual(float(config.LEAN_IMPULSE_FLOW_QUIET_SECS), 10.0)
+
+
+class ImpulseLooseEndTest(unittest.TestCase):
+    def test_instruction_allows_following_up_flat_answers(self):
+        self.assertIn("loose end", LB._IMPULSE_INSTRUCTION)
+        self.assertIn("following up, NOT reheating", LB._IMPULSE_INSTRUCTION)
+
+    def test_new_thread_rules_survive(self):
+        # The carve-out must not have deleted the anti-repeat machinery.
+        self.assertIn("RESIST", LB._IMPULSE_INSTRUCTION)
+        self.assertIn("ALREADY COVERED", LB._IMPULSE_INSTRUCTION)
+
+
+if __name__ == "__main__":
+    unittest.main()
