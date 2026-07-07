@@ -4543,7 +4543,17 @@ OFFSCREEN_IDENTIFY_WINDOW_SECS = 30.0
 # direct question or gives a command while an identity prompt is pending, drop
 # the prompt instead of treating their next words as a name/relationship answer.
 IDENTITY_PROMPT_DEFER_ON_DIRECT_TURN = True
-IDENTITY_PROMPT_ALLOW_PROACTIVE_ACTIVE = False
+# Allow the solo-unknown "what name should I save for you?" ask during ACTIVE state.
+# The session boots into ACTIVE and holds it for ~60s of silence before the idle
+# timeout — with this False, a SILENT stranger (nothing for the voice path to key on)
+# got no acknowledgment at all for that whole window, and the one ask that fired at
+# the ACTIVE->IDLE transition landed inside the 5s post-conversation suppression and
+# was rejected (live-logged 2026-07-06-19-20). The ask is salient (time-sensitive) and
+# still yields to live speech, awaiting-a-reply, DJ, games, and open flows.
+IDENTITY_PROMPT_ALLOW_PROACTIVE_ACTIVE = True
+# If the in-flight latch is older than this, the governor rejected the candidate
+# (its speak_fn/on_done never ran to clear the latch) — recover and re-ask.
+IDENTITY_PROMPT_INFLIGHT_STALE_SECS = 10.0
 
 # When Rex has just asked an unidentified speaker for their name and they reply
 # with something he can't parse into a usable name — typically because his own

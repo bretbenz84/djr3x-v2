@@ -129,6 +129,10 @@ _followup_lock = threading.Lock()
 # Pending identity prompt for unknown-person enrollment.
 _pending_identity_prompt = threading.Event()
 _identity_prompt_in_flight = threading.Event()
+# When the in-flight latch was set. A governor-REJECTED candidate never runs its
+# speak_fn, so no callback clears the latch — a stale timestamp is the recovery
+# signal (live-logged 2026-07-06-19-20: one suppressed ask muted Rex all session).
+_identity_prompt_in_flight_at: float = 0.0
 _last_identity_prompt_at: float = 0.0
 _identity_prompt_reply_until: float = 0.0
 _IDENTITY_PROMPT_COOLDOWN_SECS = 45.0
@@ -4041,12 +4045,27 @@ def _maybe_prompt_unknown_identity(
     unknown visitors.
     """
     global _last_identity_prompt_at, _identity_prompt_reply_until, _solo_unknown_since
+    global _identity_prompt_in_flight_at
 
     if unknown_count <= 0 or known_unique:
         _solo_unknown_since = 0.0  # not a solo-unknown scene — reset the grace timer
         return
-    if _pending_identity_prompt.is_set() or _identity_prompt_in_flight.is_set():
+    if _pending_identity_prompt.is_set():
         return
+    if _identity_prompt_in_flight.is_set():
+        # The governor can REJECT the submitted candidate (e.g. the 5s
+        # situation-suppression window right after ACTIVE->IDLE), in which case its
+        # speak_fn/on_done never run and nothing clears this latch. Live-logged
+        # 2026-07-06-19-20: one rejected ask left the latch set and Rex never spoke
+        # to the unknown visitor again. A latch older than the stale window is dead.
+        stale = float(getattr(config, "IDENTITY_PROMPT_INFLIGHT_STALE_SECS", 10.0) or 10.0)
+        if (time.monotonic() - _identity_prompt_in_flight_at) < stale:
+            return
+        _log.info(
+            "[identity_prompt] stale in-flight latch (>%.0fs, governor likely rejected) "
+            "— clearing and retrying", stale,
+        )
+        _identity_prompt_in_flight.clear()
 
     # Grace: require the solo-unknown face to PERSIST before concluding it's truly a
     # stranger. A KNOWN face takes a tick or two to resolve (detect -> encode -> DB
@@ -4061,12 +4080,17 @@ def _maybe_prompt_unknown_identity(
 
     current_state = state_module.get_state()
     if current_state == State.ACTIVE and not bool(
-        getattr(config, "IDENTITY_PROMPT_ALLOW_PROACTIVE_ACTIVE", False)
+        getattr(config, "IDENTITY_PROMPT_ALLOW_PROACTIVE_ACTIVE", True)
     ):
         return
     if current_state not in (State.IDLE, State.ACTIVE):
         return
-    if not _can_proactive_speak():
+    # salient=True: an unacknowledged stranger standing in front of Rex is
+    # time-sensitive — without it, plain proactive speech is blocked for the whole
+    # ACTIVE period (the first ~60s after boot), which is exactly when a visitor
+    # walks up. Salient still yields to live speech, awaiting-a-reply, DJ, games,
+    # and open flows.
+    if not _can_proactive_speak(salient=True):
         return
 
     now = time.monotonic()
@@ -4078,6 +4102,15 @@ def _maybe_prompt_unknown_identity(
         getattr(current_state, "name", current_state),
     )
     _identity_prompt_in_flight.set()
+    _identity_prompt_in_flight_at = now
+
+    def _identity_prompt_spoke() -> None:
+        # Arm the re-ask cooldown only when the line is actually committed to the
+        # speech queue. speak_async returns True on governor SUBMISSION, so arming
+        # on that return burned the 45s cooldown on candidates the governor then
+        # rejected — and the visitor got silence.
+        global _last_identity_prompt_at
+        _last_identity_prompt_at = time.monotonic()
 
     def _identity_prompt_done() -> None:
         global _identity_prompt_reply_until
@@ -4094,11 +4127,11 @@ def _maybe_prompt_unknown_identity(
         wait_secs=getattr(config, "IDENTITY_RESPONSE_WAIT_SECS", 20.0),
         purpose="identity_prompt",
         label="identity_prompt",
+        force_salient=True,
         on_done=_identity_prompt_done,
+        on_spoke=_identity_prompt_spoke,
     )
-    if queued:
-        _last_identity_prompt_at = now
-    else:
+    if not queued:
         _identity_prompt_in_flight.clear()
 
 

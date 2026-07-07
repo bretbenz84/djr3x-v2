@@ -7805,7 +7805,12 @@ class ConversationGatingTest(unittest.TestCase):
             self.assertEqual(speak.call_args.kwargs.get("purpose"), "identity_prompt")
             self.assertEqual(speak.call_args.kwargs.get("label"), "identity_prompt")
             self.assertTrue(consciousness._identity_prompt_in_flight.is_set())
-            self.assertEqual(consciousness._last_identity_prompt_at, 100.0)
+            # The re-ask cooldown arms only when the line actually SPEAKS (on_spoke).
+            # speak_async returning True is governor SUBMISSION — arming there burned
+            # the 45s cooldown on rejected candidates (silent-stranger fix 2026-07-06).
+            self.assertEqual(consciousness._last_identity_prompt_at, 0.0)
+            speak.call_args.kwargs["on_spoke"]()  # real clock here — the mock exited
+            self.assertGreater(consciousness._last_identity_prompt_at, 0.0)
         finally:
             consciousness.world_state.update("people", old_people)
             consciousness._last_face_feedback_signature = old_signature
