@@ -88,6 +88,12 @@ _SUBTITLE_HALLUCINATION_RE = re.compile(
     r"\b(?:subs?|subtitle[sd]?|caption[sd]?|transcription|translation)\s+by\b|"
     r"\b(?:closed\s+caption|cc)\s+by\b|"
     r"\bthank(?:s| you)\s+for\s+watching\b|"
+    # YouTube-outro family ("and more. I hope you enjoyed this video. I'll see
+    # you in the next video." — live hallucination 2026-07-06-22-39, spoken by
+    # NOBODY; Whisper's training data leaks video sign-offs onto near-silence).
+    r"\bhope\s+you\s+enjoyed\s+(?:this|the|my|that)\s+video\b|"
+    r"\bsee\s+you\s+in\s+the\s+next\s+(?:video|one|episode)\b|"
+    r"\bsee\s+you\s+(?:guys\s+)?in\s+the\s+next\b|"
     r"\b(?:like\s+and\s+subscribe|(?:please|plz|pls)\.?\s+subscribe|"
     r"don'?t\s+forget\s+to\s+subscribe|subscribe\s+to\s+(?:my|our|the)\s+channel)\b|"
     r"\bamara\.org\b|"
@@ -181,6 +187,7 @@ def transcribe(audio_array: np.ndarray) -> str:
     """
     raw = ""
     backend = "none"
+    local_decoded_ok = False
     local_model_ready = _local_model_ready()
 
     if _MLX_AVAILABLE:
@@ -193,6 +200,7 @@ def transcribe(audio_array: np.ndarray) -> str:
                 )
                 raw = result.get("text", "").strip()
                 backend = "mlx_whisper"
+                local_decoded_ok = True
             except Exception as exc:
                 logger.warning("mlx_whisper failed (%s), falling back to OpenAI Whisper", exc)
         else:
@@ -204,6 +212,23 @@ def transcribe(audio_array: np.ndarray) -> str:
                     _WHISPER_LOCAL_DIR,
                 )
                 _WARNED_MISSING_LOCAL_MODEL = True
+
+    if (
+        not raw
+        and local_decoded_ok
+        and not bool(getattr(config, "WHISPER_FALLBACK_ON_EMPTY", False))
+    ):
+        # Local Whisper RAN and decoded nothing — that's an answer ("nobody said
+        # anything intelligible"), not a failure. Asking the API for a second
+        # opinion on near-silence is how the YouTube-outro hallucination reached
+        # the reply path ("I hope you enjoyed this video. I'll see you in the
+        # next video.", live 2026-07-06-22-39) — and it costs ~2s + a network
+        # call per silence. The fallback is for a BROKEN local path only.
+        logger.info(
+            "[transcription] EMPTY result — segment dropped | backend=%s | "
+            "local decoded silence; API fallback skipped", backend,
+        )
+        return ""
 
     if not raw:
         try:

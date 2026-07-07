@@ -96,5 +96,49 @@ class SceneWindowGuardTest(unittest.TestCase):
         self.assertFalse(self._skip(window + guard + 0.1))
 
 
+class WhisperOutroHallucinationTest(unittest.TestCase):
+    """YouTube-outro hallucination family (live 2026-07-06-22-39: 'and more. I hope
+    you enjoyed this video. I'll see you in the next video.' — spoken by nobody).
+    The filter must catch outro boilerplate as a SUBSTRING while leaving genuine
+    speech about enjoying things alone."""
+
+    def test_field_string_is_filtered(self):
+        from audio.transcription import _is_hallucination
+        self.assertTrue(_is_hallucination(
+            "and more. I hope you enjoyed this video. I'll see you in the next video."
+        ))
+
+    def test_outro_variants_filtered(self):
+        from audio.transcription import _is_hallucination
+        for t in ("I hope you enjoyed the video",
+                  "see you in the next one",
+                  "I'll see you guys in the next episode"):
+            self.assertTrue(_is_hallucination(t), t)
+
+    def test_genuine_speech_survives(self):
+        from audio.transcription import _is_hallucination
+        for t in ("I really enjoyed this movie last night",
+                  "see you tomorrow",
+                  "I hope you enjoyed the party"):
+            self.assertFalse(_is_hallucination(t), t)
+
+    def test_local_silence_skips_api_second_opinion(self):
+        # Local Whisper decoded empty -> no API call, empty return.
+        from unittest import mock
+        import numpy as np
+        from audio import transcription as tr
+        with (
+            mock.patch.object(tr, "_MLX_AVAILABLE", True),
+            mock.patch.object(tr, "_local_model_ready", return_value=True),
+            mock.patch.object(tr, "mlx_whisper", create=True) as mlx,
+            mock.patch.object(config, "WHISPER_FALLBACK_ON_EMPTY", False),
+        ):
+            mlx.transcribe.return_value = {"text": "  "}
+            with mock.patch("openai.OpenAI") as api:
+                out = tr.transcribe(np.zeros(16000, dtype=np.float32))
+        self.assertEqual(out, "")
+        api.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

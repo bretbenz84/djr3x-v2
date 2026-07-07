@@ -1677,6 +1677,14 @@ WHISPER_FILLER_UTTERANCE_BLOCKLIST = [
 # Transcriptions that exactly match these phrases (case-insensitive after basic
 # normalization) are discarded entirely — they are known Whisper hallucinations
 # on near-silent audio.
+# When local Whisper RUNS successfully but decodes empty (silence/unintelligible),
+# should the OpenAI API get a second opinion? Default False: local large-v3-turbo
+# is the stronger model, and a second decode of near-silence is where the
+# YouTube-outro hallucinations came from (live 2026-07-06-22-39) — plus ~2s and a
+# network call per silence. The API fallback still fires when local RAISES or the
+# model is missing.
+WHISPER_FALLBACK_ON_EMPTY = _env_bool("WHISPER_FALLBACK_ON_EMPTY", False)
+
 HALLUCINATION_BLOCKLIST = [
     "thank you",
     "thanks for watching",
