@@ -4531,6 +4531,40 @@ _GREETING_OPENERS = (
     "how's your day going",
 )
 
+# First-greeting STYLE variety for an established regular (owner gripe 2026-07-06:
+# "hey Bret, what's up?" fires too often at startup — fine sometimes, stale as the
+# default). Question-phrase rotation alone kept the same SHAPE every time; this
+# table mixes in statement hellos and time-of-day hellos, which drop the
+# question-mark requirement. (opener_phrase, is_question). "time_of_day" renders
+# "good morning/afternoon/evening" at build time.
+_FIRST_GREETING_STYLES = (
+    ("how are you", True),
+    ("good to see you", False),
+    ("what's up", True),
+    ("time_of_day", False),
+    ("what's new", True),
+    ("hey, welcome back", False),
+    ("how's your day going", True),
+)
+
+
+def _time_of_day_hello() -> str:
+    hour = datetime.now().hour
+    if hour < 12:
+        return "good morning"
+    if hour < 17:
+        return "good afternoon"
+    return "good evening"
+
+
+def _first_greeting_style(visits: int) -> tuple[str, bool]:
+    """(opener_phrase, is_question) for a regular's first greeting of the day,
+    rotated on their persistent visit count so it varies across days."""
+    phrase, is_question = _FIRST_GREETING_STYLES[visits % len(_FIRST_GREETING_STYLES)]
+    if phrase == "time_of_day":
+        phrase = _time_of_day_hello()
+    return phrase, is_question
+
 
 def _repeat_greeting_opener(greeting_ordinal: int) -> Optional[str]:
     """Pick a rotated short opener for a REPEAT greeting so a same-day / within-window
@@ -4546,25 +4580,39 @@ def _repeat_greeting_opener(greeting_ordinal: int) -> Optional[str]:
 
 def _build_simple_greeting_prompt(
     first_name: str, tone: str, *, note: str = "", opener: Optional[str] = None,
-    allow_familiarity: bool = False,
+    allow_familiarity: bool = False, require_question: bool = True,
 ) -> str:
     """A plain, warm, human greeting — the way a real friend says hello. No roast, no
     clever theme, no interest hook; just a friendly hello. `note` optionally sets the
     situation (seen earlier today, been a while) so it lands naturally. `opener` sets the
     hello STYLE (e.g. "what's up") for repeat-visit variety; defaults to "how are you".
     `allow_familiarity` drops ONLY the "it's you again" ban (for an established regular whose
-    `note` invites that warmth) — every other ban (roast, clever bit, interest hook) stays."""
+    `note` invites that warmth) — every other ban (roast, clever bit, interest hook) stays.
+    `require_question=False` allows a STATEMENT hello ("Hey Bret — good to see you.") for
+    the non-question opener styles, so not every startup greeting is a question."""
     note_clause = (note.strip() + " ") if note else ""
     opener = (opener or "how are you").strip()
     again_ban = "" if allow_familiarity else "NO 'oh it's you again', "
+    if require_question:
+        shape = (
+            f"(e.g. 'Hey {first_name}, {opener}?', or a close, natural variant of that). "
+        )
+        ending = "just a warm hello by name that ends in a question mark."
+    else:
+        shape = (
+            f"(e.g. 'Hey {first_name} — {opener}.', or a close, natural variant of that). "
+        )
+        ending = (
+            "just a warm hello by name. A question is OPTIONAL — a plain warm "
+            "statement hello is completely fine this time."
+        )
     return (
         f"You see {first_name}. {note_clause}{tone} Give a simple, natural, warm hello "
         f"that opens with a \"{opener}\"-style greeting — exactly how a real friend says "
-        f"hello (e.g. 'Hey {first_name}, {opener}?', or a close, natural variant of that). "
+        f"hello {shape}"
         f"Keep it to ONE short, genuine line. NO roast, {again_ban}NO clever "
         f"bit or Star Wars one-liner, NO 'what do you need / what are you up to / working "
-        f"on / tinkering with', and NO interest callbacks — just a warm hello by name that "
-        f"ends in a question mark."
+        f"on / tinkering with', and NO interest callbacks — {ending}"
     )
 
 
@@ -7869,6 +7917,7 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                     _greet_note = ""
                     _greet_opener = greeting_opener
                     _allow_familiarity = False
+                    _greet_require_question = True
                     try:
                         if (
                             bool(getattr(config, "PRESENCE_RETURNING_REGULAR_GREETING_ENABLED", True))
@@ -7885,12 +7934,19 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                                     f"it's you' vibe fits."
                                 )
                                 if not _greet_opener:
-                                    _greet_opener = _GREETING_OPENERS[_visits % len(_GREETING_OPENERS)]
+                                    # STYLE rotation, not just phrase rotation: statement
+                                    # and time-of-day hellos mixed with the question forms
+                                    # so cold boots don't all open "Hey Bret, what's up?"
+                                    # (owner gripe 2026-07-06 — fine sometimes, stale as
+                                    # the default).
+                                    _greet_opener, _q = _first_greeting_style(_visits)
+                                    _greet_require_question = _q
                     except Exception as exc:
                         _log.debug("[greeting] returning-regular flavor failed: %s", exc)
                     prompt = _build_simple_greeting_prompt(
                         first_name, greeting_tone, note=_greet_note,
-                        opener=_greet_opener, allow_familiarity=_allow_familiarity)
+                        opener=_greet_opener, allow_familiarity=_allow_familiarity,
+                        require_question=_greet_require_question)
                     label = f"first-sight warm greeting for {person_name}"
                     emotion = "happy"
                     _log.info(

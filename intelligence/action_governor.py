@@ -419,6 +419,39 @@ class ActionGovernor:
             remaining = max(0.0, min_gap - recent_rex_gap)
             reasons.append(f"proactive_cooldown_{remaining:.1f}s")
 
+        # ── CENTRAL presence-gated cadence clamp (the real fix, 2026-07-06) ──────
+        # The metadata gates above exist only on candidates built by speak_async —
+        # submit_external candidates (idle banter, priority 50) carried none of it
+        # and faced NO cadence check at all, winning every empty cycle (the
+        # historical over-talk leak). Compute the gap HERE from the shared
+        # proactive clock, scaled by presence (base 12s in live conversation /
+        # 45s present-but-quiet / 600s empty room — presence_cadence.py), and
+        # hard-reject chatter-class purposes inside it. Event-driven purposes
+        # (greetings, wave-backs, identity asks, check-ins) and salient/reactive
+        # moves are never clamped.
+        cadence_clamped = False
+        clamp_purposes = tuple(getattr(config, "PROACTIVE_CADENCE_CLAMP_PURPOSES", ()) or ())
+        if (
+            bool(getattr(config, "PROACTIVE_CADENCE_CLAMP_ENABLED", True))
+            and candidate.purpose in clamp_purposes
+            and not _cadence_bypass
+        ):
+            try:
+                from intelligence import consciousness as _consciousness
+                from intelligence import presence_cadence
+                with _consciousness._turn_lock:
+                    last_spoke = float(_consciousness._last_proactive_speech_at or 0.0)
+                if last_spoke:
+                    gap = time.monotonic() - last_spoke
+                    need = presence_cadence.effective_min_gap_secs(profile)
+                    if gap < need:
+                        cadence_clamped = True
+                        reasons.append(
+                            f"cadence_clamp_{max(0.0, need - gap):.0f}s_of_{need:.0f}s"
+                        )
+            except Exception:
+                pass
+
         rejected = bool(
             candidate.outcome == "dropped"
             or "non_proactive_candidate" in reasons
@@ -437,6 +470,7 @@ class ActionGovernor:
             or "can_speak_false" in reasons
             or "end_thread_grace_suppressed" in reasons
             or "question_budget_exhausted" in reasons
+            or cadence_clamped
             or (candidate.metadata.get("cooldown_active") and not _cadence_bypass)
         )
         min_score = int(getattr(config, "ACTION_GOVERNOR_MIN_SCORE", 20))

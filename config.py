@@ -4071,7 +4071,27 @@ SLEEP_TRANSCRIBED_WAKE_FALLBACK_ENABLED = True
 CONSCIOUSNESS_LOOP_INTERVAL_SECS = 1.0
 
 # Minimum spacing between autonomous/proactive spoken lines from consciousness.
+# This is the ENGAGED-tier base; see the presence-gated clamp below.
 CONSCIOUSNESS_PROACTIVE_MIN_GAP_SECS = 12.0
+
+# ── Presence-gated proactive cadence clamp (intelligence/presence_cadence.py) ─
+# The REAL fix for unprompted over-talk (owner direction 2026-07-06): the gap
+# between chatter-class proactive lines scales with presence — 12s (base above)
+# while a conversation is flowing, longer when someone is present but quiet,
+# near-silent in an empty room. Enforced CENTRALLY in the action governor as a
+# hard reject, closing the historical leak where submit_external candidates
+# (idle banter, priority 50) carried no cooldown metadata and faced no cadence
+# gate at all. Event-driven purposes (greetings, wave-backs, identity asks,
+# check-ins) are never clamped.
+PROACTIVE_CADENCE_CLAMP_ENABLED = _env_bool("PROACTIVE_CADENCE_CLAMP_ENABLED", True)
+PROACTIVE_GAP_PRESENT_IDLE_SECS = 45.0   # someone visible, no live conversation
+PROACTIVE_GAP_EMPTY_ROOM_SECS = 600.0    # nobody visible — quiet when you leave
+# Chatter-class purposes subject to the clamp (event-driven purposes excluded).
+PROACTIVE_CADENCE_CLAMP_PURPOSES = (
+    "idle_monologue", "small_talk", "visual_curiosity", "lull_callback",
+    "memory_followup", "room_change", "room_reaction",
+    "weather.proactive_comment",
+)
 
 # If False, consciousness-generated proactive speech only occurs in IDLE.
 CONSCIOUSNESS_ALLOW_PROACTIVE_IN_ACTIVE = True

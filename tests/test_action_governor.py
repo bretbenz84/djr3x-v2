@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 
 class ActionGovernorScopeTests(unittest.TestCase):
@@ -7,6 +8,15 @@ class ActionGovernorScopeTests(unittest.TestCase):
         # test doesn't put a topic_key on cooldown for the next test's candidate.
         from intelligence import action_governor as ag
         ag._recent_selected.clear()
+        # These tests exercise the classic silence-fill purposes (idle_monologue,
+        # small_talk...), which the governor drops outright under the lean brain
+        # (LEAN_SUPPRESSED_PROACTIVE_PURPOSES) — pin classic mode so the scoring
+        # and gating behavior under test is reachable. (The suite went stale when
+        # LEAN_BRAIN_ENABLED flipped True for live testing.)
+        import config
+        self._lean_patch = mock.patch.object(config, "LEAN_BRAIN_ENABLED", False)
+        self._lean_patch.start()
+        self.addCleanup(self._lean_patch.stop)
 
     def test_governor_selects_proactive_candidate(self):
         from intelligence.action_governor import ActionGovernor, CandidateMove
@@ -286,6 +296,13 @@ class GovernorCrossThreadIntakeTests(unittest.TestCase):
     """Increment 2: a candidate from a non-consciousness thread (idle banter,
     memory follow-ups) is submitted to a shared buffer and drained into the next
     consciousness tick, so one decider arbitrates ALL proactive speech."""
+
+    def setUp(self):
+        # idle_monologue is lean-suppressed; pin classic mode (see scope tests).
+        import config
+        self._lean_patch = mock.patch.object(config, "LEAN_BRAIN_ENABLED", False)
+        self._lean_patch.start()
+        self.addCleanup(self._lean_patch.stop)
 
     def _clear(self, ag):
         with ag._external_lock:
