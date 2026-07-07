@@ -75,10 +75,28 @@ class RepeatGreetingOpenerTest(unittest.TestCase):
         # Cycles back to the first variant after exhausting the pool.
         self.assertEqual(c._repeat_greeting_opener(2), c._repeat_greeting_opener(2 + len(c._GREETING_OPENERS) - 1))
 
-    def test_same_day_return_prompt_honors_opener(self):
+    def test_same_day_return_prompt_demands_acknowledgment(self):
+        # New contract (owner gripe 2026-07-06: repeat visits got plain 'Hey Bret,
+        # what's up?'): the back-again beat REPLACES the hello style — the prompt
+        # must demand the acknowledgment and ban the generic hello shape.
         p = c._build_same_day_return_prompt("Bret", 1, tone="t.", opener="what's up")
-        self.assertIn("what's up", p.lower())
-        self.assertNotIn("how are you", p.lower())  # the rotated opener replaces the default
+        self.assertIn("ACKNOWLEDGES the return", p)
+        self.assertIn("never a generic", p)
+        self.assertIn("you're back", p.lower())
+        self.assertIn("NO roast", p)
+
+    def test_multi_visit_return_prompt_notes_repeat_visits(self):
+        p = c._build_same_day_return_prompt("Bret", 2, tone="", opener=None)
+        self.assertIn("AGAIN", p)
+        self.assertIn("keep coming back", p)
+
+    def test_recent_return_prompt_acknowledges_quick_return(self):
+        p = c._build_recent_return_prompt("Bret", 20.0, tone="")
+        self.assertIn("QUICK return", p)
+        self.assertIn("acknowledges", p)
+        self.assertIn("about 20 hours ago", p)
+        p_yesterday = c._build_recent_return_prompt("Bret", 30.0, tone="")
+        self.assertIn("yesterday", p_yesterday)
 
 
 if __name__ == "__main__":

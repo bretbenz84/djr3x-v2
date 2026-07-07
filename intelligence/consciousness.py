@@ -4633,14 +4633,30 @@ def _build_long_absence_prompt(first_name: str, days: float, *, tone: str = "") 
 def _build_recent_return_prompt(
     first_name: str, hours: float, *, tone: str = "", opener: Optional[str] = None,
 ) -> str:
+    """First greeting of the day for someone last seen RECENTLY (<48h) — the hello
+    should lightly acknowledge the quick return ('back already', 'saw you
+    yesterday') instead of a generic 'how are you'. Same fix as the same-day
+    builder: it used to delegate to the plain template, which dropped the note.
+    `opener` kept for caller compatibility, unused."""
     if hours < 1.5:
-        span = "a little while ago"
+        span = "just a little while ago"
+        examples = f"'Back already? Missed me.', 'That was quick. Hey {first_name}.'"
     elif hours < 24:
         span = f"about {int(round(hours))} hours ago"
+        examples = f"'Twice in one day — I'm flattered.', 'Back again? Good.'"
     else:
         span = "yesterday"
-    return _build_simple_greeting_prompt(
-        first_name, tone, note=f"You last saw {first_name} {span}.", opener=opener,
+        examples = (
+            f"'Hey {first_name} — two days running. I could get used to this.', "
+            f"'Back again. Yesterday clearly went well.'"
+        )
+    tone_clause = f" {tone}" if tone else ""
+    return (
+        f"You see {first_name}; you last saw them {span}, so this is a QUICK return."
+        f"{tone_clause} Greet them with ONE short, warm line that lightly acknowledges "
+        f"seeing them again so soon — never a generic 'how are you / what's up' hello. "
+        f"Glad, never annoyed; NO roast. Shape examples: {examples} A question is "
+        f"optional."
     )
 
 
@@ -4671,18 +4687,38 @@ def _build_same_day_return_prompt(
     first_name: str, prior_greetings_today: int, *, tone: str = "",
     opener: Optional[str] = None,
 ) -> str:
-    """A warm, simple 'good to see you back' for a same-day repeat activation —
-    NOT a roast. `prior_greetings_today` is how many times Rex already greeted them
-    earlier today (>=1 here). `opener` varies the hello style so repeat visits in the
-    same window don't all sound like 'how are you?'."""
+    """A warm 'oh, you're back' for a same-day repeat activation — NOT a roast.
+
+    Owner gripe 2026-07-06: repeat visits got plain 'Hey Bret, what's up?' with no
+    back-again acknowledgment. This used to delegate to the simple-greeting
+    template, which buried the return context in an ignorable note, forced the
+    'Hey {name}, {opener}?' shape via its example, and BANNED "it's you again"
+    (allow_familiarity defaults False) — the acknowledgment was literally
+    prohibited. The return IS the greeting now. `opener` is accepted for caller
+    compatibility but unused — the back-again beat replaces the hello style."""
     if prior_greetings_today >= 2:
-        note = (
-            f"You've already seen {first_name} a couple of times today — you're glad "
-            f"they keep coming back, not annoyed by it."
+        situation = (
+            f"You've already seen {first_name} a couple of times today and here they "
+            f"are AGAIN — you're glad they keep coming back, not annoyed by it."
+        )
+        examples = (
+            f"'Back again? I'll allow it.', '{first_name}! Round "
+            f"{_ordinal(prior_greetings_today + 1)}.', 'You keep showing up. Good.'"
         )
     else:
-        note = f"You saw {first_name} earlier today and here they are again — nice."
-    return _build_simple_greeting_prompt(first_name, tone, note=note, opener=opener)
+        situation = f"You greeted {first_name} earlier today and here they are again."
+        examples = (
+            f"'Hey, you're back.', 'Oh — round two. Hey {first_name}.', "
+            f"'Look who's back already.'"
+        )
+    tone_clause = f" {tone}" if tone else ""
+    return (
+        f"You see {first_name}. {situation}{tone_clause} Greet them with ONE short, "
+        f"warm line that ACKNOWLEDGES the return — 'you're back' is the whole point, "
+        f"never a generic 'how are you / what's up' hello. Glad, never annoyed; NO "
+        f"roast, NO guilt-tripping about leaving. Shape examples: {examples} "
+        f"A question is optional."
+    )
 
 
 def _build_anticipation_prompt(
