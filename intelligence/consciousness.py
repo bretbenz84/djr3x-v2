@@ -7644,6 +7644,41 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
                                 person_name, ev_name,
                             )
 
+                # Priority 2.6 — session-opener continuity: an UNDATED thread from a
+                # previous session that never got resolved ("last night you never told
+                # me how the soup turned out"). Dated events are Priority 2.5; this
+                # covers dateless plans that would otherwise wait FOLLOWUP_UNDATED_DAYS.
+                if prompt is None and bool(
+                    getattr(config, "SESSION_OPENER_CONTINUITY_ENABLED", True)
+                ):
+                    try:
+                        from memory import events as events_mod
+                        threads = events_mod.get_recent_open_threads(person_db_id) or []
+                    except Exception:
+                        threads = []
+                    if threads:
+                        ev = threads[0]
+                        ev_name = ev.get("event_name") or ""
+                        if ev_name:
+                            when_label = events_mod.mentioned_when_label(ev.get("mentioned_at"))
+                            followup_to_remove = (person_db_id, ev.get("id"))
+                            followup_event_name = ev_name
+                            prompt = (
+                                f"{context_sentence} "
+                                f"{when_label.capitalize()} they mentioned this and you never "
+                                f"heard how it turned out: '{ev_name}'. Greet {first_name} by "
+                                f"name, warm not roasty, then pick the thread back up — ask "
+                                f"specifically how '{ev_name}' went, referencing that it was "
+                                f"{when_label}. Two short Rex-style sentences; the second must "
+                                f"end in a question mark."
+                            )
+                            label = f"startup continuity ({ev_name}) for {person_name}"
+                            emotion = "curious"
+                            _log.info(
+                                "consciousness: session-opener continuity for %s — %r (%s)",
+                                person_name, ev_name, when_label,
+                            )
+
                 # Priority 3 — anticipated upcoming event
                 if prompt is None:
                     anticipated = _pick_anticipated_event(person_db_id)

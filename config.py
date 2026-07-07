@@ -5235,6 +5235,16 @@ JEFF_CELEBRITY_GREETING_PENDING_SECS = 45.0
 # Days after mentioned_at before a dateless event is due for follow-up
 FOLLOWUP_UNDATED_DAYS = 7
 
+# Session-opener continuity: greet a returning person by picking up an UNDATED open
+# thread from a previous session ("last night you never told me how the soup turned
+# out"). Fills the gap where dateless plans otherwise wait FOLLOWUP_UNDATED_DAYS (7)
+# before any follow-up — the very next session is when the callback feels attentive.
+# Fires as greeting Priority 2.6 (after dated follow-ups, before anticipation).
+SESSION_OPENER_CONTINUITY_ENABLED = _env_bool("SESSION_OPENER_CONTINUITY_ENABLED", True)
+# Only threads mentioned within this many days qualify (older ones fall through to
+# the normal 7-day pending-followup path).
+SESSION_OPENER_CONTINUITY_LOOKBACK_DAYS = 3
+
 # How many turns an unanswered event follow-up may stay "open" (re-injected into
 # the agenda as Rex's unresolved question) before Rex gives up and stops asking.
 # Prevents the "obsessively re-asks how the concert went" loop when the user

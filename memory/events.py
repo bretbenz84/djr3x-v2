@@ -58,6 +58,13 @@ def _today_local() -> str:
     return date.today().isoformat()
 
 
+# Process boot time (this module imports during startup). Session-opener continuity
+# uses it to split "threads from a PREVIOUS session" from things said minutes ago in
+# the current one — an event mentioned after boot is live conversation, not a thread
+# to greet someone with.
+_BOOT_AT_ISO: str = datetime.now(timezone.utc).isoformat()
+
+
 def _undated_followup_cutoff() -> str:
     days = int(getattr(config, "FOLLOWUP_UNDATED_DAYS", 7))
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
@@ -188,6 +195,61 @@ def get_pending_followups(person_id: int) -> list[dict]:
         (person_id, today, undated_cutoff),
     )
     return [dict(r) for r in rows]
+
+
+def get_recent_open_threads(person_id: int, lookback_days: Optional[int] = None) -> list[dict]:
+    """
+    Session-opener continuity ("last night you never told me how the soup turned out").
+
+    Return UNDATED open threads from a PREVIOUS session: event_date IS NULL,
+    followed_up FALSE, status planned/promised, mentioned BEFORE this process booted
+    but within lookback_days (default SESSION_OPENER_CONTINUITY_LOOKBACK_DAYS=3).
+    Newest first, so the freshest thread leads the greeting.
+
+    This deliberately overlaps get_pending_followups only at the stale end: pending
+    followups pick up undated events after FOLLOWUP_UNDATED_DAYS (7), while this
+    surfaces them the very NEXT session — the window where "you never told me how it
+    went" still feels attentive rather than random. Dated events are excluded (past
+    dates are already Priority 2.5; future dates are anticipation, not continuity).
+    """
+    days = int(lookback_days if lookback_days is not None
+               else getattr(config, "SESSION_OPENER_CONTINUITY_LOOKBACK_DAYS", 3))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    rows = db.fetchall(
+        """SELECT * FROM person_events
+           WHERE person_id = ?
+             AND followed_up = FALSE
+             AND COALESCE(status, 'planned') IN ('planned', 'promised')
+             AND event_date IS NULL
+             AND mentioned_at >= ?
+             AND mentioned_at < ?
+           ORDER BY mentioned_at DESC""",
+        (person_id, cutoff, _BOOT_AT_ISO),
+    )
+    return [dict(r) for r in rows]
+
+
+def mentioned_when_label(mentioned_at: Optional[str]) -> str:
+    """Coarse human phrase for when a thread was mentioned, in LOCAL time:
+    "earlier today", "last night", "yesterday", "a couple of days ago",
+    "the other day". Feeds the greeting so Rex says "last night you never told
+    me..." instead of a timestamp."""
+    try:
+        dt = datetime.fromisoformat(str(mentioned_at))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        local = dt.astimezone()
+        now_local = datetime.now(timezone.utc).astimezone()
+        days_apart = (now_local.date() - local.date()).days
+    except (TypeError, ValueError):
+        return "the other day"
+    if days_apart <= 0:
+        return "earlier today"
+    if days_apart == 1:
+        return "last night" if local.hour >= 17 else "yesterday"
+    if days_apart == 2:
+        return "a couple of days ago"
+    return "the other day"
 
 
 def mark_anticipated(event_id: int) -> None:
