@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +22,8 @@ from config import (
     DB_PATH,
     REX_DB_PATH,
     FACE_MODELS_DIR,
+    INSIGHTFACE_MODEL_PACK,
+    INSIGHTFACE_MODEL_ROOT,
     MEDIAPIPE_OBJECT_DETECTOR_MODEL,
     MEDIAPIPE_FACE_LANDMARKER_MODEL,
     MEDIAPIPE_POSE_LANDMARKER_MODEL,
@@ -38,6 +41,7 @@ from config import (
 REQUIRED_DIRS = [
     "assets/models/wake_word",
     "assets/models/face",
+    "assets/models/insightface",
     "assets/models/pose",
     "assets/models/object_detection",
     "assets/models/whisper",
@@ -67,6 +71,17 @@ DLIB_MODELS = [
         "url": "https://dlib.net/files/mmod_human_face_detector.dat.bz2",
     },
 ]
+
+# ── InsightFace model pack (SCRFD detection + ArcFace recognition) ───────────
+# The primary face backend (config.FACE_BACKEND="insightface"). The release zip
+# also ships landmark/genderage models we don't use — only these two are
+# extracted (~190MB instead of ~330MB). Weights are non-commercial licensed
+# (fine for this personal robot).
+INSIGHTFACE_PACK_URL = (
+    "https://github.com/deepinsight/insightface/releases/download/v0.7/"
+    f"{INSIGHTFACE_MODEL_PACK}.zip"
+)
+INSIGHTFACE_ONNX_FILES = ["det_10g.onnx", "w600k_r50.onnx"]
 
 MEDIAPIPE_FACE_LANDMARKER = {
     "name": Path(MEDIAPIPE_FACE_LANDMARKER_MODEL).name,
@@ -435,6 +450,46 @@ def download_dlib_models(
             failed.append(f"{label}: {exc}")
 
     return created, skipped, failed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2b — InsightFace model pack (SCRFD + ArcFace, the primary face backend)
+# ─────────────────────────────────────────────────────────────────────────────
+def download_insightface_models(
+    root: Path,
+) -> tuple[list[str], list[str], list[str]]:
+    # FaceAnalysis(name=PACK, root=ROOT) looks in ROOT/models/PACK/*.onnx
+    dest_dir = root / INSIGHTFACE_MODEL_ROOT / "models" / INSIGHTFACE_MODEL_PACK
+    missing = [n for n in INSIGHTFACE_ONNX_FILES if not (dest_dir / n).exists()]
+    labels = [f"insightface/{n}" for n in INSIGHTFACE_ONNX_FILES]
+
+    if not missing:
+        return [], labels, []
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    tmp = dest_dir / f"{INSIGHTFACE_MODEL_PACK}.zip.tmp"
+    try:
+        print(f"    Downloading {INSIGHTFACE_MODEL_PACK}.zip (~280MB) ...")
+        urllib.request.urlretrieve(INSIGHTFACE_PACK_URL, tmp, _progress)
+        print()
+        created = []
+        with zipfile.ZipFile(tmp) as zf:
+            for member in zf.namelist():
+                name = Path(member).name  # zip members are flat, but be safe
+                if name in INSIGHTFACE_ONNX_FILES:
+                    print(f"    Extracting {name} ...")
+                    with zf.open(member) as src, open(dest_dir / name, "wb") as out:
+                        shutil.copyfileobj(src, out)
+                    created.append(f"insightface/{name}")
+        tmp.unlink()
+        still_missing = [n for n in INSIGHTFACE_ONNX_FILES if not (dest_dir / n).exists()]
+        if still_missing:
+            return created, [], [f"insightface: zip did not contain {still_missing}"]
+        return created, [], []
+    except Exception as exc:
+        if tmp.exists():
+            tmp.unlink()
+        return [], [], [f"insightface/{INSIGHTFACE_MODEL_PACK}: {exc}"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -961,7 +1016,7 @@ def main() -> None:
     print("DJ-R3X v2 — setup_assets.py")
     print()
 
-    print("[1/9] Creating project directories ...")
+    print("[1/10] Creating project directories ...")
     dir_created = create_directories(root)
     count = len(dir_created)
     print(f"      {count} created." if count else "      All already exist.")
@@ -970,42 +1025,47 @@ def main() -> None:
     all_skipped: list[str] = []
     all_failed:  list[str] = []
 
-    print("[2/9] dlib face recognition models ...")
+    print("[2/10] InsightFace models (SCRFD + ArcFace — primary face backend) ...")
+    c, s, f = download_insightface_models(root)
+    all_created += c; all_skipped += s; all_failed += f
+    _report(c, s, f)
+
+    print("[3/10] dlib face recognition models (legacy fallback backend) ...")
     c, s, f = download_dlib_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[3/9] MediaPipe Face Landmarker model ...")
+    print("[4/10] MediaPipe Face Landmarker model ...")
     c, s, f = download_mediapipe_face_landmarker(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[4/9] MediaPipe Pose Landmarker model ...")
+    print("[5/10] MediaPipe Pose Landmarker model ...")
     c, s, f = download_mediapipe_pose_landmarker(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[5/9] MediaPipe Object Detector model ...")
+    print("[6/10] MediaPipe Object Detector model ...")
     c, s, f = download_mediapipe_object_detector(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[6/9] mlx-whisper large-v3-turbo model ...")
+    print("[7/10] mlx-whisper large-v3-turbo model ...")
     c, s, f = download_whisper_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[7/9] Resemblyzer speaker-ID model ...")
+    print("[8/10] Resemblyzer speaker-ID model ...")
     c, s, f = download_resemblyzer_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[8/9] Ollama local sidecar model ...")
+    print("[9/10] Ollama local sidecar model ...")
     c, s, f = install_ollama_model()
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[9/9] Database schema and personality defaults ...")
+    print("[10/10] Database schema and personality defaults ...")
     c, s, f = initialize_database(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)

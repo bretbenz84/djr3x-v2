@@ -200,6 +200,14 @@ ELEVENLABS_VOICE_ID = "no5jvDWvnx2leN3dFOS7"
 # How often (seconds) the GPT vision environment scan runs.
 # ENVIRONMENT_SCAN_INTERVAL_SECS = 180
 
+# Face detection/recognition backend. "insightface" (default): SCRFD + ArcFace
+# 512-dim embeddings — much better at distance, odd angles, and the robot's
+# upward camera view. "dlib": the legacy stack (also the automatic fallback if
+# InsightFace models fail to load). Face enrollments are backend-specific:
+# switching requires re-enrolling faces (voice ID is unaffected) — run
+# venv/bin/python tools/test_face_id.py --enroll "Name" --replace
+# FACE_BACKEND = "insightface"
+
 # Days before a stored fact is treated as stale / needs reconfirming.
 # STALE_FACT_THRESHOLD_DAYS = 365
 

@@ -79,5 +79,56 @@ class FindByFaceTest(unittest.TestCase):
         self.assertEqual(out["id"], 1)
 
 
+class DimensionAwareBackendTest(FindByFaceTest):
+    """512-dim ArcFace (insightface) queries use ArcFace thresholds and skip stale
+    128-dim dlib rows; dlib queries do the reverse. The two enrollment generations
+    coexist in biometrics but never cross-match."""
+
+    def setUp(self):
+        super().setUp()
+        self._orig_arc_thr = getattr(config, "FACE_RECOGNITION_DISTANCE_THRESHOLD_ARCFACE", None)
+        self._orig_arc_margin = getattr(config, "FACE_RECOGNITION_MARGIN_ARCFACE", None)
+        config.FACE_RECOGNITION_DISTANCE_THRESHOLD_ARCFACE = 1.10
+        config.FACE_RECOGNITION_MARGIN_ARCFACE = 0.08
+
+    def tearDown(self):
+        config.FACE_RECOGNITION_DISTANCE_THRESHOLD_ARCFACE = self._orig_arc_thr
+        config.FACE_RECOGNITION_MARGIN_ARCFACE = self._orig_arc_margin
+        super().tearDown()
+
+    def test_arcface_query_uses_arcface_threshold(self):
+        # d=0.90 fails the dlib threshold (0.6) but clears ArcFace's 1.10.
+        rows = [_row(1, _vec(0.90, dim=512))]
+        out = self._find(rows, _vec(0.0, dim=512))
+        self.assertIsNotNone(out)
+        self.assertEqual(out["id"], 1)
+
+    def test_arcface_query_above_arcface_threshold_returns_none(self):
+        rows = [_row(1, _vec(1.20, dim=512))]  # d=1.20 >= 1.10
+        self.assertIsNone(self._find(rows, _vec(0.0, dim=512)))
+
+    def test_arcface_query_skips_stale_dlib_rows(self):
+        # Person 1 has ONLY a stale 128-dim dlib row: a 512-dim probe must not match it.
+        rows = [_row(1, _vec(0.0, dim=128))]
+        self.assertIsNone(self._find(rows, _vec(0.0, dim=512)))
+
+    def test_dlib_query_skips_arcface_rows(self):
+        rows = [_row(1, _vec(0.0, dim=512))]
+        self.assertIsNone(self._find(rows, _vec(0.0, dim=128)))
+
+    def test_mixed_rows_same_person_match_within_own_generation(self):
+        # Person 1 enrolled under BOTH backends; a 512-dim probe matches via the
+        # ArcFace row and ignores the dlib one.
+        rows = [_row(1, _vec(0.30, dim=128)), _row(1, _vec(0.50, dim=512))]
+        out = self._find(rows, _vec(0.0, dim=512))
+        self.assertIsNotNone(out)
+        self.assertEqual(out["id"], 1)
+
+    def test_arcface_margin_gate(self):
+        # Two different people 0.05 apart < 0.08 ArcFace margin -> ambiguous.
+        rows = [_row(1, _vec(0.60, dim=512)), _row(4, _vec(0.65, dim=512))]
+        self.assertIsNone(self._find(rows, _vec(0.0, dim=512)))
+
+
 if __name__ == "__main__":
     unittest.main()

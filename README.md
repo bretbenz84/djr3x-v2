@@ -9,7 +9,7 @@ The project is built for live, in-room use: Rex can recognize people, remember d
 - Wake-word and always-listening conversation flow
 - Local Whisper transcription with OpenAI fallback support
 - ElevenLabs TTS with cached speech output
-- Camera-based scene, face, appearance, and animal awareness
+- Camera-based scene, face, appearance, and animal awareness — face detection/recognition runs on InsightFace (SCRFD detector + ArcFace 512-dim embeddings via ONNX Runtime; `FACE_BACKEND=dlib` restores the legacy stack)
 - Voice and face enrollment for known people
 - Persistent memory database for people, relationships, preferences, and events (`people.db`)
 - Rex's own first-person episodic memory (`rex.db`) — a timestamped log of his experiences (people seen, scenes observed, things he did, per-session conversation summaries)
@@ -169,7 +169,7 @@ awareness/      Time, holidays, interoception, and background awareness systems
 features/       Games, music, commandable behaviors, and interactive features
 hardware/       Servo, LED, and motion-base serial integrations
 intelligence/   Conversation, memory, LLM prompting, empathy, social behavior, and motion control
-vision/         Camera, face recognition, scene analysis, and image utilities
+vision/         Camera, face recognition (InsightFace SCRFD+ArcFace), scene analysis, and image utilities
 firmware/       ESP32 motion-controller firmware (Arduino sketch) + host serial tools
 assets/         Models, audio, game assets, memory database, and cached generated assets
 logs/           Runtime logs
@@ -178,6 +178,7 @@ logs/           Runtime logs
 ## Notes
 
 - The program can run with missing droid hardware, but servo and LED features will be disabled until the configured devices are connected.
+- Face recognition uses InsightFace by default (`config.FACE_BACKEND`). Its models (~190MB) are downloaded by `setup_assets.py` and are gitignored — run the script once on each machine. If they fail to load, the module falls back to the legacy dlib backend automatically. InsightFace (512-dim) and dlib (128-dim) face embeddings are incompatible: people enrolled under one backend must have their face re-enrolled after switching (voice ID is unaffected). Note the InsightFace pretrained weights are licensed for non-commercial use only, consistent with this project's license.
 - Logs are written to `logs/djr3x.log` and `logs/conversation.log`.
 - Real API keys should never be committed.
 - Two SQLite databases under `assets/memory/` (both gitignored, both created by `setup_assets.py`):

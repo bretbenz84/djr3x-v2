@@ -508,8 +508,30 @@ MEDIAPIPE_OBJECT_DETECTOR_MODEL = (
 # fastest variant — plenty for the geometric gesture heuristics in vision/pose.py.
 MEDIAPIPE_POSE_LANDMARKER_MODEL = "assets/models/pose/pose_landmarker_lite.task"
 
+# ── Face backend ──────────────────────────────────────────────────────────────
+# "insightface": SCRFD detector + ArcFace recognizer (512-dim embeddings) via ONNX.
+#   Far better than dlib at the robot's upward camera angle, small/distant faces,
+#   and non-frontal views (~70ms/frame CPU on Apple Silicon). Models live in
+#   INSIGHTFACE_MODEL_ROOT (downloaded by setup_assets.py; auto-downloaded on
+#   first use if missing and online). Pretrained weights are NON-COMMERCIAL
+#   licensed — fine for this personal robot.
+# "dlib": legacy HOG/mmod + 128-dim ResNet descriptor. Also the automatic runtime
+#   fallback if the InsightFace models fail to load.
+# NOTE: the two backends' embeddings are incompatible (128 vs 512 dim). Faces
+# enrolled under dlib will not match under insightface — re-enroll after switching.
+FACE_BACKEND = (os.getenv("FACE_BACKEND", "").strip().lower() or "insightface")
+INSIGHTFACE_MODEL_ROOT = "assets/models/insightface"
+INSIGHTFACE_MODEL_PACK = "buffalo_l"
+# SCRFD input size (square). 640 is the pack default; raise to 960 to see smaller/
+# more distant faces at ~2x the per-frame cost.
+INSIGHTFACE_DET_SIZE = _env_int("INSIGHTFACE_DET_SIZE", 640, min_value=160, max_value=1920)
+# SCRFD detection score gate (0-1). Well-calibrated: real faces score >0.6 even
+# small/oblique; clutter false-positives sit below 0.4.
+INSIGHTFACE_MIN_CONFIDENCE = 0.5
+
 # Skip mmod entirely and use HOG from the start. mmod averages >400ms/frame on
 # FaceTime camera — HOG is sufficient for this use case. Set False to re-enable mmod.
+# (dlib backend only.)
 FACE_DETECTOR_FORCE_HOG = True
 
 # dlib upsample passes before face detection. Higher values see smaller faces at
@@ -2688,6 +2710,15 @@ FACE_RECOGNITION_DISTANCE_THRESHOLD = 0.6
 # overlay doesn't flip between two confusable faces (e.g. family members Bret/Wade whose
 # encodings both land under 0.6 of the live face). 0 disables the margin gate.
 FACE_RECOGNITION_MARGIN = 0.06
+
+# ArcFace (InsightFace) equivalents — 512-dim L2-NORMALIZED embeddings, so Euclidean
+# distance maps to cosine similarity as d = sqrt(2 - 2*cos). Genuine matches land
+# roughly d 0.8-1.05 (cos 0.45-0.68); impostors d 1.25-1.41 (cos ~0.0-0.2). 1.10
+# corresponds to cos ~0.40, the standard ArcFace acceptance band. The matcher in
+# memory/people.find_by_face picks dlib vs ArcFace thresholds by the QUERY dimension
+# (128 vs 512), so stale dlib rows and new ArcFace rows can coexist in biometrics.
+FACE_RECOGNITION_DISTANCE_THRESHOLD_ARCFACE = 1.10
+FACE_RECOGNITION_MARGIN_ARCFACE = 0.08
 # Temporal hysteresis: when a single visible face is already bound to one known person,
 # require this many consecutive recognition ticks agreeing on a DIFFERENT person before
 # the world-state/overlay identity switches. Damps known<->known flicker. 1 disables.

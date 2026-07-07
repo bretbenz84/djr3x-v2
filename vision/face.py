@@ -1,16 +1,27 @@
 """
-vision/face.py — dlib face detection, recognition, and GPT-4o appearance profiling.
+vision/face.py — face detection, recognition, and GPT-4o appearance profiling.
 
 Models are loaded lazily on first call to detect_faces(). If any model file is
 missing, the affected functions degrade gracefully and return empty results.
 
-Detector selection
-──────────────────
-When config.FACE_DETECTOR_FORCE_HOG is True, the HOG detector is used from the
+Backend selection (config.FACE_BACKEND)
+────────────────────────────────────────
+"insightface" (default): SCRFD detector + ArcFace recognizer (512-dim L2-normalized
+embeddings) via ONNX Runtime. Handles the robot's upward camera angle, small/
+distant faces, and non-frontal views far better than dlib, at ~70ms/frame CPU.
+If the InsightFace models fail to load, the module falls back to dlib for the
+session and logs a warning.
+
+"dlib": legacy HOG/mmod detector + 128-dim ResNet descriptor. When
+config.FACE_DETECTOR_FORCE_HOG is True, the HOG detector is used from the
 start and mmod is never loaded. When False, mmod (CNN) is used by default; if it
 runs above _SLOW_THRESHOLD_SECS for _SLOW_COUNT_TO_SWITCH consecutive frames the
 module permanently switches to HOG for the session and logs a warning.
-HOG is faster but misses non-frontal faces.
+
+The two backends' embeddings are INCOMPATIBLE (512 vs 128 dim) — the matcher in
+memory/people.find_by_face silently skips stored encodings whose dimension does
+not match the query, so faces enrolled under one backend must be re-enrolled
+after switching.
 """
 
 import json
@@ -28,12 +39,16 @@ _log = logging.getLogger(__name__)
 
 # ── Model handles (populated once on first use) ───────────────────────────────
 
+_insight_app     = None   # insightface.app.FaceAnalysis (detection + recognition)
 _cnn_detector    = None   # dlib.cnn_face_detection_model_v1
 _hog_detector    = None   # dlib.get_frontal_face_detector()
 _shape_predictor = None   # dlib.shape_predictor
 _face_recognizer = None   # dlib.face_recognition_model_v1
 _models_ok       = False
 _models_attempted = False
+
+# Resolved at first load: "insightface" or "dlib" (after any fallback).
+_active_backend: Optional[str] = None
 
 # ── mmod performance tracking for automatic HOG fallback ─────────────────────
 
@@ -110,12 +125,73 @@ def visible_known_names(snapshot=None) -> list[str]:
 # ── Model loading ─────────────────────────────────────────────────────────────
 
 def _load_models() -> bool:
-    global _cnn_detector, _hog_detector, _shape_predictor, _face_recognizer
-    global _models_ok, _models_attempted
+    """Load the configured backend; on InsightFace failure fall back to dlib."""
+    global _models_ok, _models_attempted, _active_backend
 
     if _models_attempted:
         return _models_ok
     _models_attempted = True
+
+    backend = str(getattr(config, "FACE_BACKEND", "insightface") or "insightface").lower()
+
+    if backend == "insightface":
+        if _load_insightface():
+            _active_backend = "insightface"
+            _models_ok = True
+            return True
+        _log.warning("InsightFace unavailable — falling back to dlib backend")
+
+    _models_ok = _load_dlib()
+    _active_backend = "dlib" if _models_ok else None
+    return _models_ok
+
+
+def active_backend() -> Optional[str]:
+    """The face backend actually in use ("insightface"/"dlib"), or None if unloaded."""
+    return _active_backend
+
+
+def _load_insightface() -> bool:
+    """Load SCRFD detection + ArcFace recognition from the local model root.
+
+    insightface auto-downloads the model pack on first use if the directory is
+    missing (setup_assets.py pre-downloads it so the robot never needs to).
+    """
+    global _insight_app
+
+    try:
+        from insightface.app import FaceAnalysis
+    except ImportError:
+        _log.error("insightface not installed — pip install insightface onnxruntime")
+        return False
+
+    try:
+        app = FaceAnalysis(
+            name=getattr(config, "INSIGHTFACE_MODEL_PACK", "buffalo_l"),
+            root=getattr(config, "INSIGHTFACE_MODEL_ROOT", "assets/models/insightface"),
+            allowed_modules=["detection", "recognition"],
+            providers=["CPUExecutionProvider"],
+        )
+        det = int(getattr(config, "INSIGHTFACE_DET_SIZE", 640) or 640)
+        app.prepare(ctx_id=0, det_size=(det, det))
+    except Exception as exc:
+        _log.error("Failed to load InsightFace models: %s", exc)
+        return False
+
+    # FaceAnalysis silently drops modules whose .onnx is missing — verify both.
+    loaded = set(getattr(app, "models", {}) or {})
+    if not {"detection", "recognition"} <= loaded:
+        _log.error("InsightFace pack incomplete (loaded=%s) — need detection+recognition", sorted(loaded))
+        return False
+
+    _insight_app = app
+    _log.info("Loaded InsightFace %s (det_size=%d): SCRFD + ArcFace 512-dim",
+              getattr(config, "INSIGHTFACE_MODEL_PACK", "buffalo_l"), det)
+    return True
+
+
+def _load_dlib() -> bool:
+    global _cnn_detector, _hog_detector, _shape_predictor, _face_recognizer
 
     try:
         import dlib
@@ -155,7 +231,6 @@ def _load_models() -> bool:
         _log.error("Failed to load face recognizer %s: %s", config.FACE_RECOGNITION_MODEL, exc)
         ok = False
 
-    _models_ok = ok
     return ok
 
 
@@ -217,8 +292,11 @@ def detect_faces(frame: np.ndarray) -> list[dict]:
 
     Returns a list of dicts, one per face detected:
         bounding_box  (x, y, w, h) in pixels
-        encoding      128-dim float32 numpy array (dlib face descriptor)
-        landmarks     (68, 2) int32 numpy array of (x, y) landmark coordinates
+        encoding      float32 numpy array face embedding — 512-dim L2-normalized
+                      ArcFace (insightface backend) or 128-dim dlib descriptor
+        landmarks     int32 numpy array of (x, y) points — (5, 2) keypoints
+                      (insightface) or (68, 2) shape-predictor points (dlib)
+        confidence    detector score (insightface only)
     Returns an empty list if no faces found, frame is None, or models unavailable.
     """
     if frame is None:
@@ -226,6 +304,50 @@ def detect_faces(frame: np.ndarray) -> list[dict]:
     if not _load_models():
         return []
 
+    if _active_backend == "insightface":
+        return _detect_faces_insightface(frame)
+    return _detect_faces_dlib(frame)
+
+
+def _detect_faces_insightface(frame: np.ndarray) -> list[dict]:
+    """SCRFD detect + ArcFace embed. FaceAnalysis.get expects BGR (cv2-native)."""
+    min_conf = float(getattr(config, "INSIGHTFACE_MIN_CONFIDENCE", 0.5) or 0.0)
+    fh, fw = frame.shape[:2]
+
+    try:
+        faces = _insight_app.get(frame)
+    except Exception as exc:
+        _log.warning("InsightFace detection failed: %s", exc)
+        return []
+
+    results = []
+    for f in faces:
+        score = float(getattr(f, "det_score", 1.0))
+        if score < min_conf:
+            continue
+        x1, y1, x2, y2 = (float(v) for v in f.bbox)
+        x = max(0, int(round(x1)))
+        y = max(0, int(round(y1)))
+        w = min(fw, int(round(x2))) - x
+        h = min(fh, int(round(y2))) - y
+        if w <= 0 or h <= 0:
+            continue
+        emb = getattr(f, "normed_embedding", None)
+        if emb is None:
+            continue
+        kps = getattr(f, "kps", None)
+        landmarks = (np.asarray(kps, dtype=np.int32)
+                     if kps is not None else np.zeros((0, 2), dtype=np.int32))
+        results.append({
+            "bounding_box": (x, y, w, h),
+            "encoding":     np.asarray(emb, dtype=np.float32),
+            "landmarks":    landmarks,
+            "confidence":   score,
+        })
+    return results
+
+
+def _detect_faces_dlib(frame: np.ndarray) -> list[dict]:
     rgb = bgr_to_rgb(frame)
     rects = _detect_rects(rgb)
     results = []
@@ -253,8 +375,9 @@ def detect_faces(frame: np.ndarray) -> list[dict]:
 
 def identify_face(encoding: np.ndarray) -> Optional[dict]:
     """
-    Look up a 128-dim dlib face encoding in the people database.
-    Returns the matching person dict, or None if no match clears the threshold.
+    Look up a face embedding (512-dim ArcFace or 128-dim dlib) in the people
+    database. Returns the matching person dict, or None if no match clears the
+    backend-appropriate threshold.
     """
     return people.find_by_face(encoding)
 

@@ -32,7 +32,12 @@ torch>=2.3.0
 torchaudio>=2.3.0
 
 # ── Vision — face detection & recognition ────────────────────────────────────
-# setup_macos.sh installs dlib separately with Apple Silicon libpng build flags
+# Primary backend: InsightFace (SCRFD detector + ArcFace 512-dim recognizer) on
+# ONNX Runtime (already above). Models downloaded by setup_assets.py.
+insightface>=0.7.3
+# Legacy fallback backend (FACE_BACKEND=dlib, or automatic if InsightFace fails
+# to load). setup_macos.sh installs dlib separately with Apple Silicon libpng
+# build flags.
 dlib>=19.24.6
 Pillow>=10.0.0
 

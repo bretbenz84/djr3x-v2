@@ -124,7 +124,7 @@ memory/
 
 vision/
   camera.py              Camera capture.
-  face.py                dlib face recognition.
+  face.py                Face detection + recognition (InsightFace SCRFD+ArcFace; dlib fallback).
   scene.py               Environment/scene analysis.
   pose.py                Body pose/gesture hooks when available.
   proxemics.py           Distance/space estimation.
@@ -328,7 +328,16 @@ decides who spoke.
 Identity combines:
 
 - Voice embeddings from `audio.speaker_id` (Resemblyzer per-person centroid, cosine).
-- Face recognition from `vision.face`.
+- Face recognition from `vision.face` — `config.FACE_BACKEND` selects the backend:
+  `insightface` (default; SCRFD detector + ArcFace 512-dim L2-normalized embeddings via
+  ONNX Runtime, models under `assets/models/insightface/` downloaded by `setup_assets.py`,
+  auto-falls-back to dlib if they fail to load) or `dlib` (legacy HOG/mmod + 128-dim
+  descriptor). `memory/people.find_by_face` is dimension-aware: Euclidean thresholds are
+  picked by the query's dim (dlib 0.6/margin 0.06; ArcFace 1.10 ≈ cos 0.40/margin 0.08 —
+  live-measured same-person d≈0.24-0.37 vs different-person d≈1.37) and stored rows of the
+  other dim are skipped, so the two enrollment generations coexist but never cross-match —
+  a person enrolled under dlib must re-enroll their FACE under insightface (voice is
+  unaffected).
 - Current visible people from `world_state`.
 - Recent engaged speaker/session continuity.
 - Conservative fallbacks when ambiguity is high.

@@ -2,7 +2,10 @@
 memory/people.py — Person identity, biometric lookup, and relationship management.
 
 Metric note:
-  - Face matching uses Euclidean distance (dlib standard, lower = better match).
+  - Face matching uses Euclidean distance (lower = better match). Two embedding
+    backends coexist: 512-dim L2-normalized ArcFace (insightface, threshold 1.10)
+    and legacy 128-dim dlib (threshold 0.6) — find_by_face picks thresholds by the
+    query's dimension and skips stored rows of the other dimension.
   - Voice matching uses cosine similarity (Resemblyzer standard, higher = better match).
   These are intentionally different — using the same metric for both is a common bug.
 """
@@ -136,17 +139,32 @@ def _compute_tier(familiarity: float, antagonism: float, warmth: float = 0.0) ->
 
 def find_by_face(encoding: np.ndarray) -> Optional[dict]:
     """
-    Return the best-matching person record for a 128-dim dlib face encoding, or None.
+    Return the best-matching person record for a face embedding, or None.
+
+    Handles BOTH backends: 512-dim L2-normalized ArcFace (insightface) and 128-dim
+    dlib descriptors. Thresholds are picked by the QUERY's dimension, and stored
+    rows whose dimension does not match the query are skipped silently — so stale
+    dlib enrollments coexist with new ArcFace ones (they simply never match; the
+    person must be re-enrolled under the active backend).
 
     Uses Euclidean distance. A person's MULTIPLE stored encodings are aggregated to
     that person's CLOSEST one (so extra reference photos help recall instead of
     competing as separate candidates). The winner is accepted only if its distance is
-    below FACE_RECOGNITION_DISTANCE_THRESHOLD (default 0.6) AND it beats the next-closest
-    DIFFERENT person by at least FACE_RECOGNITION_MARGIN — otherwise the frame is treated
-    as ambiguous (returns None) so the identity does not flip between two confusable
-    faces (e.g. family members whose encodings both fall under 0.6 of the live face).
+    below the backend threshold (dlib 0.6 / ArcFace 1.10 ≈ cos 0.40) AND it beats
+    the next-closest DIFFERENT person by at least the backend margin — otherwise the
+    frame is treated as ambiguous (returns None) so the identity does not flip
+    between two confusable faces (e.g. family members whose encodings both fall
+    under the threshold of the live face).
     """
     query = encoding.astype(np.float32)
+
+    if query.shape[-1] == 512:  # ArcFace (insightface)
+        threshold = float(getattr(config, "FACE_RECOGNITION_DISTANCE_THRESHOLD_ARCFACE", 1.10))
+        margin    = float(getattr(config, "FACE_RECOGNITION_MARGIN_ARCFACE", 0.08) or 0.0)
+    else:                       # dlib 128-dim
+        threshold = float(config.FACE_RECOGNITION_DISTANCE_THRESHOLD)
+        margin    = float(getattr(config, "FACE_RECOGNITION_MARGIN", 0.0) or 0.0)
+
     rows = db.fetchall(
         "SELECT person_id, encoding FROM biometrics WHERE type = 'face'"
     )
@@ -154,7 +172,8 @@ def find_by_face(encoding: np.ndarray) -> Optional[dict]:
     for row in rows:
         stored = _from_blob(bytes(row["encoding"]))
         if stored.shape != query.shape:
-            _log.warning("face encoding shape mismatch: stored %s vs query %s", stored.shape, query.shape)
+            # Other-backend enrollment — expected during migration, not an error.
+            _log.debug("face encoding shape mismatch: stored %s vs query %s", stored.shape, query.shape)
             continue
         dist = float(np.linalg.norm(stored - query))
         pid = row["person_id"]
@@ -168,9 +187,8 @@ def find_by_face(encoding: np.ndarray) -> Optional[dict]:
     best_id, best_dist = ranked[0]
     second_dist = ranked[1][1] if len(ranked) > 1 else float("inf")
 
-    if best_dist >= config.FACE_RECOGNITION_DISTANCE_THRESHOLD:
+    if best_dist >= threshold:
         return None
-    margin = float(getattr(config, "FACE_RECOGNITION_MARGIN", 0.0) or 0.0)
     if (second_dist - best_dist) < margin:
         _log.info(
             "face match ambiguous: best=id%s d=%.3f vs next d=%.3f (margin %.3f < %.2f) — no match",
