@@ -3987,11 +3987,16 @@ ONBOARDING_MAX_QUESTIONS = 5
 ONBOARDING_MAX_VISITS = 1
 ONBOARDING_FACT_FLOOR = 3        # skip onboarding if they already have > this many profile facts
 # Run the onboarding burst on known special people (the creator Bret Benziger
-# and the person_specials VIPs)? False (default) means Rex never interrogates his
-# own maker — he already knows them on sight. Set True to force the burst on the
-# creator/VIPs for fresh-DB testing of the onboarding feature.
+# and the person_specials VIPs)? True (default, owner call 2026-07-07): a VIP
+# whose person row is fresh/wiped is a data-blank like any other newcomer — Rex
+# knows the name and the loyalty bits on sight, but zero facts, so the baseline
+# burst should run. Established VIPs are already spared by the visit-count and
+# fact-floor gates above, so this flag only ever bites on empty profiles. Set
+# False to restore the "never interrogate the maker" exemption (the 2026-06-18
+# BUG-5 behavior, from before the burst got answer-aware reactions and the 3/5
+# question pullback).
 # See intelligence/onboarding.eligible + intelligence/person_specials.is_special_person.
-ONBOARDING_INCLUDE_VIPS = False
+ONBOARDING_INCLUDE_VIPS = True
 
 # Pacing.
 ONBOARDING_KICKOFF_SECS = 1.2              # beat after the enrollment ack before the first question

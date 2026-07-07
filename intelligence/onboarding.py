@@ -83,10 +83,11 @@ def eligible(person_id: Optional[int], *, person: Optional[dict] = None) -> bool
             person = people_memory.get_person(person_id)
         if profile_questions.person_is_minor(person_id, person=person):
             return False
-        # Rex already knows his creator and the VIP bits on sight — never run
-        # the stranger interrogation burst on them. ONBOARDING_INCLUDE_VIPS=True
-        # forces it back on (fresh-DB testing of the feature on the creator).
-        if not bool(getattr(config, "ONBOARDING_INCLUDE_VIPS", False)):
+        # VIPs/creator run the burst by default (ONBOARDING_INCLUDE_VIPS=True):
+        # a fresh/wiped VIP row is a data-blank like any newcomer, and an
+        # ESTABLISHED VIP is already spared by the visit/fact gates below. Set
+        # the flag False to restore the "never interrogate the maker" exemption.
+        if not bool(getattr(config, "ONBOARDING_INCLUDE_VIPS", True)):
             name = (person or {}).get("name")
             if name and person_specials.is_special_person(name):
                 _log.debug(

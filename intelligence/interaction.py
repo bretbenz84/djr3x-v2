@@ -6470,10 +6470,21 @@ def _safe_enroll_voice(
         )
         return False
     try:
-        return bool(speaker_id.enroll_voice(person_id, audio_array))
+        enrolled = bool(speaker_id.enroll_voice(person_id, audio_array))
     except Exception as exc:
         _log.warning("voice enrollment failed for person_id=%s source=%s: %s", person_id, source, exc)
         return False
+    if enrolled:
+        # Enrollment is ground truth: this exact audio was just saved as the
+        # person's print, so their voice has live credibility NOW. Without this
+        # anchor, a fresh single-sample print scores marginal (~0.5) on the very
+        # next turn and the who's-that challenge fires seconds after the person
+        # said who they are (live-logged 2026-07-07: enrolled at 10:55:17,
+        # challenged "who's talking?" at 10:56:05).
+        pid = _safe_int(person_id)
+        if pid is not None:
+            _last_confident_voice_at[pid] = time.monotonic()
+    return enrolled
 
 
 def _handle_pending_offscreen_identify_reply(

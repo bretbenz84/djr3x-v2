@@ -573,9 +573,13 @@ False to fully disable the burst.
   `_maybe_begin_onboarding` for an eligible newcomer (`onboarding.eligible`:
   `visit_count <= ONBOARDING_MAX_VISITS`, `profile_fact_count <=
   ONBOARDING_FACT_FLOOR`, never a minor — shares `profile_questions.person_is_minor`).
-  (By default it SKIPS `person_specials` VIPs/the creator — Rex already knows them on
-  sight; set `ONBOARDING_INCLUDE_VIPS=True` (default False) to force the burst on them,
-  e.g. for fresh-DB testing of the feature on the creator.)
+  (`person_specials` VIPs/the creator are INCLUDED by default —
+  `ONBOARDING_INCLUDE_VIPS=True`, owner call 2026-07-07: a wiped/fresh VIP row is a
+  data-blank like any newcomer, and the visit/fact gates already spare established
+  VIPs, so the old default-False skip only ever bit exactly where the burst was
+  wanted — live-logged: the creator wiped his row to test and got zero
+  getting-to-know-you questions. Set it False to restore the "never interrogate
+  the maker" exemption.)
 - **No pile-on:** on close, the person is added to
   `_low_memory_idle_questions_spoken` so the *separate* low-memory idle profile
   question doesn't immediately re-fire (onboarding's facts live under categories
@@ -975,6 +979,24 @@ venv/bin/python main.py
 - Open plans in the live reply (`llm._open_plans_prompt_line` + `_open_plan_anticipated`, `consciousness.event_recently_anticipated`, `config.OPEN_PLANS_*`): `_build_person_context` read `emotional_events` but never the calendar, so mid-conversation Rex didn't know you have a thing tomorrow. It now appends a short **"Open plans they mentioned: X (tomorrow / on DATE)"** block (added LAST = lowest priority) from `memory.events.get_upcoming_events` (dated, today-or-future, not-followed-up, planned), capped to `OPEN_PLANS_MAX` (2) within `OPEN_PLANS_WITHIN_DAYS` (14), DATED only (undated nags, excluded). It carries a **restraint rule** ("background awareness, do NOT lead with it / force it / nag") and SKIPS any event the proactive ANTICIPATION path already raised this session — via the new `consciousness.event_recently_anticipated(person_id, event_id)` accessor over `_anticipated_events`, reached by a LAZY `from intelligence import consciousness` (consciousness imports llm, so it can't be a module-level dep). Fail-safe (returns "" on any error / disabled / nothing near-term). `OPEN_PLANS_IN_REPLY_ENABLED`. Tests: `tests/test_open_plans.py`. See `docs/comedy_improvements.md` (§8, shipped).
 - Room model — object permanence (`memory/room_model.py` + `room_objects` rex.db table, `config.ROOM_MODEL_*`/`ROOM_CHANGE_*`): a persistent per-object ledger so the live COCO stream (`world_state.objects`) gains memory across time/sessions. `record_objects` upserts ONE row PER LABEL (lowercased; `label PRIMARY KEY`; bump `last_seen`+`sighting_count` on conflict) — keyed on label NOT (label,bucket) because the head moves an object's coarse position frame-to-frame, so a chair is one chair wherever it lands; fed from `vision.scene.detect_objects_local` (the COCO scan thread). `label_sightings`/`established_count` query the baseline. Schema lives in BOTH `rex_db.SCHEMA` (runtime) and `setup_assets.REX_DB_SCHEMA` (fresh install) — idempotent `CREATE TABLE IF NOT EXISTS`, so an existing rex.db gets the table via `ensure_schema` (rex.db has NO migration system). Gated + test-suppressed exactly like `memory.episodes` (rides `EPISODIC_MEMORY_ENABLED` + its own `ROOM_MODEL_ENABLED`; the suite never writes a real rex.db — point `REX_DB_PATH` at a temp file to opt in). Screens/devices/people/animals are already filtered out upstream and never reach the table. Two payoffs: (1) **novelty-aware curiosity** — `_visual_curiosity_objects_line` floats objects with `label_sightings < ROOM_MODEL_NOVELTY_MAX_SIGHTINGS` to the front + a "X is NEW" note (degrades to confidence order when empty); (2) **"wait, that's new"** — `consciousness._step_room_change` fires once per new label per session when `established_count(ROOM_MODEL_ESTABLISHED_SIGHTINGS) >= ROOM_CHANGE_MIN_BASELINE` AND a current object's sighting count is in `[ROOM_CHANGE_MIN_SIGHTINGS, ROOM_CHANGE_MAX_SIGHTINGS]` (confirmed-but-recent), heavily gated (baseline kills the fresh-install flood; per-label de-dup marked BEFORE the enqueue so a speech race can't re-fire; 120s cooldown; session cap; lull-only `_can_proactive_speak`). Thread-safe (rex_db `_lock` serializes the vision-thread writes vs consciousness-thread reads). Adversarially reviewed (0 blocker/major; 1 de-dup minor fixed). Tests: `tests/test_room_model.py`. See `docs/comedy_improvements.md` (§2, shipped).
 - First-meeting onboarding (`intelligence/onboarding.py` + `interaction._pending_onboarding`/`_handle_onboarding_turn`/`_maybe_begin_onboarding`/`_maybe_onboarding_question`/`_maybe_onboarding_timeout`): a scoped, stranger-only baseline-gathering burst armed at `_enroll_new_person` for a brand-new, non-minor, near-empty profile. Asks a research-backed Tier A→B→C ladder (`config.ONBOARDING_QUESTION_POOL`, ignores `TIER_MAX_DEPTH`, reuses `QUESTION_POOL` keys for de-dup/boundaries), leads each answer with a warm 2-5 word retort (no "?", `COMEDY_LINE_BANKS["onboarding_retort_*"]`) + a periodic self-reveal, writes a tidied baseline (`answer_latest_pending_question` familiarity bump + `add_fact`/`upsert_interest`), and exits on hard-decline/pivot/wind-down-after-MIN/MAX/silence. Rides the `newcomer_baseline` question-budget urgent bypass (does NOT loosen the friend cap); bounded by `ONBOARDING_MIN/MAX_QUESTIONS` (3/5). On close, adds the person to `_low_memory_idle_questions_spoken` so the separate low-memory profile question doesn't pile on. Tier-C `origin_followup` is LLM-generated via `llm.generate_curiosity_question` (main OpenAI model, validated template fallback). Suppresses proactive speech while open (`speech_engine.can_proactive_speak` → `onboarding_flow_active()`). **Master flag `ONBOARDING_ENABLED` is ON** (set False to disable). Related fix: a name-only "this is X" arriving while Rex awaits an answer to his own question (no visible newcomer) is treated as the ANSWER, not an introduction (`_intro_is_answer_to_rex_question`) — the Doubtfire-as-favorite-movie misfire. See the "First-meeting onboarding" subsection above. Tests: `tests/test_onboarding.py`.
+
+- Who's-that voice challenge + enrollment-seeded continuity (2026-07-05/07): a marginal
+  (<0.70) voice match on the visible face is CHALLENGED ("who's speaking?") instead of
+  silently credited, unless the person's own voice matched confidently within the
+  continuity window (`_voice_primary_face_decision` → `challenge_identity`,
+  `_voice_continuity_active`, `SPEAKER_ID_CONTINUITY_WINDOW_SECS`) — the camera never
+  upgrades a marginal voice. A successful voice ENROLLMENT stamps that continuity anchor
+  (`_safe_enroll_voice`): the saved sample IS the person's voice, so a fresh one-sample
+  print scoring ~0.5 on the very next turn attributes (`voice_agrees_no_refresh`) instead
+  of Rex asking "who's talking?" seconds after being told (live-logged 2026-07-07).
+  Tests: `tests/test_voice_primary_identity.py::EnrollmentSeedsVoiceContinuityTest`.
+- Onboarding includes VIPs/creator by default (`ONBOARDING_INCLUDE_VIPS=True`,
+  owner call 2026-07-07): a wiped/fresh VIP person row is a data-blank like any
+  newcomer; established VIPs are already spared by the visit-count/fact-floor gates, so
+  the old default-False skip only ever fired on empty profiles — exactly where the
+  getting-to-know-you burst was wanted (live-logged: creator wiped his row, got zero
+  onboarding questions, silently — the skip logs at DEBUG only). Set False to restore
+  the exemption. `tests/test_onboarding.py`.
 
 ## Likely Future Work
 

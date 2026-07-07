@@ -191,6 +191,60 @@ class VoicePrimaryFaceDecisionTest(unittest.TestCase):
         )
 
 
+class EnrollmentSeedsVoiceContinuityTest(unittest.TestCase):
+    """A successful voice enrollment must stamp the continuity anchor: the saved
+    sample IS this person's voice, ground truth. Without it, a fresh single-sample
+    print scores marginal (~0.5) on the very next turn and the who's-that challenge
+    fires seconds after the person said who they are (live-logged 2026-07-07:
+    enrolled at 10:55:17, challenged 'who's talking?' at 10:56:05)."""
+
+    def setUp(self):
+        I._last_confident_voice_at.clear()
+        self.audio = (0.05 * np.random.default_rng(0).standard_normal(48000)).astype(np.float32)
+
+    def tearDown(self):
+        I._last_confident_voice_at.clear()
+
+    def test_successful_enrollment_activates_continuity(self):
+        self.assertFalse(I._voice_continuity_active(7))
+        with mock.patch.object(I, "_voice_enrollment_sample_allowed", return_value=(True, "")), \
+             mock.patch.object(I.speaker_id, "enroll_voice", return_value=True):
+            self.assertTrue(I._safe_enroll_voice(7, self.audio, source="new_person", confirmed=True))
+        self.assertTrue(I._voice_continuity_active(7))
+
+    def test_failed_enrollment_does_not_activate_continuity(self):
+        with mock.patch.object(I, "_voice_enrollment_sample_allowed", return_value=(True, "")), \
+             mock.patch.object(I.speaker_id, "enroll_voice", return_value=False):
+            self.assertFalse(I._safe_enroll_voice(7, self.audio, source="new_person", confirmed=True))
+        self.assertFalse(I._voice_continuity_active(7))
+
+    def test_rejected_sample_does_not_activate_continuity(self):
+        with mock.patch.object(I, "_voice_enrollment_sample_allowed", return_value=(False, "too_short")):
+            self.assertFalse(I._safe_enroll_voice(7, self.audio, source="new_person", confirmed=True))
+        self.assertFalse(I._voice_continuity_active(7))
+
+    def test_marginal_next_turn_attributes_instead_of_challenging(self):
+        # The end-to-end shape of the 2026-07-07 failure: freshly enrolled person is
+        # the single visible face, next turn scores marginal on their own print —
+        # with the enrollment-seeded anchor the decision attributes (no refresh)
+        # instead of challenging identity.
+        with mock.patch.object(I, "_voice_enrollment_sample_allowed", return_value=(True, "")), \
+             mock.patch.object(I.speaker_id, "enroll_voice", return_value=True):
+            I._safe_enroll_voice(1, self.audio, source="new_person", confirmed=True)
+        decision = I._voice_primary_face_decision(
+            person_id=1,
+            raw_best_id=1,
+            speaker_score=0.53,
+            ws_pid=1,
+            single_visible=True,
+            engaged_is_visible=True,
+            unknown_visible=False,
+            other_known_recently=False,
+            voice_continuity=I._voice_continuity_active(1),
+        )
+        self.assertEqual(decision, "voice_agrees_no_refresh")
+
+
 class VoiceprintPollutionGuardTest(unittest.TestCase):
     """A face-confirmed refresh must only append audio that BOTH the VOICE attributes
     to that person AND the camera confirms that person actually spoke. Two guards:

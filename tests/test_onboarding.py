@@ -239,25 +239,28 @@ class OnboardingDBTests(unittest.TestCase):
         facts_memory.add_fact(self.person_id, "identity", "age_category", "child", "explicit")
         self.assertFalse(onboarding.eligible(self.person_id))
 
-    def test_creator_exempt_from_onboarding(self):
+    def test_creator_onboarded_by_default(self):
         from intelligence import onboarding
 
         creator_id, _ = self.people.find_or_create_person("Bret Benziger")
-        # Default ONBOARDING_INCLUDE_VIPS is False — Rex never interrogates his maker.
-        self.assertFalse(onboarding.eligible(creator_id))
+        # Default ONBOARDING_INCLUDE_VIPS is True (owner call 2026-07-07): a
+        # fresh/wiped creator row is a data-blank like any newcomer — the burst
+        # runs. Live-logged 2026-07-07: the silent VIP skip left Rex asking no
+        # getting-to-know-you questions after a DB wipe + re-enrollment.
+        self.assertTrue(onboarding.eligible(creator_id))
 
-    def test_vip_exempt_from_onboarding(self):
+    def test_vip_onboarded_by_default(self):
         from intelligence import onboarding
 
         vip_id, _ = self.people.find_or_create_person("JT")
-        self.assertFalse(onboarding.eligible(vip_id))
+        self.assertTrue(onboarding.eligible(vip_id))
 
-    def test_include_vips_flag_allows_creator(self):
+    def test_exclude_vips_flag_restores_creator_exemption(self):
         from intelligence import onboarding
 
         creator_id, _ = self.people.find_or_create_person("Bret Benziger")
-        with mock.patch.object(config, "ONBOARDING_INCLUDE_VIPS", True, create=True):
-            self.assertTrue(onboarding.eligible(creator_id))
+        with mock.patch.object(config, "ONBOARDING_INCLUDE_VIPS", False, create=True):
+            self.assertFalse(onboarding.eligible(creator_id))
 
     def test_non_vip_still_eligible(self):
         from intelligence import onboarding
