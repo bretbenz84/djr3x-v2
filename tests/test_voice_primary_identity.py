@@ -40,7 +40,7 @@ class VoicePrimaryFaceDecisionTest(unittest.TestCase):
         return I._voice_primary_face_decision(**base)
 
     def test_voice_and_face_agree(self):
-        self.assertEqual(self._decide(person_id=1, raw_best_id=1, speaker_score=0.72), "voice_agrees")
+        self.assertEqual(self._decide(person_id=1, raw_best_id=1, speaker_score=0.78), "voice_agrees")
 
     # ── Marginal match on the VISIBLE face (owner architecture call 2026-07-05:
     #    the camera never upgrades a marginal voice — JT's "happy 4th" at 0.628
@@ -72,7 +72,7 @@ class VoicePrimaryFaceDecisionTest(unittest.TestCase):
 
     def test_confident_match_needs_no_credibility(self):
         self.assertEqual(
-            self._decide(person_id=1, raw_best_id=1, speaker_score=0.71),
+            self._decide(person_id=1, raw_best_id=1, speaker_score=0.76),
             "voice_agrees",
         )
 
@@ -82,8 +82,8 @@ class VoicePrimaryFaceDecisionTest(unittest.TestCase):
         self.assertEqual(self._decide(person_id=2, raw_best_id=2, speaker_score=0.78), "voice_over_face")
 
     def test_confident_voice_over_face_boundary(self):
-        # Exactly at the confident threshold (0.70) the voice still wins.
-        self.assertEqual(self._decide(person_id=2, raw_best_id=2, speaker_score=0.70), "voice_over_face")
+        # Exactly at the confident threshold (0.75) the voice still wins.
+        self.assertEqual(self._decide(person_id=2, raw_best_id=2, speaker_score=0.75), "voice_over_face")
 
     def test_marginal_voice_elsewhere_no_visual_signal_keeps_face(self):
         # THE BUG: a marginal (<0.70) match to an off-camera person while a known
@@ -297,7 +297,7 @@ class IdentityResolutionStrategyTest(unittest.TestCase):
         return I._infer_identity_resolution_strategy(**base)
 
     def test_confident_voice_label(self):
-        self.assertEqual(self._infer(speaker_score=0.74), "voice_confident")
+        self.assertEqual(self._infer(speaker_score=0.79), "voice_confident")
 
     def test_accepted_voice_label(self):
         self.assertEqual(self._infer(speaker_score=0.55), "voice_match")

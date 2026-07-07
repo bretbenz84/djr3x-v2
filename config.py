@@ -4204,7 +4204,10 @@ VOICE_SIGNATURE_PERSIST_MIN_TURNS = 2        # session recurrences before persis
 # unknown_voice_N. Only fires with NO live face/voice person match. The floor sits ABOVE
 # the match threshold (0.74) so naming someone needs a confident print.
 VOICE_SIGNATURE_RESOLVE_PERSON_ENABLED = True
-VOICE_SIGNATURE_RESOLVE_PERSON_MIN_SCORE = 0.80
+# RAISED 0.80 -> 0.85 after the ECAPA calibration (2026-07-06): this is the
+# highest-stakes voice-only action (naming a person outright, cross-session, no
+# face check), and genuine ECAPA matches sit ~0.90+ — the extra margin is free.
+VOICE_SIGNATURE_RESOLVE_PERSON_MIN_SCORE = 0.85
 
 # Log coarse timings for the live speech-response path. These are intentionally
 # INFO-level because latency tuning is only useful when it is visible in normal
@@ -4661,11 +4664,17 @@ VOICE_PRIMARY_IDENTITY_ENABLED = True
 # A voice match at or above this similarity (and clearing the margin guard) is
 # CONFIDENT — strong enough to contradict the camera and to be trusted for
 # refreshing a print. Set above the "stranger who merely sounds like a known
-# person" / off-camera-newcomer band (~0.59–0.64) so a passing resemblance can't
-# confidently steal a known identity, while a genuine returning speaker clears it.
+# person" cross-match band so a passing resemblance can't confidently steal a
+# known identity, while a genuine returning speaker clears it.
 # Below this a voice match still wins under voice-primary (margin-guarded), but is
 # labelled provisional and won't trigger a face-confirmed voiceprint refresh.
-SPEAKER_ID_CONFIDENT_THRESHOLD = 0.70
+# RAISED 0.70 -> 0.75 after the ECAPA calibration (2026-07-06): impostor
+# cross-match now maps to ~0.25-0.45 (was ~0.59-0.64 under Resemblyzer) while
+# Bret's live band is ~0.85-0.94 typical / ~0.70-0.77 on short commands. 0.75
+# adds real margin against a confident false accept without demoting genuine
+# short turns; do NOT push to 0.80 — that starts eating the owner's live
+# short-command band, and soft murmurs already rely on the continuity anchor.
+SPEAKER_ID_CONFIDENT_THRESHOLD = 0.75
 
 # Voice-only challenge (the single-print cross-match trap, field log 2026-07-05: JT's
 # voice matched Bret's print at 0.660 while the camera showed only JT). On the
