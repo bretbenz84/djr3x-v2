@@ -44,32 +44,62 @@ from audio import speaker_id
 from utils.config_loader import AUDIO_DEVICE_INDEX, AUDIO_SELECTION_DESCRIPTION
 
 
-def _record_channels() -> int:
-    """Channel count the input device actually supports (mirrors audio/stream.py's
-    fallback: config asks for 2 for the ReSpeaker AEC channel, but e.g. the
-    MacBook mic is 1-ch and PortAudio errors out instead of downmixing)."""
-    want = int(getattr(config, "AUDIO_CHANNELS", 1) or 1)
-    try:
-        info = sd.query_devices(AUDIO_DEVICE_INDEX, "input")
-        max_ch = int(info.get("max_input_channels") or 1)
-    except Exception:
-        max_ch = 1
-    if want > max_ch:
-        print(f"  (device supports {max_ch} input channel(s); recording {max_ch}-ch)")
-        return max(1, max_ch)
-    return want
-
-
 def _record(seconds: float) -> np.ndarray:
+    """Record from the configured device, discovering a channel count PortAudio
+    will actually OPEN (mirrors audio/stream.py: query_devices can report more
+    channels than Pa_OpenStream accepts on macOS, so trying-and-catching the real
+    open is the only reliable probe — config asks for 2 for the ReSpeaker AEC
+    channel while e.g. the MacBook mic opens 1-ch only)."""
     print(f"  Recording {seconds:.1f}s... speak now.")
     frames = int(seconds * config.AUDIO_SAMPLE_RATE)
-    audio = sd.rec(
-        frames,
-        samplerate=config.AUDIO_SAMPLE_RATE,
-        channels=_record_channels(),
-        dtype="float32",
-        device=AUDIO_DEVICE_INDEX,
-    )
+
+    requested = int(getattr(config, "AUDIO_INPUT_CHANNELS", config.AUDIO_CHANNELS) or 1)
+    candidates = [requested]
+    try:
+        max_in = int(sd.query_devices(AUDIO_DEVICE_INDEX).get("max_input_channels") or 0)
+        if max_in and max_in not in candidates:
+            candidates.append(max_in)
+    except Exception:
+        pass
+    if 1 not in candidates:
+        candidates.append(1)
+
+    audio = None
+    last_exc = None
+    # Second pass: the system default input. macOS device INDICES float between
+    # sessions (live failure 2026-07-06: AUDIO_DEVICE_INDEX=1 pointed at the
+    # SPEAKERS — zero input channels — while the mic had moved to index 0), so a
+    # stale configured index must not brick enrollment. Prefer AUDIO_DEVICE_NAME
+    # in .env for a stable selection.
+    for device in (AUDIO_DEVICE_INDEX, None):
+        for ch in candidates:
+            try:
+                audio = sd.rec(
+                    frames,
+                    samplerate=config.AUDIO_SAMPLE_RATE,
+                    channels=ch,
+                    dtype="float32",
+                    device=device,
+                )
+            except Exception as exc:
+                last_exc = exc
+                continue
+            if device is None:
+                try:
+                    name = sd.query_devices(sd.default.device[0])["name"]
+                except Exception:
+                    name = "default"
+                print(f"  (configured device {AUDIO_DEVICE_INDEX} unusable — "
+                      f"recording from system default input: {name})")
+            elif ch != requested:
+                print(f"  (device rejected {requested}-ch; recording {ch}-ch)")
+            break
+        if audio is not None:
+            break
+    if audio is None:
+        sys.exit(f"could not open any input device "
+                 f"(tried device {AUDIO_DEVICE_INDEX} and default, "
+                 f"channels {candidates}): {last_exc}")
     sd.wait()
     print("  Done.")
     if audio.ndim > 1:
