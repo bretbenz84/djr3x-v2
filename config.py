@@ -1173,9 +1173,12 @@ MEMORY_RETRIEVAL_INTEREST_WEIGHT = 0.85
 # local Ollama embeddings endpoint. DEFAULT OFF because it needs an embed model pulled
 # (`ollama pull nomic-embed-text`) and adds a per-turn embedding call; it degrades
 # gracefully to keyword overlap whenever the model/endpoint is unavailable, so enabling
-# it can never make recall WORSE than keyword. Enable after pulling the model + testing
-# latency on the robot.
-MEMORY_SEMANTIC_RECALL_ENABLED = False
+# it can never make recall WORSE than keyword.
+# ENABLED 2026-07-06: latency verified (~20ms/turn warm, 0ms cached; "sailing"
+# scores 0.65/3 on an ocean topic where keyword scored 0). setup_assets pulls the
+# embed model alongside the qwen sidecar; if it's missing on a machine, recall
+# just stays keyword-grade until setup runs (circuit breaker, no per-turn cost).
+MEMORY_SEMANTIC_RECALL_ENABLED = _env_bool("MEMORY_SEMANTIC_RECALL_ENABLED", True)
 MEMORY_SEMANTIC_EMBED_MODEL = "nomic-embed-text"
 # Cosine floor: below this the topic/candidate are treated as unrelated (relevance ~0).
 # These embed models put unrelated text around 0.3–0.5, so the floor keeps the signal

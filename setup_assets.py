@@ -824,14 +824,31 @@ def install_ollama_model() -> tuple[list[str], list[str], list[str]]:
 
     if _ollama_model_present(model):
         skipped.append(label)
-        return created, skipped, failed
+    else:
+        try:
+            print(f"    Pulling Ollama model {model} ...")
+            subprocess.run(["ollama", "pull", model], check=True)
+            created.append(label)
+        except Exception as exc:
+            failed.append(f"{label}: {exc}")
 
-    try:
-        print(f"    Pulling Ollama model {model} ...")
-        subprocess.run(["ollama", "pull", model], check=True)
-        created.append(label)
-    except Exception as exc:
-        failed.append(f"{label}: {exc}")
+    # Semantic-recall embedding model (memory/semantic.py). Small (~270MB); recall
+    # degrades gracefully to keyword matching without it, but pulling it here is
+    # what makes MEMORY_SEMANTIC_RECALL_ENABLED live on a fresh machine.
+    embed_model = str(
+        getattr(__import__("config"), "MEMORY_SEMANTIC_EMBED_MODEL", "nomic-embed-text")
+    ).strip()
+    if embed_model:
+        embed_label = f"ollama/{embed_model}"
+        if _ollama_model_present(embed_model):
+            skipped.append(embed_label)
+        else:
+            try:
+                print(f"    Pulling Ollama embed model {embed_model} ...")
+                subprocess.run(["ollama", "pull", embed_model], check=True)
+                created.append(embed_label)
+            except Exception as exc:
+                failed.append(f"{embed_label}: {exc}")
 
     return created, skipped, failed
 
