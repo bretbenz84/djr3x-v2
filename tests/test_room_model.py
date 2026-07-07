@@ -180,3 +180,32 @@ class VisualCuriosityNoveltyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoomChangeAddresseeTest(unittest.TestCase):
+    """Person present -> ask about the new object (owner feedback 2026-07-06: the
+    sandwich deserved 'what kind?' not 'A wild sandwich appears'); alone -> the
+    canned observational line."""
+
+    def _snapshot(self, people):
+        return {"people": people}
+
+    def test_known_visible_person_gets_first_name(self):
+        from unittest import mock
+        from intelligence import consciousness as c
+        snap = self._snapshot([{"face_visible": True, "person_db_id": 1}])
+        with mock.patch("memory.people.get_person",
+                        return_value={"name": "Bret Benziger"}):
+            self.assertEqual(c._room_change_addressee(snap), "Bret")
+
+    def test_unknown_visible_person_still_asked(self):
+        from intelligence import consciousness as c
+        snap = self._snapshot([{"face_visible": True, "person_db_id": None}])
+        self.assertEqual(c._room_change_addressee(snap), "them")
+
+    def test_empty_room_returns_none(self):
+        from intelligence import consciousness as c
+        self.assertIsNone(c._room_change_addressee(self._snapshot([])))
+        # pose-only phantom without a visible face doesn't count as an addressee
+        self.assertIsNone(c._room_change_addressee(
+            self._snapshot([{"face_visible": False, "pose": "x"}])))

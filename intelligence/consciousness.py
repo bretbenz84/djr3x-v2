@@ -3117,19 +3117,73 @@ def _step_room_change(snapshot: dict, profile: SituationProfile) -> None:
     # object is "handled" for the session — a flickering detection must never re-fire it.
     # (The cooldown + session cap only advance on an actual remark, below.)
     _room_change_remarked.add(label)
-    line = random.choice(list(lines)).replace("{label}", label)
-    if not _speak_async(
-        line, emotion="curious", purpose="room_change", label=f"room change: {label}",
-        governed=False,
+
+    # PERSON PRESENT → the new object is a conversation OPENER, not a room note.
+    # Owner feedback 2026-07-06 (RF-DETR spotted his sandwich, Rex said "A wild
+    # sandwich appears. The room's got range."): a closed quip wastes the moment —
+    # ask about the thing instead ("What kind of sandwich are we dealing with?").
+    # The canned observational one-liners remain the ALONE behavior (muttering at
+    # the room when there's nobody to ask).
+    person_name = _room_change_addressee(snapshot)
+    if person_name is not None and bool(
+        getattr(config, "ROOM_CHANGE_ASK_WHEN_PERSON_PRESENT", True)
     ):
+        prompt = (
+            f"You just noticed a {label} that wasn't there before, and {person_name} "
+            f"is right here. React in ONE short in-character Rex line that INVITES "
+            f"them to talk about it — genuinely curious, ask something natural about "
+            f"the {label} (what kind it is / how it is / where it came from / what's "
+            f"the occasion — whatever fits a {label}). Warm and dry, not an "
+            f"interrogation; ONE question max. Address {person_name} casually."
+        )
+        spoke = _generate_and_speak_presence(
+            prompt,
+            label=f"room change ask: {label}",
+            tag_key=f"room_change:{label}",
+            emotion="curious",
+            purpose="room_change",
+        )
+    else:
+        line = random.choice(list(lines)).replace("{label}", label)
+        spoke = _speak_async(
+            line, emotion="curious", purpose="room_change", label=f"room change: {label}",
+            governed=False,
+        )
+    if not spoke:
         return
     _room_change_state["last_at"] = now
     _room_change_state["count"] = _room_change_state.get("count", 0.0) + 1
     _log.info(
-        "consciousness: room-change remark — %s (sightings=%d, count=%d/%s)",
+        "consciousness: room-change remark — %s (sightings=%d, count=%d/%s, asked=%s)",
         label, counts.get(label, 0), int(_room_change_state["count"]),
-        getattr(config, "ROOM_CHANGE_SESSION_CAP", 3),
+        getattr(config, "ROOM_CHANGE_SESSION_CAP", 3), person_name is not None,
     )
+
+
+def _room_change_addressee(snapshot: dict) -> Optional[str]:
+    """First name of a visibly present person to ask about a new object, or None
+    when the room is empty (alone → the canned observational line instead).
+    An unknown-but-present person still gets asked, generically."""
+    try:
+        for person in snapshot.get("people") or []:
+            if not isinstance(person, dict):
+                continue
+            if not (person.get("face_visible") or person.get("face_box")):
+                continue
+            pid = person.get("person_db_id")
+            if pid is not None:
+                try:
+                    from memory import people as people_mod
+                    record = people_mod.get_person(int(pid)) or {}
+                    name = str(record.get("name") or "").strip()
+                    if name:
+                        return name.split()[0]
+                except Exception:
+                    pass
+            return "them"   # visible but unidentified — still worth asking
+    except Exception as exc:
+        _log.debug("room-change addressee lookup failed: %s", exc)
+    return None
 
 
 def _step_smile_reaction(snapshot: dict, profile: SituationProfile) -> None:

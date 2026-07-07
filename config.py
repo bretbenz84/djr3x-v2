@@ -4510,6 +4510,12 @@ ROOM_CHANGE_MIN_SIGHTINGS = 2     # the new object must be confirmed (not a 1-fr
 ROOM_CHANGE_MAX_SIGHTINGS = 12    # ...but still recent (just appeared), not a slow fixture
 ROOM_CHANGE_COOLDOWN_SECS = 120.0
 ROOM_CHANGE_SESSION_CAP = 3
+# When someone is VISIBLY PRESENT, a new object is a conversation opener: Rex asks
+# about it via an LLM-generated curious question ("What kind of sandwich are we
+# dealing with?") instead of a canned observation — owner feedback 2026-07-06
+# ("A wild sandwich appears" should have been "what kind / is it good?").
+ROOM_CHANGE_ASK_WHEN_PERSON_PRESENT = True
+# The canned one-liners below are the ALONE behavior (muttering at an empty room).
 ROOM_CHANGE_REMARK_LINES = [
     "Hold on — when did that {label} get here?",
     "New {label}. The room's redecorating without consulting me.",
