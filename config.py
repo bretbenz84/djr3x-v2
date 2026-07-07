@@ -254,6 +254,15 @@ LEAN_IMPULSE_FLOW_WINDOW_SECS = _env_float("LEAN_IMPULSE_FLOW_WINDOW_SECS", 120.
 # (impulses stacking during ACTIVE back-and-forth) had sub-10s gaps.
 LEAN_IMPULSE_FLOW_QUIET_SECS  = _env_float("LEAN_IMPULSE_FLOW_QUIET_SECS", 14.0, min_value=0.0, max_value=300.0)
 LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
+# Flat-answer follow-up (reply-side, owner spec 2026-07-06): when a flat
+# half-answer ("it's okay", "not much", "meh") ANSWERS a question Rex asked, the
+# reply itself carries ONE gentle probe at what's underneath — quip plus "what's
+# the missing 30%?" in one breath — instead of waiting for the lull impulse.
+# Anti-interview guards: only fires on answers to Rex's own questions (an "okay"
+# acknowledging a statement is agreement), at most once per cooldown, never in a
+# heavy/give-space window, and the prompt says to let it go if they stay flat.
+FLAT_ANSWER_PROBE_ENABLED = _env_bool("FLAT_ANSWER_PROBE_ENABLED", True)
+FLAT_ANSWER_PROBE_COOLDOWN_SECS = 180.0
 # Talking into the void: after Rex breaks a lull and gets NO reply, he must NOT keep quipping every
 # cooldown-tick (the "piled 4 lines about your dinner into silence" failure). Each unanswered
 # self-initiated line widens the next required gap, and after MAX_UNANSWERED of them he goes quiet

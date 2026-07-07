@@ -269,6 +269,83 @@ def _other_participant_lines(
     return out
 
 
+# ── Flat-answer follow-up (owner spec 2026-07-06) ────────────────────────────
+# "It's okay" answering "how's your day?" is a half-answer hiding the story. The
+# lull impulse picks the loose end up ~15s later; the stronger move is the REPLY
+# carrying the probe — quip plus "what's the missing 30%?" in one breath.
+# Guards against interview mode: fires only when Rex's LAST line was itself a
+# question (an "okay" acknowledging a statement is agreement, not flatness),
+# once per cooldown window, never in a heavy/sober window, and the instruction
+# says to let it go if they deflect again.
+
+_FLAT_FILLER_RE = re.compile(
+    r"^(?:uh|um|well|yeah|yea|nah|honestly|i mean|like|so)[\s,]+", re.IGNORECASE
+)
+_FLAT_PREFIX_RE = re.compile(
+    r"^(?:it'?s|it was|i'?m|i am|im|things are|life'?s|life is)\s+", re.IGNORECASE
+)
+_FLAT_CORE = {
+    "okay", "ok", "fine", "alright", "all right", "meh", "whatever",
+    "not much", "nothing", "nothing much", "nothing really", "i guess",
+    "okay i guess", "fine i guess", "good i guess", "eh", "not bad",
+    "could be worse", "same as always", "same as usual", "same old",
+    "same old same old", "dunno", "i dunno", "idk", "i don't know",
+    "hanging in there", "hangin in there", "pretty good", "going okay",
+    "going alright", "it goes", "surviving", "tired",
+}
+_last_flat_probe_at: float = 0.0
+
+
+def _is_flat_answer(text: str) -> bool:
+    """True for a short, low-content half-answer ('it's okay', 'not much', 'meh')."""
+    cleaned = re.sub(r"[^\w' ]+", " ", str(text or "").lower())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned or len(cleaned.split()) > 6:
+        return False
+    for _ in range(3):  # strip stacked fillers ("uh, well, it's okay")
+        cleaned = _FLAT_FILLER_RE.sub("", cleaned).strip()
+    cleaned = _FLAT_PREFIX_RE.sub("", cleaned).strip()
+    return cleaned in _FLAT_CORE
+
+
+def _flat_answer_probe_line(
+    user_text: str, turns: list[tuple[str, str, str]]
+) -> Optional[str]:
+    """The system-prompt line requesting the in-reply probe, or None. Arms the
+    cooldown when it fires (one probe per window — consecutive flat answers mean
+    they don't want to expand; pushing again IS interview mode)."""
+    global _last_flat_probe_at
+    if not bool(getattr(config, "FLAT_ANSWER_PROBE_ENABLED", True)):
+        return None
+    if not _is_flat_answer(user_text):
+        return None
+    # Only probe flatness that ANSWERED a question — "okay" after a Rex statement
+    # is acknowledgment, and probing it would be bizarre.
+    last_rex = next((t for role, _raw, t in reversed(turns) if role == "assistant"), "")
+    if "?" not in last_rex:
+        return None
+    cooldown = float(getattr(config, "FLAT_ANSWER_PROBE_COOLDOWN_SECS", 180.0) or 0.0)
+    now = time.monotonic()
+    if cooldown and (now - _last_flat_probe_at) < cooldown:
+        return None
+    try:
+        from intelligence import callback_engine
+        if callback_engine.recently_heavy():
+            return None  # give-space window — no poking at feelings
+    except Exception:
+        pass
+    _last_flat_probe_at = now
+    return (
+        "FLAT-ANSWER FOLLOW-UP: their reply is a flat half-answer — the kind that "
+        "hides the actual story. React in your voice, then END this same reply with "
+        "ONE short, gentle probe at what's underneath (the shape of 'Just okay? "
+        "What's the missing thirty percent?' or 'Not bad, meaning a six? What got "
+        "docked?'). This one probe is the EXCEPTION to your question-restraint "
+        "rules for THIS reply only. Light touch — curious friend, not therapist. "
+        "If they stay flat after this, drop it and let small things be small."
+    )
+
+
 def _messages(
     user_text: str,
     person_id: Optional[int],
@@ -313,9 +390,15 @@ def _messages(
     )
 
     extra_lines: Optional[list[str]] = None
+    # Reply path only (label_current_speaker=True): a directive's final message is
+    # an instruction, not a user answer — no flatness to probe.
+    if label_current_speaker:
+        probe = _flat_answer_probe_line(user_text, turns)
+        if probe:
+            extra_lines = [probe]
     if multi:
         others = " and ".join(d for d in displays if d != current_display)
-        extra_lines = [
+        multi_lines = [
             (
                 f"MULTI-PERSON ROOM: {', '.join(displays)} are all in this conversation. "
                 f"History lines are labeled with their speaker — NEVER attribute one "
@@ -326,6 +409,7 @@ def _messages(
                 f"stories, and jokes stay THEIRS."
             )
         ] + _other_participant_lines(raw_speakers, current_display)
+        extra_lines = (extra_lines or []) + multi_lines
 
     msgs: list[dict] = [
         {"role": "system", "content": _system_prompt(person_id, world, extra_lines)}
