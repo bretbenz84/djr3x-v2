@@ -314,6 +314,17 @@ _listen_resume_at: float = 0.0
 # answer pre-roll from pulling Rex's just-finished prompt into Whisper.
 _listen_capture_floor_at: float = 0.0
 
+# Monotonic time of the last QUESTION handoff, arming a ONE-SHOT retrospective
+# VAD scan of the post-question dead window. Between playback end and the loop's
+# first live mic read there are ~0.3-0.7s (echo tail + listen-resume delay +
+# synchronous turn unwind) during which the loop examines no audio at all — a
+# clipped one-word answer ("no") spoken there lands in the rolling buffer but
+# never triggers VAD, so it was silently lost (live-logged 2026-07-07, 20
+# Questions: answer at ~11:56:50 after playback ended 11:56:49, nothing heard
+# until the player repeated it 11s later). The scan looks BACK at that buffered
+# span once listening resumes. 0 = disarmed. See _maybe_recover_post_question_answer.
+_post_question_retro_scan_at: float = 0.0
+
 # When a proactive line yields because the user started talking during its generation gap, this
 # holds the monotonic time to reach the NEXT speech capture back to (the impulse-decision time), so
 # the user's opening words spoken while the loop was blocked aren't clipped. Consumed + cleared by
@@ -2277,7 +2288,7 @@ def _apply_post_tts_handoff(
     source: str = "speech_queue",
 ) -> _PostTtsHandoffPolicy:
     global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed, _last_speech_at
-    global _last_fast_handoff_at
+    global _last_fast_handoff_at, _post_question_retro_scan_at
     policy = _post_tts_handoff_policy(text)
     now = time.monotonic()
 
@@ -2338,6 +2349,15 @@ def _apply_post_tts_handoff(
         # reply: that audio is hardware-AEC'd, so Rex's tail in it is ~16 dB down.
         grace = max(grace, float(getattr(config, "POST_TTS_CAPTURE_PREROLL_GRACE_SECS_AEC", 0.5)))
     _listen_capture_floor_at = max(0.0, now - grace)
+    # A question invites an IMMEDIATE answer — arm the one-shot retro scan so a
+    # short reply spoken in the dead window before the loop's first live read is
+    # recovered from the rolling buffer instead of silently lost.
+    if policy.fast_response_expected and bool(
+        getattr(config, "POST_QUESTION_RETRO_SCAN_ENABLED", True)
+    ):
+        _post_question_retro_scan_at = now
+    else:
+        _post_question_retro_scan_at = 0.0
     if policy.flush_buffer:
         stream.flush()
         _post_tts_flush_needed = True
@@ -2847,6 +2867,7 @@ def _wake_from_sleep_line() -> str:
 
 def _clear_listening_state_for_sleep() -> None:
     global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
+    global _post_question_retro_scan_at
     try:
         speech_queue.clear_below_priority(999)
     except Exception as exc:
@@ -2872,6 +2893,7 @@ def _clear_listening_state_for_sleep() -> None:
     _listen_resume_at = 0.0
     _listen_capture_floor_at = 0.0
     _post_tts_flush_needed = False
+    _post_question_retro_scan_at = 0.0
 
 
 def _run_sleep_animation() -> None:
@@ -10383,6 +10405,66 @@ def _barge_recovered_speech_start(now: float, onset_at: float) -> float:
         return now
     earliest = now - max(0.0, float(getattr(config, "PROACTIVE_YIELD_ONSET_MAX_SECS", 3.0)))
     return max(min(now, onset_at), earliest)
+
+
+def _maybe_recover_post_question_answer() -> Optional[float]:
+    """One-shot retrospective VAD scan of the post-question dead window.
+
+    Between the end of Rex's question and the loop's first live mic read there
+    are ~0.3-0.7s (echo tail + listen-resume delay + synchronous turn unwind)
+    during which no audio is examined. A clipped one-word answer ("no") spoken
+    there is in the rolling buffer but never triggers live VAD, so nothing ever
+    reaches Whisper (live-logged 2026-07-07: 20 Questions answers vanished until
+    the player repeated them). When the last handoff was a QUESTION, scan that
+    buffered span once and, if it contains speech, return the effective
+    speech_start so the normal capture path (preroll bounded by the capture
+    floor) picks the answer up. Returns None when disarmed, stale, or silent.
+
+    The first POST_QUESTION_RETRO_SCAN_SKIP_SECS after the handoff are excluded:
+    Rex's room echo is still decaying there, and scanning it raw would let his
+    own final word trigger a phantom recovery.
+    """
+    global _post_question_retro_scan_at
+    armed_at = _post_question_retro_scan_at
+    if armed_at <= 0.0:
+        return None
+    _post_question_retro_scan_at = 0.0    # one-shot, whatever the outcome
+    now = time.monotonic()
+    window = float(getattr(config, "POST_QUESTION_RETRO_SCAN_WINDOW_SECS", 2.5))
+    if (now - armed_at) > window:
+        return None                       # loop was away too long — span is stale
+    skip = float(getattr(config, "POST_QUESTION_RETRO_SCAN_SKIP_SECS", 0.15))
+    scan_start = armed_at + skip
+    span_secs = now - scan_start
+    if span_secs < 0.12:
+        return None                       # nothing meaningfully unexamined
+    span = stream.get_audio_chunk(span_secs)
+    if len(span) == 0:
+        return None
+    frame_len = max(1, int(_CHUNK_SECS * config.AUDIO_SAMPLE_RATE))
+    need = max(1, int(getattr(config, "POST_QUESTION_RETRO_SCAN_MIN_VOICED_FRAMES", 3)))
+    voiced = 0
+    # Raw frames on purpose: the span was recorded after playback ended, and
+    # echo_cancel.filter keys off the CURRENT tail state, which would attenuate
+    # exactly the audio we are trying to recover.
+    try:
+        for i in range(0, len(span) - frame_len + 1, frame_len):
+            if vad.is_speech(span[i:i + frame_len]):
+                voiced += 1
+                if voiced >= need:
+                    break
+    finally:
+        try:
+            vad.reset_state()             # don't leak scan context into live detection
+        except Exception:
+            pass
+    if voiced < need:
+        return None
+    _log.info(
+        "[interaction] post-question retro scan recovered speech from the dead "
+        "window (span=%.2fs, voiced_frames=%d)", span_secs, voiced,
+    )
+    return scan_start
 
 
 def _accumulate_speech(
@@ -21958,23 +22040,31 @@ def _loop() -> None:
             state_module.set_state(State.IDLE)
             continue
 
-        # Read a small audio chunk and run VAD
-        chunk = stream.get_audio_chunk(_CHUNK_SECS)
-        if len(chunk) == 0:
-            _stop_event.wait(_CHUNK_SECS)
-            continue
+        # A question handoff arms a one-shot retro scan: an answer spoken in the
+        # dead window before this first live read is in the buffer but would
+        # never trigger live VAD — look back for it before polling live chunks.
+        retro_speech_start = _maybe_recover_post_question_answer()
 
-        _active_speech = vad.is_speech(_chunk_for_vad(chunk))
-        _situation_assessor.set_vad_active(_active_speech)
-        if not _active_speech:
-            # A pending barge-yield onset is only valid for the speech that immediately follows the
-            # yield; if silence intervenes it's stale — drop it so a later turn can't reach back
-            # through a Rex line that played in between.
-            _barge_yield_onset_at = 0.0
-            if _maybe_prompt_incomplete_turn():
-                _last_speech_at = time.monotonic()
-            _stop_event.wait(_CHUNK_SECS)
-            continue
+        if retro_speech_start is None:
+            # Read a small audio chunk and run VAD
+            chunk = stream.get_audio_chunk(_CHUNK_SECS)
+            if len(chunk) == 0:
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+
+            _active_speech = vad.is_speech(_chunk_for_vad(chunk))
+            _situation_assessor.set_vad_active(_active_speech)
+            if not _active_speech:
+                # A pending barge-yield onset is only valid for the speech that immediately follows the
+                # yield; if silence intervenes it's stale — drop it so a later turn can't reach back
+                # through a Rex line that played in between.
+                _barge_yield_onset_at = 0.0
+                if _maybe_prompt_incomplete_turn():
+                    _last_speech_at = time.monotonic()
+                _stop_event.wait(_CHUNK_SECS)
+                continue
+        else:
+            _situation_assessor.set_vad_active(True)
 
         # First detected speech after the post-TTS window may be the human's
         # immediate answer. If cleanup already happened, just clear the marker;
@@ -21983,7 +22073,7 @@ def _loop() -> None:
             _post_tts_flush_needed = False
 
         # ── Speech detected ────────────────────────────────────────────────────
-        speech_start = time.monotonic()
+        speech_start = retro_speech_start or time.monotonic()
         # If a proactive line just yielded because the user began talking during its generation gap,
         # reach the capture back to that onset so their opening words (spoken while this loop was
         # blocked generating the line) aren't clipped. Safe: Rex wasn't playing during that window.
@@ -22082,6 +22172,7 @@ def start(*, text_only: bool = False) -> None:
     """Start the wake word detector and the continuous interaction loop."""
     global _thread, _identity_prompt_until, _awaiting_followup_event
     global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
+    global _post_question_retro_scan_at
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
     global _pending_last_name_confirm
@@ -22109,6 +22200,7 @@ def start(*, text_only: bool = False) -> None:
     _listen_resume_at = 0.0
     _listen_capture_floor_at = 0.0
     _post_tts_flush_needed = False
+    _post_question_retro_scan_at = 0.0
     _awaiting_followup_event = None
     _pending_common_first_name_identity = None
     _pending_common_first_name_introduction = None
@@ -22184,6 +22276,7 @@ def stop() -> None:
     """Stop the interaction loop and wake word detector, waiting for clean exit."""
     global _thread, _awaiting_followup_event, _identity_prompt_until
     global _listen_resume_at, _listen_capture_floor_at, _post_tts_flush_needed
+    global _post_question_retro_scan_at
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
@@ -22207,6 +22300,7 @@ def stop() -> None:
     _listen_resume_at = 0.0
     _listen_capture_floor_at = 0.0
     _post_tts_flush_needed = False
+    _post_question_retro_scan_at = 0.0
     _session_person_turn_counts.clear()
     _session_warmth_signals.clear()
     _recently_banned_topics.clear()

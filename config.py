@@ -3755,6 +3755,23 @@ POST_QUESTION_LISTEN_DELAY_SECS = 0.12
 # last. Set to 0 to disable the stickiness.
 POST_QUESTION_HANDOFF_STICKY_SECS = 1.5
 
+# ── Post-question retro scan ───────────────────────────────────────────────────
+# Between the end of a spoken question and the loop's first live mic read there
+# are ~0.3-0.7s (echo tail + listen delay + synchronous turn unwind) during
+# which NO audio is examined. A clipped one-word answer ("no") spoken there sits
+# in the rolling buffer but never triggers live VAD, so it was silently lost —
+# live-logged 2026-07-07 during 20 Questions: answers right after a question
+# vanished until the player repeated them ~10s later. When the last reply was a
+# QUESTION, the loop now runs a ONE-SHOT VAD scan over that buffered dead-window
+# span as soon as it resumes listening, and a hit is captured through the normal
+# preroll/floor path. Longer utterances never needed this (their tail reaches
+# live VAD and preroll recovers the front), which is why it only bit on
+# rapid-fire one-word game answers.
+POST_QUESTION_RETRO_SCAN_ENABLED = True
+POST_QUESTION_RETRO_SCAN_WINDOW_SECS = 2.5   # scan only if the loop resumed within this long
+POST_QUESTION_RETRO_SCAN_SKIP_SECS = 0.15    # exclude Rex's decaying room echo at the span start
+POST_QUESTION_RETRO_SCAN_MIN_VOICED_FRAMES = 3  # ~96ms of voiced audio required to count as speech
+
 # ── Hardware-AEC boundary overrides (ReSpeaker Lite only) ──────────────────────
 # These apply ONLY when audio/hardware_aec.is_active() is True — i.e. the ReSpeaker
 # Lite is the live mic AND speaker, so its XU316 already cancels Rex's voice from

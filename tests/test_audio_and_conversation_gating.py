@@ -11031,5 +11031,107 @@ class MicroBehaviorEnforceRoutingTest(unittest.TestCase):
             Thread.assert_called_once()
 
 
+class PostQuestionRetroScanTest(unittest.TestCase):
+    """The one-shot retro VAD scan that recovers a short answer spoken in the
+    post-question dead window (playback end -> first live mic read). Live-logged
+    2026-07-07: 20 Questions answers ("no") right after a question were never
+    examined and silently lost until the player repeated them."""
+
+    def setUp(self):
+        import time
+        from intelligence import interaction
+        self.interaction = interaction
+        self.time = time
+        self._saved = (
+            interaction._post_question_retro_scan_at,
+            interaction._listen_resume_at,
+            interaction._listen_capture_floor_at,
+            interaction._post_tts_flush_needed,
+            interaction._last_fast_handoff_at,
+        )
+        interaction._post_question_retro_scan_at = 0.0
+        interaction._last_fast_handoff_at = 0.0
+        _aec = mock.patch("audio.hardware_aec.is_active", return_value=False)
+        _aec.start()
+        self.addCleanup(_aec.stop)
+
+    def tearDown(self):
+        i = self.interaction
+        (i._post_question_retro_scan_at, i._listen_resume_at,
+         i._listen_capture_floor_at, i._post_tts_flush_needed,
+         i._last_fast_handoff_at) = self._saved
+
+    def _apply_handoff(self, text):
+        with mock.patch.object(self.interaction.stream, "flush"), \
+             mock.patch.object(self.interaction.vad, "reset_state"):
+            self.interaction._apply_post_tts_handoff(text, source="test")
+
+    def test_question_handoff_arms_the_scan(self):
+        self._apply_handoff("Is it alive?")
+        self.assertGreater(self.interaction._post_question_retro_scan_at, 0.0)
+
+    def test_statement_handoff_disarms_the_scan(self):
+        self.interaction._post_question_retro_scan_at = self.time.monotonic()
+        self.interaction._last_fast_handoff_at = 0.0
+        self._apply_handoff("The motivator is fine. Probably.")
+        self.assertEqual(self.interaction._post_question_retro_scan_at, 0.0)
+
+    def test_disabled_flag_never_arms(self):
+        import config
+        with mock.patch.object(config, "POST_QUESTION_RETRO_SCAN_ENABLED", False, create=True):
+            self._apply_handoff("Is it alive?")
+        self.assertEqual(self.interaction._post_question_retro_scan_at, 0.0)
+
+    def _scan(self, *, armed_ago, voiced, span_secs=None):
+        """Run the scan with the marker armed `armed_ago` seconds in the past and a
+        buffered span whose frames all VAD to `voiced`."""
+        import numpy as np
+        import config
+        i = self.interaction
+        now = self.time.monotonic()
+        i._post_question_retro_scan_at = now - armed_ago
+        sr = int(config.AUDIO_SAMPLE_RATE)
+
+        def _chunk(seconds):
+            secs = span_secs if span_secs is not None else seconds
+            return np.zeros(int(secs * sr), dtype=np.float32)
+
+        with mock.patch.object(i.stream, "get_audio_chunk", side_effect=_chunk), \
+             mock.patch.object(i.vad, "is_speech", return_value=voiced), \
+             mock.patch.object(i.vad, "reset_state"):
+            return i._maybe_recover_post_question_answer()
+
+    def test_disarmed_returns_none(self):
+        self.interaction._post_question_retro_scan_at = 0.0
+        self.assertIsNone(self.interaction._maybe_recover_post_question_answer())
+
+    def test_recovers_buffered_answer(self):
+        # Armed 0.6s ago, all frames voiced -> speech_start = armed_at + skip.
+        result = self._scan(armed_ago=0.6, voiced=True)
+        self.assertIsNotNone(result)
+        # The recovered start excludes the echo-decay skip at the span head.
+        self.assertLess(result, self.time.monotonic())
+        # One-shot: the marker was consumed even on a hit.
+        self.assertEqual(self.interaction._post_question_retro_scan_at, 0.0)
+
+    def test_silent_span_returns_none_and_consumes_marker(self):
+        result = self._scan(armed_ago=0.6, voiced=False)
+        self.assertIsNone(result)
+        self.assertEqual(self.interaction._post_question_retro_scan_at, 0.0)
+
+    def test_stale_marker_returns_none(self):
+        # Loop was away far longer than the scan window -> span is stale.
+        self.assertIsNone(self._scan(armed_ago=10.0, voiced=True))
+
+    def test_immediate_resume_has_nothing_to_scan(self):
+        # Armed effectively "just now": the unexamined span is smaller than the
+        # echo-decay skip, so there is nothing to recover.
+        self.assertIsNone(self._scan(armed_ago=0.16, voiced=True))
+
+    def test_scan_is_one_shot(self):
+        self.assertIsNotNone(self._scan(armed_ago=0.6, voiced=True))
+        self.assertIsNone(self.interaction._maybe_recover_post_question_answer())
+
+
 if __name__ == "__main__":
     unittest.main()

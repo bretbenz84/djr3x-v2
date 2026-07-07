@@ -1012,6 +1012,24 @@ venv/bin/python main.py
   spine questions. Verified 4/4 wins in live-API offline sims (rubber ducky, pizza, stapler,
   Eiffel Tower — the first two shapes were prior losses). `tests/test_twentyquestions_guesser.py`.
 
+- Post-question retro scan (2026-07-07): between the end of a spoken QUESTION and the
+  loop's first live mic read there are ~0.3-0.7s (echo-cancel tail + listen-resume delay +
+  the synchronous turn unwind) during which NO mic audio is examined — the loop only ever
+  VADs the latest 32ms chunk, and while `speech_queue.is_speaking()` it skips chunks
+  entirely (`VAD_BARGE_IN_ENABLED=False`). A clipped one-word answer ("no") spoken in that
+  dead window lands in the rolling buffer but never triggers live VAD, so it was silently
+  lost (live-logged during 20 Questions; normal conversation never showed it because longer
+  replies still reach live VAD and the preroll-to-capture-floor recovery grabs their front).
+  Fix: `interaction._maybe_recover_post_question_answer` — a question handoff arms a
+  ONE-SHOT retrospective VAD scan (`_post_question_retro_scan_at`) of the buffered
+  dead-window span, run when the loop resumes listening; a hit feeds the normal
+  preroll/floor capture path. The first `POST_QUESTION_RETRO_SCAN_SKIP_SECS` (0.15) after
+  the handoff are excluded so Rex's decaying room echo can't fake a hit; raw (unfiltered)
+  frames on purpose since `echo_cancel.filter` keys off the CURRENT tail state. Knobs:
+  `POST_QUESTION_RETRO_SCAN_*`. An answer that fully OVERLAPS Rex's own playback is still
+  unrecoverable without hardware AEC (by design). Tests:
+  `tests/test_audio_and_conversation_gating.py::PostQuestionRetroScanTest`.
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.
