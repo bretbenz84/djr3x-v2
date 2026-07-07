@@ -1750,6 +1750,48 @@ def _apply_context_overrides(
     return decision
 
 
+# Action-domain cue words: any hit keeps the LLM router in the loop (the utterance is
+# plausibly actionable even though the explicit regexes missed). Deliberately GENEROUS --
+# a false cue just costs the old ~0.8s router call; a missed cue on a fuzzy action
+# phrase falls through to conversation (recoverable: the user re-asks explicitly, and
+# canonical command forms are still caught by the explicit classifiers above).
+_ACTION_CUE_RE = re.compile(
+    r"\b(look|watch|see|turn|spin|rotate|move|drive|roll|come|follow|stop|halt|freeze|"
+    r"forward|backward|back ?up|"
+    r"play|pause|skip|song|music|sing|dance|dj|beat|pose|volume|louder|quieter|softer|mute|"
+    r"game|trivia|jeopardy|twenty questions|quiz|guess|"
+    r"joke|roast|impression|bit|"
+    r"remember|forget|memory|memories|recall|"
+    r"who'?s|who is|name|introduce|"
+    r"picture|photo|snapshot|describe|camera|scene|"
+    r"sleep|wake|shut ?down|power|capabilit\w*|uptime|"
+    r"weather|forecast|temperature|time|date|day|o'?clock|"
+    r"cancel|favorite|favourite)\b",
+    re.IGNORECASE,
+)
+
+
+def _clearly_conversational(text: str, context: dict[str, Any]) -> bool:
+    """True when this turn is deterministically plain conversation -- safe to skip the
+    LLM routing call (~0.8s, the single largest fixed cost on chat turns, measured
+    2026-07-06). Requires ALL of: no action-domain cue word, no active game/music
+    (mid-game answers and bare 'stop' must keep full routing), and the deterministic
+    intent classifier agreeing it's 'general'."""
+    if not bool(getattr(config, "ACTION_ROUTER_DETERMINISTIC_SKIP_ENABLED", True)):
+        return False
+    if context.get("active_game") or context.get("active_music"):
+        return False
+    if _ACTION_CUE_RE.search(text):
+        return False
+    try:
+        from intelligence import intent_classifier
+        if intent_classifier.classify_deterministic(text) != "general":
+            return False
+    except Exception:
+        return False
+    return True
+
+
 def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
     """Return the router's best action decision for this turn."""
     if not text or not text.strip():
@@ -1768,6 +1810,21 @@ def decide(text: str, context: dict[str, Any] | None = None) -> ActionDecision:
     explicit_character_preference = classify_explicit_character_preference(text)
     if explicit_character_preference is not None:
         return _apply_context_overrides(explicit_character_preference, text, context)
+
+    if _clearly_conversational(text, context):
+        _log.info(
+            "[action_router] deterministic conversational skip -- no action cues, "
+            "LLM routing call saved"
+        )
+        return _apply_context_overrides(
+            ActionDecision(
+                action="conversation.reply",
+                confidence=0.6,
+                reason="deterministic: conversational, no action cues",
+            ),
+            text,
+            context,
+        )
 
     max_context_chars = int(getattr(config, "ACTION_ROUTER_MAX_CONTEXT_CHARS", 5000))
     user_payload = {

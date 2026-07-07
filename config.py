@@ -4022,6 +4022,11 @@ ACTION_ROUTER_SHADOW_ENABLED = False
 ACTION_ROUTER_LOG_DECISIONS = True
 ACTION_ROUTER_AUDIT_LOG_ENABLED = True
 ACTION_ROUTER_EXECUTE_ENABLED = True
+# Skip the router's LLM call on deterministically-conversational turns (no action cue
+# words, no active game/music, deterministic intent = general). Measured ~0.8s saved
+# per chat turn (2026-07-06 latency work); canonical commands still hit the explicit
+# regex classifiers, and any cue word keeps the LLM router in the loop.
+ACTION_ROUTER_DETERMINISTIC_SKIP_ENABLED = _env_bool("ACTION_ROUTER_DETERMINISTIC_SKIP_ENABLED", True)
 ACTION_ROUTER_EXECUTE_ACTIONS = {
     "conversation.repair",
     "humor.tell_joke",
