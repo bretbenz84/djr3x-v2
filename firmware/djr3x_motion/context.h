@@ -171,7 +171,11 @@ struct MotionContext {
   bool      seen_mac      = false;// watchdog arms only after first contact
   uint32_t  drive_set_ms  = 0;    // last `drive` receipt (deadman)
 
-  int16_t   batt_mv = 12000;      // stubbed pack voltage
+  int16_t   batt_mv = -1;         // pack voltage from the INA226; -1 = no sensor
+                                  // (was a 12000 stub the host couldn't tell from
+                                  // a real 12.0V pack)
+  int16_t   batt_ma = 0;          // pack current, only when a real shunt is fitted
+                                  // (BATT_SHUNT_MICROOHM > 0); + = discharging
 };
 
 // ===== Globals (defined in djr3x_motion.ino) ==============================

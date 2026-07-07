@@ -266,3 +266,24 @@ Lock-order rule: **never hold `g_state_mux` while emitting** (emit takes
 See [docs/motion_system.md](../../docs/motion_system.md) §17. This is Phase 0;
 Phase 1 wires motors + encoders + ToF and replaces the HAL stubs with real
 drivers + per-wheel PID.
+
+## Battery sense (INA226, optional)
+
+Pack voltage (12.8V 4S LiFePO4) is read by an INA226 breakout on the existing
+I2C bus — no voltage divider needed (the INA measures up to 36V at its VBUS pin,
+covering the charger's 14.6V peak). Without the sensor, telemetry reports
+`batt_mv: -1` and the Mac-side battery feature stays dormant.
+
+Wiring (voltage-only, four wires):
+
+    INA226 VCC  -> 3V3
+    INA226 GND  -> GND (common with the pack)
+    INA226 SDA  -> GPIO 21   (piggyback the ToF bus; INA addr 0x40, mux is 0x70)
+    INA226 SCL  -> GPIO 22
+    INA226 VBUS -> BATT+ (the pack's positive terminal)
+
+Current sensing (optional, later): the stock module shunt (R100 = 100 mΩ) only
+ranges ±0.8 A — useless for drive motors. Fit a 2 mΩ shunt inline in the main
+battery lead, then build with `-DBATT_SHUNT_MICROOHM=2000`; telemetry gains a
+real `batt_ma` and the Mac side can coulomb-count true state of charge (LiFePO4
+voltage is too flat mid-pack for voltage-only percentages).

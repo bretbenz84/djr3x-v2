@@ -22,6 +22,7 @@
 #include "control.h"
 #include "safety.h"
 #include "gamepad.h"
+#include "battery.h"
 
 // ---- Globals (declared extern in context.h) ------------------------------
 MotionContext     g_ctx;
@@ -50,10 +51,15 @@ static void serialTask(void*) {
 
 static void sensorTask(void*) {
   TickType_t last = xTaskGetTickCount();
+  uint8_t batt_div = 0;
   for (;;) {
     TofMm t;
     hal_read_tof(t);                      // stub: all clear
     LOCK_STATE(); g_ctx.tof = t; UNLOCK_STATE();
+    if (++batt_div >= 50) {               // 1 Hz is plenty for a 20Ah pack
+      batt_div = 0;
+      battery_tick();
+    }
     vTaskDelayUntil(&last, pdMS_TO_TICKS(20));   // 50 Hz
   }
 }
@@ -79,6 +85,7 @@ void setup() {
 
   hal_init();
   hal_tof_init();
+  battery_init();                         // INA226 probe (shares the ToF I2C bus)
   proto_init();
   control_init();
   safety_init();

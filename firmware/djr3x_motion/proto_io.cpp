@@ -43,12 +43,13 @@ void emit_hello() {
 void emit_telemetry() {
   // Snapshot under the lock, format outside it.
   MotionState st; MotionOwner ow; MotionGamepad gp; MotionFault fl;
-  MotionZone z; MotionDir bd; uint32_t cs, errs; Odom od; TofMm tf; int16_t bm;
+  MotionZone z; MotionDir bd; uint32_t cs, errs; Odom od; TofMm tf; int16_t bm, bma;
   GamepadLive gpl; WheelDiag wd;
   LOCK_STATE();
   st = g_ctx.state; ow = g_ctx.owner; gp = g_ctx.gamepad; fl = g_ctx.fault;
   z = g_ctx.zone; bd = g_ctx.blocked_dir; cs = g_ctx.cmd_seq; errs = g_ctx.errs;
-  od = g_ctx.odom; tf = g_ctx.tof; bm = g_ctx.batt_mv; gpl = g_ctx.gp_live; wd = g_ctx.wheels;
+  od = g_ctx.odom; tf = g_ctx.tof; bm = g_ctx.batt_mv; bma = g_ctx.batt_ma;
+  gpl = g_ctx.gp_live; wd = g_ctx.wheels;
   UNLOCK_STATE();
 
   JsonDocument doc;
@@ -73,7 +74,8 @@ void emit_telemetry() {
   JsonObject t = doc["tof_mm"].to<JsonObject>();
   t["fl"] = tf.fl; t["fr"] = tf.fr; t["rl"] = tf.rl; t["rr"] = tf.rr;
   t["lf"] = tf.lf; t["lb"] = tf.lb; t["rf"] = tf.rf; t["rb"] = tf.rb;
-  doc["batt_mv"] = bm;
+  doc["batt_mv"] = bm;                   // -1 = no INA226 wired (host treats as unknown)
+  doc["batt_ma"] = bma;                  // 0 unless a motor-ranged shunt is fitted
   doc["errs"] = errs;
   // Live gamepad mirror for the GUI Motivator Control "physical controller" display.
   // Always present (stable schema): {connected:false} when no pad / non-gamepad build.

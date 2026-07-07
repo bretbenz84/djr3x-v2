@@ -2819,6 +2819,16 @@ def _step_autonomous_motion(snapshot: dict, profile: SituationProfile) -> None:
         _log.debug("autonomous motion step error: %s", exc)
 
 
+def _step_battery_awareness(snapshot: dict, profile: SituationProfile) -> None:
+    """Pack-voltage awareness from base telemetry (intelligence/battery_awareness.py).
+    Dormant until the INA226 is wired (firmware reports batt_mv=-1 without it)."""
+    try:
+        from intelligence import battery_awareness
+        battery_awareness.step(snapshot, profile)
+    except Exception as exc:
+        _log.debug("battery awareness step error: %s", exc)
+
+
 def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
     """If a visible person waves, wave back (+ one short warm greeting) — the way you'd
     return a wave from across a room.
@@ -11755,6 +11765,10 @@ def _loop() -> None:
             # person (the neck's standing offset is the signal) and approach someone
             # far away (`come`, ToF-guarded by the firmware reflexes).
             _step_autonomous_motion(snapshot, profile)
+
+            # 10f-d. Battery awareness — track the pack's tier from base telemetry;
+            # grumble once per downward crossing when someone's around to hear it.
+            _step_battery_awareness(snapshot, profile)
 
             # 10g. Smile reaction — after Rex lands a joke/snarky aside, notice
             # if the target visibly cracks a smile and answer it once.

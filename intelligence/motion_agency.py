@@ -173,6 +173,15 @@ def _step_inner(snapshot: dict, profile) -> None:
     # ── APPROACH: close distance to a far person ──────────────────────────────
     if not _flag("MOTION_APPROACH_ENABLED", True):
         return
+    # Critical battery: stop VOLUNTEERING drives (voice-commanded motion still
+    # obeys — the pack's BMS is the hard protection; this is Rex pacing himself).
+    try:
+        from intelligence import battery_awareness
+        if battery_awareness.battery_critical():
+            _reset("far_hits")
+            return
+    except Exception:
+        pass
     # A whole-base approach is a big proactive act — respect the same social gates
     # as unsolicited speech, plus require an active turn NOT being processed.
     if getattr(profile, "suppress_proactive", False) or getattr(profile, "interaction_busy", False):

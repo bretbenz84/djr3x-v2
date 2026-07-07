@@ -6414,6 +6414,30 @@ MOTION_APPROACH_CONFIRM_TICKS = 4     # ~4 s of sustained "they're far" before m
 MOTION_APPROACH_COOLDOWN_SECS = 120.0 # at most one spontaneous approach per 2 min
 MOTION_APPROACH_CENTERED_FRACTION = 0.18  # neck must be this close to neutral (facing them)
 
+# ── Battery awareness (intelligence/battery_awareness.py) ─────────────────────
+# Pack voltage via an INA226 on the base's I2C bus (firmware sends batt_mv=-1
+# until the sensor is wired — the feature is fully dormant without hardware).
+# 12.8V 4S LiFePO4 bands: the discharge curve is FLAT (~13.0-13.2V from 90% down
+# to 25%), so Rex only claims what voltage can honestly tell: charging / nominal
+# / low (~20%) / critical (~10%, near the pack BMS's own cutoff). One grumble per
+# downward crossing per session, spoken only when someone's present to hear it;
+# motion_agency stops volunteering approaches while critical.
+BATTERY_AWARENESS_ENABLED = _env_bool("BATTERY_AWARENESS_ENABLED", True)
+BATTERY_TIER_HYSTERESIS_MV = 100
+BATTERY_ANNOUNCE_MIN_GAP_SECS = 300.0
+BATTERY_TIER_LINES = {
+    "low": [
+        "Heads up, chief — power cells are getting thin. I'm fine, but the wheels get rationed soon.",
+        "Battery report: entering the grumpy zone. Somewhere around one-fifth left.",
+        "My power cells just filed a complaint. Low, not critical — yet.",
+    ],
+    "critical": [
+        "Okay, real talk: power cells are nearly dry. Charger soon, or I become furniture.",
+        "Critical power. I'm suspending all heroics until somebody plugs me in.",
+        "Battery's on fumes, chief. No more joyrides until I see a charger.",
+    ],
+}
+
 # Verbal denial when an explicit DRIVE command is spoken but no ESP32 drive base is
 # connected. With a base attached the wheels actually moving ARE the acknowledgment, so
 # the motion confirmation isn't spoken; with NO base there's nothing to feel, so instead

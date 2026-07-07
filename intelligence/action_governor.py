@@ -84,6 +84,9 @@ _PURPOSE_PRIORITIES: dict[str, int] = {
     "memory_followup": 65,
     "celebration_checkin": 64,
     "startup_empty_room": 60,
+    # battery_status: a practical status grumble (low/critical power). Rare —
+    # once per downward tier per session — and worth hearing over lull filler.
+    "battery_status": 62,
     # Banked-callback humor in a mid-conversation lull: above visual_curiosity
     # (a callback referencing THEM beats commenting on the room), below every
     # sincerity flow (celebration 64 / memory_followup 65 / checkin 100).
