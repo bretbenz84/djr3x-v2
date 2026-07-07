@@ -93,7 +93,10 @@ audio/
   stream.py              Mic stream and rolling buffer.
   vad.py                 Silero VAD.
   transcription.py       mlx-whisper plus OpenAI fallback.
-  speaker_id.py          Resemblyzer voice embeddings and speaker matching.
+  speaker_id.py          Voice embeddings + speaker matching (ECAPA-TDNN primary,
+                         Resemblyzer fallback; scores mapped via voice_score.py).
+  voice_score.py         Embedder-backend score mapping (ECAPA cosine -> the
+                         Resemblyzer-calibrated scale all thresholds are tuned on).
   wake_word.py           OpenWakeWord loop.
   speech_queue.py        Prioritized response queue and playback/text completion.
   tts.py                 ElevenLabs TTS, cache, no-audio bypass.
@@ -319,7 +322,7 @@ Key logs:
 
 Recent latency architecture:
 
-- `audio.speaker_id.preload()` runs at startup when `config.SPEAKER_ID_PRELOAD_ON_STARTUP` is true, removing first-turn Resemblyzer load cost.
+- `audio.speaker_id.preload()` runs at startup when `config.SPEAKER_ID_PRELOAD_ON_STARTUP` is true, removing first-turn encoder load cost (ECAPA ~1.3s, Resemblyzer ~0.6s).
 - Slow-path acknowledgments (short "One sec." receipts for known-slow `general`/`memory`/`vision` paths) and the delayed latency filler (in-character "One sec, thinking." lines) are now **disabled by default** — `config.SLOW_PATH_ACK_ENABLED = False` and `config.LATENCY_FILLER_ENABLED = False`. They felt out of place, and the streaming answer path now gets Rex's real first sentence out fast, so the latency cover is unnecessary. The machinery and tunables (`SLOW_PATH_ACK_LINES`, `SLOW_PATH_ACK_EXPECTED_SECS`, `LATENCY_FILLER_LINES`, `SLOW_PATH_ACK_IN_TEXT_ONLY`) remain; flip either flag back to True to restore. The slow-path-ack tests enable the flag explicitly to keep covering the firing logic.
 - End-of-speech wait `config.SILENCE_TIMEOUT_SECS = 0.6` (was 0.9): how long of sustained silence after the user stops before transcription begins. Lowered for responsiveness on every turn; raise toward 0.8 if slow / pausing speakers get cut off mid-sentence.
 
@@ -334,7 +337,19 @@ decides who spoke.
 
 Identity combines:
 
-- Voice embeddings from `audio.speaker_id` (Resemblyzer per-person centroid, cosine).
+- Voice embeddings from `audio.speaker_id` (per-person centroid, cosine) —
+  `config.VOICE_EMBEDDER` selects the backend: `ecapa` (default; ECAPA-TDNN via
+  SpeechBrain, 192-dim, ~20ms/embedding CPU, model under `assets/models/ecapa/`
+  downloaded by `setup_assets.py`, auto-falls-back to Resemblyzer if it fails to
+  load) or `resemblyzer` (legacy 256-dim). All matchers skip stored prints of the
+  other dimension, so the two enrollment generations coexist but never cross-match —
+  re-enroll voices after switching (`tools/test_voice_id.py --enroll NAME --replace`).
+  THRESHOLD SCALE: every SPEAKER_ID_*/VOICE_SIGNATURE_* threshold stays on the
+  Resemblyzer-calibrated scale; `audio/voice_score.map_similarity` shifts ECAPA
+  cosines onto it (+`VOICE_SCORE_OFFSET_ECAPA`=0.25, constant so margin knobs keep
+  their meaning). ECAPA's genuine/impostor separation is far wider (impostors land
+  ~0.25-0.45 mapped vs genuine ~0.55-0.95), which is what retires the
+  ambiguous-between-knowns incidents.
 - Face recognition from `vision.face` — `config.FACE_BACKEND` selects the backend:
   `insightface` (default; SCRFD detector + ArcFace 512-dim L2-normalized embeddings via
   ONNX Runtime, models under `assets/models/insightface/` downloaded by `setup_assets.py`,

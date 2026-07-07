@@ -32,6 +32,7 @@ import config
 import state as state_module
 from state import State
 from audio import stream, vad, wake_word, transcription, speaker_id
+from audio import voice_score as _voice_score
 from audio import speech_queue, output_gate
 from audio import echo_cancel
 from audio import hardware_aec
@@ -2581,7 +2582,8 @@ def _resolve_anonymous_speaker_slot(
     for slot in _anonymous_speaker_slots:
         if slot.embedding.shape != embedding.shape:
             continue
-        score = float(np.dot(slot.embedding, embedding))
+        # Mapped onto the Resemblyzer-calibrated threshold scale (see voice_score).
+        score = _voice_score.map_similarity(float(np.dot(slot.embedding, embedding)))
         if best_score is None or score > best_score:
             best_score = score
             best_slot = slot

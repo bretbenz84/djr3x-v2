@@ -2742,6 +2742,30 @@ FACE_UNKNOWN_CONFIRM_FRAMES = _env_int(
     "FACE_UNKNOWN_CONFIRM_FRAMES", 3, min_value=1, max_value=30,
 )
 
+# ── Voice embedder backend ────────────────────────────────────────────────────
+# "ecapa": ECAPA-TDNN (SpeechBrain, 192-dim) — far wider genuine/impostor
+#   separation than Resemblyzer (whose weak separation was the root cause of the
+#   recurring ambiguity incidents: JT's single print sat 0.45-0.49 cosine from
+#   ALL of Bret's prints). ~20ms per embedding on CPU. Models in ECAPA_MODEL_DIR
+#   (downloaded by setup_assets.py, ~80MB).
+# "resemblyzer": legacy 256-dim embedder. Also the automatic runtime fallback if
+#   the ECAPA model fails to load.
+# The two embeddings are INCOMPATIBLE (192 vs 256 dim): stored voice prints and
+# voice signatures from one embedder are skipped by the other — people must
+# RE-ENROLL their voice after switching (tools/test_voice_id.py --enroll).
+# SCORE SCALE: all SPEAKER_ID_* thresholds below stay on the Resemblyzer-
+# calibrated scale; ECAPA cosines are mapped onto it by audio/voice_score.py
+# (+VOICE_SCORE_OFFSET_ECAPA, clamped). A constant offset preserves score GAPS,
+# so every margin knob keeps its meaning.
+VOICE_EMBEDDER = (os.getenv("VOICE_EMBEDDER", "").strip().lower() or "ecapa")
+ECAPA_MODEL_DIR = "assets/models/ecapa"
+# ECAPA genuine matches run ~0.30-0.75 raw (vs Resemblyzer 0.45-0.93); impostors
+# ~0.0-0.2 (vs 0.3-0.5). +0.25 lines the bands up with the thresholds below:
+# impostor -> 0.25-0.45 (under the 0.50 accept), genuine short utterance ->
+# 0.55-0.75, solid match -> 0.75-0.99. Re-run tools/test_voice_id.py --calibrate
+# after re-enrolling to verify your own band.
+VOICE_SCORE_OFFSET_ECAPA = 0.25
+
 # Resemblyzer cosine similarity — higher is a better match. Real cross-session
 # same-speaker scores in a live room cluster ~0.45-0.65 (a person's own voice measured
 # at ~0.55 against their own enrolled prints), so 0.75 rejected every returning user.

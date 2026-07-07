@@ -9783,7 +9783,14 @@ class GroupChatterGatingTest(unittest.TestCase):
 
     def test_anonymous_speaker_slot_reuses_near_match_for_same_raw_candidate(self):
         import numpy as np
+        from audio import voice_score
         from intelligence import interaction
+
+        # These synthetic embeddings encode RAW cosine scenarios — pin the score
+        # mapping to passthrough so the slot logic is tested backend-independently.
+        _orig_backend = voice_score.active_backend()
+        voice_score.set_active_backend("resemblyzer")
+        self.addCleanup(voice_score.set_active_backend, _orig_backend)
 
         audio = np.zeros(1600, dtype=np.float32)
         first_embedding = np.array([1.0, 0.0, 0.0], dtype=np.float32)
@@ -9866,7 +9873,14 @@ class GroupChatterGatingTest(unittest.TestCase):
         # The recent-sticky bar (0.62) still splits a truly different voice that
         # shows up moments later with a different raw candidate.
         import numpy as np
+        from audio import voice_score
         from intelligence import interaction
+
+        # Raw-cosine test vectors — pin the score mapping to passthrough (see
+        # the near-match test above).
+        _orig_backend = voice_score.active_backend()
+        voice_score.set_active_backend("resemblyzer")
+        self.addCleanup(voice_score.set_active_backend, _orig_backend)
 
         audio = np.zeros(1600, dtype=np.float32)
         first_embedding = np.array([1.0, 0.0, 0.0], dtype=np.float32)

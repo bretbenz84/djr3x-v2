@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 import config
+from audio import voice_score
 from memory import database as db
 from memory import people
 
@@ -14,24 +15,101 @@ logger = logging.getLogger(__name__)
 _encoder = None
 _UNAVAILABLE = False
 
+# Resolved at first load: "ecapa" or "resemblyzer" (after any fallback).
+_active_backend: Optional[str] = None
+
+
+def _load_ecapa():
+    """ECAPA-TDNN speaker embeddings (SpeechBrain, 192-dim) — far wider
+    genuine/impostor separation than Resemblyzer (the root cause of every
+    ambiguity incident: JT's print sat 0.45-0.49 from ALL of Bret's).
+    Model files live in config.ECAPA_MODEL_DIR (setup_assets.py downloads them;
+    ~80MB). Returns the encoder or None."""
+    try:
+        import torch  # noqa: F401 — fail fast if torch is broken
+        from speechbrain.inference.speaker import EncoderClassifier
+    except ImportError as exc:
+        logger.warning("speechbrain unavailable (%s)", exc)
+        return None
+    model_dir = str(getattr(config, "ECAPA_MODEL_DIR", "assets/models/ecapa"))
+    if not (Path(model_dir) / "hyperparams.yaml").exists():
+        logger.warning("ECAPA model missing at %s — run setup_assets.py", model_dir)
+        return None
+    try:
+        encoder = EncoderClassifier.from_hparams(
+            source=model_dir, savedir=model_dir, run_opts={"device": "cpu"},
+        )
+        logger.info("ECAPA-TDNN speaker encoder loaded from %s (192-dim)", model_dir)
+        return encoder
+    except Exception as exc:
+        logger.warning("ECAPA load failed (%s)", exc)
+        return None
+
+
+def _load_resemblyzer():
+    try:
+        from resemblyzer import VoiceEncoder
+        weights = Path(config.RESEMBLYZER_MODEL_DIR) / "pretrained.pt"
+        encoder = VoiceEncoder(weights_fpath=weights)
+        logger.info("Resemblyzer encoder loaded from %s", weights)
+        return encoder
+    except Exception as exc:
+        logger.warning("Resemblyzer unavailable (%s)", exc)
+        return None
+
 
 def _get_encoder():
-    global _encoder, _UNAVAILABLE
+    global _encoder, _UNAVAILABLE, _active_backend
     if _UNAVAILABLE:
         return None
     if _encoder is not None:
         return _encoder
-    try:
-        from resemblyzer import VoiceEncoder
-        weights = Path(config.RESEMBLYZER_MODEL_DIR) / "pretrained.pt"
-        _encoder = VoiceEncoder(weights_fpath=weights)
-        logger.info("Resemblyzer encoder loaded from %s", weights)
-    except Exception as exc:
-        logger.warning(
-            "Resemblyzer unavailable (%s) — speaker identification disabled", exc
-        )
-        _UNAVAILABLE = True
-    return _encoder
+
+    backend = str(getattr(config, "VOICE_EMBEDDER", "ecapa") or "ecapa").lower()
+    if backend == "ecapa":
+        _encoder = _load_ecapa()
+        if _encoder is not None:
+            _active_backend = "ecapa"
+            voice_score.set_active_backend("ecapa")
+            return _encoder
+        logger.warning("ECAPA unavailable — falling back to Resemblyzer embedder")
+
+    _encoder = _load_resemblyzer()
+    if _encoder is not None:
+        _active_backend = "resemblyzer"
+        voice_score.set_active_backend("resemblyzer")
+        return _encoder
+
+    logger.warning("no voice embedder available — speaker identification disabled")
+    _UNAVAILABLE = True
+    return None
+
+
+def active_backend() -> Optional[str]:
+    """The embedder actually in use ("ecapa"/"resemblyzer"), or None if unloaded."""
+    return _active_backend
+
+
+def _embed_ecapa(encoder, audio_array: np.ndarray) -> Optional[np.ndarray]:
+    import torch
+    sample_rate = int(getattr(config, "AUDIO_SAMPLE_RATE", 16000) or 16000)
+    wav = np.asarray(audio_array, dtype=np.float32)
+    if wav.ndim > 1:
+        wav = wav.mean(axis=1)
+    if sample_rate != 16000:
+        from math import gcd
+        from scipy.signal import resample_poly
+        g = gcd(16000, sample_rate)
+        wav = resample_poly(wav, 16000 // g, sample_rate // g).astype(np.float32)
+    if wav.size < 800:   # <50ms of audio — nothing to embed
+        return None
+    with torch.no_grad():
+        emb = encoder.encode_batch(torch.from_numpy(wav).unsqueeze(0))
+    emb = emb.squeeze().cpu().numpy().astype(np.float32)
+    norm = np.linalg.norm(emb)
+    if norm <= 1e-10:
+        return None
+    return emb / norm
 
 
 def preload() -> bool:
@@ -41,26 +119,62 @@ def preload() -> bool:
     if encoder is None:
         return False
     try:
-        # Warm this import too; get_embedding() needs it on the first turn.
-        from resemblyzer import preprocess_wav
+        # Warm the full embedding path too; the first live turn needs it.
         sample_rate = int(getattr(config, "AUDIO_SAMPLE_RATE", 16000) or 16000)
         samples = max(1, int(sample_rate * 0.75))
         t = np.arange(samples, dtype=np.float32) / float(sample_rate)
         dummy = (0.001 * np.sin(2.0 * np.pi * 220.0 * t)).astype(np.float32)
-        wav = preprocess_wav(dummy, source_sr=sample_rate)
-        encoder.embed_utterance(wav)
+        if _active_backend == "ecapa":
+            _embed_ecapa(encoder, dummy)
+        else:
+            from resemblyzer import preprocess_wav
+            wav = preprocess_wav(dummy, source_sr=sample_rate)
+            encoder.embed_utterance(wav)
     except Exception as exc:
         logger.warning("[speaker_id] preload failed while warming embedding path: %s", exc)
-    logger.info("[speaker_id] preloaded encoder in %.3fs", time.monotonic() - start)
+    logger.info(
+        "[speaker_id] preloaded %s encoder in %.3fs",
+        _active_backend or "no", time.monotonic() - start,
+    )
+    _warn_if_all_prints_are_other_backend()
     return True
 
 
+def _warn_if_all_prints_are_other_backend() -> None:
+    """One loud line when every stored voice print belongs to the OTHER embedder —
+    the operator would otherwise just see everyone become a mystery voice."""
+    try:
+        native_bytes = (192 if _active_backend == "ecapa" else 256) * 4
+        rows = db.fetchall(
+            "SELECT LENGTH(encoding) AS n FROM biometrics WHERE type = 'voice'"
+        )
+        if not rows:
+            return
+        native = sum(1 for r in rows if int(r["n"]) == native_bytes)
+        if native == 0:
+            logger.warning(
+                "[speaker_id] %d stored voice print(s), NONE from the active '%s' "
+                "embedder — everyone will read as unknown until they re-enroll "
+                "(tools/test_voice_id.py --enroll NAME --replace)",
+                len(rows), _active_backend,
+            )
+    except Exception as exc:
+        logger.debug("[speaker_id] print-dimension audit failed: %s", exc)
+
+
 def get_embedding(audio_array: np.ndarray) -> Optional[np.ndarray]:
-    """Preprocess audio and return a normalized float32 embedding, or None on failure."""
+    """Preprocess audio and return a normalized float32 embedding, or None on failure.
+
+    Dimension depends on the active backend: 192 (ECAPA) or 256 (Resemblyzer).
+    The two are INCOMPATIBLE — matchers skip stored rows of the other dimension,
+    so people enrolled under one embedder must re-enroll after switching.
+    """
     encoder = _get_encoder()
     if encoder is None:
         return None
     try:
+        if _active_backend == "ecapa":
+            return _embed_ecapa(encoder, audio_array)
         from resemblyzer import preprocess_wav
         wav = preprocess_wav(audio_array, source_sr=config.AUDIO_SAMPLE_RATE)
         embedding = encoder.embed_utterance(wav)
@@ -100,7 +214,8 @@ def rank_speakers(audio_array: np.ndarray) -> list[tuple[int, str, float, int]]:
     for row in rows:
         stored = np.frombuffer(bytes(row["encoding"]), dtype=np.float32)
         if stored.shape != query.shape:
-            logger.warning(
+            # Other-embedder enrollment — expected during migration, not an error.
+            logger.debug(
                 "voice embedding shape mismatch: stored %s vs query %s",
                 stored.shape, query.shape,
             )
@@ -112,7 +227,8 @@ def rank_speakers(audio_array: np.ndarray) -> list[tuple[int, str, float, int]]:
     for pid, vecs in per_person.items():
         centroid = np.mean(np.stack(vecs), axis=0)
         centroid = centroid / (np.linalg.norm(centroid) + 1e-10)
-        sim = float(np.dot(centroid, query_norm))
+        # Mapped onto the Resemblyzer-calibrated threshold scale (see voice_score).
+        sim = voice_score.map_similarity(float(np.dot(centroid, query_norm)))
         person = people.get_person(pid)
         nm = (person.get("name") if person else None) or "?"
         scored.append((pid, nm, sim, len(vecs)))

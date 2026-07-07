@@ -27,6 +27,9 @@ openwakeword>=0.6.0
 onnxruntime>=1.18.0
 
 # ── Speaker identification ────────────────────────────────────────────────────
+# Primary embedder: ECAPA-TDNN via SpeechBrain (VOICE_EMBEDDER="ecapa", 192-dim;
+# model downloaded by setup_assets.py). Resemblyzer is the legacy fallback.
+speechbrain>=1.0.0
 resemblyzer>=0.1.1.dev0
 torch>=2.3.0
 torchaudio>=2.3.0

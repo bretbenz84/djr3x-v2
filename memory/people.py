@@ -23,6 +23,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 import config
+from audio import voice_score as _voice_score
 from memory import database as db
 from memory.name_validation import (
     names_are_similar,
@@ -215,10 +216,12 @@ def find_by_voice(embedding: np.ndarray) -> Optional[dict]:
     for row in rows:
         stored = _from_blob(bytes(row["encoding"]))
         if stored.shape != query.shape:
-            _log.warning("voice embedding shape mismatch: stored %s vs query %s", stored.shape, query.shape)
+            # Other-embedder enrollment (192-d ECAPA vs 256-d Resemblyzer) —
+            # expected during migration, not an error.
+            _log.debug("voice embedding shape mismatch: stored %s vs query %s", stored.shape, query.shape)
             continue
         stored_norm = stored / (np.linalg.norm(stored) + 1e-10)
-        sim = float(np.dot(stored_norm, query_norm))
+        sim = _voice_score.map_similarity(float(np.dot(stored_norm, query_norm)))
         if sim > best_sim:
             best_sim = sim
             best_id = row["person_id"]

@@ -32,6 +32,7 @@ from typing import Optional
 import numpy as np
 
 import config
+from audio import voice_score as _voice_score
 from memory import database as db
 
 _log = logging.getLogger("memory.voice_signatures")
@@ -133,7 +134,8 @@ def match(embedding) -> Optional[dict]:
         vec = _normalize(_from_blob(row["embedding"]))
         if vec is None or vec.shape != query.shape:
             continue
-        score = float(np.dot(vec, query))
+        # Mapped onto the Resemblyzer-calibrated threshold scale (see voice_score).
+        score = _voice_score.map_similarity(float(np.dot(vec, query)))
         if best is None or score > best["score"]:
             best = {
                 "id": int(row["id"]),

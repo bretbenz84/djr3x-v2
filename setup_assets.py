@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     DB_PATH,
     REX_DB_PATH,
+    ECAPA_MODEL_DIR,
     FACE_MODELS_DIR,
     INSIGHTFACE_MODEL_PACK,
     INSIGHTFACE_MODEL_ROOT,
@@ -45,6 +46,7 @@ REQUIRED_DIRS = [
     "assets/models/pose",
     "assets/models/object_detection",
     "assets/models/whisper",
+    "assets/models/ecapa",
     "assets/models/resemblyzer",
     "assets/audio/clips",
     "assets/audio/startup",
@@ -610,7 +612,48 @@ def download_whisper_model(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 6 — Resemblyzer pretrained model
+# Step 5b — ECAPA-TDNN speaker-ID model (SpeechBrain, the primary voice embedder)
+# ─────────────────────────────────────────────────────────────────────────────
+ECAPA_REPO_ID = "speechbrain/spkrec-ecapa-voxceleb"
+ECAPA_FILES = [
+    "hyperparams.yaml", "embedding_model.ckpt",
+    "mean_var_norm_emb.ckpt", "classifier.ckpt", "label_encoder.txt",
+]
+
+
+def download_ecapa_model(
+    root: Path,
+) -> tuple[list[str], list[str], list[str]]:
+    local_dir = root / ECAPA_MODEL_DIR
+    label = f"ecapa/{ECAPA_REPO_ID}"
+
+    if (local_dir / "hyperparams.yaml").exists() and (
+        local_dir / "embedding_model.ckpt"
+    ).exists():
+        return [], [label], []
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        return [], [], [
+            f"{label}: huggingface_hub not installed — "
+            f"run: {sys.executable} -m pip install huggingface_hub"
+        ]
+
+    try:
+        print(f"    Downloading {ECAPA_REPO_ID} (~80 MB)")
+        snapshot_download(
+            repo_id=ECAPA_REPO_ID,
+            local_dir=str(local_dir),
+            allow_patterns=ECAPA_FILES,
+        )
+        return [label], [], []
+    except Exception as exc:
+        return [], [], [f"{label}: {exc}"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 6 — Resemblyzer pretrained model (legacy fallback voice embedder)
 # ─────────────────────────────────────────────────────────────────────────────
 def download_resemblyzer_model(
     root: Path,
@@ -1016,7 +1059,7 @@ def main() -> None:
     print("DJ-R3X v2 — setup_assets.py")
     print()
 
-    print("[1/10] Creating project directories ...")
+    print("[1/11] Creating project directories ...")
     dir_created = create_directories(root)
     count = len(dir_created)
     print(f"      {count} created." if count else "      All already exist.")
@@ -1025,47 +1068,52 @@ def main() -> None:
     all_skipped: list[str] = []
     all_failed:  list[str] = []
 
-    print("[2/10] InsightFace models (SCRFD + ArcFace — primary face backend) ...")
+    print("[2/11] InsightFace models (SCRFD + ArcFace — primary face backend) ...")
     c, s, f = download_insightface_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[3/10] dlib face recognition models (legacy fallback backend) ...")
+    print("[3/11] dlib face recognition models (legacy fallback backend) ...")
     c, s, f = download_dlib_models(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[4/10] MediaPipe Face Landmarker model ...")
+    print("[4/11] MediaPipe Face Landmarker model ...")
     c, s, f = download_mediapipe_face_landmarker(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[5/10] MediaPipe Pose Landmarker model ...")
+    print("[5/11] MediaPipe Pose Landmarker model ...")
     c, s, f = download_mediapipe_pose_landmarker(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[6/10] MediaPipe Object Detector model ...")
+    print("[6/11] MediaPipe Object Detector model ...")
     c, s, f = download_mediapipe_object_detector(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[7/10] mlx-whisper large-v3-turbo model ...")
+    print("[7/11] mlx-whisper large-v3-turbo model ...")
     c, s, f = download_whisper_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[8/10] Resemblyzer speaker-ID model ...")
+    print("[8/11] ECAPA-TDNN speaker-ID model (primary voice embedder) ...")
+    c, s, f = download_ecapa_model(root)
+    all_created += c; all_skipped += s; all_failed += f
+    _report(c, s, f)
+
+    print("[9/11] Resemblyzer speaker-ID model (legacy fallback embedder) ...")
     c, s, f = download_resemblyzer_model(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[9/10] Ollama local sidecar model ...")
+    print("[10/11] Ollama local sidecar model ...")
     c, s, f = install_ollama_model()
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
 
-    print("[10/10] Database schema and personality defaults ...")
+    print("[11/11] Database schema and personality defaults ...")
     c, s, f = initialize_database(root)
     all_created += c; all_skipped += s; all_failed += f
     _report(c, s, f)
