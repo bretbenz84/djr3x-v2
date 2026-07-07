@@ -284,10 +284,30 @@ def speak(
     else:
         synth_text, voice_settings = _apply_audio_tags(spoken_text, emotion, comedy_mode, voice_settings)
     cache_file = _cache_path(synth_text, voice_id, model_id, voice_settings, previous_text)
+    # Streamed takes cache as WAV next to the buffered path's MP3 — honor both.
+    wav_sibling = cache_file.with_suffix(".wav")
 
     if cache_file.exists():
         logger.info("[tts] cache hit: %s", cache_file.name)
+    elif wav_sibling.exists():
+        logger.info("[tts] cache hit: %s", wav_sibling.name)
+        cache_file = wav_sibling
     else:
+        if bool(getattr(config, "TTS_STREAMING_PLAYBACK_ENABLED", True)):
+            handled = False
+            try:
+                handled = _speak_streaming(
+                    synth_text, spoken_text, voice_id, model_id, voice_settings,
+                    previous_text, emotion, cache_file,
+                    on_playback_start=on_playback_start,
+                    post_playback_tail_secs=post_playback_tail_secs,
+                    flush_on_playback_stop=flush_on_playback_stop,
+                    log_text=log_text,
+                )
+            except Exception as exc:
+                logger.warning("[tts] streaming path error (%s) — buffered fallback", exc)
+            if handled:
+                return
         logger.info(
             "[tts] cache miss — calling ElevenLabs API%s",
             f" (voice_settings={_summarize_settings(voice_settings)})"
@@ -379,6 +399,227 @@ def _trim_trailing_silence(audio: np.ndarray, samplerate: int) -> np.ndarray:
 
 
 # ── Internal: playback ────────────────────────────────────────────────────────
+
+def _stream_pcm_samplerate() -> int:
+    """Sample rate implied by the configured ElevenLabs PCM stream format."""
+    fmt = str(getattr(config, "TTS_STREAM_PCM_FORMAT", "pcm_22050"))
+    try:
+        return int(fmt.split("_", 1)[1])
+    except (IndexError, ValueError):
+        return 22050
+
+
+def _speak_streaming(
+    synth_text: str,
+    spoken_text: str,
+    voice_id: str,
+    model_id: str,
+    voice_settings: Optional[dict],
+    previous_text: Optional[str],
+    emotion: str,
+    cache_file: Path,
+    *,
+    on_playback_start: Optional[Callable[[], None]] = None,
+    post_playback_tail_secs: Optional[float] = None,
+    flush_on_playback_stop: Optional[bool] = None,
+    log_text: bool = True,
+) -> bool:
+    """Cache-miss synthesis with STREAMING playback: audio starts the moment the
+    first PCM bytes arrive from ElevenLabs (~0.3-0.6s) instead of after the full
+    generation is buffered (~1.5-2s for a conversational sentence — the dominant
+    remaining latency stage, measured 2026-07-06). Returns True when the line was
+    handled (played, or legitimately skipped); False = caller should fall back to
+    the buffered path.
+
+    Parity with _play(): output gate, speaking flag, emotion frame, LEDs/servos,
+    AEC suppression, barge-in (polls echo_cancel.was_canceled() between chunk
+    writes — the interrupters set it right before sd.stop(), which only affects
+    sd.play streams, so the poll IS the cancel path here). Mouth LEDs are driven
+    inline from each written chunk's RMS (write-paced ≈ playback-paced within the
+    buffer latency), replacing the array-based _drive_leds thread. The full take
+    is accumulated and cached as WAV in the background for future cache hits.
+    """
+    global _speaking
+    try:
+        import sounddevice as sd
+        from elevenlabs import VoiceSettings
+    except ImportError as exc:
+        logger.debug("[tts] streaming unavailable (%s)", exc)
+        return False
+
+    samplerate = _stream_pcm_samplerate()
+    client = _get_el_client()
+    kwargs = {
+        "voice_id": voice_id,
+        "text": synth_text,
+        "model_id": model_id,
+        "output_format": str(getattr(config, "TTS_STREAM_PCM_FORMAT", "pcm_22050")),
+    }
+    if voice_settings:
+        kwargs["voice_settings"] = VoiceSettings(
+            **{k: v for k, v in voice_settings.items() if v is not None}
+        )
+    seed = _v3_seed(model_id)
+    if seed is not None:
+        kwargs["seed"] = seed
+    prev = _stitch_previous_text(previous_text, model_id)
+    if prev:
+        kwargs["previous_text"] = prev
+
+    requested_at = time.monotonic()
+    try:
+        chunk_iter = iter(client.text_to_speech.stream(**kwargs))
+        first_chunk = next(chunk_iter, None)
+    except Exception as exc:
+        logger.warning("[tts] streaming request failed (%s) — buffered fallback", exc)
+        return False
+    if not first_chunk:
+        logger.warning("[tts] streaming returned no audio — buffered fallback")
+        return False
+    logger.info(
+        "[tts] streaming first audio bytes in %.2fs", time.monotonic() - requested_at
+    )
+
+    if log_text:
+        try:
+            conv_log.log_rex(spoken_text)
+        except Exception as exc:
+            logger.debug("[tts] conversation log write failed: %s", exc)
+
+    min_delta = int(getattr(config, "HEAD_LED_SPEAK_LEVEL_MIN_DELTA", 8))
+    with output_gate.hold("tts") as acquired:
+        if not acquired:
+            logger.debug("[tts] streamed playback skipped — output gate busy")
+            return True   # handled: deliberately skipped, same as _play()
+
+        with _speaking_lock:
+            _speaking = True
+        emotion_frame = emotion_orchestrator.frame_for_speech(emotion)
+        led_emotion = emotion_frame.led_style
+        emotion_orchestrator.publish_frame(emotion_frame, ttl_secs=8.0)
+        pcm_carry = b""
+        all_samples: list[np.ndarray] = []
+        canceled = False
+        last_led = -1
+        play_started_at = time.monotonic()
+        stream = None
+        try:
+            try:
+                animations.speech_activity_start()
+                servos.begin_speech_motion(emotion_frame)
+            except Exception as exc:
+                logger.debug("[tts] speech servo start failed: %s", exc)
+            leds_head.speak(led_emotion)
+            leds_head.ensure_eyes_on(led_emotion)
+            leds_chest.speak(led_emotion)
+            echo_cancel.set_playing(True)
+            stream = sd.OutputStream(
+                samplerate=samplerate, channels=1, dtype="float32",
+                **playback_stream_kwargs(),
+            )
+            stream.start()
+            if on_playback_start is not None:
+                try:
+                    on_playback_start()
+                except Exception:
+                    pass
+
+            chunk = first_chunk
+            while chunk is not None:
+                if echo_cancel.was_canceled():
+                    canceled = True
+                    break
+                raw = pcm_carry + chunk
+                usable = len(raw) - (len(raw) % 2)   # int16 alignment
+                pcm_carry = raw[usable:]
+                if usable:
+                    samples = (
+                        np.frombuffer(raw[:usable], dtype=np.int16).astype(np.float32)
+                        / 32768.0
+                    )
+                    all_samples.append(samples)
+                    # Inline mouth drive from this chunk's RMS (parity with _drive_leds).
+                    rms = float(np.sqrt(np.mean(samples ** 2))) if len(samples) else 0.0
+                    brightness = min(255, int(rms * config.TTS_LED_BRIGHTNESS_SCALE))
+                    if last_led < 0 or abs(brightness - last_led) >= min_delta or (
+                        brightness == 0 and last_led != 0
+                    ):
+                        try:
+                            leds_head.speak_level(brightness)
+                            servos.speech_reactive_move(brightness / 255.0)
+                        except Exception:
+                            pass
+                        last_led = brightness
+                    stream.write(samples)   # blocks on buffer space — natural pacing
+                chunk = next(chunk_iter, None)
+
+            if canceled:
+                stream.abort()
+            else:
+                stream.stop()   # waits for the buffered tail to finish playing
+        except Exception as exc:
+            logger.error("[tts] streamed playback error: %s", exc)
+            # Audio may have partially played; do NOT fall back (would double-speak).
+        finally:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            shutdown_now = _is_shutdown_state()
+            try:
+                if shutdown_now:
+                    leds_head.off()
+                else:
+                    leds_head.speak_stop()
+            except Exception as exc:
+                logger.warning("[tts] head LED cleanup failed: %s", exc)
+            try:
+                if shutdown_now:
+                    leds_chest.off()
+                else:
+                    leds_chest.active()
+            except Exception as exc:
+                logger.debug("[tts] chest LED cleanup failed: %s", exc)
+            try:
+                servos.end_speech_motion()
+            except Exception as exc:
+                logger.debug("[tts] speech servo stop failed: %s", exc)
+            try:
+                animations.speech_activity_stop()
+            except Exception as exc:
+                logger.debug("[tts] speech activity clear failed: %s", exc)
+            echo_cancel.set_playing(
+                False,
+                tail_secs=post_playback_tail_secs,
+                flush=flush_on_playback_stop,
+            )
+            with _speaking_lock:
+                _speaking = False
+
+        logger.info(
+            "[tts] streamed playback %s in %.2fs",
+            "canceled" if canceled else "done",
+            time.monotonic() - play_started_at,
+        )
+
+    # Cache the complete take as WAV — synchronous on purpose: the write is
+    # milliseconds, and a daemon thread got killed at process exit before the file
+    # landed (observed live: the second identical line re-streamed instead of
+    # cache-hitting).
+    if all_samples and not canceled:
+        try:
+            import soundfile as sf
+            full = np.concatenate(all_samples)
+            trimmed = _trim_trailing_silence(full, samplerate)
+            wav_path = cache_file.with_suffix(".wav")
+            wav_path.parent.mkdir(parents=True, exist_ok=True)
+            sf.write(str(wav_path), trimmed, samplerate)
+            logger.info("[tts] saved streamed take to cache: %s", wav_path.name)
+        except Exception as exc:
+            logger.debug("[tts] streamed cache write failed: %s", exc)
+    return True
+
 
 def _play(
     audio: np.ndarray,

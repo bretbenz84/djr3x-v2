@@ -408,6 +408,15 @@ LLM_STREAMING_TTS_ENABLED = False
 # streaming disabled). Set False to restore strict whole-reply consistency.
 TTS_FIRST_SENTENCE_SPLIT_ENABLED = _env_bool("TTS_FIRST_SENTENCE_SPLIT_ENABLED", True)
 
+# STREAMING PLAYBACK (latency phase 4): on a cache miss, play the PCM bytes as they
+# arrive from ElevenLabs (~0.3-0.6s to first audio) instead of buffering the whole
+# generation (~1.5-2s for a conversational sentence — the dominant remaining stage,
+# measured 2026-07-06). Barge-in polls between chunk writes; mouth LEDs are driven
+# inline per chunk; the full take is cached as WAV in the background. Any streaming
+# error falls back to the buffered path. Set False to restore buffered-only playback.
+TTS_STREAMING_PLAYBACK_ENABLED = _env_bool("TTS_STREAMING_PLAYBACK_ENABLED", True)
+TTS_STREAM_PCM_FORMAT = os.environ.get("TTS_STREAM_PCM_FORMAT", "pcm_22050")
+
 # A finished sentence shorter than this many characters is merged with the next
 # one before speaking, so tiny fragments ("Yeah.", initials, abbreviations,
 # decimals) don't produce choppy one-word bursts. Raise if delivery feels choppy;
