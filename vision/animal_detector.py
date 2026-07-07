@@ -1,18 +1,36 @@
 """
-vision/animal_detector.py — Local pet/animal detection via MediaPipe.
+vision/animal_detector.py — Local animal + room-object detection.
 
 This is the no-OpenAI-credits path for live "a dog wandered into frame" style
-awareness. It consumes the same camera frame buffer as face expression telemetry,
-but uses MediaPipe Object Detector instead of Face Landmarker.
+awareness plus the room-object stream. It consumes the same camera frame buffer
+as face expression telemetry.
+
+Backend selection (config.OBJECT_DETECTOR_BACKEND)
+────────────────────────────────────────────────────
+"rfdetr" (default): RF-DETR nano (Apache 2.0, real-time DETR) via torch —
+measured ~40ms/frame CPU warm with dramatically better recall/precision than
+the 2019 EfficientDet-Lite0 it replaced (live: a 6-person group photo scored
+0.87-0.94 per person vs EfficientDet's sub-threshold noise). Weights live in
+config.RFDETR_MODEL_DIR (downloaded by setup_assets.py, ~350MB).
+
+"mediapipe": legacy EfficientDet-Lite0 via MediaPipe Tasks. Also the automatic
+runtime fallback if RF-DETR fails to load.
+
+Both backends feed the SAME record builders (`_records_from_detections` /
+`_object_records_from_detections`) — RF-DETR outputs are adapted to the
+MediaPipe detection duck-type, so species lists, per-species thresholds, the
+no-screens exclusion rule, and position phrasing are backend-independent.
 """
 
 from __future__ import annotations
 
 import atexit
 import logging
+import os
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 import numpy as np
@@ -28,7 +46,17 @@ _load_attempted = False
 _load_ok = False
 _model_lock = threading.Lock()
 
+# RF-DETR backend state (resolved at first load; falls back to mediapipe).
+_rf_model = None
+_rf_classes: dict = {}
+_active_backend: Optional[str] = None
+
 _SOURCE = "mediapipe_object_detector"
+_RF_SOURCE = "rfdetr_object_detector"
+
+
+def _source() -> str:
+    return _RF_SOURCE if _active_backend == "rfdetr" else _SOURCE
 
 
 def _project_root() -> Path:
@@ -46,8 +74,83 @@ def _model_path() -> Path:
     return configured if configured.is_absolute() else _project_root() / configured
 
 
+def _model_floor() -> float:
+    """The low model-level score floor shared by animals + objects; acceptance
+    thresholds are applied downstream in the record builders."""
+    return float(getattr(config, "LOCAL_ANIMAL_DETECTION_MODEL_FLOOR", 0.15))
+
+
+def _load_rfdetr() -> bool:
+    """RF-DETR nano — the primary backend. Returns True when ready."""
+    global _rf_model, _rf_classes
+    model_dir = str(getattr(config, "RFDETR_MODEL_DIR", "assets/models/rfdetr"))
+    weights = Path(model_dir)
+    if not weights.is_absolute():
+        weights = _project_root() / weights
+    if not (weights / "rf-detr-nano.pth").exists():
+        _log.warning("RF-DETR weights missing at %s — run setup_assets.py", weights)
+        return False
+    try:
+        # RF_HOME steers the package's weight cache to the project assets dir
+        # (must be set before the model class instantiates).
+        os.environ.setdefault("RF_HOME", str(weights))
+        from rfdetr import RFDETRNano
+        from rfdetr.util.coco_classes import COCO_CLASSES
+        _rf_model = RFDETRNano()
+        _rf_classes = dict(COCO_CLASSES) if isinstance(COCO_CLASSES, dict) else {
+            i: name for i, name in enumerate(COCO_CLASSES)
+        }
+        _log.info("RF-DETR nano loaded for local animal/object detection: %s", weights)
+        return True
+    except ImportError as exc:
+        _log.warning("rfdetr not installed (%s)", exc)
+        return False
+    except Exception as exc:
+        _log.error("Failed to init RF-DETR: %s", exc)
+        return False
+
+
+def _rf_detections_to_mp(result) -> list:
+    """Adapt a supervision.Detections result to the MediaPipe detection duck-type
+    the record builders consume: .categories[].category_name/.score and
+    .bounding_box.origin_x/origin_y/width/height."""
+    adapted = []
+    try:
+        xyxy = getattr(result, "xyxy", None)
+        confidence = getattr(result, "confidence", None)
+        class_id = getattr(result, "class_id", None)
+        if xyxy is None or confidence is None or class_id is None:
+            return adapted
+        for (x1, y1, x2, y2), score, cid in zip(xyxy, confidence, class_id):
+            name = str(_rf_classes.get(int(cid), "")).strip().lower()
+            if not name:
+                continue
+            adapted.append(SimpleNamespace(
+                categories=[SimpleNamespace(category_name=name, score=float(score))],
+                bounding_box=SimpleNamespace(
+                    origin_x=float(x1), origin_y=float(y1),
+                    width=float(x2) - float(x1), height=float(y2) - float(y1),
+                ),
+            ))
+    except Exception as exc:
+        _log.debug("RF-DETR detection adaptation failed: %s", exc)
+    return adapted
+
+
+def _rf_detect(frame) -> Optional[list]:
+    """Run RF-DETR on a BGR frame; returns adapted detections or None on failure."""
+    try:
+        rgb = np.ascontiguousarray(bgr_to_rgb(frame))
+        with _model_lock:
+            result = _rf_model.predict(rgb, threshold=_model_floor())
+        return _rf_detections_to_mp(result)
+    except Exception as exc:
+        _log.error("RF-DETR detection failed: %s", exc)
+        return None
+
+
 def _load_model() -> bool:
-    global _detector, _mp, _load_attempted, _load_ok
+    global _detector, _mp, _load_attempted, _load_ok, _active_backend
 
     # The same detector backs BOTH animal and object detection — load it when EITHER
     # is enabled (objects reuse this instance; no second model).
@@ -59,6 +162,14 @@ def _load_model() -> bool:
     if _load_attempted:
         return _load_ok
     _load_attempted = True
+
+    backend = str(getattr(config, "OBJECT_DETECTOR_BACKEND", "rfdetr") or "rfdetr").lower()
+    if backend == "rfdetr":
+        if _load_rfdetr():
+            _active_backend = "rfdetr"
+            _load_ok = True
+            return True
+        _log.warning("RF-DETR unavailable — falling back to MediaPipe object detector")
 
     model_path = _model_path()
     if not model_path.exists():
@@ -94,6 +205,7 @@ def _load_model() -> bool:
         _detector = ObjectDetector.create_from_options(options)
         _mp = mp
         _load_ok = True
+        _active_backend = "mediapipe"
         _log.info("MediaPipe Object Detector loaded for local animal detection: %s", model_path)
     except ImportError:
         _log.warning("mediapipe not installed — local animal detection disabled")
@@ -103,19 +215,46 @@ def _load_model() -> bool:
     return _load_ok
 
 
+def active_backend() -> Optional[str]:
+    """The object-detector backend in use ("rfdetr"/"mediapipe"), or None if unloaded."""
+    return _active_backend
+
+
 def preload() -> bool:
-    """Warm the local object detector and keep it open for the process lifetime."""
-    return _load_model()
+    """Warm the local object detector and keep it open for the process lifetime.
+
+    Runs in a background thread: RF-DETR pays ~4s of model build plus ~8s of
+    first-inference torch warmup — far too much for the synchronous boot path
+    (MediaPipe loaded in ~0.2s). Until the thread finishes, detect_* calls
+    simply report unavailable and the scene scan skips a beat; the warmup
+    dummy predict absorbs the torch graph cost so the FIRST real frame is fast.
+    """
+    def _warm() -> None:
+        if not _load_model():
+            _log.warning("local object detector preload failed; detection will stay off")
+            return
+        if _active_backend == "rfdetr":
+            try:
+                dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+                _rf_detect(dummy)
+                _log.info("RF-DETR warmed (first-inference torch warmup absorbed at boot)")
+            except Exception as exc:
+                _log.debug("RF-DETR warmup failed: %s", exc)
+
+    threading.Thread(target=_warm, daemon=True, name="object-detector-preload").start()
+    return True
 
 
 def close() -> None:
-    """Close the MediaPipe object detector before interpreter teardown."""
-    global _detector, _mp, _load_attempted, _load_ok
+    """Close the active object detector before interpreter teardown."""
+    global _detector, _mp, _load_attempted, _load_ok, _rf_model, _active_backend
 
     with _model_lock:
         detector = _detector
         _detector = None
         _mp = None
+        _rf_model = None      # torch model needs no explicit close; drop the ref
+        _active_backend = None
         _load_attempted = False
         _load_ok = False
 
@@ -272,7 +411,7 @@ def _records_from_detections(detections, frame_shape, *, now: Optional[float] = 
             "last_seen": timestamp,
             "confidence": round(max(0.0, min(1.0, score)), 3),
             "furred": _is_furred(species),
-            "source": _SOURCE,
+            "source": _source(),
         })
         if box is not None:
             records[-1]["box"] = box
@@ -291,6 +430,12 @@ def detect_animals(frame) -> Optional[list[dict]]:
         return None
     if not _load_model():
         return None
+
+    if _active_backend == "rfdetr":
+        detections = _rf_detect(frame)
+        if detections is None:
+            return None
+        return _records_from_detections(detections, frame.shape)
 
     try:
         rgb = np.ascontiguousarray(bgr_to_rgb(frame))
@@ -364,7 +509,7 @@ def _object_records_from_detections(
             "position": position,
             "last_seen": timestamp,
             "confidence": round(max(0.0, min(1.0, score)), 3),
-            "source": _SOURCE,
+            "source": _source(),
         }
         if box is not None:
             record["box"] = box
@@ -388,6 +533,12 @@ def detect_objects(frame) -> Optional[list[dict]]:
         return None
     if not _load_model():
         return None
+
+    if _active_backend == "rfdetr":
+        detections = _rf_detect(frame)
+        if detections is None:
+            return None
+        return _object_records_from_detections(detections, frame.shape)
 
     try:
         rgb = np.ascontiguousarray(bgr_to_rgb(frame))

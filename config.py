@@ -509,6 +509,16 @@ FACE_LANDMARK_MODEL   = "assets/models/face/shape_predictor_68_face_landmarks.da
 FACE_RECOGNITION_MODEL = "assets/models/face/dlib_face_recognition_resnet_model_v1.dat"
 FACE_DETECTOR_MODEL   = "assets/models/face/mmod_human_face_detector.dat"
 MEDIAPIPE_FACE_LANDMARKER_MODEL = "assets/models/face/face_landmarker.task"
+# ── Object detector backend ───────────────────────────────────────────────────
+# "rfdetr": RF-DETR nano (Apache 2.0, real-time DETR) — ~40ms/frame CPU with far
+#   better recall/precision than EfficientDet-Lite0 (2019). Weights in
+#   RFDETR_MODEL_DIR (~350MB, downloaded by setup_assets.py; RF_HOME is pointed
+#   there so the rfdetr package never writes to ~/.roboflow).
+# "mediapipe": legacy EfficientDet-Lite0. Also the automatic runtime fallback if
+#   RF-DETR fails to load.
+OBJECT_DETECTOR_BACKEND = (os.getenv("OBJECT_DETECTOR_BACKEND", "").strip().lower() or "rfdetr")
+RFDETR_MODEL_DIR = "assets/models/rfdetr"
+
 MEDIAPIPE_OBJECT_DETECTOR_MODEL = (
     "assets/models/object_detection/efficientdet_lite0.tflite"
 )

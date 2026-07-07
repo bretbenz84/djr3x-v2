@@ -48,6 +48,11 @@ Pillow>=10.0.0
 # mediapipe installs opencv-contrib-python, which already provides cv2
 mediapipe>=0.10.14
 
+# ── Vision — local animal/object detection ────────────────────────────────────
+# Primary backend: RF-DETR nano (Apache 2.0) on torch (OBJECT_DETECTOR_BACKEND).
+# Weights downloaded by setup_assets.py. MediaPipe EfficientDet is the fallback.
+rfdetr>=1.3.0
+
 # ── Optional macOS GUI dashboard ──────────────────────────────────────────────
 PySide6>=6.7.0
 
