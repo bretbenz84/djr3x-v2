@@ -6240,6 +6240,16 @@ JEOPARDY_AUDIO_MUSIC_GAIN = 0.22
 JEOPARDY_AUDIO_STINGER_GAIN = 0.75
 JEOPARDY_THEME_MAX_SECS = 6.0
 JEOPARDY_PLAY_THINKING_THEME = True
+# LLM fallback judge (2026-07-07): answers arrive via SPEECH, so a RIGHT answer
+# can reach the deterministic matcher phonetically mangled ("day cart" for
+# Descartes) or phrased in a way fuzzy matching can't score. When the
+# deterministic matcher says wrong (and the turn wasn't a pass), a strict
+# yes/no gpt-4o-mini judge gets one look at transcript + clue + expected answer
+# before the miss is scored. Deterministic verdicts still decide everything the
+# matcher already accepts; the judge can only rescue, never overrule a correct.
+# Fail-safe: any error keeps the deterministic "wrong".
+JEOPARDY_LLM_JUDGE_ENABLED = True
+JEOPARDY_LLM_JUDGE_MAX_ANSWER_CHARS = 120  # longer turns aren't answer attempts
 
 # How many times Rex will agree to play the same game within GAME_REPEAT_WINDOW_SECS
 # before refusing. Scaled up or down by the agreeability personality parameter.

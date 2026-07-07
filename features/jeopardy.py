@@ -477,12 +477,225 @@ def answer_candidates(answer: str) -> list[str]:
     return [c for c in candidates if c]
 
 
-def normalize_answer(text: str) -> str:
-    text = _QUESTION_PREFIX_RE.sub("", text or "").strip()
+# Spoken lead-ins a live player wraps an answer in ("um, I think it's Paris?").
+# Stripped iteratively so stacked fillers all come off. The contraction forms
+# ("what's X") matter most: _QUESTION_PREFIX_RE only matches the two-word forms.
+_SPOKEN_LEADIN_RES = [
+    re.compile(r"^\s*(?:um+|uh+|er+|hmm+|well|okay|ok|oh|so|hey)\b[,\s]*", re.IGNORECASE),
+    re.compile(
+        r"^\s*(?:i\s+(?:think|believe|guess|mean|know)|maybe|probably|possibly)\b[,\s]*(?:it'?s|it\s+is|that'?s)?[,\s]*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*(?:the\s+answer\s+is|that\s+would\s+be|it\s+would\s+be|is\s+it|it'?s|"
+        r"it\s+is|that'?s|that\s+is|how\s+about|what\s+about)\b[,\s]*",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^\s*(?:what|who|where|when|how)'?s\b[,\s]*", re.IGNORECASE),
+]
+
+_CARDINAL_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40,
+    "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+
+_ORDINAL_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6,
+    "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11,
+    "twelfth": 12, "thirteenth": 13, "fourteenth": 14, "fifteenth": 15,
+    "sixteenth": 16, "seventeenth": 17, "eighteenth": 18, "nineteenth": 19,
+    "twentieth": 20,
+}
+
+# Regnal-number roman numerals (Henry VIII). The single letters i/v/x/l/c are
+# deliberately excluded — too ambiguous with ordinary words and initials.
+_ROMAN_TOKENS = {
+    "ii": 2, "iii": 3, "iv": 4, "vi": 6, "vii": 7, "viii": 8, "ix": 9,
+    "xi": 11, "xii": 12, "xiii": 13, "xiv": 14, "xv": 15, "xvi": 16,
+    "xvii": 17, "xviii": 18, "xix": 19, "xx": 20,
+}
+
+_DIGIT_ORDINAL_RE = re.compile(r"^(\d+)(?:st|nd|rd|th)$")
+
+
+def _canon_token(token: str, next_token: Optional[str] = None) -> tuple[str, bool]:
+    """Canonicalize one token toward digits ("eighth"/"viii"/"8th" -> "8").
+    Returns (canonical, consumed_next) — consumed_next when a tens word absorbed
+    the following unit word ("forty two" -> "42")."""
+    if token in _ROMAN_TOKENS:
+        return str(_ROMAN_TOKENS[token]), False
+    if token in _ORDINAL_WORDS:
+        return str(_ORDINAL_WORDS[token]), False
+    match = _DIGIT_ORDINAL_RE.match(token)
+    if match:
+        return match.group(1), False
+    value = _CARDINAL_WORDS.get(token)
+    if value is not None:
+        if (
+            20 <= value <= 90
+            and value % 10 == 0
+            and next_token is not None
+            and 1 <= _CARDINAL_WORDS.get(next_token, 99) <= 9
+        ):
+            return str(value + _CARDINAL_WORDS[next_token]), True
+        return str(value), False
+    return token, False
+
+
+def _canonicalize_number_tokens(text: str) -> str:
+    tokens = text.split()
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+        canon, consumed = _canon_token(tokens[i], nxt)
+        out.append(canon)
+        i += 2 if consumed else 1
+    return " ".join(out)
+
+
+def _finish_normalize(text: str) -> str:
     text = re.sub(r"\([^)]*\)", " ", text)
     text = re.sub(r"[^a-z0-9\s]", " ", text.lower())
     text = re.sub(r"\b(a|an|the)\b", " ", text)
-    return " ".join(text.split())
+    return _canonicalize_number_tokens(" ".join(text.split()))
+
+
+def normalize_answer(text: str) -> str:
+    original = (text or "").strip()
+    stripped = original
+    for _ in range(3):
+        before = stripped
+        for pattern in _SPOKEN_LEADIN_RES:
+            stripped = pattern.sub("", stripped)
+        stripped = _QUESTION_PREFIX_RE.sub("", stripped).strip()
+        if stripped == before:
+            break
+    result = _finish_normalize(stripped)
+    if result:
+        return result
+    # The whole answer WAS a "filler" word (an answer of literally "Maybe") —
+    # stripping it to nothing loses the turn, so fall back to the unstripped form.
+    return _finish_normalize(original)
+
+
+def _spoken_number_string(plain: str) -> Optional[str]:
+    """Digits for an all-number-words utterance, or None.
+
+    Handles the shapes players actually speak: years as paired groups
+    ("fourteen ninety two" -> 1492, "nineteen oh five" -> 1905) and
+    multiplier forms ("two thousand" -> 2000, "eight hundred fifty" -> 850).
+    Tens+unit pairs are already merged by normalize_answer's canonicalizer.
+    """
+    tokens = (plain or "").split()
+    if not tokens:
+        return None
+    parts: list[str] = []
+    for token in tokens:
+        if token == "and":
+            continue
+        if token in ("oh", "o"):
+            parts.append("0")
+            continue
+        if token.isdigit():
+            parts.append(token)
+            continue
+        if token in ("hundred", "thousand"):
+            if not parts or not parts[-1].isdigit():
+                return None
+            parts[-1] = str(int(parts[-1]) * (100 if token == "hundred" else 1000))
+            continue
+        return None
+    if not parts:
+        return None
+    out: list[str] = []
+    for part in parts:
+        if out:
+            prev = int(out[-1])
+            cur = int(part)
+            # Additive remainder after a round multiplier ("eight hundred" + "fifty").
+            if prev >= 100 and prev % 100 == 0 and cur < 100:
+                out[-1] = str(prev + cur)
+                continue
+            # Year-style pairing pads the "oh five" group ("nineteen" + "0" + "5").
+            if part == "0" or (out[-1] == "0" and cur < 10):
+                if out[-1] == "0":
+                    out.pop()
+                    out.append(f"0{cur}")
+                    continue
+        out.append(part)
+    return "".join(out)
+
+
+_SOUNDEX_MAP = {
+    "b": "1", "f": "1", "p": "1", "v": "1",
+    "c": "2", "g": "2", "j": "2", "k": "2", "q": "2", "s": "2", "x": "2", "z": "2",
+    "d": "3", "t": "3", "l": "4", "m": "5", "n": "5", "r": "6",
+}
+
+
+def _soundex_code(word: str, *, truncate: bool = True) -> str:
+    letters = re.sub(r"[^a-z]", "", (word or "").lower())
+    if not letters:
+        return ""
+    codes: list[str] = []
+    prev = _SOUNDEX_MAP.get(letters[0], "")
+    for ch in letters[1:]:
+        code = _SOUNDEX_MAP.get(ch, "")
+        if code and code != prev:
+            codes.append(code)
+        if ch not in "hw":       # classic rule: h/w do not separate same-coded letters
+            prev = code
+    full = letters[0].upper() + "".join(codes)
+    return (full + "000")[:4] if truncate else full
+
+
+def _soundex(word: str) -> str:
+    return _soundex_code(word, truncate=True)
+
+
+def _phonetic_match(user: str, expected: str) -> bool:
+    """Whisper renders unfamiliar proper nouns phonetically ("day cart" for
+    Descartes, "shack" for Shaq). Accept when the two answers SOUND the same:
+    full-length (untruncated) soundex over the whole letters-only string —
+    equal, or a prefix one code apart (a dropped weak syllable) — with a
+    length-ratio guard and a loose lexical co-signal so "license" can't
+    phonetic-match "license & registration" via a shared prefix
+    (garbled-but-right pairs measure ratio ~55-85; unrelated answers ~0-15)."""
+    user_letters = re.sub(r"[^a-z]", "", user)
+    expected_letters = re.sub(r"[^a-z]", "", expected)
+    if len(user_letters) < 3 or len(expected_letters) < 4:
+        return False
+    shorter, longer = sorted((len(user_letters), len(expected_letters)))
+    if shorter / longer < 0.6:
+        return False
+    user_code = _soundex_code(user_letters, truncate=False)
+    expected_code = _soundex_code(expected_letters, truncate=False)
+    if user_code != expected_code:
+        short_code, long_code = sorted((user_code, expected_code), key=len)
+        if not (long_code.startswith(short_code) and len(long_code) - len(short_code) <= 1):
+            return False
+    return fuzz.ratio(user, expected) >= 50
+
+
+def _surname_match(user: str, expected: str) -> bool:
+    """Real Jeopardy accepts a person's surname alone ("Poe" for Edgar Allan
+    Poe). When the expected answer is multi-token and the user gave one token,
+    accept an exact or phonetic match on the LAST expected token."""
+    user_tokens = normalize_answer(user).split()
+    expected_tokens = normalize_answer(expected).split()
+    if len(user_tokens) != 1 or len(expected_tokens) < 2:
+        return False
+    guess = user_tokens[0]
+    surname = expected_tokens[-1]
+    if len(guess) < 3 or len(surname) < 3:
+        return False
+    if guess == surname:
+        return True
+    return _soundex(guess) == _soundex(surname) and fuzz.ratio(guess, surname) >= 50
 
 
 def _meaningful_tokens(text: str) -> list[str]:
@@ -531,15 +744,29 @@ def is_correct(user_answer: str, expected_answer: str) -> bool:
             continue
         if user == expected:
             return True
+        # Spoken numbers/years: "fourteen ninety two" for 1492. Only when the
+        # expected answer actually carries digits.
+        if any(ch.isdigit() for ch in expected):
+            spoken = _spoken_number_string(user)
+            expected_digits = re.sub(r"[^0-9]", "", expected)
+            if spoken and expected_digits and spoken == expected_digits:
+                return True
         if fuzz.ratio(user, expected) >= threshold:
             return True
+        # Guarded substring match: a user answer this short ("ed", "an") matches
+        # inside almost any longer expected string, so require some substance.
         if (
             not _requires_all_parts(candidate)
             and len(expected) >= 5
+            and len(user) >= 4
             and fuzz.partial_ratio(user, expected) >= threshold + 5
         ):
             return True
         if _is_reasonable_partial(user, expected, candidate):
+            return True
+        if _phonetic_match(user, expected):
+            return True
+        if _surname_match(user_answer, candidate):
             return True
     return False
 
@@ -630,9 +857,12 @@ def is_pass_or_timeout(text: str) -> bool:
     plain = _plain(text)
     if re.search(r"\b(?:i\s+)?(?:don\s+t|dont|do\s+not)\s+know\b", plain):
         return True
-    if "not sure" in plain:
+    if "not sure" in plain or "no idea" in plain or "no clue" in plain:
+        return True
+    if re.search(r"\bi\s+(?:give\s+up|got\s+nothing|have\s+nothing)\b", plain):
         return True
     return plain in {
-        "pass", "i pass", "skip", "times up", "time up", "time s up",
-        "i don t know", "i dont know", "no idea",
+        "pass", "i pass", "skip", "skip it", "times up", "time up", "time s up",
+        "i don t know", "i dont know", "dunno", "i dunno", "beats me",
+        "no guess", "nothing", "next",
     }

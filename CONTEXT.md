@@ -1047,6 +1047,27 @@ venv/bin/python main.py
   Kill switch `SPEAKER_ID_ECAPA_TRUST_ENABLED`. Never refreshes the print from these
   turns. Tests: `tests/test_voice_primary_identity.py::EcapaGenuineBandTest`.
 
+- Jeopardy spoken-answer judging rework (2026-07-07): players answer by VOICE, and the
+  deterministic matcher missed what STT actually produces. `features/jeopardy.py`:
+  `normalize_answer` strips stacked spoken lead-ins ("um, I think it's…", the
+  contraction forms "what's/who's" the old prefix regex missed) with an empty-result
+  fallback (an answer literally named "Maybe" survives); numbers are canonicalized
+  (ordinal words / regnal roman numerals / "8th" → digits, tens+units merged) so
+  "Henry the eighth" matches "Henry VIII"; `_spoken_number_string` matches spoken
+  years/numbers ("fourteen ninety two"→1492, "nineteen oh five"→1905, "two thousand
+  one"→2001) against digit answers; `_phonetic_match` (full-length soundex, prefix
+  tolerance 1, length-ratio ≥0.6, fuzz ≥50 co-signal) accepts whisper garbles
+  ("day cart"→Descartes, "shack"→Shaq) without re-opening multi-part-answer holes;
+  `_surname_match` accepts the surname alone ("Poe" for Edgar Allan Poe — real
+  Jeopardy rules); the permissive partial_ratio path now requires user len ≥4 ("ed"
+  no longer credits "Edgar Allan Poe"); pass detection covers "no clue"/"beats me"/
+  "I give up"/"dunno". games.py adds `_jeopardy_llm_judge` — a strict yes/no
+  gpt-4o-mini rescue consulted ONLY when the deterministic matcher says wrong and
+  the turn isn't a pass (`JEOPARDY_LLM_JUDGE_ENABLED`, fail-safe to wrong, never
+  re-litigates an accept). Validated at scale on the real clue bank: 2000/2000
+  "what is X" self-matches, 0/1500 false accepts on random wrong pairs; live-API
+  judge spot-check 5/5. Tests: `tests/test_jeopardy_answers.py`.
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.

@@ -1308,6 +1308,50 @@ def _jeopardy_correct_response_text(clue: dict) -> str:
     return f'Correct response was: "{response}"'
 
 
+def _jeopardy_llm_judge(user_text: str, expected_answer: str, clue: dict) -> bool:
+    """LLM fallback judge for answers the deterministic matcher rejected.
+
+    Player answers arrive via SPEECH: a RIGHT answer can reach the matcher
+    phonetically mangled ("day cart" for Descartes, "shack" for Shaq) or phrased
+    in a way lexical fuzzy matching can't score. This gives the borderline miss
+    ONE strict yes/no look before the value is deducted. It can only rescue a
+    wrong verdict — the deterministic matcher's accepts are never re-litigated —
+    and any error fails safe to "wrong"."""
+    if not bool(getattr(config, "JEOPARDY_LLM_JUDGE_ENABLED", True)):
+        return False
+    guess = (user_text or "").strip()
+    max_chars = int(getattr(config, "JEOPARDY_LLM_JUDGE_MAX_ANSWER_CHARS", 120))
+    if not guess or len(guess) > max_chars:
+        return False
+    try:
+        raw = _quick_call(
+            "You are a strict Jeopardy judge. The player's answer was transcribed "
+            "from SPEECH, so a correct answer may arrive misspelled or phonetically "
+            "mangled (e.g. 'day cart' for Descartes).\n"
+            f"Clue: \"{(clue or {}).get('clue', '')}\" "
+            f"(category: {(clue or {}).get('category', '')})\n"
+            f"Correct answer: \"{expected_answer}\"\n"
+            f"Player said: \"{guess}\"\n"
+            "Does the player's response identify the SAME answer — the same "
+            "person, place, or thing — allowing phonetic/transcription mangling, "
+            "filler words, and question phrasing? A different answer, a broader "
+            "category, or missing a required part of a multi-part answer is WRONG. "
+            "Reply with ONLY one word: yes or no.",
+            temperature=0,
+            max_tokens=3,
+        ).strip().lower()
+    except Exception as exc:
+        _log.debug("[jeopardy] LLM judge failed: %s", exc)
+        return False
+    verdict = raw.startswith("yes")
+    if verdict:
+        _log.info(
+            "[jeopardy] LLM judge rescued answer %r for expected %r",
+            guess, expected_answer,
+        )
+    return verdict
+
+
 def _jeopardy_categories_reminder() -> str:
     board = _game_state.get("board") or {}
     try:
@@ -1719,6 +1763,10 @@ def _jeopardy_handle_answer(text: str, person_id: Optional[int]) -> tuple[str, b
 
     passed = bool(jeopardy_bank and jeopardy_bank.is_pass_or_timeout(text))
     correct = bool(jeopardy_bank and jeopardy_bank.is_correct(text, answer))
+    if not correct and not passed and jeopardy_bank is not None:
+        # Speech-transcript fallback: give a borderline miss one strict LLM look
+        # before the deduction (phonetic mangling the lexical matcher can't score).
+        correct = _jeopardy_llm_judge(text, answer, clue)
 
     done = int((_game_state.get("board") or {}).get("remaining", 0) or 0) <= 0
     if passed:
