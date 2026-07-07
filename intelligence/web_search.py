@@ -159,6 +159,21 @@ def _gate_says_needs_search(text: str) -> bool:
         return False
 
 
+# Phatic small talk that MENTIONS currentness without asking for information:
+# "what's up today" is a greeting, not a news query (field bug 2026-07-06: it
+# triggered a 10s search that returned 0 citations and Rex recited hallucinated
+# AI-model news). The trailing-filler whitelist keeps real queries searchable —
+# "what's happening in Iran today" does NOT match (Iran isn't filler).
+_PHATIC_SMALL_TALK_RE = re.compile(
+    r"^\s*(?:hey|hi|hello|yo|so)?[,!\s]*"
+    r"(?:what'?s\s+(?:up|new|good|happening|going\s+on)"
+    r"|how'?s\s+it\s+going|how\s+are\s+(?:you|things)|what\s+is\s+up)"
+    r"(?:\s+(?:with\s+you|today|tonight|right\s+now|man|dude|rex|r3x|buddy))*"
+    r"\s*[?!.]*\s*$",
+    re.IGNORECASE,
+)
+
+
 def should_search(text: str) -> SearchDecision:
     """Decide whether this turn warrants a web search. Explicit phrases always win
     (forced); otherwise the autonomous path (keyword prefilter, then optional LLM
@@ -169,6 +184,9 @@ def should_search(text: str) -> SearchDecision:
         phrase = matched_trigger_phrase(text)
         if phrase:
             return SearchDecision(True, True, f"explicit:{phrase}")
+
+        if _PHATIC_SMALL_TALK_RE.match(text):
+            return _NO_DECISION   # a greeting idiom, however "current" it sounds
 
         if not getattr(config, "WEB_SEARCH_AUTONOMOUS_ENABLED", True):
             return _NO_DECISION

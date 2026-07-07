@@ -10491,6 +10491,16 @@ def _maybe_web_search_reply(
         _log.info("[web_search] no usable result (ok=%s); falling through", result.ok)
         return None
 
+    if not decision.forced and not (result.citations or []):
+        # AUTONOMOUS search with ZERO citations = the model didn't ground on any
+        # actual results — its prose is hallucinated "news" wearing a search badge
+        # (field bug 2026-07-06: "what's up today" produced invented GPT-5.5 model
+        # announcements). Fall through to a normal reply instead of reciting it.
+        # Explicit user-requested searches keep their answer — the user invoked the
+        # tool deliberately and can judge it.
+        _log.info("[web_search] autonomous result had no citations — discarding as ungrounded")
+        return None
+
     answer_text = result.text.strip()
     _log.info(
         "[web_search] answered in %.2fs (%d citations)",
@@ -20522,6 +20532,17 @@ def _handle_speech_segment(
             and not identity_prompt_active
             and _pending_offscreen_identify is None
             and not _is_engaged_partner_turn(person_id, speaker_score)
+            # A turn the dialogue-act classifier already claimed as an ANSWER to
+            # Rex's own question is by definition directed at Rex — never chatter.
+            # Field bug 2026-07-06: "as good as a Womp Rat stuck in the engines"
+            # (the answer to Rex's greeting; voice 0.850, face agreeing, dialogue
+            # act answer_to_rex 0.90) was dropped by the 10-words-no-pronoun rule,
+            # and the engaged-partner exemption didn't apply because it was the
+            # session's FIRST exchange.
+            and not (
+                dialogue_decision is not None
+                and getattr(dialogue_decision, "label", "") == "answer_to_rex"
+            )
         ):
             _log.info(
                 "[interaction] ignoring background cross-talk — text=%r "

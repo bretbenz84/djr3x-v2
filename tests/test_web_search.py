@@ -482,5 +482,22 @@ class WebSearchReplyLoggingTest(unittest.TestCase):
         )
 
 
+class PhaticSmallTalkTest(unittest.TestCase):
+    """'what's up today' is a greeting, not a news query (field bug 2026-07-06:
+    it triggered a 10s search, got 0 citations, and Rex recited hallucinated
+    GPT-5.5 'news'). Real currentness queries stay searchable."""
+
+    def test_greeting_idioms_never_search(self):
+        for t in ("what's up today", "What's new?", "hey what's up",
+                  "how's it going", "what's happening", "what's up with you"):
+            self.assertFalse(web_search.should_search(t).triggered, t)
+
+    def test_real_currentness_queries_pass_the_phatic_filter(self):
+        for t in ("what's happening in Iran today",
+                  "what's new with the Dodgers",
+                  "what's up with the stock market today"):
+            self.assertIsNone(web_search._PHATIC_SMALL_TALK_RE.match(t), t)
+
+
 if __name__ == "__main__":
     unittest.main()
