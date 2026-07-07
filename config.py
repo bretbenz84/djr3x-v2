@@ -4069,6 +4069,14 @@ ANONYMOUS_SPEAKER_SLOT_STICKY_THRESHOLD = 0.70
 # when two enrolled prints overlap — the Guest 2/3/4-per-utterance churn).
 ANONYMOUS_SPEAKER_RECENT_STICKY_SECS = _env_float("ANONYMOUS_SPEAKER_RECENT_STICKY_SECS", 180.0, min_value=0.0, max_value=3600.0)
 ANONYMOUS_SPEAKER_RECENT_STICKY_THRESHOLD = _env_float("ANONYMOUS_SPEAKER_RECENT_STICKY_THRESHOLD", 0.62, min_value=0.0, max_value=1.0)
+
+# Dual-unknown introduction: two unknown faces on camera + an unrecognized voice →
+# ask positionally ("you on my LEFT — what's your name?", then the right), binding
+# each answer's name to the face at that position plus the answer's voice audio.
+# One-known-one-unknown keeps the existing single-unknown ask.
+DUAL_INTRO_ENABLED = _env_bool("DUAL_INTRO_ENABLED", True)
+DUAL_INTRO_WINDOW_SECS = _env_float("DUAL_INTRO_WINDOW_SECS", 45.0, min_value=5.0, max_value=300.0)
+DUAL_INTRO_COOLDOWN_SECS = _env_float("DUAL_INTRO_COOLDOWN_SECS", 120.0, min_value=0.0, max_value=3600.0)
 ANONYMOUS_SPEAKER_SLOT_MAX = 8
 
 # Cross-session memory for recurring UNKNOWN voices (memory/voice_signatures.py).

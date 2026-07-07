@@ -542,6 +542,16 @@ _pending_post_greet_relationship: list[Optional[dict]] = [None]
 #         prior_engaged_name: Optional[str], overheard_text: str}
 _pending_offscreen_identify: Optional[dict] = None
 
+# Dual-unknown introduction (owner spec 2026-07-06): TWO unknown faces on camera and
+# an unrecognized voice speaks → ask positionally ("you on my LEFT — what's your
+# name?" then "and on my right?"), binding each answer's name to the face at that
+# position (Rex's left = smaller camera x, same convention as the face-reveal lateral
+# ask) plus the answer's voice audio. One known + one unknown keeps the existing
+# single-unknown ask. {"faces": [{"encoding","x"}...] sorted Rex-left→right,
+# "stage": "left"|"right", "left_name": str, "asked_at": float}
+_pending_dual_intro: Optional[dict] = None
+_dual_intro_cooldown_until: float = 0.0
+
 # Face-reveal confirmation: Rex heard a known voice (voice-only enrolled
 # person), sees unknown face(s), and asked "is this what you look like?" or
 # "are you on my left or right?" Holds cached face encodings + the person_id
@@ -5570,6 +5580,8 @@ def _clear_memory_related_pending_state() -> None:
     _pending_post_greet_relationship[0] = None
     _pending_offscreen_identify = None
     _pending_face_reveal_confirm = None
+    global _pending_dual_intro
+    _pending_dual_intro = None
     _pending_introduction = None
     _pending_intro_followup = None
     _pending_intro_voice_capture = None
@@ -6691,6 +6703,194 @@ def _handle_pending_offscreen_identify_reply(
     _session_exchange_count += 1
     _register_rex_utterance(ack_text)
     return True, ack_text
+
+
+def _capture_unknown_face_candidates() -> list[dict]:
+    """Snapshot the camera and return currently-visible UNKNOWN faces as
+    [{"encoding", "x"}] (x = face-box center; Rex's left = smaller x). Same capture
+    the face-reveal lateral ask uses. Empty list on any failure."""
+    try:
+        from vision import camera as _cam_mod
+        from vision import face as _face_mod
+        frame = _cam_mod.get_frame()
+        if frame is None:
+            return []
+        out: list[dict] = []
+        for det in _face_mod.detect_faces(frame):
+            if _face_mod.identify_face(det["encoding"]) is None:
+                x, _y, w, _h = det["bounding_box"]
+                out.append({"encoding": det["encoding"], "x": x + w // 2})
+        return out
+    except Exception as exc:
+        _log.debug("dual-intro face capture error: %s", exc)
+        return []
+
+
+def _ask_dual_unknown_intro(text: str, faces: list[dict]) -> bool:
+    """TWO unknown faces + an unrecognized voice: ask positionally, left first.
+    Returns True when the ask was spoken and the pending state armed."""
+    global _pending_dual_intro, _dual_intro_cooldown_until, _session_exchange_count
+    now = time.monotonic()
+    if now < _dual_intro_cooldown_until:
+        return False
+    ordered = sorted(faces, key=lambda f: f["x"])   # Rex's left first (smaller x)
+    ask_text = None
+    try:
+        ask_text = llm.get_response(
+            f"TWO people you don't recognize are on camera and one of them just "
+            f"said: '{text}'. In ONE short in-character Rex line: say you don't "
+            f"know either of them yet, and ask the person on YOUR LEFT for their "
+            f"name FIRST (you'll get to the other one next). Warm, curious. "
+            f"Example: 'Two mystery organics at once — I love it. You on my left, "
+            f"what do I call you?' One line ending in a question mark."
+        )
+    except Exception as exc:
+        _log.debug("dual-intro ask generation failed: %s", exc)
+    if not ask_text:
+        ask_text = "Two faces I don't know yet! You on my left first — what's your name?"
+    _pending_dual_intro = {
+        "faces": ordered,
+        "stage": "left",
+        "left_name": "",
+        "asked_at": now,
+    }
+    _dual_intro_cooldown_until = now + float(
+        getattr(config, "DUAL_INTRO_COOLDOWN_SECS", 120.0)
+    )
+    _speak_blocking(ask_text)
+    conv_memory.add_to_transcript("Rex", ask_text)
+    conv_log.log_rex(ask_text)
+    _session_exchange_count += 1
+    _register_rex_utterance(ask_text)
+    _log.info("[interaction] dual-unknown intro ask (2 unknown faces): %r", ask_text)
+    return True
+
+
+def _dual_intro_name_from_reply(text: str) -> Optional[str]:
+    """Name from a reply to the dual-intro ask: a self-intro phrasing or a bare name."""
+    name = _challenged_self_identified_name(text)
+    if name:
+        return name
+    bare = _prompted_bare_name_text(text)
+    if bare and _looks_like_name_chunk(bare):
+        return _normalize_name(bare)
+    return None
+
+
+def _dual_intro_enroll(name: str, face: dict, audio_array, reply_text: str) -> Optional[int]:
+    """Bind one dual-intro answer: person row + face at that position + the answer's
+    voice. Returns the person_id (None on failure)."""
+    try:
+        pid, created = people_memory.find_or_create_person(name)
+    except Exception as exc:
+        _log.warning("dual-intro person create failed for %r: %s", name, exc)
+        return None
+    if pid is None:
+        return None
+    try:
+        people_memory.add_biometric(pid, "face", face["encoding"])
+    except Exception as exc:
+        _log.warning("dual-intro face bind failed for %r: %s", name, exc)
+    _safe_enroll_voice(
+        pid,
+        audio_array,
+        transcript_text=reply_text,
+        source="dual_intro",
+        confirmed=True,
+    )
+    _last_confident_voice_at[int(pid)] = time.monotonic()
+    if created:
+        first_inc = config.FAMILIARITY_INCREMENTS.get("first_enrollment", 0.0)
+        if first_inc > 0:
+            try:
+                people_memory.update_familiarity(pid, first_inc)
+            except Exception:
+                pass
+    _bind_world_state_identity(pid, name)
+    _episodic_person_enrolled(pid, name, created=created)
+    _log.info("[interaction] dual-intro enrolled %r (person_id=%s, face+voice)", name, pid)
+    return int(pid)
+
+
+def _handle_pending_dual_intro_reply(
+    text: str, audio_array, anonymous_speaker_label: Optional[str]
+) -> tuple[bool, Optional[str]]:
+    """Consume a reply to the dual-unknown intro ask. Returns (consumed, spoken)."""
+    global _pending_dual_intro, _session_exchange_count
+    pending = _pending_dual_intro
+    if pending is None:
+        return False, None
+    ttl = float(getattr(config, "DUAL_INTRO_WINDOW_SECS", 45.0))
+    if (time.monotonic() - pending["asked_at"]) > ttl:
+        _log.info("[interaction] dual-intro window expired — clearing")
+        _pending_dual_intro = None
+        return False, None
+    if _is_offscreen_identify_cancel_reply(text):
+        _pending_dual_intro = None
+        return True, None
+    name = _dual_intro_name_from_reply(text)
+    if not name:
+        # Don't badger: one nameless reply drops the flow; normal handling resumes.
+        _log.info("[interaction] dual-intro reply had no name — clearing: %r", text)
+        _pending_dual_intro = None
+        return False, None
+
+    stage = pending.get("stage")
+    faces = pending.get("faces") or []
+    if stage == "left" and len(faces) >= 2:
+        pid = _dual_intro_enroll(name, faces[0], audio_array, text)
+        if pid is not None and anonymous_speaker_label:
+            _retire_anonymous_speaker_slot(
+                anonymous_speaker_label, person_id=pid, person_name=name
+            )
+        pending["stage"] = "right"
+        pending["left_name"] = name
+        pending["asked_at"] = time.monotonic()   # fresh window for the second answer
+        first = name.split()[0]
+        special = None
+        try:
+            from intelligence import person_specials as _specials
+            special = _specials.special_intro_ack(name)
+        except Exception:
+            special = None
+        lead = special or f"{first} — logged and locked in."
+        spoken = f"{lead} And you on my right — what's your name?"
+        _speak_blocking(spoken)
+        conv_memory.add_to_transcript("Rex", spoken)
+        conv_log.log_rex(spoken)
+        _session_exchange_count += 1
+        _register_rex_utterance(spoken)
+        return True, spoken
+
+    # stage == "right" (or degraded face list): bind the remaining face.
+    face = faces[-1] if faces else None
+    pid = _dual_intro_enroll(name, face, audio_array, text) if face else None
+    if pid is not None and anonymous_speaker_label:
+        _retire_anonymous_speaker_slot(
+            anonymous_speaker_label, person_id=pid, person_name=name
+        )
+    _pending_dual_intro = None
+    left_name = pending.get("left_name") or "your friend"
+    first = name.split()[0]
+    special = None
+    try:
+        from intelligence import person_specials as _specials
+        special = _specials.special_intro_ack(name)
+    except Exception:
+        special = None
+    if special:
+        spoken = special
+    else:
+        spoken = (
+            f"{first} on my right, {_first_name_or(left_name, 'you')} on my left — "
+            f"got you both. Welcome to the frequency."
+        )
+    _speak_blocking(spoken)
+    conv_memory.add_to_transcript("Rex", spoken)
+    conv_log.log_rex(spoken)
+    _session_exchange_count += 1
+    _register_rex_utterance(spoken)
+    return True, spoken
 
 
 def _ask_visible_unknown_identity_question(
@@ -15941,6 +16141,7 @@ def _boundary_fallback_topic() -> Optional[str]:
         return "identity"
     if (
         _pending_introduction is not None
+        or _pending_dual_intro is not None
         or _pending_intro_followup is not None
         or _pending_intro_voice_capture is not None
         or _pending_common_first_name_identity is not None
@@ -16002,6 +16203,9 @@ def _dismiss_pending_consent_prompts(person_id: Optional[int], reason: str) -> N
             _pending_face_reveal_confirm = None
     if _pending_offscreen_identify is not None:
         _pending_offscreen_identify = None
+    global _pending_dual_intro
+    if _pending_dual_intro is not None:
+        _pending_dual_intro = None
     if _pending_introduction is not None:
         _pending_introduction = None
     if _pending_intro_followup is not None:
@@ -19100,6 +19304,17 @@ def _handle_speech_segment(
             final_executed_path = "identity.offscreen_identify_reply"
             return
 
+        # Dual-unknown intro handler: Rex asked the two unknown faces for names,
+        # left first. Each answer binds name + face-at-position + the answer's voice.
+        if _pending_dual_intro is not None:
+            dual_consumed, dual_spoken = _handle_pending_dual_intro_reply(
+                text, audio_array, anonymous_speaker_label
+            )
+            if dual_consumed:
+                response_text = dual_spoken
+                final_executed_path = "identity.dual_intro_reply"
+                return
+
         # Face-reveal confirmation handler: Rex asked "is that you, X?" or
         # "are you on my left or my right?" — parse this reply and, if the
         # person (or the engaged person) confirms, bind the face to X and fire
@@ -20420,6 +20635,20 @@ def _handle_speech_segment(
                 final_executed_path = "ignored.visible_unknown_background_chatter"
                 completed = False
                 return
+            # TWO unknown faces on camera: the positional dual intro replaces the
+            # generic single-unknown ask, and it fires on ANY non-chatter utterance
+            # (two strangers addressing the robot is strong evidence this isn't
+            # background TV — the greeting-shape invite gate doesn't apply).
+            if (
+                bool(getattr(config, "DUAL_INTRO_ENABLED", True))
+                and _pending_dual_intro is None
+                and not group_chatter_active
+            ):
+                dual_faces = _capture_unknown_face_candidates()
+                if len(dual_faces) >= 2:
+                    if _ask_dual_unknown_intro(text, dual_faces):
+                        final_executed_path = "identity.dual_intro_ask"
+                        return
             if not _utterance_invites_identity_question(text):
                 _log.info(
                     "[interaction] deferring visible-unknown identity ask; turn should "
