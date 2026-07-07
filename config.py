@@ -4299,12 +4299,16 @@ ROOM_APPLAUSE_REACTION_LINES = [
     "I'd take a bow, but my actuators bill by the hour.",
 ]
 # NOTE: keep these free of "I can't move/leave" jokes — the robot is getting wheels.
+# Keep these PERSON-DIRECTED, not stage-directed: "I'll be here all week" /
+# "a droid doing stand-up" is comedy-club shtick that reads bizarre one-on-one
+# in a bedroom (owner: "kinda weird", 2026-07-06). Rex lands a laugh WITH the
+# person, he doesn't play a room.
 ROOM_LAUGHTER_REACTION_LINES = [
     "See? That one was free.",
-    "I'll be here all week. Encore's included whether you want it or not.",
     "Comedy subroutine: validated.",
     "There it is. Carbon-based approval.",
-    "And they said a droid couldn't do stand-up.",
+    "Careful — laughing just encourages me.",
+    "I heard that. I'm counting it.",
 ]
 
 # How often GPT-4o runs a full environment/scene analysis (seconds)
