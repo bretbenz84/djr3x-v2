@@ -178,12 +178,95 @@ def _scene_lines(world: Optional[dict]) -> list[str]:
         return []
 
 
-def _system_prompt(person_id: Optional[int], world: Optional[dict]) -> str:
+def _system_prompt(
+    person_id: Optional[int],
+    world: Optional[dict],
+    extra_lines: Optional[list[str]] = None,
+) -> str:
     persona = _persona()
-    ctx = _person_lines(person_id) + _scene_lines(world)
+    ctx = _person_lines(person_id) + _scene_lines(world) + list(extra_lines or [])
     if not ctx:
         return persona
     return persona + "\n\nRight now:\n" + "\n".join("- " + line for line in ctx)
+
+
+# ── Multi-party awareness ────────────────────────────────────────────────────
+# Identity resolution knows WHO is speaking (transcript turns carry real names) —
+# but this layer used to flatten every human into an anonymous "user" role, so the
+# model literally could not tell Bret's lines from JT's: it answered JT's questions
+# as if Bret asked them and addressed everything to the primary person. When 2+
+# distinct humans appear in the recent window, history turns get speaker labels,
+# the current turn names its speaker, and a room block tells the model who's who.
+_GUEST_LABEL_RE = re.compile(r"^unknown_voice_(\d+)$", re.IGNORECASE)
+
+
+def _display_speaker(raw: str) -> str:
+    """Human-friendly short label for a transcript speaker."""
+    s = (raw or "").strip()
+    m = _GUEST_LABEL_RE.match(s)
+    if m:
+        return f"Guest {m.group(1)}"
+    return s.split()[0] if s else "Guest"
+
+
+def _current_speaker_display(person_id: Optional[int]) -> str:
+    if person_id is None:
+        return "Guest"
+    try:
+        from memory import people
+        person = people.get_person(int(person_id))
+        name = str((person or {}).get("name") or "").strip()
+        return name.split()[0] if name else "Guest"
+    except Exception:
+        return "Guest"
+
+
+def _other_participant_lines(
+    raw_speakers: list[str], current_display: str
+) -> list[str]:
+    """One compact context line per OTHER named participant (max 2) so Rex knows who
+    the second voice in the room IS — tier, a couple of interests, and any authored
+    celebrity persona hook (the JT volleyball bit must fire when JT interjects)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_speakers:
+        disp = _display_speaker(raw)
+        if disp == current_display or disp in seen or disp.startswith("Guest"):
+            continue
+        seen.add(disp)
+        bits: list[str] = []
+        try:
+            from memory import people
+            row = people.find_person_by_name(raw)
+            if row:
+                tier = str(row.get("friendship_tier") or "").strip().lower()
+                if tier and tier != "stranger":
+                    bits.append(tier)
+                try:
+                    from memory import interests as _interests
+                    likes = [
+                        str(it.get("name") or "").strip()
+                        for it in (_interests.get_interests_for_prompt(int(row["id"]), limit=2) or [])
+                    ]
+                    likes = [x for x in likes if x]
+                    if likes:
+                        bits.append("into " + ", ".join(likes))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        line = f"Also in this conversation: {disp}" + (f" ({'; '.join(bits)})" if bits else "") + "."
+        try:
+            from intelligence import person_specials
+            special = person_specials.special_prompt_context(raw)
+            if special:
+                line += " " + " ".join(special.split())
+        except Exception:
+            pass
+        out.append(line)
+        if len(seen) >= 2:
+            break
+    return out
 
 
 def _messages(
@@ -191,20 +274,70 @@ def _messages(
     person_id: Optional[int],
     transcript: Optional[list[dict]],
     world: Optional[dict],
+    *,
+    label_current_speaker: bool = True,
 ) -> list[dict]:
     """System = persona + small context. History = the recent turns as REAL user/assistant
     messages (not a text blob shoved in the system prompt — leaner and more natural for the
-    model). Then the new user turn."""
-    msgs: list[dict] = [{"role": "system", "content": _system_prompt(person_id, world)}]
+    model). Then the new user turn.
+
+    MULTI-PARTY: when the recent window contains 2+ distinct human speakers, each human
+    turn is prefixed with its speaker's name, the current turn names who is talking, and
+    the system context gains a room block + a line about the other participant(s). A
+    1-on-1 session carries none of this weight. ``label_current_speaker=False`` is the
+    directive path (proactive lines), whose final message is an instruction, not speech."""
     keep = max(0, int(getattr(config, "LEAN_BRAIN_TRANSCRIPT_TURNS", 8)))
+    turns: list[tuple[str, str, str]] = []   # (role, raw_speaker, text)
+    raw_speakers: list[str] = []
     for turn in (transcript or [])[-keep:] if keep else []:
         text = str(turn.get("text") or "").strip()
         if not text:
             continue
-        speaker = str(turn.get("speaker") or "").strip().lower()
-        role = "assistant" if speaker in _REX_SPEAKERS else "user"
+        raw = str(turn.get("speaker") or "").strip()
+        role = "assistant" if raw.lower() in _REX_SPEAKERS else "user"
+        if role == "user" and raw and raw not in raw_speakers:
+            raw_speakers.append(raw)
+        turns.append((role, raw, text))
+
+    current_display = _current_speaker_display(person_id)
+    displays: list[str] = []
+    for raw in raw_speakers:
+        d = _display_speaker(raw)
+        if d not in displays:
+            displays.append(d)
+    if label_current_speaker and current_display not in displays:
+        displays.append(current_display)
+    multi = (
+        bool(getattr(config, "LEAN_MULTI_PARTY_ENABLED", True))
+        and len(displays) >= 2
+    )
+
+    extra_lines: Optional[list[str]] = None
+    if multi:
+        others = " and ".join(d for d in displays if d != current_display)
+        extra_lines = [
+            (
+                f"MULTI-PERSON ROOM: {', '.join(displays)} are all in this conversation. "
+                f"History lines are labeled with their speaker — NEVER attribute one "
+                f"person's words to another. The person speaking RIGHT NOW is "
+                f"{current_display}: answer THEM (by name when natural), not {others}. "
+                f"Bouncing between people or pulling the quieter one in is great — but "
+                f"the current speaker gets the answer first, and each person's questions, "
+                f"stories, and jokes stay THEIRS."
+            )
+        ] + _other_participant_lines(raw_speakers, current_display)
+
+    msgs: list[dict] = [
+        {"role": "system", "content": _system_prompt(person_id, world, extra_lines)}
+    ]
+    for role, raw, text in turns:
+        if multi and role == "user":
+            text = f"{_display_speaker(raw)}: {text}"
         msgs.append({"role": role, "content": text})
-    msgs.append({"role": "user", "content": str(user_text or "").strip()})
+    final = str(user_text or "").strip()
+    if multi and label_current_speaker:
+        final = f"{current_display}: {final}"
+    msgs.append({"role": "user", "content": final})
     return msgs
 
 
@@ -249,7 +382,11 @@ def stream_directive(
     directive is the final user-turn instruction ('You see Bret — greet with genuine warmth').
     Reuses the reply pipeline. RAISES on error (unlike stream_reply's inline fallback) so the caller
     (llm.stream_response) can fall back to the classic assembled prompt."""
-    messages = _messages(instruction, person_id, transcript, world)
+    # label_current_speaker=False: the final message here is an INSTRUCTION, not a
+    # human utterance — prefixing it with a speaker name would corrupt the directive.
+    messages = _messages(
+        instruction, person_id, transcript, world, label_current_speaker=False
+    )
     stream = llm_compat.create(
         llm._client,
         model=_model(),

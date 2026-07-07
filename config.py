@@ -219,6 +219,12 @@ LEAN_BRAIN_ENABLED          = True    # ON for live GUI testing — set False to
 LEAN_BRAIN_MODEL            = ""      # "" → the standard conversation model (gpt-5.4-mini, reasoning off)
 LEAN_BRAIN_MAX_TOKENS       = 120     # keep replies short + first audio fast
 LEAN_BRAIN_TRANSCRIPT_TURNS = 8       # recent turns passed as real user/assistant messages
+# Multi-party awareness: when 2+ distinct humans appear in the recent window, history
+# turns carry speaker labels ("JT: ..."), the current turn names its speaker, and the
+# system context gains a room block + other-participant lines — so Rex answers the
+# person who actually spoke instead of attributing everything to the primary person.
+# 1-on-1 sessions carry none of this prompt weight.
+LEAN_MULTI_PARTY_ENABLED = _env_bool("LEAN_MULTI_PARTY_ENABLED", True)
 LEAN_BRAIN_PERSONA          = ""      # "" → REX_CORE_PROMPT verbatim (the voice, minus the scaffolding)
 # Phase 4 — ONE VOICE. Route the OTHER spoken-line generators (greetings, world/presence reactions,
 # onboarding reactions/questions, directed-look/wave/etc.) through the SAME lean persona as replies,
