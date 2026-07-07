@@ -44,13 +44,29 @@ from audio import speaker_id
 from utils.config_loader import AUDIO_DEVICE_INDEX, AUDIO_SELECTION_DESCRIPTION
 
 
+def _record_channels() -> int:
+    """Channel count the input device actually supports (mirrors audio/stream.py's
+    fallback: config asks for 2 for the ReSpeaker AEC channel, but e.g. the
+    MacBook mic is 1-ch and PortAudio errors out instead of downmixing)."""
+    want = int(getattr(config, "AUDIO_CHANNELS", 1) or 1)
+    try:
+        info = sd.query_devices(AUDIO_DEVICE_INDEX, "input")
+        max_ch = int(info.get("max_input_channels") or 1)
+    except Exception:
+        max_ch = 1
+    if want > max_ch:
+        print(f"  (device supports {max_ch} input channel(s); recording {max_ch}-ch)")
+        return max(1, max_ch)
+    return want
+
+
 def _record(seconds: float) -> np.ndarray:
     print(f"  Recording {seconds:.1f}s... speak now.")
     frames = int(seconds * config.AUDIO_SAMPLE_RATE)
     audio = sd.rec(
         frames,
         samplerate=config.AUDIO_SAMPLE_RATE,
-        channels=config.AUDIO_CHANNELS,
+        channels=_record_channels(),
         dtype="float32",
         device=AUDIO_DEVICE_INDEX,
     )
