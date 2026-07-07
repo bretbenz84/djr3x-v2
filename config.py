@@ -399,6 +399,15 @@ LOG_SYSTEM_PROMPT = True
 # latency is small). Flip back to True to trade consistency for the first-sentence latency win.
 LLM_STREAMING_TTS_ENABLED = False
 
+# THE MIDDLE PATH (owner call 2026-07-06, latency work): with full streaming OFF, speak
+# the reply as TWO generations instead of one — the FIRST SENTENCE synthesizes the
+# moment the LLM produces it (measured ~5.2s avg time-to-first-audio on whole-reply;
+# this claws back the reply-composition + whole-reply-synthesis wait), and everything
+# after it is ONE second generation that renders while the first sentence plays.
+# Exactly one v3 voice seam per reply (vs one per sentence, the drift that got full
+# streaming disabled). Set False to restore strict whole-reply consistency.
+TTS_FIRST_SENTENCE_SPLIT_ENABLED = _env_bool("TTS_FIRST_SENTENCE_SPLIT_ENABLED", True)
+
 # A finished sentence shorter than this many characters is merged with the next
 # one before speaking, so tiny fragments ("Yeah.", initials, abbreviations,
 # decimals) don't produce choppy one-word bursts. Raise if delivery feels choppy;

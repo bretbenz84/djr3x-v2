@@ -10634,8 +10634,10 @@ def _stream_llm_response(
                 comedy_modes.build_directive(comedy_mode),
             ])
         _log.info("[agenda] %s", agenda_directive.replace("\n", " | "))
+        _full_streaming = bool(getattr(config, "LLM_STREAMING_TTS_ENABLED", True))
+        _first_split = bool(getattr(config, "TTS_FIRST_SENTENCE_SPLIT_ENABLED", True))
         if (
-            getattr(config, "LLM_STREAMING_TTS_ENABLED", True)
+            (_full_streaming or _first_split)
             and not bool(
                 getattr(config, "NO_AUDIO_MODE", False)
                 or getattr(config, "AUDIO_OUTPUT_SUPPRESSED", False)
@@ -10652,6 +10654,10 @@ def _stream_llm_response(
                 surprise_thread,
                 turn_start,
                 filler_stop,
+                # Full per-sentence streaming (when explicitly enabled) wins; else the
+                # two-chunk middle path: first sentence early, one seam, rest as one
+                # generation while chunk 1 plays.
+                two_chunk=not _full_streaming,
             )
             if cb_claim is not None:
                 cb_settled = True
@@ -11051,12 +11057,19 @@ def _stream_and_speak_sentences(
     surprise_thread: Optional[threading.Thread],
     turn_start: Optional[float],
     filler_stop: threading.Event,
+    two_chunk: bool = False,
 ) -> str:
     """Stream the LLM reply and speak it sentence-by-sentence.
 
     The first sentence is queued the instant it is generated (the latency win);
     later sentences queue behind it in order through the single speech queue, so
     Rex never overlaps himself. Returns the full spoken text.
+
+    ``two_chunk`` is the latency/consistency middle path (owner call 2026-07-06):
+    the FIRST sentence synthesizes the moment it exists (~1.5-2.5s earlier than
+    whole-reply), and everything after it is ONE second generation — a single v3
+    voice seam per reply instead of one per sentence (the drift that got full
+    streaming disabled) while chunk 2 synthesizes during chunk 1's playback.
     """
     trace = _current_character_loop_trace.get()
     priority = 1
@@ -11212,8 +11225,63 @@ def _stream_and_speak_sentences(
         spoken.append(prepared)
         state["first"] = False
 
+    def _consume_remainder(raw_sentences: list[str]) -> None:
+        """Two-chunk mode: everything after the first sentence, spoken as ONE
+        generation. Per-sentence governance (cruelty scrub / question cap) still
+        applies inside the blob — only the SYNTHESIS is merged."""
+        # Let the self-emotion read land so the body of the reply carries it (the
+        # per-sentence path picks it up naturally on sentence two).
+        th = self_emo.get("thread")
+        if th is not None:
+            try:
+                th.join(timeout=0.4)
+            except Exception:
+                pass
+        parts: list[str] = []
+        for raw_sentence in raw_sentences:
+            prepared = _prepare_stream_sentence(raw_sentence, frame, comedy_mode)
+            if not prepared:
+                continue
+            if social_frame.is_question_sentence(prepared):
+                if state["spoke_question"]:
+                    continue
+                state["spoke_question"] = True
+            parts.append(prepared)
+        if not parts:
+            return
+        blob = " ".join(parts)
+        if (
+            state["emotion"] == "neutral"
+            and self_emo["value"]
+            and self_emo["value"] != "neutral"
+        ):
+            state["emotion"] = self_emo["value"]
+        conv_log.log_rex_stream(blob)
+        stream_prev_text = " ".join(spoken).strip()
+        if prefetch_enabled:
+            # Kick synthesis NOW so chunk 2 renders while chunk 1 is playing.
+            _prefetch_stream_audio(
+                blob, state["emotion"], delivery_voice_settings,
+                previous_text=stream_prev_text,
+            )
+        done = speech_queue.enqueue(
+            blob,
+            state["emotion"],
+            priority=priority,
+            pre_beat_ms=0,
+            post_beat_ms=0,
+            voice_settings=delivery_voice_settings,
+            log_text=False,
+            comedy_mode=getattr(comedy_mode, "key", None),
+            suppress_audio_tag=True,          # the reply's one audio tag rode chunk 1
+            previous_text=stream_prev_text,   # harmless on v3 (dropped), stitches on v2
+        )
+        done_events.append(done)
+        spoken.append(blob)
+
     buffer = ""
     raw_chunks: list[str] = []
+    rest_raw: list[str] = []   # two-chunk mode: complete sentences after the first
     try:
         for chunk in _reply_token_stream(user_text, person_id, agenda_directive):
             if _interrupted.is_set():
@@ -11222,7 +11290,10 @@ def _stream_and_speak_sentences(
             buffer += chunk
             ready, buffer = _split_stream_sentences(buffer, min_chars)
             for sentence in ready:
-                _consume(sentence)
+                if two_chunk and not state["first"]:
+                    rest_raw.append(sentence)
+                else:
+                    _consume(sentence)
     except Exception as exc:
         _log.error("[interaction] streaming LLM error: %s", exc)
     finally:
@@ -11231,12 +11302,17 @@ def _stream_and_speak_sentences(
     if not _interrupted.is_set():
         tail = buffer.strip()
         if tail and _tail_is_speakable(tail):
-            _consume(tail)
+            if two_chunk and not state["first"]:
+                rest_raw.append(tail)
+            else:
+                _consume(tail)
         elif tail:
             _log.info(
                 "[interaction] dropped incomplete stream tail (mid-sentence cut): %r",
                 tail,
             )
+    if two_chunk and rest_raw and not _interrupted.is_set():
+        _consume_remainder(rest_raw)
 
     # Safety net: if the model produced text but every sentence was governed away
     # (e.g. an all-questions reply under a no-questions frame), fall back to

@@ -83,6 +83,9 @@ class ImpulseBackoffTest(unittest.TestCase):
         import intelligence.interaction as I
         clock = {"t": 1000.0}
         spoken = []
+        # Cross-module isolation: another suite's accepted speech sets the flow-gate
+        # anchor (_last_user_content_at); an impulse test must start from a cold room.
+        I._last_user_content_at = 0.0
         fire = lambda: I._maybe_lean_impulse(idle_for=5.0, effective_idle_timeout=60.0)
 
         with contextlib.ExitStack() as es:

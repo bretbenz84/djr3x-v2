@@ -1572,8 +1572,13 @@ def stream_response(
                 yield chunk
         except Exception as exc:
             if got:
-                # Already spoke part of the line — don't restart on the classic prompt (would double it).
+                # Already spoke part of the line — don't REGENERATE on the classic
+                # prompt (would double it), but don't go silent mid-turn either:
+                # close the reply with the audible fallback so a stalled stream
+                # still ends in speech (matters more now that the two-chunk TTS
+                # path streams every live reply).
                 _log.error("[lean] one-voice failed mid-stream after partial output: %s", exc)
+                yield "...my circuits are experiencing some turbulence. Try again."
                 return
             _log.error("[lean] one-voice generation failed, using classic: %s", exc)
         else:
