@@ -1070,6 +1070,10 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     else:
         logger.info("Pre-warming audio output device...")
         tts.prewarm()
+        # Open the ElevenLabs TLS connection in the background so the first live
+        # reply doesn't pay the cold handshake (measured 2.7-5.6s first-turn TTS
+        # outliers vs ~1.0-1.4s warm, 2026-07-06). Free metadata call, non-fatal.
+        threading.Thread(target=tts.warmup_api, daemon=True, name="tts-api-warmup").start()
 
     # Kick off the boot line + head "look around" motion BEFORE the slow preloads
     # (Whisper / speaker-ID / Ollama) so "hang on folks while I'm booting up" plays

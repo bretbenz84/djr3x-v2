@@ -667,6 +667,46 @@ def ensure_cached(
     return True
 
 
+_el_client = None
+_el_client_lock = threading.Lock()
+
+
+def _get_el_client():
+    """One shared ElevenLabs client for the process. A fresh client per call paid a
+    full TLS handshake on EVERY sentence (part of the ~1.0-1.4s per-generation cost
+    and most of the 2.7-5.6s first-turn outlier, measured 2026-07-06). The SDK's
+    underlying httpx pool keeps the connection alive between turns."""
+    global _el_client
+    if _el_client is not None:
+        return _el_client
+    with _el_client_lock:
+        if _el_client is None:
+            import apikeys
+            from elevenlabs import ElevenLabs
+            _el_client = ElevenLabs(api_key=apikeys.ELEVENLABS_API_KEY)
+    return _el_client
+
+
+def warmup_api() -> bool:
+    """Open the ElevenLabs TLS connection at startup so the session's FIRST spoken
+    reply doesn't pay the cold handshake. Mirrors action_router.warmup() for the
+    OpenAI pool. The key is TTS-only scoped, so the metadata probe 401s — that is
+    FINE: an HTTP error still means a completed round-trip over a now-open pooled
+    connection (the whole point); only a network-level failure counts as cold."""
+    try:
+        client = _get_el_client()
+        try:
+            client.user.get()   # any HTTP response = connection opened
+        except Exception as exc:
+            if type(exc).__name__ != "ApiError":
+                raise             # network-level problem — genuinely cold
+        logger.info("[tts] ElevenLabs connection warmed")
+        return True
+    except Exception as exc:
+        logger.debug("[tts] ElevenLabs warmup failed (non-fatal): %s", exc)
+        return False
+
+
 def _fetch_from_api(
     text: str,
     voice_id: str,
@@ -675,10 +715,9 @@ def _fetch_from_api(
     previous_text: Optional[str] = None,
 ) -> Optional[bytes]:
     try:
-        import apikeys
-        from elevenlabs import ElevenLabs, VoiceSettings
+        from elevenlabs import VoiceSettings
 
-        client = ElevenLabs(api_key=apikeys.ELEVENLABS_API_KEY)
+        client = _get_el_client()
         kwargs = {
             "voice_id": voice_id,
             "text": text,
