@@ -107,6 +107,14 @@ _PURPOSE_PRIORITIES: dict[str, int] = {
     # — they could never fire even on an otherwise-empty idle tick. Still low
     # priority: any presence/identity/check-in candidate outranks them.
     "idle_monologue": 22,
+    # boredom: the EMPTY-ROOM arc (grumbles + bored room-riff, terminating in
+    # SLEEP). Dedicated purpose so the lean-brain silence-fill suppression and the
+    # presence-cadence clamp don't touch it — the lean impulse never fires in an
+    # empty room, so nothing replaces this show if it's suppressed (field regression
+    # 2026-07-07: it rode idle_monologue/visual_curiosity and died when lean went
+    # live). Self-paced (55-95s grumbles, 240s snark cooldown), empty-room-gated
+    # at the step, bounded by the doze-off.
+    "boredom": 24,
     # memory_musing: a low-stakes "remember when…" nostalgia beat (episodic recall).
     # Just above idle_monologue/floor so it clears ACTION_GOVERNOR_MIN_SCORE (20) but
     # yields to anything with real intent. Previously unlisted → floor 20 (fragile).

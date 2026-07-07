@@ -500,7 +500,11 @@ def do_bored_environment_snark(snapshot: dict) -> None:
             _c._generate_and_speak(
                 _bored_env_snark_prompt(mode, summary, notable, present_name=present_name),
                 emotion=("neutral" if mode in ("complaint", "relocate") else "curious"),
-                purpose="visual_curiosity",
+                # "boredom", not visual_curiosity: the lean brain suppresses
+                # visual_curiosity (its impulse replaces person-present chatter),
+                # but the lean impulse never fires in an empty room — riding that
+                # purpose silently killed the bored room-riff when lean went live.
+                purpose="boredom",
                 label=f"bored env snark ({mode})",
             )
             # Stamp the cooldown only after a line was produced — gate failure or an

@@ -5848,7 +5848,14 @@ def _speak_boredom_line(bored_for: float) -> None:
     _speak_async(
         random.choice(pool),
         emotion=("sleepy" if late else "neutral"),
-        purpose="idle_monologue",
+        # Dedicated purpose (NOT idle_monologue): the lean brain suppresses the
+        # silence-fill purposes because its impulse replaces them — but the lean
+        # impulse never fires in an EMPTY room, so riding idle_monologue silently
+        # killed the entire boredom arc when lean went live (owner noticed
+        # 2026-07-07: "R3X is supposed to act bored when everyone leaves").
+        # "boredom" is exempt from lean suppression AND from the presence-cadence
+        # clamp: it self-paces (55-95s) and the arc terminates in SLEEP anyway.
+        purpose="boredom",
         label="boredom grumble",
     )
 
@@ -5889,6 +5896,14 @@ def _step_boredom_escalation(snapshot: dict, profile: "SituationProfile") -> Non
     # Only get bored while idle and not mid-exchange. Any other state (active convo,
     # already asleep, shutting down) clears the boredom clock.
     if state_module.get_state() != State.IDLE or is_waiting_for_response():
+        _boredom_started_at = 0.0
+        return
+
+    # The boredom arc is the EMPTY-ROOM show (owner design: "act bored when
+    # everyone leaves... then sleep"). Someone visibly present resets it — a
+    # present-but-quiet person is the lean impulse / re-engagement's territory,
+    # and grumbling "I'm bored" AT them reads as needy.
+    if not _room_looks_empty(snapshot):
         _boredom_started_at = 0.0
         return
 

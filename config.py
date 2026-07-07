@@ -285,11 +285,17 @@ LEAN_IMPULSE_REENGAGE_SECS  = 40.0
 # Suppressed ONLY when LEAN_BRAIN_ENABLED. Genuine perception/real-event reactors — arrival greeting
 # (presence_reaction), wave_back, world.animal_arrival, world.scenery_change, room_change,
 # room_reaction, smile, emotional_checkin — are NOT listed and keep firing.
+# NOTE: this set hands PERSON-PRESENT silence-filling to the lean impulse. Empty-room
+# behaviors must NOT ride these purposes — the lean impulse never fires with nobody
+# present, so a suppressed empty-room behavior has no replacement (field regression
+# 2026-07-07: the boredom arc rode idle_monologue/visual_curiosity and silently died;
+# it now uses the dedicated "boredom" purpose, and startup_empty_room was removed
+# from this set for the same reason — it's a one-shot self-capped empty-room line).
 LEAN_SUPPRESSED_PROACTIVE_PURPOSES = {
     "idle_monologue", "small_talk", "lull_callback", "relationship_inquiry",
     "celebration_checkin", "memory_followup", "memory_musing", "reengagement",
     "visual_curiosity", "ambient_observation", "appearance_riff", "people_roast",
-    "startup_empty_room", "weather.proactive_comment",
+    "weather.proactive_comment",
 }
 
 # Fire a tiny throwaway OpenAI completion at startup (in a background thread) so
@@ -4972,7 +4978,9 @@ BORED_ENV_SNARK_LOOK_AROUND = _env_bool("BORED_ENV_SNARK_LOOK_AROUND", True)
 # NOT reset it, so the doze-off still arrives on schedule.
 BOREDOM_ENABLED = _env_bool("BOREDOM_ENABLED", True)
 BOREDOM_ONSET_SECS = _env_float("BOREDOM_ONSET_SECS", 150.0, min_value=10.0, max_value=3600.0)
-BOREDOM_SLEEP_AFTER_SECS = _env_float("BOREDOM_SLEEP_AFTER_SECS", 600.0, min_value=30.0, max_value=7200.0)
+# 900s: onset (150s) + this = ~17.5 min from everyone-left to doze-off, matching
+# the owner's stated 15-20 minute intent (was 600s = 12.5 min).
+BOREDOM_SLEEP_AFTER_SECS = _env_float("BOREDOM_SLEEP_AFTER_SECS", 900.0, min_value=30.0, max_value=7200.0)
 BOREDOM_COMMENT_INTERVAL_SECS_MIN = _env_float("BOREDOM_COMMENT_INTERVAL_SECS_MIN", 55.0, min_value=10.0, max_value=3600.0)
 BOREDOM_COMMENT_INTERVAL_SECS_MAX = _env_float("BOREDOM_COMMENT_INTERVAL_SECS_MAX", 95.0, min_value=10.0, max_value=3600.0)
 BOREDOM_LINES_EARLY = [

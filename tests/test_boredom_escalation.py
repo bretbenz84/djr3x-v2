@@ -121,3 +121,56 @@ class BoredomEscalationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BoredomLeanResurrectionTest(BoredomEscalationTest):
+    """Field regression 2026-07-07 (owner: 'this should already be coded'): the
+    boredom arc rode purpose=idle_monologue / visual_curiosity, which the lean
+    brain suppresses — the entire empty-room show (grumbles, room riff, doze-off
+    lead-in) silently died when LEAN_BRAIN_ENABLED went live. The arc now uses a
+    dedicated 'boredom' purpose exempt from lean suppression and the cadence
+    clamp, and is gated to genuinely EMPTY rooms."""
+
+    def test_grumble_uses_dedicated_boredom_purpose(self):
+        self.c._boredom_started_at = 0.0
+        self.c._last_boredom_comment_at = 0.0
+        self.c._boredom_sleeping = False
+        self._set_human_idle(200)
+        speak, _ = self._run_step()
+        self.assertEqual(speak.call_args.kwargs.get("purpose"), "boredom")
+
+    def test_boredom_purpose_survives_lean_suppression(self):
+        import config
+        suppressed = getattr(config, "LEAN_SUPPRESSED_PROACTIVE_PURPOSES", set())
+        self.assertNotIn("boredom", suppressed)
+        self.assertNotIn("startup_empty_room", suppressed)  # empty-room one-shot
+        clamped = tuple(getattr(config, "PROACTIVE_CADENCE_CLAMP_PURPOSES", ()))
+        self.assertNotIn("boredom", clamped)  # self-paced, terminates in SLEEP
+
+    def test_boredom_priority_clears_governor_floor(self):
+        from intelligence.action_governor import _PURPOSE_PRIORITIES
+        import config
+        self.assertGreaterEqual(
+            _PURPOSE_PRIORITIES.get("boredom", 0),
+            int(getattr(config, "ACTION_GOVERNOR_MIN_SCORE", 20)),
+        )
+
+    def test_person_present_resets_the_arc(self):
+        # Someone visibly in the room -> no grumbling AT them, clock cleared.
+        self.c._boredom_started_at = time.monotonic() - 100.0
+        self.c._boredom_sleeping = False
+        self._set_human_idle(500)
+        c = self.c
+        with (
+            mock.patch.object(c, "state_module") as sm,
+            mock.patch.object(c, "_speak_async") as speak,
+            mock.patch.object(c, "_trigger_boredom_sleep") as sleep_trigger,
+            mock.patch.object(c, "is_waiting_for_response", return_value=False),
+            mock.patch.object(c.config, "BOREDOM_ENABLED", True),
+        ):
+            sm.get_state.return_value = c.State.IDLE
+            snapshot = {"people": [{"face_visible": True}], "crowd": {"count": 1}}
+            c._step_boredom_escalation(snapshot, self.profile)
+        speak.assert_not_called()
+        sleep_trigger.assert_not_called()
+        self.assertEqual(self.c._boredom_started_at, 0.0)
