@@ -49,3 +49,10 @@ def map_similarity(raw: float) -> float:
         return float(raw)
     offset = float(getattr(config, "VOICE_SCORE_OFFSET_ECAPA", 0.25) or 0.0)
     return max(-1.0, min(0.99, float(raw) + offset))
+
+
+def embedding_dim() -> int:
+    """Embedding dimension of the active backend (192 ECAPA / 256 Resemblyzer).
+    Lets matchers and print-counters distinguish native rows from stale
+    other-backend enrollments during migration."""
+    return 192 if _active_backend == "ecapa" else 256

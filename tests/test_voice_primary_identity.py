@@ -143,6 +143,25 @@ class VoicePrimaryFaceDecisionTest(unittest.TestCase):
             "off_screen_unknown",
         )
 
+    # ── The embedder-migration deadlock (live-logged 2026-07-06-21-15): every
+    #    stored print is stale, so raw_best is None on EVERY turn; at session
+    #    start engagement hasn't formed, and without attribution it never forms.
+    #    The camera's active-speaker confirmation substitutes for engagement. ──
+    def test_no_voice_signal_camera_confirms_talker_falls_back_to_face(self):
+        self.assertEqual(
+            self._decide(person_id=None, raw_best_id=None,
+                         engaged_is_visible=False, visual_speaker_pid=1),
+            "face_only_continuity",
+        )
+
+    def test_no_voice_signal_camera_shows_someone_else_stays_off_screen(self):
+        # The camera's recent talker is a different person — do not claim the face.
+        self.assertEqual(
+            self._decide(person_id=None, raw_best_id=None,
+                         engaged_is_visible=False, visual_speaker_pid=2),
+            "off_screen_unknown",
+        )
+
     def test_unknown_face_present_defers_to_intro_path(self):
         # A newcomer is/was in frame — leave unresolved for the intro/identify
         # flow rather than marking off-screen.
@@ -205,7 +224,9 @@ class VoiceprintPollutionGuardTest(unittest.TestCase):
         audio = kwargs.pop("audio", None)
         if audio is None:
             audio = (0.05 * np.random.default_rng(0).standard_normal(48000)).astype(np.float32)
-        with mock.patch.object(I.people_memory, "count_biometrics", return_value=current), \
+        # The refresh counts NATIVE-dimension prints (stale other-embedder rows are
+        # invisible to it since the ECAPA migration).
+        with mock.patch.object(I.people_memory, "count_native_voice_prints", return_value=current), \
              mock.patch.object(I, "_safe_enroll_voice", side_effect=lambda *a, **k: seen.append(1) or True), \
              mock.patch.object(I.threading, "Thread", _Inline):
             I._maybe_auto_refresh_voice(1, kwargs.pop("score", 0.5), audio, **kwargs)

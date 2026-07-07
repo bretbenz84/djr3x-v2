@@ -825,6 +825,26 @@ def count_biometrics(person_id: int, type_: str) -> int:
     return int(row["n"]) if row else 0
 
 
+def count_native_voice_prints(person_id: int) -> int:
+    """Voice rows from the ACTIVE embedder only (by stored dimension).
+
+    Stale other-backend rows (256-d Resemblyzer after the ECAPA switch) must not
+    count toward the auto-refresh cap or the bootstrap floor: live-logged
+    2026-07-06-21-15, Bret's 6 legacy prints made count_biometrics read 6 >= the
+    5-sample cap, so the bootstrap that would have rebuilt his ECAPA print from
+    face-confirmed turns never fired and he stayed Guest 1.
+    """
+    if person_id is None:
+        return 0
+    n_bytes = _voice_score.embedding_dim() * 4  # float32
+    row = db.fetchone(
+        "SELECT COUNT(*) AS n FROM biometrics "
+        "WHERE person_id = ? AND type = 'voice' AND LENGTH(encoding) = ?",
+        (person_id, n_bytes),
+    )
+    return int(row["n"]) if row else 0
+
+
 def delete_person(person_id: int) -> None:
     """Delete all rows for a person across every person-related table (incl. the
     voiceprint signature, proactive-ask ledger, and Rex's diary entries about them)."""

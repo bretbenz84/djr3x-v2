@@ -1787,7 +1787,20 @@ def _voice_primary_face_decision(
     )
     if voice_leans_visible and single_visible and not other_known_recently:
         return "corroborate"
-    if raw_id is None and single_visible and engaged_is_visible and not other_known_recently:
+    if (
+        raw_id is None
+        and single_visible
+        and not other_known_recently
+        and (engaged_is_visible or (vis is not None and vis == ws))
+    ):
+        # No voice candidate AT ALL (no comparable enrolled prints — e.g. right
+        # after an embedder migration — or the clip was too short to score) in a
+        # clean 1:1. Attribute to the face when EITHER engagement continuity backs
+        # it or the camera positively confirms this face is the one talking
+        # (vis == ws). The camera check matters at session start: engagement
+        # hasn't formed yet, and without this the person can never be attributed,
+        # so engagement NEVER forms — live-logged 2026-07-06-21-15, Bret (face
+        # recognized, all voice prints stale) stayed Guest 1 all session.
         return "face_only_continuity"
     return "off_screen_unknown"
 
@@ -8388,7 +8401,10 @@ def _maybe_auto_refresh_voice(
         )
         return
     max_samples = int(getattr(config, "AUTO_VOICE_REFRESH_MAX_SAMPLES", 5))
-    current = people_memory.count_biometrics(person_id, "voice")
+    # NATIVE-dimension prints only: after an embedder switch the stale legacy rows
+    # (skipped by every matcher) must not eat the cap or mask an empty print —
+    # they made the bootstrap unreachable (live-logged 2026-07-06-21-15).
+    current = people_memory.count_native_voice_prints(person_id)
     if current >= max_samples:
         _voice_refreshed_this_session.add(person_id)  # don't keep checking
         return
@@ -8447,10 +8463,10 @@ def _maybe_auto_refresh_voice(
                 confirmed=True,
             )
             if ok:
-                new_total = people_memory.count_biometrics(person_id, "voice")
+                new_total = people_memory.count_native_voice_prints(person_id)
                 _log.info(
                     "[interaction] auto-refreshed voice biometric for person_id=%s "
-                    "(score=%.3f, now %d sample(s))",
+                    "(score=%.3f, now %d native sample(s))",
                     person_id, voice_score, new_total,
                 )
         except Exception as exc:
@@ -18333,15 +18349,28 @@ def _handle_speech_segment(
                     _log.debug("auto voice-refresh skip: %s", exc)
             elif decision == "face_only_continuity":
                 # No voice candidate at all (no enrolled prints / clip too short to
-                # score) in a clean 1:1 with the engaged person on camera and nobody
-                # else around — last-resort continuity. Do NOT refresh (no voice).
+                # score) in a clean 1:1 — engagement continuity or the camera's
+                # active-speaker latch backs the face. Attribute, and hand the audio
+                # to the auto-refresh BOOTSTRAP: after an embedder migration this is
+                # the only way the person's print gets rebuilt without the CLI tool
+                # (refresh's own guards still apply — quality gates, camera-confirmed
+                # talker, bootstrap floor — so an established print is never touched
+                # from here and unconfirmed audio is simply skipped).
                 person_id = ws_pid
                 person_name = ws_name
                 _log.info(
-                    "[interaction] person resolution: no voice signal, single engaged "
+                    "[interaction] person resolution: no voice signal, single known "
                     "face — person_id=%s name=%r (face-only continuity)",
                     person_id, person_name,
                 )
+                try:
+                    _maybe_auto_refresh_voice(
+                        person_id, speaker_score, audio_array,
+                        face_confirmed=True, raw_best_id=raw_best_id,
+                        visual_speaker_pid=_voice_dec_visual_pid,
+                    )
+                except Exception as exc:
+                    _log.debug("auto voice-bootstrap skip: %s", exc)
             elif decision == "unknown_intro_path":
                 # Voice unrecognized while an unknown face is/was visible — leave the
                 # speaker unresolved for the intro/identify path (NOT off-screen).
