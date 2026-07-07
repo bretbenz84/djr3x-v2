@@ -227,6 +227,19 @@ def transcribe(audio_array: np.ndarray) -> str:
             return ""
 
     if not raw:
+        # Both engines heard nothing intelligible. Log it — a silently dropped
+        # turn reads as "the robot ignored me" in the field (log 2026-07-06-19-20:
+        # one utterance vanished here with no trace). RMS separates true silence
+        # (gain/AEC problem) from real speech the models couldn't decode.
+        try:
+            dur = len(audio_array) / float(config.AUDIO_SAMPLE_RATE)
+            rms = float(np.sqrt(np.mean(np.square(audio_array))))
+        except Exception:
+            dur, rms = -1.0, -1.0
+        logger.info(
+            "[transcription] EMPTY result — segment dropped | backend=%s | %.2fs audio, rms=%.4f",
+            backend, dur, rms,
+        )
         return ""
 
     if _is_hallucination(raw):

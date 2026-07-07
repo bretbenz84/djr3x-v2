@@ -67,26 +67,27 @@ def _record(seconds: float) -> np.ndarray:
 
 def _scan_once(audio: np.ndarray) -> None:
     # Use the SAME production matcher (per-person centroid, one entry per person).
-    results = speaker_id.rank_speakers(audio)  # [(person_id, name, sim)] sorted desc
+    results = speaker_id.rank_speakers(audio)  # [(person_id, name, sim, n_prints)] sorted desc
     if not results:
         print("  No voice prints enrolled / embedding failed. Use --enroll <Name>.")
         return
 
     threshold = config.SPEAKER_ID_SIMILARITY_THRESHOLD
-    margin = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.0) or 0.0)
-    print(f"\n  Ranking (centroid; threshold={threshold:.2f}, margin={margin:.2f}):")
-    print(f"  {'score':>7}  {'id':>4}  verdict   name")
-    print(f"  {'-----':>7}  {'--':>4}  -------   ----")
-    for pid, name, sim in results:
+    # Scoreboard-specific bar (thin-challenger relief), same as the live path.
+    margin = speaker_id.required_ambiguity_margin(results)
+    print(f"\n  Ranking (centroid; threshold={threshold:.2f}, required margin={margin:.3f}):")
+    print(f"  {'score':>7}  {'id':>4}  {'prints':>6}  verdict   name")
+    print(f"  {'-----':>7}  {'--':>4}  {'------':>6}  -------   ----")
+    for pid, name, sim, n_prints in results:
         if sim >= 0.80:
             verdict = "HIGH    "
         elif sim >= threshold:
             verdict = "LOW-CONF"
         else:
             verdict = "REJECT  "
-        print(f"  {sim:>7.3f}  {pid:>4}  {verdict}  {name}")
+        print(f"  {sim:>7.3f}  {pid:>4}  {n_prints:>6}  {verdict}  {name}")
 
-    best_pid, best_name, best_sim = results[0]
+    best_pid, best_name, best_sim, _n = results[0]
     second = results[1][2] if len(results) > 1 else -1.0
     if best_sim >= threshold and (best_sim - second) >= margin:
         print(f"\n  → would be identified as {best_name} "
@@ -196,7 +197,7 @@ def _calibrate(name: str, seconds: float) -> None:
             time.sleep(0.8)
         audio = _record(seconds)
         ranked = speaker_id.rank_speakers(audio)
-        me = next((sim for p, _nm, sim in ranked if p == pid), None)
+        me = next((sim for p, _nm, sim, _n in ranked if p == pid), None)
         if me is None:
             print("  (embedding failed / no score — skipping round)\n")
             results_table.append((condition, float("nan"), "no-score"))

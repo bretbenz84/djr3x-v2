@@ -71,10 +71,11 @@ def get_embedding(audio_array: np.ndarray) -> Optional[np.ndarray]:
         return None
 
 
-def rank_speakers(audio_array: np.ndarray) -> list[tuple[int, str, float]]:
-    """Return [(person_id, name, similarity), ...] sorted by similarity desc, ONE entry
-    per person, scoring the query against that person's CENTROID (mean of all their
-    enrolled voice embeddings, renormalized).
+def rank_speakers(audio_array: np.ndarray) -> list[tuple[int, str, float, int]]:
+    """Return [(person_id, name, similarity, n_prints), ...] sorted by similarity desc,
+    ONE entry per person, scoring the query against that person's CENTROID (mean of all
+    their enrolled voice embeddings, renormalized). n_prints is how many enrolled clips
+    back that centroid — the maturity signal required_ambiguity_margin uses.
 
     Per-person centroids fix two problems with the old max-over-rows approach: (1) a
     person no longer appears multiple times in the candidate list (a weak duplicate row
@@ -107,22 +108,56 @@ def rank_speakers(audio_array: np.ndarray) -> list[tuple[int, str, float]]:
         stored_norm = stored / (np.linalg.norm(stored) + 1e-10)
         per_person.setdefault(row["person_id"], []).append(stored_norm)
 
-    scored: list[tuple[int, str, float]] = []
+    scored: list[tuple[int, str, float, int]] = []
     for pid, vecs in per_person.items():
         centroid = np.mean(np.stack(vecs), axis=0)
         centroid = centroid / (np.linalg.norm(centroid) + 1e-10)
         sim = float(np.dot(centroid, query_norm))
         person = people.get_person(pid)
         nm = (person.get("name") if person else None) or "?"
-        scored.append((pid, nm, sim))
+        scored.append((pid, nm, sim, len(vecs)))
 
     scored.sort(key=lambda t: t[2], reverse=True)
     return scored
 
 
-def _log_scoreboard(scored: list[tuple[int, str, float]]) -> None:
+def required_ambiguity_margin(ranked: list) -> float:
+    """Gap the top candidate must have over the runner-up before the match counts
+    as unambiguous, given THIS scoreboard.
+
+    Base is SPEAKER_ID_KNOWN_MARGIN. It is REDUCED (thin-challenger relief) when:
+      - the runner-up's centroid is built from <= SPEAKER_ID_THIN_PRINT_MAX_ROWS
+        clips (a single unverified print is high-variance — it shouldn't carry
+        full veto power over a mature multi-print match), AND
+      - the top candidate has a mature (> thin) print set, AND
+      - the top score clears SPEAKER_ID_THIN_RUNNER_MIN_TOP_SCORE, high enough
+        that a cross-match impostor is unlikely (field data: JT's live voice hit
+        Bret's centroid at 0.529; Bret's own short greeting hits 0.558+).
+
+    Field log 2026-07-06-19-23: Bret (6 prints) 0.558 vs JT (1 print) 0.502 —
+    margin 0.056 < 0.07 challenged the OWNER as a mystery voice. With relief the
+    required margin halves (0.035) and Bret resolves. The reverse case (JT top
+    0.563 vs Bret runner-up 0.529, log 2026-07-05-21-22) keeps the FULL margin
+    because the runner-up (Bret) is mature — the who's-that challenge still fires
+    while JT's print is thin, which is how his print gets confirmed and grown.
+    """
+    base = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.07) or 0.0)
+    if len(ranked) < 2:
+        return base
+    thin_max = int(getattr(config, "SPEAKER_ID_THIN_PRINT_MAX_ROWS", 1) or 1)
+    factor = float(getattr(config, "SPEAKER_ID_THIN_RUNNER_MARGIN_FACTOR", 0.5) or 0.5)
+    min_top = float(getattr(config, "SPEAKER_ID_THIN_RUNNER_MIN_TOP_SCORE", 0.55) or 0.55)
+    top, runner = ranked[0], ranked[1]
+    top_sim, top_count = float(top[2]), int(top[3])
+    runner_count = int(runner[3])
+    if runner_count <= thin_max and top_count > thin_max and top_sim >= min_top:
+        return base * factor
+    return base
+
+
+def _log_scoreboard(scored: list) -> None:
     # Same "Name#id=score" format tooling/test_voice_id.py read (now one row per person).
-    parts = [f"{nm}#{pid}={sim:.3f}" for pid, nm, sim in scored[:3]]
+    parts = [f"{nm}#{pid}={sim:.3f}" for pid, nm, sim, _n in scored[:3]]
     logger.info(
         "[speaker_id] scan — threshold=%.3f, candidates: %s",
         config.SPEAKER_ID_SIMILARITY_THRESHOLD,
@@ -142,7 +177,7 @@ def identify_speaker_raw(
     if not scored:
         return (None, None, 0.0)
     _log_scoreboard(scored)
-    best_id, name, best_sim = scored[0]
+    best_id, name, best_sim, _n = scored[0]
     return (best_id, name, float(best_sim))
 
 
@@ -160,11 +195,11 @@ def identify_speaker(
     if not scored:
         return (None, None, 0.0)
     _log_scoreboard(scored)
-    best_id, name, best_sim = scored[0]
+    best_id, name, best_sim, _n = scored[0]
     if best_sim < config.SPEAKER_ID_SIMILARITY_THRESHOLD:
         return (None, None, 0.0)
     second = scored[1][2] if len(scored) > 1 else -1.0
-    margin = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.0) or 0.0)
+    margin = required_ambiguity_margin(scored)
     if (best_sim - second) < margin:
         logger.info(
             "[speaker_id] ambiguous: %s#%s=%.3f vs next=%.3f (margin %.3f < %.2f) — no match",

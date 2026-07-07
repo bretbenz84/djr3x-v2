@@ -1891,7 +1891,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     mock.patch.object(
                         interaction,
                         "_process_audio",
-                        return_value=("JT", None, None, 0.0, 0.0),
+                        return_value=("JT", None, None, 0.0, 0.0, 0.07),
                     )
                 )
                 stack.enter_context(
@@ -2088,7 +2088,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     mock.patch.object(
                         interaction,
                         "_process_audio",
-                        return_value=("for you", None, None, 0.0, 0.0),
+                        return_value=("for you", None, None, 0.0, 0.0, 0.07),
                     )
                 )
                 stack.enter_context(
@@ -2229,7 +2229,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     mock.patch.object(
                         interaction,
                         "_process_audio",
-                        return_value=("", None, None, 0.0, 0.0),
+                        return_value=("", None, None, 0.0, 0.0, 0.07),
                     )
                 )
                 interaction._handle_speech_segment(
@@ -2260,7 +2260,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     mock.patch.object(
                         interaction,
                         "_process_audio",
-                        return_value=("", None, None, 0.0, 0.0),
+                        return_value=("", None, None, 0.0, 0.0, 0.07),
                     )
                 )
                 interaction._handle_speech_segment(
@@ -2302,7 +2302,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     mock.patch.object(
                         interaction,
                         "_process_audio",
-                        return_value=("Bret Benziger", None, None, 0.0, 0.0),
+                        return_value=("Bret Benziger", None, None, 0.0, 0.0, 0.07),
                     )
                 )
                 stack.enter_context(
@@ -2509,7 +2509,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                     mock.patch.object(
                         interaction,
                         "_process_audio",
-                        return_value=("Nice to meet you too", 1, "Bret", 0.502, 0.0),
+                        return_value=("Nice to meet you too", 1, "Bret", 0.502, 0.0, 0.07),
                     )
                 )
                 stack.enter_context(

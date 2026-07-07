@@ -6973,14 +6973,21 @@ def _bare_wake_should_ask_visible_unknown_identity(
 _last_voice_challenge_at: float = 0.0
 
 
-def _voice_ambiguous_between_knowns(score: float, margin: float) -> bool:
+def _voice_ambiguous_between_knowns(
+    score: float, margin: float, required_margin: Optional[float] = None,
+) -> bool:
     """True when the voice cleared the accept threshold but two ENROLLED people are
     within the ambiguity margin of each other (field log 2026-07-05-21-22: JT 0.563
     vs Bret 0.529, margin 0.034 < 0.07). That is not background chatter — a real,
     enrolled-adjacent person is talking and the prints can't split them. It must
-    escalate to the who's-that ask, not churn anonymous Guest-N slots."""
+    escalate to the who's-that ask, not churn anonymous Guest-N slots.
+
+    required_margin, when given, is the scoreboard-specific bar from
+    speaker_id.required_ambiguity_margin (thin-challenger relief); the config
+    base is only the fallback."""
     thr = float(getattr(config, "SPEAKER_ID_SIMILARITY_THRESHOLD", 0.50))
-    known_margin = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.07))
+    known_margin = (float(required_margin) if required_margin is not None
+                    else float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.07)))
     return float(score or 0.0) >= thr and 0.0 <= float(margin or 0.0) < known_margin
 
 
@@ -10133,18 +10140,23 @@ def _maybe_onboarding_timeout() -> bool:
 
 def _process_audio(
     audio_array: np.ndarray,
-) -> tuple[str, Optional[int], Optional[str], float, float]:
+) -> tuple[str, Optional[int], Optional[str], float, float, float]:
     """
     Run transcription and speaker ID simultaneously in two threads.
 
     Returns (transcribed_text, raw_best_id, raw_best_name, raw_best_score,
-    raw_best_margin). The speaker values are the RAW top per-person centroid
-    candidate — NOT threshold-filtered. raw_best_margin is the gap to the next
-    DIFFERENT person (large when only one person is enrolled), so callers can
-    accept a low score only when the winner is unambiguous.
+    raw_best_margin, required_margin). The speaker values are the RAW top
+    per-person centroid candidate — NOT threshold-filtered. raw_best_margin is
+    the gap to the next DIFFERENT person (large when only one person is
+    enrolled). required_margin is the scoreboard-specific ambiguity bar from
+    speaker_id.required_ambiguity_margin (base SPEAKER_ID_KNOWN_MARGIN, reduced
+    when the runner-up's print set is thin) — callers compare raw_best_margin
+    against it instead of the raw config value.
     """
+    default_margin = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.07))
     text_box: list[str] = [""]
-    speaker_box: list = [None, None, 0.0, 0.0]  # [person_id, name, score, margin]
+    # [person_id, name, score, margin, required_margin]
+    speaker_box: list = [None, None, 0.0, 0.0, default_margin]
 
     def _transcribe() -> None:
         text_box[0] = transcription.transcribe(audio_array)
@@ -10154,12 +10166,13 @@ def _process_audio(
         if not ranked:
             return
         speaker_id._log_scoreboard(ranked)
-        pid, name, score = ranked[0]
+        pid, name, score, _n = ranked[0]
         second = ranked[1][2] if len(ranked) > 1 else -1.0
         speaker_box[0] = pid
         speaker_box[1] = name
         speaker_box[2] = float(score)
         speaker_box[3] = float(score - second)
+        speaker_box[4] = float(speaker_id.required_ambiguity_margin(ranked))
 
     t1 = threading.Thread(target=_transcribe, daemon=True, name="transcription")
     t2 = threading.Thread(target=_identify, daemon=True, name="speaker-id")
@@ -10168,7 +10181,8 @@ def _process_audio(
     t1.join()
     t2.join()
 
-    return text_box[0] or "", speaker_box[0], speaker_box[1], speaker_box[2], speaker_box[3]
+    return (text_box[0] or "", speaker_box[0], speaker_box[1], speaker_box[2],
+            speaker_box[3], speaker_box[4])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -17824,10 +17838,12 @@ def _handle_speech_segment(
             raw_best_name = raw_best_name_override
             speaker_score = float(speaker_score_override or 0.0)
             speaker_margin = 1.0  # explicit override — not a voice scoreboard, trust it
+            required_margin = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.07))
             transcript_ready_at = time.monotonic()
             _latency_log(turn_start, "text_input", process_started)
         else:
-            text, raw_best_id, raw_best_name, speaker_score, speaker_margin = _process_audio(audio_array)
+            (text, raw_best_id, raw_best_name, speaker_score, speaker_margin,
+             required_margin) = _process_audio(audio_array)
             transcript_ready_at = time.monotonic()
             _latency_log(turn_start, "transcribe_and_speaker_id", process_started)
 
@@ -17954,7 +17970,9 @@ def _handle_speech_segment(
         hard_threshold = float(config.SPEAKER_ID_SIMILARITY_THRESHOLD)
         soft_threshold = float(getattr(config, "SPEAKER_ID_SOFT_THRESHOLD", 0.60))
         known_floor = float(getattr(config, "SPEAKER_ID_KNOWN_SPEAKER_FLOOR", 0.45))
-        known_margin = float(getattr(config, "SPEAKER_ID_KNOWN_MARGIN", 0.07))
+        # Scoreboard-specific ambiguity bar (thin-challenger relief) computed at scan
+        # time by speaker_id.required_ambiguity_margin — NOT the raw config value.
+        known_margin = float(required_margin)
         try:
             _recent_engaged = consciousness.get_recent_engagement()
         except Exception:
@@ -20581,7 +20599,8 @@ def _handle_speech_segment(
             if (
                 off_camera_unknown
                 and not voice_challenge_fired
-                and _voice_ambiguous_between_knowns(speaker_score, speaker_margin)
+                and _voice_ambiguous_between_knowns(
+                    speaker_score, speaker_margin, required_margin)
             ):
                 voice_challenge_fired = True
                 _log.info(

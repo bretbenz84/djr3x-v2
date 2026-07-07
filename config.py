@@ -2745,6 +2745,20 @@ SPEAKER_ID_SIMILARITY_THRESHOLD = 0.50
 SPEAKER_ID_KNOWN_SPEAKER_FLOOR = 0.45
 SPEAKER_ID_KNOWN_MARGIN = 0.07
 
+# Thin-challenger relief (field log 2026-07-06-19-23: Bret, 6 curated prints, scored
+# 0.558 on a short greeting; JT's SINGLE unverified print trailed at 0.502 — margin
+# 0.056 < 0.07 challenged the OWNER as a mystery voice). A 1-clip centroid is
+# high-variance and shouldn't carry full veto power over a mature multi-print match:
+# when the runner-up has <= THIN_PRINT_MAX_ROWS prints, the top has MORE, and the top
+# score is at least THIN_RUNNER_MIN_TOP_SCORE (above the measured cross-match band —
+# JT's live voice hit Bret's centroid at only 0.529), the required margin is scaled
+# by THIN_RUNNER_MARGIN_FACTOR. The reverse direction (thin-print person on top)
+# keeps the full margin, so the who's-that challenge still fires for the newcomer
+# until their print matures.
+SPEAKER_ID_THIN_PRINT_MAX_ROWS = 1
+SPEAKER_ID_THIN_RUNNER_MARGIN_FACTOR = 0.5
+SPEAKER_ID_THIN_RUNNER_MIN_TOP_SCORE = 0.55
+
 # Load the Resemblyzer encoder during startup so the first live spoken turn
 # does not pay the model load cost.
 SPEAKER_ID_PRELOAD_ON_STARTUP = True
