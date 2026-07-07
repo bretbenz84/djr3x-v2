@@ -1030,6 +1030,23 @@ venv/bin/python main.py
   unrecoverable without hardware AEC (by design). Tests:
   `tests/test_audio_and_conversation_gating.py::PostQuestionRetroScanTest`.
 
+- ECAPA genuine-band trust floors (2026-07-07, first live ECAPA session): the who's-that
+  challenges (2026-07-05) were calibrated on RESEMBLYZER scores, where an impostor
+  cross-match lands 0.55-0.66 — indistinguishable from a genuine short turn. Under ECAPA
+  an impostor maps to ~0.25-0.45 (below the 0.50 accept bar) while genuine SHORT
+  utterances land ~0.55-0.65 mapped — structurally below the 0.75 confident bar — so the
+  FIRST short turn of every session was challenged ("who's speaking?") even with the
+  right face on camera (no continuity anchor exists at session start; live-logged:
+  "yup, I'm back" at 0.597). Fix: `interaction._ecapa_genuine_band` — when the ACTIVE
+  embedder is ecapa, a score at/above the trust floor is credible without continuity:
+  `_voice_primary_face_decision` gets `score_genuine_band` (accepted agreeing match on
+  the visible face → `voice_agrees_no_refresh`, floor `SPEAKER_ID_ECAPA_TRUST_FLOOR_FACE`
+  = the 0.50 accept bar) and `_voice_only_attribution_suspect` stands down at/above
+  `SPEAKER_ID_ECAPA_TRUST_FLOOR_VOICE_ONLY` (0.55 — no visual prior, higher bar). The
+  Resemblyzer fallback keeps the strict guards untouched (its tests pin the backend).
+  Kill switch `SPEAKER_ID_ECAPA_TRUST_ENABLED`. Never refreshes the print from these
+  turns. Tests: `tests/test_voice_primary_identity.py::EcapaGenuineBandTest`.
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.

@@ -17,10 +17,18 @@ from intelligence import interaction
 
 def _suspect(person_id=1, score=0.660, *, voice_continuity=False, others_visible=True,
              enabled=True, last_challenge=0.0, empty_frame_challenge=True):
-    """Drive _voice_only_attribution_suspect with fully mocked surroundings."""
+    """Drive _voice_only_attribution_suspect with fully mocked surroundings.
+
+    Pinned to the RESEMBLYZER backend: these tests document the resemblyzer-scale
+    cross-match shapes (JT at 0.660/0.483 on Bret's print) where the strict guards
+    must hold. Under ECAPA an impostor can't reach those scores, so the genuine-band
+    bypass stands the challenge down — covered separately in
+    tests/test_voice_primary_identity.py::EcapaGenuineBandTest."""
+    from audio import voice_score
     people = [{"person_db_id": None, "face_missing": True}] if others_visible else []
     with mock.patch.object(config, "SPEAKER_ID_UNSEEN_CHALLENGE_ENABLED", enabled, create=True), \
          mock.patch.object(config, "SPEAKER_ID_CHALLENGE_EMPTY_FRAME", empty_frame_challenge, create=True), \
+         mock.patch.object(voice_score, "active_backend", return_value="resemblyzer"), \
          mock.patch.object(interaction, "_voice_continuity_active", return_value=voice_continuity), \
          mock.patch.object(interaction.world_state, "get", return_value=people), \
          mock.patch.object(interaction, "_last_voice_challenge_at", last_challenge):

@@ -1708,6 +1708,25 @@ def _visual_corroborated_speaker(
     return raw_id
 
 
+def _ecapa_genuine_band(speaker_score: float, floor: float) -> bool:
+    """True when the ACTIVE embedder is ECAPA and the mapped score sits in the
+    genuine band (>= floor). Under ECAPA an impostor cross-match lands at
+    ~0.25-0.45 mapped — below the accept threshold — so an accepted match is
+    already genuine-band evidence, while genuine SHORT utterances land ~0.55-0.65:
+    structurally below the 0.75 confident bar. This lets the who's-that challenges
+    stand down for genuine-band ECAPA scores without weakening the Resemblyzer
+    fallback (where impostors land 0.55-0.66 and the strict guards must hold)."""
+    if not bool(getattr(config, "SPEAKER_ID_ECAPA_TRUST_ENABLED", True)):
+        return False
+    try:
+        from audio import voice_score
+        if voice_score.active_backend() != "ecapa":
+            return False
+    except Exception:
+        return False
+    return float(speaker_score or 0.0) >= float(floor)
+
+
 def _voice_primary_face_decision(
     *,
     person_id: Optional[int],
@@ -1720,6 +1739,7 @@ def _voice_primary_face_decision(
     other_known_recently: bool,
     visual_speaker_pid: Optional[int] = None,
     voice_continuity: bool = False,
+    score_genuine_band: bool = False,
 ) -> str:
     """Voice-primary attribution decision when exactly one known face (``ws_pid``)
     is visible. Pure (no side effects) so it is directly unit-testable.
@@ -1738,8 +1758,9 @@ def _voice_primary_face_decision(
     Returns one of:
       ``voice_agrees``            confident voice matched the visible face (or the
                                   camera confirms they're talking) — attribute + refresh
-      ``voice_agrees_no_refresh`` MARGINAL match on the visible face backed only by
-                                  voice continuity — attribute, do NOT touch the print
+      ``voice_agrees_no_refresh`` MARGINAL match on the visible face backed by voice
+                                  continuity or an ECAPA genuine-band score —
+                                  attribute, do NOT touch the print
       ``challenge_identity``      marginal match on the visible face with NO voice
                                   credibility — reply to content + ask who's speaking
       ``voice_over_face``         voice CONFIDENTLY matched someone else, or the camera
@@ -1765,6 +1786,14 @@ def _voice_primary_face_decision(
             return "voice_agrees"            # camera positively confirms they're talking
         if voice_continuity:
             return "voice_agrees_no_refresh"  # marginal but consistent with recent confident voice
+        if score_genuine_band:
+            # ECAPA genuine band: an impostor can't land an accepted match under
+            # ECAPA (~0.25-0.45 mapped), so an accepted score agreeing with the
+            # visible face IS credible even without continuity — this is what
+            # stops the first short turn of every session being challenged
+            # (live-logged 2026-07-07: "yup, I'm back" at 0.597, face on camera,
+            # answered with "who's speaking?"). Attribute, never touch the print.
+            return "voice_agrees_no_refresh"
         return "challenge_identity"           # marginal + no credibility: never assume the face
     if pid is not None:
         # Accepted voice match points at someone OTHER than the visible known face.
@@ -7142,6 +7171,15 @@ def _voice_only_attribution_suspect(person_id, speaker_score: float) -> bool:
     # is not evidence of being the one talking. A marginal match passes only when
     # this person's OWN voice matched confidently within the continuity window.
     if _voice_continuity_active(person_id):
+        return False
+    # ECAPA genuine band: the JT cross-matches above were Resemblyzer-scale scores;
+    # under ECAPA an impostor lands ~0.25-0.45 mapped, so a score at/above the
+    # voice-only trust floor is this person's own voice on a short/quiet turn —
+    # don't challenge a genuine speaker at every session start.
+    if _ecapa_genuine_band(
+        speaker_score,
+        float(getattr(config, "SPEAKER_ID_ECAPA_TRUST_FLOOR_VOICE_ONLY", 0.55)),
+    ):
         return False
     if not _someone_visible_who_isnt(person_id):
         # EMPTY frame: no visual contradiction, but also no corroboration — a marginal
@@ -18353,6 +18391,10 @@ def _handle_speech_segment(
                 other_known_recently=_other_known_visible_recently(ws_pid),
                 visual_speaker_pid=_voice_dec_visual_pid,
                 voice_continuity=_voice_continuity_active(person_id),
+                score_genuine_band=_ecapa_genuine_band(
+                    speaker_score,
+                    float(getattr(config, "SPEAKER_ID_ECAPA_TRUST_FLOOR_FACE", 0.50)),
+                ),
             )
             if decision == "voice_agrees":
                 _note_confident_voice(person_id, speaker_score)

@@ -4793,6 +4793,24 @@ SPEAKER_ID_CHALLENGE_EMPTY_FRAME = _env_bool("SPEAKER_ID_CHALLENGE_EMPTY_FRAME",
 # VISIBLE face is challenged ("who's speaking?"): the camera never upgrades a marginal
 # voice (owner architecture call 2026-07-05 — voice primary, vision secondary).
 SPEAKER_ID_CONTINUITY_WINDOW_SECS = _env_float("SPEAKER_ID_CONTINUITY_WINDOW_SECS", 240.0, min_value=0.0, max_value=3600.0)
+
+# ── ECAPA genuine-band trust floors ────────────────────────────────────────────
+# The who's-that challenges above were calibrated against RESEMBLYZER-scale scores,
+# where an impostor cross-match lands at 0.55-0.66 — indistinguishable from a genuine
+# short turn, hence "confident-or-continuity-or-camera" before trusting. Under ECAPA
+# an impostor maps to ~0.25-0.45 — BELOW the 0.50 accept threshold — so any ACCEPTED
+# ECAPA match is already in the genuine band, while genuine short utterances land
+# ~0.55-0.65 mapped: structurally below the 0.75 confident bar. Result (live-logged
+# 2026-07-07, first ECAPA session): the FIRST short turn of every session was
+# challenged ("who's speaking?") even with the right face on camera, because no
+# continuity anchor exists at session start. These floors let an ECAPA-scale score in
+# the genuine band be trusted without continuity: on the visible-face path any
+# accepted agreeing match passes (floor = the 0.50 accept bar); the voice-only path
+# keeps a slightly higher floor (no visual prior). ONLY applied while the active
+# embedder is ecapa — the Resemblyzer fallback keeps the strict 2026-07-05 guards.
+SPEAKER_ID_ECAPA_TRUST_ENABLED = _env_bool("SPEAKER_ID_ECAPA_TRUST_ENABLED", True)
+SPEAKER_ID_ECAPA_TRUST_FLOOR_FACE = _env_float("SPEAKER_ID_ECAPA_TRUST_FLOOR_FACE", 0.50, min_value=0.0, max_value=1.0)
+SPEAKER_ID_ECAPA_TRUST_FLOOR_VOICE_ONLY = _env_float("SPEAKER_ID_ECAPA_TRUST_FLOOR_VOICE_ONLY", 0.55, min_value=0.0, max_value=1.0)
 # A person-linked voice signature resolves the speaker outright at the strict cold bar
 # (VOICE_SIGNATURE_RESOLVE_PERSON_MIN_SCORE) — but a WARM signature (seen within the
 # warm window, e.g. linked seconds ago by a "that's JT" answer) resolves at this lower

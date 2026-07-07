@@ -61,6 +61,16 @@ class VoicePrimaryFaceDecisionTest(unittest.TestCase):
             "voice_agrees_no_refresh",
         )
 
+    def test_marginal_match_passes_in_ecapa_genuine_band(self):
+        # First short turn of an ECAPA session (live-logged 2026-07-07: "yup, I'm
+        # back" at 0.597 with the right face on camera got "who's speaking?"):
+        # a genuine-band score on the visible face attributes without continuity.
+        self.assertEqual(
+            self._decide(person_id=1, raw_best_id=1, speaker_score=0.597,
+                         score_genuine_band=True),
+            "voice_agrees_no_refresh",
+        )
+
     def test_marginal_match_passes_when_camera_confirms_talking(self):
         # The visual active-speaker latch positively says the visible face is the
         # one talking — the camera CAN corroborate, it just can't upgrade alone.
@@ -189,6 +199,51 @@ class VoicePrimaryFaceDecisionTest(unittest.TestCase):
             self._decide(person_id=None, raw_best_id=1, speaker_score=0.55, engaged_is_visible=False),
             "corroborate",
         )
+
+
+class EcapaGenuineBandTest(unittest.TestCase):
+    """ECAPA-gated trust floors: under ECAPA an impostor cross-match lands ~0.25-0.45
+    mapped (below the accept threshold), so an accepted match is genuine-band evidence
+    and the who's-that challenges stand down. The Resemblyzer fallback — where impostors
+    land 0.55-0.66 — keeps the strict 2026-07-05 guards."""
+
+    def _backend(self, name):
+        from audio import voice_score
+        return mock.patch.object(voice_score, "active_backend", return_value=name)
+
+    def test_genuine_band_requires_ecapa_backend(self):
+        with self._backend("ecapa"):
+            self.assertTrue(I._ecapa_genuine_band(0.597, 0.50))
+        with self._backend("resemblyzer"):
+            self.assertFalse(I._ecapa_genuine_band(0.597, 0.50))
+
+    def test_genuine_band_respects_floor(self):
+        with self._backend("ecapa"):
+            self.assertFalse(I._ecapa_genuine_band(0.48, 0.50))
+            self.assertTrue(I._ecapa_genuine_band(0.50, 0.50))
+
+    def test_kill_switch(self):
+        import config
+        with self._backend("ecapa"), \
+             mock.patch.object(config, "SPEAKER_ID_ECAPA_TRUST_ENABLED", False, create=True):
+            self.assertFalse(I._ecapa_genuine_band(0.9, 0.50))
+
+    def test_voice_only_challenge_stands_down_in_genuine_band(self):
+        # Session-start short turn, nobody's face resolved: a genuine-band ECAPA
+        # score must NOT trigger the who's-that challenge.
+        I._last_voice_challenge_at = 0.0
+        with self._backend("ecapa"), \
+             mock.patch.object(I, "_voice_continuity_active", return_value=False), \
+             mock.patch.object(I, "_someone_visible_who_isnt", return_value=True):
+            self.assertFalse(I._voice_only_attribution_suspect(1, 0.60))
+
+    def test_voice_only_challenge_still_fires_under_resemblyzer(self):
+        I._last_voice_challenge_at = 0.0
+        with self._backend("resemblyzer"), \
+             mock.patch.object(I, "_voice_continuity_active", return_value=False), \
+             mock.patch.object(I, "_someone_visible_who_isnt", return_value=True):
+            self.assertTrue(I._voice_only_attribution_suspect(1, 0.60))
+        I._last_voice_challenge_at = 0.0
 
 
 class EnrollmentSeedsVoiceContinuityTest(unittest.TestCase):
