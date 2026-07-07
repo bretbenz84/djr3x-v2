@@ -422,6 +422,15 @@ TTS_FIRST_SENTENCE_SPLIT_ENABLED = _env_bool("TTS_FIRST_SENTENCE_SPLIT_ENABLED",
 # error falls back to the buffered path. Set False to restore buffered-only playback.
 TTS_STREAMING_PLAYBACK_ENABLED = _env_bool("TTS_STREAMING_PLAYBACK_ENABLED", True)
 TTS_STREAM_PCM_FORMAT = os.environ.get("TTS_STREAM_PCM_FORMAT", "pcm_22050")
+# Zero-padding written after the last PCM chunk before the stream is stopped, so
+# the final word can't be clipped by the host audio buffer at teardown (CoreAudio
+# has been observed dropping the last ~latency window despite stop()'s drain).
+TTS_STREAM_END_PAD_MS = 200.0
+# A streamed take whose FINAL 30ms still sits at speech-level RMS never decayed —
+# the generation was truncated mid-word (observed live 2026-07-06 at RMS 0.023).
+# Such takes play once (nothing to do) but are NOT cached, so the clipped ending
+# doesn't become permanent; the next utterance re-rolls. 0 disables the guard.
+TTS_HOT_END_RMS = 0.010
 
 # A finished sentence shorter than this many characters is merged with the next
 # one before speaking, so tiny fragments ("Yeah.", initials, abbreviations,
@@ -2947,7 +2956,10 @@ POST_SPEECH_FLUSH_AUDIO_BUFFER = False
 TTS_TRIM_TRAILING_SILENCE_ENABLED = True
 TTS_TRIM_TRAILING_SILENCE_THRESHOLD = 0.003
 TTS_TRIM_TRAILING_SILENCE_WINDOW_MS = 20
-TTS_TRIM_TRAILING_SILENCE_PADDING_MS = 40
+# 40ms shaved word-final decays (breathy endings sit under the RMS threshold and
+# read as "silence") — 120ms keeps the natural tail while still releasing the mic
+# suppression promptly (owner report 2026-07-06: "TTS cut off at the end a bit").
+TTS_TRIM_TRAILING_SILENCE_PADDING_MS = 120
 
 # If Rex asks a question and the human does not answer, wait this long before
 # letting him recover with one joke/quip and move on.

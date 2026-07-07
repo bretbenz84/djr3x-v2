@@ -398,6 +398,19 @@ def _trim_trailing_silence(audio: np.ndarray, samplerate: int) -> np.ndarray:
     return trimmed
 
 
+def _ends_hot(audio: np.ndarray, samplerate: int) -> bool:
+    """True when the take ends at speech level instead of decaying to silence —
+    the signature of a generation truncated mid-word. A natural ElevenLabs take
+    tails off to RMS ~0.0002-0.003; truncated ones have been measured ending at
+    0.02+. Checks the FINAL window only (an intra-word dip can't false-positive)."""
+    threshold = float(getattr(config, "TTS_HOT_END_RMS", 0.010) or 0.0)
+    if threshold <= 0.0 or audio is None or audio.size == 0 or samplerate <= 0:
+        return False
+    window = max(1, int(samplerate * 0.030))
+    tail = audio[-window:]
+    return float(np.sqrt(np.mean(tail.astype(np.float64) ** 2))) >= threshold
+
+
 # ── Internal: playback ────────────────────────────────────────────────────────
 
 def _stream_pcm_samplerate() -> int:
@@ -556,7 +569,19 @@ def _speak_streaming(
             if canceled:
                 stream.abort()
             else:
-                stream.stop()   # waits for the buffered tail to finish playing
+                # Push the final speech samples fully through the device before
+                # teardown: write a short zero pad so the tail can't be clipped by
+                # the host buffer at stop() (CoreAudio has been observed dropping
+                # the last ~latency window despite stop()'s documented drain), then
+                # stop() waits for the buffered audio to finish playing.
+                pad_ms = float(getattr(config, "TTS_STREAM_END_PAD_MS", 200.0) or 0.0)
+                if pad_ms > 0:
+                    try:
+                        stream.write(np.zeros(int(samplerate * pad_ms / 1000.0),
+                                              dtype=np.float32))
+                    except Exception:
+                        pass
+                stream.stop()
         except Exception as exc:
             logger.error("[tts] streamed playback error: %s", exc)
             # Audio may have partially played; do NOT fall back (would double-speak).
@@ -611,6 +636,17 @@ def _speak_streaming(
         try:
             import soundfile as sf
             full = np.concatenate(all_samples)
+            if _ends_hot(full, samplerate):
+                # The stream delivered audio that ends at speech level with no
+                # decay — the generation itself was truncated mid-word (observed
+                # live 2026-07-06: cached take ended at RMS 0.023). Caching it
+                # would make the clipped ending PERMANENT for this line; skip so
+                # the next utterance re-rolls a full take.
+                logger.warning(
+                    "[tts] streamed take ends hot (speech-level RMS at tail) — "
+                    "truncated generation? NOT caching %s", cache_file.stem[:16],
+                )
+                return True
             trimmed = _trim_trailing_silence(full, samplerate)
             wav_path = cache_file.with_suffix(".wav")
             wav_path.parent.mkdir(parents=True, exist_ok=True)
