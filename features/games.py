@@ -229,64 +229,151 @@ def _body_beat(name: str, **context) -> None:
 # ── I Spy game ────────────────────────────────────────────────────────────────
 
 _ISPY_MAX_GUESSES = 5
+_ISPY_SCAN_VIEWS = ("left", "center", "right")
 
 
-def _ispy_get_target() -> Optional[dict]:
-    """
-    Grab a camera frame and ask GPT-4o to pick an I Spy object.
-    Returns {"object": "red chair", "clue": "red"} or None on failure.
-    """
+def _ispy_scan_room() -> list[tuple[str, object]]:
+    """Physically look around the room before picking a target — the bit of
+    showmanship the physical droid is supposed to do (owner call 2026-07-07),
+    which also widens the object pool beyond whatever the head happened to be
+    pointing at. Sweeps left → center → right with a directed-gaze hold (so the
+    face-tracking loop doesn't fight the sweep), capturing a frame at each pose,
+    then recenters. Returns [(view, frame), ...]. Without servos (or with the
+    scan disabled) it degrades to one frame from the current gaze."""
     try:
         from vision import camera
     except ImportError:
         _log.warning("[games] Camera unavailable for I Spy")
+        return []
+
+    scan_possible = bool(getattr(config, "ISPY_SCAN_ENABLED", True))
+    if scan_possible:
+        try:
+            from hardware import servos
+            scan_possible = servos.connected()
+        except Exception:
+            scan_possible = False
+    if not scan_possible:
+        frame = camera.get_frame()
+        return [("center", frame)] if frame is not None else []
+
+    views: list[tuple[str, object]] = []
+    settle = float(getattr(config, "ISPY_SCAN_SETTLE_SECS", 0.35))
+    try:
+        from intelligence import consciousness
+        from sequences import animations
+    except Exception as exc:
+        _log.debug("[games] I Spy scan primitives unavailable: %s", exc)
+        frame = camera.get_frame()
+        return [("center", frame)] if frame is not None else []
+
+    for view in _ISPY_SCAN_VIEWS:
+        try:
+            consciousness.hold_directed_gaze(view, secs=6.0)
+            animations.directed_look_pose(view)
+            frame = camera.capture_current_gaze(settle_secs=settle)
+            if frame is not None:
+                views.append((view, frame))
+        except Exception as exc:
+            _log.debug("[games] I Spy scan pose %r failed: %s", view, exc)
+    try:
+        consciousness.clear_directed_gaze_hold()
+        animations.directed_look_pose("center")
+    except Exception:
+        pass
+    if not views:
+        frame = camera.get_frame()
+        return [("center", frame)] if frame is not None else []
+    return views
+
+
+def _ispy_pick_target(views: list[tuple[str, object]]) -> Optional[dict]:
+    """Ask GPT-4o to pick one I Spy object across the captured views.
+    Returns {"object": "red chair", "clue": "red", "view": "left"} or None."""
+    if not views:
         return None
 
-    frame = camera.get_frame()
-    if frame is None:
-        return None
-
-    b64 = encode_jpeg_base64(frame, quality=85)
-    if b64 is None:
-        return None
-
+    content: list[dict] = []
     detail = config.VISION_DETAIL.get("active_conversation", "auto")
-    prompt = (
-        "Pick ONE specific object visible in this image that would work well for "
-        "the game 'I Spy'. Choose something clearly visible. Not a person.\n"
-        "Return a JSON object with exactly two keys:\n"
-        '  "object": the full name of the object (e.g. "red chair", "blue mug"),\n'
-        '  "clue": a single descriptive word for "I spy something ___" '
-        '(e.g. "red", "shiny", "round").\n'
-        "Return ONLY the JSON object — no preamble, no markdown."
-    )
+    labeled_views: list[str] = []
+    for view, frame in views:
+        b64 = encode_jpeg_base64(frame, quality=85)
+        if b64 is None:
+            continue
+        labeled_views.append(view)
+        content.append({"type": "text", "text": f"View looking {view}:"})
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": detail},
+        })
+    if not labeled_views:
+        return None
+
+    view_names = ", ".join(f'"{v}"' for v in labeled_views)
+    content.append({
+        "type": "text",
+        "text": (
+            "These are views of the same room from a robot looking around. Pick ONE "
+            "specific object visible in ONE of the views that would work well for the "
+            "game 'I Spy'. Choose something clearly visible and guessable. Not a person.\n"
+            "Return a JSON object with exactly three keys:\n"
+            '  "object": the full name of the object (e.g. "red chair", "blue mug"),\n'
+            '  "clue": a single descriptive word for "I spy something ___" '
+            '(e.g. "red", "shiny", "round"),\n'
+            f'  "view": which view it is in — one of {view_names}.\n'
+            "Return ONLY the JSON object — no preamble, no markdown."
+        ),
+    })
 
     try:
         client = _get_client()
         resp = client.chat.completions.create(
             model=config.VISION_MODEL,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": detail},
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }],
+            messages=[{"role": "user", "content": content}],
             max_tokens=150,
         )
         data = _parse_json(resp.choices[0].message.content.strip())
         if isinstance(data, dict) and data.get("object") and data.get("clue"):
+            view = str(data.get("view") or "").strip().lower()
+            data["view"] = view if view in labeled_views else labeled_views[0]
             return data
     except Exception as exc:
         _log.error("[games] I Spy vision call failed: %s", exc)
-
     return None
 
 
+def _ispy_get_target() -> Optional[dict]:
+    """Look around the room, then pick an I Spy object from what was seen."""
+    return _ispy_pick_target(_ispy_scan_room())
+
+
+def _ispy_announce_scan() -> None:
+    """Speak a quick canned 'casing the room' line WITHOUT blocking, so the head
+    sweep and the vision call run under it instead of as dead air."""
+    lines = list(getattr(config, "ISPY_SCAN_LINES", [])) or [
+        "Hold on — casing the room for a worthy target.",
+    ]
+    try:
+        from audio import speech_queue
+        speech_queue.enqueue(random.choice(lines), "curious", priority=1, tag="ispy:scan")
+    except Exception as exc:
+        _log.debug("[games] I Spy scan announce failed: %s", exc)
+
+
+def _ispy_glance_at_target() -> None:
+    """Look toward the view the chosen object was seen in — the reveal beat."""
+    view = str(_game_state.get("target_view") or "")
+    if view not in _ISPY_SCAN_VIEWS:
+        return
+    try:
+        from sequences import animations
+        animations.directed_look_pose(view)
+    except Exception as exc:
+        _log.debug("[games] I Spy reveal glance failed: %s", exc)
+
+
 def _ispy_start(person_id: Optional[int]) -> str:
+    _ispy_announce_scan()
     target = _ispy_get_target()
     if target is None:
         return _rex_respond(
@@ -299,15 +386,17 @@ def _ispy_start(person_id: Optional[int]) -> str:
     _game_state.update({
         "target_object": target["object"],
         "clue": target["clue"],
+        "target_view": target.get("view", "center"),
         "guess_count": 0,
     })
     _body_beat("dramatic_visor_peek")
 
     return _rex_respond(
-        f"[GAME: I Spy — START] Give Rex's opening line for I Spy. "
+        f"[GAME: I Spy — START] Rex just looked around the room and picked a secret "
+        f"object. Give Rex's opening line for I Spy. "
         f"Say \"I spy with my little eye, something that is {target['clue']}\" "
         f"and add a brief Rex-style flourish. Players have {_ISPY_MAX_GUESSES} guesses. "
-        f"Do not reveal the object.",
+        f"Do not reveal the object or where it is.",
         person_id,
     )
 
@@ -328,6 +417,8 @@ def _ispy_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
     )
 
     if is_correct:
+        # Look right at the object as he concedes it — the reveal beat.
+        _ispy_glance_at_target()
         _body_beat("tiny_victory_dance")
         _game_state.clear()
         return (
@@ -341,6 +432,7 @@ def _ispy_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
         )
 
     if guess_count >= _ISPY_MAX_GUESSES:
+        _ispy_glance_at_target()
         _body_beat("suspicious_glance")
         _game_state.clear()
         return (
@@ -374,6 +466,7 @@ def _ispy_handle(text: str, person_id: Optional[int]) -> tuple[str, bool]:
 
 def _ispy_stop(person_id: Optional[int]) -> str:
     target = _game_state.get("target_object", "something")
+    _ispy_glance_at_target()
     _game_state.clear()
     return _rex_respond(
         f"[GAME: I Spy — STOPPED] Game ended early. The object was \"{target}\". "

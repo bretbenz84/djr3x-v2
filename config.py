@@ -6259,6 +6259,23 @@ JEOPARDY_LLM_JUDGE_MAX_ANSWER_CHARS = 120  # longer turns aren't answer attempts
 # unaffected either way.
 JEOPARDY_READ_CATEGORIES_WITH_GUI = False
 
+# I Spy: on the physical droid, Rex LOOKS AROUND the room (left → center → right,
+# a frame captured at each pose under a directed-gaze hold) before picking the
+# secret object, instead of grabbing one frame from wherever the head happened to
+# point (owner call 2026-07-07 — the look-around is the showmanship the game was
+# always supposed to have, and it widens the object pool). Servo-less machines
+# degrade to the old single-frame behavior automatically. A canned scan line
+# plays UNDER the sweep + vision call so it never reads as dead air, and Rex
+# glances back toward the object's view when it's finally revealed.
+ISPY_SCAN_ENABLED = True
+ISPY_SCAN_SETTLE_SECS = 0.35   # camera settle at each sweep pose before capture
+ISPY_SCAN_LINES = [
+    "Hold on — casing the room for a worthy target.",
+    "One second. Scanning the premises for something you'll never get.",
+    "Let me sweep the room. Photoreceptors engaged.",
+    "Give me a moment to survey my domain for a target.",
+]
+
 # How many times Rex will agree to play the same game within GAME_REPEAT_WINDOW_SECS
 # before refusing. Scaled up or down by the agreeability personality parameter.
 GAME_REPEAT_LIMIT = 3

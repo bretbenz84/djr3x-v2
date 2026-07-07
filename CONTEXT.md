@@ -1073,6 +1073,21 @@ venv/bin/python main.py
   keeps it, `JEOPARDY_READ_CATEGORIES_WITH_GUI=True` restores it with the GUI, and
   the once-per-round fresh-board announcement is unchanged.
 
+- I Spy look-around (2026-07-07): Rex physically SCANS THE ROOM before picking the
+  secret object (`games._ispy_scan_room`: left → center → right via
+  `animations.directed_look_pose` under `consciousness.hold_directed_gaze` so the
+  face-tracking loop doesn't fight the sweep, `camera.capture_current_gaze` frame at
+  each pose, recenter + release after) — the showmanship the physical droid was
+  always supposed to have, and a 3× wider object pool. `_ispy_pick_target` sends the
+  labeled views in ONE GPT-4o call returning `{object, clue, view}`; the view is
+  stored and Rex GLANCES back toward the object at the reveal (correct guess /
+  out of guesses / stop) — never during play. A canned `ISPY_SCAN_LINES` stall line
+  plays non-blocking UNDER the sweep+vision so it isn't dead air. Servo-less
+  machines degrade to the old single-frame pick automatically (`servos.connected()`
+  gate); `ISPY_SCAN_ENABLED` kill switch, `ISPY_SCAN_SETTLE_SECS` per-pose settle.
+  Live-verified: synthetic 3-view frames → picked the correct object AND view.
+  Tests: `tests/test_ispy.py`.
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.
