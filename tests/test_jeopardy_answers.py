@@ -164,5 +164,39 @@ class LlmJudgeTest(unittest.TestCase):
         games._active_game = None
 
 
+class GuiCategoriesReminderTest(unittest.TestCase):
+    """With the GUI board on screen, the per-turn spoken category read-out is
+    skipped (it's tiresome when you can SEE the board); voice-only play keeps it."""
+
+    def setUp(self):
+        games._game_state = {
+            "board": {
+                "categories": [
+                    {"name": "SCIENCE", "clues": {200: {}}},
+                    {"name": "HISTORY", "clues": {400: {}}},
+                ],
+                "remaining": 2,
+            },
+        }
+
+    def tearDown(self):
+        games._game_state = {}
+
+    def test_voice_only_reads_categories(self):
+        with mock.patch.object(config, "GUI_ENABLED", False, create=True):
+            reminder = games._jeopardy_categories_reminder()
+        self.assertIn("SCIENCE", reminder)
+        self.assertIn("HISTORY", reminder)
+
+    def test_gui_skips_the_readout(self):
+        with mock.patch.object(config, "GUI_ENABLED", True, create=True):
+            self.assertEqual(games._jeopardy_categories_reminder(), "")
+
+    def test_override_restores_readout_with_gui(self):
+        with mock.patch.object(config, "GUI_ENABLED", True, create=True), \
+             mock.patch.object(config, "JEOPARDY_READ_CATEGORIES_WITH_GUI", True, create=True):
+            self.assertIn("SCIENCE", games._jeopardy_categories_reminder())
+
+
 if __name__ == "__main__":
     unittest.main()

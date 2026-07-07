@@ -1353,6 +1353,15 @@ def _jeopardy_llm_judge(user_text: str, expected_answer: str, clue: dict) -> boo
 
 
 def _jeopardy_categories_reminder() -> str:
+    # With the GUI up, the JeopardyPanel already shows the live board — reading
+    # the remaining categories aloud EVERY turn is just dead air (owner call
+    # 2026-07-07). Voice-only play keeps the spoken reminder, since the board
+    # exists nowhere else. JEOPARDY_READ_CATEGORIES_WITH_GUI=True restores the
+    # read-out even with the GUI (e.g. players sitting away from the screen).
+    if bool(getattr(config, "GUI_ENABLED", False)) and not bool(
+        getattr(config, "JEOPARDY_READ_CATEGORIES_WITH_GUI", False)
+    ):
+        return ""
     board = _game_state.get("board") or {}
     try:
         from features import jeopardy as jeopardy_bank

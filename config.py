@@ -6250,6 +6250,14 @@ JEOPARDY_PLAY_THINKING_THEME = True
 # Fail-safe: any error keeps the deterministic "wrong".
 JEOPARDY_LLM_JUDGE_ENABLED = True
 JEOPARDY_LLM_JUDGE_MAX_ANSWER_CHARS = 120  # longer turns aren't answer attempts
+# With the GUI up, the JeopardyPanel shows the live board, so the per-turn spoken
+# "Remaining categories: ..." reminder is skipped — Rex just prompts for the next
+# square (owner call 2026-07-07: the read-out is tiresome when the board is on
+# screen). Voice-only play always keeps the spoken reminder. Set True to restore
+# the read-out even with the GUI (e.g. players sitting away from the screen).
+# The once-per-round board announcement (all six categories on a fresh board) is
+# unaffected either way.
+JEOPARDY_READ_CATEGORIES_WITH_GUI = False
 
 # How many times Rex will agree to play the same game within GAME_REPEAT_WINDOW_SECS
 # before refusing. Scaled up or down by the agreeability personality parameter.
