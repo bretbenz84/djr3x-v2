@@ -1125,6 +1125,23 @@ venv/bin/python main.py
   `_summarize_world_state` env description. Live-verified: held-object prompt →
   "Bret, what's in the cup—coffee, or are you fueling the chaos more creatively?".
   Kill switch `HELD_OBJECT_REMARK_ENABLED`. Tests: `tests/test_held_object_curiosity.py`.
+- Personal small-talk impulse register (2026-07-08 round 3, owner: "we're missing
+  proactive sentences like 'so, got any plans for the weekend?'"): the held-object /
+  scenery emphasis made EVERY lull line anchor on a visible object (logged: cup, chair,
+  chair). `lean_brain._choose_impulse_intent` now alternates each impulse between
+  `scene` (anchored to what Rex sees) and `personal` (an open life question), with two
+  anti-monotony rails — never `personal` twice running, and never a THIRD `scene` in a
+  row (after two scene lulls the next is forced personal), so a visible object can't own
+  a quiet stretch. `personal` fills the instruction's `{angles}` slot with
+  `_personal_steer_clause` ("set the objects and the room ASIDE … ask ONE open, warm
+  personal question — 'got any plans this weekend?' energy") drawn from a deduped
+  `_PERSONAL_DIRECTIONS` menu (plans / what they're working on / how the week's been /
+  what they're into lately). `scene` keeps the existing fresh-angles path. Odds of the
+  non-forced turn going personal = `LEAN_IMPULSE_PERSONAL_PROB` (0.4). Live-verified: 6
+  consecutive impulses on the logged cup scene yielded 2 personal questions ("what's
+  been stealing your attention lately?", "what are you looking forward to this week?")
+  and never 3 cup/chair lines in a row. State cleared by `reset_offered_angles`. Tests:
+  `tests/test_lean_agency.py::PersonalSmallTalkIntentTest`.
 
 ## Likely Future Work
 

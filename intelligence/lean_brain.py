@@ -640,9 +640,76 @@ _FRESH_ANGLES = (
 # same template twice).
 _offered_angles: set[str] = set()
 
+# Open PERSONAL small-talk directions — the "so, got any plans for the weekend?" register
+# the object-anchored impulses were crowding out (owner 2026-07-08: every lull line was
+# about the cup / the chair, never his actual life). A rotating menu so the personal turns
+# vary too, deduped like the angles.
+_PERSONAL_DIRECTIONS = (
+    "their plans — this weekend, tonight, or whatever's coming up they're actually looking forward to",
+    "what they've been working on lately, and whether it's going anywhere",
+    "how their week has actually been treating them",
+    "what's been keeping them busy outside of work",
+    "something they've been meaning to get to but haven't yet",
+    "what they've been into lately — a show, a game, a rabbit hole, a new obsession",
+    "how a recent plan or event they had actually turned out",
+    "the next thing on their calendar they don't dread",
+)
+_offered_personal: set[str] = set()
+
+# The recent impulse registers (most-recent last), so scene-anchored curiosity and open
+# personal small-talk vary instead of the model defaulting to whatever object is in view
+# for three lulls straight (the logged failure: cup, chair, chair). Empty until the first
+# impulse; only the tail matters.
+_recent_impulse_intents: list[str] = []
+
 
 def reset_offered_angles() -> None:
     _offered_angles.clear()
+    _offered_personal.clear()
+    _recent_impulse_intents.clear()
+
+
+def _choose_impulse_intent(rng: Optional[random.Random] = None) -> str:
+    """Pick this impulse's register: 'personal' (an open life question) or 'scene'
+    (anchored to what Rex sees / the moment). Two anti-monotony rails: never 'personal'
+    twice running (varies back to the moment), and never a THIRD 'scene' in a row — after
+    two scene-anchored lulls the next is forced personal, killing the logged cup/chair/chair
+    run. Otherwise fires personal with LEAN_IMPULSE_PERSONAL_PROB, so a visible object can't
+    monopolize a quiet stretch."""
+    prob = float(getattr(config, "LEAN_IMPULSE_PERSONAL_PROB", 0.4) or 0.0)
+    tail = _recent_impulse_intents[-2:]
+    if tail[-1:] == ["personal"]:
+        intent = "scene"                                   # just did personal — vary back
+    elif tail == ["scene", "scene"]:
+        intent = "personal"                                # break a two-scene run
+    elif (rng or random).random() < prob:
+        intent = "personal"
+    else:
+        intent = "scene"
+    _recent_impulse_intents.append(intent)
+    if len(_recent_impulse_intents) > 8:
+        del _recent_impulse_intents[:-8]
+    return intent
+
+
+def _personal_steer_clause(rng: Optional[random.Random] = None) -> str:
+    """Fills the {angles} slot with a strong steer toward an OPEN personal question this
+    turn — the small-talk a friend makes — and tells Rex to set the visible objects aside
+    so the cup/chair doesn't pull him back to scene curiosity."""
+    pool = [d for d in _PERSONAL_DIRECTIONS if d not in _offered_personal]
+    if len(pool) < 2:
+        _offered_personal.clear()
+        pool = list(_PERSONAL_DIRECTIONS)
+    picks = (rng or random).sample(pool, k=2)
+    _offered_personal.update(picks)
+    return (
+        " This turn, set the objects and the room ASIDE — no cup, no chair, no scenery. "
+        "Just ask ONE open, warm personal question about THEIR world, the ordinary small-talk "
+        "a friend makes when it's gone quiet ('so, got any plans this weekend?' energy). Pick "
+        "AT MOST one direction, whichever feels natural: (a) " + picks[0] + "; (b) " + picks[1] +
+        ". Keep it light and genuinely curious, an open door they can walk through — never an "
+        "interview. Skip anything under ALREADY COVERED, and do NOT anchor on a visible object."
+    )
 
 
 def _fresh_angles_clause(rng: Optional[random.Random] = None) -> str:
@@ -773,10 +840,18 @@ def consider_initiating(
             except Exception:
                 who = "them"
         template = _REENGAGE_INSTRUCTION if long_silence else _IMPULSE_INSTRUCTION
+        # Alternate between open personal small-talk ("got any plans this weekend?") and
+        # scene-anchored curiosity so a visible object can't own every lull (owner
+        # 2026-07-08). The personal steer fills the same {angles} slot with an explicit
+        # "set the objects aside" directive.
+        if _choose_impulse_intent() == "personal":
+            angles = _personal_steer_clause()
+        else:
+            angles = _fresh_angles_clause()
         instruction = template.format(
             who=who,
             situation=_situation_block(person_id, world, quiet_secs, mood),
-            angles=_fresh_angles_clause(),
+            angles=angles,
         )
         messages: list[dict] = [{"role": "system", "content": _persona()}]
         keep = max(0, int(getattr(config, "LEAN_BRAIN_TRANSCRIPT_TURNS", 8)))

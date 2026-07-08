@@ -261,6 +261,15 @@ LEAN_IMPULSE_FLOW_QUIET_SECS  = _env_float("LEAN_IMPULSE_FLOW_QUIET_SECS", 14.0,
 # already governs the wait, so this shorter value only ever applies after a
 # dead-end statement — exactly the awkward-silence case visual curiosity should fill.
 LEAN_IMPULSE_FLOW_QUIET_AFTER_STATEMENT_SECS = _env_float("LEAN_IMPULSE_FLOW_QUIET_AFTER_STATEMENT_SECS", 7.0, min_value=0.0, max_value=300.0)
+# Share of lull impulses that open with an OPEN PERSONAL question ("so, got any plans
+# for the weekend?") instead of scene-anchored curiosity about a visible object. The
+# held-object/scenery emphasis made every lull line about the cup or the chair (owner
+# 2026-07-08: "we're missing proactive sentences like 'got any plans for the weekend?'").
+# The two registers ALTERNATE (never personal twice running); this is the odds the
+# non-forced turn goes personal. 0 = always scene-anchored (old behavior); 1 = maximally
+# chatty about their life. The visible object still gets asked about the OTHER turns, and
+# the dedicated held-object reactor is unaffected.
+LEAN_IMPULSE_PERSONAL_PROB = _env_float("LEAN_IMPULSE_PERSONAL_PROB", 0.4, min_value=0.0, max_value=1.0)
 LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
 # Flat-answer follow-up (reply-side, owner spec 2026-07-06): when a flat
 # half-answer ("it's okay", "not much", "meh") ANSWERS a question Rex asked, the

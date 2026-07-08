@@ -61,7 +61,10 @@ class ImpulseDecisionParsingTest(unittest.TestCase):
             captured.append(kwargs["messages"][-1]["content"])
             return _one_chunk_stream("PASS")
 
-        with mock.patch.object(lean_brain.llm_compat, "create", side_effect=fake_create):
+        # Pin the SCENE register so this exercises the fresh-angles path deterministically
+        # (a personal-intent turn deliberately omits the angles menu — covered below).
+        with mock.patch.object(lean_brain.llm_compat, "create", side_effect=fake_create), \
+             mock.patch.object(lean_brain, "_choose_impulse_intent", return_value="scene"):
             for long_silence in (False, True):
                 lean_brain.consider_initiating(
                     person_id=None, transcript=[], long_silence=long_silence
@@ -72,6 +75,64 @@ class ImpulseDecisionParsingTest(unittest.TestCase):
         # sampling varies the clause across calls (statistically: 3 of 18 angles)
         clauses = {lean_brain._fresh_angles_clause() for _ in range(12)}
         self.assertGreater(len(clauses), 1)
+
+
+class PersonalSmallTalkIntentTest(unittest.TestCase):
+    """Open personal small-talk ('so, got any plans this weekend?') alternates with
+    scene-anchored curiosity so a visible object can't own every lull (owner 2026-07-08:
+    every impulse was about the cup / the chair, never his actual life)."""
+
+    def setUp(self):
+        lean_brain.reset_offered_angles()
+        self.addCleanup(lean_brain.reset_offered_angles)
+
+    def test_never_personal_twice_and_never_three_scenes(self):
+        import random
+        rng = random.Random(7)
+        # prob 0 is the worst case for scene-runs; the rails must still hold.
+        with mock.patch.object(config, "LEAN_IMPULSE_PERSONAL_PROB", 0.0, create=True):
+            seq = [lean_brain._choose_impulse_intent(rng) for _ in range(20)]
+        self.assertFalse(any(seq[i] == seq[i + 1] == "personal" for i in range(len(seq) - 1)))
+        self.assertFalse(any(seq[i] == seq[i + 1] == seq[i + 2] == "scene"
+                             for i in range(len(seq) - 2)))
+        # And a personal turn actually appears (not stuck all-scene).
+        self.assertIn("personal", seq)
+
+    def test_personal_prob_zero_still_breaks_scene_runs(self):
+        import random
+        rng = random.Random(3)
+        with mock.patch.object(config, "LEAN_IMPULSE_PERSONAL_PROB", 0.0, create=True):
+            seq = [lean_brain._choose_impulse_intent(rng) for _ in range(9)]
+        # scene,scene,personal repeating → personal roughly every third lull.
+        self.assertGreaterEqual(seq.count("personal"), 2)
+
+    def test_personal_steer_sets_objects_aside(self):
+        clause = lean_brain._personal_steer_clause()
+        low = clause.lower()
+        self.assertIn("aside", low)
+        self.assertIn("personal question", low)
+        self.assertNotIn("fresh angles", low)
+
+    def test_consider_initiating_uses_personal_steer_when_chosen(self):
+        captured = []
+
+        def fake_create(client, **kwargs):
+            captured.append(kwargs["messages"][-1]["content"])
+            return _one_chunk_stream("So — got any plans this weekend?")
+
+        with mock.patch.object(lean_brain.llm_compat, "create", side_effect=fake_create), \
+             mock.patch.object(lean_brain, "_choose_impulse_intent", return_value="personal"):
+            line = lean_brain.consider_initiating(person_id=None, transcript=[])
+        self.assertEqual(line, "So — got any plans this weekend?")
+        self.assertIn("set the objects and the room ASIDE", captured[0])
+        self.assertNotIn("fresh angles", captured[0])
+
+    def test_reset_clears_intent_history(self):
+        lean_brain._choose_impulse_intent()
+        lean_brain._choose_impulse_intent()
+        self.assertTrue(lean_brain._recent_impulse_intents)
+        lean_brain.reset_offered_angles()
+        self.assertEqual(lean_brain._recent_impulse_intents, [])
 
 
 class ImpulseBackoffTest(unittest.TestCase):
