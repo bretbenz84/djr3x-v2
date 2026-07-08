@@ -244,6 +244,15 @@ _recently_banned_topics: list[dict] = []
 # question ~39s apart, live-logged 2026-06-18). Cleared on session reset.
 _recent_rex_questions: list[dict] = []
 
+# Whether Rex's most recent spoken line ended by handing a clear turn to the user
+# (a question / imperative prompt). Drives the ADAPTIVE re-engage wait: after Rex
+# asks a question, the floor-hold already makes the impulse wait for their answer;
+# after a DEAD-END statement (a quip with nothing to answer) the conversation has
+# stalled and it's on Rex to bridge, so he re-engages SOONER. Owner 2026-07-08:
+# "he quips about my 'good', then just sits there waiting for a predefined silence
+# period" — a fixed 14s flow-quiet felt like dead air after a closed quip.
+_last_rex_line_was_question: bool = False
+
 # Proactive idle-banter pacing. _idle_banter_count resets in _begin_user_turn
 # when the user speaks again, so each silent stretch gets a fresh attempt budget.
 _last_idle_banter_at: float = 0.0
@@ -3673,11 +3682,15 @@ def _register_rex_utterance(
     expected_reply_types: Optional[list[str]] = None,
     blocked_actions: Optional[list[str]] = None,
 ) -> None:
-    global _floor_held_until
+    global _floor_held_until, _last_rex_line_was_question
     if not text or not text.strip():
         return
     try:
         _note_rex_question(text)
+        # Track whether this line handed the user a clear turn — a question or an
+        # imperative prompt ("tell me about it"). A closed quip did not, so the
+        # adaptive re-engage wait shortens (the conversation stalled on Rex).
+        _last_rex_line_was_question = _assistant_asked_question(text)
         # When Rex's line asks a question, hard-hold the floor so idle filler
         # doesn't pile a fresh prompt on top before the user can answer — even
         # when the text has no literal '?'-punctuated proactive arming. Fixes the
@@ -4298,6 +4311,16 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     # actual conversation.)
     _flow_window = float(getattr(config, "LEAN_IMPULSE_FLOW_WINDOW_SECS", 120.0))
     _flow_quiet = float(getattr(config, "LEAN_IMPULSE_FLOW_QUIET_SECS", 30.0))
+    # ADAPTIVE re-engage wait (owner 2026-07-08: "estimate a good time to wait —
+    # humans don't like dead silence"). After Rex asked a question, the floor-hold
+    # above already makes him wait for the answer. So reaching here with his last
+    # line a CLOSED statement means the exchange stalled on him ("good" → "Try not
+    # to make it a personality." → silence) — bridge it sooner than a full 14s.
+    if not _last_rex_line_was_question:
+        _flow_quiet = min(
+            _flow_quiet,
+            float(getattr(config, "LEAN_IMPULSE_FLOW_QUIET_AFTER_STATEMENT_SECS", 7.0)),
+        )
     if (
         _last_user_content_at > 0.0
         and (time.monotonic() - _last_user_content_at) <= _flow_window
@@ -22220,6 +22243,7 @@ def start(*, text_only: bool = False) -> None:
     global _pending_last_name_confirm
     global _pending_prompted_name_confirmation
     global _text_only_mode, _last_speech_at, _identity_reask_count
+    global _last_rex_line_was_question
 
     if _thread and _thread.is_alive():
         _log.warning("[interaction] already running")
@@ -22237,6 +22261,7 @@ def start(*, text_only: bool = False) -> None:
     _interest_idle_followups_spoken.clear()
     _recently_banned_topics.clear()
     _recent_rex_questions.clear()
+    _last_rex_line_was_question = False
     _identity_prompt_until = 0.0
     _identity_reask_count = 0
     _listen_resume_at = 0.0

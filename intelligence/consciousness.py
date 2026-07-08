@@ -312,6 +312,12 @@ _room_reacted: dict[str, float] = {"count": 0.0, "last_at": 0.0}
 # "Wait, that's new" change detection: per-session cooldown/cap + per-label de-dup.
 _room_change_state: dict[str, float] = {"count": 0.0, "last_at": 0.0}
 _room_change_remarked: set[str] = set()
+# Held-object remark ("what's that you're drinking?"): per-session cooldown/cap,
+# per-label de-dup, and first-seen persistence tracking so a one-frame near_person
+# flicker never fires it.
+_held_object_state: dict[str, float] = {"count": 0.0, "last_at": 0.0}
+_held_object_remarked: set[str] = set()
+_held_object_first_seen: dict[str, float] = {}
 _facial_expression_reacted_at: dict[tuple[str, str], float] = {}
 _last_facial_expression_reaction_at: float = 0.0
 _last_expression_reaction_line_by_kind: dict[str, str] = {}
@@ -3167,6 +3173,85 @@ def _step_room_change(snapshot: dict, profile: SituationProfile) -> None:
         "consciousness: room-change remark — %s (sightings=%d, count=%d/%s, asked=%s)",
         label, counts.get(label, 0), int(_room_change_state["count"]),
         getattr(config, "ROOM_CHANGE_SESSION_CAP", 3), person_name is not None,
+    )
+
+
+def _step_held_object_remark(snapshot: dict, profile: SituationProfile) -> None:
+    """Someone is HOLDING something — ask about it ("what's that you're drinking?").
+
+    The direct payoff of person-oriented object salience (owner 2026-07-08: "comment
+    on objects I'm holding more often" — he held a cup through two whole sessions and
+    Rex never asked). Event-driven, not lull-taxonomy: fires soon after a near_person
+    object PERSISTS (first-seen tracking absorbs one-frame flickers), yields to live
+    conversation via _can_proactive_speak, and is bounded by a per-label session
+    de-dup + cooldown + session cap. Unlike _step_room_change it needs NO room-model
+    baseline — a held object is salient on a fresh install too."""
+    if not bool(getattr(config, "HELD_OBJECT_REMARK_ENABLED", True)):
+        return
+    if profile.suppress_proactive or profile.user_mid_sentence or profile.interaction_busy:
+        return
+
+    now = time.monotonic()
+    held_now: dict[str, dict] = {}
+    for obj in snapshot.get("objects") or []:
+        if not isinstance(obj, dict) or not obj.get("near_person"):
+            continue
+        label = str(obj.get("label") or "").strip().lower()
+        if label:
+            held_now[label] = obj
+    # First-seen persistence: a label must stay near_person for MIN_HOLD_SECS.
+    for label in list(_held_object_first_seen):
+        if label not in held_now:
+            del _held_object_first_seen[label]
+    for label in held_now:
+        _held_object_first_seen.setdefault(label, now)
+
+    min_hold = float(getattr(config, "HELD_OBJECT_REMARK_MIN_HOLD_SECS", 5.0))
+    ready = [
+        label for label, seen_at in _held_object_first_seen.items()
+        if label not in _held_object_remarked and (now - seen_at) >= min_hold
+    ]
+    if not ready:
+        return
+    if (now - float(_held_object_state.get("last_at", 0.0))) < float(
+        getattr(config, "HELD_OBJECT_REMARK_COOLDOWN_SECS", 90.0)
+    ):
+        return
+    if _held_object_state.get("count", 0.0) >= float(
+        getattr(config, "HELD_OBJECT_REMARK_SESSION_CAP", 3)
+    ):
+        return
+    if not _can_proactive_speak():
+        return
+
+    label = ready[0]
+    holder = str(held_now.get(label, {}).get("near_person_name") or "").strip()
+    holder = holder.split()[0] if holder else (_room_change_addressee(snapshot) or "them")
+    # De-dup NOW, before speaking, so a failed enqueue can't re-fire the same label.
+    _held_object_remarked.add(label)
+
+    prompt = (
+        f"{holder} is holding a {label} right now (or it's right beside them). React in "
+        f"ONE short in-character Rex line that shows genuine curiosity about THEIR "
+        f"{label} — the natural small-talk move (\"what's that you're drinking?\" / "
+        f"\"where'd that come from?\" / \"what is that?\" — whatever fits a {label}). "
+        f"Casual and warm, ONE question max, address {holder} directly."
+    )
+    spoke = _generate_and_speak_presence(
+        prompt,
+        label=f"held object ask: {label}",
+        tag_key=f"held_object:{label}",
+        emotion="curious",
+        purpose="held_object_remark",
+    )
+    if not spoke:
+        return
+    _held_object_state["last_at"] = now
+    _held_object_state["count"] = _held_object_state.get("count", 0.0) + 1
+    _log.info(
+        "consciousness: held-object remark — %s (holder=%s, count=%d/%s)",
+        label, holder, int(_held_object_state["count"]),
+        getattr(config, "HELD_OBJECT_REMARK_SESSION_CAP", 3),
     )
 
 
@@ -11796,6 +11881,10 @@ def _loop() -> None:
             # (room_model permanence), in a lull, once per object per session.
             _step_room_change(snapshot, profile)
 
+            # 10g-d. "What's that you're drinking?" — ask about an object someone is
+            # HOLDING (person-oriented salience), once per label per session.
+            _step_held_object_remark(snapshot, profile)
+
             # 10h. Facial expression reactions — gently notice clear surprise,
             # frowns, and brow furrows from the local MediaPipe telemetry.
             _step_facial_expression_reactions(snapshot, profile)
@@ -11944,6 +12033,10 @@ def start() -> None:
     _room_change_state["count"] = 0.0
     _room_change_state["last_at"] = 0.0
     _room_change_remarked.clear()
+    _held_object_state["count"] = 0.0
+    _held_object_state["last_at"] = 0.0
+    _held_object_remarked.clear()
+    _held_object_first_seen.clear()
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()
     _disposition_sampled_at.clear()
@@ -12068,6 +12161,10 @@ def stop() -> None:
     _room_change_state["count"] = 0.0
     _room_change_state["last_at"] = 0.0
     _room_change_remarked.clear()
+    _held_object_state["count"] = 0.0
+    _held_object_state["last_at"] = 0.0
+    _held_object_remarked.clear()
+    _held_object_first_seen.clear()
     _last_facial_expression_reaction_at = 0.0
     _last_expression_reaction_line_by_kind.clear()
     _disposition_sampled_at.clear()

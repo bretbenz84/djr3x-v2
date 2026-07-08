@@ -253,6 +253,14 @@ LEAN_IMPULSE_FLOW_WINDOW_SECS = _env_float("LEAN_IMPULSE_FLOW_WINDOW_SECS", 120.
 # that Rex still feels present. The question-machine failure this guard exists for
 # (impulses stacking during ACTIVE back-and-forth) had sub-10s gaps.
 LEAN_IMPULSE_FLOW_QUIET_SECS  = _env_float("LEAN_IMPULSE_FLOW_QUIET_SECS", 14.0, min_value=0.0, max_value=300.0)
+# ADAPTIVE re-engage: the 14s above assumes the user still owes a reply. But when
+# Rex's OWN last line was a closed statement (a quip with nothing to answer — "good"
+# → "Try not to make it a personality."), the exchange stalled on HIM, and 14s of
+# dead air feels like he checked out (owner 2026-07-08). Bridge that case sooner.
+# When Rex asked a QUESTION instead, the floor-hold (POST_REPLY_QUESTION_WAIT_SECS)
+# already governs the wait, so this shorter value only ever applies after a
+# dead-end statement — exactly the awkward-silence case visual curiosity should fill.
+LEAN_IMPULSE_FLOW_QUIET_AFTER_STATEMENT_SECS = _env_float("LEAN_IMPULSE_FLOW_QUIET_AFTER_STATEMENT_SECS", 7.0, min_value=0.0, max_value=300.0)
 LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
 # Flat-answer follow-up (reply-side, owner spec 2026-07-06): when a flat
 # half-answer ("it's okay", "not much", "meh") ANSWERS a question Rex asked, the
@@ -4522,6 +4530,21 @@ OBJECT_DETECTION_BANNED_CLASSES = {
 # gets "what are you drinking?" instead of a riff on the background chair
 # (live-logged: Bret held a cup for minutes while Rex asked about a chair).
 OBJECT_NEAR_PERSON_ENABLED = True
+
+# "What's that you're drinking?" — Rex proactively asks about an object someone is
+# HOLDING (a near_person object, tagged above). This is the direct payoff of person-
+# oriented salience (owner 2026-07-08: "comment on objects I'm holding more often" —
+# he held a cup through whole sessions and Rex never asked). Event-driven, not lull
+# taxonomy: fires once an object PERSISTS in-hand for MIN_HOLD_SECS (absorbs one-frame
+# flicker), yields to live conversation (_can_proactive_speak), and is bounded by a
+# per-label session de-dup + cooldown + LOW session cap. Unlike ROOM_CHANGE it needs
+# NO room-model baseline — a held object is salient on a fresh install too. It also
+# routes through the action governor at a higher priority than visual_curiosity /
+# lull_callback (the thing in their hands beats the room). Kill switch:
+HELD_OBJECT_REMARK_ENABLED = True
+HELD_OBJECT_REMARK_MIN_HOLD_SECS = 5.0    # in-hand this long before he asks (flicker guard)
+HELD_OBJECT_REMARK_COOLDOWN_SECS = 90.0   # min gap between held-object asks
+HELD_OBJECT_REMARK_SESSION_CAP = 3        # don't interrogate every item they pick up
 
 # ── Room model (persistent object permanence in rex.db) ───────────────────────────
 # Record which objects Rex has seen over time (memory/room_model.py, fed by the local

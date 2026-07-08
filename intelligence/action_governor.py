@@ -87,6 +87,10 @@ _PURPOSE_PRIORITIES: dict[str, int] = {
     # battery_status: a practical status grumble (low/critical power). Rare —
     # once per downward tier per session — and worth hearing over lull filler.
     "battery_status": 62,
+    # Held-object ask ("what's that you're drinking?"): a person-oriented
+    # perception reactor — above lull_callback/visual_curiosity (the thing in
+    # THEIR hands beats a banked premise or the room), below sincerity flows.
+    "held_object_remark": 63,
     # Banked-callback humor in a mid-conversation lull: above visual_curiosity
     # (a callback referencing THEM beats commenting on the room), below every
     # sincerity flow (celebration 64 / memory_followup 65 / checkin 100).

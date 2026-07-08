@@ -1103,6 +1103,28 @@ venv/bin/python main.py
   scene through `consider_initiating` produced cup questions ("what's in it?") 3/3.
   Tests: `tests/test_object_detection.py::PersonAdjacentObjectTests` /
   `PersonOrientedCuriosityTests`.
+- Held-object remark + adaptive re-engage (2026-07-08 round 2, live-logged: the
+  salience above still didn't fire — the lean impulse was blocked by a flat 14s
+  flow-quiet gate and the session ended in dead air after "good"→quip): TWO fixes.
+  (1) `consciousness._step_held_object_remark` — an EVENT-DRIVEN "what's that you're
+  drinking?" that fires once a `near_person` object PERSISTS in-hand for
+  `HELD_OBJECT_REMARK_MIN_HOLD_SECS` (first-seen tracking absorbs one-frame
+  flicker), yields to live talk via `_can_proactive_speak`, bounded by per-label
+  session de-dup + `HELD_OBJECT_REMARK_COOLDOWN_SECS` + `_SESSION_CAP`. Needs NO
+  room-model baseline (unlike `_step_room_change`) — a held object is salient on a
+  fresh install. Governor purpose `held_object_remark` priority 63 (above
+  visual_curiosity 55 / lull_callback 58, below sincerity flows); NOT in
+  `LEAN_SUPPRESSED_PROACTIVE_PURPOSES`, so it fires under the lean brain. (2) ADAPTIVE
+  re-engage wait in `_maybe_lean_impulse`: the flow-quiet gate SHORTENS to
+  `LEAN_IMPULSE_FLOW_QUIET_AFTER_STATEMENT_SECS` (7s) when Rex's last line was a
+  CLOSED statement (`_last_rex_line_was_question` False, set in
+  `_register_rex_utterance`) — the exchange stalled on him, so he bridges the awkward
+  silence sooner; after a QUESTION the floor-hold already governs the wait so the full
+  14s stands. Clothing/appearance curiosity ("where'd you get that shirt?") already
+  reaches the impulse via the periodic vision scan's `visible_clothing` →
+  `_summarize_world_state` env description. Live-verified: held-object prompt →
+  "Bret, what's in the cup—coffee, or are you fueling the chaos more creatively?".
+  Kill switch `HELD_OBJECT_REMARK_ENABLED`. Tests: `tests/test_held_object_curiosity.py`.
 
 ## Likely Future Work
 
