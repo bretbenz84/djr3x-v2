@@ -677,12 +677,34 @@ def _scene_summary(world: Optional[dict]) -> str:
     # descriptions"). Add them so Rex can be genuinely curious about what's physically around.
     # COCO labels are often wrong (a dreamcatcher reads as 'clock'); the persona already says to
     # drop a guess the instant they correct it, so a wrong label is a fine conversation starter.
+    # PERSON-ORIENTED SALIENCE (live-logged 2026-07-08: Bret held a cup for minutes while the
+    # impulse riffed on a background chair): anything the person is HOLDING leads the summary
+    # with an explicit "this beats the furniture" note, so the impulse asks about THEIR cup,
+    # not the room's chair.
     try:
-        objs = []
+        held: list[str] = []
+        held_name = ""
+        objs: list[str] = []
         for o in (world.get("objects") or []):
-            label = str((o.get("label") if isinstance(o, dict) else o) or "").strip()
-            if label and label not in objs:
+            if isinstance(o, dict):
+                label = str(o.get("label") or "").strip()
+                if label and o.get("near_person"):
+                    if label not in held:
+                        held.append(label)
+                        held_name = held_name or str(o.get("near_person_name") or "")
+                    continue
+            else:
+                label = str(o or "").strip()
+            if label and label not in objs and label not in held:
                 objs.append(label)
+        if held:
+            who = f"{held_name} is" if held_name else "they are"
+            summary = (summary + " " if summary else "") + (
+                f"IN THEIR HANDS / right beside them (rough camera labels): "
+                f"{', '.join(held[:3])} — the single most curiosity-worthy thing in view. "
+                f"What {who} drinking/eating/fiddling with beats ANY furniture or "
+                f"background object."
+            )
         if objs:
             summary = (summary + " " if summary else "") + \
                 "Objects in view (rough camera labels, may be wrong): " + ", ".join(objs[:6]) + "."

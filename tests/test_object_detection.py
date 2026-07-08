@@ -166,5 +166,92 @@ class ObjectLabelTests(unittest.TestCase):
         self.assertEqual(vision_panel._object_label({}, 2), "Object 3")
 
 
+class PersonAdjacentObjectTests(unittest.TestCase):
+    """Person-oriented salience (2026-07-08): a small object inside a visible
+    person's body zone is tagged near_person, so a cup in someone's hand beats
+    the background chair for curiosity. Live-logged failure: Bret held a cup for
+    minutes while Rex riffed on a chair."""
+
+    # Face at (900, 200), 120x140 → body zone x∈[720,1200], y∈[200,1040], max_h=350.
+    _PEOPLE = [{"face_id": "Bret", "face_box": (900, 200, 120, 140)}]
+
+    def _tag(self, objects, people=None):
+        from vision import scene
+        return scene.tag_person_adjacent_objects(objects, self._PEOPLE if people is None else people)
+
+    def test_cup_in_hand_is_tagged_with_name(self):
+        objs = self._tag([{"label": "cup", "box": (930, 620, 60, 90)}])
+        self.assertTrue(objs[0].get("near_person"))
+        self.assertEqual(objs[0].get("near_person_name"), "Bret")
+
+    def test_background_object_not_tagged(self):
+        objs = self._tag([{"label": "cup", "box": (100, 620, 60, 90)}])
+        self.assertFalse(objs[0].get("near_person"))
+
+    def test_furniture_label_never_tagged(self):
+        # A chair's box contains the sitter — overlap doesn't mean holding.
+        objs = self._tag([{"label": "chair", "box": (930, 620, 60, 90)}])
+        self.assertFalse(objs[0].get("near_person"))
+
+    def test_too_big_to_hold_not_tagged(self):
+        objs = self._tag([{"label": "backpack", "box": (930, 400, 300, 600)}])
+        self.assertFalse(objs[0].get("near_person"))
+
+    def test_no_people_leaves_objects_unchanged(self):
+        objs = self._tag([{"label": "cup", "box": (930, 620, 60, 90)}], people=[])
+        self.assertFalse(objs[0].get("near_person"))
+
+    def test_kill_switch(self):
+        import config
+        with mock.patch.object(config, "OBJECT_NEAR_PERSON_ENABLED", False, create=True):
+            objs = self._tag([{"label": "cup", "box": (930, 620, 60, 90)}])
+        self.assertFalse(objs[0].get("near_person"))
+
+    def test_object_without_box_skipped(self):
+        objs = self._tag([{"label": "cup"}])
+        self.assertFalse(objs[0].get("near_person"))
+
+
+class PersonOrientedCuriosityTests(unittest.TestCase):
+    """The two curiosity consumers put held objects FIRST with an explicit
+    'this beats the furniture' instruction."""
+
+    _OBJECTS = [
+        {"label": "chair", "position": "background", "confidence": 0.9},
+        {"label": "cup", "position": "center", "confidence": 0.6,
+         "near_person": True, "near_person_name": "Bret"},
+    ]
+
+    def test_lean_scene_summary_leads_with_held_object(self):
+        from intelligence import lean_brain, llm
+
+        with mock.patch.object(llm, "_summarize_world_state", return_value=""):
+            summary = lean_brain._scene_summary({"objects": list(self._OBJECTS)})
+        self.assertIn("IN THEIR HANDS", summary)
+        self.assertIn("cup", summary)
+        # The held item leads; the chair is relegated to the generic object list.
+        self.assertLess(summary.index("cup"), summary.index("chair"))
+        self.assertIn("beats ANY furniture", summary)
+
+    def test_visual_curiosity_line_floats_held_object_first(self):
+        from intelligence import consciousness
+
+        with mock.patch.object(consciousness.world_state, "get", return_value=list(self._OBJECTS)):
+            line = consciousness._visual_curiosity_objects_line()
+        self.assertIn("cup (in their hands)", line)
+        self.assertIn("IN Bret's hands", line)
+        # Held ordering wins even though the chair has higher detector confidence.
+        self.assertLess(line.index("cup"), line.index("chair"))
+
+    def test_visual_curiosity_line_without_held_objects_unchanged(self):
+        from intelligence import consciousness
+
+        plain = [{"label": "chair", "position": "background", "confidence": 0.9}]
+        with mock.patch.object(consciousness.world_state, "get", return_value=plain):
+            line = consciousness._visual_curiosity_objects_line()
+        self.assertIn("chair (background)", line)
+        self.assertNotIn("hands", line)
+
+
 if __name__ == "__main__":
     unittest.main()

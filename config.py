@@ -4514,6 +4514,14 @@ OBJECT_DETECTION_BANNED_CLASSES = {
     "laptop", "tv", "tvmonitor", "monitor", "screen",
     "cell phone", "cellphone", "keyboard", "mouse", "remote",
 }
+# Person-oriented object salience (2026-07-08): small objects whose box center falls
+# inside a visible person's body zone (face box widened + extended to lap height, and
+# small enough to hold) are tagged near_person / near_person_name at publish time
+# (vision.scene.tag_person_adjacent_objects). The lean impulse and visual curiosity
+# put those FIRST with a "this beats the furniture" note — so a cup in someone's hand
+# gets "what are you drinking?" instead of a riff on the background chair
+# (live-logged: Bret held a cup for minutes while Rex asked about a chair).
+OBJECT_NEAR_PERSON_ENABLED = True
 
 # ── Room model (persistent object permanence in rex.db) ───────────────────────────
 # Record which objects Rex has seen over time (memory/room_model.py, fed by the local

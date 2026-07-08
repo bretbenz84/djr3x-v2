@@ -6794,12 +6794,26 @@ def _visual_curiosity_objects_line() -> str:
             )
     except Exception:
         pass
+    # Person-oriented salience OUTRANKS novelty: what someone is HOLDING is the most
+    # interesting thing in the room, period (live-logged 2026-07-08: Bret held a cup
+    # for minutes while curiosity picked the background chair).
+    held_note = ""
+    held = [o for o in keep if o.get("near_person")]
+    if held:
+        keep = held + [o for o in keep if not o.get("near_person")]
+        holder = str(held[0].get("near_person_name") or "the person")
+        held_note = (
+            f" The {held[0].get('label')} is IN {holder}'s hands or right beside them — "
+            "ask about THAT ('what are you drinking?' energy), not the background."
+        )
     items = ", ".join(
-        f"{o.get('label')} ({o.get('position') or 'in view'})" for o in keep[:cap]
+        f"{o.get('label')} "
+        + ("(in their hands)" if o.get("near_person") else f"({o.get('position') or 'in view'})")
+        for o in keep[:cap]
     )
     return (
         "Confirmed objects in view (a local object detector verified these are really "
-        f"there — safe to name): {items}.{novel_note}\n\n"
+        f"there — safe to name): {items}.{held_note or novel_note}\n\n"
     )
 
 

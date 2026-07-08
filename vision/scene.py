@@ -540,6 +540,80 @@ def _confirm_persistent_animals(animals: list[dict]) -> list[dict]:
     ]
 
 
+# Labels that overlap a person's body zone because the person is ON/AT them, not
+# holding them — never tagged near_person (a chair's box contains the sitter).
+_OBJECT_NEAR_PERSON_EXCLUDE = {
+    "chair", "couch", "bed", "bench", "dining table", "toilet", "potted plant",
+    "refrigerator", "sink", "oven", "microwave",
+}
+
+
+def tag_person_adjacent_objects(objects: list[dict], people: list[dict]) -> list[dict]:
+    """Mark small objects a visible person is HOLDING or has right beside them
+    (`near_person=True`, plus `near_person_name` when the person is identified).
+
+    Person-oriented salience for curiosity: a cup in someone's hand should beat
+    the furniture in the background (live-logged 2026-07-08: Bret held a cup for
+    minutes while Rex asked about a chair). Geometry: the object's center must
+    fall inside a body zone derived from the person's face box (face width
+    widened, extended downward to lap height) AND the object must be small
+    enough to hold (height ≤ ~2.5 face-heights) — a chair overlapping the zone
+    because the person sits on it is excluded by size and by label.
+    Pure and fail-safe: returns `objects` with flags added in place."""
+    if not objects or not bool(getattr(config, "OBJECT_NEAR_PERSON_ENABLED", True)):
+        return objects
+    zones: list[dict] = []
+    for person in people or []:
+        if not isinstance(person, dict):
+            continue
+        box = person.get("face_box") or person.get("bounding_box") or person.get("bbox")
+        if not box or len(box) != 4:
+            continue
+        try:
+            fx, fy, fw, fh = (float(v) for v in box)
+        except (TypeError, ValueError):
+            continue
+        if fw <= 0 or fh <= 0:
+            continue
+        cx = fx + fw / 2.0
+        zones.append({
+            "x1": cx - fw * 2.0,
+            "x2": cx + fw * 2.0,
+            "y1": fy,
+            "y2": fy + fh * 6.0,
+            "max_h": fh * 2.5,
+            "name": person.get("face_id") or None,
+        })
+    if not zones:
+        return objects
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        label = str(obj.get("label") or "").strip().lower()
+        if not label or label in _OBJECT_NEAR_PERSON_EXCLUDE:
+            continue
+        box = obj.get("box")
+        if not box or len(box) != 4:
+            continue
+        try:
+            ox, oy, ow, oh = (float(v) for v in box)
+        except (TypeError, ValueError):
+            continue
+        ocx = ox + ow / 2.0
+        ocy = oy + oh / 2.0
+        for zone in zones:
+            if (
+                zone["x1"] <= ocx <= zone["x2"]
+                and zone["y1"] <= ocy <= zone["y2"]
+                and oh <= zone["max_h"]
+            ):
+                obj["near_person"] = True
+                if zone["name"]:
+                    obj["near_person_name"] = zone["name"]
+                break
+    return objects
+
+
 # Per-label consecutive-scan streak, mirroring _animal_confirm_streak, so a one-frame
 # object misread can't churn the room model.
 _object_confirm_streak: dict[str, int] = {}
@@ -578,6 +652,10 @@ def detect_objects_local(frame) -> list[dict]:
         return world_state.get("objects") or []
 
     objects = _confirm_persistent_objects(objects)
+    try:
+        objects = tag_person_adjacent_objects(objects, world_state.get("people") or [])
+    except Exception as exc:
+        _log.debug("person-adjacent object tagging skipped: %s", exc)
     world_state.update("objects", objects)
     # Feed the persistent room model (rex.db) so curiosity prefers what's new and Rex can
     # notice changes. Fail-safe + test-suppressed inside record_objects.

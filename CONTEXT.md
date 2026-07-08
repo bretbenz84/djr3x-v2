@@ -1088,6 +1088,22 @@ venv/bin/python main.py
   Live-verified: synthetic 3-view frames → picked the correct object AND view.
   Tests: `tests/test_ispy.py`.
 
+- Person-oriented object salience (2026-07-08, live-logged: Bret held a cup for minutes
+  while the lean impulse riffed on a background chair): `vision.scene.
+  tag_person_adjacent_objects` runs at the object-stream publish point
+  (`detect_objects_local`) and tags small objects whose box center falls inside a
+  visible person's body zone (face box widened ×2, extended down 6 face-heights;
+  object height ≤2.5 face-heights so a chair can't qualify by overlap; furniture
+  labels excluded outright) with `near_person`/`near_person_name`. Both curiosity
+  consumers put held items FIRST with an explicit "this beats the furniture" note:
+  `lean_brain._scene_summary` ("IN THEIR HANDS … what Bret is drinking/eating/
+  fiddling with beats ANY furniture") and `consciousness._visual_curiosity_objects_line`
+  (held outranks room-model novelty; items render as "cup (in their hands)").
+  Kill switch `OBJECT_NEAR_PERSON_ENABLED`. Live-verified: replaying the failing
+  scene through `consider_initiating` produced cup questions ("what's in it?") 3/3.
+  Tests: `tests/test_object_detection.py::PersonAdjacentObjectTests` /
+  `PersonOrientedCuriosityTests`.
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.
