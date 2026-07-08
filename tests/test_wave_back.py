@@ -40,12 +40,23 @@ class WaveBackHelpersTest(unittest.TestCase):
         self.assertEqual(c._wave_person_key({}), "unknown")
 
     def test_face_too_close_gate(self):
-        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.30):
-            self.assertTrue(c._wave_face_too_close({"face_box_height_fraction": 0.49}))  # close-up
+        # The guard only rejects a face pressed to the lens now — a seated desk-webcam
+        # wave (~0.40-0.50 of frame height) is the PRIMARY use case and must pass
+        # (live-logged 2026-07-08: a real wave at 0.44 was wrongly ignored).
+        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.72):
+            self.assertTrue(c._wave_face_too_close({"face_box_height_fraction": 0.80}))   # on the lens
+            self.assertFalse(c._wave_face_too_close({"face_box_height_fraction": 0.44}))  # desk wave
+            self.assertFalse(c._wave_face_too_close({"face_box_height_fraction": 0.49}))  # desk wave
             self.assertFalse(c._wave_face_too_close({"face_box_height_fraction": 0.18}))  # across room
             self.assertFalse(c._wave_face_too_close({}))                                  # no data
         with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.0):             # disabled
             self.assertFalse(c._wave_face_too_close({"face_box_height_fraction": 0.9}))
+
+    def test_desk_wave_passes_at_default_threshold(self):
+        # Regression for the 2026-07-08 log: at the shipped default, a 0.44 desk wave
+        # must NOT be gated as too-close.
+        self.assertFalse(c._wave_face_too_close({"face_box_height_fraction": 0.44}))
+        self.assertGreaterEqual(c.config.WAVE_BACK_MAX_FACE_FRACTION, 0.60)
 
 
 class StepWaveReactionTest(unittest.TestCase):
@@ -270,23 +281,32 @@ class WaveStabilityGateTest(unittest.TestCase):
         self.assertFalse(self._tick({"people": [_waving()]}))   # streak 1 again
         self.assertIsNone(c._pending_wave_back)
 
-    def test_close_up_face_never_waves_back(self):
-        # A waver whose face fills the frame height (desk webcam close-up) is ignored even
-        # across many consecutive 'waving' ticks — a near-camera artifact, not a real wave.
+    def test_face_on_the_lens_never_waves_back(self):
+        # Only a face pressed to the lens (fills the frame height) is ignored across ticks —
+        # a genuine near-camera artifact, not a real wave.
         close = _waving()
-        close["face_box_height_fraction"] = 0.49   # ~half the frame height (laptop close-up)
-        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.30):
+        close["face_box_height_fraction"] = 0.85   # filling the frame — on the lens
+        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.72):
             self.assertFalse(self._tick({"people": [close]}))
             self.assertFalse(self._tick({"people": [close]}))   # never accumulates a streak
             self.assertFalse(self._tick({"people": [close]}))
         self.assertIsNone(c._pending_wave_back)
+
+    def test_desk_webcam_wave_fires(self):
+        # The 2026-07-08 regression: a seated desk-webcam waver (~half the frame height)
+        # passes the close gate and fires once the stability streak is met.
+        desk = _waving()
+        desk["face_box_height_fraction"] = 0.44    # the exact logged value
+        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.72):
+            self.assertFalse(self._tick({"people": [desk]}))    # streak 1
+            self.assertTrue(self._tick({"people": [desk]}))     # streak 2 → fires
 
     def test_normal_distance_face_still_waves(self):
         # A waver at normal distance (small face height) passes the close gate and fires
         # once the stability streak is met.
         far = _waving()
         far["face_box_height_fraction"] = 0.18     # across the room
-        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.30):
+        with mock.patch.object(c.config, "WAVE_BACK_MAX_FACE_FRACTION", 0.72):
             self.assertFalse(self._tick({"people": [far]}))     # streak 1
             self.assertTrue(self._tick({"people": [far]}))      # streak 2 → fires
 

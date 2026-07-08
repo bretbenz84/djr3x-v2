@@ -1143,6 +1143,21 @@ venv/bin/python main.py
   and never 3 cup/chair lines in a row. State cleared by `reset_offered_angles`. Tests:
   `tests/test_lean_agency.py::PersonalSmallTalkIntentTest`.
 
+- Wave-back too-close guard relaxed (2026-07-08, live-logged: a genuine wave at 44% face
+  height was ignored, no wave-back — "There is code for waving but it appears to be not
+  firing"): `WAVE_BACK_MAX_FACE_FRACTION` shipped at 0.30, which rejected the PRIMARY use
+  case — someone seated at a desk webcam waves with their face at ~40-50% of frame height
+  (the guard's whole point was to drop a face pressed to the lens, but 0.30 caught normal
+  desk distance). Raised the default to **0.72** (only a face filling ~¾+ of the frame is
+  rejected now). The real anti-phantom protection is elsewhere and untouched — the
+  plausible-pose shoulder-girdle filter + `WAVE_BACK_CONFIRM_FRAMES=2` streak — so this
+  guard is just a backstop for the on-the-lens degenerate case. The rest of the pipeline
+  was already correct (pose→'waving'→face-slot binding→`_wave_face_too_close` all fired in
+  the log); only the threshold blocked it. Wave-back speaks its line with or without servos
+  (the physical arm gesture no-ops gracefully when no Maestro is connected). Tests:
+  `tests/test_wave_back.py` (`test_desk_wave_passes_at_default_threshold`,
+  `test_desk_webcam_wave_fires`, retuned close-gate cases).
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.

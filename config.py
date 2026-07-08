@@ -2657,16 +2657,19 @@ WAVE_BACK_MIN_GAP_SECS = _env_float(
 # reads 'waving' twice in a row, so it's rejected. Set 1 to restore old single-frame
 # behavior (the source of the phantom waves).
 WAVE_BACK_CONFIRM_FRAMES = _env_int("WAVE_BACK_CONFIRM_FRAMES", 2, min_value=1, max_value=10)
-# Suppress wave-back when the waver's face fills too much of the frame HEIGHT — i.e.
-# they're right at the camera (a desk/laptop webcam), where a detected "wave" is almost
-# always a near-camera artifact (an arm/object) and a wave across the room makes no sense.
-# Measured as face-box HEIGHT / frame height, NOT the width-based proxemics zone: on a wide
-# 16:9 webcam a close-up face is TALL not wide, so width under-reads closeness (live-logged
-# 2026-06-26: a face filling ~half the frame height still logged distance=public). Default
-# 0.30 = "face taller than 30% of the screen → desk-webcam close-up". 0 disables. Tune off
-# the "face_height=" value in the "wave detected" log line for your setup.
+# Suppress wave-back ONLY when the waver's face fills nearly the whole frame HEIGHT —
+# i.e. pressed right up against the lens, where a "wave" is a near-camera artifact and a
+# wave-back makes no sense. Measured as face-box HEIGHT / frame height, NOT the width-based
+# proxemics zone: on a wide 16:9 webcam a close-up face is TALL not wide, so width
+# under-reads closeness. History: this shipped at 0.30, which turned out to reject the
+# PRIMARY use case — someone seated at a desk webcam waves with their face at ~40-50% of
+# frame height (live-logged 2026-07-08: a genuine wave at 44% was ignored, no wave-back).
+# The real anti-phantom protection is elsewhere (plausible-pose shoulder-girdle filter +
+# WAVE_BACK_CONFIRM_FRAMES streak), so this guard is now just a backstop for the
+# face-on-the-lens degenerate case: 0.72 ≈ "face taller than ~three-quarters of the
+# screen". 0 disables. Tune off the "face_height=" value in the "wave detected" log line.
 WAVE_BACK_MAX_FACE_FRACTION = _env_float(
-    "WAVE_BACK_MAX_FACE_FRACTION", 0.30, min_value=0.0, max_value=1.0,
+    "WAVE_BACK_MAX_FACE_FRACTION", 0.72, min_value=0.0, max_value=1.0,
 )
 # Wave-back arm gesture: how many times the wrist (the "hand" servo) sweeps between BOTH of
 # its travel limits when Rex waves back (one sweep = to one limit and back). The elbow only
