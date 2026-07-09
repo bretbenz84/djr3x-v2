@@ -126,6 +126,13 @@ You need to activate the virtual environment in every new terminal session befor
 
 Instead of starting `main.py` by hand, you can have macOS stay quietly ready and launch the robot by voice. A tiny LaunchAgent (`rex_supervisor.py`) listens only for **"wake up Rex"** and launches the full controller on demand (it starts `main.py --gui`, so the dashboard opens on every wake); **"shut down"** powers it back down while the listener keeps running. Install with `scripts/install_supervisor.sh`. See **[docs/supervisor.md](docs/supervisor.md)** for how it works and how the single-instance lock prevents a double-launch (including when Rex is asleep).
 
+On the physical robot, the supervisor also keeps a clean `main` checkout current
+with `origin/main`: it checks at supervisor startup, every four hours, and again
+immediately before launching `main.py`. A running controller is never updated
+underneath itself, failures fall back to the installed version, and no updater
+state files are created. See [docs/supervisor.md](docs/supervisor.md) for the
+safety rules and configuration switches.
+
 ## Configuration
 
 User-tunable defaults live in [config.py](config.py). API keys should stay in `apikeys.py`, and host-specific hardware paths plus build-specific servo limit overrides should stay in `.env`; both are intentionally excluded from git.

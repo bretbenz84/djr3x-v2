@@ -84,6 +84,36 @@ log = logging.getLogger("rex_supervisor")
 _stop = threading.Event()
 
 
+# ── Stateless repository updates ──────────────────────────────────────────────
+
+def _check_for_update(*, apply: bool, trigger: str):
+    """Fetch origin/main and optionally fast-forward this checkout.
+
+    Import lazily so the always-on process remains dependency-light and so a
+    freshly pulled updater module is loaded after a supervisor restart.
+    """
+    try:
+        from utils import repo_updater
+        return repo_updater.update_repository(_PROJECT_ROOT, apply=apply, trigger=trigger)
+    except Exception as exc:
+        log.warning("[auto_update] %s: updater unavailable (%s); continuing.", trigger, exc)
+        return None
+
+
+def _update_interval_secs() -> float:
+    try:
+        from utils import repo_updater
+        return repo_updater.update_interval_secs()
+    except Exception:
+        return 14400.0
+
+
+def _restart_supervisor() -> None:
+    """Replace this process with the supervisor code currently on disk."""
+    log.info("[auto_update] Restarting supervisor to load the updated code.")
+    os.execv(str(_VENV_PYTHON), [str(_VENV_PYTHON), str(Path(__file__).resolve())])
+
+
 # ── Minimal .env reading (no project config import) ────────────────────────────
 
 def _read_env_file() -> dict[str, str]:
@@ -460,6 +490,12 @@ def run() -> int:
     signal.signal(signal.SIGTERM, lambda *_: _stop.set())
     signal.signal(signal.SIGINT, lambda *_: _stop.set())
 
+    # Do this before loading the wake model or opening the microphone. If the
+    # supervisor itself changed, exec the new copy so every import is coherent.
+    startup_update = _check_for_update(apply=True, trigger="supervisor startup")
+    if startup_update is not None and startup_update.updated:
+        _restart_supervisor()
+
     model = _load_model()
     if model is None:
         return 1
@@ -483,6 +519,7 @@ def run() -> int:
     )
 
     child: Optional[subprocess.Popen] = None
+    restart_after_controller = False
     stream = None
     listening = False
     open_channels = 1  # actual channel count the mic stream was opened with
@@ -490,6 +527,7 @@ def run() -> int:
     # Diagnostics.
     peak_score = 0.0
     last_diag = 0.0
+    next_update_check = time.monotonic() + _update_interval_secs()
     consecutive = 0  # frames in a row at/above threshold (debounce vs. TV spikes)
 
     # Channel candidates: the device's real max-input first (e.g. ReSpeaker Lite
@@ -526,7 +564,7 @@ def run() -> int:
         raise RuntimeError(f"could not open mic with channels {chan_candidates}: {last_exc}")
 
     def _fire(reason: str):
-        nonlocal stream, listening, child
+        nonlocal stream, listening, child, restart_after_controller, next_update_check
         log.info("Wake detected (%s) — launching controller.", reason)
         if stream is not None:
             try:
@@ -538,7 +576,15 @@ def run() -> int:
         # Instant audio feedback (chime) before the slower controller boots. Mic
         # is already closed, so the chime can't bleed back into the input.
         _play_chime()
+        update = _check_for_update(apply=True, trigger="controller launch")
+        if update is not None and update.updated:
+            # Launch main.py from the new checkout now. The old supervisor is
+            # safe while dormant, then replaces itself when the controller exits.
+            restart_after_controller = True
+        next_update_check = time.monotonic() + _update_interval_secs()
         child = _launch_controller()
+        if child is None and restart_after_controller:
+            _restart_supervisor()
         _stop.wait(3.0)  # let main.py take the lock so we don't double-fire
 
     try:
@@ -550,6 +596,27 @@ def run() -> int:
                 log.info("Controller exited (code=%s). Resuming wake-word listening.", child.returncode)
                 child = None
                 running = _controller_running(None)
+                if restart_after_controller and not running:
+                    _restart_supervisor()
+
+            # The timer is in memory; Git's remote-tracking ref is the only
+            # record of whether an update is waiting. While main.py is alive we
+            # fetch only. When idle, a fast-forward is safe and we restart.
+            now = time.monotonic()
+            if now >= next_update_check:
+                periodic = _check_for_update(
+                    apply=not running,
+                    trigger="periodic check",
+                )
+                next_update_check = time.monotonic() + _update_interval_secs()
+                if periodic is not None and periodic.updated and not running:
+                    if stream is not None:
+                        try:
+                            stream.stop(); stream.close()
+                        except Exception:
+                            pass
+                        stream = None
+                    _restart_supervisor()
 
             if running:
                 # Dormant: release the mic so the controller owns it, and poll.

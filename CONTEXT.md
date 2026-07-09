@@ -875,6 +875,11 @@ venv/bin/python main.py
 - Face-tracking responsiveness: the head-pose loop (`consciousness._step_face_tracking`, ~12.5 Hz) is a closed loop (camera on head); `FACE_TRACKING_CENTERING_GAIN` is matched to the FOV.
 - Supervisor wake detection is ONNX-only (`wakeuprex.onnx` openWakeWord on 80 ms mono frames, threshold `REX_SUPERVISOR_WAKE_THRESHOLD`); do NOT regress to VAD/Whisper/RMS.
 - Always-on wake-word supervisor + single-instance lock (`docs/supervisor.md`, `rex_supervisor.py` LaunchAgent): listens the whole login session, launches `main.py` on "wake up Rex"; an flock keeps main.py single-instance so the supervisor stays dormant while a controller is alive.
+- Stateless supervisor auto-update (`utils/repo_updater.py`): checks `origin/main`
+  at supervisor startup, every four hours, and before controller launch. It only
+  fast-forwards a clean local `main`; periodic checks fetch-only while the
+  controller lock is held, network/Git failures run installed code, and an
+  updated supervisor replaces itself. No updater state files are written.
 - Same-day repeat-visit banter: a repeat summon within one local day opens the startup greeting with a short repeat-visit roast, then normal conversation (`memory.people`).
 - Listening motion: VAD onset (`interaction._begin_user_turn`) → `servos.start_listening_motion()` for the transcription→LLM→TTS wait so Rex isn't frozen while thinking.
 - Eye blink fix: the head Arduino blinks only while `eyesActive==true` (cleared by `SPEAK_STOP`/`OFF`); the speech path re-asserts it so Rex keeps blinking after his first line.

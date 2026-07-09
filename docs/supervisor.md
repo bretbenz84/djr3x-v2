@@ -17,6 +17,33 @@ down — while the listener keeps running. Test the chime any time with
 The supervisor is intentionally minimal: it does **not** import the project
 config or need API keys, so it starts cleanly at login and just waits.
 
+## Automatic Git updates
+
+The supervisor keeps the physical robot's `main` checkout current with
+`origin/main` without writing any updater state files:
+
+1. **Supervisor startup:** before loading the wake model or opening the mic, it
+   fetches and fast-forwards, then replaces itself if code changed so the newly
+   pulled supervisor is what stays resident.
+2. **Every four hours:** it fetches `origin/main`. While `main.py` is running or
+   asleep this is check-only—the working tree is never changed beneath a live
+   controller. When Rex is off, it may fast-forward and restart itself.
+3. **Every controller launch:** after the wake chime and before `main.py --gui`,
+   it performs one final fetch/fast-forward so the controller starts directly
+   from the newest code.
+
+Updates are deliberately conservative: the checkout must be on `main`, the
+worktree must be clean, and local `HEAD` must be an ancestor of `origin/main`.
+The updater uses a fast-forward-only merge and never stashes, resets, discards
+changes, or creates merge commits. Network/Git failures only produce a warning;
+Rex launches the installed version instead of becoming unavailable offline.
+Machine-local `.env`, `apikeys.py`, `user_config.py`, databases, models, caches,
+and logs remain untouched through the project's existing ignore rules.
+
+No periodic timestamp or "update pending" marker is stored. The four-hour timer
+lives in supervisor memory, and the fetched `origin/main` ref is sufficient to
+tell whether an update is waiting.
+
 ## How they coordinate (no double-launch)
 
 `main.py` holds a single-instance lock (`utils/single_instance.py`, an `flock`)
@@ -81,6 +108,9 @@ camera/automation prompts still appear the first time `main.py` itself runs.
 | `REX_SUPERVISOR_WAKE_CONSECUTIVE` | `3` | How many consecutive 80 ms frames must clear the threshold before firing. A real phrase holds the score near 1.0 for ~10 frames in a row; a TV phonetic near-miss is a 1-2 frame spike, so this rejects background-audio false triggers. Raise toward 4-5 if a noisy room still trips it; 1 disables the debounce. |
 | `REX_SUPERVISOR_DEBUG` | unset | Set to `1` for verbose per-frame logging |
 | `REX_SUPERVISOR_CHIME` | `1` | Play `startup_chime.mp3` the instant a wake is accepted (instant feedback before the robot boots). Set `0` to disable. |
+| `REX_AUTO_UPDATE_ENABLED` | `1` | Fetch and fast-forward `origin/main` at supervisor startup, periodically, and before controller launch. Set `0` to disable. |
+| `REX_AUTO_UPDATE_INTERVAL_SECS` | `14400` | Periodic update-check interval (four hours; minimum 60 seconds). |
+| `REX_AUTO_UPDATE_TIMEOUT_SECS` | `45` | Maximum time allowed for each individual Git operation before startup falls back to installed code. |
 | `DJR3X_LOCK_PATH` | `<tmpdir>/djr3x-main.lock` | Single-instance lock location (must match between supervisor and `main.py`) |
 | `DJR3X_SKIP_SINGLE_INSTANCE` | unset | Set to `1` to let `main.py` skip the lock (manual dev runs) |
 | `AUDIO_DEVICE_NAME` / `AUDIO_DEVICE_INDEX` | from `.env` | Mic the supervisor listens on (same keys `main.py` uses) |

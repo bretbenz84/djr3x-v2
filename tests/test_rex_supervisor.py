@@ -299,5 +299,27 @@ class SupervisorLaunchTest(unittest.TestCase):
         self.assertEqual(kwargs.get("stderr"), self.sup.subprocess.STDOUT)
 
 
+class SupervisorAutoUpdateTest(unittest.TestCase):
+    def setUp(self):
+        self.sup = _load_supervisor()
+
+    def test_check_delegates_to_stateless_updater(self):
+        fake_result = mock.Mock(updated=False)
+        with mock.patch("utils.repo_updater.update_repository", return_value=fake_result) as update:
+            result = self.sup._check_for_update(apply=False, trigger="periodic test")
+        self.assertIs(result, fake_result)
+        update.assert_called_once_with(
+            self.sup._PROJECT_ROOT, apply=False, trigger="periodic test",
+        )
+
+    def test_restart_execs_supervisor_with_venv_python(self):
+        with mock.patch.object(self.sup.os, "execv") as execv:
+            self.sup._restart_supervisor()
+        execv.assert_called_once_with(
+            str(self.sup._VENV_PYTHON),
+            [str(self.sup._VENV_PYTHON), str(Path(self.sup.__file__).resolve())],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
