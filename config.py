@@ -6193,6 +6193,12 @@ BIRTHDAY_WINS_ON_DAY = True
 # for an engaged person who hasn't been asked about that holiday this year.
 HOLIDAY_PLANS_PROBABILITY = 0.25
 
+# When the hosted public-holiday calendar is unreachable for a non-US locale,
+# wait before retrying rather than attempting a network call on every awareness
+# tick. The US path has a local fallback calendar, so calendar-aware conversation
+# remains available offline there.
+HOLIDAY_FETCH_RETRY_SECS = 300.0
+
 # ─── "Tell me about someone" pre-briefing flow ───────────────────────────────
 # "I'd like to tell you about my coworker Daniel" opens a short flow (name →
 # gossip-or-facts → details) that pre-populates the person DB before the

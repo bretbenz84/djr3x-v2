@@ -14,6 +14,7 @@ tick to discover holidays whose approach window currently includes today.
 import logging
 import sys
 import threading
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -38,6 +39,10 @@ _MAJOR_HOLIDAY_KEYWORDS = (
 # Per-year cache: {year: [holiday_dict, ...]}
 _cache: dict[int, list[dict]] = {}
 _cache_lock = threading.Lock()
+# A failed fetch for a non-US calendar must not become a permanent empty cache,
+# but it also must not retry on every consciousness tick. The US fallback below
+# keeps the normal robot deployment calendar-aware even while offline.
+_fetch_retry_after: dict[int, float] = {}
 
 
 def _classify(name: str) -> str:
@@ -84,16 +89,77 @@ def _fetch_year(year: int, country_code: str) -> list[dict]:
     return holidays
 
 
+def _nth_weekday(year: int, month: int, weekday: int, occurrence: int) -> date:
+    """Return the Nth weekday in a month (Monday=0)."""
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (occurrence - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    """Return the last weekday in a month (Monday=0)."""
+    if month == 12:
+        cursor = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        cursor = date(year, month + 1, 1) - timedelta(days=1)
+    return cursor - timedelta(days=(cursor.weekday() - weekday) % 7)
+
+
+def _us_fallback_holidays(year: int) -> list[dict]:
+    """Small offline US federal-holiday calendar.
+
+    The hosted calendar remains preferred. This covers the dates most useful for
+    natural plans questions when the robot has no network; it is deliberately a
+    practical fallback, not a replacement for a jurisdiction-specific service.
+    """
+    rows = (
+        ("New Year's Day", date(year, 1, 1)),
+        ("Martin Luther King Jr. Day", _nth_weekday(year, 1, 0, 3)),
+        ("Washington's Birthday", _nth_weekday(year, 2, 0, 3)),
+        ("Memorial Day", _last_weekday(year, 5, 0)),
+        ("Juneteenth National Independence Day", date(year, 6, 19)),
+        ("Independence Day", date(year, 7, 4)),
+        ("Labor Day", _nth_weekday(year, 9, 0, 1)),
+        ("Columbus Day", _nth_weekday(year, 10, 0, 2)),
+        ("Veterans Day", date(year, 11, 11)),
+        ("Thanksgiving Day", _nth_weekday(year, 11, 3, 4)),
+        ("Christmas Day", date(year, 12, 25)),
+    )
+    return [
+        {
+            "date": day.isoformat(),
+            "month_day": day.strftime("%m-%d"),
+            "name": name,
+            "tier": _classify(name),
+        }
+        for name, day in rows
+    ]
+
+
 def get_holidays(year: int) -> list[dict]:
     """Return cached holiday list for the year, fetching on first miss."""
     country = getattr(config, "HOLIDAY_COUNTRY_CODE", "US")
     with _cache_lock:
         cached = _cache.get(year)
+        retry_after = _fetch_retry_after.get(year, 0.0)
     if cached is not None:
         return cached
+    if time.monotonic() < retry_after:
+        return []
     fetched = _fetch_year(year, country)
+    if not fetched and str(country).strip().upper() == "US":
+        fetched = _us_fallback_holidays(year)
+        _log.warning(
+            "[holidays] using local US fallback calendar for %s after fetch failure",
+            year,
+        )
     with _cache_lock:
-        _cache[year] = fetched
+        if fetched:
+            _cache[year] = fetched
+            _fetch_retry_after.pop(year, None)
+        else:
+            retry_secs = max(1.0, float(getattr(config, "HOLIDAY_FETCH_RETRY_SECS", 300.0)))
+            _fetch_retry_after[year] = time.monotonic() + retry_secs
     return fetched
 
 

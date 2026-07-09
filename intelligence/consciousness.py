@@ -9034,6 +9034,59 @@ def _holiday_plans_allowed(holiday: dict) -> bool:
     return False
 
 
+def _next_holiday_plan_for_person(person_id: Optional[int]) -> Optional[dict]:
+    """Return the soonest upcoming holiday this person has not been asked about.
+
+    Lean Brain uses this same lookup so it owns conversational timing while the
+    calendar and per-person/date dedupe stay shared with the classic fallback.
+    """
+    if person_id is None:
+        return None
+    try:
+        person_id = int(person_id)
+    except (TypeError, ValueError):
+        return None
+    try:
+        from awareness import holidays as holidays_mod
+        from memory import relationships as rel_memory
+
+        for holiday in holidays_mod.upcoming_holidays():
+            date_key = str(holiday.get("date") or "").strip()
+            if not date_key or not _holiday_plans_allowed(holiday):
+                continue
+            if (person_id, date_key) in _holiday_plans_asked:
+                continue
+            if rel_memory.was_proactive_asked(person_id, f"holiday_plans:{date_key}"):
+                continue
+            days_until = int(holiday.get("days_until", 0) or 0)
+            return {
+                **holiday,
+                "when": holidays_mod._holiday_when_phrase(days_until),
+            }
+    except Exception as exc:
+        _log.debug("holiday-plan lookup failed for person_id=%s: %s", person_id, exc)
+    return None
+
+
+def _mark_holiday_plan_asked(person_id: Optional[int], holiday: Optional[dict]) -> None:
+    """Record a holiday question only after it genuinely spoke, per person/date."""
+    if person_id is None or not holiday:
+        return
+    try:
+        person_id = int(person_id)
+    except (TypeError, ValueError):
+        return
+    date_key = str(holiday.get("date") or "").strip()
+    if not date_key:
+        return
+    _holiday_plans_asked.add((person_id, date_key))
+    try:
+        from memory import relationships as rel_memory
+        rel_memory.mark_proactive_asked(person_id, f"holiday_plans:{date_key}")
+    except Exception as exc:
+        _log.debug("persist holiday plans asked failed: %s", exc)
+
+
 def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
     """
     During an active conversation with a known person, if any public holiday
@@ -9042,6 +9095,11 @@ def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
     the holiday's iso date includes the year so next year resets naturally.
     """
     global _last_holiday_plans_check_at
+
+    # Lean Brain owns conversational lulls. It consumes the same calendar cue,
+    # so do not submit a competing legacy candidate in Lean mode.
+    if bool(getattr(config, "LEAN_BRAIN_ENABLED", False)):
+        return
 
     if profile.suppress_proactive or profile.rapid_exchange:
         return
@@ -9065,27 +9123,8 @@ def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
         return
 
     try:
-        from awareness.holidays import upcoming_holidays
         from memory import people as people_mod
-        from memory import relationships as rel_memory
-
-        holidays = upcoming_holidays()
-        if not holidays:
-            return
-
-        # Find the soonest holiday Rex hasn't asked this person about yet — in this
-        # session (in-memory set) OR a PRIOR run (persistent proactive-asked store), so a
-        # holiday-plans question already answered before isn't repeated between runs.
-        target = None
-        for h in holidays:
-            if not _holiday_plans_allowed(h):
-                continue
-            if (engaged_id, h["date"]) in _holiday_plans_asked:
-                continue
-            if rel_memory.was_proactive_asked(engaged_id, f"holiday_plans:{h['date']}"):
-                continue
-            target = h
-            break
+        target = _next_holiday_plan_for_person(engaged_id)
         if target is None:
             return
 
@@ -9123,13 +9162,7 @@ def _step_holiday_plans(snapshot: dict, profile: SituationProfile) -> None:
         )
 
         def _on_spoke() -> None:
-            # Mark this holiday's plans question asked only on an actual spoken turn —
-            # both in-session (set) and persistently (so it won't repeat next run).
-            _holiday_plans_asked.add((engaged_id, target["date"]))
-            try:
-                rel_memory.mark_proactive_asked(engaged_id, f"holiday_plans:{target['date']}")
-            except Exception as exc:
-                _log.debug("persist holiday plans asked failed: %s", exc)
+            _mark_holiday_plan_asked(engaged_id, target)
             _log.info(
                 "consciousness: holiday plans question for person_id=%s — %s (T-%dd, %s)",
                 engaged_id, target["name"], days_until, target["window"],

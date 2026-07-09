@@ -4381,6 +4381,14 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         mood = body_mood.current_mood()[0]
     except Exception:
         mood = None
+    holiday_plan = None
+    try:
+        # Calendar questions are a one-shot Lean cue, not a second proactive
+        # speaker. The helper owns per-person/per-date de-dupe shared with the
+        # classic consciousness fallback.
+        holiday_plan = consciousness._next_holiday_plan_for_person(person_id)
+    except Exception as exc:
+        _log.debug("holiday-plan Lean cue lookup failed: %s", exc)
     try:
         from intelligence import lean_brain
         line = lean_brain.consider_initiating(
@@ -4390,6 +4398,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             quiet_secs=quiet,
             mood=mood,
             long_silence=long_silence,
+            holiday_plan=holiday_plan,
         )
     except Exception as exc:
         _log.debug("[lean] impulse generation failed: %s", exc)
@@ -4398,6 +4407,9 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     if not line:
         _log.info("[lean] impulse — watched (person_id=%s, quiet=%.0fs, mode=%s)", person_id, quiet, _mode)
         return False                            # Rex chose to just watch
+    if holiday_plan and not _assistant_asked_question(line):
+        _log.info("[lean] holiday cue dropped — generated line was not a question: %r", line)
+        return False
     # Content-based anti-repeat (NOT the first-word opener guard — that killed every 'What…?'
     # question, so Rex generated lines and spoke none, and the conversation died). This only
     # drops a near-duplicate of a recent question, so distinct curious questions still get through.
@@ -4419,6 +4431,11 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             target_person_id=person_id,
             expected_reply_types=(["answer", "statement"] if "?" in line else None),
         )
+        if holiday_plan:
+            try:
+                consciousness._mark_holiday_plan_asked(person_id, holiday_plan)
+            except Exception as exc:
+                _log.debug("holiday-plan Lean cue mark failed: %s", exc)
         _log.info("[lean] impulse — person_id=%s mode=%s text=%r", person_id, _mode, line)
     return completed
 

@@ -606,6 +606,17 @@ _REENGAGE_INSTRUCTION = (
 )
 
 
+_HOLIDAY_PLAN_INSTRUCTION = (
+    "[An upcoming holiday gives you a natural reason to check in with {who}. You have NOT asked "
+    "them about this one yet.]\n"
+    "{situation}"
+    "The holiday is {holiday_name} ({holiday_when}). Ask ONE short, warm, in-character question "
+    "about their plans or whether it means anything to them. This is a real conversational opening, "
+    "not an announcement or a history lesson. You MUST ask the question; do NOT reply PASS. Do not "
+    "mention systems, calendars, reminders, or that you were waiting for silence."
+)
+
+
 # Rotating inspiration for the lull-breakers. The instruction prompt used to be IDENTICAL every
 # call, so the model kept converging on its strongest persona default: music questions ("what song
 # survives your veto process?" every single lull — owner: "usually around music and not very
@@ -824,6 +835,7 @@ def consider_initiating(
     quiet_secs: float = 0.0,
     mood: Optional[str] = None,
     long_silence: bool = False,
+    holiday_plan: Optional[dict] = None,
 ) -> str:
     """Let Rex DECIDE, in character, to say ONE thing or just watch (the strong default).
     Returns the line to speak, or "" on PASS / any error. This is the agentic replacement for
@@ -839,20 +851,29 @@ def consider_initiating(
                 who = _first_name(people.get_person(int(person_id))) or "them"
             except Exception:
                 who = "them"
-        template = _REENGAGE_INSTRUCTION if long_silence else _IMPULSE_INSTRUCTION
-        # Alternate between open personal small-talk ("got any plans this weekend?") and
-        # scene-anchored curiosity so a visible object can't own every lull (owner
-        # 2026-07-08). The personal steer fills the same {angles} slot with an explicit
-        # "set the objects aside" directive.
-        if _choose_impulse_intent() == "personal":
-            angles = _personal_steer_clause()
+        situation = _situation_block(person_id, world, quiet_secs, mood)
+        if holiday_plan:
+            instruction = _HOLIDAY_PLAN_INSTRUCTION.format(
+                who=who,
+                situation=situation,
+                holiday_name=str(holiday_plan.get("name") or "the upcoming holiday"),
+                holiday_when=str(holiday_plan.get("when") or "soon"),
+            )
         else:
-            angles = _fresh_angles_clause()
-        instruction = template.format(
-            who=who,
-            situation=_situation_block(person_id, world, quiet_secs, mood),
-            angles=angles,
-        )
+            template = _REENGAGE_INSTRUCTION if long_silence else _IMPULSE_INSTRUCTION
+            # Alternate between open personal small-talk ("got any plans this weekend?") and
+            # scene-anchored curiosity so a visible object can't own every lull (owner
+            # 2026-07-08). The personal steer fills the same {angles} slot with an explicit
+            # "set the objects aside" directive.
+            if _choose_impulse_intent() == "personal":
+                angles = _personal_steer_clause()
+            else:
+                angles = _fresh_angles_clause()
+            instruction = template.format(
+                who=who,
+                situation=situation,
+                angles=angles,
+            )
         messages: list[dict] = [{"role": "system", "content": _persona()}]
         keep = max(0, int(getattr(config, "LEAN_BRAIN_TRANSCRIPT_TURNS", 8)))
         for turn in (transcript or [])[-keep:] if keep else []:

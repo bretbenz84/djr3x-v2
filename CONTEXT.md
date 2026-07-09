@@ -848,6 +848,13 @@ venv/bin/python main.py
 - Regression corpus for misroutes lives under `tests/fixtures/misroute_replays.json`; add false-positive examples there when they appear in live logs.
 - Memory-query grounding for self relationship metrics and greeting counts.
 - Minor public holiday proactive questions are gated behind `HOLIDAY_PLANS_INCLUDE_MINOR`, which ships **True** (minor holidays are ON by default; set it `False` to restrict to major holidays).
+- Holiday-plan questions are Lean-owned when `LEAN_BRAIN_ENABLED`: the next eligible
+  lull receives a one-shot calendar cue and asks the known person about that upcoming
+  holiday. De-dupe remains per `(person_id, holiday_date)` in session and in
+  `proactive_topics_asked` across sessions, so the same holiday remains fair game for
+  a new person. The old consciousness step is retained only for non-Lean fallback.
+  `awareness/holidays.py` uses a local US federal-holiday fallback when its hosted
+  calendar cannot be reached; non-US failures retry after `HOLIDAY_FETCH_RETRY_SECS`.
 - Introduction handling that links known visible/recent people instead of renaming the current speaker.
 - README startup flag documentation.
 - User-facing override layer: `config.py` ends with `from user_config import *` (try/except ImportError) so `user_config.py` — gitignored, copied from the committed `user_config.example.py` template by `setup_macos.sh` — overrides defaults without editing `config.py`. Defaults stay in `config.py` (source of truth); `from config import X` is unaffected since the change is purely an additive tail. A re-derive tail after the import recomputes `ACTION_ROUTER_MODEL` (= `LLM_MODEL`) and `STARTUP_BOOT_TTS_LINE` so overriding their base propagates. Scope is ~45 essentials (models, personality dials + base prompt, location, feature toggles, timeouts); each ships commented-out at its current default. See the Configuration And Secrets section.
