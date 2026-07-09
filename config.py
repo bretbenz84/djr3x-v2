@@ -270,6 +270,11 @@ LEAN_IMPULSE_FLOW_QUIET_AFTER_STATEMENT_SECS = _env_float("LEAN_IMPULSE_FLOW_QUI
 # chatty about their life. The visible object still gets asked about the OTHER turns, and
 # the dedicated held-object reactor is unaffected.
 LEAN_IMPULSE_PERSONAL_PROB = _env_float("LEAN_IMPULSE_PERSONAL_PROB", 0.4, min_value=0.0, max_value=1.0)
+# A visual riff is an occasional *Lean-owned* option during a normal lull, never a
+# separate timer-driven speaker.  It is limited to a known adult with no relevant
+# conversation boundaries, and only receives safe appearance/accessory or posture cues.
+LEAN_VISUAL_RIFF_ENABLED = True
+LEAN_VISUAL_RIFF_PROBABILITY = _env_float("LEAN_VISUAL_RIFF_PROBABILITY", 0.25, min_value=0.0, max_value=1.0)
 LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
 # Flat-answer follow-up (reply-side, owner spec 2026-07-06): when a flat
 # half-answer ("it's okay", "not much", "meh") ANSWERS a question Rex asked, the

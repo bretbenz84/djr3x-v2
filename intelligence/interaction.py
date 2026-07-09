@@ -4270,6 +4270,85 @@ def _idle_banter_directive(
     return _IDLE_BANTER_DIRECTIVES[1], False
 
 
+def _lean_visual_riff_cue(person_id: Optional[int], world: Optional[dict]) -> Optional[dict]:
+    """Return one safe visual-riff cue for Lean, or ``None``.
+
+    This deliberately does not revive ``appearance_riff`` / ``people_roast`` as
+    independent timer behaviors. It gives the already-paced Lean impulse a
+    grounded option only when the present person is known to be an adult and has
+    not asked Rex to avoid appearance, clothing, or roasting comments.
+    """
+    if person_id is None or not bool(getattr(config, "LEAN_VISUAL_RIFF_ENABLED", True)):
+        return None
+    if random.random() >= float(getattr(config, "LEAN_VISUAL_RIFF_PROBABILITY", 0.25)):
+        return None
+
+    target = None
+    for person in (world or {}).get("people", []) or []:
+        if not isinstance(person, dict):
+            continue
+        try:
+            if int(person.get("person_db_id")) == int(person_id):
+                target = person
+                break
+        except (TypeError, ValueError):
+            continue
+    if target is None:
+        return None                         # only comment on someone actually present
+
+    # Fail closed unless enrollment/profile data says adult. A known name alone
+    # is not enough license for unprompted physical commentary.
+    age_values = [target.get("age_category"), target.get("age_estimate")]
+    try:
+        profile = people_memory.get_person(int(person_id)) or {}
+        age_values.extend([profile.get("age_category"), profile.get("age_estimate")])
+        age_values.extend(
+            fact.get("value") for fact in facts_memory.get_facts(int(person_id))
+            if str(fact.get("key") or "").strip().lower() == "age_category"
+        )
+    except Exception:
+        return None
+    normalized_ages = {str(value or "").strip().lower() for value in age_values}
+    if normalized_ages & {"child", "teen", "minor"}:
+        return None
+    adult_values = {"young_adult", "adult", "middle_aged", "senior"}
+    if not normalized_ages & adult_values:
+        return None
+
+    try:
+        blocked_topics = ("anything", "appearance", "clothing", "body", "identity")
+        if any(
+            boundary_memory.is_blocked(int(person_id), behavior, topic)
+            for behavior in ("mention", "roast")
+            for topic in blocked_topics
+        ):
+            return None
+    except Exception:
+        return None
+
+    # Familiar visual facts are intentionally narrow (the shared helper excludes
+    # build/height/age). If none are available, a present non-sensitive posture
+    # still permits a people-roast style line grounded in this exact moment.
+    hint = consciousness._pick_appearance_hint(int(person_id))
+    if hint:
+        return {"cue": f"a familiar visual detail: {hint}"}
+    cues = []
+    for key, label in (
+        ("distance_zone", "distance"),
+        ("approach_vector", "movement"),
+        ("pose", "pose"),
+        ("gesture", "gesture"),
+        ("engagement", "engagement"),
+        ("position", "position"),
+    ):
+        value = str(target.get(key) or "").strip()
+        if value and value.lower() != "neutral":
+            cues.append(f"{label}={value}")
+    if cues:
+        return {"cue": "current non-sensitive vibe: " + ", ".join(cues[:3])}
+    return None
+
+
 def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bool:
     """Lean AGENCY (Phase 1): when a known person is PRESENT but quiet, let Rex DECIDE — via the
     lean brain, grounded in perception + memory + mood — to say ONE motivated thing or just watch
@@ -4382,6 +4461,8 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     except Exception:
         mood = None
     holiday_plan = None
+    visual_riff = None
+    world = _lean_world()
     try:
         # Calendar questions are a one-shot Lean cue, not a second proactive
         # speaker. The helper owns per-person/per-date de-dupe shared with the
@@ -4389,16 +4470,22 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         holiday_plan = consciousness._next_holiday_plan_for_person(person_id)
     except Exception as exc:
         _log.debug("holiday-plan Lean cue lookup failed: %s", exc)
+    if not holiday_plan:  # A holiday question is the more useful one-shot opening.
+        try:
+            visual_riff = _lean_visual_riff_cue(person_id, world)
+        except Exception as exc:
+            _log.debug("visual-riff Lean cue lookup failed: %s", exc)
     try:
         from intelligence import lean_brain
         line = lean_brain.consider_initiating(
             person_id,
             transcript=_lean_recent_transcript(""),
-            world=_lean_world(),
+            world=world,
             quiet_secs=quiet,
             mood=mood,
             long_silence=long_silence,
             holiday_plan=holiday_plan,
+            visual_riff=visual_riff,
         )
     except Exception as exc:
         _log.debug("[lean] impulse generation failed: %s", exc)

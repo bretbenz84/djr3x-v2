@@ -7241,10 +7241,13 @@ def _step_lull_callback(snapshot: dict, profile: SituationProfile) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _pick_appearance_hint(person_db_id: Optional[int]) -> Optional[str]:
-    """Return a single natural-language appearance hint for prompting, or None.
+    """Return one safe, non-body visual hint for a gentle riff, or ``None``.
 
-    Reads the person_facts table for category='appearance' and formats one or
-    two attributes into a short phrase Rex can riff on.
+    Appearance enrollment is deliberately broader than conversational material.
+    In particular, height, build, age, and arbitrary "notable features" do not
+    belong in an unprompted comment.  Keep this shared helper to hair and a small
+    allowlist of neutral accessories, so return greetings and Lean cues follow the
+    same rule.
     """
     if person_db_id is None:
         return None
@@ -7261,7 +7264,20 @@ def _pick_appearance_hint(person_db_id: Optional[int]) -> Optional[str]:
 
     notable = attrs.get("notable_features")
     if notable and notable not in ("[]", "None", "none"):
-        candidates.append(f"notable features: {notable}")
+        try:
+            features = json.loads(notable) if isinstance(notable, str) else notable
+        except (TypeError, ValueError):
+            features = [notable]
+        if not isinstance(features, list):
+            features = [features]
+        safe_accessories = {
+            "glasses", "sunglasses", "hat", "cap", "beanie", "headphones",
+            "earbuds", "scarf",
+        }
+        for feature in features:
+            value = str(feature or "").strip().lower()
+            if value in safe_accessories:
+                candidates.append(f"a familiar {value}")
 
     hair = []
     if attrs.get("hair_color"):
@@ -7270,9 +7286,6 @@ def _pick_appearance_hint(person_db_id: Optional[int]) -> Optional[str]:
         hair.append(attrs["hair_style"])
     if hair:
         candidates.append(f"{' '.join(hair)} hair")
-
-    if attrs.get("build"):
-        candidates.append(f"{attrs['build']} build")
 
     if not candidates:
         return None

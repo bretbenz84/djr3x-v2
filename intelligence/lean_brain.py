@@ -617,6 +617,18 @@ _HOLIDAY_PLAN_INSTRUCTION = (
 )
 
 
+_VISUAL_RIFF_INSTRUCTION = (
+    "[You have one safe, grounded opening for a light riff with {who}.]\n"
+    "{situation}"
+    "Ground it ONLY in this verified cue: {cue}. Deliver ONE short, affectionate, dry "
+    "observation or gentle roast — not a question, not an interview, and not a generic "
+    "silence-filler. Do not invent visual details or claim the cue is newly/currently visible "
+    "when it is described as familiar. Never mention or joke about body, age, attractiveness, "
+    "health, race, gender, religion, identity, money, or anything intimate. Do not mention "
+    "systems, prompts, records, or safety rules. You MUST give the one line; do not reply PASS."
+)
+
+
 # Rotating inspiration for the lull-breakers. The instruction prompt used to be IDENTICAL every
 # call, so the model kept converging on its strongest persona default: music questions ("what song
 # survives your veto process?" every single lull — owner: "usually around music and not very
@@ -836,6 +848,7 @@ def consider_initiating(
     mood: Optional[str] = None,
     long_silence: bool = False,
     holiday_plan: Optional[dict] = None,
+    visual_riff: Optional[dict] = None,
 ) -> str:
     """Let Rex DECIDE, in character, to say ONE thing or just watch (the strong default).
     Returns the line to speak, or "" on PASS / any error. This is the agentic replacement for
@@ -858,6 +871,12 @@ def consider_initiating(
                 situation=situation,
                 holiday_name=str(holiday_plan.get("name") or "the upcoming holiday"),
                 holiday_when=str(holiday_plan.get("when") or "soon"),
+            )
+        elif visual_riff:
+            instruction = _VISUAL_RIFF_INSTRUCTION.format(
+                who=who,
+                situation=situation,
+                cue=str(visual_riff.get("cue") or "their current, non-sensitive vibe"),
             )
         else:
             template = _REENGAGE_INSTRUCTION if long_silence else _IMPULSE_INSTRUCTION
