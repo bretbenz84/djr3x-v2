@@ -855,6 +855,58 @@ venv/bin/python main.py
   a new person. The old consciousness step is retained only for non-Lean fallback.
   `awareness/holidays.py` uses a local US federal-holiday fallback when its hosted
   calendar cannot be reached; non-US failures retry after `HOLIDAY_FETCH_RETRY_SECS`.
+- Remembered-event follow-ups are Lean-owned (`LEAN_EVENT_FOLLOWUP_ENABLED`, default on):
+  the old silence-fill `memory_followup`/`small_talk` behavior ("how did the interview
+  go?") rode purposes the lean brain suppresses and went dark, so a due plan now enters
+  the single lull speaker as one cue instead of a competing proactive line.
+  `interaction._lean_event_followup_cue` reads `events.get_pending_followups` (dated plans
+  whose date has passed, or undated ones older than `FOLLOWUP_UNDATED_DAYS`) NON-destructively
+  — deliberately NOT `consciousness.get_pending_followup`, which POPS the reactive queue —
+  and `lean_brain.consider_initiating` gets an `event_followup` cue slot ranked holiday >
+  **event** > callback > visual-riff. UPCOMING events are intentionally excluded: anticipation
+  ("big day tomorrow — ready?") is still owned by the greeting-time `_pick_anticipated_event`
+  path. Coordination with the reactive `_post_response` follow-up and the startup greeting
+  follow-up is via shared session state — the moderate `_memory_followup_cadence_allows`
+  clamp (gap/cooldown/flat-room) plus the `_fired_followup_event_ids` anti-repeat set every
+  path honors — so one event is never asked twice. On a SPOKEN cue (never on PASS/dropped),
+  it registers the line under the `memory_followup` RexTurnFrame (so the next reply binds as
+  status-update/cancel/dismissal, not an identity command), arms the normal
+  `set_awaiting_followup_event` → `_resolve_awaiting_followup` loop that closes the event in
+  memory, and purges the in-memory queue via `_pending_followups_lock_remove`. Two hardening
+  details from adversarial review: (1) the cue is ranked BELOW celebration (see next bullet)
+  — the full order is celebration > holiday > event > callback > visual; (2) the clause is
+  DATED-aware — a dated plan whose date passed is asserted to have happened ("how did it
+  go?"), but a dateless aspiration surfaced only because it's stale ("redo the kitchen
+  sometime") must NOT assert completion, so it asks "did you ever get to it?"; and (3) when a
+  LATER lull line opens a *different* thread, the impulse now clears any stale
+  `_awaiting_followup_event` so the reply to that new line can't mis-close the old event with
+  an unrelated outcome (the single global `_awaiting_followup_event` is frame-independent).
+  Fail-safe to no-cue on any DB/lookup error. Tests: `tests/test_lean_event_followup.py`.
+- Remembered good-news / CELEBRATION check-ins are Lean-owned (`LEAN_CELEBRATION_CHECKIN_ENABLED`,
+  default on): the lean rework left an asymmetry — the HARD-event / negative-affect check-ins
+  (purpose `emotional_checkin`, NOT suppressed) kept firing via the legacy
+  `consciousness._step_emotional_checkin`, but its POSITIVE branch (Trigger A2, purpose
+  `celebration_checkin`) was suppressed, so Rex would console bad news yet silently drop good
+  news. `interaction._lean_celebration_cue` restores it as the TOP lull cue (good news is the
+  most meaningful open), reading `emotional_events.get_due_celebrations` (valence>0, unmuted,
+  not decayed, not acknowledged within the ack-gap). Faithful to the legacy Trigger A2: gated
+  by the same masters (`EMPATHY_ENABLED`/`EMPATHY_PROACTIVE_CHECKIN_ENABLED`). Three guards from
+  adversarial review: (1) CROWD DISCRETION — good news can be private (a pregnancy, an
+  engagement), so the cue honors `EMPATHY_DISCRETION_IN_CROWD` and stays silent when
+  `_current_crowd_count() > 1`, exactly like the bad-news console path (the legacy A2 lacked
+  this; reviving it without the guard would make good news LESS discreet than bad news). (2)
+  DIRECTIONAL session gate — it CHECKS but does not SET `consciousness._emotional_checkin_fired`,
+  so a console that already fired blocks a later celebration (don't pile good news on someone
+  just consoled), but a celebration doesn't block a later console about a DIFFERENT event
+  (matching legacy). (3) STARVATION backstop — since celebration is the TOP cue, a due one the
+  model keeps declining to voice (PASS) would starve the lower cues; `_celebration_unvoiced_attempts`
+  caps un-voiced offers per silent stretch (`LEAN_CELEBRATION_MAX_UNVOICED_ATTEMPTS`, cleared on
+  the next user turn) and then steps aside. On a SPOKEN cue it `mark_acknowledged`s the event
+  (per-event 7-day dedup, shared with the legacy path so neither re-celebrates it), logs the
+  same rex.db "I celebrated their good news" episode via `episodic_hooks.celebration`, and
+  registers under the `celebration_checkin` RexTurnFrame. The legacy A2 governor candidate stays
+  suppressed, so there's never a second celebration speaker. Fail-safe to no-cue on any
+  DB/lookup error. Tests: `tests/test_lean_celebration.py`.
 - Introduction handling that links known visible/recent people instead of renaming the current speaker.
 - README startup flag documentation.
 - User-facing override layer: `config.py` ends with `from user_config import *` (try/except ImportError) so `user_config.py` — gitignored, copied from the committed `user_config.example.py` template by `setup_macos.sh` — overrides defaults without editing `config.py`. Defaults stay in `config.py` (source of truth); `from config import X` is unaffected since the change is purely an additive tail. A re-derive tail after the import recomputes `ACTION_ROUTER_MODEL` (= `LLM_MODEL`) and `STARTUP_BOOT_TTS_LINE` so overriding their base propagates. Scope is ~45 essentials (models, personality dials + base prompt, location, feature toggles, timeouts); each ships commented-out at its current default. See the Configuration And Secrets section.

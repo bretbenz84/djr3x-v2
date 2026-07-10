@@ -353,6 +353,7 @@ def _messages(
     world: Optional[dict],
     *,
     label_current_speaker: bool = True,
+    turn_directive: Optional[str] = None,
 ) -> list[dict]:
     """System = persona + small context. History = the recent turns as REAL user/assistant
     messages (not a text blob shoved in the system prompt — leaner and more natural for the
@@ -410,6 +411,11 @@ def _messages(
             )
         ] + _other_participant_lines(raw_speakers, current_display)
         extra_lines = (extra_lines or []) + multi_lines
+    if turn_directive and turn_directive.strip():
+        # A narrowly-scoped per-turn cue (currently banked callback humor).
+        # Keep it in system context rather than disguising it as something the
+        # human said. Ordinary Lean replies still carry no agenda/menu stack.
+        extra_lines = (extra_lines or []) + [turn_directive.strip()]
 
     msgs: list[dict] = [
         {"role": "system", "content": _system_prompt(person_id, world, extra_lines)}
@@ -430,10 +436,13 @@ def stream_reply(
     person_id: Optional[int] = None,
     transcript: Optional[list[dict]] = None,
     world: Optional[dict] = None,
+    turn_directive: Optional[str] = None,
 ) -> Generator[str, None, None]:
     """Stream raw reply chunks from the one lean call. Reuses the shared OpenAI client +
     llm_compat param contract (so gpt-5.4-mini gets reasoning-off / max_completion_tokens)."""
-    messages = _messages(user_text, person_id, transcript, world)
+    messages = _messages(
+        user_text, person_id, transcript, world, turn_directive=turn_directive
+    )
     try:
         stream = llm_compat.create(
             llm._client,
@@ -522,13 +531,16 @@ def respond(
     person_id: Optional[int] = None,
     transcript: Optional[list[dict]] = None,
     world: Optional[dict] = None,
+    turn_directive: Optional[str] = None,
 ) -> dict:
     """Generate a full reply and MEASURE latency (for the harness / tuning). Returns
     {text, ttft_s (time to first token), total_s, model}."""
     t0 = time.monotonic()
     ttft: Optional[float] = None
     parts: list[str] = []
-    for chunk in stream_reply(user_text, person_id, transcript, world):
+    for chunk in stream_reply(
+        user_text, person_id, transcript, world, turn_directive=turn_directive
+    ):
         if ttft is None:
             ttft = time.monotonic() - t0
         parts.append(chunk)
@@ -617,6 +629,32 @@ _HOLIDAY_PLAN_INSTRUCTION = (
 )
 
 
+_CELEBRATION_INSTRUCTION = (
+    "[{who} shared some good news or a milestone with you earlier and you haven't "
+    "celebrated it with them yet. The conversation just reached a lull — a natural moment "
+    "to bring it up.]\n"
+    "{situation}"
+    "The good news: \"{news}\". In ONE short, warm, in-character line, celebrate it WITH "
+    "them — genuinely glad, dry wit is welcome, but NO jab at their expense and don't turn "
+    "it into a speech. You may end with ONE low-pressure follow-up ('how's that going?') "
+    "only if it lands naturally. Do NOT say 'I remember' / 'you told me' / 'my records', "
+    "and don't mention systems or that you were waiting for a quiet moment. You MUST give "
+    "the one line; do not reply PASS."
+)
+
+
+_EVENT_FOLLOWUP_INSTRUCTION = (
+    "[Something {who} told you about earlier has come due — a real, warm reason to check "
+    "back in. The conversation just reached a lull.]\n"
+    "{situation}"
+    "{event_clause} Ask ONE short, genuinely curious in-character question about it — the "
+    "way a friend who actually remembered would. Warm and specific, not an interrogation. "
+    "Do NOT preface it with 'I remember' / 'you told me' / 'according to my records', and do "
+    "not mention memory banks, calendars, or that you were waiting for a quiet moment — just "
+    "ask, like it's been on your mind. You MUST ask the one question; do not reply PASS."
+)
+
+
 _VISUAL_RIFF_INSTRUCTION = (
     "[You have one safe, grounded opening for a light riff with {who}.]\n"
     "{situation}"
@@ -626,6 +664,20 @@ _VISUAL_RIFF_INSTRUCTION = (
     "when it is described as familiar. Never mention or joke about body, age, attractiveness, "
     "health, race, gender, religion, identity, money, or anything intimate. Do not mention "
     "systems, prompts, records, or safety rules. You MUST give the one line; do not reply PASS."
+)
+
+
+_CALLBACK_LULL_INSTRUCTION = (
+    "[A detail {who} volunteered earlier has become callback material. The conversation has "
+    "just reached a natural light lull.]\n"
+    "{situation}"
+    "The safe, volunteered premise is: \"{premise}\". Land ONE short callback that connects "
+    "that premise to this moment or lets it drift back in with a fresh comic angle. Trust the "
+    "audience: do NOT say 'you told me', 'I remember', 'earlier you said', 'callback', or explain "
+    "the reference. Do not merely repeat the fact; transform it through comparison, exaggeration, "
+    "misdirection, or a dry implication. Affectionate and specific, never contemptuous. No question, "
+    "no second topic, no body/age/identity/health/money/religion/romance/grief material. You MUST "
+    "give the one callback line; do not reply PASS."
 )
 
 
@@ -840,6 +892,27 @@ def _situation_block(person_id: Optional[int], world: Optional[dict],
     return "You notice:\n" + "\n".join("- " + s for s in lines) + "\n"
 
 
+def _event_followup_clause(cue: Optional[dict]) -> str:
+    """The one-sentence 'here's the remembered plan' clause for the event-follow-up cue.
+    Scoped to PAST/overdue plans — upcoming anticipation lives in the greeting path, not here.
+
+    A DATED plan whose date has passed can be assumed to have happened ('how did it go?').
+    A DATELESS aspiration ('I should redo the kitchen sometime') that surfaced only because
+    it's been a while must NOT assert completion — it may never have occurred — so ask whether
+    they ever got to it instead (default to the dated wording when the flag is absent)."""
+    name = str((cue or {}).get("event_name") or "").strip() or "that thing they had going on"
+    dated = bool((cue or {}).get("dated", True))
+    if dated:
+        return (
+            f'They mentioned a while back that they had "{name}" coming up, and enough time has '
+            f"passed that it has almost certainly happened by now. Ask how it went."
+        )
+    return (
+        f'A while back they mentioned wanting to do "{name}" someday — you never heard whether '
+        f"it happened. Gently ask if they ever got to it, or how it turned out."
+    )
+
+
 def consider_initiating(
     person_id: Optional[int] = None,
     transcript: Optional[list[dict]] = None,
@@ -849,6 +922,9 @@ def consider_initiating(
     long_silence: bool = False,
     holiday_plan: Optional[dict] = None,
     visual_riff: Optional[dict] = None,
+    callback_premise: Optional[dict] = None,
+    event_followup: Optional[dict] = None,
+    celebration: Optional[dict] = None,
 ) -> str:
     """Let Rex DECIDE, in character, to say ONE thing or just watch (the strong default).
     Returns the line to speak, or "" on PASS / any error. This is the agentic replacement for
@@ -865,12 +941,30 @@ def consider_initiating(
             except Exception:
                 who = "them"
         situation = _situation_block(person_id, world, quiet_secs, mood)
-        if holiday_plan:
+        if celebration:
+            instruction = _CELEBRATION_INSTRUCTION.format(
+                who=who,
+                situation=situation,
+                news=str(celebration.get("description") or "the good news they shared"),
+            )
+        elif holiday_plan:
             instruction = _HOLIDAY_PLAN_INSTRUCTION.format(
                 who=who,
                 situation=situation,
                 holiday_name=str(holiday_plan.get("name") or "the upcoming holiday"),
                 holiday_when=str(holiday_plan.get("when") or "soon"),
+            )
+        elif event_followup:
+            instruction = _EVENT_FOLLOWUP_INSTRUCTION.format(
+                who=who,
+                situation=situation,
+                event_clause=_event_followup_clause(event_followup),
+            )
+        elif callback_premise:
+            instruction = _CALLBACK_LULL_INSTRUCTION.format(
+                who=who,
+                situation=situation,
+                premise=str(callback_premise.get("premise") or "their harmless running bit"),
             )
         elif visual_riff:
             instruction = _VISUAL_RIFF_INSTRUCTION.format(

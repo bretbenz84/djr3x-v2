@@ -90,6 +90,63 @@ def do_ambient_scan() -> None:
         _log.debug("ambient scan error: %s", exc)
 
 
+def do_empty_room_observation(snapshot: dict) -> None:
+    """Phase 1 of the empty-room arc: look around, then comment on one real detail.
+
+    It uses the dedicated ``boredom`` purpose so Lean's person-present chatter
+    suppression cannot discard it. The vision work stays off the consciousness
+    tick, and the caller owns pacing for the four-phase arc.
+    """
+    if not _c._empty_room_commentary_allowed(snapshot) or not _c._can_proactive_speak():
+        return
+
+    def _task() -> None:
+        try:
+            from vision import camera as _cam
+            from vision import scene as _scene
+
+            if bool(getattr(config, "BORED_ENV_SNARK_LOOK_AROUND", True)):
+                do_ambient_scan()
+            frame = _cam.get_frame()
+            details = _scene.describe_scene_detailed(frame) if frame is not None else {}
+            summary = str((details or {}).get("overall_summary") or "").strip()
+            notable = [
+                str(item).strip()
+                for item in ((details or {}).get("notable_details") or [])
+                if str(item).strip()
+            ]
+            if not summary and not notable:
+                summary = str(_scene.describe_scene() or "").strip()
+            if not summary and not notable:
+                env = (snapshot or {}).get("environment", {}) or {}
+                summary = str(env.get("description") or env.get("scene_type") or "").strip()
+                notable = [
+                    str(item.get("label") if isinstance(item, dict) else item).strip()
+                    for item in ((snapshot or {}).get("objects") or [])
+                    if str(item.get("label") if isinstance(item, dict) else item).strip()
+                ][:5]
+            if not summary and not notable:
+                return
+            concrete = "; ".join(notable[:5])
+            _c._generate_and_speak(
+                "You are DJ-R3X, alone in a room with nobody speaking and nobody visible. "
+                "You just deliberately looked around. Comment on ONE concrete thing you actually "
+                f"see. Scene: {summary or 'an empty room'}. "
+                f"Visible details: {concrete or 'none beyond the scene summary'}. "
+                "This is the FIRST phase: you are not bored or abandoned yet. Make one short, dry, "
+                "curious observation or joke about the object, decor, clutter, or room itself. "
+                "Do not ask where everybody went, complain about being alone, mention sleep, or "
+                "invent anything not in the vision description. One line only.",
+                emotion="curious",
+                purpose="boredom",
+                label="empty-room observation",
+            )
+        except Exception as exc:
+            _log.debug("empty-room observation error: %s", exc)
+
+    threading.Thread(target=_task, daemon=True, name="empty-room-observation").start()
+
+
 def do_private_thought() -> None:
     if not _c._can_proactive_speak():
         return

@@ -5844,6 +5844,11 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
         return
     if _startup_known_greeting_pending(snapshot):
         return
+    if bool(getattr(config, "BOREDOM_ENABLED", True)) and _room_looks_empty(snapshot):
+        # The four-phase empty-room arc owns all speech when Rex is genuinely
+        # alone. Random legacy micro-behaviors could otherwise jump ahead to
+        # "I'm bored" during phase 1 or keep joking after the left-on phase began.
+        return
 
     interval_min = getattr(config, "MICRO_BEHAVIOR_INTERVAL_SECS_MIN", 15)
     interval_max = getattr(config, "MICRO_BEHAVIOR_INTERVAL_SECS_MAX", 45)
@@ -5915,6 +5920,7 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
 # ── Boredom escalation: grumble when left alone, then doze off to SLEEP ──────────
 _boredom_started_at: float = 0.0        # monotonic time boredom began (0.0 = not bored)
 _last_boredom_comment_at: float = 0.0
+_last_empty_room_observation_at: float = 0.0
 _boredom_sleeping: bool = False         # True while the doze-off sleep flow is in flight
 _boredom_loop_started_at: float = 0.0   # anchor so a never-engaged droid still gets bored
 
@@ -5932,17 +5938,22 @@ def _human_idle_secs(now: float) -> float:
 
 
 def _speak_boredom_line(bored_for: float) -> None:
-    """Speak one canned bored grumble (no API spend), drowsier the longer he's ignored."""
+    """Speak phase 2 (bored) or phase 3 (left activated) with no API spend."""
     sleep_after = float(getattr(config, "BOREDOM_SLEEP_AFTER_SECS", 600.0))
-    late = sleep_after > 0 and bored_for >= sleep_after * 0.6
+    left_on_fraction = float(getattr(config, "BOREDOM_LEFT_ON_PHASE_FRACTION", 0.60))
+    left_on = sleep_after > 0 and bored_for >= sleep_after * left_on_fraction
     early_lines = list(getattr(config, "BOREDOM_LINES_EARLY", []) or [])
     late_lines = list(getattr(config, "BOREDOM_LINES_LATE", []) or [])
-    pool = (late_lines or early_lines) if late else (early_lines or late_lines)
+    left_on_lines = list(getattr(config, "BOREDOM_LINES_LEFT_ON", []) or [])
+    # Mix the two boredom banks during phase 2, then switch cleanly to the
+    # "somebody left me powered on" premise for phase 3.
+    bored_lines = early_lines + late_lines
+    pool = (left_on_lines or bored_lines) if left_on else (bored_lines or left_on_lines)
     if not pool:
         pool = ["...is anyone even here?"]
     _speak_async(
         random.choice(pool),
-        emotion=("sleepy" if late else "neutral"),
+        emotion=("annoyed" if left_on else "neutral"),
         # Dedicated purpose (NOT idle_monologue): the lean brain suppresses the
         # silence-fill purposes because its impulse replaces them — but the lean
         # impulse never fires in an EMPTY room, so riding idle_monologue silently
@@ -5964,7 +5975,9 @@ def _trigger_boredom_sleep() -> None:
         global _boredom_sleeping
         try:
             from intelligence import interaction  # lazy: interaction imports consciousness
-            interaction._enter_sleep_mode()
+            lines = list(getattr(config, "BOREDOM_SLEEP_RESIGNATION_LINES", []) or [])
+            resignation = random.choice(lines) if lines else None
+            interaction._enter_sleep_mode(transition_line=resignation)
         except Exception as exc:
             _log.warning("[boredom] sleep transition failed: %s", exc)
             _boredom_sleeping = False  # recover so boredom can re-arm
@@ -5973,10 +5986,9 @@ def _trigger_boredom_sleep() -> None:
 
 
 def _step_boredom_escalation(snapshot: dict, profile: "SituationProfile") -> None:
-    """Left alone (no human interaction) for a while → Rex grumbles he's bored; after
-    BOREDOM_SLEEP_AFTER_SECS of boredom he nods off into SLEEP. Wake word brings him
-    back. Comments are canned, so this costs nothing in API calls."""
-    global _boredom_started_at, _last_boredom_comment_at, _boredom_sleeping
+    """Run the four-phase empty-room arc: observe → bored → left-on → sleep."""
+    global _boredom_started_at, _last_boredom_comment_at
+    global _last_empty_room_observation_at, _boredom_sleeping
 
     if not bool(getattr(config, "BOREDOM_ENABLED", True)):
         return
@@ -5992,6 +6004,7 @@ def _step_boredom_escalation(snapshot: dict, profile: "SituationProfile") -> Non
     # already asleep, shutting down) clears the boredom clock.
     if state_module.get_state() != State.IDLE or is_waiting_for_response():
         _boredom_started_at = 0.0
+        _last_empty_room_observation_at = 0.0
         return
 
     # The boredom arc is the EMPTY-ROOM show (owner design: "act bored when
@@ -6000,18 +6013,41 @@ def _step_boredom_escalation(snapshot: dict, profile: "SituationProfile") -> Non
     # and grumbling "I'm bored" AT them reads as needy.
     if not _room_looks_empty(snapshot):
         _boredom_started_at = 0.0
+        _last_empty_room_observation_at = 0.0
         return
 
     now = time.monotonic()
-    if _human_idle_secs(now) < float(getattr(config, "BOREDOM_ONSET_SECS", 150.0)):
+    human_idle = _human_idle_secs(now)
+    observation_onset = float(getattr(config, "EMPTY_ROOM_OBSERVATION_ONSET_SECS", 30.0))
+    boredom_onset = float(getattr(config, "BOREDOM_ONSET_SECS", 150.0))
+    if human_idle < observation_onset:
         _boredom_started_at = 0.0   # engaged recently / not alone long enough
+        _last_empty_room_observation_at = 0.0
         return
 
-    # --- Bored. ---
+    # Phase 1 — he is alone long enough to notice the room, but not bored yet.
+    # Deliberately paced by the same interval as later comments so he looks alive
+    # without narrating every camera scan.
+    if human_idle < boredom_onset:
+        if profile.suppress_proactive or profile.suppress_system_comments:
+            return
+        interval = random.uniform(
+            float(getattr(config, "BOREDOM_COMMENT_INTERVAL_SECS_MIN", 55.0)),
+            float(getattr(config, "BOREDOM_COMMENT_INTERVAL_SECS_MAX", 95.0)),
+        )
+        if (now - _last_empty_room_observation_at) < interval or not _can_proactive_speak():
+            return
+        _last_empty_room_observation_at = now
+        from intelligence import idle_behaviors
+        idle_behaviors.do_empty_room_observation(snapshot)
+        return
+
+    # Phase 2 begins: boredom has set in. Phase 3 is selected inside
+    # _speak_boredom_line once enough of the boredom-to-sleep window has elapsed.
     if _boredom_started_at <= 0.0:
         _boredom_started_at = now
         _last_boredom_comment_at = 0.0
-        _log.info("[boredom] no interaction for ~%.0fs — Rex is bored.", _human_idle_secs(now))
+        _log.info("[boredom] no interaction for ~%.0fs — Rex is bored.", human_idle)
 
     bored_for = now - _boredom_started_at
 

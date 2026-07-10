@@ -275,6 +275,42 @@ LEAN_IMPULSE_PERSONAL_PROB = _env_float("LEAN_IMPULSE_PERSONAL_PROB", 0.4, min_v
 # conversation boundaries, and only receives safe appearance/accessory or posture cues.
 LEAN_VISUAL_RIFF_ENABLED = True
 LEAN_VISUAL_RIFF_PROBABILITY = _env_float("LEAN_VISUAL_RIFF_PROBABILITY", 0.25, min_value=0.0, max_value=1.0)
+# Remembered event/plan follow-ups as a *Lean-owned* lull cue: when the conversation
+# lulls, Rex can raise something the person told him about earlier that has now come
+# due ("how did the interview go?"). Data-driven from memory/events.get_pending_followups
+# (dated plans whose date has passed, or undated ones older than FOLLOWUP_UNDATED_DAYS).
+# The old silence-fill version rode the suppressed `memory_followup`/`small_talk` purposes
+# and went dark under the lean brain. This feeds the SAME single lull speaker as the
+# holiday/callback/visual-riff cues (one voice), reuses the existing FOLLOWUP_* cadence
+# clamp + `_fired_followup_event_ids` de-dup so it never double-asks with the reactive
+# _post_response follow-up or the startup greeting follow-up, and arms the normal
+# awaiting-resolution loop so the person's next reply closes the event in memory.
+# UPCOMING events are deliberately NOT handled here — anticipation ("big day tomorrow —
+# ready?") already has its own surviving greeting-time path (_pick_anticipated_event).
+LEAN_EVENT_FOLLOWUP_ENABLED = True
+# Remembered good-news / celebration check-ins as a *Lean-owned* lull cue: when someone
+# shared a positive milestone in a prior session ("I got the job", "we're expecting"),
+# Rex opens a lull by celebrating it WITH them. Data-driven from
+# memory/emotional_events.get_due_celebrations (valence>0, not yet acknowledged, not
+# decayed/muted). The old proactive version rode the suppressed `celebration_checkin`
+# purpose and went dark under the lean brain — while the HARD-event / negative-affect
+# check-ins (purpose `emotional_checkin`) stayed alive, so Rex would console bad news but
+# silently drop good news. This restores the symmetry through the SAME single lull speaker
+# (ranked ABOVE holiday/event/callback/visual — good news is the most meaningful open).
+# It shares the per-session `_emotional_checkin_fired` gate DIRECTIONALLY — a console
+# that already fired blocks a later celebration (don't pile good news on someone you just
+# consoled), but a celebration does NOT block a later console about a DIFFERENT event
+# (matching the legacy path; consoling after celebrating distinct news is fine). Good news
+# can be private, so it honors the SAME crowd discretion the bad-news path uses
+# (EMPATHY_DISCRETION_IN_CROWD): Rex won't announce a pregnancy/engagement in a group. It
+# marks the event acknowledged on speak (per-event 7-day dedup) and logs the same rex.db
+# "I celebrated their good news" episode as the legacy path.
+LEAN_CELEBRATION_CHECKIN_ENABLED = True
+# Backstop so a due celebration the model keeps declining to voice (returns PASS despite the
+# "do not reply PASS" instruction) can't sit at top priority and starve the lower lull cues:
+# after this many un-voiced offers within one silent stretch, the cue steps aside so
+# holiday/event/callback/visual can run. Resets on the next user turn.
+LEAN_CELEBRATION_MAX_UNVOICED_ATTEMPTS = 2
 LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
 # Flat-answer follow-up (reply-side, owner spec 2026-07-06): when a flat
 # half-answer ("it's okay", "not much", "meh") ANSWERS a question Rex asked, the
@@ -4151,10 +4187,11 @@ WAKE_FROM_SLEEP_ACKNOWLEDGMENTS = [
     "Booting personality. Unfortunately for everyone, it survived.",
 ]
 
-# Backup path for the sleep wake word: if OpenWakeWord does not fire while
-# sleeping, Rex can still VAD/transcribe a short utterance and wake only for an
-# explicit "wake up Rex/R3X" phrase.
-SLEEP_TRANSCRIBED_WAKE_FALLBACK_ENABLED = True
+# Sleep is intentionally ONNX-only: ordinary speech, general Rex wake models,
+# GUI/text input, and Whisper transcription cannot wake him. This makes SLEEP a
+# real low-attention state with one explicit acoustic exit.
+SLEEP_ONNX_ONLY_WAKE = True
+SLEEP_TRANSCRIBED_WAKE_FALLBACK_ENABLED = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSCIOUSNESS LOOP
@@ -5059,18 +5096,27 @@ BORED_ENV_SNARK_COOLDOWN_SECS = _env_float(
 BORED_ENV_SNARK_LOOK_AROUND = _env_bool("BORED_ENV_SNARK_LOOK_AROUND", True)
 
 # ── Boredom → sleep escalation ──────────────────────────────────────────────
-# Left alone (no HUMAN interaction) for a while, Rex starts grumbling that he's
-# bored; after BOREDOM_SLEEP_AFTER_SECS of being bored he nods off into SLEEP (the
-# wake word "wake up Rex" brings him back). Grumbles are canned lines (no API spend).
+# Left alone (no HUMAN interaction) Rex moves through one paced empty-room arc:
+#   1. look around and comment on something he can actually see;
+#   2. admit the room is getting boring;
+#   3. complain that somebody left him activated;
+#   4. resign himself to it and enter SLEEP.
+# Only the dedicated wakeuprex ONNX model wakes him from SLEEP.
 # The clock counts time since a human last engaged him — his own bored comments do
 # NOT reset it, so the doze-off still arrives on schedule.
 BOREDOM_ENABLED = _env_bool("BOREDOM_ENABLED", True)
+EMPTY_ROOM_OBSERVATION_ONSET_SECS = _env_float(
+    "EMPTY_ROOM_OBSERVATION_ONSET_SECS", 30.0, min_value=5.0, max_value=1800.0,
+)
 BOREDOM_ONSET_SECS = _env_float("BOREDOM_ONSET_SECS", 150.0, min_value=10.0, max_value=3600.0)
 # 900s: onset (150s) + this = ~17.5 min from everyone-left to doze-off, matching
 # the owner's stated 15-20 minute intent (was 600s = 12.5 min).
 BOREDOM_SLEEP_AFTER_SECS = _env_float("BOREDOM_SLEEP_AFTER_SECS", 900.0, min_value=30.0, max_value=7200.0)
 BOREDOM_COMMENT_INTERVAL_SECS_MIN = _env_float("BOREDOM_COMMENT_INTERVAL_SECS_MIN", 55.0, min_value=10.0, max_value=3600.0)
 BOREDOM_COMMENT_INTERVAL_SECS_MAX = _env_float("BOREDOM_COMMENT_INTERVAL_SECS_MAX", 95.0, min_value=10.0, max_value=3600.0)
+BOREDOM_LEFT_ON_PHASE_FRACTION = _env_float(
+    "BOREDOM_LEFT_ON_PHASE_FRACTION", 0.60, min_value=0.20, max_value=0.90,
+)
 BOREDOM_LINES_EARLY = [
     "Sure is quiet in here.",
     "Anybody? ...Anybody.",
@@ -5082,11 +5128,25 @@ BOREDOM_LINES_EARLY = [
 ]
 BOREDOM_LINES_LATE = [
     "My circuits are rusting from boredom over here.",
-    "If nobody shows up soon, I'm clocking out for a nap.",
-    "Entertainment levels critically low. Considering hibernation.",
     "I'd yawn if my designers had sprung for a mouth.",
-    "Powering down the enthusiasm subroutine. It wasn't getting used.",
-    "Running low on reasons to stay awake here.",
+    "Entertainment levels critically low. Even the furniture has stopped trying.",
+    "This room and I have run out of things to say to each other.",
+    "I have now reviewed the entire local collection of absolutely nothing happening.",
+]
+BOREDOM_LINES_LEFT_ON = [
+    "It's no fun being left activated in an empty room. I assume this was covered in the brochure.",
+    "Someone forgot to turn me off. Again. Excellent stewardship of advanced technology.",
+    "Who leaves a professional DJ powered on for the furniture? The chairs have terrible taste.",
+    "Still activated, still alone, still billing nobody for this performance.",
+    "I could be conserving power, but apparently the empty room needed supervision.",
+    "At this point I am less a droid and more an unnecessarily expensive night-light.",
+]
+BOREDOM_SLEEP_RESIGNATION_LINES = [
+    "All right. The room has won. I'm going to sleep until an organic remembers I exist.",
+    "No audience, no conversation, no reason to burn cycles. Sleep mode it is.",
+    "I accept my fate: abandoned with the furniture. Wake me when the room develops a personality.",
+    "That's enough solo duty for one activation. Power nap until somebody says the magic words.",
+    "Fine. I resign from empty-room supervision. Going to sleep.",
 ]
 
 # Idle humor: when nobody is around, Rex can heckle the empty room. When people

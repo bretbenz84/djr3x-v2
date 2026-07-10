@@ -289,6 +289,11 @@ _last_user_content_at: float = 0.0
 _last_followup_exchange: int = -(10**9)
 _last_followup_at: float = 0.0
 _fired_followup_event_ids: set[int] = set()
+# Per-silent-stretch backstop for the top-priority celebration cue: counts how many times a
+# due celebration event was OFFERED but not voiced (model PASSed), keyed by event id. Once it
+# hits LEAN_CELEBRATION_MAX_UNVOICED_ATTEMPTS the cue skips that event so lower lull cues can
+# run instead of being starved. Cleared on the next user turn (_begin_user_turn).
+_celebration_unvoiced_attempts: dict[int, int] = {}
 # After Rex asks a real question, hold the floor until this time so he doesn't
 # jump back in with idle banter before the user has had a chance to answer.
 _floor_held_until: float = 0.0
@@ -378,6 +383,8 @@ def _begin_user_turn() -> None:
     _consecutive_lean_impulses = 0
     _last_lean_impulse_at = 0.0
     _floor_held_until = 0.0
+    # Fresh silent stretch → fresh attempts to voice any due celebration.
+    _celebration_unvoiced_attempts.clear()
     _last_user_turn_started_at = time.monotonic()
     try:
         _situation_assessor.set_interaction_busy(True)
@@ -803,6 +810,12 @@ def _on_wake_word(model_name: str) -> None:
         except Exception:
             pass
         state_module.set_state(State.SHUTDOWN)
+        return
+
+    if current_state == State.SLEEP and model_name != "wakeuprex":
+        _log.info(
+            "[wake_word] ignored non-sleep wake model while asleep: %s", model_name
+        )
         return
 
     if current_state != State.SLEEP and model_name == "wakeuprex":
@@ -2950,8 +2963,8 @@ def _run_wake_animation() -> None:
         _log.warning("[sleep_mode] wake animation failed: %s", exc)
 
 
-def _enter_sleep_mode() -> str:
-    resp = _sleep_mode_line()
+def _enter_sleep_mode(*, transition_line: Optional[str] = None) -> str:
+    resp = (transition_line or "").strip() or _sleep_mode_line()
     _speak_blocking(resp, emotion="sleepy")
     _clear_listening_state_for_sleep()
     state_module.set_state(State.SLEEP)
@@ -4349,6 +4362,177 @@ def _lean_visual_riff_cue(person_id: Optional[int], world: Optional[dict]) -> Op
     return None
 
 
+def _lean_callback_lull_cue(
+    person_id: Optional[int], transcript: list[dict], *, long_silence: bool
+) -> Optional[dict]:
+    """Offer one already-vetted callback premise to Lean's single lull speaker.
+
+    The callback engine retains ownership of consent, sensitivity, relationship,
+    crowd, cooldown, and per-session limits. This seam adds only conversational
+    timing: callbacks need an actual exchange earlier in this session and belong
+    in a natural short lull, not a 40-second re-engagement from cold silence.
+    """
+    if person_id is None or long_silence:
+        return None
+    human_turns = sum(
+        1 for turn in (transcript or [])
+        if str(turn.get("speaker") or "").strip().lower()
+        not in {"rex", "dj-r3x", "dj rex", "djr3x", "r3x", "dj r3x"}
+        and str(turn.get("text") or "").strip()
+    )
+    if human_turns < 2:
+        return None
+    try:
+        from intelligence import callback_engine
+        if not callback_engine.lull_gates_clear(int(person_id)):
+            return None
+        return callback_engine.pick_lull_premise(int(person_id))
+    except Exception as exc:
+        _log.debug("[lean] callback lull cue unavailable: %s", exc)
+        return None
+
+
+def _current_crowd_count() -> int:
+    """Best-effort count of people (known AND unknown bodies) currently in view, for the
+    celebration crowd-discretion guard. Defaults to 1 (just the engaged person) when the
+    count is unknown, matching the legacy emotional-check-in snapshot semantics."""
+    try:
+        crowd = world_state.get("crowd") or {}
+        count = crowd.get("count")
+        if count is not None:
+            return int(count or 0)
+        people = world_state.get("people") or []
+        return len(people) or 1
+    except Exception:
+        return 1
+
+
+def _lean_celebration_cue(person_id: Optional[int]) -> Optional[dict]:
+    """Offer ONE remembered piece of good news to Lean's single lull speaker, or ``None``.
+
+    The old proactive celebration check-in ("that promotion — how's it going?") rode the
+    suppressed ``celebration_checkin`` purpose and went dark under the lean brain, while the
+    HARD-event / negative-affect check-ins (``emotional_checkin``, NOT suppressed) kept
+    firing — so Rex would console bad news but silently drop good news. This revives the
+    positive branch as the TOP lull cue.
+
+    Faithful to the legacy ``_step_emotional_checkin`` Trigger A2 (same master switches;
+    sourced from ``emotional_events.get_due_celebrations`` — valence>0, unmuted, not decayed,
+    not acknowledged within the ack-gap), with two guards:
+
+      * CROWD DISCRETION — good news can be private (a pregnancy, an engagement). Mirror the
+        bad-news console path, which stays silent in a group (``EMPATHY_DISCRETION_IN_CROWD``):
+        don't announce someone's personal milestone in front of others who may not know.
+        (Legacy Trigger A2 lacked this; A2's exposure was masked only because the whole
+        purpose was suppressed under lean — reviving it here without the guard would make good
+        news LESS discreet than bad news.)
+      * DIRECTIONAL session gate — skip when a console already fired this session
+        (``consciousness._emotional_checkin_fired``), so a celebration never piles on right
+        after a console. A celebration does NOT set that gate, so a later console about a
+        DIFFERENT event can still follow it (matching the legacy path).
+
+    Per-event de-dup is the ``mark_acknowledged`` write done on speak (not here); the
+    ``_celebration_unvoiced_attempts`` cap keeps a persistently-unvoiced celebration from
+    starving the lower cues. Fail-safe to ``None`` so a missing DB never breaks the impulse.
+    """
+    if person_id is None or not bool(getattr(config, "LEAN_CELEBRATION_CHECKIN_ENABLED", True)):
+        return None
+    if not bool(getattr(config, "EMPATHY_ENABLED", True)):
+        return None
+    if not bool(getattr(config, "EMPATHY_PROACTIVE_CHECKIN_ENABLED", True)):
+        return None
+    # Crowd discretion: don't reveal private good news in front of others.
+    if bool(getattr(config, "EMPATHY_DISCRETION_IN_CROWD", True)) and _current_crowd_count() > 1:
+        return None
+    # Don't stack a celebration on top of a console: mirrors the legacy step's early return
+    # on the shared once-per-session emotional-check-in gate.
+    try:
+        if int(person_id) in consciousness._emotional_checkin_fired:
+            return None
+    except Exception:
+        pass
+    try:
+        celebrations = emotional_events.get_due_celebrations(int(person_id), limit=2) or []
+    except Exception as exc:
+        _log.debug("[lean] celebration cue lookup failed: %s", exc)
+        return None
+    attempt_cap = int(getattr(config, "LEAN_CELEBRATION_MAX_UNVOICED_ATTEMPTS", 2) or 0)
+    for ev in celebrations:
+        try:
+            eid = int(ev.get("id"))
+        except (TypeError, ValueError):
+            continue
+        # Model kept declining to voice this one this stretch → step aside for lower cues.
+        if attempt_cap and _celebration_unvoiced_attempts.get(eid, 0) >= attempt_cap:
+            continue
+        desc = str(ev.get("description") or "").strip()
+        if not desc:
+            continue
+        person_name = None
+        first_name = ""
+        try:
+            person = people_memory.get_person(int(person_id)) or {}
+            person_name = str(person.get("name") or "").strip() or None
+            first_name = _first_name_or(person_name or "", "them")
+        except Exception:
+            pass
+        return {
+            "event_id": eid,
+            "description": desc,
+            "category": str(ev.get("category") or "").strip(),
+            "person_name": person_name,
+            "first_name": first_name,
+        }
+    return None
+
+
+def _lean_event_followup_cue(person_id: Optional[int]) -> Optional[dict]:
+    """Offer ONE remembered event whose date has passed ("how did the interview go?") to
+    Lean's single lull speaker, or ``None``.
+
+    The old silence-fill ``memory_followup`` behavior went dark under the lean brain; this
+    revives it as a Lean cue instead of a competing speaker. Source is the SAME data the
+    reactive ``_post_response`` follow-up reads — ``events.get_pending_followups`` — but read
+    NON-destructively here (the consciousness in-memory queue getter POPS, so we must not use
+    it). Coordination with the other follow-up paths is via shared session state:
+
+      * ``_memory_followup_cadence_allows()`` — the moderate gap/cooldown/flat-room clamp,
+        shared with ``_post_response`` (so a lull follow-up and a reactive one can't stack).
+      * ``_fired_followup_event_ids`` — the per-session anti-repeat set every follow-up path
+        (reactive, startup greeting, this cue) honors, so the same event is never asked twice.
+
+    UPCOMING events are intentionally excluded — anticipation is owned by the greeting-time
+    ``_pick_anticipated_event`` path. Fail-safe to ``None`` so a missing DB never breaks the
+    impulse.
+    """
+    if person_id is None or not bool(getattr(config, "LEAN_EVENT_FOLLOWUP_ENABLED", True)):
+        return None
+    if not _memory_followup_cadence_allows():
+        return None
+    try:
+        pending = events_memory.get_pending_followups(int(person_id)) or []
+    except Exception as exc:
+        _log.debug("[lean] event-followup cue lookup failed: %s", exc)
+        return None
+    for ev in pending:
+        try:
+            eid = int(ev.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if eid in _fired_followup_event_ids:
+            continue
+        name = str(ev.get("event_name") or "").strip()
+        if not name:
+            continue
+        # get_pending_followups returns BOTH dated-past events AND undated aspirations
+        # older than FOLLOWUP_UNDATED_DAYS. For a dated plan whose date has passed we can
+        # assert it happened ("how did it go?"); for a dateless "I should do X sometime" we
+        # must NOT — it may never have occurred — so carry the distinction to the clause.
+        dated = bool(str(ev.get("event_date") or "").strip())
+        return {"event_id": eid, "event_name": name, "kind": "past", "dated": dated}
+    return None
+
+
 def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bool:
     """Lean AGENCY (Phase 1): when a known person is PRESENT but quiet, let Rex DECIDE — via the
     lean brain, grounded in perception + memory + mood — to say ONE motivated thing or just watch
@@ -4358,6 +4542,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     pass, so the model isn't hammered) + a config 'in the mood' probability. Frequency lives in
     config (LEAN_IMPULSE_*), tuned live — the model reliably produces a good line OR passes."""
     global _last_lean_impulse_at, _last_proactive_line_at, _consecutive_lean_impulses
+    global _awaiting_followup_event
     if not (
         bool(getattr(config, "LEAN_BRAIN_ENABLED", False))
         and bool(getattr(config, "LEAN_IMPULSE_ENABLED", True))
@@ -4460,17 +4645,51 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         mood = body_mood.current_mood()[0]
     except Exception:
         mood = None
+    celebration = None
     holiday_plan = None
+    event_followup = None
     visual_riff = None
+    callback_premise = None
     world = _lean_world()
+    transcript = _lean_recent_transcript("")
+    # Remembered GOOD NEWS is the most meaningful thing Rex can open a lull with, so it
+    # outranks every other cue. Restores the symmetry the lean rework broke — console
+    # check-ins kept firing while celebrations went dark. Shares the emotional-check-in
+    # session gate so it never stacks on a console.
     try:
-        # Calendar questions are a one-shot Lean cue, not a second proactive
-        # speaker. The helper owns per-person/per-date de-dupe shared with the
-        # classic consciousness fallback.
-        holiday_plan = consciousness._next_holiday_plan_for_person(person_id)
+        celebration = _lean_celebration_cue(person_id)
     except Exception as exc:
-        _log.debug("holiday-plan Lean cue lookup failed: %s", exc)
-    if not holiday_plan:  # A holiday question is the more useful one-shot opening.
+        _log.debug("celebration Lean cue lookup failed: %s", exc)
+    if celebration:
+        # Count this offer; if the model never voices it, the cap in _lean_celebration_cue
+        # eventually steps aside so lower cues aren't starved. Cleared on the next user turn
+        # and popped below on a successful voicing.
+        try:
+            _cid = int(celebration.get("event_id"))
+            _celebration_unvoiced_attempts[_cid] = _celebration_unvoiced_attempts.get(_cid, 0) + 1
+        except (TypeError, ValueError):
+            pass
+    if not celebration:
+        try:
+            # Calendar questions are a one-shot Lean cue, not a second proactive
+            # speaker. The helper owns per-person/per-date de-dupe shared with the
+            # classic consciousness fallback.
+            holiday_plan = consciousness._next_holiday_plan_for_person(person_id)
+        except Exception as exc:
+            _log.debug("holiday-plan Lean cue lookup failed: %s", exc)
+    # A remembered plan that has come due ("how did the interview go?") beats a callback
+    # or visual riff — it's time-sensitive and specifically attentive. Allowed in both the
+    # quick lull and the long-silence re-engagement (a real follow-up is a great restart).
+    if not celebration and not holiday_plan:
+        try:
+            event_followup = _lean_event_followup_cue(person_id)
+        except Exception as exc:
+            _log.debug("event-followup Lean cue lookup failed: %s", exc)
+    if not celebration and not holiday_plan and not event_followup:
+        callback_premise = _lean_callback_lull_cue(
+            person_id, transcript, long_silence=long_silence
+        )
+    if not celebration and not holiday_plan and not event_followup and not callback_premise:
         try:
             visual_riff = _lean_visual_riff_cue(person_id, world)
         except Exception as exc:
@@ -4479,13 +4698,16 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         from intelligence import lean_brain
         line = lean_brain.consider_initiating(
             person_id,
-            transcript=_lean_recent_transcript(""),
+            transcript=transcript,
             world=world,
             quiet_secs=quiet,
             mood=mood,
             long_silence=long_silence,
             holiday_plan=holiday_plan,
             visual_riff=visual_riff,
+            callback_premise=callback_premise,
+            event_followup=event_followup,
+            celebration=celebration,
         )
     except Exception as exc:
         _log.debug("[lean] impulse generation failed: %s", exc)
@@ -4512,17 +4734,97 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         _consecutive_lean_impulses += 1   # count it against the into-the-void run (reset when the user speaks)
         conv_memory.add_to_transcript("Rex", line)
         conv_log.log_rex(line)
-        _register_rex_utterance(
-            line,
-            source="lean_impulse",
-            target_person_id=person_id,
-            expected_reply_types=(["answer", "statement"] if "?" in line else None),
-        )
+        if celebration:
+            # A celebration line carries the celebration_checkin FRAME so the person's reply
+            # ("it's going great") binds as a status update, not a stray command. dialogue_act
+            # infers the reply/blocked types from this source.
+            _register_rex_utterance(
+                line,
+                source="celebration_checkin",
+                topic=celebration.get("category") or "their good news",
+                target_person_id=person_id,
+            )
+        elif event_followup:
+            # A remembered-event follow-up needs the memory_followup FRAME (not the generic
+            # lean_impulse one) so the person's next reply is bound as the OUTCOME — a status
+            # update / cancellation / dismissal — and can't be misread as an identity command.
+            # Mirrors the reactive _post_response follow-up's frame.
+            _register_rex_utterance(
+                line,
+                source="memory_followup",
+                topic=event_followup.get("event_name") or "",
+                target_person_id=person_id,
+                expected_reply_types=["status_update", "cancel_event", "dismissal"],
+                blocked_actions=[
+                    "identity.name_correction",
+                    "identity.introduce_person",
+                ],
+            )
+        else:
+            _register_rex_utterance(
+                line,
+                source="lean_impulse",
+                target_person_id=person_id,
+                expected_reply_types=(["answer", "statement"] if "?" in line else None),
+            )
+        if not event_followup and _awaiting_followup_event is not None:
+            # This line opened a NEW thread (celebration / holiday / callback / riff / generic),
+            # NOT an event follow-up. An earlier armed event follow-up (from this cue, the
+            # reactive _post_response path, or the startup greeting) must not now capture the
+            # user's reply to THIS line and mis-close that event with an unrelated outcome —
+            # _resolve_awaiting_followup keys only off the global slot, frame-independent.
+            # Opening a fresh topic supersedes the stale follow-up, so drop it (adversarial
+            # review 2026-07-10). The event stays open in the DB and can resurface later.
+            _awaiting_followup_event = None
         if holiday_plan:
             try:
                 consciousness._mark_holiday_plan_asked(person_id, holiday_plan)
             except Exception as exc:
                 _log.debug("holiday-plan Lean cue mark failed: %s", exc)
+        if celebration:
+            # Mark the event acknowledged (per-event 7-day dedup, shared with the legacy
+            # emotional-check-in path so neither re-celebrates it) and log the same rex.db
+            # "I celebrated their good news" episode the legacy Trigger A2 wrote.
+            try:
+                emotional_events.mark_acknowledged(int(celebration["event_id"]))
+                _celebration_unvoiced_attempts.pop(int(celebration["event_id"]), None)
+            except Exception as exc:
+                _log.debug("[lean] celebration mark_acknowledged failed: %s", exc)
+            try:
+                from intelligence import episodic_hooks
+                fn = celebration.get("first_name") or ""
+                who_poss = f"{fn}'s" if fn and fn != "them" else "their"
+                episodic_hooks.celebration(
+                    person_id,
+                    celebration.get("person_name"),
+                    f"I celebrated {who_poss} good news with them.",
+                    detail={"category": celebration.get("category"), "trigger": "lean_celebration_cue"},
+                )
+            except Exception as exc:
+                _log.debug("[lean] celebration episodic hook failed: %s", exc)
+        if event_followup:
+            # Arm the awaiting-resolution loop (the person's next reply closes the event in
+            # memory via _resolve_awaiting_followup) AND mark it fired for the shared
+            # per-session anti-repeat — set_awaiting_followup_event does both (it calls
+            # _note_memory_followup_fired → _fired_followup_event_ids). Then purge it from the
+            # consciousness in-memory queue so the reactive _post_response path can't re-ask.
+            try:
+                eid = event_followup.get("event_id")
+                set_awaiting_followup_event(
+                    person_id, eid, event_followup.get("event_name") or ""
+                )
+                try:
+                    consciousness._pending_followups_lock_remove(person_id, eid)
+                except Exception as exc:
+                    _log.debug("[lean] event-followup queue purge failed: %s", exc)
+            except Exception as exc:
+                _log.debug("[lean] event-followup mark failed: %s", exc)
+        if callback_premise:
+            try:
+                from intelligence import callback_engine
+                callback_engine.spend_lull_premise(callback_premise)
+            except Exception as exc:
+                _log.debug("[lean] callback lull spend failed: %s", exc)
         _log.info("[lean] impulse — person_id=%s mode=%s text=%r", person_id, _mode, line)
     return completed
 
@@ -10857,6 +11159,7 @@ def _stream_llm_response(
 
     cb_claim = None
     cb_settled = False
+    lean_callback_directive = ""
     filler_stop = _start_latency_filler_timer()
     try:
         turn_plan = conversation_agenda.build_turn_plan(
@@ -10895,9 +11198,10 @@ def _stream_llm_response(
                 turn_plan=turn_plan,
             )
             if cb_claim is not None:
+                lean_callback_directive = _cb_engine.build_callback_directive(cb_claim)
                 comedy_mode = comedy_modes.with_banked_premise(
                     comedy_mode,
-                    _cb_engine.build_callback_directive(cb_claim),
+                    lean_callback_directive,
                 )
         except Exception as exc:
             cb_claim = None
@@ -10958,6 +11262,7 @@ def _stream_llm_response(
                 # two-chunk middle path: first sentence early, one seam, rest as one
                 # generation while chunk 1 plays.
                 two_chunk=not _full_streaming,
+                lean_turn_directive=lean_callback_directive,
             )
             if cb_claim is not None:
                 cb_settled = True
@@ -10971,6 +11276,7 @@ def _stream_llm_response(
                     text, person_id,
                     transcript=_lean_recent_transcript(text),
                     world=_lean_world(),
+                    turn_directive=lean_callback_directive or None,
                 ).get("text") or ""
             except Exception as exc:
                 _log.error("[lean] non-streaming reply failed, using classic path: %s", exc)
@@ -11258,7 +11564,9 @@ def _lean_world() -> Optional[dict]:
         return None
 
 
-def _reply_token_stream(user_text: str, person_id, agenda_directive):
+def _reply_token_stream(
+    user_text: str, person_id, agenda_directive, lean_turn_directive: str = ""
+):
     """Reply generator: the LEAN brain (one coherent call — persona + small context + recent
     turns) when LEAN_BRAIN_ENABLED, else the classic assembled-prompt path. A lean init error
     falls back to the classic path so a hiccup never breaks a live turn."""
@@ -11269,6 +11577,7 @@ def _reply_token_stream(user_text: str, person_id, agenda_directive):
                 user_text, person_id,
                 transcript=_lean_recent_transcript(user_text),
                 world=_lean_world(),
+                turn_directive=lean_turn_directive or None,
             )
         except Exception as exc:
             _log.error("[lean] live reply init failed, using classic path: %s", exc)
@@ -11358,6 +11667,7 @@ def _stream_and_speak_sentences(
     turn_start: Optional[float],
     filler_stop: threading.Event,
     two_chunk: bool = False,
+    lean_turn_directive: str = "",
 ) -> str:
     """Stream the LLM reply and speak it sentence-by-sentence.
 
@@ -11583,7 +11893,9 @@ def _stream_and_speak_sentences(
     raw_chunks: list[str] = []
     rest_raw: list[str] = []   # two-chunk mode: complete sentences after the first
     try:
-        for chunk in _reply_token_stream(user_text, person_id, agenda_directive):
+        for chunk in _reply_token_stream(
+            user_text, person_id, agenda_directive, lean_turn_directive
+        ):
             if _interrupted.is_set():
                 break
             raw_chunks.append(chunk)
@@ -21979,7 +22291,9 @@ def _loop() -> None:
                     _last_speech_at = time.monotonic()
                     _wake_from_sleep()
                     continue
-            if not bool(getattr(config, "SLEEP_TRANSCRIBED_WAKE_FALLBACK_ENABLED", True)):
+            if bool(getattr(config, "SLEEP_ONNX_ONLY_WAKE", True)) or not bool(
+                getattr(config, "SLEEP_TRANSCRIBED_WAKE_FALLBACK_ENABLED", False)
+            ):
                 _stop_event.wait(0.05)
                 continue
             if time.monotonic() < _listen_resume_at:
