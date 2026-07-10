@@ -1640,6 +1640,9 @@ def _run_gui_mode(run_dashboard, *, startup_jeopardy: bool = False) -> None:
         def _request_wake() -> None:
             if not state.is_state(State.SLEEP):
                 return
+            if bool(getattr(config, "SLEEP_ONNX_ONLY_WAKE", True)):
+                logger.info("GUI wake ignored — SLEEP requires the wakeuprex ONNX model")
+                return
 
             def _run() -> None:
                 try:

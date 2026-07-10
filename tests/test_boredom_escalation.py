@@ -21,6 +21,7 @@ class BoredomEscalationTest(unittest.TestCase):
             for k in (
                 "_boredom_started_at",
                 "_last_boredom_comment_at",
+                "_last_empty_room_observation_at",
                 "_boredom_sleeping",
                 "_boredom_loop_started_at",
                 "_engaged_last_touch_at",
@@ -53,6 +54,7 @@ class BoredomEscalationTest(unittest.TestCase):
             mock.patch.object(c, "_can_proactive_speak", return_value=True),
             mock.patch.object(c.config, "BOREDOM_ENABLED", True),
             mock.patch.object(c.config, "BOREDOM_ONSET_SECS", 150.0),
+            mock.patch.object(c.config, "EMPTY_ROOM_OBSERVATION_ONSET_SECS", 30.0),
             mock.patch.object(c.config, "BOREDOM_SLEEP_AFTER_SECS", 600.0),
             mock.patch.object(c.config, "BOREDOM_COMMENT_INTERVAL_SECS_MIN", 0.0),
             mock.patch.object(c.config, "BOREDOM_COMMENT_INTERVAL_SECS_MAX", 0.0),
@@ -79,6 +81,42 @@ class BoredomEscalationTest(unittest.TestCase):
         speak.assert_called_once()
         sleep_trigger.assert_not_called()
         self.assertGreater(self.c._boredom_started_at, 0.0)
+
+    def test_phase_one_looks_and_comments_on_room_before_boredom(self):
+        c = self.c
+        from intelligence import idle_behaviors
+        c._boredom_started_at = 0.0
+        c._last_empty_room_observation_at = 0.0
+        c._boredom_sleeping = False
+        self._set_human_idle(60)  # observation phase: after 30s, before boredom at 150s
+        with (
+            mock.patch.object(c, "state_module") as sm,
+            mock.patch.object(c, "is_waiting_for_response", return_value=False),
+            mock.patch.object(c, "_can_proactive_speak", return_value=True),
+            mock.patch.object(idle_behaviors, "do_empty_room_observation") as observe,
+            mock.patch.object(c.config, "BOREDOM_ENABLED", True),
+            mock.patch.object(c.config, "EMPTY_ROOM_OBSERVATION_ONSET_SECS", 30.0),
+            mock.patch.object(c.config, "BOREDOM_ONSET_SECS", 150.0),
+            mock.patch.object(c.config, "BOREDOM_COMMENT_INTERVAL_SECS_MIN", 0.0),
+            mock.patch.object(c.config, "BOREDOM_COMMENT_INTERVAL_SECS_MAX", 0.0),
+        ):
+            sm.get_state.return_value = c.State.IDLE
+            c._step_boredom_escalation({}, self.profile)
+        observe.assert_called_once_with({})
+        self.assertEqual(c._boredom_started_at, 0.0)
+
+    def test_phase_three_uses_left_activated_lines(self):
+        c = self.c
+        with (
+            mock.patch.object(c.random, "choice", side_effect=lambda pool: pool[0]),
+            mock.patch.object(c, "_speak_async") as speak,
+            mock.patch.object(c.config, "BOREDOM_SLEEP_AFTER_SECS", 600.0),
+            mock.patch.object(c.config, "BOREDOM_LEFT_ON_PHASE_FRACTION", 0.60),
+            mock.patch.object(c.config, "BOREDOM_LINES_LEFT_ON", ["Someone left me on."]),
+        ):
+            c._speak_boredom_line(400.0)
+        self.assertEqual(speak.call_args.args[0], "Someone left me on.")
+        self.assertEqual(speak.call_args.kwargs["emotion"], "annoyed")
 
     def test_dozes_off_after_sleep_threshold(self):
         self._set_human_idle(900)

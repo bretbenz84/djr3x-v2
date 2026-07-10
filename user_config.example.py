@@ -180,10 +180,13 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 # Seconds of silence that close a single spoken turn before it is processed.
 # SILENCE_TIMEOUT_SECS = 0.6
 
-# Boredom flow (env-backed): seconds alone before Rex starts bored remarks, and
-# total bored seconds before he dozes off to SLEEP.
+# Four-phase empty-room flow (env-backed): look/comment, get bored, complain he
+# was left activated, then resign and sleep. Phase 3 starts 60% of the way from
+# boredom onset to sleep. SLEEP wakes only through the wakeuprex ONNX model.
+# EMPTY_ROOM_OBSERVATION_ONSET_SECS = 30.0
 # BOREDOM_ONSET_SECS = 150.0
-# BOREDOM_SLEEP_AFTER_SECS = 600.0
+# BOREDOM_LEFT_ON_PHASE_FRACTION = 0.60
+# BOREDOM_SLEEP_AFTER_SECS = 900.0
 
 # Wake-word sensitivity 0–1. Raise to cut false triggers, lower for sensitivity.
 # Per-model values override the global default.

@@ -825,5 +825,85 @@ class RunningBitEscalationTests(unittest.TestCase):
             self.assertFalse(callbacks.off_cooldown(self._row(1, just_fired), now=now))
 
 
+class LeanCallbackSeamTests(unittest.TestCase):
+    """Lean receives one callback cue without reviving a competing speaker."""
+
+    def test_reactive_directive_enters_lean_system_context(self):
+        from intelligence import lean_brain
+
+        messages = lean_brain._messages(
+            "That telescope broke again.",
+            None,
+            [],
+            None,
+            turn_directive="Callback material: they print telescopes at 2am.",
+        )
+        self.assertIn("print telescopes at 2am", messages[0]["content"])
+        self.assertEqual(messages[-1]["content"], "That telescope broke again.")
+
+    def test_lull_callback_uses_transform_not_recap_instruction(self):
+        from types import SimpleNamespace as NS
+        from intelligence import lean_brain
+
+        captured = []
+
+        def fake_create(client, **kwargs):
+            captured.append(kwargs["messages"][-1]["content"])
+            return [NS(choices=[NS(delta=NS(content="Even your telescope keeps astronomer hours."))])]
+
+        with mock.patch.object(lean_brain.llm_compat, "create", side_effect=fake_create):
+            line = lean_brain.consider_initiating(
+                person_id=None,
+                transcript=[],
+                callback_premise={"premise": "prints telescopes at 2am"},
+            )
+        self.assertEqual(line, "Even your telescope keeps astronomer hours.")
+        self.assertIn("do NOT say 'you told me'", captured[0])
+        self.assertIn("transform it", captured[0])
+        self.assertNotIn("fresh angles", captured[0])
+
+    def test_lull_cue_requires_real_exchange_and_engine_clearance(self):
+        from intelligence import interaction
+
+        premise = {"id": 7, "premise": "prints telescopes at 2am"}
+        transcript = [
+            {"speaker": "Bret", "text": "I print telescopes at 2am."},
+            {"speaker": "Rex", "text": "Naturally."},
+            {"speaker": "Bret", "text": "The printer hates me."},
+        ]
+        with (
+            mock.patch("intelligence.callback_engine.lull_gates_clear", return_value=True),
+            mock.patch("intelligence.callback_engine.pick_lull_premise", return_value=premise),
+        ):
+            self.assertEqual(
+                interaction._lean_callback_lull_cue(1, transcript, long_silence=False),
+                premise,
+            )
+            self.assertIsNone(
+                interaction._lean_callback_lull_cue(1, transcript, long_silence=True)
+            )
+
+    def test_reply_stream_forwards_only_narrow_lean_directive(self):
+        from intelligence import interaction
+
+        captured = {}
+
+        def fake_stream(*args, **kwargs):
+            captured.update(kwargs)
+            return iter(["A callback."])
+
+        with (
+            mock.patch.object(interaction.config, "LEAN_BRAIN_ENABLED", True),
+            mock.patch("intelligence.lean_brain.stream_reply", side_effect=fake_stream),
+            mock.patch.object(interaction, "_lean_recent_transcript", return_value=[]),
+            mock.patch.object(interaction, "_lean_world", return_value={}),
+        ):
+            stream = interaction._reply_token_stream(
+                "Current turn", 1, "classic agenda ignored", "one callback cue"
+            )
+            self.assertEqual(list(stream), ["A callback."])
+        self.assertEqual(captured["turn_directive"], "one callback cue")
+
+
 if __name__ == "__main__":
     unittest.main()

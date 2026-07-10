@@ -1565,7 +1565,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         finally:
             interaction._wake_word_fired.clear()
 
-    def test_sleep_state_accepts_general_and_sleep_wake_words(self):
+    def test_sleep_state_accepts_only_dedicated_sleep_wake_word(self):
         from intelligence import interaction
 
         old_state = interaction.state_module.get_state()
@@ -1578,9 +1578,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
                 return_value=False,
             ):
                 interaction._on_wake_word("Hey_rex")
-                self.assertTrue(interaction._wake_word_fired.is_set())
-                with interaction._wake_lock:
-                    self.assertEqual(interaction._last_wake_word, "Hey_rex")
+                self.assertFalse(interaction._wake_word_fired.is_set())
 
                 interaction._wake_word_fired.clear()
                 interaction._on_wake_word("wakeuprex")
@@ -1591,7 +1589,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
             interaction._wake_word_fired.clear()
             interaction.state_module.set_state(old_state)
 
-    def test_wake_word_detector_uses_general_models_as_sleep_fallbacks(self):
+    def test_wake_word_detector_excludes_general_models_during_sleep(self):
         from audio import wake_word
         from state import State
 
@@ -1600,7 +1598,7 @@ class PostTtsHandoffPolicyTest(unittest.TestCase):
         try:
             self.assertEqual(
                 wake_word._active_for_state(State.SLEEP),
-                frozenset({"Hey_rex", "Yo_robot", "wakeuprex"}),
+                frozenset({"wakeuprex"}),
             )
         finally:
             wake_word._loaded_models = old_loaded

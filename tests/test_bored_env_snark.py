@@ -105,7 +105,9 @@ class FireTest(unittest.TestCase):
     def test_fires_a_visual_curiosity_line_grounded_in_objects(self):
         gen, _ = self._fire()
         gen.assert_called_once()
-        self.assertEqual(gen.call_args.kwargs.get("purpose"), "visual_curiosity")
+        # Empty-room room riffs use the dedicated boredom purpose so Lean's
+        # person-present visual-curiosity suppression cannot discard them.
+        self.assertEqual(gen.call_args.kwargs.get("purpose"), "boredom")
         prompt = gen.call_args.args[0]
         self.assertTrue(any(o in prompt for o in ("black chair", "boxes", "abstract art")))
 

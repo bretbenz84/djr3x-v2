@@ -1,12 +1,12 @@
 """
 Wake word detection using OpenWakeWord ONNX models.
 
-Five models are loaded from assets/models/wake_word/:
+Wake models are loaded from assets/models/wake_word/:
   - Dee-Jay_Rex, Hey_DJ_Rex, Hey_rex, Yo_robot  — active in IDLE, QUIET, ACTIVE
   - wakeuprex                                     — active in SLEEP
 
-While asleep, all loaded Rex wake models are active so a missed dedicated
-"wake up Rex" model cannot strand the droid in sleep mode.
+While asleep, only the dedicated ``wakeuprex`` ONNX model is active. General
+address models and transcription do not wake the droid from real sleep mode.
 
 Detection runs in a background daemon thread. Missing model files are skipped
 with a warning rather than causing startup failures.
@@ -184,7 +184,9 @@ def _active_for_state(current_state: State) -> frozenset[str]:
     if current_state in (State.IDLE, State.QUIET, State.ACTIVE):
         return (_GENERAL_MODELS | _SHUTDOWN_MODELS) & _loaded_models
     if current_state is State.SLEEP:
-        return (_SLEEP_MODELS | _GENERAL_MODELS | _SHUTDOWN_MODELS) & _loaded_models
+        # The shutdown model remains a kill-switch, but wakeuprex is the only
+        # model capable of returning SLEEP to an interactive state.
+        return (_SLEEP_MODELS | _SHUTDOWN_MODELS) & _loaded_models
     return frozenset()  # SHUTDOWN — nothing should fire
 
 
