@@ -342,7 +342,11 @@ LEAN_IMPULSE_REENGAGE_SECS  = 40.0
 # Old silence-fill proactive purposes the lean brain's own agency (the motivated impulse) REPLACES.
 # Suppressed ONLY when LEAN_BRAIN_ENABLED. Genuine perception/real-event reactors — arrival greeting
 # (presence_reaction), wave_back, world.animal_arrival, world.scenery_change, room_change,
-# room_reaction, smile, emotional_checkin — are NOT listed and keep firing.
+# room_reaction, smile, emotional_checkin, relationship_inquiry ("who's this?" when an unknown
+# joins someone Rex knows) — are NOT listed and keep firing. (relationship_inquiry was mis-filed
+# here as silence-fill; it's a perception ask like presence_reaction. Its "who's this, {name}?"
+# line generates through the lean one-voice path (generate_and_speak -> get_response ->
+# lean_brain.stream_directive), so un-suppressing it makes Rex ask in the lean voice.)
 # NOTE: this set hands PERSON-PRESENT silence-filling to the lean impulse. Empty-room
 # behaviors must NOT ride these purposes — the lean impulse never fires with nobody
 # present, so a suppressed empty-room behavior has no replacement (field regression
@@ -350,7 +354,7 @@ LEAN_IMPULSE_REENGAGE_SECS  = 40.0
 # it now uses the dedicated "boredom" purpose, and startup_empty_room was removed
 # from this set for the same reason — it's a one-shot self-capped empty-room line).
 LEAN_SUPPRESSED_PROACTIVE_PURPOSES = {
-    "idle_monologue", "small_talk", "lull_callback", "relationship_inquiry",
+    "idle_monologue", "small_talk", "lull_callback",
     "celebration_checkin", "memory_followup", "memory_musing", "reengagement",
     "visual_curiosity", "ambient_observation", "appearance_riff", "people_roast",
     "weather.proactive_comment",
@@ -4749,6 +4753,18 @@ UNKNOWN_WITH_ENGAGED_CONFIRM_SECS = 2.5
 
 # Cooldown on relationship-inquiry prompts so Rex doesn't badger.
 RELATIONSHIP_PROMPT_COOLDOWN_SECS = 45.0
+# How long the "who's this?" in-flight latch survives before it's treated as dead and
+# retried. Under ENFORCE the governor can reject the submitted candidate (a higher-priority
+# reactor wins the tick) so its on_spoke never runs to clear the latch; this timeout keeps a
+# rejected ask from wedging the reactor for the session. MUST exceed the worst-case in-flight
+# duration: unlike identity_prompt (which speaks a FIXED string, so its window is just enqueue
+# latency and 10s is fine), the relationship line runs the LLM (get_response) INSIDE the
+# in-flight window before on_spoke fires — bounded by LLM_REQUEST_TIMEOUT_SECS (30s). A window
+# below that would falsely judge a slow-but-legitimate generation "stale", clear the latch, and
+# submit a SECOND candidate → Rex asks "who's this?" twice. 40s clears the 30s ceiling with
+# margin, so a second candidate is never submitted while the first is still generating; the
+# tradeoff is a genuinely-rejected ask waits ~40s (≈ the 45s re-ask cooldown) before retrying.
+RELATIONSHIP_PROMPT_INFLIGHT_STALE_SECS = 40.0
 
 # Time window during which Rex treats a prior engagement as "still recent" —
 # used to chain identity enrollment into a relationship follow-up question,

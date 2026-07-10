@@ -142,6 +142,13 @@ _IDENTITY_PROMPT_COOLDOWN_SECS = 45.0
 # and, if found, the new face is enrolled and an edge saved.
 _pending_relationship_prompt = threading.Event()
 _pending_relationship_context: dict = {}  # {"engaged_person_id": int, "engaged_name": str, "slot_id": str, "asked_at": float}
+# Set between submitting a "who's this?" candidate and it actually speaking, so the reactor
+# doesn't re-submit a duplicate every tick before the first one wins arbitration. Under
+# ENFORCE the governor can REJECT the candidate (its speak_fn/on_spoke never run), so the
+# latch has a stale-timeout auto-clear (RELATIONSHIP_PROMPT_INFLIGHT_STALE_SECS) — mirrors
+# _identity_prompt_in_flight.
+_relationship_prompt_in_flight = threading.Event()
+_relationship_prompt_in_flight_at: float = 0.0
 _RELATIONSHIP_PROMPT_COOLDOWN_SECS = 45.0
 _UNKNOWN_WITH_ENGAGED_CONFIRM_SECS = 5.0
 # Per-session slot ids we've already asked about, so Rex doesn't re-ask.
@@ -7473,6 +7480,7 @@ def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> Non
     for a {name, relationship} pair.
     """
     global _last_identity_prompt_at, _unknown_first_seen_at
+    global _relationship_prompt_in_flight_at
 
     if not _can_speak():
         return
@@ -7480,6 +7488,19 @@ def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> Non
         return
     if _pending_relationship_prompt.is_set():
         return
+    if _relationship_prompt_in_flight.is_set():
+        # A candidate is submitted but hasn't spoken yet — don't stack a duplicate. But the
+        # governor can REJECT it (e.g. a higher-priority emotional_checkin wins the tick), in
+        # which case its speak_fn/on_spoke never run and nothing clears this latch. A latch
+        # older than the stale window is dead — clear it and allow a retry.
+        stale = float(getattr(config, "RELATIONSHIP_PROMPT_INFLIGHT_STALE_SECS", 10.0) or 10.0)
+        if (time.monotonic() - _relationship_prompt_in_flight_at) < stale:
+            return
+        _log.info(
+            "[relationship_inquiry] stale in-flight latch (>%.0fs, governor likely rejected) "
+            "— clearing and retrying", stale,
+        )
+        _relationship_prompt_in_flight.clear()
 
     audio_scene = snapshot.get("audio_scene", {}) or {}
     try:
@@ -7555,19 +7576,34 @@ def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> Non
         return
 
     first_name = _first_name(engaged_name, "friend")
-    _last_identity_prompt_at = now
-    _pending_relationship_context.clear()
-    _pending_relationship_context.update({
+    rel_ctx = {
         "engaged_person_id": engaged_id,
         "engaged_name": engaged_name,
         "slot_id": ripe_slot,
         "asked_at": now,
-    })
-    _pending_relationship_prompt.set()
+    }
     _log.info(
         "consciousness: asking %s about unknown visitor (slot=%s)",
         engaged_name, ripe_slot,
     )
+
+    def _relationship_inquiry_spoke() -> None:
+        # Arm the reply window + cooldown ONLY when the line actually speaks. Under ENFORCE,
+        # _generate_and_speak returns True at governor SUBMISSION, so the old pre-speak arming
+        # + `if not _generate_and_speak(): clear` self-heal was dead code: on a candidate the
+        # governor then REJECTED (e.g. a higher-priority emotional_checkin won the tick),
+        # _pending_relationship_prompt stayed set with no question asked, and the next user
+        # statement got mis-parsed as the answer. Arming here — the on_spoke hook that fires
+        # only after the line enqueues — closes that hole (mirrors _step_identity_prompt).
+        global _last_identity_prompt_at
+        _last_identity_prompt_at = time.monotonic()
+        _pending_relationship_context.clear()
+        _pending_relationship_context.update(rel_ctx)
+        _pending_relationship_prompt.set()
+        _relationship_prompt_in_flight.clear()
+
+    _relationship_prompt_in_flight.set()
+    _relationship_prompt_in_flight_at = now
     if not _generate_and_speak(
         f"You're talking with '{first_name}' and a new unfamiliar face has just "
         f"joined the view. In one short in-character Rex line, ask {first_name} "
@@ -7577,9 +7613,10 @@ def _step_relationship_inquiry(snapshot: dict, profile: SituationProfile) -> Non
         emotion="curious",
         wait_secs=getattr(config, "IDENTITY_RESPONSE_WAIT_SECS", 20.0),
         purpose="relationship_inquiry",
+        on_spoke=_relationship_inquiry_spoke,
     ):
-        _pending_relationship_prompt.clear()
-        _pending_relationship_context.clear()
+        # Submission itself failed (legacy claim rejected / not enforcing) → release the latch.
+        _relationship_prompt_in_flight.clear()
 
 
 def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
@@ -12025,6 +12062,7 @@ def start() -> None:
     _identity_prompt_reply_until = 0.0
     _pending_relationship_prompt.clear()
     _pending_relationship_context.clear()
+    _relationship_prompt_in_flight.clear()
     _asked_relationship_slots.clear()
     _unknown_first_seen_at.clear()
     _solo_unknown_since = 0.0

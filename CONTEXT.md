@@ -907,6 +907,29 @@ venv/bin/python main.py
   registers under the `celebration_checkin` RexTurnFrame. The legacy A2 governor candidate stays
   suppressed, so there's never a second celebration speaker. Fail-safe to no-cue on any
   DB/lookup error. Tests: `tests/test_lean_celebration.py`.
+- "Who's this?" relationship inquiry is a lean-owned PERCEPTION reactor now
+  (`consciousness._step_relationship_inquiry`, dispatched in the tick loop). When an unknown
+  face lingers alongside the known engaged person for `UNKNOWN_WITH_ENGAGED_CONFIRM_SECS`, Rex
+  asks who they are and arms `_pending_relationship_prompt` so the next utterance is parsed as
+  the {name, relationship} answer (answer side in `interaction._handle_relationship_reply`).
+  It was mis-filed in `LEAN_SUPPRESSED_PROACTIVE_PURPOSES` (it's a perception ask like
+  `presence_reaction`, not silence-fill) and went dark under lean; removed from that set, it
+  now fires — and its "who's this, {name}?" line generates through the lean one-voice path
+  (`generate_and_speak` → `get_response` → `lean_brain.stream_directive`), so Rex asks in the
+  lean voice. It stays priority 95, grace-whitelisted (`end_thread`), and question-budget-exempt
+  (`question_budget._URGENT_KINDS`). CRITICAL arming fix (also a latent pre-existing bug):
+  under `ACTION_GOVERNOR_ENFORCE` `_generate_and_speak` returns True at governor SUBMISSION, so
+  the old pre-speak arming + `if not _generate_and_speak(): clear` self-heal was dead code and
+  left the reply window armed on candidates the governor then REJECTED (a higher-priority
+  reactor wins the tick) — the next user statement got mis-parsed as an answer to a question
+  Rex never asked. Arming now lives in an `on_spoke` callback (fires only after the line
+  enqueues) plus a `_relationship_prompt_in_flight` latch with a
+  `RELATIONSHIP_PROMPT_INFLIGHT_STALE_SECS` auto-clear (so a governor-rejected candidate can't
+  wedge the reactor) — mirrors the `identity_prompt` reactor. NOTE the stale window is 40s, NOT
+  identity_prompt's 10s: identity speaks a FIXED string (in-flight ≈ enqueue latency) whereas
+  this line runs the LLM inside the in-flight window, so the window must exceed
+  `LLM_REQUEST_TIMEOUT_SECS` (30s) or a slow-but-legitimate generation gets judged stale and
+  re-asked twice. Tests: `tests/test_relationship_inquiry_arming.py`, `tests/test_lean_agency.py`.
 - Introduction handling that links known visible/recent people instead of renaming the current speaker.
 - README startup flag documentation.
 - User-facing override layer: `config.py` ends with `from user_config import *` (try/except ImportError) so `user_config.py` — gitignored, copied from the committed `user_config.example.py` template by `setup_macos.sh` — overrides defaults without editing `config.py`. Defaults stay in `config.py` (source of truth); `from config import X` is unaffected since the change is purely an additive tail. A re-derive tail after the import recomputes `ACTION_ROUTER_MODEL` (= `LLM_MODEL`) and `STARTUP_BOOT_TTS_LINE` so overriding their base propagates. Scope is ~45 essentials (models, personality dials + base prompt, location, feature toggles, timeouts); each ships commented-out at its current default. See the Configuration And Secrets section.

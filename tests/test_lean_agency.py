@@ -30,6 +30,13 @@ class GovernorSuppressionTest(unittest.TestCase):
         for reactor in ("presence_reaction", "world.animal_arrival", "world.scenery_change"):
             self.assertFalse(self._rejected(reactor, lean=True), reactor)
 
+    def test_relationship_inquiry_is_a_perception_reactor_not_suppressed(self):
+        # "who's this?" when an unknown joins someone Rex knows is a perception ask (like
+        # presence_reaction), NOT silence-fill — it must fire under the lean brain. It was
+        # mis-filed in the suppressed set and went dark; this pins that it no longer is.
+        self.assertFalse(self._rejected("relationship_inquiry", lean=True))
+        self.assertFalse(self._rejected("relationship_inquiry", lean=False))
+
 
 def _one_chunk_stream(text):
     """A fake OpenAI stream yielding one delta with `text`."""
