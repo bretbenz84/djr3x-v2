@@ -282,6 +282,28 @@ static void dispatch(const char* cmd, JsonDocument& doc, uint32_t seq) {
     return;
   }
 
+  // wheel: single-wheel bring-up jog (diagnostic — NOT in the advertised caps). Raw
+  // duty on ONE H-bridge for `ms` (default 1500, hard-capped), bypassing kinematics.
+  // Gated like any moving command (estop/fault/manual reject). docs §5.10.
+  if (!strcmp(cmd, "wheel")) {
+    if (gate != ACK_OK) { emit_ack(seq, false, gate); return; }
+    const char* side_s = doc["side"];
+    int side;
+    if      (side_s && (!strcmp(side_s, "left")  || !strcmp(side_s, "l"))) side = 0;
+    else if (side_s && (!strcmp(side_s, "right") || !strcmp(side_s, "r"))) side = 1;
+    else { emit_ack(seq, false, R_BAD_FIELD); return; }
+    if (!IS_NUM(doc["frac"])) { emit_ack(seq, false, R_BAD_FIELD); return; }
+    bool cl = false;
+    float frac = clamp_flag(doc["frac"].as<float>(), -1.0f, 1.0f, cl);
+    long ms_in = IS_NUM(doc["ms"]) ? doc["ms"].as<long>() : 1500;
+    if (ms_in < 0) ms_in = 0;
+    uint32_t ms = (uint32_t)ms_in;
+    if (ms > HARDCAP_WHEEL_TEST_MS) { ms = HARDCAP_WHEEL_TEST_MS; cl = true; }
+    ctl_wheel_test(side, frac, ms, seq);
+    emit_ack(seq, true, cl ? R_CLAMPED : ACK_OK);
+    return;
+  }
+
   // Unknown command.
   emit_ack(seq, false, R_UNKNOWN_CMD);
 }

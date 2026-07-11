@@ -208,6 +208,16 @@ void control_tick(float dt) {
           }
         }
         break;
+      case CMD_WHEEL:
+        // Time-bounded (NOT encoder-bounded — the whole point is to work with an
+        // unvalidated encoder). Rollover-safe unsigned elapsed compare, like the
+        // drive deadman above. On completion the act section below sees CMD_NONE and
+        // stops the wheel.
+        if ((uint32_t)(now - c.finite.wheel_start_ms) >= c.finite.wheel_ms) {
+          emitDone = true; dres = DONE_COMPLETED; dseq = c.finite.seq; dodom = c.odom;
+          c.finite = FiniteCmd(); c.cmd_mode = CMD_NONE;
+        }
+        break;
       default: break;
     }
   }
@@ -225,6 +235,11 @@ void control_tick(float dt) {
   if (halted) {
     s_ramp_lin = 0.0f; s_ramp_ang = 0.0f;   // don't resume mid-ramp after a halt clears
     hal_motors_off();
+  } else if (c.cmd_mode == CMD_WHEEL) {
+    // Single-wheel bring-up jog: raw duty on ONE wheel, no kinematics/PID. Keep the
+    // teleop ramp pinned to zero so a later takeover starts from rest, not mid-jog.
+    s_ramp_lin = 0.0f; s_ramp_ang = 0.0f;
+    hal_drive_wheel_raw(c.finite.wheel_side, c.finite.wheel_frac);
   } else if (c.cmd_mode == CMD_DRIVE) {
     // Teleop: slew the commanded velocity toward the target (accel-limited, symmetric)
     // so a stick push ramps up briskly and a release coasts to a stop rather than
@@ -331,6 +346,28 @@ void ctl_come(float heading_deg, float stop_at, uint32_t seq) {
   f.come_turning = (fabsf(heading_deg) > 1.0f);
   g_ctx.finite = f;
   g_ctx.cmd_mode = CMD_COME;
+  g_ctx.cmd_seq = seq;
+  if (g_ctx.state == ST_IDLE) g_ctx.state = ST_MOVING;
+  UNLOCK_STATE();
+  if (sup) emit_done(sseq, DONE_SUPERSEDED, sodom);
+}
+
+void ctl_wheel_test(int side, float frac, uint32_t ms, uint32_t seq) {
+  // Single-wheel bring-up jog: arm CMD_WHEEL for `ms` ms, then control_tick auto-stops
+  // it (done:completed). Runs as an AUTO finite command so the Mac/bench heartbeat keeps
+  // it alive and a dropped link trips the watchdog -> motors off within watchdog_ms; a
+  // gamepad taking over, `stop`, or `estop` supersede/cut it like any finite command.
+  bool sup = false; uint32_t sseq = 0; Odom sodom;
+  LOCK_STATE();
+  sup = begin_finite_locked(sseq, sodom);
+  FiniteCmd f;
+  f.kind = CMD_WHEEL; f.seq = seq;
+  f.wheel_side = (side != 0) ? 1 : 0;
+  f.wheel_frac = frac;
+  f.wheel_start_ms = millis();
+  f.wheel_ms = ms;
+  g_ctx.finite = f;
+  g_ctx.cmd_mode = CMD_WHEEL;
   g_ctx.cmd_seq = seq;
   if (g_ctx.state == ST_IDLE) g_ctx.state = ST_MOVING;
   UNLOCK_STATE();

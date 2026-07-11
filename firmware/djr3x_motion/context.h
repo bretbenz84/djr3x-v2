@@ -25,6 +25,7 @@ inline uint32_t clampu(uint32_t v, uint32_t lo, uint32_t hi) {
 #define HARDCAP_MAX_TURN_RATE_DPS 120.0f  // deg/s
 #define HARDCAP_WATCHDOG_MS       2000u   // watchdog can't be set looser than this
 #define HARDCAP_DRIVE_EXPIRY_MS   1000u
+#define HARDCAP_WHEEL_TEST_MS     3000u   // single-wheel bring-up jog can't run longer
 
 // ===== Runtime-tunable parameters (the `config` command, docs §10) ==========
 struct MotionParams {
@@ -76,6 +77,11 @@ struct FiniteCmd {
   bool     come_turning  = false;  // phase 1: rotating to heading
   float    come_stop_at  = 0;      // m
   float    come_sim_wall = 0;      // m, stub-only virtual wall ahead at start
+  // wheel bring-up jog bookkeeping (CMD_WHEEL): raw single-wheel duty, time-bounded
+  uint8_t  wheel_side    = 0;      // 0 = left, 1 = right
+  float    wheel_frac    = 0;      // signed drive fraction -1..1 (+ = that wheel forward)
+  uint32_t wheel_start_ms = 0;     // millis() at command start
+  uint32_t wheel_ms      = 0;      // run duration (ms), then auto-stop -> done
 };
 
 // ===== Odometry / plant snapshot ===========================================

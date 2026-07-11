@@ -223,6 +223,28 @@ Sets any subset of the runtime parameters in §10. Omitted keys are unchanged. V
 **clamped to firmware hard caps** (a `config` can lower a cap, never raise it above the
 compiled-in limit). Acked; the ack echoes the *effective* (post-clamp) values.
 
+### 5.10 `wheel` — single-wheel bring-up jog (diagnostic)
+```json
+{"v":1,"cmd":"wheel","seq":51,"side":"left","frac":0.35,"ms":1500}
+```
+| Field | Type | Meaning | Required | Default |
+| --- | --- | --- | --- | --- |
+| `side` | string | `"left"`/`"l"` or `"right"`/`"r"` | yes | — |
+| `frac` | float | signed drive fraction −1..1 of full duty; **+ = that wheel forward** per its `MOTOR_SIGN_*` | yes | — |
+| `ms` | int | run time, then auto-stop | no | 1500 (hard cap 3000) |
+
+Powers **exactly one** wheel's H-bridge at a fixed duty for `ms`, **bypassing the
+differential kinematics AND the velocity PID** — the open-loop bring-up test for "is this
+motor wired to the right side, and does it spin the right way?". Deliberately open-loop so
+a mis-wired/unread encoder can't fight the test (unlike `drive`, whose PID would). The
+magnitude is floored at the stiction breakaway (`min_duty`) and clamped to full duty; the
+other wheel is held off. Runs as an AUTO finite command: it completes with
+`done result:"completed"` after `ms`, and the heartbeat watchdog (§7.2), `stop`, `estop`,
+or a gamepad takeover cut it like any finite command. **NOT** obstacle-gated (a spinning
+wheel on a stand isn't translating) — stand only, wheels off the ground. Acked (`clamped`
+if `frac`/`ms` were clamped). Diagnostic only: **not advertised in `hello.caps`** and not
+issued by the normal Mac controller — it is driven by `firmware/tools/motion_bench.py wheel`.
+
 ---
 
 ## 6. ESP32 → Mac messages

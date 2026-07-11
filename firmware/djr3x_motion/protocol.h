@@ -45,7 +45,9 @@ enum AckReason : uint8_t {
 };
 
 // Finite command kind (control-layer bookkeeping; not a wire enum).
-enum CmdKind : uint8_t { CMD_NONE = 0, CMD_DRIVE, CMD_TURN, CMD_MOVE, CMD_COME };
+// CMD_WHEEL is the single-wheel bring-up jog (raw duty on ONE H-bridge, time-bounded;
+// docs/motion_protocol.md §5.10) — a diagnostic, NOT part of the advertised caps.
+enum CmdKind : uint8_t { CMD_NONE = 0, CMD_DRIVE, CMD_TURN, CMD_MOVE, CMD_COME, CMD_WHEEL };
 
 // ---- enum -> wire string ---------------------------------------------------
 inline const char* state_str(MotionState s) {

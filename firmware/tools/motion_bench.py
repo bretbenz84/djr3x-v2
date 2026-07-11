@@ -12,6 +12,12 @@ this order as you wire and verify the base. Reuses the smoke-test serial client.
                      confirm the encoder reads + which way it counts (per wheel:
                      ENC_SIGN_L / ENC_SIGN_R in calib.h). Safe any time.
 
+  wheel SIDE         ON A STAND (wheels off the ground). Powers ONE wheel (left/right/
+                     both) open-loop at a fixed duty for a couple seconds — no PID, no
+                     kinematics — so you can confirm each motor is wired to the right
+                     side and spins the right way BEFORE trusting the closed loop.
+                     Reads the encoder speed back and prints a wiring decision table.
+
   spin               ON A STAND (wheels off the ground). Gentle forward drive (~3s)
                      with a runaway guard that auto-ESTOPs if the closed loop diverges
                      (a motor/encoder sign mismatch). Confirms the motor(s) drive
@@ -82,6 +88,89 @@ def cmd_encoder(c, _args):
             time.sleep(0.15)
     except KeyboardInterrupt:
         print()
+
+
+def _wheel_jog(c, side, frac, secs):
+    """Jog ONE wheel open-loop for `secs`, watching the encoder-derived speed for that
+    side. Returns (peak_signed_speed, peak_other_side) in m/s. Prints live vl/vr."""
+    key = "vl" if side == "left" else "vr"
+    other = "vr" if side == "left" else "vl"
+    direction = "FORWARD" if frac >= 0 else "REVERSE"
+    print(f"\n  Jogging the {side.upper()} wheel {direction} "
+          f"(frac={frac:+.2f}) for {secs:.1f}s — WATCH THAT WHEEL.")
+    c.clear()
+    seq = c.send({"cmd": "wheel", "side": side, "frac": frac, "ms": int(secs * 1000)})
+    ack = c.wait_for(lambda m: m.get("type") == "ack" and m.get("seq") == seq, 2.0)
+    if not (ack and ack.get("accepted")):
+        print(f"    NOT accepted: {ack} — clear estop/fault (or release the gamepad) first.")
+        return None, None
+    peak, peak_other = 0.0, 0.0
+    end = time.time() + secs + 0.4
+    while time.time() < end:
+        w = (c.telemetry() or {}).get("wheels", {})
+        v, vo = w.get(key, 0.0), w.get(other, 0.0)
+        if abs(v) > abs(peak):
+            peak = v
+        if abs(vo) > abs(peak_other):
+            peak_other = vo
+        print(f"    {key}={v:+.3f} m/s   {other}={vo:+.3f} m/s     ", end="\r")
+        time.sleep(0.1)
+    c.wait_for(lambda m: m.get("type") == "done" and m.get("seq") == seq, 1.5)
+    c.send({"cmd": "stop"})
+    print()
+    return peak, peak_other
+
+
+def _wheel_verdict(side, frac, peak, peak_other):
+    """Print the wiring/direction decision from the measured encoder speeds."""
+    moved = abs(peak) > 0.015
+    other_moved = abs(peak_other) > 0.015
+    fwd_cmd = frac >= 0
+    print(f"    measured: this wheel peak={peak:+.3f} m/s, other wheel={peak_other:+.3f} m/s")
+    if other_moved and not moved:
+        print(f"    ✗ WRONG SIDE: the OTHER wheel moved, not the {side}. The two motors'")
+        print("      PWM leads are swapped — fix the wiring (PIN_L_* vs PIN_R_* in pins.h).")
+        return
+    if not moved:
+        print("    ✗ NO MOTION on this wheel (encoder read ~0). Either:")
+        print("        • did it spin BY EYE? yes -> the ENCODER isn't reading: check its")
+        print("          3.3V/GND + A/B pins (PIN_ENC_* in pins.h).")
+        print("        • no -> the MOTOR isn't driving: check 12V on B+/B-, the enable pin")
+        print("          (R_EN+L_EN -> PIN_*_EN), the RPWM/LPWM leads, and a common ground.")
+        return
+    # It moved and the encoder read it. Direction: a FORWARD command should read +.
+    forward_reading = (peak > 0) == fwd_cmd
+    print(f"    ✓ this wheel spun and its encoder read it ({'+' if peak > 0 else '−'} counts).")
+    print("      Confirm BY EYE which way it physically turned:")
+    if forward_reading:
+        print(f"        • spun {'FORWARD' if fwd_cmd else 'REVERSE'} (as commanded) -> motor +")
+        print("          encoder agree for this wheel. ✓ Done, nothing to change.")
+        print(f"        • spun the OTHER way -> motor AND encoder are BOTH flipped: swap this")
+        print("          wheel's M+/M- leads (or flip MOTOR_SIGN_*) AND flip its ENC_SIGN_*.")
+    else:
+        print("        • spun the way you commanded BY EYE -> the ENCODER sign is backward:")
+        print(f"          flip ENC_SIGN_{'L' if side == 'left' else 'R'} in calib.h.")
+        print("        • spun the OPPOSITE way BY EYE -> the MOTOR polarity is backward:")
+        print(f"          swap this wheel's M+/M- leads (or flip MOTOR_SIGN_"
+              f"{'L' if side == 'left' else 'R'}).")
+    print("      (Get each wheel: spins FORWARD by eye AND reads + here, before `spin`.)")
+
+
+def cmd_wheel(c, args):
+    print("WHEEL WIRING TEST — base ON A STAND (wheels off the ground), hand near estop.")
+    print("  Powers one wheel OPEN-LOOP (no PID) at a fixed duty, then reads its encoder.")
+    print("  Use it to confirm each motor: right SIDE, right DIRECTION, encoder agrees.\n")
+    frac = -abs(args.frac) if args.reverse else abs(args.frac)
+    sides = ["left", "right"] if args.side == "both" else [args.side]
+    if not confirm(f"Wheels OFF THE GROUND and ready to power {'/'.join(sides)}?", args.yes):
+        return
+    for i, side in enumerate(sides):
+        if i > 0 and not confirm(f"Ready to test the {side} wheel?", args.yes):
+            break
+        peak, peak_other = _wheel_jog(c, side, frac, args.secs)
+        if peak is not None:
+            _wheel_verdict(side, frac, peak, peak_other)
+    c.send({"cmd": "stop"})
 
 
 def cmd_spin(c, _args):
@@ -243,22 +332,32 @@ def cmd_bringup(c, args):
     print("Reposition the base when prompted; Ctrl-C aborts and stops the base.")
     print("=" * 72)
 
-    print("\n[1/4] ENCODER DIRECTION — motors stay OFF (safe any time).")
+    print("\n[1/5] ENCODER DIRECTION — motors stay OFF (safe any time).")
     if confirm("Start the encoder hand-roll check?", args.yes):
         cmd_encoder(c, args)            # loops until Ctrl-C, then returns
     print("  -> If a wheel counted the WRONG way rolling forward, flip its ENC_SIGN_* in")
     print("     calib.h (or push live) BEFORE the powered stages.")
 
-    print("\n[2/4] SPIN UNDER PID — wheels must be OFF THE GROUND (on a stand).")
+    print("\n[2/5] WHEEL WIRING — one wheel at a time, OPEN-LOOP (no PID), OFF THE GROUND.")
+    print("  Confirms each motor is on the right side and spins the right way.")
+    if confirm("Wheels off the ground and ready to power each wheel briefly?", False):
+        for side in ("left", "right"):
+            peak, peak_other = _wheel_jog(c, side, 0.35, 1.5)
+            if peak is not None:
+                _wheel_verdict(side, 0.35, peak, peak_other)
+    else:
+        print("  skipped.")
+
+    print("\n[3/5] SPIN UNDER PID — wheels must be OFF THE GROUND (on a stand).")
     if confirm("Wheels off the ground and ready to drive the motors?", False):
         cmd_spin(c, args)
     else:
         print("  skipped.")
 
-    print(f"\n[3/4] STRAIGHT — place the base ON THE FLOOR, ~{args.dist} m clear ahead.")
+    print(f"\n[4/5] STRAIGHT — place the base ON THE FLOOR, ~{args.dist} m clear ahead.")
     cmd_straight(c, args)               # has its own ready? prompt
 
-    print(f"\n[4/4] TURN — clear space to spin {args.deg}° in place on the floor.")
+    print(f"\n[5/5] TURN — clear space to spin {args.deg}° in place on the floor.")
     cmd_turn(c, args)                   # has its own ready? prompt
 
     print("\n" + "=" * 72)
@@ -302,6 +401,13 @@ def main():
     ap.add_argument("--yes", action="store_true", help="skip the floor-test confirmation prompt")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("encoder")
+    wp = sub.add_parser("wheel")
+    wp.add_argument("side", choices=("left", "right", "both"),
+                    help="which wheel to power open-loop")
+    wp.add_argument("--frac", type=float, default=0.35,
+                    help="drive fraction 0..1 of full duty (default 0.35)")
+    wp.add_argument("--secs", type=float, default=1.5, help="run time per wheel (default 1.5)")
+    wp.add_argument("--reverse", action="store_true", help="jog REVERSE instead of forward")
     sub.add_parser("spin")
     sub.add_parser("wheels")
     sp = sub.add_parser("straight"); sp.add_argument("--dist", type=float, default=1.0)
@@ -329,9 +435,9 @@ def main():
                     help="rad/s per meter of left-right wall imbalance")
     args = ap.parse_args()
 
-    handlers = {"encoder": cmd_encoder, "spin": cmd_spin, "wheels": cmd_wheels,
-                "straight": cmd_straight, "turn": cmd_turn, "bringup": cmd_bringup,
-                "show": cmd_show, "set": cmd_set}
+    handlers = {"encoder": cmd_encoder, "wheel": cmd_wheel, "spin": cmd_spin,
+                "wheels": cmd_wheels, "straight": cmd_straight, "turn": cmd_turn,
+                "bringup": cmd_bringup, "show": cmd_show, "set": cmd_set}
     if not args.port:
         ap.error("no serial port — set MOTION_ESP32_PORT in .env or pass --port "
                  "(find it with `arduino-cli board list`)")

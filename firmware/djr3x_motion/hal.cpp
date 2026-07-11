@@ -227,6 +227,39 @@ void hal_motors_off() {
   g_ctx.wheels.dl = 0; g_ctx.wheels.dr = 0;   // duties off (caller holds the state lock)
 }
 
+// Drive ONE wheel's H-bridge at a raw signed fraction of full duty, bypassing BOTH the
+// differential kinematics AND the velocity PID — the bring-up diagnostic for "is this
+// wheel wired, and does it spin the right way?". Deliberately open-loop so a mis-wired
+// or unread encoder cannot corrupt the test (unlike hal_drive_velocity, whose PID would
+// fight a bad encoder). side: 0 = left, 1 = right. frac: signed, -1..1; + = that wheel
+// FORWARD per its MOTOR_SIGN_* (so a wrong physical direction means the motor leads /
+// MOTOR_SIGN are off). The magnitude is floored at the stiction breakaway (params.min_duty)
+// so a small frac still turns a free wheel on a stand, and clamped to PWM_DUTY_MAX; the
+// OTHER wheel is held off. Caller (control_tick) holds the state lock, so writing
+// g_ctx.wheels for telemetry is safe (mirrors hal_drive_velocity).
+void hal_drive_wheel_raw(int side, float frac) {
+  frac = clampf(frac, -1.0f, 1.0f);
+  int duty = 0;
+  if (fabsf(frac) > 1e-3f) {
+    float mag = fabsf(frac) * (float)PWM_DUTY_MAX;
+    if (mag < g_ctx.params.min_duty) mag = g_ctx.params.min_duty;   // stiction breakaway floor
+    duty = (int)clampf(mag, 0.0f, (float)PWM_DUTY_MAX);
+    if (frac < 0.0f) duty = -duty;
+  }
+  motors_enable(true);
+  if (side == 0) {                                   // LEFT wheel; right held off
+    const int d = MOTOR_SIGN_L * duty;
+    apply_wheel_duty(PIN_L_RPWM, PIN_L_LPWM, d);
+    apply_wheel_duty(PIN_R_RPWM, PIN_R_LPWM, 0);
+    g_ctx.wheels.dl = (int16_t)d; g_ctx.wheels.dr = 0;
+  } else {                                           // RIGHT wheel; left held off
+    const int d = MOTOR_SIGN_R * duty;
+    apply_wheel_duty(PIN_R_RPWM, PIN_R_LPWM, d);
+    apply_wheel_duty(PIN_L_RPWM, PIN_L_LPWM, 0);
+    g_ctx.wheels.dl = 0; g_ctx.wheels.dr = (int16_t)d;
+  }
+}
+
 // hal_read_tof()/hal_tof_init() live in tof.cpp — they are gated by MOTION_TOF_PRESENT
 // independently of the motor drivers (the base can drive before the ToF is wired).
 
