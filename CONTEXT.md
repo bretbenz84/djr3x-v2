@@ -930,6 +930,21 @@ venv/bin/python main.py
   this line runs the LLM inside the in-flight window, so the window must exceed
   `LLM_REQUEST_TIMEOUT_SECS` (30s) or a slow-but-legitimate generation gets judged stale and
   re-asked twice. Tests: `tests/test_relationship_inquiry_arming.py`, `tests/test_lean_agency.py`.
+- Weather proactive comment is lean-owned now (`consciousness._step_proactive_reactions`, purpose
+  `weather.proactive_comment`, priority 42). It reacts to a NOTABLE weather-feed change (a
+  rain/snow/thunder/fog onset, a >=10F shift, or a swing into very-hot/cold) — a real-event
+  reaction the model can't invent because it isn't told the weather. It was mis-filed in
+  `LEAN_SUPPRESSED_PROACTIVE_PURPOSES` and went dark under lean; removed from that set it fires
+  again, in the lean voice via one-voice (`generate_and_speak` -> `get_response` ->
+  `lean_brain.stream_directive`). No arming/dedup change was needed: weather is fire-and-forget
+  (no pending-answer flow like relationship_inquiry) and now behaves exactly like its sibling
+  world-change triggers in the same step — date + time-of-day rollover — which already fire under
+  lean via the un-suppressed `world_reaction` purpose with the same consume-on-select dedup
+  (`tests/test_world_reaction_dedupe.py`). It's gated to a genuine lull by the
+  `_ACTIVE_CONVERSATION_LOW_PRIORITY` -35 penalty (so it never interrupts an active conversation),
+  a 30-min `WEATHER_PROACTIVE_REACTION_COOLDOWN_SECS`, and per-signature dedup
+  (`_acknowledged_weather_signatures`). Kill switch `WEATHER_PROACTIVE_REACTIONS_ENABLED`. Tests:
+  `tests/test_lean_agency.py`, `tests/test_weather_awareness.py`, `tests/test_action_governor.py`.
 - Introduction handling that links known visible/recent people instead of renaming the current speaker.
 - README startup flag documentation.
 - User-facing override layer: `config.py` ends with `from user_config import *` (try/except ImportError) so `user_config.py` — gitignored, copied from the committed `user_config.example.py` template by `setup_macos.sh` — overrides defaults without editing `config.py`. Defaults stay in `config.py` (source of truth); `from config import X` is unaffected since the change is purely an additive tail. A re-derive tail after the import recomputes `ACTION_ROUTER_MODEL` (= `LLM_MODEL`) and `STARTUP_BOOT_TTS_LINE` so overriding their base propagates. Scope is ~45 essentials (models, personality dials + base prompt, location, feature toggles, timeouts); each ships commented-out at its current default. See the Configuration And Secrets section.

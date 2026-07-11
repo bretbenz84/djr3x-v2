@@ -15,12 +15,21 @@ from intelligence.action_governor import ActionGovernor, CandidateMove
 class GovernorSuppressionTest(unittest.TestCase):
     def _rejected(self, purpose, lean):
         prev = config.LEAN_BRAIN_ENABLED
+        prev_clamp = getattr(config, "PROACTIVE_CADENCE_CLAMP_ENABLED", True)
         try:
             config.LEAN_BRAIN_ENABLED = lean
+            # Neutralize the orthogonal presence-cadence clamp: _score rejects any
+            # PROACTIVE_CADENCE_CLAMP_PURPOSES member (idle_monologue, weather.proactive_comment…)
+            # when consciousness._last_proactive_speech_at is recent — a SHARED module global
+            # other tests leave set, so in a full `discover` run the clamp, not lean suppression
+            # (the real thing under test), was rejecting these purposes and flaking these
+            # assertions. Disabling the clamp here isolates the suppression check.
+            config.PROACTIVE_CADENCE_CLAMP_ENABLED = False
             g = ActionGovernor()
             return g._score(CandidateMove(source="t", purpose=purpose, priority=50, label=purpose)).rejected
         finally:
             config.LEAN_BRAIN_ENABLED = prev
+            config.PROACTIVE_CADENCE_CLAMP_ENABLED = prev_clamp
 
     def test_silence_fill_suppressed_only_under_lean(self):
         self.assertTrue(self._rejected("idle_monologue", lean=True))
@@ -36,6 +45,14 @@ class GovernorSuppressionTest(unittest.TestCase):
         # mis-filed in the suppressed set and went dark; this pins that it no longer is.
         self.assertFalse(self._rejected("relationship_inquiry", lean=True))
         self.assertFalse(self._rejected("relationship_inquiry", lean=False))
+
+    def test_weather_proactive_comment_is_a_real_event_reactor_not_suppressed(self):
+        # A notable weather-feed change is a real-event reaction the model can't invent —
+        # like its sibling world-change triggers (date / time-of-day rollover via the
+        # world_reaction purpose). It was mis-filed in the suppressed set and went dark under
+        # lean; this pins that it now fires (in the lean voice via one-voice).
+        self.assertFalse(self._rejected("weather.proactive_comment", lean=True))
+        self.assertFalse(self._rejected("weather.proactive_comment", lean=False))
 
 
 def _one_chunk_stream(text):
