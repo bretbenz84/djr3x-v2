@@ -1427,6 +1427,7 @@ PY
 }
 
 _ensure_esp32_toolchain() {
+    local want_gamepad="${1:-0}"
     command -v arduino-cli &>/dev/null || { warn "arduino-cli not available — cannot flash the ESP32."; return 1; }
     arduino-cli config init >/dev/null 2>&1 || true
     arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json >/dev/null 2>&1 \
@@ -1441,6 +1442,27 @@ _ensure_esp32_toolchain() {
         else
             warn "Could not install the ESP32 core."
             MANUAL_ATTENTION+=("Install ESP32 core: arduino-cli core install esp32:esp32"); return 1
+        fi
+    fi
+    # Bluepad32 core — ONLY for the gamepad build. Bluepad32 replaces the ESP32 Bluetooth
+    # stack, so it ships as its OWN board package (esp32-bluepad32:esp32), NOT a library on
+    # esp32:esp32. Without it, -DMOTION_GAMEPAD_PRESENT=1 cannot build and a paired
+    # controller has no stack to connect to. The URL is APPENDED (config add) so the
+    # espressif URL added above is kept alongside it.
+    if [[ "$want_gamepad" == "1" ]]; then
+        arduino-cli config add board_manager.additional_urls \
+            https://raw.githubusercontent.com/ricardoquesada/esp32-arduino-lib-builder/master/bluepad32_files/package_esp32_bluepad32_index.json >/dev/null 2>&1 || true
+        if arduino-cli core list 2>/dev/null | grep -q '^esp32-bluepad32:esp32[[:space:]]'; then
+            ok "Bluepad32 ESP32 core already installed."
+        else
+            log "Installing the Bluepad32 ESP32 core (Bluetooth gamepad support, one-time)..."
+            arduino-cli core update-index >/dev/null 2>&1 || true
+            if arduino-cli core install esp32-bluepad32:esp32 >/dev/null 2>&1; then
+                INSTALLED_ITEMS+=("Bluepad32 ESP32 core"); ok "Bluepad32 ESP32 core installed."
+            else
+                warn "Could not install the Bluepad32 core."
+                MANUAL_ATTENTION+=("Install Bluepad32 core: see firmware/djr3x_motion/README.md (add its board-manager URL, then arduino-cli core install esp32-bluepad32:esp32)"); return 1
+            fi
         fi
     fi
     if arduino-cli lib list 2>/dev/null | grep -qi '^ArduinoJson[[:space:]]'; then
@@ -1475,28 +1497,84 @@ _ensure_esp32_toolchain() {
     return 0
 }
 
+# Build selection produced by _choose_motion_build_flags (read by the flash function).
+_MOTION_FQBN=""
+_MOTION_EXTRA_FLAGS=""
+_MOTION_GAMEPAD=0
+
+# Ask which motion-firmware variant to build. These three -D flags ARE the whole build
+# configuration (firmware/djr3x_motion/README.md). Answering "no" to all three flashes the
+# Phase-0 stub — full wire protocol, NO Bluetooth, NO motors — which runs on a bare ESP32.
+# The gamepad flag is the important one for pairing: the Bluetooth stack (Bluepad32) only
+# exists in the firmware when -DMOTION_GAMEPAD_PRESENT=1 is compiled in on the Bluepad32
+# core, so without it a paired controller has nothing to connect to.
+_choose_motion_build_flags() {
+    local gamepad=0 hw=0 tof=0
+    echo ""
+    echo -e "${BOLD}Motion firmware build — select what is physically present${NC}"
+    echo "Answer no to all for the Phase-0 stub (protocol only; runs on a bare ESP32)."
+    if _prompt_yes_no "Use a Bluetooth gamepad (e.g. 8BitDo Pro 2) with the base? [y/N] " "n"; then
+        gamepad=1
+    fi
+    if _prompt_yes_no "Is the real drive hardware (motors + encoders) wired up? [y/N] " "n"; then
+        hw=1
+        if _prompt_yes_no "Are the ToF distance sensors (VL53L0X/L1X) wired up? [y/N] " "n"; then
+            tof=1
+        fi
+    fi
+
+    local flags=""
+    [[ "$hw" -eq 1 ]] && flags+=" -DMOTION_HW_PRESENT=1"
+    [[ "$tof" -eq 1 ]] && flags+=" -DMOTION_TOF_PRESENT=1"
+    [[ "$gamepad" -eq 1 ]] && flags+=" -DMOTION_GAMEPAD_PRESENT=1"
+    _MOTION_EXTRA_FLAGS="${flags# }"          # trim leading space
+    _MOTION_GAMEPAD="$gamepad"
+    # The gamepad build needs the Bluepad32 board package (its OWN core), not esp32:esp32.
+    # 921600 is unreliable on this USB bridge; UploadSpeed=115200 (in the FQBN) flashes it.
+    if [[ "$gamepad" -eq 1 ]]; then
+        _MOTION_FQBN="esp32-bluepad32:esp32:esp32:UploadSpeed=115200"
+    else
+        _MOTION_FQBN="esp32:esp32:esp32:UploadSpeed=115200"
+    fi
+}
+
 _compile_and_upload_motion_firmware() {
     local port="$1"
     local sketch_dir="$PROJECT_DIR/firmware/djr3x_motion"
-    # 921600 is unreliable on this CP2102 board; 115200 flashes reliably.
-    local fqbn="esp32:esp32:esp32:UploadSpeed=115200"
     if [[ ! -d "$sketch_dir" ]]; then
         warn "Motion firmware sketch missing: $sketch_dir"
         MANUAL_ATTENTION+=("Motion firmware sketch missing: $sketch_dir"); return 1
     fi
-    _ensure_esp32_toolchain || return 1
-    log "Compiling motion firmware ($fqbn)..."
-    if ! arduino-cli compile --fqbn "$fqbn" "$sketch_dir"; then
-        warn "Motion firmware compile failed."
-        MANUAL_ATTENTION+=("Motion firmware compile failed; see firmware/djr3x_motion/README.md"); return 1
+    _choose_motion_build_flags
+    _ensure_esp32_toolchain "$_MOTION_GAMEPAD" || return 1
+
+    # Compile AND upload in ONE arduino-cli call. A separate `upload` carries no
+    # --build-property, so it would flash whatever variant was last cached — silently
+    # dropping the gamepad/HW -D flags (the firmware README calls this out).
+    local -a args=(compile --fqbn "$_MOTION_FQBN")
+    if [[ -n "$_MOTION_EXTRA_FLAGS" ]]; then
+        args+=(--build-property "compiler.cpp.extra_flags=$_MOTION_EXTRA_FLAGS")
+        log "Building + uploading motion firmware ($_MOTION_FQBN; flags: $_MOTION_EXTRA_FLAGS)..."
+    else
+        log "Building + uploading motion firmware ($_MOTION_FQBN; Phase-0 stub, no build flags)..."
     fi
-    ok "Motion firmware compiled."
-    log "Uploading motion firmware to $port at 115200..."
-    if arduino-cli upload -p "$port" --fqbn "$fqbn" "$sketch_dir"; then
-        INSTALLED_ITEMS+=("Motion firmware uploaded to $port"); ok "Motion firmware uploaded."; return 0
+    args+=(--upload -p "$port" "$sketch_dir")
+
+    if [[ "$_MOTION_GAMEPAD" -eq 1 ]]; then
+        echo "This build includes the Bluepad32 Bluetooth stack. Once it finishes flashing,"
+        echo "put the pad in pairing mode (8BitDo Pro 2: hold START+A, then the top pair"
+        echo "button) — Bluepad32 pairs directly to the ESP32 and remembers the bond."
     fi
-    warn "Motion firmware upload failed."
-    MANUAL_ATTENTION+=("Upload manually: arduino-cli upload -p $port --fqbn $fqbn firmware/djr3x_motion"); return 1
+
+    if arduino-cli "${args[@]}"; then
+        INSTALLED_ITEMS+=("Motion firmware flashed to $port ($_MOTION_FQBN${_MOTION_EXTRA_FLAGS:+; $_MOTION_EXTRA_FLAGS})")
+        ok "Motion firmware built and uploaded."; return 0
+    fi
+    warn "Motion firmware build/upload failed."
+    local manual="arduino-cli compile --fqbn $_MOTION_FQBN"
+    [[ -n "$_MOTION_EXTRA_FLAGS" ]] && manual+=" --build-property \"compiler.cpp.extra_flags=$_MOTION_EXTRA_FLAGS\""
+    manual+=" --upload -p $port firmware/djr3x_motion"
+    MANUAL_ATTENTION+=("Flash manually: $manual  (see firmware/djr3x_motion/README.md)"); return 1
 }
 
 _guided_motion_setup() {
