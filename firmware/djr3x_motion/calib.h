@@ -36,7 +36,9 @@
 // increase." Flip to -1 (per wheel) if the bench hand-turn test shows the sign
 // backwards, instead of rewiring A/B.
 #define ENC_SIGN_L  (+1.0f)
-#define ENC_SIGN_R  (+1.0f)
+#define ENC_SIGN_R  (-1.0f)   // flipped: right side is mirror-mounted (bench `wheel right`
+                              // 2026-07-11: forward cmd read +counts but spun BACKWARD —
+                              // motor + encoder BOTH inverted; flip both, in lockstep)
 
 // Per-wheel MOTOR direction. +1 means "a positive (forward) duty spins the wheel
 // forward." Flip to -1 (per wheel) — the software equivalent of swapping that motor's
@@ -46,7 +48,7 @@
 // runaway guard. Fixing direction HERE keeps each channel paired with its own encoder,
 // so it does NOT desync odometry the way swapping only the motor leads does.
 #define MOTOR_SIGN_L  (+1)
-#define MOTOR_SIGN_R  (+1)
+#define MOTOR_SIGN_R  (-1)    // flipped in lockstep with ENC_SIGN_R (see above)
 
 // ---- Motor PWM (LEDC) -----------------------------------------------------
 // 20 kHz is above audible and well within the BTS7960's switching range.
