@@ -127,10 +127,12 @@ void hal_read_odom(Odom& out, float dt) {
   g_ctx.wheels.vr = s_vmeas_r;
 
   const float d_center = 0.5f * (d_l + d_r);
-  // Negated (d_l - d_r, not d_r - d_l) to match the swapped-sides motor mixing in
-  // hal_drive_velocity, so +d_theta = physical CCW/left (REP-103) and odometry heading
-  // tracks the real world (keeps voice/D-pad/autonomous turns correct).
-  const float d_theta  = (d_l - d_r) / track;
+  // Standard REP-103 heading delta (right wheel ahead of left = turning CCW/left), in
+  // lockstep with the standard mixing in hal_drive_velocity, so +d_theta = physical
+  // CCW/left and odometry heading tracks the real world (voice/D-pad/autonomous turns).
+  // History: this was (d_l - d_r) while the channels were cross-wired — see the note in
+  // hal_drive_velocity; flip BOTH together or closed-loop turns break.
+  const float d_theta  = (d_r - d_l) / track;
 
   out.theta += d_theta;
   while (out.theta >  (float)M_PI)  out.theta -= 2.0f * (float)M_PI;
@@ -174,13 +176,16 @@ void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer, float 
   const float track = g_ctx.params.track_width_m;
   const float kp = g_ctx.params.kp, ki = g_ctx.params.ki, kd = g_ctx.params.kd;
   const float kff = g_ctx.params.kff, min_duty = g_ctx.params.min_duty;
-  // Differential-drive kinematics (REP-103: +lin forward, +ang CCW/left). The drive
-  // channels are wired to the OPPOSITE physical sides (verified on the bench: a +ang
-  // command spun the base CW/right while forward/back were correct), so the angular term
-  // is negated here — kept in lockstep with the same negation in hal_read_odom — to make
-  // +ang = physical CCW/left WITHOUT swapping the pin map (pins.h stays as-wired).
-  float v_l = lin + ang * (track * 0.5f);
-  float v_r = lin - ang * (track * 0.5f);
+  // Differential-drive kinematics (REP-103: +lin forward, +ang CCW/left): a CCW/left
+  // turn slows/reverses the LEFT wheel and speeds the RIGHT. STANDARD mixing — kept in
+  // lockstep with d_theta in hal_read_odom. History (don't re-negate): an earlier build
+  // of the base had the drive channels cross-wired to opposite physical sides and
+  // compensated by negating the angular term here + in odometry; the base has since been
+  // wired straight per pins.h (proven by the per-wheel `wheel` bench test 2026-07-11:
+  // PIN_L_* spins the physical left wheel), which made that negation reverse all turning
+  // (stick fwd+left drove fwd+right). Per-wheel direction is MOTOR_SIGN_*'s job, not this.
+  float v_l = lin - ang * (track * 0.5f);
+  float v_r = lin + ang * (track * 0.5f);
 
   // Joystick steering (teleop only) — a smooth MORPH between two mixings, driven by
   // pivot_blend (0..1, from the fwd-stick fraction in gamepad.cpp):
