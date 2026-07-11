@@ -1484,8 +1484,10 @@ _ensure_esp32_toolchain() {
         warn "Could not install ESP32Encoder."
         MANUAL_ATTENTION+=("Install ESP32Encoder: arduino-cli lib install ESP32Encoder"); return 1
     fi
-    # VL53L0X (Pololu): 5× ToF distance sensors. Only needed for the
-    # -DMOTION_TOF_PRESENT=1 build, but install it up front like the others.
+    # ToF distance sensors (Pololu): the -DMOTION_TOF_PRESENT=1 build needs BOTH the
+    # short-range VL53L0X (diagonals) and the long-range VL53L1X (cardinals) — tof.cpp
+    # includes both headers. Install both up front so a live ToF build never fails on a
+    # missing header. (Only needed for the ToF build, but installed like the others.)
     if arduino-cli lib list 2>/dev/null | grep -qi '^VL53L0X[[:space:]]'; then
         ok "VL53L0X library already installed."
     elif arduino-cli lib install VL53L0X >/dev/null 2>&1; then
@@ -1493,6 +1495,14 @@ _ensure_esp32_toolchain() {
     else
         warn "Could not install VL53L0X."
         MANUAL_ATTENTION+=("Install VL53L0X: arduino-cli lib install VL53L0X"); return 1
+    fi
+    if arduino-cli lib list 2>/dev/null | grep -qi '^VL53L1X[[:space:]]'; then
+        ok "VL53L1X library already installed."
+    elif arduino-cli lib install VL53L1X >/dev/null 2>&1; then
+        INSTALLED_ITEMS+=("Arduino library: VL53L1X"); ok "VL53L1X installed."
+    else
+        warn "Could not install VL53L1X."
+        MANUAL_ATTENTION+=("Install VL53L1X: arduino-cli lib install VL53L1X"); return 1
     fi
     return 0
 }
