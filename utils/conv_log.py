@@ -103,6 +103,17 @@ def _normalize(text: str) -> str:
     return " ".join((text or "").strip().lower().split())
 
 
+def _strip_audio_tags(text: str) -> str:
+    """Belt-and-braces: Rex-line text may carry v3 [audio tags] (delivery shaping for
+    ElevenLabs — authored seam lines or LLM-emitted). They must never reach the
+    transcript or GUI, so every Rex write seam scrubs them here."""
+    try:
+        from utils.audio_tags import strip_audio_tags
+        return strip_audio_tags(text)
+    except Exception:
+        return text
+
+
 def _mirror_to_gui(speaker: str, text: str, kind: str) -> None:
     if not bool(getattr(config, "GUI_ENABLED", False)):
         return
@@ -129,6 +140,7 @@ def log_rex(text: str, *, to_gui: bool = True) -> None:
     has already filled the GUI bubble sentence-by-sentence via log_rex_stream() and
     would otherwise re-add the whole reply as a duplicate line."""
     global _last_rex_norm, _last_rex_at
+    text = _strip_audio_tags(text)
     if not text or not text.strip():
         return
     norm = _normalize(text)
@@ -151,7 +163,7 @@ def log_rex_stream(text: str) -> None:
     in place so the reply text appears in the dashboard the moment it is generated,
     reading along with the TTS, instead of after playback finishes. The on-disk
     transcript is written once at the end via log_rex(..., to_gui=False)."""
-    text = (text or "").strip()
+    text = _strip_audio_tags(text).strip()
     if not text or not bool(getattr(config, "GUI_ENABLED", False)):
         return
     try:
@@ -167,6 +179,8 @@ def finish_rex_stream(full_text: str | None = None) -> None:
     bubble to the canonical reply text."""
     if not bool(getattr(config, "GUI_ENABLED", False)):
         return
+    if full_text:
+        full_text = _strip_audio_tags(full_text)
     try:
         from gui.state_bridge import gui_bridge
         gui_bridge.finish_rex_stream(full_text)

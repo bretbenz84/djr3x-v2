@@ -90,6 +90,7 @@ from awareness import address_mode
 from awareness.situation import assessor as _situation_assessor
 from world_state import world_state
 from utils import conv_log, phrase_cycler
+from utils.audio_tags import strip_audio_tags
 
 _log = logging.getLogger(__name__)
 
@@ -11883,7 +11884,10 @@ def _stream_and_speak_sentences(
             previous_text=stream_prev_text,   # stitch onto the reply's prior sentences
         )
         done_events.append(done)
-        spoken.append(prepared)
+        # `spoken` feeds the canonical full_text (transcript, memory, handoff) and the
+        # stitching context — keep it free of inline v3 [audio tags]; the tagged text
+        # lives only in the enqueued synthesis line above.
+        spoken.append(strip_audio_tags(prepared))
         state["first"] = False
 
     def _consume_remainder(raw_sentences: list[str]) -> None:
@@ -11934,11 +11938,12 @@ def _stream_and_speak_sentences(
             voice_settings=delivery_voice_settings,
             log_text=False,
             comedy_mode=getattr(comedy_mode, "key", None),
-            suppress_audio_tag=True,          # the reply's one audio tag rode chunk 1
+            suppress_audio_tag=True,          # the reply's one LEADING tag rode chunk 1
+                                              # (inline mid-sentence tags still land)
             previous_text=stream_prev_text,   # harmless on v3 (dropped), stitches on v2
         )
         done_events.append(done)
-        spoken.append(blob)
+        spoken.append(strip_audio_tags(blob))
 
     buffer = ""
     raw_chunks: list[str] = []

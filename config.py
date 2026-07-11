@@ -1422,12 +1422,18 @@ ELEVENLABS_VOICE_ID = "no5jvDWvnx2leN3dFOS7"
 TTS_MODEL_ID = "eleven_v3"
 
 # ── Eleven v3 audio tags — expressive delivery ───────────────────────────────
-# Inject ONE leading audio tag ([sarcastic], [laughs], …) into the text sent to ElevenLabs,
-# deterministically mapped from the per-line affect the app ALREADY computes (comedy_mode + emotion).
-# Makes Rex's delivery match his intent. Only active when TTS_MODEL_ID is eleven_v3 (v2/turbo would
-# read the brackets aloud). Tags go ONLY to ElevenLabs — never to logs/transcript/memory (audio.tts
-# injects into the synthesized text only; callers log their own clean text). Kill switch → exact
-# prior behavior.
+# Two kinds of tag shape a line's delivery:
+#   1. LEADING — ONE tag prepended to the text sent to ElevenLabs ([sarcastic], [laughs], …),
+#      deterministically mapped from the per-line affect the app ALREADY computes
+#      (comedy_mode + emotion). Rides chunk 1 of a streamed reply only.
+#   2. INLINE / MID-SENTENCE — tags already inside the text when it reaches audio.tts:
+#      authored on canned seam lines (e.g. repair_moves' "[excited] I'm sure we'll have
+#      better luck next time!" appended after a correction reply) or emitted by the lean
+#      brain (TTS_V3_LLM_INLINE_TAGS_ENABLED). Whitelist-filtered and capped
+#      (TTS_V3_INLINE_TAG_CAP) on v3; stripped entirely on v2/turbo (which would read the
+#      brackets aloud) or when this kill switch is off.
+# Tags go ONLY to ElevenLabs — every transcript/GUI/log/memory seam strips them
+# (utils.audio_tags.strip_audio_tags via conv_log + interaction's canonical reply text).
 TTS_V3_AUDIO_TAGS_ENABLED = True
 # v3's `stability` is a 3-way preset slider (Creative≈0.0 / Natural≈0.5 / Robust≈1.0), NOT the
 # continuous knob v2 used. At low/varying stability v3 regenerates each line very differently —
@@ -1474,6 +1480,17 @@ TTS_V3_TAG_BY_EMOTION = {
     "curious": "curious",
     "happy":   "laughs",
 }
+# Let the reply LLM (lean brain) place ONE whitelisted delivery tag mid-reply where the
+# beat genuinely shifts (a tease, a reveal, a sigh) — the prompt rule comes from
+# audio.tts.llm_inline_tag_rule so the offered palette always matches the synthesis
+# whitelist. Model output is sanitized regardless (whitelist + cap below), so turning
+# this off only stops SUGGESTING tags; stray ones are still handled safely.
+TTS_V3_LLM_INLINE_TAGS_ENABLED = True
+# Max inline tags kept per synthesized line/chunk (earliest win). Bounds an over-eager
+# LLM (or a pathological authored line) so a reply can't become a laugh track. The
+# leading affect-mapped tag doesn't count against this — it only fires when NO inline
+# tag survived. 0 = unlimited.
+TTS_V3_INLINE_TAG_CAP = 2
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TTS — EXPRESSIVE VOICE (anti-monotone)

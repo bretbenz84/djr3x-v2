@@ -41,7 +41,12 @@ class MisheardRecoveryResponseTest(unittest.TestCase):
             prev = r
 
     def test_star_tours_line_preserved(self):
-        self.assertIn("I'm sure we'll have better luck next time!", rm._SAVE_FACE_LINES)
+        # The sign-off now carries an authored [excited] delivery tag for eleven_v3;
+        # the spoken words themselves are unchanged.
+        self.assertIn(
+            "I'm sure we'll have better luck next time!",
+            [rm.strip_audio_tags(line) for line in rm._SAVE_FACE_LINES],
+        )
 
 
 class DetectBroadenedTest(unittest.TestCase):

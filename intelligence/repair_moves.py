@@ -15,6 +15,8 @@ import threading
 import time
 from typing import Optional
 
+from utils.audio_tags import strip_audio_tags
+
 
 _MISHEARD_PAT = re.compile(
     r"\b(?:"
@@ -196,15 +198,20 @@ _last_tone_repair_at: float = 0.0
 # fixed line got repeated on back-to-back repairs and a bystander noticed ("Is it
 # just gonna keep asking the same question?"). Rotate with anti-repeat so two
 # consecutive repairs never use the same tag.
+# Lines may carry an inline v3 [audio tag] ([excited] …): appended after the repair
+# reply it shifts the DELIVERY mid-reply at synthesis (the Star Tours sign-off gets
+# genuine droid optimism instead of the reply's tone). Tags are sanitized/stripped
+# by audio.tts (whitelist on v3, removed entirely on v2/turbo or when disabled) and
+# never reach the transcript/GUI/memory.
 _RECOVERY_LINES = [
-    "I'm sure we'll have better luck next time!",
+    "[excited] I'm sure we'll have better luck next time!",
     "We'll get there — recalibrating.",
     "Noted. I'll route around that one.",
     "Fair enough — let me reset and try that again.",
     "Consider it logged. Onward.",
     "My circuits and I will do better on the next pass.",
 ]
-BETTER_LUCK_NEXT_TIME = _RECOVERY_LINES[0]  # back-compat alias
+BETTER_LUCK_NEXT_TIME = strip_audio_tags(_RECOVERY_LINES[0])  # back-compat alias (clean form)
 _last_recovery_line: str = ""
 
 
@@ -226,11 +233,11 @@ def pick_recovery_line() -> str:
 # can repeat it. Both halves rotate with anti-repeat so back-to-back corrections never
 # read identically (a bystander once noticed Rex repeating the same repair line).
 _SAVE_FACE_LINES = [
-    "Ah, my audio processor fumbled that one.",
+    "[sighs] Ah, my audio processor fumbled that one.",
     "Circuits crossed — that decoded as pure static.",
     "My transcription unit clearly skipped its calibration.",
     "Static in the receptors; that came through garbled.",
-    "I'm sure we'll have better luck next time!",   # Star Tours sign-off, keep it
+    "[excited] I'm sure we'll have better luck next time!",   # Star Tours sign-off, keep it
     "One of my logic boards took an unscheduled coffee break.",
     "My ears run on 90% guesswork and 10% optimism, apparently.",
     "Bad packet on my end — that arrived as nonsense.",
@@ -297,8 +304,13 @@ def _norm_apostrophes(s: str) -> str:
 
 
 def _contains_recovery_line(text: str) -> bool:
-    low = _norm_apostrophes(text)
-    return any(_norm_apostrophes(line) in low for line in _RECOVERY_LINES)
+    # Tag-insensitive on BOTH sides: the LLM may echo the recovery line without its
+    # authored [audio tag] (or with it) — either way it counts as present, so the
+    # line is never appended twice.
+    low = _norm_apostrophes(strip_audio_tags(text))
+    return any(
+        _norm_apostrophes(strip_audio_tags(line)) in low for line in _RECOVERY_LINES
+    )
 
 
 _BETTER_LUCK_REPAIR_KINDS = {
@@ -332,7 +344,9 @@ def clear() -> None:
 
 
 def note_assistant_turn(text: str) -> None:
-    cleaned = (text or "").strip()
+    # Strip v3 [audio tags]: this text is echoed back verbatim by "repeat" repairs
+    # ("I said: …") and compared against user corrections — it must be the clean line.
+    cleaned = strip_audio_tags(text).strip()
     if not cleaned:
         return
     global _last_assistant_text, _last_assistant_at
@@ -555,6 +569,8 @@ def build_prompt(repair: dict) -> str:
         "speaker label. For misheard, misunderstood, wrong-person, pronoun, "
         "factual, or bare-negation repairs, include this exact recovery line: "
         f"{recovery_line!r}"
+        " (if the line starts with a bracketed [tag], keep it exactly as written —"
+        " it is a voice-delivery cue, not spoken text)."
     )
 
 

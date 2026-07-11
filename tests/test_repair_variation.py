@@ -92,6 +92,22 @@ class RecoveryLineVariationTest(unittest.TestCase):
         out = rm.add_better_luck_line("Guess I misfired there!", repair["recovery_line"])
         self.assertIn(repair["recovery_line"], out)
 
+    def test_star_tours_line_carries_mid_reply_excited_tag(self):
+        # The signature sign-off ships with an authored [excited] delivery tag, so when
+        # it is appended after a repair reply the tag lands MID-REPLY at synthesis.
+        line = rm._RECOVERY_LINES[0]
+        self.assertTrue(line.startswith("[excited] "), line)
+        out = rm.add_better_luck_line("Got it. I'll call you Bret.", line)
+        self.assertIn(". [excited] I'm sure we'll have better luck next time!", out)
+
+    def test_no_double_append_when_llm_echoed_line_without_tag(self):
+        # The LLM may echo the recovery line but drop the authored [tag] — containment
+        # must be tag-insensitive so the line is never appended twice.
+        tagged = rm._RECOVERY_LINES[0]
+        untagged = rm.strip_audio_tags(tagged)
+        out = rm.add_better_luck_line(f"Something happened. {untagged}", tagged)
+        self.assertEqual(out.lower().count("better luck next time"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

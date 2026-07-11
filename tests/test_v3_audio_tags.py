@@ -60,6 +60,74 @@ class ApplyTagsTest(unittest.TestCase):
         self.assertEqual(text, "A bold plan.")   # v2 would speak the brackets — never tag it
 
 
+class InlineTagSanitizeTest(unittest.TestCase):
+    """Inline (mid-sentence) tags: whitelisted survive on v3, everything is stripped when
+    tags can't land (non-v3 model / kill switch), and suppress_leading only skips the
+    affect-mapped prepend — never the sanitize."""
+
+    def test_suppress_leading_keeps_inline_tag_but_never_prepends(self):
+        # 2nd+ chunk of a streamed reply: a mapped stance must NOT prepend, but an
+        # authored/LLM inline tag mid-chunk still lands.
+        text, _ = tts._apply_audio_tags(
+            "Fine. [excited] Next time we triumph!", "neutral", "smug_superiority", {},
+            suppress_leading=True,
+        )
+        self.assertEqual(text, "Fine. [excited] Next time we triumph!")
+        # And with no inline tag at all, suppression yields the bare text.
+        text, _ = tts._apply_audio_tags(
+            "Fine. Next time.", "neutral", "smug_superiority", {}, suppress_leading=True,
+        )
+        self.assertEqual(text, "Fine. Next time.")
+
+    def test_kill_switch_strips_inline_tags(self):
+        with mock.patch.object(config, "TTS_V3_AUDIO_TAGS_ENABLED", False):
+            text, _ = tts._apply_audio_tags("[excited] Onward to glory!", "neutral", None, {})
+        self.assertEqual(text, "Onward to glory!")
+
+    def test_non_v3_model_strips_inline_tags(self):
+        with mock.patch.object(config, "TTS_MODEL_ID", "eleven_multilingual_v2"):
+            text, _ = tts._apply_audio_tags(
+                "Got it. [excited] Better luck next time!", "neutral", None, {}
+            )
+        self.assertEqual(text, "Got it. Better luck next time!")
+
+    def test_inline_tag_cap_keeps_earliest(self):
+        with mock.patch.object(config, "TTS_V3_INLINE_TAG_CAP", 2):
+            text, _ = tts._apply_audio_tags(
+                "[laughs] One. [sighs] Two. [whispers] Three.", "neutral", None, {}
+            )
+        self.assertEqual(text, "[laughs] One. [sighs] Two. Three.")
+
+    def test_inline_tag_suppresses_the_leading_prepend(self):
+        # An inline tag means the line already carries its delivery — no mapped prepend.
+        text, _ = tts._apply_audio_tags(
+            "Sure. [excited] We ride!", "neutral", "smug_superiority", {}
+        )
+        self.assertEqual(text, "Sure. [excited] We ride!")
+
+
+class LlmInlineTagRuleTest(unittest.TestCase):
+    """The lean-brain prompt rule exists only when tags can actually land, and offers
+    only whitelisted tags."""
+
+    def test_rule_active_and_palette_whitelisted(self):
+        with mock.patch.object(config, "TTS_V3_LLM_INLINE_TAGS_ENABLED", True):
+            rule = tts.llm_inline_tag_rule()
+        self.assertIn("[excited]", rule)
+        self.assertIn("[sighs]", rule)
+        self.assertNotIn("[snorts]", rule)   # vocalization-only tags are not offered
+
+    def test_rule_empty_when_flag_off(self):
+        with mock.patch.object(config, "TTS_V3_LLM_INLINE_TAGS_ENABLED", False):
+            self.assertEqual(tts.llm_inline_tag_rule(), "")
+
+    def test_rule_empty_on_non_v3_or_kill_switch(self):
+        with mock.patch.object(config, "TTS_MODEL_ID", "eleven_multilingual_v2"):
+            self.assertEqual(tts.llm_inline_tag_rule(), "")
+        with mock.patch.object(config, "TTS_V3_AUDIO_TAGS_ENABLED", False):
+            self.assertEqual(tts.llm_inline_tag_rule(), "")
+
+
 class StabilityPinTest(unittest.TestCase):
     """v3 pins stability to one preset so Rex doesn't sound like a different voice each sentence."""
 
@@ -88,7 +156,19 @@ class StabilityPinTest(unittest.TestCase):
             self.assertEqual(tts._pin_v3_stability({"stability": 0.3})["stability"], 0.3)
 
 
-class SeedTest(unittest.TestCase):
+class _ResetElClientMixin:
+    """Tests that mock elevenlabs.ElevenLabs must clear the module-level client cache
+    (tts._el_client) before AND after, or whichever fake ran first sticks for the rest
+    of the module and later tests capture nothing (observed: 2 order-dependent fails)."""
+
+    def setUp(self):
+        tts._el_client = None
+
+    def tearDown(self):
+        tts._el_client = None
+
+
+class SeedTest(_ResetElClientMixin, unittest.TestCase):
     """A fixed v3 seed keeps the voice consistent across separate per-sentence API calls."""
 
     def test_seed_only_on_v3(self):
@@ -142,7 +222,7 @@ class SeedTest(unittest.TestCase):
         self.assertNotIn("seed", captured)
 
 
-class StitchTest(unittest.TestCase):
+class StitchTest(_ResetElClientMixin, unittest.TestCase):
     """Request stitching (previous_text). eleven_v3 REJECTS previous_text (400 unsupported_model),
     so it must NEVER be sent on v3; stitching stays available for models that support it (v2/turbo)."""
 
@@ -226,6 +306,24 @@ class StripTagsTest(unittest.TestCase):
 
     def test_no_tags_unchanged(self):
         self.assertEqual(tts.strip_audio_tags("Just a normal line."), "Just a normal line.")
+
+    def test_strips_mid_sentence_tag(self):
+        self.assertEqual(
+            tts.strip_audio_tags("Got it. [excited] I'm sure we'll have better luck next time!"),
+            "Got it. I'm sure we'll have better luck next time!",
+        )
+
+    def test_tts_reexports_shared_helper(self):
+        # One canonical implementation: audio.tts and utils.conv_log must share it.
+        from utils.audio_tags import strip_audio_tags as shared
+        self.assertIs(tts.strip_audio_tags, shared)
+
+    def test_conv_log_seam_strips(self):
+        from utils import conv_log
+        self.assertEqual(
+            conv_log._strip_audio_tags("Sure. [whispers] Between us, the toaster lies."),
+            "Sure. Between us, the toaster lies.",
+        )
 
 
 if __name__ == "__main__":

@@ -44,7 +44,18 @@ _SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
 
 
 def _persona() -> str:
-    return (getattr(config, "LEAN_BRAIN_PERSONA", "") or "").strip() or config.REX_CORE_PROMPT
+    persona = (getattr(config, "LEAN_BRAIN_PERSONA", "") or "").strip() or config.REX_CORE_PROMPT
+    # Inline v3 delivery tags: when the TTS layer can honor them, tell the model it may
+    # place one whitelisted [tag] mid-reply where the delivery genuinely shifts. audio.tts
+    # sanitizes whatever comes back (whitelist + cap) and every log/GUI/memory seam strips
+    # tags, so this is safe by construction; the rule is "" whenever tags can't land.
+    # Single choke point: covers replies, lull-breakers, and one-voice directives alike.
+    try:
+        from audio import tts as _tts
+        tag_rule = _tts.llm_inline_tag_rule()
+    except Exception:
+        tag_rule = ""
+    return persona + ("\n\n" + tag_rule if tag_rule else "")
 
 
 def _model() -> str:

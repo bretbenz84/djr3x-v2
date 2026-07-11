@@ -165,21 +165,43 @@ def _pin_v3_stability(voice_settings: Optional[dict]) -> Optional[dict]:
 
 # ── Eleven v3 audio tags ─────────────────────────────────────────────────────
 # Tags shape delivery at synthesis; they must NEVER reach the transcript / log / memory / GUI.
-_AUDIO_TAG_RE = re.compile(r"\[([A-Za-z][A-Za-z '\-]*)\]")
-
-
-def strip_audio_tags(text: Optional[str]) -> str:
-    """Remove [audio tags] from text — use anywhere Rex's line is stored or displayed, so a v3
-    delivery tag never leaks into the transcript/log/memory."""
-    if not text:
-        return text or ""
-    return re.sub(r"\s{2,}", " ", _AUDIO_TAG_RE.sub("", text)).strip()
+# Pattern + strip live in utils.audio_tags (shared with conv_log); re-exported here as the
+# established public API.
+from utils.audio_tags import AUDIO_TAG_RE as _AUDIO_TAG_RE, strip_audio_tags  # noqa: E402
 
 
 def _v3_tags_active() -> bool:
     return (
         str(getattr(config, "TTS_MODEL_ID", "")).strip() == "eleven_v3"
         and bool(getattr(config, "TTS_V3_AUDIO_TAGS_ENABLED", False))
+    )
+
+
+def llm_inline_tag_rule() -> str:
+    """The compact system-prompt rule that lets the reply LLM place inline v3 delivery tags
+    mid-reply, or "" when tags can't land (non-v3 model, kill switch off, or
+    TTS_V3_LLM_INLINE_TAGS_ENABLED off). Lives here so the offered palette stays in lockstep
+    with the synthesis whitelist — a tag the prompt suggests is always one synthesis keeps.
+    Vocalization-only tags the model places poorly (snorts/exhales) are not offered."""
+    if not _v3_tags_active():
+        return ""
+    if not bool(getattr(config, "TTS_V3_LLM_INLINE_TAGS_ENABLED", False)):
+        return ""
+    whitelist = getattr(config, "TTS_V3_TAG_WHITELIST", set()) or set()
+    offered = [
+        t for t in ("excited", "curious", "sarcastic", "mischievously",
+                    "laughs", "sighs", "whispers")
+        if t in whitelist
+    ]
+    if not offered:
+        return ""
+    palette = " ".join(f"[{t}]" for t in offered)
+    return (
+        "Voice delivery tags: you may place AT MOST one bracketed tag inside a reply, "
+        "immediately before the words whose delivery genuinely shifts — exactly one of: "
+        f"{palette}. Use one only when the beat clearly calls for it (a tease, a reveal, "
+        "mock-drama, a weary sigh, a shift to hushed conspiracy); most replies need none. "
+        "Never tag a sincere or serious moment, and never invent tags outside that list."
     )
 
 
@@ -194,24 +216,51 @@ def resolve_audio_tag(emotion: Optional[str] = None, comedy_mode: Optional[str] 
     return tag if (tag and tag in whitelist) else None
 
 
+def _sanitize_inline_tags(text: str) -> str:
+    """Make inline [audio tags] in caller-supplied text safe for synthesis. Inline tags may now
+    arrive legitimately mid-sentence — authored on canned seam lines (repair_moves recovery tags)
+    or emitted by the lean brain. When v3 tags are ACTIVE: keep whitelisted tags, drop the rest,
+    and cap how many survive (TTS_V3_INLINE_TAG_CAP, earliest win) so an over-eager LLM can't
+    turn a reply into a laugh track. When INACTIVE (non-v3 model, or the kill switch is off):
+    strip ALL tags — v2/turbo would read the brackets aloud, and the kill switch must actually
+    kill delivery tags, not let inline ones ride."""
+    if not _AUDIO_TAG_RE.search(text):
+        return text
+    if not _v3_tags_active():
+        return strip_audio_tags(text)
+    whitelist = getattr(config, "TTS_V3_TAG_WHITELIST", set()) or set()
+    cap = int(getattr(config, "TTS_V3_INLINE_TAG_CAP", 2) or 0)
+    kept = {"n": 0}
+
+    def _keep(m: re.Match) -> str:
+        if m.group(1).strip().lower() not in whitelist:
+            return ""
+        if cap > 0 and kept["n"] >= cap:
+            return ""
+        kept["n"] += 1
+        return m.group(0)
+
+    return re.sub(r"\s{2,}", " ", _AUDIO_TAG_RE.sub(_keep, text)).strip()
+
+
 def _apply_audio_tags(
     spoken_text: str,
     emotion: Optional[str],
     comedy_mode: Optional[str],
     voice_settings: Optional[dict],
+    suppress_leading: bool = False,
 ) -> Tuple[str, Optional[dict]]:
-    """Return (text-for-ElevenLabs, voice_settings) with a v3 audio tag applied. Used by BOTH speak
-    and ensure_cached so their cache keys match. No-op unless v3 tags are active. Keeps only
-    whitelisted inline tags (model-emitted, a later phase), else prepends the affect-mapped leading
-    tag. Stability is NOT touched here — it is pinned globally by _pin_v3_stability to the Natural
-    preset, which still lets tags land (only HIGH/Robust stability mutes them)."""
+    """Return (text-for-ElevenLabs, voice_settings) with v3 audio tags applied. Used by BOTH speak
+    and ensure_cached so their cache keys match. Inline tags are ALWAYS sanitized (whitelisted
+    survive on v3, everything is stripped otherwise — see _sanitize_inline_tags); the affect-mapped
+    LEADING tag is then prepended unless `suppress_leading` (2nd+ chunks of a streamed reply — the
+    reply's one leading tag rode chunk 1) or an inline tag already carries the delivery. Stability
+    is NOT touched here — it is pinned globally by _pin_v3_stability to the Natural preset, which
+    still lets tags land (only HIGH/Robust stability mutes them)."""
+    text = _sanitize_inline_tags(spoken_text)
     if not _v3_tags_active():
-        return spoken_text, voice_settings
-    whitelist = getattr(config, "TTS_V3_TAG_WHITELIST", set()) or set()
-    text = _AUDIO_TAG_RE.sub(
-        lambda m: m.group(0) if m.group(1).strip().lower() in whitelist else "", spoken_text
-    )
-    if not _AUDIO_TAG_RE.search(text):
+        return text, voice_settings
+    if not suppress_leading and not _AUDIO_TAG_RE.search(text):
         tag = resolve_audio_tag(emotion, comedy_mode)
         if tag:
             text = f"[{tag}] {text.lstrip()}"
@@ -245,6 +294,9 @@ def speak(
     if not text or not text.strip():
         return
     spoken_text = _normalize_for_speech(text)
+    # Callers may pass text carrying inline [audio tags] (authored seam lines, LLM-emitted);
+    # clean_text is what the transcript/GUI get — tags reach ElevenLabs only.
+    clean_text = strip_audio_tags(spoken_text)
     print(f"[TTS] {spoken_text}", flush=True)
     if bool(
         getattr(config, "NO_AUDIO_MODE", False)
@@ -252,7 +304,7 @@ def speak(
     ):
         if log_text:
             try:
-                conv_log.log_rex(spoken_text)
+                conv_log.log_rex(clean_text)
             except Exception as exc:
                 logger.debug("[tts] conversation log write failed: %s", exc)
         if on_playback_start is not None:
@@ -276,13 +328,13 @@ def speak(
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID
     voice_settings = _resolve_voice_settings(emotion, voice_settings)
-    # synth_text may carry a leading v3 audio tag ([sarcastic] …); spoken_text stays CLEAN for the
-    # conversation log below, so tags reach ElevenLabs only, never the transcript. suppress_audio_tag
-    # is set for the 2nd+ sentences of a streamed reply so the leading tag lands once, not per sentence.
-    if suppress_audio_tag:
-        synth_text = spoken_text
-    else:
-        synth_text, voice_settings = _apply_audio_tags(spoken_text, emotion, comedy_mode, voice_settings)
+    # synth_text may carry v3 audio tags (a prepended leading tag and/or inline mid-sentence ones);
+    # clean_text is what the conversation log below gets, so tags reach ElevenLabs only, never the
+    # transcript. suppress_audio_tag is set for the 2nd+ chunks of a streamed reply so the leading
+    # tag lands once, not per sentence — inline tags in those chunks are still sanitized and kept.
+    synth_text, voice_settings = _apply_audio_tags(
+        spoken_text, emotion, comedy_mode, voice_settings, suppress_leading=suppress_audio_tag
+    )
     cache_file = _cache_path(synth_text, voice_id, model_id, voice_settings, previous_text)
     # Streamed takes cache as WAV next to the buffered path's MP3 — honor both.
     wav_sibling = cache_file.with_suffix(".wav")
@@ -297,7 +349,7 @@ def speak(
             handled = False
             try:
                 handled = _speak_streaming(
-                    synth_text, spoken_text, voice_id, model_id, voice_settings,
+                    synth_text, clean_text, voice_id, model_id, voice_settings,
                     previous_text, emotion, cache_file,
                     on_playback_start=on_playback_start,
                     post_playback_tail_secs=post_playback_tail_secs,
@@ -328,7 +380,7 @@ def speak(
 
     if log_text:
         try:
-            conv_log.log_rex(spoken_text)
+            conv_log.log_rex(clean_text)
         except Exception as exc:
             logger.debug("[tts] conversation log write failed: %s", exc)
 
@@ -882,22 +934,28 @@ def is_cached(
     text: str,
     voice_settings: Optional[dict] = None,
     emotion: str = "neutral",
+    comedy_mode: Optional[str] = None,
 ) -> bool:
     """Return True if this text already has cached audio for the active voice.
 
-    `emotion` must match what the line will be spoken with so the cache key
-    lines up with the expressive voice settings used at playback time.
+    `emotion` (and `comedy_mode`) must match what the line will be spoken with so
+    the cache key lines up with the expressive voice settings and any v3 audio tag
+    used at playback time.
     """
     if not text or not text.strip():
         return False
     spoken_text = _normalize_for_speech(text)
     voice_settings = _resolve_voice_settings(emotion, voice_settings)
-    return _cache_path(
-        spoken_text,
+    synth_text, voice_settings = _apply_audio_tags(
+        spoken_text, emotion, comedy_mode, voice_settings
+    )
+    cache_file = _cache_path(
+        synth_text,
         config.ELEVENLABS_VOICE_ID,
         config.TTS_MODEL_ID,
         voice_settings,
-    ).exists()
+    )
+    return cache_file.exists() or cache_file.with_suffix(".wav").exists()
 
 
 def ensure_cached(
@@ -924,10 +982,9 @@ def ensure_cached(
         return False
     spoken_text = _normalize_for_speech(text)
     voice_settings = _resolve_voice_settings(emotion, voice_settings)
-    if suppress_audio_tag:
-        synth_text = spoken_text
-    else:
-        synth_text, voice_settings = _apply_audio_tags(spoken_text, emotion, comedy_mode, voice_settings)
+    synth_text, voice_settings = _apply_audio_tags(
+        spoken_text, emotion, comedy_mode, voice_settings, suppress_leading=suppress_audio_tag
+    )
     voice_id = config.ELEVENLABS_VOICE_ID
     model_id = config.TTS_MODEL_ID
     cache_file = _cache_path(synth_text, voice_id, model_id, voice_settings, previous_text)
