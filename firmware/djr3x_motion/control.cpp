@@ -470,6 +470,33 @@ void ctl_manual_turn(float deg, float rate_dps) {
   if (sup) emit_done(sseq, DONE_SUPERSEDED, sodom);
 }
 
+void ctl_manual_move(float dist, float speed) {
+  // Gamepad D-pad Up/Down "nudge forward/back" — the linear mirror of ctl_manual_turn.
+  // Same encoder-closed finite move as ctl_move, but armed as a MANUAL command: owner
+  // becomes MANUAL so the heartbeat watchdog won't abort it (survives a USB drop) and
+  // the Mac can't issue a competing autonomous move. Unlike a turn (pure spin), a move
+  // HAS a travel direction, so the ToF stop reflex gates it like any finite move: driving
+  // toward a Z_STOP obstacle terminates it with done:blocked (control_tick §7.4 path).
+  // gamepad_tick suppresses its zero-stick manual deadman while a finite nudge is in
+  // flight; a real stick push still takes over and cancels it (intended override).
+  bool sup = false; uint32_t sseq = 0; Odom sodom;
+  LOCK_STATE();
+  // Don't punch through a hard latch — estop/fault must be cleared first (mirror ctl_manual_drive).
+  if (g_ctx.state == ST_ESTOP || g_ctx.state == ST_FAULT) { UNLOCK_STATE(); return; }
+  sup = begin_finite_locked(sseq, sodom);
+  FiniteCmd f;
+  f.kind = CMD_MOVE; f.seq = 0;
+  f.target_dist = dist;
+  f.speed = fabsf(speed);
+  g_ctx.owner = OWNER_MANUAL;
+  g_ctx.finite = f;
+  g_ctx.cmd_mode = CMD_MOVE;
+  g_ctx.last_manual_input_ms = millis();   // a deliberate manual input — defer idle auto-return
+  if (g_ctx.state == ST_IDLE) g_ctx.state = ST_MOVING;
+  UNLOCK_STATE();
+  if (sup) emit_done(sseq, DONE_SUPERSEDED, sodom);
+}
+
 void ctl_manual_stop() {
   // Disconnect failsafe: stop NOW but keep MANUAL ownership, so AUTO doesn't silently
   // resume on a dropped pad (docs §11.4). Auto-return (if enabled) handles the handoff.

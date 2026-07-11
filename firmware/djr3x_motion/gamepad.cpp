@@ -9,6 +9,8 @@
 // the library normalizes them, so this mapping is pad-agnostic). Pairing/mode notes
 // in README. Mapping (docs §11.2):
 //   left stick : arcade drive — Y forward/back, X turn
+//   D-pad      : relative nudges — Up/Down = short fwd/back move, Left/Right = 90° turn
+//                (hold L1 + D-pad = absolute-heading encoder test, bring-up only)
 //   L3 (click) : cycle speed level — slow (default) / faster / full
 //   B          : E-STOP (always honored)
 //   Start      : clear e-stop + return control to AUTO
@@ -93,8 +95,8 @@ static void maybe_autoreturn() {
 // emitted whenever the pad is connected — INDEPENDENT of drive owner, so the
 // soundboard works in AUTO too and pressing them does NOT grab the wheel.
 // btn names must match config.MOTION_GAMEPAD_BUTTON_ACTIONS keys on the Mac.
-// NOTE: the D-pad is intentionally NOT forwarded here — it is repurposed in gamepad_tick
-// to spin the base to absolute headings for the encoder-validation test (see below).
+// NOTE: the D-pad is intentionally NOT forwarded here — it drives the relative motion
+// nudges (and, with L1 held, the absolute-heading encoder test) in gamepad_tick below.
 // ---------------------------------------------------------------------------
 static uint16_t s_prev_actions = 0;
 
@@ -156,35 +158,59 @@ void gamepad_tick() {
   }
   s_prev_l3 = l3;
 
-  // D-pad -> spin the base to an ABSOLUTE heading (encoder validation). Rising edge: one
-  // turn per press. Headings in the REP-103 body frame (+deg = CCW / left):
-  //   Up = 0   Left = +90 (CCW)   Down = 180   Right = -90 (CW)
-  // Each press issues a MANUAL finite turn BY the shortest-path delta from the live encoder
-  // heading (g_ctx.odom.theta), so a correctly wired + calibrated base lands square at 90°
-  // steps; a flipped encoder sign runs away, a wrong counts/track scale over/under-rotates.
-  // It runs as a MANUAL turn (ctl_manual_turn) so the heartbeat watchdog won't abort it and
-  // the Mac can't fight it; a left-stick push cancels it. A turn is a pure spin (lin≈0), so
-  // ToF does NOT gate it — run on a clear floor / stand during bring-up.
+  // D-pad -> RELATIVE driving nudges (rising edge: one action per press):
+  //   Up    = nudge FORWARD  by GAMEPAD_NUDGE_DIST_M (finite move — ToF stop reflex gates it)
+  //   Down  = nudge BACKWARD by GAMEPAD_NUDGE_DIST_M (finite move — ToF-gated, rear pair)
+  //   Left  = turn LEFT  (CCW) by params.default_turn_deg (90°), relative to HERE
+  //   Right = turn RIGHT (CW)  by params.default_turn_deg, relative to HERE
+  // All run as MANUAL finite commands: the heartbeat watchdog won't abort them (they
+  // survive a USB drop like stick teleop) and the Mac can't fight them; a left-stick
+  // push cancels an in-flight nudge. Turns are pure spins (lin≈0), so ToF does NOT
+  // gate them — mind the ring swing near obstacles.
+  //
+  // Hold L1 + D-pad = the original ABSOLUTE-heading encoder test (Up=0 Left=+90 Down=180
+  // Right=-90, REP-103 body frame, shortest-path from the live odom heading). Use it to
+  // validate encoder signs + counts/track calibration: a flipped sign runs away, a wrong
+  // counts_per_meter/track_width_m scale over/under-rotates (docs §14). Bring-up only.
   {
     const uint8_t dp = c->dpad();   // bitmask: UP=0x01 DOWN=0x02 RIGHT=0x04 LEFT=0x08
-    struct DpadTurn { uint8_t bit; float heading_deg; };
-    static const DpadTurn DPAD_TURNS[] = {
-      {0x01,   0.0f},   // Up    -> 0
-      {0x08,  90.0f},   // Left  -> +90 (CCW)
-      {0x02, 180.0f},   // Down  -> 180
-      {0x04, -90.0f},   // Right -> -90 (CW)
-    };
-    for (uint8_t i = 0; i < (uint8_t)(sizeof(DPAD_TURNS) / sizeof(DPAD_TURNS[0])); i++) {
-      const uint8_t bit = DPAD_TURNS[i].bit;
-      if ((dp & bit) && !(s_prev_dpad & bit)) {                  // rising edge: one turn/press
-        float theta, rate;
-        LOCK_STATE(); theta = g_ctx.odom.theta; rate = g_ctx.params.default_turn_rate; UNLOCK_STATE();
-        const float delta_deg =
-            gp_wrap_pi(gp_deg2rad(DPAD_TURNS[i].heading_deg) - theta) * 180.0f / (float)M_PI;
-        ctl_manual_turn(delta_deg, rate);
+    const uint8_t rising = (uint8_t)(dp & (uint8_t)~s_prev_dpad);
+    s_prev_dpad = dp;
+    if (rising) {
+      float theta, rate, turn_deg, nudge_speed;
+      LOCK_STATE();
+      theta       = g_ctx.odom.theta;
+      rate        = g_ctx.params.default_turn_rate;
+      turn_deg    = g_ctx.params.default_turn_deg;
+      nudge_speed = g_ctx.params.max_lin * GAMEPAD_NUDGE_SPEED_FRAC;
+      UNLOCK_STATE();
+      if (c->l1()) {
+        // Absolute-heading encoder test (headings in the REP-103 body frame, +deg = CCW).
+        struct DpadTurn { uint8_t bit; float heading_deg; };
+        static const DpadTurn DPAD_TURNS[] = {
+          {0x01,   0.0f},   // Up    -> 0
+          {0x08,  90.0f},   // Left  -> +90 (CCW)
+          {0x02, 180.0f},   // Down  -> 180
+          {0x04, -90.0f},   // Right -> -90 (CW)
+        };
+        for (uint8_t i = 0; i < (uint8_t)(sizeof(DPAD_TURNS) / sizeof(DPAD_TURNS[0])); i++) {
+          if (rising & DPAD_TURNS[i].bit) {
+            const float delta_deg =
+                gp_wrap_pi(gp_deg2rad(DPAD_TURNS[i].heading_deg) - theta) * 180.0f / (float)M_PI;
+            ctl_manual_turn(delta_deg, rate);
+            break;                                // one action per press (diagonal picks first)
+          }
+        }
+      } else if (rising & 0x01) {                 // Up: nudge forward
+        ctl_manual_move(+GAMEPAD_NUDGE_DIST_M, nudge_speed);
+      } else if (rising & 0x02) {                 // Down: nudge backward
+        ctl_manual_move(-GAMEPAD_NUDGE_DIST_M, nudge_speed);
+      } else if (rising & 0x08) {                 // Left: relative turn CCW
+        ctl_manual_turn(+turn_deg, rate);
+      } else if (rising & 0x04) {                 // Right: relative turn CW
+        ctl_manual_turn(-turn_deg, rate);
       }
     }
-    s_prev_dpad = dp;
   }
 
   // FULL-OVERRIDE: hold BOTH analog triggers near full — a deliberate two-hand gesture,
@@ -217,16 +243,16 @@ void gamepad_tick() {
 
   // Enter MANUAL on the first meaningful push; once manual, keep refreshing (incl. zero,
   // which feeds the drive deadman and holds the base stopped) until release/auto-return.
-  // EXCEPTION: while a D-pad encoder-test turn is in flight (finite CMD_TURN), skip the
-  // zero-stick deadman refresh — ctl_manual_drive would wipe the finite turn every poll.
-  // A real stick push (meaningful) still takes over and cancels the turn (intended override).
+  // EXCEPTION: while a D-pad nudge is in flight (finite CMD_TURN or CMD_MOVE), skip the
+  // zero-stick deadman refresh — ctl_manual_drive would wipe the finite command every poll.
+  // A real stick push (meaningful) still takes over and cancels it (intended override).
   bool meaningful = (fabsf(lin) > 0.001f || fabsf(ang) > 0.001f);
-  bool isManual, turnInFlight;
+  bool isManual, nudgeInFlight;
   LOCK_STATE();
-  isManual     = (g_ctx.owner == OWNER_MANUAL);
-  turnInFlight = (g_ctx.finite.kind == CMD_TURN);
+  isManual      = (g_ctx.owner == OWNER_MANUAL);
+  nudgeInFlight = (g_ctx.finite.kind == CMD_TURN || g_ctx.finite.kind == CMD_MOVE);
   UNLOCK_STATE();
-  if (meaningful || (isManual && !turnInFlight)) ctl_manual_drive(lin, ang, bt);
+  if (meaningful || (isManual && !nudgeInFlight)) ctl_manual_drive(lin, ang, bt);
 
   // Forward the soundboard / animation buttons to the Mac (does not affect drive).
   poll_action_buttons(c);

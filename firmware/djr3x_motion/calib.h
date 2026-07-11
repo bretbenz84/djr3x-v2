@@ -114,6 +114,13 @@
 // we wait for its next sample. Dead sensors are skipped (s_ok), so this only bounds
 // a genuinely stuck live sensor.
 #define TOF_TIMEOUT_MS        100
+// A sensor whose reads keep failing must not FREEZE its last-good distance forever —
+// a sensor that dies while reading "clear" would silently disable the stop reflex in
+// its direction (an undetectable safety hole). After this many CONSECUTIVE failed
+// reads (each sensor is revisited every ~80 ms, so 8 ≈ 0.6 s) the published distance
+// drops to -1: an honest error the GUI radar/telemetry can show. safety.cpp still
+// fails OPEN on -1 by documented choice (min2_valid skips it; the pair partner covers).
+#define TOF_ERR_STREAK_STALE  8
 
 // VL53L0X (short range, ~1.2 m reliable):
 #define TOF_L0X_TIMING_BUDGET_US  33000 // 33 ms measurement budget (speed vs accuracy)
@@ -169,6 +176,12 @@
 // acts strange" — the old binary 0.02 m/s gate stepped authority 1.0 -> 0.15 at slow).
 #define GAMEPAD_SPIN_BLEND_FWD_LO  0.05f   // stick fraction where the blend starts
 #define GAMEPAD_SPIN_BLEND_FWD_HI  0.35f   // stick fraction where it's fully arcade
+// D-pad driving nudges (rising edge, one per press): Up/Down = a short finite forward/
+// back MOVE (encoder-closed, ToF stop-reflex gated like any move); Left/Right = a
+// RELATIVE turn by params.default_turn_deg (90°). Hold L1 + D-pad for the original
+// absolute-heading encoder test instead (bring-up/calibration only).
+#define GAMEPAD_NUDGE_DIST_M      0.30f  // Up/Down nudge travel (m)
+#define GAMEPAD_NUDGE_SPEED_FRAC  0.30f  // nudge speed as a fraction of max_lin
 #define GAMEPAD_TRIGGER_MAX    1023.0f  // Bluepad32 analog trigger full-scale
 #define GAMEPAD_FULL_OVERRIDE_FRAC 0.85f // both triggers past this fraction = bypass ToF
 #define GAMEPAD_TRIGGER_PRESS_FRAC 0.50f // trigger past this fraction = "pressed" (GUI mirror)

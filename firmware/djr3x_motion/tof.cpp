@@ -63,6 +63,7 @@ static bool    s_ok[TOF_COUNT] = {false};  // did this sensor init? gates reads 
 // per call (round-robin) so a blocking continuous read never stalls the loop; the rest
 // keep their last value. -1 = error / not present.
 static int16_t s_dist[TOF_COUNT] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+static uint8_t s_err_streak[TOF_COUNT] = {0};   // consecutive failed reads per sensor
 static int     s_next = 0;                  // round-robin cursor
 
 static inline uint8_t mux_ch(int i) { return (uint8_t)i; }   // sensor index -> mux channel
@@ -162,9 +163,28 @@ static int read_mm(int i) {
 static void poll_one(int i) {
   if (!s_ok[i]) {
     s_dist[i] = -1;                               // not present -> honest error/no-data
-  } else {
-    const int mm = read_mm(i);
-    if (mm >= 0) s_dist[i] = (int16_t)mm;          // transient -1 keeps the last good value
+    return;
+  }
+  const int mm = read_mm(i);
+  if (mm >= 0) {
+    s_err_streak[i] = 0;
+    s_dist[i] = (int16_t)mm;
+    return;
+  }
+  // Failed read: hold the last-good value through a TRANSIENT error, but not forever —
+  // a sensor that dies while reading "clear" would otherwise freeze that clear distance
+  // and silently disable the stop reflex in its direction. After a solid failure streak
+  // publish an honest -1 (safety fails open on -1 by documented choice, and the GUI
+  // radar/telemetry show the dead sensor instead of a healthy-looking stale distance).
+  if (s_err_streak[i] < 255) s_err_streak[i]++;
+  if (s_err_streak[i] == TOF_ERR_STREAK_STALE && s_dist[i] != -1) {
+    s_dist[i] = -1;
+    char buf[72];
+    snprintf(buf, sizeof(buf), "tof[%d] %s: %u consecutive read errors - reporting -1",
+             i, TOF_LABEL[i], (unsigned)TOF_ERR_STREAK_STALE);
+    emit_log("warn", buf);
+  } else if (s_err_streak[i] > TOF_ERR_STREAK_STALE) {
+    s_dist[i] = -1;                               // stay honest until a read succeeds
   }
 }
 

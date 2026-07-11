@@ -162,23 +162,32 @@ remembers the bond for next time.
 | --- | --- |
 | Left stick | arcade drive — Y forward/back, X turn. Pure X (no Y) spins in place at full turn authority; as Y is added the spin **blends smoothly** into an arcade arc (turn authority eases to the speed level, inside-wheel reverse eases out — no hard regime snap) |
 | **L3 (click left stick)** | **cycle drive speed level**: slow (default) → faster → full. Latches; resets to slow on reconnect. Emits `event:"speed" level:1..3` |
-| **D-pad** | **spin to an absolute heading** (encoder test): Up=0°, Left=+90° (CCW), Down=180°, Right=−90° (CW) |
+| **D-pad** | **relative nudges**: Up/Down = short forward/back move (`GAMEPAD_NUDGE_DIST_M`, ToF-gated), Left/Right = relative 90° turn (`default_turn_deg`) |
+| **L1 (hold) + D-pad** | **spin to an absolute heading** (encoder test): Up=0°, Left=+90° (CCW), Down=180°, Right=−90° (CW) |
 | **B** | **E-STOP** (always honored) |
 | Start | clear e-stop + return control to AUTO |
 | Hold **both** triggers (L2+R2) | FULL-OVERRIDE: bypass ToF gating (nudge through tight spots) |
 
-**D-pad → absolute-heading turn (encoder validation).** Each arrow press spins the base in
-place to the absolute heading above, via the same encoder-closed-loop finite `turn` the Mac
-uses — so on a correctly wired + calibrated base it lands square at 90° steps. Use it to
-sanity-check the encoders: a **flipped encoder sign** makes the spin run away (never
-converges) instead of stopping; a wrong `counts_per_meter` / `track_width_m` scale makes it
-over- or under-rotate (e.g. command 90°, get 75°). It is issued as a **MANUAL** turn
-(`ctl_manual_turn`), so it runs locally on the base — it survives a USB drop and the Mac
-won't fight it — and it's computed as a shortest-path delta from the live heading
-(`g_ctx.odom.theta`). A left-stick push cancels an in-flight turn; **B** e-stops it; **Start**
-clears + returns to AUTO. A pure spin has no linear travel, so **ToF does NOT gate it** — run
-on a clear floor or a stand. (Needs the `-DMOTION_HW_PRESENT=1` build for real encoders; on
-the stub build the turn "works" but only against synthesized odometry, testing nothing.)
+**D-pad → relative nudges (driving).** Plain D-pad presses are one-shot positioning moves,
+relative to wherever the base is NOW: **Up/Down** run a short encoder-closed forward/back
+`move` of `GAMEPAD_NUDGE_DIST_M` (0.30 m) at `GAMEPAD_NUDGE_SPEED_FRAC` of `max_lin`;
+**Left/Right** run a relative spin of `default_turn_deg` (90°) at `default_turn_rate`. All
+are issued as **MANUAL** finite commands (`ctl_manual_move` / `ctl_manual_turn`): they run
+locally on the base, survive a USB drop, and the Mac can't fight them. A left-stick push
+cancels an in-flight nudge; **B** e-stops it; **Start** clears + returns to AUTO. The
+forward/back nudges have a travel direction, so the **ToF stop reflex gates them** like any
+finite move (`done:blocked` at a `Z_STOP` obstacle); the turns are pure spins, so ToF does
+NOT gate them — mind the ring swing near obstacles.
+
+**L1 (hold) + D-pad → absolute-heading turn (encoder validation).** Each arrow press spins
+the base in place to the absolute heading above (odometry frame, set at boot), via the same
+encoder-closed-loop finite `turn` the Mac uses — so on a correctly wired + calibrated base it
+lands square at 90° steps. Use it to sanity-check the encoders: a **flipped encoder sign**
+makes the spin run away (never converges) instead of stopping; a wrong `counts_per_meter` /
+`track_width_m` scale makes it over- or under-rotate (e.g. command 90°, get 75°). Computed
+as a shortest-path delta from the live heading (`g_ctx.odom.theta`). (Needs the
+`-DMOTION_HW_PRESENT=1` build for real encoders; on the stub build the turn "works" but only
+against synthesized odometry, testing nothing.)
 
 Any meaningful stick push switches `owner` to **MANUAL** — the Mac's drive/turn/move/come
 are then refused (`stop`/`estop`/`config`/`ping` still work) and the GUI shows
