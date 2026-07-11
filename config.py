@@ -311,6 +311,18 @@ LEAN_CELEBRATION_CHECKIN_ENABLED = True
 # after this many un-voiced offers within one silent stretch, the cue steps aside so
 # holiday/event/callback/visual can run. Resets on the next user turn.
 LEAN_CELEBRATION_MAX_UNVOICED_ATTEMPTS = 2
+# Episodic "memory musing" as a *Lean-owned* lull cue: in a quiet moment Rex occasionally
+# reminisces aloud about something from his rex.db diary ("since I was last on" continuity —
+# a scene vibe + a couple of experiential highlights from prior sessions). Data-driven from
+# memory/episodic_recall.session_recap (the model can't invent a memory it wasn't given), so
+# the old idle-behavior version (purpose `memory_musing`) went dark under the lean brain — its
+# governor candidate is suppressed and the lean impulse never consulted the diary. This feeds
+# the SAME single lull speaker as the other cues, at the LOWEST priority (only when no
+# celebration/holiday/event/callback/visual-riff fires), gated by its own probability and
+# capped at ONE musing per session (it's a once-per-visit "since last time" beat; the in-reply
+# shared-memory callback `llm._pick_episodic_callback` is a separate surface). Rides the shared
+# EPISODIC_RECALL_ENABLED switch + EPISODIC_RECALL_SESSION_RECAP_PROBABILITY.
+LEAN_MEMORY_MUSING_ENABLED = True
 LEAN_IMPULSE_MAX_TOKENS     = 60      # a self-initiated line is short
 # Flat-answer follow-up (reply-side, owner spec 2026-07-06): when a flat
 # half-answer ("it's okay", "not much", "meh") ANSWERS a question Rex asked, the

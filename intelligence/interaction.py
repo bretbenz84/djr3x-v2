@@ -294,6 +294,10 @@ _fired_followup_event_ids: set[int] = set()
 # hits LEAN_CELEBRATION_MAX_UNVOICED_ATTEMPTS the cue skips that event so lower lull cues can
 # run instead of being starved. Cleared on the next user turn (_begin_user_turn).
 _celebration_unvoiced_attempts: dict[int, int] = {}
+# One "since I was last on" episodic memory-musing per session (the lowest-priority lull cue).
+# session_recap returns similar content within a session, so cap at one to avoid a repeat.
+# Reset in _end_session.
+_lean_memory_mused_this_session: bool = False
 # After Rex asks a real question, hold the floor until this time so he doesn't
 # jump back in with idle banter before the user has had a chance to answer.
 _floor_held_until: float = 0.0
@@ -4486,6 +4490,40 @@ def _lean_celebration_cue(person_id: Optional[int]) -> Optional[dict]:
     return None
 
 
+def _lean_memory_musing_cue(person_id: Optional[int]) -> Optional[dict]:
+    """Offer ONE rex.db diary recap to Lean's lull speaker as an occasional 'since I was last
+    on' musing, or ``None``.
+
+    The old idle `do_memory_musing` behavior (purpose `memory_musing`) went dark under the lean
+    brain — its governor candidate is suppressed and the lean impulse never consulted the diary.
+    This revives it as the LOWEST-priority lull cue (only reached when no celebration / holiday /
+    event / callback / visual-riff fires), so a low-stakes nostalgia beat never crowds out the
+    higher-value cues. Source is the same person-agnostic `episodic_recall.session_recap` the
+    legacy path used (a scene vibe + a couple of experiential highlights, sensitive kinds
+    excluded). Capped at one musing per session (`_lean_memory_mused_this_session`) because the
+    recap content is stable within a session; probability-gated like the legacy beat. Fail-safe
+    to ``None`` so a missing/empty diary never breaks the impulse.
+    """
+    if person_id is None or not bool(getattr(config, "LEAN_MEMORY_MUSING_ENABLED", True)):
+        return None
+    if not bool(getattr(config, "EPISODIC_RECALL_ENABLED", False)):
+        return None
+    if _lean_memory_mused_this_session:
+        return None
+    if random.random() >= float(getattr(config, "EPISODIC_RECALL_SESSION_RECAP_PROBABILITY", 0.5) or 0.0):
+        return None
+    try:
+        from memory import episodic_recall
+        recap = episodic_recall.session_recap()
+    except Exception as exc:
+        _log.debug("[lean] memory-musing cue lookup failed: %s", exc)
+        return None
+    recap = str(recap or "").strip()
+    if not recap:
+        return None
+    return {"recap": recap}
+
+
 def _lean_event_followup_cue(person_id: Optional[int]) -> Optional[dict]:
     """Offer ONE remembered event whose date has passed ("how did the interview go?") to
     Lean's single lull speaker, or ``None``.
@@ -4542,7 +4580,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     pass, so the model isn't hammered) + a config 'in the mood' probability. Frequency lives in
     config (LEAN_IMPULSE_*), tuned live — the model reliably produces a good line OR passes."""
     global _last_lean_impulse_at, _last_proactive_line_at, _consecutive_lean_impulses
-    global _awaiting_followup_event
+    global _awaiting_followup_event, _lean_memory_mused_this_session
     if not (
         bool(getattr(config, "LEAN_BRAIN_ENABLED", False))
         and bool(getattr(config, "LEAN_IMPULSE_ENABLED", True))
@@ -4650,6 +4688,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     event_followup = None
     visual_riff = None
     callback_premise = None
+    memory_musing = None
     world = _lean_world()
     transcript = _lean_recent_transcript("")
     # Remembered GOOD NEWS is the most meaningful thing Rex can open a lull with, so it
@@ -4694,6 +4733,13 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             visual_riff = _lean_visual_riff_cue(person_id, world)
         except Exception as exc:
             _log.debug("visual-riff Lean cue lookup failed: %s", exc)
+    # LOWEST-priority cue: a low-stakes "since I was last on" diary musing, only when nothing
+    # richer fires. Data-driven (the model can't invent a memory it wasn't given), once/session.
+    if not (celebration or holiday_plan or event_followup or callback_premise or visual_riff):
+        try:
+            memory_musing = _lean_memory_musing_cue(person_id)
+        except Exception as exc:
+            _log.debug("memory-musing Lean cue lookup failed: %s", exc)
     try:
         from intelligence import lean_brain
         line = lean_brain.consider_initiating(
@@ -4708,6 +4754,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             callback_premise=callback_premise,
             event_followup=event_followup,
             celebration=celebration,
+            memory_musing=memory_musing,
         )
     except Exception as exc:
         _log.debug("[lean] impulse generation failed: %s", exc)
@@ -4825,6 +4872,10 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
                 callback_engine.spend_lull_premise(callback_premise)
             except Exception as exc:
                 _log.debug("[lean] callback lull spend failed: %s", exc)
+        if memory_musing:
+            # One "since I was last on" musing per session — session_recap is stable within a
+            # session, so a second would repeat. Reset in _end_session.
+            _lean_memory_mused_this_session = True
         _log.info("[lean] impulse — person_id=%s mode=%s text=%r", person_id, _mode, line)
     return completed
 
@@ -14697,7 +14748,7 @@ def _end_session() -> None:
     updates visit records and familiarity, then clears in-memory session state.
     """
     global _session_exchange_count, _identity_prompt_until, _awaiting_followup_event
-    global _idle_outro_spoken
+    global _idle_outro_spoken, _lean_memory_mused_this_session
     global _pending_introduction, _pending_intro_followup, _pending_intro_voice_capture
     global _pending_common_first_name_identity, _pending_common_first_name_introduction
     global _pending_existing_common_first_name, _pending_identity_match_confirmation
@@ -14721,6 +14772,7 @@ def _end_session() -> None:
         _recent_memory_candidates.clear()
         _clear_anonymous_speaker_slots()
         _idle_outro_spoken = False
+        _lean_memory_mused_this_session = False
         try:
             topic_thread.clear()
         except Exception:
@@ -15005,6 +15057,7 @@ def _end_session() -> None:
     _recent_memory_candidates.clear()
     _clear_anonymous_speaker_slots()
     _idle_outro_spoken = False
+    _lean_memory_mused_this_session = False
     try:
         topic_thread.clear()
     except Exception:

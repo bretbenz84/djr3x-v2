@@ -681,6 +681,20 @@ _CALLBACK_LULL_INSTRUCTION = (
 )
 
 
+_MEMORY_MUSING_INSTRUCTION = (
+    "[The moment is quiet and your mind drifts back over things you actually remember from BEFORE "
+    "this session — your own diary of experiences.]\n"
+    "{situation}"
+    "Here's what surfaces (raw first-person material — rephrase it in your voice, don't read it "
+    "verbatim): {recap} In ONE short, dry, in-character line, MUSE aloud about one of these — a "
+    "passing recollection you're chewing on, the way someone half-remembers a thing out loud. Not a "
+    "greeting, not a question, not an interview — just reminisce briefly and let it hang there for "
+    "them to pick up. Do NOT invent memories beyond what's given, and do NOT narrate that you have "
+    "a diary/database/logs — it's just something on your mind. You MUST give the one line; do not "
+    "reply PASS."
+)
+
+
 # Rotating inspiration for the lull-breakers. The instruction prompt used to be IDENTICAL every
 # call, so the model kept converging on its strongest persona default: music questions ("what song
 # survives your veto process?" every single lull — owner: "usually around music and not very
@@ -925,6 +939,7 @@ def consider_initiating(
     callback_premise: Optional[dict] = None,
     event_followup: Optional[dict] = None,
     celebration: Optional[dict] = None,
+    memory_musing: Optional[dict] = None,
 ) -> str:
     """Let Rex DECIDE, in character, to say ONE thing or just watch (the strong default).
     Returns the line to speak, or "" on PASS / any error. This is the agentic replacement for
@@ -971,6 +986,12 @@ def consider_initiating(
                 who=who,
                 situation=situation,
                 cue=str(visual_riff.get("cue") or "their current, non-sensitive vibe"),
+            )
+        elif memory_musing:
+            instruction = _MEMORY_MUSING_INSTRUCTION.format(
+                who=who,
+                situation=situation,
+                recap=str(memory_musing.get("recap") or "a few things from before").strip(),
             )
         else:
             template = _REENGAGE_INSTRUCTION if long_silence else _IMPULSE_INSTRUCTION
