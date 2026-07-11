@@ -227,7 +227,14 @@ void gamepad_tick() {
 
   float max_lin, max_ang;
   LOCK_STATE(); max_lin = g_ctx.params.max_lin; max_ang = g_ctx.params.max_ang; UNLOCK_STATE();
-  float lin =  fwd  * max_lin * scale;
+  // Concave response curve on the forward/back axis (GAMEPAD_LIN_GAMMA < 1): lifts the
+  // command at small stick pushes so the loaded base breaks stiction and creeps reliably,
+  // while full deflection still lands exactly on the level max. Turn stays linear, and
+  // the spin↔arcade blend below deliberately keys off the RAW `fwd` (its LO/HI bands were
+  // tuned on the raw stick fraction — shaping it would shift the blend feel).
+  float fwd_shaped = powf(fabsf(fwd), GAMEPAD_LIN_GAMMA);
+  if (fwd < 0.0f) fwd_shaped = -fwd_shaped;
+  float lin =  fwd_shaped * max_lin * scale;
   // Spin↔arcade BLEND, keyed off how far the stick is pushed forward/back. At (or near)
   // zero fwd: a pure spin with FULL turn authority at every speed level (breaks carpet
   // traction). As fwd grows through the GAMEPAD_SPIN_BLEND_FWD_LO..HI band, the turn

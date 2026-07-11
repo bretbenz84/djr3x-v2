@@ -155,12 +155,22 @@
 #define GAMEPAD_DEADZONE       0.12f    // stick fraction ignored around center
 // Teleop speed levels, cycled by CLICKING the left stick (L3): slow -> faster -> full ->
 // slow. Boots at SLOW so the default is gentle; each is a fraction of the caps (max_lin/
-// max_ang). Lowered a full notch after field feel ("still too fast across the board; the
-// slowest should be the middle") — the old SLOW (0.30) is now the MIDDLE, everything else
-// shifts down. Raise all three together by bumping the caps live with `set --max-lin`.
-#define GAMEPAD_SPEED_SLOW     0.15f    // level 0 (default on boot / reconnect)
-#define GAMEPAD_SPEED_MED      0.30f    // level 1  (= the old SLOW, which felt like a good middle)
-#define GAMEPAD_SPEED_FULL     0.50f    // level 2
+// max_ang). History: lowered a full notch after field feel on the BARE base ("still too
+// fast across the board"); then 2026-07-11, at full build weight (batteries + hardware),
+// SLOW couldn't break stiction at all and MED barely moved — raised SLOW/MED back up a
+// bit (FULL untouched) and added the low-stick response curve below so the fix isn't a
+// linear speed-up. Raise all three together by bumping the caps live with `set --max-lin`.
+#define GAMEPAD_SPEED_SLOW     0.20f    // level 0 (default on boot / reconnect; was 0.15 pre-weight)
+#define GAMEPAD_SPEED_MED      0.38f    // level 1  (was 0.30 pre-weight)
+#define GAMEPAD_SPEED_FULL     0.50f    // level 2  (unchanged — top speed is right)
+// Forward/back stick RESPONSE CURVE: lin command = sign(fwd)*|fwd|^GAMMA * level max.
+// GAMMA < 1 is concave ("anti-expo"): more authority at small stick pushes — at 25%
+// stick you command ~|0.25|^0.6 ≈ 44% of the level's max (linear gave 25%) — while full
+// deflection still hits exactly the level max, so top speeds are unchanged. This is what
+// makes the loaded base actually MOVE at small/medium stick without a linear speed-up.
+// 1.0 = linear (old feel). Applies to the LINEAR axis only; the turn axis stays linear
+// and the spin↔arcade blend keys off the RAW stick so the tuned blend bands don't shift.
+#define GAMEPAD_LIN_GAMMA      0.60f
 // A pure in-place SPIN (stick full left/right, no forward/back) uses THIS turn scale
 // instead of the speed level, so ALL levels get the same full turning authority — enough
 // feedforward duty to break carpet traction and actually rotate. The speed level throttles
