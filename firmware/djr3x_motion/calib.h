@@ -253,9 +253,9 @@
 // The STOP floor is the "never able to actually hit the wall" guarantee.
 #define STOP_ZONE_MIN_M       0.10f   // hard-stop floor at rest (~4 in) — never hittable
 #define SLOW_ZONE_MIN_M       0.18f   // braking-band floor at rest
-#define ZONE_SPEED_REF_MS     0.60f   // speed at which the configured zones fully apply
-                                      // (was 0.18 in the old inflated units; full teleop
-                                      // is now a REAL ~0.72 m/s)
+#define ZONE_SPEED_REF_MS     0.80f   // speed at which the configured zones fully apply
+                                      // (tracks the hardwood-mode ceiling; carpet mode
+                                      // tops out higher but is drag-limited in practice)
 
 // ---- Approach slowdown creep floor (control.cpp slow-zone taper) ------------
 // The progressive slow-zone taper scales the commanded speed toward zero at the stop
@@ -272,32 +272,28 @@
 // Left stick = arcade drive (Y forward, X turn); L1 creep / R1 boost; B = e-stop;
 // Start = clear + return to AUTO; hold BOTH analog triggers = full-override (docs §11).
 #define GAMEPAD_DEADZONE       0.12f    // stick fraction ignored around center
-// TELEOP CEILINGS — the gamepad's own speed caps, in REAL m/s / rad/s, independent
-// of params.max_lin/max_ang (2026-07-11): the params caps are the AUTONOMOUS limits
-// and the Mac pushes them DOWN on connect (config.py MOTION_MAX_LINEAR_MS = 0.25),
-// which used to silently cap teleop too — the pad crawled whenever Rex was running.
-// control_tick clamps a MANUAL drive to these (bounded by the hard caps) and
-// autonomous motion to the params caps, so the two are finally decoupled.
-// 0.72 m/s = the physical top speed the base was ACTUALLY field-driven at daily
-// under the old 4.09× cpm miscalibration (the approved feel, now in honest units).
-#define GAMEPAD_MAX_LIN_MS     0.72f    // teleop linear ceiling (level FULL = 1.00 × this)
-#define GAMEPAD_MAX_ANG_RADS   2.20f    // teleop turn ceiling. Field fix (same day): first
-                                        // set to 0.80 from a BACKWARDS unit conversion and
-                                        // spins lost their breakaway torque ("left/right has
-                                        // no power") — the old "1.5" ceiling was in odometry
-                                        // units that DEFLATED rotation 2.75×, i.e. physically
-                                        // ~4.1 rad/s of authority and ~510 duty of spin kick.
-                                        // 2.20 (under the 2.5 hard cap) restores ~475 duty of
-                                        // kick; full-stick spin ≈ 126°/s. Tune by feel.
-// Teleop speed levels, cycled by CLICKING the left stick (L3): slow -> faster -> full ->
-// slow. Boots at SLOW so the default is gentle; each is a fraction of GAMEPAD_MAX_LIN_MS.
-// History: repeatedly retuned in the old inflated units (bare-base / full-weight /
-// carpet passes); when units became real (2026-07-11) the fractions were recomputed so
-// each level's PHYSICAL speed matches what those field passes actually approved:
-// SLOW 0.43, MED 0.60, FULL 0.72 m/s.
-#define GAMEPAD_SPEED_SLOW     0.60f    // level 0 (default on boot / reconnect) ≈ 0.43 m/s
-#define GAMEPAD_SPEED_MED      0.83f    // level 1 ≈ 0.60 m/s
-#define GAMEPAD_SPEED_FULL     1.00f    // level 2 = 0.72 m/s (the approved top speed)
+// TELEOP SURFACE MODES — the gamepad's own caps, in REAL m/s / rad/s, independent
+// of params.max_lin/max_ang (the AUTONOMOUS limits the Mac pushes down on connect).
+// control_tick clamps a MANUAL drive to the larger (carpet) profile; autonomous
+// motion stays on the params caps.
+//
+// History: launched as 3 abstract speed LEVELS (slow/med/full, L3 cycling), retuned
+// repeatedly (bare base -> full weight -> carpet -> real units). At full build
+// weight the whole 3-level ladder was insufficient (owner 2026-07-11: full stick on
+// level 3 struggles on carpet, turning difficult even on hardwood) — what actually
+// varies is the SURFACE, so L3 now TOGGLES two surface profiles instead:
+//   HARDWOOD (boot/reconnect default): a bit above the old level-3 top speed.
+//   CARPET: maximum authority — higher speed ceiling and a full-saturation spin
+//     breakaway kick. NOTE the measured torque ceiling stands: an in-place spin on
+//     the test carpet saturated both wheels at 1023 duty with ~zero rotation, so
+//     carpet mode makes turning as strong as the hardware allows (arcs improve;
+//     pure pivots on deep pile may still stall — that's motors, not firmware).
+#define GAMEPAD_HARDWOOD_LIN_MS    0.80f   // old FULL was 0.72 — "slightly faster"
+#define GAMEPAD_HARDWOOD_ANG_RADS  2.50f   // old ceiling 2.20 ("turning difficult")
+#define GAMEPAD_HARDWOOD_SPIN_KICK 750.0f  // stall-gated pivot breakaway (see below)
+#define GAMEPAD_CARPET_LIN_MS      1.05f   // PID saturates duty into carpet drag
+#define GAMEPAD_CARPET_ANG_RADS    3.20f
+#define GAMEPAD_CARPET_SPIN_KICK   1023.0f // full saturation — everything the bridge has
 // Forward/back stick RESPONSE CURVE: lin command = sign(fwd)*|fwd|^GAMMA * level max.
 // GAMMA < 1 is concave ("anti-expo"): more authority at small stick pushes — at 25%
 // stick you command ~|0.25|^0.6 ≈ 44% of the level's max (linear gave 25%) — while full
@@ -306,12 +302,9 @@
 // 1.0 = linear (old feel). Applies to the LINEAR axis only; the turn axis stays linear
 // and the spin↔arcade blend keys off the RAW stick so the tuned blend bands don't shift.
 #define GAMEPAD_LIN_GAMMA      0.60f
-// A pure in-place SPIN (stick full left/right, no forward/back) uses THIS turn scale
-// instead of the speed level, so ALL levels get the same full turning authority — enough
-// feedforward duty to break carpet traction and actually rotate. The speed level throttles
-// TRANSLATION, not the pivot. 1.0 = the full max_ang cap (tune the spin rate with `set
-// --max-ang`; the PID saturates to max duty on a stiff surface regardless).
-#define GAMEPAD_SPIN_SCALE     1.00f
+// (GAMEPAD_SPIN_SCALE retired 2026-07-11 with the speed levels: turn authority is now
+// always the surface mode's full ang ceiling; the blend below only morphs the wheel
+// MIXING between spin-in-place and arcade arc.)
 // Spin↔arcade BLEND band, on the forward/back stick fraction (post-deadzone, 0..1).
 // Below LO: pure spin-in-place (full authority, inside wheel may reverse). Above HI:
 // pure arcade steer (level-scaled authority, inside wheel floored at 0). Between the

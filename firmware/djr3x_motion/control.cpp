@@ -208,11 +208,13 @@ void control_tick(float dt) {
   // (calib.h GAMEPAD_MAX_*, bounded by the hard caps); everything else clamps to the
   // runtime params — which are the AUTONOMOUS limits the Mac pushes down on connect
   // (0.25 m/s), and which used to silently cap the pad whenever Rex was running.
+  // Manual clamps to the LARGER surface profile (carpet) — the per-mode precision is
+  // already applied where the command is built (gamepad.cpp); this is defensive only.
   const bool manual_drive = (c.owner == OWNER_MANUAL && c.cmd_mode == CMD_DRIVE);
   const float lin_cap = manual_drive
-      ? fminf(GAMEPAD_MAX_LIN_MS, HARDCAP_MAX_LINEAR_MS)   : c.params.max_lin;
+      ? fminf(GAMEPAD_CARPET_LIN_MS, HARDCAP_MAX_LINEAR_MS)   : c.params.max_lin;
   const float ang_cap = manual_drive
-      ? fminf(GAMEPAD_MAX_ANG_RADS, HARDCAP_MAX_ANGULAR_RAD_S) : c.params.max_ang;
+      ? fminf(GAMEPAD_CARPET_ANG_RADS, HARDCAP_MAX_ANGULAR_RAD_S) : c.params.max_ang;
   lin_t = clampf(lin_t, -lin_cap, lin_cap);
   ang_t = clampf(ang_t, -ang_cap, ang_cap);
 

@@ -223,10 +223,11 @@ void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer, float 
   // sustained load the surface actually needs). Arcade-clamped turns floor the inside
   // wheel at 0, so they stay in the rolling regime and keep the gentle kick.
   const bool pivot = (v_l * v_r < -1e-6f);
+  const float spin_kick = g_ctx.spin_breakaway_duty;   // surface-mode dependent (context.h)
   const float kick_l = (pivot && fabsf(s_vmeas_l) < WHEEL_STALLED_EPS_MS)
-      ? fmaxf(min_duty, WHEEL_SPIN_BREAKAWAY_DUTY) : min_duty;
+      ? fmaxf(min_duty, spin_kick) : min_duty;
   const float kick_r = (pivot && fabsf(s_vmeas_r) < WHEEL_STALLED_EPS_MS)
-      ? fmaxf(min_duty, WHEEL_SPIN_BREAKAWAY_DUTY) : min_duty;
+      ? fmaxf(min_duty, spin_kick) : min_duty;
   // PID runs in the forward=+ convention; MOTOR_SIGN_* maps its effort onto each
   // H-bridge, so a wheel that spins backwards is fixed in software, not by rewiring.
   const int duty_l = MOTOR_SIGN_L * wheel_pid(v_l, s_vmeas_l, s_i_l, s_eprev_l, dt, kp, ki, kd, kff, kick_l);

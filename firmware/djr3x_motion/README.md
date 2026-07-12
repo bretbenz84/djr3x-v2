@@ -160,8 +160,8 @@ remembers the bond for next time.
 
 | Input | Action |
 | --- | --- |
-| Left stick | arcade drive — Y forward/back, X turn. Pure X (no Y) spins in place at full turn authority; as Y is added the spin **blends smoothly** into an arcade arc (turn authority eases to the speed level, inside-wheel reverse eases out — no hard regime snap) |
-| **L3 (click left stick)** | **cycle drive speed level**: slow (default) → faster → full. Latches; resets to slow on reconnect. Emits `event:"speed" level:1..3` |
+| Left stick | arcade drive — Y forward/back, X turn. Pure X (no Y) spins in place at the mode's full turn authority; as Y is added the spin **blends smoothly** into an arcade arc (inside-wheel reverse eases out — no hard regime snap) |
+| **L3 (click left stick)** | **toggle SURFACE MODE**: hardwood (boot/reconnect default) ↔ carpet (max authority — higher speed/turn ceilings + full-saturation spin breakaway). Latches; rumble confirms: 1 pulse = hardwood, 2 = carpet. Emits `event:"mode" surface:"hardwood"/"carpet"` |
 | **D-pad** | **relative nudges**: Up/Down = short forward/back move (`GAMEPAD_NUDGE_DIST_M`, ToF-gated), Left/Right = relative 90° turn (`default_turn_deg`) |
 | **L1 (hold) + D-pad** | **spin to an absolute heading** (encoder test): Up=0°, Left=+90° (CCW), Down=180°, Right=−90° (CW) |
 | **B** | **E-STOP** (always honored) |
@@ -207,7 +207,7 @@ you reconnect and press Start).
 **Action buttons → R3X soundboard / animations.** The buttons motion does NOT use —
 **A, X, Y, Select (−), Home (★), R3 (right stick click)** — are forwarded to the
 Mac as `event:"button"` (rising edge, one per press) by `poll_action_buttons()`.
-(L3 is NOT forwarded — it's the speed-level toggle above.) They fire
+(L3 is NOT forwarded — it's the surface-mode toggle above.) They fire
 **whenever the pad is connected**, independent of the drive `owner` (so the soundboard works
 in AUTO and pressing them does NOT grab the wheel). On the Mac,
 `intelligence/motion_controller._on_motion_event` looks the button up in

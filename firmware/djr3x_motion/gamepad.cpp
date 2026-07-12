@@ -40,13 +40,20 @@ static bool s_prev_b = false;
 static bool s_prev_start = false;
 static bool s_full_override = false;
 static uint8_t s_prev_dpad = 0;           // D-pad rising-edge state (heading-turn triggers)
-static bool s_prev_l3 = false;            // left-stick-click rising edge (speed-level toggle)
-static uint8_t s_speed_level = 0;         // 0 slow (default) / 1 med / 2 full; L3 cycles
+static bool s_prev_l3 = false;            // left-stick-click rising edge (surface-mode toggle)
+// SURFACE MODE (replaced the 3 abstract speed levels 2026-07-11 — at full build
+// weight the whole ladder was insufficient; what actually varies is the floor):
+// false = HARDWOOD (boot/reconnect default), true = CARPET (max authority). L3
+// toggles. Each mode sets its own lin/ang ceilings AND the pivot breakaway kick
+// (g_ctx.spin_breakaway_duty — a surface property, so autonomous turns get it too).
+static bool s_carpet_mode = false;
 
-// The three teleop speed levels L3 cycles through (fraction of the caps).
-static const float SPEED_LEVELS[3] = {
-  GAMEPAD_SPEED_SLOW, GAMEPAD_SPEED_MED, GAMEPAD_SPEED_FULL,
-};
+static void apply_surface_mode() {
+  LOCK_STATE();
+  g_ctx.spin_breakaway_duty =
+      s_carpet_mode ? GAMEPAD_CARPET_SPIN_KICK : GAMEPAD_HARDWOOD_SPIN_KICK;
+  UNLOCK_STATE();
+}
 
 static void onConnect(ControllerPtr c) {
   if (!s_ctl) { s_ctl = c; ctl_set_gamepad(true); }   // take the first pad; filter reads in tick
@@ -56,7 +63,8 @@ static void onDisconnect(ControllerPtr c) {
   if (s_ctl == c) {
     s_ctl = nullptr;
     s_full_override = false;
-    s_speed_level = 0;        // a reconnected pad starts at the SLOW level, not wherever it left off
+    s_carpet_mode = false;    // a reconnected pad starts in HARDWOOD (gentler default)
+    apply_surface_mode();
     ctl_set_gamepad(false);
     LOCK_STATE(); g_ctx.gp_live.connected = false; UNLOCK_STATE();  // GUI: pad gone
     ctl_manual_stop();        // failsafe: stop now, KEEP manual — never silently resume AUTO
@@ -167,6 +175,7 @@ void gamepad_init() {
   BP32.setup(&onConnect, &onDisconnect);
   BP32.enableVirtualDevice(false);          // real gamepads only (no virtual mouse/kbd)
   BP32.enableNewBluetoothConnections(true); // accept a pad in pairing mode
+  apply_surface_mode();                     // boot in the HARDWOOD profile (incl. spin kick)
 }
 
 void gamepad_tick() {
@@ -188,13 +197,17 @@ void gamepad_tick() {
   if (start && !s_prev_start) { ctl_clear(0); ctl_manual_release(); }
   s_prev_start = start;
 
-  // Left-stick CLICK (L3) = cycle the drive speed level: slow -> faster -> full -> slow
-  // (rising edge, one step per press). Latches — it's a mode, not a held modifier.
+  // Left-stick CLICK (L3) = toggle the SURFACE MODE: hardwood <-> carpet (rising
+  // edge). Latches. Rumble confirms without looking: 1 pulse = hardwood, 2 = carpet.
   bool l3 = c->thumbL();
   if (l3 && !s_prev_l3) {
-    s_speed_level = (uint8_t)((s_speed_level + 1) % 3);
-    const char lv[2] = { (char)('1' + s_speed_level), '\0' };  // "1"/"2"/"3" for a Mac cue
-    emit_event_kv("speed", "level", lv);
+    s_carpet_mode = !s_carpet_mode;
+    apply_surface_mode();
+    emit_event_kv("mode", "surface", s_carpet_mode ? "carpet" : "hardwood");
+#if GAMEPAD_RUMBLE_ENABLED
+    rumble_burst(s_carpet_mode ? 2 : 1, 140, 140,
+                 GAMEPAD_RUMBLE_HELLO_MAG, GAMEPAD_RUMBLE_HELLO_MAG);
+#endif
   }
   s_prev_l3 = l3;
 
@@ -260,35 +273,33 @@ void gamepad_tick() {
   bool fo = (br >= GAMEPAD_FULL_OVERRIDE_FRAC && th >= GAMEPAD_FULL_OVERRIDE_FRAC);
   if (fo != s_full_override) { s_full_override = fo; ctl_set_full_override(fo); }
 
-  // Left stick -> arcade drive; the L3-selected speed level scales the caps.
+  // Left stick -> arcade drive, scaled by the SURFACE MODE's ceilings (hardwood or
+  // carpet — full stick = the mode's max; there are no sub-levels anymore).
   float fwd   = -stick_norm(c->axisY());   // stick up = forward
   float turn  =  stick_norm(c->axisX());   // stick right = +x
-  float scale = SPEED_LEVELS[s_speed_level];
+  const float mode_lin = s_carpet_mode ? GAMEPAD_CARPET_LIN_MS   : GAMEPAD_HARDWOOD_LIN_MS;
+  const float mode_ang = s_carpet_mode ? GAMEPAD_CARPET_ANG_RADS : GAMEPAD_HARDWOOD_ANG_RADS;
 
-  // Teleop scales against the GAMEPAD's OWN ceilings (GAMEPAD_MAX_LIN_MS/_ANG_RADS),
-  // NOT params.max_lin/max_ang — those are the autonomous caps, and the Mac pushes
-  // them down on connect (0.25 m/s), which used to silently slow the pad whenever
-  // Rex was running. control_tick clamps manual drives to these same ceilings.
+  // Teleop scales against the GAMEPAD's OWN ceilings, NOT params.max_lin/max_ang —
+  // those are the autonomous caps, and the Mac pushes them down on connect
+  // (0.25 m/s), which used to silently slow the pad whenever Rex was running.
+  // control_tick clamps manual drives to the carpet (larger) profile defensively.
   // Concave response curve on the forward/back axis (GAMEPAD_LIN_GAMMA < 1): lifts the
   // command at small stick pushes so the loaded base breaks stiction and creeps reliably,
-  // while full deflection still lands exactly on the level max. Turn stays linear, and
+  // while full deflection still lands exactly on the mode max. Turn stays linear, and
   // the spin↔arcade blend below deliberately keys off the RAW `fwd` (its LO/HI bands were
   // tuned on the raw stick fraction — shaping it would shift the blend feel).
   float fwd_shaped = powf(fabsf(fwd), GAMEPAD_LIN_GAMMA);
   if (fwd < 0.0f) fwd_shaped = -fwd_shaped;
-  float lin =  fwd_shaped * GAMEPAD_MAX_LIN_MS * scale;
-  // Spin↔arcade BLEND, keyed off how far the stick is pushed forward/back. At (or near)
-  // zero fwd: a pure spin with FULL turn authority at every speed level (breaks carpet
-  // traction). As fwd grows through the GAMEPAD_SPIN_BLEND_FWD_LO..HI band, the turn
-  // authority eases down to the level's scale and (via pivot_blend in hal) the inside
-  // wheel's reverse allowance eases out — a spin tightens smoothly into a forward arc.
-  // The old binary gate snapped authority 1.0 -> 0.15 (slow) at a 0.02 m/s threshold,
-  // which felt like the turn dying the moment the stick tilted forward.
+  float lin =  fwd_shaped * mode_lin;
+  // Spin↔arcade BLEND, keyed off how far the stick is pushed forward/back. bt only
+  // drives the wheel MIXING morph in hal now (pure spin -> arcade arc); turn authority
+  // is the mode's full ceiling at every blend (the old per-level authority taper died
+  // with the speed levels — GAMEPAD_SPIN_SCALE governed it and is retired).
   float bt = clampf((fabsf(fwd) - GAMEPAD_SPIN_BLEND_FWD_LO) /
                     (GAMEPAD_SPIN_BLEND_FWD_HI - GAMEPAD_SPIN_BLEND_FWD_LO), 0.0f, 1.0f);
   bt = bt * bt * (3.0f - 2.0f * bt);       // smoothstep: zero slope at both edges
-  const float turn_authority = GAMEPAD_SPIN_SCALE + (scale - GAMEPAD_SPIN_SCALE) * bt;
-  float ang = -turn * GAMEPAD_MAX_ANG_RADS * turn_authority;  // stick-right => -ang (REP-103: +ang = left)
+  float ang = -turn * mode_ang;            // stick-right => -ang (REP-103: +ang = left)
 
   // Enter MANUAL on the first meaningful push; once manual, keep refreshing (incl. zero,
   // which feeds the drive deadman and holds the base stopped) until release/auto-return.

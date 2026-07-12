@@ -20,11 +20,14 @@ inline uint32_t clampu(uint32_t v, uint32_t lo, uint32_t hi) {
 // ===== Hard caps (compile-time ceilings; `config` can tighten, never exceed) =
 // These are deliberately conservative for a tall, top-heavy droid on 2 driven
 // wheels. Re-tune once the base is measured (docs/motion_system.md §14).
-#define HARDCAP_MAX_LINEAR_MS     0.80f   // m/s — raised 0.60->0.80 (2026-07-11) with units now
-                                          // REAL: the base was field-driven ~0.72 m/s daily for
-                                          // days under the 4x cpm miscalibration without incident,
-                                          // so 0.80 is empirically grounded, not a guess
-#define HARDCAP_MAX_ANGULAR_RAD_S 2.50f   // rad/s (~143 deg/s)
+#define HARDCAP_MAX_LINEAR_MS     1.10f   // m/s — 0.60->0.80 when units became real (the base had
+                                          // been field-driven ~0.72 m/s daily under the 4x cpm
+                                          // miscalibration), then ->1.10 for the carpet surface
+                                          // profile (full weight + pile drag need the headroom;
+                                          // actual speed is drag-limited well below the cap)
+#define HARDCAP_MAX_ANGULAR_RAD_S 3.20f   // rad/s (~183 deg/s) — raised 2.50->3.20 for the carpet
+                                          // surface profile (spin authority; scrub-limited below
+                                          // this on any real floor)
 #define HARDCAP_MAX_TURN_RATE_DPS 120.0f  // deg/s
 #define HARDCAP_WATCHDOG_MS       2000u   // watchdog can't be set looser than this
 #define HARDCAP_DRIVE_EXPIRY_MS   1000u
@@ -204,6 +207,11 @@ struct MotionContext {
   // Manual (gamepad) override (docs §11). owner/gamepad above; these two below.
   bool      full_override = false;     // gamepad bypasses ToF zone/cliff gating (held)
   uint32_t  last_manual_input_ms = 0;  // last meaningful gamepad input (idle-autoreturn)
+  // Pivot breakaway kick currently in force (duty; hal_drive_velocity reads it under
+  // the state lock). Boot default = calib.h WHEEL_SPIN_BREAKAWAY_DUTY; the gamepad's
+  // surface-mode toggle (L3) raises it to the carpet profile — a SURFACE property, so
+  // autonomous turns benefit from the mode too, not just teleop.
+  float     spin_breakaway_duty = WHEEL_SPIN_BREAKAWAY_DUTY;
   GamepadLive gp_live;                 // live pad mirror for the GUI (telemetry only)
   WheelDiag   wheels;                  // per-wheel measured speed + duty (telemetry diag)
   ImuState    imu;                     // MPU-6050 attitude (telemetry + future fusion)
