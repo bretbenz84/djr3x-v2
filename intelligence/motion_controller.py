@@ -222,6 +222,9 @@ _TUNING_KEYS = (
     ("kp", "MOTION_WHEEL_KP"),
     ("ki", "MOTION_WHEEL_KI"),
     ("kd", "MOTION_WHEEL_KD"),
+    ("kff", "MOTION_WHEEL_KFF"),
+    ("min_duty", "MOTION_WHEEL_MIN_DUTY"),
+    ("breakaway_duty", "MOTION_WHEEL_BREAKAWAY_DUTY"),
     ("counts_per_meter", "MOTION_COUNTS_PER_METER"),
     ("track_width_m", "MOTION_TRACK_WIDTH_M"),
 )

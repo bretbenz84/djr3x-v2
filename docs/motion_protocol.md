@@ -475,6 +475,9 @@ autonomous caps no longer slows the human operator.
 | `kp` | `MOTION_WHEEL_KP` | duty per m/s | calib.h | 1e5 |
 | `ki` | `MOTION_WHEEL_KI` | duty·s per m/s | calib.h | 1e5 |
 | `kd` | `MOTION_WHEEL_KD` | duty·s² per m/s | calib.h | 1e5 |
+| `kff` | `MOTION_WHEEL_KFF` | duty per m/s of command | calib.h (~640) | 1e5 |
+| `min_duty` | `MOTION_WHEEL_MIN_DUTY` | duty (running floor while rolling) | calib.h (120) | 1023 |
+| `breakaway_duty` | `MOTION_WHEEL_BREAKAWAY_DUTY` | duty (stall-gated dead-stop punch, straight drive) | calib.h (358 ≈ 35%) | 1023 |
 | `counts_per_meter` | `MOTION_COUNTS_PER_METER` | counts/m | calib.h | 1e3–1e6 |
 | `track_width_m` | `MOTION_TRACK_WIDTH_M` | m | calib.h | 0.05–2.0 |
 

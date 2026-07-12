@@ -98,8 +98,22 @@
 //          Raise until the wheel starts moving crisply at creep; lower if it lurches.
 #define WHEEL_PID_KFF     640.0f    // duty per REAL m/s of COMMAND (was 2600 in the old
                                     // 4.09×-inflated units; 640 ≈ the measured plant gain)
-#define WHEEL_MIN_DUTY    120.0f    // stiction breakaway kick (duty), in travel dir — duty
-                                    // units, physical, NOT rescaled
+#define WHEEL_MIN_DUTY    230.0f    // running duty floor (duty), in travel dir — applies
+                                    // while the wheel is ROLLING. MEASURED on the
+                                    // full-weight base (2026-07-12): sustained creep
+                                    // needs ~240 total duty; at the old 120 the wheel
+                                    // re-stalled one tick after breakaway (100 Hz
+                                    // stick-slip chatter, "only moves at full throttle")
+// STRAIGHT-drive breakaway (owner 2026-07-12: the full-weight robot needs a
+// substantial duty punch to leave a dead stop — below it, low commands just hummed).
+// STALL-GATED like the pivot tiers: while a wheel is COMMANDED but measured
+// stationary, its duty floors here (owner's 35% start was MEASURED marginal — twitch,
+// not launch — on the full-weight base; ~49% breaks away decisively —
+// tune live with `set --breakaway`); one 100 Hz tick after it rolls, the floor drops
+// to WHEEL_MIN_DUTY and the closed loop holds the actual commanded speed. Net feel:
+// dead stop -> immediate 35% punch -> rolling -> true low-speed control. Runtime
+// param (breakaway_duty); this is the boot default.
+#define WHEEL_STRAIGHT_BREAKAWAY_DUTY 500.0f
 // PIVOT (spin-in-place) breakaway: when the two wheel targets have OPPOSITE signs the
 // base is scrubbing both tires sideways — a far higher static threshold than rolling,
 // and higher again on carpet. STALL-GATED: the kick applies per wheel ONLY while that

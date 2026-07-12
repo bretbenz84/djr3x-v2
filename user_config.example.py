@@ -256,3 +256,19 @@ NOTE  Per-machine serial ports (MOTION_ESP32_PORT, MAESTRO_PORT, Arduino ports)
 #     "Give me a tick, scanning the feeds.",
 #     "Patience — consulting the galaxy's databanks.",
 # ]
+
+# ── Drive base feel (motion) ─────────────────────────────────────────────────
+# Dead-stop breakaway punch for the drive wheels (PWM duty, 0..1023). The
+# full-weight droid needs a substantial kick to overcome static friction from a
+# stop; this floor applies ONLY while a commanded wheel is still stationary and
+# drops away the instant it rolls, so slow driving stays controllable. Raise if
+# he hums without moving at low stick; lower if starts feel lurchy.
+# MOTION_WHEEL_BREAKAWAY_DUTY = 358
+
+# Running duty floor while a wheel is already rolling (keeps creep alive over
+# bumps/carpet seams without overshooting slow commands).
+# MOTION_WHEEL_MIN_DUTY = 120
+
+# Velocity feedforward: duty per m/s of commanded speed (droid-measured plant
+# gain ~640). Only touch alongside a bench retune (firmware/tools/motion_bench.py).
+# MOTION_WHEEL_KFF = 640

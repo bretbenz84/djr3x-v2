@@ -324,7 +324,7 @@ def cmd_turn(c, args):
             print("    (no config echo — compute by hand: track_new = track_old * cmd_deg/phys_deg)")
 
 
-_PARAM_ORDER = ("kp", "ki", "kd", "kff", "min_duty", "accel_lin", "accel_ang",
+_PARAM_ORDER = ("kp", "ki", "kd", "kff", "min_duty", "breakaway_duty", "accel_lin", "accel_ang",
                 "counts_per_meter", "track_width_m",
                 "max_lin", "max_ang", "slow_zone_m", "stop_zone_m",
                 "assist_enabled", "assist_engage_mm", "assist_gain")
@@ -358,6 +358,7 @@ def cmd_set(c, args):
     if args.kd is not None: keys["kd"] = args.kd
     if args.kff is not None: keys["kff"] = args.kff
     if args.min_duty is not None: keys["min_duty"] = args.min_duty
+    if args.breakaway is not None: keys["breakaway_duty"] = args.breakaway
     if args.accel_lin is not None: keys["accel_lin"] = args.accel_lin
     if args.accel_ang is not None: keys["accel_ang"] = args.accel_ang
     if args.max_lin is not None: keys["max_lin"] = args.max_lin
@@ -491,7 +492,9 @@ def main():
     st.add_argument("--kp", type=float); st.add_argument("--ki", type=float)
     st.add_argument("--kd", type=float)
     st.add_argument("--kff", type=float, help="velocity feedforward (duty per m/s)")
-    st.add_argument("--min-duty", type=float, dest="min_duty", help="stiction breakaway kick (duty)")
+    st.add_argument("--min-duty", type=float, dest="min_duty", help="running duty floor while rolling")
+    st.add_argument("--breakaway", type=float, dest="breakaway",
+                    help="stall-gated dead-stop punch (duty, 0..1023)")
     st.add_argument("--accel-lin", type=float, dest="accel_lin", help="teleop linear slew (m/s^2)")
     st.add_argument("--accel-ang", type=float, dest="accel_ang", help="teleop angular slew (rad/s^2)")
     st.add_argument("--max-lin", type=float, dest="max_lin", help="linear speed cap (m/s)")

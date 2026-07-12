@@ -60,7 +60,9 @@ struct MotionParams {
   float    ki = WHEEL_PID_KI;
   float    kd = WHEEL_PID_KD;
   float    kff      = WHEEL_PID_KFF;    // velocity feedforward (duty per m/s of command)
-  float    min_duty = WHEEL_MIN_DUTY;   // stiction breakaway kick (duty)
+  float    min_duty = WHEEL_MIN_DUTY;   // running duty floor while rolling (duty)
+  float    breakaway_duty = WHEEL_STRAIGHT_BREAKAWAY_DUTY;  // stall-gated dead-stop punch
+                                        // for straight drive (pivots have their own tiers)
   float    accel_lin = DRIVE_ACCEL_LIN; // teleop linear setpoint slew (m/s^2)
   float    accel_ang = DRIVE_ACCEL_ANG; // teleop angular setpoint slew (rad/s^2)
   float    counts_per_meter = COUNTS_PER_METER;

@@ -222,21 +222,24 @@ void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer, float 
   // stall-gating makes it breakaway torque pulses, and the integrator carries whatever
   // sustained load the surface actually needs). Arcade-clamped turns floor the inside
   // wheel at 0, so they stay in the rolling regime and keep the gentle kick.
-  // Three duty tiers per wheel (surface-mode dependent, context.h):
-  //   pivot + STALLED  -> breakaway kick (break static scrub loose)
-  //   pivot + ROLLING  -> run floor (carry the sustained sideways-scrub drag —
-  //                       without it the wheel re-stalled one tick after breakaway
-  //                       and spins were stick-slip grind)
-  //   rolling drive    -> gentle stiction kick (min_duty)
+  // Duty-floor tiers per wheel (stall-gated; surface-mode + params, context.h):
+  //   pivot + STALLED    -> spin breakaway (break static scrub loose)
+  //   pivot + ROLLING    -> spin run floor (carry sustained sideways-scrub drag)
+  //   straight + STALLED -> straight breakaway (params.breakaway_duty — the full-weight
+  //                         robot needs a substantial punch to leave a dead stop; a low
+  //                         command otherwise just hums below static friction)
+  //   straight + ROLLING -> min_duty (gentle floor — keeps low-speed regulation honest:
+  //                         a big CONSTANT floor would overshoot creep targets)
   const bool pivot = (v_l * v_r < -1e-6f);
   const float spin_kick = g_ctx.spin_breakaway_duty;
   const float spin_run  = g_ctx.spin_run_duty;
-  const float kick_l = !pivot ? min_duty
-      : (fabsf(s_vmeas_l) < WHEEL_STALLED_EPS_MS ? fmaxf(min_duty, spin_kick)
-                                                 : fmaxf(min_duty, spin_run));
-  const float kick_r = !pivot ? min_duty
-      : (fabsf(s_vmeas_r) < WHEEL_STALLED_EPS_MS ? fmaxf(min_duty, spin_kick)
-                                                 : fmaxf(min_duty, spin_run));
+  const float straight_kick = fmaxf(min_duty, g_ctx.params.breakaway_duty);
+  const float kick_l = (fabsf(s_vmeas_l) < WHEEL_STALLED_EPS_MS)
+      ? (pivot ? fmaxf(min_duty, spin_kick) : straight_kick)
+      : (pivot ? fmaxf(min_duty, spin_run)  : min_duty);
+  const float kick_r = (fabsf(s_vmeas_r) < WHEEL_STALLED_EPS_MS)
+      ? (pivot ? fmaxf(min_duty, spin_kick) : straight_kick)
+      : (pivot ? fmaxf(min_duty, spin_run)  : min_duty);
   // PID runs in the forward=+ convention; MOTOR_SIGN_* maps its effort onto each
   // H-bridge, so a wheel that spins backwards is fixed in software, not by rewiring.
   const int duty_l = MOTOR_SIGN_L * wheel_pid(v_l, s_vmeas_l, s_i_l, s_eprev_l, dt, kp, ki, kd, kff, kick_l);

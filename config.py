@@ -6615,6 +6615,11 @@ MOTION_DEFAULT_MOVE_DIST_M = 0.30     # "move forward/back" with no stated dista
 MOTION_WHEEL_KP = None                 # per-wheel velocity PID gain (duty per m/s of error)
 MOTION_WHEEL_KI = None
 MOTION_WHEEL_KD = None
+MOTION_WHEEL_KFF = None                # velocity feedforward (duty per m/s of command)
+MOTION_WHEEL_MIN_DUTY = None           # running duty floor while a wheel is rolling
+MOTION_WHEEL_BREAKAWAY_DUTY = None     # stall-gated dead-stop punch (duty, 0..1023) — the
+                                       # full-weight base needs ~358 (35%) to leave a stop;
+                                       # firmware boot default is calib.h, push only to tune
 MOTION_COUNTS_PER_METER = None         # encoder counts per metre of wheel travel (distance cal)
 MOTION_TRACK_WIDTH_M = None            # distance between the drive wheels, m (turn cal)
 
