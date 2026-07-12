@@ -7714,7 +7714,11 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         )
         if (now - first_missing) < confirm_for_key:
             continue
-        _pending_departure_keys[key] = (first_missing, person_name, person_db_id)
+        # staged_at rides along: the quip-resolution window below is measured from
+        # STAGING, not first-missing (the confirm window already consumed 12-40 s of
+        # first-missing time — measuring the old 30 s timeout from first-missing made
+        # non-engaged departures, confirm 40 s, expire the instant they staged).
+        _pending_departure_keys[key] = (first_missing, person_name, person_db_id, now)
         _confirmed_absent_at[key] = first_missing
         _log.debug(
             "consciousness: staged departure for key=%s name=%r after %.1fs absent "
@@ -7724,16 +7728,69 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
 
     # ── Resolve pending departures ─────────────────────────────────────────────
     for key in list(_pending_departure_keys):
-        departed_at, person_name, person_db_id = _pending_departure_keys[key]
+        departed_at, person_name, person_db_id, staged_at = _pending_departure_keys[key]
 
         # Person returned — cancel
         if key in current_keys:
             del _pending_departure_keys[key]
             continue
 
-        # Timeout: give up after departure_cooldown without resolution
-        if now - departed_at > departure_cooldown:
+        # Explicit recent goodbye + absence past the confirm window: latch the
+        # conversation closed NOW, ahead of the quip gates below. A stale
+        # face-tracking hold or ambient room audio must not keep the conversation
+        # open after the person SAID they were leaving and then left the view
+        # (field-logged 2026-07-11: the latch never armed and Rex questioned an
+        # empty room for 2+ minutes). Worst case self-heals: if they said bye but
+        # stayed, their next turn or reappearance clears the latch and re-greets.
+        try:
+            from intelligence import end_thread
+            if end_thread.recent_farewell():
+                end_thread.note_farewell_departure()
+                _first_missing_at.pop(key, None)
+                del _pending_departure_keys[key]
+                _last_departure_reaction_at[key] = now
+                _last_presence_reaction_at[key] = now
+                _visit_arrival = _visit_started_at.pop(key, None)
+                if isinstance(key, int) and person_name:
+                    _log.info(
+                        "consciousness: %s left after an explicit goodbye — "
+                        "conversation closed, suppressing departure quip",
+                        person_name,
+                    )
+                    episodic_hooks.visit_departure(
+                        person_db_id, person_name, _visit_arrival, departed_at,
+                    )
+                else:
+                    _log.info(
+                        "consciousness: unknown (key=%s) left after a goodbye — "
+                        "conversation closed, suppressing departure quip",
+                        key,
+                    )
+                continue
+        except Exception:
+            _log.debug("farewell-departure check failed", exc_info=True)
+
+        # Quip window expired: resolve as a SILENT departure — clean up the missing
+        # timer and log the visit, just without the spoken quip. The old bare delete
+        # left _first_missing_at armed, so the entry re-staged and re-deleted every
+        # tick FOREVER: no quip, no farewell latch, no visit log, and the person
+        # haunted presence state until shutdown (the 2026-07-11 empty-room bug).
+        if now - staged_at > departure_cooldown:
+            _first_missing_at.pop(key, None)
             del _pending_departure_keys[key]
+            _visit_arrival = _visit_started_at.pop(key, None)
+            if isinstance(key, int) and person_name:
+                _log.info(
+                    "consciousness: silent departure resolved for %s "
+                    "(quip window missed)", person_name,
+                )
+                episodic_hooks.visit_departure(
+                    person_db_id, person_name, _visit_arrival, departed_at,
+                )
+            else:
+                _log.info(
+                    "consciousness: silent departure resolved for key=%s", key,
+                )
             continue
 
         # Face gone but user still talking → likely just stepped off-camera; suppress
@@ -7766,35 +7823,9 @@ def _step_presence_tracking(snapshot: dict, profile: SituationProfile) -> None:
         _visit_arrival = _visit_started_at.pop(key, None)  # arrival of the just-ended visit
 
         is_known = isinstance(key, int) and person_name
-
-        # Explicit goodbye + now leaving the camera view = the conversation is
-        # genuinely over. Rex already answered the sign-off ("Catch you later!"),
-        # so a departure quip on top reads as if he never heard it — and it kicks
-        # off the idle-banter cascade that leaves him talking to an empty room.
-        # Suppress the quip, latch "conversation closed" (idle banter / monologue /
-        # re-engagement stay quiet until they come back), but still log the visit.
-        try:
-            from intelligence import end_thread
-            if end_thread.recent_farewell():
-                end_thread.note_farewell_departure()
-                if is_known:
-                    _log.info(
-                        "consciousness: %s left after an explicit goodbye — "
-                        "conversation closed, suppressing departure quip",
-                        person_name,
-                    )
-                    episodic_hooks.visit_departure(
-                        person_db_id, person_name, _visit_arrival, departed_at,
-                    )
-                else:
-                    _log.info(
-                        "consciousness: unknown (key=%s) left after a goodbye — "
-                        "conversation closed, suppressing departure quip",
-                        key,
-                    )
-                continue
-        except Exception:
-            _log.debug("farewell-departure check failed", exc_info=True)
+        # (The explicit-goodbye latch used to live here, AFTER the quip gates — a
+        # stale face-track hold could block it until the resolve window expired.
+        # It now runs at the TOP of the resolve loop, ahead of every gate.)
 
         if is_known:
             first_name = _first_name(person_name, "there")

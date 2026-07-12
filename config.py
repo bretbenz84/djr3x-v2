@@ -261,6 +261,12 @@ LEAN_IMPULSE_FLOW_QUIET_SECS  = _env_float("LEAN_IMPULSE_FLOW_QUIET_SECS", 14.0,
 # already governs the wait, so this shorter value only ever applies after a
 # dead-end statement — exactly the awkward-silence case visual curiosity should fill.
 LEAN_IMPULSE_FLOW_QUIET_AFTER_STATEMENT_SECS = _env_float("LEAN_IMPULSE_FLOW_QUIET_AFTER_STATEMENT_SECS", 7.0, min_value=0.0, max_value=300.0)
+# Presence backstop for the lull impulse: only address a lull line at the session
+# person while they're plausibly HERE — visible on camera now, or heard within this
+# many seconds (keeps voice-led off-camera conversation legitimate). Field bug
+# 2026-07-11: after "I'm gonna leave the room now" the impulse kept asking the empty
+# room questions — session continuity kept returning the departed person as target.
+LEAN_IMPULSE_PRESENCE_HEARD_SECS = 120.0
 # Share of lull impulses that open with an OPEN PERSONAL question ("so, got any plans
 # for the weekend?") instead of scene-anchored curiosity about a visible object. The
 # held-object/scenery emphasis made every lull line about the cup or the chair (owner

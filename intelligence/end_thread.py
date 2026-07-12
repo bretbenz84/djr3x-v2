@@ -34,8 +34,11 @@ _CLOSURE_PAT = re.compile(
     r"i told you i did not want to talk about (?:it|that|this)|"
     r"bye|goodbye|good-bye|"
     r"see you|see ya|later|talk to you later|talk later|nice speaking|"
-    r"nice talking|nice chatting|i'?m\s+going\s+to\s+go|"
-    r"i\s+am\s+going\s+to\s+go|i\s+have\s+to\s+go|gotta\s+go)\b",
+    r"nice talking|nice chatting|"
+    r"i'?m\s+(?:gonna|going\s+to)\s+(?:go|leave|head\s+out|step\s+out|take\s+off)|"
+    r"i\s+am\s+going\s+to\s+(?:go|leave)|i\s+have\s+to\s+(?:go|leave)|gotta\s+go|"
+    r"leaving\s+(?:the\s+room|now)|stepping\s+out|be\s+right\s+back|"
+    r"i'?ll\s+be\s+(?:right\s+)?back|(?:going|heading|off)\s+to\s+bed)\b",
     re.IGNORECASE,
 )
 _SHORT_ACK_PAT = re.compile(
@@ -50,9 +53,15 @@ _FAREWELL_PAT = re.compile(
     r"\b(bye|goodbye|good-bye|see you|see ya|"
     r"talk to you later|talk later|catch you later|"
     r"nice (?:talking|chatting|speaking)|"
-    r"i'?m\s+(?:gonna|going to)\s+(?:go|head out|take off|get going)|"
-    r"i\s+(?:gotta|have to|need to|hafta)\s+(?:go|head out|take off|get going|run)|"
+    # "leave"/"step out" verbs added 2026-07-11: "I'm gonna leave the room now"
+    # matched NOTHING here, so the whole farewell-departure latch never armed and
+    # Rex kept asking questions at an empty room for 2+ minutes (field-logged).
+    r"i'?m\s+(?:gonna|going to)\s+(?:go|leave|head out|step out|take off|get going)|"
+    r"i\s+(?:gotta|have to|need to|hafta)\s+(?:go|leave|head out|take off|get going|run)|"
     r"gotta\s+go|heading\s+out|i'?m\s+off|i'?m\s+out|i'?m\s+leaving|"
+    r"leaving\s+(?:the\s+room|now)|stepping\s+out|"
+    r"be\s+right\s+back|\bbrb\b|i'?ll\s+be\s+(?:right\s+)?back|"
+    r"(?:going|heading|off)\s+to\s+bed|"
     r"take care)\b",
     re.IGNORECASE,
 )

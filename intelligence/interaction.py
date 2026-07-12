@@ -4572,6 +4572,26 @@ def _lean_event_followup_cue(person_id: Optional[int]) -> Optional[dict]:
     return None
 
 
+def _lean_impulse_person_present(person_id: int) -> bool:
+    """Is the impulse's target plausibly HERE — on camera now, or heard recently?
+
+    _primary_session_person_id() is session CONTINUITY, not presence: after the user
+    walks out, it keeps returning them, and the lull impulse kept addressing questions
+    to an empty room for 2+ minutes (field-logged 2026-07-11, "I'm gonna leave the
+    room now"). Voice-led off-camera conversation stays legitimate via the
+    heard-recently clause; fail-open on state errors so a hiccup can't mute Rex."""
+    heard_secs = float(getattr(config, "LEAN_IMPULSE_PRESENCE_HEARD_SECS", 120.0))
+    if _last_user_content_at > 0.0 and (time.monotonic() - _last_user_content_at) <= heard_secs:
+        return True
+    try:
+        for p in world_state.get("people") or []:
+            if p.get("person_db_id") == person_id:
+                return True
+    except Exception:
+        return True
+    return False
+
+
 def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bool:
     """Lean AGENCY (Phase 1): when a known person is PRESENT but quiet, let Rex DECIDE — via the
     lean brain, grounded in perception + memory + mood — to say ONE motivated thing or just watch
@@ -4597,6 +4617,8 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     person_id = _primary_session_person_id()
     if person_id is None:                       # nobody known present → never nudge an empty room
         return False
+    if not _lean_impulse_person_present(person_id):
+        return False                            # target left (or went silent + off-camera)
     # "Quiet" = seconds since REX last spoke (his reply or a prior impulse), NOT since the user
     # spoke — a short natural pause after Rex FINISHES is the trigger, so the reply's own
     # generation + playback time doesn't count against it. 0.0 while he's still speaking (blocked
