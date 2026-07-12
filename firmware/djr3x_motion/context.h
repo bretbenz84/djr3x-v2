@@ -20,7 +20,10 @@ inline uint32_t clampu(uint32_t v, uint32_t lo, uint32_t hi) {
 // ===== Hard caps (compile-time ceilings; `config` can tighten, never exceed) =
 // These are deliberately conservative for a tall, top-heavy droid on 2 driven
 // wheels. Re-tune once the base is measured (docs/motion_system.md §14).
-#define HARDCAP_MAX_LINEAR_MS     0.60f   // m/s (headroom to tune teleop speed up via `config`)
+#define HARDCAP_MAX_LINEAR_MS     0.80f   // m/s — raised 0.60->0.80 (2026-07-11) with units now
+                                          // REAL: the base was field-driven ~0.72 m/s daily for
+                                          // days under the 4x cpm miscalibration without incident,
+                                          // so 0.80 is empirically grounded, not a guess
 #define HARDCAP_MAX_ANGULAR_RAD_S 2.50f   // rad/s (~143 deg/s)
 #define HARDCAP_MAX_TURN_RATE_DPS 120.0f  // deg/s
 #define HARDCAP_WATCHDOG_MS       2000u   // watchdog can't be set looser than this
@@ -36,7 +39,8 @@ struct MotionParams {
   // values at ZONE_SPEED_REF_MS (stop_zone_eff/slow_zone_eff below). Retuned
   // 2026-07-11: fixed zones over-braked at range (the ±22.5° beams see off-path
   // clutter far out) and blocked precision parking near walls.
-  float    slow_zone_m   = 0.50f;  // braking starts here at full speed
+  float    slow_zone_m   = 0.60f;  // braking starts here at full speed (0.50->0.60 when units
+                                   // became real: full teleop is now truly ~0.72 m/s)
   float    stop_zone_m   = 0.15f;  // hard-stop line at full speed
 
   float    come_stop_at_m= 0.60f;

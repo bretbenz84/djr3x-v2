@@ -72,8 +72,13 @@
 // ⚠ Starting gains — tune on the bench (docs §14.3): raise KP until the wheel
 // tracks a step without buzzing, add KI to kill steady-state error, keep KD ~0
 // unless it's oscillating. Units: duty per (m/s) of error.
-#define WHEEL_PID_KP     1800.0f
-#define WHEEL_PID_KI      900.0f
+// RESCALED ÷4.09 on 2026-07-11 when the cpm calibration made target/measured
+// speeds REAL (they had been 4.09× inflated): the old gains were duty per
+// INFLATED m/s, so keeping them would have quadrupled the loop gain overnight
+// (overshoot/oscillation). Anchor: at the old FULL, kff put ~455 duty on the
+// wheels for a true 0.716 m/s → plant ≈ 635 duty per real m/s.
+#define WHEEL_PID_KP      440.0f
+#define WHEEL_PID_KI      220.0f
 #define WHEEL_PID_KD        0.0f
 // Anti-windup: the integral's duty contribution is clamped to this so it can't
 // accumulate while the motor is saturated/stalled.
@@ -91,8 +96,10 @@
 //   MIN_DUTY — a fixed breakaway "kick" added in the travel direction whenever a
 //          nonzero speed is commanded, to clear static friction on a heavy base.
 //          Raise until the wheel starts moving crisply at creep; lower if it lurches.
-#define WHEEL_PID_KFF    2600.0f    // duty per (m/s) of COMMAND (feedforward)
-#define WHEEL_MIN_DUTY    120.0f    // stiction breakaway kick (duty), in travel dir
+#define WHEEL_PID_KFF     640.0f    // duty per REAL m/s of COMMAND (was 2600 in the old
+                                    // 4.09×-inflated units; 640 ≈ the measured plant gain)
+#define WHEEL_MIN_DUTY    120.0f    // stiction breakaway kick (duty), in travel dir — duty
+                                    // units, physical, NOT rescaled
 
 // A wheel target below this (m/s magnitude) counts as "stopped" → the wheel is
 // braked to zero and its integrator reset rather than chasing micro-setpoints.
@@ -104,11 +111,13 @@
 // released stick coasts to a stop over ~(speed/accel) seconds instead of slamming
 // to zero and dynamic-braking (the abrupt-stop complaint). Autonomous finite
 // move/turn/come commands are NOT slewed here (they stay crisp + distance-accurate).
-// Softened repeatedly after field tests ("takes off too fast" x3): at the SLOW level
-// (0.30*max_lin≈0.105 m/s) 0.2 m/s² ramps to top in ~0.5 s; at FULL (0.35) ~1.75 s.
+// Softened repeatedly after field tests ("takes off too fast" x3), then RESCALED
+// 2026-07-11 when units became real: the field-tuned 0.2 was in 4.09×-inflated m/s²,
+// i.e. a PHYSICAL ~0.8 m/s² — that's the ramp feel that was actually approved, so 0.8
+// is the same feel in real units (ang mirrors it via its own 2.75× scale factor).
 // Tune with `set --accel-lin` (higher = snappier).
-#define DRIVE_ACCEL_LIN    0.2f     // m/s^2  (teleop linear setpoint slew)
-#define DRIVE_ACCEL_ANG    4.0f     // rad/s^2 (teleop angular setpoint slew)
+#define DRIVE_ACCEL_LIN    0.8f     // m/s^2  (teleop linear setpoint slew, REAL units)
+#define DRIVE_ACCEL_ANG    1.5f     // rad/s^2 (teleop angular setpoint slew, REAL units)
 // (The old DRIVE_SPIN_LIN_EPS binary spin gate is gone — replaced by the smooth
 // GAMEPAD_SPIN_BLEND_FWD_LO/HI band above; the blend factor rides the setpoint.)
 
@@ -194,8 +203,9 @@
 // The STOP floor is the "never able to actually hit the wall" guarantee.
 #define STOP_ZONE_MIN_M       0.10f   // hard-stop floor at rest (~4 in) — never hittable
 #define SLOW_ZONE_MIN_M       0.18f   // braking-band floor at rest
-#define ZONE_SPEED_REF_MS     0.18f   // speed at which the configured zones fully apply
-                                      // (~full teleop: GAMEPAD_SPEED_FULL * max_lin)
+#define ZONE_SPEED_REF_MS     0.60f   // speed at which the configured zones fully apply
+                                      // (was 0.18 in the old inflated units; full teleop
+                                      // is now a REAL ~0.72 m/s)
 
 // ---- Approach slowdown creep floor (control.cpp slow-zone taper) ------------
 // The progressive slow-zone taper scales the commanded speed toward zero at the stop
@@ -212,17 +222,27 @@
 // Left stick = arcade drive (Y forward, X turn); L1 creep / R1 boost; B = e-stop;
 // Start = clear + return to AUTO; hold BOTH analog triggers = full-override (docs §11).
 #define GAMEPAD_DEADZONE       0.12f    // stick fraction ignored around center
+// TELEOP CEILINGS — the gamepad's own speed caps, in REAL m/s / rad/s, independent
+// of params.max_lin/max_ang (2026-07-11): the params caps are the AUTONOMOUS limits
+// and the Mac pushes them DOWN on connect (config.py MOTION_MAX_LINEAR_MS = 0.25),
+// which used to silently cap teleop too — the pad crawled whenever Rex was running.
+// control_tick clamps a MANUAL drive to these (bounded by the hard caps) and
+// autonomous motion to the params caps, so the two are finally decoupled.
+// 0.72 m/s = the physical top speed the base was ACTUALLY field-driven at daily
+// under the old 4.09× cpm miscalibration (the approved feel, now in honest units).
+#define GAMEPAD_MAX_LIN_MS     0.72f    // teleop linear ceiling (level FULL = 1.00 × this)
+#define GAMEPAD_MAX_ANG_RADS   0.80f    // teleop turn ceiling (old physical feel was ~0.55;
+                                        // boot params.max_ang 1.5 would be ~3× that — 0.80
+                                        // splits the difference, tune by feel)
 // Teleop speed levels, cycled by CLICKING the left stick (L3): slow -> faster -> full ->
-// slow. Boots at SLOW so the default is gentle; each is a fraction of the caps (max_lin/
-// max_ang). History: lowered a full notch after field feel on the BARE base ("still too
-// fast across the board"); then 2026-07-11, at full build weight (batteries + hardware),
-// SLOW couldn't break stiction at all and MED barely moved — raised SLOW/MED + added the
-// low-stick response curve below; then later the same day ON CARPET the raised SLOW was
-// STILL unusable (pile drag ≫ hard-floor stiction) — raised SLOW/MED again (FULL
-// untouched each time: top speed is right). Raise all three together with `set --max-lin`.
-#define GAMEPAD_SPEED_SLOW     0.30f    // level 0 (default on boot / reconnect; was 0.20 pre-carpet, 0.15 pre-weight)
-#define GAMEPAD_SPEED_MED      0.42f    // level 1  (was 0.38 pre-carpet, 0.30 pre-weight)
-#define GAMEPAD_SPEED_FULL     0.50f    // level 2  (unchanged — top speed is right)
+// slow. Boots at SLOW so the default is gentle; each is a fraction of GAMEPAD_MAX_LIN_MS.
+// History: repeatedly retuned in the old inflated units (bare-base / full-weight /
+// carpet passes); when units became real (2026-07-11) the fractions were recomputed so
+// each level's PHYSICAL speed matches what those field passes actually approved:
+// SLOW 0.43, MED 0.60, FULL 0.72 m/s.
+#define GAMEPAD_SPEED_SLOW     0.60f    // level 0 (default on boot / reconnect) ≈ 0.43 m/s
+#define GAMEPAD_SPEED_MED      0.83f    // level 1 ≈ 0.60 m/s
+#define GAMEPAD_SPEED_FULL     1.00f    // level 2 = 0.72 m/s (the approved top speed)
 // Forward/back stick RESPONSE CURVE: lin command = sign(fwd)*|fwd|^GAMMA * level max.
 // GAMMA < 1 is concave ("anti-expo"): more authority at small stick pushes — at 25%
 // stick you command ~|0.25|^0.6 ≈ 44% of the level's max (linear gave 25%) — while full

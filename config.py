@@ -6584,6 +6584,9 @@ MOTION_BAUD = 115200
 MOTION_PROTO_VERSION = 1
 
 # Speed / geometry caps and zones (units per docs/motion_protocol.md §4,§10).
+# These caps govern AUTONOMOUS motion only (voice moves, `come`, Mac drive): the
+# gamepad has its own teleop ceilings in firmware (calib.h GAMEPAD_MAX_LIN_MS/
+# _ANG_RADS), so pushing these no longer slows manual driving.
 MOTION_MAX_LINEAR_MS = 0.25           # m/s
 MOTION_MAX_ANGULAR_DEG_S = 60.0       # deg/s (converted to rad/s on the wire)
 # FULL-SPEED collision envelope: the firmware scales the effective zones with
@@ -6591,7 +6594,8 @@ MOTION_MAX_ANGULAR_DEG_S = 60.0       # deg/s (converted to rad/s on the wire)
 # hard floors at rest (0.10 m stop / 0.18 m slow, calib.h) so slow positioning can
 # get close to a wall while fast approach brakes early. Contact stays impossible.
 MOTION_STOP_ZONE_M = 0.15             # hard-stop line at full speed
-MOTION_SLOW_ZONE_M = 0.50             # braking starts here at full speed
+MOTION_SLOW_ZONE_M = 0.60             # braking starts here at full speed (raised 0.50->0.60
+                                      # when units became real: full teleop ~0.72 m/s)
 MOTION_COME_STOP_AT_M = 0.60
 MOTION_DEFAULT_TURN_DEG = 90.0        # "turn left/right" with no stated angle
 MOTION_DEFAULT_TURN_RATE = 40.0       # deg/s

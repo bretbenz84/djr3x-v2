@@ -431,7 +431,12 @@ each; `config` can tighten but never exceed it.** The ack echoes effective value
 | --- | --- | --- | --- | --- |
 | `max_lin` | `MOTION_MAX_LINEAR_MS` | m/s | 0.25 | board limit |
 | `max_ang` | `MOTION_MAX_ANGULAR_DEG_S` → rad/s | (key is deg/s) | 60 | board limit |
-| `slow_zone_m` | `MOTION_SLOW_ZONE_M` | m | 0.50 | — |
+
+`max_lin`/`max_ang` cap **autonomous** motion only (Mac drive/turn/move/come). MANUAL
+gamepad teleop clamps to the firmware's own ceilings (`calib.h GAMEPAD_MAX_LIN_MS` /
+`GAMEPAD_MAX_ANG_RADS`, bounded by the hard caps) — so the Mac pushing conservative
+autonomous caps no longer slows the human operator.
+| `slow_zone_m` | `MOTION_SLOW_ZONE_M` | m | 0.60 | — |
 | `stop_zone_m` | `MOTION_STOP_ZONE_M` | m | 0.15 | — |
 | `come_stop_at_m` | `MOTION_COME_STOP_AT_M` | m | 0.6 | — |
 | `default_turn_deg` | `MOTION_DEFAULT_TURN_DEG` | deg | 90 | — |

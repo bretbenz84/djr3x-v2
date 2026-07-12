@@ -204,9 +204,17 @@ void control_tick(float dt) {
     }
   }
 
-  // Defensive clamp to caps.
-  lin_t = clampf(lin_t, -c.params.max_lin, c.params.max_lin);
-  ang_t = clampf(ang_t, -c.params.max_ang, c.params.max_ang);
+  // Defensive clamp to caps. MANUAL teleop clamps to the gamepad's own ceilings
+  // (calib.h GAMEPAD_MAX_*, bounded by the hard caps); everything else clamps to the
+  // runtime params — which are the AUTONOMOUS limits the Mac pushes down on connect
+  // (0.25 m/s), and which used to silently cap the pad whenever Rex was running.
+  const bool manual_drive = (c.owner == OWNER_MANUAL && c.cmd_mode == CMD_DRIVE);
+  const float lin_cap = manual_drive
+      ? fminf(GAMEPAD_MAX_LIN_MS, HARDCAP_MAX_LINEAR_MS)   : c.params.max_lin;
+  const float ang_cap = manual_drive
+      ? fminf(GAMEPAD_MAX_ANG_RADS, HARDCAP_MAX_ANGULAR_RAD_S) : c.params.max_ang;
+  lin_t = clampf(lin_t, -lin_cap, lin_cap);
+  ang_t = clampf(ang_t, -ang_cap, ang_cap);
 
 #if MOTION_HW_PRESENT
   // Real base: odometry comes from the wheel encoders (sense before act). dt is

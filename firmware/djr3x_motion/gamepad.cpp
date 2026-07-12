@@ -265,8 +265,10 @@ void gamepad_tick() {
   float turn  =  stick_norm(c->axisX());   // stick right = +x
   float scale = SPEED_LEVELS[s_speed_level];
 
-  float max_lin, max_ang;
-  LOCK_STATE(); max_lin = g_ctx.params.max_lin; max_ang = g_ctx.params.max_ang; UNLOCK_STATE();
+  // Teleop scales against the GAMEPAD's OWN ceilings (GAMEPAD_MAX_LIN_MS/_ANG_RADS),
+  // NOT params.max_lin/max_ang — those are the autonomous caps, and the Mac pushes
+  // them down on connect (0.25 m/s), which used to silently slow the pad whenever
+  // Rex was running. control_tick clamps manual drives to these same ceilings.
   // Concave response curve on the forward/back axis (GAMEPAD_LIN_GAMMA < 1): lifts the
   // command at small stick pushes so the loaded base breaks stiction and creeps reliably,
   // while full deflection still lands exactly on the level max. Turn stays linear, and
@@ -274,7 +276,7 @@ void gamepad_tick() {
   // tuned on the raw stick fraction — shaping it would shift the blend feel).
   float fwd_shaped = powf(fabsf(fwd), GAMEPAD_LIN_GAMMA);
   if (fwd < 0.0f) fwd_shaped = -fwd_shaped;
-  float lin =  fwd_shaped * max_lin * scale;
+  float lin =  fwd_shaped * GAMEPAD_MAX_LIN_MS * scale;
   // Spin↔arcade BLEND, keyed off how far the stick is pushed forward/back. At (or near)
   // zero fwd: a pure spin with FULL turn authority at every speed level (breaks carpet
   // traction). As fwd grows through the GAMEPAD_SPIN_BLEND_FWD_LO..HI band, the turn
@@ -286,7 +288,7 @@ void gamepad_tick() {
                     (GAMEPAD_SPIN_BLEND_FWD_HI - GAMEPAD_SPIN_BLEND_FWD_LO), 0.0f, 1.0f);
   bt = bt * bt * (3.0f - 2.0f * bt);       // smoothstep: zero slope at both edges
   const float turn_authority = GAMEPAD_SPIN_SCALE + (scale - GAMEPAD_SPIN_SCALE) * bt;
-  float ang = -turn * max_ang * turn_authority;  // stick-right => -ang (REP-103: +ang = left)
+  float ang = -turn * GAMEPAD_MAX_ANG_RADS * turn_authority;  // stick-right => -ang (REP-103: +ang = left)
 
   // Enter MANUAL on the first meaningful push; once manual, keep refreshing (incl. zero,
   // which feeds the drive deadman and holds the base stopped) until release/auto-return.
