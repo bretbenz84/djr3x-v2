@@ -23,6 +23,7 @@
 #include "safety.h"
 #include "gamepad.h"
 #include "battery.h"
+#include "imu.h"
 
 // ---- Globals (declared extern in context.h) ------------------------------
 MotionContext     g_ctx;
@@ -56,6 +57,7 @@ static void sensorTask(void*) {
     TofMm t;
     hal_read_tof(t);                      // stub: all clear
     LOCK_STATE(); g_ctx.tof = t; UNLOCK_STATE();
+    imu_tick(0.02f);                      // MPU-6050 attitude @ 50 Hz (no-op if absent)
     if (++batt_div >= 50) {               // 1 Hz is plenty for a 20Ah pack
       batt_div = 0;
       battery_tick();
@@ -86,6 +88,7 @@ void setup() {
   hal_init();
   hal_tof_init();
   battery_init();                         // INA226 probe (shares the ToF I2C bus)
+  imu_init();                             // MPU-6050 probe + gyro bias cal (same bus)
   proto_init();
   control_init();
   safety_init();

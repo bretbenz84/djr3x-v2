@@ -72,11 +72,18 @@ bool battery_present() { return s_present; }
 void battery_tick() {
   if (!s_present) return;
 
+  // Voltage and current are INDEPENDENT measurements (VBUS pin vs the IN+/IN-
+  // shunt path) — a build can have either wired without the other, so an
+  // unwired VBUS must not block the current read (it used to early-return here).
+  bool have_mv = false;
   uint16_t raw = 0;
-  if (!ina_read16(REG_BUS, raw)) return;   // transient bus error: keep last EMA
-  float mv = raw * 1.25f;
-  if (mv < 1000.0f) return;                // VBUS unwired/floating — don't report garbage
-  s_mv_ema = (s_mv_ema < 0.0f) ? mv : (0.8f * s_mv_ema + 0.2f * mv);
+  if (ina_read16(REG_BUS, raw)) {          // transient bus error: keep last EMA
+    float mv = raw * 1.25f;
+    if (mv >= 1000.0f) {                   // VBUS unwired/floating — don't report garbage
+      s_mv_ema = (s_mv_ema < 0.0f) ? mv : (0.8f * s_mv_ema + 0.2f * mv);
+      have_mv = true;
+    }
+  }
 
 #if BATT_SHUNT_MICROOHM > 0
   uint16_t sraw = 0;
@@ -89,7 +96,7 @@ void battery_tick() {
 #endif
 
   LOCK_STATE();
-  g_ctx.batt_mv = (int16_t)(s_mv_ema + 0.5f);
+  if (have_mv) g_ctx.batt_mv = (int16_t)(s_mv_ema + 0.5f);
 #if BATT_SHUNT_MICROOHM > 0
   g_ctx.batt_ma = (int16_t)s_ma_ema;
 #endif

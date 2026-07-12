@@ -160,6 +160,18 @@ struct GamepadLive {
   uint32_t btn_mask = 0;     // pressed buttons; bit order = GP_BTN_* in gamepad.cpp
 };
 
+// ===== IMU attitude (MPU-6050, telemetry + future fusion) ==================
+// Complementary-filtered attitude from imu.cpp (50 Hz on the sensor task).
+// pitch/roll are gravity-referenced (deg); yaw is bias-corrected gyro
+// integration RELATIVE TO BOOT HEADING (deg, drifts slowly — no indoor
+// magnetometer by design). ok=false when no MPU-6050 answered the boot probe.
+struct ImuState {
+  bool  ok    = false;
+  float pitch = 0.0f;   // deg, + = nose up
+  float roll  = 0.0f;   // deg, + = right side down (chip frame; remap when mounted)
+  float yaw   = 0.0f;   // deg, + = CCW from boot heading
+};
+
 // ===== Per-wheel drive diagnostics (telemetry only) =======================
 // Measured wheel speed (m/s, encoder-derived) and the commanded PWM duty for each
 // wheel THIS control tick — for diagnosing left/right asymmetry (a slower-ramping
@@ -194,6 +206,7 @@ struct MotionContext {
   uint32_t  last_manual_input_ms = 0;  // last meaningful gamepad input (idle-autoreturn)
   GamepadLive gp_live;                 // live pad mirror for the GUI (telemetry only)
   WheelDiag   wheels;                  // per-wheel measured speed + duty (telemetry diag)
+  ImuState    imu;                     // MPU-6050 attitude (telemetry + future fusion)
 
   uint32_t  cmd_seq   = 0;        // last applied command seq (telemetry)
   uint32_t  seq_alloc = 0;        // (unused on fw side; Mac allocates)

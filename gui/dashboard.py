@@ -189,6 +189,16 @@ class DashboardWindow(QMainWindow):
         rc.setSpacing(14)
         self._device_status: dict[str, QLabel] = {}
         self._last_device_color: dict[str, str] = {}
+        # Drive-pack power readout (INA226 on the motion base, over motion telemetry):
+        # current draw + pack voltage. Gray em-dash until the base reports something.
+        self._power_status = QLabel()
+        self._power_status.setObjectName("deviceStatus")
+        self._power_status.setTextFormat(Qt.TextFormat.RichText)
+        self._power_status.setToolTip(
+            "Drive pack (INA226 via motion base): current draw / pack voltage")
+        self._power_status.setText('<span style="color:#5b6b7d;">⚡</span>&nbsp;—')
+        self._last_power_text = ""
+        rc.addWidget(self._power_status)
         for key, label_text, tip in _DEVICE_SPECS:
             lbl = QLabel()
             lbl.setObjectName("deviceStatus")
@@ -409,6 +419,36 @@ class DashboardWindow(QMainWindow):
             lbl = self._device_status.get(key)
             if lbl is not None:
                 lbl.setText(f'<span style="color:{color};">●</span>&nbsp;{label_text}')
+        self._update_power_status()
+
+    def _update_power_status(self) -> None:
+        """Drive-pack current/voltage in the top bar (INA226 over motion telemetry)."""
+        mv = ma = None
+        try:
+            from hardware import motion
+            tel = motion.telemetry() if motion.connected() else None
+            if tel:
+                raw_mv = float(tel.get("batt_mv", -1) or -1)
+                raw_ma = float(tel.get("batt_ma", 0) or 0)
+                if raw_mv > 0:
+                    mv = raw_mv
+                if raw_ma != 0:
+                    ma = raw_ma
+        except Exception:
+            pass
+        if ma is not None:
+            amp_s = f"{ma / 1000.0:.2f} A" if abs(ma) >= 1000 else f"{ma:.0f} mA"
+        else:
+            amp_s = None
+        volt_s = f"{mv / 1000.0:.2f} V" if mv is not None else None
+        if amp_s or volt_s:
+            body = " · ".join(s for s in (amp_s, volt_s) if s)
+            text = f'<span style="color:#f0c45a;">⚡</span>&nbsp;{body}'
+        else:
+            text = '<span style="color:#5b6b7d;">⚡</span>&nbsp;—'
+        if text != self._last_power_text:
+            self._last_power_text = text
+            self._power_status.setText(text)
 
     def close_from_shutdown(self) -> None:
         self._closing_from_shutdown = True
@@ -1526,6 +1566,118 @@ class GamepadMirrorWidget(QWidget):
         p.end()
 
 
+class AttitudeWidget(QWidget):
+    """3D attitude indicator for the MPU-6050 on the drive base.
+
+    Renders a wireframe of the base (drive deck + droid body + heading arrow) rotated
+    by the IMU's pitch/roll/yaw over a fixed ground ring, so tilt reads at a glance
+    against the "floor". Pure QPainter (rotation matrices + orthographic projection
+    through a fixed isometric camera) — no OpenGL dependency. Read-only: call
+    set_attitude() from the telemetry tick; yaw is relative to the ESP32's boot
+    heading, pitch/roll are gravity-referenced (firmware imu.cpp).
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setMinimumHeight(190)
+        self._ok = False
+        self._pitch = 0.0   # deg, + = nose up
+        self._roll = 0.0    # deg, + = right side down
+        self._yaw = 0.0     # deg, + = CCW from boot heading
+
+        # Body wireframe in the body frame: x forward, y left, z up (REP-103-ish),
+        # unit ≈ base radius. Deck = flat box; body = narrower tall box; arrow = front.
+        deck = self._box(1.00, 1.00, 0.16, z0=0.0)
+        body = self._box(0.52, 0.52, 0.85, z0=0.16)
+        arrow = [((0.62, 0.22, 0.05), (1.05, 0.0, 0.05)),
+                 ((0.62, -0.22, 0.05), (1.05, 0.0, 0.05))]
+        self._edges = deck + body
+        self._arrow = arrow
+
+    @staticmethod
+    def _box(lx: float, ly: float, lz: float, z0: float) -> list:
+        """Edge list of an axis-aligned box: half-extents lx/ly, height lz above z0."""
+        b, t = z0, z0 + lz
+        c = [(sx * lx, sy * ly, z) for z in (b, t) for sx in (-1, 1) for sy in (-1, 1)]
+        idx = [(0, 1), (1, 3), (3, 2), (2, 0),        # bottom ring
+               (4, 5), (5, 7), (7, 6), (6, 4),        # top ring
+               (0, 4), (1, 5), (2, 6), (3, 7)]        # verticals
+        return [(c[i], c[j]) for i, j in idx]
+
+    def set_attitude(self, pitch: float, roll: float, yaw: float, ok: bool) -> None:
+        if (ok != self._ok or abs(pitch - self._pitch) > 0.05
+                or abs(roll - self._roll) > 0.05 or abs(yaw - self._yaw) > 0.05):
+            self._ok, self._pitch, self._roll, self._yaw = ok, pitch, roll, yaw
+            self.update()
+
+    def clear(self) -> None:
+        if self._ok:
+            self._ok = False
+            self.update()
+
+    # ---- 3D math (row-vector · matrix chains, orthographic projection) ----
+    @staticmethod
+    def _rot(p, pitch_r: float, roll_r: float, yaw_r: float):
+        x, y, z = p
+        cy, sy = math.cos(yaw_r), math.sin(yaw_r)      # yaw about z (CCW+)
+        x, y = x * cy - y * sy, x * sy + y * cy
+        cp, sp = math.cos(pitch_r), math.sin(pitch_r)  # pitch about y (+ = nose up)
+        x, z = x * cp + z * sp, -x * sp + z * cp
+        cr, sr = math.cos(roll_r), math.sin(roll_r)    # roll about x (+ = right down)
+        y, z = y * cr - z * sr, y * sr + z * cr
+        return x, y, z
+
+    def _project(self, p, cx: float, cy: float, scale: float) -> QPointF:
+        # Fixed isometric-ish camera: yaw the scene 35° for depth, tilt 55° down.
+        x, y, z = p
+        ca, sa = math.cos(math.radians(35)), math.sin(math.radians(35))
+        x, y = x * ca - y * sa, x * sa + y * ca
+        ct, st = math.cos(math.radians(55)), math.sin(math.radians(55))
+        sy_ = y * ct + z * st          # screen-vertical component
+        return QPointF(cx + x * scale, cy - sy_ * scale)
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w, h = float(self.width()), float(self.height())
+        cx, cy = w / 2.0, h / 2.0 + 8
+        scale = min(w, h) * 0.34
+        dim = 1.0 if self._ok else 0.35
+
+        # Ground reference ring + cardinal ticks (world frame — never rotates).
+        p.setPen(QPen(QColor(90, 150, 200, int(70 * dim)), 1))
+        ring = [self._project((math.cos(a) * 1.35, math.sin(a) * 1.35, 0.0), cx, cy, scale)
+                for a in [i * math.pi / 24 for i in range(49)]]
+        for a, b in zip(ring, ring[1:]):
+            p.drawLine(a, b)
+        for ang, lab in ((0.0, "F"), (math.pi / 2, "L"), (math.pi, "B"), (-math.pi / 2, "R")):
+            tp = self._project((math.cos(ang) * 1.52, math.sin(ang) * 1.52, 0.0), cx, cy, scale)
+            p.setPen(QColor(150, 165, 185, int(150 * dim)))
+            f = p.font(); f.setPointSize(8); f.setBold(True); p.setFont(f)
+            p.drawText(QRectF(tp.x() - 8, tp.y() - 8, 16, 16), Qt.AlignmentFlag.AlignCenter, lab)
+
+        pr, rr, yr = (math.radians(self._pitch), math.radians(self._roll),
+                      math.radians(self._yaw))
+
+        def draw_edges(edges, pen):
+            p.setPen(pen)
+            for a, b in edges:
+                pa = self._project(self._rot(a, pr, rr, yr), cx, cy, scale)
+                pb = self._project(self._rot(b, pr, rr, yr), cx, cy, scale)
+                p.drawLine(pa, pb)
+
+        draw_edges(self._edges, QPen(QColor(90, 170, 220, int(210 * dim)), 1.6))
+        draw_edges(self._arrow, QPen(QColor(240, 180, 70, int(230 * dim)), 2.2))
+
+        # Numeric readout strip.
+        p.setPen(QColor(150, 165, 185, int(220 * dim)))
+        f = p.font(); f.setPointSize(9); f.setBold(False); p.setFont(f)
+        txt = (f"pitch {self._pitch:+.1f}°   roll {self._roll:+.1f}°   yaw {self._yaw:+.1f}°"
+               if self._ok else "no IMU detected")
+        p.drawText(QRectF(0, h - 20, w, 18), Qt.AlignmentFlag.AlignCenter, txt)
+        p.end()
+
+
 class MotivatorControlDialog(QDialog):
     """Joystick console to drive the motion base by hand, with live ESP32 readout.
 
@@ -1606,6 +1758,18 @@ class MotivatorControlDialog(QDialog):
         self._gamepad = GamepadMirrorWidget()
         pad_lay.addWidget(self._gamepad, 1)
         right.addWidget(pad_panel)
+
+        att_panel = QFrame()
+        att_panel.setObjectName("chromePanel")
+        att_lay = QVBoxLayout(att_panel)
+        att_lay.setContentsMargins(12, 10, 12, 10)
+        att_lay.setSpacing(8)
+        att_title = QLabel("ATTITUDE (MPU-6050)")
+        att_title.setObjectName("panelTitle")
+        att_lay.addWidget(att_title)
+        self._attitude = AttitudeWidget()
+        att_lay.addWidget(self._attitude, 1)
+        right.addWidget(att_panel)
 
         fb = self._section("ESP32 FEEDBACK")
         self._fb_state = self._row(fb, "State")
@@ -1741,6 +1905,7 @@ class MotivatorControlDialog(QDialog):
                 lbl.setText("—")
             self._photoreceptors.clear()
             self._gamepad.clear()
+            self._attitude.clear()
             return
 
         odom = tel.get("odom") or {}
@@ -1763,7 +1928,11 @@ class MotivatorControlDialog(QDialog):
             f"{tof.get('fl', '—')} / {tof.get('fr', '—')} / {tof.get('rl', '—')} / {tof.get('rr', '—')} mm")
         self._fb_tof2.setText(
             f"{tof.get('lf', '—')} / {tof.get('lb', '—')} / {tof.get('rf', '—')} / {tof.get('rb', '—')} mm")
-        self._fb_batt.setText(f"{g(tel, 'batt_mv') / 1000.0:.2f} V")
+        mv, ma = g(tel, "batt_mv", -1.0), g(tel, "batt_ma")
+        volt_s = f"{mv / 1000.0:.2f} V" if mv > 0 else "— V"
+        amp_s = (f" / {ma / 1000.0:+.2f} A" if abs(ma) >= 1000
+                 else (f" / {ma:+.0f} mA" if ma != 0 else ""))
+        self._fb_batt.setText(volt_s + amp_s)
         self._fb_fault.setText(f"{tel.get('fault') or 'none'} / errs {tel.get('errs', 0)}")
         self._photoreceptors.set_readings(tof, tel.get("zone"), tel.get("blocked_dir"))
 
@@ -1772,6 +1941,12 @@ class MotivatorControlDialog(QDialog):
             self._gamepad.set_state(gp.get("lx", 0.0), gp.get("ly", 0.0), gp.get("btn", 0), True)
         else:
             self._gamepad.clear()
+
+        imu = tel.get("imu") or {}
+        if imu.get("ok"):
+            self._attitude.set_attitude(g(imu, "pitch"), g(imu, "roll"), g(imu, "yaw"), True)
+        else:
+            self._attitude.clear()
 
     def _stop(self) -> None:
         # Immediate stop (unlike releasing the stick, which ramps down): zero the ramp

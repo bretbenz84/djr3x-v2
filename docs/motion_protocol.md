@@ -271,7 +271,9 @@ Distinguished by `type`. `telemetry` is periodic; the rest are event-driven.
 | `cmd_seq` | int | `seq` of the most recently **applied** command (heartbeat liveness + ack matching aid). |
 | `odom` | object | `{x,y}` m, `theta` rad (−π,π], `lin` m/s, `ang` rad/s. Reset to 0 on `boot_id` change / explicit `config` reset. |
 | `tof_mm` | object | Per-sensor distance in mm — **8 radial sensors** (§6), every 45° starting 22.5° off the forward axis: long-range front pair `fl,fr` + rear pair `rl,rr` (VL53L1X, ±22.5° off the axis) and short-range left pair `lf,lb` + right pair `rf,rb` (VL53L0X). A sensor in error reports `-1`; a large value (per-type out-of-range cap) means nothing in range = clear. No down/cliff sensor in this layout. |
-| `batt_mv` | int | Pack voltage, millivolts. |
+| `batt_mv` | int | Pack voltage, millivolts (INA226 VBUS; `-1` = no sensor / VBUS unwired). |
+| `batt_ma` | int | Pack current, milliamps (INA226 shunt, signed, + = discharging; `0` until a shunt is configured — `BATT_SHUNT_MICROOHM` in calib.h). Independent of `batt_mv`: either can report without the other. |
+| `imu` | object | MPU-6050 attitude: `{ok}` always; when `ok:true` also `{pitch,roll,yaw}` in degrees. `pitch`/`roll` are gravity-referenced (complementary filter); `yaw` is bias-corrected gyro integration **relative to boot heading** (drifts slowly; no indoor magnetometer by design). `ok:false` = no sensor answered the boot probe. |
 | `errs` | int | Cumulative parse/framing error count (for link-health monitoring). |
 
 The Mac keeps the **latest** telemetry as a thread-safe snapshot (mirror of the servo

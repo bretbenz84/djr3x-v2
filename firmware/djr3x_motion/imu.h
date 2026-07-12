@@ -1,0 +1,30 @@
+// imu.h — MPU-6050 (GY-521) 6-axis IMU on the shared I2C trunk (addr 0x68).
+//
+// Roadmap Phase A (docs/motion_sensing_roadmap.md §4): the gyro is heading truth
+// independent of wheel slip; the accel gives tilt / bump / pickup sensing. This
+// module is the FOUNDATION layer: probe, configure, calibrate gyro bias at boot
+// (the base boots idle, so rest-time calibration is natural), and publish a
+// complementary-filtered attitude (pitch/roll vs gravity + integrated yaw) into
+// g_ctx.imu for telemetry. Fusion INTO odometry/turn control is a later phase —
+// nothing in the control loop consumes this yet.
+//
+// WIRING: VCC->3V3, GND->GND, SDA->GPIO21, SCL->GPIO22 (piggybacks the ToF/INA
+// trunk; 0x68 collides with nothing — mux 0x70, sensors behind mux at 0x29,
+// INA226 0x40). Mount near the axle midpoint, away from motor cables.
+//
+// THREADING: all reads happen on the sensor task (the only I2C task), like ToF
+// and the INA226 — never from control/serial. Publishes under the state lock.
+//
+// No sensor wired? imu_init() probes WHO_AM_I once; absent -> g_ctx.imu.ok stays
+// false and telemetry reports {"ok":false} — the host feature stays dormant.
+#pragma once
+
+// Call once from setup() AFTER tof/battery init (shares Wire; begin() is harmless).
+void imu_init();
+
+// Call every sensor-task tick (50 Hz). dt = seconds since the previous call.
+// Reads accel+gyro, runs the complementary filter, publishes g_ctx.imu.
+void imu_tick(float dt);
+
+// True when an MPU-6050 answered the probe at boot.
+bool imu_present();

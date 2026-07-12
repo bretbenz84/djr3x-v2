@@ -207,6 +207,18 @@
 #define ASSIST_REPEL_MM       130.0f    // ~5 in: a side wall inside this repels hard
 #define ASSIST_REPEL_GAIN     12.0f     // rad/s per METER of penetration inside REPEL
 
+// ---- Battery sense (INA226, battery.cpp) -----------------------------------
+// Shunt resistance in MICRO-ohms for the current (batt_ma) reading; 0 disables
+// current and reports voltage only. 100000 = the stock GY-INA226 module's R100
+// (100 mΩ) shunt. ⚠ RANGE WARNING: the INA226's ±81.9 mV shunt input across
+// R100 = ±0.819 A full scale — fine for logic/idle draw, but drive-motor current
+// CLIPS the reading, and a hard dual-motor stall (many amps) through R100 would
+// exceed the shunt's power rating. For motor-ranged sensing fit a ~2 mΩ inline
+// shunt (set 2000 here) per battery.h. Current additionally requires the load's
+// path to run through the module's IN+ -> IN- terminals; VBUS -> pack+ is what
+// enables the voltage reading.
+#define BATT_SHUNT_MICROOHM  100000
+
 // ---- Speed-adaptive zone envelope (safety.cpp zones + control.cpp taper) ----
 // The front/rear pairs are angled ±22.5° off the travel axis, so at RANGE they see
 // obstacles outside the actual collision corridor (at 0.9 m a beam points ~0.35 m
