@@ -242,3 +242,18 @@
 #define GAMEPAD_TRIGGER_MAX    1023.0f  // Bluepad32 analog trigger full-scale
 #define GAMEPAD_FULL_OVERRIDE_FRAC 0.85f // both triggers past this fraction = bypass ToF
 #define GAMEPAD_TRIGGER_PRESS_FRAC 0.50f // trigger past this fraction = "pressed" (GUI mirror)
+// Rumble (force feedback, playDualRumble): tactile echo of the collision avoidance +
+// a hello greeting when a host (main.py) connects. All Bluepad32 calls stay on the
+// Arduino loopTask (gamepad_tick); other tasks only set pending flags.
+#define GAMEPAD_RUMBLE_ENABLED        1     // build-time master switch (0 = never rumble)
+#define GAMEPAD_RUMBLE_BLOCK_MS       320   // hard-stop (BLOCKED) thump duration
+#define GAMEPAD_RUMBLE_BLOCK_STRONG   0xE0  // heavy motor: a real thump
+#define GAMEPAD_RUMBLE_BLOCK_WEAK     0x30
+#define GAMEPAD_RUMBLE_BLOCK_REPEAT_MS 700  // re-thump cadence while still pushing into it
+#define GAMEPAD_RUMBLE_SLOW_MS        130   // entering the braking band: light buzz
+#define GAMEPAD_RUMBLE_SLOW_WEAK      0x80  // light motor only — clearly distinct from the thump
+#define GAMEPAD_RUMBLE_SLOW_STRONG    0x00
+#define GAMEPAD_RUMBLE_HELLO_MS       150   // host-connect greeting: friendly double pulse
+#define GAMEPAD_RUMBLE_HELLO_GAP_MS   180
+#define GAMEPAD_RUMBLE_HELLO_MAG      0x70
+#define GAMEPAD_RUMBLE_HELLO_TTL_MS   3000  // drop a stale greet if no pad is on within this

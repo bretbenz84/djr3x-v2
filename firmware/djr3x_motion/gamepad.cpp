@@ -123,6 +123,46 @@ static void poll_action_buttons(ControllerPtr c) {
   s_prev_actions = cur;
 }
 
+// ---------------------------------------------------------------------------
+// Rumble (force feedback) — tactile echo of the collision avoidance + a greeting
+// when a host connects. ALL Bluepad32 calls stay on the loopTask (this file's
+// tick); other tasks only set the pending flag below. Simple pulse scheduler:
+// rumble_burst() queues N pulses, rumble_service() plays them out per tick.
+// ---------------------------------------------------------------------------
+#if GAMEPAD_RUMBLE_ENABLED
+static uint8_t  s_rum_left = 0;             // pulses remaining in the current burst
+static uint32_t s_rum_next_ms = 0;          // when the next pulse may fire
+static uint16_t s_rum_dur = 0, s_rum_gap = 0;
+static uint8_t  s_rum_weak = 0, s_rum_strong = 0;
+static bool     s_prev_rum_blocked = false; // edge detect: BLOCKED thump
+static bool     s_prev_rum_slow = false;    // edge detect: braking-band buzz
+static uint32_t s_last_block_rum_ms = 0;    // re-thump cadence while pushing into a block
+
+static void rumble_burst(uint8_t pulses, uint16_t dur_ms, uint16_t gap_ms,
+                         uint8_t weak, uint8_t strong) {
+  s_rum_left = pulses; s_rum_dur = dur_ms; s_rum_gap = gap_ms;
+  s_rum_weak = weak; s_rum_strong = strong;
+  s_rum_next_ms = millis();                 // first pulse fires this tick
+}
+
+static void rumble_service(ControllerPtr c, uint32_t now) {
+  if (!s_rum_left || (int32_t)(now - s_rum_next_ms) < 0) return;
+  c->playDualRumble(0, s_rum_dur, s_rum_weak, s_rum_strong);
+  s_rum_next_ms = now + (uint32_t)s_rum_dur + s_rum_gap;
+  s_rum_left--;
+}
+#endif  // GAMEPAD_RUMBLE_ENABLED
+
+// Set from the SERIAL task when a `hello` command arrives (main.py connecting);
+// consumed on the loopTask. volatile is enough — a lost race costs one greeting.
+static volatile bool     s_hello_rum_pending = false;
+static volatile uint32_t s_hello_rum_at_ms = 0;
+
+void gamepad_notify_host_connected() {
+  s_hello_rum_at_ms = millis();
+  s_hello_rum_pending = true;
+}
+
 void gamepad_init() {
   BP32.setup(&onConnect, &onDisconnect);
   BP32.enableVirtualDevice(false);          // real gamepads only (no virtual mouse/kbd)
@@ -261,6 +301,46 @@ void gamepad_tick() {
   UNLOCK_STATE();
   if (meaningful || (isManual && !nudgeInFlight)) ctl_manual_drive(lin, ang, bt);
 
+#if GAMEPAD_RUMBLE_ENABLED
+  // ---- Rumble feedback ----
+  {
+    const uint32_t now = millis();
+    // Host connect (main.py handshake): friendly double pulse. TTL guards against a
+    // stale greet buzzing a pad that's powered on minutes later.
+    if (s_hello_rum_pending) {
+      s_hello_rum_pending = false;
+      if ((uint32_t)(now - s_hello_rum_at_ms) <= GAMEPAD_RUMBLE_HELLO_TTL_MS)
+        rumble_burst(2, GAMEPAD_RUMBLE_HELLO_MS, GAMEPAD_RUMBLE_HELLO_GAP_MS,
+                     GAMEPAD_RUMBLE_HELLO_MAG, GAMEPAD_RUMBLE_HELLO_MAG);
+    }
+    bool blocked; MotionZone zn;
+    LOCK_STATE(); blocked = (g_ctx.state == ST_BLOCKED); zn = g_ctx.zone; UNLOCK_STATE();
+    // Hard stop (BLOCKED): strong thump on entry; re-thump on a slow cadence while the
+    // operator keeps pushing into the block, so the pad keeps saying "wall".
+    if (blocked && !s_prev_rum_blocked) {
+      rumble_burst(1, GAMEPAD_RUMBLE_BLOCK_MS, 0,
+                   GAMEPAD_RUMBLE_BLOCK_WEAK, GAMEPAD_RUMBLE_BLOCK_STRONG);
+      s_last_block_rum_ms = now;
+    } else if (blocked && meaningful &&
+               (uint32_t)(now - s_last_block_rum_ms) >= GAMEPAD_RUMBLE_BLOCK_REPEAT_MS) {
+      rumble_burst(1, GAMEPAD_RUMBLE_BLOCK_MS / 2, 0,
+                   GAMEPAD_RUMBLE_BLOCK_WEAK, GAMEPAD_RUMBLE_BLOCK_STRONG);
+      s_last_block_rum_ms = now;
+    }
+    s_prev_rum_blocked = blocked;
+    // Braking band (Z_SLOW, collision avoidance actively slowing the drive): one light
+    // buzz on entry — the zone only leaves CLEAR while moving/commanding toward an
+    // obstacle, so this is exactly "the taper just grabbed the throttle".
+    const bool slow_now = (!blocked && zn == Z_SLOW);
+    if (slow_now && !s_prev_rum_slow)
+      rumble_burst(1, GAMEPAD_RUMBLE_SLOW_MS, 0,
+                   GAMEPAD_RUMBLE_SLOW_WEAK, GAMEPAD_RUMBLE_SLOW_STRONG);
+    s_prev_rum_slow = slow_now;
+
+    rumble_service(c, now);
+  }
+#endif  // GAMEPAD_RUMBLE_ENABLED
+
   // Forward the soundboard / animation buttons to the Mac (does not affect drive).
   poll_action_buttons(c);
 
@@ -301,8 +381,9 @@ void gamepad_tick() {
 
 #else
 // ===========================================================================
-// STUB — gamepad feature off. No Bluepad32 dependency; both hooks do nothing.
+// STUB — gamepad feature off. No Bluepad32 dependency; all hooks do nothing.
 // ===========================================================================
 void gamepad_init() {}
 void gamepad_tick() {}
+void gamepad_notify_host_connected() {}
 #endif  // MOTION_GAMEPAD_PRESENT

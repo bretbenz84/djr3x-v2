@@ -2,6 +2,7 @@
 #include "control.h"
 #include "safety.h"
 #include "config_params.h"
+#include "gamepad.h"    // gamepad_notify_host_connected — hello-handshake rumble greet
 #include <ArduinoJson.h>
 #include <math.h>
 
@@ -206,6 +207,10 @@ static void dispatch(const char* cmd, JsonDocument& doc, uint32_t seq) {
   }
   if (!strcmp(cmd, "hello")) {
     emit_hello();
+    // A host just connected (main.py startup / bench tool) — greet the operator
+    // through the pad. Safe from this task: it only sets a flag; the Bluepad32
+    // call happens in gamepad_tick on the loopTask. No-op in non-gamepad builds.
+    gamepad_notify_host_connected();
     return;
   }
 

@@ -27,3 +27,7 @@
 
 void gamepad_init();   // start Bluepad32 (no-op in the stub)
 void gamepad_tick();   // poll the pad + drive manual arbitration (no-op in the stub)
+// A host (main.py / bench tool) just completed the `hello` handshake — greet the
+// operator with a rumble double-pulse. Callable from ANY task (sets a flag; the
+// actual Bluepad32 call happens in gamepad_tick on the loopTask). No-op in the stub.
+void gamepad_notify_host_connected();

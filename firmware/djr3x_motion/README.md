@@ -168,6 +168,14 @@ remembers the bond for next time.
 | Start | clear e-stop + return control to AUTO |
 | Hold **both** triggers (L2+R2) | FULL-OVERRIDE: bypass ToF gating (nudge through tight spots) |
 
+**Rumble feedback** (`GAMEPAD_RUMBLE_*` in `calib.h`, master `GAMEPAD_RUMBLE_ENABLED`):
+the pad is a tactile echo of the collision avoidance — a **light buzz** entering the
+braking band (the taper just grabbed the throttle), a **strong thump** on a hard stop
+(BLOCKED), re-thumping on a slow cadence while you keep pushing into the wall; plus a
+friendly **double pulse** whenever a host completes the `hello` handshake (Rex's
+`main.py` starting up — the bench tools trigger it too). All Bluepad32 rumble calls run
+on the loopTask; the serial task only sets a flag.
+
 **D-pad → relative nudges (driving).** Plain D-pad presses are one-shot positioning moves,
 relative to wherever the base is NOW: **Up/Down** run a short encoder-closed forward/back
 `move` of `GAMEPAD_NUDGE_DIST_M` (0.30 m) at `GAMEPAD_NUDGE_SPEED_FRAC` of `max_lin`;
