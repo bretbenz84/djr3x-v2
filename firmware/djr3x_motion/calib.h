@@ -100,6 +100,20 @@
                                     // 4.09×-inflated units; 640 ≈ the measured plant gain)
 #define WHEEL_MIN_DUTY    120.0f    // stiction breakaway kick (duty), in travel dir — duty
                                     // units, physical, NOT rescaled
+// PIVOT (spin-in-place) breakaway: when the two wheel targets have OPPOSITE signs the
+// base is scrubbing both tires sideways — a far higher static threshold than rolling,
+// and higher again on carpet. STALL-GATED: the kick applies per wheel ONLY while that
+// wheel is measurably stalled (|vmeas| < WHEEL_STALLED_EPS_MS) and drops back to
+// WHEEL_MIN_DUTY within one 100 Hz tick of it rolling — a constant kick this large
+// would massively overspeed the spin after breakaway (equilibrium ~5 rad/s vs a
+// ~1.5 rad/s target), while stall-gating turns it into breakaway torque pulses.
+// Field ladder (2026-07-11): the old "turning worked" hardwood baseline was ~780
+// stalled duty (the inflated-units loop delivered it unknowingly); this carpet
+// SATURATES at 1023 duty with ~zero rotation — in-place spins on that carpet exceed
+// the platform's torque ceiling, full stop; use moving arcs there instead.
+#define WHEEL_SPIN_BREAKAWAY_DUTY 700.0f
+#define WHEEL_STALLED_EPS_MS      0.03f   // wheel counts as stalled below this (m/s);
+                                          // ~2.3 encoder counts per 10 ms tick — resolvable
 
 // A wheel target below this (m/s magnitude) counts as "stopped" → the wheel is
 // braked to zero and its integrator reset rather than chasing micro-setpoints.

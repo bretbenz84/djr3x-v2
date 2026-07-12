@@ -214,10 +214,23 @@ void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer, float 
   if (!want_move) { hal_motors_off(); return; }
 
   motors_enable(true);
+  // Pivot regime: opposite-sign wheel targets mean both tires scrub sideways — a far
+  // higher breakaway threshold than rolling (measured: spins stall at duties that move
+  // the base fine in a straight line). Each wheel gets the big spin kick ONLY while it
+  // is measurably stalled — one tick after it rolls, the kick drops back to the gentle
+  // rolling value (a constant large kick would overspeed the spin ~3x after breakaway;
+  // stall-gating makes it breakaway torque pulses, and the integrator carries whatever
+  // sustained load the surface actually needs). Arcade-clamped turns floor the inside
+  // wheel at 0, so they stay in the rolling regime and keep the gentle kick.
+  const bool pivot = (v_l * v_r < -1e-6f);
+  const float kick_l = (pivot && fabsf(s_vmeas_l) < WHEEL_STALLED_EPS_MS)
+      ? fmaxf(min_duty, WHEEL_SPIN_BREAKAWAY_DUTY) : min_duty;
+  const float kick_r = (pivot && fabsf(s_vmeas_r) < WHEEL_STALLED_EPS_MS)
+      ? fmaxf(min_duty, WHEEL_SPIN_BREAKAWAY_DUTY) : min_duty;
   // PID runs in the forward=+ convention; MOTOR_SIGN_* maps its effort onto each
   // H-bridge, so a wheel that spins backwards is fixed in software, not by rewiring.
-  const int duty_l = MOTOR_SIGN_L * wheel_pid(v_l, s_vmeas_l, s_i_l, s_eprev_l, dt, kp, ki, kd, kff, min_duty);
-  const int duty_r = MOTOR_SIGN_R * wheel_pid(v_r, s_vmeas_r, s_i_r, s_eprev_r, dt, kp, ki, kd, kff, min_duty);
+  const int duty_l = MOTOR_SIGN_L * wheel_pid(v_l, s_vmeas_l, s_i_l, s_eprev_l, dt, kp, ki, kd, kff, kick_l);
+  const int duty_r = MOTOR_SIGN_R * wheel_pid(v_r, s_vmeas_r, s_i_r, s_eprev_r, dt, kp, ki, kd, kff, kick_r);
   apply_wheel_duty(PIN_L_RPWM, PIN_L_LPWM, duty_l);
   apply_wheel_duty(PIN_R_RPWM, PIN_R_LPWM, duty_r);
   g_ctx.wheels.dl = (int16_t)duty_l;   // telemetry diag (caller holds the state lock)
