@@ -469,12 +469,28 @@ bool ctl_clear(uint32_t seq) {
 // it works even with the USB unplugged. owner=MANUAL makes proto_io's motion_gate
 // reject Mac drive/turn/move/come; stop/estop/config/ping still pass.
 
+// A live pad input takes over from a dead Mac link (field fix 2026-07-11): when Rex
+// shuts down, the heartbeat watchdog latches ST_COMMS_LOST, which control_tick treats
+// as HALTED — and the only exit was a valid Mac line, so the paired gamepad went
+// unresponsive until the app was relaunched. But comms-lost exists to stop AUTONOMOUS
+// motion with nobody at the wheel (the watchdog deliberately only guards OWNER_AUTO,
+// safety.cpp) — a human pushing the stick IS someone at the wheel, so every manual
+// entry clears the latch and proceeds. estop/fault still require an explicit clear
+// (Start button), exactly as before. Caller holds the state lock.
+static inline void manual_takeover_clears_comms_lost() {
+  if (g_ctx.state == ST_COMMS_LOST) {
+    g_ctx.state = ST_IDLE;
+    if (g_ctx.fault == F_COMMS_LOST) g_ctx.fault = F_NONE;
+  }
+}
+
 void ctl_manual_drive(float lin, float ang, float pivot_blend) {
   // Refreshed every gamepad poll; the drive deadman stops the base if polls stall.
   bool sup = false; uint32_t sseq = 0; Odom sodom;
   LOCK_STATE();
   // Don't punch through a hard latch — estop/fault must be cleared first.
   if (g_ctx.state == ST_ESTOP || g_ctx.state == ST_FAULT) { UNLOCK_STATE(); return; }
+  manual_takeover_clears_comms_lost();      // a live operator outranks a dead Mac link
   sup = begin_finite_locked(sseq, sodom);   // taking over from an autonomous finite cmd
   g_ctx.owner = OWNER_MANUAL;
   g_ctx.finite = FiniteCmd();
@@ -500,6 +516,7 @@ void ctl_manual_turn(float deg, float rate_dps) {
   LOCK_STATE();
   // Don't punch through a hard latch — estop/fault must be cleared first (mirror ctl_manual_drive).
   if (g_ctx.state == ST_ESTOP || g_ctx.state == ST_FAULT) { UNLOCK_STATE(); return; }
+  manual_takeover_clears_comms_lost();      // a live operator outranks a dead Mac link
   sup = begin_finite_locked(sseq, sodom);
   FiniteCmd f;
   f.kind = CMD_TURN; f.seq = 0;
@@ -527,6 +544,7 @@ void ctl_manual_move(float dist, float speed) {
   LOCK_STATE();
   // Don't punch through a hard latch — estop/fault must be cleared first (mirror ctl_manual_drive).
   if (g_ctx.state == ST_ESTOP || g_ctx.state == ST_FAULT) { UNLOCK_STATE(); return; }
+  manual_takeover_clears_comms_lost();      // a live operator outranks a dead Mac link
   sup = begin_finite_locked(sseq, sodom);
   FiniteCmd f;
   f.kind = CMD_MOVE; f.seq = 0;
