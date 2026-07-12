@@ -204,11 +204,12 @@
 // slow. Boots at SLOW so the default is gentle; each is a fraction of the caps (max_lin/
 // max_ang). History: lowered a full notch after field feel on the BARE base ("still too
 // fast across the board"); then 2026-07-11, at full build weight (batteries + hardware),
-// SLOW couldn't break stiction at all and MED barely moved — raised SLOW/MED back up a
-// bit (FULL untouched) and added the low-stick response curve below so the fix isn't a
-// linear speed-up. Raise all three together by bumping the caps live with `set --max-lin`.
-#define GAMEPAD_SPEED_SLOW     0.20f    // level 0 (default on boot / reconnect; was 0.15 pre-weight)
-#define GAMEPAD_SPEED_MED      0.38f    // level 1  (was 0.30 pre-weight)
+// SLOW couldn't break stiction at all and MED barely moved — raised SLOW/MED + added the
+// low-stick response curve below; then later the same day ON CARPET the raised SLOW was
+// STILL unusable (pile drag ≫ hard-floor stiction) — raised SLOW/MED again (FULL
+// untouched each time: top speed is right). Raise all three together with `set --max-lin`.
+#define GAMEPAD_SPEED_SLOW     0.30f    // level 0 (default on boot / reconnect; was 0.20 pre-carpet, 0.15 pre-weight)
+#define GAMEPAD_SPEED_MED      0.42f    // level 1  (was 0.38 pre-carpet, 0.30 pre-weight)
 #define GAMEPAD_SPEED_FULL     0.50f    // level 2  (unchanged — top speed is right)
 // Forward/back stick RESPONSE CURVE: lin command = sign(fwd)*|fwd|^GAMMA * level max.
 // GAMMA < 1 is concave ("anti-expo"): more authority at small stick pushes — at 25%
