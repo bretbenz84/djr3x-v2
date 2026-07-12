@@ -65,6 +65,13 @@ log = logging.getLogger("rex_battery")
 
 _SOC_LOW_PCT = 20          # 🪫 at or below this
 _CHARGING_MA = -50         # batt_ma below this (signed, + = discharging) → ⚡
+# Supply-set-too-high watch: pack terminals at/above 14.55 V while STILL being
+# pushed hard means the bench supply is set above 14.6 V (at a 14.6 setpoint the
+# current is near zero by the time the pack gets here — the IR drop has died).
+# 14.6 V = 3.65 V/cell is the 4S LiFePO4 ceiling; time to dial the supply back.
+_SUPPLY_HIGH_MV = 14550
+_SUPPLY_HIGH_MA = -800
+_SUPPLY_HIGH_RENOTIFY_SECS = 300.0
 _STALE_SECS = 5.0          # no telemetry for this long while open → reopen port
 _LOCK_POLL_SECS = 1.0      # how often the worker re-checks port/lock state
 
@@ -312,6 +319,27 @@ def _worker() -> None:
     _close()
 
 
+def _supply_too_high(s: dict) -> bool:
+    """True while charging hard with pack terminals at/above the 4S ceiling."""
+    mv, ma = s.get("batt_mv"), s.get("batt_ma")
+    return (s.get("mode") == "live" and mv is not None and ma is not None
+            and mv >= _SUPPLY_HIGH_MV and ma <= _SUPPLY_HIGH_MA)
+
+
+def _notify(title: str, message: str) -> None:
+    """macOS notification via osascript (works from a plain LaunchAgent;
+    rumps' own notification API needs an app bundle)."""
+    import subprocess
+    try:
+        subprocess.Popen(
+            ["osascript", "-e",
+             f'display notification "{message}" with title "{title}" sound name "Basso"'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        log.debug("notification failed: %s", exc)
+
+
 # ── Formatting ─────────────────────────────────────────────────────────────────
 
 def _fmt_title(s: dict) -> str:
@@ -333,6 +361,8 @@ def _fmt_title(s: dict) -> str:
         return f"🤖 {reading}"          # robot owns the port; reading may be old
     if s["mode"] != "live":
         return "🔋 …"
+    if _supply_too_high(s):
+        return f"⚠️ {mv / 1000:.2f}V"   # pack over the 14.6 ceiling — show volts, not %
     if ma is not None and ma < _CHARGING_MA:
         return f"⚡ {reading}"
     if soc is not None and 0 <= soc <= _SOC_LOW_PCT:
@@ -370,6 +400,9 @@ def _fmt_lines(s: dict) -> list[str]:
             lines.append(f"Current: {amps:.2f} A draw")
         if mv is not None and mv > 0 and abs(ma) >= abs(_CHARGING_MA):
             lines.append(f"Power: {abs(mv * ma) / 1_000_000:.1f} W")
+
+    if _supply_too_high(s):
+        lines.append("⚠ Pack over 14.55 V under charge — set supply back to 14.6 V")
 
     if s["state"]:
         # comms_lost is the NORMAL resting state while Rex is off: the firmware
@@ -423,6 +456,7 @@ def run_app() -> int:
             # Only shown while we own the port (live); hidden when dormant/off.
             self._mark_full = rumps.MenuItem("Set Battery to 100%",
                                              callback=self._on_mark_full)
+            self._hv_notified_at = 0.0   # last supply-too-high notification
             self.menu = list(self._rows) + [None, self._mark_full]
             self._timer = rumps.Timer(self._refresh, 1.0)
             self._timer.start()
@@ -451,6 +485,17 @@ def run_app() -> int:
             s = _snapshot()
             self.title = _fmt_title(s)
             self._mark_full.hidden = (s["mode"] != "live")
+            if _supply_too_high(s):
+                now = time.time()
+                if now - self._hv_notified_at >= _SUPPLY_HIGH_RENOTIFY_SECS:
+                    self._hv_notified_at = now
+                    log.warning("Pack %.2f V at %.1f A charge — supply set above 14.6 V.",
+                                s["batt_mv"] / 1000, abs(s["batt_ma"]) / 1000)
+                    _notify("Rex Battery",
+                            f"Pack at {s['batt_mv'] / 1000:.2f} V and still charging — "
+                            "dial the bench supply back to 14.6 V.")
+            else:
+                self._hv_notified_at = 0.0
             lines = _fmt_lines(s)
             for i, row in enumerate(self._rows):
                 if i < len(lines):
