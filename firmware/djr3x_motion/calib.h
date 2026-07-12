@@ -22,15 +22,23 @@
 #endif
 
 // ---- Drive geometry (MEASURE — see above) --------------------------------
-// Encoder: 11 cycles/motor-rev/channel × 176:1 gear × 4 (full quadrature)
-//   ≈ 7744 counts per WHEEL output-rev. Verify empirically.
-#define COUNTS_PER_REV_OUTPUT  7744.0f
-#define WHEEL_DIAMETER_M       0.080f    // ⚠ placeholder — measure your wheel
-#define TRACK_WIDTH_M          0.200f    // ⚠ placeholder — distance between drive wheels
+// Encoder spec (11 cycles/motor-rev/channel × 176:1 gear × 4 full-quad ≈ 7744
+// counts/wheel-rev) is kept for reference but PROVED ~4.0× high on the bench —
+// see COUNTS_PER_METER below. Either the datasheet PPR already included the
+// quadrature factor or the gearing differs; the empirical value wins regardless.
+#define COUNTS_PER_REV_OUTPUT  7744.0f   // reference only — superseded by empirical cpm
+#define WHEEL_DIAMETER_M       0.080f    // reference only — superseded by empirical cpm
+#define TRACK_WIDTH_M          0.200f    // ⚠ placeholder — turn calibration still pending
 
-// Counts per metre of wheel travel = counts/rev ÷ wheel circumference.
 #define WHEEL_CIRCUM_M   ((float)M_PI * WHEEL_DIAMETER_M)
-#define COUNTS_PER_METER (COUNTS_PER_REV_OUTPUT / WHEEL_CIRCUM_M)
+// EMPIRICAL distance calibration (bench `straight`, 2026-07-11, provisional):
+// commanded 1.0 m; the wall reflex ended the run with odometry at 0.532 m while the
+// tape said ~2.134 m (7 ft). Counts C = 0.532 × 30812.39 = 16392 → cpm = C / 2.134
+// = 7683 — the old derived value (COUNTS_PER_REV_OUTPUT/WHEEL_CIRCUM_M = 30812.39)
+// was 4.01× high, which also means every commanded speed had been ~4× fast
+// physically. Refine with another taped `straight` run (the bench tool now prompts
+// for the tape reading and prints the corrected value).
+#define COUNTS_PER_METER 7683.0f
 
 // Per-wheel count direction. +1 means "driving the wheel forward makes its count
 // increase." Flip to -1 (per wheel) if the bench hand-turn test shows the sign

@@ -212,45 +212,105 @@ def _run_finite(c, cmd, seq_payload, settle_timeout, label):
     ack = c.wait_for(lambda m: m.get("type") == "ack" and m.get("seq") == seq, 2.0)
     if not (ack and ack.get("accepted")):
         print(f"  {label} NOT accepted: {ack}")
+        if (ack or {}).get("reason") == "manual_override":
+            print("    (gamepad owns the base — press Start on the pad, or power-cycle the ESP32)")
         return None
     done = c.wait_for(lambda m: m.get("type") == "done" and m.get("seq") == seq, settle_timeout)
     if not done:
         c.send({"cmd": "stop"})
         print(f"  {label} did not complete in {settle_timeout:.0f}s (encoders wired/turning?).")
         return None
+    result = done.get("result", "completed")
+    if result != "completed":
+        print(f"  NOTE: {label} ended early — done result: {result!r}"
+              + (" (obstacle reflex stopped it)" if result == "blocked" else ""))
     return done
 
 
+def _current_params(c):
+    """The board's live effective params (an empty `config` echoes them)."""
+    seq = c.send({"cmd": "config"})
+    ack = c.wait_for(lambda m: m.get("type") == "ack" and m.get("seq") == seq, 2.0)
+    return (ack or {}).get("config", {})
+
+
+def _ask_float(prompt):
+    """Prompt for a number; empty/EOF/garbage -> None (skip the calibration math)."""
+    try:
+        raw = input(prompt).strip()
+    except EOFError:
+        return None
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"  (couldn't parse {raw!r} — skipping)")
+        return None
+
+
 def cmd_straight(c, args):
+    print("Mark the floor at a fixed reference point on the base BEFORE driving —")
+    print("the calibration math needs the TAPE-MEASURED physical distance, not odometry.")
     if not confirm(f"Robot will DRIVE FORWARD ~{args.dist} m on the floor. Ready?", args.yes):
         return
     print(f"\nSTRAIGHT — move dist={args.dist} m:")
     done = _run_finite(c, "move", {"cmd": "move", "dist": args.dist, "speed": 0.12},
                        settle_timeout=max(8.0, args.dist / 0.12 + 6.0), label="move")
-    if done:
-        o = done.get("odom", {})
-        x, th = o.get("x"), o.get("theta")
-        print(f"  done. measured x={x:+.3f} m (cmd {args.dist} m), theta drift={th:+.3f} rad")
-        if x:
-            print(f"    distance calibration: COUNTS_PER_METER *= {x / args.dist:.4f}")
-        if th is not None and abs(th) > 0.05:
-            print("    veered — left/right wheels mismatched (PID gains or an ENC_SIGN_* flip).")
     c.send({"cmd": "stop"})
+    if not done:
+        return
+    o = done.get("odom", {})
+    x, th = o.get("x"), o.get("theta")
+    print(f"  done. odometry x={x:+.3f} m (cmd {args.dist} m), theta drift={th:+.3f} rad")
+    if th is not None and abs(th) > 0.05:
+        print("    veered — left/right wheels mismatched (PID gains or an ENC_SIGN_* flip).")
+    # Calibration: odometry-vs-TAPE from the SAME run (works even if the run was cut
+    # short by the reflex — both numbers cover the same wheel travel). NOT x/dist:
+    # odometry x lands on the commanded dist by construction, so that ratio is ~1.
+    phys = _ask_float("  Tape-measured PHYSICAL distance traveled (m, empty to skip): ")
+    if phys and phys > 0 and x:
+        cur = _current_params(c).get("counts_per_meter")
+        if cur:
+            new_cpm = float(cur) * float(x) / phys
+            print(f"    counts_per_meter: {float(cur):.1f} -> {new_cpm:.1f}"
+                  f"  (odometry {x:.3f} m vs tape {phys:.3f} m)")
+            print(f"    push live now:   motion_bench.py set --counts-per-meter {new_cpm:.1f}")
+            print("    persist:         calib.h COUNTS_PER_METER (reflash) or .env MOTION_COUNTS_PER_METER")
+        else:
+            print("    (no config echo from the board — compute by hand: cpm_new = cpm_old * odom/tape)")
 
 
 def cmd_turn(c, args):
+    print("Mark which way the base faces BEFORE spinning (floor arrow + a mark on the")
+    print("base) — the calibration math needs the PHYSICALLY-observed rotation. Do the")
+    print("`straight` distance calibration FIRST: heading odometry scales with cpm too.")
     if not confirm(f"Robot will SPIN {args.deg}° in place on the floor. Ready?", args.yes):
         return
     print(f"\nTURN — turn deg={args.deg} (+ = left/CCW):")
     done = _run_finite(c, "turn", {"cmd": "turn", "deg": args.deg, "rate": 45},
                        settle_timeout=max(8.0, abs(args.deg) / 45.0 + 6.0), label="turn")
-    if done:
-        th = done.get("odom", {}).get("theta")
-        want = math.radians(args.deg)
-        print(f"  done. measured theta={th:+.3f} rad (cmd {want:+.3f} rad = {args.deg}°)")
-        if th:
-            print(f"    track-width calibration: TRACK_WIDTH_M *= {want / th:.4f}")
     c.send({"cmd": "stop"})
+    if not done:
+        return
+    th = done.get("odom", {}).get("theta")
+    print(f"  done. odometry theta={th:+.3f} rad (cmd {args.deg}°)")
+    print("  (odometry theta WRAPS to (-pi, pi] — after a full turn it reads ~0; that's")
+    print("   why the tape/eye measurement below is the truth, not this number.)")
+    # Calibration: the turn completed when ODOMETRY progress hit the commanded angle,
+    # so the wheels rolled exactly enough counts for cmd° at the CURRENT track width.
+    # If the base physically rotated R°, then track_true = track_cur * cmd / R.
+    phys = _ask_float(f"  PHYSICALLY-observed rotation (degrees, e.g. 270; empty to skip): ")
+    if phys and phys != 0:
+        cur = _current_params(c).get("track_width_m")
+        if cur:
+            new_track = float(cur) * abs(args.deg) / abs(phys)
+            print(f"    track_width_m: {float(cur):.4f} -> {new_track:.4f}"
+                  f"  (commanded {abs(args.deg):.0f}° vs physical {abs(phys):.0f}°)")
+            print(f"    push live now:   motion_bench.py set --track-width {new_track:.4f}")
+            print("    persist:         calib.h TRACK_WIDTH_M (reflash) or .env MOTION_TRACK_WIDTH_M")
+        else:
+            print("    (no config echo — compute by hand: track_new = track_old * cmd_deg/phys_deg)")
 
 
 _PARAM_ORDER = ("kp", "ki", "kd", "kff", "min_duty", "accel_lin", "accel_ang",
