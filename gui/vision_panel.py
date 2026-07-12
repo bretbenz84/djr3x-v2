@@ -124,6 +124,7 @@ class VisionPanel(QWidget):
                 painter.drawImage(image_rect, image)
                 self._draw_pose_skeletons(painter, image_rect, image.width(), image.height())
                 self._draw_objects(painter, image_rect, image.width(), image.height())
+                self._draw_occlusion_zones(painter, image_rect)
                 self._draw_animals(painter, image_rect, image.width(), image.height())
                 self._draw_people(painter, image_rect, image.width(), image.height())
                 stale = self._camera_stale_secs()
@@ -271,6 +272,26 @@ class VisionPanel(QWidget):
                 text_anchor = QPointF(px + 8, py - 8)
 
             _draw_label(painter, text_anchor, label, details, color)
+
+    def _draw_occlusion_zones(self, painter: QPainter, image_rect: QRectF) -> None:
+        """Dim dashed outlines of the self-occlusion zones (Rex's own eye stalks in
+        front of the lens; config.CAMERA_SELF_OCCLUSION_ZONES) so the mask can be
+        aligned against the live feed by eye. Object detections mostly inside a zone
+        are suppressed at the source (vision/animal_detector)."""
+        zones = getattr(config, "CAMERA_SELF_OCCLUSION_ZONES", None) or []
+        if not zones or not getattr(config, "GUI_OBJECT_BOXES_ENABLED", True):
+            return
+        pen = QPen(QColor(185, 140, 255, 70), 1)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for zx0, zy0, zx1, zy1 in zones:
+            painter.drawRect(QRectF(
+                image_rect.left() + zx0 * image_rect.width(),
+                image_rect.top() + zy0 * image_rect.height(),
+                (zx1 - zx0) * image_rect.width(),
+                (zy1 - zy0) * image_rect.height(),
+            ))
 
     def _draw_objects(
         self,

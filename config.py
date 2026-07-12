@@ -4604,6 +4604,19 @@ OBJECT_DETECTION_MAX_RESULTS = _env_int(
     min_value=1,
     max_value=25,
 )
+# Self-occlusion mask (field bug 2026-07-12): Rex's own eye stalks sit in front of the
+# wide lens and read as big dark blobs at the 1080p crop's bottom corners — the object
+# detector kept publishing them as "chairs" (and once a 0.21 "dog"), feeding phantom
+# furniture into world_state.objects, the rex.db room model, and visual curiosity.
+# Normalized (x0, y0, x1, y1) rects in frame coordinates; any detection whose box lies
+# MOSTLY inside a zone is dropped at the source. The GUI vision panel outlines the
+# zones (dim dashed violet) so they can be aligned against the live feed by eye —
+# adjust here if the camera or the eye hardware moves.
+CAMERA_SELF_OCCLUSION_ZONES = [
+    (0.00, 0.55, 0.15, 1.00),   # left eye stalk (bottom-left blob)
+    (0.60, 0.45, 1.00, 1.00),   # right eye stalk (bottom-right blob, the "chair")
+]
+CAMERA_SELF_OCCLUSION_MAX_OVERLAP = 0.55   # box fraction inside a zone that kills it
 # Consecutive-scan confirm streak before an object counts as really present — indoor
 # flicker / one-frame misreads must persist first, exactly like animal arrivals.
 OBJECT_DETECTION_CONFIRM_SCANS = _env_int(

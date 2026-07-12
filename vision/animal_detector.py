@@ -480,6 +480,27 @@ def _best_object_category(detection, excluded: set[str]) -> Optional[tuple[str, 
     return best
 
 
+def _self_occlusion_fraction(box, frame_shape) -> float:
+    """Fraction of a pixel box (x, y, w, h) lying inside any configured
+    self-occlusion zone (normalized rects; config.CAMERA_SELF_OCCLUSION_ZONES) —
+    the regions of the frame permanently blocked by Rex's own eye stalks."""
+    zones = getattr(config, "CAMERA_SELF_OCCLUSION_ZONES", None) or []
+    if not zones or box is None:
+        return 0.0
+    fh, fw = float(frame_shape[0]), float(frame_shape[1])
+    if fh <= 0 or fw <= 0:
+        return 0.0
+    x, y, w, h = (float(v) for v in box)
+    area = max(1.0, w * h)
+    worst = 0.0
+    for zx0, zy0, zx1, zy1 in zones:
+        ix0, iy0 = max(x, zx0 * fw), max(y, zy0 * fh)
+        ix1, iy1 = min(x + w, zx1 * fw), min(y + h, zy1 * fh)
+        inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+        worst = max(worst, inter / area)
+    return worst
+
+
 def _object_records_from_detections(
     detections, frame_shape, *, now: Optional[float] = None
 ) -> list[dict]:
@@ -499,6 +520,15 @@ def _object_records_from_detections(
         bbox = getattr(detection, "bounding_box", None)
         position = _position_from_bbox(bbox, frame_shape) if bbox is not None else "unknown"
         box = _box_tuple(bbox)
+        # Self-occlusion mask: a detection sitting mostly on Rex's own eye stalks is
+        # his face, not furniture (field bug: the stalks kept publishing as "chairs").
+        occl = _self_occlusion_fraction(box, frame_shape)
+        if occl > float(getattr(config, "CAMERA_SELF_OCCLUSION_MAX_OVERLAP", 0.55)):
+            _log.debug(
+                "object %r suppressed: %.0f%% inside a self-occlusion zone",
+                label, occl * 100.0,
+            )
+            continue
         key = (label, position)
         if key in seen:
             continue

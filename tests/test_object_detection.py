@@ -32,6 +32,53 @@ class _FakeDetection:
         self.bounding_box = box if box is not None else _FakeBox(10, 10, 60, 60)
 
 
+class SelfOcclusionMaskTests(unittest.TestCase):
+    """Detections sitting on Rex's own eye stalks (self-occlusion zones) are dropped
+    at the source — the field-logged phantom "chair" that was really his face."""
+
+    FRAME = (1080, 1920, 3)   # 1080p capture
+
+    def _records(self, detections, zones):
+        from vision import animal_detector as ad
+        import config
+        with mock.patch.object(config, "CAMERA_SELF_OCCLUSION_ZONES", zones, create=True), \
+             mock.patch.object(config, "CAMERA_SELF_OCCLUSION_MAX_OVERLAP", 0.55, create=True):
+            return ad._object_records_from_detections(detections, self.FRAME, now=123.0)
+
+    def test_detection_inside_zone_is_suppressed(self):
+        # Box fully inside the bottom-right zone (0.60-1.0 x, 0.45-1.0 y of 1920x1080).
+        zone_box = _FakeBox(1300, 600, 400, 400)
+        recs = self._records(
+            [_FakeDetection("chair", 0.90, box=zone_box)],
+            zones=[(0.60, 0.45, 1.00, 1.00)],
+        )
+        self.assertEqual(recs, [])
+
+    def test_detection_outside_zone_is_kept(self):
+        center_box = _FakeBox(800, 300, 300, 300)
+        recs = self._records(
+            [_FakeDetection("chair", 0.90, box=center_box)],
+            zones=[(0.60, 0.45, 1.00, 1.00)],
+        )
+        self.assertEqual([r["label"] for r in recs], ["chair"])
+
+    def test_partial_overlap_below_threshold_is_kept(self):
+        # Box straddling the zone edge with well under 55% inside survives.
+        straddle = _FakeBox(950, 100, 400, 400)   # only a sliver inside x>=1152
+        recs = self._records(
+            [_FakeDetection("potted plant", 0.90, box=straddle)],
+            zones=[(0.60, 0.45, 1.00, 1.00)],
+        )
+        self.assertEqual([r["label"] for r in recs], ["potted plant"])
+
+    def test_no_zones_configured_keeps_everything(self):
+        recs = self._records(
+            [_FakeDetection("chair", 0.90, box=_FakeBox(1300, 600, 400, 400))],
+            zones=[],
+        )
+        self.assertEqual([r["label"] for r in recs], ["chair"])
+
+
 class ObjectDetectorRecordsTests(unittest.TestCase):
     def _records(self, detections):
         from vision import animal_detector
