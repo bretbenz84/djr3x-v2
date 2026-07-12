@@ -186,6 +186,35 @@ def _clear_tx() -> None:
         _tx_queue.clear()
 
 
+# "Restart ESP32" menu click → the worker (which owns the open handle) pulses the
+# RTS line: EN low ~150 ms, then release — the same hardware reset esptool and the
+# bench tools use. Not a serial WRITE, so it rides its own flag, not _tx_queue.
+_reset_flag = threading.Event()
+
+
+def _queue_esp32_reset() -> None:
+    _reset_flag.set()
+
+
+def _service_reset(ser) -> None:
+    if not _reset_flag.is_set():
+        return
+    _reset_flag.clear()
+    try:
+        ser.dtr = False
+        ser.rts = True        # EN low — hold the chip in reset
+        time.sleep(0.15)
+        ser.rts = False       # EN high — boot
+        try:
+            ser.reset_input_buffer()   # drop any partial pre-reset line
+        except Exception:
+            pass
+        log.info("ESP32 reset pulse sent (RTS toggle) — board rebooting.")
+        _notify("Rex Battery", "ESP32 restarted.")
+    except Exception as exc:
+        log.warning("ESP32 reset failed: %s", exc)
+
+
 # ── Serial worker ──────────────────────────────────────────────────────────────
 
 def _handle_line(raw: bytes) -> None:
@@ -240,6 +269,7 @@ def _worker() -> None:
             ser = None
         # A queued click must not fire surprisingly late on a future reconnect.
         _clear_tx()
+        _reset_flag.clear()
 
     while not _stop.is_set():
         port = _motion_port()
@@ -286,6 +316,7 @@ def _worker() -> None:
             _update(mode="connecting", port=port, detail=f"listening on {port}")
 
         _drain_tx(ser)
+        _service_reset(ser)
 
         try:
             line = ser.readline()   # 1 s timeout → empty bytes
@@ -456,8 +487,13 @@ def run_app() -> int:
             # Only shown while we own the port (live); hidden when dormant/off.
             self._mark_full = rumps.MenuItem("Set Battery to 100%",
                                              callback=self._on_mark_full)
+            # Hardware reboot of the motion base (RTS pulse via the open port) —
+            # for un-wedging the board after a bad flash / wedged state without
+            # crawling to the USB plug. Live-mode only, like Set-Battery-100%.
+            self._restart_esp = rumps.MenuItem("Restart ESP32",
+                                               callback=self._on_restart_esp)
             self._hv_notified_at = 0.0   # last supply-too-high notification
-            self.menu = list(self._rows) + [None, self._mark_full]
+            self.menu = list(self._rows) + [None, self._mark_full, self._restart_esp]
             self._timer = rumps.Timer(self._refresh, 1.0)
             self._timer.start()
             # rumps schedules its NSTimer in the DEFAULT run-loop mode only,
@@ -481,10 +517,17 @@ def run_app() -> int:
             log.info("User clicked Set Battery to 100% — queueing batt_full.")
             _queue_batt_full()
 
+        def _on_restart_esp(self, _item):
+            if _snapshot()["mode"] != "live":
+                return
+            log.info("User clicked Restart ESP32 — queueing reset pulse.")
+            _queue_esp32_reset()
+
         def _refresh(self, _timer):
             s = _snapshot()
             self.title = _fmt_title(s)
             self._mark_full.hidden = (s["mode"] != "live")
+            self._restart_esp.hidden = (s["mode"] != "live")
             if _supply_too_high(s):
                 now = time.time()
                 if now - self._hv_notified_at >= _SUPPLY_HIGH_RENOTIFY_SECS:
