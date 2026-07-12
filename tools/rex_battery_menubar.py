@@ -191,7 +191,15 @@ def _handle_line(raw: bytes) -> None:
         msg = json.loads(raw.decode("utf-8", errors="replace"))
     except ValueError:
         return
-    if not isinstance(msg, dict) or msg.get("type") != "telemetry":
+    if not isinstance(msg, dict):
+        return
+    if msg.get("type") == "log":
+        # Surface firmware decisions (SOC anchors/clamps, sensor bring-up) with
+        # host timestamps — evidence for validating the gauge against a bench
+        # supply: `tail -f logs/battery_menubar.err.log` while charging.
+        log.info("fw %s: %s", msg.get("level", "log"), msg.get("msg"))
+        return
+    if msg.get("type") != "telemetry":
         return
     _update(
         batt_mv=msg.get("batt_mv"),
@@ -213,6 +221,7 @@ def _worker() -> None:
 
     ser = None
     was_dormant = False
+    last_summary = 0.0   # once-a-minute battery line in the log (taper record)
 
     def _close():
         nonlocal ser
@@ -282,6 +291,13 @@ def _worker() -> None:
 
         if line:
             _handle_line(line)
+            now = time.time()
+            if now - last_summary >= 60.0:
+                s = _snapshot()
+                if s["mode"] == "live" and s["batt_ma"] is not None:
+                    last_summary = now
+                    log.info("[batt] soc=%s%% mv=%s ma=%s state=%s",
+                             s["batt_soc"], s["batt_mv"], s["batt_ma"], s["state"])
         elif time.time() - _snapshot()["frame_at"] > _STALE_SECS:
             # Port open but silent (board held in reset / wrong device):
             # cycle it rather than sit on a dead fd forever.
@@ -344,11 +360,15 @@ def _fmt_lines(s: dict) -> list[str]:
         lines.append(f"Voltage: {mv / 1000:.2f} V" if mv >= 0 else "Voltage: no INA226 wired")
     if ma is not None:
         amps = ma / 1000.0
-        if ma < _CHARGING_MA:
+        if abs(ma) < abs(_CHARGING_MA):
+            # Near-zero battery current: full pack on a charger (bus carries the
+            # load), or a genuinely disconnected pack — don't show "-0.03 A draw".
+            lines.append(f"Current: ~0 A ({amps * 1000:+.0f} mA)")
+        elif ma < 0:
             lines.append(f"Current: {abs(amps):.2f} A charging")
         else:
             lines.append(f"Current: {amps:.2f} A draw")
-        if mv is not None and mv > 0:
+        if mv is not None and mv > 0 and abs(ma) >= abs(_CHARGING_MA):
             lines.append(f"Power: {abs(mv * ma) / 1_000_000:.1f} W")
 
     if s["state"]:
