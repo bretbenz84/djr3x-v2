@@ -406,6 +406,20 @@ def run_app() -> int:
             self.menu = list(self._rows) + [None, self._mark_full]
             self._timer = rumps.Timer(self._refresh, 1.0)
             self._timer.start()
+            # rumps schedules its NSTimer in the DEFAULT run-loop mode only,
+            # but while the dropdown is open macOS switches to EVENT-TRACKING
+            # mode — so the readouts froze exactly while being looked at.
+            # Registering the same timer in the tracking mode keeps the rows
+            # live-updating with the menu open. Guarded: if a future rumps
+            # renames its private _nstimer, we just fall back to frozen-while-
+            # open instead of crashing the meter.
+            try:
+                from AppKit import NSEventTrackingRunLoopMode
+                from Foundation import NSRunLoop
+                NSRunLoop.currentRunLoop().addTimer_forMode_(
+                    self._timer._nstimer, NSEventTrackingRunLoopMode)
+            except Exception as exc:
+                log.warning("Could not enable open-menu live updates: %s", exc)
 
         def _on_mark_full(self, _item):
             if _snapshot()["mode"] != "live":
