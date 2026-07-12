@@ -112,10 +112,16 @@ with voltage, current, power, base state/fault, and reading age in the dropdown.
 It needs no firmware or protocol changes because the motion firmware streams a
 telemetry frame at 10 Hz from the moment it boots — before any handshake — and
 every frame already carries `batt_mv` / `batt_ma` / `batt_soc`
-(see docs/motion_protocol.md §6.1). The app opens `MOTION_ESP32_PORT` and
-**never writes a byte**: the firmware's comms watchdog only arms after the first
-line received *from* the Mac, so a purely passive listener can't cause a
-`comms_lost` fault or claim ownership.
+(see docs/motion_protocol.md §6.1). The app opens `MOTION_ESP32_PORT` and is
+**passive with one exception**: it never sends motion commands, so it can't
+claim ownership or interfere with the base. The exception is the **"Set Battery
+to 100%"** menu item (shown only while the meter owns the port): when you watch
+your charger's taper current hit cutoff — the definitive "pack is full" signal,
+which the firmware can't see on its own because a charging pack is never at
+rest — one click sends the `batt_full` command (protocol §5.11) and the ESP32
+sets its coulomb ledger to 100% and persists it to NVS. The SOC in the dropdown
+snaps to 100% within a second or two as confirmation. Terminal equivalent:
+`venv/bin/python tools/rex_battery_menubar.py --mark-full`.
 
 **Port sharing with the robot** uses the same flock the supervisor uses for the
 microphone. Serial ports are exclusive-open, so the app polls the single-instance

@@ -3,6 +3,7 @@
 #include "safety.h"
 #include "config_params.h"
 #include "gamepad.h"    // gamepad_notify_host_connected — hello-handshake rumble greet
+#include "battery.h"    // batt_full command — host-side "charger says full" SOC sync
 #include <ArduinoJson.h>
 #include <math.h>
 
@@ -50,6 +51,7 @@ void emit_hello() {
   doc["fw"] = MOTION_FW_VERSION;
   JsonArray caps = doc["caps"].to<JsonArray>();
   caps.add("drive"); caps.add("turn"); caps.add("move"); caps.add("come"); caps.add("stop");
+  if (battery_gauge_available()) caps.add("batt_full");
   doc["boot_id"] = bid;
   tx_line(doc);
 }
@@ -259,6 +261,15 @@ static void dispatch(const char* cmd, JsonDocument& doc, uint32_t seq) {
     MotionParams eff;
     bool clamped = apply_config(doc.as<JsonObjectConst>(), eff);
     emit_config_ack(seq, clamped, eff);
+    return;
+  }
+  if (!strcmp(cmd, "batt_full")) {
+    // Operator watched the charger taper to cutoff → sync the SOC ledger to
+    // 100% (docs §5.11). Applied by the next 1 Hz battery_tick. Never gated:
+    // it can't move the base, so it's accepted even under estop/manual.
+    if (!battery_gauge_available()) { emit_ack(seq, false, R_UNSUPPORTED_CAP); return; }
+    battery_request_mark_full();
+    emit_ack(seq, true, ACK_OK);
     return;
   }
 

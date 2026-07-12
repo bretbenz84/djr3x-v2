@@ -7,14 +7,20 @@ state of charge, voltage, and current even when the robot (main.py) is OFF.
 Installed as a LaunchAgent alongside the wake-word supervisor by
 scripts/install_supervisor.sh.
 
-How it gets the data with ZERO firmware or protocol changes:
+How it gets the data with no protocol handshake:
   The motion firmware streams a telemetry frame at 10 Hz from the moment it
   boots — unconditionally, before any handshake (telemetryTask in
   firmware/djr3x_motion/djr3x_motion.ino). Every frame carries batt_mv /
-  batt_ma / batt_soc. So this app just opens MOTION_ESP32_PORT read-only and
-  parses NDJSON. It NEVER WRITES A BYTE: the firmware's comms watchdog only
-  arms after the first line received from the Mac (seen_mac), so a purely
-  passive listener can never cause a comms_lost fault or claim ownership.
+  batt_ma / batt_soc. So this app just opens MOTION_ESP32_PORT and parses
+  NDJSON. It is PASSIVE with exactly one exception: the "Set Battery to 100%"
+  menu item sends a single `batt_full` command (docs/motion_protocol.md §5.11)
+  to sync the coulomb gauge when the operator watches the charger's taper
+  current hit cutoff — evidence of "full" the firmware can't see on its own
+  (mid-absorption the pack is never at rest, so the boot rest-voltage anchor
+  can't fire until a power-cycle). It never sends motion commands. Side effect
+  of any write: the firmware's comms watchdog arms (seen_mac) and re-latches
+  comms_lost once we go quiet — harmless while the base is idle, and the
+  dropdown already presents that state as benign standby.
 
 How it shares the serial port with main.py (ports are exclusive-open):
   Same dormant pattern the supervisor uses for the microphone. main.py holds
@@ -135,6 +141,44 @@ def _snapshot() -> dict:
         return dict(_snap)
 
 
+# ── Outbound commands (UI thread → serial worker) ─────────────────────────────
+# The meter is passive except for `batt_full`; the worker drains this queue
+# between telemetry reads, so a click reaches the wire within ~1 s (bounded by
+# readline's timeout).
+
+_tx_lock = threading.Lock()
+_tx_queue: list[bytes] = []
+_tx_seq = 0
+
+
+def _queue_batt_full() -> None:
+    global _tx_seq
+    with _tx_lock:
+        _tx_seq += 1
+        payload = json.dumps({"v": 1, "cmd": "batt_full", "seq": _tx_seq}) + "\n"
+        _tx_queue.append(payload.encode("utf-8"))
+
+
+def _drain_tx(ser) -> None:
+    """Send any queued commands. Serial write errors are left to the read path
+    to detect (it owns reopen); a failed command is dropped, not retried —
+    the user just clicks again."""
+    with _tx_lock:
+        pending = _tx_queue[:]
+        _tx_queue.clear()
+    for payload in pending:
+        try:
+            ser.write(payload)
+            log.info("Sent %s", payload.decode().strip())
+        except Exception as exc:
+            log.warning("Command write failed (%s) — dropped.", exc)
+
+
+def _clear_tx() -> None:
+    with _tx_lock:
+        _tx_queue.clear()
+
+
 # ── Serial worker ──────────────────────────────────────────────────────────────
 
 def _handle_line(raw: bytes) -> None:
@@ -178,6 +222,8 @@ def _worker() -> None:
             except Exception:
                 pass
             ser = None
+        # A queued click must not fire surprisingly late on a future reconnect.
+        _clear_tx()
 
     while not _stop.is_set():
         port = _motion_port()
@@ -213,7 +259,7 @@ def _worker() -> None:
                 log.debug("open %s failed: %s", port, exc)
                 _stop.wait(2.0)
                 continue
-            log.info("Listening on %s (read-only).", port)
+            log.info("Listening on %s (passive; writes only on Set-Battery-100%%).", port)
             # Opening the port usually auto-resets the ESP32 (DTR toggle) —
             # give it a moment to boot, then drop any partial line.
             _stop.wait(0.5)
@@ -222,6 +268,8 @@ def _worker() -> None:
             except Exception:
                 pass
             _update(mode="connecting", port=port, detail=f"listening on {port}")
+
+        _drain_tx(ser)
 
         try:
             line = ser.readline()   # 1 s timeout → empty bytes
@@ -351,13 +399,24 @@ def run_app() -> int:
             # a no-op callback keeps these info rows in normal colour.
             self._rows = [rumps.MenuItem(f"row{i}", callback=lambda _: None)
                           for i in range(_MAX_ROWS)]
-            self.menu = list(self._rows)
+            # "Charger taper hit cutoff" → sync the firmware's coulomb gauge.
+            # Only shown while we own the port (live); hidden when dormant/off.
+            self._mark_full = rumps.MenuItem("Set Battery to 100%",
+                                             callback=self._on_mark_full)
+            self.menu = list(self._rows) + [None, self._mark_full]
             self._timer = rumps.Timer(self._refresh, 1.0)
             self._timer.start()
+
+        def _on_mark_full(self, _item):
+            if _snapshot()["mode"] != "live":
+                return
+            log.info("User clicked Set Battery to 100% — queueing batt_full.")
+            _queue_batt_full()
 
         def _refresh(self, _timer):
             s = _snapshot()
             self.title = _fmt_title(s)
+            self._mark_full.hidden = (s["mode"] != "live")
             lines = _fmt_lines(s)
             for i, row in enumerate(self._rows):
                 if i < len(lines):
@@ -393,7 +452,7 @@ def probe(seconds: float = 5.0) -> int:
     except Exception as exc:
         print(f"Could not open {port}: {exc}")
         return 1
-    print(f"Reading {port} for {seconds:.0f}s (read-only)…")
+    print(f"Reading {port} for {seconds:.0f}s (passive)…")
     time.sleep(0.5)
     ser.reset_input_buffer()
     end = time.monotonic() + seconds
@@ -425,15 +484,72 @@ def probe(seconds: float = 5.0) -> int:
     return 0
 
 
+def mark_full_cli() -> int:
+    """Send batt_full from the terminal (what the menu item does) and confirm
+    the ack + the SOC actually reaching 100% in telemetry."""
+    port = _motion_port()
+    if not port:
+        print("MOTION_ESP32_PORT is not set in .env.")
+        return 1
+    if _rex_running():
+        print("main.py is running and owns the port — stop Rex first.")
+        return 1
+    try:
+        import serial
+        ser = serial.Serial(port, _motion_baud(), timeout=1.0, exclusive=True)
+    except Exception as exc:
+        print(f"Could not open {port}: {exc}")
+        print("(If the menu bar meter is running, it holds the port — quit it "
+              "or use its 'Set Battery to 100%' item instead.)")
+        return 1
+    cmd = json.dumps({"v": 1, "cmd": "batt_full", "seq": 1}) + "\n"
+    print(f"Sending on {port}: {cmd.strip()}")
+    time.sleep(0.5)
+    ser.reset_input_buffer()
+    ser.write(cmd.encode())
+    acked = soc100 = False
+    end = time.monotonic() + 6.0
+    try:
+        while time.monotonic() < end and not (acked and soc100):
+            line = ser.readline()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line.decode("utf-8", errors="replace"))
+            except ValueError:
+                continue
+            if msg.get("type") == "ack" and msg.get("seq") == 1:
+                acked = True
+                print(f"  ack: accepted={msg.get('accepted')} reason={msg.get('reason')}")
+                if not msg.get("accepted"):
+                    break
+            elif msg.get("type") == "log":
+                print(f"  fw log: {msg.get('msg')}")
+            elif msg.get("type") == "telemetry" and msg.get("batt_soc") == 100:
+                soc100 = True
+                print(f"  telemetry: batt_soc=100%  batt_mv={msg.get('batt_mv')}mV")
+    finally:
+        ser.close()
+    if acked and soc100:
+        print("✓  SOC gauge synced to 100%.")
+        return 0
+    print(f"⚠  Incomplete: ack={acked}, soc@100%={soc100}. Old firmware without "
+          "batt_full support? Reflash firmware/djr3x_motion.")
+    return 1
+
+
 if __name__ == "__main__":
     arg = sys.argv[1] if len(sys.argv) > 1 else ""
     if arg in ("--probe", "-p", "probe"):
         secs = float(sys.argv[2]) if len(sys.argv) > 2 else 5.0
         sys.exit(probe(secs))
+    elif arg in ("--mark-full", "mark-full"):
+        sys.exit(mark_full_cli())
     elif arg in ("--help", "-h", "help"):
-        print("Usage: rex_battery_menubar.py [--probe [secs]]\n"
+        print("Usage: rex_battery_menubar.py [--probe [secs] | --mark-full]\n"
               "  (no args)      run the menu bar battery meter\n"
-              "  --probe [secs] print raw battery telemetry to stdout and exit")
+              "  --probe [secs] print raw battery telemetry to stdout and exit\n"
+              "  --mark-full    send batt_full (sync SOC gauge to 100%) and exit")
         sys.exit(0)
     else:
         sys.exit(run_app())

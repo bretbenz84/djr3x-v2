@@ -42,6 +42,8 @@ static uint32_t s_saved_at_ms   = 0;
 static int      s_quiet_ticks   = 0;      // consecutive 1 Hz ticks at rest
 static bool     s_full_anchored = false;  // full-anchor fired since last discharge dip
 static uint32_t s_last_tick_ms  = 0;      // for the Ah integration dt
+static volatile bool s_mark_full_req = false;  // "batt_full" flag: set on the serial
+                                               // task, consumed by battery_tick
 
 static const uint16_t REG_CONFIG = 0x00;
 static const uint16_t REG_SHUNT  = 0x01;
@@ -123,6 +125,16 @@ static float soc_from_rest_mv(float mv) {
 
 bool battery_present() { return s_present; }
 
+bool battery_gauge_available() {
+#if BATT_SHUNT_MICROOHM > 0
+  return s_present;
+#else
+  return false;
+#endif
+}
+
+void battery_request_mark_full() { s_mark_full_req = true; }
+
 void battery_tick() {
   if (!s_present) return;
 
@@ -160,6 +172,22 @@ void battery_tick() {
   // Rest tracking: no motor drive (idle electronics ~1 A = C/40, negligible sag).
   const bool quiet = fabsf(s_ma_ema) < (float)BATT_SOC_QUIET_MA;
   s_quiet_ticks = quiet ? s_quiet_ticks + 1 : 0;
+
+  // Host-commanded full mark (batt_full): the operator watched the charger's
+  // taper current hit cutoff, which is BETTER evidence than our rest-voltage
+  // anchor (it works mid-absorption, when current still flows and the pack
+  // never looks "quiet"). Outranks the ledger like the boot anchor; persisted
+  // immediately so a power-off right after the click can't lose it. Also
+  // initializes a ledger that never existed (s_soc_mah == -1).
+  if (s_mark_full_req) {
+    s_mark_full_req = false;
+    s_soc_mah = (float)BATT_CAPACITY_MAH;
+    s_full_anchored = true;   // same once-per-charge arming as the rest anchor
+    s_prefs.putFloat("mah", s_soc_mah);
+    s_saved_mah = s_soc_mah;
+    s_saved_at_ms = now;
+    emit_log("info", "battery: host marked pack full - SOC set to 100%");
+  }
 
   if (s_soc_mah < 0.0f && have_mv && s_quiet_ticks >= BATT_SOC_ANCHOR_TICKS) {
     // First boot ever (no ledger): coarse init from the rest voltage.

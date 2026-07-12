@@ -26,3 +26,13 @@ void battery_tick();
 
 // True when an INA226 answered the probe at boot.
 bool battery_present();
+
+// True when this build carries the coulomb SOC gauge AND the sensor is alive
+// (BATT_SHUNT_MICROOHM > 0 and the INA226 answered the boot probe).
+bool battery_gauge_available();
+
+// Host command "batt_full" (docs §5.11 — the Mac menu bar meter clicks this when
+// the charger's taper current says the pack is done): request the SOC ledger be
+// set to 100%. Thread-safe from the serial task: only sets a flag; the next 1 Hz
+// battery_tick on sensorTask applies it and persists to NVS immediately.
+void battery_request_mark_full();

@@ -245,6 +245,23 @@ wheel on a stand isn't translating) — stand only, wheels off the ground. Acked
 if `frac`/`ms` were clamped). Diagnostic only: **not advertised in `hello.caps`** and not
 issued by the normal Mac controller — it is driven by `firmware/tools/motion_bench.py wheel`.
 
+### 5.11 `batt_full` — sync the SOC gauge to 100%
+```json
+{"v":1,"cmd":"batt_full","seq":52}
+```
+No fields. The operator observed the **charger's taper current reach cutoff** — direct
+evidence the pack is full that the firmware itself can't see (mid-absorption the pack is
+never "at rest", so the §6.1 rest-voltage full anchor can't fire until after a
+power-cycle). Sets the coulomb ledger to 100% (`batt_soc:100`), arms the same
+once-per-charge latch as the rest anchor, and **persists to NVS immediately**. Applied on
+the next 1 Hz battery tick, so telemetry reflects it within ~1 s. Never gated (it cannot
+move the base): accepted under estop, faults, and manual ownership, like `config`/`ping`.
+Acked `ok`; on a build/board without the coulomb gauge (no motor-ranged shunt, or no
+INA226) → `ack accepted:false reason:"unsupported_cap"`. Advertised in `hello.caps` as
+`"batt_full"` when available. Sender in practice is the Mac **menu bar battery meter**
+(`tools/rex_battery_menubar.py`, "Set Battery to 100%") — the meter is otherwise a
+purely passive telemetry listener.
+
 ---
 
 ## 6. ESP32 → Mac messages
@@ -279,7 +296,7 @@ Distinguished by `type`. `telemetry` is periodic; the rest are event-driven.
 | `tof_mm` | object | Per-sensor distance in mm — **8 radial sensors** (§6), every 45° starting 22.5° off the forward axis: long-range front pair `fl,fr` + rear pair `rl,rr` (VL53L1X, ±22.5° off the axis) and short-range left pair `lf,lb` + right pair `rf,rb` (VL53L0X). A sensor in error reports `-1`; a large value (per-type out-of-range cap) means nothing in range = clear. No down/cliff sensor in this layout. |
 | `batt_mv` | int | Pack voltage, millivolts (INA226 VBUS; `-1` = no sensor / VBUS unwired). |
 | `batt_ma` | int | Pack current, milliamps (INA226 shunt, signed, + = discharging; `0` until a shunt is configured — `BATT_SHUNT_MICROOHM` in calib.h). Independent of `batt_mv`: either can report without the other. |
-| `batt_soc` | int | Coulomb-counted state of charge, 0–100% (`-1` = unknown). Ledger persists in ESP32 NVS across power-off; reconciled at boot against LiFePO4 rest-voltage anchors (≥ full-anchor at rest → 100%; below a knee → clamped down; on the flat plateau → the saved ledger is trusted). Charging happens while the ESP32 is dark, so the full anchor is what re-syncs the gauge after a charge. |
+| `batt_soc` | int | Coulomb-counted state of charge, 0–100% (`-1` = unknown). Ledger persists in ESP32 NVS across power-off; reconciled at boot against LiFePO4 rest-voltage anchors (≥ full-anchor at rest → 100%; below a knee → clamped down; on the flat plateau → the saved ledger is trusted). Charging happens while the ESP32 is dark, so the full anchor is what re-syncs the gauge after a charge; the host can also sync it explicitly with `batt_full` (§5.11) when it watches a charge finish live. |
 | `imu` | object | MPU-6050 attitude: `{ok}` always; when `ok:true` also `{pitch,roll,yaw}` in degrees. `pitch`/`roll` are gravity-referenced (complementary filter); `yaw` is bias-corrected gyro integration **relative to boot heading** (drifts slowly; no indoor magnetometer by design). `ok:false` = no sensor answered the boot probe. |
 | `errs` | int | Cumulative parse/framing error count (for link-health monitoring). |
 
@@ -498,7 +515,7 @@ tuned over the wire: `WHEEL_DIAMETER_MM`, `COUNTS_PER_REV`, and the per-wheel
 | Unsupported `v` | `ack accepted:false reason:"bad_version"`, no action. |
 | Command needs an unadvertised cap | `ack accepted:false reason:"unsupported_cap"`. |
 | Motion cmd while `estop`/`fault` | `ack accepted:false reason:"estop"`/`"fault"`. |
-| drive/turn/move/come while `owner:"manual"` | `ack accepted:false reason:"manual_override"` (but `stop`/`estop`/`config`/`ping`/`clear` still accepted). |
+| drive/turn/move/come while `owner:"manual"` | `ack accepted:false reason:"manual_override"` (but `stop`/`estop`/`config`/`ping`/`clear`/`batt_full` still accepted). |
 | Line > 512 B | Discard through next `\n`, `errs`++. |
 
 **Principle:** the protocol degrades safe and quiet. The only thing that should ever make
@@ -514,7 +531,7 @@ The BT gamepad is paired to the **ESP32**, not the Mac (motion_system.md §11). 
 
 - Meaningful gamepad input → ESP32 sets `owner:"manual"`, emits `owner_change`, and
   **ignores** Mac drive/turn/move/come (acked `reason:"manual_override"`). It still honors
-  `stop`/`estop`/`config`/`ping`/`clear`.
+  `stop`/`estop`/`config`/`ping`/`clear`/`batt_full`.
 - The Mac's obligation: when `owner == "manual"`, **stop issuing autonomous motion
   commands** (a voice "come here" is dropped or queued, the controller's choice) and
   surface "MANUAL (gamepad)" + `gamepad` status in the GUI. Keep sending `ping` (heartbeat
