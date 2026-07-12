@@ -298,7 +298,15 @@ def _worker() -> None:
                 # main.py's motion connect, main.py sees a clean "resource
                 # busy" (absorbed by its open retries) instead of two readers
                 # silently splitting the byte stream.
-                ser = serial.Serial(port, _motion_baud(), timeout=1.0, exclusive=True)
+                # NO-RESET open (see hardware/motion.py): a default open pulses
+                # the ESP32's reset — so the moment Rex exited and this app took
+                # the port, the board rebooted and the gamepad's BT session died
+                # ("can't reconnect the pad after Rex ends"). Pre-drop DTR/RTS.
+                ser = serial.Serial(None, _motion_baud(), timeout=1.0, exclusive=True)
+                ser.port = port
+                ser.dtr = False
+                ser.rts = False
+                ser.open()
             except Exception as exc:
                 _update(mode="connecting", port=port,
                         detail=f"waiting for board on {port}")
@@ -306,8 +314,8 @@ def _worker() -> None:
                 _stop.wait(2.0)
                 continue
             log.info("Listening on %s (passive; writes only on Set-Battery-100%%).", port)
-            # Opening the port usually auto-resets the ESP32 (DTR toggle) —
-            # give it a moment to boot, then drop any partial line.
+            # Opened with DTR/RTS held low (no auto-reset). Brief settle, then
+            # drop any partial line mid-stream.
             _stop.wait(0.5)
             try:
                 ser.reset_input_buffer()

@@ -105,11 +105,17 @@ void setup() {
 
   emit_event_boot(g_ctx.boot_id);         // announce reset (carries boot_id + fw)
 
-  // Highest priority = control; serial just under it (both core 1).
+  // Highest priority = control; serial just under it. ALL our tasks live on core 1:
+  // the Bluetooth controller + BTstack (Bluepad32 builds) own core 0 at high priority,
+  // and a CONNECTED gamepad streams input reports continuously — with sensor/telemetry
+  // pinned to core 0 they starved whenever a pad was connected (field bug 2026-07-12:
+  // battery menu bar and GUI sensors went stale the moment the pad linked). Core 1 has
+  // the headroom: control ~5%, serial poll ~5%, sensor I2C ~30% worst, telemetry ~2%,
+  // leaving the Arduino loopTask (gamepad poll, prio 1) plenty of gaps.
   xTaskCreatePinnedToCore(controlTask,   "control", 4096, nullptr, 4, nullptr, 1);
   xTaskCreatePinnedToCore(serialTask,    "serial",  4096, nullptr, 3, nullptr, 1);
-  xTaskCreatePinnedToCore(sensorTask,    "sensor",  3072, nullptr, 2, nullptr, 0);
-  xTaskCreatePinnedToCore(telemetryTask, "telem",   4096, nullptr, 2, nullptr, 0);
+  xTaskCreatePinnedToCore(sensorTask,    "sensor",  3072, nullptr, 2, nullptr, 1);
+  xTaskCreatePinnedToCore(telemetryTask, "telem",   4096, nullptr, 2, nullptr, 1);
 }
 
 void loop() {
