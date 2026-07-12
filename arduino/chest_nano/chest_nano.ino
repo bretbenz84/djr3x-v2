@@ -95,7 +95,7 @@ enum ChestMode : uint8_t {
     CM_SPEAK_NEUTRAL, // speaking neutral: RandomBlocks2
     CM_SPEAK_EXCITED, // speaking excited: AllRed, full brightness
     CM_SPEAK_SAD,     // speaking sad: AllBlue, dim
-    CM_SPEAK_ANGRY,   // speaking angry: rapid red strobe
+    CM_SPEAK_ANGRY,   // speaking angry: red alert (scanner bars + alarm blocks + slams)
     CM_SPEAK_HAPPY,   // speaking happy: confetti
     CM_COMPLIMENT,    // reacting to a compliment: white<->blue flash (self-ends ~2.5s)
     CM_FADEOFF,       // shutdown: smoothly fade the current frame to black, then OFF
@@ -338,7 +338,7 @@ void nextPattern()
 //                        neutral  → RandomBlocks2
 //                        excited  → AllRed, full brightness
 //                        sad      → AllBlue, dim
-//                        angry    → rapid red strobe
+//                        angry    → red alert (scanner bars, alarm blocks, slams)
 //                        happy    → confetti
 //   SPEAK_STOP       — return to IDLE (end of speech)
 //   SLEEP            — very dim slow red breathing pulse
@@ -828,13 +828,83 @@ void sleepBreath() {
     fill_solid(DJLEDs, NUM_LEDS, CRGB(b, 0, 0));
 }
 
-// angryFlash — rapid red strobe at ~6 Hz (75 ms on / 75 ms off).
+// angryFlash — red alert. Instead of strobing the whole panel on/off, this
+// keeps the control-panel character of RandomBlocks2 but furious:
+//
+//   * Bars (3 × 8 LEDs)  — a hot red-orange scanner head sweeps each bar
+//     back and forth (different speed/phase per bar), leaving a decaying
+//     trail via the per-frame fade.
+//   * Blocks (9 × 4 LEDs) — asynchronous alarm strobes: short red bursts
+//     with random gaps, some burning orange-hot, like warning lights all
+//     tripping at once.
+//   * Slam — every 1.2–2.6 s the whole panel flashes full red once and
+//     decays in ~200 ms: the old strobe's punch, kept as an accent.
+//   * A dim red simmer floor keeps the panel from ever going black.
+//
+// Eyes (pixels 96–97) stay owned by RandomEyes, as in every awake mode.
 void angryFlash() {
-    if ((millis() % 150UL) < 75UL) {
-        fill_solid(DJLEDs, NUM_LEDS, CRGB(255, 0, 0));
-    } else {
-        fill_solid(DJLEDs, NUM_LEDS, CRGB(0, 0, 0));
+    static uint32_t lastRunMs   = 0;
+    static uint32_t nextSlamMs  = 0;
+    static bool     blockHot[9] = { false };
+
+    uint32_t now = millis();
+
+    // Mode (re)entry: a gap since the last frame means we just switched in.
+    // Kick the shared per-pixel timers to short angry intervals — otherwise
+    // stale RandomBlocks2 intervals (up to 3 s) leave the blocks frozen —
+    // and schedule the first slam almost immediately for instant drama.
+    if (now - lastRunMs > 250UL) {
+        for (byte i = 0; i < 9; i++) {
+            uint8_t pos = StartLEDNum[i];
+            LEDMillis[pos]    = now;
+            IntervalTime[pos] = random(40, 300);
+            LEDOn[pos]        = 0;
+        }
+        nextSlamMs = now + 150;
     }
+    lastRunMs = now;
+
+    // Decay everything from the previous frame (trails, strobes, slam tail).
+    // Eyes excluded — RandomEyes owns pixels 96+.
+    fadeToBlackBy(DJLEDs, 96, 20);
+
+    // Bars: one hot scanner head per bar, sweeping at slightly different
+    // rates so the three bars never sync up.
+    const uint8_t barStarts[3] = { PanelAStart, PanelBStart, PanelCStart };
+    for (byte b = 0; b < 3; b++) {
+        uint8_t head = beatsin8(88 + b * 9, 0, 7, 0, b * 85);
+        DJLEDs[barStarts[b] + head] = CRGB(255, 40, 0);
+    }
+
+    // Blocks: independent alarm strobes. Bursts rewrite their colour every
+    // frame (so the fade can't dim them); gaps let the fade swallow them.
+    for (byte i = 0; i < 9; i++) {
+        uint8_t pos = StartLEDNum[i];
+        if (now - LEDMillis[pos] > IntervalTime[pos]) {
+            LEDMillis[pos] = now;
+            if (!LEDOn[pos]) {
+                LEDOn[pos]        = 1;
+                IntervalTime[pos] = random(80, 260);   // short furious burst
+                blockHot[i]       = (random(0, 4) == 0);  // 1 in 4 burns orange
+            } else {
+                LEDOn[pos]        = 0;
+                IntervalTime[pos] = random(120, 500);  // dark gap
+            }
+        }
+        if (LEDOn[pos]) {
+            LEDBlockOn(pos, blockHot[i] ? CRGB(255, 90, 0) : CRGB(255, 0, 0),
+                       BLOCKBRIGHTNESS);
+        }
+    }
+
+    // Slam: one full-panel red flash, then let the fade eat it.
+    if (now >= nextSlamMs) {
+        fill_solid(DJLEDs, 96, CRGB(255, 0, 0));
+        nextSlamMs = now + random(1200, 2600);
+    }
+
+    // Simmer floor: the panel never goes fully dark while he's angry.
+    for (byte i = 0; i < 96; i++) DJLEDs[i] |= CRGB(18, 0, 0);
 }
 
 // complimentFlash — alternate WHITE then BLUE at ~2.5 Hz (200 ms each), the

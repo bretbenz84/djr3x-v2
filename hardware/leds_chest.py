@@ -153,7 +153,7 @@ def active() -> None:
 def speak(emotion: str) -> None:
     """
     Enter speak pattern for the given emotion.
-    Emotion colors: excited=red, sad=blue, angry=rapid flash, happy=confetti.
+    Emotion colors: excited=red, sad=blue, angry=red alert, happy=confetti.
     """
     send_command(f"SPEAK:{emotion}")
 
