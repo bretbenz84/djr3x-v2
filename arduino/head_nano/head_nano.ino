@@ -11,25 +11,27 @@
  * ---------------------------------------------------
  *   Even rows (0,2,4,6,8) wire left→right.
  *   Odd  rows (1,3,5,7,9) wire right→left.
- *   Physical center of the array is at grid position (row=4.5, col=3.5).
+ *   Physical center of the array is at grid position (row=4.5, col=3.5):
+ *   the "center row pair" is rows 4 and 5.
  *
- *   Centre cluster (zone 0): pixels 37, 38, 45, 46 (mouth offset +2)
- *     37 = row4 col3   38 = row4 col4
- *     45 = row5 col4*  46 = row5 col3*   (* serpentine reversal)
- *
- *   Zones by Euclidean distance from (4.5, 3.5):
- *     Zone 0  dist < 1.0   — centre cluster        ( 4 pixels)
- *     Zone 1  dist < 2.4   — inner ring             (12 pixels)
- *     Zone 2  dist < 3.2   — middle ring            (16 pixels)
- *     Zone 3  dist < 4.5   — outer ring             (28 pixels)
- *     Zone 4  dist ≥ 4.5   — outermost edges        (20 pixels)
+ * Speaking animation — equalizer bars
+ * ------------------------------------
+ *   Eight vertical bars (one per column) open outward from the center row
+ *   pair like a VU meter. Bar height tracks SPEAK_LEVEL with fast-attack /
+ *   slow-decay ballistics; each column wobbles on its own phase so the bars
+ *   dance independently, with a center-weighted envelope so the mouth reads
+ *   as a mouth (tall in the middle, tapered at the corners). A falling
+ *   "peak dot" hangs above each bar. Peak brightness is capped at
+ *   SPEAK_MAX_BRIGHT (45 %) and only the center row pair keeps a dim floor —
+ *   quiet passages close the mouth to a thin lit line instead of lighting
+ *   the whole panel.
  *
  * Serial protocol — 115200 baud, ASCII, newline-terminated
  * ---------------------------------------------------------
  *   SPEAK:{emotion}       Start speaking animation. Also sets the mouth's
  *                         emotion colour used by the idle glow afterwards.
  *                         emotion = neutral | happy | excited | sad | angry | curious
- *   SPEAK_LEVEL:{0-255}   Update audio intensity — drives pulse speed + brightness.
+ *   SPEAK_LEVEL:{0-255}   Update audio intensity — drives bar height + motion.
  *                         Send as often as needed; non-blocking.
  *   SPEAK_STOP            Mouth returns to the dim idle glow (current emotion
  *                         colour); eyes unchanged; blinking suspended until next
@@ -74,42 +76,19 @@
 #define NUM_MOUTH   80
 #define NUM_LEDS    (NUM_EYES + NUM_MOUTH)   // 82 total; eyes first, mouth second
 #define MOUTH_START NUM_EYES                 // mouth pixels begin at index 2
-#define NUM_ZONES   5
+#define MOUTH_COLS  8
+#define MOUTH_ROWS  10
+#define MOUTH_HALF  5                        // half-rows per side of the center pair
 
 #define BAUD_RATE  115200
 #define SERIAL_BUF 64
 
-// ---------------------------------------------------------------------------
-// Zone lookup table  (stored in flash — saves ~80 bytes of SRAM)
-// ---------------------------------------------------------------------------
-//
-// Layout:   10 rows × 8 pixels.  Rows alternate L→R / R→L (serpentine).
-// Symmetry: the table is symmetric top↔bottom and left↔right, which gives
-//           the concentric diamond / ellipse pattern radiating from centre.
-//
-//   Row 0  top edge  (even, L→R)
-//   Row 1            (odd,  R→L : phys cols 7→0)
-//   Row 2            (even, L→R)
-//   Row 3            (odd,  R→L)
-//   Row 4  ← zone-0 pixels 35,36 are at this row, cols 3 & 4
-//   Row 5  ← zone-0 pixels 43,44 are at this row, cols 4 & 3 (serpentine)
-//   Row 6
-//   Row 7
-//   Row 8
-//   Row 9  bottom edge (odd, R→L)
-
-const uint8_t PIXEL_ZONE[NUM_MOUTH] PROGMEM = {
-    4, 4, 4, 4, 4, 4, 4, 4,   // row 0 — top edge
-    4, 3, 3, 3, 3, 3, 3, 4,   // row 1
-    3, 3, 2, 2, 2, 2, 3, 3,   // row 2
-    3, 2, 1, 1, 1, 1, 2, 3,   // row 3
-    3, 2, 1, 0, 0, 1, 2, 3,   // row 4  ← pixels 35,36 = zone 0
-    3, 2, 1, 0, 0, 1, 2, 3,   // row 5  ← pixels 43,44 = zone 0
-    3, 2, 1, 1, 1, 1, 2, 3,   // row 6
-    3, 3, 2, 2, 2, 2, 3, 3,   // row 7
-    4, 3, 3, 3, 3, 3, 3, 4,   // row 8
-    4, 4, 4, 4, 4, 4, 4, 4,   // row 9 — bottom edge
-};
+// mouthIdx — LED index for a (row, col) grid position, accounting for the
+// serpentine wiring: even rows run L→R, odd rows run R→L.
+static inline uint8_t mouthIdx(uint8_t row, uint8_t col) {
+    uint8_t c = (row & 1) ? (uint8_t)(MOUTH_COLS - 1 - col) : col;
+    return MOUTH_START + row * MOUTH_COLS + c;
+}
 
 // ---------------------------------------------------------------------------
 // Emotion colour table
@@ -168,7 +147,11 @@ AnimMode animMode = ANIM_OFF;
 // the GRB mouth strip — see the EMOTION_COLORS note).
 EmotionColor mouthColor  = { 140, 255, 0 };   // neutral amber (wire order)
 uint8_t      speakLevel  = 0;                 // 0–255 audio intensity
-float        speakPhase  = 0.0f;              // wave front 0.0 – NUM_ZONES
+
+// Speaking equalizer state — one bar per mouth column (see tickSpeak).
+float        colHeight[MOUTH_COLS];           // smoothed bar height, 0–MOUTH_HALF half-rows
+float        colPeak[MOUTH_COLS];             // falling peak-dot height per column
+float        colPhase[MOUTH_COLS];            // per-column wobble phase (seeded in setup)
 
 // Mouth idle glow (ACTIVE / IDLE / post-speech): gentle sine pulse between
 // GLOW_MIN and GLOW_MAX of mouthColor (~6.3 s period at 1.0 rad/s).
@@ -444,7 +427,6 @@ void handleCommand(char *cmd) {
         EmotionColor ec;
         memcpy_P(&ec, &EMOTION_COLORS[emo], sizeof(EmotionColor));
         mouthColor = ec;
-        speakPhase = 0.0f;
         animMode   = ANIM_SPEAK;
         cancelGlowRamp();       // speech lights the mouth fully; glow resumes at full level
         lastSpeakActivityMs = millis();   // reset watchdog at utterance start
@@ -558,80 +540,118 @@ void handleCommand(char *cmd) {
 }
 
 // ---------------------------------------------------------------------------
-// Speaking pulse animation
+// Speaking animation — audio-reactive equalizer bars
 // ---------------------------------------------------------------------------
 //
-// A sine-shaped wave front advances from zone 0 outward to zone 4, looping
-// continuously.  Speed and peak brightness both scale with speakLevel.
+// Eight vertical bars — one per mouth column — open outward from the center
+// row pair (rows 4/5), VU-meter style.  Per frame, each column:
 //
-// For each pixel at zone Z, brightness is:
-//   diff = speakPhase - Z           (how far the wave has passed this zone)
-//   pulse = sin(π × (diff+LEAD) / WINDOW)   for diff in [-LEAD, WINDOW-LEAD]
+//   1. Wobbles: a per-column sine (distinct rate + phase per column, faster
+//      when loud) modulates the shared audio level so the bars dance
+//      independently instead of pumping in lockstep.
+//   2. Is shaped: a fixed center-weighted envelope keeps the middle columns
+//      tallest and the corners tapered, so the lit region reads as a mouth.
+//   3. Is smoothed: fast attack / slow decay ballistics — bars snap up on a
+//      syllable and settle down through the gaps, closing to a thin center
+//      line during pauses.
+//   4. Trails a peak dot: a dim marker rides the bar's recent maximum and
+//      falls slowly, adding motion above the bars.
 //
-// LEAD  = 0.30  slight pre-glow before the wave arrives
-// WINDOW= 1.70  total pulse width in zone units (enter 0.30 before, exit 1.40 after peak)
-//
-// An ambient floor (0.12) keeps the mouth dimly lit at all times while speaking.
+// Brightness is capped at SPEAK_MAX_BRIGHT (45 %) — the old wave hit 100 % —
+// and only the center row pair keeps a dim floor, so quiet passages no
+// longer light the whole panel.  The bar tip is anti-aliased (fractional
+// height renders as a dimmed pixel) to keep motion smooth on a 10-row grid.
 //
 // NOTE: only writes to mouth pixels (index MOUTH_START and above).
 // Eye pixels leds[0] and leds[1] are left alone so tickBlink() owns them.
 
-#define SPEAK_LEAD    0.30f
-#define SPEAK_WINDOW  1.70f
+#define SPEAK_MAX_BRIGHT 0.45f   // brightness of a fully lit bar pixel
+#define SPEAK_FLOOR      0.10f   // dim floor on the center row pair only
+#define SPEAK_ATTACK     18.0f   // bar rise responsiveness (per second)
+#define SPEAK_DECAY       6.0f   // bar fall responsiveness (per second)
+#define SPEAK_PEAK_FALL   3.5f   // peak-dot fall speed (half-rows per second)
 
-// Speak-wave frame cap. Unthrottled, tickSpeak rendered + show()ed on EVERY
-// loop pass (~400 fps): back-to-back frames leave only FastLED's minimum
-// reset gap, which crowds the WS2812 latch window — and bright frames (mostly
-// 1-bits) have the thinnest analog margins, so pixels that miss the latch
-// reinterpret the next frame's leading bits as a continuation and flash wrong
-// hues (amber/yellow → blue/purple). It also kept interrupts disabled for
-// ~2.5 ms per show, >50 % of wall time, eating the host's SPEAK_LEVEL bytes.
-// 50 fps is far beyond smooth for a wave that moves ≤8 zones/s, leaves ≥17 ms
-// of latch headroom per frame, and frees the UART. The wave PHASE still
-// accumulates every tick (dt-based), so motion speed is unchanged — only the
-// render/show cadence is capped.
+// Center-weighted column envelope: middle columns reach full height, corner
+// columns top out lower — the lit shape tapers like a mouth, not a box.
+const float COL_ENV[MOUTH_COLS] = {
+    0.55f, 0.75f, 0.92f, 1.0f, 1.0f, 0.92f, 0.75f, 0.55f
+};
+
+// Frame cap. Unthrottled, tickSpeak rendered + show()ed on EVERY loop pass
+// (~400 fps): back-to-back frames leave only FastLED's minimum reset gap,
+// which crowds the WS2812 latch window — pixels that miss the latch
+// reinterpret the next frame's leading bits and flash wrong hues. It also
+// kept interrupts disabled for ~2.5 ms per show, >50 % of wall time, eating
+// the host's SPEAK_LEVEL bytes. 50 fps is far beyond smooth for this motion,
+// leaves ≥17 ms of latch headroom per frame, and frees the UART. Bar
+// ballistics use the real elapsed time between frames, so motion speed is
+// independent of the render cadence.
 #define SPEAK_FRAME_MS 20
 uint32_t lastSpeakFrameMs = 0;
 
-void tickSpeak(float dt) {
-    // Wave speed: 1.5 zones/s at level 0 → 8.0 zones/s at level 255
-    float speed = 1.5f + (speakLevel / 255.0f) * 6.5f;
-    speakPhase += speed * dt;
-    if (speakPhase >= (float)NUM_ZONES) speakPhase -= (float)NUM_ZONES;
-
-    // Frame-rate cap: skip the render + show until the next frame slot.
+void tickSpeak() {
+    // Frame-rate cap: skip the update + render + show until the next slot.
     uint32_t now = millis();
-    if ((uint32_t)(now - lastSpeakFrameMs) < SPEAK_FRAME_MS) return;
+    uint32_t elapsedMs = now - lastSpeakFrameMs;
+    if (elapsedMs < SPEAK_FRAME_MS) return;
     lastSpeakFrameMs = now;
 
-    // Peak brightness: 0.30 at level 0 → 1.00 at level 255
-    float peak    = 0.30f + (speakLevel / 255.0f) * 0.70f;
-    float ambient = 0.12f;
+    float dt = elapsedMs * 0.001f;
+    if (dt > 0.1f) dt = 0.1f;   // clamp: ignore stalls (e.g. first frame after idle)
 
-    for (uint8_t i = 0; i < NUM_MOUTH; i++) {
-        float zone = (float)pgm_read_byte(&PIXEL_ZONE[i]);
-        // Mouth pixels start at index MOUTH_START (2); zone table is 0-indexed
-        uint8_t ledIdx = i + MOUTH_START;
-        float diff = speakPhase - zone;
+    float level = speakLevel * (1.0f / 255.0f);
 
-        // Wrap so waves look continuous when front passes zone 4 → zone 0
-        if (diff < -SPEAK_LEAD) diff += (float)NUM_ZONES;
+    // --- Update per-column bar heights + peak dots -------------------------
+    for (uint8_t c = 0; c < MOUTH_COLS; c++) {
+        // Per-column wobble: distinct rate per column, faster when loud.
+        colPhase[c] += (2.2f + 0.55f * c) * (0.6f + 1.4f * level) * dt;
+        if (colPhase[c] >= TWO_PI) colPhase[c] -= TWO_PI;
+        float wobble = 0.60f + 0.40f * sinf(colPhase[c]);
 
-        float pulse = 0.0f;
-        if (diff >= -SPEAK_LEAD && diff <= (SPEAK_WINDOW - SPEAK_LEAD)) {
-            pulse = sin(PI * (diff + SPEAK_LEAD) / SPEAK_WINDOW);
-            if (pulse < 0.0f) pulse = 0.0f;
+        // Target height in half-rows (0 – MOUTH_HALF from the center pair).
+        float target = level * wobble * COL_ENV[c] * 5.2f;
+        if (target > (float)MOUTH_HALF) target = (float)MOUTH_HALF;
+
+        // Fast attack, slow decay.
+        float rate = (target > colHeight[c]) ? SPEAK_ATTACK : SPEAK_DECAY;
+        float k = rate * dt;
+        if (k > 1.0f) k = 1.0f;
+        colHeight[c] += (target - colHeight[c]) * k;
+
+        // Peak dot rides the maximum, then falls slowly.
+        if (colHeight[c] > colPeak[c]) {
+            colPeak[c] = colHeight[c];
+        } else {
+            colPeak[c] -= SPEAK_PEAK_FALL * dt;
+            if (colPeak[c] < 0.0f) colPeak[c] = 0.0f;
         }
+    }
 
-        float brightness = ambient + pulse * peak;
-        if (brightness > 1.0f) brightness = 1.0f;
+    // --- Render -------------------------------------------------------------
+    for (uint8_t c = 0; c < MOUTH_COLS; c++) {
+        uint8_t peakRow = (uint8_t)colPeak[c];
+        if (peakRow > MOUTH_HALF - 1) peakRow = MOUTH_HALF - 1;
+        bool showPeak = (colPeak[c] > colHeight[c] + 0.6f);
 
-        uint8_t sc = (uint8_t)(brightness * 255.0f);
-        leds[ledIdx] = CRGB(
-            scale8(mouthColor.r, sc),
-            scale8(mouthColor.g, sc),
-            scale8(mouthColor.b, sc)
-        );
+        for (uint8_t d = 0; d < MOUTH_HALF; d++) {
+            // Bar fill at this half-row: >=1 full, 0–1 anti-aliased tip, <=0 off.
+            float fill = colHeight[c] - (float)d;
+            if (fill > 1.0f) fill = 1.0f;
+            if (fill < 0.0f) fill = 0.0f;
+
+            float bright = fill * SPEAK_MAX_BRIGHT;
+            if (d == 0 && bright < SPEAK_FLOOR) bright = SPEAK_FLOOR;
+            if (showPeak && d == peakRow && bright < SPEAK_MAX_BRIGHT * 0.7f) {
+                bright = SPEAK_MAX_BRIGHT * 0.7f;
+            }
+
+            uint8_t sc = (uint8_t)(bright * 255.0f);
+            CRGB px = CRGB(scale8(mouthColor.r, sc),
+                           scale8(mouthColor.g, sc),
+                           scale8(mouthColor.b, sc));
+            leds[mouthIdx(4 - d, c)] = px;   // upper half
+            leds[mouthIdx(5 + d, c)] = px;   // lower half
+        }
     }
     FastLED.show();
 }
@@ -793,7 +813,7 @@ void tickAnimation() {
             forceGlowRefresh();
             return;   // glow takes over on the next tick
         }
-        tickSpeak(dt);
+        tickSpeak();
         return;
     }
     if (animMode == ANIM_SLEEP) { tickSleep(); return; }
@@ -842,6 +862,14 @@ void setup() {
     Serial.begin(BAUD_RATE);
     serialPos     = 0;
     lastMs        = millis();
+
+    // Stagger the equalizer columns' wobble phases so the bars never start
+    // (or drift) in lockstep. Heights/peaks start closed.
+    for (uint8_t c = 0; c < MOUTH_COLS; c++) {
+        colPhase[c]  = c * 0.9f;
+        colHeight[c] = 0.0f;
+        colPeak[c]   = 0.0f;
+    }
 
     // Initialise blink state machine — first blink fires somewhere in 2–8 s.
     blinkTimer    = millis();
