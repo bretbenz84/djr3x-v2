@@ -64,6 +64,12 @@
 
 // ---- Motor PWM (LEDC) -----------------------------------------------------
 // 20 kHz is above audible and well within the BTS7960's switching range.
+// (Weak-torque investigation 2026-07-12: a 5 kHz experiment produced IDENTICAL
+// behavior — same ~1.8 A pack draw at dual near-full duty, same non-rotation —
+// so PWM gate-drive loss is RULED OUT. The measured signature — full-duty motor
+// current nearly invisible at the pack shunt, no voltage sag — points at the
+// BTS7960 B+/B- supply not actually coming from the main pack path; hardware
+// trace pending.)
 #define PWM_FREQ_HZ    20000
 #define PWM_RES_BITS   10                 // 0..1023 duty
 #define PWM_DUTY_MAX   ((1 << PWM_RES_BITS) - 1)
