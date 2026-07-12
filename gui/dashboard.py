@@ -422,28 +422,34 @@ class DashboardWindow(QMainWindow):
         self._update_power_status()
 
     def _update_power_status(self) -> None:
-        """Drive-pack current/voltage in the top bar (INA226 over motion telemetry)."""
-        mv = ma = None
+        """Drive-pack SOC/current/voltage in the top bar (INA226 over motion telemetry)."""
+        mv = ma = soc = None
         try:
             from hardware import motion
             tel = motion.telemetry() if motion.connected() else None
             if tel:
                 raw_mv = float(tel.get("batt_mv", -1) or -1)
                 raw_ma = float(tel.get("batt_ma", 0) or 0)
+                raw_soc = float(tel.get("batt_soc", -1) if tel.get("batt_soc") is not None else -1)
                 if raw_mv > 0:
                     mv = raw_mv
                 if raw_ma != 0:
                     ma = raw_ma
+                if raw_soc >= 0:
+                    soc = raw_soc
         except Exception:
             pass
+        parts = []
+        if soc is not None:
+            # LiFePO4 bands: green while healthy, amber at the knee, red when critical.
+            soc_color = "#45d85e" if soc > 30 else ("#f0c45a" if soc > 12 else "#ff6b5e")
+            parts.append(f'<span style="color:{soc_color};">{soc:.0f}%</span>')
         if ma is not None:
-            amp_s = f"{ma / 1000.0:.2f} A" if abs(ma) >= 1000 else f"{ma:.0f} mA"
-        else:
-            amp_s = None
-        volt_s = f"{mv / 1000.0:.2f} V" if mv is not None else None
-        if amp_s or volt_s:
-            body = " · ".join(s for s in (amp_s, volt_s) if s)
-            text = f'<span style="color:#f0c45a;">⚡</span>&nbsp;{body}'
+            parts.append(f"{ma / 1000.0:.2f} A" if abs(ma) >= 1000 else f"{ma:.0f} mA")
+        if mv is not None:
+            parts.append(f"{mv / 1000.0:.2f} V")
+        if parts:
+            text = f'<span style="color:#f0c45a;">⚡</span>&nbsp;{" · ".join(parts)}'
         else:
             text = '<span style="color:#5b6b7d;">⚡</span>&nbsp;—'
         if text != self._last_power_text:
@@ -1929,10 +1935,12 @@ class MotivatorControlDialog(QDialog):
         self._fb_tof2.setText(
             f"{tof.get('lf', '—')} / {tof.get('lb', '—')} / {tof.get('rf', '—')} / {tof.get('rb', '—')} mm")
         mv, ma = g(tel, "batt_mv", -1.0), g(tel, "batt_ma")
+        soc = g(tel, "batt_soc", -1.0)
         volt_s = f"{mv / 1000.0:.2f} V" if mv > 0 else "— V"
         amp_s = (f" / {ma / 1000.0:+.2f} A" if abs(ma) >= 1000
                  else (f" / {ma:+.0f} mA" if ma != 0 else ""))
-        self._fb_batt.setText(volt_s + amp_s)
+        soc_s = f"  ·  {soc:.0f}%" if soc >= 0 else ""
+        self._fb_batt.setText(volt_s + amp_s + soc_s)
         self._fb_fault.setText(f"{tel.get('fault') or 'none'} / errs {tel.get('errs', 0)}")
         self._photoreceptors.set_readings(tof, tel.get("zone"), tel.get("blocked_dir"))
 

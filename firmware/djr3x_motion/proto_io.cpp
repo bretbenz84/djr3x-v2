@@ -45,12 +45,12 @@ void emit_telemetry() {
   // Snapshot under the lock, format outside it.
   MotionState st; MotionOwner ow; MotionGamepad gp; MotionFault fl;
   MotionZone z; MotionDir bd; uint32_t cs, errs; Odom od; TofMm tf; int16_t bm, bma;
-  GamepadLive gpl; WheelDiag wd; ImuState im;
+  int8_t bsoc; GamepadLive gpl; WheelDiag wd; ImuState im;
   LOCK_STATE();
   st = g_ctx.state; ow = g_ctx.owner; gp = g_ctx.gamepad; fl = g_ctx.fault;
   z = g_ctx.zone; bd = g_ctx.blocked_dir; cs = g_ctx.cmd_seq; errs = g_ctx.errs;
   od = g_ctx.odom; tf = g_ctx.tof; bm = g_ctx.batt_mv; bma = g_ctx.batt_ma;
-  gpl = g_ctx.gp_live; wd = g_ctx.wheels; im = g_ctx.imu;
+  bsoc = g_ctx.batt_soc; gpl = g_ctx.gp_live; wd = g_ctx.wheels; im = g_ctx.imu;
   UNLOCK_STATE();
 
   JsonDocument doc;
@@ -77,6 +77,7 @@ void emit_telemetry() {
   t["lf"] = tf.lf; t["lb"] = tf.lb; t["rf"] = tf.rf; t["rb"] = tf.rb;
   doc["batt_mv"] = bm;                   // -1 = no INA226 wired (host treats as unknown)
   doc["batt_ma"] = bma;                  // 0 unless a motor-ranged shunt is fitted
+  doc["batt_soc"] = bsoc;                // coulomb-counted %, -1 = unknown
   doc["errs"] = errs;
   // IMU attitude (MPU-6050). Always present (stable schema): {ok:false} when no
   // sensor answered the boot probe. Angles in degrees; yaw relative to boot heading.

@@ -12,9 +12,11 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <Preferences.h>   // ESP32 NVS — the SOC ledger survives USB power-off
 #include "battery.h"
 #include "context.h"
 #include "pins.h"
+#include "proto_io.h"      // emit_log — gauge anchor/restore diagnostics
 
 #ifndef BATT_INA226_ADDR
 #define BATT_INA226_ADDR 0x40      // A0/A1 to GND (module default)
@@ -31,6 +33,15 @@
 static bool  s_present = false;
 static float s_mv_ema  = -1.0f;
 static float s_ma_ema  = 0.0f;
+
+// ---- SOC gauge state (see calib.h "Battery gauge") ----
+static Preferences s_prefs;               // NVS namespace "batt", key "mah"
+static float    s_soc_mah       = -1.0f;  // remaining mAh; -1 = not initialized yet
+static float    s_saved_mah     = -1.0f;  // last value persisted to NVS
+static uint32_t s_saved_at_ms   = 0;
+static int      s_quiet_ticks   = 0;      // consecutive 1 Hz ticks at rest
+static bool     s_full_anchored = false;  // full-anchor fired since last discharge dip
+static uint32_t s_last_tick_ms  = 0;      // for the Ah integration dt
 
 static const uint16_t REG_CONFIG = 0x00;
 static const uint16_t REG_SHUNT  = 0x01;
@@ -69,7 +80,46 @@ void battery_init() {
   // result — far faster than the 1 Hz tick, so every read is fresh.
   ina_write16(REG_CONFIG, 0x4527);
   Serial.println("{\"v\":1,\"type\":\"log\",\"msg\":\"battery: INA226 online (pack voltage sense)\"}");
+
+#if BATT_SHUNT_MICROOHM > 0
+  // Restore the SOC ledger from NVS. Boot-time voltage reconciliation (full
+  // anchor / knee clamps / plateau fallback) happens in battery_tick once the
+  // first valid quiet readings arrive — VBUS needs a moment to be sampled.
+  s_prefs.begin("batt", false);
+  s_soc_mah = s_prefs.getFloat("mah", -1.0f);
+  s_saved_mah = s_soc_mah;
+  if (s_soc_mah >= 0.0f) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "battery: SOC ledger restored (%.0f mAh, %.0f%%)",
+             s_soc_mah, 100.0f * s_soc_mah / (float)BATT_CAPACITY_MAH);
+    emit_log("info", buf);
+  }
+#endif
 }
+
+#if BATT_SHUNT_MICROOHM > 0
+// Persist the ledger when it moved enough or enough time passed (NVS wear-safe:
+// worst case ~6 writes/hour; the partition wear-levels far beyond that).
+static void soc_maybe_save(uint32_t now) {
+  if (s_soc_mah < 0.0f) return;
+  const bool moved = fabsf(s_soc_mah - s_saved_mah) >= (float)BATT_SOC_SAVE_DELTA_MAH;
+  const bool due   = (uint32_t)(now - s_saved_at_ms) >= (uint32_t)BATT_SOC_SAVE_SECS * 1000u;
+  if (!moved && !due) return;
+  s_prefs.putFloat("mah", s_soc_mah);
+  s_saved_mah = s_soc_mah;
+  s_saved_at_ms = now;
+}
+
+// Coarse plateau estimate for a first boot with no ledger (rest voltage, 4S LiFePO4).
+static float soc_from_rest_mv(float mv) {
+  if (mv >= BATT_SOC_FULL_ANCHOR_MV) return 1.00f;
+  if (mv >= 13150.0f) return 0.70f;
+  if (mv >= 13000.0f) return 0.40f;
+  if (mv >= (float)BATT_SOC_KNEE1_MV) return 0.25f;
+  if (mv >= (float)BATT_SOC_KNEE2_MV) return 0.12f;
+  return 0.05f;
+}
+#endif
 
 bool battery_present() { return s_present; }
 
@@ -100,10 +150,61 @@ void battery_tick() {
   }
 #endif
 
+#if BATT_SHUNT_MICROOHM > 0
+  // ---- SOC gauge (1 Hz tick) ----
+  const uint32_t now = millis();
+  const float dt_h = (s_last_tick_ms == 0) ? 0.0f
+                     : (float)(uint32_t)(now - s_last_tick_ms) / 3600000.0f;
+  s_last_tick_ms = now;
+
+  // Rest tracking: no motor drive (idle electronics ~1 A = C/40, negligible sag).
+  const bool quiet = fabsf(s_ma_ema) < (float)BATT_SOC_QUIET_MA;
+  s_quiet_ticks = quiet ? s_quiet_ticks + 1 : 0;
+
+  if (s_soc_mah < 0.0f && have_mv && s_quiet_ticks >= BATT_SOC_ANCHOR_TICKS) {
+    // First boot ever (no ledger): coarse init from the rest voltage.
+    s_soc_mah = soc_from_rest_mv(s_mv_ema) * (float)BATT_CAPACITY_MAH;
+    emit_log("info", "battery: SOC initialized from rest voltage (no ledger)");
+  }
+
+  if (s_soc_mah >= 0.0f) {
+    // Coulomb count: + ma = discharging (sign handled above). Charging through
+    // the shunt (if ever wired that way) counts back in for free.
+    s_soc_mah -= s_ma_ema * dt_h;
+    s_soc_mah = clampf(s_soc_mah, 0.0f, (float)BATT_CAPACITY_MAH);
+
+    if (have_mv && s_quiet_ticks >= BATT_SOC_ANCHOR_TICKS) {
+      // FULL anchor: rest voltage at/above the anchor = the pack was charged
+      // while we were dark -> 100%. Once per charge (rearms after a real dip).
+      if (s_mv_ema >= (float)BATT_SOC_FULL_ANCHOR_MV && !s_full_anchored) {
+        s_soc_mah = (float)BATT_CAPACITY_MAH;
+        s_full_anchored = true;
+        emit_log("info", "battery: rest voltage at full anchor - SOC reset to 100%");
+      } else if (s_mv_ema < (float)BATT_SOC_FULL_ANCHOR_MV - 100.0f) {
+        s_full_anchored = false;
+      }
+      // KNEE clamps: the sharp end of the LiFePO4 curve outranks the ledger —
+      // clamp DOWN only (never up: a sagging ledger must not be inflated).
+      const float knee1 = (float)BATT_CAPACITY_MAH * BATT_SOC_KNEE1_PCT / 100.0f;
+      const float knee2 = (float)BATT_CAPACITY_MAH * BATT_SOC_KNEE2_PCT / 100.0f;
+      if (s_mv_ema < (float)BATT_SOC_KNEE2_MV && s_soc_mah > knee2) {
+        s_soc_mah = knee2;
+        emit_log("warn", "battery: rest voltage below low knee - SOC clamped (pack is LOW)");
+      } else if (s_mv_ema < (float)BATT_SOC_KNEE1_MV && s_soc_mah > knee1) {
+        s_soc_mah = knee1;
+        emit_log("info", "battery: rest voltage below knee - SOC clamped");
+      }
+    }
+    soc_maybe_save(now);
+  }
+#endif
+
   LOCK_STATE();
   if (have_mv) g_ctx.batt_mv = (int16_t)(s_mv_ema + 0.5f);
 #if BATT_SHUNT_MICROOHM > 0
   g_ctx.batt_ma = (int16_t)s_ma_ema;
+  g_ctx.batt_soc = (s_soc_mah >= 0.0f)
+      ? (int8_t)(100.0f * s_soc_mah / (float)BATT_CAPACITY_MAH + 0.5f) : (int8_t)-1;
 #endif
   UNLOCK_STATE();
 }

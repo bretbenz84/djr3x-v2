@@ -223,6 +223,8 @@ struct MotionContext {
                                   // a real 12.0V pack)
   int16_t   batt_ma = 0;          // pack current, only when a real shunt is fitted
                                   // (BATT_SHUNT_MICROOHM > 0); + = discharging
+  int8_t    batt_soc = -1;        // coulomb-counted state of charge, 0-100%;
+                                  // -1 = unknown (no shunt / gauge not initialized)
 };
 
 // ===== Globals (defined in djr3x_motion.ino) ==============================

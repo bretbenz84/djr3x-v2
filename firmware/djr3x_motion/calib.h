@@ -220,6 +220,26 @@
 // orientation reads discharge negative, so flip in software rather than rewire.
 #define BATT_CURRENT_SIGN    (-1)
 
+// ---- Battery gauge (coulomb counter + LiFePO4 voltage anchors) --------------
+// SOC = coulomb-counted discharge against pack capacity, persisted to ESP32 NVS
+// so it survives power-off (the ESP32 is USB-powered from the Mac — it goes DARK
+// while the pack charges, and the charger clips to the pack terminals so charge
+// current never crosses the shunt). Every boot therefore RECONCILES against rest
+// voltage: >= FULL_ANCHOR at rest -> 100% (the normal off->charge->on cycle
+// self-corrects); on the flat plateau -> trust the saved ledger; below a knee ->
+// clamp DOWN (never over-promise). 4S LiFePO4 rest-voltage knees; "rest" = no
+// motor drive (idle electronics ~1 A = C/40 on this pack, sag is negligible).
+#define BATT_CAPACITY_MAH        40000   // 2x 12.8 V 20 Ah in parallel
+#define BATT_SOC_FULL_ANCHOR_MV  13350   // at/above this at rest = charged full
+#define BATT_SOC_KNEE1_MV        12900   // below: clamp SOC to <= KNEE1_PCT
+#define BATT_SOC_KNEE1_PCT       20
+#define BATT_SOC_KNEE2_MV        12500   // below: clamp SOC to <= KNEE2_PCT
+#define BATT_SOC_KNEE2_PCT       8
+#define BATT_SOC_QUIET_MA        2500    // |current| below this counts as "rest"
+#define BATT_SOC_ANCHOR_TICKS    20      // consecutive quiet 1 Hz ticks before anchoring
+#define BATT_SOC_SAVE_DELTA_MAH  200     // persist to NVS every 0.5% of capacity...
+#define BATT_SOC_SAVE_SECS       600     // ...or at least every 10 min (NVS wear-safe)
+
 // ---- Speed-adaptive zone envelope (safety.cpp zones + control.cpp taper) ----
 // The front/rear pairs are angled ±22.5° off the travel axis, so at RANGE they see
 // obstacles outside the actual collision corridor (at 0.9 m a beam points ~0.35 m
