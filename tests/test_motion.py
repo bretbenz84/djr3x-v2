@@ -332,6 +332,29 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual(self._act("move forward"), "motion.move")
         self.assertEqual(self._act("turn left"), "motion.turn")
 
+    def test_lateral_move_is_an_arc(self):
+        # Field-logged 2026-07-11: "Move to your left" fell through to conversation
+        # and got a quip. A lateral request (move verb + side, no forward/back word)
+        # executes as a small forward arc toward that side — the base can't strafe.
+        d = ar.classify_explicit_motion("Move to your left")
+        self.assertEqual(d.action, "motion.arc")
+        self.assertEqual((d.args["lin_dir"], d.args["ang_dir"], d.args["small"]),
+                         ("forward", "left", True))
+        for text, side in (
+            ("move to the right", "right"),
+            ("go left", "left"),
+            ("scoot over to the left", "left"),
+            ("slide to your right", "right"),
+            ("move a little to the left", "left"),
+            ("shift right", "right"),
+        ):
+            d = ar.classify_explicit_motion(text)
+            self.assertEqual(
+                (d.action, d.args["ang_dir"]), ("motion.arc", side), text)
+        # Turn verbs stay pure turns — never hijacked by the lateral family.
+        self.assertEqual(self._act("turn left"), "motion.turn")
+        self.assertEqual(self._act("spin right"), "motion.turn")
+
     def test_no_false_positives(self):
         for t in ["stop", "play some music", "turn it up", "turn off the lights",
                   "how do I get back to the menu", "let's move on",

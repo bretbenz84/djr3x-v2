@@ -246,6 +246,16 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         executable=True,
     ),
     ActionSpec(
+        "motion.arc",
+        "motion",
+        "User asks Rex to physically move SIDEWAYS or diagonally with the drive base — "
+        "'move to your left', 'go right', 'scoot over', 'move forward and to the left'. "
+        "The base can't strafe, so it drives a brief curve toward that side. "
+        "Args: ang_dir ('left'/'right'), lin_dir ('forward'/'back', default forward). "
+        "Not for head/look gestures.",
+        executable=True,
+    ),
+    ActionSpec(
         "motion.come",
         "motion",
         "User asks Rex to physically come to them / roll over here / come closer (drive base).",
@@ -1132,6 +1142,20 @@ _MOTION_SMALL_MOVE_M = 0.15
 # utterance ("move a little forward and to your right") => a simultaneous curve. The
 # left/right must follow the "and" (within a short window) so it's the arc's turn part.
 _MOTION_ARC_LAT_RE = re.compile(r"\band\b.{0,18}?\b(?P<lr>left|right)\b", re.I)
+# LATERAL move: "move to your left", "go left", "scoot over to the right" — a move
+# verb aimed at a SIDE, with no forward/back word (field-logged 2026-07-11: "Move to
+# your left" fell through to conversation and got a quip instead of motion). A
+# differential base can't strafe, so this executes as a small forward arc toward the
+# side (motion.arc). Turn verbs (turn/rotate/spin/...) are deliberately NOT in the
+# verb list — "turn left" stays a pure motion.turn.
+_MOTION_LATERAL_RE = re.compile(
+    r"\b(?:move|go|roll|drive|scoot|slide|shift|step|shimmy|edge|ease|inch|head)"
+    rf"(?:\s+{_MOTION_AMOUNT})?"
+    r"(?:\s+over)?"
+    r"(?:\s+(?:to|toward|towards))?(?:\s+(?:your|the|my))?"
+    r"\s+(?P<lr>left|right)\b",
+    re.I,
+)
 _MOTION_TURN_RE = re.compile(
     r"\b(?:turn|rotate|spin|pivot|swing|face)\b.{0,20}?\b"
     r"(?P<dir>left|right|around|clockwise|counter[-\s]?clockwise)\b",
@@ -1226,6 +1250,18 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
         return ActionDecision(
             action="motion.move", confidence=0.95, args=args,
             reason="explicit move-back request",
+        )
+
+    lateral = _MOTION_LATERAL_RE.search(cleaned)
+    if lateral:
+        return ActionDecision(
+            action="motion.arc", confidence=0.95,
+            args={
+                "lin_dir": "forward",
+                "ang_dir": lateral.group("lr").lower(),
+                "small": True,   # lateral repositioning: always a brief, gentle curve
+            },
+            reason="explicit lateral move request",
         )
 
     turn = _MOTION_TURN_RE.search(cleaned)
