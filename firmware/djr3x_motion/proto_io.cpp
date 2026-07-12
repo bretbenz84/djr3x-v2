@@ -15,6 +15,19 @@ static bool   s_overflow = false;
 
 static void inc_errs() { LOCK_STATE(); g_ctx.errs++; UNLOCK_STATE(); }
 
+// Quantized float for telemetry: full-precision floats serialize to 9-11 chars
+// ("-6.6957545") and the 20 Hz telemetry frame was ~505 bytes — ~90% of the
+// 115200-baud line's capacity, so ANY extra traffic (pad input load, acks,
+// bigger in-motion numbers) backed frames up and the GUI showed stale data
+// (field-logged: "telemetry froze while driving"). Emit floats at the precision
+// consumers actually use. snprintf into a stack char[] — ArduinoJson COPIES
+// mutable char* values into the document, so this is safe.
+static void add_qf(JsonObject o, const char* key, float v, const char* fmt) {
+  char b[16];
+  snprintf(b, sizeof(b), fmt, (double)v);
+  o[key] = serialized(b);
+}
+
 // ---- TX: serialize one doc to a single atomic NDJSON line ----------------
 static void tx_line(JsonDocument& doc) {
   char buf[MOTION_TX_BUF_BYTES];
@@ -65,11 +78,17 @@ void emit_telemetry() {
   doc["blocked_dir"] = dir_str(bd);
   doc["cmd_seq"] = cs;
   JsonObject o = doc["odom"].to<JsonObject>();
-  o["x"] = od.x; o["y"] = od.y; o["theta"] = od.theta; o["lin"] = od.lin; o["ang"] = od.ang;
+  add_qf(o, "x", od.x, "%.3f");        // mm-scale position is plenty
+  add_qf(o, "y", od.y, "%.3f");
+  add_qf(o, "theta", od.theta, "%.4f");  // 0.006° heading resolution
+  add_qf(o, "lin", od.lin, "%.3f");
+  add_qf(o, "ang", od.ang, "%.3f");
   // Per-wheel drive diagnostics: measured speed (m/s) + commanded duty, for
   // left/right asymmetry debugging (see WheelDiag in context.h).
   JsonObject w = doc["wheels"].to<JsonObject>();
-  w["vl"] = wd.vl; w["vr"] = wd.vr; w["dl"] = wd.dl; w["dr"] = wd.dr;
+  add_qf(w, "vl", wd.vl, "%.3f");
+  add_qf(w, "vr", wd.vr, "%.3f");
+  w["dl"] = wd.dl; w["dr"] = wd.dr;
   // ToF layout (docs §6): long front/rear pairs (fl/fr/rl/rr, ±22.5° off the axis)
   // + short left/right pairs (lf/lb/rf/rb). Keys match the GUI radar in dashboard.py.
   JsonObject t = doc["tof_mm"].to<JsonObject>();
@@ -84,17 +103,17 @@ void emit_telemetry() {
   JsonObject im2 = doc["imu"].to<JsonObject>();
   im2["ok"] = im.ok;
   if (im.ok) {
-    im2["pitch"] = im.pitch;
-    im2["roll"]  = im.roll;
-    im2["yaw"]   = im.yaw;
+    add_qf(im2, "pitch", im.pitch, "%.1f");
+    add_qf(im2, "roll",  im.roll,  "%.1f");
+    add_qf(im2, "yaw",   im.yaw,   "%.1f");
   }
   // Live gamepad mirror for the GUI Motivator Control "physical controller" display.
   // Always present (stable schema): {connected:false} when no pad / non-gamepad build.
   JsonObject g = doc["gp"].to<JsonObject>();
   g["connected"] = gpl.connected;
   if (gpl.connected) {
-    g["lx"] = gpl.lx;            // turn axis  -1..1 (right = +)
-    g["ly"] = gpl.ly;            // drive axis -1..1 (stick-up = +)
+    add_qf(g, "lx", gpl.lx, "%.2f");  // turn axis  -1..1 (right = +)
+    add_qf(g, "ly", gpl.ly, "%.2f");  // drive axis -1..1 (stick-up = +)
     g["btn"] = gpl.btn_mask;     // pressed-button bitmask (GP_BTN_* order, gamepad.cpp)
   }
   tx_line(doc);

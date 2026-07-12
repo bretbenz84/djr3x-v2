@@ -70,11 +70,20 @@ static void telemetryTask(void*) {
   TickType_t last = xTaskGetTickCount();
   for (;;) {
     emit_telemetry();
-    vTaskDelayUntil(&last, pdMS_TO_TICKS(50));    // 20 Hz
+    // 10 Hz (was 20): a ~480 B frame at 20 Hz was ~84% of the 115200-baud line —
+    // no headroom, so pad-driving load backed frames up and the GUI showed stale
+    // data. Every consumer is a latest-snapshot reader (GUI ticks at ~6.7 Hz),
+    // so 10 Hz keeps everyone fresher than they can consume at ~42% line util.
+    vTaskDelayUntil(&last, pdMS_TO_TICKS(100));
   }
 }
 
 void setup() {
+  // TX buffer must hold a full telemetry frame (+ a queued ack/log) so emitters
+  // never block mid-line while holding g_tx_mux — at 115200 baud a queued frame
+  // takes ~35 ms to drain, and a blocked mux stalls every other emitter with it.
+  // MUST be called before begin().
+  Serial.setTxBufferSize(2048);
   Serial.begin(115200);
   delay(50);
 

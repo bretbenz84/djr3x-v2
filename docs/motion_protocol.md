@@ -251,7 +251,13 @@ issued by the normal Mac controller — it is driven by `firmware/tools/motion_b
 
 Distinguished by `type`. `telemetry` is periodic; the rest are event-driven.
 
-### 6.1 `telemetry` — periodic state (default 20 Hz)
+### 6.1 `telemetry` — periodic state (default 10 Hz)
+
+> Rate history: launched at 20 Hz; halved 2026-07-11 when the frame grew to ~480 B
+> (imu/gp/wheels/battery fields) — 20 Hz was ~84% of the 115200-baud line and
+> pad-driving load backed frames up (stale GUI). Every consumer reads a
+> latest-snapshot, so 10 Hz stays fresher than anyone consumes at ~42% line util.
+> Numeric fields are quantized at emit (mm-scale odometry, 0.1° attitude).
 ```json
 {"v":1,"type":"telemetry","t":12834,"state":"moving","owner":"auto","gamepad":"none",
  "fault":null,"zone":"slow","blocked_dir":"front","cmd_seq":42,
