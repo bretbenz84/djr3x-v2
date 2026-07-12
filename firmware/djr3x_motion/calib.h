@@ -228,6 +228,24 @@
 #define ASSIST_REPEL_MM       130.0f    // ~5 in: a side wall inside this repels hard
 #define ASSIST_REPEL_GAIN     12.0f     // rad/s per METER of penetration inside REPEL
 
+// ---- Stalled-pivot WIGGLE assist (control.cpp) ------------------------------
+// The full-weight base cannot scrub an in-place spin (measured: both bridges
+// saturated at 1023 duty, ~7 deg of rotation in 2 s) — but it turns FINE while
+// translating, because rolling friction is far below sideways scrub (the owner's
+// field workaround: "get him moving forward/back first"). This assist automates
+// that: when a pivot is COMMANDED but the base measurably isn't rotating, the
+// commanded spin converts into alternating short ROLLING arcs (fwd-left, back-left,
+// ... — a robot 3-point turn). Heading progresses continuously in the commanded
+// direction; the linear phases pass through the normal reflex/taper gates, so ToF
+// still protects each fore/aft excursion. Applies to stick pivots AND finite turns
+// (voice/D-pad) — the surface doesn't care who commanded the spin.
+#define PIVOT_WIGGLE_ENABLED     1
+#define PIVOT_WIGGLE_ENGAGE_MS   300     // commanded pivot w/ ~no rotation this long -> engage
+#define PIVOT_WIGGLE_PHASE_MS    450     // length of each fwd/back arc phase
+#define PIVOT_WIGGLE_ANG_EPS     0.15f   // rad/s: below this = "not actually rotating"
+#define PIVOT_WIGGLE_LIN_BIAS    1.15f   // lin = bias*|ang|*track/2 (~pirouette about the
+                                         // inside wheel; >1 keeps both wheels rolling fwd)
+
 // ---- Battery sense (INA226, battery.cpp) -----------------------------------
 // Shunt resistance in MICRO-ohms for the current (batt_ma) reading; 0 disables
 // current and reports voltage only. AS BUILT (2026-07-11): an external R002
