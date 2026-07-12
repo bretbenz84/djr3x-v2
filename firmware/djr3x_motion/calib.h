@@ -28,11 +28,12 @@
 // quadrature factor or the gearing differs; the empirical value wins regardless.
 #define COUNTS_PER_REV_OUTPUT  7744.0f   // reference only — superseded by empirical cpm
 #define WHEEL_DIAMETER_M       0.080f    // reference only — superseded by empirical cpm
-// EMPIRICAL turn calibration (bench `turn --deg 360`, 2026-07-11, provisional):
-// commanded 360° spun ~270° physically → 0.200 × 360/270 = 0.2667, then ×(7683/7532)
-// because that spin ran under the 2%-high provisional cpm (heading odometry scales
-// with cpm). Refine: after flashing, `turn --deg 360` should land back on the mark.
-#define TRACK_WIDTH_M          0.272f
+// EMPIRICAL turn calibration (bench `turn --deg 360` on hardwood, 2026-07-11,
+// CONVERGED): 0.200 → 270° obs; 0.272 → ~330° obs; 0.297 → 360° observed = done.
+// Effective track (includes contact-patch width in a spin) — expect a hair of
+// over-rotation on carpet-grade scrub surfaces until the IMU (roadmap Phase A)
+// makes heading surface-independent.
+#define TRACK_WIDTH_M          0.297f
 
 #define WHEEL_CIRCUM_M   ((float)M_PI * WHEEL_DIAMETER_M)
 // EMPIRICAL distance calibration (bench `straight`, 2026-07-11, two passes):
