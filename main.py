@@ -10,6 +10,7 @@ from typing import Optional
 _PROJECT_ROOT = Path(__file__).resolve().parent
 _PROJECT_VENV = (_PROJECT_ROOT / "venv").resolve()
 _NO_AUDIO_ARGS = frozenset({"-noaudio", "--noaudio", "--no-audio"})
+_NO_SERVO_ARGS = frozenset({"-noservos", "--noservos", "--no-servos"})
 
 
 def _seed_startup_runtime_flags(argv: list[str] | None = None) -> None:
@@ -17,6 +18,11 @@ def _seed_startup_runtime_flags(argv: list[str] | None = None) -> None:
     args = sys.argv[1:] if argv is None else argv
     if any(arg in _NO_AUDIO_ARGS for arg in args):
         os.environ["DJR3X_NO_AUDIO_MODE"] = "1"
+    # SERVOS_ENABLED is computed at config_loader import time (and imported by value
+    # in hardware.servos), so --noservos must be visible as an env flag BEFORE those
+    # imports — same mechanism as --noaudio above.
+    if any(arg in _NO_SERVO_ARGS for arg in args):
+        os.environ["DJR3X_NO_SERVOS"] = "1"
 
 
 def _verify_project_virtualenv() -> None:
@@ -929,6 +935,8 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         logger.info("Servos: enabled (Maestro connected)")
     elif SERVOS_ENABLED and not servo_ok:
         logger.warning("Servos: disabled (MAESTRO_PORT set but connection failed)")
+    elif os.environ.get("DJR3X_NO_SERVOS", "").strip():
+        logger.info("Servos: disabled (--noservos)")
     else:
         logger.info("Servos: disabled (MAESTRO_PORT not set)")
 
@@ -1383,6 +1391,10 @@ def _apply_cli_runtime_flags(args: argparse.Namespace) -> None:
         setattr(config, "PLAY_SHUTDOWN_AUDIO", False)
         setattr(config, "PLAY_LISTENING_CHIME", False)
         logger.info("--noaudio enabled: mic input, wake word, audio output, and ElevenLabs TTS are suppressed.")
+    # --noservos took effect at import time (env seed -> config_loader SERVOS_ENABLED);
+    # this is just the operator-visible confirmation.
+    if bool(getattr(args, "noservos", False)):
+        logger.info("--noservos enabled: Pololu Maestro servo control is disabled for this run.")
 
 
 def _load_dashboard_runner():
@@ -1719,6 +1731,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="noaudio",
         action="store_true",
         help="disable microphone capture and audio output; use GUI text input/output instead",
+    )
+    parser.add_argument(
+        "-noservos",
+        "--noservos",
+        "--no-servos",
+        dest="noservos",
+        action="store_true",
+        help="disable the Pololu Maestro servo controller entirely for this run",
     )
     return parser.parse_args(argv)
 

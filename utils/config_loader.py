@@ -244,7 +244,11 @@ else:
 
 CAMERA_ENABLED: bool = CAMERA_INDEX is not None or CAMERA_DEVICE_NAME is not None
 AUDIO_ENABLED: bool = AUDIO_DEVICE_INDEX is not None
-SERVOS_ENABLED: bool = MAESTRO_PORT is not None
+# --noservos (seeded as DJR3X_NO_SERVOS by main.py before this import) disables the
+# Pololu Maestro entirely for the run, even with MAESTRO_PORT configured — every
+# servo call is already a no-op when SERVOS_ENABLED is False (hardware.servos).
+SERVOS_DISABLED_BY_FLAG: bool = bool(os.environ.get("DJR3X_NO_SERVOS", "").strip())
+SERVOS_ENABLED: bool = MAESTRO_PORT is not None and not SERVOS_DISABLED_BY_FLAG
 HEAD_LEDS_ENABLED: bool = ARDUINO_HEAD_PORT is not None
 CHEST_LEDS_ENABLED: bool = ARDUINO_CHEST_PORT is not None
 # Motion base is enabled when its port is set AND the master switch (config.MOTION_ENABLED)

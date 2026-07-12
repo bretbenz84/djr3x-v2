@@ -99,6 +99,7 @@ Startup flags:
 | `-gui`, `--gui` | Open the optional PySide6 GUI dashboard for this run. |
 | `-jeopardy`, `--jeopardy` | Start directly in Jeopardy mode and skip startup introductions. |
 | `-noaudio`, `--noaudio`, `--no-audio` | Disable microphone capture, wake word listening, audio output, and ElevenLabs TTS calls. Responses are written as text to the conversation log and GUI. |
+| `-noservos`, `--noservos`, `--no-servos` | Disable the Pololu Maestro servo controller entirely for this run, even when `MAESTRO_PORT` is configured. All servo motion (head tracking, gestures, animations) is skipped; everything else runs normally. |
 
 Open the optional GUI dashboard:
 

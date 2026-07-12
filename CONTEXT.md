@@ -49,6 +49,7 @@ Startup flags owned by `main.py`:
 | `-gui`, `--gui` | Open the optional dashboard. |
 | `-jeopardy`, `--jeopardy` | Start directly in Jeopardy mode. |
 | `-noaudio`, `--noaudio`, `--no-audio` | Disable microphone capture, wake word, audio output, and ElevenLabs calls. |
+| `-noservos`, `--noservos`, `--no-servos` | Disable the Pololu Maestro entirely for the run, even with `MAESTRO_PORT` configured. Seeded as `DJR3X_NO_SERVOS` before the config imports (mirrors `--noaudio`'s env-seed mechanism) so `config_loader.SERVOS_ENABLED` computes False; every servo call is already a no-op when servos are disabled (`hardware/servos.py`). |
 
 In no-audio mode, `main.py` sets runtime-only config values:
 
