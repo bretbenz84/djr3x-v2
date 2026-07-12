@@ -93,11 +93,11 @@ enum ChestMode : uint8_t {
     CM_IDLE,          // default: RandomBlocks2 at normal brightness
     CM_ACTIVE,        // Rex awake: RandomBlocks2 brighter
     CM_SPEAK_NEUTRAL, // speaking neutral: RandomBlocks2
-    CM_SPEAK_EXCITED, // speaking excited: AllRed, full brightness
-    CM_SPEAK_SAD,     // speaking sad: AllBlue, dim
+    CM_SPEAK_EXCITED, // speaking excited: racing gold chases + rapid colour pops
+    CM_SPEAK_SAD,     // speaking sad: slow blue sighs (draining bars, breathing blocks)
     CM_SPEAK_ANGRY,   // speaking angry: red alert (scanner bars + alarm blocks + slams)
-    CM_SPEAK_HAPPY,   // speaking happy: confetti
-    CM_COMPLIMENT,    // reacting to a compliment: white<->blue flash (self-ends ~2.5s)
+    CM_SPEAK_HAPPY,   // speaking happy: bouncing gold heads + cheery pops + confetti
+    CM_COMPLIMENT,    // reacting to a compliment: blue glow + gold/white sparkles (self-ends ~2.5s)
     CM_FADEOFF,       // shutdown: smoothly fade the current frame to black, then OFF
     CM_SLEEP,         // sleep: very dim slow red breath
     CM_OFF,           // all off
@@ -207,11 +207,11 @@ void runCurrentMode() {
 			break;
 
 		case CM_SPEAK_EXCITED:
-			AllRed();
+			excitedPulse();
 			break;
 
 		case CM_SPEAK_SAD:
-			AllBlue();
+			sadSigh();
 			break;
 
 		case CM_SPEAK_ANGRY:
@@ -219,7 +219,7 @@ void runCurrentMode() {
 			break;
 
 		case CM_SPEAK_HAPPY:
-			confetti();
+			happyBounce();
 			break;
 
 		case CM_COMPLIMENT:
@@ -336,10 +336,10 @@ void nextPattern()
 //   ACTIVE           — RandomBlocks2 at higher brightness
 //   SPEAK:{emotion}  — emotion-specific pattern:
 //                        neutral  → RandomBlocks2
-//                        excited  → AllRed, full brightness
-//                        sad      → AllBlue, dim
+//                        excited  → racing gold chases + rapid colour pops, full brightness
+//                        sad      → slow blue sighs, dim
 //                        angry    → red alert (scanner bars, alarm blocks, slams)
-//                        happy    → confetti
+//                        happy    → bouncing gold heads + cheery pops + confetti
 //   SPEAK_STOP       — return to IDLE (end of speech)
 //   SLEEP            — very dim slow red breathing pulse
 //   OFF              — all LEDs off
@@ -374,7 +374,7 @@ void handleCommand(char *cmd) {
 			FastLED.setBrightness(255);
 			chestMode = CM_SPEAK_ANGRY;
 		} else if (strcmp(emotion, "happy") == 0) {
-			FastLED.setBrightness(BRIGHTNESS);
+			FastLED.setBrightness(200);   // match ACTIVE's energy — happy shouldn't be dimmer than idle chat
 			chestMode = CM_SPEAK_HAPPY;
 		} else {
 			// neutral or unknown emotion
@@ -907,21 +907,154 @@ void angryFlash() {
     for (byte i = 0; i < 96; i++) DJLEDs[i] |= CRGB(18, 0, 0);
 }
 
-// complimentFlash — alternate WHITE then BLUE at ~2.5 Hz (200 ms each), the
-// celebratory positive mirror of angryFlash (triggered when Rex is complimented).
+// complimentFlash — an "aw shucks" shimmer (triggered when Rex is complimented):
+// a soft blue glow washes the panel while gold and white sparkles shower across
+// it for the ~2.5 s the mode runs (self-ended by runCurrentMode).
 //
-// The white is INTENTIONALLY a reduced-intensity white (CRGB(100,100,100)), not full
-// (255,255,255): white lights all 3 channels at once, so full white on 98 LEDs draws
-// ~3x the current of the single-channel red/blue effects. If that exceeds the panel's
-// supply the WS2811 chips brown out and render white as RED. At brightness 200 this
-// keeps the white half's draw below the red flash (which the supply already handles),
-// so it shows as a clean (soft) white. Raise WHITE_LEVEL toward 255 only if your PSU
-// has headroom; if white ever looks red/orange again, lower it.
-#define WHITE_LEVEL 100
+// PSU note (learned the hard way): white lights all 3 channels at once, so the
+// old FULL-PANEL white flash browned out the WS2811s and rendered as RED. This
+// effect keeps white to a couple of sparkle pixels at a time; the sustained
+// wash is single-channel blue. If sparkles ever look red/orange, lower
+// SPARKLE_CHANCE to thin them out rather than brightening anything.
+#define SPARKLE_CHANCE 40   // per attempt, 2 attempts/frame ≈ 60 sparkles/s
 void complimentFlash() {
-    if ((millis() % 400UL) < 200UL) {
-        fill_solid(DJLEDs, NUM_LEDS, CRGB(WHITE_LEVEL, WHITE_LEVEL, WHITE_LEVEL));  // soft white
-    } else {
-        fill_solid(DJLEDs, NUM_LEDS, CRGB(0, 0, 255));                              // blue
+    fadeToBlackBy(DJLEDs, 96, 30);   // sparkles glint out in ~75 ms
+
+    // Soft blue wash, always present under the sparkles.
+    for (byte i = 0; i < 96; i++) DJLEDs[i] |= CRGB(0, 0, 45);
+
+    // Gold / white sparkle shower.
+    for (byte s = 0; s < 2; s++) {
+        if (random8() < SPARKLE_CHANCE) {
+            DJLEDs[random8(96)] = (random8() < 100) ? CRGB(255, 255, 255)
+                                                    : CRGB(255, 200, 80);   // gold
+        }
     }
+}
+
+// excitedPulse — the idle panel on caffeine. Same control-panel vocabulary as
+// RandomBlocks2 (that's what makes it read "Rex", not a generic light show)
+// but pumping ~4x faster: a gold head races up each of the three bars and
+// wraps around (each bar at its own tempo), the nine blocks pop in rapid
+// red-heavy bursts with gold/white/blue accents, and white glitter rides the
+// whole thing. Distinct from angry: racing and celebratory, no slams, no
+// menace. Runs at full master brightness (set in handleCommand).
+void excitedPulse() {
+    static uint32_t lastRunMs   = 0;
+    static uint8_t  blockCol[9] = { 0 };
+    uint32_t now = millis();
+
+    // Mode (re)entry: kick the shared per-pixel timers to excited tempo so
+    // stale intervals from the previous mode can't stall the blocks.
+    if (now - lastRunMs > 250UL) {
+        for (byte i = 0; i < 9; i++) {
+            uint8_t pos = StartLEDNum[i];
+            LEDMillis[pos]    = now;
+            IntervalTime[pos] = random(30, 200);
+            LEDOn[pos]        = 0;
+        }
+    }
+    lastRunMs = now;
+
+    fadeToBlackBy(DJLEDs, 96, 25);   // snappy trails
+
+    // Bars: a gold head races up each bar and wraps, each at its own tempo.
+    const uint8_t barStarts[3] = { PanelAStart, PanelBStart, PanelCStart };
+    for (byte b = 0; b < 3; b++) {
+        uint8_t head = scale8(beat8(140 + b * 30), 7);
+        DJLEDs[barStarts[b] + head] = cGOLD;
+    }
+
+    // Blocks: rapid pops — half red, half gold/white/blue accents.
+    for (byte i = 0; i < 9; i++) {
+        uint8_t pos = StartLEDNum[i];
+        if (now - LEDMillis[pos] > IntervalTime[pos]) {
+            LEDMillis[pos] = now;
+            if (!LEDOn[pos]) {
+                LEDOn[pos]        = 1;
+                IntervalTime[pos] = random(60, 220);
+                blockCol[i]       = (random8() < 128) ? 0 : random(1, 4);
+            } else {
+                LEDOn[pos]        = 0;
+                IntervalTime[pos] = random(60, 320);
+            }
+        }
+        if (LEDOn[pos]) LEDBlockOn(pos, BlockLEDColors[blockCol[i]], BLOCKBRIGHTNESS);
+    }
+
+    addGlitter(60);   // white sparks riding the energy
+}
+
+// sadSigh — slow blue melancholy. Everything breathes on long cycles: each
+// bar's level slowly swells and slumps like a sigh (12–20 s per cycle, the
+// three bars drifting out of phase), and each block breathes dim blue on its
+// own slow period. Stateless (pure beatsin8), so no entry kick is needed.
+// Runs dim (master brightness 55, set in handleCommand).
+void sadSigh() {
+    fadeToBlackBy(DJLEDs, 96, 5);   // long, mournful trails as the bars slump
+
+    // Bars: sighing levels, out of phase with each other.
+    const uint8_t barStarts[3] = { PanelAStart, PanelBStart, PanelCStart };
+    for (byte b = 0; b < 3; b++) {
+        uint8_t len = beatsin8(3 + b, 0, 8, 0, b * 70);   // 3–5 bpm sighs
+        for (byte i = 0; i < len; i++) DJLEDs[barStarts[b] + i] = CRGB(0, 0, 200);
+    }
+
+    // Blocks: each breathes dim blue on its own slow period and phase.
+    for (byte i = 0; i < 9; i++) {
+        uint8_t lvl = beatsin8(2 + (i & 3), 15, 160, 0, i * 28);
+        LEDBlockOn(StartLEDNum[i], CRGB(0, 0, lvl), BLOCKBRIGHTNESS);
+    }
+}
+
+// happyBounce — cheerful and playful, halfway between idle's calm and
+// excited's frenzy: a gold head BOUNCES end-to-end on each bar (bounce, not
+// wrap — that's the visual signature separating happy from excited's racing),
+// the blocks pop at a relaxed pace in gold/white/blue (no red — red reads
+// angry/excited), and rainbow confetti drifts over the top as a nod to the
+// old happy pattern.
+void happyBounce() {
+    static uint32_t lastRunMs   = 0;
+    static uint8_t  blockCol[9] = { 1 };
+    uint32_t now = millis();
+
+    // Mode (re)entry: kick the shared per-pixel timers (see excitedPulse).
+    if (now - lastRunMs > 250UL) {
+        for (byte i = 0; i < 9; i++) {
+            uint8_t pos = StartLEDNum[i];
+            LEDMillis[pos]    = now;
+            IntervalTime[pos] = random(100, 500);
+            LEDOn[pos]        = 0;
+        }
+    }
+    lastRunMs = now;
+
+    fadeToBlackBy(DJLEDs, 96, 12);   // soft playful trails
+
+    // Bars: gold heads bounce end-to-end, each at its own happy tempo.
+    const uint8_t barStarts[3] = { PanelAStart, PanelBStart, PanelCStart };
+    for (byte b = 0; b < 3; b++) {
+        uint8_t head = beatsin8(45 + b * 8, 0, 7, 0, b * 85);
+        DJLEDs[barStarts[b] + head] = cGOLD;
+    }
+
+    // Blocks: relaxed cheerful pops in white/gold/blue.
+    for (byte i = 0; i < 9; i++) {
+        uint8_t pos = StartLEDNum[i];
+        if (now - LEDMillis[pos] > IntervalTime[pos]) {
+            LEDMillis[pos] = now;
+            if (!LEDOn[pos]) {
+                LEDOn[pos]        = 1;
+                IntervalTime[pos] = random(150, 500);
+                blockCol[i]       = random(1, 4);   // cWHITE / cGOLD / cBLUE
+            } else {
+                LEDOn[pos]        = 0;
+                IntervalTime[pos] = random(150, 700);
+            }
+        }
+        if (LEDOn[pos]) LEDBlockOn(pos, BlockLEDColors[blockCol[i]], BLOCKBRIGHTNESS);
+    }
+
+    // Rainbow confetti drifting over the top.
+    if (random8() < 90) DJLEDs[random8(96)] += CHSV(gHue + random8(64), 200, 255);
 }
