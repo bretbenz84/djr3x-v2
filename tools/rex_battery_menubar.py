@@ -304,8 +304,15 @@ def _fmt_lines(s: dict) -> list[str]:
             lines.append(f"Power: {abs(mv * ma) / 1_000_000:.1f} W")
 
     if s["state"]:
-        fault = f" — FAULT: {s['fault']}" if s["fault"] else ""
-        lines.append(f"Base: {s['state']}{fault}")
+        # comms_lost is the NORMAL resting state while Rex is off: the firmware
+        # watchdog latches it when main.py's heartbeats stop, and only a new
+        # Mac→ESP32 line clears it — which this passive listener never sends.
+        # Present it as standby, not as a fault.
+        if s["state"] == "comms_lost" or s["fault"] == "comms_lost":
+            lines.append("Base: standby (normal while Rex is off)")
+        else:
+            fault = f" — FAULT: {s['fault']}" if s["fault"] else ""
+            lines.append(f"Base: {s['state']}{fault}")
 
     if s["frame_at"]:
         age = time.time() - s["frame_at"]
@@ -340,7 +347,10 @@ def run_app() -> int:
     class RexBatteryApp(rumps.App):
         def __init__(self):
             super().__init__("R3X", title="🔋 …", quit_button="Quit Rex Battery Meter")
-            self._rows = [rumps.MenuItem(f"row{i}") for i in range(_MAX_ROWS)]
+            # rumps renders items WITHOUT a callback as disabled (grey text);
+            # a no-op callback keeps these info rows in normal colour.
+            self._rows = [rumps.MenuItem(f"row{i}", callback=lambda _: None)
+                          for i in range(_MAX_ROWS)]
             self.menu = list(self._rows)
             self._timer = rumps.Timer(self._refresh, 1.0)
             self._timer.start()
