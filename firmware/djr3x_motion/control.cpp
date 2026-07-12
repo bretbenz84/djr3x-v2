@@ -189,8 +189,16 @@ void control_tick(float dt) {
           ? nearest_capped(c.tof.fl, c.tof.fr, 32767)
           : nearest_capped(c.tof.rl, c.tof.rr, 32767);
       const float d_m = (float)d_near * 0.001f;
-      if (d_m < slow_m)
-        lin_t *= clampf((d_m - stop_m) / (slow_m - stop_m), 0.0f, 1.0f);
+      if (d_m < slow_m) {
+        float scaled = lin_t * clampf((d_m - stop_m) / (slow_m - stop_m), 0.0f, 1.0f);
+        // Creep floor (APPROACH_CREEP_MIN_MS): a taper that goes to zero stalls the
+        // loaded base well before the stop line (stiction + the wheel-PID stop
+        // epsilon). Keep at least a real crawl — never more than commanded — so the
+        // base reaches the stop_zone hard block under control instead of dying early.
+        const float creep = fminf(APPROACH_CREEP_MIN_MS, fabsf(lin_t));
+        if (fabsf(scaled) < creep) scaled = (lin_t > 0.0f) ? creep : -creep;
+        lin_t = scaled;
+      }
     }
   }
 

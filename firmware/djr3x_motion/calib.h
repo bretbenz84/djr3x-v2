@@ -169,6 +169,17 @@
 #define ASSIST_REPEL_MM       130.0f    // ~5 in: a side wall inside this repels hard
 #define ASSIST_REPEL_GAIN     12.0f     // rad/s per METER of penetration inside REPEL
 
+// ---- Approach slowdown creep floor (control.cpp slow-zone taper) ------------
+// The progressive slow-zone taper scales the commanded speed toward zero at the stop
+// line — but the loaded base needs a REAL speed to move at all (stiction; the same
+// reason GAMEPAD_SPEED_SLOW had to be raised at full build weight), and the wheel PID
+// treats targets under WHEEL_STOP_EPS_MS as a stop. Without a floor the taper stalls
+// the base mid-slow-zone, far from the wall (field-logged 2026-07-11: "won't let me
+// within 3 feet"). Inside the slow zone the command is floored at this creep speed
+// (never MORE than the operator commanded), so the base crawls under control all the
+// way to the stop_zone hard block instead of dying early.
+#define APPROACH_CREEP_MIN_MS 0.06f     // m/s; comfortably above WHEEL_STOP_EPS_MS + stiction
+
 // ---- Bluetooth gamepad (Bluepad32) — only when MOTION_GAMEPAD_PRESENT==1 ----
 // Left stick = arcade drive (Y forward, X turn); L1 creep / R1 boost; B = e-stop;
 // Start = clear + return to AUTO; hold BOTH analog triggers = full-override (docs §11).

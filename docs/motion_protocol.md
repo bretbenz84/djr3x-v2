@@ -431,8 +431,8 @@ each; `config` can tighten but never exceed it.** The ack echoes effective value
 | --- | --- | --- | --- | --- |
 | `max_lin` | `MOTION_MAX_LINEAR_MS` | m/s | 0.25 | board limit |
 | `max_ang` | `MOTION_MAX_ANGULAR_DEG_S` → rad/s | (key is deg/s) | 60 | board limit |
-| `slow_zone_m` | `MOTION_SLOW_ZONE_M` | m | 0.6 | — |
-| `stop_zone_m` | `MOTION_STOP_ZONE_M` | m | 0.25 | — |
+| `slow_zone_m` | `MOTION_SLOW_ZONE_M` | m | 0.40 | — |
+| `stop_zone_m` | `MOTION_STOP_ZONE_M` | m | 0.15 | — |
 | `come_stop_at_m` | `MOTION_COME_STOP_AT_M` | m | 0.6 | — |
 | `default_turn_deg` | `MOTION_DEFAULT_TURN_DEG` | deg | 90 | — |
 | `default_turn_rate` | `MOTION_DEFAULT_TURN_RATE` | deg/s | 40 | board limit |

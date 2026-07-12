@@ -31,8 +31,9 @@ inline uint32_t clampu(uint32_t v, uint32_t lo, uint32_t hi) {
 struct MotionParams {
   float    max_lin       = 0.35f;  // m/s  (was 0.25 — teleop topped out ~0.16 m/s; tune up to the hard cap)
   float    max_ang       = 1.50f;  // rad/s (~86 deg/s) — turns felt slow at 1.05; tune with `set --max-ang`
-  float    slow_zone_m   = 0.60f;
-  float    stop_zone_m   = 0.25f;
+  float    slow_zone_m   = 0.40f;  // braking starts here (was 0.60 — felt like a 3-ft force field)
+  float    stop_zone_m   = 0.15f;  // hard-stop line, ~6 in (was 0.25); retuned 2026-07-11
+
   float    come_stop_at_m= 0.60f;
   float    default_turn_deg  = 90.0f;
   float    default_turn_rate = 40.0f;   // deg/s
