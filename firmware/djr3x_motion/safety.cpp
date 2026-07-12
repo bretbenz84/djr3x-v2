@@ -78,10 +78,24 @@ void safety_tick() {
     ev_comms_lost = true;
   }
 
-  // ---- Zone evaluation in the travel direction ----
+  // ---- Zone evaluation in the travel-or-INTENT direction ----
+  // Actual motion wins; at rest the COMMANDED direction counts too (field fix
+  // 2026-07-11: zones were odometry-only, so starting from rest right beside a wall
+  // the first stick push accelerated freely — the front pair couldn't block until
+  // motion showed up in odom, and the base could reach the wall on the ramp alone).
   float lin = c.odom.lin;
-  MotionDir travel = (lin > SAFETY_EPS) ? DIR_FRONT
-                   : (lin < -SAFETY_EPS) ? DIR_REAR : DIR_NONE;
+  float cmd_lin = 0.0f;
+  switch (c.cmd_mode) {
+    case CMD_DRIVE: cmd_lin = c.setpoint.lin; break;
+    case CMD_MOVE:  cmd_lin = (c.finite.target_dist >= 0 ? 1.0f : -1.0f) * c.finite.speed; break;
+    case CMD_COME:  cmd_lin = c.finite.come_turning ? 0.0f : c.finite.speed; break;
+    default: break;   // TURN/WHEEL/none: no linear intent
+  }
+  MotionDir travel = DIR_NONE;
+  if      (lin >  SAFETY_EPS) travel = DIR_FRONT;
+  else if (lin < -SAFETY_EPS) travel = DIR_REAR;
+  else if (cmd_lin >  SAFETY_EPS) travel = DIR_FRONT;
+  else if (cmd_lin < -SAFETY_EPS) travel = DIR_REAR;
 
   // Nearest obstacle in the travel direction: the long-range pair straddling that
   // axis (front -> fl+fr at ±22.5°, whose ~25° FOVs cover the frontal ~±35° arc;

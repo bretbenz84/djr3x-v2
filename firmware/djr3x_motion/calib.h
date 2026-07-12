@@ -122,6 +122,17 @@
 // fails OPEN on -1 by documented choice (min2_valid skips it; the pair partner covers).
 #define TOF_ERR_STREAK_STALE  8
 
+// Fast-attack / slow-release output filter (field fix 2026-07-11): the published
+// distance drops to a NEARER reading INSTANTLY (danger is never filtered) but rises
+// toward a farther one at most this many mm per revisit (~80 ms/sensor). The long
+// sensors sit 45° apart pointing outward, so a narrow obstacle (chair leg) at a
+// beam's edge strobed 0.5 m <-> 4 m as it entered/left the cone — flapping the GUI
+// radar, the steering assist, AND the stop reflex (BLOCKED released on each "clear"
+// frame and the base lurched forward). With the filter the close return HOLDS and
+// decays smoothly: ~300 mm/poll ≈ 3.7 m/s of release, a cleared wall reads fully
+// open again in ~1 s.
+#define TOF_RELEASE_STEP_MM       300
+
 // VL53L0X (short range, ~1.2 m reliable):
 #define TOF_L0X_TIMING_BUDGET_US  33000 // 33 ms measurement budget (speed vs accuracy)
 #define TOF_L0X_OUT_OF_RANGE_MM   2000  // clamp "nothing in range" to a far/clear value
@@ -148,6 +159,15 @@
 #define ASSIST_FRONT_WEIGHT   0.7f      // front-pair contribution vs the side pairs
 #define ASSIST_MAX_ANG_FRAC   0.6f      // correction cap as a fraction of max_ang
 #define ASSIST_MIN_LIN_MS     0.02f     // assist only while actually driving forward
+// Close-wall REPULSION (field fix 2026-07-11: base scraped hallway walls the pure
+// imbalance term couldn't prevent — centered in a too-narrow gap the left/right
+// difference reads ~zero, so no steer, and an equally-close pair got NO correction
+// at all). A side wall inside REPEL (~5 in) now pushes back hard on its own,
+// proportional to penetration, independent of the other side; both close -> net
+// push away from the NEARER wall. Rides the same ASSIST_MAX_ANG_FRAC cap, so the
+// operator keeps override authority.
+#define ASSIST_REPEL_MM       130.0f    // ~5 in: a side wall inside this repels hard
+#define ASSIST_REPEL_GAIN     12.0f     // rad/s per METER of penetration inside REPEL
 
 // ---- Bluetooth gamepad (Bluepad32) — only when MOTION_GAMEPAD_PRESENT==1 ----
 // Left stick = arcade drive (Y forward, X turn); L1 creep / R1 boost; B = e-stop;

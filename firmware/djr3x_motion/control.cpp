@@ -65,7 +65,21 @@ static float hall_assist_correction(const MotionContext& c, float lin_t) {
   // closer) -> steer LEFT (+ang, REP-103) toward the open side; negative mirrors.
   const float imbal_m = ((float)(l_side - r_side)
                          + ASSIST_FRONT_WEIGHT * (float)(l_frnt - r_frnt)) * 0.001f;
-  const float corr = c.params.assist_gain * imbal_m;
+
+  // Close-wall REPULSION (ASSIST_REPEL_MM, ~5 in): a side wall this close pushes back
+  // hard on its own, independent of the other side. The imbalance term alone reads
+  // ~zero when both walls are equally close (a centered-but-too-narrow gap) and is
+  // weak at grazing contact — the field-logged wall scrapes. Both sides inside REPEL
+  // cancel proportionally -> net push away from the NEARER wall.
+  float repel = 0.0f;
+  const int16_t l_min = nearest_capped(c.tof.lf, c.tof.lb, 32767);
+  const int16_t r_min = nearest_capped(c.tof.rf, c.tof.rb, 32767);
+  if ((float)l_min < ASSIST_REPEL_MM)   // left wall close -> steer RIGHT (-ang)
+    repel -= ASSIST_REPEL_GAIN * (ASSIST_REPEL_MM - (float)l_min) * 0.001f;
+  if ((float)r_min < ASSIST_REPEL_MM)   // right wall close -> steer LEFT (+ang)
+    repel += ASSIST_REPEL_GAIN * (ASSIST_REPEL_MM - (float)r_min) * 0.001f;
+
+  const float corr = c.params.assist_gain * imbal_m + repel;
   const float cap  = ASSIST_MAX_ANG_FRAC * c.params.max_ang;
   return clampf(corr, -cap, cap);
 }
@@ -158,6 +172,28 @@ void control_tick(float dt) {
     if (c.blocked_dir == DIR_REAR  && lin_t < 0) lin_t = 0;
   }
 
+  // Progressive approach slowdown — the SLOW zone actually slows now (field fix
+  // 2026-07-11: nothing consumed Z_SLOW, so a straight run at a wall carried full
+  // speed to the 0.25 m stop line and momentum did the rest). Inside slow_zone_m
+  // toward the obstacle, the commanded speed scales linearly down to ZERO at the
+  // stop boundary, so the base sheds speed BEFORE the hard block. Runs on the same
+  // fail-open distance read as the reflex (dead pair -> 32767 -> no scaling); the
+  // AFTER-assist position keeps the assist's forward-drive gate seeing the raw
+  // command. Full-override bypasses, like the reflex. Steering (ang_t) is never
+  // scaled — turning away is how you escape a wall.
+  if (!halted && !c.full_override && fabsf(lin_t) > 1e-4f) {
+    const float stop_m = c.params.stop_zone_m;
+    const float slow_m = c.params.slow_zone_m;
+    if (slow_m > stop_m + 1e-3f) {
+      const int16_t d_near = (lin_t > 0)
+          ? nearest_capped(c.tof.fl, c.tof.fr, 32767)
+          : nearest_capped(c.tof.rl, c.tof.rr, 32767);
+      const float d_m = (float)d_near * 0.001f;
+      if (d_m < slow_m)
+        lin_t *= clampf((d_m - stop_m) / (slow_m - stop_m), 0.0f, 1.0f);
+    }
+  }
+
   // Defensive clamp to caps.
   lin_t = clampf(lin_t, -c.params.max_lin, c.params.max_lin);
   ang_t = clampf(ang_t, -c.params.max_ang, c.params.max_ang);
@@ -241,6 +277,14 @@ void control_tick(float dt) {
     s_ramp_lin = 0.0f; s_ramp_ang = 0.0f;
     hal_drive_wheel_raw(c.finite.wheel_side, c.finite.wheel_frac);
   } else if (c.cmd_mode == CMD_DRIVE) {
+    // Hard halt on a reflex block: CUT the teleop ramp toward the obstacle instead of
+    // letting it decay at accel_lin — with the target zeroed the wheels sit enabled at
+    // zero duty (BTS7960 both-low = dynamic brake), so the base stops NOW rather than
+    // coasting the last stretch into the wall (field fix 2026-07-11).
+    if (c.state == ST_BLOCKED && !c.full_override) {
+      if (c.blocked_dir == DIR_FRONT && s_ramp_lin > 0) s_ramp_lin = 0;
+      if (c.blocked_dir == DIR_REAR  && s_ramp_lin < 0) s_ramp_lin = 0;
+    }
     // Teleop: slew the commanded velocity toward the target (accel-limited, symmetric)
     // so a stick push ramps up briskly and a release coasts to a stop rather than
     // stepping to zero and dynamic-braking. Feedforward (in wheel_pid) keeps the ramp

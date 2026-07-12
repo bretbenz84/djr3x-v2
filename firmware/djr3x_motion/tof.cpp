@@ -66,6 +66,11 @@ static int16_t s_dist[TOF_COUNT] = { -1, -1, -1, -1, -1, -1, -1, -1 };
 static uint8_t s_err_streak[TOF_COUNT] = {0};   // consecutive failed reads per sensor
 static int     s_next = 0;                  // round-robin cursor
 
+// Fast-attack / slow-release filter state per sensor (see TOF_RELEASE_STEP_MM in
+// calib.h): published distance drops to a nearer reading instantly, rises toward a
+// farther one at a bounded rate. -1 = uninitialized (first valid reading seeds it).
+static float s_filt[TOF_COUNT] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+
 static inline uint8_t mux_ch(int i) { return (uint8_t)i; }   // sensor index -> mux channel
 
 // Select a mux channel; returns false if the mux did not ACK (so we don't trust a read
@@ -168,7 +173,17 @@ static void poll_one(int i) {
   const int mm = read_mm(i);
   if (mm >= 0) {
     s_err_streak[i] = 0;
-    s_dist[i] = (int16_t)mm;
+    // Fast-attack / slow-release: take a NEARER reading immediately (never filter
+    // danger), believe a FARTHER one gradually (max TOF_RELEASE_STEP_MM per revisit).
+    // Kills the 0.5 m <-> 4 m strobing when a narrow obstacle sits at a beam's edge —
+    // the close return holds steady for the GUI/assist/reflex instead of blinking.
+    if (s_filt[i] < 0.0f || (float)mm <= s_filt[i]) {
+      s_filt[i] = (float)mm;
+    } else {
+      const float rise = (float)mm - s_filt[i];
+      s_filt[i] += (rise < (float)TOF_RELEASE_STEP_MM) ? rise : (float)TOF_RELEASE_STEP_MM;
+    }
+    s_dist[i] = (int16_t)(s_filt[i] + 0.5f);
     return;
   }
   // Failed read: hold the last-good value through a TRANSIENT error, but not forever —
