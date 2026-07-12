@@ -207,11 +207,13 @@ struct MotionContext {
   // Manual (gamepad) override (docs §11). owner/gamepad above; these two below.
   bool      full_override = false;     // gamepad bypasses ToF zone/cliff gating (held)
   uint32_t  last_manual_input_ms = 0;  // last meaningful gamepad input (idle-autoreturn)
-  // Pivot breakaway kick currently in force (duty; hal_drive_velocity reads it under
-  // the state lock). Boot default = calib.h WHEEL_SPIN_BREAKAWAY_DUTY; the gamepad's
-  // surface-mode toggle (L3) raises it to the carpet profile — a SURFACE property, so
-  // autonomous turns benefit from the mode too, not just teleop.
+  // Pivot duty tiers currently in force (hal_drive_velocity reads them under the
+  // state lock): breakaway while a wheel is STALLED in a pivot, run-floor while it
+  // is ROLLING in a pivot (sustained sideways-scrub carry). Boot defaults from
+  // calib.h; the gamepad's surface-mode toggle (L3) applies the hardwood/carpet
+  // profile — a SURFACE property, so autonomous turns benefit from the mode too.
   float     spin_breakaway_duty = WHEEL_SPIN_BREAKAWAY_DUTY;
+  float     spin_run_duty       = WHEEL_SPIN_RUN_DUTY;
   GamepadLive gp_live;                 // live pad mirror for the GUI (telemetry only)
   WheelDiag   wheels;                  // per-wheel measured speed + duty (telemetry diag)
   ImuState    imu;                     // MPU-6050 attitude (telemetry + future fusion)

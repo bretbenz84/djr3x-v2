@@ -112,6 +112,13 @@
 // SATURATES at 1023 duty with ~zero rotation — in-place spins on that carpet exceed
 // the platform's torque ceiling, full stop; use moving arcs there instead.
 #define WHEEL_SPIN_BREAKAWAY_DUTY 700.0f
+// Pivot RUNNING floor (field fix, same day): stall-gating alone made spins twitch —
+// the kick broke the wheels loose, dropped to WHEEL_MIN_DUTY (120) one tick later,
+// and the SUSTAINED sideways scrub of a pivot re-stalled them (stick-slip grind;
+// the integrator needed seconds to build the missing duty). While pivoting and
+// ROLLING, the kick floors here instead of at 120, carrying the scrub load; the
+// per-surface profiles (GAMEPAD_*_SPIN_RUN) override this base at mode-apply.
+#define WHEEL_SPIN_RUN_DUTY       380.0f
 #define WHEEL_STALLED_EPS_MS      0.03f   // wheel counts as stalled below this (m/s);
                                           // ~2.3 encoder counts per 10 ms tick — resolvable
 
@@ -291,9 +298,11 @@
 #define GAMEPAD_HARDWOOD_LIN_MS    0.80f   // old FULL was 0.72 — "slightly faster"
 #define GAMEPAD_HARDWOOD_ANG_RADS  2.50f   // old ceiling 2.20 ("turning difficult")
 #define GAMEPAD_HARDWOOD_SPIN_KICK 750.0f  // stall-gated pivot breakaway (see below)
+#define GAMEPAD_HARDWOOD_SPIN_RUN  380.0f  // pivot RUNNING floor (sustained scrub carry)
 #define GAMEPAD_CARPET_LIN_MS      1.05f   // PID saturates duty into carpet drag
 #define GAMEPAD_CARPET_ANG_RADS    3.20f
 #define GAMEPAD_CARPET_SPIN_KICK   1023.0f // full saturation — everything the bridge has
+#define GAMEPAD_CARPET_SPIN_RUN    650.0f  // pile drag needs most of the range sustained
 // Forward/back stick RESPONSE CURVE: lin command = sign(fwd)*|fwd|^GAMMA * level max.
 // GAMMA < 1 is concave ("anti-expo"): more authority at small stick pushes — at 25%
 // stick you command ~|0.25|^0.6 ≈ 44% of the level's max (linear gave 25%) — while full

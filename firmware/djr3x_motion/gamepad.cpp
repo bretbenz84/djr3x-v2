@@ -52,6 +52,8 @@ static void apply_surface_mode() {
   LOCK_STATE();
   g_ctx.spin_breakaway_duty =
       s_carpet_mode ? GAMEPAD_CARPET_SPIN_KICK : GAMEPAD_HARDWOOD_SPIN_KICK;
+  g_ctx.spin_run_duty =
+      s_carpet_mode ? GAMEPAD_CARPET_SPIN_RUN : GAMEPAD_HARDWOOD_SPIN_RUN;
   UNLOCK_STATE();
 }
 
