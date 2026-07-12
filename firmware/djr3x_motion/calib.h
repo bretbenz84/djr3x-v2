@@ -112,12 +112,15 @@
 // to zero and dynamic-braking (the abrupt-stop complaint). Autonomous finite
 // move/turn/come commands are NOT slewed here (they stay crisp + distance-accurate).
 // Softened repeatedly after field tests ("takes off too fast" x3), then RESCALED
-// 2026-07-11 when units became real: the field-tuned 0.2 was in 4.09×-inflated m/s²,
-// i.e. a PHYSICAL ~0.8 m/s² — that's the ramp feel that was actually approved, so 0.8
-// is the same feel in real units (ang mirrors it via its own 2.75× scale factor).
-// Tune with `set --accel-lin` (higher = snappier).
+// 2026-07-11 when units became real. The old odometry units DEFLATED motion (lin
+// ÷4.09, ang ÷2.75), so the field-approved feel in PHYSICAL units was: lin 0.2×4.09
+// ≈ 0.8 m/s², ang 4.0×2.75 ≈ 11 rad/s². lin carries over exactly; ang is set a bit
+// under the old physical value (8 < 11) — it was likely friction-limited anyway.
+// (First pass wrongly set ang to 1.5 — a backwards conversion — and spins ramped
+// like molasses, part of the "left/right has no power" report.)
+// Tune with `set --accel-lin` / `--accel-ang` (higher = snappier).
 #define DRIVE_ACCEL_LIN    0.8f     // m/s^2  (teleop linear setpoint slew, REAL units)
-#define DRIVE_ACCEL_ANG    1.5f     // rad/s^2 (teleop angular setpoint slew, REAL units)
+#define DRIVE_ACCEL_ANG    8.0f     // rad/s^2 (teleop angular setpoint slew, REAL units)
 // (The old DRIVE_SPIN_LIN_EPS binary spin gate is gone — replaced by the smooth
 // GAMEPAD_SPIN_BLEND_FWD_LO/HI band above; the blend factor rides the setpoint.)
 
@@ -231,9 +234,14 @@
 // 0.72 m/s = the physical top speed the base was ACTUALLY field-driven at daily
 // under the old 4.09× cpm miscalibration (the approved feel, now in honest units).
 #define GAMEPAD_MAX_LIN_MS     0.72f    // teleop linear ceiling (level FULL = 1.00 × this)
-#define GAMEPAD_MAX_ANG_RADS   0.80f    // teleop turn ceiling (old physical feel was ~0.55;
-                                        // boot params.max_ang 1.5 would be ~3× that — 0.80
-                                        // splits the difference, tune by feel)
+#define GAMEPAD_MAX_ANG_RADS   2.20f    // teleop turn ceiling. Field fix (same day): first
+                                        // set to 0.80 from a BACKWARDS unit conversion and
+                                        // spins lost their breakaway torque ("left/right has
+                                        // no power") — the old "1.5" ceiling was in odometry
+                                        // units that DEFLATED rotation 2.75×, i.e. physically
+                                        // ~4.1 rad/s of authority and ~510 duty of spin kick.
+                                        // 2.20 (under the 2.5 hard cap) restores ~475 duty of
+                                        // kick; full-stick spin ≈ 126°/s. Tune by feel.
 // Teleop speed levels, cycled by CLICKING the left stick (L3): slow -> faster -> full ->
 // slow. Boots at SLOW so the default is gentle; each is a fraction of GAMEPAD_MAX_LIN_MS.
 // History: repeatedly retuned in the old inflated units (bare-base / full-weight /
