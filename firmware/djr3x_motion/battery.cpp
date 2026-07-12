@@ -23,6 +23,10 @@
 #define BATT_SHUNT_MICROOHM 0      // 0 = voltage-only (stock 100 mOhm module
                                    // shunt maxes at +/-0.8A — not motor-ranged)
 #endif
+#ifndef BATT_CURRENT_SIGN
+#define BATT_CURRENT_SIGN 1        // +1 if IN+ faces the battery; -1 if it faces
+                                   // the load (calib.h sets the as-built value)
+#endif
 
 static bool  s_present = false;
 static float s_mv_ema  = -1.0f;
@@ -88,9 +92,10 @@ void battery_tick() {
 #if BATT_SHUNT_MICROOHM > 0
   uint16_t sraw = 0;
   if (ina_read16(REG_SHUNT, sraw)) {
-    // 2.5 uV/LSB across the shunt; I = V/R. Signed register.
+    // 2.5 uV/LSB across the shunt; I = V/R. Signed register; BATT_CURRENT_SIGN
+    // maps the as-built sense orientation onto "+ = discharging" (§6.1).
     float uv = (int16_t)sraw * 2.5f;
-    float ma = uv * 1000.0f / (float)BATT_SHUNT_MICROOHM;
+    float ma = (float)BATT_CURRENT_SIGN * uv * 1000.0f / (float)BATT_SHUNT_MICROOHM;
     s_ma_ema = 0.8f * s_ma_ema + 0.2f * ma;
   }
 #endif

@@ -209,15 +209,16 @@
 
 // ---- Battery sense (INA226, battery.cpp) -----------------------------------
 // Shunt resistance in MICRO-ohms for the current (batt_ma) reading; 0 disables
-// current and reports voltage only. 100000 = the stock GY-INA226 module's R100
-// (100 mΩ) shunt. ⚠ RANGE WARNING: the INA226's ±81.9 mV shunt input across
-// R100 = ±0.819 A full scale — fine for logic/idle draw, but drive-motor current
-// CLIPS the reading, and a hard dual-motor stall (many amps) through R100 would
-// exceed the shunt's power rating. For motor-ranged sensing fit a ~2 mΩ inline
-// shunt (set 2000 here) per battery.h. Current additionally requires the load's
-// path to run through the module's IN+ -> IN- terminals; VBUS -> pack+ is what
-// enables the voltage reading.
-#define BATT_SHUNT_MICROOHM  100000
+// current and reports voltage only. AS BUILT (2026-07-11): an external R002
+// (2 mΩ, 20 A) shunt inline in the aggregate battery NEGATIVE lead — pack− →
+// shunt → fuse block → devices — with the module's IN+/IN− sensed across it
+// (low-side) and VBUS at the fuse block's positive. 2 mΩ across the INA226's
+// ±81.9 mV input = ±41 A range at ~1.25 mA/LSB. (First bring-up ran with the
+// stock-module R100 value 100000 here — every reading was ÷50.)
+#define BATT_SHUNT_MICROOHM  2000
+// Sense polarity: +batt_ma = DISCHARGING (protocol §6.1). The as-built IN+/IN−
+// orientation reads discharge negative, so flip in software rather than rewire.
+#define BATT_CURRENT_SIGN    (-1)
 
 // ---- Speed-adaptive zone envelope (safety.cpp zones + control.cpp taper) ----
 // The front/rear pairs are angled ±22.5° off the travel axis, so at RANGE they see
