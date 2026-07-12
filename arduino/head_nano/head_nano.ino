@@ -51,7 +51,7 @@
  * ---------------
  *   Whenever Rex is awake and not speaking (ACTIVE / IDLE / after SPEAK_STOP),
  *   the whole mouth pulses gently between GLOW_MIN and GLOW_MAX brightness
- *   (15–25 %) of the current emotion colour, so the mouth is never fully dark
+ *   (5–10 %) of the current emotion colour, so the mouth is never fully dark
  *   while he's "on". Speaking brightens it through the existing wave animation,
  *   then it settles back to the glow. OFF / SLEEP / FADEOFF keep their existing
  *   dark / red-breathing behaviour. The glow writes ONLY mouth pixels — eyes
@@ -155,12 +155,14 @@ float        colPhase[MOUTH_COLS];            // per-column wobble phase (seeded
 
 // Mouth idle glow (ACTIVE / IDLE / post-speech): gentle sine pulse between
 // GLOW_MIN and GLOW_MAX of mouthColor (~6.3 s period at 1.0 rad/s).
+// All 80 pixels glow at once, so this must sit well below the speaking bars
+// (SPEAK_MAX_BRIGHT) or the quiet mouth reads BRIGHTER than the talking one.
 // glowLastScale throttles FastLED.show() to actual brightness-byte changes
 // (~8 frames/s) so the glow doesn't hammer the WS2812B bus or starve the
 // serial port; 255 is a sentinel forcing a redraw on the next tick (the real
-// scale never exceeds GLOW_MAX*255 = 64).
-#define GLOW_MIN  0.15f
-#define GLOW_MAX  0.25f
+// scale never exceeds GLOW_MAX*255 ≈ 26).
+#define GLOW_MIN  0.05f
+#define GLOW_MAX  0.10f
 #define GLOW_RATE 1.0f                        // rad/s
 float        glowPhase     = 0.0f;            // 0.0 – TWO_PI
 uint8_t      glowLastScale = 255;             // sentinel: force first frame
@@ -660,8 +662,8 @@ void tickSpeak() {
 // Mouth idle glow — dim emotional pulse while awake and not speaking
 // ---------------------------------------------------------------------------
 //
-// All 80 mouth pixels pulse together between GLOW_MIN (15 %) and GLOW_MAX
-// (25 %) of mouthColor on a slow sine (~6.3 s period at GLOW_RATE rad/s), so
+// All 80 mouth pixels pulse together between GLOW_MIN (5 %) and GLOW_MAX
+// (10 %) of mouthColor on a slow sine (~6.3 s period at GLOW_RATE rad/s), so
 // the mouth shows a soft version of the current emotion colour whenever Rex
 // is on but quiet.  Runs in ANIM_ACTIVE and ANIM_IDLE.
 //

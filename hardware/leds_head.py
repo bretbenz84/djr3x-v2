@@ -6,7 +6,7 @@ Pixels 2–81: mouth trapezoid PCB (physically GRB, but the Arduino handles the 
 in its EMOTION_COLORS table — Python sends plain RGB unchanged).
 
 While Rex is awake and not speaking (ACTIVE / IDLE / after SPEAK_STOP), the
-firmware autonomously pulses the mouth at a dim 15–25 % of the current emotion
+firmware autonomously pulses the mouth at a dim 5–10 % of the current emotion
 colour (the emotion of the last SPEAK:, neutral amber before the first turn) —
 no host traffic needed to maintain it. Speaking brightens the mouth through the
 wave animation, then it settles back to the glow. OFF / SLEEP / FADEOFF keep
@@ -359,7 +359,7 @@ def _resume_eye_blink() -> None:
 
 def speak_stop() -> None:
     """Stop the mouth speak animation; the mouth settles into the firmware's dim
-    emotional idle glow (15–25 % of the last SPEAK emotion's colour).
+    emotional idle glow (5–10 % of the last SPEAK emotion's colour).
 
     Also re-arms eye blinking (see _resume_eye_blink): SPEAK_STOP suspends the
     Arduino's blink loop, so we must hand the eyes back to ACTIVE or Rex freezes
