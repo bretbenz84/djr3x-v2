@@ -6586,8 +6586,12 @@ MOTION_PROTO_VERSION = 1
 # Speed / geometry caps and zones (units per docs/motion_protocol.md §4,§10).
 MOTION_MAX_LINEAR_MS = 0.25           # m/s
 MOTION_MAX_ANGULAR_DEG_S = 60.0       # deg/s (converted to rad/s on the wire)
-MOTION_STOP_ZONE_M = 0.15             # hard-stop line (~6 in); was 0.25 — field feel
-MOTION_SLOW_ZONE_M = 0.40             # braking starts here; was 0.60 ("3-foot force field")
+# FULL-SPEED collision envelope: the firmware scales the effective zones with
+# measured speed — these values apply at full teleop speed, shrinking linearly to
+# hard floors at rest (0.10 m stop / 0.18 m slow, calib.h) so slow positioning can
+# get close to a wall while fast approach brakes early. Contact stays impossible.
+MOTION_STOP_ZONE_M = 0.15             # hard-stop line at full speed
+MOTION_SLOW_ZONE_M = 0.50             # braking starts here at full speed
 MOTION_COME_STOP_AT_M = 0.60
 MOTION_DEFAULT_TURN_DEG = 90.0        # "turn left/right" with no stated angle
 MOTION_DEFAULT_TURN_RATE = 40.0       # deg/s

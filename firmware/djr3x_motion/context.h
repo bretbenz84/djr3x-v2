@@ -31,8 +31,13 @@ inline uint32_t clampu(uint32_t v, uint32_t lo, uint32_t hi) {
 struct MotionParams {
   float    max_lin       = 0.35f;  // m/s  (was 0.25 — teleop topped out ~0.16 m/s; tune up to the hard cap)
   float    max_ang       = 1.50f;  // rad/s (~86 deg/s) — turns felt slow at 1.05; tune with `set --max-ang`
-  float    slow_zone_m   = 0.40f;  // braking starts here (was 0.60 — felt like a 3-ft force field)
-  float    stop_zone_m   = 0.15f;  // hard-stop line, ~6 in (was 0.25); retuned 2026-07-11
+  // FULL-SPEED collision envelope: the effective zones scale with measured speed,
+  // from the STOP/SLOW_ZONE_MIN_M floors at rest (calib.h) up to these configured
+  // values at ZONE_SPEED_REF_MS (stop_zone_eff/slow_zone_eff below). Retuned
+  // 2026-07-11: fixed zones over-braked at range (the ±22.5° beams see off-path
+  // clutter far out) and blocked precision parking near walls.
+  float    slow_zone_m   = 0.50f;  // braking starts here at full speed
+  float    stop_zone_m   = 0.15f;  // hard-stop line at full speed
 
   float    come_stop_at_m= 0.60f;
   float    default_turn_deg  = 90.0f;
@@ -62,6 +67,24 @@ struct MotionParams {
   float    assist_engage_mm = ASSIST_ENGAGE_MM;  // walls beyond this are ignored
   float    assist_gain      = ASSIST_GAIN;       // rad/s per METER of left-right imbalance
 };
+
+// ===== Speed-adaptive collision zones (calib.h ZONE_*/STOP_ZONE_MIN_M) ======
+// Effective stop/slow distances as a function of MEASURED linear speed: the
+// configured params are the full-speed envelope, shrinking linearly to the calib.h
+// floors at rest. Used by BOTH the safety reflex (zone classification) and the
+// control taper — keep them consuming these helpers so the two never disagree.
+inline float zone_speed_frac(float lin_ms) {
+  return clampf(fabsf(lin_ms) / ZONE_SPEED_REF_MS, 0.0f, 1.0f);
+}
+inline float stop_zone_eff(const MotionParams& p, float lin_ms) {
+  const float lo = fminf(STOP_ZONE_MIN_M, p.stop_zone_m);   // a tighter config wins
+  return lo + (p.stop_zone_m - lo) * zone_speed_frac(lin_ms);
+}
+inline float slow_zone_eff(const MotionParams& p, float lin_ms) {
+  const float lo = fminf(SLOW_ZONE_MIN_M, p.slow_zone_m);
+  const float s  = lo + (p.slow_zone_m - lo) * zone_speed_frac(lin_ms);
+  return fmaxf(s, stop_zone_eff(p, lin_ms) + 0.05f);        // keep a real band above stop
+}
 
 // ===== Active finite command (turn / move / come) ===========================
 struct FiniteCmd {

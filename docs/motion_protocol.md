@@ -431,7 +431,7 @@ each; `config` can tighten but never exceed it.** The ack echoes effective value
 | --- | --- | --- | --- | --- |
 | `max_lin` | `MOTION_MAX_LINEAR_MS` | m/s | 0.25 | board limit |
 | `max_ang` | `MOTION_MAX_ANGULAR_DEG_S` → rad/s | (key is deg/s) | 60 | board limit |
-| `slow_zone_m` | `MOTION_SLOW_ZONE_M` | m | 0.40 | — |
+| `slow_zone_m` | `MOTION_SLOW_ZONE_M` | m | 0.50 | — |
 | `stop_zone_m` | `MOTION_STOP_ZONE_M` | m | 0.15 | — |
 | `come_stop_at_m` | `MOTION_COME_STOP_AT_M` | m | 0.6 | — |
 | `default_turn_deg` | `MOTION_DEFAULT_TURN_DEG` | deg | 90 | — |
@@ -446,6 +446,12 @@ each; `config` can tighten but never exceed it.** The ack echoes effective value
 | `kd` | `MOTION_WHEEL_KD` | duty·s² per m/s | calib.h | 1e5 |
 | `counts_per_meter` | `MOTION_COUNTS_PER_METER` | counts/m | calib.h | 1e3–1e6 |
 | `track_width_m` | `MOTION_TRACK_WIDTH_M` | m | calib.h | 0.05–2.0 |
+
+`slow_zone_m` / `stop_zone_m` are the **full-speed envelope**: the firmware scales the
+effective zones with measured linear speed, from hard floors at rest (0.10 m stop /
+0.18 m slow, `calib.h ZONE_*`) up to the configured values at ~full teleop speed — so a
+fast approach brakes early while slow positioning can get close; the stop floor keeps
+contact impossible. (Rationale: the ±22.5° pairs see off-path clutter at range.)
 
 Mac-only keys (never sent over the wire): `MOTION_ENABLED` (master switch),
 `MOTION_ESP32_PORT` (serial device path — **motion is disabled unless set**, mirroring

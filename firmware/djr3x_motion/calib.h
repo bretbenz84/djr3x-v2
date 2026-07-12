@@ -169,6 +169,22 @@
 #define ASSIST_REPEL_MM       130.0f    // ~5 in: a side wall inside this repels hard
 #define ASSIST_REPEL_GAIN     12.0f     // rad/s per METER of penetration inside REPEL
 
+// ---- Speed-adaptive zone envelope (safety.cpp zones + control.cpp taper) ----
+// The front/rear pairs are angled ±22.5° off the travel axis, so at RANGE they see
+// obstacles outside the actual collision corridor (at 0.9 m a beam points ~0.35 m
+// off-centerline — wider than the 0.27 m half-body), while everything they see CLOSE
+// is genuinely in the path. Fixed zones therefore over-brake at distance and
+// under-serve precision parking. The effective zones now SCALE WITH MEASURED SPEED
+// (context.h stop_zone_eff/slow_zone_eff): the configured slow_zone_m/stop_zone_m
+// are the FULL-SPEED envelope (braking distance matters, angled false positives
+// cost little), shrinking linearly to the floors below at rest — where the operator
+// is deliberately positioning and the angled beams only see true in-path obstacles.
+// The STOP floor is the "never able to actually hit the wall" guarantee.
+#define STOP_ZONE_MIN_M       0.10f   // hard-stop floor at rest (~4 in) — never hittable
+#define SLOW_ZONE_MIN_M       0.18f   // braking-band floor at rest
+#define ZONE_SPEED_REF_MS     0.18f   // speed at which the configured zones fully apply
+                                      // (~full teleop: GAMEPAD_SPEED_FULL * max_lin)
+
 // ---- Approach slowdown creep floor (control.cpp slow-zone taper) ------------
 // The progressive slow-zone taper scales the commanded speed toward zero at the stop
 // line — but the loaded base needs a REAL speed to move at all (stiction; the same

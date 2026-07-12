@@ -182,8 +182,10 @@ void control_tick(float dt) {
   // command. Full-override bypasses, like the reflex. Steering (ang_t) is never
   // scaled — turning away is how you escape a wall.
   if (!halted && !c.full_override && fabsf(lin_t) > 1e-4f) {
-    const float stop_m = c.params.stop_zone_m;
-    const float slow_m = c.params.slow_zone_m;
+    // Speed-adaptive envelope (context.h): same effective zones the safety reflex
+    // uses this tick, so the taper and the hard block always agree.
+    const float stop_m = stop_zone_eff(c.params, c.odom.lin);
+    const float slow_m = slow_zone_eff(c.params, c.odom.lin);
     if (slow_m > stop_m + 1e-3f) {
       const int16_t d_near = (lin_t > 0)
           ? nearest_capped(c.tof.fl, c.tof.fr, 32767)

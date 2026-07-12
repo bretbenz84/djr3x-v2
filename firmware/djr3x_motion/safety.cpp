@@ -110,10 +110,13 @@ void safety_tick() {
     d_mm = min2_valid(c.tof.rl, c.tof.rr);
   }
 
+  // Speed-adaptive envelope (context.h helpers): the configured zones apply at full
+  // speed, shrinking to the calib.h floors at rest — fast approach brakes early,
+  // slow positioning gets close, and the STOP floor still makes contact impossible.
   MotionZone z;
-  if      (d_mm < (int)(c.params.stop_zone_m * 1000.0f)) z = Z_STOP;
-  else if (d_mm < (int)(c.params.slow_zone_m * 1000.0f)) z = Z_SLOW;
-  else                                                   z = Z_CLEAR;
+  if      (d_mm < (int)(stop_zone_eff(c.params, c.odom.lin) * 1000.0f)) z = Z_STOP;
+  else if (d_mm < (int)(slow_zone_eff(c.params, c.odom.lin) * 1000.0f)) z = Z_SLOW;
+  else                                                                  z = Z_CLEAR;
 
   c.zone = z;
   c.blocked_dir = (z == Z_STOP) ? travel : DIR_NONE;
@@ -127,7 +130,14 @@ void safety_tick() {
       c.state = ST_BLOCKED;
     }
   } else if (c.state == ST_BLOCKED) {
-    if (z == Z_CLEAR || c.full_override) c.state = ST_IDLE;   // control_tick re-promotes to MOVING if still commanded
+    // Release on CLEAR (as before) — or once the base has come to REST in the SLOW
+    // band: the block was earned at speed (big envelope), and a stopped base gets the
+    // small at-rest envelope, so the operator may creep the remaining distance under
+    // the taper's creep floor; it re-blocks at the (tiny) at-rest stop line.
+    if (z == Z_CLEAR || c.full_override ||
+        (z == Z_SLOW && fabsf(c.odom.lin) <= SAFETY_EPS)) {
+      c.state = ST_IDLE;   // control_tick re-promotes to MOVING if still commanded
+    }
   }
 
   // Edge-detect a new block for the event stream.
