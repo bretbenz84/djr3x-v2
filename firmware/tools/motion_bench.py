@@ -254,6 +254,11 @@ def cmd_straight(c, args):
     print("the calibration math needs the TAPE-MEASURED physical distance, not odometry.")
     if not confirm(f"Robot will DRIVE FORWARD ~{args.dist} m on the floor. Ready?", args.yes):
         return
+    # Snapshot the pose BEFORE the run: odom x/y/theta are CUMULATIVE since boot
+    # (gamepad repositioning between runs lands in them), so all math below uses
+    # per-run deltas, never absolute pose.
+    o0 = (c.telemetry() or {}).get("odom", {})
+    x0, y0, th0 = o0.get("x", 0.0), o0.get("y", 0.0), o0.get("theta", 0.0)
     print(f"\nSTRAIGHT — move dist={args.dist} m:")
     done = _run_finite(c, "move", {"cmd": "move", "dist": args.dist, "speed": 0.12},
                        settle_timeout=max(8.0, args.dist / 0.12 + 6.0), label="move")
@@ -261,20 +266,26 @@ def cmd_straight(c, args):
     if not done:
         return
     o = done.get("odom", {})
-    x, th = o.get("x"), o.get("theta")
-    print(f"  done. odometry x={x:+.3f} m (cmd {args.dist} m), theta drift={th:+.3f} rad")
-    if th is not None and abs(th) > 0.05:
+    dth = o.get("theta", 0.0) - th0
+    while dth > math.pi:  dth -= 2 * math.pi
+    while dth <= -math.pi: dth += 2 * math.pi
+    # Odometry distance THIS RUN: a completed move is exactly the commanded distance
+    # (that's the completion condition), immune to pose history; a blocked/aborted
+    # run falls back to the planar displacement delta.
+    completed = done.get("result", "completed") == "completed"
+    run_odom = float(args.dist) if completed else \
+        math.hypot(o.get("x", 0.0) - x0, o.get("y", 0.0) - y0)
+    print(f"  done. odometry distance this run={run_odom:.3f} m (cmd {args.dist} m), "
+          f"theta drift={dth:+.3f} rad")
+    if abs(dth) > 0.05:
         print("    veered — left/right wheels mismatched (PID gains or an ENC_SIGN_* flip).")
-    # Calibration: odometry-vs-TAPE from the SAME run (works even if the run was cut
-    # short by the reflex — both numbers cover the same wheel travel). NOT x/dist:
-    # odometry x lands on the commanded dist by construction, so that ratio is ~1.
     phys = _ask_float("  Tape-measured PHYSICAL distance traveled (m, empty to skip): ")
-    if phys and phys > 0 and x:
+    if phys and phys > 0 and run_odom > 0:
         cur = _current_params(c).get("counts_per_meter")
         if cur:
-            new_cpm = float(cur) * float(x) / phys
+            new_cpm = float(cur) * run_odom / phys
             print(f"    counts_per_meter: {float(cur):.1f} -> {new_cpm:.1f}"
-                  f"  (odometry {x:.3f} m vs tape {phys:.3f} m)")
+                  f"  (odometry {run_odom:.3f} m vs tape {phys:.3f} m)")
             print(f"    push live now:   motion_bench.py set --counts-per-meter {new_cpm:.1f}")
             print("    persist:         calib.h COUNTS_PER_METER (reflash) or .env MOTION_COUNTS_PER_METER")
         else:

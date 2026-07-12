@@ -28,17 +28,20 @@
 // quadrature factor or the gearing differs; the empirical value wins regardless.
 #define COUNTS_PER_REV_OUTPUT  7744.0f   // reference only — superseded by empirical cpm
 #define WHEEL_DIAMETER_M       0.080f    // reference only — superseded by empirical cpm
-#define TRACK_WIDTH_M          0.200f    // ⚠ placeholder — turn calibration still pending
+// EMPIRICAL turn calibration (bench `turn --deg 360`, 2026-07-11, provisional):
+// commanded 360° spun ~270° physically → 0.200 × 360/270 = 0.2667, then ×(7683/7532)
+// because that spin ran under the 2%-high provisional cpm (heading odometry scales
+// with cpm). Refine: after flashing, `turn --deg 360` should land back on the mark.
+#define TRACK_WIDTH_M          0.272f
 
 #define WHEEL_CIRCUM_M   ((float)M_PI * WHEEL_DIAMETER_M)
-// EMPIRICAL distance calibration (bench `straight`, 2026-07-11, provisional):
-// commanded 1.0 m; the wall reflex ended the run with odometry at 0.532 m while the
-// tape said ~2.134 m (7 ft). Counts C = 0.532 × 30812.39 = 16392 → cpm = C / 2.134
-// = 7683 — the old derived value (COUNTS_PER_REV_OUTPUT/WHEEL_CIRCUM_M = 30812.39)
-// was 4.01× high, which also means every commanded speed had been ~4× fast
-// physically. Refine with another taped `straight` run (the bench tool now prompts
-// for the tape reading and prints the corrected value).
-#define COUNTS_PER_METER 7683.0f
+// EMPIRICAL distance calibration (bench `straight`, 2026-07-11, two passes):
+// pass 1 — cmd 1.0 m, wall-blocked at odom 0.532 m, tape ~2.134 m (7 ft): the old
+// derived value (COUNTS_PER_REV_OUTPUT/WHEEL_CIRCUM_M = 30812.39) was 4.01× high —
+// every commanded speed had been ~4× fast physically. Provisional cpm 7683.
+// pass 2 — cmd 1.0 m COMPLETED (odometry = exactly 1.00 by the completion rule),
+// tape 1.02 m → 7683 × 1.00/1.02 = 7532. Residual now ~tape precision.
+#define COUNTS_PER_METER 7532.0f
 
 // Per-wheel count direction. +1 means "driving the wheel forward makes its count
 // increase." Flip to -1 (per wheel) if the bench hand-turn test shows the sign
