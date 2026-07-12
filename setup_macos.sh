@@ -1987,7 +1987,7 @@ SUPERVISOR_PLIST="$HOME/Library/LaunchAgents/$SUPERVISOR_LABEL.plist"
 
 echo ""
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BOLD}  Optional: always-on \"wake up Rex\" launcher${NC}"
+echo -e "${BOLD}  Optional: always-on \"wake up Rex\" launcher + battery meter${NC}"
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 if [[ ! -f "$SUPERVISOR_INSTALLER" ]]; then
@@ -2000,7 +2000,7 @@ elif [[ -f "$SUPERVISOR_PLIST" ]]; then
     if _is_interactive && _prompt_yes_no "Reinstall / refresh it for this repo path? [y/N] " "n"; then
         if "$SUPERVISOR_INSTALLER" install; then
             ok "Wake-word supervisor reinstalled."
-            INSTALLED_ITEMS+=("Wake-word supervisor (LaunchAgent: $SUPERVISOR_LABEL)")
+            INSTALLED_ITEMS+=("Wake-word supervisor + battery meter (LaunchAgents: $SUPERVISOR_LABEL, com.djr3x.battery — battery only when MOTION_ESP32_PORT is set)")
         else
             warn "Supervisor reinstall failed — install it manually later: scripts/install_supervisor.sh"
             MANUAL_ATTENTION+=("Wake-word supervisor reinstall failed — run: scripts/install_supervisor.sh")
@@ -2013,13 +2013,18 @@ else
     echo -e "  ${BOLD}\"shut down\"${NC} powers the robot back down while the listener keeps"
     echo -e "  running. Details: ${BOLD}docs/supervisor.md${NC}"
     echo ""
+    echo -e "  When ${BOLD}MOTION_ESP32_PORT${NC} is set in .env, this also adds a menu bar"
+    echo -e "  ${BOLD}battery meter${NC} showing the drive base's charge/voltage/current"
+    echo -e "  even while the robot is off (it hands the port to the robot"
+    echo -e "  automatically whenever Rex is running)."
+    echo ""
     if ! _is_interactive; then
         log "Non-interactive run — skipping the supervisor prompt."
         MANUAL_ATTENTION+=("Optional: install the wake-word supervisor with scripts/install_supervisor.sh")
     elif _prompt_yes_no "Install the always-on \"wake up Rex\" launcher now? [y/N] " "n"; then
         if "$SUPERVISOR_INSTALLER" install; then
             ok "Wake-word supervisor installed and listening."
-            INSTALLED_ITEMS+=("Wake-word supervisor (LaunchAgent: $SUPERVISOR_LABEL)")
+            INSTALLED_ITEMS+=("Wake-word supervisor + battery meter (LaunchAgents: $SUPERVISOR_LABEL, com.djr3x.battery — battery only when MOTION_ESP32_PORT is set)")
             MANUAL_ATTENTION+=("Grant Microphone permission to the venv Python on first wake (System Settings > Privacy & Security > Microphone)")
         else
             warn "Supervisor install failed — you can run it manually: scripts/install_supervisor.sh"

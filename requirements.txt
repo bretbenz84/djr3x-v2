@@ -59,6 +59,9 @@ PySide6>=6.7.0
 # ── Hardware — serial (Maestro servo controller + Arduino) ───────────────────
 pyserial>=3.5
 
+# ── macOS menu bar battery meter (tools/rex_battery_menubar.py) ───────────────
+rumps>=0.4.0
+
 # ── Fuzzy string matching (command parser + DJ vibe matching) ─────────────────
 rapidfuzz>=3.9.0
 

@@ -82,9 +82,11 @@ scripts/install_supervisor.sh status    # check it's running
 scripts/install_supervisor.sh uninstall # stop + remove
 ```
 
-The installer substitutes this repo's absolute path into
-`launchd/com.djr3x.supervisor.plist.template` and installs the result to
-`~/Library/LaunchAgents/com.djr3x.supervisor.plist`.
+The installer substitutes this repo's absolute path into the templates under
+`launchd/` and installs the results to `~/Library/LaunchAgents/`. It installs
+**two** agents: `com.djr3x.supervisor` (the wake-word listener) and
+`com.djr3x.battery` (the menu bar battery meter, below — skipped when
+`MOTION_ESP32_PORT` isn't set in `.env`). `uninstall` removes both.
 
 **First run:** macOS will prompt for **Microphone** permission for the venv
 Python. Grant it (System Settings → Privacy & Security → Microphone). The robot's
@@ -99,6 +101,41 @@ camera/automation prompts still appear the first time `main.py` itself runs.
   Mostly a duplicate of the controller's own structured log plus any pre-logging boot/crash
   output.
 - `logs/djr3x.log` — the controller's full, rotated structured log (written by `main.py`).
+
+## Menu bar battery meter
+
+`tools/rex_battery_menubar.py` (LaunchAgent `com.djr3x.battery`) keeps the ESP32
+drive base's **charge / voltage / current** visible in the macOS menu bar even
+while the robot is off — `🔋 78%` normally, `🪫` at ≤20%, `⚡` while charging,
+with voltage, current, power, base state/fault, and reading age in the dropdown.
+
+It needs no firmware or protocol changes because the motion firmware streams a
+telemetry frame at 10 Hz from the moment it boots — before any handshake — and
+every frame already carries `batt_mv` / `batt_ma` / `batt_soc`
+(see docs/motion_protocol.md §6.1). The app opens `MOTION_ESP32_PORT` and
+**never writes a byte**: the firmware's comms watchdog only arms after the first
+line received *from* the Mac, so a purely passive listener can't cause a
+`comms_lost` fault or claim ownership.
+
+**Port sharing with the robot** uses the same flock the supervisor uses for the
+microphone. Serial ports are exclusive-open, so the app polls the single-instance
+lock about once a second:
+
+- `main.py` alive (awake **or** asleep) → the app closes the port and shows the
+  last reading under a `🤖` icon ("Rex is running — port handed over").
+- no `main.py` → it reopens the port and resumes the live meter.
+
+`main.py` takes the lock at startup, well before motion connects, and
+`hardware/motion.py` opens with retries — so the ≤1 s release lag is absorbed.
+The flock frees itself if `main.py` crashes, so the meter recovers on its own.
+
+Bring-up check without the GUI (prints raw battery frames):
+
+```bash
+venv/bin/python tools/rex_battery_menubar.py --probe
+```
+
+Its logs are `logs/battery_menubar.out.log` / `.err.log`.
 
 ## Tunables (environment variables)
 

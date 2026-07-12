@@ -125,7 +125,9 @@ You need to activate the virtual environment in every new terminal session befor
 
 ### Always-on "wake up Rex" launcher (optional)
 
-Instead of starting `main.py` by hand, you can have macOS stay quietly ready and launch the robot by voice. A tiny LaunchAgent (`rex_supervisor.py`) listens only for **"wake up Rex"** and launches the full controller on demand (it starts `main.py --gui`, so the dashboard opens on every wake); **"shut down"** powers it back down while the listener keeps running. Install with `scripts/install_supervisor.sh`. See **[docs/supervisor.md](docs/supervisor.md)** for how it works and how the single-instance lock prevents a double-launch (including when Rex is asleep).
+Instead of starting `main.py` by hand, you can have macOS stay quietly ready and launch the robot by voice. A tiny LaunchAgent (`rex_supervisor.py`) listens only for **"wake up Rex"** and launches the full controller on demand (it starts `main.py --gui`, so the dashboard opens on every wake); **"shut down"** powers it back down while the listener keeps running. Install with `scripts/install_supervisor.sh` (the setup script also offers this). See **[docs/supervisor.md](docs/supervisor.md)** for how it works and how the single-instance lock prevents a double-launch (including when Rex is asleep).
+
+The same installer adds a **menu bar battery meter** (`tools/rex_battery_menubar.py`) when `MOTION_ESP32_PORT` is set: the drive base's charge, voltage, and current stay visible in the macOS menu bar even while the robot is off, by passively reading the ESP32's always-on telemetry stream. It releases the serial port automatically whenever `main.py` is running (same flock the supervisor uses for the mic) and reclaims it when Rex shuts down.
 
 On the physical robot, the supervisor also keeps a clean `main` checkout current
 with `origin/main`: it checks at supervisor startup, every four hours, and again

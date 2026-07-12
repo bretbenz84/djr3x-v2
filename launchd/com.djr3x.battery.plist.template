@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent for the DJ-R3X menu bar battery meter (tools/rex_battery_menubar.py).
+
+  This is a TEMPLATE. Do not load it directly — run scripts/install_supervisor.sh,
+  which substitutes __PROJECT_ROOT__ with this repo's absolute path and installs
+  the result to ~/Library/LaunchAgents/com.djr3x.battery.plist.
+
+  It runs at login (RunAtLoad) and is kept alive (KeepAlive) so the ESP32 drive
+  base's battery level, voltage, and current are always visible in the menu bar —
+  even while the robot itself is off. It reads the motion base's telemetry
+  passively over MOTION_ESP32_PORT and releases the port automatically whenever
+  main.py is running (see the module docstring). A user LaunchAgent (not a system
+  daemon) because the menu bar only exists inside a logged-in GUI session.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.djr3x.battery</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PROJECT_ROOT__/venv/bin/python</string>
+        <string>__PROJECT_ROOT__/tools/rex_battery_menubar.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_ROOT__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Don't hammer relaunches if it exits immediately. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>__PROJECT_ROOT__/logs/battery_menubar.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_ROOT__/logs/battery_menubar.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>
