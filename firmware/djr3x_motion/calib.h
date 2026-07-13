@@ -23,11 +23,11 @@
 
 // ---- Drive geometry (MEASURE — see above) --------------------------------
 // Encoder spec (11 cycles/motor-rev/channel × 176:1 gear × 4 full-quad ≈ 7744
-// counts/wheel-rev) is kept for reference but PROVED ~4.0× high on the bench —
-// see COUNTS_PER_METER below. Either the datasheet PPR already included the
-// quadrature factor or the gearing differs; the empirical value wins regardless.
+// counts/wheel-rev) is kept for reference but proved substantially high on the
+// bench — see COUNTS_PER_METER below. Either the datasheet PPR already included
+// the quadrature factor or the gearing differs; the empirical value wins regardless.
 #define COUNTS_PER_REV_OUTPUT  7744.0f   // reference only — superseded by empirical cpm
-#define WHEEL_DIAMETER_M       0.080f    // reference only — superseded by empirical cpm
+#define WHEEL_DIAMETER_M       0.100f    // measured rubber drive-wheel diameter
 // EMPIRICAL turn calibration (bench `turn --deg 360` on hardwood, 2026-07-11,
 // CONVERGED): 0.200 → 270° obs; 0.272 → ~330° obs; 0.297 → 360° observed = done.
 // Effective track (includes contact-patch width in a spin) — expect a hair of
@@ -36,9 +36,11 @@
 #define TRACK_WIDTH_M          0.297f
 
 #define WHEEL_CIRCUM_M   ((float)M_PI * WHEEL_DIAMETER_M)
-// EMPIRICAL distance calibration (bench `straight`, 2026-07-11, two passes):
+// EMPIRICAL distance calibration (bench `straight`, 2026-07-11, two passes).
+// The original calculation mistakenly assumed an 80 mm wheel; the fitted wheels
+// are 100 mm. The tape-measured counts-per-metre below remains authoritative:
 // pass 1 — cmd 1.0 m, wall-blocked at odom 0.532 m, tape ~2.134 m (7 ft): the old
-// derived value (COUNTS_PER_REV_OUTPUT/WHEEL_CIRCUM_M = 30812.39) was 4.01× high —
+// old 80 mm derived value (30812.39 counts/m) was 4.01× high —
 // every commanded speed had been ~4× fast physically. Provisional cpm 7683.
 // pass 2 — cmd 1.0 m COMPLETED (odometry = exactly 1.00 by the completion rule),
 // tape 1.02 m → 7683 × 1.00/1.02 = 7532. Residual now ~tape precision.
@@ -146,6 +148,20 @@
 // braked to zero and its integrator reset rather than chasing micro-setpoints.
 #define WHEEL_STOP_EPS_MS  0.01f
 
+// Do not treat the first encoder twitch as proof that the full chassis has broken
+// static friction. Gear lash and tyre compliance can produce several counts while
+// the base is still planted. A launch must show sustained wheel motion before the
+// controller drops from the breakaway tier to the running tier; likewise, a rolling
+// wheel must remain stalled for a while before breakaway is re-armed.
+#define WHEEL_LAUNCH_CONFIRM_S   0.12f
+#define WHEEL_RESTALL_CONFIRM_S  0.12f
+
+// Rated 176 rpm with a 100 mm wheel is 0.922 m/s unloaded. Keep mixed wheel-speed
+// requests just below that physical ceiling and scale both sides together so a
+// combined forward+turn command preserves curvature instead of saturating only the
+// outside wheel.
+#define WHEEL_TARGET_MAX_MS      0.90f
+
 // ---- Drive setpoint slew (teleop feel) ------------------------------------
 // Acceleration limit applied to the TELEOP (gamepad drive) setpoint so the base
 // ramps smoothly toward the stick command in BOTH directions — symmetric, so a
@@ -160,7 +176,7 @@
 // (First pass wrongly set ang to 1.5 — a backwards conversion — and spins ramped
 // like molasses, part of the "left/right has no power" report.)
 // Tune with `set --accel-lin` / `--accel-ang` (higher = snappier).
-#define DRIVE_ACCEL_LIN    0.8f     // m/s^2  (teleop linear setpoint slew, REAL units)
+#define DRIVE_ACCEL_LIN    1.2f     // m/s^2  (teleop linear setpoint slew, REAL units)
 #define DRIVE_ACCEL_ANG    8.0f     // rad/s^2 (teleop angular setpoint slew, REAL units)
 // (The old DRIVE_SPIN_LIN_EPS binary spin gate is gone — replaced by the smooth
 // GAMEPAD_SPIN_BLEND_FWD_LO/HI band above; the blend factor rides the setpoint.)
@@ -248,9 +264,10 @@
 #define PIVOT_WIGGLE_ENABLED     1
 #define PIVOT_WIGGLE_ENGAGE_MS   300     // commanded pivot w/ ~no rotation this long -> engage
 #define PIVOT_WIGGLE_PHASE_MS    450     // length of each fwd/back arc phase
-#define PIVOT_WIGGLE_ANG_EPS     0.15f   // rad/s: below this = "not actually rotating"
+#define PIVOT_WIGGLE_MIN_PROGRESS_RAD 0.04f // <~2.3 deg progress in window = stalled
 #define PIVOT_WIGGLE_LIN_BIAS    1.15f   // lin = bias*|ang|*track/2 (~pirouette about the
                                          // inside wheel; >1 keeps both wheels rolling fwd)
+#define PIVOT_WIGGLE_ACCEL_LIN   3.0f    // m/s^2: reverse within one 450 ms arc phase
 
 // ---- Battery sense (INA226, battery.cpp) -----------------------------------
 // Shunt resistance in MICRO-ohms for the current (batt_ma) reading; 0 disables

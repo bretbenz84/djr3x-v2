@@ -53,6 +53,13 @@ static bool    s_motors_enabled = false;
 static float s_i_l = 0, s_i_r = 0;           // integral accumulators
 static float s_eprev_l = 0, s_eprev_r = 0;   // previous error (for D term)
 
+struct LaunchState {
+  bool  rolling = false;
+  float moving_s = 0.0f;
+  float stalled_s = 0.0f;
+};
+static LaunchState s_launch_l, s_launch_r;
+
 static inline void motors_enable(bool en) {
   if (en == s_motors_enabled) return;        // only toggle the GPIO on a real change
   digitalWrite(PIN_L_EN, en ? HIGH : LOW);
@@ -70,6 +77,8 @@ static inline void apply_wheel_duty(int rpwm_pin, int lpwm_pin, int duty) {
 static void reset_pid() {
   s_i_l = s_i_r = 0;
   s_eprev_l = s_eprev_r = 0;
+  s_launch_l = LaunchState();
+  s_launch_r = LaunchState();
 }
 
 void hal_init() {
@@ -162,13 +171,46 @@ static int wheel_pid(float target, float meas, float& integ, float& eprev, float
     return 0;
   }
   const float err = target - meas;
-  integ += ki * err * dt;
-  integ = clampf(integ, -WHEEL_PID_I_CLAMP, WHEEL_PID_I_CLAMP);   // anti-windup
   const float deriv = (dt > 1e-4f) ? (err - eprev) / dt : 0.0f;
   eprev = err;
   const float ff = kff * target + min_duty * (target >= 0.0f ? 1.0f : -1.0f);
-  const float u  = ff + kp * err + integ + kd * deriv;
+  const float base = ff + kp * err + kd * deriv;
+  const float next_i = clampf(integ + ki * err * dt,
+                              -WHEEL_PID_I_CLAMP, WHEEL_PID_I_CLAMP);
+  const float candidate = base + next_i;
+  // Conditional integration: do not wind the integrator farther into saturation.
+  // It may still integrate in the opposite direction, which unwinds it promptly.
+  if (!((candidate > (float)PWM_DUTY_MAX && err > 0.0f) ||
+        (candidate < -(float)PWM_DUTY_MAX && err < 0.0f))) {
+    integ = next_i;
+  }
+  const float u = base + integ;
   return (int)clampf(u, -(float)PWM_DUTY_MAX, (float)PWM_DUTY_MAX);
+}
+
+// Stateful launch detector. The high breakaway tier stays active through brief
+// encoder motion and is released only after sustained rolling. Once rolling, a
+// single quantized zero-speed tick does not re-trigger a kick; a genuine restall does.
+static bool needs_breakaway(float target, float meas, float dt, LaunchState& s) {
+  if (fabsf(target) < WHEEL_STOP_EPS_MS) {
+    s = LaunchState();
+    return false;
+  }
+  const bool moving = fabsf(meas) >= WHEEL_STALLED_EPS_MS;
+  if (!s.rolling) {
+    s.moving_s = moving ? (s.moving_s + dt) : 0.0f;
+    if (s.moving_s >= WHEEL_LAUNCH_CONFIRM_S) {
+      s.rolling = true;
+      s.stalled_s = 0.0f;
+    }
+  } else {
+    s.stalled_s = moving ? 0.0f : (s.stalled_s + dt);
+    if (s.stalled_s >= WHEEL_RESTALL_CONFIRM_S) {
+      s.rolling = false;
+      s.moving_s = 0.0f;
+    }
+  }
+  return !s.rolling;
 }
 
 void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer, float pivot_blend) {
@@ -206,6 +248,17 @@ void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer, float 
     v_r += (a_r - v_r) * pivot_blend;
   }
 
+  // Preserve the requested curvature when combined linear+angular input asks an
+  // individual wheel to exceed the drivetrain's physical speed. Without this,
+  // only the outside wheel saturates and full-stick steering becomes unexpectedly
+  // shallow while its PID integrator winds up.
+  const float peak = fmaxf(fabsf(v_l), fabsf(v_r));
+  if (peak > WHEEL_TARGET_MAX_MS) {
+    const float scale = WHEEL_TARGET_MAX_MS / peak;
+    v_l *= scale;
+    v_r *= scale;
+  }
+
   // Energize only when something should move (commanded OR still rolling, so we
   // actively brake a coasting wheel to a stop before disabling it).
   const bool want_move =
@@ -234,10 +287,12 @@ void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer, float 
   const float spin_kick = g_ctx.spin_breakaway_duty;
   const float spin_run  = g_ctx.spin_run_duty;
   const float straight_kick = fmaxf(min_duty, g_ctx.params.breakaway_duty);
-  const float kick_l = (fabsf(s_vmeas_l) < WHEEL_STALLED_EPS_MS)
+  const bool launch_l = needs_breakaway(v_l, s_vmeas_l, dt, s_launch_l);
+  const bool launch_r = needs_breakaway(v_r, s_vmeas_r, dt, s_launch_r);
+  const float kick_l = launch_l
       ? (pivot ? fmaxf(min_duty, spin_kick) : straight_kick)
       : (pivot ? fmaxf(min_duty, spin_run)  : min_duty);
-  const float kick_r = (fabsf(s_vmeas_r) < WHEEL_STALLED_EPS_MS)
+  const float kick_r = launch_r
       ? (pivot ? fmaxf(min_duty, spin_kick) : straight_kick)
       : (pivot ? fmaxf(min_duty, spin_run)  : min_duty);
   // PID runs in the forward=+ convention; MOTOR_SIGN_* maps its effort onto each

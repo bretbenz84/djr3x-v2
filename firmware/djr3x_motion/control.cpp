@@ -31,6 +31,7 @@ static float s_ramp_lin = 0.0f, s_ramp_ang = 0.0f;
 // Stalled-pivot wiggle assist state (calib.h PIVOT_WIGGLE_*): converts a pivot the
 // base can't scrub into alternating rolling arcs. Owned solely by control_tick.
 static uint32_t s_wiggle_stall_since = 0;   // 0 = not tracking a stalled pivot
+static float    s_wiggle_start_theta = 0.0f; // heading at start of progress window
 static uint32_t s_wiggle_phase_at = 0;      // start of the current arc phase
 static int8_t   s_wiggle_dir = 1;           // +1 forward phase, -1 backward phase
 static bool     s_wiggle_on = false;
@@ -186,16 +187,26 @@ void control_tick(float dt) {
       }
       lin_t = (float)s_wiggle_dir * PIVOT_WIGGLE_LIN_BIAS
               * fabsf(ang_t) * c.params.track_width_m * 0.5f;
-    } else if (fabsf(c.odom.ang) < PIVOT_WIGGLE_ANG_EPS) {
+    } else {
+      // Judge a pivot by accumulated heading progress, not one 100 Hz angular-
+      // velocity sample. A couple of encoder counts from lash used to reset the
+      // timer indefinitely even though the 54 lb chassis had not turned.
       if (s_wiggle_stall_since == 0) {
         s_wiggle_stall_since = now;
-      } else if ((uint32_t)(now - s_wiggle_stall_since) >= (uint32_t)PIVOT_WIGGLE_ENGAGE_MS) {
-        s_wiggle_on = true;
-        s_wiggle_dir = 1;
-        s_wiggle_phase_at = now;
+        s_wiggle_start_theta = c.odom.theta;
+      } else if ((uint32_t)(now - s_wiggle_stall_since) >=
+                 (uint32_t)PIVOT_WIGGLE_ENGAGE_MS) {
+        const float progress = fabsf(wrap_pi(c.odom.theta - s_wiggle_start_theta));
+        if (progress < PIVOT_WIGGLE_MIN_PROGRESS_RAD) {
+          s_wiggle_on = true;
+          s_wiggle_dir = 1;
+          s_wiggle_phase_at = now;
+        } else {
+          // It really is rotating; start a fresh progress window.
+          s_wiggle_stall_since = now;
+          s_wiggle_start_theta = c.odom.theta;
+        }
       }
-    } else {
-      s_wiggle_stall_since = 0;    // genuinely rotating — no assist needed
     }
   } else {
     s_wiggle_on = false;
@@ -355,7 +366,13 @@ void control_tick(float dt) {
     // so a stick push ramps up briskly and a release coasts to a stop rather than
     // stepping to zero and dynamic-braking. Feedforward (in wheel_pid) keeps the ramp
     // responsive; the slew just removes the jerk at both ends.
-    const float al = c.params.accel_lin * dt;
+    // The stalled-pivot fallback must reverse its short rolling arc within one
+    // PIVOT_WIGGLE_PHASE_MS interval. The normal comfort slew is intentionally too
+    // gentle for that, so use a bounded faster slew only while the fallback is active.
+    const float accel_lin = s_wiggle_on
+        ? fmaxf(c.params.accel_lin, PIVOT_WIGGLE_ACCEL_LIN)
+        : c.params.accel_lin;
+    const float al = accel_lin * dt;
     const float aa = c.params.accel_ang * dt;
     s_ramp_lin += clampf(lin_t - s_ramp_lin, -al, al);
     s_ramp_ang += clampf(ang_t - s_ramp_ang, -aa, aa);
