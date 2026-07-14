@@ -29,6 +29,14 @@
 static bool  s_present = false;
 static float s_bias_gx = 0, s_bias_gy = 0, s_bias_gz = 0;  // deg/s at rest
 static float s_pitch = 0, s_roll = 0, s_yaw = 0;           // deg, filtered
+static uint8_t s_err_streak = 0;   // consecutive failed samples (self-disable below)
+
+// A sensor that passes the boot probe but then degrades mid-session (field case:
+// loosening jumpers) fails EVERY 20 ms sample, and each failure burns an I2C
+// timeout on the shared trunk — disturbing the ToF/INA reads and starving lower-
+// priority tasks. After this many consecutive failures the IMU self-disables for
+// the session (re-probed at next boot); attitude reads ok:false, honestly.
+static const uint8_t IMU_ERR_STREAK_DISABLE = 25;   // ~0.5 s of solid failures
 
 static const float ACCEL_LSB_PER_G   = 16384.0f;  // FS ±2 g
 static const float GYRO_LSB_PER_DPS  = 131.0f;    // FS ±250 °/s
@@ -138,7 +146,21 @@ void imu_tick(float dt) {
   if (!s_present || dt <= 0.0f) return;
 
   float ax, ay, az, gx, gy, gz;
-  if (!mpu_sample(ax, ay, az, gx, gy, gz)) return;   // transient bus error: keep last
+  if (!mpu_sample(ax, ay, az, gx, gy, gz)) {
+    // Transient bus error: keep the last attitude. A SOLID failure streak means
+    // the sensor is gone/degraded mid-session — self-disable so its timeouts stop
+    // disturbing the shared I2C trunk (see IMU_ERR_STREAK_DISABLE above).
+    if (s_err_streak < 255) s_err_streak++;
+    if (s_err_streak == IMU_ERR_STREAK_DISABLE) {
+      s_present = false;
+      LOCK_STATE();
+      g_ctx.imu.ok = false;
+      UNLOCK_STATE();
+      emit_log("warn", "imu: MPU-6050 disabled after repeated bus errors — check its wiring");
+    }
+    return;
+  }
+  s_err_streak = 0;
 
   gx -= s_bias_gx; gy -= s_bias_gy; gz -= s_bias_gz;
 

@@ -116,6 +116,16 @@ void setup() {
   xTaskCreatePinnedToCore(serialTask,    "serial",  4096, nullptr, 3, nullptr, 1);
   xTaskCreatePinnedToCore(sensorTask,    "sensor",  3072, nullptr, 2, nullptr, 1);
   xTaskCreatePinnedToCore(telemetryTask, "telem",   4096, nullptr, 2, nullptr, 1);
+
+  // The Arduino loopTask (which services Bluetooth via BP32.update in loop()) is
+  // created at priority 1 — BELOW the sensor task's 2 on the same core. Field
+  // regression after the core-1 consolidation: whenever I2C stalled (a flaky
+  // MPU-6050 disturbing the shared trunk stretched every ToF/INA transaction
+  // toward its timeout), the sensor task monopolized the core, BP32.update()
+  // starved, and the GAMEPAD DISCONNECTED right as the current monitor failed.
+  // Raise ourselves (setup runs ON loopTask) above the sensor/telemetry tier so
+  // Bluetooth servicing always gets the CPU it needs; sensor I2C runs in the gaps.
+  vTaskPrioritySet(NULL, 3);
 }
 
 void loop() {
