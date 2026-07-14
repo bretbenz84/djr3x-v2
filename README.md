@@ -129,6 +129,8 @@ Instead of starting `main.py` by hand, you can have macOS stay quietly ready and
 
 The same installer adds a **menu bar battery meter** (`tools/rex_battery_menubar.py`) when `MOTION_ESP32_PORT` is set: the drive base's charge, voltage, and current stay visible in the macOS menu bar even while the robot is off, by passively reading the ESP32's always-on telemetry stream. It releases the serial port automatically whenever `main.py` is running (same flock the supervisor uses for the mic) and reclaims it when Rex shuts down. A **"Set Battery to 100%"** menu item lets you sync the firmware's charge gauge the moment your charger's taper current says the pack is full.
 
+It also adds a **"Servo Control" menu bar console** (`tools/rex_servo_menubar.py`) when `MAESTRO_PORT` is set: a dropdown with live sliders for all 8 Maestro servo channels (labelled with the current position in microseconds, initialized from the board's actual positions) plus a **"Restart Pololu"** action that sends the Maestro's go-home command. Sliders command the servos directly over the same wire protocol the robot uses. Like the battery meter, it releases the serial port automatically whenever `main.py` is running and reclaims it when Rex shuts down.
+
 On the physical robot, the supervisor also keeps a clean `main` checkout current
 with `origin/main`: it checks at supervisor startup, every four hours, and again
 immediately before launching `main.py`. A running controller is never updated

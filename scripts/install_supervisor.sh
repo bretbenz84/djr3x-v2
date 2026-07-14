@@ -10,6 +10,9 @@
 #     shows the ESP32 drive base's charge/voltage/current in the macOS menu bar
 #     even while the robot is off. Only installed when MOTION_ESP32_PORT is set
 #     in .env (without a motion base there is nothing to meter).
+#   com.djr3x.servo — the "Servo Control" menu bar console (tools/
+#     rex_servo_menubar.py): live sliders for all 8 Maestro channels + Restart
+#     Pololu. Only installed when MAESTRO_PORT is set in .env.
 #
 # This script renders each plist template with this repo's absolute path and
 # loads it.
@@ -24,6 +27,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SUPERVISOR_LABEL="com.djr3x.supervisor"
 BATTERY_LABEL="com.djr3x.battery"
+SERVO_LABEL="com.djr3x.servo"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
 ACTION="${1:-install}"
 
@@ -70,6 +74,16 @@ motion_port_configured() {
     [[ -n "$port" ]]
 }
 
+# The servo console is pointless without a Maestro: only install it when
+# MAESTRO_PORT has a value in .env (i.e. the physical robot was set up).
+maestro_port_configured() {
+    [[ -f "$PROJECT_ROOT/.env" ]] || return 1
+    local port
+    port="$(sed -n 's/^[[:space:]]*MAESTRO_PORT[[:space:]]*=[[:space:]]*//p' \
+            "$PROJECT_ROOT/.env" | tail -1 | tr -d '"'"'" | xargs)"
+    [[ -n "$port" ]]
+}
+
 case "$ACTION" in
   install)
     if [[ ! -x "$PROJECT_ROOT/venv/bin/python" ]]; then
@@ -97,18 +111,33 @@ case "$ACTION" in
         echo "Loaded $BATTERY_LABEL — battery meter is in the menu bar."
         echo "Logs: $PROJECT_ROOT/logs/battery_menubar.out.log (and .err.log)"
     fi
+
+    if ! maestro_port_configured; then
+        echo "MAESTRO_PORT is not set in .env — skipping the Servo Control menu"
+        echo "bar console (re-run this script after configuring the Maestro)."
+    elif ! "$PROJECT_ROOT/venv/bin/python" -c "import rumps" 2>/dev/null; then
+        echo "WARNING: 'rumps' is not installed in the venv — skipping the Servo"
+        echo "Control console. Fix with: venv/bin/pip install rumps  (then re-run)"
+    else
+        install_agent "$SERVO_LABEL"
+        echo "Loaded $SERVO_LABEL — 'Servo Control' is in the menu bar."
+        echo "Logs: $PROJECT_ROOT/logs/servo_menubar.out.log (and .err.log)"
+    fi
     ;;
 
   uninstall|remove)
-    echo "Stopping and removing $SUPERVISOR_LABEL + $BATTERY_LABEL ..."
+    echo "Stopping and removing $SUPERVISOR_LABEL + $BATTERY_LABEL + $SERVO_LABEL ..."
     uninstall_agent "$SUPERVISOR_LABEL"
     uninstall_agent "$BATTERY_LABEL"
+    uninstall_agent "$SERVO_LABEL"
     ;;
 
   status)
     status_agent "$SUPERVISOR_LABEL"
     echo
     status_agent "$BATTERY_LABEL"
+    echo
+    status_agent "$SERVO_LABEL"
     ;;
 
   *)

@@ -987,6 +987,16 @@ venv/bin/python main.py
 - Face-tracking responsiveness: the head-pose loop (`consciousness._step_face_tracking`, ~12.5 Hz) is a closed loop (camera on head); `FACE_TRACKING_CENTERING_GAIN` is matched to the FOV.
 - Supervisor wake detection is ONNX-only (`wakeuprex.onnx` openWakeWord on 80 ms mono frames, threshold `REX_SUPERVISOR_WAKE_THRESHOLD`); do NOT regress to VAD/Whisper/RMS.
 - Always-on wake-word supervisor + single-instance lock (`docs/supervisor.md`, `rex_supervisor.py` LaunchAgent): listens the whole login session, launches `main.py` on "wake up Rex"; an flock keeps main.py single-instance so the supervisor stays dormant while a controller is alive.
+- Menu bar utilities (LaunchAgents installed by `scripts/install_supervisor.sh`, both
+  dormant while main.py holds the single-instance flock, reclaiming their serial port
+  when Rex exits — no-reset opens so attaching never reboots the board):
+  `com.djr3x.battery` (`tools/rex_battery_menubar.py`, needs MOTION_ESP32_PORT) — pack
+  SOC/voltage/current from the ESP32's always-on telemetry, "Set Battery to 100%" gauge
+  sync, "Restart ESP32" RTS reset pulse; `com.djr3x.servo` (`tools/rex_servo_menubar.py`,
+  needs MAESTRO_PORT) — "Servo Control": live sliders for all 8 Maestro channels
+  (Pololu compact protocol direct on the wire, positions read back at connect) +
+  "Restart Pololu" (go-home). Servo table mirrors `config.SERVO_CHANNELS` with the same
+  `.env` µs overrides — keep in sync if the robot gains a servo.
 - Stateless supervisor auto-update (`utils/repo_updater.py`): checks `origin/main`
   at supervisor startup, every four hours, and before controller launch. It only
   fast-forwards a clean local `main`; periodic checks fetch-only while the
