@@ -26,16 +26,6 @@ static inline float signf(float v) { return v >= 0.0f ? 1.0f : -1.0f; }
 // hard dynamic-braking. Owned solely by control_tick (single control task), reset on
 // any halt. Only CMD_DRIVE (gamepad/teleop) is slewed; finite move/turn/come stay crisp.
 static float s_ramp_lin = 0.0f, s_ramp_ang = 0.0f;
-
-#if PIVOT_WIGGLE_ENABLED
-// Stalled-pivot wiggle assist state (calib.h PIVOT_WIGGLE_*): converts a pivot the
-// base can't scrub into alternating rolling arcs. Owned solely by control_tick.
-static uint32_t s_wiggle_stall_since = 0;   // 0 = not tracking a stalled pivot
-static float    s_wiggle_start_theta = 0.0f; // heading at start of progress window
-static uint32_t s_wiggle_phase_at = 0;      // start of the current arc phase
-static int8_t   s_wiggle_dir = 1;           // +1 forward phase, -1 backward phase
-static bool     s_wiggle_on = false;
-#endif
 #endif
 
 void control_init() {
@@ -166,53 +156,6 @@ void control_tick(float dt) {
       default: break;
     }
   }
-
-#if MOTION_HW_PRESENT && PIVOT_WIGGLE_ENABLED
-  // Stalled-pivot WIGGLE assist (calib.h): a commanded pivot the base measurably
-  // can't scrub (full weight — bridges saturate, no rotation) converts into
-  // alternating short ROLLING arcs: lin biases fore/aft each phase while the
-  // commanded ang stays on, so the wheels turn the SAME direction at different
-  // speeds (rolling regime) and heading progresses continuously — the automated
-  // version of the operator's "get moving first, then turn" workaround. Placed
-  // BEFORE the reflex gate + slow-zone taper so the injected linear phases pass
-  // through the normal ToF safety like any drive. Engages only after
-  // PIVOT_WIGGLE_ENGAGE_MS of commanded-but-not-rotating; a base that CAN spin
-  // in place (light load / slick floor) never sees it.
-  if (!halted && fabsf(ang_t) > 0.30f && fabsf(lin_t) < 0.02f &&
-      (c.cmd_mode == CMD_DRIVE || c.cmd_mode == CMD_TURN)) {
-    if (s_wiggle_on) {
-      if ((uint32_t)(now - s_wiggle_phase_at) >= (uint32_t)PIVOT_WIGGLE_PHASE_MS) {
-        s_wiggle_dir = (int8_t)(-s_wiggle_dir);
-        s_wiggle_phase_at = now;
-      }
-      lin_t = (float)s_wiggle_dir * PIVOT_WIGGLE_LIN_BIAS
-              * fabsf(ang_t) * c.params.track_width_m * 0.5f;
-    } else {
-      // Judge a pivot by accumulated heading progress, not one 100 Hz angular-
-      // velocity sample. A couple of encoder counts from lash used to reset the
-      // timer indefinitely even though the 54 lb chassis had not turned.
-      if (s_wiggle_stall_since == 0) {
-        s_wiggle_stall_since = now;
-        s_wiggle_start_theta = c.odom.theta;
-      } else if ((uint32_t)(now - s_wiggle_stall_since) >=
-                 (uint32_t)PIVOT_WIGGLE_ENGAGE_MS) {
-        const float progress = fabsf(wrap_pi(c.odom.theta - s_wiggle_start_theta));
-        if (progress < PIVOT_WIGGLE_MIN_PROGRESS_RAD) {
-          s_wiggle_on = true;
-          s_wiggle_dir = 1;
-          s_wiggle_phase_at = now;
-        } else {
-          // It really is rotating; start a fresh progress window.
-          s_wiggle_stall_since = now;
-          s_wiggle_start_theta = c.odom.theta;
-        }
-      }
-    }
-  } else {
-    s_wiggle_on = false;
-    s_wiggle_stall_since = 0;
-  }
-#endif
 
   // Hallway steering assist: nudge the manual forward drive away from nearby walls
   // (centering in a hallway) BEFORE the reflex gate — the assist steers, the reflex
@@ -366,13 +309,7 @@ void control_tick(float dt) {
     // so a stick push ramps up briskly and a release coasts to a stop rather than
     // stepping to zero and dynamic-braking. Feedforward (in wheel_pid) keeps the ramp
     // responsive; the slew just removes the jerk at both ends.
-    // The stalled-pivot fallback must reverse its short rolling arc within one
-    // PIVOT_WIGGLE_PHASE_MS interval. The normal comfort slew is intentionally too
-    // gentle for that, so use a bounded faster slew only while the fallback is active.
-    const float accel_lin = s_wiggle_on
-        ? fmaxf(c.params.accel_lin, PIVOT_WIGGLE_ACCEL_LIN)
-        : c.params.accel_lin;
-    const float al = accel_lin * dt;
+    const float al = c.params.accel_lin * dt;
     const float aa = c.params.accel_ang * dt;
     s_ramp_lin += clampf(lin_t - s_ramp_lin, -al, al);
     s_ramp_ang += clampf(ang_t - s_ramp_ang, -aa, aa);

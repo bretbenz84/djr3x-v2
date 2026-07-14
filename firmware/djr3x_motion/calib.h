@@ -250,24 +250,10 @@
 #define ASSIST_REPEL_MM       130.0f    // ~5 in: a side wall inside this repels hard
 #define ASSIST_REPEL_GAIN     12.0f     // rad/s per METER of penetration inside REPEL
 
-// ---- Stalled-pivot WIGGLE assist (control.cpp) ------------------------------
-// The full-weight base cannot scrub an in-place spin (measured: both bridges
-// saturated at 1023 duty, ~7 deg of rotation in 2 s) — but it turns FINE while
-// translating, because rolling friction is far below sideways scrub (the owner's
-// field workaround: "get him moving forward/back first"). This assist automates
-// that: when a pivot is COMMANDED but the base measurably isn't rotating, the
-// commanded spin converts into alternating short ROLLING arcs (fwd-left, back-left,
-// ... — a robot 3-point turn). Heading progresses continuously in the commanded
-// direction; the linear phases pass through the normal reflex/taper gates, so ToF
-// still protects each fore/aft excursion. Applies to stick pivots AND finite turns
-// (voice/D-pad) — the surface doesn't care who commanded the spin.
-#define PIVOT_WIGGLE_ENABLED     1
-#define PIVOT_WIGGLE_ENGAGE_MS   300     // commanded pivot w/ ~no rotation this long -> engage
-#define PIVOT_WIGGLE_PHASE_MS    450     // length of each fwd/back arc phase
-#define PIVOT_WIGGLE_MIN_PROGRESS_RAD 0.04f // <~2.3 deg progress in window = stalled
-#define PIVOT_WIGGLE_LIN_BIAS    1.15f   // lin = bias*|ang|*track/2 (~pirouette about the
-                                         // inside wheel; >1 keeps both wheels rolling fwd)
-#define PIVOT_WIGGLE_ACCEL_LIN   3.0f    // m/s^2: reverse within one 450 ms arc phase
+// (The stalled-pivot "wiggle" assist that lived here — auto-converting a stalled
+// pivot into alternating rolling arcs — was removed 2026-07-13 at the owner's
+// request: turns should just be turns. If a pivot stalls under full weight,
+// that's the torque ceiling talking; the fix is mechanical, not choreography.)
 
 // ---- Battery sense (INA226, battery.cpp) -----------------------------------
 // Shunt resistance in MICRO-ohms for the current (batt_ma) reading; 0 disables
@@ -351,11 +337,11 @@
 //     carpet mode makes turning as strong as the hardware allows (arcs improve;
 //     pure pivots on deep pile may still stall — that's motors, not firmware).
 #define GAMEPAD_HARDWOOD_LIN_MS    0.80f   // old FULL was 0.72 — "slightly faster"
-// Pure-pivot kinematics are wheel_speed = angular_rate * track_width / 2. The old
-// angular ceilings requested only ~46% of the full-forward wheel speed, so lifted
-// wheels visibly ran at half speed and the loaded chassis had little chance to turn.
-// Match full-stick pivot wheel speed to full-stick forward speed in each mode.
-#define GAMEPAD_HARDWOOD_ANG_RADS  ((2.0f * GAMEPAD_HARDWOOD_LIN_MS) / TRACK_WIDTH_M)
+// Pure-pivot kinematics are wheel_speed = angular_rate * track_width / 2. BOTH
+// modes command the full wheel-speed ceiling for turns (owner 2026-07-13): the
+// loaded chassis needs every bit of scrub authority regardless of surface, and
+// the stick still scales below the ceiling for fine control.
+#define GAMEPAD_HARDWOOD_ANG_RADS  ((2.0f * WHEEL_TARGET_MAX_MS) / TRACK_WIDTH_M)
 #define GAMEPAD_HARDWOOD_SPIN_KICK 750.0f  // stall-gated pivot breakaway (see below)
 #define GAMEPAD_HARDWOOD_SPIN_RUN  380.0f  // pivot RUNNING floor (sustained scrub carry)
 #define GAMEPAD_CARPET_LIN_MS      1.05f   // PID saturates duty into carpet drag
