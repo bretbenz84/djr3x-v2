@@ -25,9 +25,9 @@ inline uint32_t clampu(uint32_t v, uint32_t lo, uint32_t hi) {
                                           // miscalibration), then ->1.10 for the carpet surface
                                           // profile (full weight + pile drag need the headroom;
                                           // actual speed is drag-limited well below the cap)
-#define HARDCAP_MAX_ANGULAR_RAD_S 3.20f   // rad/s (~183 deg/s) — raised 2.50->3.20 for the carpet
-                                          // surface profile (spin authority; scrub-limited below
-                                          // this on any real floor)
+#define HARDCAP_MAX_ANGULAR_RAD_S 6.10f   // rad/s (~350 deg/s) — with a 0.297 m track this
+                                          // requests ~0.91 m/s per wheel in a pure pivot,
+                                          // matching the 176 rpm / 100 mm drivetrain ceiling
 #define HARDCAP_MAX_TURN_RATE_DPS 120.0f  // deg/s
 #define HARDCAP_WATCHDOG_MS       2000u   // watchdog can't be set looser than this
 #define HARDCAP_DRIVE_EXPIRY_MS   1000u

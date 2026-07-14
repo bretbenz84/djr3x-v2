@@ -351,11 +351,15 @@
 //     carpet mode makes turning as strong as the hardware allows (arcs improve;
 //     pure pivots on deep pile may still stall — that's motors, not firmware).
 #define GAMEPAD_HARDWOOD_LIN_MS    0.80f   // old FULL was 0.72 — "slightly faster"
-#define GAMEPAD_HARDWOOD_ANG_RADS  2.50f   // old ceiling 2.20 ("turning difficult")
+// Pure-pivot kinematics are wheel_speed = angular_rate * track_width / 2. The old
+// angular ceilings requested only ~46% of the full-forward wheel speed, so lifted
+// wheels visibly ran at half speed and the loaded chassis had little chance to turn.
+// Match full-stick pivot wheel speed to full-stick forward speed in each mode.
+#define GAMEPAD_HARDWOOD_ANG_RADS  ((2.0f * GAMEPAD_HARDWOOD_LIN_MS) / TRACK_WIDTH_M)
 #define GAMEPAD_HARDWOOD_SPIN_KICK 750.0f  // stall-gated pivot breakaway (see below)
 #define GAMEPAD_HARDWOOD_SPIN_RUN  380.0f  // pivot RUNNING floor (sustained scrub carry)
 #define GAMEPAD_CARPET_LIN_MS      1.05f   // PID saturates duty into carpet drag
-#define GAMEPAD_CARPET_ANG_RADS    3.20f
+#define GAMEPAD_CARPET_ANG_RADS    ((2.0f * WHEEL_TARGET_MAX_MS) / TRACK_WIDTH_M)
 #define GAMEPAD_CARPET_SPIN_KICK   1023.0f // full saturation — everything the bridge has
 #define GAMEPAD_CARPET_SPIN_RUN    650.0f  // pile drag needs most of the range sustained
 // Forward/back stick RESPONSE CURVE: lin command = sign(fwd)*|fwd|^GAMMA * level max.
