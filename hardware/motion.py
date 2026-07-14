@@ -72,16 +72,15 @@ def _open_serial_with_retries(
 
     for attempt in range(1, attempts + 1):
         try:
-            # NO-RESET open: pyserial asserts DTR/RTS at open by default, which
-            # pulses the ESP32's auto-reset circuit — every Rex start was silently
-            # REBOOTING the base (dropping the gamepad's Bluetooth session, the
-            # surface mode, and live odometry). Construct unopened, pre-drop the
-            # control lines, then open. The handshake below still verifies liveness.
-            ser = serial.Serial(None, baud, timeout=timeout)
-            ser.port = port
-            ser.dtr = False
-            ser.rts = False
-            ser.open()
+            # DEFAULT open on purpose — do NOT pre-drop DTR/RTS. On macOS the
+            # kernel asserts BOTH lines during open, which is benign (the
+            # ESP32's auto-reset transistor pair cancels when DTR==RTS); the
+            # Linux "no-reset" pre-drop trick makes pyserial deassert DTR
+            # FIRST, passing through DTR-low+RTS-high — the EN-low RESET state.
+            # Measured 2026-07-13: pre-drop open rebooted the base on EVERY
+            # connect (dropping the gamepad's BT session, the surface mode, and
+            # live odometry); default open and close leave it untouched.
+            ser = serial.Serial(port, baud, timeout=timeout)
             _log.info(
                 "Motion base connected on %s at %d baud (attempt %d/%d)",
                 port, baud, attempt, attempts,

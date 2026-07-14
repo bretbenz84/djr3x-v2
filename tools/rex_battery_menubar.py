@@ -72,7 +72,8 @@ _CHARGING_MA = -50         # batt_ma below this (signed, + = discharging) → �
 _SUPPLY_HIGH_MV = 14550
 _SUPPLY_HIGH_MA = -800
 _SUPPLY_HIGH_RENOTIFY_SECS = 300.0
-_STALE_SECS = 5.0          # no telemetry for this long while open → reopen port
+_STALE_SECS = 10.0         # no telemetry for this long after open → reopen port
+                           # (> the board's ~6 s boot: ToF init + IMU bias cal)
 _LOCK_POLL_SECS = 1.0      # how often the worker re-checks port/lock state
 
 
@@ -187,8 +188,10 @@ def _clear_tx() -> None:
 
 
 # "Restart ESP32" menu click → the worker (which owns the open handle) pulses the
-# RTS line: EN low ~150 ms, then release — the same hardware reset esptool and the
-# bench tools use. Not a serial WRITE, so it rides its own flag, not _tx_queue.
+# DTR line. With the default open both DTR and RTS sit asserted (EN high — the
+# transistor pair cancels); dropping DTR alone leaves RTS-only asserted, which is
+# the EN-low reset state. Re-asserting DTR releases EN into a normal boot (IO0
+# stays high at the release edge). Not a serial WRITE, so it rides its own flag.
 _reset_flag = threading.Event()
 
 
@@ -201,15 +204,14 @@ def _service_reset(ser) -> None:
         return
     _reset_flag.clear()
     try:
-        ser.dtr = False
-        ser.rts = True        # EN low — hold the chip in reset
+        ser.dtr = False       # RTS stays asserted → EN low, chip held in reset
         time.sleep(0.15)
-        ser.rts = False       # EN high — boot
+        ser.dtr = True        # both asserted again → EN high, normal boot
         try:
             ser.reset_input_buffer()   # drop any partial pre-reset line
         except Exception:
             pass
-        log.info("ESP32 reset pulse sent (RTS toggle) — board rebooting.")
+        log.info("ESP32 reset pulse sent (DTR toggle) — board rebooting.")
         _notify("Rex Battery", "ESP32 restarted.")
     except Exception as exc:
         log.warning("ESP32 reset failed: %s", exc)
@@ -257,6 +259,7 @@ def _worker() -> None:
 
     ser = None
     was_dormant = False
+    opened_at = 0.0      # when THIS serial connection was opened (staleness base)
     last_summary = 0.0   # once-a-minute battery line in the log (taper record)
 
     def _close():
@@ -298,24 +301,25 @@ def _worker() -> None:
                 # main.py's motion connect, main.py sees a clean "resource
                 # busy" (absorbed by its open retries) instead of two readers
                 # silently splitting the byte stream.
-                # NO-RESET open (see hardware/motion.py): a default open pulses
-                # the ESP32's reset — so the moment Rex exited and this app took
-                # the port, the board rebooted and the gamepad's BT session died
-                # ("can't reconnect the pad after Rex ends"). Pre-drop DTR/RTS.
-                ser = serial.Serial(None, _motion_baud(), timeout=1.0, exclusive=True)
-                ser.port = port
-                ser.dtr = False
-                ser.rts = False
-                ser.open()
+                # DEFAULT open on purpose — do NOT pre-drop DTR/RTS. On macOS
+                # the kernel asserts BOTH lines during open (both-asserted is
+                # benign: the ESP32's auto-reset transistor pair cancels), and
+                # pyserial then applies pre-set values DTR-FIRST — passing
+                # through DTR-low+RTS-high, the EN-low RESET state. The Linux
+                # "no-reset" pre-drop trick therefore CAUSES a reboot here
+                # (measured 2026-07-13: pre-drop open → boot at +1.6 s; default
+                # open and close → no reset). Leave the lines asserted for the
+                # whole session; _service_reset() pulses DTR to command a reset.
+                ser = serial.Serial(port, _motion_baud(), timeout=1.0, exclusive=True)
             except Exception as exc:
                 _update(mode="connecting", port=port,
                         detail=f"waiting for board on {port}")
                 log.debug("open %s failed: %s", port, exc)
                 _stop.wait(2.0)
                 continue
+            opened_at = time.time()
             log.info("Listening on %s (passive; writes only on Set-Battery-100%%).", port)
-            # Opened with DTR/RTS held low (no auto-reset). Brief settle, then
-            # drop any partial line mid-stream.
+            # Brief settle, then drop any partial line mid-stream.
             _stop.wait(0.5)
             try:
                 ser.reset_input_buffer()
@@ -344,9 +348,13 @@ def _worker() -> None:
                     last_summary = now
                     log.info("[batt] soc=%s%% mv=%s ma=%s state=%s",
                              s["batt_soc"], s["batt_mv"], s["batt_ma"], s["state"])
-        elif time.time() - _snapshot()["frame_at"] > _STALE_SECS:
+        elif time.time() - max(_snapshot()["frame_at"], opened_at) > _STALE_SECS:
             # Port open but silent (board held in reset / wrong device):
-            # cycle it rather than sit on a dead fd forever.
+            # cycle it rather than sit on a dead fd forever. Staleness is
+            # measured from THIS connection's open, not just the last frame —
+            # a global-only clock carried pre-reconnect staleness across every
+            # reopen and cycled a booting board (~6 s of ToF init + IMU cal)
+            # forever (field bug 2026-07-13: 141-reboot storm in one evening).
             log.info("No telemetry for %.0fs — cycling the port.", _STALE_SECS)
             _close()
             _update(mode="connecting", detail=f"no telemetry from {port}")

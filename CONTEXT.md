@@ -989,10 +989,15 @@ venv/bin/python main.py
 - Always-on wake-word supervisor + single-instance lock (`docs/supervisor.md`, `rex_supervisor.py` LaunchAgent): listens the whole login session, launches `main.py` on "wake up Rex"; an flock keeps main.py single-instance so the supervisor stays dormant while a controller is alive.
 - Menu bar utilities (LaunchAgents installed by `scripts/install_supervisor.sh`, both
   dormant while main.py holds the single-instance flock, reclaiming their serial port
-  when Rex exits — no-reset opens so attaching never reboots the board):
+  when Rex exits. ESP32-port opens must be plain DEFAULT pyserial opens — on macOS the
+  kernel asserts DTR+RTS at open, which is benign, but the Linux "no-reset"
+  pre-drop-DTR/RTS trick makes pyserial pass through the EN-low reset state and
+  REBOOTS the board on every open (measured 2026-07-13; dropped the gamepad each
+  time). Probing the flock uses LOCK_SH so concurrent pollers never false-positive
+  each other into port flaps.):
   `com.djr3x.battery` (`tools/rex_battery_menubar.py`, needs MOTION_ESP32_PORT) — pack
   SOC/voltage/current from the ESP32's always-on telemetry, "Set Battery to 100%" gauge
-  sync, "Restart ESP32" RTS reset pulse; `com.djr3x.servo` (`tools/rex_servo_menubar.py`,
+  sync, "Restart ESP32" DTR reset pulse; `com.djr3x.servo` (`tools/rex_servo_menubar.py`,
   needs MAESTRO_PORT) — "Servo Control": live sliders for all 8 Maestro channels
   (Pololu compact protocol direct on the wire, positions read back at connect) +
   "Restart Pololu" (go-home). Servo table mirrors `config.SERVO_CHANNELS` with the same

@@ -29,6 +29,7 @@ import errno
 import fcntl
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -64,13 +65,24 @@ def acquire() -> bool:
 
     # Open (not truncate) so a busy holder's pid bytes survive our failed attempt.
     handle = open(path, "a+")
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as exc:
+    # A few brief retries: is_held_by_other() probers hold a momentary SHARED
+    # lock, which would fail our exclusive attempt if we land inside that
+    # microseconds-wide window. A real owner still holds EX across all retries.
+    acquired = False
+    for i in range(5):
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+            break
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                handle.close()
+                raise
+            if i < 4:
+                time.sleep(0.05)
+    if not acquired:
         handle.close()
-        if exc.errno in (errno.EACCES, errno.EAGAIN):
-            return False  # someone else holds it
-        raise
+        return False  # someone else holds it
 
     # We hold it — (re)write our pid as the human-readable owner record.
     try:
@@ -94,9 +106,15 @@ def is_held() -> bool:
 def is_held_by_other() -> bool:
     """True if some OTHER live process holds the lock.
 
-    Used by the supervisor to decide whether a controller is already running
-    (awake or asleep). Probes by attempting a non-blocking lock on a throwaway
-    handle and immediately releasing if it succeeds. Never disturbs a real owner.
+    Used by the supervisor AND the menu bar utilities to decide whether a
+    controller is already running (awake or asleep). Probes with a SHARED
+    non-blocking lock: main.py's exclusive lock blocks it (held → True), while
+    any number of concurrent probers hold SH together without blocking each
+    other. The probe MUST NOT be LOCK_EX — with several 1 Hz pollers (the
+    supervisor plus each menu bar app), exclusive probes collided with each
+    other and randomly reported "Rex is running" to a peer, which then flapped
+    its serial port closed/open (field bug 2026-07-13: each flap rebooted the
+    ESP32 and dropped the gamepad).
     """
     if _handle is not None:
         return False  # we hold it; not "other"
@@ -111,7 +129,7 @@ def is_held_by_other() -> bool:
         # Can't open — assume not held rather than block the supervisor forever.
         return False
     try:
-        fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(probe.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
     except OSError as exc:
         if exc.errno in (errno.EACCES, errno.EAGAIN):
             return True  # a live process holds it
