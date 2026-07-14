@@ -19,7 +19,13 @@
 
 // ---- Wire limits -----------------------------------------------------------
 #define MOTION_MAX_LINE_BYTES 512   // a longer line is dropped through the next '\n'
-#define MOTION_TX_BUF_BYTES   512   // serialized output line buffer
+#define MOTION_TX_BUF_BYTES   1024  // serialized output line buffer. Must hold the
+                                    // LARGEST telemetry frame: with a gamepad
+                                    // connected the gp block pushed frames past the
+                                    // old 512 and serializeJson TRUNCATED every
+                                    // line mid-JSON — consumers (menu bar, GUI)
+                                    // rejected 100% of frames and froze (field bug
+                                    // 2026-07-13, "stale while pad connected").
 
 // ---- Enumerations (mirror docs/motion_protocol.md §9) ----------------------
 enum MotionState : uint8_t {

@@ -31,13 +31,27 @@ static void add_qf(JsonObject o, const char* key, float v, const char* fmt) {
 
 // ---- TX: serialize one doc to a single atomic NDJSON line ----------------
 static void tx_line(JsonDocument& doc) {
-  char buf[MOTION_TX_BUF_BYTES];
-  size_t n = serializeJson(doc, buf, sizeof(buf));
-  if (n == 0) return;
+  // static + serialized under g_tx_mux: tx_line runs on several tasks and the
+  // sensor task's 3 KB stack can't afford this buffer per-call. A line that
+  // would not fit is DROPPED, never truncated — a cut JSON line poisons every
+  // consumer downstream (they reject the frame and show stale data), which is
+  // strictly worse than one missing frame out of ten per second.
+  static char buf[MOTION_TX_BUF_BYTES];
+  static bool overflow_warned = false;
   xSemaphoreTake(g_tx_mux, portMAX_DELAY);
-  Serial.write((const uint8_t*)buf, n);
-  Serial.write('\n');
+  const bool overflow = (measureJson(doc) > sizeof(buf) - 1);
+  if (!overflow) {
+    size_t n = serializeJson(doc, buf, sizeof(buf));
+    if (n > 0) {
+      Serial.write((const uint8_t*)buf, n);
+      Serial.write('\n');
+    }
+  }
   xSemaphoreGive(g_tx_mux);
+  if (overflow && !overflow_warned) {
+    overflow_warned = true;   // one-shot; the warn line itself is small and safe
+    emit_log("warn", "proto: TX line exceeds MOTION_TX_BUF_BYTES — dropped; grow the buffer");
+  }
 }
 
 // ===== Emitters ===========================================================
