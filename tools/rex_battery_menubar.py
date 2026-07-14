@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import sys
 import threading
@@ -65,6 +66,14 @@ log = logging.getLogger("rex_battery")
 
 _SOC_LOW_PCT = 20          # 🪫 at or below this
 _CHARGING_MA = -50         # batt_ma below this (signed, + = discharging) → ⚡
+# Runtime estimate: remaining_mah / smoothed_current. Capacity mirrors the
+# firmware ledger (calib.h BATT_CAPACITY_MAH); keep the two in sync. The current
+# is EMA-smoothed because a droid's draw is spiky (idle ~1 A, drive bursts far
+# higher) — an instantaneous divide would make the estimate jump wildly.
+_BATT_CAPACITY_MAH = 40000  # 2x 12.8 V 20 Ah in parallel (== calib.h)
+_RUNTIME_TAU_SECS = 45.0    # EMA time constant for the estimate's current
+_RUNTIME_MIN_MA = 80        # |smoothed current| under this → no estimate (idle on
+                            # a charger / disconnected pack → the number is nonsense)
 # Supply-set-too-high watch: pack terminals at/above 14.55 V while STILL being
 # pushed hard means the bench supply is set above 14.6 V (at a 14.6 setpoint the
 # current is near zero by the time the pack gets here — the IR drop has died).
@@ -130,6 +139,8 @@ _snap: dict = {
     "port": "",
     "batt_mv": None,        # int mV, None = never seen, -1 = sensor unwired
     "batt_ma": None,        # int mA signed (+ = discharging)
+    "batt_ma_avg": None,    # float mA, EMA of batt_ma for the runtime estimate
+    "batt_ma_avg_at": 0.0,  # time.time() the EMA last advanced (gap detection)
     "batt_soc": None,       # int %, -1 = unknown
     "state": "",            # base state string (idle/moving/…)
     "fault": None,
@@ -239,6 +250,7 @@ def _handle_line(raw: bytes) -> None:
         return
     if msg.get("type") != "telemetry":
         return
+    _advance_current_ema(msg.get("batt_ma"))
     _update(
         batt_mv=msg.get("batt_mv"),
         batt_ma=msg.get("batt_ma"),
@@ -248,6 +260,27 @@ def _handle_line(raw: bytes) -> None:
         frame_at=time.time(),
         mode="live",
     )
+
+
+def _advance_current_ema(ma) -> None:
+    """Fold one batt_ma sample into the smoothed current used for the runtime
+    estimate. Time-aware so telemetry gaps (dormant handoff, reconnect) don't
+    blend across the hole — a gap longer than a few time constants resets the
+    average to the fresh sample instead of averaging stale current into it."""
+    if ma is None:
+        return
+    now = time.time()
+    with _snap_lock:
+        prev = _snap.get("batt_ma_avg")
+        prev_t = _snap.get("batt_ma_avg_at") or 0.0
+        dt = now - prev_t
+        if prev is None or dt <= 0.0 or dt > 5.0 * _RUNTIME_TAU_SECS:
+            avg = float(ma)
+        else:
+            alpha = 1.0 - math.exp(-dt / _RUNTIME_TAU_SECS)
+            avg = prev + alpha * (float(ma) - prev)
+        _snap["batt_ma_avg"] = avg
+        _snap["batt_ma_avg_at"] = now
 
 
 def _worker() -> None:
@@ -448,6 +481,13 @@ def _fmt_lines(s: dict) -> list[str]:
         if mv is not None and mv > 0 and abs(ma) >= abs(_CHARGING_MA):
             lines.append(f"Power: {abs(mv * ma) / 1_000_000:.1f} W")
 
+    # Estimated runtime — only while live (a dormant/stale reading would give a
+    # confidently wrong number). Guards itself when it can't be estimated.
+    if s["mode"] == "live":
+        tleft = _fmt_time_left(s)
+        if tleft:
+            lines.append(tleft)
+
     if _supply_too_high(s):
         lines.append("⚠ Pack over 14.55 V under charge — set supply back to 14.6 V")
 
@@ -467,6 +507,34 @@ def _fmt_lines(s: dict) -> list[str]:
         lines.append(f"Updated: {_fmt_age(age)}")
 
     return lines
+
+
+def _fmt_time_left(s: dict) -> "str | None":
+    """Estimated time-to-empty (discharging) or time-to-full (charging), from
+    the SOC ledger and the smoothed current. Coulomb-based, so LiFePO4's flat
+    voltage curve doesn't distort it. None when it can't be estimated: no synced
+    gauge, near-zero current (idle on a charger), or already full."""
+    soc = s.get("batt_soc")
+    avg = s.get("batt_ma_avg")
+    if soc is None or soc < 0 or avg is None or abs(avg) < _RUNTIME_MIN_MA:
+        return None
+    if avg > 0:                                   # discharging → time to empty
+        hours = (soc / 100.0) * _BATT_CAPACITY_MAH / avg
+        return f"Est. runtime: ~{_fmt_duration(hours)} left"
+    if soc >= 99:                                 # charging but essentially full
+        return None
+    hours = ((100 - soc) / 100.0) * _BATT_CAPACITY_MAH / abs(avg)
+    return f"Est. charge: ~{_fmt_duration(hours)} to full"
+
+
+def _fmt_duration(hours: float) -> str:
+    if hours >= 99.0:
+        return ">99h"
+    h = int(hours)
+    m = int(round((hours - h) * 60.0))
+    if m == 60:
+        h, m = h + 1, 0
+    return f"{m}m" if h == 0 else f"{h}h {m}m"
 
 
 def _fmt_age(age: float) -> str:

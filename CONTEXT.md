@@ -996,8 +996,10 @@ venv/bin/python main.py
   time). Probing the flock uses LOCK_SH so concurrent pollers never false-positive
   each other into port flaps.):
   `com.djr3x.battery` (`tools/rex_battery_menubar.py`, needs MOTION_ESP32_PORT) — pack
-  SOC/voltage/current from the ESP32's always-on telemetry, "Set Battery to 100%" gauge
-  sync, "Restart ESP32" DTR reset pulse; `com.djr3x.servo` (`tools/rex_servo_menubar.py`,
+  SOC/voltage/current from the ESP32's always-on telemetry, an estimated runtime /
+  time-to-full (coulomb-based: remaining_mah ÷ EMA-smoothed current, `_BATT_CAPACITY_MAH`
+  must track calib.h), "Set Battery to 100%" gauge sync, "Restart ESP32" DTR reset
+  pulse; `com.djr3x.servo` (`tools/rex_servo_menubar.py`,
   needs MAESTRO_PORT) — "Servo Control": live sliders for all 8 Maestro channels
   (Pololu compact protocol direct on the wire, positions read back at connect) +
   "Restart Pololu" (go-home). Servo table mirrors `config.SERVO_CHANNELS` with the same
