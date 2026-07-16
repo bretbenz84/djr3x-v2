@@ -191,6 +191,7 @@ class FsmTests(unittest.TestCase):
         def _rec(sess, text, **kw):
             self.spoken.append(text)
             sess.lines_spoken += 1
+            return True  # _speak's contract: True = line actually enqueued
 
         # Silence + no motion + no vision + no LLM — the loop runs on canned appraisals.
         self._patches = [
@@ -692,6 +693,187 @@ class StartRefusalTests(unittest.TestCase):
         with mock.patch.object(ex, "base_available", return_value=True):
             started = ex.start(9, "JT", source="invite")
         self.assertFalse(started)
+
+
+# ── 13. Terminal motion states (disconnect / fault / estop abort) ─────────────
+
+
+class TerminalMotionStateTests(unittest.TestCase):
+    def tearDown(self):
+        ex._session = None
+
+    def _sess_with_base(self):
+        sess = _new_session()
+        sess.had_base = True
+        return sess
+
+    def test_base_disconnect_aborts(self):
+        sess = self._sess_with_base()
+        with mock.patch.object(ex, "base_available", return_value=False):
+            self.assertFalse(ex._check_can_continue(sess))
+        self.assertTrue(sess.aborting())
+        self.assertEqual(sess.abort_reason, "base_disconnected")
+
+    def test_firmware_estop_aborts(self):
+        sess = self._sess_with_base()
+        with mock.patch.object(ex, "base_available", return_value=True), \
+                mock.patch("hardware.motion.owner", return_value="auto"), \
+                mock.patch("hardware.motion.state", return_value="estop"):
+            self.assertFalse(ex._check_can_continue(sess))
+        self.assertTrue(sess.aborting())
+        self.assertEqual(sess.abort_reason, "base_estop")
+
+    def test_firmware_fault_aborts(self):
+        sess = self._sess_with_base()
+        with mock.patch.object(ex, "base_available", return_value=True), \
+                mock.patch("hardware.motion.owner", return_value="auto"), \
+                mock.patch("hardware.motion.state", return_value="fault"):
+            self.assertFalse(ex._check_can_continue(sess))
+        self.assertEqual(sess.abort_reason, "base_fault")
+
+    def test_headonly_session_ignores_disconnect(self):
+        # A session that never had a base (head-only fallback) must not abort on
+        # "disconnect" — there was nothing to disconnect.
+        sess = _new_session()
+        sess.had_base = False
+        with mock.patch.object(ex, "base_available", return_value=False):
+            self.assertTrue(ex._check_can_continue(sess))
+        self.assertFalse(sess.aborting())
+
+
+# ── 14. Tether origin captured at session start ───────────────────────────────
+
+
+class TetherOriginTests(unittest.TestCase):
+    def tearDown(self):
+        ex._session = None
+
+    def test_origin_is_session_start_not_first_leg_destination(self):
+        # Odometry reads (2.0, 3.0) at session start; even with zero legs driven the
+        # worker captures that as the tether origin BEFORE the explore loop runs.
+        sess = _new_session(state="announce")
+        with mock.patch.object(ex, "_hold_head", lambda s: None), \
+                mock.patch.object(ex, "_release_head", lambda: None), \
+                mock.patch.object(ex, "_announce", lambda s: None), \
+                mock.patch.object(ex, "_explore_loop", lambda s: True), \
+                mock.patch.object(ex, "_handoff", lambda s: None), \
+                mock.patch.object(ex, "_current_xy", return_value=(2.0, 3.0)):
+            ex._run_session(sess)
+        self.assertEqual(sess.start_xy, (2.0, 3.0))
+
+
+# ── 15. Fixation persists ONLY when the beat was delivered ────────────────────
+
+
+class FixationDeliveryTests(unittest.TestCase):
+    def tearDown(self):
+        ex._session = None
+
+    def _fixate(self, speak_ok):
+        sess = _new_session()
+        with mock.patch.object(ex, "_glance", lambda v: None), \
+                mock.patch.object(ex, "_generate", return_value="THIS is art."), \
+                mock.patch.object(ex, "_speak", return_value=speak_ok):
+            ex._fixate(sess, _cand("oil painting", 0.9))
+        return sess
+
+    def test_delivered_fixation_persists(self):
+        sess = self._fixate(speak_ok=True)
+        self.assertTrue(sess.fixated)
+
+    def test_dropped_fixation_line_does_not_persist(self):
+        # The user started talking / enqueue failed -> Rex never said the beat, so
+        # no fixation may be seeded into topic/memory at handoff.
+        sess = self._fixate(speak_ok=False)
+        self.assertFalse(sess.fixated)
+
+
+# ── 16. Person candidates: fail-closed minor/identity gate ────────────────────
+
+
+class PersonGateTests(unittest.TestCase):
+    def _score(self, allowed):
+        cands = [_cand("person by the window", 0.9, category="person")]
+        for c in cands:
+            c.pop("score", None)
+            c.pop("boring", None)
+        with mock.patch.object(ex, "_label_sightings", return_value={}), \
+                mock.patch.object(ex, "_person_candidate_allowed", return_value=allowed):
+            ex._score_candidates(cands)
+        return cands[0]
+
+    def test_blocked_person_is_clamped_and_can_never_fixate(self):
+        c = self._score(allowed=False)
+        self.assertTrue(c["boring"])
+        self.assertTrue(c.get("person_blocked"))
+        self.assertLessEqual(c["score"], config.EXPLORE_BORING_MAX_SCORE)
+        # boring=True also blocks the fixation gate (_should_fixate rejects boring).
+
+    def test_allowed_person_scores_normally(self):
+        c = self._score(allowed=True)
+        self.assertFalse(c["boring"])
+        self.assertGreaterEqual(c["score"], 0.9)
+
+    def test_gate_fails_closed_on_unknown_face(self):
+        # An unidentified visible person (no person_db_id) -> False.
+        with mock.patch("world_state.world_state.get", return_value=[
+                {"id": "person_1", "face_visible": True}]):
+            self.assertFalse(ex._person_candidate_allowed())
+
+    def test_gate_fails_closed_on_minor(self):
+        with mock.patch("world_state.world_state.get", return_value=[
+                {"id": "person_1", "face_visible": True, "person_db_id": 5}]), \
+                mock.patch("vision.face.visible_known_people", return_value=[(5, "Kid")]), \
+                mock.patch("intelligence.profile_questions.person_is_minor", return_value=True):
+            self.assertFalse(ex._person_candidate_allowed())
+
+    def test_gate_fails_closed_on_error(self):
+        with mock.patch("world_state.world_state.get", side_effect=RuntimeError("boom")):
+            self.assertFalse(ex._person_candidate_allowed())
+
+    def test_gate_allows_known_adult(self):
+        with mock.patch("world_state.world_state.get", return_value=[
+                {"id": "person_1", "face_visible": True, "person_db_id": 7}]), \
+                mock.patch("vision.face.visible_known_people", return_value=[(7, "Bret")]), \
+                mock.patch("intelligence.profile_questions.person_is_minor", return_value=False):
+            self.assertTrue(ex._person_candidate_allowed())
+
+    def test_person_directive_forbids_appearance_remarks(self):
+        cand = _cand("person by the window", 0.9, category="person")
+        sess = _new_session()
+        riff = ex._riff_directive(sess, cand, boring=False)
+        fix = ex._fixate_directive(sess, cand, ask=True)
+        for d in (riff, fix):
+            self.assertIn("NO remarks about their body", d)
+        # Non-person subjects carry no person clause.
+        obj = ex._riff_directive(sess, _cand("oil painting", 0.9), boring=False)
+        self.assertNotIn("NO remarks about their body", obj)
+
+
+# ── 17. Ownership TTL always outlives the configured session duration ─────────
+
+
+class OwnershipTtlTests(unittest.TestCase):
+    def tearDown(self):
+        ex._session = None
+
+    def test_long_configured_session_keeps_ownership_past_flat_ttl(self):
+        # duration 400 > flat TTL 240: at 300s elapsed the session must STILL own
+        # the floor (the old flat TTL released it mid-run).
+        sess = _new_session()
+        sess.created_at = time.monotonic() - 300.0
+        ex._session = sess
+        with mock.patch.object(config, "EXPLORE_MAX_DURATION_SECS", 400.0), \
+                mock.patch.object(config, "EXPLORE_STEP_TTL_SECS", 240.0):
+            self.assertTrue(ex.active())
+
+    def test_wedged_session_still_expires(self):
+        sess = _new_session()
+        sess.created_at = time.monotonic() - 500.0  # past duration+60 and TTL
+        ex._session = sess
+        with mock.patch.object(config, "EXPLORE_MAX_DURATION_SECS", 400.0), \
+                mock.patch.object(config, "EXPLORE_STEP_TTL_SECS", 240.0):
+            self.assertFalse(ex.active())
 
 
 if __name__ == "__main__":

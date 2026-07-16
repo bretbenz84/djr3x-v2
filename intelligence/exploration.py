@@ -69,6 +69,7 @@ class _Session:
         self.vision_failures = 0
         self.lines_spoken = 0
         self.fixated = False               # a real fixation beat was delivered
+        self.had_base = base_available()   # session started with a drive base attached
         # Perception bookkeeping.
         self.best: Optional[dict] = None   # best appraisal candidate seen so far
         self.riffed_keys: set[str] = set()  # candidate names/categories already riffed (dedup)
@@ -108,8 +109,16 @@ def active() -> bool:
                 return False
             if sess.state in ("done",):
                 return False
-            # TTL guard so a wedged session can't own the floor forever.
-            ttl = float(getattr(config, "EXPLORE_STEP_TTL_SECS", 240.0))
+            # TTL guard so a WEDGED session can't own the floor forever — but a
+            # healthy session must never lose ownership mid-run, so the effective
+            # TTL always exceeds the configured duration cap (a user raising
+            # EXPLORE_MAX_DURATION_SECS above the flat TTL used to release the
+            # floor/base/head while the worker was still driving). Normal exits go
+            # through _handoff -> state "done"; this bound is the last resort.
+            ttl = max(
+                float(getattr(config, "EXPLORE_STEP_TTL_SECS", 240.0)),
+                float(getattr(config, "EXPLORE_MAX_DURATION_SECS", 180.0)) + 60.0,
+            )
             return (time.monotonic() - sess.created_at) <= ttl
     except Exception:
         return False
@@ -365,6 +374,10 @@ def _run_session(sess: "_Session") -> None:
     """Worker-thread entry point. Runs the FSM to completion; always tears down."""
     try:
         _hold_head(sess)
+        # Capture the tether ORIGIN from the session-start pose (before any leg) —
+        # measured from where the walk began, not from the first leg's destination.
+        # The post-leg _note_tether call remains as a fallback for late telemetry.
+        _note_tether(sess)
         _announce(sess)
         _explore_loop(sess)
     except Exception as exc:
@@ -464,12 +477,23 @@ def _check_can_continue(sess: "_Session") -> bool:
     """False when the session must abort NOW (abort flag or an external takeover)."""
     if sess.aborting():
         return False
-    # Gamepad grab / interaction pause / base disconnect end the session silently.
+    # Gamepad grab / interaction pause / base disconnect / firmware fault or estop
+    # end the session (the design contract in the plan's abort table).
     try:
         from hardware import motion
+        if sess.had_base and not base_available():
+            _log.info("[explore] base disconnected mid-session — aborting")
+            sess.abort_reason = sess.abort_reason or "base_disconnected"
+            sess.abort.set()
+            return False
         if base_available() and motion.owner() == "manual":
             _log.info("[explore] gamepad took the base — aborting")
             sess.abort_reason = sess.abort_reason or "manual_override"
+            sess.abort.set()
+            return False
+        if base_available() and motion.state() in ("fault", "estop", "comms_lost"):
+            _log.info("[explore] base in terminal state %r — aborting", motion.state())
+            sess.abort_reason = sess.abort_reason or "base_" + motion.state()
             sess.abort.set()
             return False
         if bool(getattr(config, "INTERACTION_PAUSED", False)):
@@ -574,8 +598,8 @@ def _riff(sess: "_Session", appraisal: dict) -> None:
     line = _generate(directive)
     if not line:
         return
-    sess.last_riff_stop = sess.stops_done
-    _speak(sess, line, emotion="curious", tag="explore:riff")
+    if _speak(sess, line, emotion="curious", tag="explore:riff"):
+        sess.last_riff_stop = sess.stops_done  # cadence tracks DELIVERED riffs only
 
 
 def _fixate(sess: "_Session", cand: Optional[dict]) -> None:
@@ -593,12 +617,18 @@ def _fixate(sess: "_Session", cand: Optional[dict]) -> None:
     line = _generate(directive)
     if not line:
         line = "Okay, THIS I have opinions about."
-    sess.fixated = True
-    _speak(sess, line, emotion="excited", tag="explore:fixate", register_frame=cand if ask else None)
-    _log.info(
-        "[explore] fixated on %r (score=%.2f) after %d stops",
-        cand.get("name"), float(cand.get("score", 0.0)), sess.stops_done,
-    )
+    # A fixation only EXISTS if the beat was actually delivered — a line dropped
+    # because the user started talking (or the queue failed) must not persist a
+    # fixation into memory/topic seeding that Rex never said out loud.
+    if _speak(sess, line, emotion="excited", tag="explore:fixate",
+              register_frame=cand if ask else None):
+        sess.fixated = True
+        _log.info(
+            "[explore] fixated on %r (score=%.2f) after %d stops",
+            cand.get("name"), float(cand.get("score", 0.0)), sess.stops_done,
+        )
+    else:
+        _log.info("[explore] fixation line dropped — no fixation persisted (%r)", cand.get("name"))
 
 
 def _wind_down(sess: "_Session") -> None:
@@ -829,18 +859,71 @@ def _parse_appraisal(raw: str, views: list) -> Optional[dict]:
 # ── Scoring (deterministic, after the vision call) ────────────────────────────
 
 
+def _person_candidate_allowed() -> bool:
+    """Fail-closed gate for riffing/fixating on a PERSON candidate.
+
+    Mirrors the roast-vision safety policy: a person may be the subject of an
+    exploration beat ONLY when every currently visible person is a RECOGNIZED,
+    known NON-minor. An unidentified face on camera (could be a child), any known
+    minor, or any error resolving identity/age -> False — never assume adult.
+    Person candidates that fail this gate are clamped at scoring time so they can
+    never win a riff or a fixation (they remain fine as scene context).
+    """
+    try:
+        from world_state import world_state
+        from vision import face
+        from intelligence import profile_questions
+        people = world_state.get("people") or []
+        visible = [
+            p for p in people
+            if isinstance(p, dict)
+            and p.get("face_visible") is not False
+            and not p.get("face_missing")
+        ]
+        if not visible:
+            return False  # a person candidate with nobody visibly tracked = stale/phantom
+        for p in visible:
+            if p.get("person_db_id") is None:
+                return False  # unidentified person on camera — could be a minor
+        known_ids = {pid for pid, _name in face.visible_known_people()}
+        if not known_ids:
+            return False
+        for pid in known_ids:
+            if profile_questions.person_is_minor(int(pid)):
+                return False
+        return True
+    except Exception:
+        return False  # never assume adult
+
+
 def _score_candidates(cands: list) -> None:
     """Set each candidate's final "score": model interest, boring-clamped +
-    novelty-boosted. Mutates in place."""
+    novelty-boosted. Person candidates additionally pass the fail-closed
+    minor/identity gate or are clamped like boring items. Mutates in place."""
     boring_labels = set(getattr(config, "EXPLORE_BORING_LABELS", set()))
     boring_cap = float(getattr(config, "EXPLORE_BORING_MAX_SCORE", 0.35))
     boost = float(getattr(config, "EXPLORE_NOVELTY_BOOST", 0.15))
     sightings = _label_sightings([c["name"] for c in cands] + [c["category"] for c in cands])
+    # Evaluate the person gate at most once per stop, and only when needed.
+    person_allowed: Optional[bool] = None
     for c in cands:
         score = float(c.get("interest", 0.0))
         name_l = c["name"].lower()
         cat_l = c["category"].lower()
-        is_boring = (
+        is_person = cat_l == "person" or name_l in ("person", "people", "someone", "a person")
+        if is_person:
+            if person_allowed is None:
+                person_allowed = _person_candidate_allowed()
+            if not person_allowed:
+                # Blocked person subject: clamp like a boring item so it can never
+                # become best / riff / fixation. Stays in candidates as context.
+                c["boring"] = True
+                c["person_blocked"] = True
+                c["score"] = min(score, boring_cap)
+                continue
+        is_boring = not is_person and (
+            # People are interesting BY SPEC; their names often carry locational
+            # furniture words ("person by the window") that must not clamp them.
             cat_l in boring_labels
             or name_l in boring_labels
             or any(w in boring_labels for w in name_l.split())
@@ -1216,21 +1299,24 @@ def _speak(
     emotion: str = "neutral",
     tag: str = "explore",
     register_frame: Optional[dict] = None,
-) -> None:
+) -> bool:
     """Speak one exploration line and block (bounded) for pacing.
 
     The mode OWNS the floor, so it enqueues directly (bypassing the proactive gate,
     which `active()` would otherwise trip against the mode's own speech). Yields to
     a user who is already talking. Registers a reply frame for the fixation question.
+    Returns True only when the line was actually ENQUEUED — callers that persist
+    state about a spoken beat (fixation, riff cadence) must key off this, never
+    assume delivery.
     """
     text = (text or "").strip()
     if not text or sess.aborting():
-        return
+        return False
     try:
         from audio import speech_queue, barge_guard
         if barge_guard.user_speaking_now():
             _log.info("[explore] user speaking — dropping line: %r", text)
-            return
+            return False
         ev = speech_queue.enqueue(text, emotion, priority=1, tag=tag)
         sess.lines_spoken += 1
         # Transcript + speech-state coherence.
@@ -1249,8 +1335,10 @@ def _speak(
             ev.wait(timeout=float(getattr(config, "EXPLORE_SPEAK_MAX_WAIT_SECS", 12.0)))
         except Exception:
             pass
+        return True
     except Exception as exc:
         _log.debug("[explore] speak failed: %s", exc)
+        return False
 
 
 def _note_line(text: str) -> None:
@@ -1286,6 +1374,18 @@ def _generate(directive: str) -> str:
         return ""
 
 
+def _person_safety_clause(cand: dict) -> str:
+    """Hard rule appended when the subject is a PERSON (already gated to known
+    adults): the humor never targets their body or appearance."""
+    if str(cand.get("category") or "").lower() != "person":
+        return ""
+    return (
+        " The subject is a PERSON: absolutely NO remarks about their body, face, "
+        "age, or appearance — react warmly to what they're DOING, and aim any dig "
+        "at yourself or the situation, never at them."
+    )
+
+
 def _riff_directive(sess: "_Session", cand: dict, *, boring: bool) -> str:
     hook = str(cand.get("riff_hook") or "").strip()
     name = str(cand.get("name") or "something").strip()
@@ -1299,8 +1399,8 @@ def _riff_directive(sess: "_Session", cand: dict, *, boring: bool) -> str:
         f"You are DJ-R3X rolling around a room, exploring. You just stopped and are "
         f"looking at: {name}.{hook_clause} React with ONE short whimsical, witty line "
         f"(<= 18 words). {tone} Do NOT ask a question here — you're just noticing it out "
-        f"loud. Never invent objects you can't see; only riff on {name}. No stage "
-        f"directions, no asterisks."
+        f"loud. Never invent objects you can't see; only riff on {name}."
+        f"{_person_safety_clause(cand)} No stage directions, no asterisks."
     )
 
 
@@ -1320,7 +1420,7 @@ def _fixate_directive(sess: "_Session", cand: dict, *, ask: bool) -> str:
         f"You are DJ-R3X. While exploring the room you got FIXATED on: {name}.{hook_clause}"
         f"{who} React with real, whimsical delight (and a light dig if it fits) — this is "
         f"the thing you can't look away from. {tail} Never invent details you can't see; "
-        f"only about {name}. No stage directions, no asterisks."
+        f"only about {name}.{_person_safety_clause(cand)} No stage directions, no asterisks."
     )
 
 
