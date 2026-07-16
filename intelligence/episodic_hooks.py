@@ -350,6 +350,24 @@ def celebration(person_id, name, summary, detail=None) -> None:
         _log.debug("episodic celebration failed: %s", exc)
 
 
+def exploration(summary, person_name=None, person_id=None, detail=None) -> None:
+    """Rex went on a self-directed room wander and fixated on something.
+
+    Routed to record_scene (kind "scene", already surfaced by episodic recall). The
+    write gate + test-runner suppression live inside memory.episodes, so this leaf
+    stays a thin wrapper like the others.
+    """
+    try:
+        from memory import episodes
+        episodes.record_scene(
+            summary, detail=detail,
+            person_id=person_id if isinstance(person_id, int) else None,
+            person_name=person_name,
+        )
+    except Exception as exc:
+        _log.debug("episodic exploration failed: %s", exc)
+
+
 def greeting_from_label(label, person_id, name) -> None:
     """Log a memorable first-sight greeting (birthday / celebration / milestone /
     reunion / check-in), keyed on the dispatched tier's `label`. Called only inside the

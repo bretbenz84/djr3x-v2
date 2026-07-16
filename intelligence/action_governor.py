@@ -75,6 +75,12 @@ _PURPOSE_PRIORITIES: dict[str, int] = {
     "emotional_checkin": 100,
     "relationship_inquiry": 95,
     "identity_prompt": 92,
+    # exploration: an INVITED self-directed room wander. High — once invited it owns
+    # the floor and announces/narrates over lull filler. (The mode enqueues its own
+    # lines directly rather than through the governor, so this is forward-safety for
+    # any future governor-routed exploration line.) NOT lean-suppressed / not
+    # cadence-clamped — like an autonomous-motion behavior, it self-limits.
+    "exploration": 90,
     "presence_reaction": 80,
     "overheard_chime_in": 75,
     "third_party_awareness": 72,

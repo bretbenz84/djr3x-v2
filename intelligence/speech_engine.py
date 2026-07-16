@@ -85,6 +85,17 @@ def can_proactive_speak(*, salient: bool = False, reactive: bool = False) -> boo
     except Exception:
         pass
 
+    # A room-exploration session owns the floor outright while Rex is wandering,
+    # surveying, and narrating what he finds — no other proactive behavior may barge
+    # in until the walk ends. The mode speaks its own lines by enqueuing directly, so
+    # denying here does NOT gag the exploration itself.
+    try:
+        from intelligence import exploration as _exploration
+        if _exploration.active():
+            return False
+    except Exception:
+        pass
+
     # GIVE SPACE after a heavy/grief disclosure: suppress NON-salient proactive speech
     # (idle banter, holiday/plans, environment snark, small talk) for the sober window,
     # so Rex doesn't proactively re-open or probe a heavy topic the user stepped back

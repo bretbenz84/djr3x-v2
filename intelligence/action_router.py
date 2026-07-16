@@ -268,6 +268,16 @@ ACTION_SPECS: tuple[ActionSpec, ...] = (
         executable=True,
     ),
     ActionSpec(
+        "motion.explore",
+        "motion",
+        "User INVITES Rex to autonomously explore / look around / wander the room on "
+        "his own — 'feel free to explore', 'look around a little', 'wander around', "
+        "'check the place out', 'make yourself at home'. Rex drives around and takes "
+        "in the room himself. NOT a directed 'look left and tell me what you see' "
+        "(that's a vision query), NOT a search errand ('look around for my keys').",
+        executable=True,
+    ),
+    ActionSpec(
         "system.sleep",
         "system",
         "User asks Rex to sleep, wake, quiet down, mute, shut down, or power off.",
@@ -1292,6 +1302,127 @@ def classify_explicit_motion(text: str) -> ActionDecision | None:
     return None
 
 
+# ── Room-exploration invitation (deterministic; motion.explore) ───────────────
+# "feel free to explore the room", "look around a little", "wander around",
+# "check the place out", "make yourself at home". HIGH-PRECISION and safety-critical:
+# a false positive drives a physical base around the room and seizes the floor, and it
+# runs BEFORE the dialogue-act gate, so nothing downstream can undo a misfire. The
+# guard is that the invite must be an IMPERATIVE ADDRESSED TO REX — the core verb
+# phrase must be verb-first at the START of the utterance, after only an optional
+# whitelist of invitation lead-ins / vocatives ("feel free to", "why don't you",
+# "hey Rex, …"). This is what keeps a first-person answer ("I love to wander around
+# the city") or third-party narration ("the dog likes to roam around the yard") from
+# launching a wander. It also declines negations, directed-vision queries, and search
+# errands.
+#
+# Invitation lead-ins that mark the phrase as ADDRESSED TO REX. Stripped (repeatedly)
+# off the FRONT before the imperative core is matched. First-person subjects ("I",
+# "we") and third-party subjects ("the dog") are deliberately NOT here, so a
+# declarative statement never reduces to a bare imperative core.
+_EXPLORE_LEAD_RE = re.compile(
+    r"^(?:"
+    r"hey|ok|okay|alright|so|now|please|rex|c'?mon|come\s+on|"
+    r"feel\s+free\s+to|go\s+ahead\s+and|go\s+ahead|why\s+don'?t\s+you|why\s+not|"
+    r"you\s+can|you\s+could|you\s+should|you\s+might|how\s+about\s+you|how\s+about|"
+    r"maybe\s+you|maybe|just|go\s+and|go|wanna|want\s+to|"
+    r"i'?d\s+like\s+you\s+to|i\s+want\s+you\s+to|let'?s|"
+    r"feel\s+free|be\s+my\s+guest\s+and|be\s+my\s+guest"
+    r")\b[\s,!.]*",
+    re.I,
+)
+# The imperative invite core, anchored to the START of the (lead-stripped) text.
+# The bare "explore" branch is restricted to a room-ish object or end-of-clause so
+# "explore my feelings" / "explore your options" do NOT match.
+_EXPLORE_CORE_RE = re.compile(
+    r"^(?:"
+    r"explore(?:\s+(?:the|your|this)\s+(?:new\s+|whole\s+|entire\s+|rest\s+of\s+the\s+)?"
+    r"(?:room|place|space|area|surroundings|environment|"
+    r"home|domain|joint|pad|apartment|house|studio|office|garage|yard|garden)"
+    r"|\s+(?:around|room|place|space|area|surroundings|environment)"
+    r"|[\s.!?]*$)"
+    r"|look(?:ing)?\s+around\b"
+    r"|have\s+a\s+look\s+around\b"
+    r"|take\s+a\s+look\s+around\b"
+    r"|wander\b|roam\b|scout\b"
+    r"|nose\s+around\b|poke\s+around\b|nose\s+about\b|poke\s+about\b"
+    r"|check\s+(?:out\s+)?(?:the|this|your)\s+(?:room|place|space|joint|pad|surroundings)"
+    r"|check\s+(?:the|this|your)\s+(?:room|place|space|joint|pad|surroundings)\s+out"
+    r"|scope\s+(?:out\s+)?(?:the|this|your)\s+(?:room|place|space|joint|pad|surroundings)"
+    r"|case\s+(?:the|this|your)\s+(?:room|place|space|joint|pad)"
+    r"|survey\s+(?:the|this|your)\s+(?:room|place|space|surroundings|domain)"
+    r"|scan\s+(?:the|this|your)\s+(?:room|place|space|surroundings)"
+    r"|take\s+a\s+(?:lap|tour|spin|stroll|walk)\b"
+    r"|make\s+yourself\s+at\s+home\b"
+    r")",
+    re.I,
+)
+# A see/describe request → this is the existing directed-vision path, not an invite.
+_EXPLORE_SEE_REQUEST_RE = re.compile(
+    r"\b(what\s+(?:do|can)\s+you\s+see|tell\s+me\s+what|describe|what'?s\s+(?:there|in\s+(?:front|the))"
+    r"|what\s+do\s+you\s+notice)\b",
+    re.I,
+)
+# A search errand ("look around for my keys", "scan the room for it") → not a wander.
+# Broad on both the verb and the object (incl. pronoun objects) so a "find X" errand is
+# never mistaken for an open-ended wander.
+_EXPLORE_SEARCH_ERRAND_RE = re.compile(
+    r"\b(?:look|search|hunt|check|scan|survey|scope|case|find|locate|spot)\b[^.?!]*?"
+    # "for <target>" marks an errand — but NOT a duration/manner ("for a while", "for fun").
+    r"\bfor\s+(?!(?:a\s+|the\s+)?(?:while|bit|moment|sec|second|minute|fun|now|once|good|kicks|"
+    r"a\s+laugh)\b)"
+    r"(?:my|the|a|an|some|any|it|him|her|them|us|me|his|your|our|that|those|\w)",
+    re.I,
+)
+# A negation at the very front of the (lead-stripped) core reverses the intent.
+_EXPLORE_NEGATION_RE = re.compile(
+    r"^(?:don'?t|do\s+not|never|no\b|not\b|stop|quit|cut\s+it|knock\s+it|hold\s+off|"
+    r"instead\s+of|rather\s+than|without)\b",
+    re.I,
+)
+
+
+def classify_explicit_exploration(text: str) -> ActionDecision | None:
+    """Classify an invitation for Rex to autonomously explore the room (no LLM).
+
+    HIGH-PRECISION: only fires when the utterance is an IMPERATIVE invitation ADDRESSED
+    TO REX — the core verb phrase must be verb-first after only an optional whitelist of
+    invitation lead-ins/vocatives. This is what stops a first-person answer ("I love to
+    wander around the city") or third-party narration ("the dog roams around the yard")
+    from launching a physical wander. Also declines negations, directed-vision queries,
+    and search errands. Runs AFTER classify_explicit_motion in the takeover, so a
+    'turn around' has already been claimed as a turn.
+    """
+    cleaned = " ".join((text or "").strip().split())
+    if not cleaned:
+        return None
+    # Yield outright to the existing directed-vision path and search errands.
+    if _EXPLORE_SEE_REQUEST_RE.search(cleaned):
+        return None
+    if _EXPLORE_SEARCH_ERRAND_RE.search(cleaned):
+        return None
+    # Strip invitation lead-ins ("feel free to", "why don't you", "hey Rex,") off the
+    # FRONT so the imperative core is at the start; a declarative subject ("I", "the
+    # dog") is not a lead-in, so it will fail the verb-first core match below.
+    core = cleaned
+    for _ in range(5):
+        m = _EXPLORE_LEAD_RE.match(core)
+        if not m or m.end() == 0:
+            break
+        core = core[m.end():]
+    if not core:
+        return None
+    # A negation at the front of the remaining core reverses the intent.
+    if _EXPLORE_NEGATION_RE.match(core):
+        return None
+    # The remaining text must START with an imperative invite core.
+    if not _EXPLORE_CORE_RE.match(core):
+        return None
+    return ActionDecision(
+        action="motion.explore", confidence=0.93, args={},
+        reason="explicit room-exploration invitation",
+    )
+
+
 def classify_explicit_humor(text: str) -> ActionDecision | None:
     """Classify obvious humor-performance requests without an LLM call."""
     cleaned = " ".join((text or "").strip().split())
@@ -1432,6 +1563,11 @@ def missing_required_evidence_reason(
     if action in {"performance.dj_bit", "performance.body_beat", "performance.mood_pose"}:
         explicit = classify_explicit_performance(cleaned)
         return None if explicit and explicit.action == action else "missing_performance_request_evidence"
+    if action == "motion.explore":
+        # A floor-seizing physical wander must not fire on an ambient LLM read of the
+        # turn — require the deterministic imperative-invite classifier to agree.
+        explicit = classify_explicit_exploration(cleaned)
+        return None if explicit and explicit.action == action else "missing_explore_invite_evidence"
     if action == "character.preference_query":
         return (
             None

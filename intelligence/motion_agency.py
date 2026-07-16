@@ -128,6 +128,15 @@ def step(snapshot: dict, profile) -> None:
 def _step_inner(snapshot: dict, profile) -> None:
     if not _flag("AUTONOMOUS_MOTION_ENABLED", True):
         return
+    # A room-exploration session OWNS the base while it wanders — realign/approach
+    # must not interleave a maneuver between its legs.
+    try:
+        from intelligence import exploration
+        if exploration.active():
+            _reset("neck_hits", "far_hits")
+            return
+    except Exception:
+        pass
     if not motion_controller.available():
         _reset("neck_hits", "far_hits")
         return

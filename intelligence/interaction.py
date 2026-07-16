@@ -1057,6 +1057,7 @@ def _action_router_context(
             "intro_followup": _pending_intro_followup is not None,
             "tell_about": _pending_tell_about is not None,
             "prompted_name_confirmation": _pending_prompted_name_confirmation is not None,
+            "exploration": exploration_flow_active(),
         },
         "legacy": {
             "command_key": (legacy_command or {}).get("command_key"),
@@ -10462,6 +10463,32 @@ def onboarding_flow_active() -> bool:
     return (time.monotonic() - float(state.get("created_at") or 0.0)) <= ttl
 
 
+def exploration_flow_active() -> bool:
+    """True while a room-exploration session owns the floor (running or paused).
+
+    The session/worker state lives in intelligence/exploration.py; this is the thin
+    interaction-side predicate the consumption block + idle-filler guard consult, in
+    the same slot as onboarding_flow_active() / tell_about_flow_active()."""
+    try:
+        from intelligence import exploration
+        return exploration.active()
+    except Exception:
+        return False
+
+
+def _handle_exploration_turn(text: str, speaker_id: Optional[int]) -> Optional[str]:
+    """Consume a user turn during an active exploration session (before routers).
+
+    Returns a spoken line (stop-word sign-off / encouragement ack — turn consumed)
+    or None (a real question/comment — the walk pauses and the turn is released to
+    normal routing)."""
+    try:
+        from intelligence import exploration
+        return exploration.handle_user_turn(text, speaker_id)
+    except Exception:
+        return None
+
+
 def _close_onboarding(reason: str) -> None:
     global _pending_onboarding
     state = _pending_onboarding
@@ -16017,6 +16044,75 @@ def _explicit_motion_takeover(
     return result
 
 
+def _handle_explore_invite(
+    text: str,
+    *,
+    person_id: Optional[int],
+    person_name: Optional[str],
+    router_audit: Optional["_RouterDecisionAudit"] = None,
+    source: str = "invite",
+) -> Optional[str]:
+    """Start a room-exploration session for an invitation, or speak the no-base quip.
+
+    Returns a SILENT-command sentinel when the session started (the exploration
+    worker speaks its own ack line, so the interaction layer stays quiet but still
+    consumes the turn), the spoken denial when no base is connected, or None when
+    exploration is disabled / refused (game/DJ/battery/already-active) so the turn
+    falls through to normal routing.
+    """
+    try:
+        from intelligence import exploration
+    except Exception:
+        return None
+    if not exploration.enabled():
+        return None
+    can_drive = exploration.base_available() or bool(
+        getattr(config, "EXPLORE_HEADONLY_FALLBACK_ENABLED", False)
+    )
+    if not can_drive:
+        lines = list(getattr(config, "EXPLORE_NO_BASE_LINES", []) or [])
+        if not lines:
+            return None
+        denial = random.choice(lines)
+        _log.info("[explore] invite with no base connected -> verbal quip: text=%r", text)
+        _speak_blocking(denial, emotion="neutral", log_text=False)
+        _router_audit_note_fast_local_action(
+            router_audit, "motion.explore_denied_no_base", reason="no drive base"
+        )
+        return denial
+    started = exploration.start(person_id, person_name, source=source)
+    if not started:
+        return None
+    _log.info("[explore] invite accepted (person_id=%s source=%s)", person_id, source)
+    _router_audit_note_fast_local_action(
+        router_audit, "motion.explore", reason="room-exploration invitation"
+    )
+    # The worker speaks the ack + narration itself; interaction stays silent.
+    return _silent_command_response("motion.explore")
+
+
+def _explore_invite_takeover(
+    text: str,
+    *,
+    person_id: Optional[int],
+    person_name: Optional[str],
+    router_audit: Optional["_RouterDecisionAudit"] = None,
+) -> Optional[str]:
+    """Deterministic room-exploration INVITE, run alongside the motion takeover.
+
+    Like _explicit_motion_takeover this fires BEFORE the dialogue-act gate (an
+    invitation to explore is a command, not an answer to Rex's last turn). Runs
+    AFTER the motion takeover so 'turn around' is already claimed as a turn.
+    """
+    decision = action_router.classify_explicit_exploration(text)
+    if decision is None or decision.action != "motion.explore":
+        return None
+    _router_audit_note_decision(router_audit, decision)
+    return _handle_explore_invite(
+        text, person_id=person_id, person_name=person_name, router_audit=router_audit
+    )
+
+
 def _handle_router_takeover_action(
     decision: Optional[action_router.ActionDecision],
     text: str,
@@ -16338,6 +16434,16 @@ def _handle_router_takeover_action(
             person_id,
             person_name,
             text,
+        )
+
+    if action == "motion.explore":
+        _log.info(
+            "[action_router] executing motion.explore person_id=%s text=%r",
+            person_id, text,
+        )
+        return _handle_explore_invite(
+            text, person_id=person_id, person_name=person_name,
+            router_audit=router_audit, source="router",
         )
 
     if action in _MOTION_ACTIONS:
@@ -19688,6 +19794,27 @@ def _handle_speech_segment(
                 _register_rex_utterance(ack_text)
                 return
 
+        # Room-exploration session: while Rex is wandering / surveying / narrating,
+        # a user turn is a stop-word (end the walk), encouragement (keep going), or a
+        # real question/comment (pause the walk + release the turn to normal routing).
+        # Consume it here before routers so a "stop" ends the whole mode, not just the
+        # current leg, and encouragement doesn't get misrouted.
+        if not game_conversation_lock and exploration_flow_active():
+            exploration_response = _handle_exploration_turn(text, person_id)
+            if exploration_response:
+                _record_heard_turn_once()
+                _speak_blocking(
+                    exploration_response,
+                    emotion="neutral",
+                    pre_beat_ms=100,
+                    post_beat_ms_override=200,
+                )
+                conv_memory.add_to_transcript("Rex", exploration_response)
+                conv_log.log_rex(exploration_response)
+                _session_exchange_count += 1
+                _register_rex_utterance(exploration_response, source="exploration")
+                return
+
         # First-meeting onboarding burst: while a freshly-enrolled newcomer's
         # baseline burst is open, their turn is the answer to Rex's last
         # question. Consume it here (before routers) so the answer drives the
@@ -20764,6 +20891,17 @@ def _handle_speech_segment(
             # right after Rex speaks get swallowed as conversation (live-logged 2026-06-23:
             # "move forward." / "Move backwards" -> conversation.reply).
             fast_takeover_response = _explicit_motion_takeover(text, router_audit=router_audit)
+            # An INVITE to explore the room ("look around a little", "make yourself at
+            # home") is likewise a command, not an answer — start the self-directed
+            # wander before the dialogue gate. Runs after the motion takeover so a
+            # "turn around" is still a turn.
+            if fast_takeover_response is None:
+                fast_takeover_response = _explore_invite_takeover(
+                    text,
+                    person_id=person_id,
+                    person_name=person_name,
+                    router_audit=router_audit,
+                )
             if fast_takeover_response is None and not dialogue_decision.skip_action_router:
                 fast_takeover_response = _handle_fast_local_takeover(
                     text,
@@ -22550,7 +22688,11 @@ def _loop() -> None:
             continue
         if _maybe_onboarding_question():
             continue
-        if not tell_about_flow_active() and not onboarding_flow_active():
+        if (
+            not tell_about_flow_active()
+            and not onboarding_flow_active()
+            and not exploration_flow_active()
+        ):
             if bool(getattr(config, "LEAN_BRAIN_ENABLED", False)):
                 # Lean agency owns the quiet: ONE motivated impulse (or silence) replaces the
                 # old silence-fill trio (interest / low-memory / idle-banter interview questions).

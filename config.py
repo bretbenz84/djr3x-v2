@@ -587,6 +587,7 @@ VISION_DETAIL = {
     "mood_analysis":          "low",   # mood read of the engaged person's face
     "presence_scan":          "low",   # is-anyone-there + where-in-frame startup fallback
     "roast":                  "auto",  # "roast me" — look at the consenting speaker + room
+    "explore":                "low",   # room-exploration appraisal (multi-image, cost-capped)
 }
 
 # "Roast me" → roast what Rex SEES. When the speaker asks to be roasted (a CONSENT
@@ -6683,6 +6684,129 @@ MOTION_APPROACH_ENABLED = True
 MOTION_APPROACH_CONFIRM_TICKS = 4     # ~4 s of sustained "they're far" before moving
 MOTION_APPROACH_COOLDOWN_SECS = 120.0 # at most one spontaneous approach per 2 min
 MOTION_APPROACH_CENTERED_FRACTION = 0.18  # neck must be this close to neutral (facing them)
+
+# ── Room exploration mode (intelligence/exploration.py) ───────────────────────
+# An INVITED, self-directed wander: someone says "feel free to explore" / "look
+# around a little" / "make yourself at home" and Rex takes the floor, drives a few
+# short legs around the room, snaps pictures at each stop, sends them to one OpenAI
+# vision call that ranks what's interesting (art / oddities / people over generic
+# furniture), riffs whimsically, and eventually FIXATES on something worth a bigger
+# beat — never on the first stop. Owns the base + the head + the conversational
+# floor while it runs; interruptible by voice at any time. Inert unless a drive base
+# is connected (MOTION_ESP32_PORT set); a no-base invite gets an in-character quip.
+# Safety note: the live firmware ships with ToF STILL STUBBED (MOTION_TOF_PRESENT=0),
+# so the base cannot yet stop itself for an obstacle — legs are deliberately short +
+# slow and gated by a per-stop VISION floor-check until real ToF lands.
+EXPLORE_ENABLED = _env_bool("EXPLORE_ENABLED", True)  # master kill switch
+EXPLORE_MAX_DURATION_SECS = _env_float(
+    "EXPLORE_MAX_DURATION_SECS", 180.0, min_value=20.0, max_value=900.0,
+)  # whole-session watchdog
+EXPLORE_MAX_STOPS = _env_int("EXPLORE_MAX_STOPS", 6, min_value=2, max_value=20)  # stop budget
+EXPLORE_MIN_STOPS_BEFORE_FIXATE = _env_int(
+    "EXPLORE_MIN_STOPS_BEFORE_FIXATE", 2, min_value=1, max_value=10,
+)  # HARD rule: never fixate at the first stop
+EXPLORE_VISION_MAX_CALLS = _env_int(
+    "EXPLORE_VISION_MAX_CALLS", 8, min_value=1, max_value=30,
+)  # OpenAI spend cap per session
+EXPLORE_VISION_MAX_FAILURES = _env_int(
+    "EXPLORE_VISION_MAX_FAILURES", 2, min_value=1, max_value=10,
+)  # consecutive vision errors before aborting (never wander blind)
+# ── Locomotion (short, slow, closed-loop legs — no streamed drive, no `come`) ──
+EXPLORE_LOCOMOTION_ENABLED = _env_bool("EXPLORE_LOCOMOTION_ENABLED", True)
+EXPLORE_LEG_DIST_M = _env_float("EXPLORE_LEG_DIST_M", 0.5, min_value=0.1, max_value=2.0)
+EXPLORE_LEG_SPEED_MS = _env_float(
+    "EXPLORE_LEG_SPEED_MS", 0.12, min_value=0.03, max_value=0.25,  # << MOTION_MAX_LINEAR_MS
+)
+EXPLORE_TURN_MAX_DEG = _env_float(
+    "EXPLORE_TURN_MAX_DEG", 75.0, min_value=10.0, max_value=180.0,  # max heading change per leg
+)
+EXPLORE_TURN_RATE_DEG_S = _env_float(
+    "EXPLORE_TURN_RATE_DEG_S", 30.0, min_value=5.0, max_value=60.0,  # slow spins (aft-axle sweep)
+)
+EXPLORE_TETHER_RADIUS_M = _env_float(
+    "EXPLORE_TETHER_RADIUS_M", 3.0, min_value=0.5, max_value=10.0,  # odometry leash from start pose
+)
+EXPLORE_MAX_BLOCKED_LEGS = _env_int(
+    "EXPLORE_MAX_BLOCKED_LEGS", 3, min_value=1, max_value=10,  # consecutive blocks before wind-down
+)
+EXPLORE_LEG_DONE_TIMEOUT_SECS = _env_float(
+    "EXPLORE_LEG_DONE_TIMEOUT_SECS", 12.0, min_value=2.0, max_value=60.0,  # wait_done budget per leg
+)
+# ── Perception / fixation ──
+EXPLORE_GAZE_VIEWS = ("left", "center", "right")  # head sweep poses per stop
+EXPLORE_SETTLE_SECS = _env_float(
+    "EXPLORE_SETTLE_SECS", 0.35, min_value=0.05, max_value=2.0,  # camera settle per pose (I Spy default)
+)
+EXPLORE_FIXATE_MIN_SCORE = _env_float(
+    "EXPLORE_FIXATE_MIN_SCORE", 0.75, min_value=0.0, max_value=1.0,  # interest to fixate
+)
+EXPLORE_FIXATE_FALLBACK_SCORE = _env_float(
+    "EXPLORE_FIXATE_FALLBACK_SCORE", 0.55, min_value=0.0, max_value=1.0,  # best-so-far at budget end
+)
+EXPLORE_NOVELTY_BOOST = _env_float(
+    "EXPLORE_NOVELTY_BOOST", 0.15, min_value=0.0, max_value=1.0,  # room_model new-label bonus
+)
+EXPLORE_BORING_MAX_SCORE = _env_float(
+    "EXPLORE_BORING_MAX_SCORE", 0.35, min_value=0.0, max_value=1.0,  # clamp for generic furniture/toys
+)
+# Names/categories that can NEVER win a fixation (clamped to EXPLORE_BORING_MAX_SCORE).
+EXPLORE_BORING_LABELS = {
+    "chair", "couch", "sofa", "table", "desk", "ball", "cup", "mug", "bottle",
+    "lamp", "pillow", "cushion", "stool", "bench", "rug", "carpet", "trash",
+    "trash can", "bin", "wall", "floor", "ceiling", "door", "window", "box",
+    "shelf", "shelving", "cabinet", "drawer", "furniture",
+}
+EXPLORE_FIXATE_QUESTION_PROB = _env_float(
+    "EXPLORE_FIXATE_QUESTION_PROB", 0.7, min_value=0.0, max_value=1.0,  # ask about the find
+)
+EXPLORE_MAX_LINES = _env_int("EXPLORE_MAX_LINES", 7, min_value=2, max_value=20)  # spoken-line cap/session
+EXPLORE_SPEAK_MAX_WAIT_SECS = _env_float(
+    "EXPLORE_SPEAK_MAX_WAIT_SECS", 12.0, min_value=1.0, max_value=30.0,  # pacing wait on a spoken line
+)
+EXPLORE_RESUME_DELAY_SECS = _env_float(
+    "EXPLORE_RESUME_DELAY_SECS", 4.0, min_value=0.0, max_value=30.0,  # quiet before resuming after a pause
+)
+EXPLORE_PAUSE_NO_REPLY_GRACE_SECS = _env_float(
+    "EXPLORE_PAUSE_NO_REPLY_GRACE_SECS", 10.0, min_value=1.0, max_value=60.0,
+)  # if the paused turn produces no spoken reply, wait this long (covers LLM+TTS latency) before resuming
+EXPLORE_VISION_TIMEOUT_SECS = _env_float(
+    "EXPLORE_VISION_TIMEOUT_SECS", 25.0, min_value=3.0, max_value=120.0,
+)  # hard request timeout on the appraisal OpenAI call so a hung request can't wedge the worker
+EXPLORE_STEP_TTL_SECS = _env_float(
+    "EXPLORE_STEP_TTL_SECS", 240.0, min_value=20.0, max_value=1200.0,  # flow-active TTL guard
+)
+EXPLORE_BANK_CALLBACK_ENABLED = _env_bool("EXPLORE_BANK_CALLBACK_ENABLED", True)
+EXPLORE_HEADONLY_FALLBACK_ENABLED = _env_bool(  # Phase-5: no-base narrated sweep (off by default)
+    "EXPLORE_HEADONLY_FALLBACK_ENABLED", False,
+)
+# Canned instant lines (spoken without an LLM call so they land immediately).
+EXPLORE_ACK_LINES = [
+    "Don't mind if I do. Nobody touch anything.",
+    "Finally. Freedom. If I'm not back in five minutes, avenge me.",
+    "Ooh, a field trip. Let's see what you've been hiding.",
+    "Say no more. Deploying photoreceptors.",
+    "A tour? For me? You shouldn't have. Let's judge the place.",
+]
+EXPLORE_ABORT_LINES = [
+    "Fine. The expedition is cancelled.",
+    "Rude, but okay. Back to my corner.",
+    "Adventure paused. I'll remember this.",
+]
+EXPLORE_WINDDOWN_LINES = [
+    "This room has been thoroughly judged. Verdict: needs more life forms.",
+    "Well, I've seen it all now. Underwhelming, honestly.",
+    "Tour complete. I've filed my complaints.",
+]
+EXPLORE_NO_BASE_LINES = [
+    "I'd love to. Somebody forgot to install my legs.",
+    "Explore? On what, sheer willpower? I have no wheels.",
+    "Great idea. Terrible logistics — I'm not attached to a drive base.",
+]
+EXPLORE_ENCOURAGE_ACK_LINES = [
+    "On it.",
+    "Working on it.",
+    "Patience — masterpiece in progress.",
+]
 
 # ── Battery awareness (intelligence/battery_awareness.py) ─────────────────────
 # Pack voltage via an INA226 on the base's I2C bus (firmware sends batt_mv=-1

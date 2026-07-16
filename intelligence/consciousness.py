@@ -2821,6 +2821,20 @@ def _mirrored_half_period(user_speed: Optional[float]) -> Optional[float]:
     return slow_hp + frac * (fast_hp - slow_hp)
 
 
+def _step_exploration(snapshot: dict, profile: SituationProfile) -> None:
+    """Supervise an active room-exploration session (a WATCHDOG only).
+
+    The whole wander/survey/narrate sequence runs on exploration.py's own worker
+    thread (it blocks on motion completion + multi-second vision calls and must not
+    stall this ~1 Hz tick). This step only force-cleans a session that overran the
+    duration cap or whose worker died — freeing the base/head/floor it owns."""
+    try:
+        from intelligence import exploration
+        exploration.supervise()
+    except Exception as exc:
+        _log.debug("exploration supervise error: %s", exc)
+
+
 def _step_autonomous_motion(snapshot: dict, profile: SituationProfile) -> None:
     """Autonomous base motion: rotate to face the tracked person, approach a far one.
     All decision logic lives in intelligence/motion_agency.py (turn/come are
@@ -11411,6 +11425,14 @@ def _step_face_tracking(frame, people: Optional[list[dict]] = None) -> None:
         return
     if time.monotonic() < _face_tracking_suspended_until:
         return
+    # A room-exploration session drives Rex's own gaze (survey sweeps + fixation
+    # glances) and owns the head — don't fight it with face centering.
+    try:
+        from intelligence import exploration
+        if exploration.active():
+            return
+    except Exception:
+        pass
 
     try:
         from hardware import servos as servo_mod
@@ -12009,6 +12031,12 @@ def _loop() -> None:
             # 10f-b. Wave back — if a visible person waves, return the wave (+ a short
             # warm line), the way you'd wave back across a room.
             _step_wave_reaction(snapshot, profile)
+
+            # 10f-b2. Room exploration — supervise an active self-directed wander
+            # (the sequence runs on exploration.py's own worker thread; this only
+            # watchdogs an overrun/dead session). Runs BEFORE autonomous motion so
+            # the base stand-down is already in effect this tick.
+            _step_exploration(snapshot, profile)
 
             # 10f-c. Autonomous base motion — rotate the base to face the tracked
             # person (the neck's standing offset is the signal) and approach someone
