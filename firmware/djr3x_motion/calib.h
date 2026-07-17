@@ -250,7 +250,14 @@
 // ⚠ MEASURE TOF_MATRIX_HEIGHT_M on the robot: lens centre to floor, metres. If unsure
 // err HIGH — too-high reads the empty floor as an obstacle (nuisance block, obvious);
 // too-low classifies real low obstacles as floor (missed, silent).
-#define TOF_MATRIX_HEIGHT_M        0.15f // ⚠ lens height above floor — MEASURE ME
+#define TOF_MATRIX_HEIGHT_M        0.11f // EFFECTIVE optical height — empirically
+                                         // calibrated 2026-07-16. Tape-measured lens
+                                         // height is 0.16 m, but the raw grid on open
+                                         // floor reads row7≈330/row6≈460 mm (vs 474/657
+                                         // predicted): oblique ToF returns under-range
+                                         // at grazing angles by a consistent ~0.70x.
+                                         // 0.11 makes both bottom rows match observed
+                                         // floor. Recalibrate if the mount height moves.
 #define TOF_MATRIX_PITCH_DEG       0.0f  // mount pitch trim (+ = tilted up); level = 0
 #define TOF_MATRIX_VFOV_DEG        45.0f // VL53L7CX vertical FOV (45° square per ST)
 #define TOF_MATRIX_FLOOR_TOLERANCE 0.80f // reading >= this fraction of expected floor = floor

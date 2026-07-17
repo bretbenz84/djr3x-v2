@@ -262,6 +262,8 @@ static void mx_aggregate(int16_t* out_fl, int16_t* out_fr) {
       const int cc = TOF_MATRIX_FLIP_H ? (7 - c) : c;
       const uint16_t v = s_grid[rr * 8 + cc];
       if (v == 0) continue;                              // no valid return in this zone
+      if (v >= TOF_MATRIX_CLEAR_MM) continue;            // sensor's "no return" marker
+                                                         // (reports 4000 for nothing seen)
       if (v < TOF_MATRIX_MIN_MM) continue;               // sub-min-range speckle
       if ((float)v >= s_row_reject_mm[r]) continue;      // the floor (or beyond it)
       const float horiz = (float)v * s_row_cos[r];       // project ray -> horizontal
