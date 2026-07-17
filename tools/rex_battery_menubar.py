@@ -625,6 +625,7 @@ def run_app() -> int:
             self._restart_esp = rumps.MenuItem("Restart ESP32",
                                                callback=self._on_restart_esp)
             self._hv_notified_at = 0.0   # last supply-too-high notification
+            self._mono_warned = False    # warn once if attributed titles fail
             self.menu = list(self._rows) + [None, self._mark_full, self._restart_esp]
             self._timer = rumps.Timer(self._refresh, 1.0)
             self._timer.start()
@@ -655,9 +656,29 @@ def run_app() -> int:
             log.info("User clicked Restart ESP32 — queueing reset pulse.")
             _queue_esp32_reset()
 
+        def _set_title_stable(self, text: str) -> None:
+            """Set the status item title in the system font's MONOSPACED-DIGIT
+            variant, so a 0 becoming a 1 doesn't reflow the whole readout
+            (menu bar digits are proportional by default — the title visibly
+            slid around as values ticked). Falls back to the plain title if
+            the AppKit internals ever change."""
+            self.title = text            # keep rumps' own state in sync
+            try:
+                from AppKit import (NSAttributedString, NSFont,
+                                    NSFontAttributeName)
+                font = NSFont.monospacedDigitSystemFontOfSize_weight_(
+                    NSFont.systemFontSize(), 0.0)   # 0.0 = NSFontWeightRegular
+                attr = NSAttributedString.alloc().initWithString_attributes_(
+                    text, {NSFontAttributeName: font})
+                self._nsapp.nsstatusitem.button().setAttributedTitle_(attr)
+            except Exception as exc:
+                if not self._mono_warned:
+                    self._mono_warned = True
+                    log.warning("Monospaced-digit title unavailable: %s", exc)
+
         def _refresh(self, _timer):
             s = _snapshot()
-            self.title = _fmt_title(s)
+            self._set_title_stable(_fmt_title(s))
             self._mark_full.hidden = (s["mode"] != "live")
             self._restart_esp.hidden = (s["mode"] != "live")
             if _supply_too_high(s):
