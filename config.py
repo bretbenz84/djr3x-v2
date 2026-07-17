@@ -6694,9 +6694,11 @@ MOTION_APPROACH_CENTERED_FRACTION = 0.18  # neck must be this close to neutral (
 # beat — never on the first stop. Owns the base + the head + the conversational
 # floor while it runs; interruptible by voice at any time. Inert unless a drive base
 # is connected (MOTION_ESP32_PORT set); a no-base invite gets an in-character quip.
-# Safety note: the live firmware ships with ToF STILL STUBBED (MOTION_TOF_PRESENT=0),
-# so the base cannot yet stop itself for an obstacle — legs are deliberately short +
-# slow and gated by a per-stop VISION floor-check until real ToF lands.
+# Safety note: unless the firmware is built with a real ToF source — the front 8x8
+# matrix (-DMOTION_TOF_MATRIX_PRESENT=1, DFRobot SEN0628) or the radial array
+# (-DMOTION_TOF_PRESENT=1) — the base cannot stop itself for an obstacle, so legs are
+# deliberately short + slow and gated by a per-stop VISION floor-check. Keep the
+# vision floor-check even with ToF built in (it sees cables/clutter ToF can't).
 EXPLORE_ENABLED = _env_bool("EXPLORE_ENABLED", True)  # master kill switch
 EXPLORE_MAX_DURATION_SECS = _env_float(
     "EXPLORE_MAX_DURATION_SECS", 180.0, min_value=20.0, max_value=900.0,

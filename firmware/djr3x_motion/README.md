@@ -116,6 +116,58 @@ the `-DMOTION_TOF_USE_MUX=0` path `#error`s). `tof.cpp` is still a **scaffold** 
 fully hardware-validated; bench-check the channel→field order and timing budgets (docs §6).
 Bring-up emits one `[motion_fw] tof[…]` log per sensor (OK/FAIL) + an `N/8 up` tally.
 
+### Front 8x8 Matrix ToF (DFRobot SEN0628) — `-DMOTION_TOF_MATRIX_PRESENT=1`
+
+A single VL53L7CX 8x8 matrix module (onboard RP2040, Gravity 4-pin I²C) mounted at the
+**direct front of the base, pointed level**, gives the front stop/slow reflex a real
+64-zone view — chair legs, seat edges, and low clutter that a single-point sensor
+misses. Independent of the radial array (`MOTION_TOF_PRESENT`): the matrix's
+floor-rejected left/right-half obstacle distances **override `fl`/`fr`** (or
+min-combine when the radial array is also built in). Rear/side coverage still needs
+the radial array — **reversing is unprotected** with only the matrix wired.
+
+```bash
+# Live drive base + front matrix (the recommended config with this sensor wired)
+arduino-cli compile --fqbn esp32:esp32:esp32 \
+  --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_TOF_MATRIX_PRESENT=1" \
+  firmware/djr3x_motion
+```
+
+**Wiring** (same I²C trunk as the INA226/IMU, pins.h): sensor `D/T` → GPIO21 (SDA),
+`C/R` → GPIO22 (SCL), VCC → 3V3, GND → GND. DIP address **0x33**
+(`TOF_MATRIX_ADDR`). No library install needed — the robot build speaks the wire
+protocol directly (`tof_matrix.cpp`, a bounded vendored mini-driver; the DFRobot
+library's private 8 s receive timeout and per-call mallocs make it bench-only:
+`firmware/tof_matrix_test`).
+
+**Floor rejection**: the sensor sits above the floor, so the lower rows of the 45°
+FOV permanently see floor at short range (h=0.15 m ⇒ bottom row ≈ 0.45 m) — raw,
+that would pin the front zone in SLOW/STOP forever. Each below-horizon row gets a
+geometric expected-floor distance (`h/sin(row angle)`); readings at/beyond
+`TOF_MATRIX_FLOOR_TOLERANCE` (80%) of it are floor → clear, meaningfully shorter
+readings are real obstacles. Obstacles standing proud of the floor (chair legs) are
+still caught — mostly by the near-horizontal rows, which have no floor in view.
+
+**Calibration (calib.h, before trusting it on the floor):**
+1. **Measure `TOF_MATRIX_HEIGHT_M`** — lens centre to floor, metres. Err HIGH if
+   unsure: too-high makes empty floor read as an obstacle (obvious nuisance block);
+   too-low classifies real low obstacles as floor (silent miss).
+2. **Verify orientation** with the bench viewer (`tools/tof_matrix_gui.py`): tilt the
+   module down — near readings must appear in the BOTTOM rows, else set
+   `TOF_MATRIX_FLIP_V 1`; hold a hand at the robot's front-LEFT — `fl` (not `fr`)
+   must drop in telemetry, else set `TOF_MATRIX_FLIP_H 1`.
+3. **Floor check**: on open floor the front zone must read CLEAR (`fl`/`fr` ≈ 3500);
+   a hand at ~0.4 m must drop it into SLOW, at ~0.15 m into STOP/BLOCKED.
+
+Init is deferred (~6 s after boot: probe → 8x8 mode-set → 5 s sensor settle) so
+`setup()`/the Mac handshake never stall; until ready `fl`/`fr` read **-1** in the
+matrix-only build (visible in the GUI radar; safety fails open on -1 by the
+documented policy, same as the radial array). Frames poll at ~13 Hz
+(`TOF_MATRIX_FRAME_INTERVAL_MS`), each read hard-bounded at
+`TOF_MATRIX_READ_TIMEOUT_MS` (30 ms) so a wedged sensor can never stall the sensor
+task. A drop-off/cliff mode (floor reading *farther* than expected) is a possible
+future extension — not implemented; the `cliff` zone stays unused.
+
 ### Manual gamepad override (Bluepad32) — Phase 1.5
 
 A Bluetooth gamepad paired **directly to the ESP32** (not the Mac) can grab the wheel

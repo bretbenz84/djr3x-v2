@@ -32,6 +32,19 @@
 #define MOTION_TOF_USE_MUX 1   // override per-build: -DMOTION_TOF_USE_MUX=0 (unsupported: 8>GPIOs)
 #endif
 
+// MOTION_TOF_MATRIX_PRESENT gates the DFRobot 8x8 Matrix ToF (SEN0628, VL53L7CX +
+// onboard RP2040) mounted at the DIRECT FRONT of the base, pointed level. Its 64-zone
+// depth grid is floor-rejected and reduced to the nearest obstacle in the left/right
+// halves of the FOV, which OVERRIDE TofMm.fl/.fr — so the existing front stop/slow
+// zone reflex becomes real with just this one sensor wired (rear/side coverage still
+// needs the radial array). Independent of MOTION_TOF_PRESENT; when both are built,
+// the front pair takes the MIN of radial and matrix (most conservative). Driver:
+// tof_matrix.cpp (vendored mini-driver, no library dependency); knobs: calib.h
+// "8x8 Matrix ToF". Wiring/calibration: firmware/djr3x_motion/README.md.
+#ifndef MOTION_TOF_MATRIX_PRESENT
+#define MOTION_TOF_MATRIX_PRESENT 0   // override per-build: -DMOTION_TOF_MATRIX_PRESENT=1
+#endif
+
 void hal_init();
 void hal_tof_init();                             // bring up the ToF subsystem (no-op in the stub)
 void hal_read_tof(TofMm& out);                   // latest ToF distances (mm; -1 = error)

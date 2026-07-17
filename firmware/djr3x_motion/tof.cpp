@@ -23,7 +23,24 @@
 // Addressing: TCA9548A I²C mux ONLY. All 8 sensors keep the default 0x29 and the mux
 // selects one channel at a time (zero XSHUT GPIOs). 8 sensors exceed the ESP32's free
 // GPIOs for XSHUT sequencing, so that scheme is unsupported for this layout (#error).
-#include "hal.h"            // MOTION_TOF_PRESENT / MOTION_TOF_USE_MUX + TofMm (via context.h)
+//
+// FRONT MATRIX OVERLAY (MOTION_TOF_MATRIX_PRESENT, tof_matrix.cpp): the DFRobot 8x8
+// Matrix ToF at the direct front contributes floor-rejected left/right-half obstacle
+// distances that override (radial absent) or min-combine into (radial present) the
+// front pair fl/fr at the end of hal_read_tof — the zone reflex sees ONE front pair
+// either way. Rear/side fields are untouched by the matrix.
+#include "hal.h"            // MOTION_TOF_PRESENT / _TOF_MATRIX_PRESENT / _TOF_USE_MUX + TofMm
+#include "tof_matrix.h"     // front 8x8 matrix (no-op stubs when not built in)
+
+#if MOTION_TOF_MATRIX_PRESENT
+// Conservative front-pair combine for builds with BOTH the radial array and the
+// matrix: nearest valid wins; -1 only when both are errored/absent.
+static inline int16_t tof_front_combine(int16_t radial, int16_t matrix) {
+  if (radial < 0) return matrix;
+  if (matrix < 0) return radial;
+  return (radial < matrix) ? radial : matrix;
+}
+#endif
 
 #if MOTION_TOF_PRESENT
 #include "pins.h"
@@ -142,6 +159,10 @@ void hal_tof_init() {
   }
 
   tof_report_tally();
+
+#if MOTION_TOF_MATRIX_PRESENT
+  tof_matrix_init();        // deferred background init (~5 s settle off this path)
+#endif
 }
 
 // Read one sensor by index. Returns mm, or -1 on a genuine read error / no comms.
@@ -229,17 +250,38 @@ void hal_read_tof(TofMm& out) {
   out.fr = s_dist[5];   // long,  mux 5 — front-right
   out.rl = s_dist[6];   // long,  mux 6 — rear-left
   out.rr = s_dist[7];   // long,  mux 7 — rear-right
+
+#if MOTION_TOF_MATRIX_PRESENT
+  // Front matrix overlay: min-combine with the radial front pair (nearest wins).
+  int16_t mfl, mfr;
+  tof_matrix_read(&mfl, &mfr);
+  out.fl = tof_front_combine(out.fl, mfl);
+  out.fr = tof_front_combine(out.fr, mfr);
+#endif
 }
 
 #else
 // ===========================================================================
-// STUB — no ToF sensors wired. Report a clear room so the reflex/zone logic stays
-// in CLEAR. OBSTACLE AVOIDANCE IS INACTIVE in this build.
+// STUB — no radial ToF sensors wired. Rear/side fields report a clear room.
+// WITHOUT the matrix: obstacle avoidance is fully inactive in this build.
+// WITH the matrix (MOTION_TOF_MATRIX_PRESENT=1): the front 8x8 OWNS fl/fr —
+// including an honest -1 while initializing (~6 s after boot) or errored — so
+// the FRONT stop/slow reflex is real; reversing remains unprotected.
 // ===========================================================================
-void hal_tof_init() {}
+void hal_tof_init() {
+#if MOTION_TOF_MATRIX_PRESENT
+  tof_matrix_init();        // deferred background init (~5 s settle off this path)
+#endif
+}
 
 void hal_read_tof(TofMm& out) {
   out.fl = out.fr = out.rl = out.rr = 4000;   // long pairs: room reads clear
   out.lf = out.lb = out.rf = out.rb = 1500;   // short pairs: no walls in range
+#if MOTION_TOF_MATRIX_PRESENT
+  // The matrix is the ONLY front sensor here: it owns fl/fr outright, so a dead
+  // or still-initializing matrix shows as -1 in telemetry (visible in the GUI
+  // radar) instead of hiding behind the stub's fictional 4000-clear.
+  tof_matrix_read(&out.fl, &out.fr);
+#endif
 }
 #endif  // MOTION_TOF_PRESENT

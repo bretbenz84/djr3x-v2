@@ -225,6 +225,38 @@
 #define TOF_L1X_INTERMEASUREMENT_MS 60  // continuous-mode period (> timing budget)
 #define TOF_L1X_OUT_OF_RANGE_MM   4000  // clamp "nothing in range" to a far/clear value
 
+// ---- 8x8 Matrix ToF (DFRobot SEN0628 — MOTION_TOF_MATRIX_PRESENT==1) --------
+// Front-mounted, level, VL53L7CX behind an onboard RP2040 (tof_matrix.cpp).
+// Range 20-3500 mm, 45°x45° FOV (63° diagonal), 8x8 = 15 Hz max on the sensor.
+#define TOF_MATRIX_ADDR            0x33  // DIP-strapped I2C address (bench-confirmed)
+#define TOF_MATRIX_FRAME_INTERVAL_MS 75  // ~13 Hz poll (sensor tops out at 15 Hz in 8x8)
+#define TOF_MATRIX_READ_TIMEOUT_MS   30  // hard deadline for one frame read — a slow/
+                                         // wedged RP2040 costs at most this per attempt
+#define TOF_MATRIX_MODE_ACK_TIMEOUT_MS 1000 // SETMODE ack wait (init task only)
+#define TOF_MATRIX_MODE_SETTLE_MS  5200  // VL53L7CX reconfigure settle (vendor lib uses 5000)
+//
+// FLOOR REJECTION geometry — the sensor sits above the floor, so the lower rows
+// permanently see floor at short range (h=0.15 m: bottom row ≈ 445 mm along-ray).
+// Per-row expected floor distance = HEIGHT / sin(row angle below horizon); readings
+// at/beyond FLOOR_TOLERANCE of it are floor (clear), meaningfully shorter = obstacle.
+// ⚠ MEASURE TOF_MATRIX_HEIGHT_M on the robot: lens centre to floor, metres. If unsure
+// err HIGH — too-high reads the empty floor as an obstacle (nuisance block, obvious);
+// too-low classifies real low obstacles as floor (missed, silent).
+#define TOF_MATRIX_HEIGHT_M        0.15f // ⚠ lens height above floor — MEASURE ME
+#define TOF_MATRIX_PITCH_DEG       0.0f  // mount pitch trim (+ = tilted up); level = 0
+#define TOF_MATRIX_VFOV_DEG        45.0f // VL53L7CX vertical FOV (45° square per ST)
+#define TOF_MATRIX_FLOOR_TOLERANCE 0.80f // reading >= this fraction of expected floor = floor
+#define TOF_MATRIX_FLOOR_MIN_MM    250   // never call anything closer than this "floor"
+#define TOF_MATRIX_MIN_MM          25    // below sensor min range = speckle, ignore
+#define TOF_MATRIX_CLEAR_MM        3500  // "nothing in range" clear value (sensor max)
+//
+// Orientation — normalize the raw grid so row 0 = physically TOP and column 0 = the
+// ROBOT'S LEFT edge of the FOV. ⚠ VERIFY ON THE BENCH with tools/tof_matrix_gui.py:
+// (1) tilt the module down — if the NEAR readings move to the TOP rows, set FLIP_V 1;
+// (2) hold a hand at the robot's front-LEFT — if fr (not fl) drops, set FLIP_H 1.
+#define TOF_MATRIX_FLIP_V          0     // 1 = raw row 0 is physically the BOTTOM
+#define TOF_MATRIX_FLIP_H          0     // 1 = raw col 0 is the robot's RIGHT
+
 // ---- Hallway steering assist (manual forward drive) ------------------------
 // While the gamepad commands FORWARD, the base steers itself away from walls using
 // the side short-range pairs (lateral clearance) plus the front long pair

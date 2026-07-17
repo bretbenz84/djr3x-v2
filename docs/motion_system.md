@@ -126,6 +126,19 @@ Each BTS7960 is a full H-bridge driving **one** motor bidirectionally.
 
 ## 6. Sensor subsystem (8 radial ToF: 4× VL53L0X + 4× VL53L1X)
 
+> **Front 8x8 Matrix ToF (added 2026-07-16):** a DFRobot SEN0628 (VL53L7CX 64-zone
+> matrix + onboard RP2040, I²C addr 0x33 on the same trunk) can be mounted at the
+> DIRECT FRONT, pointed level, and built in with `-DMOTION_TOF_MATRIX_PRESENT=1` —
+> independent of this radial array. Its floor-rejected left/right-half nearest-obstacle
+> distances override (or min-combine with) the front pair `fl`/`fr`, so the front
+> stop/slow reflex works with just this one sensor: full contour view of chairs and
+> low clutter across a 45° FOV. The lower rows see the FLOOR at short range by
+> geometry (the sensor sits ~0.15 m up); a per-row expected-floor rejection keeps the
+> empty floor CLEAR while anything standing proud of it registers. Driver, math, and
+> calibration: `firmware/djr3x_motion/tof_matrix.cpp` + the firmware README's
+> "Front 8x8 Matrix ToF" section. Rear/sides (and reversing protection) still need
+> the radial array below.
+
 ### 6.1 The I²C addressing gotcha (must-handle)
 **Every VL53L0X *and* VL53L1X powers up at the same I²C address (0x29),** so 8 on one
 bus collide. This base uses a **TCA9548A I²C multiplexer**: all 8 keep 0x29 and the mux
