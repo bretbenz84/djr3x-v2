@@ -144,6 +144,7 @@ _snap: dict = {
     "batt_soc": None,       # int %, -1 = unknown
     "state": "",            # base state string (idle/moving/…)
     "env": None,            # {"ok":bool,"t":°C,"hpa":…,"rh":%?} from telemetry
+    "charging": False,      # firmware's debounced on-charger flag (drive locked out)
     "fault": None,
     "frame_at": 0.0,        # time.time() of the last telemetry frame
     "detail": "starting…",
@@ -254,6 +255,7 @@ def _handle_line(raw: bytes) -> None:
     _advance_current_ema(msg.get("batt_ma"))
     _update(
         env=msg.get("env"),
+        charging=bool(msg.get("charging", False)),
         batt_mv=msg.get("batt_mv"),
         batt_ma=msg.get("batt_ma"),
         batt_soc=msg.get("batt_soc"),
@@ -283,6 +285,71 @@ def _advance_current_ema(ma) -> None:
             avg = prev + alpha * (float(ma) - prev)
         _snap["batt_ma_avg"] = avg
         _snap["batt_ma_avg_at"] = now
+
+
+# ── Mouth PCB sleep sync (owner request 2026-07-17) ───────────────────────────
+# While the ROBOT IS OFF (this app only owns ports when main.py isn't running)
+# and the charger is connected, the head/mouth PCB shows its SLEEP animation
+# (slow red breathing); unplugging turns it back off. Uses the same one-line
+# text protocol as hardware/leds_head.py on ARDUINO_HEAD_PORT. The port is
+# opened per state change and closed immediately, so a starting main.py never
+# finds it held. Rex himself handles LEDs while running (we're dormant then).
+
+def _head_port() -> str:
+    env = _read_env_file()
+    return (os.environ.get("ARDUINO_HEAD_PORT") or env.get("ARDUINO_HEAD_PORT") or "").strip()
+
+
+def _send_mouth_command(cmd: str) -> bool:
+    port = _head_port()
+    if not port:
+        return False
+    try:
+        import serial
+        ser = serial.Serial(port, 115200, timeout=1.0, write_timeout=1.0, exclusive=True)
+    except Exception as exc:
+        log.debug("mouth PCB open failed (%s) — will retry.", exc)
+        return False
+    try:
+        # Opening the port auto-resets the AVR; wait out its bootloader before
+        # writing or the command lands on deaf ears.
+        time.sleep(2.0)
+        ser.write((cmd + "\n").encode("ascii"))
+        ser.flush()
+        log.info("Mouth PCB: sent %s.", cmd)
+        return True
+    except Exception as exc:
+        log.warning("Mouth PCB write failed (%s).", exc)
+        return False
+    finally:
+        try:
+            ser.close()
+        except Exception:
+            pass
+
+
+_mouth_sleeping: "bool | None" = None   # None = unknown (fresh handoff / dormant)
+_mouth_retry_at = 0.0
+
+
+def _sync_mouth_sleep(mode: str, charging: bool) -> None:
+    """Keep the mouth PCB's sleep animation in step with the charger while the
+    robot is off. State-based (not edge-based) so 'Rex exits while already on
+    the charger' also starts the animation."""
+    global _mouth_sleeping, _mouth_retry_at
+    if mode != "live":
+        _mouth_sleeping = None      # Rex (or nobody) owns the LEDs — resync later
+        return
+    want = bool(charging)
+    if _mouth_sleeping == want:
+        return
+    now = time.time()
+    if now < _mouth_retry_at:
+        return
+    if _send_mouth_command("SLEEP" if want else "OFF"):
+        _mouth_sleeping = want
+    else:
+        _mouth_retry_at = now + 30.0    # don't hammer a missing/busy port
 
 
 def _worker() -> None:
@@ -394,6 +461,9 @@ def _worker() -> None:
             _close()
             _update(mode="connecting", detail=f"no telemetry from {port}")
             _stop.wait(2.0)
+
+        s = _snapshot()
+        _sync_mouth_sleep(s["mode"], bool(s.get("charging")))
 
         # Re-check the flock between reads. readline()'s 1 s timeout bounds
         # how long a quiet line can delay the dormant handoff.
