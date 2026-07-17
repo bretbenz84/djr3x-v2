@@ -462,26 +462,30 @@ def _load_model():
 
 
 def _wake_threshold() -> float:
-    # 0.7 (not 0.5) so background TV/ambient — which tops out around 0.12 in
-    # practice — can't graze the bar. A clean "wake up rex" scores ~0.99, so
-    # there's wide margin. Lower it only if a real phrase won't trigger.
+    # 0.92 (raised from 0.7, owner report 2026-07-17: nearby conversation launched
+    # the program without the phrase). Log evidence across 6 days of fires: every
+    # verified real "wake up rex" scored 0.994-0.998; the one conversational false
+    # fire scored 0.871 — comfortably UNDER this bar while real wakes sit well
+    # over it. Lower it only if a real phrase stops triggering (check the [diag]
+    # peak-score lines to see what a missed attempt actually scored).
     try:
-        return float(os.environ.get("REX_SUPERVISOR_WAKE_THRESHOLD", "0.7"))
+        return float(os.environ.get("REX_SUPERVISOR_WAKE_THRESHOLD", "0.92"))
     except ValueError:
-        return 0.7
+        return 0.92
 
 
 def _wake_consecutive() -> int:
     """How many CONSECUTIVE 80 ms frames must clear the threshold before firing.
 
     A real "wake up rex" holds the model near 1.0 for ~10 frames in a row; a TV
-    phonetic near-miss is a 1-2 frame spike. Requiring a short sustained run
-    (default 3 ≈ 240 ms) kills those spikes without risking real wakes.
+    phonetic near-miss is a 1-2 frame spike. Requiring a sustained run (default
+    4 ≈ 320 ms, raised from 3 alongside the 0.92 threshold — conversational false
+    fires held 3 frames) kills those spikes without risking real wakes.
     """
     try:
-        return max(1, int(os.environ.get("REX_SUPERVISOR_WAKE_CONSECUTIVE", "3")))
+        return max(1, int(os.environ.get("REX_SUPERVISOR_WAKE_CONSECUTIVE", "4")))
     except ValueError:
-        return 3
+        return 4
 
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
