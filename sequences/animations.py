@@ -960,6 +960,16 @@ def shutdown() -> None:
     head is stranded near where it was (≈ neutral). We reset to a brisk profile
     here so the physical servo can actually keep up and reach the rest pose.
     """
+    # The GUI's manual servo override freezes EVERY programmatic move — including
+    # this one. If the operator shuts down with the override still on (field bug
+    # 2026-07-16: droop silently no-oped, program exited with the head wherever
+    # it was), the power-down pose must still win: the program is exiting, so
+    # there is nothing left for the override to protect. Clear it first.
+    try:
+        servos.set_manual_override_enabled(False)
+    except Exception:
+        pass
+
     servos.stop_breathing()
     time.sleep(0.1)   # let breathing thread exit before we move headlift
 
