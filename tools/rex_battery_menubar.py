@@ -143,6 +143,7 @@ _snap: dict = {
     "batt_ma_avg_at": 0.0,  # time.time() the EMA last advanced (gap detection)
     "batt_soc": None,       # int %, -1 = unknown
     "state": "",            # base state string (idle/moving/…)
+    "env": None,            # {"ok":bool,"t":°C,"hpa":…,"rh":%?} from telemetry
     "fault": None,
     "frame_at": 0.0,        # time.time() of the last telemetry frame
     "detail": "starting…",
@@ -252,6 +253,7 @@ def _handle_line(raw: bytes) -> None:
         return
     _advance_current_ema(msg.get("batt_ma"))
     _update(
+        env=msg.get("env"),
         batt_mv=msg.get("batt_mv"),
         batt_ma=msg.get("batt_ma"),
         batt_soc=msg.get("batt_soc"),
@@ -469,6 +471,19 @@ def _fmt_title(s: dict) -> str:
     clock = _fmt_title_clock(s)
     if clock:
         parts.append(f"⏳ {clock}")
+
+    # Room climate (BME280/BMP280 on the base), American units: °F and inHg.
+    env = s.get("env") or {}
+    if env.get("ok"):
+        t = env.get("t")
+        if t is not None:
+            parts.append(f"🌡️ {float(t) * 9.0 / 5.0 + 32.0:.0f}°F")
+        rh = env.get("rh")
+        if rh is not None:
+            parts.append(f"💧 {float(rh):.0f}%")
+        hpa = env.get("hpa")
+        if hpa is not None:
+            parts.append(f"🌤️ {float(hpa) * 0.029530:.2f}inHg")
     return "  ".join(parts)
 
 
@@ -528,6 +543,16 @@ def _fmt_lines(s: dict) -> list[str]:
             lines.append(f"Current: {amps:.2f} A draw")
         if mv is not None and mv > 0 and abs(ma) >= abs(_CHARGING_MA):
             lines.append(f"Power: {abs(mv * ma) / 1_000_000:.1f} W")
+
+    env = s.get("env") or {}
+    if env.get("ok") and env.get("t") is not None:
+        t_f = float(env["t"]) * 9.0 / 5.0 + 32.0
+        line = f"Climate: {t_f:.1f}°F"
+        if env.get("rh") is not None:
+            line += f", {float(env['rh']):.0f}% RH"
+        if env.get("hpa") is not None:
+            line += f", {float(env['hpa']) * 0.029530:.2f} inHg"
+        lines.append(line)
 
     # Estimated runtime — only while live (a dormant/stale reading would give a
     # confidently wrong number). Guards itself when it can't be estimated.
