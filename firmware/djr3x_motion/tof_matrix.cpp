@@ -48,11 +48,12 @@ static const uint8_t MX_MODE_8X8      = 8;      // eMatrix_8X8
 
 // ---- State (init task writes once; sensor task owns everything after) -------
 static volatile bool s_ready = false;           // init task -> sensor task handoff
+
 static uint16_t s_grid[64];                     // latest raw frame, row-major mm
-static int16_t  s_fl = -1, s_fr = -1;           // published aggregates (mm; -1 = no data)
+static volatile int16_t  s_fl = -1, s_fr = -1;  // published aggregates (mm; -1 = no data)
+static volatile uint32_t s_pub_ms = 0;          // when s_fl/s_fr were last refreshed
 static float    s_filt_fl = -1.0f, s_filt_fr = -1.0f;  // fast-attack/slow-release state
 static uint8_t  s_err_streak = 0;               // consecutive failed frame reads
-static uint32_t s_last_frame_ms = 0;            // rate limiter
 
 // Per-row floor-rejection tables, precomputed on first use (row 0 = physically TOP
 // after TOF_MATRIX_FLIP_V normalization). reject_mm = readings at/beyond this are
@@ -92,29 +93,36 @@ static void mx_compute_geometry() {
   s_geom_ready = true;
 }
 
-// ---- Bounded I2C primitives --------------------------------------------------
+static void mx_aggregate(int16_t* out_fl, int16_t* out_fr);
+static int16_t mx_filter(float* state, int16_t mm);
+
+// ---- Bounded I2C primitives (hardware I2C1 via Wire1) -------------------------
+// The matrix lives ALONE on the second I2C controller (GPIO4/5, pins.h) — never
+// on the 21/22 trunk with the INA226/IMU. Every transaction runs on the matrix's
+// own poll task, so a slow or stretching sensor costs only this task's time.
 static bool mx_probe() {
-  Wire.beginTransmission(TOF_MATRIX_ADDR);
-  return Wire.endTransmission() == 0;
+  Wire1.beginTransmission(TOF_MATRIX_ADDR);
+  return Wire1.endTransmission() == 0;
 }
 
-static void mx_send_cmd(uint8_t cmd, const uint8_t* args, uint8_t args_len) {
-  Wire.beginTransmission(TOF_MATRIX_ADDR);
-  Wire.write(MX_HEAD);
-  Wire.write((uint8_t)(((args_len + 1) >> 8) & 0xFF));  // argsNumH (lib's len+1 quirk)
-  Wire.write((uint8_t)((args_len + 1) & 0xFF));         // argsNumL
-  Wire.write(cmd);
-  if (args_len) Wire.write(args, args_len);
-  Wire.endTransmission();
+static bool mx_send_cmd(uint8_t cmd, const uint8_t* args, uint8_t args_len) {
+  Wire1.beginTransmission(TOF_MATRIX_ADDR);
+  Wire1.write(MX_HEAD);
+  Wire1.write((uint8_t)(((args_len + 1) >> 8) & 0xFF));  // argsNumH (lib's len+1 quirk)
+  Wire1.write((uint8_t)((args_len + 1) & 0xFF));         // argsNumL
+  Wire1.write(cmd);
+  if (args_len) Wire1.write(args, args_len);
+  const bool ok = (Wire1.endTransmission() == 0);
+  return ok;
 }
 
 // Read len bytes in <=32-byte chunks. Returns false on a short/NACKed read.
 static bool mx_read_bytes(uint8_t* dst, int len) {
   while (len > 0) {
     const int n = (len > MX_I2C_CHUNK) ? MX_I2C_CHUNK : len;
-    if ((int)Wire.requestFrom((uint8_t)TOF_MATRIX_ADDR, (uint8_t)n) != n) return false;
+    if ((int)Wire1.requestFrom((uint8_t)TOF_MATRIX_ADDR, (uint8_t)n) != n) return false;
     for (int i = 0; i < n; i++) {
-      const int b = Wire.read();
+      const int b = Wire1.read();
       if (b < 0) return false;
       *dst++ = (uint8_t)b;
     }
@@ -176,9 +184,17 @@ static void mx_init_task(void*) {
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 
+  // ⚠ DO NOT status-poll the sensor while it reconfigures. The RP2040
+  // clock-stretches during the ~5 s VL53L7CX mode switch, and the ESP32's I2C
+  // hardware tolerates at most ~13 ms of stretch — hammering status reads into
+  // that window wedges the shared I2C trunk and hangs the whole firmware
+  // (field-observed 2026-07-16: telemetry died seconds after boot, 4/5 resets).
+  // Instead: send SETMODE, wait out the reconfigure BLINDLY, then read the ack
+  // exactly when the sensor is guaranteed idle again.
   for (;;) {
     const uint8_t args[4] = {0, 0, 0, MX_MODE_8X8};
     mx_send_cmd(MX_CMD_SETMODE, args, sizeof(args));
+    vTaskDelay(pdMS_TO_TICKS(TOF_MATRIX_MODE_SETTLE_MS));
     uint8_t scratch[8];
     if (mx_recv_response(MX_CMD_SETMODE, scratch, sizeof(scratch),
                          TOF_MATRIX_MODE_ACK_TIMEOUT_MS) >= 0) {
@@ -188,14 +204,50 @@ static void mx_init_task(void*) {
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 
-  // The VL53L7CX reconfigure needs a long settle before frames are valid (the
-  // vendor library hard-delays 5000 ms here; we do it off the critical path).
-  vTaskDelay(pdMS_TO_TICKS(TOF_MATRIX_MODE_SETTLE_MS));
-
   mx_compute_geometry();
   s_ready = true;
   emit_log("info", "tof_matrix: 8x8 front matrix ready (floor rejection active)");
-  vTaskDelete(nullptr);
+
+  // ---- Poll loop: this task OWNS every matrix I2C transaction from here on. ----
+  // WEDGE ISOLATION (field bug 2026-07-16): the RP2040 clock-stretches beyond
+  // what the ESP32 I2C driver tolerates, and a recovery-path deadlock inside
+  // Wire can block its caller FOREVER. When the frame reads ran inline on the
+  // 50 Hz sensor task, one wedged transaction froze the sensor task -> the
+  // state-lock chain -> control/telemetry/serial: the whole firmware went
+  // silent (both cores' output dead). Confining the I2C to this dedicated task
+  // means a wedge kills ONLY the matrix; tof_matrix_read() then times out via
+  // s_pub_ms staleness and publishes an honest -1 while the robot stays alive.
+  for (;;) {
+    mx_send_cmd(MX_CMD_ALLDATA, nullptr, 0);
+    uint8_t payload[128];
+    const int got = mx_recv_response(MX_CMD_ALLDATA, payload, sizeof(payload),
+                                     TOF_MATRIX_READ_TIMEOUT_MS);
+    if (got == (int)sizeof(payload)) {
+      s_err_streak = 0;
+      for (int i = 0; i < 64; i++) {                     // uint16 little-endian, row-major
+        s_grid[i] = (uint16_t)payload[2 * i] | ((uint16_t)payload[2 * i + 1] << 8);
+      }
+      int16_t raw_fl, raw_fr;
+      mx_aggregate(&raw_fl, &raw_fr);
+      s_fl = mx_filter(&s_filt_fl, raw_fl);
+      s_fr = mx_filter(&s_filt_fr, raw_fr);
+      s_pub_ms = millis();
+    } else {
+      // Failed/short frame: hold the last-good aggregates through a transient
+      // error, then publish an honest -1 (same policy + streak as tof.cpp, same
+      // documented fail-open in safety.cpp).
+      if (s_err_streak < 255) s_err_streak++;
+      if (s_err_streak == TOF_ERR_STREAK_STALE && (s_fl != -1 || s_fr != -1)) {
+        s_fl = s_fr = -1;
+        s_filt_fl = s_filt_fr = -1.0f;
+        emit_log("warn", "tof_matrix: consecutive read errors - reporting -1");
+      } else if (s_err_streak > TOF_ERR_STREAK_STALE) {
+        s_fl = s_fr = -1;
+      }
+      s_pub_ms = millis();   // an honest error is still a live publisher
+    }
+    vTaskDelay(pdMS_TO_TICKS(TOF_MATRIX_FRAME_INTERVAL_MS));
+  }
 }
 
 // ---- Aggregation: 64 zones -> nearest obstacle per half ----------------------
@@ -237,48 +289,32 @@ static int16_t mx_filter(float* state, int16_t mm) {
 
 // ---- Public API ---------------------------------------------------------------
 void tof_matrix_init() {
-  // Idempotent bus bring-up (tof.cpp/battery/imu do the same; first caller wins)
-  // + the same wedged-transaction bound the rest of the trunk uses.
-  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-  Wire.setTimeOut(20);
+  // Second controller, dedicated pins (pins.h): the matrix shares a bus with
+  // NOTHING, and all its transactions run on its own expendable poll task.
+  Wire1.begin(PIN_MX_I2C_SDA, PIN_MX_I2C_SCL);
+  Wire1.setTimeOut(500);   // ride out slave clock-stretch; only this task waits
   emit_log("info", "tof_matrix: init deferred (mode switch needs ~5s settle)");
   xTaskCreatePinnedToCore(mx_init_task, "tofmx", 3072, nullptr, 1, nullptr, 1);
 }
 
 bool tof_matrix_ready() { return s_ready; }
 
+// Lock-free snapshot for the 50 Hz sensor task: NO I2C here (see the wedge-
+// isolation note in the poll loop). If the poll task dies mid-transaction the
+// publishes stop; the staleness bound below converts that silence into an
+// honest -1 (and one log line) instead of freezing distances at their last
+// value while the base keeps driving.
 void tof_matrix_read(int16_t* fl, int16_t* fr) {
   if (!s_ready) { *fl = -1; *fr = -1; return; }
 
-  const uint32_t now = millis();
-  if ((uint32_t)(now - s_last_frame_ms) >= TOF_MATRIX_FRAME_INTERVAL_MS) {
-    s_last_frame_ms = now;
-    mx_send_cmd(MX_CMD_ALLDATA, nullptr, 0);
-    uint8_t payload[128];
-    const int got = mx_recv_response(MX_CMD_ALLDATA, payload, sizeof(payload),
-                                     TOF_MATRIX_READ_TIMEOUT_MS);
-    if (got == (int)sizeof(payload)) {
-      s_err_streak = 0;
-      for (int i = 0; i < 64; i++) {                     // uint16 little-endian, row-major
-        s_grid[i] = (uint16_t)payload[2 * i] | ((uint16_t)payload[2 * i + 1] << 8);
-      }
-      int16_t raw_fl, raw_fr;
-      mx_aggregate(&raw_fl, &raw_fr);
-      s_fl = mx_filter(&s_filt_fl, raw_fl);
-      s_fr = mx_filter(&s_filt_fr, raw_fr);
-    } else {
-      // Failed/short frame: hold the last-good aggregates through a transient
-      // error, then publish an honest -1 (same policy + streak as tof.cpp, same
-      // documented fail-open in safety.cpp).
-      if (s_err_streak < 255) s_err_streak++;
-      if (s_err_streak == TOF_ERR_STREAK_STALE && (s_fl != -1 || s_fr != -1)) {
-        s_fl = s_fr = -1;
-        s_filt_fl = s_filt_fr = -1.0f;
-        emit_log("warn", "tof_matrix: consecutive read errors - reporting -1");
-      } else if (s_err_streak > TOF_ERR_STREAK_STALE) {
-        s_fl = s_fr = -1;
-      }
+  if ((uint32_t)(millis() - s_pub_ms) > TOF_MATRIX_STALE_MS) {
+    static bool s_warned = false;
+    if (!s_warned) {
+      s_warned = true;
+      emit_log("warn", "tof_matrix: publisher stale (poll task wedged?) - reporting -1");
     }
+    *fl = -1; *fr = -1;
+    return;
   }
 
   *fl = s_fl;

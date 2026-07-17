@@ -54,3 +54,14 @@
 // there are no PIN_TOF_XSHUT_* defines.
 #define PIN_I2C_SDA  21
 #define PIN_I2C_SCL  22
+
+// ---- I2C #2 — the 8x8 Matrix ToF's PRIVATE bus (MOTION_TOF_MATRIX_PRESENT==1) --
+// The SEN0628's onboard RP2040 clock-stretches (frame packaging, ~5 s mode
+// reconfigure); stretches past the Wire timeout corrupt the IDF i2c_master driver
+// state and take out every OTHER device on the same controller (field bug
+// 2026-07-16: IMU transaction crashed → whole firmware froze). So the matrix rides
+// the ESP32's second I2C controller on its own pins — never on the 21/22 trunk.
+// The Gravity board has onboard pull-ups; GPIO4 is a clean output-capable pin, and
+// GPIO5's strapping role (SDIO timing) tolerates an idle-high I2C line at reset.
+#define PIN_MX_I2C_SDA  4   // SEN0628 Gravity D/T
+#define PIN_MX_I2C_SCL  5   // SEN0628 Gravity C/R

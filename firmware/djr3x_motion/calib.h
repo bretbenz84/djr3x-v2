@@ -232,8 +232,16 @@
 #define TOF_MATRIX_FRAME_INTERVAL_MS 75  // ~13 Hz poll (sensor tops out at 15 Hz in 8x8)
 #define TOF_MATRIX_READ_TIMEOUT_MS   30  // hard deadline for one frame read — a slow/
                                          // wedged RP2040 costs at most this per attempt
-#define TOF_MATRIX_MODE_ACK_TIMEOUT_MS 1000 // SETMODE ack wait (init task only)
+#define TOF_MATRIX_MODE_ACK_TIMEOUT_MS 8000 // SETMODE ack wait (init task only). The
+                                         // RP2040 only acks AFTER the ~5 s VL53L7CX
+                                         // reconfigure; a short window here re-sends
+                                         // SETMODE into a busy sensor, which wedges
+                                         // the I2C trunk and hangs the whole firmware
+                                         // (field-observed 2026-07-16). Must exceed
+                                         // the reconfigure time; vendor lib polls 8 s.
 #define TOF_MATRIX_MODE_SETTLE_MS  5200  // VL53L7CX reconfigure settle (vendor lib uses 5000)
+#define TOF_MATRIX_STALE_MS         500  // publisher silence past this = poll task dead
+                                         // (I2C wedge) -> fl/fr report -1, robot stays alive
 //
 // FLOOR REJECTION geometry — the sensor sits above the floor, so the lower rows
 // permanently see floor at short range (h=0.15 m: bottom row ≈ 445 mm along-ray).

@@ -127,14 +127,24 @@ min-combine when the radial array is also built in). Rear/side coverage still ne
 the radial array — **reversing is unprotected** with only the matrix wired.
 
 ```bash
-# Live drive base + front matrix (the recommended config with this sensor wired)
-arduino-cli compile --fqbn esp32:esp32:esp32 \
-  --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_TOF_MATRIX_PRESENT=1" \
-  firmware/djr3x_motion
+# Live drive base + gamepad + front matrix — THE robot build with this sensor wired.
+# ⚠ FQBN MUST be the Bluepad32 core. Field lesson 2026-07-16: flashing this firmware
+# with plain esp32:esp32 (core 3.3.10) froze core 1 at boot — its rewritten IDF
+# i2c_master driver hard-hangs on this trunk's transactions (and drops the gamepad).
+# The Bluepad32 core's legacy I2C driver is the one this firmware is stable on.
+arduino-cli compile --fqbn esp32-bluepad32:esp32:esp32:UploadSpeed=115200 \
+  --build-property "compiler.cpp.extra_flags=-DMOTION_HW_PRESENT=1 -DMOTION_GAMEPAD_PRESENT=1 -DMOTION_TOF_MATRIX_PRESENT=1" \
+  --upload -p "$PORT" firmware/djr3x_motion
 ```
 
-**Wiring** (same I²C trunk as the INA226/IMU, pins.h): sensor `D/T` → GPIO21 (SDA),
-`C/R` → GPIO22 (SCL), VCC → 3V3, GND → GND. DIP address **0x33**
+**Wiring** (its OWN I²C bus — never the 21/22 trunk, pins.h): sensor `D/T` →
+**GPIO4** (SDA), `C/R` → **GPIO5** (SCL), VCC → 3V3, GND → GND. The module's RP2040
+clock-stretches (frame packaging; ~5 s mode reconfigure), and a stretch that outlasts
+the Wire timeout corrupts the ESP32 core's I²C driver state — on a shared bus that
+crashed the IMU's next transaction and froze the whole firmware (field bug
+2026-07-16). On its private controller (I2C1) a wedge can only kill the matrix's own
+poll task; `fl`/`fr` then go stale → an honest `-1` within `TOF_MATRIX_STALE_MS`
+while the robot keeps running. DIP address **0x33**
 (`TOF_MATRIX_ADDR`). No library install needed — the robot build speaks the wire
 protocol directly (`tof_matrix.cpp`, a bounded vendored mini-driver; the DFRobot
 library's private 8 s receive timeout and per-call mallocs make it bench-only:
