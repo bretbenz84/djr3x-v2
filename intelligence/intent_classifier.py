@@ -142,7 +142,7 @@ _NAMED_DAY_EXPLANATION_RE = re.compile(
     re.IGNORECASE,
 )
 _WEATHER_QUERY_RE = re.compile(
-    r"\b(weather|temperature|forecast|rain|raining|hot|cold|outside)\b",
+    r"\b(weather|temperature|forecast|rain|raining|hot|cold|outside|humidity|humid|muggy|barometric|air pressure)\b",
     re.IGNORECASE,
 )
 # Genuine "what can we play?" asks only. A bare/embedded game NAME ("20 questions",

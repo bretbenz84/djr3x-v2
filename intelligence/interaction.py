@@ -18269,6 +18269,37 @@ def _handle_classified_intent(
         return resp
 
     if intent == "query_weather":
+        # INDOOR phrasing ("inside", "in here", "in the room") means the BME280
+        # climate sensor on the drive base, not the outdoor weather feed — the
+        # classifier files both under query_weather (field bug 2026-07-16: asking
+        # for the temperature inside got Sacramento's forecast).
+        lowered = (raw_text or "").lower()
+        if any(k in lowered for k in ("inside", "in here", "indoor", "in the room",
+                                      "in this room", "in the house")):
+            env: dict = {}
+            try:
+                from hardware import motion
+                env = (motion.telemetry() or {}).get("env") or {}
+            except Exception:
+                env = {}
+            if env.get("ok") and env.get("t") is not None:
+                t_f = float(env["t"]) * 9.0 / 5.0 + 32.0
+                facts = f"{t_f:.0f}°F"
+                if env.get("rh") is not None:
+                    facts += f", {float(env['rh']):.0f} percent humidity"
+                if "pressure" in lowered and env.get("hpa") is not None:
+                    facts += f", {float(env['hpa']) * 0.029530:.2f} inHg barometric pressure"
+                return _say(
+                    f"Your own onboard climate sensor reads the room at exactly {facts}. "
+                    "Tell the user the indoor reading in one Rex-style line. You MUST "
+                    f"state the numbers exactly as given — do not round or invent. {tool_scope}"
+                )
+            return _say(
+                "The user asked about the temperature inside, but your onboard climate "
+                "sensor isn't reporting right now. Say so in one Rex-style line. Do NOT "
+                f"make up a number. {tool_scope}"
+            )
+
         from awareness.chronoception import refresh_weather
         w = refresh_weather()
         temp = w.get("temp_f")
@@ -18281,9 +18312,12 @@ def _handle_classified_intent(
                 "right now. Tell them you can't reach the weather service in one "
                 f"Rex-style line. Do NOT make up a temperature or conditions. {tool_scope}"
             )
+        humid_part = ""
+        if ("humid" in lowered or "muggy" in lowered) and w.get("humidity") is not None:
+            humid_part = f" Humidity is {w['humidity']} percent — include it."
         return _say(
             f"The real current weather in {location} is exactly {temp}°F and "
-            f"{desc}. Tell the user the weather in one Rex-style line. "
+            f"{desc}.{humid_part} Tell the user the weather in one Rex-style line. "
             f"You MUST state the temperature exactly as given ({temp}°F) and the "
             f"conditions ({desc}) — do not round, do not invent different numbers, "
             f"do not substitute different conditions. {tool_scope}"
