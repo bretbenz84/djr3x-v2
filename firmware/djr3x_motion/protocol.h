@@ -37,7 +37,7 @@ enum MotionFault : uint8_t {
   F_NONE = 0, F_ENCODER_STALL, F_OVERCURRENT, F_TOF_ERROR, F_LOW_BATT, F_COMMS_LOST
 };
 enum MotionZone : uint8_t { Z_CLEAR = 0, Z_SLOW, Z_STOP, Z_CLIFF };
-enum MotionDir : uint8_t { DIR_NONE = 0, DIR_FRONT, DIR_REAR, DIR_LEFT, DIR_RIGHT };
+enum MotionDir : uint8_t { DIR_NONE = 0, DIR_FRONT, DIR_REAR, DIR_LEFT, DIR_RIGHT, DIR_BOTH };
 
 // done.result
 enum DoneResult : uint8_t {
@@ -85,6 +85,7 @@ inline const char* dir_str(MotionDir d) {
     case DIR_REAR: return "rear";
     case DIR_LEFT: return "left";
     case DIR_RIGHT: return "right";
+    case DIR_BOTH: return "both";
   }
   return "none";
 }

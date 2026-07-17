@@ -241,7 +241,7 @@ def _push_config() -> None:
         "max_lin": _get_float("MOTION_MAX_LINEAR_MS", 0.25),
         "max_ang": math.radians(_get_float("MOTION_MAX_ANGULAR_DEG_S", 60.0)),
         "slow_zone_m": _get_float("MOTION_SLOW_ZONE_M", 0.60),
-        "stop_zone_m": _get_float("MOTION_STOP_ZONE_M", 0.25),
+        "stop_zone_m": _get_float("MOTION_STOP_ZONE_M", 0.30),
         "come_stop_at_m": _get_float("MOTION_COME_STOP_AT_M", 0.60),
         "default_turn_deg": _get_float("MOTION_DEFAULT_TURN_DEG", 90.0),
         "default_turn_rate": _get_float("MOTION_DEFAULT_TURN_RATE", 40.0),

@@ -8,13 +8,16 @@
 // REAL — Bluepad32. Target pad: 8BitDo Pro 2 (any Bluepad32-supported pad works;
 // the library normalizes them, so this mapping is pad-agnostic). Pairing/mode notes
 // in README. Mapping (docs §11.2):
-//   left stick : arcade drive — Y forward/back, X turn
+//   left stick : arcade drive — Y forward/back, X turn (avoidance ACTIVE)
 //   D-pad      : relative nudges — Up/Down = short fwd/back move, Left/Right = 90° turn
 //                (hold L1 + D-pad = absolute-heading encoder test, bring-up only)
-//   L3 (click) : cycle speed level — slow (default) / faster / full
+//   L3 (click) : toggle surface mode (hardwood <-> carpet)
 //   B          : E-STOP (always honored)
 //   Start      : clear e-stop + return control to AUTO
-//   L2 + R2 (both, near full): hold to FULL-OVERRIDE — bypass ToF gating
+//   R3 (click) : toggle SENSOR-BYPASS mode (owner spec 2026-07-16). While ON, the
+//                RIGHT stick drives with ALL ToF gating off (for escaping a stuck
+//                block) and the left stick is ignored; click R3 again to exit.
+//                Auto-cancels on disconnect. Replaces the old hold-L2+R2 override.
 // ===========================================================================
 #include <Bluepad32.h>
 #include <Arduino.h>
@@ -38,9 +41,10 @@ static inline float gp_deg2rad(float d) { return d * (float)M_PI / 180.0f; }
 static ControllerPtr s_ctl = nullptr;     // the one pad we drive from
 static bool s_prev_b = false;
 static bool s_prev_start = false;
-static bool s_full_override = false;
+static bool s_bypass = false;             // R3-toggled sensor-bypass (right-stick drive)
 static uint8_t s_prev_dpad = 0;           // D-pad rising-edge state (heading-turn triggers)
 static bool s_prev_l3 = false;            // left-stick-click rising edge (surface-mode toggle)
+static bool s_prev_r3 = false;            // right-stick-click rising edge (sensor-bypass toggle)
 // SURFACE MODE (replaced the 3 abstract speed levels 2026-07-11 — at full build
 // weight the whole ladder was insufficient; what actually varies is the floor):
 // false = HARDWOOD (boot/reconnect default), true = CARPET (max authority). L3
@@ -64,7 +68,8 @@ static void onConnect(ControllerPtr c) {
 static void onDisconnect(ControllerPtr c) {
   if (s_ctl == c) {
     s_ctl = nullptr;
-    s_full_override = false;
+    s_bypass = false;                 // bypass NEVER survives a disconnect
+    ctl_set_full_override(false);
     s_carpet_mode = false;    // a reconnected pad starts in HARDWOOD (gentler default)
     apply_surface_mode();
     ctl_set_gamepad(false);
@@ -118,9 +123,9 @@ static void poll_action_buttons(ControllerPtr c) {
     {"y",          c->y()},
     {"select",     c->miscSelect()},   // the "-" button
     {"home",       c->miscSystem()},   // the star / home button
-    {"r3",         c->thumbR()},        // right stick click
-    // NB: L3 (left stick click) is NOT forwarded — it cycles the drive speed level
-    // (see gamepad_tick), so it must not also fire a soundboard clip.
+    // NB: L3 and R3 (stick clicks) are NOT forwarded — L3 toggles the surface
+    // mode and R3 toggles sensor-bypass (see gamepad_tick), so they must not
+    // also fire soundboard clips.
   };
   const uint8_t n = (uint8_t)(sizeof(btns) / sizeof(btns[0]));
   uint16_t cur = 0;
@@ -268,17 +273,37 @@ void gamepad_tick() {
     }
   }
 
-  // FULL-OVERRIDE: hold BOTH analog triggers near full — a deliberate two-hand gesture,
-  // distinct from the L1/R1 shoulder buttons used for creep/boost.
+  // SENSOR-BYPASS toggle (R3 rising edge). While ON: full_override stays asserted
+  // (reflex block, slow taper, and hallway assist all stand down) and the drive
+  // command comes from the RIGHT stick only — a deliberately different hand
+  // position, so normal left-stick driving can never accidentally run unprotected.
+  // Rumble confirms without looking: 3 pulses = bypass ON, 1 pulse = back to normal.
+  bool r3 = c->thumbR();
+  if (r3 && !s_prev_r3) {
+    s_bypass = !s_bypass;
+    ctl_set_full_override(s_bypass);
+    emit_event_kv("mode", "bypass", s_bypass ? "on" : "off");
+#if GAMEPAD_RUMBLE_ENABLED
+    rumble_burst(s_bypass ? 3 : 1, 140, 140,
+                 GAMEPAD_RUMBLE_HELLO_MAG, GAMEPAD_RUMBLE_HELLO_MAG);
+#endif
+  }
+  s_prev_r3 = r3;
+
+  // Triggers still read for the GUI button mirror below (their override role is gone).
   float br = (float)c->brake()    / GAMEPAD_TRIGGER_MAX;
   float th = (float)c->throttle() / GAMEPAD_TRIGGER_MAX;
-  bool fo = (br >= GAMEPAD_FULL_OVERRIDE_FRAC && th >= GAMEPAD_FULL_OVERRIDE_FRAC);
-  if (fo != s_full_override) { s_full_override = fo; ctl_set_full_override(fo); }
 
-  // Left stick -> arcade drive, scaled by the SURFACE MODE's ceilings (hardwood or
-  // carpet — full stick = the mode's max; there are no sub-levels anymore).
-  float fwd   = -stick_norm(c->axisY());   // stick up = forward
-  float turn  =  stick_norm(c->axisX());   // stick right = +x
+  // Drive stick: LEFT in normal operation (avoidance active), RIGHT in bypass —
+  // scaled by the SURFACE MODE's ceilings (full stick = the mode's max).
+  float fwd, turn;
+  if (s_bypass) {
+    fwd  = -stick_norm(c->axisRY());  // right stick up = forward, sensors bypassed
+    turn =  stick_norm(c->axisRX());
+  } else {
+    fwd  = -stick_norm(c->axisY());   // left stick up = forward
+    turn =  stick_norm(c->axisX());
+  }
   const float mode_lin = s_carpet_mode ? GAMEPAD_CARPET_LIN_MS   : GAMEPAD_HARDWOOD_LIN_MS;
   const float mode_ang = s_carpet_mode ? GAMEPAD_CARPET_ANG_RADS : GAMEPAD_HARDWOOD_ANG_RADS;
 
@@ -389,6 +414,7 @@ void gamepad_tick() {
   g_ctx.gp_live.lx = turn;     // right = +
   g_ctx.gp_live.ly = fwd;      // stick-up = +
   g_ctx.gp_live.btn_mask = bm;
+  g_ctx.gp_live.batt = c->battery();   // raw 0..255; Mac maps (see proto note)
   UNLOCK_STATE();
 
   maybe_autoreturn();

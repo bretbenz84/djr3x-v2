@@ -123,7 +123,7 @@ void control_tick(float dt) {
   // skipped because emitDone is now set.
   if (!halted && !emitDone && c.state == ST_BLOCKED && c.finite.kind != CMD_NONE) {
     MotionDir ft = finite_travel_dir(c.finite);
-    if (ft != DIR_NONE && ft == c.blocked_dir) {
+    if (ft != DIR_NONE && (ft == c.blocked_dir || c.blocked_dir == DIR_BOTH)) {
       emitDone = true; dres = DONE_BLOCKED; dseq = c.finite.seq; dodom = c.odom;
       c.finite = FiniteCmd();
       c.cmd_mode = CMD_NONE;
@@ -168,8 +168,10 @@ void control_tick(float dt) {
   // bypasses ToF for nudging through tight spots. estop/fault/comms-loss halts above
   // are NOT bypassed by full_override.
   if (c.state == ST_BLOCKED && !c.full_override) {
-    if (c.blocked_dir == DIR_FRONT && lin_t > 0) lin_t = 0;
-    if (c.blocked_dir == DIR_REAR  && lin_t < 0) lin_t = 0;
+    const bool bf = (c.blocked_dir == DIR_FRONT || c.blocked_dir == DIR_BOTH);
+    const bool br = (c.blocked_dir == DIR_REAR  || c.blocked_dir == DIR_BOTH);
+    if (bf && lin_t > 0) lin_t = 0;
+    if (br && lin_t < 0) lin_t = 0;
   }
 
   // Progressive approach slowdown — the SLOW zone actually slows now (field fix
@@ -302,8 +304,10 @@ void control_tick(float dt) {
     // zero duty (BTS7960 both-low = dynamic brake), so the base stops NOW rather than
     // coasting the last stretch into the wall (field fix 2026-07-11).
     if (c.state == ST_BLOCKED && !c.full_override) {
-      if (c.blocked_dir == DIR_FRONT && s_ramp_lin > 0) s_ramp_lin = 0;
-      if (c.blocked_dir == DIR_REAR  && s_ramp_lin < 0) s_ramp_lin = 0;
+      const bool bf2 = (c.blocked_dir == DIR_FRONT || c.blocked_dir == DIR_BOTH);
+      const bool br2 = (c.blocked_dir == DIR_REAR  || c.blocked_dir == DIR_BOTH);
+      if (bf2 && s_ramp_lin > 0) s_ramp_lin = 0;
+      if (br2 && s_ramp_lin < 0) s_ramp_lin = 0;
     }
     // Teleop: slew the commanded velocity toward the target (accel-limited, symmetric)
     // so a stick push ramps up briskly and a release coasts to a stop rather than

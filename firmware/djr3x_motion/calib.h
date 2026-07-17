@@ -422,7 +422,8 @@
 #define GAMEPAD_NUDGE_DIST_M      0.30f  // Up/Down nudge travel (m)
 #define GAMEPAD_NUDGE_SPEED_FRAC  0.30f  // nudge speed as a fraction of max_lin
 #define GAMEPAD_TRIGGER_MAX    1023.0f  // Bluepad32 analog trigger full-scale
-#define GAMEPAD_FULL_OVERRIDE_FRAC 0.85f // both triggers past this fraction = bypass ToF
+// (GAMEPAD_FULL_OVERRIDE_FRAC retired 2026-07-16: hold-L2+R2 override replaced by the
+//  R3-toggled sensor-bypass mode — see gamepad.cpp header.)
 #define GAMEPAD_TRIGGER_PRESS_FRAC 0.50f // trigger past this fraction = "pressed" (GUI mirror)
 // Rumble (force feedback, playDualRumble): tactile echo of the collision avoidance +
 // a hello greeting when a host (main.py) connects. All Bluepad32 calls stay on the

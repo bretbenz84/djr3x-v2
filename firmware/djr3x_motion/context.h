@@ -42,9 +42,11 @@ struct MotionParams {
   // values at ZONE_SPEED_REF_MS (stop_zone_eff/slow_zone_eff below). Retuned
   // 2026-07-11: fixed zones over-braked at range (the ±22.5° beams see off-path
   // clutter far out) and blocked precision parking near walls.
-  float    slow_zone_m   = 0.60f;  // braking starts here at full speed (0.50->0.60 when units
+  float    slow_zone_m   = 0.75f;  // braking starts here at full speed (0.50->0.60 when units
                                    // became real: full teleop is now truly ~0.72 m/s)
-  float    stop_zone_m   = 0.15f;  // hard-stop line at full speed
+  float    stop_zone_m   = 0.30f;  // hard-stop line at full speed (0.15->0.30 2026-07-16:
+                                   // matrix ToF adds ~77 ms detection latency; at 0.6 m/s
+                                   // the 0.15 envelope physically could not stop in time)
 
   float    come_stop_at_m= 0.60f;
   float    default_turn_deg  = 90.0f;
@@ -163,6 +165,9 @@ struct GamepadLive {
   float    lx = 0.0f;        // turn axis  -1..1 (right = +)
   float    ly = 0.0f;        // drive axis -1..1 (stick-up = +)
   uint32_t btn_mask = 0;     // pressed buttons; bit order = GP_BTN_* in gamepad.cpp
+  uint8_t  batt = 255;       // Bluepad32 Controller::battery() RAW 0..255 (semantics
+                             // are fuzzy across the stack — forwarded raw, the Mac
+                             // interprets; 255 = "not available" default per uni_controller.h)
 };
 
 // ===== IMU attitude (MPU-6050, telemetry + future fusion) ==================

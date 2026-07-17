@@ -205,6 +205,7 @@ static void mx_init_task(void*) {
   }
 
   mx_compute_geometry();
+  s_pub_ms = millis();   // arm the staleness clock BEFORE readers can see s_ready
   s_ready = true;
   emit_log("info", "tof_matrix: 8x8 front matrix ready (floor rejection active)");
 
