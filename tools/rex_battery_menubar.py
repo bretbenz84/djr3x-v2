@@ -464,7 +464,7 @@ def _fmt_title(s: dict) -> str:
         if abs(ma) < abs(_CHARGING_MA):
             parts.append("⚡ ~0A")
         else:
-            parts.append(f"⚡ {abs(ma) / 1000:.2f}A")
+            parts.append(f"⚡ {ma / 1000:+.2f}A")   # + = draining, − = charging
             if mv is not None and mv > 0:
                 # Signed power: + = draining the pack, − = charging (flowing in).
                 parts.append(f"💡 {mv * ma / 1_000_000:+.1f}W")
