@@ -449,23 +449,27 @@ def _fmt_title(s: dict) -> str:
     else:
         glyph = "🔋"
 
-    parts: list[str] = [glyph]
+    # Each value gets its own emoji tag: 🔋/⚡/🪫/⚠️ %, 🔌 volts, ⚡ amps,
+    # 💡 watts, ⏳ time. Double-spaced so the groups read at a glance.
+    parts: list[str] = []
     if soc is not None and soc >= 0:
-        parts.append(f"{soc}%")
+        parts.append(f"{glyph} {soc}%")
+    else:
+        parts.append(glyph)
     if mv is not None and mv >= 0:
-        parts.append(f"{mv / 1000:.2f}V")
+        parts.append(f"🔌 {mv / 1000:.2f}V")
     if ma is not None:
         if abs(ma) < abs(_CHARGING_MA):
-            parts.append("~0A")
+            parts.append("⚡ ~0A")
         else:
-            parts.append(f"{abs(ma) / 1000:.2f}A")
+            parts.append(f"⚡ {abs(ma) / 1000:.2f}A")
             if mv is not None and mv > 0:
-                parts.append(f"{abs(mv * ma) / 1_000_000:.1f}W")
+                parts.append(f"💡 {abs(mv * ma) / 1_000_000:.1f}W")
 
     clock = _fmt_title_clock(s)
     if clock:
-        parts.append(clock)
-    return " ".join(parts)
+        parts.append(f"⏳ {clock}")
+    return "  ".join(parts)
 
 
 def _fmt_title_clock(s: dict) -> "str | None":
