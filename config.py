@@ -3887,14 +3887,22 @@ POST_QUESTION_RETRO_SCAN_MIN_VOICED_FRAMES = 3  # ~96ms of voiced audio required
 # IGNORED and the values above remain in force, leaving that behavior unchanged.
 # Detection substring for the ReSpeaker input/output device name (case-insensitive).
 HARDWARE_AEC_DEVICE_HINT = "respeaker"
+# ⚠ RETUNED to MATCH the no-AEC dev-Mac seam values (owner call 2026-07-17): the
+# XU316 cancels ~16-17 dB, which is enough to keep the mic USABLE while Rex plays
+# (barge-in, commands over music — the reason AEC stays on) but NOT enough to make
+# his post-TTS residual silent: with the old aggressive seam (0.05/0.05/0.5) the
+# capture reached half a second back into that residual and transcribed his own
+# trailing words ("...still under review" → HEARD "with you", conv log 00:10:28).
+# The dev Mac's 0.12s seam was tuned hard and doesn't self-transcribe; use it here
+# too. The AEC advantage now lives DURING playback, not at the handoff seam.
 # Mic-attenuation tail after a reply ends (replaces POST_*_PLAYBACK_SUPPRESSION_SECS).
-POST_PLAYBACK_SUPPRESSION_SECS_AEC = 0.05
+POST_PLAYBACK_SUPPRESSION_SECS_AEC = 0.12
 # Delay before the listen loop resumes after a reply (replaces POST_*_LISTEN_DELAY_SECS).
-POST_TTS_LISTEN_DELAY_SECS_AEC = 0.05
+POST_TTS_LISTEN_DELAY_SECS_AEC = 0.12
 # How far back capture may reach past the handoff to recover a reply that overlaps
-# Rex's tail. Safe to enlarge here because the hardware AEC has already removed
-# Rex's voice from that overlapping audio (replaces POST_*_CAPTURE_PREROLL_GRACE_SECS).
-POST_TTS_CAPTURE_PREROLL_GRACE_SECS_AEC = 0.5
+# Rex's tail. 0.5 pulled the AEC residual of Rex's final word into the capture and
+# Whisper transcribed it; 0.12 matches the dev-Mac grace that never did.
+POST_TTS_CAPTURE_PREROLL_GRACE_SECS_AEC = 0.12
 
 # Seconds of no detected speech in ACTIVE state before returning to IDLE.
 # Raised from 30 so the proactive idle-banter path (below) has room to re-engage
