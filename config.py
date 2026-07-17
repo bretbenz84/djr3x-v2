@@ -4614,7 +4614,9 @@ OBJECT_DETECTION_MAX_RESULTS = _env_int(
 # zones (dim dashed violet) so they can be aligned against the live feed by eye —
 # adjust here if the camera or the eye hardware moves.
 CAMERA_SELF_OCCLUSION_ZONES = [
-    (0.00, 0.55, 0.15, 1.00),   # left eye stalk (bottom-left blob)
+    (0.00, 0.50, 0.32, 1.00),   # left eye stalk (bottom-left blob) — widened 0.15 -> 0.32
+                                # (field 2026-07-17: it still read as a 55% "chair"; the
+                                # blob spans ~30% of the frame width, screenshot-verified)
     (0.60, 0.45, 1.00, 1.00),   # right eye stalk (bottom-right blob, the "chair")
 ]
 CAMERA_SELF_OCCLUSION_MAX_OVERLAP = 0.55   # box fraction inside a zone that kills it
