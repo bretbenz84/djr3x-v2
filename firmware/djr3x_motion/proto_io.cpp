@@ -131,6 +131,7 @@ void emit_telemetry() {
     add_qf(g, "lx", gpl.lx, "%.2f");  // turn axis  -1..1 (right = +)
     add_qf(g, "ly", gpl.ly, "%.2f");  // drive axis -1..1 (stick-up = +)
     g["btn"] = gpl.btn_mask;     // pressed-button bitmask (GP_BTN_* order, gamepad.cpp)
+    g["batt"] = gpl.batt;        // controller battery, RAW Bluepad32 0..255 (Mac maps)
   }
   tx_line(doc);
 }
