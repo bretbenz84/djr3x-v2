@@ -38,6 +38,7 @@ _commanded_positions: dict[int, int] = {
 }
 _last_reconnect_attempt_at = 0.0
 _manual_override = threading.Event()
+_shutdown_latch = threading.Event()   # power-down pose reached — servos frozen
 
 # breathing_thread stop event — set by shutdown()
 _stop_breathing = threading.Event()
@@ -256,7 +257,19 @@ def _record_manual_override_state(enabled: bool) -> None:
 
 
 def _program_servo_updates_blocked() -> bool:
-    return _manual_override.is_set()
+    return _manual_override.is_set() or _shutdown_latch.is_set()
+
+
+def latch_shutdown_pose() -> None:
+    """Make the power-down rest pose FINAL: every later programmatic servo write
+    no-ops until process exit. The shutdown droop runs at the TOP of _shutdown()
+    (theatrics first) while vision/consciousness threads are still being torn
+    down — a periodic scene capture racing that window drove the visor to max +
+    the neck to center right after the droop finished, and its own "restore"
+    write then died against the closing port (field bug 2026-07-16). Called by
+    animations.shutdown() once the rest pose has been commanded."""
+    _shutdown_latch.set()
+    _log.info("Servo shutdown latch set — rest pose is final.")
 
 
 def manual_override_enabled() -> bool:

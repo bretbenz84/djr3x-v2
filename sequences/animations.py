@@ -988,6 +988,13 @@ def shutdown() -> None:
     # close. Don't rely on the shutdown-audio join window (skipped when audio is
     # disabled), or a correct-speed droop could still be cut short.
     time.sleep(float(getattr(config, "SHUTDOWN_DROOP_SETTLE_SECS", 0.8)))
+    # Freeze the pose: vision/consciousness teardown is still running and a late
+    # frame grab would re-open the visor / recenter the neck (see servos.
+    # latch_shutdown_pose). From here on, no programmatic write can undo the droop.
+    try:
+        servos.latch_shutdown_pose()
+    except Exception:
+        pass
     # Fade the LEDs out (lifelike power-down) rather than snapping them off. _shutdown()
     # already kicked off this fade in lockstep with the audio + droop; FADEOFF is
     # idempotent in firmware, so this is a harmless re-assert (and keeps shutdown()
