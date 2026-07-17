@@ -65,7 +65,7 @@ _CMD_GO_HOME = 0xA2
 
 # Mirror of config.SERVO_CHANNELS (q-µs). Keep in sync when the robot changes.
 _SERVO_DEFAULTS: dict[str, dict[str, int]] = {
-    "neck":     {"ch": 0, "min": 1984, "max": 9984, "neutral": 6000},
+    "neck":     {"ch": 0, "min": 1984, "max": 8960, "neutral": 5472},
     "headlift": {"ch": 1, "min": 1984, "max": 7744, "neutral": 6000},
     "headtilt": {"ch": 2, "min": 3904, "max": 5504, "neutral": 4320},
     "visor":    {"ch": 3, "min": 4544, "max": 6976, "neutral": 6000},
@@ -296,7 +296,7 @@ def run_app() -> int:
 
     class RexServoApp(rumps.App):
         def __init__(self):
-            super().__init__("R3XServo", title="Servo Control",
+            super().__init__("R3XServo", title="🦾 Servo Control",
                              quit_button="Quit Servo Control")
             self._status = rumps.MenuItem("status", callback=lambda _: None)
             self._labels: dict[str, rumps.MenuItem] = {}
