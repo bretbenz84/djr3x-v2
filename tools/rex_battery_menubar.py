@@ -534,10 +534,10 @@ def _fmt_title(s: dict) -> str:
         if abs(ma) < abs(_CHARGING_MA):
             parts.append("⚡ ~0A")
         else:
-            parts.append(f"⚡ {ma / 1000:+.2f}A")   # + = draining, − = charging
+            parts.append(f"⚡ {-ma / 1000:+.2f}A")  # + = charging (into the pack), − = draining
             if mv is not None and mv > 0:
-                # Signed power: + = draining the pack, − = charging (flowing in).
-                parts.append(f"💡 {mv * ma / 1_000_000:+.1f}W")
+                # Signed power: + = charging (flowing into the pack), − = draining.
+                parts.append(f"💡 {-mv * ma / 1_000_000:+.1f}W")
 
     clock = _fmt_title_clock(s)
     if clock:
@@ -613,7 +613,7 @@ def _fmt_lines(s: dict) -> list[str]:
         else:
             lines.append(f"Current: {amps:.2f} A draw")
         if mv is not None and mv > 0 and abs(ma) >= abs(_CHARGING_MA):
-            lines.append(f"Power: {mv * ma / 1_000_000:+.1f} W"
+            lines.append(f"Power: {-mv * ma / 1_000_000:+.1f} W"
                          + (" (charging)" if ma < 0 else ""))
 
     env = s.get("env") or {}
