@@ -175,6 +175,14 @@ struct GamepadLive {
 // pitch/roll are gravity-referenced (deg); yaw is bias-corrected gyro
 // integration RELATIVE TO BOOT HEADING (deg, drifts slowly — no indoor
 // magnetometer by design). ok=false when no MPU-6050 answered the boot probe.
+// ===== Environment (BMP280/BME280 — env.cpp) ===============================
+struct EnvState {
+  bool  ok = false;       // sensor answered the boot probe and is still healthy
+  float temp_c = 0.0f;    // air temperature, °C
+  float hpa    = 0.0f;    // barometric pressure, hPa
+  float rh     = -1.0f;   // relative humidity %, -1 = BMP280 fitted (no humidity)
+};
+
 struct ImuState {
   bool  ok    = false;
   float pitch = 0.0f;   // deg, + = nose up
@@ -224,6 +232,7 @@ struct MotionContext {
   GamepadLive gp_live;                 // live pad mirror for the GUI (telemetry only)
   WheelDiag   wheels;                  // per-wheel measured speed + duty (telemetry diag)
   ImuState    imu;                     // MPU-6050 attitude (telemetry + future fusion)
+  EnvState    env;                     // BMP280/BME280 room climate (telemetry)
 
   uint32_t  cmd_seq   = 0;        // last applied command seq (telemetry)
   uint32_t  seq_alloc = 0;        // (unused on fw side; Mac allocates)

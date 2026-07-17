@@ -74,12 +74,13 @@ void emit_telemetry() {
   // Snapshot under the lock, format outside it.
   MotionState st; MotionOwner ow; MotionGamepad gp; MotionFault fl;
   MotionZone z; MotionDir bd; uint32_t cs, errs; Odom od; TofMm tf; int16_t bm, bma;
-  int8_t bsoc; GamepadLive gpl; WheelDiag wd; ImuState im;
+  int8_t bsoc; GamepadLive gpl; WheelDiag wd; ImuState im; EnvState ev;
   LOCK_STATE();
   st = g_ctx.state; ow = g_ctx.owner; gp = g_ctx.gamepad; fl = g_ctx.fault;
   z = g_ctx.zone; bd = g_ctx.blocked_dir; cs = g_ctx.cmd_seq; errs = g_ctx.errs;
   od = g_ctx.odom; tf = g_ctx.tof; bm = g_ctx.batt_mv; bma = g_ctx.batt_ma;
   bsoc = g_ctx.batt_soc; gpl = g_ctx.gp_live; wd = g_ctx.wheels; im = g_ctx.imu;
+  ev = g_ctx.env;
   UNLOCK_STATE();
 
   JsonDocument doc;
@@ -122,6 +123,15 @@ void emit_telemetry() {
     add_qf(im2, "pitch", im.pitch, "%.1f");
     add_qf(im2, "roll",  im.roll,  "%.1f");
     add_qf(im2, "yaw",   im.yaw,   "%.1f");
+  }
+  // Room climate (BMP280/BME280). Always present (stable schema): {ok:false}
+  // when no sensor answered the probe. rh -1 = BMP280 fitted (no humidity die).
+  JsonObject ev2 = doc["env"].to<JsonObject>();
+  ev2["ok"] = ev.ok;
+  if (ev.ok) {
+    add_qf(ev2, "t",   ev.temp_c, "%.1f");   // °C
+    add_qf(ev2, "hpa", ev.hpa,    "%.1f");   // barometric pressure
+    if (ev.rh >= 0.0f) add_qf(ev2, "rh", ev.rh, "%.1f");   // % (BME280 only)
   }
   // Live gamepad mirror for the GUI Motivator Control "physical controller" display.
   // Always present (stable schema): {connected:false} when no pad / non-gamepad build.

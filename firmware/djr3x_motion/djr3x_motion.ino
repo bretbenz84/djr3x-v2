@@ -24,6 +24,7 @@
 #include "gamepad.h"
 #include "battery.h"
 #include "imu.h"
+#include "env.h"
 
 // ---- Globals (declared extern in context.h) ------------------------------
 MotionContext     g_ctx;
@@ -53,6 +54,7 @@ static void serialTask(void*) {
 static void sensorTask(void*) {
   TickType_t last = xTaskGetTickCount();
   uint8_t batt_div = 0;
+  uint8_t env_div = 0;
   for (;;) {
     TofMm t;
     hal_read_tof(t);                      // stub: all clear
@@ -61,6 +63,10 @@ static void sensorTask(void*) {
     if (++batt_div >= 50) {               // 1 Hz is plenty for a 20Ah pack
       batt_div = 0;
       battery_tick();
+    }
+    if (++env_div >= 100) {               // room climate: 0.5 Hz is generous
+      env_div = 0;
+      env_tick();
     }
     vTaskDelayUntil(&last, pdMS_TO_TICKS(20));   // 50 Hz
   }
@@ -98,6 +104,7 @@ void setup() {
   hal_tof_init();
   battery_init();                         // INA226 probe (shares the ToF I2C bus)
   imu_init();                             // MPU-6050 probe + gyro bias cal (same bus)
+  env_init();                             // BMP280/BME280 probe (same bus)
   proto_init();
   control_init();
   safety_init();

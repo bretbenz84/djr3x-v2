@@ -1354,6 +1354,7 @@ _LEGACY_COMMAND_ACTION_MAP: dict[str, str] = {
     "time_query": "time.query",
     "date_query": "date.query",
     "status_uptime": "status.uptime",
+    "status_climate": "status.climate",
     "vision_describe": "vision.describe_scene",
     # Physical gaze commands ("look to your right", "look at this"). Mapping
     # them here gives the turn-policy gate a real ActionDecision, so a clear
@@ -13546,6 +13547,32 @@ def _execute_command(
         return _say(
             f"Your uptime is {up // 3600}h {(up % 3600) // 60}m. "
             f"State your uptime in one in-character line."
+        )
+
+    if key == "status_climate":
+        env: dict = {}
+        try:
+            from hardware import motion
+            env = (motion.telemetry() or {}).get("env") or {}
+        except Exception:
+            env = {}
+        if not env.get("ok") or env.get("t") is None:
+            return _say(
+                "Someone asked about the room temperature, but your climate sensor "
+                "isn't reporting right now. Say so in one in-character line."
+            )
+        t_c = float(env["t"])
+        t_f = t_c * 9.0 / 5.0 + 32.0
+        facts = f"The air in the room is {t_c:.1f} degrees Celsius ({t_f:.0f} degrees Fahrenheit)"
+        rh = env.get("rh")
+        if rh is not None:
+            facts += f", relative humidity {float(rh):.0f} percent"
+        hpa = env.get("hpa")
+        if hpa is not None:
+            facts += f", barometric pressure {float(hpa):.0f} hectopascals"
+        return _say(
+            facts + ". Someone asked about the room climate — answer with the "
+            "measurement(s) they actually asked about, in one in-character line."
         )
 
     # ── Personality ────────────────────────────────────────────────────────────
