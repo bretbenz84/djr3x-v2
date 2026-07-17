@@ -171,9 +171,20 @@ void battery_tick() {
                      : (float)(uint32_t)(now - s_last_tick_ms) / 3600000.0f;
   s_last_tick_ms = now;
 
-  // Rest tracking: no motor drive (idle electronics ~1 A = C/40, negligible sag).
-  const bool quiet = fabsf(s_ma_ema) < (float)BATT_SOC_QUIET_MA;
+  // Rest tracking: idle-electronics draw only. Any INFLOW disqualifies rest
+  // outright — the charger DOES cross the shunt in the current wiring (the old
+  // "charge current never crosses the shunt" note is stale), and during its
+  // ramp/taper the current dips under the quiet bar while the terminals sit at
+  // SUPPLY voltage: 20 such ticks anchored a 22% pack to "100%" (field
+  // 2026-07-17, plug-in event 00:31). Charging is handled by coulomb counting
+  // + the taper-time batt_full mark, never by voltage anchors.
+  const bool inflow = (s_ma_ema < -(float)BATT_CHARGE_DETECT_MA) || s_charging;
+  const bool quiet = !inflow && fabsf(s_ma_ema) < (float)BATT_SOC_QUIET_MA;
   s_quiet_ticks = quiet ? s_quiet_ticks + 1 : 0;
+
+  // Rest-voltage ESTIMATE for the anchors: back out the IR sag of the idle draw
+  // (~160 mΩ junction: even 1.3 A hides 0.2 V). Only meaningful when quiet.
+  const float rest_mv = s_mv_ema + s_ma_ema * (float)BATT_PACK_IR_MOHM / 1000.0f;
 
   // Host-commanded full mark (batt_full): the operator watched the charger's
   // taper current hit cutoff, which is BETTER evidence than our rest-voltage
@@ -193,7 +204,7 @@ void battery_tick() {
 
   if (s_soc_mah < 0.0f && have_mv && s_quiet_ticks >= BATT_SOC_ANCHOR_TICKS) {
     // First boot ever (no ledger): coarse init from the rest voltage.
-    s_soc_mah = soc_from_rest_mv(s_mv_ema) * (float)BATT_CAPACITY_MAH;
+    s_soc_mah = soc_from_rest_mv(rest_mv) * (float)BATT_CAPACITY_MAH;
     emit_log("info", "battery: SOC initialized from rest voltage (no ledger)");
   }
 
@@ -206,21 +217,21 @@ void battery_tick() {
     if (have_mv && s_quiet_ticks >= BATT_SOC_ANCHOR_TICKS) {
       // FULL anchor: rest voltage at/above the anchor = the pack was charged
       // while we were dark -> 100%. Once per charge (rearms after a real dip).
-      if (s_mv_ema >= (float)BATT_SOC_FULL_ANCHOR_MV && !s_full_anchored) {
+      if (rest_mv >= (float)BATT_SOC_FULL_ANCHOR_MV && !s_full_anchored) {
         s_soc_mah = (float)BATT_CAPACITY_MAH;
         s_full_anchored = true;
         emit_log("info", "battery: rest voltage at full anchor - SOC reset to 100%");
-      } else if (s_mv_ema < (float)BATT_SOC_FULL_ANCHOR_MV - 100.0f) {
+      } else if (rest_mv < (float)BATT_SOC_FULL_ANCHOR_MV - 100.0f) {
         s_full_anchored = false;
       }
       // KNEE clamps: the sharp end of the LiFePO4 curve outranks the ledger —
       // clamp DOWN only (never up: a sagging ledger must not be inflated).
       const float knee1 = (float)BATT_CAPACITY_MAH * BATT_SOC_KNEE1_PCT / 100.0f;
       const float knee2 = (float)BATT_CAPACITY_MAH * BATT_SOC_KNEE2_PCT / 100.0f;
-      if (s_mv_ema < (float)BATT_SOC_KNEE2_MV && s_soc_mah > knee2) {
+      if (rest_mv < (float)BATT_SOC_KNEE2_MV && s_soc_mah > knee2) {
         s_soc_mah = knee2;
         emit_log("warn", "battery: rest voltage below low knee - SOC clamped (pack is LOW)");
-      } else if (s_mv_ema < (float)BATT_SOC_KNEE1_MV && s_soc_mah > knee1) {
+      } else if (rest_mv < (float)BATT_SOC_KNEE1_MV && s_soc_mah > knee1) {
         s_soc_mah = knee1;
         emit_log("info", "battery: rest voltage below knee - SOC clamped");
       }

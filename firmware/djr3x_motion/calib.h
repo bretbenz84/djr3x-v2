@@ -330,8 +330,18 @@
 #define BATT_SOC_KNEE1_PCT       20
 #define BATT_SOC_KNEE2_MV        12500   // below: clamp SOC to <= KNEE2_PCT
 #define BATT_SOC_KNEE2_PCT       8
-#define BATT_SOC_QUIET_MA        2500    // |current| below this counts as "rest"
+#define BATT_SOC_QUIET_MA        1500    // |current| below this counts as "rest".
+                                         // 2500 counted Rex TALKING/GESTURING (~2 A)
+                                         // as rest; with the pack's ~160 mΩ junction
+                                         // that load sags 12.9 V-looking readings out
+                                         // of a healthy plateau -> phantom knee clamp
+                                         // (field 2026-07-17: 85% -> 20% mid-speech).
+                                         // 1500 still covers idle electronics (~1.3 A).
 #define BATT_SOC_ANCHOR_TICKS    20      // consecutive quiet 1 Hz ticks before anchoring
+#define BATT_PACK_IR_MOHM        160     // effective pack+junction resistance: rest
+                                         // voltage is estimated as mv + ma*IR so the
+                                         // sag under idle draw doesn't skew anchors
+                                         // (measured ~160 mΩ, 2026-07 charging bench)
 #define BATT_SOC_SAVE_DELTA_MAH  200     // persist to NVS every 0.5% of capacity...
 #define BATT_SOC_SAVE_SECS       600     // ...or at least every 10 min (NVS wear-safe)
 
