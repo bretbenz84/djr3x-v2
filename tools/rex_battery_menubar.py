@@ -423,31 +423,75 @@ def _notify(title: str, message: str) -> None:
 # ── Formatting ─────────────────────────────────────────────────────────────────
 
 def _fmt_title(s: dict) -> str:
-    """Compact menu bar title: glyph + best available number."""
+    """Full live readout in the menu bar (owner request 2026-07-16): percentage,
+    voltage, current, watts, and the runtime estimate as a clock (39:30 left) —
+    no click needed. The 1 Hz refresh timer keeps every field live."""
     if s["mode"] == "no_port":
         return "🔋 —"
     soc = s["batt_soc"]
     mv = s["batt_mv"]
     ma = s["batt_ma"]
 
-    if soc is not None and soc >= 0:
-        reading = f"{soc}%"
-    elif mv is not None and mv >= 0:
-        reading = f"{mv / 1000:.1f}V"
-    else:
-        reading = "—"
-
     if s["mode"] == "dormant":
-        return f"🤖 {reading}"          # robot owns the port; reading may be old
+        # Robot owns the port; the reading may be stale — keep it short.
+        reading = f"{soc}%" if (soc is not None and soc >= 0) else "—"
+        return f"🤖 {reading}"
     if s["mode"] != "live":
         return "🔋 …"
+
+    # Glyph: charging / low / over-voltage warning / normal.
     if _supply_too_high(s):
-        return f"⚠️ {mv / 1000:.2f}V"   # pack over the 14.6 ceiling — show volts, not %
-    if ma is not None and ma < _CHARGING_MA:
-        return f"⚡ {reading}"
-    if soc is not None and 0 <= soc <= _SOC_LOW_PCT:
-        return f"🪫 {reading}"
-    return f"🔋 {reading}"
+        glyph = "⚠️"
+    elif ma is not None and ma < _CHARGING_MA:
+        glyph = "⚡"
+    elif soc is not None and 0 <= soc <= _SOC_LOW_PCT:
+        glyph = "🪫"
+    else:
+        glyph = "🔋"
+
+    parts: list[str] = [glyph]
+    if soc is not None and soc >= 0:
+        parts.append(f"{soc}%")
+    if mv is not None and mv >= 0:
+        parts.append(f"{mv / 1000:.2f}V")
+    if ma is not None:
+        if abs(ma) < abs(_CHARGING_MA):
+            parts.append("~0A")
+        else:
+            parts.append(f"{abs(ma) / 1000:.2f}A")
+            if mv is not None and mv > 0:
+                parts.append(f"{abs(mv * ma) / 1_000_000:.1f}W")
+
+    clock = _fmt_title_clock(s)
+    if clock:
+        parts.append(clock)
+    return " ".join(parts)
+
+
+def _fmt_title_clock(s: dict) -> "str | None":
+    """H:MM runtime estimate for the title bar: "39:30 left" discharging,
+    "2:15 to full" charging. Same coulomb math + guards as _fmt_time_left."""
+    soc = s.get("batt_soc")
+    avg = s.get("batt_ma_avg")
+    if soc is None or soc < 0 or avg is None or abs(avg) < _RUNTIME_MIN_MA:
+        return None
+    if avg > 0:                                   # discharging → time to empty
+        hours = (soc / 100.0) * _BATT_CAPACITY_MAH / avg
+        return f"{_fmt_clock(hours)} left"
+    if soc >= 99:                                 # charging but essentially full
+        return None
+    hours = ((100 - soc) / 100.0) * _BATT_CAPACITY_MAH / abs(avg)
+    return f"{_fmt_clock(hours)} to full"
+
+
+def _fmt_clock(hours: float) -> str:
+    if hours >= 100.0:
+        return ">99:59"
+    h = int(hours)
+    m = int(round((hours - h) * 60.0))
+    if m == 60:
+        h, m = h + 1, 0
+    return f"{h}:{m:02d}"
 
 
 def _fmt_lines(s: dict) -> list[str]:
