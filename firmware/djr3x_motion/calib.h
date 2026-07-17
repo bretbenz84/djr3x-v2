@@ -335,6 +335,15 @@
 #define BATT_SOC_SAVE_DELTA_MAH  200     // persist to NVS every 0.5% of capacity...
 #define BATT_SOC_SAVE_SECS       600     // ...or at least every 10 min (NVS wear-safe)
 
+// ---- Charging lockout (battery.cpp detect, control.cpp gate) ----------------
+// Plugged into the bench supply/charger = the pack current goes NEGATIVE
+// (+ = discharging). While charging, ALL drive is locked out — including manual
+// and the R3 sensor-bypass — so the base can never roll away on the cord.
+// Debounced on the 1 Hz battery tick; both edges emit a "charging" event.
+#define BATT_CHARGE_DETECT_MA    250   // sustained charge current at/above this = on charger
+#define BATT_CHARGE_ENTER_TICKS    3   // ~3 s of charge current before locking out
+#define BATT_CHARGE_EXIT_TICKS     5   // ~5 s without it before releasing (cable wiggle proof)
+
 // ---- Speed-adaptive zone envelope (safety.cpp zones + control.cpp taper) ----
 // The front/rear pairs are angled ±22.5° off the travel axis, so at RANGE they see
 // obstacles outside the actual collision corridor (at 0.9 m a beam points ~0.35 m

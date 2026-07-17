@@ -233,6 +233,7 @@ struct MotionContext {
   WheelDiag   wheels;                  // per-wheel measured speed + duty (telemetry diag)
   ImuState    imu;                     // MPU-6050 attitude (telemetry + future fusion)
   EnvState    env;                     // BMP280/BME280 room climate (telemetry)
+  bool        charging = false;        // on the charger (battery.cpp) — drive locked out
 
   uint32_t  cmd_seq   = 0;        // last applied command seq (telemetry)
   uint32_t  seq_alloc = 0;        // (unused on fw side; Mac allocates)

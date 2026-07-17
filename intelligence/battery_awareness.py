@@ -41,6 +41,8 @@ _announced_tiers: set = set()
 _pending_announce: Optional[str] = None
 _last_read_mv: int = -1
 _last_spoke_at: float = 0.0
+_last_charging: Optional[bool] = None   # telemetry charging flag, edge-detected
+_pending_charging_line: bool = False
 
 
 def _lines_for(tier: str) -> list[str]:
@@ -86,6 +88,52 @@ def battery_critical() -> bool:
     return tier_for_mv(current_mv()) == "critical"
 
 
+def _step_charging(snapshot: dict, profile) -> None:
+    """Edge-detect the firmware's charging flag (current-based, debounced on the
+    base) and comment once per plug-in. The firmware also locks out the wheels
+    for the whole charge — Rex just narrates it."""
+    global _last_charging, _pending_charging_line
+    try:
+        from hardware import motion
+        snap = motion.telemetry() or {}
+    except Exception:
+        return
+    chg = snap.get("charging")
+    if chg is None:
+        return
+    chg = bool(chg)
+    if _last_charging is None:
+        _last_charging = chg          # session baseline: no remark if born charging
+        return
+    if chg != _last_charging:
+        _last_charging = chg
+        if chg:
+            _pending_charging_line = True
+            _log.info("[battery] charger plugged in — wheels locked by firmware")
+        else:
+            _pending_charging_line = False   # unplugged before it was said: drop it
+            _log.info("[battery] charger disconnected — drive released")
+    if not _pending_charging_line:
+        return
+    if getattr(profile, "user_mid_sentence", False) or getattr(
+        profile, "interaction_busy", False
+    ):
+        return
+    lines = list(getattr(config, "BATTERY_CHARGING_LINES", []) or [])
+    if not lines:
+        _pending_charging_line = False
+        return
+    import random
+    from intelligence import speech_engine
+    if speech_engine.speak_async(
+        random.choice(lines),
+        emotion="happy",
+        purpose="battery_status",
+        label="charger plugged in",
+    ):
+        _pending_charging_line = False
+
+
 def step(snapshot: dict, profile) -> None:
     """One consciousness tick: track tier crossings, grumble once per downward
     crossing when someone is present. Never raises."""
@@ -93,6 +141,7 @@ def step(snapshot: dict, profile) -> None:
     try:
         if not bool(getattr(config, "BATTERY_AWARENESS_ENABLED", True)):
             return
+        _step_charging(snapshot, profile)
         mv = current_mv()
         if mv <= 0:
             return

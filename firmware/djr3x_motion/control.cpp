@@ -117,6 +117,14 @@ void control_tick(float dt) {
     c.cmd_mode = CMD_NONE;
   }
 
+  // Charging lockout (calib.h "Charging lockout"): on the charger, an in-flight
+  // finite command terminates once with done:aborted — the cord outranks it.
+  if (!halted && !emitDone && c.charging && c.finite.kind != CMD_NONE) {
+    emitDone = true; dres = DONE_ABORTED; dseq = c.finite.seq; dodom = c.odom;
+    c.finite = FiniteCmd();
+    c.cmd_mode = CMD_NONE;
+  }
+
   // A reflex block in the finite command's OWN travel direction terminates it
   // once with done:blocked (contract §7.4). Motion away from the block keeps
   // running (its travel dir won't match blocked_dir). The completion below is
@@ -162,6 +170,12 @@ void control_tick(float dt) {
   // still stops. No-op unless MANUAL + CMD_DRIVE + moving forward + a wall inside
   // the engage distance (open rooms and the stub build are exactly zero correction).
   if (!halted) ang_t += hall_assist_correction(c, lin_t);
+
+  // Charging lockout: while on the charger NOTHING moves — not manual teleop,
+  // not autonomy, and deliberately NOT the R3 sensor-bypass (full_override):
+  // the bypass exists to escape a false sensor block, but the cord is real.
+  // estop still outranks everything as usual.
+  if (c.charging) { lin_t = 0; ang_t = 0; }
 
   // Reflex gating: if blocked in the travel direction, zero that component — UNLESS
   // a gamepad operator is holding full-override (docs §11.4), which deliberately
@@ -309,6 +323,7 @@ void control_tick(float dt) {
       if (bf2 && s_ramp_lin > 0) s_ramp_lin = 0;
       if (br2 && s_ramp_lin < 0) s_ramp_lin = 0;
     }
+    if (c.charging) { s_ramp_lin = 0; s_ramp_ang = 0; }   // charging: hard zero, no coast
     // Teleop: slew the commanded velocity toward the target (accel-limited, symmetric)
     // so a stick push ramps up briskly and a release coasts to a stop rather than
     // stepping to zero and dynamic-braking. Feedforward (in wheel_pid) keeps the ramp

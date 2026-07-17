@@ -44,6 +44,8 @@ static bool     s_full_anchored = false;  // full-anchor fired since last discha
 static uint32_t s_last_tick_ms  = 0;      // for the Ah integration dt
 static volatile bool s_mark_full_req = false;  // "batt_full" flag: set on the serial
                                                // task, consumed by battery_tick
+static bool s_charging = false;    // debounced on-charger state (calib.h knobs)
+static int  s_chg_ticks = 0;       // consecutive ticks toward the pending edge
 
 static const uint16_t REG_CONFIG = 0x00;
 static const uint16_t REG_SHUNT  = 0x01;
@@ -227,10 +229,30 @@ void battery_tick() {
   }
 #endif
 
+#if BATT_SHUNT_MICROOHM > 0
+  // ---- Charging detection (debounced both ways; see calib.h) ----
+  const bool chg_now = (s_ma_ema <= -(float)BATT_CHARGE_DETECT_MA);
+  if (chg_now != s_charging) {
+    s_chg_ticks++;
+    const int need = s_charging ? BATT_CHARGE_EXIT_TICKS : BATT_CHARGE_ENTER_TICKS;
+    if (s_chg_ticks >= need) {
+      s_charging = chg_now;
+      s_chg_ticks = 0;
+      emit_event_kv("charging", "state", s_charging ? "on" : "off");
+      emit_log("info", s_charging
+               ? "battery: charger detected - drive locked out"
+               : "battery: charger disconnected - drive released");
+    }
+  } else {
+    s_chg_ticks = 0;
+  }
+#endif
+
   LOCK_STATE();
   if (have_mv) g_ctx.batt_mv = (int16_t)(s_mv_ema + 0.5f);
 #if BATT_SHUNT_MICROOHM > 0
   g_ctx.batt_ma = (int16_t)s_ma_ema;
+  g_ctx.charging = s_charging;
   g_ctx.batt_soc = (s_soc_mah >= 0.0f)
       ? (int8_t)(100.0f * s_soc_mah / (float)BATT_CAPACITY_MAH + 0.5f) : (int8_t)-1;
 #endif

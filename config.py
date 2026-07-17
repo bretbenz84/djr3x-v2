@@ -6821,6 +6821,13 @@ EXPLORE_ENCOURAGE_ACK_LINES = [
 BATTERY_AWARENESS_ENABLED = _env_bool("BATTERY_AWARENESS_ENABLED", True)
 BATTERY_TIER_HYSTERESIS_MV = 100
 BATTERY_ANNOUNCE_MIN_GAP_SECS = 300.0
+# Spoken once when the charger is plugged in (firmware detects sustained charge
+# current, locks out the wheels, and reports charging:true in telemetry).
+BATTERY_CHARGING_LINES = [
+    "Ooh — sweet, sweet electrons. Wheels are parked while I drink.",
+    "Charger detected. Officially off duty — motors locked until I'm unplugged.",
+    "Plugged in! No rolling off with the cord, promise. It's in my firmware.",
+]
 BATTERY_TIER_LINES = {
     "low": [
         "Heads up, chief — power cells are getting thin. I'm fine, but the wheels get rationed soon.",
