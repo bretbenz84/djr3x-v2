@@ -70,6 +70,20 @@ CREATE TABLE IF NOT EXISTS room_objects (
 );
 """
 
+# Learn-by-asking columns (2026-07-17, curiosity Phase 1) — added via ALTER so an
+# existing rex.db upgrades in place. human_name is what a person SAID the object
+# is ("my sourdough starter"); name_confidence counts corroborations (1 = a
+# single unverified claim — the memory-poisoning defense); ask_status drives the
+# room-question queue: NULL (nothing to ask) -> 'pending' -> 'asked' ->
+# 'answered' | 'dismissed'.
+_ROOM_OBJECT_COLUMNS = (
+    ("human_name", "TEXT"),
+    ("human_note", "TEXT"),
+    ("name_confidence", "INTEGER NOT NULL DEFAULT 0"),
+    ("ask_status", "TEXT"),
+    ("last_asked_at", "TEXT"),
+)
+
 
 def _default_db_path() -> Path:
     return _PROJECT_ROOT / _DEFAULT_REL
@@ -131,6 +145,10 @@ def ensure_schema() -> None:
     try:
         with connection() as conn:
             conn.executescript(SCHEMA)
+            existing = {r[1] for r in conn.execute("PRAGMA table_info(room_objects)")}
+            for col, decl in _ROOM_OBJECT_COLUMNS:
+                if col not in existing:
+                    conn.execute(f"ALTER TABLE room_objects ADD COLUMN {col} {decl}")
     except Exception as exc:
         _log.debug("rex_db ensure_schema failed: %s", exc)
 

@@ -4705,6 +4705,19 @@ ROOM_CHANGE_SESSION_CAP = 3
 # dealing with?") instead of a canned observation — owner feedback 2026-07-06
 # ("A wild sandwich appears" should have been "what kind / is it good?").
 ROOM_CHANGE_ASK_WHEN_PERSON_PRESENT = True
+
+# ── Learn-by-asking room questions (curiosity Phase 1, intelligence/room_questions.py)
+# Genuinely-new-to-the-room objects (rarity-gated in memory/room_model.py) queue a
+# durable "ask about this" item; the idle-question path asks it BEFORE any personal
+# profile question (starvation rule), and the person's answer is written back to
+# the room model as the object's human-given name with corroboration counting.
+ROOM_QUESTIONS_ENABLED = _env_bool("ROOM_QUESTIONS_ENABLED", True)
+ROOM_QUESTION_COOLDOWN_SECS = _env_float("ROOM_QUESTION_COOLDOWN_SECS", 600.0, min_value=0.0, max_value=86400.0)
+ROOM_QUESTION_ANSWER_TTL_SECS = _env_float("ROOM_QUESTION_ANSWER_TTL_SECS", 90.0, min_value=5.0, max_value=600.0)
+ROOM_QUESTION_ANSWER_TURNS = _env_int("ROOM_QUESTION_ANSWER_TURNS", 2, min_value=1, max_value=10)
+# The room model must be at least this old before novelty can queue questions —
+# a fresh install's day-one furniture trickle must not become an interview.
+ROOM_QUESTION_MIN_ROOM_AGE_DAYS = _env_float("ROOM_QUESTION_MIN_ROOM_AGE_DAYS", 1.0, min_value=0.0, max_value=365.0)
 # The canned one-liners below are the ALONE behavior (muttering at an empty room).
 ROOM_CHANGE_REMARK_LINES = [
     "Hold on — when did that {label} get here?",

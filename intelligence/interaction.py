@@ -3999,6 +3999,30 @@ def _maybe_low_memory_idle_question(
     except Exception:
         pass
 
+    # STARVATION RULE (curiosity Phase 1, owner direction 2026-07-17): a pending
+    # ROOM question — a genuinely-new object Rex hasn't asked about — outranks
+    # the personal profile pool. When the room is stale this returns None and
+    # personal curiosity resumes. Shares the same budget/pacing gates above.
+    try:
+        from intelligence import room_questions
+        room_q = room_questions.next_room_question()
+    except Exception:
+        room_q = None
+    if room_q:
+        if _proactive_line_recently_fired():
+            return False
+        _log.info("[interaction] room curiosity question — label=%r text=%r",
+                  room_q["label"], room_q["text"])
+        completed = _speak_proactive(
+            room_q["text"], emotion="curious", priority=1, label="room_question"
+        )
+        if completed:
+            room_questions.note_asked(room_q["label"])
+            conv_memory.add_to_transcript("Rex", room_q["text"])
+            conv_log.log_rex(room_q["text"])
+            _register_rex_utterance(room_q["text"])
+        return completed
+
     question = _next_profile_question(person_id)
     if not question:
         return False
@@ -19861,6 +19885,14 @@ def _handle_speech_segment(
         # Consume it here before routers so a "stop" ends the whole mode, not just the
         # current leg, and encouragement doesn't get misrouted.
         if not game_conversation_lock and exploration_flow_active():
+            # Passive room-question answer capture (never consumes the turn):
+            # if Rex just asked "what's that X?", watch this reply for an identity.
+            try:
+                from intelligence import room_questions
+                room_questions.maybe_capture_answer(text)
+            except Exception:
+                pass
+
             exploration_response = _handle_exploration_turn(text, person_id)
             if exploration_response:
                 _record_heard_turn_once()
