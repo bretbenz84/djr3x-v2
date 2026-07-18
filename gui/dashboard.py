@@ -618,13 +618,25 @@ class VisionDescriptionPanel(QWidget):
         self.setMinimumHeight(300)
 
     def set_snapshot(self, snapshot: dict[str, Any]) -> None:
-        rendered = _vision_state_html(snapshot)
+        # Indoor climate rides the motion telemetry (BME280 env block) — read it
+        # here like the top bar reads the pack, so the pure renderer stays a
+        # function of its inputs.
+        indoor = None
+        try:
+            from hardware import motion
+            tel = motion.telemetry() if motion.connected() else None
+            env = (tel or {}).get("env") or {}
+            if env.get("ok"):
+                indoor = env
+        except Exception:
+            pass
+        rendered = _vision_state_html(snapshot, indoor)
         if rendered != self._last_html:
             self._last_html = rendered
             self._body.setHtml(rendered)
 
 
-def _vision_state_html(snapshot: dict[str, Any]) -> str:
+def _vision_state_html(snapshot: dict[str, Any], indoor: "dict | None" = None) -> str:
     ws = snapshot.get("world_state") or {}
     env = ws.get("environment") or {}
     description = (
@@ -662,6 +674,7 @@ def _vision_state_html(snapshot: dict[str, Any]) -> str:
         ]
     )
 
+    environment_html = _environment_html(ws.get("weather") or {}, indoor)
     tracking_html = _tracking_html(face_tracking)
     if people:
         people_html = "".join(
@@ -749,6 +762,10 @@ td.value {{
     <div class="description">{_html(description)}</div>
   </div>
   <div class="section">
+    <div class="eyebrow">◢ Environment</div>
+    {environment_html}
+  </div>
+  <div class="section">
     <div class="eyebrow">◢ Contacts</div>
     <div class="summary">{_html(summary)}</div>
     {tracking_html}
@@ -761,6 +778,38 @@ td.value {{
 </body>
 </html>
 """
+
+
+def _environment_html(weather: dict[str, Any], indoor: "dict | None") -> str:
+    """Outside (chronoception's weather feed) + inside (BME280 over motion
+    telemetry), American units to match the battery menu bar."""
+    rows = []
+    if isinstance(weather, dict) and weather.get("available") and weather.get("temp_f") is not None:
+        cond = str(weather.get("condition") or weather.get("description") or "").strip()
+        out = f"{float(weather['temp_f']):.0f}°F"
+        feels = weather.get("feels_like_f")
+        if feels is not None and abs(float(feels) - float(weather["temp_f"])) >= 3:
+            out += f" (feels {float(feels):.0f}°F)"
+        if cond:
+            out += f", {cond}"
+        if weather.get("humidity") is not None:
+            out += f", {float(weather['humidity']):.0f}% RH"
+        if weather.get("wind_mph") is not None:
+            out += f", wind {float(weather['wind_mph']):.0f} mph"
+        rows.append(("outside", out))
+    else:
+        rows.append(("outside", "no weather fix"))
+    if indoor and indoor.get("t") is not None:
+        t_f = float(indoor["t"]) * 9.0 / 5.0 + 32.0
+        inside = f"{t_f:.1f}°F"
+        if indoor.get("rh") is not None:
+            inside += f", {float(indoor['rh']):.0f}% RH"
+        if indoor.get("hpa") is not None:
+            inside += f", {float(indoor['hpa']) * 0.029530:.2f} inHg"
+        rows.append(("inside", inside))
+    else:
+        rows.append(("inside", "climate sensor offline"))
+    return _kv_table(rows)
 
 
 def _tracking_html(face_tracking: dict[str, Any]) -> str:
