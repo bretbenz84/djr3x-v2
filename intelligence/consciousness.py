@@ -6951,14 +6951,29 @@ def _visual_curiosity_objects_line() -> str:
             f" The {held[0].get('label')} is IN {holder}'s hands or right beside them — "
             "ask about THAT ('what are you drinking?' energy), not the background."
         )
+    # Learned names (curiosity Phase 1 write-back): a human told Rex what some of
+    # these objects actually ARE — speak of "the sourdough starter", not "potted
+    # plant". Single-source names (confidence 1) are marked so the LLM can hedge.
+    def _display(o) -> str:
+        label = str(o.get("label") or "")
+        try:
+            from memory import room_model
+            named = room_model.human_label(label)
+        except Exception:
+            named = None
+        if named:
+            hedge = "" if int(named.get("confidence") or 0) >= 2 else " — one person's word"
+            return f"{label} (they call it \"{named['name']}\"{hedge})"
+        return label
     items = ", ".join(
-        f"{o.get('label')} "
+        f"{_display(o)} "
         + ("(in their hands)" if o.get("near_person") else f"({o.get('position') or 'in view'})")
         for o in keep[:cap]
     )
     return (
         "Confirmed objects in view (a local object detector verified these are really "
-        f"there — safe to name): {items}.{held_note or novel_note}\n\n"
+        f"there — safe to name; when an object has a they-call-it name, USE that name): "
+        f"{items}.{held_note or novel_note}\n\n"
     )
 
 

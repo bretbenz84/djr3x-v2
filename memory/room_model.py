@@ -41,7 +41,16 @@ def _suppressed() -> bool:
 
 
 def _clean_label(value) -> str:
-    return str(value or "").strip().lower()
+    """Normalize a label for the per-label key. Exploration feeds OPEN-VOCAB
+    names ("a half-disassembled droid arm"), not just COCO classes — collapse
+    whitespace, drop leading articles, and truncate so free text can't bloat
+    the key space."""
+    s = " ".join(str(value or "").strip().lower().split())
+    for art in ("a ", "an ", "the "):
+        if s.startswith(art):
+            s = s[len(art):]
+            break
+    return s[:60]
 
 
 def record_objects(objects) -> None:
