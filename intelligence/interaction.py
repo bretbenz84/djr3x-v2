@@ -4667,6 +4667,39 @@ def _lean_news_cue() -> Optional[dict]:
         return None
 
 
+def _lean_weekend_plans_cue(person_id: Optional[int]) -> Optional[dict]:
+    """Offer the "got anything going this weekend?" discovery ask (owner
+    2026-07-18: the river-float weekend came and went unasked — the legacy
+    plans curiosity never made it into lean). Gates: it's Thursday-Sunday,
+    Rex knows the person, he hasn't asked about THIS weekend yet (durable
+    per-ISO-week key in proactive_topics_asked), and no stored upcoming event
+    is imminent (then he should reference THAT, not fish). The ANSWER is
+    captured by the normal post-turn extractor into person_events, which the
+    follow-up machinery then closes next week ("how was the float?")."""
+    if person_id is None or not bool(getattr(config, "WEEKEND_PLANS_ASK_ENABLED", True)):
+        return None
+    from datetime import date as _date
+    today = _date.today()
+    ask_days = set(getattr(config, "WEEKEND_PLANS_ASK_WEEKDAYS", (3, 4, 5, 6)))  # Thu-Sun
+    if today.weekday() not in ask_days:
+        return None
+    iso = today.isocalendar()
+    topic_key = f"weekend_plans:{iso[0]}-W{iso[1]:02d}"
+    try:
+        if rel_memory.was_proactive_asked(int(person_id), topic_key):
+            return None
+    except Exception:
+        return None
+    try:
+        upcoming = events_memory.get_upcoming_events(int(person_id)) or []
+        if upcoming:
+            return None      # he already knows a plan — anticipation owns that
+    except Exception:
+        pass
+    when = "already here — it's the weekend" if today.weekday() >= 5 else "coming up"
+    return {"topic_key": topic_key, "when": when}
+
+
 def _lean_impulse_person_present(person_id: int) -> bool:
     """Is the impulse's target plausibly HERE — on camera now, or heard recently?
 
@@ -4846,6 +4879,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     memory_musing = None
     open_thread = None
     room_question = None
+    weekend_plans = None
     news_story = None
     world = _lean_world()
     transcript = _lean_recent_transcript("")
@@ -4903,11 +4937,18 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             _log.debug("visual-riff Lean cue lookup failed: %s", exc)
     # LOWEST-priority cue: a low-stakes "since I was last on" diary musing, only when nothing
     # richer fires. Data-driven (the model can't invent a memory it wasn't given), once/session.
+    # Weekend-plans discovery beats news (it's personal and time-bound), but
+    # never fires at a tired user or with the question budget spent.
+    if _no_higher and not room_question and not visual_riff and not low_energy and not no_questions:
+        try:
+            weekend_plans = _lean_weekend_plans_cue(person_id)
+        except Exception as exc:
+            _log.debug("weekend-plans Lean cue lookup failed: %s", exc)
     # News beats the diary musing (fresher material) but loses to everything
     # personal. Its own session cap + spend-once live in the cue/bookkeeping.
-    if _no_higher and not room_question and not visual_riff:
+    if _no_higher and not room_question and not visual_riff and not weekend_plans:
         news_story = _lean_news_cue()
-    if _no_higher and not room_question and not visual_riff and not news_story:
+    if _no_higher and not room_question and not visual_riff and not weekend_plans and not news_story:
         try:
             memory_musing = _lean_memory_musing_cue(person_id)
         except Exception as exc:
@@ -4929,6 +4970,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             memory_musing=memory_musing,
             open_thread=open_thread,
             room_question=room_question,
+            weekend_plans=weekend_plans,
             news_story=news_story,
             low_energy=low_energy,
             no_questions=no_questions,
@@ -5077,6 +5119,12 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
                 room_questions.note_asked(room_question["label"])
             except Exception as exc:
                 _log.debug("[lean] room-question latch failed: %s", exc)
+        if weekend_plans:
+            # Durable once-per-ISO-week mark, so the ask can't repeat across runs.
+            try:
+                rel_memory.mark_proactive_asked(person_id, weekend_plans["topic_key"])
+            except Exception as exc:
+                _log.debug("[lean] weekend-plans mark failed: %s", exc)
         if news_story:
             _lean_news_mentioned_this_session = True
             try:

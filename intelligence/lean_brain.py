@@ -175,7 +175,11 @@ def _scene_lines(world: Optional[dict]) -> list[str]:
         # relative days wrong ("tonight" for a tomorrow event). ~8 tokens.
         from datetime import datetime as _dt
         _now = _dt.now()
-        bits.append(_now.strftime("%A %Y-%m-%d"))
+        _h = _now.hour
+        _bucket = ("deep late-night" if _h < 5 else "early morning" if _h < 9
+                   else "morning" if _h < 12 else "afternoon" if _h < 17
+                   else "evening" if _h < 21 else "late evening")
+        bits.append(_now.strftime("%A %Y-%m-%d %-I:%M %p") + f" ({_bucket})")
         tod = str(world.get("time_of_day") or world.get("part_of_day") or "").strip()
         if tod:
             bits.append(tod)
@@ -744,6 +748,18 @@ _NEWS_INSTRUCTION = (
 )
 
 
+_WEEKEND_PLANS_INSTRUCTION = (
+    "[The weekend is {weekend_when}, you have no idea what {who} has planned for it, "
+    "and the conversation just reached a lull — a natural moment to ask.]\n"
+    "{situation}"
+    "Ask ONE short, warm, genuinely curious question about their weekend plans — "
+    "the natural 'got anything going this weekend?' a friend asks. Mind the clock "
+    "(if it's already the weekend, ask about the rest of it; late at night, keep it "
+    "low-key). No interview follow-ups, ONE question. You MUST ask it; do not "
+    "reply PASS."
+)
+
+
 # Rotating inspiration for the lull-breakers. The instruction prompt used to be IDENTICAL every
 # call, so the model kept converging on its strongest persona default: music questions ("what song
 # survives your veto process?" every single lull — owner: "usually around music and not very
@@ -918,6 +934,30 @@ def _scene_summary(world: Optional[dict]) -> str:
     return summary
 
 
+def _time_context_line() -> str:
+    """Clock + weekday + a plain-English hour bucket, so the model can act its
+    age about the time (owner 2026-07-18: "People wouldn't ask me why I'm in
+    bed this late at night, but R3X would" — he asked what was left to do
+    'tonight' at 00:22, and demanded weekend energy at midnight)."""
+    from datetime import datetime as _dt
+    now = _dt.now()
+    h = now.hour
+    if h < 5:
+        bucket = "deep late-night — most humans are asleep or should be"
+    elif h < 9:
+        bucket = "early morning"
+    elif h < 12:
+        bucket = "morning"
+    elif h < 17:
+        bucket = "afternoon"
+    elif h < 21:
+        bucket = "evening"
+    else:
+        bucket = "late evening, winding-down hours"
+    return (f"It's {now.strftime('%-I:%M %p')} on {now.strftime('%A, %B %-d')} "
+            f"({bucket}). Fit your energy and topics to the hour.")
+
+
 def _situation_block(person_id: Optional[int], world: Optional[dict],
                      quiet_secs: float, mood: Optional[str]) -> str:
     """The impulse's PRESENT-focused situation: who he's with + what he SEES/HEARS this moment +
@@ -925,6 +965,10 @@ def _situation_block(person_id: Optional[int], world: Optional[dict],
     stored interests out of context is the awkward, left-field behavior we're removing (temporally-
     appropriate hobby follow-ups belong in the REPLY, right when the person brings it up)."""
     lines: list[str] = []
+    try:
+        lines.append(_time_context_line())
+    except Exception:
+        pass
     if person_id is not None:
         try:
             from memory import people
@@ -991,6 +1035,7 @@ def consider_initiating(
     memory_musing: Optional[dict] = None,
     open_thread: Optional[dict] = None,
     room_question: Optional[dict] = None,
+    weekend_plans: Optional[dict] = None,
     news_story: Optional[dict] = None,
     low_energy: bool = False,
     no_questions: bool = False,
@@ -1053,6 +1098,12 @@ def consider_initiating(
                 who=who,
                 situation=situation,
                 cue=str(visual_riff.get("cue") or "their current, non-sensitive vibe"),
+            )
+        elif weekend_plans:
+            instruction = _WEEKEND_PLANS_INSTRUCTION.format(
+                who=who,
+                situation=situation,
+                weekend_when=str(weekend_plans.get("when") or "coming up"),
             )
         elif news_story:
             instruction = _NEWS_INSTRUCTION.format(

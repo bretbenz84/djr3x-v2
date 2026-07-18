@@ -4750,6 +4750,11 @@ ROOM_CHANGE_FURNITURE_LABELS = (
 # A story cache older than this is stale news — pick_story returns nothing
 # rather than open with "did you hear" about yesterday.
 CURRENT_EVENTS_MAX_AGE_HOURS = _env_float("CURRENT_EVENTS_MAX_AGE_HOURS", 36.0, min_value=1.0, max_value=168.0)
+# Weekend-plans discovery ask ("got anything going this weekend?"): Thu-Sun,
+# once per ISO week per person (durable), skipped when a stored upcoming event
+# exists (Rex references THAT instead) or the user is low-energy.
+WEEKEND_PLANS_ASK_ENABLED = _env_bool("WEEKEND_PLANS_ASK_ENABLED", True)
+WEEKEND_PLANS_ASK_WEEKDAYS = (3, 4, 5, 6)   # Thu, Fri, Sat, Sun (Monday=0)
 
 # ── Novelty drive (awareness/novelty_drive.py, curiosity Phase 2) ─────────────
 # Time-since-anything-new. Stale -> idle behaviors tilt toward looking around;
