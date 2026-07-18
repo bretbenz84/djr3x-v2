@@ -52,7 +52,18 @@ bool apply_config(JsonObjectConst cmd, MotionParams& out) {
   clamped |= take_f(cmd, "breakaway_duty", 0.0f, (float)PWM_DUTY_MAX, p.breakaway_duty);
   clamped |= take_f(cmd, "accel_lin", 0.05f, 20.0f, p.accel_lin);   // m/s^2  (0 would freeze teleop)
   clamped |= take_f(cmd, "accel_ang", 0.05f, 50.0f, p.accel_ang);   // rad/s^2
-  clamped |= take_f(cmd, "counts_per_meter", 1000.0f, 1.0e6f, p.counts_per_meter);
+  // Legacy shared key first (sets BOTH — bench straight-line calibration), then
+  // the per-wheel keys so an explicit _l/_r in the same config wins.
+  {
+    float both = p.counts_per_meter_l;
+    if (take_f(cmd, "counts_per_meter", 1000.0f, 1.0e6f, both)) clamped = true;
+    if (cmd["counts_per_meter"].is<float>() || cmd["counts_per_meter"].is<int>()) {
+      p.counts_per_meter_l = both;
+      p.counts_per_meter_r = both;
+    }
+  }
+  clamped |= take_f(cmd, "counts_per_meter_l", 1000.0f, 1.0e6f, p.counts_per_meter_l);
+  clamped |= take_f(cmd, "counts_per_meter_r", 1000.0f, 1.0e6f, p.counts_per_meter_r);
   clamped |= take_f(cmd, "track_width_m",    0.05f,   2.0f,   p.track_width_m);
 
   // Hallway steering assist (manual forward drive).

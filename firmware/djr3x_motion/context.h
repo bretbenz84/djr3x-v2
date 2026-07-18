@@ -35,7 +35,7 @@ inline uint32_t clampu(uint32_t v, uint32_t lo, uint32_t hi) {
 
 // ===== Runtime-tunable parameters (the `config` command, docs §10) ==========
 struct MotionParams {
-  float    max_lin       = 0.35f;  // m/s  (was 0.25 — teleop topped out ~0.16 m/s; tune up to the hard cap)
+  float    max_lin       = 0.25f;  // m/s  ⚠ TEMP 2026-07-17: 60RPM left motor ceiling (was 0.35)
   float    max_ang       = 1.50f;  // rad/s (~86 deg/s) — turns felt slow at 1.05; tune with `set --max-ang`
   // FULL-SPEED collision envelope: the effective zones scale with measured speed,
   // from the STOP/SLOW_ZONE_MIN_M floors at rest (calib.h) up to these configured
@@ -67,7 +67,8 @@ struct MotionParams {
                                         // for straight drive (pivots have their own tiers)
   float    accel_lin = DRIVE_ACCEL_LIN; // teleop linear setpoint slew (m/s^2)
   float    accel_ang = DRIVE_ACCEL_ANG; // teleop angular setpoint slew (rad/s^2)
-  float    counts_per_meter = COUNTS_PER_METER;
+  float    counts_per_meter_l = COUNTS_PER_METER_L;  // per-wheel: the 60RPM left
+  float    counts_per_meter_r = COUNTS_PER_METER_R;  // motor has a different gearbox
   float    track_width_m    = TRACK_WIDTH_M;
 
   // Hallway steering assist (manual forward drive only — docs §6.3). While the pad

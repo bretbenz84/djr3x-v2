@@ -180,7 +180,8 @@ void emit_config_ack(uint32_t seq, bool clamped, const MotionParams& p) {
   e["kff"] = p.kff; e["min_duty"] = p.min_duty;
   e["breakaway_duty"] = p.breakaway_duty;
   e["accel_lin"] = p.accel_lin; e["accel_ang"] = p.accel_ang;
-  e["counts_per_meter"] = p.counts_per_meter;
+  e["counts_per_meter_l"] = p.counts_per_meter_l;
+  e["counts_per_meter_r"] = p.counts_per_meter_r;
   e["track_width_m"] = p.track_width_m;
   e["assist_enabled"] = p.assist_enabled;
   e["assist_engage_mm"] = p.assist_engage_mm;

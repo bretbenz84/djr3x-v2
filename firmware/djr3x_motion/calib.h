@@ -44,12 +44,24 @@
 // every commanded speed had been ~4× fast physically. Provisional cpm 7683.
 // pass 2 — cmd 1.0 m COMPLETED (odometry = exactly 1.00 by the completion rule),
 // tape 1.02 m → 7683 × 1.00/1.02 = 7532. Residual now ~tape precision.
-#define COUNTS_PER_METER 7532.0f
+// SPLIT PER WHEEL 2026-07-17: the replacement 60RPM left motor has a different
+// gearbox ratio, so its encoder scale differs from the right's. 7532 is the
+// EMPIRICAL right-wheel value (tape-calibrated 2026-07-11). The left value is
+// measured with the hand-roll test (bench `encoder`: one full wheel rev =
+// pi*0.100 m of travel). Runtime keys: counts_per_meter_l / _r (the legacy
+// counts_per_meter config key sets BOTH, for the bench straight calibration).
+#define COUNTS_PER_METER_L 17000.0f  // MEASURED 2026-07-17 (hand-roll, one full rev =
+                                     // 5341 counts): the 60RPM gearbox is 2.26x the
+                                     // right's ratio. Re-measure when the matching
+                                     // right motor arrives.
+#define COUNTS_PER_METER_R 7532.0f   // empirical (unchanged old right motor)
 
 // Per-wheel count direction. +1 means "driving the wheel forward makes its count
 // increase." Flip to -1 (per wheel) if the bench hand-turn test shows the sign
 // backwards, instead of rewiring A/B.
-#define ENC_SIGN_L  (+1.0f)
+#define ENC_SIGN_L  (-1.0f)   // flipped 2026-07-17: replacement 60RPM left motor is
+                              // mirror-wired vs the original (bench `wheel left`:
+                              // + counts but physically BACKWARD — flip BOTH signs)
 #define ENC_SIGN_R  (-1.0f)   // flipped: right side is mirror-mounted (bench `wheel right`
                               // 2026-07-11: forward cmd read +counts but spun BACKWARD —
                               // motor + encoder BOTH inverted; flip both, in lockstep)
@@ -61,7 +73,7 @@
 // travel -> +counts): a mismatch makes the velocity PID positive feedback and trips the
 // runaway guard. Fixing direction HERE keeps each channel paired with its own encoder,
 // so it does NOT desync odometry the way swapping only the motor leads does.
-#define MOTOR_SIGN_L  (+1)
+#define MOTOR_SIGN_L  (-1)    // flipped in lockstep with ENC_SIGN_L (see above)
 #define MOTOR_SIGN_R  (-1)    // flipped in lockstep with ENC_SIGN_R (see above)
 
 // ---- Motor PWM (LEDC) -----------------------------------------------------
@@ -402,7 +414,11 @@
 //     the test carpet saturated both wheels at 1023 duty with ~zero rotation, so
 //     carpet mode makes turning as strong as the hardware allows (arcs improve;
 //     pure pivots on deep pile may still stall — that's motors, not firmware).
-#define GAMEPAD_HARDWOOD_LIN_MS    0.80f   // old FULL was 0.72 — "slightly faster"
+#define GAMEPAD_HARDWOOD_LIN_MS    0.25f   // ⚠ TEMP CAP 2026-07-17 (was 0.80): the 60RPM
+                                           // left motor tops out ~0.31 m/s no-load —
+                                           // commanding beyond it makes the faster right
+                                           // motor veer the base. Restore when the
+                                           // matching right motor is fitted.
 // Pure-pivot kinematics are wheel_speed = angular_rate * track_width / 2. BOTH
 // modes command the full wheel-speed ceiling for turns (owner 2026-07-13): the
 // loaded chassis needs every bit of scrub authority regardless of surface, and
@@ -410,7 +426,7 @@
 #define GAMEPAD_HARDWOOD_ANG_RADS  ((2.0f * WHEEL_TARGET_MAX_MS) / TRACK_WIDTH_M)
 #define GAMEPAD_HARDWOOD_SPIN_KICK 750.0f  // stall-gated pivot breakaway (see below)
 #define GAMEPAD_HARDWOOD_SPIN_RUN  380.0f  // pivot RUNNING floor (sustained scrub carry)
-#define GAMEPAD_CARPET_LIN_MS      1.05f   // PID saturates duty into carpet drag
+#define GAMEPAD_CARPET_LIN_MS      0.28f   // ⚠ TEMP CAP 2026-07-17 (was 1.05) — see above
 #define GAMEPAD_CARPET_ANG_RADS    ((2.0f * WHEEL_TARGET_MAX_MS) / TRACK_WIDTH_M)
 #define GAMEPAD_CARPET_SPIN_KICK   1023.0f // full saturation — everything the bridge has
 #define GAMEPAD_CARPET_SPIN_RUN    650.0f  // pile drag needs most of the range sustained

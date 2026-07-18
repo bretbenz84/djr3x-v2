@@ -115,13 +115,14 @@ void hal_read_odom(Odom& out, float dt) {
   // Caller (control_tick) holds the state lock, so reading the runtime-tunable
   // params here is a consistent snapshot. apply_config clamps both > 0, so the
   // divides below are safe.
-  const float cpm   = g_ctx.params.counts_per_meter;
+  const float cpm_l = g_ctx.params.counts_per_meter_l;
+  const float cpm_r = g_ctx.params.counts_per_meter_r;
   const float track = g_ctx.params.track_width_m;
   const int64_t cl = encL.getCount();
   const int64_t cr = encR.getCount();
   // Signed wheel travel (metres) since the previous tick.
-  const float d_l = ENC_SIGN_L * (float)(cl - s_prev_l) / cpm;
-  const float d_r = ENC_SIGN_R * (float)(cr - s_prev_r) / cpm;
+  const float d_l = ENC_SIGN_L * (float)(cl - s_prev_l) / cpm_l;
+  const float d_r = ENC_SIGN_R * (float)(cr - s_prev_r) / cpm_r;
   s_prev_l = cl;
   s_prev_r = cr;
 
