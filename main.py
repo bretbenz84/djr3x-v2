@@ -1119,6 +1119,18 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         # outliers vs ~1.0-1.4s warm, 2026-07-06). Free metadata call, non-fatal.
         threading.Thread(target=tts.warmup_api, daemon=True, name="tts-api-warmup").start()
 
+    # Arm the fine GIL switch interval EARLY — from the moment the boot filler
+    # line can start playing (regression hardening 2026-07-18: the QoS used to
+    # arm only at the preload block below, leaving the first line's opening
+    # seconds unprotected if any background thread got busy). The PRE-QoS value
+    # is captured HERE (not at the preload block, which would capture the fine
+    # interval and make the "restore" a no-op).
+    _prior_switch_interval = sys.getswitchinterval()
+    if bool(getattr(config, "STARTUP_PRELOAD_AUDIO_QOS_ENABLED", True)) and not no_audio:
+        sys.setswitchinterval(
+            float(getattr(config, "STARTUP_PRELOAD_GIL_SWITCH_INTERVAL", 0.002))
+        )
+
     # Kick off the boot line + head "look around" motion BEFORE the slow preloads
     # (Whisper / speaker-ID / Ollama) so "hang on folks while I'm booting up" plays
     # and the head scans the room WHILE the models load — instead of dead silence
@@ -1159,11 +1171,8 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     _audio_qos = (
         bool(getattr(config, "STARTUP_PRELOAD_AUDIO_QOS_ENABLED", True)) and not no_audio
     )
-    _prior_switch_interval = sys.getswitchinterval()
     if _audio_qos:
-        sys.setswitchinterval(
-            float(getattr(config, "STARTUP_PRELOAD_GIL_SWITCH_INTERVAL", 0.002))
-        )
+        # Interval already armed at the boot-line spawn above; just log the state.
         logger.info(
             "Audio QoS active for preloads (switch interval %.3fs, breath %.2fs)",
             sys.getswitchinterval(),
@@ -1180,24 +1189,6 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
             playing = True
         if playing:
             time.sleep(float(getattr(config, "STARTUP_PRELOAD_BREATH_SECS", 0.25)))
-
-    # Daily current-events fetch rides ALONGSIDE the model preloads (background
-    # thread, one web-search call, date-gated to once/day) so the day's stories
-    # are logged and cached before Rex announces he's ready. Startup never waits
-    # on it; a failed fetch just leaves yesterday's cache.
-    try:
-        from awareness import current_events
-        current_events.start_background_refresh()
-    except Exception as exc:
-        logger.debug("current events refresh kick failed: %s", exc)
-
-    # Compass fusion service (no-op until COMPASS_ENABLED — the QMC5883L isn't
-    # wired yet; flip the flag after wiring + figure-8 calibration).
-    try:
-        from hardware import compass as compass_service
-        compass_service.start_service()
-    except Exception as exc:
-        logger.debug("compass service start failed: %s", exc)
 
     _abort_startup_if_shutdown("Whisper preload")
     if no_audio:
@@ -1398,6 +1389,24 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     if startup_jeopardy:
         _abort_startup_if_shutdown("Jeopardy launch")
         _launch_startup_jeopardy()
+
+    # Daily current-events fetch — deliberately AFTER the ready line (regression
+    # fix 2026-07-18: fetching during the boot-filler window put client/TLS/JSON
+    # work on the GIL exactly while the cached startup lines played -> stutter.
+    # The stories are only consumed in conversation lulls; nothing needs them
+    # before Rex is listening).
+    try:
+        from awareness import current_events
+        current_events.start_background_refresh()
+    except Exception as exc:
+        logger.debug("current events refresh kick failed: %s", exc)
+
+    # Compass fusion service (no-op until COMPASS_ENABLED).
+    try:
+        from hardware import compass as compass_service
+        compass_service.start_service()
+    except Exception as exc:
+        logger.debug("compass service start failed: %s", exc)
 
     logger.info("=== DJ-R3X v2 is online ===")
 
