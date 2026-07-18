@@ -54,13 +54,16 @@
                                      // 5341 counts): the 60RPM gearbox is 2.26x the
                                      // right's ratio. Re-measure when the matching
                                      // right motor arrives.
-#define COUNTS_PER_METER_R 3361.0f   // MEASURED 2026-07-17 (hand-roll, one full rev =
-                                     // 1056 counts). NOTE: the old shared 7532 was the
-                                     // AVERAGE of two secretly-mismatched gearboxes
-                                     // (~11700 left + 3361 right ≈ 7530/2-wheel mean) —
-                                     // the per-wheel split exposed it. Likely the true
-                                     // culprit behind the 2026-06-23 "left motor always
-                                     // slow" fault that was pinned on PWM pins.
+#define COUNTS_PER_METER_R 17000.0f  // ⚠ ASSUMES the matching 60RPM right motor is
+                                     // FITTED (arriving 2026-07-20) — seeded from the
+                                     // left's measured value; VERIFY with the hand-roll
+                                     // before trusting (gearbox tolerance varies a few
+                                     // % even within a SKU). History: the old right
+                                     // measured 3361, and the old shared 7532 was the
+                                     // average of two secretly-mismatched gearboxes —
+                                     // the per-wheel split exposed it (and the true
+                                     // culprit behind 2026-06-23 "left motor always
+                                     // slow"). DO NOT flash this onto the old motor.
 
 // Per-wheel count direction. +1 means "driving the wheel forward makes its count
 // increase." Flip to -1 (per wheel) if the bench hand-turn test shows the sign
@@ -112,7 +115,9 @@
 // unit artifact). Runtime keys: gain_scale_l / gain_scale_r. Re-derive when the
 // matching 60RPM right motor arrives (both will be ~5.2x, i.e. retune the bases).
 #define WHEEL_GAIN_SCALE_L  5.2f
-#define WHEEL_GAIN_SCALE_R  0.446f
+#define WHEEL_GAIN_SCALE_R  5.2f     // ⚠ matching-60RPM value (old right motor was
+                                     // 0.446) — flash only after the motor swap; then
+                                     // fine-tune BOTH on the floor as a pair
 #define WHEEL_PID_KP      440.0f
 #define WHEEL_PID_KI      220.0f
 #define WHEEL_PID_KD        0.0f
