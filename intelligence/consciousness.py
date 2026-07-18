@@ -123,6 +123,7 @@ _last_lull_callback_at: float = 0.0
 _lull_callback_by_person: dict[int, float] = {}
 _last_news_remark_at: float = 0.0
 _news_remarks_this_session: int = 0
+_open_thread_asked_persons: set = set()   # once per person per session
 
 # Pending follow-up events per DB person_id: {db_id: [event_dict, ...]}
 _pending_followups: dict[int, list[dict]] = {}
@@ -7295,6 +7296,86 @@ def _step_lull_callback(snapshot: dict, profile: SituationProfile) -> None:
     )
 
 
+def _step_open_thread_followup(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    Cross-session follow-through in a mid-conversation lull: the diary stored
+    what this person left unresolved last time (open_threads on their
+    conversation_summary episodes); ask about ONE of them — "hey, did the
+    dentist thing ever happen?" Highest-priority lull candidate
+    (OPEN_THREAD_PRIORITY 62 > lull callbacks 58 > news 54): remembering
+    someone's actual life beats banked humor and headlines.
+    """
+    if not bool(getattr(config, "OPEN_THREAD_FOLLOWUP_ENABLED", True)):
+        return
+    if profile.suppress_proactive or profile.user_mid_sentence or profile.interaction_busy:
+        return
+    if not profile.conversation_active:
+        return
+    if is_waiting_for_response() or not _can_proactive_speak():
+        return
+
+    now = time.monotonic()
+    min_silence = float(getattr(config, "CALLBACK_LULL_MIN_SILENCE_SECS", 12.0))
+    active_window = float(getattr(config, "CALLBACK_LULL_ACTIVE_WINDOW_SECS", 60.0))
+    with _engaged_lock:
+        engaged_id = _engaged_person_id
+        engaged_touch = _engaged_last_touch_at
+    if engaged_id is None or engaged_id in _open_thread_asked_persons:
+        return
+    quiet_for = now - engaged_touch
+    if quiet_for < min_silence or quiet_for > active_window:
+        return
+    try:
+        turn_window = float(getattr(config, "VISUAL_CURIOSITY_TURN_WINDOW_SECS", 45.0))
+        if _situation_assessor.recent_speech_turn_count(turn_window) < 2:
+            return
+    except Exception:
+        if not profile.rapid_exchange:
+            return
+
+    try:
+        from intelligence import open_threads
+        candidates = open_threads.pending_for_person(engaged_id)
+    except Exception as exc:
+        _log.debug("open thread step error: %s", exc)
+        return
+    if not candidates:
+        return
+    pick = candidates[0]                     # freshest unresolved thread
+
+    _open_thread_asked_persons.add(engaged_id)   # armed at submit (anti-resubmit)
+
+    first_name = "there"
+    try:
+        from memory import people as people_mod
+        person = people_mod.get_person(engaged_id) or {}
+        first_name = _first_name(person.get("name"), "there")
+    except Exception:
+        pass
+
+    when = open_threads.describe_age(pick["age_days"])
+    prompt = (
+        f"You're talking with {first_name}. {when.capitalize()}, they left "
+        f"something unresolved: {pick['thread']}. The conversation just hit a "
+        "lull — casually check in on it in ONE short in-character line "
+        "(\"hey, did ... ever happen?\" energy). Warm and genuinely curious, "
+        "not an interrogation; don't recite the memory back at them."
+    )
+    _log.info(
+        "consciousness: open-thread follow-up for person_id=%s after %.1fs quiet (%r)",
+        engaged_id, quiet_for, pick["thread"],
+    )
+    _generate_and_speak(
+        prompt,
+        emotion="curious",
+        purpose="open_thread_followup",
+        priority=int(getattr(config, "OPEN_THREAD_PRIORITY", 62)),
+        label=f"open thread for {engaged_id}",
+        metadata={"topic_key": f"thread:{engaged_id}:{pick['episode_id']}"},
+        on_spoke=lambda: open_threads.mark_asked(pick["episode_id"], pick["thread"]),
+    )
+
+
 def _step_news_remark(snapshot: dict, profile: SituationProfile) -> None:
     """
     Current-events conversation invitation in a mid-conversation lull: surface
@@ -12098,6 +12179,10 @@ def _loop() -> None:
 
             # 10d5. Lull callback — when conversation goes quiet, resurface one
             # banked fun-fact premise about the engaged person (callback humor).
+            # 8d-a0. Cross-session open-thread follow-up — "did the thing happen?"
+            # (top lull priority: personal follow-through beats humor and news).
+            _step_open_thread_followup(snapshot, profile)
+
             _step_lull_callback(snapshot, profile)
 
             # 8d-b. Current-events lull remark — "did you hear about ...?" (B-material;

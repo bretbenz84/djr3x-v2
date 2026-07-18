@@ -6916,6 +6916,15 @@ NEWS_REMARK_PRIORITY = _env_int("NEWS_REMARK_PRIORITY", 54, min_value=1, max_val
 NEWS_REMARK_SESSION_CAP = _env_int("NEWS_REMARK_SESSION_CAP", 1, min_value=0, max_value=10)
 NEWS_REMARK_COOLDOWN_SECS = _env_float("NEWS_REMARK_COOLDOWN_SECS", 900.0, min_value=0.0, max_value=86400.0)
 
+# ── Open-thread follow-ups (intelligence/open_threads.py) ─────────────────────
+# The diary stores what a person left unresolved (open_threads); when they're
+# back and the conversation lulls, Rex asks about ONE — at most once per thread
+# ever, once per person per session. Freshness window keeps it warm, not creepy.
+OPEN_THREAD_FOLLOWUP_ENABLED = _env_bool("OPEN_THREAD_FOLLOWUP_ENABLED", True)
+OPEN_THREAD_PRIORITY = _env_int("OPEN_THREAD_PRIORITY", 62, min_value=1, max_value=100)
+OPEN_THREAD_MIN_AGE_HOURS = _env_float("OPEN_THREAD_MIN_AGE_HOURS", 6.0, min_value=0.0, max_value=720.0)
+OPEN_THREAD_MAX_AGE_DAYS = _env_float("OPEN_THREAD_MAX_AGE_DAYS", 21.0, min_value=0.1, max_value=365.0)
+
 # Spoken once when the charger is plugged in (firmware detects sustained charge
 # current, locks out the wheels, and reports charging:true in telemetry).
 BATTERY_CHARGING_LINES = [
