@@ -121,6 +121,8 @@ _visual_curiosity_lock = threading.Lock()
 # "fun fact" premise about the engaged person (intelligence/callback_engine).
 _last_lull_callback_at: float = 0.0
 _lull_callback_by_person: dict[int, float] = {}
+_last_news_remark_at: float = 0.0
+_news_remarks_this_session: int = 0
 
 # Pending follow-up events per DB person_id: {db_id: [event_dict, ...]}
 _pending_followups: dict[int, list[dict]] = {}
@@ -7293,6 +7295,87 @@ def _step_lull_callback(snapshot: dict, profile: SituationProfile) -> None:
     )
 
 
+def _step_news_remark(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    Current-events conversation invitation in a mid-conversation lull: surface
+    ONE of today's cached stories (awareness/current_events.py, fetched once
+    per day at startup) as a "hey, did you hear about ...?" opener that invites
+    the person to pick the thread up.
+
+    Deliberately B-material: same lull envelope as the banked-callback step but
+    LOWER priority (NEWS_REMARK_PRIORITY 54 < lull_callback 58), a session cap
+    (default 1), and a long cooldown — news competes for airtime, it never owns
+    it. The story is spent (persisted) only in on_spoke, so a governor loss
+    keeps it available for later.
+    """
+    global _last_news_remark_at, _news_remarks_this_session
+
+    if profile.suppress_proactive or profile.user_mid_sentence or profile.interaction_busy:
+        return
+    if not profile.conversation_active:
+        return
+    if is_waiting_for_response() or not _can_proactive_speak():
+        return
+    if _news_remarks_this_session >= int(getattr(config, "NEWS_REMARK_SESSION_CAP", 1)):
+        return
+
+    now = time.monotonic()
+    if (now - _last_news_remark_at) < float(getattr(config, "NEWS_REMARK_COOLDOWN_SECS", 900.0)):
+        return
+    # Same lull window the callback step uses: a real exchange that went quiet.
+    min_silence = float(getattr(config, "CALLBACK_LULL_MIN_SILENCE_SECS", 12.0))
+    active_window = float(getattr(config, "CALLBACK_LULL_ACTIVE_WINDOW_SECS", 60.0))
+    with _engaged_lock:
+        engaged_id = _engaged_person_id
+        engaged_touch = _engaged_last_touch_at
+    if engaged_id is None:
+        return
+    quiet_for = now - engaged_touch
+    if quiet_for < min_silence or quiet_for > active_window:
+        return
+    try:
+        turn_window = float(getattr(config, "VISUAL_CURIOSITY_TURN_WINDOW_SECS", 45.0))
+        if _situation_assessor.recent_speech_turn_count(turn_window) < 2:
+            return
+    except Exception:
+        if not profile.rapid_exchange:
+            return
+
+    try:
+        from awareness import current_events
+        story = current_events.pick_story()
+    except Exception as exc:
+        _log.debug("news remark step error: %s", exc)
+        return
+    if not story:
+        return
+
+    _last_news_remark_at = now          # armed at submit (anti-resubmit); the
+    _news_remarks_this_session += 1     # story itself is spent only on_spoke
+
+    prompt = (
+        "You read some news this morning and a conversational lull just opened. "
+        f"The story: {story['headline']} — {story['summary']} "
+        "Bring it up naturally in ONE short in-character line that INVITES the "
+        "other person into the topic (\"hey, did you hear about ...\" energy — "
+        "a conversation opener, not a news broadcast). Don't recite the whole "
+        "summary; tease the interesting part and let them ask."
+    )
+    _log.info(
+        "consciousness: news remark candidate after %.1fs quiet (story=%r)",
+        quiet_for, story["headline"],
+    )
+    _generate_and_speak(
+        prompt,
+        emotion="amused",
+        purpose="news_remark",
+        priority=int(getattr(config, "NEWS_REMARK_PRIORITY", 54)),
+        label="news lull remark",
+        metadata={"topic_key": f"news:{story['headline'][:60]}"},
+        on_spoke=lambda: current_events.mark_mentioned(story),
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 10 — Presence tracking (departure / return reactions)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -12016,6 +12099,10 @@ def _loop() -> None:
             # 10d5. Lull callback — when conversation goes quiet, resurface one
             # banked fun-fact premise about the engaged person (callback humor).
             _step_lull_callback(snapshot, profile)
+
+            # 8d-b. Current-events lull remark — "did you hear about ...?" (B-material;
+            # loses ties to banked personal callbacks by priority).
+            _step_news_remark(snapshot, profile)
 
             # 10e. Overheard chime-in — react when someone talks ABOUT Rex
             _step_overheard_chime_in(snapshot, profile)

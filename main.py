@@ -1172,6 +1172,16 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
         if playing:
             time.sleep(float(getattr(config, "STARTUP_PRELOAD_BREATH_SECS", 0.25)))
 
+    # Daily current-events fetch rides ALONGSIDE the model preloads (background
+    # thread, one web-search call, date-gated to once/day) so the day's stories
+    # are logged and cached before Rex announces he's ready. Startup never waits
+    # on it; a failed fetch just leaves yesterday's cache.
+    try:
+        from awareness import current_events
+        current_events.start_background_refresh()
+    except Exception as exc:
+        logger.debug("current events refresh kick failed: %s", exc)
+
     _abort_startup_if_shutdown("Whisper preload")
     if no_audio:
         logger.info("Skipping local Whisper preload (--noaudio)")

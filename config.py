@@ -6883,6 +6883,26 @@ COMPASS_CURRENT_HIGH_MA = _env_int("COMPASS_CURRENT_HIGH_MA", 2600, min_value=0,
 # LED-run surge). Rejections are counted in the status/telemetry method.
 COMPASS_FIELD_TOLERANCE = _env_float("COMPASS_FIELD_TOLERANCE", 0.25, min_value=0.01, max_value=2.0)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CURRENT EVENTS (awareness/current_events.py)
+# One web-search LLM call per DAY (date-gated) fetches ~5 notable/viral stories
+# during startup model preloads; consciousness surfaces at most one per session
+# in a conversation lull ("hey, did you hear about ...?") through the normal
+# proactive-speech governor. ~$0.03/day at gpt-4o-mini + hosted web_search.
+# ─────────────────────────────────────────────────────────────────────────────
+CURRENT_EVENTS_ENABLED = _env_bool("CURRENT_EVENTS_ENABLED", True)
+CURRENT_EVENTS_PATH = os.getenv("CURRENT_EVENTS_PATH", "assets/memory/current_events.json").strip()
+CURRENT_EVENTS_STORY_COUNT = _env_int("CURRENT_EVENTS_STORY_COUNT", 5, min_value=1, max_value=15)
+CURRENT_EVENTS_MAX_OUTPUT_TOKENS = _env_int("CURRENT_EVENTS_MAX_OUTPUT_TOKENS", 900, min_value=200, max_value=4000)
+CURRENT_EVENTS_TIMEOUT_SECS = _env_float("CURRENT_EVENTS_TIMEOUT_SECS", 45.0, min_value=5.0, max_value=300.0)
+# Lull-remark envelope: same shape as the banked-callback lull (silence window is
+# shared via CALLBACK_LULL_MIN_SILENCE/ACTIVE_WINDOW). One story per session,
+# long global cooldown, priority just below lull callbacks so banked personal
+# humor wins a tie — news is the B-material.
+NEWS_REMARK_PRIORITY = _env_int("NEWS_REMARK_PRIORITY", 54, min_value=1, max_value=100)
+NEWS_REMARK_SESSION_CAP = _env_int("NEWS_REMARK_SESSION_CAP", 1, min_value=0, max_value=10)
+NEWS_REMARK_COOLDOWN_SECS = _env_float("NEWS_REMARK_COOLDOWN_SECS", 900.0, min_value=0.0, max_value=86400.0)
+
 # Spoken once when the charger is plugged in (firmware detects sustained charge
 # current, locks out the wheels, and reports charging:true in telemetry).
 BATTERY_CHARGING_LINES = [
