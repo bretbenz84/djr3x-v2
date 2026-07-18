@@ -323,6 +323,52 @@ def _is_flat_answer(text: str) -> bool:
     return cleaned in _FLAT_CORE
 
 
+_last_rich_followup_at: float = 0.0
+
+
+def _rich_share_followup_line(
+    user_text: str, turns: list[tuple[str, str, str]]
+) -> Optional[str]:
+    """The inverse of the flat-answer probe (owner 2026-07-18: "I'm going on a
+    river float with my dad and my sister tomorrow" got three quips and ZERO
+    curiosity — no where, no how long). When the user gives a SUBSTANTIVE
+    answer to a question Rex asked, the reply should carry genuine interest:
+    quip in his voice, then ONE concrete follow-up question. Cooldown-gated so
+    consecutive turns don't become an interview."""
+    global _last_rich_followup_at
+    if not bool(getattr(config, "RICH_SHARE_FOLLOWUP_ENABLED", True)):
+        return None
+    cleaned = " ".join(str(user_text or "").split())
+    if len(cleaned.split()) < 6 or _is_flat_answer(cleaned):
+        return None
+    if cleaned.endswith("?"):
+        return None                       # they asked back — answer them instead
+    # Only when Rex's LAST line was itself a question (they're answering him).
+    last_rex = next((t for role, _raw, t in reversed(turns) if role == "assistant"), "")
+    if "?" not in last_rex:
+        return None
+    cooldown = float(getattr(config, "RICH_SHARE_FOLLOWUP_COOLDOWN_SECS", 120.0) or 0.0)
+    now = time.monotonic()
+    if cooldown and (now - _last_rich_followup_at) < cooldown:
+        return None
+    try:
+        from intelligence import callback_engine
+        if callback_engine.recently_heavy():
+            return None
+    except Exception:
+        pass
+    _last_rich_followup_at = now
+    return (
+        "RICH-SHARE FOLLOW-UP: they just genuinely answered your question with "
+        "something real. Do NOT settle for a quip alone — react in your voice, "
+        "then END this same reply with ONE short, genuinely curious follow-up "
+        "about a CONCRETE detail of what they said (the where / which one / how "
+        "long / who's coming shape). This one question is the EXCEPTION to your "
+        "question-restraint rules for THIS reply only. A friend who's actually "
+        "interested, not an interviewer — one question, then let them run with it."
+    )
+
+
 def _flat_answer_probe_line(
     user_text: str, turns: list[tuple[str, str, str]]
 ) -> Optional[str]:
@@ -410,6 +456,8 @@ def _messages(
     # an instruction, not a user answer — no flatness to probe.
     if label_current_speaker:
         probe = _flat_answer_probe_line(user_text, turns)
+        if not probe:
+            probe = _rich_share_followup_line(user_text, turns)
         if probe:
             extra_lines = [probe]
     if multi:

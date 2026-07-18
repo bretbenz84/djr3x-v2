@@ -4755,6 +4755,15 @@ CURRENT_EVENTS_MAX_AGE_HOURS = _env_float("CURRENT_EVENTS_MAX_AGE_HOURS", 36.0, 
 # exists (Rex references THAT instead) or the user is low-energy.
 WEEKEND_PLANS_ASK_ENABLED = _env_bool("WEEKEND_PLANS_ASK_ENABLED", True)
 WEEKEND_PLANS_ASK_WEEKDAYS = (3, 4, 5, 6)   # Thu, Fri, Sat, Sun (Monday=0)
+# Rich-share follow-up: a substantive answer to Rex's question earns one
+# concrete follow-up question in the same reply (the inverse of the flat-
+# answer probe). Cooldown keeps consecutive turns from becoming an interview.
+RICH_SHARE_FOLLOWUP_ENABLED = _env_bool("RICH_SHARE_FOLLOWUP_ENABLED", True)
+RICH_SHARE_FOLLOWUP_COOLDOWN_SECS = _env_float("RICH_SHARE_FOLLOWUP_COOLDOWN_SECS", 120.0, min_value=0.0, max_value=3600.0)
+# The idle-wander spoken re-greet stays silent while the person spoke recently
+# (the head motion still happens) — "Oh—still here" twice in a 3-minute live
+# conversation was noise, not presence.
+IDLE_REGREET_MIN_USER_SILENCE_SECS = _env_float("IDLE_REGREET_MIN_USER_SILENCE_SECS", 180.0, min_value=0.0, max_value=3600.0)
 
 # ── Novelty drive (awareness/novelty_drive.py, curiosity Phase 2) ─────────────
 # Time-since-anything-new. Stale -> idle behaviors tilt toward looking around;

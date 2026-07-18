@@ -10625,6 +10625,18 @@ def _maybe_fire_wander_regreet(snapshot: dict, profile: "SituationProfile") -> N
         profile, "rapid_exchange", False
     ):
         return
+    # profile.conversation_active forgets fast — a ~33s pause mid-conversation
+    # read as inactive and the re-greet spoke "Oh—still here" TWICE in one
+    # 3-minute exchange (field 2026-07-18 01:10). Direct recency check: if the
+    # person spoke within this window, the wander stays a silent head motion.
+    try:
+        from intelligence import interaction as _intx
+        _recent = float(getattr(config, "IDLE_REGREET_MIN_USER_SILENCE_SECS", 180.0))
+        if (_intx._last_user_content_at > 0.0
+                and (time.monotonic() - _intx._last_user_content_at) < _recent):
+            return
+    except Exception:
+        pass
     name = _locked_person_name(snapshot)
     first = _first_name(name, "there")
     pid = _face_tracking_lock.get("person_id")

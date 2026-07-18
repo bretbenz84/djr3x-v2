@@ -4851,9 +4851,14 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     if low_energy:
         if long_silence:
             return False                        # no re-engage pestering when tired
+        # Content is the guard (statement-or-PASS via the lean addendum), NOT a
+        # silence wall: the old quiet >= 60s requirement meant lean could never
+        # beat the ~35s idle-wander re-greet, so a tired user got "Oh—still
+        # here" instead of anything real (field 2026-07-18 01:10 session).
         _low_gap = float(getattr(config, "LEAN_IMPULSE_LOW_ENERGY_GAP_SECS", 120.0))
-        if (now - _last_lean_impulse_at) < _low_gap or quiet < _low_gap / 2.0:
+        if (now - _last_lean_impulse_at) < _low_gap:
             return False
+        _log.info("[lean] impulse consult in LOW-ENERGY mode (statements only)")
     # Question budget: an exhausted budget doesn't silence the impulse, it
     # converts it to statement-or-pass (the addendum in lean_brain).
     no_questions = False
