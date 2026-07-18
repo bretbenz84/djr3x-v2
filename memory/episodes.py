@@ -167,6 +167,11 @@ def record_made_laugh(
 
 def record_animal(species: Optional[str], *, position: Optional[str] = None) -> Optional[int]:
     sp = (species or "creature").strip() or "creature"
+    try:
+        from awareness import novelty_drive
+        novelty_drive.record_novel_event("animal", sp)
+    except Exception:
+        pass
     article = "an" if sp[:1].lower() in "aeiou" else "a"
     return record_episode(
         "animal", f"I saw {article} {sp}.",
@@ -211,6 +216,11 @@ def record_conversation_summary(
 
 def record_person_enrolled(person_id: Optional[int], name: Optional[str]) -> Optional[int]:
     label = (name or "").strip() or "someone new"
+    try:
+        from awareness import novelty_drive
+        novelty_drive.record_novel_event("person_enrolled", label)
+    except Exception:
+        pass
     return record_episode(
         "person_enrolled", f"I met {label}.",
         person_id=person_id, person_name=name, salience=0.8,

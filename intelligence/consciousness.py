@@ -5892,6 +5892,20 @@ def _step_idle_micro_behavior(snapshot: dict, profile: SituationProfile) -> None
 
     _last_micro_behavior_at = now
     choices, weights = _idle_micro_behavior_choices(snapshot)
+    # Novelty drive (curiosity Phase 2): a stale room tilts the idle mix toward
+    # the LOOKING behaviors — Rex goes hunting for something new instead of
+    # monologuing. Multiplier only touches scan/observation/vision entries.
+    try:
+        from awareness import novelty_drive
+        if novelty_drive.is_stale():
+            boost = float(getattr(config, "NOVELTY_STALE_LOOK_BOOST", 3.0))
+            weights = [
+                w * boost if c in ("ambient_scan", "ambient_observation",
+                                   "live_vision_comment") else w
+                for c, w in zip(choices, weights)
+            ]
+    except Exception:
+        pass
     # Episodic recall (Phase 2) is opt-in: only offer the "memory musing" behavior
     # when enabled, so the idle mix is unchanged while the feature is off.
     if getattr(config, "EPISODIC_RECALL_ENABLED", False) and "memory_musing" not in choices:
@@ -7309,6 +7323,63 @@ def _step_lull_callback(snapshot: dict, profile: SituationProfile) -> None:
         # disclosure mid-tick); re-run the engine gates right before composing.
         pre_speak_check=lambda: callback_engine.lull_gates_clear(engaged_id),
     )
+
+
+_last_self_explore_at: float = 0.0
+
+
+def _step_self_exploration(snapshot: dict, profile: SituationProfile) -> None:
+    """
+    Curiosity Phase 2, OPT-IN (EXPLORE_SELF_TRIGGER_ENABLED, default OFF — it
+    MOVES THE ROBOT unprompted): when the novelty clock has been stale a long
+    time, nobody is around, and the pack is healthy, Rex takes himself on the
+    same supervised wander an invitation would start. The walk feeds the room
+    model, which feeds the learn-by-asking queue — boredom literally produces
+    questions for the next visitor.
+    """
+    global _last_self_explore_at
+    if not bool(getattr(config, "EXPLORE_SELF_TRIGGER_ENABLED", False)):
+        return
+    if not bool(getattr(config, "EXPLORE_ENABLED", True)):
+        return
+    if profile.suppress_proactive:
+        return
+    if not _room_looks_empty(snapshot):
+        return                                  # never self-wander with company
+    try:
+        from awareness import novelty_drive
+        if novelty_drive.staleness_secs() < float(
+            getattr(config, "EXPLORE_SELF_TRIGGER_STALENESS_SECS", 3600.0)
+        ):
+            return
+    except Exception:
+        return
+    now = time.monotonic()
+    if (now - _last_self_explore_at) < float(
+        getattr(config, "EXPLORE_SELF_TRIGGER_COOLDOWN_SECS", 7200.0)
+    ):
+        return
+    try:
+        from intelligence import battery_awareness
+        if battery_awareness.battery_critical():
+            return
+    except Exception:
+        pass
+    try:
+        from hardware import motion
+        if (motion.telemetry() or {}).get("charging"):
+            return                              # firmware locks the wheels anyway
+    except Exception:
+        pass
+    try:
+        from intelligence import exploration
+        if exploration.active():
+            return
+        _last_self_explore_at = now
+        _log.info("consciousness: self-triggered exploration (novelty staleness) — starting walk")
+        exploration.start(None, None, source="boredom")
+    except Exception as exc:
+        _log.debug("self exploration start failed: %s", exc)
 
 
 def _step_open_thread_followup(snapshot: dict, profile: SituationProfile) -> None:
@@ -12143,6 +12214,10 @@ def _loop() -> None:
 
             # 9a. Boredom escalation — grumble when left alone, then doze into SLEEP.
             _step_boredom_escalation(snapshot, profile)
+
+            # 9a2. Self-triggered exploration (OPT-IN; default off) — a long-stale
+            # empty room sends Rex on a wander that feeds the curiosity queue.
+            _step_self_exploration(snapshot, profile)
 
             # 9b. Mood-driven body language — visor openness, breathing cadence, and the
             # occasional idle mood gesture, expressing Rex's sustained body mood on the

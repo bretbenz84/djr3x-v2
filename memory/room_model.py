@@ -78,6 +78,12 @@ def record_objects(objects) -> None:
         seen.add(label)
         bucket = str(obj.get("position") or "").strip() or "unknown"
         brand_new = baseline_ok and prior.get(label, 0) == 0
+        if brand_new:
+            try:
+                from awareness import novelty_drive
+                novelty_drive.record_novel_event("new_object", label)
+            except Exception:
+                pass
         try:
             rex_db.execute(
                 "INSERT INTO room_objects "
@@ -212,6 +218,11 @@ def record_answer(label: str, name: str, note: str = "") -> bool:
             "name_confidence = ?, ask_status = 'answered' WHERE label = ?",
             (current, str(note or "").strip()[:400] or None, confidence, label),
         )
+        try:
+            from awareness import novelty_drive
+            novelty_drive.record_novel_event("learned_name", f"{label} -> {current}")
+        except Exception:
+            pass
         return True
     except Exception as exc:
         _log.debug("room_model.record_answer failed: %s", exc)

@@ -4718,6 +4718,16 @@ ROOM_QUESTION_ANSWER_TURNS = _env_int("ROOM_QUESTION_ANSWER_TURNS", 2, min_value
 # The room model must be at least this old before novelty can queue questions —
 # a fresh install's day-one furniture trickle must not become an interview.
 ROOM_QUESTION_MIN_ROOM_AGE_DAYS = _env_float("ROOM_QUESTION_MIN_ROOM_AGE_DAYS", 1.0, min_value=0.0, max_value=365.0)
+
+# ── Novelty drive (awareness/novelty_drive.py, curiosity Phase 2) ─────────────
+# Time-since-anything-new. Stale -> idle behaviors tilt toward looking around;
+# very stale + empty room + healthy pack -> OPT-IN self-triggered exploration.
+NOVELTY_STALE_AFTER_SECS = _env_float("NOVELTY_STALE_AFTER_SECS", 1800.0, min_value=60.0, max_value=86400.0)
+NOVELTY_STALE_LOOK_BOOST = _env_float("NOVELTY_STALE_LOOK_BOOST", 3.0, min_value=1.0, max_value=20.0)
+# ⚠ Default OFF: this moves the robot with nobody around. Enable deliberately.
+EXPLORE_SELF_TRIGGER_ENABLED = _env_bool("EXPLORE_SELF_TRIGGER_ENABLED", False)
+EXPLORE_SELF_TRIGGER_STALENESS_SECS = _env_float("EXPLORE_SELF_TRIGGER_STALENESS_SECS", 3600.0, min_value=300.0, max_value=86400.0)
+EXPLORE_SELF_TRIGGER_COOLDOWN_SECS = _env_float("EXPLORE_SELF_TRIGGER_COOLDOWN_SECS", 7200.0, min_value=600.0, max_value=86400.0)
 # The canned one-liners below are the ALONE behavior (muttering at an empty room).
 ROOM_CHANGE_REMARK_LINES = [
     "Hold on — when did that {label} get here?",
