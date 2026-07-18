@@ -181,6 +181,24 @@ def get_pending_followups(person_id: int) -> list[dict]:
     """
     today = _today_local()
     undated_cutoff = _undated_followup_cutoff()
+    # EXPIRY (field 2026-07-18: Rex opened with a dentist appointment >1 week
+    # past — "that was over a week ago though"): a dated event more than
+    # FOLLOWUP_DATED_MAX_AGE_DAYS past its date is stale; asking reads as
+    # surveillance, not attentiveness. Lazily mark them followed_up so every
+    # consumer (lean cue, startup greeting, reactive path) forgets them at once.
+    try:
+        import config as _config
+        from datetime import date as _date, timedelta as _timedelta
+        max_age = float(getattr(_config, "FOLLOWUP_DATED_MAX_AGE_DAYS", 5.0))
+        stale_cutoff = (_date.today() - _timedelta(days=max_age)).isoformat()
+        db.execute(
+            """UPDATE person_events SET followed_up = TRUE
+               WHERE person_id = ? AND followed_up = FALSE
+                 AND event_date IS NOT NULL AND event_date < ?""",
+            (person_id, stale_cutoff),
+        )
+    except Exception:
+        pass
     rows = db.fetchall(
         """SELECT * FROM person_events
            WHERE person_id = ?

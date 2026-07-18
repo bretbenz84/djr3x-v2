@@ -2974,6 +2974,23 @@ def _step_wave_reaction(snapshot: dict, profile: SituationProfile) -> None:
             level = prev + 1
     line, should_speak, should_gesture = _wave_response_plan(level, name)
 
+    # MID-CONVERSATION wave (field 2026-07-18: a wave 45s into a flowing exchange
+    # produced a spoken "Hi there, Bret!" — a duplicate greeting that derailed the
+    # conversation): when the person spoke recently, respond like a human would —
+    # wave BACK silently, don't restart the greeting.
+    try:
+        from intelligence import interaction as _intx
+        _recent_speech = (
+            _intx._last_user_content_at > 0.0
+            and (time.monotonic() - _intx._last_user_content_at)
+            <= float(getattr(config, "WAVE_BACK_SILENT_IN_CONVERSATION_SECS", 90.0))
+        )
+    except Exception:
+        _recent_speech = False
+    if _recent_speech and should_speak:
+        should_speak, line = False, None
+        should_gesture = True
+
     # Speaking levels must clear the speech gates; if blocked, HOLD the latch and retry
     # without advancing the bit (so the joke lands when Rex is actually free, not lost).
     # reactive=True breaks through awaiting-reply/active-conversation/pacing but still yields
@@ -3144,6 +3161,31 @@ def _step_room_change(snapshot: dict, profile: SituationProfile) -> None:
     lo = int(getattr(config, "ROOM_CHANGE_MIN_SIGHTINGS", 2))
     hi = int(getattr(config, "ROOM_CHANGE_MAX_SIGHTINGS", 12))
     new_labels = sorted(lbl for lbl in labels if lo <= counts.get(lbl, 0) <= hi)
+    # DETECTOR HUMILITY (field 2026-07-18: a pillow misread as "handbag" for 4
+    # seconds became "New handbag. The room's redecorating without consulting me"):
+    # a real new object PERSISTS — require its sightings to span a minimum wall-
+    # clock window, and never remark on soft/carriable labels sitting next to a
+    # person (usually the person's own stuff, or a misread of them/their couch).
+    min_span = float(getattr(config, "ROOM_CHANGE_MIN_SPAN_SECS", 45.0))
+    if min_span > 0 and new_labels:
+        try:
+            spans = room_model.label_spans(new_labels)
+            new_labels = [l for l in new_labels if spans.get(l, 0.0) >= min_span]
+        except Exception:
+            pass
+    soft = {
+        s.strip().lower()
+        for s in getattr(config, "ROOM_CHANGE_SOFT_LABELS", (
+            "handbag", "backpack", "suitcase", "tie", "umbrella", "cell phone",
+            "book", "cup", "bottle", "remote",
+        ))
+    }
+    near_person_labels = {
+        str(o.get("label") or "").strip().lower()
+        for o in (snapshot.get("objects") or [])
+        if isinstance(o, dict) and o.get("near_person")
+    }
+    new_labels = [l for l in new_labels if not (l in soft and l in near_person_labels)]
     if not new_labels:
         return
     if not _can_proactive_speak():
@@ -3193,6 +3235,15 @@ def _step_room_change(snapshot: dict, profile: SituationProfile) -> None:
         return
     _room_change_state["last_at"] = now
     _room_change_state["count"] = _room_change_state.get("count", 0.0) + 1
+    # Arm the correction latch: "actually, that's a pillow" in the next turns
+    # should RENAME the object in the room model, not fall into the person-fact
+    # correction machinery (field 2026-07-18: it did, and emitted a canned
+    # failure line).
+    try:
+        from intelligence import room_questions
+        room_questions.note_room_remark(label)
+    except Exception:
+        pass
     _log.info(
         "consciousness: room-change remark — %s (sightings=%d, count=%d/%s, asked=%s)",
         label, counts.get(label, 0), int(_room_change_state["count"]),
@@ -6986,7 +7037,7 @@ def _visual_curiosity_objects_line() -> str:
     )
     return (
         "Confirmed objects in view (a local object detector verified these are really "
-        f"there — safe to name; when an object has a they-call-it name, USE that name): "
+        f"there — safe to name; USE the they-call-it name where one is given): "
         f"{items}.{held_note or novel_note}\n\n"
     )
 

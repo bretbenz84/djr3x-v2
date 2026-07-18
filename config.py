@@ -4719,6 +4719,28 @@ ROOM_QUESTION_ANSWER_TURNS = _env_int("ROOM_QUESTION_ANSWER_TURNS", 2, min_value
 # a fresh install's day-one furniture trickle must not become an interview.
 ROOM_QUESTION_MIN_ROOM_AGE_DAYS = _env_float("ROOM_QUESTION_MIN_ROOM_AGE_DAYS", 1.0, min_value=0.0, max_value=365.0)
 
+# ── Impulse discipline + detector humility (field rework 2026-07-18) ──────────
+# Rolling rate cap on lean impulses — does NOT reset when the user replies (the
+# per-run counters do, which is how six lines landed in three minutes).
+LEAN_IMPULSE_RATE_WINDOW_SECS = _env_float("LEAN_IMPULSE_RATE_WINDOW_SECS", 600.0, min_value=60.0, max_value=3600.0)
+LEAN_IMPULSE_MAX_PER_WINDOW = _env_int("LEAN_IMPULSE_MAX_PER_WINDOW", 5, min_value=1, max_value=50)
+# Low-energy (tired / disengaged / question-averse) impulse gap — and impulses
+# become statement-or-pass, never questions.
+LEAN_IMPULSE_LOW_ENERGY_GAP_SECS = _env_float("LEAN_IMPULSE_LOW_ENERGY_GAP_SECS", 120.0, min_value=10.0, max_value=3600.0)
+# A dated event more than this many days past its date is stale — asking about
+# it reads as surveillance, not attentiveness (expired lazily at the source).
+FOLLOWUP_DATED_MAX_AGE_DAYS = _env_float("FOLLOWUP_DATED_MAX_AGE_DAYS", 5.0, min_value=0.5, max_value=90.0)
+# A wave DURING a conversation gets a silent wave-back, not a spoken re-greeting.
+WAVE_BACK_SILENT_IN_CONVERSATION_SECS = _env_float("WAVE_BACK_SILENT_IN_CONVERSATION_SECS", 90.0, min_value=0.0, max_value=3600.0)
+# Room-change remarks: a real new object PERSISTS — require this much wall-clock
+# span between first and last sighting (a one-flicker misread has ~0)...
+ROOM_CHANGE_MIN_SPAN_SECS = _env_float("ROOM_CHANGE_MIN_SPAN_SECS", 45.0, min_value=0.0, max_value=3600.0)
+# ...and never remark on soft/carriable labels right next to a person.
+ROOM_CHANGE_SOFT_LABELS = (
+    "handbag", "backpack", "suitcase", "tie", "umbrella", "cell phone",
+    "book", "cup", "bottle", "remote",
+)
+
 # ── Novelty drive (awareness/novelty_drive.py, curiosity Phase 2) ─────────────
 # Time-since-anything-new. Stale -> idle behaviors tilt toward looking around;
 # very stale + empty room + healthy pack -> OPT-IN self-triggered exploration.

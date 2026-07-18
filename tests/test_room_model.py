@@ -98,6 +98,8 @@ class StepRoomChangeTest(unittest.TestCase):
         captured = {}
         with mock.patch("memory.room_model.established_count", return_value=established), \
              mock.patch("memory.room_model.label_sightings", return_value=dict(sightings or {})), \
+             mock.patch("memory.room_model.label_spans",
+                        side_effect=lambda ls: {l: 9999.0 for l in ls}), \
              mock.patch.object(c, "_can_proactive_speak", return_value=can_speak), \
              mock.patch.object(c, "_speak_async",
                                side_effect=lambda line, **k: captured.update(line=line, kw=k) or True):
@@ -148,6 +150,8 @@ class StepRoomChangeTest(unittest.TestCase):
         c = self.c
         with mock.patch("memory.room_model.established_count", return_value=10), \
              mock.patch("memory.room_model.label_sightings", return_value={"guitar": 3}), \
+             mock.patch("memory.room_model.label_spans",
+                        side_effect=lambda ls: {l: 9999.0 for l in ls}), \
              mock.patch.object(c, "_can_proactive_speak", return_value=True), \
              mock.patch.object(c, "_speak_async", return_value=False):
             c._step_room_change({"objects": [{"label": "guitar"}]}, _Profile())

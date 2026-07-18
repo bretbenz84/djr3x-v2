@@ -33,10 +33,13 @@ import config
 
 _log = logging.getLogger(__name__)
 
-# Awaiting-answer latch: {"label", "armed_at", "turns_left"}. Module-local —
-# one pending room answer at a time is plenty.
+# Awaiting-answer latch: {"label", "armed_at", "turns_left", "kind"}. Module-
+# local — one pending room answer at a time is plenty. kind: "question" (Rex
+# asked what it is) or "remark" (Rex commented; a correction may follow).
 _latch: Optional[dict] = None
 _last_asked_at: float = 0.0
+_last_capture_at: float = 0.0    # when an answer/correction was last consumed
+_last_capture: Optional[dict] = None   # {"label", "name", "kind"} of that capture
 
 _TEMPLATES = (
     "Hey — what's the story with that {thing}{where}?",
@@ -100,12 +103,37 @@ def note_asked(label: str) -> None:
         "label": str(label).strip().lower(),
         "armed_at": time.monotonic(),
         "turns_left": int(getattr(config, "ROOM_QUESTION_ANSWER_TURNS", 2)),
+        "kind": "question",
     }
     try:
         from memory import room_model
         room_model.note_question_asked(label)
     except Exception as exc:
         _log.debug("[room_questions] note_question_asked failed: %s", exc)
+
+
+def note_room_remark(label: str) -> None:
+    """Rex just REMARKED on a (possibly misread) object. Arm a correction latch:
+    "actually, that's a pillow" in the following turns renames the object in the
+    room model instead of falling into the person-fact correction machinery."""
+    global _latch
+    _latch = {
+        "label": str(label).strip().lower(),
+        "armed_at": time.monotonic(),
+        "turns_left": int(getattr(config, "ROOM_QUESTION_ANSWER_TURNS", 2)),
+        "kind": "remark",
+    }
+
+
+def recently_captured(within_secs: float = 5.0) -> bool:
+    """True right after an answer/correction was consumed — interaction uses this
+    to keep the legacy memory_correct_fact command from hijacking the same turn."""
+    return (time.monotonic() - _last_capture_at) <= within_secs
+
+
+def last_capture() -> Optional[dict]:
+    """The most recent consumed answer/correction ({"label","name","kind"})."""
+    return dict(_last_capture) if _last_capture else None
 
 
 def _extract_identity(text: str) -> Optional[str]:
@@ -169,12 +197,19 @@ def maybe_capture_answer(text: str) -> bool:
         _log.debug("[room_questions] record_answer failed: %s", exc)
         return False
     if ok:
-        _log.info("[room_questions] learned: %s -> %r", latch["label"], name)
+        global _last_capture_at, _last_capture
+        _last_capture_at = time.monotonic()
+        _last_capture = {"label": latch["label"], "name": name,
+                         "kind": latch.get("kind") or "question"}
+        verb = "corrected" if latch.get("kind") == "remark" else "learned"
+        _log.info("[room_questions] %s: %s -> %r", verb, latch["label"], name)
     return ok
 
 
 def reset() -> None:
     """Test hook."""
-    global _latch, _last_asked_at
+    global _latch, _last_asked_at, _last_capture_at, _last_capture
     _latch = None
     _last_asked_at = 0.0
+    _last_capture_at = 0.0
+    _last_capture = None

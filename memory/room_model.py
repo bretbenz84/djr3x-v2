@@ -78,7 +78,11 @@ def record_objects(objects) -> None:
         seen.add(label)
         bucket = str(obj.get("position") or "").strip() or "unknown"
         brand_new = baseline_ok and prior.get(label, 0) == 0
-        if brand_new:
+        # Novelty fires at CONFIRM time, not first sight (field 2026-07-18: a
+        # 4-second "handbag" misread reset the staleness clock). The clock
+        # resets when a recent first-sight label crosses the confirm bar.
+        confirm_at = max(2, int(getattr(config, "ROOM_CHANGE_MIN_SIGHTINGS", 2)))
+        if baseline_ok and prior.get(label, 0) == confirm_at - 1:
             try:
                 from awareness import novelty_drive
                 novelty_drive.record_novel_event("new_object", label)
@@ -243,3 +247,29 @@ def human_label(label: str):
     except Exception:
         pass
     return None
+
+
+def label_spans(labels) -> dict:
+    """Map label -> wall-clock seconds between its first and last sighting. A
+    one-flicker misread has a span of ~0; a real object accumulates minutes.
+    Used by the change-remark's persistence gate."""
+    wanted = {_clean_label(x) for x in (labels or [])}
+    wanted.discard("")
+    if not wanted:
+        return {}
+    out = {}
+    try:
+        rows = rex_db.fetchall("SELECT label, first_seen, last_seen FROM room_objects")
+        for r in rows:
+            lbl = str(r["label"]).strip().lower()
+            if lbl not in wanted:
+                continue
+            try:
+                a = datetime.strptime(str(r["first_seen"]), "%Y-%m-%d %H:%M:%S")
+                b = datetime.strptime(str(r["last_seen"]), "%Y-%m-%d %H:%M:%S")
+                out[lbl] = max(0.0, (b - a).total_seconds())
+            except Exception:
+                out[lbl] = 0.0
+    except Exception:
+        pass
+    return {lbl: out.get(lbl, 0.0) for lbl in wanted}

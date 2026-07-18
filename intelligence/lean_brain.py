@@ -706,6 +706,42 @@ _MEMORY_MUSING_INSTRUCTION = (
 )
 
 
+_OPEN_THREAD_INSTRUCTION = (
+    "[Something {who} left unresolved {when} has been quietly on your mind, and the "
+    "conversation just reached a lull — a natural moment to check back in.]\n"
+    "{situation}"
+    "The unresolved thing: \"{thread}\". Ask ONE short, genuinely curious in-character "
+    "question about how it turned out — the way a friend who actually remembered would. "
+    "Warm and specific, not an interrogation. Do NOT say 'I remember' / 'you told me' / "
+    "'according to my records', and do not mention memory banks or that you were waiting "
+    "for a quiet moment — it's just been on your mind. You MUST ask the one question; do "
+    "not reply PASS."
+)
+
+
+_ROOM_QUESTION_INSTRUCTION = (
+    "[You've been curious about an unfamiliar object you keep seeing, and the "
+    "conversation just reached a lull — a natural moment to finally ask.]\n"
+    "{situation}"
+    "The object (as your detector labels it): {label}{where}. Ask ONE short, curious "
+    "in-character question about what it actually is or what its story is — playful "
+    "genuine curiosity, not an inventory audit. Don't claim certainty about what it is "
+    "(your detector guesses); asking IS the point. You MUST ask the one question; do "
+    "not reply PASS."
+)
+
+
+_NEWS_INSTRUCTION = (
+    "[You read some news earlier and the conversation just hit a lull — a natural "
+    "moment to bring it up, the way anyone mentions something they read.]\n"
+    "{situation}"
+    "The story: {headline} — {summary} Bring it up in ONE short in-character line that "
+    "INVITES {who} into the topic ('hey, did you hear about ...' energy) — tease the "
+    "interesting part and let them ask; do NOT recite the whole summary or turn into a "
+    "news anchor. You MUST give the one line; do not reply PASS."
+)
+
+
 # Rotating inspiration for the lull-breakers. The instruction prompt used to be IDENTICAL every
 # call, so the model kept converging on its strongest persona default: music questions ("what song
 # survives your veto process?" every single lull — owner: "usually around music and not very
@@ -951,6 +987,11 @@ def consider_initiating(
     event_followup: Optional[dict] = None,
     celebration: Optional[dict] = None,
     memory_musing: Optional[dict] = None,
+    open_thread: Optional[dict] = None,
+    room_question: Optional[dict] = None,
+    news_story: Optional[dict] = None,
+    low_energy: bool = False,
+    no_questions: bool = False,
 ) -> str:
     """Let Rex DECIDE, in character, to say ONE thing or just watch (the strong default).
     Returns the line to speak, or "" on PASS / any error. This is the agentic replacement for
@@ -986,17 +1027,37 @@ def consider_initiating(
                 situation=situation,
                 event_clause=_event_followup_clause(event_followup),
             )
+        elif open_thread:
+            instruction = _OPEN_THREAD_INSTRUCTION.format(
+                who=who,
+                situation=situation,
+                thread=str(open_thread.get("thread") or "the thing they mentioned"),
+                when=str(open_thread.get("when") or "recently"),
+            )
         elif callback_premise:
             instruction = _CALLBACK_LULL_INSTRUCTION.format(
                 who=who,
                 situation=situation,
                 premise=str(callback_premise.get("premise") or "their harmless running bit"),
             )
+        elif room_question:
+            instruction = _ROOM_QUESTION_INSTRUCTION.format(
+                situation=situation,
+                label=str(room_question.get("label") or "the thing"),
+                where=str(room_question.get("where") or ""),
+            )
         elif visual_riff:
             instruction = _VISUAL_RIFF_INSTRUCTION.format(
                 who=who,
                 situation=situation,
                 cue=str(visual_riff.get("cue") or "their current, non-sensitive vibe"),
+            )
+        elif news_story:
+            instruction = _NEWS_INSTRUCTION.format(
+                who=who,
+                situation=situation,
+                headline=str(news_story.get("headline") or "something in the news"),
+                summary=str(news_story.get("summary") or ""),
             )
         elif memory_musing:
             instruction = _MEMORY_MUSING_INSTRUCTION.format(
@@ -1018,6 +1079,22 @@ def consider_initiating(
                 who=who,
                 situation=situation,
                 angles=angles,
+            )
+        # Impulse discipline (owner field report 2026-07-18: six engagement-demanding
+        # lines in three minutes at a TIRED user): a low-energy read or an exhausted
+        # question budget converts the impulse to statement-or-pass — never another ask.
+        if low_energy:
+            instruction += (
+                "\nIMPORTANT: {who} is clearly low-energy right now (tired, winding down, "
+                "or giving short answers). Do NOT ask them a question or demand engagement "
+                "— either offer ONE short, low-pressure statement they're free to ignore, "
+                "or just reply PASS and let the quiet be comfortable. PASS is a genuinely "
+                "good choice here."
+            ).format(who=who)
+        elif no_questions:
+            instruction += (
+                "\nIMPORTANT: you've already asked plenty of questions this session. Do "
+                "NOT ask another one — make it a statement, an observation, or PASS."
             )
         messages: list[dict] = [{"role": "system", "content": _persona()}]
         keep = max(0, int(getattr(config, "LEAN_BRAIN_TRANSCRIPT_TURNS", 8)))

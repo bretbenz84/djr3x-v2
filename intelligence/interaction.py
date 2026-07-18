@@ -275,6 +275,8 @@ _last_lean_impulse_at: float = 0.0   # cooldown anchor for the lean agentic impu
 # the required gap each time and caps the run (LEAN_IMPULSE_MAX_UNANSWERED) so he doesn't monologue
 # into the void. Reset the instant the user speaks (_begin_user_turn) — a fresh lull gets a fresh run.
 _consecutive_lean_impulses: int = 0
+_lean_news_mentioned_this_session: bool = False   # one story per session, like the musing
+_lean_impulse_spoken_times: list[float] = []      # rolling-window rate cap (Phase B)
 # Monotonic time the most recent user turn began processing. A proactive line is
 # decided on a silence timer, then spends ~1-2s in LLM+TTS before any sound; if a
 # user turn started in that gap, the line is stale and must yield at speak time.
@@ -4598,6 +4600,73 @@ def _lean_event_followup_cue(person_id: Optional[int]) -> Optional[dict]:
     return None
 
 
+def _lean_open_thread_cue(person_id: Optional[int]) -> Optional[dict]:
+    """Offer ONE diary open thread ("whether the motor swap happened") to Lean's
+    lull speaker. The consciousness-side _step_open_thread_followup is suppressed
+    under the lean brain (lean owns silence-fill), so this cue is the LIVE path.
+    Freshness/once-ever rules live in intelligence/open_threads."""
+    if person_id is None or not bool(getattr(config, "OPEN_THREAD_FOLLOWUP_ENABLED", True)):
+        return None
+    try:
+        from intelligence import open_threads
+        candidates = open_threads.pending_for_person(int(person_id))
+        if not candidates:
+            return None
+        pick = candidates[0]
+        return {
+            "episode_id": pick["episode_id"],
+            "thread": pick["thread"],
+            "when": open_threads.describe_age(pick["age_days"]),
+        }
+    except Exception as exc:
+        _log.debug("[lean] open-thread cue lookup failed: %s", exc)
+        return None
+
+
+def _lean_room_question_cue() -> Optional[dict]:
+    """Offer ONE pending learn-by-asking room question to Lean's lull speaker.
+    room_questions owns the queue/cooldown; asking arms its answer-capture latch
+    in the on-spoke bookkeeping below."""
+    try:
+        from intelligence import room_questions
+        rq = room_questions.next_room_question()
+        if not rq:
+            return None
+        bucket = ""
+        try:
+            from memory import room_model
+            row = room_model.pending_question() or {}
+            b = str(row.get("location_bucket") or "").strip()
+            if b and b != "unknown":
+                bucket = f" (roughly {b})"
+        except Exception:
+            pass
+        return {"label": rq["label"], "where": bucket}
+    except Exception as exc:
+        _log.debug("[lean] room-question cue lookup failed: %s", exc)
+        return None
+
+
+def _lean_news_cue() -> Optional[dict]:
+    """Offer ONE of today's cached stories ("did you hear about ...?"). One per
+    session; each story offered at most once ever (spent on-spoke)."""
+    global _lean_news_mentioned_this_session
+    if _lean_news_mentioned_this_session:
+        return None
+    if not bool(getattr(config, "CURRENT_EVENTS_ENABLED", True)):
+        return None
+    try:
+        from awareness import current_events
+        story = current_events.pick_story()
+        if not story:
+            return None
+        return {"headline": story["headline"], "summary": story["summary"],
+                "topic": story.get("topic") or ""}
+    except Exception as exc:
+        _log.debug("[lean] news cue lookup failed: %s", exc)
+        return None
+
+
 def _lean_impulse_person_present(person_id: int) -> bool:
     """Is the impulse's target plausibly HERE — on camera now, or heard recently?
 
@@ -4628,6 +4697,7 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     config (LEAN_IMPULSE_*), tuned live — the model reliably produces a good line OR passes."""
     global _last_lean_impulse_at, _last_proactive_line_at, _consecutive_lean_impulses
     global _awaiting_followup_event, _lean_memory_mused_this_session
+    global _lean_news_mentioned_this_session
     if not (
         bool(getattr(config, "LEAN_BRAIN_ENABLED", False))
         and bool(getattr(config, "LEAN_IMPULSE_ENABLED", True))
@@ -4723,6 +4793,42 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     except Exception:
         pass
 
+    # ── Impulse discipline (Phase B, field report 2026-07-18) ────────────────
+    # Rolling rate cap: the per-run counters reset every time the user replies,
+    # so a polite user re-arms the machine gun (six lines in three minutes at a
+    # tired owner). This cap doesn't reset on replies.
+    _cap_window = float(getattr(config, "LEAN_IMPULSE_RATE_WINDOW_SECS", 600.0))
+    _cap_n = int(getattr(config, "LEAN_IMPULSE_MAX_PER_WINDOW", 5))
+    _lean_impulse_spoken_times[:] = [t for t in _lean_impulse_spoken_times if now - t < _cap_window]
+    if len(_lean_impulse_spoken_times) >= _cap_n:
+        return False
+    # Low-energy read: tired / disengaged / question-averse people get FEWER,
+    # gentler impulses — statements only, longer gaps, and no patient re-engage
+    # pestering (let the night end).
+    low_energy = False
+    try:
+        _energy = user_energy.snapshot() or {}
+        low_energy = (
+            str(_energy.get("engagement") or "").lower() == "low"
+            or str(_energy.get("mode") or "").lower() == "quiet"
+            or str(_energy.get("question_appetite") or "").lower() == "low"
+        )
+    except Exception:
+        pass
+    if low_energy:
+        if long_silence:
+            return False                        # no re-engage pestering when tired
+        _low_gap = float(getattr(config, "LEAN_IMPULSE_LOW_ENERGY_GAP_SECS", 120.0))
+        if (now - _last_lean_impulse_at) < _low_gap or quiet < _low_gap / 2.0:
+            return False
+    # Question budget: an exhausted budget doesn't silence the impulse, it
+    # converts it to statement-or-pass (the addendum in lean_brain).
+    no_questions = False
+    try:
+        no_questions = not question_budget.can_ask("lean_impulse")
+    except Exception:
+        pass
+
     # Consult the lean brain: does Rex genuinely feel like saying one thing, or does he watch?
     # Arm the cooldown NOW (whether he speaks OR passes) so we consult at most once per window,
     # not every tick — but never burn a window on a coin-flip skip (the bug that made him mute).
@@ -4738,6 +4844,9 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     visual_riff = None
     callback_premise = None
     memory_musing = None
+    open_thread = None
+    room_question = None
+    news_story = None
     world = _lean_world()
     transcript = _lean_recent_transcript("")
     # Remembered GOOD NEWS is the most meaningful thing Rex can open a lull with, so it
@@ -4773,18 +4882,32 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             event_followup = _lean_event_followup_cue(person_id)
         except Exception as exc:
             _log.debug("event-followup Lean cue lookup failed: %s", exc)
+    # Diary open threads sit right after event follow-ups: same "friend who
+    # remembered" register, sourced from the session-summary extractor.
     if not celebration and not holiday_plan and not event_followup:
+        open_thread = _lean_open_thread_cue(person_id)
+    if not celebration and not holiday_plan and not event_followup and not open_thread:
         callback_premise = _lean_callback_lull_cue(
             person_id, transcript, long_silence=long_silence
         )
-    if not celebration and not holiday_plan and not event_followup and not callback_premise:
+    _no_higher = not (celebration or holiday_plan or event_followup or open_thread
+                      or callback_premise)
+    # Room curiosity beats a generic visual riff (it LEARNS something), but only
+    # when the person has energy for a question.
+    if _no_higher and not low_energy and not no_questions:
+        room_question = _lean_room_question_cue()
+    if _no_higher and not room_question:
         try:
             visual_riff = _lean_visual_riff_cue(person_id, world)
         except Exception as exc:
             _log.debug("visual-riff Lean cue lookup failed: %s", exc)
     # LOWEST-priority cue: a low-stakes "since I was last on" diary musing, only when nothing
     # richer fires. Data-driven (the model can't invent a memory it wasn't given), once/session.
-    if not (celebration or holiday_plan or event_followup or callback_premise or visual_riff):
+    # News beats the diary musing (fresher material) but loses to everything
+    # personal. Its own session cap + spend-once live in the cue/bookkeeping.
+    if _no_higher and not room_question and not visual_riff:
+        news_story = _lean_news_cue()
+    if _no_higher and not room_question and not visual_riff and not news_story:
         try:
             memory_musing = _lean_memory_musing_cue(person_id)
         except Exception as exc:
@@ -4804,6 +4927,11 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
             event_followup=event_followup,
             celebration=celebration,
             memory_musing=memory_musing,
+            open_thread=open_thread,
+            room_question=room_question,
+            news_story=news_story,
+            low_energy=low_energy,
+            no_questions=no_questions,
         )
     except Exception as exc:
         _log.debug("[lean] impulse generation failed: %s", exc)
@@ -4822,11 +4950,23 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
         _log.info("[lean] impulse dropped — re-asks a recent question: %r", line)
         return False
 
+    # Enforcement backstop: a low-energy or budget-exhausted impulse that still
+    # came back as a question gets dropped, not spoken.
+    if (low_energy or no_questions) and _assistant_asked_question(line):
+        _log.info("[lean] impulse dropped — question while %s: %r",
+                  "low-energy" if low_energy else "budget-exhausted", line)
+        return False
+
     completed = _speak_proactive(
         line, emotion="curious", priority=1, label="lean_impulse", decided_at=decided_at
     )
     if completed:
         _last_proactive_line_at = time.monotonic()
+        _lean_impulse_spoken_times.append(time.monotonic())   # rolling rate cap (Phase B)
+        try:
+            question_budget.note_rex_utterance(line)          # questions count against the budget
+        except Exception:
+            pass
         _consecutive_lean_impulses += 1   # count it against the into-the-void run (reset when the user speaks)
         conv_memory.add_to_transcript("Rex", line)
         conv_log.log_rex(line)
@@ -4921,6 +5061,29 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
                 callback_engine.spend_lull_premise(callback_premise)
             except Exception as exc:
                 _log.debug("[lean] callback lull spend failed: %s", exc)
+        if open_thread:
+            # Spend the thread permanently (asked at most once, ever) and register
+            # the follow-up frame so the reply binds as an outcome.
+            try:
+                from intelligence import open_threads
+                open_threads.mark_asked(open_thread["episode_id"], open_thread["thread"])
+            except Exception as exc:
+                _log.debug("[lean] open-thread spend failed: %s", exc)
+        if room_question:
+            # Mark asked + arm the answer-capture latch (the person's next reply
+            # can teach the room model what the object actually is).
+            try:
+                from intelligence import room_questions
+                room_questions.note_asked(room_question["label"])
+            except Exception as exc:
+                _log.debug("[lean] room-question latch failed: %s", exc)
+        if news_story:
+            _lean_news_mentioned_this_session = True
+            try:
+                from awareness import current_events
+                current_events.mark_mentioned(news_story)
+            except Exception as exc:
+                _log.debug("[lean] news spend failed: %s", exc)
         if memory_musing:
             # One "since I was last on" musing per session — session_recap is stable within a
             # session, so a second would repeat. Reset in _end_session.
@@ -13487,6 +13650,25 @@ def _execute_command(
         return _execute_memory_boundary_command(person_id)
 
     if key == "memory_correct_fact":
+        # A correction about a ROOM OBJECT Rex just remarked on ("actually,
+        # that's a pillow") belongs to the room model, which has already consumed
+        # it — fall through to a normal conversational reply instead of the
+        # person-fact machinery (field 2026-07-18: it hijacked the turn and
+        # emitted "I heard the correction, but I need one clear fact to update").
+        try:
+            from intelligence import room_questions
+            if room_questions.recently_captured():
+                cap = room_questions.last_capture() or {}
+                seen_as = cap.get("label") or "something"
+                actual = cap.get("name") or "something else"
+                return _say(
+                    f"Your object detector misread a {actual} as a {seen_as}, and "
+                    f"they just corrected you. Own it in ONE short, self-deprecating "
+                    f"in-character line — the correction is saved; no need to ask "
+                    f"anything back."
+                )
+        except Exception:
+            pass
         return _execute_memory_correct_fact_command(args, person_id, person_name)
 
     if key == "memory_remember_fact":
@@ -14878,6 +15060,8 @@ def _end_session() -> None:
         _clear_anonymous_speaker_slots()
         _idle_outro_spoken = False
         _lean_memory_mused_this_session = False
+        _lean_news_mentioned_this_session = False
+        _lean_impulse_spoken_times.clear()
         try:
             topic_thread.clear()
         except Exception:
@@ -15163,6 +15347,8 @@ def _end_session() -> None:
     _clear_anonymous_speaker_slots()
     _idle_outro_spoken = False
     _lean_memory_mused_this_session = False
+    _lean_news_mentioned_this_session = False
+    _lean_impulse_spoken_times.clear()
     try:
         topic_thread.clear()
     except Exception:

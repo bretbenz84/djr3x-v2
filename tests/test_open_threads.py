@@ -136,3 +136,46 @@ class ConsolidationTest(unittest.TestCase):
             "SELECT label, ask_status FROM room_objects")}
         self.assertEqual(rows["guitar"], "dismissed")
         self.assertEqual(rows["ladder"], "pending")
+
+
+class DatedFollowupExpiryTest(unittest.TestCase):
+    """memory/events.get_pending_followups: dated events past FOLLOWUP_DATED_MAX_AGE_DAYS
+    are lazily expired (field 2026-07-18: the week-old dentist opener)."""
+
+    def test_stale_dated_event_expired(self):
+        import sqlite3
+        from unittest import mock
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE person_events (id INTEGER PRIMARY KEY, person_id INT, "
+            "event_name TEXT, event_date TEXT, mentioned_at TEXT, "
+            "followed_up BOOL DEFAULT FALSE, status TEXT DEFAULT 'planned')"
+        )
+        old_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
+        recent_date = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("INSERT INTO person_events (person_id, event_name, event_date, mentioned_at) "
+                     "VALUES (1, 'dentist appointment', ?, ?)", (old_date, now))
+        conn.execute("INSERT INTO person_events (person_id, event_name, event_date, mentioned_at) "
+                     "VALUES (1, 'job interview', ?, ?)", (recent_date, now))
+
+        class FakeDb:
+            @staticmethod
+            def execute(q, p=()):
+                conn.execute(q, p); conn.commit()
+            @staticmethod
+            def fetchall(q, p=()):
+                return conn.execute(q, p).fetchall()
+
+        from memory import events as events_mod
+        with mock.patch.object(events_mod, "db", FakeDb):
+            pending = events_mod.get_pending_followups(1)
+        names = [e["event_name"] for e in pending]
+        self.assertIn("job interview", names)
+        self.assertNotIn("dentist appointment", names)
+        # ...and the stale one was permanently marked, not just filtered.
+        row = conn.execute(
+            "SELECT followed_up FROM person_events WHERE event_name='dentist appointment'"
+        ).fetchone()
+        self.assertTrue(row["followed_up"])

@@ -142,3 +142,29 @@ class LatchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CorrectionLatchTest(unittest.TestCase):
+    """The remark-correction path (field 2026-07-18: 'Actually, that's a pillow')."""
+
+    def setUp(self):
+        from intelligence import room_questions
+        self.rq = room_questions
+        self.rq.reset()
+
+    def tearDown(self):
+        self.rq.reset()
+
+    def test_remark_correction_captured(self):
+        with mock.patch("memory.room_model.record_answer", return_value=True):
+            self.rq.note_room_remark("handbag")
+            self.assertTrue(self.rq.maybe_capture_answer("Actually, that's a pillow"))
+        self.assertTrue(self.rq.recently_captured())
+        cap = self.rq.last_capture()
+        self.assertEqual(cap["label"], "handbag")
+        self.assertEqual(cap["name"], "pillow")
+        self.assertEqual(cap["kind"], "remark")
+
+    def test_no_latch_no_capture(self):
+        self.assertFalse(self.rq.maybe_capture_answer("Actually, that's a pillow"))
+        self.assertFalse(self.rq.recently_captured())
