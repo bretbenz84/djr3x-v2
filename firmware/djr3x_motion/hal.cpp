@@ -298,8 +298,9 @@ void hal_drive_velocity(float lin, float ang, float dt, bool pivot_steer, float 
       : (pivot ? fmaxf(min_duty, spin_run)  : min_duty);
   // PID runs in the forward=+ convention; MOTOR_SIGN_* maps its effort onto each
   // H-bridge, so a wheel that spins backwards is fixed in software, not by rewiring.
-  const int duty_l = MOTOR_SIGN_L * wheel_pid(v_l, s_vmeas_l, s_i_l, s_eprev_l, dt, kp, ki, kd, kff, kick_l);
-  const int duty_r = MOTOR_SIGN_R * wheel_pid(v_r, s_vmeas_r, s_i_r, s_eprev_r, dt, kp, ki, kd, kff, kick_r);
+  const float gl = g_ctx.params.gain_scale_l, gr = g_ctx.params.gain_scale_r;
+  const int duty_l = MOTOR_SIGN_L * wheel_pid(v_l, s_vmeas_l, s_i_l, s_eprev_l, dt, kp*gl, ki*gl, kd*gl, kff*gl, kick_l);
+  const int duty_r = MOTOR_SIGN_R * wheel_pid(v_r, s_vmeas_r, s_i_r, s_eprev_r, dt, kp*gr, ki*gr, kd*gr, kff*gr, kick_r);
   apply_wheel_duty(PIN_L_RPWM, PIN_L_LPWM, duty_l);
   apply_wheel_duty(PIN_R_RPWM, PIN_R_LPWM, duty_r);
   g_ctx.wheels.dl = (int16_t)duty_l;   // telemetry diag (caller holds the state lock)

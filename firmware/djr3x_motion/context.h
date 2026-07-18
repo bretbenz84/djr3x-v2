@@ -62,6 +62,8 @@ struct MotionParams {
   float    ki = WHEEL_PID_KI;
   float    kd = WHEEL_PID_KD;
   float    kff      = WHEEL_PID_KFF;    // velocity feedforward (duty per m/s of command)
+  float    gain_scale_l = WHEEL_GAIN_SCALE_L;  // per-wheel multiplier on kp/ki/kff
+  float    gain_scale_r = WHEEL_GAIN_SCALE_R;  // (mixed motors — see calib.h)
   float    min_duty = WHEEL_MIN_DUTY;   // running duty floor while rolling (duty)
   float    breakaway_duty = WHEEL_STRAIGHT_BREAKAWAY_DUTY;  // stall-gated dead-stop punch
                                         // for straight drive (pivots have their own tiers)

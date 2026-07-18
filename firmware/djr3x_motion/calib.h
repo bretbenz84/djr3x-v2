@@ -54,7 +54,13 @@
                                      // 5341 counts): the 60RPM gearbox is 2.26x the
                                      // right's ratio. Re-measure when the matching
                                      // right motor arrives.
-#define COUNTS_PER_METER_R 7532.0f   // empirical (unchanged old right motor)
+#define COUNTS_PER_METER_R 3361.0f   // MEASURED 2026-07-17 (hand-roll, one full rev =
+                                     // 1056 counts). NOTE: the old shared 7532 was the
+                                     // AVERAGE of two secretly-mismatched gearboxes
+                                     // (~11700 left + 3361 right ≈ 7530/2-wheel mean) —
+                                     // the per-wheel split exposed it. Likely the true
+                                     // culprit behind the 2026-06-23 "left motor always
+                                     // slow" fault that was pinned on PWM pins.
 
 // Per-wheel count direction. +1 means "driving the wheel forward makes its count
 // increase." Flip to -1 (per wheel) if the bench hand-turn test shows the sign
@@ -97,6 +103,16 @@
 // INFLATED m/s, so keeping them would have quadrupled the loop gain overnight
 // (overshoot/oscillation). Anchor: at the old FULL, kff put ~455 duty on the
 // wheels for a true 0.716 m/s → plant ≈ 635 duty per real m/s.
+// PER-WHEEL GAIN SCALES (2026-07-17, mixed motors): the shared gains below were
+// tuned in the old shared-7532 encoder units. The per-wheel encoder split made
+// measured speeds TRUE m/s, which changed each wheel's effective plant gain:
+//   right (old motor, true cpm 3361): plant = 640 * 3361/7532 ≈ 286 duty/(m/s) → 0.446x
+//   left (new 60RPM motor): ~1023 duty ≈ 0.31 m/s → plant ≈ 3300 duty/(m/s) → ~5.2x
+// Applied to kp/ki/kff (not min_duty — breakaway duty is a motor property, not a
+// unit artifact). Runtime keys: gain_scale_l / gain_scale_r. Re-derive when the
+// matching 60RPM right motor arrives (both will be ~5.2x, i.e. retune the bases).
+#define WHEEL_GAIN_SCALE_L  5.2f
+#define WHEEL_GAIN_SCALE_R  0.446f
 #define WHEEL_PID_KP      440.0f
 #define WHEEL_PID_KI      220.0f
 #define WHEEL_PID_KD        0.0f

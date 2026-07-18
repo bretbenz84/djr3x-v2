@@ -62,6 +62,8 @@ bool apply_config(JsonObjectConst cmd, MotionParams& out) {
       p.counts_per_meter_r = both;
     }
   }
+  clamped |= take_f(cmd, "gain_scale_l", 0.05f, 50.0f, p.gain_scale_l);
+  clamped |= take_f(cmd, "gain_scale_r", 0.05f, 50.0f, p.gain_scale_r);
   clamped |= take_f(cmd, "counts_per_meter_l", 1000.0f, 1.0e6f, p.counts_per_meter_l);
   clamped |= take_f(cmd, "counts_per_meter_r", 1000.0f, 1.0e6f, p.counts_per_meter_r);
   clamped |= take_f(cmd, "track_width_m",    0.05f,   2.0f,   p.track_width_m);
