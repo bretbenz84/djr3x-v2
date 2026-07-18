@@ -168,3 +168,34 @@ class CorrectionLatchTest(unittest.TestCase):
     def test_no_latch_no_capture(self):
         self.assertFalse(self.rq.maybe_capture_answer("Actually, that's a pillow"))
         self.assertFalse(self.rq.recently_captured())
+
+
+class CorrectionRobustnessTest(unittest.TestCase):
+    """Field 2026-07-18: 'no, its not a couch, its my bed' (Whisper drops
+    apostrophes) was missed; and corrections without a latch went nowhere."""
+
+    def setUp(self):
+        from intelligence import room_questions
+        self.rq = room_questions
+        self.rq.reset()
+
+    def tearDown(self):
+        self.rq.reset()
+
+    def test_apostropheless_correction_with_latch(self):
+        with mock.patch("memory.room_model.record_answer", return_value=True) as rec:
+            self.rq.note_room_remark("couch")
+            self.assertTrue(self.rq.maybe_capture_answer("no, its not a couch, its my bed"))
+            self.assertEqual(rec.call_args[0][0], "couch")
+            self.assertIn("bed", rec.call_args[0][1])
+
+    def test_unlatched_correction_of_live_label(self):
+        with mock.patch.object(self.rq, "_recent_room_labels", return_value={"handbag"}), \
+             mock.patch("memory.room_model.record_answer", return_value=True) as rec:
+            self.assertTrue(self.rq.maybe_capture_answer("that's not a handbag, that's a pillow"))
+            self.assertEqual(rec.call_args[0][0], "handbag")
+            self.assertEqual(rec.call_args[0][1], "pillow")
+
+    def test_unlatched_correction_of_unknown_label_ignored(self):
+        with mock.patch.object(self.rq, "_recent_room_labels", return_value=set()):
+            self.assertFalse(self.rq.maybe_capture_answer("that's not a dragon, that's a cat"))

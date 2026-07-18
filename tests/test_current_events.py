@@ -63,7 +63,9 @@ class CurrentEventsTest(unittest.TestCase):
         self.assertEqual(len(current_events.stories()), 2)   # stale beats none
 
     def test_pick_and_mark_cycle(self):
-        current_events._save({"date": current_events._today(), "fetched_at": "now",
+        from datetime import datetime
+        current_events._save({"date": current_events._today(),
+                              "fetched_at": datetime.now().isoformat(timespec="seconds"),
                               "stories": self._stories(2)})
         first = current_events.pick_story()
         self.assertEqual(first["headline"], "Story 0")
@@ -75,6 +77,15 @@ class CurrentEventsTest(unittest.TestCase):
         # Spent flags persisted to disk.
         on_disk = json.loads(Path(config.CURRENT_EVENTS_PATH).read_text())
         self.assertTrue(all(s["mentioned"] for s in on_disk["stories"]))
+
+    def test_stale_cache_yields_no_story(self):
+        # Field 2026-07-18: "did you hear" about a day-old cache — pick_story
+        # now refuses anything older than CURRENT_EVENTS_MAX_AGE_HOURS.
+        from datetime import datetime, timedelta
+        old = (datetime.now() - timedelta(hours=48)).isoformat(timespec="seconds")
+        current_events._save({"date": "2026-01-01", "fetched_at": old,
+                              "stories": self._stories(2)})
+        self.assertIsNone(current_events.pick_story())
 
     def test_disabled_never_fetches(self):
         with mock.patch.object(config, "CURRENT_EVENTS_ENABLED", False), \

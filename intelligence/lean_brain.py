@@ -738,7 +738,9 @@ _NEWS_INSTRUCTION = (
     "The story: {headline} — {summary} Bring it up in ONE short in-character line that "
     "INVITES {who} into the topic ('hey, did you hear about ...' energy) — tease the "
     "interesting part and let them ask; do NOT recite the whole summary or turn into a "
-    "news anchor. You MUST give the one line; do not reply PASS."
+    "news anchor. Tell THIS story faithfully — do NOT substitute a different story, "
+    "change what happened, or invent details beyond the summary. You MUST give the "
+    "one line; do not reply PASS."
 )
 
 

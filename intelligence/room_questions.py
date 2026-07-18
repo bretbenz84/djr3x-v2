@@ -47,12 +47,25 @@ _TEMPLATES = (
     "Okay, I have to ask — what's that {thing}{where} about?",
 )
 
-# Identity shapes in a natural answer. Ordered most-specific first.
+# Identity shapes in a natural answer. Ordered most-specific first. NB the
+# apostrophe-less variants ("its my bed", "thats a pillow") — Whisper routinely
+# drops apostrophes, and the couch/bed correction was missed for exactly that
+# (field 2026-07-18).
 _ANSWER_PATTERNS = (
-    re.compile(r"\b(?:it|that|this)(?:'s| is) (?:called |named )(?P<name>[^.,!?]{2,60})", re.I),
-    re.compile(r"\b(?:it|that|this)(?:'s| is) (?:my|our|a|an|the) (?P<name>[^.,!?]{2,60})", re.I),
+    re.compile(r"\b(?:it|that|this)(?:'?s| is) (?:called |named )(?P<name>[^.,!?]{2,60})", re.I),
+    re.compile(r"\bnot an? [a-z ]{2,30}[,;.]?\s*(?:it|that|this)?(?:'?s| is)? ?(?:my|our|a|an|the) (?P<name>[^.,!?]{2,60})", re.I),
+    re.compile(r"\b(?:it|that|this)(?:'?s| is) (?:my|our|a|an|the) (?P<name>[^.,!?]{2,60})", re.I),
     re.compile(r"\bthose are (?:my|our|the) (?P<name>[^.,!?]{2,60})", re.I),
     re.compile(r"\bwe call (?:it|that) (?P<name>[^.,!?]{2,60})", re.I),
+)
+
+# Standalone correction shape — works WITHOUT a latch ("that's not a bag,
+# that's a pillow" after ANY object mention, e.g. a lean visual riff that never
+# armed one). Group 'wrong' must match a recently-seen detector label.
+_CORRECTION_RE = re.compile(
+    r"\b(?:it|that|this)?(?:'?s| is)?\s*not an? (?P<wrong>[a-z ]{2,30}?)[,;.]?\s*"
+    r"(?:it|that|this)?(?:'?s| is)?\s*(?:my|our|a|an|the) (?P<name>[^.,!?]{2,60})",
+    re.I,
 )
 
 _NON_ANSWERS = (
@@ -163,13 +176,44 @@ def _extract_identity(text: str) -> Optional[str]:
     return None
 
 
+def _recent_room_labels() -> set:
+    """Labels the detector has plausibly mentioned lately: live world objects +
+    room-model rows seen in the last few minutes."""
+    labels = set()
+    try:
+        from world_state import world_state
+        for o in world_state.get("objects") or []:
+            if isinstance(o, dict) and o.get("label"):
+                labels.add(str(o["label"]).strip().lower())
+    except Exception:
+        pass
+    return labels
+
+
 def maybe_capture_answer(text: str) -> bool:
     """Passively observe one HUMAN turn while the latch is armed. Never consumes
     the turn (normal routing continues); returns True when an identity was
     captured and written back. Expires by TTL or after N observed turns."""
-    global _latch
+    global _latch, _last_capture_at, _last_capture
     latch = _latch
     if latch is None:
+        # No latch — but an EXPLICIT correction of a recently-seen label still
+        # counts ("that's not a bag, that's a pillow" after a visual riff that
+        # never armed one). The wrong-label must match a live detector object.
+        m = _CORRECTION_RE.search(" ".join(str(text or "").split()))
+        if m:
+            wrong = m.group("wrong").strip().lower()
+            name = m.group("name").strip(" .")
+            if wrong in _recent_room_labels() and 2 <= len(name) <= 60:
+                try:
+                    from memory import room_model
+                    if room_model.record_answer(wrong, name, note=str(text or "")[:400]):
+                        _last_capture_at = time.monotonic()
+                        _last_capture = {"label": wrong, "name": name, "kind": "remark"}
+                        _log.info("[room_questions] corrected (unlatched): %s -> %r", wrong, name)
+                        return True
+                except Exception:
+                    pass
         return False
     ttl = float(getattr(config, "ROOM_QUESTION_ANSWER_TTL_SECS", 90.0))
     if (time.monotonic() - latch["armed_at"]) > ttl:
@@ -197,7 +241,6 @@ def maybe_capture_answer(text: str) -> bool:
         _log.debug("[room_questions] record_answer failed: %s", exc)
         return False
     if ok:
-        global _last_capture_at, _last_capture
         _last_capture_at = time.monotonic()
         _last_capture = {"label": latch["label"], "name": name,
                          "kind": latch.get("kind") or "question"}

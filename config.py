@@ -4740,6 +4740,16 @@ ROOM_CHANGE_SOFT_LABELS = (
     "handbag", "backpack", "suitcase", "tie", "umbrella", "cell phone",
     "book", "cup", "bottle", "remote",
 )
+# Large fixed classes that enter the frame whenever the camera pans — they can
+# NEVER be "new to the room" (field 2026-07-18: the bed, misread as couch,
+# "just appeared out of nowhere").
+ROOM_CHANGE_FURNITURE_LABELS = (
+    "couch", "bed", "chair", "dining table", "tv", "refrigerator",
+    "toilet", "sink", "oven", "microwave", "potted plant",
+)
+# A story cache older than this is stale news — pick_story returns nothing
+# rather than open with "did you hear" about yesterday.
+CURRENT_EVENTS_MAX_AGE_HOURS = _env_float("CURRENT_EVENTS_MAX_AGE_HOURS", 36.0, min_value=1.0, max_value=168.0)
 
 # ── Novelty drive (awareness/novelty_drive.py, curiosity Phase 2) ─────────────
 # Time-since-anything-new. Stale -> idle behaviors tilt toward looking around;

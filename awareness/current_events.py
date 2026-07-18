@@ -65,7 +65,9 @@ def _save(data: dict) -> None:
     try:
         p = _path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        tmp.replace(p)                      # atomic — no torn reads, ever
     except Exception as exc:
         _log.warning("[current_events] save failed: %s", exc)
 
@@ -132,6 +134,9 @@ def _fetch_via_web_search() -> list:
         '"coverage" itself — "BBC\'s homepage mixes headlines" is a FAILURE; if a '
         "search only surfaces meta-pages, search again with a different query. "
         "Mix hard news with lighter viral items; not five angles on one story. "
+        "SPREAD the topics: at most ONE story about AI/tech companies or AI "
+        "models — the rest must come from other spheres (world, science, sports, "
+        "culture, weather, the genuinely weird). "
         "Skip paywalled minutiae, celebrity gossip about minors, and graphic "
         "tragedy. Return STRICT JSON only — an array of objects:\n"
         '[{"headline": "short headline", "summary": "1-2 plain sentences with '
@@ -162,9 +167,14 @@ def refresh_if_stale() -> bool:
         return False
     with _lock:
         if is_fresh():
-            _log.info("[current_events] cache is today's (%d stories) — no fetch.",
-                      len(stories()))
+            d = _load()
+            _log.info("[current_events] cache is today's — no fetch (path=%s dated=%s "
+                      "fetched_at=%s today=%s, %d stories).",
+                      _path(), d.get("date"), d.get("fetched_at"), _today(),
+                      len(d.get("stories") or []))
             return False
+        _log.info("[current_events] cache stale (dated=%s today=%s) — fetching.",
+                  _load().get("date"), _today())
         try:
             fetched = _fetch_via_web_search()
         except Exception as exc:
@@ -197,8 +207,18 @@ def start_background_refresh() -> None:
 
 def pick_story() -> Optional[dict]:
     """One not-yet-mentioned story, or None. Preserves fetch order (the model
-    leads with the most notable)."""
-    for s in stories():
+    leads with the most notable). Refuses a cache older than
+    CURRENT_EVENTS_MAX_AGE_HOURS — "did you hear" about stale news is worse
+    than silence (field 2026-07-18: a yesterday-dated cache was consumed)."""
+    d = _load()
+    try:
+        fetched = datetime.fromisoformat(str(d.get("fetched_at") or ""))
+        age_h = (datetime.now() - fetched).total_seconds() / 3600.0
+        if age_h > float(getattr(config, "CURRENT_EVENTS_MAX_AGE_HOURS", 36.0)):
+            return None
+    except Exception:
+        return None
+    for s in d.get("stories") or []:
         if not s.get("mentioned"):
             return dict(s)
     return None

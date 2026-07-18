@@ -3173,6 +3173,17 @@ def _step_room_change(snapshot: dict, profile: SituationProfile) -> None:
             new_labels = [l for l in new_labels if spans.get(l, 0.0) >= min_span]
         except Exception:
             pass
+    # FURNITURE never "appears" — the camera PANS, so large fixed classes enter
+    # the frame all the time (field 2026-07-18: the bed, misread as "couch",
+    # "just appeared out of nowhere"). These classes are excluded outright.
+    furniture = {
+        s.strip().lower()
+        for s in getattr(config, "ROOM_CHANGE_FURNITURE_LABELS", (
+            "couch", "bed", "chair", "dining table", "tv", "refrigerator",
+            "toilet", "sink", "oven", "microwave", "potted plant",
+        ))
+    }
+    new_labels = [l for l in new_labels if l not in furniture]
     soft = {
         s.strip().lower()
         for s in getattr(config, "ROOM_CHANGE_SOFT_LABELS", (
@@ -3211,8 +3222,10 @@ def _step_room_change(snapshot: dict, profile: SituationProfile) -> None:
         getattr(config, "ROOM_CHANGE_ASK_WHEN_PERSON_PRESENT", True)
     ):
         prompt = (
-            f"You just noticed a {label} that wasn't there before, and {person_name} "
-            f"is right here. React in ONE short in-character Rex line that INVITES "
+            f"You just properly noticed a {label} you hadn't paid attention to "
+            f"before, and {person_name} is right here. Your camera pans around, so "
+            f"do NOT claim it 'appeared' or 'came out of nowhere' — you just hadn't "
+            f"clocked it. React in ONE short in-character Rex line that INVITES "
             f"them to talk about it — genuinely curious, ask something natural about "
             f"the {label} (what kind it is / how it is / where it came from / what's "
             f"the occasion — whatever fits a {label}). Warm and dry, not an "
@@ -12320,15 +12333,16 @@ def _loop() -> None:
 
             # 10d5. Lull callback — when conversation goes quiet, resurface one
             # banked fun-fact premise about the engaged person (callback humor).
-            # 8d-a0. Cross-session open-thread follow-up — "did the thing happen?"
-            # (top lull priority: personal follow-through beats humor and news).
-            _step_open_thread_followup(snapshot, profile)
+            # Open-thread follow-ups and news remarks moved INTO the lean brain's
+            # impulse cue ladder (2026-07-18) — the steps here RACED the lean cues
+            # (field-logged: a news_remark governor win colliding with a room-change
+            # ask in the same lull). The step functions remain for a lean-disabled
+            # fallback but are gated off while the lean brain owns silence-fill.
+            if not bool(getattr(config, "LEAN_BRAIN_ENABLED", False)):
+                _step_open_thread_followup(snapshot, profile)
+                _step_news_remark(snapshot, profile)
 
             _step_lull_callback(snapshot, profile)
-
-            # 8d-b. Current-events lull remark — "did you hear about ...?" (B-material;
-            # loses ties to banked personal callbacks by priority).
-            _step_news_remark(snapshot, profile)
 
             # 10e. Overheard chime-in — react when someone talks ABOUT Rex
             _step_overheard_chime_in(snapshot, profile)
