@@ -87,3 +87,52 @@ class OpenThreadsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConsolidationTest(unittest.TestCase):
+    """memory/consolidation.py retention rules on a temp rex.db."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self._orig = getattr(config, "REX_DB_PATH", None)
+        config.REX_DB_PATH = str(Path(self._tmp.name) / "rex.db")
+        rex_db.ensure_schema()
+        from memory import consolidation
+        self.con = consolidation
+
+    def tearDown(self):
+        config.REX_DB_PATH = self._orig
+        self._tmp.cleanup()
+
+    def _seen(self, person_id, age_days, hour):
+        ts = (datetime.now() - timedelta(days=age_days)).replace(hour=hour, minute=0, second=0)
+        rex_db.execute(
+            "INSERT INTO rex_episodes (created_at, kind, summary, person_id, salience, session_id) "
+            "VALUES (?,?,?,?,?,?)",
+            (_iso(ts), "person_seen", "I saw Bret.", person_id, 0.45, "t"),
+        )
+
+    def test_person_seen_dedup_and_ageout(self):
+        self._seen(1, 0, 9)
+        self._seen(1, 0, 15)        # same day: dedup to newest
+        self._seen(1, 2, 12)        # different day: kept
+        self._seen(1, 60, 12)       # past retention: deleted
+        self.con.run()
+        rows = rex_db.fetchall("SELECT created_at FROM rex_episodes WHERE kind='person_seen'")
+        self.assertEqual(len(rows), 2)
+
+    def test_stale_pending_room_question_dismissed(self):
+        old = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S")
+        rex_db.execute(
+            "INSERT INTO room_objects (label, first_seen, last_seen, sighting_count, ask_status) "
+            "VALUES ('guitar', ?, ?, 5, 'pending')", (old, old))
+        fresh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        rex_db.execute(
+            "INSERT INTO room_objects (label, first_seen, last_seen, sighting_count, ask_status) "
+            "VALUES ('ladder', ?, ?, 5, 'pending')", (fresh, fresh))
+        self.con.run()
+        rows = {r["label"]: r["ask_status"] for r in rex_db.fetchall(
+            "SELECT label, ask_status FROM room_objects")}
+        self.assertEqual(rows["guitar"], "dismissed")
+        self.assertEqual(rows["ladder"], "pending")

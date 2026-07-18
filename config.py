@@ -4728,6 +4728,11 @@ NOVELTY_STALE_LOOK_BOOST = _env_float("NOVELTY_STALE_LOOK_BOOST", 3.0, min_value
 EXPLORE_SELF_TRIGGER_ENABLED = _env_bool("EXPLORE_SELF_TRIGGER_ENABLED", False)
 EXPLORE_SELF_TRIGGER_STALENESS_SECS = _env_float("EXPLORE_SELF_TRIGGER_STALENESS_SECS", 3600.0, min_value=300.0, max_value=86400.0)
 EXPLORE_SELF_TRIGGER_COOLDOWN_SECS = _env_float("EXPLORE_SELF_TRIGGER_COOLDOWN_SECS", 7200.0, min_value=600.0, max_value=86400.0)
+
+# ── Diary retention sweep (memory/consolidation.py, runs at shutdown) ─────────
+PERSON_SEEN_RETENTION_DAYS = _env_float("PERSON_SEEN_RETENTION_DAYS", 30.0, min_value=1.0, max_value=3650.0)
+VISIT_RETENTION_DAYS = _env_float("VISIT_RETENTION_DAYS", 90.0, min_value=1.0, max_value=3650.0)
+ROOM_QUESTION_PENDING_EXPIRY_DAYS = _env_float("ROOM_QUESTION_PENDING_EXPIRY_DAYS", 7.0, min_value=0.5, max_value=365.0)
 # The canned one-liners below are the ALONE behavior (muttering at an empty room).
 ROOM_CHANGE_REMARK_LINES = [
     "Hold on — when did that {label} get here?",

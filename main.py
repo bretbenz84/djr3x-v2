@@ -664,6 +664,15 @@ def _shutdown() -> None:
     # clears the transcript. Timeout-bounded so it can't hang shutdown.
     _episodic_shutdown_summary()
 
+    # Consolidation sweep: per-kind diary retention (person_seen dedup/age-out,
+    # visit ageing, stale pending room questions) — pure SQL, includes the scene
+    # prune below via episodic_recall.prune().
+    try:
+        from memory import consolidation
+        consolidation.run()
+    except Exception as exc:
+        logger.debug("consolidation sweep failed: %s", exc)
+
     # Retention: cap the diary's scene episodes so they don't accumulate unbounded
     # (~15/run, only ever used as a clustered "vibe"). Best-effort, gated internally.
     try:
