@@ -1191,6 +1191,14 @@ def _run_controller_startup(*, startup_jeopardy: bool = False) -> None:
     except Exception as exc:
         logger.debug("current events refresh kick failed: %s", exc)
 
+    # Compass fusion service (no-op until COMPASS_ENABLED — the QMC5883L isn't
+    # wired yet; flip the flag after wiring + figure-8 calibration).
+    try:
+        from hardware import compass as compass_service
+        compass_service.start_service()
+    except Exception as exc:
+        logger.debug("compass service start failed: %s", exc)
+
     _abort_startup_if_shutdown("Whisper preload")
     if no_audio:
         logger.info("Skipping local Whisper preload (--noaudio)")

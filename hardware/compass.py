@@ -322,6 +322,49 @@ class Compass:
         }
 
 
+# ── Background service (COMPASS_ENABLED; the QMC isn't wired yet — scaffold) ──
+# main.py starts this once the magnetometer is physically on the trunk and
+# COMPASS_ENABLED is flipped. Consumers (room-model heading tags, exploration
+# leg planning) read get_service_yaw(); None until the service runs AND the
+# sensor answers. Spatial anchoring proper (landmarks at headings) builds on
+# this — deferred until the hardware exists (see context.md).
+
+_service: "Compass | None" = None
+_service_thread = None
+
+
+def start_service(hz: float = 10.0) -> bool:
+    """Idempotent background fusion loop over the motion telemetry stream."""
+    global _service, _service_thread
+    import threading
+    if not bool(getattr(config, "COMPASS_ENABLED", False)):
+        return False
+    if _service_thread is not None:
+        return True
+    _service = Compass()
+
+    def _loop():
+        import time as _t
+        while True:
+            try:
+                _service.update()
+            except Exception:
+                pass
+            _t.sleep(1.0 / hz)
+
+    _service_thread = threading.Thread(target=_loop, daemon=True, name="compass-service")
+    _service_thread.start()
+    _log.info("[compass] service started (%.0f Hz)%s", hz,
+              "" if _service.cal.loaded else " — UNCALIBRATED")
+    return True
+
+
+def get_service_yaw() -> "float | None":
+    """Fused true-heading from the running service, or None (service off /
+    sensor absent / no fix yet)."""
+    return _service.get_fused_yaw() if _service is not None else None
+
+
 # ── Bench demo loop ────────────────────────────────────────────────────────────
 
 def demo(hz: float = 10.0) -> int:

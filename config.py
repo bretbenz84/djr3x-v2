@@ -6880,6 +6880,9 @@ BATTERY_ANNOUNCE_MIN_GAP_SECS = 300.0
 # Magnetic declination, degrees EAST of true north. Sacramento/Davis CA is
 # ~13.0°E (2026, drifting ~-0.1°/yr — WMM). Applied AFTER tilt compensation so
 # get_heading() returns TRUE heading; set 0.0 to work in magnetic heading.
+# Master switch for the background fusion service (main.py). OFF until the
+# QMC5883L is physically wired and calibrated (tools/compass_calibrate.py).
+COMPASS_ENABLED = _env_bool("COMPASS_ENABLED", False)
 COMPASS_DECLINATION_DEG = _env_float("COMPASS_DECLINATION_DEG", 13.0, min_value=-180.0, max_value=180.0)
 
 # Hard/soft-iron calibration file (JSON: per-axis offsets/scales + ambient |B|).
