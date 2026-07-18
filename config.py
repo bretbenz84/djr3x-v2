@@ -1190,6 +1190,16 @@ EPISODIC_MEMORY_ENABLED = True
 # 'conversation_summary' episode. Bounded by a timeout so it can't hang shutdown.
 EPISODIC_SHUTDOWN_SUMMARY_ENABLED = True
 EPISODIC_SHUTDOWN_SUMMARY_TIMEOUT_SECS = 12.0
+# Diary quality gates (field rework 2026-07-17 — the old extractor wrote a
+# third-person null report for EVERY session at a hardcoded salience 0.8):
+# a session needs this many HUMAN turns before the diary extractor even runs
+# (test/command sessions produce no entry and no LLM call)...
+EPISODIC_SUMMARY_MIN_HUMAN_TURNS = _env_int("EPISODIC_SUMMARY_MIN_HUMAN_TURNS", 3, min_value=0, max_value=100)
+# ...and the extractor's honest salience must clear this floor to be written.
+EPISODIC_SUMMARY_MIN_SALIENCE = _env_float("EPISODIC_SUMMARY_MIN_SALIENCE", 0.3, min_value=0.0, max_value=1.0)
+# Ambient scene episodes: minimum gap between stored scenes (the material-
+# difference token test also applies — see episodic_hooks.scene_changed).
+SCENE_EPISODE_MIN_GAP_SECS = _env_float("SCENE_EPISODE_MIN_GAP_SECS", 1800.0, min_value=0.0, max_value=86400.0)
 # Once per run, take ONE cheap GPT-4o-mini image caption of Rex's first look at the
 # room and log it as a 'scene' episode ("When I powered up, I saw: …"). Off the tick
 # (background thread), gated like all episodic writes.

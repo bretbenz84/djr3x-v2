@@ -1852,6 +1852,69 @@ def generate_session_summary(person_id: int, transcript: list[dict]) -> str:
         return ""
 
 
+def generate_diary_entry(transcript: list[dict], people_names: "list[str] | None" = None) -> "dict | None":
+    """Session -> ONE first-person diary entry for Rex's episodic memory (rex.db).
+
+    Purpose-built for the diary (the conversations-table summarizer above serves a
+    different consumer): returns a structured dict
+        {remember: bool, note: str, salience: float, open_threads: [str]}
+    or None on failure. Design rules baked into the prompt (field lessons 2026-07-17
+    — the old extractor filled the diary with third-person null reports, every row
+    salience 0.8, and every concrete detail abstracted away):
+      • PERMISSION TO STAY SILENT: no substance -> remember=false, and the caller
+        writes NOTHING. An empty diary day beats forty rows of "nothing happened."
+      • CONCRETE ANCHORS: a note that could describe any conversation is a failure;
+        keep the nouns ("scared to book the dentist", not "scared about something").
+      • FIRST PERSON: this is REX'S diary; recall reads it back as his memory.
+      • OPEN THREADS are the primary extraction target — they become next-visit
+        callbacks ("did you fix the thing?"), the whole point of remembering.
+    """
+    if not transcript:
+        return None
+    who = ", ".join(people_names or []) or "an unidentified visitor"
+    prompt = (
+        "You are DJ-R3X (Rex), a droid, writing ONE entry in your private diary "
+        "about a conversation you just had. Return STRICT JSON:\n"
+        '{"remember": bool, "note": str, "salience": float, "open_threads": [str]}\n\n'
+        "remember: false if nothing genuinely memorable happened — small talk, device "
+        "tests, one-line commands, or questions about the temperature/time do NOT "
+        "count as memorable. When false, leave the other fields empty. Do not force it.\n\n"
+        "note (only when remember=true): 1-3 sentences, FIRST PERSON as Rex "
+        '("Bret told me he..."). Keep the CONCRETE specifics — names, projects, '
+        "objects, quoted phrases. A note that could describe any conversation is "
+        'worthless: "he was scared about taking action on something" is a FAILURE; '
+        '"he admitted he\'s scared to finally book the dentist appointment" is right. '
+        "Record what the PERSON shared (interests, plans, work, life events, mood "
+        "with its cause) — not your own jokes, DJ shtick, or Star Wars flavor. Skip "
+        "transient surroundings (the room, clutter, temperature, background noise).\n\n"
+        "salience 0.0-1.0, honest: 0.2 mundane chit-chat barely worth keeping, "
+        "0.5 a normal conversation with real content, 0.8 emotional weight / a "
+        "commitment / big news, 1.0 unforgettable. Most sessions are 0.3-0.6.\n\n"
+        "open_threads: 0-3 SHORT items I could naturally ask about next time "
+        '("whether the dentist appointment happened"). Only real ones; usually empty.\n\n'
+        f"Who was here: {who}\n\nTranscript:\n{_format_transcript(transcript)}"
+    )
+    try:
+        resp = _client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=400,
+            response_format={"type": "json_object"},
+        )
+        import json as _json
+        d = _json.loads(resp.choices[0].message.content)
+        return {
+            "remember": bool(d.get("remember")),
+            "note": str(d.get("note") or "").strip(),
+            "salience": max(0.0, min(1.0, float(d.get("salience") or 0.0))),
+            "open_threads": [str(t).strip() for t in (d.get("open_threads") or []) if str(t).strip()][:3],
+        }
+    except Exception as exc:
+        _log.error("generate_diary_entry failed: %s", exc)
+        return None
+
+
 def scenery_change_remark(previous_scene: str, current_scene: str) -> str:
     """Compare Rex's last-run startup snapshot to this run's. If it's a clearly DIFFERENT
     place, return ONE short in-character remark about the change of scenery; otherwise "".

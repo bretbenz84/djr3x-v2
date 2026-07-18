@@ -188,14 +188,21 @@ def record_scene(
 
 
 def record_conversation_summary(
-    summary: str, *, people: Optional[list] = None, salience: float = 0.8,
+    summary: str, *, people: Optional[list] = None, salience: float = 0.5,
+    detail: Optional[dict] = None,
 ) -> Optional[int]:
+    """Salience comes from the extractor's honest per-session score now — the old
+    constant 0.8 default made ranking meaningless (every session tied). `detail`
+    may carry open_threads for the next-visit callback path."""
     primary = (people or [{}])[0] if people else {}
+    payload = dict(detail or {})
+    if people and "people" not in payload:
+        payload["people"] = people
     return record_episode(
         "conversation_summary", summary,
         person_id=primary.get("person_id") if isinstance(primary, dict) else None,
         person_name=primary.get("name") if isinstance(primary, dict) else None,
-        detail={"people": people} if people else None,
+        detail=payload or None,
         salience=salience,
     )
 

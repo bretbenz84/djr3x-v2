@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import threading
 
 import config
@@ -67,6 +68,8 @@ def animal(species, position=None) -> None:
 
 
 _last_scene_episode_sig = None
+_last_scene_episode_at = 0.0        # monotonic time of the last stored ambient scene
+_last_scene_episode_desc = ""       # its description, for the material-difference test
 
 
 def _known_visible_names(snapshot: Optional[dict] = None) -> list[str]:
@@ -145,7 +148,20 @@ def scene_changed(snapshot: dict) -> None:
         sig = (scene_type, lighting, crowd, desc[:80])
         if sig == _last_scene_episode_sig:
             return
+        # Near-rewordings of the same room slipped the exact-sig check and filled
+        # the diary ("cluttered space with various items on shelves" x40, field
+        # 2026-07-17): require MATERIAL difference from the last stored scene
+        # (token overlap, same test the startup path uses) AND a minimum gap.
+        global _last_scene_episode_at, _last_scene_episode_desc
+        now = time.monotonic()
+        min_gap = float(getattr(config, "SCENE_EPISODE_MIN_GAP_SECS", 1800.0))
+        if (now - _last_scene_episode_at) < min_gap:
+            return
+        if desc and not _caption_materially_differs(_last_scene_episode_desc, desc):
+            return
         _last_scene_episode_sig = sig
+        _last_scene_episode_at = now
+        _last_scene_episode_desc = desc
         if desc:
             summary = f"I looked around the room: {desc}"
         else:

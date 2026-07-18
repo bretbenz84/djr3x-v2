@@ -547,6 +547,19 @@ def _episodic_shutdown_summary() -> None:
         transcript = conv_memory.get_session_transcript() or []
         if not transcript:
             return  # nothing happened this session
+        # Substance pre-gate: a diary-worthy session needs a real exchange. Short
+        # test/command sessions used to burn an LLM call AND leave a "nothing
+        # happened" row (field 2026-07-17: a third of the diary was null reports).
+        rex_labels = {"rex", "dj-r3x", "djr3x", "dj r3x", "r3x", "dj-rex", "assistant"}
+        human_turns = sum(
+            1 for t in transcript
+            if str(t.get("speaker") or t.get("role") or "").strip().lower() not in rex_labels
+        )
+        min_turns = int(getattr(config, "EPISODIC_SUMMARY_MIN_HUMAN_TURNS", 3))
+        if human_turns < min_turns:
+            logger.info("Diary: session below substance gate (%d/%d human turns) — no entry.",
+                        human_turns, min_turns)
+            return
 
         # Best-effort: who was around (soft person refs for the episode).
         people = []
@@ -568,8 +581,8 @@ def _episodic_shutdown_summary() -> None:
         def _work() -> None:
             try:
                 from intelligence import llm
-                primary = people[0]["person_id"] if people else 0
-                result["summary"] = llm.generate_session_summary(primary, transcript)
+                names = [p.get("name") for p in people if p.get("name")]
+                result["entry"] = llm.generate_diary_entry(transcript, people_names=names)
             except Exception as exc:
                 logger.debug("episodic shutdown summary llm failed: %s", exc)
 
@@ -577,10 +590,24 @@ def _episodic_shutdown_summary() -> None:
         worker = threading.Thread(target=_work, daemon=True, name="episodic-shutdown-summary")
         worker.start()
         worker.join(timeout)
-        summary = (result.get("summary") or "").strip()
-        if summary:
-            episodes.record_conversation_summary(summary, people=people or None)
-            logger.info("Saved shutdown conversation summary to rex.db (%d people).", len(people))
+        entry = result.get("entry") or {}
+        note = (entry.get("note") or "").strip()
+        min_sal = float(getattr(config, "EPISODIC_SUMMARY_MIN_SALIENCE", 0.3))
+        if not entry.get("remember") or not note:
+            logger.info("Diary: extractor judged this session not memorable — no entry.")
+        elif entry.get("salience", 0.0) < min_sal:
+            logger.info("Diary: salience %.2f below floor %.2f — no entry.",
+                        entry.get("salience", 0.0), min_sal)
+        else:
+            detail = {"people": people} if people else {}
+            if entry.get("open_threads"):
+                detail["open_threads"] = entry["open_threads"]
+            episodes.record_conversation_summary(
+                note, people=people or None,
+                salience=float(entry["salience"]), detail=detail or None,
+            )
+            logger.info("Diary: entry saved (salience %.2f, %d open thread(s), %d people).",
+                        entry["salience"], len(entry.get("open_threads") or []), len(people))
     except Exception as exc:
         logger.debug("episodic shutdown summary failed: %s", exc)
 

@@ -59,6 +59,8 @@ class KnownVisibleNamesTest(unittest.TestCase):
 class SceneChangedNamesWhoTest(unittest.TestCase):
     def test_scene_episode_names_the_person_present(self):
         episodic_hooks._last_scene_episode_sig = None
+        episodic_hooks._last_scene_episode_at = 0.0
+        episodic_hooks._last_scene_episode_desc = ""
         snapshot = {
             "environment": {"scene_type": "workshop", "lighting": "dim",
                             "crowd_density": "sparse", "description": "a cluttered workshop"},
@@ -78,6 +80,8 @@ class SceneChangedNamesWhoTest(unittest.TestCase):
 
     def test_no_known_people_leaves_summary_generic(self):
         episodic_hooks._last_scene_episode_sig = None
+        episodic_hooks._last_scene_episode_at = 0.0
+        episodic_hooks._last_scene_episode_desc = ""
         snapshot = {
             "environment": {"description": "an empty room"},
             "people": [{"person_db_id": None, "face_visible": True}],

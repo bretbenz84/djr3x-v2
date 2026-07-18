@@ -388,3 +388,27 @@ class StartupImageCaptionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConversationSummarySalienceTest(unittest.TestCase):
+    """The 2026-07-17 diary rework: salience is the extractor's honest score
+    (no more hardcoded 0.8 for every session) and detail carries open_threads."""
+
+    def test_salience_and_open_threads_passthrough(self):
+        from unittest import mock
+        from memory import episodes
+        recorded = {}
+        with mock.patch("memory.episodes.record_episode",
+                        side_effect=lambda kind, summary, **kw: recorded.update(
+                            kind=kind, summary=summary, **kw) or 1):
+            episodes.record_conversation_summary(
+                "Bret told me the new left motor arrives Monday.",
+                people=[{"person_id": 1, "name": "Bret"}],
+                salience=0.55,
+                detail={"open_threads": ["whether the motor swap happened"]},
+            )
+        self.assertEqual(recorded["salience"], 0.55)
+        self.assertEqual(recorded["detail"]["open_threads"],
+                         ["whether the motor swap happened"])
+        self.assertEqual(recorded["detail"]["people"][0]["name"], "Bret")
+        self.assertEqual(recorded["person_name"], "Bret")
