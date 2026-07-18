@@ -535,9 +535,13 @@ def _fmt_title(s: dict) -> str:
             parts.append("⚡ ~0A")
         else:
             parts.append(f"⚡ {-ma / 1000:+.2f}A")  # + = charging (into the pack), − = draining
-            if mv is not None and mv > 0:
-                # Signed power: + = charging (flowing into the pack), − = draining.
-                parts.append(f"💡 {-mv * ma / 1_000_000:+.1f}W")
+        if mv is not None and mv > 0:
+            # Signed power: + = charging (flowing into the pack), − = draining.
+            # Always shown (owner request 2026-07-17): a full pack idling on the
+            # charger reads 💡 0.0W rather than the segment vanishing. Unsigned
+            # inside the ~0 A band so jitter doesn't flip +0.0/−0.0.
+            watts = -mv * ma / 1_000_000
+            parts.append("💡 0.0W" if abs(watts) < 0.05 else f"💡 {watts:+.1f}W")
 
     clock = _fmt_title_clock(s)
     if clock:
@@ -612,9 +616,13 @@ def _fmt_lines(s: dict) -> list[str]:
             lines.append(f"Current: {abs(amps):.2f} A charging")
         else:
             lines.append(f"Current: {amps:.2f} A draw")
-        if mv is not None and mv > 0 and abs(ma) >= abs(_CHARGING_MA):
+        if mv is not None and mv > 0:
+            # Always show power once voltage is known — a full pack idling on
+            # the charger reads "+0.0 W", it doesn't vanish. Label "(charging)"
+            # only beyond the ~0 A noise band so the tag isn't applied to mA
+            # of measurement jitter.
             lines.append(f"Power: {-mv * ma / 1_000_000:+.1f} W"
-                         + (" (charging)" if ma < 0 else ""))
+                         + (" (charging)" if ma < _CHARGING_MA else ""))
 
     env = s.get("env") or {}
     if env.get("ok") and env.get("t") is not None:
