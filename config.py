@@ -6831,6 +6831,48 @@ EXPLORE_ENCOURAGE_ACK_LINES = [
 BATTERY_AWARENESS_ENABLED = _env_bool("BATTERY_AWARENESS_ENABLED", True)
 BATTERY_TIER_HYSTERESIS_MV = 100
 BATTERY_ANNOUNCE_MIN_GAP_SECS = 300.0
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPASS (QMC5883L on the motion base — hardware/compass.py)
+# The firmware publishes RAW magnetometer counts in telemetry (`mag` block);
+# everything below tunes the Mac-side calibration, tilt compensation, and
+# current-gated fusion. Calibration itself lives in COMPASS_CALIBRATION_PATH
+# (JSON, written by tools/compass_calibrate.py — run it in-situ on the robot).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Magnetic declination, degrees EAST of true north. Sacramento/Davis CA is
+# ~13.0°E (2026, drifting ~-0.1°/yr — WMM). Applied AFTER tilt compensation so
+# get_heading() returns TRUE heading; set 0.0 to work in magnetic heading.
+COMPASS_DECLINATION_DEG = _env_float("COMPASS_DECLINATION_DEG", 13.0, min_value=-180.0, max_value=180.0)
+
+# Hard/soft-iron calibration file (JSON: per-axis offsets/scales + ambient |B|).
+COMPASS_CALIBRATION_PATH = os.getenv("COMPASS_CALIBRATION_PATH", "compass_calibration.json").strip()
+
+# ── Axis mapping (⚠ mounting not finalized — confirm at hardware bring-up) ────
+# The tilt-compensation math assumes the QMC's axes align with the IMU's body
+# frame (x forward, y left, z up). GY-271 silkscreen axes rarely match the way
+# the board ends up mounted; flip/swap here rather than editing the math.
+COMPASS_SWAP_XY = _env_bool("COMPASS_SWAP_XY", False)
+COMPASS_FLIP_X = _env_bool("COMPASS_FLIP_X", False)
+COMPASS_FLIP_Y = _env_bool("COMPASS_FLIP_Y", False)
+COMPASS_FLIP_Z = _env_bool("COMPASS_FLIP_Z", False)
+
+# ── Current-gated fusion (complementary filter) ───────────────────────────────
+# alpha = per-update magnetometer trust (at the ~10 Hz update rate). High |batt_ma|
+# means motors are working and the field is contaminated -> trust the gyro;
+# low current -> let the magnetometer re-anchor and bleed off gyro drift.
+# Between the thresholds the trust ramps linearly. NOTE the robot idles ~1.3 A
+# (electronics), so the "low" threshold sits above idle, not at zero.
+COMPASS_ALPHA_MAX = _env_float("COMPASS_ALPHA_MAX", 0.05, min_value=0.0, max_value=1.0)   # full trust at/below low current
+COMPASS_ALPHA_MIN = _env_float("COMPASS_ALPHA_MIN", 0.0, min_value=0.0, max_value=1.0)    # trust at/above high current
+COMPASS_CURRENT_LOW_MA = _env_int("COMPASS_CURRENT_LOW_MA", 1600, min_value=0, max_value=50000)    # <= this -> ALPHA_MAX
+COMPASS_CURRENT_HIGH_MA = _env_int("COMPASS_CURRENT_HIGH_MA", 2600, min_value=0, max_value=50000)  # >= this -> ALPHA_MIN
+
+# ── Magnitude sanity gate ─────────────────────────────────────────────────────
+# Reject any calibrated sample whose |B| deviates from the calibrated ambient
+# field magnitude by more than this fraction (nearby magnet, motor transient,
+# LED-run surge). Rejections are counted in the status/telemetry method.
+COMPASS_FIELD_TOLERANCE = _env_float("COMPASS_FIELD_TOLERANCE", 0.25, min_value=0.01, max_value=2.0)
+
 # Spoken once when the charger is plugged in (firmware detects sustained charge
 # current, locks out the wheels, and reports charging:true in telemetry).
 BATTERY_CHARGING_LINES = [

@@ -75,12 +75,13 @@ void emit_telemetry() {
   MotionState st; MotionOwner ow; MotionGamepad gp; MotionFault fl;
   MotionZone z; MotionDir bd; uint32_t cs, errs; Odom od; TofMm tf; int16_t bm, bma;
   int8_t bsoc; GamepadLive gpl; WheelDiag wd; ImuState im; EnvState ev; bool chg;
+  MagState mg;
   LOCK_STATE();
   st = g_ctx.state; ow = g_ctx.owner; gp = g_ctx.gamepad; fl = g_ctx.fault;
   z = g_ctx.zone; bd = g_ctx.blocked_dir; cs = g_ctx.cmd_seq; errs = g_ctx.errs;
   od = g_ctx.odom; tf = g_ctx.tof; bm = g_ctx.batt_mv; bma = g_ctx.batt_ma;
   bsoc = g_ctx.batt_soc; gpl = g_ctx.gp_live; wd = g_ctx.wheels; im = g_ctx.imu;
-  ev = g_ctx.env; chg = g_ctx.charging;
+  ev = g_ctx.env; chg = g_ctx.charging; mg = g_ctx.mag;
   UNLOCK_STATE();
 
   JsonDocument doc;
@@ -133,6 +134,15 @@ void emit_telemetry() {
     add_qf(ev2, "t",   ev.temp_c, "%.1f");   // °C
     add_qf(ev2, "hpa", ev.hpa,    "%.1f");   // barometric pressure
     if (ev.rh >= 0.0f) add_qf(ev2, "rh", ev.rh, "%.1f");   // % (BME280 only)
+  }
+  // Magnetometer raw axes (QMC5883L). Stable schema: {ok:false} when absent.
+  // Counts are RAW on purpose — hard/soft-iron calibration, tilt compensation,
+  // and current-gated fusion all live on the Mac (hardware/compass.py).
+  JsonObject mg2 = doc["mag"].to<JsonObject>();
+  mg2["ok"] = mg.ok;
+  if (mg.ok) {
+    mg2["x"] = mg.x; mg2["y"] = mg.y; mg2["z"] = mg.z;
+    if (mg.ovl) mg2["ovl"] = true;
   }
   // Live gamepad mirror for the GUI Motivator Control "physical controller" display.
   // Always present (stable schema): {connected:false} when no pad / non-gamepad build.

@@ -186,6 +186,13 @@ struct EnvState {
   float rh     = -1.0f;   // relative humidity %, -1 = BMP280 fitted (no humidity)
 };
 
+// ===== Magnetometer (QMC5883L — mag.cpp; raw counts, host-side fusion) ======
+struct MagState {
+  bool    ok = false;     // sensor probed + healthy
+  int16_t x = 0, y = 0, z = 0;   // RAW counts (±8 G range, 3000 LSB/gauss)
+  bool    ovl = false;    // field overflow this sample — host rejects it
+};
+
 struct ImuState {
   bool  ok    = false;
   float pitch = 0.0f;   // deg, + = nose up
@@ -236,6 +243,7 @@ struct MotionContext {
   WheelDiag   wheels;                  // per-wheel measured speed + duty (telemetry diag)
   ImuState    imu;                     // MPU-6050 attitude (telemetry + future fusion)
   EnvState    env;                     // BMP280/BME280 room climate (telemetry)
+  MagState    mag;                     // QMC5883L raw axes (host-side compass)
   bool        charging = false;        // on the charger (battery.cpp) — drive locked out
 
   uint32_t  cmd_seq   = 0;        // last applied command seq (telemetry)

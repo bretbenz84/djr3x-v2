@@ -25,6 +25,7 @@
 #include "battery.h"
 #include "imu.h"
 #include "env.h"
+#include "mag.h"
 
 // ---- Globals (declared extern in context.h) ------------------------------
 MotionContext     g_ctx;
@@ -55,6 +56,7 @@ static void sensorTask(void*) {
   TickType_t last = xTaskGetTickCount();
   uint8_t batt_div = 0;
   uint8_t env_div = 0;
+  uint8_t mag_div = 0;
   for (;;) {
     TofMm t;
     hal_read_tof(t);                      // stub: all clear
@@ -67,6 +69,10 @@ static void sensorTask(void*) {
     if (++env_div >= 100) {               // room climate: 0.5 Hz is generous
       env_div = 0;
       env_tick();
+    }
+    if (++mag_div >= 5) {                 // compass raw axes: 10 Hz (host fuses)
+      mag_div = 0;
+      mag_tick();
     }
     vTaskDelayUntil(&last, pdMS_TO_TICKS(20));   // 50 Hz
   }
@@ -105,6 +111,7 @@ void setup() {
   battery_init();                         // INA226 probe (shares the ToF I2C bus)
   imu_init();                             // MPU-6050 probe + gyro bias cal (same bus)
   env_init();                             // BMP280/BME280 probe (same bus)
+  mag_init();                             // QMC5883L probe (same bus)
   proto_init();
   control_init();
   safety_init();

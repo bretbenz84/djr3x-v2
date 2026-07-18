@@ -116,6 +116,17 @@ the `-DMOTION_TOF_USE_MUX=0` path `#error`s). `tof.cpp` is still a **scaffold** 
 fully hardware-validated; bench-check the channel→field order and timing budgets (docs §6).
 Bring-up emits one `[motion_fw] tof[…]` log per sensor (OK/FAIL) + an `N/8 up` tally.
 
+### QMC5883L compass (GY-271) — raw axes in telemetry
+
+A QMC5883L magnetometer (NOT the HMC — different register map; the GY-271 boards
+ship either) joins the main I²C trunk at fixed address **0x0D** (no conflicts:
+INA226 0x40, MPU 0x68, mux 0x70, BMP/BME 0x76). The firmware only probes,
+configures ±8 G continuous mode, and publishes RAW counts at 10 Hz in the `mag`
+telemetry block (`{ok,x,y,z[,ovl]}`); calibration, tilt compensation, and the
+current-gated heading fusion live on the Mac (`hardware/compass.py`,
+`tools/compass_calibrate.py` — run the figure-8 calibration IN-SITU on the
+robot). Absent sensor = one boot log line + `{ok:false}`, like the IMU/env.
+
 ### Front 8x8 Matrix ToF (DFRobot SEN0628) — `-DMOTION_TOF_MATRIX_PRESENT=1`
 
 A single VL53L7CX 8x8 matrix module (onboard RP2040, Gravity 4-pin I²C) mounted at the
