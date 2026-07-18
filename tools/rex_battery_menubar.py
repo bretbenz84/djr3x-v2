@@ -532,7 +532,10 @@ def _fmt_title(s: dict) -> str:
         parts.append(f"🔌 {mv / 1000:.2f}V")
     if ma is not None:
         if abs(ma) < abs(_CHARGING_MA):
-            parts.append("⚡ ~0A")
+            # Same 2-decimal width as the signed bands so the title doesn't
+            # jump between "~0A" and "+3.40A" shapes; magnitude only, so mA
+            # jitter can't flip the sign.
+            parts.append(f"⚡ {abs(ma) / 1000:.2f}A")
         else:
             parts.append(f"⚡ {-ma / 1000:+.2f}A")  # + = charging (into the pack), − = draining
         if mv is not None and mv > 0:
@@ -610,8 +613,10 @@ def _fmt_lines(s: dict) -> list[str]:
         amps = ma / 1000.0
         if abs(ma) < abs(_CHARGING_MA):
             # Near-zero battery current: full pack on a charger (bus carries the
-            # load), or a genuinely disconnected pack — don't show "-0.03 A draw".
-            lines.append(f"Current: ~0 A ({amps * 1000:+.0f} mA)")
+            # load), or a genuinely disconnected pack. Same 2-decimal format as
+            # the other bands (owner request: no format jumps), magnitude only
+            # so jitter doesn't flip a sign; the mA hint keeps trickle visible.
+            lines.append(f"Current: {abs(amps):.2f} A ({amps * 1000:+.0f} mA)")
         elif ma < 0:
             lines.append(f"Current: {abs(amps):.2f} A charging")
         else:
