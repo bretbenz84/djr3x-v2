@@ -359,6 +359,18 @@ LEAN_IMPULSE_REENGAGE_SECS  = 40.0
 # unanswered cap, low-energy read) when a known person is visible but has never spoken, or
 # after the ACTIVE conversation timed out back to IDLE with them still on camera.
 IDLE_PRESENCE_IMPULSE_ENABLED = True
+# Disengagement probe (owner 2026-07-18: "treat a lack of response as a gauge of possible lack
+# of interest"). After LEAN_IMPULSE_MAX_UNANSWERED topic lines go unanswered with the person
+# still on camera, the next re-engage swing becomes a DIRECT check-in ("Am I bothering you?",
+# "You busy?" — shy-goad "I don't bite, {name}" for someone Rex barely knows). Then:
+#   reply           → normal conversation resumes (probe + snooze cleared on any real speech)
+#   "give me a few minutes" → impulses snooze DEFER_SNOOZE_SECS, then Rex checks back
+#   silence through the answer window → assume they don't want to talk; snooze NO_ANSWER secs
+#   person leaves the frame → all state cleared; normal idle/boredom/sleep path owns the room
+ENGAGEMENT_PROBE_ENABLED = True
+ENGAGEMENT_PROBE_ANSWER_WINDOW_SECS = 30.0    # how long the probe waits for any reply
+ENGAGEMENT_PROBE_NO_ANSWER_SNOOZE_SECS = 600.0  # silence = not interested — quiet for 10 min
+ENGAGEMENT_DEFER_SNOOZE_SECS = 100.0          # "give me a few minutes" — back in ~a minute and a half
 # Cadence = quiet-threshold (measured from Rex's last line, so a natural short pause triggers it)
 # + cooldown. Each eligible window Rex consults the lean brain and either says one motivated thing
 # or passes. Too chatty → raise COOLDOWN; too slow → lower QUIET_SECS. Tune live.

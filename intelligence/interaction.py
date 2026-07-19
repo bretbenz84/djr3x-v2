@@ -277,6 +277,18 @@ _last_lean_impulse_at: float = 0.0   # cooldown anchor for the lean agentic impu
 _consecutive_lean_impulses: int = 0
 _lean_news_mentioned_this_session: bool = False   # one story per session, like the musing
 _lean_impulse_spoken_times: list[float] = []      # rolling-window rate cap (Phase B)
+# Disengagement probe (owner 2026-07-18: treat no-reply-while-visible as a gauge of
+# interest). After the unanswered run maxes out, the first re-engage swing becomes a
+# direct "Am I bothering you? / You busy?" check-in instead of another topic. Then:
+# any reply resumes normal conversation; a deferral ("give me a few minutes") snoozes
+# impulses briefly; pure silence through the answer window reads as "doesn't want to
+# talk" and snoozes them for a long while. All of it clears when the person leaves
+# the frame (the normal idle/boredom/sleep path owns an empty room) or speaks.
+_engagement_probe_at: float = 0.0            # when the probe was spoken (0 = none pending)
+_engagement_probed_this_silence: bool = False  # one probe per silence-run (reset on user speech)
+_impulse_snooze_until: float = 0.0           # monotonic gate: no impulses before this
+_impulse_snooze_reason: str = ""
+_impulse_snooze_person: Optional[int] = None  # whose snooze it is — a different arrival isn't muted
 # Monotonic time the most recent user turn began processing. A proactive line is
 # decided on a silence timer, then spends ~1-2s in LLM+TTS before any sound; if a
 # user turn started in that gap, the line is stale and must yield at speak time.
@@ -4739,6 +4751,141 @@ def _lean_impulse_person_present(person_id: int) -> bool:
     return False
 
 
+# ── Disengagement probe (owner 2026-07-18) ──────────────────────────────────
+# Canned Rex-voice check-ins — deliberately NOT LLM-generated: the probe must
+# fire reliably even when the lean brain would PASS, and the owner supplied the
+# register. {name}-bearing lines are only used when a first name is known.
+_ENGAGEMENT_PROBE_LINES = (
+    "Am I bothering you, {name}?",
+    "You busy? You've got that preoccupied look.",
+    "Don't be shy — I can see you sitting right there.",
+    "You seem busy. Say the word and I'll pipe down.",
+    "I'm getting a lot of silence for someone in plain view.",
+)
+_ENGAGEMENT_PROBE_SHY_LINES = (
+    "I don't bite, {name}. Couldn't if I wanted to — no teeth.",
+    "You can talk to me, {name}. I'm told I'm charming in small doses.",
+    "First conversations are the awkward ones, {name}. Say anything — I'll carry the rest.",
+)
+
+# Verbal deferrals — "give me a few minutes", "hold on", "can't talk right now".
+# Whisper drops punctuation/apostrophes, so shapes are apostrophe-tolerant.
+_ENGAGEMENT_DEFERRAL_RE = re.compile(
+    r"\b(?:"
+    r"give me (?:a|a few|a couple(?: of)?|one|two|\d+) (?:minute|minutes|min|mins|sec|secs|second|seconds|moment|moments)"
+    r"|gimme a (?:minute|min|sec|second|few|moment)"
+    r"|in a (?:minute|bit|sec|second|moment|few)"
+    r"|hold on|hang on|one sec|just a (?:sec|second|minute|moment)"
+    r"|not (?:right )?now|can'?t talk(?: right now)?"
+    r"|i'?m (?:kinda |a little |really )?busy|busy right now"
+    r"|later,? (?:rex|r3x|r3-x)"
+    r")\b",
+    re.I,
+)
+
+
+def _note_user_speech_for_engagement() -> None:
+    """Any real accepted user turn = they're talking again: clear a pending
+    probe, the probed-this-silence latch, and any impulse snooze."""
+    global _engagement_probe_at, _engagement_probed_this_silence
+    global _impulse_snooze_until, _impulse_snooze_reason, _impulse_snooze_person
+    _engagement_probe_at = 0.0
+    _engagement_probed_this_silence = False
+    if _impulse_snooze_until > 0.0:
+        _log.info("[lean] user spoke — engagement snooze (%s) lifted", _impulse_snooze_reason)
+    _impulse_snooze_until = 0.0
+    _impulse_snooze_reason = ""
+    _impulse_snooze_person = None
+
+
+def _maybe_capture_engagement_deferral(text: str) -> bool:
+    """Passive watcher on every human turn: a deferral ("give me a few minutes",
+    "busy right now") snoozes the impulse machinery briefly — Rex lets the reply
+    LLM answer naturally ("take your time"), goes quiet, and checks back in a
+    minute or two. Never consumes the turn."""
+    global _impulse_snooze_until, _impulse_snooze_reason, _impulse_snooze_person
+    if not bool(getattr(config, "ENGAGEMENT_PROBE_ENABLED", True)):
+        return False
+    cleaned = " ".join(str(text or "").split())
+    if not cleaned or not _ENGAGEMENT_DEFERRAL_RE.search(cleaned):
+        return False
+    snooze = float(getattr(config, "ENGAGEMENT_DEFER_SNOOZE_SECS", 100.0))
+    _impulse_snooze_until = time.monotonic() + snooze
+    _impulse_snooze_reason = "deferred"
+    _impulse_snooze_person = _primary_session_person_id()
+    _log.info(
+        "[lean] deferral heard (%r) — impulses snoozed %.0fs, Rex will check back",
+        cleaned[:60], snooze,
+    )
+    return True
+
+
+def _clear_engagement_state(reason: str = "") -> None:
+    """Person left the frame (or session reset): forget the probe AND the snooze
+    so the normal idle/boredom/sleep path owns the empty room, and a fresh
+    arrival starts clean at the greeting."""
+    global _engagement_probe_at, _engagement_probed_this_silence
+    global _impulse_snooze_until, _impulse_snooze_reason, _impulse_snooze_person
+    if _engagement_probe_at > 0.0 or _impulse_snooze_until > 0.0:
+        _log.info("[lean] engagement probe/snooze state cleared (%s)", reason or "reset")
+    _engagement_probe_at = 0.0
+    _engagement_probed_this_silence = False
+    _impulse_snooze_until = 0.0
+    _impulse_snooze_reason = ""
+    _impulse_snooze_person = None
+
+
+def _speak_engagement_probe(person_id: int) -> bool:
+    """Speak the direct 'Am I bothering you?' check-in and arm the answer window.
+    Shy variant for someone Rex barely knows (sparse profile — a newly greeted
+    person going silent reads as shyness, not disinterest)."""
+    global _engagement_probe_at, _engagement_probed_this_silence
+    global _last_proactive_line_at, _consecutive_lean_impulses
+    name = ""
+    try:
+        from memory import people as _people_mod
+        row = _people_mod.get_person(person_id) or {}
+        name = _first_name_or(row.get("name"), "")
+    except Exception:
+        pass
+    shy = False
+    try:
+        shy = profile_questions.profile_fact_count(person_id) <= int(
+            getattr(config, "LOW_MEMORY_PROFILE_MAX_FACTS", 4) or 4
+        )
+    except Exception:
+        pass
+    pool = _ENGAGEMENT_PROBE_SHY_LINES if (shy and name) else _ENGAGEMENT_PROBE_LINES
+    candidates = [l for l in pool if name or "{name}" not in l]
+    if not candidates:
+        candidates = ["You busy? You've got that preoccupied look."]
+    line = random.choice(candidates).format(name=name)
+    completed = _speak_proactive(
+        line, emotion="curious", priority=1, label="engagement_probe"
+    )
+    if completed:
+        now = time.monotonic()
+        _engagement_probe_at = now
+        _engagement_probed_this_silence = True
+        _last_proactive_line_at = now
+        _lean_impulse_spoken_times.append(now)   # counts against the rolling rate cap
+        _consecutive_lean_impulses += 1
+        conv_memory.add_to_transcript("Rex", line)
+        conv_log.log_rex(line)
+        _register_rex_utterance(
+            line,
+            source="lean_impulse",
+            target_person_id=person_id,
+            expected_reply_types=["answer", "statement"],
+        )
+        try:
+            question_budget.note_rex_utterance(line)
+        except Exception:
+            pass
+        _log.info("[lean] engagement probe — person_id=%s shy=%s text=%r", person_id, shy, line)
+    return completed
+
+
 def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bool:
     """Lean AGENCY (Phase 1): when a known person is PRESENT but quiet, let Rex DECIDE — via the
     lean brain, grounded in perception + memory + mood — to say ONE motivated thing or just watch
@@ -4750,6 +4897,8 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     global _last_lean_impulse_at, _last_proactive_line_at, _consecutive_lean_impulses
     global _awaiting_followup_event, _lean_memory_mused_this_session
     global _lean_news_mentioned_this_session
+    global _engagement_probe_at, _impulse_snooze_until, _impulse_snooze_reason
+    global _impulse_snooze_person
     if not (
         bool(getattr(config, "LEAN_BRAIN_ENABLED", False))
         and bool(getattr(config, "LEAN_IMPULSE_ENABLED", True))
@@ -4766,7 +4915,34 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     if person_id is None:                       # nobody known present → never nudge an empty room
         return False
     if not _lean_impulse_person_present(person_id):
-        return False                            # target left (or went silent + off-camera)
+        # Target left (or went silent + off-camera): forget any probe/snooze so
+        # the normal idle/boredom/sleep path owns the room from here.
+        _clear_engagement_state("person left")
+        return False
+    # ── Disengagement protocol (owner 2026-07-18) ────────────────────────────
+    # An unanswered probe past its window = they don't want to talk right now:
+    # go quiet for a long while (presence-gated; speaking clears it instantly).
+    _now_eng = time.monotonic()
+    if _engagement_probe_at > 0.0 and (
+        _now_eng - _engagement_probe_at
+    ) >= float(getattr(config, "ENGAGEMENT_PROBE_ANSWER_WINDOW_SECS", 30.0)):
+        _no_ans = float(getattr(config, "ENGAGEMENT_PROBE_NO_ANSWER_SNOOZE_SECS", 600.0))
+        _engagement_probe_at = 0.0
+        _impulse_snooze_until = _now_eng + _no_ans
+        _impulse_snooze_reason = "no_answer"
+        _impulse_snooze_person = person_id
+        _log.info(
+            "[lean] engagement probe unanswered — assuming they don't want to talk; "
+            "impulses snoozed %.0fs (speaking resumes immediately)", _no_ans,
+        )
+    if _engagement_probe_at > 0.0:
+        return False                            # probe outstanding — wait out the window quietly
+    if _now_eng < _impulse_snooze_until:
+        if _impulse_snooze_person in (None, person_id):
+            return False                        # snoozed ("give me a few minutes" / no answer)
+        # A DIFFERENT known person is now the target — their arrival isn't
+        # muted by someone else's snooze.
+        _clear_engagement_state("new person arrived")
     # "Quiet" = seconds since REX last spoke (his reply or a prior impulse), NOT since the user
     # spoke — a short natural pause after Rex FINISHES is the trigger, so the reply's own
     # generation + playback time doesn't count against it. 0.0 while he's still speaking (blocked
@@ -4854,6 +5030,19 @@ def _maybe_lean_impulse(*, idle_for: float, effective_idle_timeout: float) -> bo
     _lean_impulse_spoken_times[:] = [t for t in _lean_impulse_spoken_times if now - t < _cap_window]
     if len(_lean_impulse_spoken_times) >= _cap_n:
         return False
+    # ── Disengagement probe trigger ──────────────────────────────────────────
+    # The unanswered run has maxed out and it's gone truly quiet: instead of yet
+    # another topic swing, ask DIRECTLY whether they want to talk ("Am I
+    # bothering you?" / shy-goad for someone new). One probe per silence-run;
+    # deliberately BEFORE the low-energy gate — checking in is the polite move
+    # at a quiet person, another trivia question is not.
+    if (
+        bool(getattr(config, "ENGAGEMENT_PROBE_ENABLED", True))
+        and long_silence
+        and _consecutive_lean_impulses >= int(getattr(config, "LEAN_IMPULSE_MAX_UNANSWERED", 2))
+        and not _engagement_probed_this_silence
+    ):
+        return _speak_engagement_probe(person_id)
     # Low-energy read: tired / disengaged / question-averse people get FEWER,
     # gentler impulses — statements only, longer gaps, and no patient re-engage
     # pestering (let the night end).
@@ -19794,6 +19983,14 @@ def _handle_speech_segment(
             # ("and the"), which must not read as "the conversation is flowing".
             global _last_user_content_at
             _last_user_content_at = time.monotonic()
+            # Disengagement protocol: real speech resumes the conversation —
+            # clear any pending probe/snooze; then a deferral ("give me a few
+            # minutes") re-arms a short snooze so Rex waits and checks back.
+            _note_user_speech_for_engagement()
+            try:
+                _maybe_capture_engagement_deferral(text)
+            except Exception as exc:
+                _log.debug("[lean] deferral capture failed: %s", exc)
 
         name_merge_response, name_merge_person_id, name_merge_name = (None, None, None)
         if not game_conversation_lock:
