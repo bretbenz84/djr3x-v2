@@ -67,6 +67,56 @@ def _strip_direct_command_leaders(clean: str) -> str:
     return value
 
 
+# ── Verbal pause ("one sec, be right back") → QUIET mode ─────────────────────
+# Owner 2026-07-18: a natural-language way to hit the GUI pause button. Maps to
+# quiet_mode (State.QUIET), which any ONNX wake word already resumes. Matching
+# is clause-aware: "Hey Rex, one sec, be right back" pauses on the "be right
+# back" clause. The AMBIGUOUS shapes ("give me a sec", "one sec") only count
+# when the utterance is Rex-ADDRESSED — unaddressed they stay a soft impulse
+# deferral (interaction's engagement snooze), not a hard pause.
+_PAUSE_CORES = {
+    "pause",
+    "be right back",
+    "ill be right back",
+    "i'll be right back",
+    "i will be right back",
+    "brb",
+    "hold that thought",
+}
+_PAUSE_SHUTUP_RE = re.compile(
+    r"^(?:shut up|quiet|hush|zip it|pipe down) for a (?:sec|second|minute|min|moment|bit|while)$"
+)
+_PAUSE_ADDRESSED_ONLY_RE = re.compile(
+    r"^(?:(?:give me|gimme) (?:a|one|a few|two|\d+) (?:sec|secs|second|seconds|minute|minutes|min|mins|moment|moments)"
+    r"|one sec|one second|just a sec|just a second|hold on|hang on)$"
+)
+_REX_ADDRESSED_RE = re.compile(r"^(?:hey |okay |ok |alright )?(?:dj ?)?r[e3]x\b")
+
+
+def parse_pause_command(text: str) -> bool:
+    """True when *text* is a natural-language pause request ("rex, pause",
+    "pause please", "one sec, be right back", "shut up for a sec")."""
+    normalized = _normalize(text)
+    if not normalized or len(normalized) > 80:   # commands are short; narration isn't
+        return False
+    addressed = bool(_REX_ADDRESSED_RE.match(_plain(normalized)))
+    for clause in re.split(r"[,.;!?]| and | so ", normalized):
+        clean = _strip_direct_command_leaders(_plain(clause))
+        for suffix in (" please", " now", " for a sec", " for a second", " for a minute", " for a bit"):
+            if clean.endswith(suffix) and clean[: -len(suffix)].strip() in _PAUSE_CORES:
+                clean = clean[: -len(suffix)].strip()
+                break
+        if not clean:
+            continue
+        if clean in _PAUSE_CORES:
+            return True
+        if _PAUSE_SHUTUP_RE.match(clean):
+            return True
+        if addressed and _PAUSE_ADDRESSED_ONLY_RE.match(clean):
+            return True
+    return False
+
+
 _SLEEP_COMMAND_CORES = {
     "go to sleep",
     "sleep",
@@ -875,6 +925,11 @@ def parse(text: str) -> CommandMatch | None:
     # 1. Exact match
     if normalized in EXACT_COMMANDS:
         return CommandMatch(EXACT_COMMANDS[normalized], "exact", {})
+
+    # Verbal pause → quiet mode ("rex, pause" / "one sec, be right back").
+    # After the exact table so "pause music" still routes to dj_stop.
+    if parse_pause_command(original):
+        return CommandMatch("quiet_mode", "pattern", {"flavor": "brb"})
 
     memory_boundary = _parse_memory_boundary(normalized, original)
     if memory_boundary is not None:

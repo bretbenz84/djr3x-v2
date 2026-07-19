@@ -13870,9 +13870,24 @@ def _execute_command(
         return _say("You just woke up. One short in-character wake-up line.")
 
     if key == "quiet_mode":
+        # "brb" flavor: they asked for a pause mid-conversation ("one sec, be
+        # right back") rather than a formal quiet-mode command — ack like a
+        # friend, not a system ("Take your time — say the magic words when
+        # you're back").
+        if (args or {}).get("flavor") == "brb":
+            prompt = (
+                "They asked you to pause for a moment — stepping away, taking a "
+                "call, be right back. Acknowledge in ONE short easygoing line "
+                "that you'll wait quietly until they say a wake phrase like "
+                "'hey Rex'. No questions."
+            )
+        else:
+            prompt = (
+                "You are entering quiet mode and won't speak until told to resume. "
+                "One brief in-character acknowledgment."
+            )
         resp = llm.get_response(
-            "You are entering quiet mode and won't speak until told to resume. "
-            "One brief in-character acknowledgment.",
+            prompt,
             person_id,
         )
         _speak_blocking(resp)
