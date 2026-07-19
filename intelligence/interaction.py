@@ -1771,6 +1771,7 @@ def _voice_primary_face_decision(
     visual_speaker_pid: Optional[int] = None,
     voice_continuity: bool = False,
     score_genuine_band: bool = False,
+    short_utterance: bool = False,
 ) -> str:
     """Voice-primary attribution decision when exactly one known face (``ws_pid``)
     is visible. Pure (no side effects) so it is directly unit-testable.
@@ -1801,6 +1802,9 @@ def _voice_primary_face_decision(
                                   — the present face anchors identity, no refresh
       ``corroborate``             voice weakly leans toward the visible face — attribute + refresh
       ``face_only_continuity``    no voice signal at all in a clean 1:1 — attribute, no refresh
+      ``short_face_wins``         clip too short for the embedder to score reliably and the
+                                  voice doesn't point at someone else — the sole visible known
+                                  face resolves identity; never touch the print
       ``unknown_intro_path``      voice unrecognized while an unknown face is present — leave
                                   person unresolved for the intro/identify path (not off-screen)
       ``off_screen_unknown``      voice points away / scene ambiguous — off-screen unknown voice
@@ -1873,6 +1877,21 @@ def _voice_primary_face_decision(
         # so engagement NEVER forms — live-logged 2026-07-06-21-15, Bret (face
         # recognized, all voice prints stale) stayed Guest 1 all session.
         return "face_only_continuity"
+    if (
+        short_utterance
+        and single_visible
+        and not other_known_recently
+        and (raw_id is None or raw_id == ws)
+        and (vis is None or vis == ws)
+    ):
+        # The clip is too short for the embedder to score reliably (a genuine
+        # one-word turn lands ~0.3 on the speaker's own print), so the low score
+        # is NOT evidence of an off-screen stranger. Voice stays the arbiter —
+        # this fires only when the voice's own best candidate IS the visible
+        # face (or there is no candidate) and the camera doesn't contradict it.
+        # Field 2026-07-18: Bret's "Yep" at 0.332, face locked, became
+        # unknown_voice_1 and de-personed the whole session.
+        return "short_face_wins"
     return "off_screen_unknown"
 
 
@@ -19344,6 +19363,10 @@ def _handle_speech_segment(
                     speaker_score,
                     float(getattr(config, "SPEAKER_ID_ECAPA_TRUST_FLOOR_FACE", 0.50)),
                 ),
+                short_utterance=(
+                    _audio_duration_secs(audio_array)
+                    < float(getattr(config, "SPEAKER_ID_SHORT_UTTERANCE_SECS", 2.0))
+                ),
             )
             if decision == "voice_agrees":
                 _note_confident_voice(person_id, speaker_score)
@@ -19470,6 +19493,19 @@ def _handle_speech_segment(
                     )
                 except Exception as exc:
                     _log.debug("auto voice-bootstrap skip: %s", exc)
+            elif decision == "short_face_wins":
+                # Clip too short to score; voice doesn't point elsewhere; one
+                # known face on camera → that face is the speaker. NO voice
+                # refresh — a sub-2s clip is bad print material.
+                person_id = ws_pid
+                person_name = ws_name
+                _log.info(
+                    "[interaction] person resolution: short utterance (%.2fs) — voice "
+                    "uninformative, sole visible face wins — person_id=%s name=%r "
+                    "(raw_best=%s score=%.3f)",
+                    _audio_duration_secs(audio_array), person_id, person_name,
+                    raw_best_id, speaker_score,
+                )
             elif decision == "unknown_intro_path":
                 # Voice unrecognized while an unknown face is/was visible — leave the
                 # speaker unresolved for the intro/identify path (NOT off-screen).

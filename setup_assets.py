@@ -232,7 +232,8 @@ CREATE TABLE IF NOT EXISTS person_events (
     outcome         TEXT,
     status          TEXT DEFAULT 'planned',
     canceled_at     DATETIME,
-    updated_at      DATETIME
+    updated_at      DATETIME,
+    anticipated_at  DATETIME
 );
 
 CREATE TABLE IF NOT EXISTS personality_settings (
@@ -945,6 +946,7 @@ def _run_schema_updates(conn: sqlite3.Connection) -> list[str]:
         ("status", "TEXT DEFAULT 'planned'"),
         ("canceled_at", "DATETIME"),
         ("updated_at", "DATETIME"),
+        ("anticipated_at", "DATETIME"),
     ):
         if _ensure_column(conn, "person_events", column, definition):
             applied.append(f"person_events.{column}")

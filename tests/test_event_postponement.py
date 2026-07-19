@@ -31,7 +31,11 @@ class _TempDb(unittest.TestCase):
 class PostponeKeepsEventOpenTest(_TempDb):
     def test_postpone_keeps_event_open_and_stops_reprompting(self):
         from memory import events
-        eid = events.add_event(1, "camping trip", "2020-01-01", "with the crew")  # past date
+        from datetime import date, timedelta
+        # Recent past date — within FOLLOWUP_DATED_MAX_AGE_DAYS, so it's an
+        # overdue follow-up rather than lazily expired stale history.
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        eid = events.add_event(1, "camping trip", yesterday, "with the crew")
         self.assertIsNotNone(eid)
         # A past-dated open event is an overdue follow-up.
         self.assertIn(eid, [e["id"] for e in events.get_pending_followups(1)])

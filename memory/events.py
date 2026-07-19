@@ -271,13 +271,16 @@ def mentioned_when_label(mentioned_at: Optional[str]) -> str:
 
 
 def mark_anticipated(event_id: int) -> None:
-    """Refresh mentioned_at so the same upcoming event isn't proactively anticipated on
-    every launch — the cross-session throttle behind ANTICIPATION_REPEAT_COOLDOWN_HOURS
-    (the 'Juneteenth every launch' fix). Deliberately does NOT touch followed_up, so the
-    post-event follow-up still fires after the date passes."""
+    """Stamp anticipated_at (and refresh mentioned_at) so the same upcoming event isn't
+    proactively anticipated on every launch — the cross-session throttle behind
+    ANTICIPATION_REPEAT_COOLDOWN_HOURS (the 'Juneteenth every launch' fix). The cooldown
+    keys on anticipated_at, NOT mentioned_at, so a never-anticipated event can't be
+    throttled by the human's own mention of it. Deliberately does NOT touch followed_up,
+    so the post-event follow-up still fires after the date passes."""
     db.execute(
-        "UPDATE person_events SET mentioned_at = ?, updated_at = ? WHERE id = ?",
-        (_now(), _now(), event_id),
+        "UPDATE person_events SET anticipated_at = ?, mentioned_at = ?, updated_at = ? "
+        "WHERE id = ?",
+        (_now(), _now(), _now(), event_id),
     )
 
 

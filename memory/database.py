@@ -312,6 +312,13 @@ def _run_migrations() -> None:
                 ("status", "TEXT DEFAULT 'planned'"),
                 ("canceled_at", "DATETIME"),
                 ("updated_at", "DATETIME"),
+                # When Rex last SPOKE an anticipation for this event — distinct
+                # from mentioned_at (when the human mentioned it). The
+                # anticipation cooldown keys on this, so a never-anticipated
+                # event can't be throttled by its own mention (field 2026-07-18:
+                # the river float mentioned at 1 AM was still inside the 20h
+                # cooldown at 9 PM, so Rex never brought it up).
+                ("anticipated_at", "DATETIME"),
             ):
                 _ensure_column(
                     conn,

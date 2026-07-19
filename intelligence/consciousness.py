@@ -4553,14 +4553,16 @@ def _pick_anticipated_event(person_db_id: Optional[int]) -> Optional[dict]:
             ev_id = ev.get("id")
             if ev_id is None or (person_db_id, ev_id) in _anticipated_events:
                 continue
-            # Cross-session throttle: don't re-anticipate the same event on every launch.
-            # mentioned_at is refreshed on each anticipation (events.mark_anticipated) AND
-            # set when the user first mentions the plan, so this naturally caps it to ~once
-            # a day instead of once per startup (the 'Juneteenth every launch' fix).
-            mentioned_at = ev.get("mentioned_at")
-            if mentioned_at and cooldown_hours > 0:
+            # Cross-session throttle: don't re-anticipate the same event on every launch
+            # (the 'Juneteenth every launch' fix). Keys on anticipated_at — when REX last
+            # spoke an anticipation — never on mentioned_at, which is set by the human's
+            # own mention (field 2026-07-18: the river float mentioned at 1 AM was still
+            # inside the 20h window at 9 PM, so Rex never once brought it up). A
+            # never-anticipated event is never throttled.
+            anticipated_at = ev.get("anticipated_at")
+            if anticipated_at and cooldown_hours > 0:
                 try:
-                    m_dt = datetime.fromisoformat(str(mentioned_at))
+                    m_dt = datetime.fromisoformat(str(anticipated_at))
                     if m_dt.tzinfo is None:
                         m_dt = m_dt.replace(tzinfo=timezone.utc)
                     if (now_utc - m_dt) < timedelta(hours=cooldown_hours):

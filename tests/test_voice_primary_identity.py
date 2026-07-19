@@ -140,6 +140,47 @@ class VoicePrimaryFaceDecisionTest(unittest.TestCase):
         # face; treat as off-screen/unknown.
         self.assertEqual(self._decide(person_id=None, raw_best_id=2, speaker_score=0.42), "off_screen_unknown")
 
+    # ── Short utterances (field 2026-07-18: Bret's "Yep" scored 0.332 on his
+    #    OWN print — ECAPA can't score a sub-2s clip — and the session was
+    #    de-personed to unknown_voice_1 with his face locked on camera) ────────
+    def test_short_utterance_agreeing_with_face_wins(self):
+        self.assertEqual(
+            self._decide(raw_best_id=1, speaker_score=0.332, engaged_is_visible=False,
+                         short_utterance=True),
+            "short_face_wins",
+        )
+
+    def test_short_utterance_no_candidate_still_wins(self):
+        self.assertEqual(
+            self._decide(raw_best_id=None, speaker_score=0.0, engaged_is_visible=False,
+                         short_utterance=True),
+            "short_face_wins",
+        )
+
+    def test_short_utterance_pointing_elsewhere_stays_off_screen(self):
+        # The voice actively leans toward someone NOT in frame — short or not,
+        # never credit the visible face.
+        self.assertEqual(
+            self._decide(raw_best_id=2, speaker_score=0.40, engaged_is_visible=False,
+                         short_utterance=True),
+            "off_screen_unknown",
+        )
+
+    def test_short_utterance_camera_shows_other_talker_stays_off_screen(self):
+        self.assertEqual(
+            self._decide(raw_best_id=1, speaker_score=0.30, engaged_is_visible=False,
+                         short_utterance=True, visual_speaker_pid=3),
+            "off_screen_unknown",
+        )
+
+    def test_long_utterance_same_score_stays_off_screen(self):
+        # A LONG clip at 0.33 is genuine evidence of a stranger — unchanged.
+        self.assertEqual(
+            self._decide(raw_best_id=1, speaker_score=0.332, engaged_is_visible=False,
+                         short_utterance=False),
+            "off_screen_unknown",
+        )
+
     def test_no_voice_signal_clean_oneonone_falls_back_to_face(self):
         # No voice candidate at all, clean 1:1 with the engaged person on camera.
         self.assertEqual(

@@ -1293,6 +1293,112 @@ venv/bin/python main.py
   `tests/test_wave_back.py` (`test_desk_wave_passes_at_default_threshold`,
   `test_desk_webcam_wave_fires`, retuned close-gate cases).
 
+### Lean-brain cue integration + impulse discipline (2026-07-18)
+
+The lean brain OWNS silence-filling (consciousness proactive candidates are
+suppressed under it: `lean_brain_silence_fill_suppressed`). Field session
+2026-07-18 showed the new memory features never fired (wrong channel) while
+lean improvised six generic questions in three minutes at a tired user. Fixes:
+
+- NEW LEAN CUES (interaction cue ladder): open_thread (after event_followup),
+  room_question (before visual riff; skipped when low-energy), news_story
+  (before memory musing; one/session, spent once ever). Consciousness-side
+  steps for these remain but are dead code under lean.
+- IMPULSE DISCIPLINE: rolling rate cap (LEAN_IMPULSE_MAX_PER_WINDOW per
+  RATE_WINDOW — does NOT reset on user replies), low-energy read from
+  user_energy (statement-or-PASS, longer gaps, no reengage), question_budget
+  consulted (exhausted -> no-question addendum + post-check drop).
+- FOLLOW-UP HYGIENE: dated events expire FOLLOWUP_DATED_MAX_AGE_DAYS past
+  their date (lazily marked followed_up at the source — all consumers);
+  wave-backs during recent conversation are GESTURE-ONLY (no spoken
+  re-greeting).
+- DETECTOR HUMILITY: room-change remarks need a min first/last-seen SPAN
+  (ROOM_CHANGE_MIN_SPAN_SECS) and never fire on soft/carriable labels near a
+  person (ROOM_CHANGE_SOFT_LABELS); novelty-drive resets at CONFIRM time not
+  first sight; "actually that's a X" after a room remark renames the object in
+  the room model (room_questions.note_room_remark latch) and answers in
+  character instead of the memory_correct_fact canned failure.
+
+### Curiosity plan Phases 2-5 (2026-07-17)
+
+- OPEN THREADS (`intelligence/open_threads.py` + `consciousness.
+  _step_open_thread_followup`): the diary's open_threads surface as lull
+  follow-ups ("did the thing happen?") at priority 62 — above lull callbacks
+  (58) and news (54). Freshness window 6h-21d; each thread asked at most once
+  EVER (spent flag persisted in the episode detail JSON).
+- NOVELTY DRIVE (`awareness/novelty_drive.py`): time-since-anything-new, fed
+  from capture points (new room object, learned name, person enrolled,
+  animal). Stale (30 min) tilts the idle micro-behavior mix toward looking;
+  very stale + empty room can self-trigger exploration — but ONLY behind
+  `EXPLORE_SELF_TRIGGER_ENABLED` (default OFF: it moves the robot unprompted).
+- LEARNED NAMES: visual-curiosity prompts speak the human-given object name
+  ("they call it 'the sourdough starter'", hedged when single-source).
+- RETENTION SWEEP (`memory/consolidation.py`, shutdown): person_seen deduped
+  per person per day + 30d age-out, visits 90d, stale pending room questions
+  auto-dismiss at 7d. Pure SQL — LLM distillation stays a future upgrade.
+- COMPASS SERVICE scaffold (`hardware/compass.start_service`, gated by
+  `COMPASS_ENABLED`, default OFF until the QMC5883L is wired + calibrated).
+  Spatial anchoring (landmarks at headings) is the remaining deferred piece;
+  exploration's open-vocab labels already feed the room model / question
+  queue via record_objects.
+
+### Learn-by-asking room questions (2026-07-17, curiosity Phase 1)
+
+The room model now runs a durable ask-about-this queue on `room_objects`
+(`ask_status` + `human_name`/`name_confidence` columns, in-place ALTER
+migration in rex_db). Rules to preserve:
+
+- QUEUEING is rarity-gated (label never logged before) AND baseline-gated AND
+  age-gated (`ROOM_QUESTION_MIN_ROOM_AGE_DAYS`, default 1 — a fresh install's
+  furniture trickle must not become an interview).
+- STARVATION RULE in `interaction._maybe_ask_low_memory_idle_question`: a
+  pending room question outranks the personal profile-question pool; when the
+  room is stale, personal curiosity resumes. Shares question_budget pacing.
+- ANSWER CAPTURE is passive (`room_questions.maybe_capture_answer`, called on
+  every human turn before exploration handling): regex identity extraction,
+  never consumes the turn, latch expires after 2 turns / 90s (question then
+  auto-dismissed so it can't re-ask forever).
+- CORROBORATION (memory-poisoning defense): first answer = confidence 1; a
+  matching repeat bumps it; a contradicting claim only replaces a
+  single-source name — twice-confirmed names resist one joker.
+- `room_model.human_label(label)` exposes the learned name + confidence for
+  future curiosity/description prompts ("the sourdough starter", hedged when
+  confidence is 1).
+
+### Current-events knowledge (2026-07-17)
+
+`awareness/current_events.py` fetches the day's ~5 notable/viral stories ONCE
+per day (date-gated JSON cache at `CURRENT_EVENTS_PATH`) via the hosted
+web_search Responses call, kicked as a background thread from main.py at the
+start of model preloads (logged, never spoken at startup; a failed fetch keeps
+yesterday's cache). Consumer: `consciousness._step_news_remark` offers ONE
+unmentioned story per session in a conversation lull as an invitation ("did
+you hear about ...?"), priority `NEWS_REMARK_PRIORITY` (54 — deliberately
+below lull callbacks: news is B-material and must lose ties to personal
+memory). Stories are spent (persisted) only after the line actually plays.
+The fetch prompt demands CONCRETE events — it explicitly forbids meta-stories
+about news outlets/homepages, which the first live test produced.
+
+### Rex diary quality rework (2026-07-17)
+
+The rex.db first-person diary capture was reworked after the store filled with
+third-person null reports ("The person did not share...") at a hardcoded salience
+0.8 and forty near-identical scene rows. Rules to preserve:
+
+- `intelligence/llm.py generate_diary_entry` is the DIARY extractor (structured
+  JSON: remember/note/salience/open_threads, first-person Rex voice, concrete
+  anchors required, permission to stay silent). `generate_session_summary`
+  remains for the people.db conversations-table consumer — do not merge them.
+- `main.py _episodic_shutdown_summary` gates: `EPISODIC_SUMMARY_MIN_HUMAN_TURNS`
+  human turns before the LLM even runs; `remember=false` or salience below
+  `EPISODIC_SUMMARY_MIN_SALIENCE` writes NOTHING. No row is the correct output
+  for an unmemorable session.
+- `detail.open_threads` on conversation_summary rows is the seed for future
+  next-visit callbacks ("did you fix the thing?") — planned consumer, keep it.
+- Ambient scenes: `SCENE_EPISODE_MIN_GAP_SECS` + token-overlap material-difference
+  gate in `episodic_hooks.scene_changed` (near-rewordings of the same room must
+  not create new rows).
+
 ## Likely Future Work
 
 - Motion Phase 1: wire the real drive base (BTS7960 motor driver + Hall encoders + per-wheel PID + 5× VL53L0X ToF) and fill the `hal.cpp` `MOTION_HW_PRESENT` driver sections; add the Bluetooth-gamepad manual override (`docs/motion_system.md` §11, §17). Known Phase-1 fidelity gaps: a pure `turn` (spin) is not yet ToF-gated (no side sensors), and the stub plant carries residual velocity from a finished finite command into the next one.

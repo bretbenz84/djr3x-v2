@@ -5092,6 +5092,15 @@ SPEAKER_ID_SINGLE_VISIBLE_CONTINUITY_FLOOR = 0.45
 # a weak matching candidate should beat the off-camera-unknown branch.
 SPEAKER_ID_SINGLE_VISIBLE_MATCH_FLOOR = 0.35
 
+# Below this many seconds of captured audio, the voice embedder's score is
+# treated as UNINFORMATIVE rather than as evidence against the visible face:
+# ECAPA needs ~2s of speech, and a genuine one-word turn ("Yep") lands ~0.3 on
+# the speaker's own print (field 2026-07-18: Bret's "Yep" at 0.332, face locked
+# on camera, was ruled an off-screen unknown and the whole session de-personed).
+# When the clip is this short, the sole visible known face resolves identity —
+# unless the voice actively points at somebody ELSE.
+SPEAKER_ID_SHORT_UTTERANCE_SECS = 2.0
+
 # Pending-question continuity floor: when Rex has just asked a known person a
 # direct profile/curiosity question, their next answer may arrive while the face
 # is temporarily off-camera because the head is panned away. A weak top voice
