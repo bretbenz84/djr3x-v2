@@ -353,6 +353,12 @@ LEAN_IMPULSE_ESCALATION     = 1.0     # gap after n unanswered lines = COOLDOWN 
 # outro (PRESENT_REENGAGE_IDLE_TIMEOUT_SECS). 0 disables. Owner ask: "after 40s of silence he should
 # try to bring up a new topic/question."
 LEAN_IMPULSE_REENGAGE_SECS  = 40.0
+# Presence-driven engagement from IDLE (owner 2026-07-18: "R3X knows I'm in front of him —
+# if I don't respond to what he says ... it would be good if he still tried to engage").
+# Runs the same lean impulse (same discipline: quiet threshold, cooldowns, rolling rate cap,
+# unanswered cap, low-energy read) when a known person is visible but has never spoken, or
+# after the ACTIVE conversation timed out back to IDLE with them still on camera.
+IDLE_PRESENCE_IMPULSE_ENABLED = True
 # Cadence = quiet-threshold (measured from Rex's last line, so a natural short pause triggers it)
 # + cooldown. Each eligible window Rex consults the lean brain and either says one motivated thing
 # or passes. Too chatty → raise COOLDOWN; too slow → lower QUIET_SECS. Tune live.

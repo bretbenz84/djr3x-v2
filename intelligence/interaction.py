@@ -22939,6 +22939,31 @@ def _loop() -> None:
                 _stop_event.wait(0.05)
                 continue
 
+            # Presence-driven engagement (owner 2026-07-18: "R3X knows I'm in
+            # front of him — if I don't respond to what he says ... it would be
+            # good if he still tried to engage"). The lean impulse machinery
+            # used to run only in the ACTIVE loop, so a visible-but-silent
+            # person got the greeting and then nothing but sparse consciousness
+            # steps. Run the same impulse from IDLE: _primary_session_person_id
+            # falls back to the single visible known face, and all the existing
+            # discipline (greeting-first, quiet threshold, cooldowns, rolling
+            # rate cap, MAX_UNANSWERED, low-energy read) still applies, so he
+            # engages without badgering. IDLE has no conversation timeout —
+            # pass an infinite horizon so the outro-headroom gate is a no-op.
+            if bool(getattr(config, "LEAN_BRAIN_ENABLED", False)) and bool(
+                getattr(config, "IDLE_PRESENCE_IMPULSE_ENABLED", True)
+            ):
+                try:
+                    _identity_inflight = consciousness.is_identity_prompt_in_flight()
+                except Exception:
+                    _identity_inflight = False
+                if not _identity_inflight and _maybe_lean_impulse(
+                    idle_for=0.0,
+                    effective_idle_timeout=float("inf"),
+                ):
+                    _stop_event.wait(0.05)
+                    continue
+
             # Optional hands-free behavior: allow normal speech to activate Rex
             # directly from IDLE without a wake word.
             if not getattr(config, "IDLE_LISTEN_WITHOUT_WAKE_WORD", False):
