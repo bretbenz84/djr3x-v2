@@ -4631,7 +4631,13 @@ OBJECT_DETECTION_MAX_RESULTS = _env_int(
 # MOSTLY inside a zone is dropped at the source. The GUI vision panel outlines the
 # zones (dim dashed violet) so they can be aligned against the live feed by eye —
 # adjust here if the camera or the eye hardware moves.
-CAMERA_SELF_OCCLUSION_ZONES = [
+# The zones describe the ROBOT'S face hardware — on a dev Mac's built-in camera
+# there are no eye stalks in frame, and masking a third of the picture just
+# hides real objects. When CAMERA_DEVICE_NAME points at a built-in Mac camera
+# (e.g. "MacBook Pro Camera"), the zones are disabled entirely; every consumer
+# (object scan, animal scan, GUI overlay) already tolerates an empty list.
+_CAMERA_IS_DEV_MAC = "macbook" in (os.getenv("CAMERA_DEVICE_NAME") or "").strip().lower()
+CAMERA_SELF_OCCLUSION_ZONES = [] if _CAMERA_IS_DEV_MAC else [
     (0.00, 0.50, 0.32, 1.00),   # left eye stalk (bottom-left blob) — widened 0.15 -> 0.32
                                 # (field 2026-07-17: it still read as a 55% "chair"; the
                                 # blob spans ~30% of the frame width, screenshot-verified)
