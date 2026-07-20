@@ -1617,12 +1617,11 @@ IMPERSONATION_CAPTURE_TIMEOUT_SECS = 45.0     # pending capture slot expiry
 # Lines Rex asks the person to repeat (fixed, so the reference transcript is known
 # exactly). Each is ~2 short sentences — enough audio to condition the clone.
 IMPERSONATION_CAPTURE_LINES = [
-    "Say this exactly like you mean it: the cantina's open, the music's loud, "
-    "and I fly better than I sing. Strap in.",
-    "Repeat after me: I have a very good feeling about this, which historically "
-    "means it is about to go sideways.",
-    "Give me this one: I am the main character, the room is my set, and yes, "
-    "I did land that ship on the first try.",
+    "Mary had a little lamb, its fleece was white as snow. "
+    "And everywhere that Mary went, the lamb was sure to go.",
+    "Twinkle, twinkle, little star, how I wonder what you are. "
+    "Up above the world so high, like a diamond in the sky.",
+    "An apple a day keeps the doctor away, and a penny saved is a penny earned.",
 ]
 # Rex-voice setup/stall lines spoken (in HIS voice) before the impersonation. Also
 # covers the one-time model-load latency, the way the web-search stall line does.

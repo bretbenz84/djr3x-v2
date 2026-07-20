@@ -166,7 +166,8 @@ def _pick(lines, fallback: str) -> str:
 def capture_line() -> str:
     return _pick(
         getattr(config, "IMPERSONATION_CAPTURE_LINES", []),
-        "Say this like you mean it: the cantina's open and I fly better than I sing.",
+        "Mary had a little lamb, its fleece was white as snow. "
+        "And everywhere that Mary went, the lamb was sure to go.",
     )
 
 
