@@ -1967,15 +1967,20 @@ fi
 
 # ── 9. Asset and model downloads ──────────────────────────────────────────────
 SETUP_ASSETS="$PROJECT_DIR/setup_assets.py"
-if [[ "$RUN_ENV_SETUP" -eq 0 ]]; then
-    log "Skipping setup_assets.py because dependency setup was skipped."
-elif [[ -f "$SETUP_ASSETS" ]]; then
-    log "Running setup_assets.py with the project venv Python (model downloads + database init)..."
-    "$VENV_PYTHON" "$SETUP_ASSETS"
-    ok "setup_assets.py completed."
-else
+if [[ ! -f "$SETUP_ASSETS" ]]; then
     warn "setup_assets.py not found — skipping model downloads and DB init."
     MANUAL_ATTENTION+=("setup_assets.py missing — run it once available: $VENV_PYTHON setup_assets.py")
+elif [[ "$RUN_ENV_SETUP" -eq 0 ]] && ! _venv_python_usable; then
+    log "Skipping setup_assets.py — the project venv Python is not usable."
+    MANUAL_ATTENTION+=("Repair the venv, then run: $VENV_PYTHON setup_assets.py")
+else
+    # Runs even when the full venv rebuild was declined: setup_assets.py itself now
+    # syncs Python packages from requirements.txt (picking up newly-added deps like
+    # mlx-audio for --local-tts) and refreshes model/DB assets — all idempotent, so
+    # re-running setup on an existing install installs anything missing.
+    log "Running setup_assets.py with the project venv Python (deps + model downloads + database init)..."
+    "$VENV_PYTHON" "$SETUP_ASSETS"
+    ok "setup_assets.py completed."
 fi
 
 # ── 10. Always-on "wake up Rex" supervisor (optional) ──────────────────────────

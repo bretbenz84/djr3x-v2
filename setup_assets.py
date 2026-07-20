@@ -5,6 +5,7 @@ Safe to run multiple times: never overwrites existing models or wipes existing d
 """
 
 import bz2
+import os
 import platform
 import shutil
 import sqlite3
@@ -15,6 +16,32 @@ import urllib.request
 import zipfile
 from datetime import datetime
 from pathlib import Path
+
+
+# ── Re-exec under the project venv Python ────────────────────────────────────
+# So `python3 setup_assets.py` (or any Python on PATH) always runs in the project
+# venv — model downloads use the venv's huggingface_hub, and the dependency sync
+# targets the venv. Without this, running with a system/pyenv Python that lacks the
+# project deps would fail or install into the wrong place. Guarded against loops.
+def _reexec_under_venv_python() -> None:
+    root = Path(__file__).resolve().parent
+    venv_py = root / "venv" / "bin" / "python"
+    if not venv_py.exists() or os.environ.get("DJR3X_SETUP_REEXEC"):
+        return
+    try:
+        if Path(sys.executable).resolve() == venv_py.resolve():
+            return
+    except Exception:
+        return
+    os.environ["DJR3X_SETUP_REEXEC"] = "1"
+    print(f"Re-running setup_assets.py under the project venv Python: {venv_py}")
+    os.execv(str(venv_py), [str(venv_py), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+# Only when run as a script — importing setup_assets (e.g. from tests) must NOT
+# re-exec the process.
+if __name__ == "__main__":
+    _reexec_under_venv_python()
 
 # ── Import config values ──────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
@@ -1163,6 +1190,58 @@ def print_summary(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Step 0 — Python dependencies (so a re-run picks up newly-added packages)
+# ─────────────────────────────────────────────────────────────────────────────
+def sync_python_dependencies(root: Path) -> tuple[list[str], list[str], list[str]]:
+    """Install/refresh Python packages from requirements.txt so re-running setup
+    picks up newly-added deps (e.g. mlx-audio for --local-tts) instead of leaving
+    the runtime to fail on a missing import.
+
+    Installs into the PROJECT VENV via its own pip regardless of which interpreter
+    launched this script — so `python3 setup_assets.py` still targets the venv, not
+    whatever Python happens to be on PATH. dlib is excluded: it is an optional
+    legacy face-recognition fallback that needs the Apple-Silicon build flags
+    setup_macos.sh applies, and building it here could fail the whole step.
+    Non-fatal: reports the failure and continues.
+    """
+    import tempfile
+
+    label = "python packages (requirements.txt)"
+    req = root / "requirements.txt"
+    if not req.exists():
+        return [], [], [f"{label}: requirements.txt not found"]
+
+    venv_pip = root / "venv" / "bin" / "pip"
+    pip_cmd = [str(venv_pip)] if venv_pip.exists() else [sys.executable, "-m", "pip"]
+
+    kept = [
+        line for line in req.read_text().splitlines()
+        if not line.strip().lower().startswith("dlib")
+    ]
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
+            handle.write("\n".join(kept) + "\n")
+            tmp_path = handle.name
+        print(f"    Installing from requirements.txt via {pip_cmd[0]} (dlib excluded) ...")
+        subprocess.run([*pip_cmd, "install", "-r", tmp_path], check=True)
+        return [label], [], []
+    except subprocess.CalledProcessError as exc:
+        return [], [], [
+            f"{label}: pip install failed (exit {exc.returncode}) — run manually: "
+            f"{' '.join(pip_cmd)} install -r requirements.txt"
+        ]
+    except Exception as exc:
+        return [], [], [f"{label}: {exc}"]
+    finally:
+        if tmp_path:
+            try:
+                Path(tmp_path).unlink()
+            except Exception:
+                pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 def main() -> None:
@@ -1171,14 +1250,19 @@ def main() -> None:
     print("DJ-R3X v2 — setup_assets.py")
     print()
 
+    all_created: list[str] = []
+    all_skipped: list[str] = []
+    all_failed:  list[str] = []
+
+    print("[deps] Syncing Python packages from requirements.txt ...")
+    c, s, f = sync_python_dependencies(root)
+    all_created += c; all_skipped += s; all_failed += f
+    _report(c, s, f)
+
     print("[1/13] Creating project directories ...")
     dir_created = create_directories(root)
     count = len(dir_created)
     print(f"      {count} created." if count else "      All already exist.")
-
-    all_created: list[str] = []
-    all_skipped: list[str] = []
-    all_failed:  list[str] = []
 
     print("[2/13] InsightFace models (SCRFD + ArcFace — primary face backend) ...")
     c, s, f = download_insightface_models(root)
