@@ -6925,6 +6925,37 @@ MOTION_APPROACH_ENABLED = True
 MOTION_APPROACH_CONFIRM_TICKS = 4     # ~4 s of sustained "they're far" before moving
 MOTION_APPROACH_COOLDOWN_SECS = 120.0 # at most one spontaneous approach per 2 min
 MOTION_APPROACH_CENTERED_FRACTION = 0.18  # neck must be this close to neutral (facing them)
+# Flinch: a reflexive back-off when someone crowds Rex from the front — the way an
+# animal edges back when you get in its face. Each front matrix ToF half (fl/fr,
+# floor-rejected) is watched on its OWN adaptive open-distance baseline (tracks a nearer
+# surface at once but only RISES after _CLEAR_CONFIRM_TICKS clear ticks, so a multi-frame
+# ToF dropout can't inflate it and fake an approach; freezes once something's inside the
+# trigger, so the "came from" reference survives a slow approach or a gated stretch). A
+# flinch fires when a side is inside
+# _TRIGGER_M AND has closed by _APPROACH_DROP_M off that baseline for _CONFIRM_TICKS
+# consecutive ticks (a real intrusion — fast or slow, either side — not static clutter
+# or a single noisy frame). A firmware BLOCKED-on-the-front state (a crowder too close
+# or too fast for the ~1 Hz sampler) triggers the same back-off immediately. He backs
+# up ONLY to a point: capped by the rear ToF (rl/rr) to leave _REAR_MARGIN_M of
+# clearance and stop short of the wall; cornered — or BLIND behind (rear sensors dead,
+# where the firmware stop also fails open) — he holds. The firmware's always-on
+# rear-ToF stop is the hard backstop when the rear sensors report. Highest-priority
+# autonomous behavior; needs no tracked person; may fire mid-sentence (it's a reflex).
+# Voice/gamepad/paused still gate the actual move.
+MOTION_FLINCH_ENABLED = True
+MOTION_FLINCH_TRIGGER_M = 0.45         # front intrusion closer than this arms a flinch
+MOTION_FLINCH_APPROACH_DROP_M = 0.20   # ...only if the gap also closed at least this much
+MOTION_FLINCH_CONFIRM_TICKS = 2        # consecutive intruding ticks before firing (de-glitch)
+MOTION_FLINCH_MIN_VALID_M = 0.05       # front reads below this are treated as sensor noise (idle only)
+MOTION_FLINCH_BASELINE_ADAPT_M = 0.12  # max per-tick drift of the open-distance baseline
+MOTION_FLINCH_CLEAR_CONFIRM_TICKS = 3  # consecutive clear ticks before the baseline may RISE (so a
+                                       # multi-frame ToF dropout can't inflate it and fake an approach)
+MOTION_FLINCH_BACKUP_M = 0.30          # nominal retreat distance
+MOTION_FLINCH_REAR_MARGIN_M = 0.30     # clearance to keep behind him (stop short of the wall)
+MOTION_FLINCH_MIN_BACKUP_M = 0.10      # below this the retreat isn't worth it -> hold (cornered)
+MOTION_FLINCH_SPEED_MS = 0.20          # m/s of the retreat (firmware still slows near the wall)
+MOTION_FLINCH_COOLDOWN_SECS = 6.0      # settle time between flinches
+MOTION_FLINCH_ALLOW_MID_SENTENCE = True  # a reflex fires even while they're talking; False defers it
 
 # ── Room exploration mode (intelligence/exploration.py) ───────────────────────
 # An INVITED, self-directed wander: someone says "feel free to explore" / "look

@@ -303,6 +303,25 @@ reversing; the swing side when spinning):
 - Zone thresholds and max speed are co-tuned so **stopping distance < min reliable ToF
   range** at full speed.
 
+**Flinch reflex (Mac-side, layered on the firmware stop).** Separate from the firmware
+zones above, `intelligence/motion_agency.py` gives a parked Rex a lifelike *back-off*.
+Each front matrix ToF half (`fl`/`fr`) is tracked on its own *adaptive open-distance
+baseline* — it drifts toward the reading while the front is clear (capped per tick, so a
+single spurious far frame can't fake an approach) and *freezes* the instant something
+enters personal space, so the "where they came from" reference survives a slow approach
+or a long gated stretch. A flinch fires when a side is inside `MOTION_FLINCH_TRIGGER_M`
+*and* has closed by `MOTION_FLINCH_APPROACH_DROP_M` off that baseline for
+`MOTION_FLINCH_CONFIRM_TICKS` consecutive ticks (a real intrusion — fast or slow, either
+side — not static clutter or one noisy frame). A firmware `BLOCKED`-on-the-front state (a
+crowder too close/fast for the ~1 Hz sampler) triggers the same back-off immediately. The
+retreat is *soft-capped* by the rear ToF (`rl`/`rr`) so he keeps
+`MOTION_FLINCH_REAR_MARGIN_M` of clearance and stops short of the wall; cornered — or
+*blind* behind (both rear sensors dead, where the firmware stop also fails open, per §safety)
+— he holds. This is a decision layer only — it issues a normal `move` (−distance), so the
+firmware's always-on rear-ToF STOP reflex remains the hard backstop that makes wall
+contact impossible whenever the rear sensors report. It needs no tracked/known person and,
+being a reflex, may fire mid-sentence (`MOTION_FLINCH_ALLOW_MID_SENTENCE`).
+
 ---
 
 ## 11. Manual control & Bluetooth gamepad override

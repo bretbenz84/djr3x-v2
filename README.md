@@ -26,6 +26,7 @@ The project is built for live, in-room use: Rex can recognize people, remember d
 - Live pose wireframe — the GUI dashboard's camera preview overlays each detected body as a real-time skeleton (MediaPipe pose landmarks, up to `POSE_MAX_PEOPLE` people) on top of the per-person face boxes, so you can see what Rex's body-tracking sees (toggle with `GUI_POSE_WIREFRAME_ENABLED`)
 - Servo and LED hardware hooks for a physical droid body
 - Voice-driven motion — an optional ESP32 drive base lets Rex physically roll around the room on command ("turn left", "back up", "come here", "halt"), avoiding obstacles and people with onboard sensors; the ESP32 owns the real-time, fail-safe motor loop while the Mac sends high-level commands
+- A back-off reflex — when Rex is parked and someone steps right up into his face, the front 8×8 ToF sensor feels the approach and he reflexively edges backward, the way an animal gives itself room. He only retreats as far as the rear ToF sensors say is safe — stopping short of the wall and simply holding his ground when he's cornered (toggle with `MOTION_FLINCH_ENABLED`; needs the drive base)
 - Music controls and verbal games: I Spy, 20 Questions, themed five-question Trivia rounds, Jeopardy, and Word Association
 
 See [CONTEXT.md](CONTEXT.md) for more detailed project features, architecture notes, hardware mappings, and behavior design.

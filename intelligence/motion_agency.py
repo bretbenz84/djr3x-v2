@@ -1,7 +1,26 @@
 """
 intelligence/motion_agency.py — autonomous base motion (owner spec 2026-07-06).
 
-Two behaviors, evaluated once per consciousness tick (~1 Hz):
+Three behaviors, evaluated once per consciousness tick (~1 Hz), highest priority
+first:
+
+FLINCH — a reflexive back-off when someone crowds Rex from the front, the way an
+animal edges back when you get in its face. Each front matrix ToF half (fl/fr,
+floor-rejected) is watched on its OWN adaptive open-distance baseline, so a real
+approach — fast or slow, from either side — is caught while static clutter on one
+sensor can't mask it. When a side is inside MOTION_FLINCH_TRIGGER_M AND has closed
+by MOTION_FLINCH_APPROACH_DROP_M off its (frozen) baseline for
+MOTION_FLINCH_CONFIRM_TICKS consecutive ticks (so one noisy frame never lurches
+him), he retreats a short step. A firmware BLOCKED-on-the-front state — a very close
+or fast crowder the ~1 Hz sampler would otherwise skip — triggers the same back-off
+immediately. He backs up ONLY to a point: the retreat is capped by the rear ToF
+(rl/rr) so he leaves MOTION_FLINCH_REAR_MARGIN_M of clearance and stops SHORT of the
+wall; cornered — or BLIND behind (rear sensors dead, where the firmware stop also
+fails open) — he holds his ground rather than reverse into it. The firmware's
+always-on rear-ToF stop is the hard backstop when the rear sensors report. Unlike
+the two behaviors below, FLINCH needs no tracked/known person (someone can walk up
+while Rex looks elsewhere) and — being a reflex — may fire even mid-sentence
+(MOTION_FLINCH_ALLOW_MID_SENTENCE).
 
 REALIGN — turn the base to face the person the head is tracking. The neck servo is
 the signal: face-tracking keeps the FACE centered in frame, so frame error goes to
@@ -26,8 +45,8 @@ Safety layering (all independent of this module):
 This module only DECIDES; it never streams velocities (turn/come are closed-loop
 firmware commands), acts only from motion state "idle", one action per tick.
 
-Kill switches: AUTONOMOUS_MOTION_ENABLED master; MOTION_FACE_PERSON_ENABLED /
-MOTION_APPROACH_ENABLED per behavior.
+Kill switches: AUTONOMOUS_MOTION_ENABLED master; MOTION_FLINCH_ENABLED /
+MOTION_FACE_PERSON_ENABLED / MOTION_APPROACH_ENABLED per behavior.
 """
 
 import logging
@@ -46,6 +65,23 @@ _state = {
     "far_hits": 0,
     "last_turn_at": 0.0,
     "last_approach_at": 0.0,
+    "last_flinch_at": 0.0,
+}
+
+# Flinch detector state, sampled every idle tick and reset whenever the base is
+# busy/exploring/gone (see _reset_flinch). Per FRONT SIDE (fl/fr, tracked separately
+# so static clutter on one side can't mask a real approach on the other) we keep an
+# adaptive "open-distance" baseline: it drifts toward the reading (capped per tick, so
+# a single spurious far frame can't manufacture a big drop) while the front is CLEAR,
+# and FREEZES the instant something enters personal space — so the "where they came
+# from" reference survives even a long gated stretch (mid-sentence / paused) instead of
+# decaying out of a fixed window. `hits` counts consecutive intruding ticks; a flinch
+# needs MOTION_FLINCH_CONFIRM_TICKS of them, so one noisy frame never lurches him.
+_flinch_state = {
+    "baseline": {"fl": None, "fr": None},  # adaptive open distance per side (m) or None
+    "clear_run": {"fl": 0, "fr": 0},       # consecutive CLEAR ticks per side (gates baseline rises)
+    "hits": 0,                              # consecutive intruding ticks
+    "last_corner_log_at": 0.0,             # throttle for the "cornered/blind, holding" log
 }
 
 
@@ -63,6 +99,25 @@ def _num(name: str, default: float) -> float:
 def _reset(*counters: str) -> None:
     for key in counters:
         _state[key] = 0
+
+
+def _min_valid_m(*vals) -> Optional[float]:
+    """Smallest of the given ToF readings, in METRES, ignoring invalids. The wire
+    carries mm as int16: a negative value is the error/no-data sentinel (-1); the
+    clear/room-max reads (~3500 matrix, ~4000 radial) are valid large distances.
+    None when no reading is usable."""
+    best: Optional[float] = None
+    for v in vals:
+        try:
+            mm = float(v)
+        except (TypeError, ValueError):
+            continue
+        if mm < 0.0:                      # -1 = sensor error / no data
+            continue
+        m = mm / 1000.0
+        if best is None or m < best:
+            best = m
+    return best
 
 
 def neck_offset_fraction() -> Optional[float]:
@@ -117,6 +172,176 @@ def _turn_degrees_for(frac: float) -> float:
     return max(-max_deg, min(max_deg, deg))
 
 
+def _reset_flinch() -> None:
+    """Drop the adaptive baselines + confirm counters (cooldown stamps persist)."""
+    _flinch_state["baseline"]["fl"] = None
+    _flinch_state["baseline"]["fr"] = None
+    _flinch_state["clear_run"]["fl"] = 0
+    _flinch_state["clear_run"]["fr"] = 0
+    _flinch_state["hits"] = 0
+
+
+def _flinch_side_m(v) -> Optional[float]:
+    """One front-sensor reading in METRES, or None if unusable. Beyond the shared
+    -1/junk rejection, drop implausibly short reads (< MOTION_FLINCH_MIN_VALID_M) as
+    sensor noise so a lone near-zero flyer can't by itself trip the reflex."""
+    m = _min_valid_m(v)
+    if m is None or m < _num("MOTION_FLINCH_MIN_VALID_M", 0.05):
+        return None
+    return m
+
+
+def _nearest(*vals: Optional[float]) -> Optional[float]:
+    """Smallest of some already-in-METRES readings, ignoring None. (Unlike
+    _min_valid_m this does NOT re-scale — feed it _flinch_side_m outputs.)"""
+    xs = [v for v in vals if v is not None]
+    return min(xs) if xs else None
+
+
+def _update_baseline(side: str, d: Optional[float]) -> None:
+    """Fold this tick's reading into the side's adaptive open-distance baseline.
+
+    Movement is capped at MOTION_FLINCH_BASELINE_ADAPT_M per tick. The baseline may
+    drift DOWN toward a nearer clear surface immediately (keeps him sensitive), but may
+    only RISE after the front has read clear for MOTION_FLINCH_CLEAR_CONFIRM_TICKS in a
+    row — so a multi-frame ToF dropout-to-max burst can't inflate the reference and
+    fake an approach on a static object (the down direction has no such glitch risk).
+    Once something is inside the trigger the baseline FREEZES, preserving "where they
+    came from" across a long approach or a gated stretch."""
+    if d is None:
+        return
+    if d < _num("MOTION_FLINCH_TRIGGER_M", 0.45):
+        _flinch_state["clear_run"][side] = 0        # intrusion regime — freeze
+        if _flinch_state["baseline"][side] is None:
+            _flinch_state["baseline"][side] = d      # seed on first near read
+        return
+    _flinch_state["clear_run"][side] += 1
+    b = _flinch_state["baseline"][side]
+    if b is None:
+        _flinch_state["baseline"][side] = d          # seed on first clear read
+        return
+    cap = _num("MOTION_FLINCH_BASELINE_ADAPT_M", 0.12)
+    if d <= b:
+        _flinch_state["baseline"][side] = b + max(-cap, d - b)     # nearer surface: track down now
+    elif _flinch_state["clear_run"][side] >= max(1, int(_num("MOTION_FLINCH_CLEAR_CONFIRM_TICKS", 3))):
+        _flinch_state["baseline"][side] = b + min(cap, d - b)      # sustained re-open: allow a rise
+    # else: an unconfirmed clear read (possible dropout) — hold the frozen baseline.
+
+
+def _side_intrudes(side: str, d: Optional[float]) -> bool:
+    """True if this side shows a genuine intrusion: inside the trigger AND closed by
+    at least MOTION_FLINCH_APPROACH_DROP_M vs its frozen open-distance baseline."""
+    b = _flinch_state["baseline"][side]
+    if d is None or b is None or d >= _num("MOTION_FLINCH_TRIGGER_M", 0.45):
+        return False
+    return (b - d) >= _num("MOTION_FLINCH_APPROACH_DROP_M", 0.20)
+
+
+def _flinch_gated(profile, now: float) -> bool:
+    """Common fire gates once a trigger is present: the mid-sentence freeze (only when
+    the operator opts flinch into it) and the maneuver cooldown."""
+    if (getattr(profile, "user_mid_sentence", False)
+            and not _flag("MOTION_FLINCH_ALLOW_MID_SENTENCE", True)):
+        return True
+    return (now - _state["last_flinch_at"]) < _num("MOTION_FLINCH_COOLDOWN_SECS", 6.0)
+
+
+def _corner_log(msg: str, front: float, rear: Optional[float], now: float) -> None:
+    """Throttled 'nowhere to retreat' log (does NOT touch the maneuver cooldown, so a
+    hold never delays a real flinch once room appears behind him)."""
+    if (now - _flinch_state["last_corner_log_at"]) < _num("MOTION_FLINCH_COOLDOWN_SECS", 6.0):
+        return
+    _flinch_state["last_corner_log_at"] = now
+    _log.info(
+        "[motion_agency] flinch: crowded at %.2fm but rear=%s — %s",
+        front, ("%.2fm" % rear) if rear is not None else "unknown", msg,
+    )
+
+
+def _flinch_retreat(front: float, rear: Optional[float], now: float, reason: str) -> bool:
+    """Back off from a confirmed front intrusion, capped by rear clearance. Holds
+    (returns False, no cooldown stamp) when cornered or blind behind — the firmware's
+    always-on rear-ToF stop only guards a reverse when the rear sensors report, so a
+    blind rear has no backstop and must not take even a token step. Returns True only
+    when a move was actually issued."""
+    if rear is None:
+        _corner_log("rear sensors blind, holding", front, rear, now)
+        return False
+    room = rear - _num("MOTION_FLINCH_REAR_MARGIN_M", 0.30)
+    backup = min(_num("MOTION_FLINCH_BACKUP_M", 0.30), room)
+    if backup < _num("MOTION_FLINCH_MIN_BACKUP_M", 0.10):
+        _corner_log("cornered, holding", front, rear, now)
+        return False
+
+    speed = _num("MOTION_FLINCH_SPEED_MS", 0.20)
+    seq = motion_controller.move(-backup, speed)
+    if seq is None:
+        return False  # suppressed (paused / gamepad owner / disconnected) — not fired
+    _log.info(
+        "[motion_agency] flinch (%s): front %.2fm -> back off %.2fm (rear=%.2fm, speed=%.2f)",
+        reason, front, backup, rear, speed,
+    )
+    _state["last_flinch_at"] = now
+    _reset_flinch()  # fresh baselines after the move
+    return True
+
+
+def _maybe_flinch(profile, now: float, state: str) -> bool:
+    """Reflexive back-off from a front intrusion. Call once per tick from idle OR the
+    firmware BLOCKED state; returns True only when a back-off was issued (caller stops).
+
+    IDLE — watch each front side (fl/fr) with its own adaptive baseline + a
+    consecutive-tick confirm counter, so a real approach (from either side, fast or
+    slow) fires while static clutter and single-frame noise do not.
+
+    BLOCKED — the firmware has already latched on a too-close obstacle; if it is in
+    FRONT (front read inside the trigger, OR too close to read at all — the firmware
+    only blocks front/rear, so a latched block with the rear clear is a front one) that
+    IS the intrusion, so back off immediately (no confirm needed, and the idle noise
+    floor does not apply — the firmware already vouched for a real obstacle). A reverse
+    away from a front block runs even while blocked; the firmware zeroes it if the rear
+    is also blocked, and _flinch_retreat holds first if the rear is tight — so he never
+    reverses into a wall.
+
+    Never raises."""
+    tele = motion.telemetry()
+    if not isinstance(tele, dict):
+        return False
+    tof = tele.get("tof_mm")
+    if not isinstance(tof, dict):
+        return False
+    rear = _min_valid_m(tof.get("rl"), tof.get("rr"))
+    trigger = _num("MOTION_FLINCH_TRIGGER_M", 0.45)
+
+    if state == "blocked":
+        # Use the RAW front (no idle noise floor): a crowder pressed sub-floor close is
+        # exactly the case this path exists for. front >= trigger means the block is
+        # rear/side, not a crowder — leave it alone. front None (both dead/too-close)
+        # under a latched block ⇒ front block ⇒ pin it at contact and let the rear cap
+        # (cornered/blind → hold) decide safely.
+        front = _min_valid_m(tof.get("fl"), tof.get("fr"))
+        if front is not None and front >= trigger:
+            return False
+        if _flinch_gated(profile, now):
+            return False
+        return _flinch_retreat(0.0 if front is None else front, rear, now, "front-block")
+
+    fl = _flinch_side_m(tof.get("fl"))
+    fr = _flinch_side_m(tof.get("fr"))
+
+    # ── idle: sample every tick (baselines must stay fresh even while gated) ──────
+    _update_baseline("fl", fl)
+    _update_baseline("fr", fr)
+    intruding = _side_intrudes("fl", fl) or _side_intrudes("fr", fr)
+    _flinch_state["hits"] = _flinch_state["hits"] + 1 if intruding else 0
+
+    if _flinch_state["hits"] < max(1, int(_num("MOTION_FLINCH_CONFIRM_TICKS", 2))):
+        return False
+    if _flinch_gated(profile, now):
+        return False
+    return _flinch_retreat(_nearest(fl, fr), rear, now, "approach")
+
+
 def step(snapshot: dict, profile) -> None:
     """One autonomy tick. Call from the consciousness loop; never raises."""
     try:
@@ -127,6 +352,10 @@ def step(snapshot: dict, profile) -> None:
 
 def _step_inner(snapshot: dict, profile) -> None:
     if not _flag("AUTONOMOUS_MOTION_ENABLED", True):
+        # Drop the flinch baselines like every other non-live path, so a person who
+        # walked up while autonomy was OFF isn't read as an "approach" on re-enable.
+        _reset("neck_hits", "far_hits")
+        _reset_flinch()
         return
     # A room-exploration session OWNS the base while it wanders — realign/approach
     # must not interleave a maneuver between its legs.
@@ -134,18 +363,46 @@ def _step_inner(snapshot: dict, profile) -> None:
         from intelligence import exploration
         if exploration.active():
             _reset("neck_hits", "far_hits")
+            _reset_flinch()
             return
     except Exception:
         pass
     if not motion_controller.available():
         _reset("neck_hits", "far_hits")
+        _reset_flinch()
         return
-    # Never start a maneuver while the human is mid-sentence (motor noise into the
-    # mic during THEIR turn) or the base is already doing something / blocked.
+
+    st = motion.state()
+    # The base must be settled (idle) to sample intrusions, but a firmware BLOCKED
+    # state is itself a strong front-crowding signal the flinch should answer. Any
+    # other state (moving / estop / fault / comms-lost) means the ToF is dominated by
+    # our own motion or the base is unavailable — drop the baselines so a distance
+    # jump across it can't later masquerade as an approach.
+    if st not in ("idle", "blocked"):
+        _reset_flinch()
+        return
+
+    now = time.monotonic()
+
+    # ── FLINCH: reflexive back-off when someone crowds the front ─────────────────
+    # A raw ToF reflex: no tracked/known person required, and it may fire even while
+    # the human is mid-sentence (someone stepping into his face while talking) — so
+    # it is evaluated BEFORE the mid-sentence freeze that guards the social behaviors.
+    # It also samples the front baseline every idle tick (approach detection), which
+    # is why it must run before any of the early returns below.
+    if _flag("MOTION_FLINCH_ENABLED", True) and _maybe_flinch(profile, now, st):
+        return  # one maneuver per tick
+
+    # A BLOCKED base can only flinch (or hold) — it is not settled enough for the
+    # social behaviors, and there is no fresh approach baseline while blocked.
+    if st != "idle":
+        return
+
+    # Below here are the SOCIAL behaviors (realign/approach). Never start their
+    # maneuvers while the human is mid-sentence (motor noise into the mic on THEIR
+    # turn) — a reflex flinch is deliberately exempt from this, they are not.
     if getattr(profile, "user_mid_sentence", False):
         _reset("neck_hits", "far_hits")
-        return
-    if motion.state() != "idle":
         return
 
     person = _tracked_person(snapshot)
@@ -153,7 +410,6 @@ def _step_inner(snapshot: dict, profile) -> None:
         _reset("neck_hits", "far_hits")
         return
 
-    now = time.monotonic()
     frac = neck_offset_fraction()
 
     # ── REALIGN: rotate the base under the head ──────────────────────────────

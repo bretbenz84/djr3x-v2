@@ -124,10 +124,14 @@ intelligence/
   social_frame.py        Response shape/governance cleanup.
   tell_me_about.py       "Tell me about someone" pre-briefing parsing/lines/classifier.
   motion_controller.py   High-level drive-base API: turn/move/come/stop + heartbeat + safety gates.
-  motion_agency.py       Autonomous motion decisions: turn base to face the tracked person
-                         (neck-offset signal), approach a far person (`come`, ToF-guarded).
-                         AUTONOMOUS_MOTION_ENABLED + per-behavior flags; one maneuver/tick,
-                         idle-state only, never mid-sentence; gamepad owner always wins.
+  motion_agency.py       Autonomous motion decisions: FLINCH back-off when someone crowds
+                         the front (front-matrix ToF intrusion, rear-ToF-limited retreat —
+                         backs up only to a point, holds when cornered), turn base to face
+                         the tracked person (neck-offset signal), approach a far person
+                         (`come`, ToF-guarded). AUTONOMOUS_MOTION_ENABLED + per-behavior
+                         flags; one maneuver/tick, idle-state only; flinch is a reflex
+                         (no tracked person needed, may fire mid-sentence) while
+                         realign/approach defer mid-sentence; gamepad owner always wins.
 
 memory/
   database.py            SQLite connection, schema, migrations.
