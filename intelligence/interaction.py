@@ -16338,6 +16338,27 @@ def _handle_impersonation_capture(
     return (parody, True)
 
 
+def _settle_response_wait_after_action() -> None:
+    """Turn-epilogue response-wait handling for executed actions.
+
+    Normally an executed command clears the response wait (nothing is owed). But
+    when the impersonation capture slot is open, Rex has just ASKED the user to
+    repeat a line — he is waiting, not done. Arm the wait for the capture window
+    so the whole proactive family (smile reactions, presence beats, env snark,
+    musings) holds off instead of barging in — live-logged 2026-07-19 21:20: a
+    canned smile-reaction line played ONE second after 'Repeat after me…' because
+    the epilogue cleared the wait and the camera caught the user grinning."""
+    try:
+        if _pending_impersonation_capture is not None:
+            consciousness.begin_response_wait(
+                float(getattr(config, "IMPERSONATION_CAPTURE_TIMEOUT_SECS", 45.0))
+            )
+        else:
+            consciousness.clear_response_wait()
+    except Exception:
+        pass
+
+
 def _explicit_impersonation_takeover(
     text: str,
     *,
@@ -20769,6 +20790,10 @@ def _handle_speech_segment(
             # already_spoken → perform() voiced the bit (intro/clone/outro); just log.
             if not imp_already_spoken:
                 _speak_blocking(imp_line, emotion="curious", pre_beat_ms=100)
+            # Slot still open (a too-short-clip re-ask) → re-arm the response wait
+            # so proactive beats keep holding; slot closed (performed/canceled) →
+            # clear it. Same settle rule as the takeover epilogue.
+            _settle_response_wait_after_action()
             conv_memory.add_to_transcript("Rex", imp_line)
             conv_log.log_rex(imp_line)
             _session_exchange_count += 1
@@ -21718,10 +21743,7 @@ def _handle_speech_segment(
                 ):
                     suppress_memory_learning = True
                 _dismiss_pending_consent_prompts(person_id, text)
-                try:
-                    consciousness.clear_response_wait()
-                except Exception:
-                    pass
+                _settle_response_wait_after_action()
                 if not silent_command:
                     conv_memory.add_to_transcript("Rex", fast_takeover_response)
                     conv_log.log_rex(fast_takeover_response)
@@ -21948,10 +21970,7 @@ def _handle_speech_segment(
                 spoken_text=router_takeover_response,
             )
             _dismiss_pending_consent_prompts(person_id, text)
-            try:
-                consciousness.clear_response_wait()
-            except Exception:
-                pass
+            _settle_response_wait_after_action()
             conv_memory.add_to_transcript("Rex", router_takeover_response)
             conv_log.log_rex(router_takeover_response)
             _session_exchange_count += 1

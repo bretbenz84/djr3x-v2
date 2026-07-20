@@ -359,6 +359,50 @@ class PreDialogueGateTakeoverTest(unittest.TestCase):
         )
 
 
+class ResponseWaitSettleTest(unittest.TestCase):
+    """The 21:20 barge-in: the takeover epilogue cleared the response wait right
+    after 'Repeat after me…', so the smile-reaction (camera saw the user grin at
+    the joke-shaped capture line) was free to speak ONE second later. With the
+    capture slot open, the epilogue must ARM the wait for the capture window."""
+
+    @classmethod
+    def setUpClass(cls):
+        from intelligence import interaction
+        cls.itn = interaction
+
+    def setUp(self):
+        self.itn._pending_impersonation_capture = None
+
+    def tearDown(self):
+        self.itn._pending_impersonation_capture = None
+
+    def test_arms_wait_while_capture_pending(self):
+        self.itn._pending_impersonation_capture = {"person_id": 1, "asked_at": 0.0}
+        with mock.patch.object(self.itn.consciousness, "begin_response_wait") as arm, \
+             mock.patch.object(self.itn.consciousness, "clear_response_wait") as clear, \
+             mock.patch.object(config, "IMPERSONATION_CAPTURE_TIMEOUT_SECS", 45.0):
+            self.itn._settle_response_wait_after_action()
+        arm.assert_called_once_with(45.0)
+        clear.assert_not_called()
+
+    def test_clears_wait_when_no_capture_pending(self):
+        with mock.patch.object(self.itn.consciousness, "begin_response_wait") as arm, \
+             mock.patch.object(self.itn.consciousness, "clear_response_wait") as clear:
+            self.itn._settle_response_wait_after_action()
+        clear.assert_called_once()
+        arm.assert_not_called()
+
+    def test_smile_reaction_blocked_while_waiting(self):
+        # End-to-end on the real consciousness gate: an armed response wait must
+        # suppress the smile reaction (the actual 21:20 barger).
+        from intelligence import consciousness
+        consciousness.begin_response_wait(45.0)
+        try:
+            self.assertFalse(consciousness._can_smile_reaction_speak())
+        finally:
+            consciousness.clear_response_wait()
+
+
 class CaptureConsumerTest(unittest.TestCase):
     """The interaction.py pending-slot consumer _handle_impersonation_capture."""
 
